@@ -36,6 +36,7 @@ steps:
     condition: "goal_already_met != 'true'"
     prompt: |
       # Step 9: Refactor and Simplify
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
 
       **CRITICAL:** User requirements that CANNOT be removed:
       {{final_requirements}}
@@ -67,6 +68,7 @@ steps:
     condition: "goal_already_met != 'true'"
     prompt: |
       # Step 9b: Performance Optimization
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
 
       **Refactored Code:** {{refactored_code}}
       **Requirements:** {{final_requirements}}
@@ -185,6 +187,7 @@ steps:
     condition: "goal_already_met != 'true'"
     prompt: |
       # Step 11b: Implement Review Feedback
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
 
       **Current Code:** {{optimized_code}}
       **Feedback Assessment:** {{feedback_assessment}}

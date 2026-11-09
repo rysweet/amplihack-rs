@@ -61,6 +61,7 @@ steps:
       **Repo**: {{repo_path}}
 
       Perform the operation, report what was done. End with "STATUS: COMPLETE".
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
     output: "round_1_result"
 
   # Detect if Operations modified tracked files (fix #227).
@@ -392,8 +393,7 @@ steps:
     fatal: false
     type: "bash"
     command: |
-      # Cleanup workstream state files. Uses /tmp because workstream JSON is
-      # ephemeral per-run and does not need to survive reboots.
-      rm -f /tmp/smart-orch-ws-*.json 2>/dev/null || true
+      # Same place `amplihack orch` writes them: std::env::temp_dir(), i.e. $TMPDIR else /tmp (#1978).
+      rm -f "${TMPDIR:-/tmp}"/smart-orch-ws-*.json 2>/dev/null || true
       echo "ok"
     output: "cleanup_status"

@@ -64,6 +64,7 @@ steps:
         "all_passing": true/false
       }
       ```
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
     output: "hook_fixes"
     parse_json: true
 
@@ -104,6 +105,7 @@ steps:
         "ready_to_commit": true/false
       }
       ```
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
     output: "local_testing"
     parse_json: true
 

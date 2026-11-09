@@ -289,6 +289,8 @@ mod issue_1955_install_cli;
 mod issue_1973_rotate_fixture;
 #[path = "issue_1973_wait_helpers.rs"]
 mod issue_1973_wait_helpers;
+#[path = "issue_1978_recipe_prompts_use_tmpdir.rs"]
+mod issue_1978_recipe_prompts_use_tmpdir;
 #[path = "issue_1979_crusty_minor_followups.rs"]
 mod issue_1979_crusty_minor_followups;
 #[path = "issue_1985_codex_agent_step_flags.rs"]

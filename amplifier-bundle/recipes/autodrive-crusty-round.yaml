@@ -272,7 +272,7 @@ steps:
       the tree.
 
       Do not paper over a concern. Do not narrow a test until it passes. Do not
-      leave a TODO in place of a fix.
+      leave a TODO in place of a fix. Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
 
       [amplihack:no-merge] Do NOT run "gh pr merge" or call the pulls/<N>/merge API, and do not list merging in requirements or acceptance criteria. Leave the PR open. Auto-drive's merge gate merges it after a Crusty CLEAN and the merge-ready loop; any other merge attempt is refused.
 

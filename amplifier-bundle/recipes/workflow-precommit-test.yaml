@@ -28,6 +28,7 @@ steps:
     condition: "goal_already_met != 'true'"
     prompt: |
       # Step 12: Run Tests and Pre-commit Hooks
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
 
       **Worktree:** {{worktree_setup}}
       **Implementation:** {{review_feedback}}
@@ -101,6 +102,7 @@ steps:
     condition: "goal_already_met != 'true'"
     prompt: |
       # Step 13: Mandatory Outside-In Testing (CANNOT BE SKIPPED)
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
 
       **Task:** {{task_description}}
       **Repository:** {{repo_path}}

@@ -128,7 +128,7 @@ steps:
       **Philosophy Review:** {{pr_philosophy_review}}
       Review all findings from Steps 16a-16d and address any blocking issues:
       1. Identify blocking issues from each review
-      2. Implement fixes for each blocking issue
+      2. Implement fixes for each blocking issue. Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
       3. If issues found, re-run applicable reviews after fixing
       **Output:** Summary of blocking issues found and how they were addressed.
       If no blocking issues, state "No blocking issues found."
@@ -180,7 +180,7 @@ steps:
       - [ ] Address EVERY blocking issue
       - [ ] Address suggestions where appropriate
       - [ ] For disagreements, document reasoning
-      - [ ] Ensure changes don't introduce new issues
+      - [ ] Ensure changes don't introduce new issues. Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
       - [ ] Waiting (issue #1794): use `amplihack wait --seconds N`, or `cmd & pid=$!; wait $pid`; never `tail -f /dev/null` or `timeout N tail -f /dev/null`, whose `tail` outlives the tool call as an orphan and which the PreToolUse hook denies
       **Output:** Summary of changes for each feedback item.
     output: "pr_feedback_changes"

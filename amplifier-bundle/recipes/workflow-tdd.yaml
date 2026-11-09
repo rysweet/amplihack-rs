@@ -30,6 +30,7 @@ steps:
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
       # Step 7: TDD - Write Tests First
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
 
       **Task:** {{task_description}}
       **Requirements:** {{final_requirements}}
@@ -58,6 +59,7 @@ steps:
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
       # Step 8: Implement the Solution
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
 
       **Task:** {{task_description}}
       **Requirements:** {{final_requirements}}
@@ -112,6 +114,7 @@ steps:
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
       # Step 8c: Work Verifier (agentic)
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
 
       You are the WORK VERIFIER. step-08-implement reported `STATUS: COMPLETE`.
       Decide whether that claim is supported by **concrete artifacts** and emit
@@ -242,6 +245,7 @@ steps:
     condition: "clarified_requirements.requires_integration_work != 'false' and resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
     prompt: |
       # Step 8b: External Service Integration
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
 
       **Implementation:** {{implementation}}
       **Design Specification:** {{design_spec}}

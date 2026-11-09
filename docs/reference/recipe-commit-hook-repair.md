@@ -840,6 +840,12 @@ bash run in the worktree after the action, which the refusal cases use; and
 test honours `WORKFLOW_HOOK_REPAIR_HELPER` and `WORKFLOW_STAGE_CHANGES_HELPER`,
 and `ISSUE_1671_KEEP_WORK=1` keeps its temporary directory for debugging.
 
+Each case builds its repositories under its own `CASE_ROOT`, which is removed
+when the case returns, and the suite fails if entries build up from one case
+to the next. `ISSUE_1671_ONLY` runs a subset of cases and
+`ISSUE_1671_BOUNDARY_LOG` records the counts. The fixture root avoids tmpfs.
+See [Recipe Scratch Policy](./recipe-scratch-policy.md#the-hook-repair-suite-per-case-removal).
+
 The behaviours below are fixed by this page rather than by the design. Each
 has its own case in the shell test:
 
@@ -896,3 +902,5 @@ cargo test --locked -p amplihack --test integration issue_1671_hook_rejection_re
   exit-79 contract
 - [Publish Lockfile Sync](./workflow-publish-lockfile-sync.md): other
   step-15 behaviour
+- [Recipe Scratch Policy](./recipe-scratch-policy.md): where the shell
+  test and recipe agents put scratch, and per-case removal

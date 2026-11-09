@@ -160,11 +160,28 @@ FAIL_COUNT=0
 pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo "  PASS[$1]: $2"; }
 fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL[$1]: $2" >&2; }
 
+# drop_case <path>...: remove a finished case's repositories and state dirs
+# once nothing later reads them (#2043), so the suite never holds every
+# case's fixtures at once. Every path must sit under ${WORK} or ${WORK_PHYS};
+# anything else is a harness error. A no-op under AUTODRIVE_TEST_KEEP_WORK.
+drop_case() {
+  [ -z "${AUTODRIVE_TEST_KEEP_WORK:-}" ] || return 0
+  local path
+  for path in "$@"; do
+    case "${path}" in
+      *"/../"*|*"/..") echo "HARNESS-ERROR: drop_case refuses a path with '..': ${path}" >&2; exit 2 ;;
+      "${WORK:?}/"?*|"${WORK_PHYS:?}/"?*) chmod -R u+rwx -- "${path}" 2>/dev/null || true; rm -rf -- "${path}" ;;
+      *) echo "HARNESS-ERROR: drop_case refuses ${path}: not under ${WORK}" >&2; exit 2 ;;
+    esac
+  done
+}
+
 echo "=== auto-drive-to-merge contract ==="
 
 # mktemp -d uses TMPDIR when it is set and /tmp otherwise.
 WORK="$(mktemp -d)" || { echo "HARNESS-ERROR: mktemp -d failed (TMPDIR=${TMPDIR:-unset})" >&2; exit 2; }
-trap 'chmod -R u+rwx "${WORK}" 2>/dev/null; rm -rf "${WORK}"' EXIT
+# AUTODRIVE_TEST_KEEP_WORK=1 keeps ${WORK} and every case in it (#2043).
+[ -n "${AUTODRIVE_TEST_KEEP_WORK:-}" ] || trap 'chmod -R u+rwx "${WORK}" 2>/dev/null; rm -rf -- "${WORK:?}"' EXIT
 WORK_PHYS="$(cd "${WORK}" && pwd -P)"
 # The resolver cases run from a directory that must not be inside any git work
 # tree; scratch space under a checkout (say <repo>/target/tmp) would let them
@@ -643,6 +660,16 @@ else
   fail "LOOP-labels-nothing-set-aside" "entries were set aside as untrusted: $(find "${WORK}"/loop-relabel* -name 'untrusted-*' | tr '\n' ' ')"
 fi
 export STUB_ROUND_FINDINGS=""
+# #2043: sections 1 to 2d are done; nothing below reads their loop state.
+# The shared LOOP_MAIN/LOOP_WT pair is named loop-* too and stays.
+for _loop_state in "${WORK}"/loop-*; do
+  case "${_loop_state##*/}" in
+    "${LOOP_MAIN##*/}"|"${LOOP_WT##*/}") ;;
+    *) drop_case "${_loop_state}" ;;
+  esac
+done
+unset _loop_state
+drop_case "${WORK}/manifest-at-evaluator"
 
 # ---------------------------------------------------------------------------
 # 2e. The tree under review never supplies its own reviewer (#1528).
@@ -768,6 +795,8 @@ for case_ in explicit inside default context other-repo not-a-checkout sibling-w
     fail "1528-review-dir-refused-${case_}" "rc=${rc}; calls: $(cat "${LOOP_DIR}.calls" 2>/dev/null); out: $(cat "${LOOP_DIR}.out")"
   fi
 done
+# #2043: the other repository and the refused loops' state are not read again.
+drop_case "${WORK}/other-repo" "${WORK}/other-repo-wt" "${WORK}"/loop-review-refused-*
 
 # A loop helper that was itself picked up from inside the tree under review
 # would resolve "launch-side" recipes from that tree. It must refuse before a
@@ -2907,7 +2936,7 @@ fi
 # so an absent sentinel is not a step that stopped early.
 DECOY_1607="$(mktemp -d "${WORK_PHYS}/decoy-1607.XXXXXX")" || { echo "HARNESS-ERROR: mktemp" >&2; exit 2; }
 chmod 0700 "${DECOY_1607}"
-trap 'rm -rf "${DECOY_1607}"; chmod -R u+rwx "${WORK}" 2>/dev/null; rm -rf "${WORK}"' EXIT
+[ -n "${AUTODRIVE_TEST_KEEP_WORK:-}" ] || trap 'rm -rf -- "${DECOY_1607:?}"; chmod -R u+rwx "${WORK}" 2>/dev/null; rm -rf -- "${WORK:?}"' EXIT
 SENTINEL_1607="DECOY-1607-SENTINEL"
 # Each decoy tool records that it ran in a marker file, prints the sentinel
 # and exits 0, so a step that sourced it ends "successfully": only the marker
@@ -4451,7 +4480,7 @@ else
   fail "CRUSTY-STEP06-bad-fix-sha-fails" "rc=${S6_RC} record=$(cat "${S6_REC}" 2>/dev/null)"
 fi
 # Hostile counts and label still give one valid JSON line.
-s6_run "${CTX}" '{"commits":"2x"}' '{"crusty_verdict":"CLEAN","concern_count":"3; rm -rf /"}' 'round-"1\'
+s6_run "${CTX}" '{"commits":"2x"}' '{"crusty_verdict":"CLEAN","concern_count":"3; rm -rf -- /"}' 'round-"1\'
 if [ "${S6_RC}" -eq 0 ] && jq -e 'type == "object" and .concern_count == 0 and .commits_this_round == 0' "${S6_REC}" >/dev/null 2>&1 \
    && [ "$(grep -c . "${S6_REC}")" = "1" ]; then
   pass "CRUSTY-STEP06-hostile-values" "non-numeric counts become 0 and the label cannot break the record"
@@ -6368,7 +6397,7 @@ info_count() { grep -cF "running another round to re-review" "${LOOP_LOGS}/err" 
 p1597_reset() { # p1597_reset <spec-dir>: stub defaults with DONE from every evaluator call
   set_stub '' 0 "$H_DONE"
   unset STUB_HEALTH_SEQ STUB_HEALTH_BODY
-  rm -rf "$1"; mkdir -p "$1"
+  rm -rf -- "${1:?}"; mkdir -p "$1"
   spec_body "$1"
   export STUB_HISTORY_LOG="${WORK}/p1597-history.tmp"; : > "${STUB_HISTORY_LOG}"
 }
@@ -6652,6 +6681,8 @@ fi
 
 unset STUB_ROUND_BODY STUB_HEALTH_SEQ STUB_HEALTH_BODY STUB_HISTORY_LOG RUN_LOOP_TIMEOUT
 LOOP_MAIN="${SAVED_LOOP_MAIN}"; LOOP_WT="${SAVED_LOOP_WT}"
+# #2043: issue #1597's checkout pair and loop state are not read again.
+drop_case "${P1597_WT}" "${P1597_MAIN}" "${WORK}"/loop-p1597-* "${WORK}/p1597-history.tmp"
 
 # ── Issue #1763: the gate scopes gadugi with its own base ────────────────────
 # The gate decides gadugi from the checkout with AUTODRIVE_QA_BASE set from its

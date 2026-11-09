@@ -25,6 +25,10 @@
 # origin/master -> origin/develop fallback and workflow-publish removes timeout
 # wrappers while making design spec optional.
 #
+# Each case's repositories are removed when the case's last assertion passes
+# (#2043), so the suite never holds every case's fixtures at once. Set
+# DEFAULT_WORKFLOW_RELIABILITY_KEEP_WORK=1 to keep $WORK and every case.
+#
 # Usage: bash amplifier-bundle/recipes/tests/test-default-workflow-reliability.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
 
@@ -96,7 +100,7 @@ fi
 # Resolved (pwd -P): steps accept worktree_setup.worktree_path only as an
 # already-resolved worktree root (#1561), even when TMPDIR is a symlink.
 WORK="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/default-workflow-reliability-XXXXXX")" && pwd -P)"
-trap 'rm -rf "${WORK}"' EXIT
+[[ -n "${DEFAULT_WORKFLOW_RELIABILITY_KEEP_WORK:-}" ]] || trap 'rm -rf -- "${WORK:?}"' EXIT
 STEP04="${WORK}/step-04-setup-worktree.sh"
 STEP_TDD_CHECKPOINT="${WORK}/checkpoint-after-implementation.sh"
 STEP_REFACTOR_REVIEW_CHECKPOINT="${WORK}/checkpoint-after-review-feedback.sh"
@@ -106,6 +110,22 @@ STEP_FINALIZE_CLEANUP="${WORK}/step-20b-push-cleanup.sh"
 fail() {
     echo "FAIL: $*" >&2
     exit 1
+}
+
+# drop_case <path>...: remove a finished case's fixtures (#2043). Every path
+# must sit under ${WORK}; anything else is refused. A no-op under
+# DEFAULT_WORKFLOW_RELIABILITY_KEEP_WORK. fail() exits, so a failed case keeps
+# its fixtures until the EXIT trap.
+drop_case() {
+    [[ -z "${DEFAULT_WORKFLOW_RELIABILITY_KEEP_WORK:-}" ]] || return 0
+    local path
+    for path in "$@"; do
+        case "${path}" in
+            *"/../"*|*"/..") fail "drop_case: refusing a path with '..': ${path}" ;;
+            "${WORK:?}/"?*) rm -rf -- "${path}" ;;
+            *) fail "drop_case: refusing ${path}: not under ${WORK}" ;;
+        esac
+    done
 }
 
 extract_step_command() {
@@ -286,12 +306,13 @@ assert_runtime_artifact_helper_contracts() {
     nongit="$(mktemp -d)"
     mkdir -p "${nongit}/.claude/runtime"
     if cleanup_known_workflow_runtime_artifacts "${nongit}"; then
-        rm -rf "${nongit}"
+        rm -rf -- "${nongit}"
         fail "cleanup must reject non-git directories instead of deleting by path shape alone"
     fi
     [[ -d "${nongit}/.claude/runtime" ]] \
-        || { rm -rf "${nongit}"; fail "cleanup must not delete anything when the target is not a git worktree"; }
-    rm -rf "${nongit}"
+        || { rm -rf -- "${nongit}"; fail "cleanup must not delete anything when the target is not a git worktree"; }
+    rm -rf -- "${nongit}"
+    drop_case "${case_dir}"
 }
 
 # Issue #1528 (SEC-D1): in a main checkout, `worktrees/` holds other runs' live
@@ -355,6 +376,7 @@ SHIM
         || fail "issue #1528: preflight must keep worktrees/ when git worktree list fails"
     grep -qxF "WARNING: runtime cleanup kept ${repo}/worktrees: git worktree list failed (#1528)" "${stderr_file}" \
         || fail "issue #1528: preflight must warn that the worktree list failed (got: $(cat "${stderr_file}"))"
+    drop_case "${case_dir}"
 
     echo "  PASS[runtime-preflight-1528]: a main checkout keeps worktrees/ while it holds a registered worktree or the list fails"
 }
@@ -475,6 +497,7 @@ assert_terminal_status_case() {
             fail "workflow_final_status ${label} must mention '${expected_text}'"
         fi
     fi
+    drop_case "${case_dir}"
 }
 
 assert_commit_guard_static() {
@@ -627,6 +650,7 @@ run_commit_guard_case() {
     actual_env="$(cat "${commit_env_log}")"
     [[ "${actual_env}" == "${expected_env}" ]] \
         || fail "${label} recorded PRE_COMMIT_ALLOW_NO_CONFIG=${actual_env}, expected ${expected_env} for ${hook_state}/${config_state}"
+    drop_case "${case_dir}"
 }
 
 assert_commit_guard_dynamic() {
@@ -901,6 +925,10 @@ run_worktree_case() {
     if [[ "${worktree_sha}" != "${expected_sha}" ]]; then
         fail "workflow-worktree based ${label} on ${worktree_sha}, expected ${expected_ref} (${expected_sha})"
     fi
+    # clone_case_repo's origin and seed, named the same way it names them.
+    local fixture_key="${expected_ref#origin/}-${remove_origin_head}-${add_master}"
+    drop_case "${case_dir}" "${stdout_file}" "${stderr_file}" \
+        "${WORK}/origin-${fixture_key}.git" "${WORK}/seed-${fixture_key}"
 }
 
 run_worktree_json_escape_case() {
@@ -959,6 +987,7 @@ if data["branch_name"] != sys.argv[2]:
 if not isinstance(data["created"], bool):
     raise SystemExit("created must be a JSON boolean")
 PY
+    drop_case "${case_dir}" "${stdout_file}" "${stderr_file}" "${origin_dir}"
 }
 
 # Issue #752 terminal-state contract coverage. These assertions are expected
@@ -1363,6 +1392,7 @@ assert_pr_title_ignores_lockfiles() {
     fi
     printf '%s' "${mixed_title}" | grep -qF 'workflow recipes' \
         || { echo "PR title was: ${mixed_title}" >&2; fail "issue #929: mixed diff PR title must reflect the substantive (recipe) scope"; }
+    drop_case "${mixed_repo}" "${mixed_repo}.origin.git"
 
     # Case 2 (fallback): a genuinely lockfile-only diff may still use the
     # lockfile scope. This locks the fallback so the filter never yields an
@@ -1383,6 +1413,7 @@ assert_pr_title_ignores_lockfiles() {
     lock_title="$(head -n1 "${lock_titles}")"
     printf '%s' "${lock_title}" | grep -qi 'Cargo\.lock' \
         || { echo "PR title was: ${lock_title}" >&2; fail "issue #929: a genuinely lockfile-only diff should keep the Cargo.lock scope"; }
+    drop_case "${lock_repo}" "${lock_repo}.origin.git"
 }
 
 setup_nomerge_probe_repo() {
@@ -1514,6 +1545,7 @@ assert_no_merge_directive_suppresses_auto_merge() {
     fi
     grep -q '"should_merge":"true"' "${WORK}/nomerge-control.out" \
         || { cat "${WORK}/nomerge-control.out" >&2; fail "issue #929: default (no directive) active state must keep should_merge=true"; }
+    drop_case "${ctrl_repo}" "${ctrl_repo}.origin.git"
 
     # Directive present -> should_merge must be forced to "false". Issue #1062
     # (finding B): the directive is now the STRUCTURED `no_merge` flag emitted by
@@ -1536,6 +1568,7 @@ assert_no_merge_directive_suppresses_auto_merge() {
         fi
         grep -q '"should_merge":"false"' "${WORK}/nomerge-dir.out" \
             || { echo "no_merge flag was: ${directive_flag}" >&2; cat "${WORK}/nomerge-dir.out" >&2; fail "issue #929/#1062: structured no_merge flag must force should_merge=false"; }
+        drop_case "${case_repo}" "${case_repo}.origin.git"
     done
 }
 

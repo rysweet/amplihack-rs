@@ -371,7 +371,7 @@ steps:
       if [ -f "$RUNTIME_HELPER" ]; then
         AMPLIHACK_RUNTIME_ROOT="$(bash "$RUNTIME_HELPER" "$BRANCH_NAME")" || exit 1
       else
-        AMPLIHACK_RUNTIME_ROOT="${AMPLIHACK_RUNTIME_ROOT:-${XDG_RUNTIME_DIR:-/tmp}/amplihack-runtime/$BRANCH_NAME}"
+        AMPLIHACK_RUNTIME_ROOT="${AMPLIHACK_RUNTIME_ROOT:-${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/amplihack-runtime/$BRANCH_NAME}"
         mkdir -p "$AMPLIHACK_RUNTIME_ROOT"/{locks,reflection,logs,metrics,provenance}
       fi
       export AMPLIHACK_RUNTIME_ROOT

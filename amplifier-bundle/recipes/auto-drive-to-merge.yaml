@@ -2,6 +2,7 @@ name: "auto-drive-to-merge"
 description: |
   Wraps `default-workflow` and drives the resulting pull request all the way to
   a merge, through two agentically-terminated loops.
+  Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR", else "$AMPLIHACK_RUNTIME_ROOT", else this recipe's own worktree, never under a literal /tmp path; remove each one when its case finishes.
 
     1. BUILD        — run `default-workflow` on the task to produce a PR.
                       Phase 1 never merges; `no_merge: "true"` takes that
