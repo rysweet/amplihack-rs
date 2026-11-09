@@ -17,11 +17,19 @@ mod prompt_docs;
 mod support;
 mod work_request;
 
+/// The session state directory these unit tests use: the temp root in `dirs`
+/// stands in for the amplihack state root (#1963), so state never lands in
+/// the real one.
+fn test_session_dir(dirs: &ProjectDirs, session_id: &str) -> std::path::PathBuf {
+    amplihack_types::session_state_dir_under(&dirs.root, Some(session_id))
+}
+
 /// Test-only view of `topic_decision`. Issue #1757 removes it together with
 /// `save_classification_state` once `classify` below uses `record_outcome`.
 fn is_new_topic(dirs: &ProjectDirs, session_id: &str, turn_count: u64, user_prompt: &str) -> bool {
+    let session_dir = test_session_dir(dirs, session_id);
     matches!(
-        topic_decision(dirs, session_id, turn_count, user_prompt),
+        topic_decision(Some(&session_dir), turn_count, user_prompt),
         TopicDecision::NewTopic
     )
 }
@@ -31,7 +39,7 @@ fn save_classification_state(
     session_id: &str,
     turn_count: u64,
 ) -> anyhow::Result<()> {
-    let path = state_file(dirs, session_id);
+    let path = state_file(&test_session_dir(dirs, session_id));
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -348,7 +356,7 @@ fn classify(dirs: &ProjectDirs, session: &str, turn: Option<u64>, prompt: &str) 
     };
     let turn_count = match extract_turn_count(&extra) {
         Some(reported) => reported,
-        None => next_observed_turn(dirs, session),
+        None => next_observed_turn(Some(&test_session_dir(dirs, session)), session),
     };
     if !is_new_topic(dirs, session, turn_count, prompt) {
         return Value::Object(serde_json::Map::new());
