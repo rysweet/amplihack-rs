@@ -456,14 +456,20 @@ impl Sandbox {
     fn run(&self, recipe: &Path, sets: &[&str], amplihack_home: &Path) -> Run {
         let mut cmd: Command = crate::isolated_amplihack::isolated(runner());
         self.isolate(&mut cmd);
+        // Only flags the runner pinned in claude-plugin/recipe-runner.rev
+        // (what CI installs) accepts: it rejects `--no-update-check` and
+        // `--no-default-search`. The env var turns the update check off, and
+        // the extra search-dir variables are removed so only `-R` and the
+        // bundle at `amplihack_home` are searched.
         cmd.env("AMPLIHACK_HOME", amplihack_home)
             .env("RECIPE_RUNNER_NO_UPDATE_CHECK", "1")
+            .env_remove("AMPLIHACK_PACKAGE_RECIPE_DIR")
+            .env_remove("RECIPE_RUNNER_RECIPE_DIRS")
             .arg(recipe)
-            .args(["--no-update-check", "--output-format", "json", "-C"])
+            .args(["--output-format", "json", "-C"])
             .arg(self.p("work"))
             .arg("-R")
-            .arg(self.p("recipes"))
-            .arg("--no-default-search");
+            .arg(self.p("recipes"));
         for s in sets {
             cmd.args(["-c", s]);
         }
