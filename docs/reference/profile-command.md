@@ -34,12 +34,13 @@ amplihack profile auto-switch install
 amplihack profile auto-switch repair
 amplihack profile overflow add|remove|clear <name>
 amplihack profile overflow list
-amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1]
+amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--codex on|off] [--codex-floor N] [--codex-home-link PATH]
 amplihack profile rotate start|watch [<tuning flags>] [--interval SECS]
 amplihack profile rotate watch [<tuning flags>] [--interval SECS] --supervised[=UNIT]
 amplihack profile rotate stop|status
 amplihack profile rotate autostart [on|off]
 amplihack profile rotate owner [clear]
+amplihack profile codex-resume --session <id> | --events <file> [--from-home <path>] [-- <codex-args>...]
 amplihack profile kind list
 amplihack profile kind set <name> <subscription|api-key|auto>
 amplihack profile verify [--fix]
@@ -64,7 +65,8 @@ amplihack launch|claude --profile <name> [...]
 | `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails, or, with `--spend`, to read the spend limit of an account with [usage credits on](#usage-credits-on); then shows its weekly and session usage as bars and its spend status as a mark, sorted by the rotator's headroom, followed by a [capacity summary](#capacity-summary) and, with no names, a live reading of each [Codex account](#codex-accounts). `--table` for the text table, `--utc` for UTC reset times, `--json` or `--summary-json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings and adds to the [usage history](#usage-history). See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
 | `overflow …` | Mark or unmark a credit-backed profile that the rotator may use when every plan login is exhausted, list the marks, or lift a spend-limit block. See [Overflow commands](#overflow-commands). |
-| `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. See [Rotate](#rotate). |
+| `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. Each cycle also keeps the default Codex home link on the Codex account with the most room. See [Rotate](#rotate) and [Rotate Codex](#rotate-codex). |
+| `codex-resume` | Unix only. Resume a Codex session that stopped on a usage limit with `codex resume`, on another account with room, or after the earliest reset. See [Codex resume command](#codex-resume-command). |
 | `kind list`, `kind set <name> <kind>` | Show whether each profile is a subscription or an [API-key profile](#api-key-profiles), and set or remove an override. See [Kind override](#kind-override). |
 | `verify [--fix]` | Unix only. For `~/.claude` and each profile folder, print the account Anthropic's OAuth profile endpoint reports for the folder's own token, against the account [recorded](#recorded-account) for it. `--fix` moves a profile's login that is another profile's recorded account into that profile's empty folder; do not use it until [#1960](https://github.com/rysweet/amplihack-rs/issues/1960) is closed. See [profile verify](#profile-verify). |
 | `seed-record <name> [--write]` | Unix only. Shows the account a profile with no [record](#recorded-account) would be recorded with, from one fresh reading. `--write` saves it. Moves no login and writes no credentials file. See [profile seed-record](#profile-seed-record). |
@@ -4957,14 +4959,16 @@ which swaps logins inside profiled sessions, but shares its toggle, its
 exclusion list and its state lock.
 
 The rotator also runs a [daily session archive](#rotate-daily-session-archive)
-that moves old session logs out of `~/.claude/projects`.
+that moves old session logs out of `~/.claude/projects`, and on Unix keeps
+the default Codex home link on the Codex account with the most room; see
+[Rotate Codex](#rotate-codex).
 
 ### Rotate commands
 
 ```
-amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1]
-amplihack profile rotate start  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--interval SECS]
-amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--interval SECS] [--supervised[=UNIT]]
+amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--codex on|off] [--codex-floor N] [--codex-home-link PATH]
+amplihack profile rotate start  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--codex on|off] [--codex-floor N] [--codex-home-link PATH] [--interval SECS]
+amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--codex on|off] [--codex-floor N] [--codex-home-link PATH] [--interval SECS] [--supervised[=UNIT]]
 amplihack profile rotate stop
 amplihack profile rotate status
 amplihack profile rotate autostart [on|off]
@@ -5118,6 +5122,9 @@ lines on failure. Output holds profile names, times and fixed text only.
 | `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | `0`-`604800` (seconds); see [Rotate overflow](#rotate-overflow) |
 | `--overflow-unknown-reset 0\|1` | `AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET` | `0` | `1` lets a plan reset that no reading reports count as further away than `--overflow-wait`, so it can move work onto an overflow profile and **spend money**; see [Overflow decision](#overflow-decision) |
 | `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | `1`-`86400` (seconds); `start` and `watch` only |
+| `--codex on\|off` | `AMPLIHACK_ROTATE_CODEX` | `on` | `off` turns the [Codex rotation](#rotate-codex) off |
+| `--codex-floor N` | `AMPLIHACK_ROTATE_CODEX_FLOOR` | `3000` | `0` or more (credit balance); see [Codex rotate settings](#codex-rotate-settings) |
+| `--codex-home-link PATH` | `AMPLIHACK_ROTATE_CODEX_HOME_LINK` | `$HOME/.codex` | An absolute path with no `..`; see [Default Codex home link](#default-codex-home-link) |
 
 A flag beats its variable, and the variable beats the default. An empty
 variable counts as unset. Values are unsigned decimal integers: a sign,
@@ -7667,6 +7674,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 | `pin` | The [rotation pin](#rotate-pin): one profile name and a newline. Written by `profile switch <name>`, removed by `profile switch --none`. Not part of the ledger. |
 | `sessions-archive.last` | When the [daily session archive](#rotate-daily-session-archive) last started: epoch seconds and a newline. Written atomically before each run; removed when a run stops early after archiving something, so the next pass carries on. |
 | `owner` | The [owner marker](#rotate-owner): `unit=`, `pid=` and `since=` lines. Written by a supervised `rotate watch`, removed only by `rotate owner clear`. Not part of the ledger. |
+| `codex-state.json` | The [Codex rotation state](#codex-state-file): the Codex swap journal, the time of the last Codex swap and the `codex-resume` records. Not part of the ledger. |
 
 The auto-switch `ledger.json` and `journal.json` one level up are separate
 files and are not changed by rotation.
@@ -7817,6 +7825,7 @@ run and prints their `reread:` lines; see
 | `switch <from>-><to>` | A swap made by [`profile switch`](#rotate-switch). It has no usage readings, because `switch` measures no usage, and it does not start with `swap `, so a search for rotator swaps does not match it. |
 | `skip: <name> is already the live login; nothing moved` | `profile switch` found `<name>` already live. |
 | `would refresh: expired login in ~/.claude` / `would seed: record for live profile <L> from a fresh reading` / `would note: no record for live profile <L>: <reason>; nothing moved; run: amplihack profile seed-record <L>` / `would swap ...` / `would block <name> (spend limit) until <time>` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would stay (held by switch to <name>)` / `would stay (pin unreadable)` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` / `would recover: <recovered line>` / `would_refuse <name>: <reason>` | `--dry-run` only. `would_refuse` is printed in place of `would swap` when the target is an API-key profile that fails its [login check](#api-key-login-check). |
+| `codex cycle ...`, `codex skip reason=...`, `codex swap ...`, `codex refuse reason=...`, `codex recover ...`, `dry-run would-swap ...`, `dry-run would-recover ...`, `codex resume session=...`, `codex resume none ...` | Lines of the [Codex rotation](#rotate-codex) and of [`codex-resume`](#codex-resume-command); see [Codex cycle line](#codex-cycle-line), [Codex refusals](#codex-refusals), [Codex dry run](#codex-dry-run) and [Codex resume lines](#codex-resume-lines). They never change the Claude lines. |
 
 Identity refusals write an ALERT on every affected rotation cycle;
 manual switches report the refusal on every attempt. Other ALERTs are
@@ -7859,7 +7868,7 @@ turned rotation off and when:
 
 | Field | Value |
 |-------|-------|
-| `<setting>` | `rotate-autostart` for `rotate autostart on\|off`; `auto-switch` for any command that changes `enabled` in `<root>/.auto-switch` (`auto-switch on`, `auto-switch off`). |
+| `<setting>` | `rotate-autostart` for `rotate autostart on\|off`; `auto-switch` for any command that changes `enabled` in `<root>/.auto-switch` (`auto-switch on`, `auto-switch off`); `codex_home` for a [Codex swap](#codex-swap), where `<old>` and `<new>` are the account labels. |
 | `<old>` | `on` or `off`; `unset` when there was no setting; `corrupt` when the setting could not be trusted. |
 | `<new>` | `on` or `off`. |
 | `pid`, `ppid` | The process that wrote the setting, and its parent. |
@@ -8916,6 +8925,492 @@ account IDs or tokens. Failing to write it does not change the outcome.
 
 The wait plus one read interval is less than the hook timeout, so the hook
 always decides before Claude Code stops it.
+
+### Rotate Codex
+
+On Unix, each rotate cycle also measures every Codex account and keeps the
+default Codex home on the account with the most room. The default home is a
+symlink, `~/.codex` unless [configured](#codex-rotate-settings), that points
+at one account directory under the Codex profiles root. A swap points the
+symlink at another account. Nothing is copied, no account directory is
+renamed, and no file inside an account directory is opened. The
+[how-to](../howto/codex-profile-rotation.md) walks through setting it up.
+
+The Codex part runs once per cycle, straight after the Claude part:
+
+| Form | When the Codex part runs |
+|------|--------------------------|
+| `rotate watch` (and the process `rotate start` launches) | Once per loop, after the Claude cycle returns. Not while rotation is paused. |
+| `rotate` | Once, after the Claude cycle. |
+| `rotate --dry-run` | Once, read-only; see [Codex dry run](#codex-dry-run). |
+
+It adds no interval, timer or probe of its own. It never changes the Claude
+cycle, its outcome, the rotate ledger or the exit status. An error in the
+Codex part is written to the log as `skip: <error>` (`ALERT: <error>` for a
+refusal error), as for a failed Claude cycle, and `watch` carries on.
+
+The Codex rotation uses the same account list and the same live read as
+[Codex accounts](#codex-accounts) in `profile usage`: one
+`account/rateLimits/read` per signed-in account per cycle, no model call, and
+never the contents of `auth.json`.
+
+#### Codex rotate settings
+
+| Flag | Variable | Default | Range |
+|------|----------|---------|-------|
+| `--codex on\|off` | `AMPLIHACK_ROTATE_CODEX` | `on` | `on` or `off`; `1` and `0` are accepted too. `off` turns the Codex part off: it reads nothing and writes no line. |
+| `--codex-floor N` | `AMPLIHACK_ROTATE_CODEX_FLOOR` | `3000` | `0` or more. The credit balance above which a full account still counts as having room (its room is shown as `0.5`); see [Codex next choice](#codex-next-choice). |
+| `--codex-home-link PATH` | `AMPLIHACK_ROTATE_CODEX_HOME_LINK` | `$HOME/.codex` | An absolute path with no `..` component. The symlink the rotator keeps pointed at the best account. |
+
+The flags go where the other tuning flags go: on the one-shot `rotate`, and
+after `start` or `watch`. A flag beats its variable, and the variable beats
+the default; an empty variable counts as unset. `start` resolves all three
+and passes them to the background process as flags, as it does for the other
+settings. An invalid value is a `RotateConfig` error that names the flag or
+variable:
+
+```
+error: invalid rotate setting --codex-home-link "codex": expected an absolute path with no .. component
+hint: run `amplihack profile rotate --help` for the accepted values
+```
+
+The hold and the margin are shared with Claude: `--hold` and `--margin` apply
+to Codex swaps as described in [Codex decision](#codex-decision). There is no
+separate Codex hold.
+
+The per-account read deadline is `AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS`, as in
+[Codex read deadline](#codex-read-deadline). The rotator neither raises it
+nor retries a read. The Codex program is `CODEX_BIN` or `codex` on `PATH`,
+and the profiles root is `CODEX_PROFILES_ROOT` or `$HOME/.codex-profiles`,
+as for `profile usage`.
+
+#### Default Codex home link
+
+The rotator swaps only a link that meets all of these rules. Each check uses
+`lstat`, `readlink` and `stat`; none opens a file.
+
+| Rule | Refused with |
+|------|--------------|
+| The link path exists and is a symlink, not a real directory or file. | `home-not-link` |
+| Its target exists. | `link-dangling` |
+| Its target, made canonical, is a direct child of the canonical profiles root. Paths are compared by component, so `/home/you/.codex-profiles-evil/a` is not under `/home/you/.codex-profiles`, and a nested target such as `<root>/a/b` is refused too. | `link-outside-root` |
+| The link's parent directory and the profiles root are owned by you and are not group- or world-writable. | `link-outside-root` with `detail=parent-not-private` or `detail=root-not-private` |
+| `<link>.amplihack-swap` does not exist, or is a symlink left by an interrupted swap. | `home-not-link` with `detail=swap-path-not-link` |
+| The Codex program, made canonical, is not inside the current account directory or under the link. | `codex-bin-in-home` |
+
+The account the link points at is the *live* Codex account. Its label is the
+name of the directory under the root, so `~/.codex -> ~/.codex-profiles/ggrant`
+makes `ggrant` live.
+
+Codex jobs started with an explicit `CODEX_HOME=<root>/<name>` use that
+directory directly. A swap changes only the link, so their path and the inode
+of their directory stay the same, and they keep their account. Processes
+with any `CODEX_HOME` other than the link path are never examined or
+changed.
+
+#### Adopting an existing `~/.codex`
+
+The rotator never turns a real `~/.codex` directory into a link. While
+`~/.codex` is a real directory, every cycle that would swap writes
+`codex refuse reason=home-not-link` and changes nothing. To adopt it, move it
+into the profiles root yourself, once, with no Codex running:
+
+```bash
+mkdir -p -m 0700 ~/.codex-profiles
+mv ~/.codex ~/.codex-profiles/personal
+ln -s ~/.codex-profiles/personal ~/.codex
+```
+
+If the `codex` you run is installed inside `~/.codex` (for example under
+`~/.codex/packages/`), a swap would also change which program runs, so the
+rotator refuses with `codex-bin-in-home`. Install Codex outside the account
+directories, for example with `npm install -g @openai/codex`, or move the
+installed package out of the profile and put its new location on `PATH`.
+Check with:
+
+```bash
+readlink -f "$(command -v codex)"
+```
+
+The printed path must not start with `~/.codex-profiles/` or `~/.codex/`.
+
+#### Codex cycle
+
+1. With `--codex off`, stop. Nothing is read or written.
+2. List the accounts as in [Which accounts are read](#which-accounts-are-read).
+   If there are none, write `codex skip reason=no-accounts` and stop.
+3. Find the Codex program by `PATH` lookup (or `CODEX_BIN`). If there is
+   none, write `codex skip reason=no-codex-bin` and stop.
+4. Inspect the link. When it points at an account under the root, that
+   account is read once, under its own label, and is marked live. The
+   `~/.codex` entry is then dropped, so no account is read twice. When the
+   link is not a link to an account under the root, `~/.codex` is read as its
+   own account with the label `~/.codex`, as in `profile usage`.
+5. Read every account once, all at the same time, with no lock held and no
+   retry. A warning about `AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS` is written once.
+6. Decide, as in [Codex decision](#codex-decision), and write the
+   [`codex cycle` line](#codex-cycle-line).
+7. When the decision is a swap, run the [Codex swap](#codex-swap), which may
+   instead write a [refusal](#codex-refusals). When the decision is
+   `none(no-live)`, write the refusal for the link's state. When it is
+   `none(recovering)`, run [Codex recovery](#codex-recovery). When
+   `codex-state.json` cannot be loaded, write
+   `codex refuse reason=journal-mismatch detail=state-unreadable` instead,
+   whatever the decision, and run no swap or recovery.
+
+A cycle writes one `codex cycle` or `codex skip` line, and after a
+`codex cycle` line at most one of `codex swap`, `codex refuse`,
+`codex recover` or `dry-run would-swap`. A swap also writes one
+[`change:` line](#rotate-change-log).
+
+#### Codex cycle line
+
+```
+codex cycle live=<label|-> <label>:<window>=<p>%@<reset>,...,room=<h> ... unread=<label>(<why>),... read=<time> -> keep|swap <from>-><to>|none(<reason>)
+```
+
+| Part | Value |
+|------|-------|
+| `live=` | The live account's label, or `-` when the link does not point at an account under the root. |
+| `<label>:...` | One entry per account that was read, live first, then in the order of [Which accounts are read](#which-accounts-are-read). |
+| `<window>=<p>%@<reset>` | One per window reported, primary first. `<window>` is the window label from [Codex row layout](#codex-row-layout) (`5h`, `7d`, ...). `<p>` is the used percentage rounded down; `-` when none was reported. `<reset>` is the reset in UTC as `MM-DDTHH:MMZ`, `-` when none was reported, and `?` when `resetsAt` is not a usable time (see [Codex reset times](#codex-reset-times)). |
+| `credits=<c>` | When credits were reported: the balance with no trailing zeros, or `yes` / `no`. |
+| `room=<h>` | The account's room from [Codex next choice](#codex-next-choice), with no trailing zeros: `59`, `12.5`, `0.5` (credits above the floor) or `-1`. |
+| `unread=` | Present when an account could not be read: `<label>(not-signed-in)`, `<label>(timeout)` or `<label>(error:<reason>)`, comma-separated. A `~/.codex` account that is not signed in is left out, as in `profile usage`. |
+| `read=` | The latest read time of the cycle, RFC 3339 in UTC. |
+| `-> ...` | The [decision](#codex-decision). |
+
+For example:
+
+```
+2026-11-08T19:09:01Z codex cycle live=ffarmer ffarmer:5h=88%@11-08T20:15Z,7d=70%@11-11T03:00Z,room=12 ggrant:7d=34%@11-12T14:30Z,room=66 hhale:credits=4200,room=0.5 unread=jjones(not-signed-in),kkim(timeout) read=2026-11-08T19:09:01Z -> swap ffarmer->ggrant
+2026-11-08T19:09:01Z codex swap ffarmer->ggrant link=/home/ryan/.codex reason=room
+```
+
+Labels, reasons and paths are cleaned before they are written: control and
+bidirectional-override characters are removed, whitespace becomes `_`,
+`(`, `)` and `,` in a label become `_`, secrets are redacted as in the
+[change log](#rotate-change-log), and an error reason is cut to 64
+characters. A value cannot start a second line or forge a field.
+
+#### Codex decision
+
+The rules are tried in order; the first that applies decides.
+
+| Order | Condition | Decision |
+|-------|-----------|----------|
+| 1 | `codex-state.json` holds an open journal | `none(recovering)`, followed by [recovery](#codex-recovery) (in a dry run, `dry-run would-recover`) |
+| 2 | No signed-in account has room above `0` | `none(no-room)` |
+| 3 | The link is not a link to an account under the root | `none(no-live)`, followed by `codex refuse reason=home-not-link`, `link-outside-root` or `link-dangling` |
+| 4 | The [next choice](#codex-next-choice) is the live account | `keep` |
+| 5 | The live account has room above `0`, and the last Codex swap was less than `--hold` seconds ago | `none(held)` |
+| 6 | The live account has room above `0`, and the choice's room exceeds it by less than `--margin` points | `none(damped)` |
+| 7 | Otherwise | `swap <live>-><choice>` |
+
+An open journal comes first, so an interrupted swap is recovered on the next
+cycle even when no account has room or the link is missing. A live account
+that could not be read counts as having no room, so it is never held or
+damped. The time of the last Codex swap is `last_swap_at` in
+[`codex-state.json`](#codex-state-file); Claude swaps do not count.
+
+#### Codex swap
+
+The swap runs under the Codex lock, `<root>/.auto-switch.d/rotate/lock`
+(an exclusive `flock`), never inside the Claude cycle and never while the
+Claude cycle holds its own lock. Recovery and `codex-resume` use the same
+Codex lock.
+
+1. Take the lock without queueing behind its holder. If it is held, refuse
+   with `lock-busy`; the next cycle tries again.
+2. Inspect the link again under the lock. If it no longer points at the
+   account the decision swapped from, refuse with `journal-mismatch`.
+3. Check the [link rules](#default-codex-home-link) again, including the
+   ownership and mode of the link's parent and the root, the leftover temp
+   path and the Codex program's location.
+4. Check that the [default home is not in use](#codex-default-home-in-use).
+5. Write the journal to `codex-state.json` with phase `prepared` and fsync it.
+6. Create a symlink at `<link>.amplihack-swap` whose content is the absolute
+   path `<root>/<label>` of the new account, then `rename()` it over the
+   link, which is atomic, and fsync the link's parent directory. A `rename`
+   error (`EISDIR`, `ENOTEMPTY`, `ENOTDIR`, ...) is returned as an error;
+   nothing is deleted to make the rename succeed.
+7. Set the journal phase to `linked`, write the
+   [`change:` line](#rotate-change-log) for `codex_home`, write the
+   `codex swap` line, set `last_swap_at`, and remove the journal.
+
+A Codex process that starts between step 4 and step 6 and uses the default
+home is not covered. That window is microseconds long, and closing it would
+need Codex itself to take the Codex lock.
+
+#### Codex refusals
+
+A refusal writes one line and changes nothing:
+
+```
+codex refuse reason=<code>[ detail=<word>]
+```
+
+| Code | When |
+|------|------|
+| `home-not-link` | The link path is a real directory or file, or does not exist (`detail=missing`), or `<link>.amplihack-swap` exists and is not a symlink (`detail=swap-path-not-link`). |
+| `link-outside-root` | The link's target is not a direct child of the profiles root, or the link's parent or the root is not private (`detail=parent-not-private`, `detail=root-not-private`). |
+| `link-dangling` | The link's target does not exist. |
+| `journal-mismatch` | An open journal does not match the configured link or the current link, or the link moved between the decision and the swap. Also used when `codex-state.json` cannot be loaded (`detail=state-unreadable`). The journal and the state file are kept for you to inspect. |
+| `default-home-in-use` | A Codex process of yours uses the default home; see [Codex default home in use](#codex-default-home-in-use). |
+| `lock-busy` | The Codex lock (`.auto-switch.d/rotate/lock`) was held. |
+| `codex-bin-in-home` | The Codex program is inside the current account directory or under the link; see [Adopting an existing `~/.codex`](#adopting-an-existing-codex). |
+
+A refusal is tried again on the next cycle. The codes are fixed; scripts may
+match them.
+
+#### Codex default home in use
+
+A `codex` started without `CODEX_HOME`, or with `CODEX_HOME` equal to the
+link path, reaches its login through the link. If the link moved under it, a
+token refresh could write into the other account's directory. So before a
+swap the rotator looks for such a process:
+
+- Only `/proc/<pid>` entries owned by your user are examined. A process is a
+  Codex process when its `comm` is `codex`, the file name of its `exe` starts
+  with `codex`, or its `comm` is `node` and the file name of its first
+  argument is `codex` or `codex.js`.
+- For a Codex process, `environ` is read (at most 256 KiB) and only the
+  `CODEX_HOME` value is kept. Nothing else from it is stored or logged.
+- The process uses the default home when `CODEX_HOME` is absent, or equals
+  the link once both are made absolute without following the link. A
+  relative `CODEX_HOME` is resolved against that process's `/proc/<pid>/cwd`.
+- A process that exits during the scan is skipped. Anything else that cannot
+  be read (`/proc` not listable, `EACCES` on `environ`, an unreadable `cwd`)
+  counts as in use.
+
+The refusal is `codex refuse reason=default-home-in-use detail=pid-<pid>`, or
+`detail=proc-unreadable` when `/proc` could not be listed. On hosts that
+mount `/proc` with `hidepid`, swaps are refused until that is changed; this
+is on purpose. Processes are never signalled.
+
+#### Codex recovery
+
+When a cycle finds an open journal, it takes the lock and finishes or undoes
+the swap. Paths in the journal are never trusted: `link` must equal the
+configured link, and the old and new targets must both pass the root rule,
+or the result is `journal-mismatch` and the journal is kept. The temp path is
+always worked out from the configured link.
+
+| Link points at | Action | Line |
+|----------------|--------|------|
+| The new target, with the inode recorded in the journal | Write the `change:` line if the phase was `prepared`, set `last_swap_at`, remove the journal. | `codex recover <from>-><to> reason=recovered` |
+| The old target | Remove `<link>.amplihack-swap` only if it is a symlink, remove the journal. | `codex recover <from>-><to> reason=rolled-back` |
+| Anything else | Keep the journal. | `codex refuse reason=journal-mismatch` |
+
+A cycle that recovers makes no swap; the next cycle decides again.
+
+A `journal-mismatch` from recovery repeats every cycle and blocks every
+Codex swap until you clear it; see
+[Clearing a journal mismatch](#clearing-a-codex-journal-mismatch).
+
+#### Clearing a Codex journal mismatch
+
+When every cycle writes `codex refuse reason=journal-mismatch` with no
+`detail=` and `codex-state.json` holds a `journal`:
+
+1. Check the link by hand: `readlink ~/.codex` (or your
+   `--codex-home-link`). Make it point at the account you want, an
+   absolute path `<root>/<label>`, with `ln -sfn`. Remove
+   `<link>.amplihack-swap` if it is a leftover symlink.
+2. Delete the journal: remove the `journal` field from
+   `<root>/.auto-switch.d/rotate/codex-state.json`, keeping the file at mode
+   `0600`, or delete the file. Deleting the file also drops `last_swap_at`
+   and the `codex-resume` records, so the hold and the resume cap start
+   again.
+
+The next cycle decides as usual.
+
+#### Codex dry run
+
+`rotate --dry-run` reads the Codex accounts and writes the `codex cycle` line
+to stdout like the other dry-run lines. It takes no lock, writes no state,
+changes no link and runs no recovery; an open journal is reported as
+`dry-run would-recover <from>-><to> phase=<phase>`. For a swap decision it
+runs the link, root, temp-path, Codex program and in-use checks without the
+lock, then prints either the refusal a real cycle would write or:
+
+```
+dry-run would-swap <from>-><to>
+```
+
+#### Codex state file
+
+`<root>/.auto-switch.d/rotate/codex-state.json`, beside the
+[rotate state](#rotate-state-directory). The Claude ledger and journal never
+hold Codex data.
+
+```json
+{
+  "version": 1,
+  "journal": {
+    "from": "ffarmer",
+    "to": "ggrant",
+    "link": "/home/ryan/.codex",
+    "old_target": "/home/ryan/.codex-profiles/ffarmer",
+    "new_target": "/home/ryan/.codex-profiles/ggrant",
+    "from_ino": 1835123,
+    "to_ino": 1835140,
+    "phase": "prepared"
+  },
+  "last_swap_at": 1794164941,
+  "resumes": [
+    { "session": "0199a213-81c0-7800-8aa1-bbab2a035a53", "at": 1794165002, "from": "ggrant", "to": "hhale" }
+  ]
+}
+```
+
+| Field | Contents |
+|-------|----------|
+| `journal` | The swap in progress, absent when there is none. `phase` is `prepared` or `linked`. |
+| `last_swap_at` | Epoch seconds of the last completed Codex swap. |
+| `resumes` | The [codex-resume](#codex-resume-command) records of the last 24 hours. Older records are dropped on each write. |
+
+The file must be a regular file owned by you with mode `0600` or narrower,
+and is written atomically, never through a symlink. A file that is not, that
+does not parse, or that has a `version` other than `1` is never overwritten:
+every cycle writes `codex refuse reason=journal-mismatch detail=state-unreadable`
+and no swap or recovery runs, and `codex-resume` fails with status 1.
+
+#### What the Codex rotation does not do
+
+- It never opens `auth.json`, `config.toml`, a session rollout or any other
+  file inside an account directory. Account directories and the link are
+  touched only by `read_dir`, `lstat`, `readlink`, `stat`, `symlink`,
+  `rename` and `mkdir`.
+- It never renames, moves or copies an account directory or a login.
+- It never converts a real `~/.codex` into a link.
+- It never changes a process, or a job started with an explicit
+  `CODEX_HOME` other than the link.
+- It adds no timeout, interval, retry or probe.
+
+The trust model is the same user: these rules keep the rotator from reading
+or moving credentials, not from a compromised user account.
+
+#### Codex platform support
+
+The Codex rotation runs only on Unix. On other platforms `rotate` fails with
+`RotateUnsupported` before the Codex part, as it already does.
+
+### Codex resume command
+
+`profile codex-resume` resumes a Codex session that stopped on a usage limit,
+on an account with room, or on any account once a limit window resets. Codex
+has no hook for a stopped session, so a wrapper around the Codex job calls
+this command when the job ends; the
+[how-to](../howto/codex-profile-rotation.md#resume-a-codex-job-that-hit-its-limit)
+has a wrapper.
+
+```
+amplihack profile codex-resume --session <id> [--from-home <path>] [-- <codex args>...]
+amplihack profile codex-resume --events <file> [--from-home <path>] [-- <codex args>...]
+```
+
+| Option | Meaning |
+|--------|---------|
+| `--session <id>` | The session to resume. Beats `--events` when both are given. |
+| `--events <file>` | A JSONL events file from `codex exec --json`. The session id is the first `thread.started` event's `thread_id` or `session_configured` event's `session_id`. The file must also show a [usage limit](#codex-limit-detection). |
+| `--from-home <path>` | The `CODEX_HOME` the stopped session used. Default: `CODEX_HOME` when set and not empty, otherwise the [default home link](#default-codex-home-link). It must resolve to an account directory under the profiles root. |
+| `-- <codex args>...` | Passed to `codex resume` after the id, for example a prompt. Only their number is logged. |
+
+Neither `--session` nor `--events` is a usage error.
+
+#### Session id
+
+A session id must match `^[A-Za-z0-9][A-Za-z0-9-]{0,63}$`, so it cannot
+start with `-` and be read as a flag, and cannot hold `/` or `..`. The id
+comes only from `--session` or the events file, never from credentials or a
+rollout's contents.
+
+The events file is read under these rules:
+
+- It must be a regular file, checked before it is opened and opened
+  non-blocking, so a FIFO fails at once.
+- A file named `auth.json`, as given or once symlinks are resolved, and any
+  path under the profiles root or under the link's target, is refused.
+- At most 16 MiB and 100,000 lines are read. Line contents are never logged.
+
+#### Codex limit detection
+
+A session counts as stopped on a usage limit when the events file has any of:
+
+- a non-null `rate_limit_reached_type` (or `rateLimitReachedType`) at any
+  depth of an event;
+- the text `You've hit your usage limit`, ignoring ASCII case, with a
+  straight or curly apostrophe;
+- the code `usage_limit_reached`.
+
+An account's live reading counts as limited when its `rateLimitReachedType`
+is not null. The wording Codex uses may change between versions; the match
+lives in one function with fixture tests.
+
+#### Choosing the account
+
+1. Count this session's resume records in the last 24 hours. At 3 or more,
+   stop with `capped`; no account is read. The cap is the Claude hook's
+   `MAX_RESUMES_PER_SESSION`, shared.
+2. With no lock held, read every account live once. Only accounts that are
+   themselves a directory directly under the root are read: an entry that
+   is a symlink to a directory elsewhere, or to another account, is left
+   out. Leave out the account the session used and every account whose
+   reading is limited, then take the [next choice](#codex-next-choice) with
+   the [`--codex-floor`](#codex-rotate-settings) value from
+   `AMPLIHACK_ROTATE_CODEX_FLOOR`.
+3. If no account has room: each signed-in account's reset is the `resetsAt`
+   of its fullest window, and the deadline is the earliest of those. With
+   none, stop with `no-reset-known`. Otherwise sleep once until the deadline
+   (not at all if it has passed), read every account once more, leaving out
+   only limited accounts, so the account the session used can now be chosen.
+   If none has room, stop with `no-room-after-reset`. There is no loop and no
+   retry.
+4. Take the Codex lock without waiting (`lock-busy` if it is held), count
+   the records again and, under 3, add the resume record, then release the
+   lock. Counting and adding happen under one lock, so two wrappers cannot
+   both pass a count of 2. The lock is never held while reading or waiting.
+5. If the chosen account is not the one the session used, link the session's
+   rollout into it: find the file whose name ends in `-<id>.jsonl` under
+   `<from-home>/sessions` by listing directories only, and, unless a file
+   with such a name already exists under the chosen account's `sessions`,
+   create a symlink at the same relative path there (parents created with
+   mode `0700`). A folder on that path that is a symlink is an error, never
+   followed. The rollout is never opened or copied. No rollout found is
+   an error (status 1) and nothing is started.
+6. Write the resume line, then run
+   `codex resume <id> <codex args>...` with no shell, `CODEX_HOME` set to
+   `<root>/<label>` of the chosen account, and `OPENAI_API_KEY` and
+   `CODEX_API_KEY` removed so the chosen account is the one billed. Stdin,
+   stdout and stderr are inherited; the command waits for it.
+
+Codex must follow the rollout symlink for a resume on another account to
+work. If a Codex version does not, the resume on another account fails in
+Codex, and only the wait for the same account's reset (step 3) helps.
+
+#### Codex resume lines
+
+Each line is appended to `rotate.log` and printed on stderr:
+
+```
+codex resume session=<id> <from>-><to> reason=room|after-reset args=<n>
+codex resume none reason=capped|no-reset-known|no-room-after-reset|lock-busy session=<id>
+```
+
+#### Codex resume exit status
+
+| Status | When |
+|--------|------|
+| The child's status | `codex resume` ran. A child killed by a signal gives `1`. |
+| `1` | `lock-busy`, no rollout found, an unreadable `codex-state.json`, or another error. |
+| `2` | A usage or configuration error: no id, an invalid id, a refused events file, an events file with no id or no usage limit, a `--from-home` that is not an account under the root. |
+| `3` | `capped`: 3 resumes of this session in 24 hours. |
+| `4` | `no-reset-known` or `no-room-after-reset`. |
+
+A child can itself exit with `2`, `3` or `4`; the `codex resume` line on
+stderr tells the cases apart. On non-Unix platforms the command fails with
+`RotateUnsupported` (status 1).
 
 ## Usage-limit wait
 

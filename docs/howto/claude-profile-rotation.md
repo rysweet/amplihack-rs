@@ -28,6 +28,9 @@ session account does not block an otherwise authorized swap or trigger
 recovery, even after the recovery grace period ends. See
 [Rotation login identity](../reference/profile-command.md#rotation-login-identity).
 
+The same rotator also keeps `~/.codex` on the Codex account with the most
+room; see [How to Rotate Codex Accounts Automatically](codex-profile-rotation.md).
+
 The exact flags, files, exit codes and log lines are in the
 [`profile rotate` reference](../reference/profile-command.md#rotate).
 

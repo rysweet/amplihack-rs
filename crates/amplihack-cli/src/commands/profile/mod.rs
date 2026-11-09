@@ -478,6 +478,8 @@ pub enum ProfileCommands {
     Root { dir: Option<String> },
     /// Keep the login in ~/.claude on the profile with the most capacity left
     Rotate(Box<rotate::RotateArgs>),
+    /// Resume a Codex session that stopped on a usage limit, on an account with room
+    CodexResume(rotate_args::CodexResumeArgs),
     /// Mark profiles as credit-backed overflow for the rotator (costs real money)
     Overflow {
         #[command(subcommand)]
@@ -657,6 +659,15 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         }
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
         ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
+        #[cfg(unix)]
+        ProfileCommands::CodexResume(args) => {
+            let code = rotate::codex::resume_command(store.root(), args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        #[cfg(not(unix))]
+        ProfileCommands::CodexResume(_) => return Err(ProfileError::RotateUnsupported.into()),
         ProfileCommands::Overflow { command } => overflow::run(&store, command)?,
         #[cfg(unix)]
         ProfileCommands::SeedRecord { name, write } => seed_cmd::run(&store, &name, write)?,

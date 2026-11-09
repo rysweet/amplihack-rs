@@ -183,6 +183,9 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_ROOT` | internal |  | Legacy root printed by `uvx-help`. |
 | `AMPLIHACK_ROTATE` | internal |  | Not an env var: the prefix the profile rotator strips from its probe child's environment. |
 | `AMPLIHACK_ROTATE_AUTOSTART` | user preference |  | `0`/`off` stops launches from starting the profile rotator and `1`/`on` lets them, overriding the saved autostart setting; see [Rotate autostart](profile-command.md#rotate-autostart). The test helper `isolated(..)` sets it to `0`. |
+| `AMPLIHACK_ROTATE_CODEX` | user preference |  | Default for `amplihack profile rotate --codex` (`on` or `off`, also `1` or `0`; default `on`). `off` turns the Codex rotation off: no Codex account is read and no `codex` line is written. See [Rotate Codex](profile-command.md#rotate-codex). |
+| `AMPLIHACK_ROTATE_CODEX_FLOOR` | user preference |  | Default for `amplihack profile rotate --codex-floor` (`0` or more; default `3000`): the credit balance above which a full Codex account still counts as having room. `amplihack profile codex-resume` reads it too. See [Codex rotate settings](profile-command.md#codex-rotate-settings). |
+| `AMPLIHACK_ROTATE_CODEX_HOME_LINK` | user preference |  | Default for `amplihack profile rotate --codex-home-link`: the symlink the rotator keeps pointed at the Codex account with the most room. An absolute path with no `..`; default `$HOME/.codex`. See [Default Codex home link](profile-command.md#default-codex-home-link). |
 | `AMPLIHACK_ROTATE_HOLD` | user preference |  | Default for `amplihack profile rotate --hold`. |
 | `AMPLIHACK_ROTATE_INTERVAL` | user preference |  | Default for `amplihack profile rotate --interval`. |
 | `AMPLIHACK_ROTATE_MARGIN` | user preference |  | Default for `amplihack profile rotate --margin`. |
@@ -241,6 +244,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_TEST_HOME_GUARD` | test-only |  | Set only by the test helper `tests/support/isolated_amplihack.rs` on each `amplihack` a test starts; the user-config loader then ignores a HOME outside the temp dir, so no test reads or migrates a real `~/.amplihack`. When it is set and not empty, a launch also skips rotator autostart before any other check, so no test starts a real `profile rotate watch --spawned` daemon; see [Keep Tests from Leaking Rotator Daemons](../howto/keep-tests-from-leaking-rotator-daemons.md). |
 | `AMPLIHACK_TEST_AGENT_CHILD_TIMEOUT_SECS` | test-only |  | Read only in debug builds. Whole seconds, `1..=3600`; any other value gives the 10 s `CHILD_TIMEOUT`. Raises the time each tmux, `systemd-run` and git call of `amplihack agent` may take. The `issue_1760` test fixture sets it to 600; see [Keep Tests Passing Under Host Load](../howto/keep-tests-passing-under-host-load.md#agent-child-timeout-in-issue_1760_fixture). |
 | `AMPLIHACK_TEST_IDENTITY_BUDGET_SECS` | test-only |  | Read only in debug builds. Whole seconds, `1..=3600`; any other value gives the 30 s `IDENTITY_BUDGET`. Raises the total time a rotate cycle may spend on account identity reads, so a loaded host does not use it up. The rotate test fixture sets it to 600; see [Keep Tests Passing Under Host Load](../howto/keep-tests-passing-under-host-load.md#use-a-debug-only-knob). |
+| `AMPLIHACK_TEST_CODEX_FAULT` | test-only |  | Read only in debug builds; release builds ignore it. `after-journal` or `after-rename` stops a [Codex swap](profile-command.md#codex-swap) at that point, so the swap tests can check [Codex recovery](profile-command.md#codex-recovery). |
 | `AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS` | test-only |  | Read only in debug builds. Whole seconds, `1..=3600`; any other value gives the 5 s `IDENTITY_READ_TIMEOUT`. Raises the time one identity read may take. The rotate test fixture sets it to 600. |
 | `AMPLIHACK_TEST_MISSING_NO_DEFAULT` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_123` | test-only |  | `EnvVar` unit test name. |
@@ -284,7 +288,7 @@ a rotator of their own. A `change:` line in the rotate log records it as
 `invocation=<id>`. `rotate start` and launches that start the rotator remove
 it from the rotator's environment. Do not set it by hand.
 
-`amplihack profile usage` also reads two Codex variables:
+`amplihack profile usage`, the [Codex rotation](profile-command.md#rotate-codex) and `amplihack profile codex-resume` also read two Codex variables:
 
 | Name | Category | Note |
 |------|----------|------|
@@ -293,8 +297,11 @@ it from the rotator's environment. Do not set it by hand.
 
 amplihack sets `CODEX_HOME` only in the environment of the Codex app server
 it starts, to the account directory, and removes `OPENAI_API_KEY`,
-`CODEX_API_KEY` and `RUST_LOG` from that child's environment. Its own
-environment is not changed.
+`CODEX_API_KEY` and `RUST_LOG` from that child's environment.
+`amplihack profile codex-resume` likewise sets `CODEX_HOME` to the chosen
+account directory and removes `OPENAI_API_KEY` and `CODEX_API_KEY` only for
+the `codex resume` it starts; it reads `CODEX_HOME` from its own environment
+as the default `--from-home`. amplihack's own environment is not changed.
 
 ## Related
 

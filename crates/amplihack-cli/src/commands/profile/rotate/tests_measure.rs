@@ -36,6 +36,8 @@ fn settings() -> Settings {
         interval: 600,
         overflow_wait: 1800,
         overflow_unknown_reset: false,
+        codex: true,
+        codex_floor: 3000,
     }
 }
 

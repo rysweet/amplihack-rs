@@ -65,6 +65,7 @@ nav:
       - Uninstall: howto/uninstall.md
       - Claude Login Profiles: howto/claude-profiles.md
       - Claude Login Rotation: howto/claude-profile-rotation.md
+      - Codex Account Rotation: howto/codex-profile-rotation.md
       - Supervise Agent Sessions: howto/supervise-agent-sessions.md
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
       - Keep Tests out of the Real Profile Root: howto/keep-tests-out-of-the-real-profile-root.md

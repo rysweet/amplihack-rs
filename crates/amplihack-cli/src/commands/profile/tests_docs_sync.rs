@@ -982,3 +982,121 @@ fn the_reference_quotes_the_codex_texts_the_code_prints() {
         );
     }
 }
+
+// ---- Issue #2005: Codex rotation and `codex-resume` ----
+
+/// The refusal codes, word for word as `rotate::codex::swap::DOCUMENTED`
+/// (checked against that array in `rotate/codex/tests.rs`).
+const CODEX_REFUSALS: [&str; 7] = [
+    "home-not-link",
+    "link-outside-root",
+    "link-dangling",
+    "journal-mismatch",
+    "default-home-in-use",
+    "lock-busy",
+    "codex-bin-in-home",
+];
+
+#[test]
+fn the_reference_tables_every_codex_refusal_code() {
+    for code in CODEX_REFUSALS {
+        assert!(
+            REFERENCE.contains(&format!("| `{code}` |")),
+            "reference refusal table is missing `{code}`"
+        );
+    }
+    for detail in [
+        "detail=missing",
+        "detail=swap-path-not-link",
+        "detail=parent-not-private",
+        "detail=root-not-private",
+        "detail=state-unreadable",
+        "detail=pid-<pid>",
+        "detail=proc-unreadable",
+    ] {
+        assert!(REFERENCE.contains(detail), "reference is missing {detail}");
+    }
+}
+
+#[test]
+fn the_reference_quotes_the_codex_line_formats() {
+    for text in [
+        "codex cycle live=<label|-> <label>:<window>=<p>%@<reset>,...,room=<h> ... unread=<label>(<why>),... read=<time> -> keep|swap <from>-><to>|none(<reason>)",
+        "codex skip reason=no-accounts",
+        "codex skip reason=no-codex-bin",
+        "codex refuse reason=<code>[ detail=<word>]",
+        "codex recover <from>-><to> reason=recovered",
+        "codex recover <from>-><to> reason=rolled-back",
+        "dry-run would-swap <from>-><to>",
+        "dry-run would-recover <from>-><to> phase=<phase>",
+        "codex resume session=<id> <from>-><to> reason=room|after-reset args=<n>",
+        "codex resume none reason=capped|no-reset-known|no-room-after-reset|lock-busy session=<id>",
+        "none(no-room)",
+        "none(no-live)",
+        "none(recovering)",
+        "none(held)",
+        "none(damped)",
+        "<link>.amplihack-swap",
+        "codex-state.json",
+    ] {
+        assert!(
+            REFERENCE.contains(text),
+            "reference does not quote {text:?}"
+        );
+    }
+}
+
+#[test]
+fn the_reference_lists_the_codex_resume_exit_statuses() {
+    for status in ["| `1` |", "| `2` |", "| `3` |", "| `4` |"] {
+        assert!(REFERENCE.contains(status), "reference is missing {status}");
+    }
+    assert!(REFERENCE.contains("`capped`: 3 resumes of this session in 24 hours"));
+    assert!(REFERENCE.contains("^[A-Za-z0-9][A-Za-z0-9-]{0,63}$"));
+    assert!(REFERENCE.contains("amplihack profile codex-resume --session <id>"));
+}
+
+#[test]
+fn the_codex_rotate_variables_are_documented_in_both_references() {
+    for var in [
+        "AMPLIHACK_ROTATE_CODEX",
+        "AMPLIHACK_ROTATE_CODEX_FLOOR",
+        "AMPLIHACK_ROTATE_CODEX_HOME_LINK",
+    ] {
+        assert!(REFERENCE.contains(&format!("`{var}`")), "reference: {var}");
+        assert!(
+            ENV_VARS.contains(&format!("| `{var}` |")),
+            "env-vars: {var}"
+        );
+    }
+    for flag in [
+        "--codex on|off",
+        "--codex-floor N",
+        "--codex-home-link PATH",
+    ] {
+        assert!(REFERENCE.contains(flag), "reference synopsis: {flag}");
+    }
+}
+
+#[test]
+fn the_codex_rotation_howto_is_linked_and_in_the_nav() {
+    let link = "codex-profile-rotation.md";
+    assert!(
+        REFERENCE.contains(link),
+        "reference does not link the how-to"
+    );
+    assert!(
+        MKDOCS.contains("howto/codex-profile-rotation.md"),
+        "mkdocs nav"
+    );
+    let index = include_str!("../../../../../docs/index.md");
+    assert!(
+        index.contains("howto/codex-profile-rotation.md"),
+        "docs/index.md"
+    );
+    let howto = include_str!("../../../../../docs/howto/codex-profile-rotation.md");
+    assert!(
+        howto.contains("amplihack profile codex-resume"),
+        "how-to shows codex-resume"
+    );
+}
