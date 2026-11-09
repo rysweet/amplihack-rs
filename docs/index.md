@@ -144,6 +144,7 @@ amplihack copilot
 #### General Configuration
 
 - [User Configuration](reference/user-config.md) - Persistent defaults in `~/.amplihack/config.toml` and `.amplihack/config.toml`, and the `amplihack config` command
+- [Config Write Durability](concepts/config-write-durability.md) - Why the first-launch save of `node.heap_consent` skips `fsync` while `config set` and `config unset` keep it
 - [AMPLIHACK_* Environment Variable Audit](reference/amplihack-env-vars.md) - Every `AMPLIHACK_*` name classified as user preference, internal or test-only, with its config key
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
