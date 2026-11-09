@@ -1,10 +1,14 @@
 //! Contracts for the macOS lint allows in `issue_1569_auto_switch.rs` (PR #1530).
 //!
-//! Seven items in that test file are used only from code gated on
+//! Five items in that test file are used only from code gated on
 //! `#[cfg(target_os = "linux")]`. On macOS the gated code is compiled out, the
 //! items become dead, and `cargo clippy --all-targets -- -D warnings` fails
 //! the pre-commit hook. Each item therefore carries
 //! `#[cfg_attr(not(target_os = "linux"), allow(dead_code))]`.
+//!
+//! Since issue #2042, `Holder`, its `Drop` and `Fixture::hold` hold the
+//! Linux-only fake process table, so they are gated on Linux outright and
+//! need no allow.
 //!
 //! CI's macOS jobs never run clippy on test targets, and on Linux the attribute
 //! expands to nothing, so these source checks are the only guard. They also
@@ -19,11 +23,13 @@ const TARGET: &str = "crates/amplihack-cli/tests/issue_1569_auto_switch.rs";
 const ALLOW: &str = r#"#[cfg_attr(not(target_os = "linux"), allow(dead_code))]"#;
 const LINUX_GATE: &str = r#"#[cfg(target_os = "linux")]"#;
 
+/// Items that use the Linux-only fake process table and so are gated on
+/// Linux outright, with no allow.
+const LINUX_ONLY: &[&str] = &["struct Holder {", "impl Drop for Holder", "fn hold("];
+
 /// (definition prefix, pattern that marks a use of the item)
 const HELPERS: &[(&str, &str)] = &[
     ("const ABORT_ENV:", "ABORT_ENV"),
-    ("struct Holder(", "Holder"),
-    ("fn hold(", ".hold("),
     ("fn hosts(", ".hosts("),
     ("fn oauth_uuid(", ".oauth_uuid("),
     ("fn parked(", ".parked("),
@@ -115,10 +121,6 @@ fn allowed_helpers_are_used_only_from_linux_gated_code() {
     for (prefix, _) in HELPERS {
         known.push(item_span(&lines, definition(&lines, prefix)));
     }
-    known.push(item_span(
-        &lines,
-        definition(&lines, "impl Drop for Holder"),
-    ));
     for (prefix, needle) in HELPERS {
         let stray: Vec<usize> = (0..lines.len())
             .filter(|&i| lines[i].contains(needle))
@@ -134,7 +136,7 @@ fn allowed_helpers_are_used_only_from_linux_gated_code() {
 }
 
 #[test]
-fn allows_stay_narrow_and_holder_drop_stays_unsuppressed() {
+fn allows_stay_narrow() {
     let lines = lines();
     let text = lines.join("\n");
     assert!(
@@ -150,11 +152,19 @@ fn allows_stay_narrow_and_holder_drop_stays_unsuppressed() {
         HELPERS.len(),
         "expected exactly one dead_code allow per Linux-only helper"
     );
-    // Holder's Drop kills and reaps the stand-in session process; it must be
-    // compiled on every platform and never hidden behind an allow.
-    let drop = definition(&lines, "impl Drop for Holder");
-    assert!(
-        !lines[drop - 1].contains("cfg"),
-        "leave `impl Drop for Holder` unannotated"
-    );
+}
+
+#[test]
+fn fake_process_table_items_stay_gated_on_linux() {
+    let lines = lines();
+    for prefix in LINUX_ONLY {
+        let def = definition(&lines, prefix);
+        assert_eq!(
+            lines[def - 1].trim(),
+            LINUX_GATE,
+            "line {}: `{prefix}` uses the Linux-only fake process table; keep \
+             {LINUX_GATE} directly above it",
+            def + 1
+        );
+    }
 }
