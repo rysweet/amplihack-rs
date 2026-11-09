@@ -129,11 +129,21 @@ impl ProcSource {
     /// A cached read; when `permits` holds for it, a forced read decides.
     /// `Everything` and `Unsupported` must never permit an action.
     pub fn confirmed(&self, root: &Path, permits: impl FnOnce(&Liveness) -> bool) -> Liveness {
+        self.confirmed_fresh(root, permits).0
+    }
+
+    /// [`confirmed`](Self::confirmed), also saying whether the answer came
+    /// from a forced read.
+    pub fn confirmed_fresh(
+        &self,
+        root: &Path,
+        permits: impl FnOnce(&Liveness) -> bool,
+    ) -> (Liveness, Fresh) {
         let cached = self.liveness(root, Fresh::Cached);
         if permits(&cached) {
-            self.liveness(root, Fresh::Forced)
+            (self.liveness(root, Fresh::Forced), Fresh::Forced)
         } else {
-            cached
+            (cached, Fresh::Cached)
         }
     }
 }

@@ -193,3 +193,28 @@ fn a_busy_forced_read_moves_nothing() {
     assert_eq!(reads, 2);
     assert!(f.state.load_ledger().unwrap().hosts.is_empty(), "no move");
 }
+
+#[test]
+fn a_forced_read_taken_by_recovery_is_not_repeated() {
+    use super::state::{HostEntry, Ledger};
+    let _l = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let f = fx();
+    let _env = env(&f);
+    // `third`'s login is hosted in `other`. The cached read shows no session
+    // in `other`, so recovery forces a read, which finds it still running.
+    let hosts = BTreeMap::from([(
+        "other".to_string(),
+        HostEntry {
+            live: "third".into(),
+            swapped_at: 1,
+            pre_swap_fingerprint: None,
+        },
+    )]);
+    let version = f.state.load_ledger().unwrap().version;
+    f.state.save_ledger(&Ledger { version, hosts }).unwrap();
+    let reads = run(&f, 10.0, vec![on(&["work"]), on(&["work", "other"])]);
+    assert_eq!(reads, 2, "recovery's forced read confirms the target");
+    let hosts = f.state.load_ledger().unwrap().hosts;
+    assert!(hosts.contains_key("other"), "the session in other runs on");
+    assert!(hosts.contains_key("work"), "the login moved");
+}

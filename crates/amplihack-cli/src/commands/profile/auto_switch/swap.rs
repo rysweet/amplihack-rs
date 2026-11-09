@@ -273,9 +273,25 @@ pub fn recover_reporting_with(
     state: &State,
     procs: &ProcSource,
 ) -> Result<(Option<Liveness>, Vec<String>), ProfileError> {
-    recover_reading(state, |root, hosted| {
-        procs.confirmed(root, |l| hosted.iter().any(|n| !l.is_live(n)))
-    })
+    let (live, done) = recover_fresh(state, procs)?;
+    Ok((live.map(|(live, _)| live), done))
+}
+
+/// A read of the running sessions, and whether it was forced.
+type Read = (Liveness, Fresh);
+
+/// [`recover_reporting_with`], also saying whether its read was forced.
+fn recover_fresh(
+    state: &State,
+    procs: &ProcSource,
+) -> Result<(Option<Read>, Vec<String>), ProfileError> {
+    let mut fresh = Fresh::Cached;
+    let (live, done) = recover_reading(state, |root, hosted| {
+        let (live, f) = procs.confirmed_fresh(root, |l| hosted.iter().any(|n| !l.is_live(n)));
+        fresh = f;
+        live
+    })?;
+    Ok((live.map(|live| (live, fresh)), done))
 }
 
 /// [`recover`] for the launcher once its Claude has exited: the running
@@ -533,9 +549,9 @@ pub(super) fn swap_check_with(
     if !worth_checking {
         return Ok(());
     }
-    let live = match recover_reporting_with(state, procs)?.0 {
-        Some(live) => live,
-        None => procs.liveness(&state.root, Fresh::Cached),
+    let (live, fresh) = match recover_fresh(state, procs)?.0 {
+        Some(read) => read,
+        None => (procs.liveness(&state.root, Fresh::Cached), Fresh::Cached),
     };
     if !swap_allowed(state, &live, owner) {
         return Ok(());
@@ -580,12 +596,13 @@ pub(super) fn swap_check_with(
     // The cached read picks the target, so an update with nothing to swap to
     // costs no `/proc` scan. Issue #2040: when the pick rests on the cache
     // saying no session runs in the target's directory, `/proc` is read
-    // afresh and the target is picked again from that read.
+    // afresh and the target is picked again from that read. A read that
+    // recovery forced in this check is already fresh and is not repeated.
     let Some(mut target) = pick(&live) else {
         return Ok(());
     };
     let t = target.as_str();
-    if !ledger.hosts.contains_key(t) && t != owner.as_str() {
+    if fresh == Fresh::Cached && !ledger.hosts.contains_key(t) && t != owner.as_str() {
         let fresh = procs.liveness(&state.root, Fresh::Forced);
         if !swap_allowed(state, &fresh, owner) {
             return Ok(());
