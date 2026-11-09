@@ -151,7 +151,18 @@ default or exit code was added, so the rotate log reads the same as after a
    either entry is missing or does not match, `Drop` treats the pid as
    reused by another process and returns without waiting. The environment
    is never printed.
-5. It waits with `poll(pidfd, POLLIN, -1)`, retrying only on `EINTR`.
+5. It waits with `poll(pidfd, POLLIN, -1)`, retrying only on `EINTR`. If
+   `poll` fails with any other error, it prints one line to stderr, naming
+   no pid or path, because the `TempDir` may then be removed under a running
+   watcher.
+
+Steps 2 to 5 use pidfds and `/proc`, so they are compiled on Linux only. On
+other unix systems `Drop` only closes the write end, and the integration
+tests below do not run.
+
+A command built by the fixture must be spawned while the fixture is alive.
+Its `pre_exec` closure holds the read end's bare fd number, which may belong
+to another descriptor once the fixture has been dropped.
 
 The `TempDir` is removed only after this, so the watcher never runs against
 a deleted profile root. The exception is a mismatch in step 4: the wait is

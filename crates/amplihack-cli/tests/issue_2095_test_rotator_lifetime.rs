@@ -273,6 +273,10 @@ fn helper(armed: bool) {
         .unwrap();
     assert!(pid > 1);
     let pidfd = pidfd_open(pid).expect("the rotator is running");
+    assert!(
+        environ_has(pid, &[&home_entry(&f.home)]),
+        "the pid file names this fixture's rotator"
+    );
     // `watch` writes its gate record after it has armed, naming itself.
     let gate = f.rotate_dir().join("gate.json");
     wait_event(&f.rotate_dir(), &pidfd, "the gate record", || {
@@ -321,6 +325,10 @@ fn a_killed_test_takes_its_rotator_with_it() {
     let mut h = run_helper("helper_armed");
     let fd = h.lifetime_fd.expect("an armed fixture reports its fd");
     let pidfd = pidfd_open(h.watcher).expect("the rotator runs while its test does");
+    assert!(
+        environ_has(h.watcher, &[&home_entry(&h.home)]),
+        "the reported pid is the helper's rotator, so it is safe to signal"
+    );
     let _kill = KillOnDrop(&pidfd);
     assert_eq!(
         cloexec_in(h.watcher, fd),
@@ -352,6 +360,10 @@ fn an_unarmed_rotator_outlives_its_starter() {
     let mut h = run_helper("helper_unarmed");
     assert_eq!(h.lifetime_fd, None, "an unarmed fixture has no lifetime fd");
     let pidfd = pidfd_open(h.watcher).expect("the rotator runs while its test does");
+    assert!(
+        environ_has(h.watcher, &[&home_entry(&h.home)]),
+        "the reported pid is the helper's rotator, so it is safe to signal"
+    );
     let _kill = KillOnDrop(&pidfd);
     let log_path = h.pid_file.with_file_name("rotate.log");
     let idles = || {

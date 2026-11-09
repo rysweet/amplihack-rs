@@ -79,12 +79,9 @@ pub(super) fn armed_fd(
 /// process opened through std is close-on-exec, so this tells an fd inherited
 /// across `execve` apart from one that merely reuses the same number.
 pub(super) fn inherited_fifo(fd: RawFd) -> bool {
-    if fd < 0 {
-        return false;
-    }
     let mut st = std::mem::MaybeUninit::<libc::stat>::uninit();
-    // SAFETY: fstat writes into `st` and does nothing else; a closed fd
-    // returns -1 with EBADF.
+    // SAFETY: fstat writes into `st` and does nothing else; a closed or
+    // negative fd returns -1 with EBADF.
     if unsafe { libc::fstat(fd, st.as_mut_ptr()) } != 0 {
         return false;
     }
@@ -110,25 +107,22 @@ pub(super) fn arm(stop: &Arc<AtomicBool>) {
     let Some(fd) = armed_fd(var.as_deref(), guard.as_deref(), inherited_fifo) else {
         return;
     };
-    if !cloexec_clear(fd) {
-        return;
-    }
     // Probe children must not hold the read end.
     // SAFETY: F_SETFD only changes the descriptor flags of `fd`.
     if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
         return;
     }
     // SAFETY: `fd` was an open FIFO with FD_CLOEXEC clear at the time of the
-    // check, which no fd this process opens has, so nothing else owns it.
+    // check, which no fd that std or this crate opens has, so nothing else
+    // owns it.
     let file = unsafe { File::from_raw_fd(fd) };
-    // A thread that cannot start leaves the watcher unarmed; the harness's
-    // own stop path still applies. The handle is dropped to detach it.
-    if let Ok(handle) = spawn_watch(file, Arc::clone(stop)) {
-        drop(handle);
-    }
+    // A thread that cannot start leaves the watcher unarmed, by design
+    // silently; the harness's own stop path still applies. Dropping the
+    // handle detaches the thread.
+    let _ = watch_pipe(file, Arc::clone(stop));
 }
 
-fn spawn_watch<R>(reader: R, stop: Arc<AtomicBool>) -> io::Result<JoinHandle<()>>
+fn watch_pipe<R>(reader: R, stop: Arc<AtomicBool>) -> io::Result<JoinHandle<()>>
 where
     R: Read + Send + 'static,
 {
@@ -150,14 +144,6 @@ fn pump<R: Read>(mut reader: R, stop: &AtomicBool) {
         }
     }
     stop.store(true, Ordering::SeqCst);
-}
-
-#[cfg(test)]
-fn watch_pipe<R>(reader: R, stop: Arc<AtomicBool>) -> JoinHandle<()>
-where
-    R: Read + Send + 'static,
-{
-    thread::spawn(move || pump(reader, &stop))
 }
 
 #[cfg(test)]

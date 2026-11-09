@@ -15,7 +15,7 @@
 //!   is true. Otherwise it returns `None`.
 //! - `inherited_fifo(fd)` is true only for an open FIFO whose `FD_CLOEXEC`
 //!   flag is clear (an fd inherited across `execve`).
-//! - `watch_pipe(reader, stop)` starts a thread that reads into a buffer of
+//! - `watch_pipe(reader, stop)` starts a named thread that reads into a buffer of
 //!   at most 64 bytes, ignores the data, retries on `Interrupted`, and sets
 //!   `stop` on end of file or any other error.
 //! - `arm(stop)` reads the process environment and does nothing, silently,
@@ -168,7 +168,7 @@ fn the_write_end_is_close_on_exec() {
 fn dropping_the_write_end_sets_stop() {
     let (reader, writer) = io::pipe().unwrap();
     let stop = Arc::new(AtomicBool::new(false));
-    let handle = watch_pipe(reader, stop.clone());
+    let handle = watch_pipe(reader, stop.clone()).unwrap();
     // The write end is open, so the reader cannot have seen end of file.
     assert!(!stop.load(Ordering::SeqCst));
     drop(writer);
@@ -180,7 +180,7 @@ fn dropping_the_write_end_sets_stop() {
 fn data_on_the_pipe_never_sets_stop() {
     let (reader, writer) = io::pipe().unwrap();
     let stop = Arc::new(AtomicBool::new(false));
-    let handle = watch_pipe(reader, stop.clone());
+    let handle = watch_pipe(reader, stop.clone()).unwrap();
     // Four times a 64 KiB pipe buffer: the writer can only finish once the
     // watch thread has read most of it, so it has handled many reads.
     let writer = std::thread::spawn(move || {
@@ -224,6 +224,7 @@ fn run_script(script: Vec<io::Result<usize>>) -> (bool, Vec<usize>) {
         calls: calls.clone(),
     };
     watch_pipe(reader, stop.clone())
+        .unwrap()
         .join()
         .expect("the watch thread does not panic");
     let calls = calls.lock().unwrap().clone();
