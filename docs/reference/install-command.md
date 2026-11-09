@@ -69,6 +69,7 @@ The `--interactive` and `--local` flags compose: `--interactive` controls config
 | `1` | no local source qualifies and this dev or snapshot build may not fetch a release tag |
 | `1` | fetched release tree has the wrong or an unknown version |
 | `1` | staged bundle does not match its source ([manifest check](./framework-source-selection.md#manifest-check)) |
+| `1` | new bundle could not be swapped into place; the previous bundle is restored or left at `amplifier-bundle.old` ([bundle swap errors](#bundle-swap-errors)) |
 | `1` | unknown or inaccessible executable still shadows the Rust `~/.local/bin/amplihack` after repair |
 | `1` | stale wrapper quarantine failed and the wrapper still shadows the Rust binary |
 | `1` | Release tag fetch or extraction failed (non-local mode only); bundle and stamp unchanged |
@@ -123,6 +124,34 @@ not on PATH. Only an explicit `amplihack install` does this; the startup self-he
 launch-time checks and the install that `amplihack update` runs afterwards
 never download rustup or run apt.
 Set `AMPLIHACK_NO_RUST_BOOTSTRAP=1` to disable both automatic installs.
+
+### Bundle swap errors
+
+Phase 3 activates the checked bundle with two renames in the directory that
+holds `amplifier-bundle` (`~/.amplihack` by default): the current
+`amplifier-bundle` becomes `amplifier-bundle.old`, then
+`amplifier-bundle.staging` becomes `amplifier-bundle`. If the second rename
+fails, install renames `amplifier-bundle.old` back. The error reports the
+outcome of that rollback.
+
+| Rollback | Error text (`{target}` is the bundle path, `{backup}` is `{target}.old`) | Left on disk |
+|----------|-----------------------------------------------------------------------|--------------|
+| succeeded | `failed to swap new amplifier-bundle into {target}: {swap error}` | previous bundle at `{target}`; no `.old`; no `.staging` unless its cleanup failed |
+| failed | `failed to swap new amplifier-bundle into {target} and could not restore the previous bundle ({rollback error}); it was left at {backup} and can be moved back to {target} by hand: {swap error}` | previous bundle at `{backup}`; no `{target}`; no `.staging` unless its cleanup failed |
+
+The terminal prints either message after an `error: ` prefix. Both messages
+start with the same text, so anything that matches on
+`failed to swap new amplifier-bundle into` matches either case. The swap error
+is always the underlying cause; the rollback error appears only in the context
+text. Install never deletes `{backup}` on an error path. The message gives the
+recovery in words and does not include a shell command.
+
+After either error, install tries to remove `amplifier-bundle.staging`. If
+that removal fails, install logs a warning and still returns the swap error;
+the next install removes the leftover staging directory before it starts.
+
+See [Recover from a failed bundle swap](../howto/recover-from-failed-bundle-swap.md)
+for the recovery steps.
 
 ### Environment Variables
 
@@ -423,3 +452,4 @@ Best-effort provisioning of the Mermaid CLI (`mmdc`, npm `@mermaid-js/mermaid-cl
 - [Install Manifest](./install-manifest.md) — manifest schema
 - [Binary Resolution](./binary-resolution.md) — find_hooks_binary lookup detail
 - [Framework bundle compatibility](./framework-bundle-compatibility.md) — smart-orchestrator compatibility contract and stale bundle repair
+- [Recover from a failed bundle swap](../howto/recover-from-failed-bundle-swap.md) - restore the previous bundle from `amplifier-bundle.old`

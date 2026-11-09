@@ -543,9 +543,21 @@ fn stage_and_swap_bundle(
                 target_bundle.display()
             )
         })?;
-        if let Err(err) = fs::rename(staging_temp, target_bundle) {
-            // Roll the previous bundle back into place so the install isn't bricked.
-            let _ = fs::rename(&backup, target_bundle);
+        if let Err(err) = rename_dir(staging_temp, target_bundle) {
+            // Try to roll the previous bundle back into place. If that fails as
+            // well, the previous bundle stays at `backup` and the error names it
+            // so the user can restore it by hand (issue #1990).
+            if let Err(rollback_err) = rename_dir(&backup, target_bundle) {
+                return Err(err).with_context(|| {
+                    format!(
+                        "failed to swap new amplifier-bundle into {target} and could not \
+                         restore the previous bundle ({rollback_err}); it was left at \
+                         {backup} and can be moved back to {target} by hand",
+                        target = target_bundle.display(),
+                        backup = backup.display(),
+                    )
+                });
+            }
             return Err(err).with_context(|| {
                 format!(
                     "failed to swap new amplifier-bundle into {}",
@@ -563,6 +575,16 @@ fn stage_and_swap_bundle(
         })?;
     }
     Ok(())
+}
+
+/// Rename a directory. Used for the bundle swap and its rollback, so that tests
+/// can make either of them fail (issue #1990).
+fn rename_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(err) = staging_hook::rename_failure(from, to) {
+        return Err(err);
+    }
+    fs::rename(from, to)
 }
 
 /// Apply the mode rule across a staged bundle (issue #1955): directories and
@@ -711,17 +733,40 @@ fn secure_merge_guard(bundle: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Test seam: `copy_amplifier_bundle` calls the installed hook with the staging
-/// directory after the copy and before the manifest comparison. Issue #1955.
+/// Test seams for `copy_amplifier_bundle`.
+///
+/// - Issue #1955: the staging hook is called with the staging directory after
+///   the copy and before the manifest comparison.
+/// - Issue #1990: the rename hook is called with `(from, to)` before the bundle
+///   swap and before its rollback. Returning `Some(err)` makes that rename fail
+///   with `err` without touching the file system.
 #[cfg(test)]
 pub(super) mod staging_hook {
     use std::cell::RefCell;
+    use std::io;
     use std::path::Path;
 
     type Hook = Box<dyn FnMut(&Path)>;
+    type RenameHook = Box<dyn FnMut(&Path, &Path) -> Option<io::Error>>;
 
     thread_local! {
         static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+        static RENAME_FAILURE: RefCell<Option<RenameHook>> = const { RefCell::new(None) };
+    }
+
+    /// Run `body` with `hook` deciding which guarded renames fail on this thread.
+    pub(in super::super) fn with_rename_failures<R>(
+        hook: impl FnMut(&Path, &Path) -> Option<io::Error> + 'static,
+        body: impl FnOnce() -> R,
+    ) -> R {
+        RENAME_FAILURE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+        let result = body();
+        RENAME_FAILURE.with(|slot| *slot.borrow_mut() = None);
+        result
+    }
+
+    pub(super) fn rename_failure(from: &Path, to: &Path) -> Option<io::Error> {
+        RENAME_FAILURE.with(|slot| slot.borrow_mut().as_mut().and_then(|hook| hook(from, to)))
     }
 
     /// Run `body` with `hook` installed on this thread.

@@ -93,6 +93,7 @@ Centralized plugin system that works across all your projects:
 - [Stale Wrapper Repair Tutorial](tutorials/repair-install-update-path-conflicts.md) - Learn how install/update keeps the Rust binary first and refreshes stale assets
 - [Repair Stale Wrappers and PATH Conflicts](howto/repair-install-update-path-conflicts.md) - Quarantine stale Python/uvx wrappers and make `~/.local/bin/amplihack` resolve first
 - [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets, and what to do when install refuses a source
+- [Recover from a Failed Bundle Swap](howto/recover-from-failed-bundle-swap.md) - Restore `amplifier-bundle` from `amplifier-bundle.old` when install could not swap the new bundle in or roll back
 - [Manage Claude Login Profiles](howto/claude-profiles.md) - Keep multiple Claude Code logins in separate `CLAUDE_CONFIG_DIR` profiles that share one session store ([reference](reference/profile-command.md), [ccswitch review](reviews/ccswitch-review.md))
 - [Wait for a Usage-Limit Reset](howto/claude-profiles.md#waiting-for-a-usage-limit-reset) - Let a recipe step that hits a Claude usage limit wait for the reset and run once more ([reference](reference/profile-command.md#usage-limit-wait))
 
