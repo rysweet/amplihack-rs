@@ -141,9 +141,6 @@ steps:
         exit 1
       fi
       { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || { echo "ERROR: step-15-commit-push: $(pwd -P) is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)" >&2; exit 1; }
-      # Security: refuse to commit/push on protected branches, even inside a linked worktree.
-      _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
-      if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; then echo "ERROR: step-15 landed on protected branch '$_CURRENT_BRANCH' — refusing to commit. Worktree setup likely failed." >&2; exit 1; fi
       echo "=== Step 15: Commit and Push ===" >&2
       # FIX (#495): commit_result MUST be emitted on every exit path so step-16
       # (PR creation) can be gated on the actual push outcome. Trap installed
@@ -176,7 +173,19 @@ steps:
       GIT_IDENTITY_HELPER="${RUNTIME_ARTIFACT_HELPER:+${RUNTIME_ARTIFACT_HELPER%/*}/git-identity.sh}"; [ -n "$GIT_IDENTITY_HELPER" ] && [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
       # #1671: stage_workflow_changes is `git add -A` minus build artefacts, and a
       # rejecting git hook goes to a fixing agent before the commit or push is retried.
-      WF_TOOLS="${RUNTIME_ARTIFACT_HELPER%/*}"; [ -f "$WF_TOOLS/workflow_hook_repair.sh" ] || WF_TOOLS="${GIT_IDENTITY_HELPER%/*}"; REMOTE_BRANCH="$(bash "$WF_TOOLS/workflow_remote_branch.sh" .)" || exit 2; [ "$REMOTE_BRANCH" != "$(git branch --show-current)" ] || REMOTE_BRANCH=""; SETUP_BRANCH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r '.branch_name // empty' 2>/dev/null)" || SETUP_BRANCH=""; [ -z "$REMOTE_BRANCH" ] || [ "$REMOTE_BRANCH" = "$SETUP_BRANCH" ] || { echo "ERROR: push target '$REMOTE_BRANCH' does not match worktree_setup.branch_name '$SETUP_BRANCH'; refusing to push (issue #1762)." >&2; exit 1; }  # #1762: an alias pushes to <B>
+      # #1969: every check on the push target runs before staging; the first failure decides.
+      # TARGET is the branch on origin (<B> in a #1762 alias <B>--wt-<n>); @{u} is never read.
+      WF_TOOLS="${RUNTIME_ARTIFACT_HELPER%/*}"; [ -f "$WF_TOOLS/workflow_hook_repair.sh" ] || WF_TOOLS="${GIT_IDENTITY_HELPER%/*}"; TARGET="$(bash "$WF_TOOLS/workflow_remote_branch.sh" .)" || exit 2
+      [ -n "$TARGET" ] || { echo "ERROR: cannot resolve the branch to push (detached HEAD?); refusing to push (#1969)." >&2; reason="no-push-target"; exit 1; }
+      SETUP_BRANCH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r '.branch_name // empty' 2>/dev/null)" || SETUP_BRANCH=""; [ -z "$SETUP_BRANCH" ] || [ "$TARGET" = "$SETUP_BRANCH" ] || { echo "ERROR: push target '$TARGET' does not match worktree_setup.branch_name '$SETUP_BRANCH'; refusing to push (issue #1762)." >&2; exit 1; }
+      # Default-branch backstop (#1969, #858): main, master, the local origin/HEAD target, else origin's HEAD.
+      DEFAULT_BRANCH="$(git symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null || true)"; DEFAULT_BRANCH="${DEFAULT_BRANCH#refs/remotes/origin/}"
+      if [ -z "$DEFAULT_BRANCH" ]; then
+        while IFS= read -r symref_line; do case "$symref_line" in "ref: refs/heads/"*"$(printf '\t')HEAD") DEFAULT_BRANCH="${symref_line#ref: refs/heads/}"; DEFAULT_BRANCH="${DEFAULT_BRANCH%?HEAD}"; break ;; esac; done < <(GIT_TERMINAL_PROMPT=0 git ls-remote --symref origin HEAD 2>/dev/null || true)
+        [ "$(git check-ref-format --branch "$DEFAULT_BRANCH" 2>/dev/null || true)" = "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH=""
+      fi
+      case "$TARGET" in main|master|"${DEFAULT_BRANCH:-main}") echo "ERROR: push target '$TARGET' is the default branch; step 15 never pushes to it (#1969, #858)." >&2; reason="default-branch-target"; exit 1 ;; esac
+      PUSH_PLAN="$WF_TOOLS/workflow_push_plan.sh"; [ -f "$PUSH_PLAN" ] || { echo "ERROR: workflow push plan helper not found: $PUSH_PLAN (#1969)" >&2; exit 2; }
       for wf_helper in "${WORKFLOW_STAGE_CHANGES_HELPER:-$WF_TOOLS/workflow_stage_changes.sh}" "${WORKFLOW_HOOK_REPAIR_HELPER:-$WF_TOOLS/workflow_hook_repair.sh}"; do [ -f "$wf_helper" ] || { echo "ERROR: workflow helper not found: $wf_helper" >&2; exit 2; }; . "$wf_helper"; done
       amplihack hygiene artifact-guard --repo . --mode pre-publish
       stage_workflow_changes; amplihack hygiene artifact-guard --repo . --mode pre-publish
@@ -229,97 +238,82 @@ steps:
         }
         redact_sensitive_file "$commit_output_file" >&2; rm -f "$commit_output_file"
       else
-        # FIX (#282): avoid hollow-success false-positive — check the current branch
-        # for new commits (in any worktree) before declaring nothing was done.
-        CURRENT_BRANCH=$(git branch --show-current)
-        ALT_WORKTREE_COMMITS=0
-        if [ -n "$CURRENT_BRANCH" ] && git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
-          ALT_WORKTREE_COMMITS=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-        fi
-        if [ "$ALT_WORKTREE_COMMITS" -gt 0 ]; then
+        NOTHING_STAGED=true
+      fi
+      echo "--- Pushing to Remote ---" >&2
+      # FIX (#978, #1969): fetch, then decide by ancestry against refs/remotes/origin/$TARGET, never
+      # @{u} and never a blind `git pull --rebase`. behind==0 -> fast-forward push (tested commit
+      # identities kept); behind>0 -> fail closed with merge-base/ahead/behind evidence.
+      fetch_output_file=$(mktemp -t step15-fetch-XXXXXX)
+      if git fetch origin >"$fetch_output_file" 2>&1; then
+        redact_sensitive_file "$fetch_output_file" >&2
+      else
+        echo "WARNING: git fetch origin failed before ancestry check; using cached upstream state" >&2
+        redact_sensitive_file "$fetch_output_file" >&2
+      fi
+      rm -f "$fetch_output_file"
+      # The plan comes after the commit, so a commit made above is counted (#1969).
+      PLAN="$(bash "$PUSH_PLAN" "$TARGET")" || { reason="push-plan-failed"; exit 2; }
+      plan_field() { local v="${PLAN#* "$1"=}"; [ "$v" != "$PLAN" ] || return 0; printf '%s' "${v%% *}"; }
+      COMMITS_AHEAD="$(plan_field ahead)"; COMMITS_BEHIND="$(plan_field behind)"
+      case "$COMMITS_AHEAD" in ''|*[!0-9]*) echo "ERROR: unreadable push plan '$PLAN' (#1969)" >&2; reason="push-plan-failed"; exit 2 ;; esac
+      AHEAD_OF="origin/$TARGET"; NOT_ON="refs/remotes/origin/$TARGET"; [ "${PLAN%% *}" != "first-push" ] || { AHEAD_OF="origin"; NOT_ON="--remotes=origin"; }
+      if [ "${NOTHING_STAGED:-false}" = true ]; then
+        # FIX (#282): avoid hollow-success false-positive; count from the plan, never @{u}.
+        if [ "$COMMITS_AHEAD" -gt 0 ]; then
           echo "INFO: Nothing staged in ${WORKTREE_SETUP_WORKTREE_PATH:-(unset)}, but the" >&2
-          echo "current branch '$CURRENT_BRANCH' is $ALT_WORKTREE_COMMITS commit(s) ahead of upstream." >&2
-          git --no-pager log --oneline -"$ALT_WORKTREE_COMMITS" >&2
+          echo "current branch '$branch' is $COMMITS_AHEAD commit(s) ahead of $AHEAD_OF." >&2
+          git --no-pager log --oneline -n 50 HEAD --not "$NOT_ON" -- >&2
         else
           echo "INFO: Nothing staged to commit; continuing so already-pushed meaningful work can be published or classified." >&2
         fi
       fi
-      echo "--- Pushing to Remote ---" >&2
-      # REL-002: Detect missing upstream tracking branch before rev-list
-      if ! git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
-        echo "WARNING: No upstream tracking branch configured — skipping push" >&2
-        reason="no-upstream"
-        exit 0
-      fi
-      COMMITS_AHEAD=$(git rev-list --count @{u}..HEAD)
-      if [ "$COMMITS_AHEAD" -ne 0 ]; then
-        # FIX (#978): ancestry-aware integration — never blind `git pull --rebase`.
-        # Refresh upstream, then decide by ancestry: behind==0 -> fast-forward push
-        # (preserve tested commit identities); behind>0 -> fail closed with structured
-        # merge-base/ahead/behind evidence. Never auto-replay already-integrated history.
-        UPSTREAM_REF=$(git rev-parse --abbrev-ref '@{u}' 2>/dev/null || echo "unknown")
-        fetch_output_file=$(mktemp -t step15-fetch-XXXXXX)
-        if git fetch origin >"$fetch_output_file" 2>&1; then
-          redact_sensitive_file "$fetch_output_file" >&2
-        else
-          echo "WARNING: git fetch origin failed before ancestry check; using cached upstream state" >&2
-          redact_sensitive_file "$fetch_output_file" >&2
-        fi
-        rm -f "$fetch_output_file"
-        COMMITS_AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-        COMMITS_BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
-        if [ "$COMMITS_AHEAD" -eq 0 ]; then
-          echo "INFO: HEAD no longer ahead of upstream '$UPSTREAM_REF' after fetch — nothing to push" >&2
+      case "${PLAN%% *}" in
+        first-push) echo "INFO: first push of '$TARGET' to origin (#1969)" >&2 ;;
+        already-pushed)
+          echo "INFO: HEAD is not ahead of origin/$TARGET after fetch; nothing to push" >&2
           raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
           if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then sha="$raw_sha"; fi
           pushed="true"; reason="already-pushed"
           echo "=== Commit and Push Complete ===" >&2
-          exit 0
-        fi
-        if [ "$COMMITS_BEHIND" -ne 0 ]; then
-          MERGE_BASE=$(git merge-base HEAD '@{u}' 2>/dev/null || echo "none")
+          exit 0 ;;
+        diverged)
+          MERGE_BASE="$(plan_field merge_base)"
           HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-          echo "ERROR: step-15 refuses to rebase divergent history onto upstream '$UPSTREAM_REF' (issue #978)." >&2
-          echo "  ancestry: ahead=$COMMITS_AHEAD behind=$COMMITS_BEHIND merge_base=$MERGE_BASE head=$HEAD_SHA upstream=$UPSTREAM_REF" >&2
+          echo "ERROR: step-15 refuses to rebase divergent history onto upstream 'origin/$TARGET' (issue #978)." >&2
+          echo "  ancestry: ahead=$COMMITS_AHEAD behind=$COMMITS_BEHIND merge_base=$MERGE_BASE head=$HEAD_SHA upstream=origin/$TARGET" >&2
           echo "  Auto-rebasing would replay already-integrated commits and create add/add conflicts." >&2
           echo "  Point the branch at its intended PR base and fast-forward, or make an explicit rebase decision." >&2
-          reason="diverged-upstream: ahead=$COMMITS_AHEAD behind=$COMMITS_BEHIND merge_base=$MERGE_BASE upstream=$UPSTREAM_REF"
-          exit 1
-        fi
-        echo "INFO: upstream '$UPSTREAM_REF' is an ancestor of HEAD — fast-forward push, no rebase (#978)" >&2
-        # FIX (#495): capture push stderr, redact tokens before reason emission.
-        push_stderr_file=$(mktemp -t step15-push-XXXXXX)
-        # shellcheck disable=SC2064
-        trap "rm -f \"$push_stderr_file\"; _emit_commit_result" EXIT
-        if hook_repair_run push step-15-commit-push \
-          --fix-message "fix: address {hook_ids} pre-push rejection${ISSUE_NUMBER:+ (#$ISSUE_NUMBER)}" \
-          --output "$push_stderr_file" -- git push ${REMOTE_BRANCH:+origin "HEAD:$REMOTE_BRANCH"}; then
-          redact_sensitive_file "$push_stderr_file" >&2  # kept for the step log; never printed raw (#978)
-          # FIX (#1269): confirm the published commit is the tested one. A missing
-          # helper warns, never fails -- see verify_pushed_ref.sh and #1268.
-          V=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/verify_pushed_ref.sh" ] && { V="$c/amplifier-bundle/tools/verify_pushed_ref.sh"; break; }; done || true
-          raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-          if [ -n "$V" ]; then bash "$V" origin "${REMOTE_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}" "$raw_sha" || { reason="push-verify-failed"; exit 1; }; else echo "WARNING: verify_pushed_ref.sh not reachable; published commit unverified (#1269)" >&2; fi
-          if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then sha="$raw_sha"; fi
-          pushed="true"; reason="pushed"  # step-16 gate: only after verification
-        else
-          push_rc=$?
-          # #1671: an unresolved hook rejection (hook-rejected-<status>:push:<ids>) or exit 79 (orchestration-unavailable) has its own reason.
-          if reason="$(hook_repair_step15_reason push)"; then exit "$push_rc"; fi
-          sanitized=$(redact_sensitive_file "$push_stderr_file" | tr '\n' ' ' | head -c 500)
-          reason="push-failed: ${sanitized}"
-          echo "ERROR: git push failed (exit $push_rc)" >&2
-          redact_sensitive_file "$push_stderr_file" >&2
-          exit "$push_rc"
-        fi
-      else
-        echo "INFO: Nothing to push - branch is already up to date with remote" >&2
+          reason="diverged-upstream: ahead=$COMMITS_AHEAD behind=$COMMITS_BEHIND merge_base=$MERGE_BASE upstream=origin/$TARGET"
+          exit 1 ;;
+        fast-forward) echo "INFO: origin/$TARGET is an ancestor of HEAD; fast-forward push, no rebase (#978)" >&2 ;;
+        *) echo "ERROR: unrecognised push plan '$PLAN' (#1969)" >&2; reason="push-plan-failed"; exit 2 ;;
+      esac
+      # FIX (#495): capture push stderr, redact tokens before reason emission.
+      push_stderr_file=$(mktemp -t step15-push-XXXXXX)
+      _push_cleanup() { rm -f "$push_stderr_file"; _emit_commit_result; }
+      trap _push_cleanup EXIT
+      # #1969: an explicit refspec with -u; the destination never depends on @{u} or push.default.
+      if hook_repair_run push step-15-commit-push \
+        --fix-message "fix: address {hook_ids} pre-push rejection${ISSUE_NUMBER:+ (#$ISSUE_NUMBER)}" \
+        --output "$push_stderr_file" -- git push -u origin "HEAD:refs/heads/$TARGET"; then
+        redact_sensitive_file "$push_stderr_file" >&2  # kept for the step log; never printed raw (#978)
+        # FIX (#1269): confirm the published commit is the tested one. A missing
+        # helper warns, never fails -- see verify_pushed_ref.sh and #1268.
+        V=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/verify_pushed_ref.sh" ] && { V="$c/amplifier-bundle/tools/verify_pushed_ref.sh"; break; }; done || true
         raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-        if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then
-          sha="$raw_sha"
-        fi
-        pushed="true"
-        reason="already-pushed"
+        if [ -n "$V" ]; then bash "$V" origin "$TARGET" "$raw_sha" || { reason="push-verify-failed"; exit 1; }; else echo "WARNING: verify_pushed_ref.sh not reachable; published commit unverified (#1269)" >&2; fi
+        if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then sha="$raw_sha"; fi
+        pushed="true"; reason="pushed"  # step-16 gate: only after verification
+      else
+        push_rc=$?
+        # #1671: an unresolved hook rejection (hook-rejected-<status>:push:<ids>) or exit 79 (orchestration-unavailable) has its own reason.
+        if reason="$(hook_repair_step15_reason push)"; then exit "$push_rc"; fi
+        sanitized=$(redact_sensitive_file "$push_stderr_file" | tr '\n' ' ' | head -c 500)
+        reason="push-failed: ${sanitized}"
+        echo "ERROR: git push failed (exit $push_rc)" >&2
+        redact_sensitive_file "$push_stderr_file" >&2
+        exit "$push_rc"
       fi
       echo "=== Commit and Push Complete ===" >&2
     output: "commit_result"
@@ -389,7 +383,7 @@ steps:
           amplihack hygiene artifact-guard --repo . --mode pre-publish && git add -A && amplihack hygiene artifact-guard --repo . --mode pre-publish || { echo "STOP: artifact guard refused; do not commit" >&2; exit 1; }
           amplihack_prepare_git_commit_identity
           git commit -m "fix: <describe the fix found during outside-in testing>"
-          rb="$(bash "${GIT_IDENTITY_HELPER%/*}/workflow_remote_branch.sh" .)" || exit 1; [ "$rb" != "$(git branch --show-current)" ] || rb=""; git pull --rebase && git push ${rb:+origin "HEAD:$rb"}
+          rb="$(bash "${GIT_IDENTITY_HELPER%/*}/workflow_remote_branch.sh" .)" && [ -n "$rb" ] || exit 1; git pull --rebase origin "$rb" && git push -u origin "HEAD:refs/heads/$rb"
           ```
        6. If failures persist after 3 iterations, document them honestly.
 

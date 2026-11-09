@@ -18,6 +18,15 @@
 //! - `static_checks.rs`: the planner and resolver only read, the reuse
 //!   helper's only write is one fast-forward, step 4 and the docs.
 //!
+//! - `issue_1969_step04.rs`: #1969 caller-branch continuation, the up-front
+//!   refusal, and the cases that keep a fresh branch.
+//! - `issue_1969_publish.rs`: #1969 step 15 first push, explicit refspec and
+//!   ancestry against origin/<TARGET>, never `@{u}`.
+//! - `issue_1969_backstop.rs`: #1969 step 15 default-branch backstop, the
+//!   order of its pre-staging checks, and a hostile branch name.
+//! - `issue_1969_helpers.rs`: the #1969 detection and push-plan helpers.
+//! - `issue_1969_static.rs`: #1969 recipe-text guards.
+//!
 //! Every child starts from `isolated(..)` with a fixture-owned HOME, a fake
 //! `gh` and a bare local origin; nothing reaches GitHub or the real
 //! `~/.claude`, `~/.amplihack` or profile root. See `fixture.rs`.
@@ -25,6 +34,16 @@
 mod consumers;
 #[path = "issue_1762_caller_branch_alias/fixture.rs"]
 mod fixture;
+#[path = "issue_1762_caller_branch_alias/issue_1969_backstop.rs"]
+mod issue_1969_backstop;
+#[path = "issue_1762_caller_branch_alias/issue_1969_helpers.rs"]
+mod issue_1969_helpers;
+#[path = "issue_1762_caller_branch_alias/issue_1969_publish.rs"]
+mod issue_1969_publish;
+#[path = "issue_1762_caller_branch_alias/issue_1969_static.rs"]
+mod issue_1969_static;
+#[path = "issue_1762_caller_branch_alias/issue_1969_step04.rs"]
+mod issue_1969_step04;
 #[path = "issue_1762_caller_branch_alias/planner.rs"]
 mod planner;
 #[path = "issue_1762_caller_branch_alias/push.rs"]

@@ -143,17 +143,19 @@ wt_add_idempotent() {
   case "$mode" in
     attach) git worktree add -- "$wt" "$branch" ;;
     track)  git worktree add --track -b "$branch" -- "$wt" "origin/$branch" ;;
-    create) git worktree add -b "$branch" -- "$wt" "$ref" ;;
+    create) git worktree add --no-track -b "$branch" -- "$wt" "$ref" ;;
   esac
 }
 ```
 
 > **`--` placement matters.** Git stops parsing options at `--`, so every
-> option (`-b`, `--track`) must appear **before** the separator. `create`
-> therefore uses `add -b "$branch" -- "$wt" "$ref"` (not `add -- "$wt" -b …`,
-> which git rejects because `-b` after `--` is read as a pathspec). This
-> mirrors the existing `--track` form and preserves the flag-injection guard
-> the `--` separator provides.
+> option (`-b`, `--track`, `--no-track`) must appear **before** the separator.
+> `create` therefore uses `add --no-track -b "$branch" -- "$wt" "$ref"` (not
+> `add -- "$wt" -b …`, which git rejects because `-b` after `--` is read as a
+> pathspec). This mirrors the existing `--track` form and preserves the
+> flag-injection guard the `--` separator provides. `--no-track` keeps a
+> branch cut from `origin/<base>` from tracking `origin/<base>`; see
+> [#1969](issue-1762-caller-branch-worktree-alias.md#new-branches-have-no-upstream-until-pushed-1969).
 
 Key guarantees:
 

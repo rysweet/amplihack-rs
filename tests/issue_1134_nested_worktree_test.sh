@@ -201,9 +201,11 @@ fi
 
 # ===========================================================================
 # Part B — the REAL step-04 body, executed from inside a linked worktree.
-# This is the faithful reproduction of the incident.
+# This is the faithful reproduction of the incident. A nested run's steps see
+# AMPLIHACK_SESSION_DEPTH=2 or more, and a nested run keeps its own branch
+# instead of continuing the caller's (#1969 D1).
 # ===========================================================================
-run_step "${LINKED}" 1134 "child task"
+run_step "${LINKED}" 1134 "child task" AMPLIHACK_SESSION_DEPTH=2
 CHILD_WT="$(json_field "${RUN_JSON}" worktree_path)"
 
 if [[ "${RUN_RC}" -eq 0 ]]; then
@@ -237,11 +239,18 @@ else
     fail "B4-ondisk" "child worktree '${CHILD_WT}' does not exist on disk"
 fi
 
+NESTED_INFO="INFO: nested run (depth 2); not continuing caller branch 'feat/parent' (#1969, #1134). Pass -c existing_branch='feat/parent' to continue it."
+if printf '%s\n' "${RUN_ERR}" | grep -qF -- "${NESTED_INFO}"; then
+    pass "B5-nested-info" "a nested run says it is not continuing the caller's branch (#1969)"
+else
+    fail "B5-nested-info" "expected '${NESTED_INFO}'; stderr:\n${RUN_ERR}"
+fi
+
 # ===========================================================================
 # Part C — three levels deep (4991 -> 4993 -> 4994 in the incident).
 # ===========================================================================
 if [[ -d "${CHILD_WT}" ]]; then
-    run_step "${CHILD_WT}" 1135 "grandchild task"
+    run_step "${CHILD_WT}" 1135 "grandchild task" AMPLIHACK_SESSION_DEPTH=2
     GRAND_WT="$(json_field "${RUN_JSON}" worktree_path)"
     EXPECT_GRAND="${MAIN_REAL}/worktrees/fix/issue-1135-grandchild-task"
     if [[ "${RUN_RC}" -eq 0 && "${GRAND_WT}" == "${EXPECT_GRAND}" ]]; then
@@ -258,6 +267,22 @@ if [[ -z "${NESTED}" ]]; then
     pass "C2-zero-nested" "git worktree list reports ZERO worktrees nested inside another worktree"
 else
     fail "C2-zero-nested" "nested worktrees present:\n${NESTED}"
+fi
+
+# ===========================================================================
+# Part E — the same caller at top level (#1969 R7): feat/parent was never
+# pushed, so step 04 refuses up front and creates nothing.
+# ===========================================================================
+WT_COUNT_BEFORE="$(git -C "${MAIN}" worktree list --porcelain | grep -c '^worktree ')"
+BR_COUNT_BEFORE="$(git -C "${MAIN}" for-each-ref refs/heads/ | wc -l)"
+run_step "${LINKED}" 1139 "top-level task" AMPLIHACK_SESSION_DEPTH=1
+WT_COUNT_AFTER="$(git -C "${MAIN}" worktree list --porcelain | grep -c '^worktree ')"
+BR_COUNT_AFTER="$(git -C "${MAIN}" for-each-ref refs/heads/ | wc -l)"
+if [[ "${RUN_RC}" -ne 0 && "${WT_COUNT_AFTER}" == "${WT_COUNT_BEFORE}" && "${BR_COUNT_AFTER}" == "${BR_COUNT_BEFORE}" ]] \
+    && printf '%s' "${RUN_ERR}" | grep -q "existing_branch='feat/parent'"; then
+    pass "E1-top-level-refusal" "top-level run on an unpushed caller branch stops before creating anything"
+else
+    fail "E1-top-level-refusal" "rc=${RUN_RC} worktrees ${WT_COUNT_BEFORE}->${WT_COUNT_AFTER} branches ${BR_COUNT_BEFORE}->${BR_COUNT_AFTER}; stderr:\n${RUN_ERR}"
 fi
 
 # ===========================================================================

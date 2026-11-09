@@ -12,7 +12,7 @@
   "code-atlas": "086c4299a3fd331d",
   "code-philosophy-audit": "a1b7c3d9e5f24680",
   "consensus-design": "30cece78d1df3b90",
-  "consensus-issue-worktree": "3c798c88b685f662",
+  "consensus-issue-worktree": "99a28683b37542a4",
   "consensus-merge-finalize": "e6f3f8cf83c5101e",
   "consensus-panel-cleanup": "05e7f18a343f5e53",
   "consensus-pr-feedback": "65285f5cd97141d9",
@@ -52,8 +52,8 @@
   "workflow-pr-review": "df505dbbcf86363c",
   "workflow-precommit-test": "15d5ca68a3851948",
   "workflow-prep": "3e1dfe776ced6d26",
-  "workflow-publish": "250aae725873ae9f",
+  "workflow-publish": "8c11924af0b178e4",
   "workflow-refactor-review": "ad94b72c16cecd5d",
   "workflow-tdd": "4a8574462bc30532",
-  "workflow-worktree": "6ed477c9530e4426"
+  "workflow-worktree": "1ec1f2416a48ac2f"
 }

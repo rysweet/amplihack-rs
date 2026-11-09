@@ -341,7 +341,7 @@ steps:
         SETUP_STATE="attach-clean-branch"
       else
         echo "INFO: Creating branch '$BRANCH_NAME' and worktree '$WORKTREE_PATH' from $BASE_REF." >&2
-        if ! git worktree add -b "$BRANCH_NAME" -- "$WORKTREE_PATH" "$BASE_REF" >&2; then
+        if ! git worktree add --no-track -b "$BRANCH_NAME" -- "$WORKTREE_PATH" "$BASE_REF" >&2; then
           echo "ERROR: could not create branch '$BRANCH_NAME' and worktree '$WORKTREE_PATH' from $BASE_REF. Nothing was reset or deleted." >&2
           exit 1
         fi

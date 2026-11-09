@@ -37,6 +37,15 @@ pub const PR_URL: &str = "https://github.com/acme/widget/pull/7";
 pub const PLANNER: &str = "workflow_caller_branch_alias.sh";
 pub const RESOLVER: &str = "workflow_remote_branch.sh";
 pub const REUSE: &str = "workflow_alias_reuse.sh";
+/// #1969: step 4's caller-branch detection helper.
+pub const DETECT: &str = "workflow_caller_branch.sh";
+/// #1969: step 15's push classification helper.
+pub const PUSH_PLAN: &str = "workflow_push_plan.sh";
+
+/// #1969 V1/V4/V6: a suffix that `git check-ref-format --branch` accepts but
+/// that runs `touch PWNED` if any recipe or helper ever evaluates the branch
+/// name as shell text: a single quote, `$(..)` and backticks.
+pub const HOSTILE: &str = "o'neil-$(touch${IFS}PWNED)-`touch${IFS}PWNED`";
 
 /// `<BRANCH>--wt-<n>`.
 pub fn alias(n: u32) -> String {
@@ -97,6 +106,14 @@ pub fn names_head(call: &str, branch: &str) -> bool {
     let words: Vec<&str> = call.split_whitespace().collect();
     words.windows(2).any(|w| w[0] == "--head" && w[1] == branch)
         || words.iter().any(|w| *w == format!("--head={branch}"))
+}
+
+/// The text of `line` between the first `start` and the next `end` after
+/// it: the copy-paste word in a hint such as `-c existing_branch=<word> and`.
+pub fn between<'a>(line: &'a str, start: &str, end: &str) -> Option<&'a str> {
+    let from = line.find(start)? + start.len();
+    let len = line[from..].find(end)?;
+    Some(&line[from..from + len])
 }
 
 /// One finished child.
@@ -511,6 +528,14 @@ impl Fx {
         home
     }
 
+    /// An `AMPLIHACK_HOME` whose tools are this worktree's, except that tool
+    /// `name` is replaced by `body` (#1969).
+    pub fn bundle_with(&self, name: &str, body: &str) -> PathBuf {
+        let (home, tools) = self.bundle_copy();
+        write_exec(&tools.join(name), body);
+        home
+    }
+
     /// An `AMPLIHACK_HOME` whose tools are this worktree's, without `name`.
     pub fn bundle_without(&self, name: &str) -> PathBuf {
         let (home, tools) = self.bundle_copy();
@@ -560,5 +585,52 @@ impl Fx {
             "{why}: no gh call may name the alias, got {calls:?}\n{}",
             run.describe()
         );
+    }
+
+    /// #1969: every file named `PWNED` under the fixture root. A non-empty
+    /// answer means some step evaluated a branch name or a variable as code.
+    pub fn pwned_files(&self) -> Vec<PathBuf> {
+        fn walk(dir: &Path, found: &mut Vec<PathBuf>) {
+            let Ok(entries) = fs::read_dir(dir) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
+                if kind.is_dir() {
+                    walk(&path, found);
+                } else if entry.file_name() == "PWNED" {
+                    found.push(path);
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(&self.root, &mut found);
+        found
+    }
+
+    pub fn assert_nothing_executed(&self, run: &Run, why: &str) {
+        let found = self.pwned_files();
+        assert!(
+            found.is_empty(),
+            "{why}: a branch name or variable was run as shell code: {found:?}\n{}",
+            run.describe()
+        );
+    }
+
+    /// What bash makes of `word` when a user pastes it as one shell word: the
+    /// value `printf '%s' <word>` prints, run in an empty scratch directory.
+    /// A copy-paste hint is shell-inert when this gives back the plain value
+    /// and [`Fx::pwned_files`] stays empty (#1969 V6).
+    pub fn shell_value(&self, word: &str) -> String {
+        let dir = self.root.join("scratch/paste");
+        fs::create_dir_all(&dir).expect("paste dir");
+        let mut command = self.bash(&dir);
+        command.arg("-c").arg(format!("printf '%s' {word}"));
+        let out = run(&mut command);
+        assert_eq!(out.code, Some(0), "pasting {word:?}\n{}", out.describe());
+        out.stdout
     }
 }

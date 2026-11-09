@@ -57,7 +57,8 @@ fn helpers_contain_no_write_commands() {
     let config = git_invocation("config");
     let file_writes =
         Regex::new(r"(?:^|[\s;&|(]|\$\()(?:rm|mkdir|touch|mv|cp|ln|mktemp)\s").unwrap();
-    for name in [PLANNER, RESOLVER] {
+    // #1969: the detection and push-plan helpers only read as well.
+    for name in [PLANNER, RESOLVER, DETECT, PUSH_PLAN] {
         let text = read(&tool_path(name));
         for line in code_lines(&text) {
             for (sub, pattern) in &forbidden {
