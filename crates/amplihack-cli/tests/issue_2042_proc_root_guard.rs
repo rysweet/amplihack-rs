@@ -151,9 +151,10 @@ fn scan(src: &str) -> Vec<(usize, Rule)> {
     let mentions_profile = lines
         .iter()
         .any(|(_, l)| l.contains("\"profile\"") || l.contains("\"sessions\""));
+    // A quoted "start" on any line, so rustfmt's wrapping cannot hide it.
     let starts_something = lines
         .iter()
-        .any(|(_, l)| l.contains(".spawn()") || l.contains("\"rotate\", \"start\""));
+        .any(|(_, l)| l.contains(".spawn()") || l.contains("\"start\""));
     let mut out = Vec::new();
     for &(n, l) in &lines {
         if l.contains("env_remove(") && sets_tree(l) {

@@ -22,6 +22,9 @@ const FIRST_READ: usize = 4096;
 /// `/proc`, or the test root in `AMPLIHACK_TEST_PROC_ROOT` when [`proc_root_from`] allows it,
 /// even in release builds; the one resolver of it (#2042). Left on the real `/proc` on purpose:
 /// `/proc/loadavg`, `util.rs` tree termination, `rotator_down` (see the keep-tests-off guide).
+/// Release builds honour it on purpose: [`proc_root_from`] also needs the test home guard and a
+/// 0700 dir this user owns under the temp dir, so anyone meeting that is already this user.
+/// The liveness work in #2040 must call this resolver, never read `/proc` directly.
 pub fn proc_root() -> PathBuf {
     proc_root_from(
         std::env::var_os("AMPLIHACK_TEST_PROC_ROOT").as_deref(),

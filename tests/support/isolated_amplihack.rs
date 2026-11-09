@@ -144,6 +144,8 @@ pub fn shared_empty_proc_root() -> &'static Path {
             .create_new(true)
             .mode(0o600)
             .open(&environ)
+            // Keep in step with SELF_ENVIRON and the 0700/0600 modes in
+            // crates/amplihack-cli/tests/support/fake_proc.rs.
             .and_then(|mut f| f.write_all(b"AMPLIHACK_FAKE=1\0"))
             .unwrap_or_else(|e| panic!("write {}: {e}", environ.display()));
         root

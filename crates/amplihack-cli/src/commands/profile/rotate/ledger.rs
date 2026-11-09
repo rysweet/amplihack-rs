@@ -317,7 +317,7 @@ impl RotateState {
     /// this process's, for example one started before an upgrade.
     pub fn foreign_rotator(&self) -> Option<u32> {
         self.foreign_rotator_at(
-            &crate::commands::agent::procfs::proc_root(),
+            &super::daemon::proc_root(),
             std::env::current_exe().ok().as_deref(),
         )
     }

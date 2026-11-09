@@ -32,6 +32,7 @@ use std::path::{Path, PathBuf};
 pub const FAKE_PID_BASE: u32 = 4_194_305;
 
 /// The constant `self/environ` of every fake tree.
+/// Keep in step with `shared_empty_proc_root` in `tests/support/isolated_amplihack.rs`.
 pub const SELF_ENVIRON: &[u8] = b"AMPLIHACK_FAKE=1\0";
 
 fn private_dir(path: &Path) {
@@ -101,6 +102,10 @@ impl FakeProc {
 
     /// `<root>/<pid> -> /proc/<pid>`, for a process the test started.
     pub fn link_own(&self, pid: u32) {
+        assert!(
+            pid > 1 && pid != std::process::id(),
+            "link_own: pid {pid} is not one this test started"
+        );
         let link = self.path().join(pid.to_string());
         std::os::unix::fs::symlink(format!("/proc/{pid}"), &link)
             .unwrap_or_else(|e| panic!("link {}: {e}", link.display()));

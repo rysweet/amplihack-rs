@@ -66,9 +66,15 @@ fn the_rotator_keeps_its_start_root_and_status_finds_it() {
     let fake = FakeProc::new();
     f.with_proc(&fake);
     let r = f.root.display().to_string();
-    let mut args = vec!["profile", "rotate", "start"];
-    args.extend(["--interval", "1", "--hold", "0"]);
-    let out = f.ok(&args);
+    let out = f.ok(&[
+        "profile",
+        "rotate",
+        "start",
+        "--interval",
+        "1",
+        "--hold",
+        "0",
+    ]);
     assert!(pid_file(&f).starts_with(f.tmp.path()));
     let pid: i32 = fs::read_to_string(pid_file(&f))
         .unwrap()

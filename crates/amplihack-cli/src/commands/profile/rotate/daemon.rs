@@ -276,7 +276,7 @@ pub fn watch(
             format!("{}\n", std::process::id()).as_bytes(),
         )?;
         let env = |k: &str| std::env::var_os(k);
-        let proc_root = crate::commands::agent::procfs::proc_root();
+        let proc_root = proc_root();
         if owner::supervised(&supervised, &env, &proc_root) {
             let flag = supervised.as_ref().and_then(|f| f.as_deref());
             let m = owner::Marker {

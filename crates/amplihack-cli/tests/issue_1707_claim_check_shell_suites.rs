@@ -155,9 +155,10 @@ fn run_suite(script: &str) {
 /// nothing from the developer's or an auto-drive shell beyond that helper's
 /// keep-list: no `BASH_ENV` (which would source the merge guard's `gh` shim
 /// into every bash child), no `AMPLIHACK_*` other than the helper's two
-/// safeguards and its empty fake process table (issue #2042), no `CLAUDE_CONFIG_DIR`, no `GH_*`, no `GIT_*` beyond the
-/// helper's prompt suppressors, no `PR_NUMBER`, and a `HOME` under the test's
-/// temp dir. The safeguards and the suppressors (issue #1764) must be set,
+/// safeguards and its empty fake process table (issue #2042), no
+/// `CLAUDE_CONFIG_DIR`, no `GH_*`, no `GIT_*` beyond the helper's prompt
+/// suppressors, no `PR_NUMBER`, and a `HOME` under the test's temp dir. The
+/// safeguards and the suppressors (issue #1764) must be set,
 /// with their exact values, which shows the command came from the shared
 /// helper and not a copy.
 #[test]

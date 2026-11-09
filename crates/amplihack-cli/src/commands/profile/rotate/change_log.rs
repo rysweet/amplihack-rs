@@ -312,7 +312,7 @@ pub fn record(root: &Path, setting: &str, old: &str, new: &str) {
         setting,
         old,
         new,
-        &caller(&env, &crate::commands::agent::procfs::proc_root()),
+        &caller(&env, &super::daemon::proc_root()),
     );
     Sink::new(open_or_warn(&rs.log, &rs.log1), false, true).emit(now(), &msg);
 }

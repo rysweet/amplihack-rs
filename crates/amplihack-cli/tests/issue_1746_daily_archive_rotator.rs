@@ -78,9 +78,15 @@ fn cycles(f: &Fixture) -> usize {
 fn start(f: &Fixture) -> Reaper {
     let reaper = Reaper(f.rotate_dir().join("rotate.pid"), FakeProc::new());
     f.with_proc(&reaper.1);
-    let mut args = vec!["profile", "rotate", "start"];
-    args.extend(["--interval", "1", "--hold", "0"]);
-    let out = f.ok(&args);
+    let out = f.ok(&[
+        "profile",
+        "rotate",
+        "start",
+        "--interval",
+        "1",
+        "--hold",
+        "0",
+    ]);
     assert!(
         text(&out.stdout).contains("rotate: started (pid "),
         "{}",
