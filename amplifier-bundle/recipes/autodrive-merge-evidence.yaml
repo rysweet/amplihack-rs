@@ -116,7 +116,7 @@ steps:
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
       T=""; SEARCHED=""
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "WARNING: REPO_PATH is not a git work tree once GIT_* is cleared; head_sha and the changed paths will be empty" >&2
+        echo "[skip] not a git repo once GIT_* is cleared (REPO_PATH); head_sha and the changed paths will be empty" >&2
       fi
       # The QA tool is found by the same path search, never through the git
       # toplevel: an inherited GIT_WORK_TREE could plant one there (#2033).
