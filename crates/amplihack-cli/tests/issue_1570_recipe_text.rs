@@ -482,10 +482,14 @@ fn recipe_helper_lookup_snippets_are_identical() {
             copies.push((format!("{rel}:{}", n + 1), normalized.into_owned()));
         }
     }
+    // Issue #1966 (D10): seven earlier copies plus the three criticality
+    // checkpoints (consensus-workflow validate-criticality-input and
+    // consensus-tdd-impl step5-validate-criticality and
+    // step5-require-complete-route). Set from the count in the tree.
     assert_eq!(
         copies.len(),
-        7,
-        "expected seven copies of the recipe_context_value.sh lookup, found: {:?}",
+        10,
+        "expected ten copies of the recipe_context_value.sh lookup, found: {:?}",
         copies.iter().map(|(at, _)| at).collect::<Vec<_>>()
     );
     let (first_at, first) = &copies[0];
