@@ -157,8 +157,9 @@ impl Drop for AlwaysUnauthorised {
 
 // ── Process events ───────────────────────────────────────────────────────────
 //
-// The unsafe code in this file is in the five wrappers below and the geteuid
-// call in `owned_by_me`. Each wrapper reads `errno` straight after its call.
+// The unsafe code in this file is in the five wrappers below, the geteuid
+// call in `owned_by_me` and the `pre_exec` hook in
+// `issue_2099_sigttin_seen_reports_the_stop`. Each wrapper reads `errno` straight after its call.
 
 /// Open a pidfd for `pid`. ESRCH means the process has already gone.
 #[cfg(target_os = "linux")]
@@ -1507,16 +1508,31 @@ fn issue_2099_owned_drop_tolerates_exited_and_missing_children() {
 /// D1: ptrace reports the SIGTTIN stop of a process the test started, whether
 /// the stop comes before or after the seize, and leaves it stopped, never
 /// continued, for `Owned` to reap. The child has its own process group, so
-/// the group is not orphaned and the kernel does not discard SIGTTIN.
+/// the group is not orphaned and the kernel does not discard SIGTTIN. The
+/// child also gets the default action for SIGTTIN back before `exec`: an
+/// ignored signal stays ignored across `exec`, and a launcher that ignores
+/// SIGTTIN (the recipe runner does) would otherwise let the shell run on.
 #[cfg(target_os = "linux")]
 #[test]
 fn issue_2099_sigttin_seen_reports_the_stop() {
     use std::io::{BufRead, BufReader};
     use std::os::unix::process::CommandExt;
     let marker = unit_marker("sigttin");
-    let mut child = Command::new("sh")
+    let mut command = Command::new("sh");
+    command
         .args(["-c", "echo ready; kill -TTIN $$; echo resumed", &marker])
-        .process_group(0)
+        .process_group(0);
+    // SAFETY: the closure runs in the forked child before `exec` and calls
+    // only `signal`, which is async-signal-safe.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::signal(libc::SIGTTIN, libc::SIG_DFL) == libc::SIG_ERR {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
