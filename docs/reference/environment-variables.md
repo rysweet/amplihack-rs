@@ -1016,7 +1016,8 @@ until a login has capacity or the run is stopped. When set, it ends any
 wait that would last longer. For a wait on a reset, `0` means no wait but
 one more attempt; for a capacity wait, `0` means the step ends at once as a
 usage limit. Overrides the config files; empty means unset; an invalid
-value prints one warning, naming the variable only, and is ignored.
+value prints one warning, naming the variable only, and is ignored. A typo
+such as `10m` therefore leaves the wait with no limit.
 
 ```sh
 # Wait at most two hours for a usage limit to lift, in this shell only
