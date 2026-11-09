@@ -381,6 +381,6 @@ fn write_home_account_never_rewrites_a_file_that_does_not_parse() {
     let e = env();
     let path = e.home.join(".claude.json");
     private(&path, "not json");
-    let _ = write_home_account(&e.home, &verified("u-spare", "spare@example.com"));
+    assert!(write_home_account(&e.home, &verified("u-spare", "spare@example.com")).is_err());
     assert_eq!(fs::read_to_string(&path).unwrap(), "not json");
 }

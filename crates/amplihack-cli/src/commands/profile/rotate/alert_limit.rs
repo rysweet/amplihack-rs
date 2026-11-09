@@ -15,8 +15,6 @@ use std::collections::BTreeMap;
 pub const HOUR: i64 = 3600;
 /// The most keys kept; the one seen longest ago goes first.
 pub const MAX_ENTRIES: usize = 64;
-/// How far ahead of the loading time a stored time may be.
-const MAX_AHEAD: i64 = 86_400;
 
 /// One key's state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,22 +109,23 @@ fn valid_key(k: &str) -> bool {
     !k.is_empty() && k.len() <= MAX_ACCOUNT && !k.chars().any(unprintable)
 }
 
-/// Whether a stored time may be kept at `now`: not negative and at most a
-/// day ahead.
-fn valid_time(v: i64, now: i64) -> bool {
-    v >= 0 && v <= now.saturating_add(MAX_AHEAD)
+/// Whether a stored time may be kept: not negative. A time later than the
+/// current one needs no check here, because [`note`] logs at once when
+/// `last_logged_at` is later than `t`; so loading never reads a clock.
+fn valid_time(v: i64) -> bool {
+    v >= 0
 }
 
 /// A loaded `alert_log`: entries that are not objects of the right shape,
 /// bad keys and bad times are dropped, and only the [`MAX_ENTRIES`] seen
 /// most recently are kept. A bad entry never makes the ledger unreadable:
 /// at worst a line is written once more.
-pub fn load(raw: BTreeMap<String, serde_json::Value>, now: i64) -> BTreeMap<String, AlertSeen> {
+pub fn load(raw: BTreeMap<String, serde_json::Value>) -> BTreeMap<String, AlertSeen> {
     let mut map: BTreeMap<String, AlertSeen> = raw
         .into_iter()
         .filter(|(k, _)| valid_key(k))
         .filter_map(|(k, v)| Some((k, serde_json::from_value::<AlertSeen>(v).ok()?)))
-        .filter(|(_, s)| valid_time(s.last_logged_at, now) && valid_time(s.seen_at, now))
+        .filter(|(_, s)| valid_time(s.last_logged_at) && valid_time(s.seen_at))
         .collect();
     cap(&mut map);
     map
@@ -147,7 +146,6 @@ pub mod serde_raw {
             serde_json::Value::Object(m) => m.into_iter().collect(),
             _ => BTreeMap::new(),
         };
-        let now = crate::commands::profile::auto_switch::kit::now();
-        Ok(super::load(raw, now))
+        Ok(super::load(raw))
     }
 }

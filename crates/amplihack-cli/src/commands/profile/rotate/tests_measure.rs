@@ -18,8 +18,8 @@
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, decide};
 use super::log::{Shown, msg};
 use super::measure::reading;
-use super::overflow::{plan_usable, regains};
-use super::rank::best_eligible;
+use super::overflow::regains;
+use super::rank::{best_eligible, eligible};
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::usage_cmd::{ErrorReason, Probe};
@@ -249,7 +249,7 @@ fn a_timed_out_probe_is_not_treated_as_exhausted() {
     let slow = reading("slow", &timed_out());
     assert!(!matches!(slow.reading, Reading::Exhausted { .. }));
     // The overflow rule: no known reset, no plan capacity, no regain time.
-    assert!(!plan_usable(&settings(), &slow.reading));
+    assert!(!eligible(&settings(), &slow.reading));
     assert_eq!(regains(&settings(), &slow.reading, &slow.windows), None);
 }
 

@@ -26,7 +26,6 @@ use super::revalidate::{self, Verdict};
 use super::swap::{self, Source};
 use super::swap_back;
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::shared_dirs;
 use refusal::Cause;
 use std::time::Duration;
@@ -76,7 +75,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     let (lock, state, mut first) = match prelude {
         Prelude::Ready { lock, state, first } => (lock, state, *first),
         Prelude::LockBusy => {
-            out.emit(now(), msg::LOCK_BUSY);
+            out.emit(ctx.now(), msg::LOCK_BUSY);
             return Ok(CycleOutcome::Skipped);
         }
         Prelude::AutoSwitchInconsistent => {
@@ -116,13 +115,13 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         }
         // Issue #1962: every cycle, and nothing is saved over the ledger.
         Prelude::LedgerUnreadable { line } => {
-            out.emit(now(), &format!("ALERT: {line}"));
+            out.emit(ctx.now(), &format!("ALERT: {line}"));
             return Ok(CycleOutcome::Alerted);
         }
         // Issue #1693: the prelude already wrote the guidance.
         Prelude::Guided => {
             let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-            save(ctx, &mut l, CycleOutcome::Alerted, now(), None, None)?;
+            save(ctx, &mut l, CycleOutcome::Alerted, ctx.now(), None, None)?;
             return Ok(CycleOutcome::Alerted);
         }
     };
@@ -141,7 +140,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     if let Some(line) = &line
         && ctx.last_gate.as_ref() != Some(line)
     {
-        out.emit(now(), line);
+        out.emit(ctx.now(), line);
     }
     ctx.last_gate = line;
     if held {
@@ -160,31 +159,33 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     let (live_shown, others_shown) = shown(&m, ctx.now(), max_age);
     let (name, platform) = (live_name(&first.live), first.shown_platform());
     out.emit(
-        now(),
+        ctx.now(),
         &msg::cycle(name, &live_shown, &others_shown, platform),
     );
     // Issue #2013 (D7): what a stale, failed or running reading was.
     for line in msg::reading_lines(name, &live_shown, &others_shown, platform) {
-        out.emit(now(), &line);
+        out.emit(ctx.now(), &line);
     }
     // Issue #1870: before `failed_live` moves on, so it is counted once.
     let m = fresh::gate(ctx, &first, m, Reread::Allowed)?;
     ctx.identity_budget.exclude_measurement(measuring.elapsed());
-    m.fresh_lines.iter().for_each(|line| out.emit(now(), line));
+    m.fresh_lines
+        .iter()
+        .for_each(|line| out.emit(ctx.now(), line));
     let failed_before = std::mem::replace(&mut ctx.failed_live, m.failed);
     note_home_key(ctx, &mut out, &first);
     if ctx.stopping() {
-        out.emit(now(), msg::STOPPED);
+        out.emit(ctx.now(), msg::STOPPED);
         return Ok(CycleOutcome::Stopped);
     }
     // Step 6: revalidate and swap under the lock, held until the swap.
     let Some(lock) = state.try_lock(LOCK_WAIT)? else {
-        out.emit(now(), msg::LOCK_BUSY);
+        out.emit(ctx.now(), msg::LOCK_BUSY);
         return Ok(CycleOutcome::Skipped);
     };
     // The external rotator may have started while this one measured.
     prototype_guard(ctx.store.root())?;
-    let t = now();
+    let t = ctx.now();
     let checked = revalidate::check(ctx, &state, &first, &m, failed_before)?;
     if checked.reread {
         out.emit(t, revalidate::REREAD);
@@ -218,9 +219,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     };
     let (live_shown, others_shown) = shown(&m, ctx.now(), max_age);
     // Issue #2013 (D6): a live reading too old to use shows no capacity.
-    let live_stale = m.probed.as_ref().is_some_and(|(p, _)| {
-        live_shown.stale && !fresh::fresh_at(p, m.measured_at, ctx.now(), max_age)
-    });
+    let live_stale = m.probed.is_some() && live_shown.stale;
     let Measurement {
         live,
         others,
@@ -307,7 +306,10 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             let target = shown_of(&others_shown, &to);
             let seen = (next_plan_reset, unknown_plan.len());
             note_per_token(&mut out, &first, tag, &to, seen, check);
-            out.emit(now(), &msg::swap(&from, &to, &live_shown, &target, reason));
+            out.emit(
+                ctx.now(),
+                &msg::swap(&from, &to, &live_shown, &target, reason),
+            );
             let (off_key, onto_key) = (first.platform_live(), first.platform() == Some(&to));
             note_move(
                 &mut out,
@@ -369,10 +371,10 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     let left = swapped.as_ref().map(|[_, from]| (from, &live));
     let (s, live_n) = (&ctx.settings, live_name(&first.live));
     for line in swap_back::update(&mut l, s, live_n, probed.as_ref(), left, measured_at, t) {
-        out.emit(now(), &line);
+        out.emit(ctx.now(), &line);
     }
     let at = capacity::recorded_at(outcome, probed.as_ref(), measured_at);
-    save(ctx, &mut l, outcome, now(), Some(at), tag)?;
+    save(ctx, &mut l, outcome, ctx.now(), Some(at), tag)?;
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.
     drop(lock);

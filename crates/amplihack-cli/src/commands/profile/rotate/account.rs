@@ -123,6 +123,14 @@ impl Account {
         self.email.as_deref()
     }
 
+    /// The account as a refusal or `repair:` line shows it (issue #2013):
+    /// its e-mail address only, never a UUID.
+    pub fn email_or_placeholder(&self) -> String {
+        self.email()
+            .unwrap_or("an account without an e-mail address")
+            .to_string()
+    }
+
     /// The account in `dir/.claude.json`.
     pub fn of_dir(dir: &Path) -> Option<Self> {
         Self::from_value(&read_claude_json(dir)?.0)

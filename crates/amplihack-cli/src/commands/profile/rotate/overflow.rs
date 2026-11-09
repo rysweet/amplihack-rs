@@ -141,12 +141,6 @@ pub struct Verdict {
     pub key_held: Vec<ProfileName>,
 }
 
-/// A plan login with capacity: [`rank::eligible`] (issue #2013), the
-/// [`Gate::plan_capacity`] test auto-switch also applies.
-pub fn plan_usable(s: &Settings, r: &Reading) -> bool {
-    rank::eligible(s, r)
-}
-
 /// When a plan login without capacity has it again: the reset of the window
 /// at its threshold, or the later of the two when both are. `None` when
 /// unknown, including every failed probe.
@@ -305,7 +299,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
                 reason: Reason::Threshold,
             } => !plan
                 .iter()
-                .any(|c| &c.name == to && plan_usable(s, &c.reading)),
+                .any(|c| &c.name == to && rank::eligible(s, &c.reading)),
             _ => false,
         };
         if !moving_without_capacity || i.live.reading == Reading::Failed {
@@ -348,7 +342,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
     // On overflow: leave as soon as a plan login has capacity.
     let with_capacity: Vec<Measured> = plan
         .iter()
-        .filter(|c| plan_usable(s, &c.reading))
+        .filter(|c| rank::eligible(s, &c.reading))
         .cloned()
         .collect();
     if let Some(to) = rank::best_eligible(s, &with_capacity) {

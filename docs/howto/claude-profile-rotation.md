@@ -2111,6 +2111,13 @@ A running Claude Code session can write its old block back; the next cycle
 repairs it again, and the line is logged once an hour. See
 [Home account repair](../reference/profile-command.md#rotate-home-account-repair).
 
+If the block cannot be written, the cycle writes nothing and logs a
+different line, also once an hour:
+
+| Line | What it means | What to do |
+|------|---------------|------------|
+| `repair refused: ~/.claude.json was not rewritten: <error>` | The evidence agreed, but the write was refused or failed; `<error>` says why. Nothing was written. | Make `~/.claude.json` a regular file you own in a home directory you can write to. The next cycle tries again. |
+
 This usually follows a `/login` in `~/.claude` to the wrong account, or a
 browser that signed Claude in to whichever account it already had. To fix
 it, put the right login back in `~/.claude`:

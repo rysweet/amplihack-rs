@@ -25,9 +25,9 @@ pub enum Cause {
     Other,
 }
 
-/// The evidence value for a source that was read but could not be used:
-/// it fails [`safe_account`], so the line shows `unreadable`.
-pub const UNREADABLE: &str = "";
+/// The evidence value for a source that was read but could not be used.
+/// The line shows it as it is: `unreadable`.
+pub const UNREADABLE: &str = "unreadable";
 
 /// What each source said about the account, as e-mail addresses only. `None`
 /// shows `none`; a value that fails [`safe_account`] shows `unreadable`.
@@ -106,8 +106,8 @@ impl Cause {
             Self::HasLogin => {
                 format!("decide which login {p} keeps, then run: amplihack profile login {p}")
             }
-            Self::FileUnsafe => "fix the owner and mode named in <cause> (chmod 600 for a \
-                 login file, chmod 700 for the profile root)"
+            Self::FileUnsafe => "fix the owner and mode of the path named before 'Evidence:' \
+                 (chmod 600 for a login file, chmod 700 for the profile root)"
                 .to_string(),
             Self::RefreshLock => "none needed; the next cycle tries again".to_string(),
             Self::Unsupported => {

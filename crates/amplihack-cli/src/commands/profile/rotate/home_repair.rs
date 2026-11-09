@@ -16,7 +16,7 @@
 //! Then a missing block, or one naming another account, is rewritten from
 //! the verified account (`swap_finish::write_home_account`) and the cycle
 //! goes on. Anything doubtful is [`Repair::NotApplicable`] and writes
-//! nothing. The step makes no identity request of its own: it uses the
+//! nothing; a write that is refused or fails is [`Repair::Refused`]. The step makes no identity request of its own: it uses the
 //! snapshot's reading. See "Rotate home account repair" in
 //! docs/reference/profile-command.md.
 
@@ -42,18 +42,19 @@ pub enum Repair {
     /// The evidence does not agree, or the file cannot be used: nothing was
     /// written.
     NotApplicable,
-}
-
-/// How an account is named in a `repair:` line: its e-mail address only.
-fn named(a: &Account) -> String {
-    a.email()
-        .unwrap_or("an account without an e-mail address")
-        .to_string()
+    /// The evidence agreed but the write was refused or failed; nothing was
+    /// written.
+    Refused,
 }
 
 /// The repair line, `repair: ...; rewritten`.
 pub fn line(old: &str, new: &str) -> String {
     format!("repair: home account metadata named {old}, verified identity is {new}; rewritten")
+}
+
+/// The line for a refused or failed write, `repair refused: ...`.
+pub fn refused_line(e: &dyn std::fmt::Display) -> String {
+    format!("repair refused: ~/.claude.json was not rewritten: {e}")
 }
 
 /// The `--dry-run` line.
@@ -100,11 +101,11 @@ pub fn plan(
     let old = match &current {
         // The same account: Claude's other fields in the block are kept.
         Some(Ok(a)) if a.same(verified) => return Ok(Some(None)),
-        Some(Ok(a)) => named(a),
+        Some(Ok(a)) => a.email_or_placeholder(),
         Some(Err(())) => "unreadable".to_string(),
         None => "none".to_string(),
     };
-    Ok(Some(Some((old, named(verified)))))
+    Ok(Some(Some((old, verified.email_or_placeholder()))))
 }
 
 /// Runs the repair for this cycle. The `repair:` line goes through the
@@ -127,6 +128,11 @@ pub fn step(ctx: &Ctx, state: &State, snap: &Snap, out: &mut Sink) -> Result<Rep
     let (LiveId::Known(p), Some(verified)) = (&snap.live, &snap.trusted_live) else {
         return Ok(Repair::NotApplicable);
     };
+    // The ledger is loaded before anything is written, so a ledger gone
+    // since `plan` writes nothing rather than saving a default one.
+    let Some(mut l) = ctx.rs.load_ledger()? else {
+        return Ok(Repair::NotApplicable);
+    };
     let t = ctx.now();
     if ctx.read_only {
         out.emit(t, &would(&old, &new));
@@ -134,12 +140,18 @@ pub fn step(ctx: &Ctx, state: &State, snap: &Snap, out: &mut Sink) -> Result<Rep
     }
     if let Err(e) = write_home_account(&ctx.home, verified) {
         // Refused (a symlink, a file of another user) or failed: nothing
-        // was written, and the swap checks still apply this cycle.
-        eprintln!("warning: rotate: ~/.claude.json was not repaired: {e}");
-        return Ok(Repair::NotApplicable);
+        // was written, and the swap checks still apply this cycle. The
+        // line is limited under its own key, so a symlinked file is
+        // reported once an hour, not every cycle.
+        let text = refused_line(&e);
+        match note(&mut l.alert_log, &format!("repair-refused:{p}"), t, &text) {
+            Note::Log(text) => out.emit(t, &text),
+            Note::Suppress => out.print(t, &text),
+        }
+        ctx.rs.save_ledger(&l)?;
+        return Ok(Repair::Refused);
     }
     let text = line(&old, &new);
-    let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
     match note(&mut l.alert_log, &format!("repair:{p}"), t, &text) {
         Note::Log(text) => out.emit(t, &text),
         Note::Suppress => out.print(t, &text),

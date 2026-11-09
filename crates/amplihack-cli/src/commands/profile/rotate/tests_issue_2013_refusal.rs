@@ -133,7 +133,7 @@ fn every_kind_has_its_documented_fixed_action() {
         (
             Cause::FileUnsafe,
             "file-unsafe",
-            "fix the owner and mode named in <cause> (chmod 600 for a login file, chmod 700 for the profile root)",
+            "fix the owner and mode of the path named before 'Evidence:' (chmod 600 for a login file, chmod 700 for the profile root)",
         ),
         (
             Cause::RefreshLock,

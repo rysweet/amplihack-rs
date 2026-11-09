@@ -15,14 +15,8 @@ use super::Ctx;
 use crate::commands::profile::auto_switch::kit::{CLAUDE_JSON, State, exists, read_claude_json};
 use crate::commands::profile::name::ProfileName;
 
-/// An account with no e-mail address to show.
-const NO_EMAIL: &str = "an account without an e-mail address";
 /// A record that names none of the other sources' accounts.
 const ANOTHER: &str = "another account";
-
-fn email(a: &Account) -> String {
-    a.email().unwrap_or(NO_EMAIL).to_string()
-}
 
 /// The evidence for the live profile `live` (the ledger's).
 pub fn of(
@@ -46,12 +40,12 @@ pub fn of(
                 .into_iter()
                 .flatten()
                 .find(|a| rec.names(a))
-                .map_or_else(|| ANOTHER.to_string(), email),
+                .map_or_else(|| ANOTHER.to_string(), Account::email_or_placeholder),
         ),
     };
     Evidence {
-        verified: verified.map(email),
-        ledger: ledger_account.as_ref().map(email),
+        verified: verified.map(Account::email_or_placeholder),
+        ledger: ledger_account.as_ref().map(Account::email_or_placeholder),
         record,
         home: home.0,
     }
@@ -68,7 +62,7 @@ fn home(ctx: &Ctx) -> (Option<String>, Option<Account>) {
     match v.get("oauthAccount") {
         None | Some(serde_json::Value::Null) => (None, None),
         Some(block) => match Account::from_block(block) {
-            Some(a) => (Some(email(&a)), Some(a)),
+            Some(a) => (Some(a.email_or_placeholder()), Some(a)),
             None => (Some(UNREADABLE.to_string()), None),
         },
     }

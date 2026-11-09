@@ -61,5 +61,7 @@ mod tests_issue_2013_rank;
 mod tests_issue_2013_refusal;
 #[path = "tests_issue_2013_repair.rs"]
 mod tests_issue_2013_repair;
+#[path = "tests_issue_2013_repair_refused.rs"]
+mod tests_issue_2013_repair_refused;
 #[path = "tests_issue_2013_swap.rs"]
 mod tests_issue_2013_swap;

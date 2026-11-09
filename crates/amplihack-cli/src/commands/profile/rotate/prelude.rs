@@ -91,10 +91,10 @@ pub fn locked_prelude(
     match super::recover::recover_with(&ctx.store, &ctx.rs, &ctx.home, ctx.identity_reader()) {
         Ok(RecoverOutcome::None) => {}
         Ok(RecoverOutcome::RolledBack { from, to }) => {
-            out.emit(now(), &msg::recovered(false, &from, &to));
+            out.emit(ctx.now(), &msg::recovered(false, &from, &to));
         }
         Ok(RecoverOutcome::RolledForward { from, to }) => {
-            out.emit(now(), &msg::recovered(true, &from, &to));
+            out.emit(ctx.now(), &msg::recovered(true, &from, &to));
         }
         Ok(RecoverOutcome::Inconsistent(reason))
         | Err(ProfileError::RotateInconsistent(reason)) => {
@@ -128,7 +128,7 @@ pub fn locked_prelude(
                 &format!("identity-unavailable:{name}"),
                 &line,
             )?,
-            false => out.emit(now(), &line),
+            false => out.emit(ctx.now(), &line),
         }
     }
     // Issue #2013 (D8, D9): every rotate cycle, before seeding and the live
@@ -184,7 +184,7 @@ const LIVE_READABLE: &str = "readable";
 /// differ from what this process last logged, and each API-key profile
 /// ignored in `overflow=` once per process.
 fn log_skips(ctx: &mut Ctx, out: &mut Sink, snap: &Snap) {
-    let t = now();
+    let t = ctx.now();
     log_ignored(out, snap, t);
     if snap.proto != ctx.last_proto {
         if let Some(reason) = snap.proto {

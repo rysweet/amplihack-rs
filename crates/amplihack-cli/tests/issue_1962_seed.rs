@@ -233,10 +233,9 @@ fn same_email_in_two_organizations_is_told_apart() {
 fn same_account_alerts_naming_both_on_every_cycle_and_moves_nothing() {
     let w = shared_email("org-a");
     let want = "ALERT: cannot tell profiles spare, work apart: both claim the account in ~/.claude; no record written, nothing moved";
-    for cycle in 1..=2 {
+    for _ in 1..=2 {
         let _ = w.cycle();
         // Issue #2013 (D11): written once an hour; the stop holds every cycle.
-        let _ = cycle;
         assert_eq!(w.f.log().matches(want).count(), 1, "{}", w.f.log());
         assert_eq!(w.record("work"), None);
         assert_eq!(w.record("spare"), None);

@@ -15,8 +15,9 @@
 //! - `prune(&mut map, cycle_started_at)` drops keys not seen in this cycle.
 //! - At most `MAX_ENTRIES` (64) entries; the oldest `seen_at` goes first.
 //! - Loading a ledger drops bad entries (key over 320 bytes or with control
-//!   characters, negative time, time more than a day ahead) and keeps the
-//!   64 newest; it never makes the ledger `RotateInconsistent`.
+//!   characters, negative time, a value of the wrong shape) and keeps the
+//!   64 newest; it never makes the ledger `RotateInconsistent`. Loading
+//!   reads no clock, so a time far ahead of the real clock is kept.
 //! - `for_older_readers` clears `alert_log`.
 //! - In a cycle, refusal lines (key `<kind>:<p>`) go through the limit; the
 //!   ledger's `alert` field is still set on every refused cycle.
@@ -198,9 +199,36 @@ fn bad_entries_are_dropped_on_load_and_never_make_the_ledger_inconsistent() {
     let l = e.rs.load_ledger().unwrap().unwrap();
     assert_eq!(
         l.alert_log.keys().collect::<Vec<_>>(),
-        ["repair:work"],
+        ["ahead:work", "repair:work"],
         "{:?}",
         l.alert_log
+    );
+}
+
+/// D12: loading reads no clock. An entry stamped far beyond the real clock
+/// is kept, and a note at an earlier injected time logs at once.
+#[test]
+fn an_entry_far_ahead_of_the_real_clock_is_kept_and_an_earlier_note_logs() {
+    let e = env();
+    let far = i64::MAX / 2;
+    let mut m = serde_json::Map::new();
+    m.insert(
+        "repair:work".into(),
+        serde_json::json!({"last_logged_at": far, "seen_at": far, "suppressed": 3}),
+    );
+    write_raw_ledger(&e, serde_json::Value::Object(m));
+    let mut l = e.rs.load_ledger().unwrap().unwrap();
+    assert_eq!(
+        l.alert_log.get("repair:work"),
+        Some(&AlertSeen {
+            last_logged_at: far,
+            seen_at: far,
+            suppressed: 3,
+        })
+    );
+    assert_eq!(
+        note(&mut l.alert_log, "repair:work", T0, LINE),
+        Note::Log(LINE.to_string())
     );
 }
 
