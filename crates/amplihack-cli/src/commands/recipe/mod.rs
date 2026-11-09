@@ -11,6 +11,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(target_os = "macos")]
+mod darwin_process;
 /// Issue #1606: `recipe run --detach`.
 pub mod detach;
 pub mod list;
@@ -20,6 +22,8 @@ mod parse;
 mod process_tree;
 mod resolve;
 pub mod run;
+#[cfg(target_os = "macos")]
+mod run_control;
 pub mod show_validate;
 /// Issue #1606: `recipe stop`.
 pub mod stop;

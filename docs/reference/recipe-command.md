@@ -372,14 +372,38 @@ and every agent and command it started.
   down. Anything of its tree still running after 15 s gets SIGKILL. Then the
   session is killed, which closes any other pane in it (a `tail -f` you split
   off) without a signal from `recipe stop`.
-- **A run id**, the `run_id` of a run's `amplihack.recipe.log_pointer` line:
+- **A run id on Linux**, the `run_id` of a run's `amplihack.recipe.log_pointer` line:
   every process started with that `AMPLIHACK_RECIPE_RUN_ID`, its descendants
-  and their process groups get SIGTERM, then SIGKILL after 15 s. Linux only.
+  and their process groups get SIGTERM, then SIGKILL after 15 s.
+- **A run id on macOS**, including an ordinary detached process launch:
+  the launcher records its native PID, UID and start time before starting the
+  workload, and maintains a private Unix control socket. `recipe stop` verifies
+  the live socket peer against that record and asks the owner to cancel. It
+  captures descendants (including linked agent steps that start new sessions)
+  before cancellation and rechecks each native start identity before TERM and
+  KILL. Previously observed descendants remain attributed after reparenting.
+  Before reaping its runner, the launcher also captures members of the runner's
+  private session group, with native identity and `waitid(WNOWAIT)` checks on
+  both sides of capture. This covers a fast runner that exits before its
+  children; an already reaped PID is never used as group authority.
+  Other members of a shared process group are excluded.
+
+On macOS, run the stop command with the same `HOME` as the launch. Records live
+in `~/.amplihack/recipe-runs/` and sockets in private directories under `TMPDIR`;
+choose a shorter `TMPDIR` if its path cannot fit a Unix socket. Runs started by
+older binaries have no authenticated stop handle and are refused, as are stale,
+unverifiable or dead-owner records. An already orphaned process that was never
+observed through the owner's ancestry cannot safely be attributed from its
+environment or process group alone; it is not adopted by this mechanism.
 
 The tree is found before anything is signalled, and each process is
-signalled only while its start time still matches, so a reused pid is never
-hit. `recipe stop` never signals itself or its own ancestors. It prints
+revalidated against its recorded start time before signalling, refusing known
+replacement identities. Darwin's start check and signal are separate kernel calls, so there is a
+small check-to-signal race; the launcher itself is cancelled through its live
+control connection. `recipe stop` never signals itself or its own ancestors. It prints
 `stopped <what> (<n> processes)` and exits 0, or exits 1 when nothing matches.
+The macOS run-ID route also verifies that all recorded identities have become
+terminal and fails if liveness cannot be inspected or owned processes survive.
 
 ---
 
