@@ -633,17 +633,17 @@ fn classify_keeps_ids_that_only_contain_keyword_letters_minor() {
 
 #[test]
 fn light_mode_uses_the_whole_word_id_rule() {
-    // Issue #1982: auto-drive-light has no id rule of its own. Its rounds are
-    // classified by `classify`, which reads ids as whole words, so an id such
-    // as `section-1` is minor in light mode as it is in the crusty loop.
-    let light = read("amplifier-bundle/tools/autodrive_light_round.sh");
+    // Issue #1982: auto-drive-light has no id rule, and no round tool, of its
+    // own. Its rounds are classified by `classify`, which reads ids as whole
+    // words, so an id such as `section-1` is minor in light mode as it is in
+    // the crusty loop.
     assert!(
-        !light.contains("KEYWORDS"),
-        "the light round tool passes no keyword list; classify decides"
-    );
-    assert!(
-        !light.contains("--arg kw"),
-        "the light round tool runs no severity rule of its own"
+        !std::path::Path::new(&format!(
+            "{}/../../amplifier-bundle/tools/autodrive_light_round.sh",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .exists(),
+        "the light round tool is gone; classify decides"
     );
     let rules = read(&format!("amplifier-bundle/tools/{RULES}"));
     assert!(
@@ -2100,13 +2100,8 @@ fn finding_rules_are_defined_once_and_sourced_by_the_followups_tool() {
             .any(|l| l.trim_start().starts_with("KEYWORDS=")),
         "{RULES} must not define the retired KEYWORDS list (#1982)"
     );
-    // Only autodrive_followups.sh uses the rules; the light round tool
-    // handles no finding text since #1982.
-    let light = read("amplifier-bundle/tools/autodrive_light_round.sh");
-    assert!(
-        !light.contains(RULES),
-        "autodrive_light_round.sh must not source {RULES}"
-    );
+    // Only autodrive_followups.sh uses the rules; light mode handles no
+    // finding text since #1982 and has no round tool.
     {
         let user = TOOL;
         let body = read(&format!("amplifier-bundle/tools/{user}"));
@@ -2244,13 +2239,15 @@ fn verdict_allow_lists_admit_minor_only() {
 }
 
 #[test]
-fn round_step03_classifies_after_the_light_rule() {
+fn round_step03_classifies_with_no_light_hook_before_it() {
     let s03 = step_command(ROUND, "step-03-extract-crusty-verdict");
-    let light = s03.find("autodrive_light_steps.sh").expect("light line");
-    let cls = s03.find("autodrive_followups.sh").expect("classify line");
     assert!(
-        cls > light,
-        "classify runs after the light check, which only re-measures a moved head"
+        s03.contains("autodrive_followups.sh"),
+        "step-03 runs classify"
+    );
+    assert!(
+        !s03.contains("autodrive_light") && !s03.contains("light-mode"),
+        "#1982: no light hook runs before classify"
     );
     assert!(
         s03.contains("AUTODRIVE_LAUNCH_TOOLS"),

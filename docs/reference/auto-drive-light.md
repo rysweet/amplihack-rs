@@ -1,7 +1,7 @@
 ---
 title: Auto-Drive-Light Recipe
 description: The smaller drive-to-merge recipe for small pull requests, its eligibility rules, escalation to auto-drive-to-merge, the task id its follow-up issues name, and how it shares auto-drive-to-merge's per-finding follow-up model.
-last_updated: 2026-11-07
+last_updated: 2026-11-08
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -26,8 +26,7 @@ The recipe is `amplifier-bundle/recipes/auto-drive-light.yaml`. It was added for
 - [Eligibility rules](#eligibility-rules)
 - [The eligibility tool](#the-eligibility-tool)
 - [Escalation to auto-drive-to-merge](#escalation-to-auto-drive-to-merge)
-- [The light-mode marker](#the-light-mode-marker)
-- [The round tool](#the-round-tool)
+- [Nothing is measured inside the loops](#nothing-is-measured-inside-the-loops)
 - [Minor findings and follow-up issues](#minor-findings-and-follow-up-issues)
 - [Merge criteria](#merge-criteria)
 - [State files](#state-files)
@@ -95,7 +94,7 @@ AUTODRIVE_LIGHT_ELIGIBILITY=light reason=within-limits
 | `task_description` | `""` | The change to make. Required unless `pr_number` or `existing_branch` is set. |
 | `repo_path` | `"."` | Repository to work in. |
 | `issue_number` | `""` | Optional. 1 to 10 digits. The PR body gets `Refs #N` and the branch name uses it. When `plan_task_id` is empty, `#N` is the task id for follow-up issues. See [The task id](#the-task-id). |
-| `plan_task_id` | `""` | Optional. The plan task that follow-up issues name: `N`, `#N`, or 1 to 64 characters from `A-Za-z0-9._:/-`. Checked by `light-prereqs`, which exits 2 on any other value. |
+| `plan_task_id` | `""` | Optional. The plan task that follow-up issues name: `N`, `#N`, or 1 to 64 characters from `A-Za-z0-9._:/-`. Checked by `light-task-id`, which exits 2 on any other value. |
 | `existing_branch` | `""` | A branch whose PR already exists. Validated with `git check-ref-format` and refused if it begins with `-`. A branch without an open PR is refused with `light-existing-branch-no-pr`. |
 | `pr_number` | `""` | An open PR to drive. 1 to 10 digits. The build steps are skipped. |
 | `qa_command` | `""` | When set, run as `bash -c "$RECIPE_VAR_qa_command"` in the worktree in place of `quick_change_checks.sh`. |
@@ -133,23 +132,22 @@ The recipe also fills these values as it runs: `light_base`, `light_task_id`, `b
 | 11 | `light-resolve-pr` | bash | always |
 | 12 | `light-eligibility` | bash | always |
 | 13 | `light-escalate` | recipe `auto-drive-to-merge` | decision is `escalate` |
-| 14 | `light-mode-marker` | bash | decision is `light` |
-| 15 | `light-crusty-loop` | recipe `autodrive-crusty-loop` | decision is `light` |
-| 16 | `light-check-unmerged` | bash | decision is `light` |
-| 17 | `light-merge-loop` | recipe `autodrive-merge-loop` | decision is `light` |
-| 18 | `light-report` | bash | always |
+| 14 | `light-crusty-loop` | recipe `autodrive-crusty-loop` | decision is `light` |
+| 15 | `light-check-unmerged` | bash | decision is `light` |
+| 16 | `light-merge-loop` | recipe `autodrive-merge-loop` | decision is `light` |
+| 17 | `light-report` | bash | always |
 
 "New change" means neither `pr_number` nor `existing_branch` was given.
 
-**Prerequisites (steps 1 to 3).** `light-prereqs` checks that every tool the run loads exists under `$AMPLIHACK_HOME/amplifier-bundle/tools`. The list includes the light tools, `autodrive_finding_rules.sh`, and the follow-up tools `autodrive_followups.sh`, `autodrive_followups_check.sh` and `workflow_issue_tracking.sh`, which the loops load from the same root. It also validates `plan_task_id`. `light-task-id` works out the effective task id; see [The task id](#the-task-id).
+**Prerequisites (steps 1 to 3).** `light-prereqs` checks that every tool the run loads exists under `$AMPLIHACK_HOME/amplifier-bundle/tools`. The list includes `autodrive_light_eligibility.sh`, `autodrive_finding_rules.sh`, and the follow-up tools `autodrive_followups.sh`, `autodrive_followups_check.sh` and `workflow_issue_tracking.sh`, which the loops load from the same root. `light-task-id` checks `plan_task_id` and works out the effective task id, before any work starts; see [The task id](#the-task-id).
 
 **Build (steps 4 to 10).** The worktree and branch come from `workflow-worktree` and `quick_change_common.sh`, so the branch is named `quick/<issue-or-slug>`. `light-base-pin` records the base commit before the agent runs; that commit is `light_base`. `light-implement` is a single agent session whose prompt carries the quick-change leaf-step constraints and the line `[amplihack:no-merge]`. It never tells the agent to start an orchestrator. `light-qa` runs `qa_command` or `quick_change_checks.sh`; `light-precommit` runs the repository's pre-commit hooks. A failing check stops the run before anything is pushed.
 
 **PR resolution (step 11).** `light-resolve-pr` writes `build_result` in the same shape as `autodrive-build`, with `pr`, `branch`, `head_sha`, `base_sha` and `state_dir`. For an existing PR it reads `gh pr view` and refuses a PR whose `isCrossRepository` is true (`light-cross-repo`). For an existing PR, `light_base` is the merge base of the PR head and `origin/<baseRefName>`. PR code fetched as `refs/pull/<N>/head` is not checked out, sourced or run before review.
 
-**Light path (steps 14 to 17).** `light-mode-marker` is described in [The light-mode marker](#the-light-mode-marker). `light-crusty-loop` and `light-merge-loop` run the unchanged `autodrive-crusty-loop` and `autodrive-merge-loop` sub-recipes that `auto-drive-to-merge` uses, on the same state directory, with `plan_task_id` set to the effective task id. There is no `autodrive-check-unmerged` recipe: in `auto-drive-to-merge.yaml` that check is an inline bash step. `light-check-unmerged` is a bash step with the same body. It reads `build_result`, sources `autodrive_state.sh` from `AMPLIHACK_HOME` and calls `autodrive_require_unmerged`, so a PR merged outside the gate during the crusty loop stops the run with exit 1 (#1551).
+**Light path (steps 14 to 16).** `light-crusty-loop` and `light-merge-loop` run the unchanged `autodrive-crusty-loop` and `autodrive-merge-loop` sub-recipes that `auto-drive-to-merge` uses, on the same state directory, with `plan_task_id` set to the effective task id. There is no `autodrive-check-unmerged` recipe: in `auto-drive-to-merge.yaml` that check is an inline bash step. `light-check-unmerged` is a bash step with the same body. It reads `build_result`, sources `autodrive_state.sh` from `AMPLIHACK_HOME` and calls `autodrive_require_unmerged`, so a PR merged outside the gate during the crusty loop stops the run with exit 1 (#1551). Light mode adds nothing inside these loops; see [Nothing is measured inside the loops](#nothing-is-measured-inside-the-loops).
 
-**Report (step 18).** `light-report` prints which path ran (`light`, `escalate` or `light-escalated`), the eligibility or escalation reason, the follow-up issues filed for the PR, and the merge gate result:
+**Report (step 17).** `light-report` prints which path ran (`light` or `escalate`, as `light-eligibility` decided), the eligibility reason, the follow-up issues filed for the PR, and the merge gate result:
 
 ```text
 AUTO_DRIVE_LIGHT: MERGED - PR #1850 (path: light, reason: within-limits, follow-up issues: #1851,#1852, merge gate: MERGED)
@@ -183,7 +181,7 @@ An edit to an existing recipe or tool file does not escalate unless it changes t
 
 - `light-eligibility` runs once the PR exists and its head is known. The decision is written to `light-eligibility.json` with the base and head it measured and the limits it used.
 - A resumed run whose PR head equals the recorded head reuses the decision. When the PR head has moved, `light-eligibility` measures again on `light_base..<current head>`.
-- Inside the loops, a crusty round whose verdict is `CONCERNS` and that finds a valid marker compares the head it reviewed with the marker head. When they differ, `autodrive_light_round.sh check` measures again on `<base>..<reviewed head>`, taking the base and limits from `light-eligibility.json`. This covers commits made by crusty address steps, commits pushed by anyone else, and crusty re-reviews in the merge phase. A `CLEAN` round is not measured again. See [Escalation inside the loop](#escalation-inside-the-loop).
+- Nothing measures the change inside the crusty or merge loops. See [Nothing is measured inside the loops](#nothing-is-measured-inside-the-loops).
 
 An earlier escalation is permanent for the state directory. When `escalation.json` is present, `light-eligibility` still measures and writes `light-eligibility.json`, but the decision is `escalate` with reason `previously-escalated`, and the file is never removed. To try light mode again on the same PR, pass a new `autodrive_state_dir` or delete `escalation.json` by hand.
 
@@ -222,102 +220,24 @@ The `light-eligibility` step treats a fault as `escalate` with reason `fault-<to
 
 ## Escalation to auto-drive-to-merge
 
-When the decision is `escalate`, `light-eligibility` does three things before `light-escalate` runs:
+When the decision is `escalate`, `light-eligibility` does two things before `light-escalate` runs:
 
-1. Removes any `light-mode` marker from the state directory.
-2. Writes `escalation.json` with the reason, the measurements, `base_sha` and `head_sha`.
-3. Sets `light_eligibility.decision` to `escalate`.
+1. Writes `escalation.json` with the reason, the measurements, `base_sha` and `head_sha`, unless it is already present.
+2. Sets `light_eligibility.decision` to `escalate`.
 
 `light-escalate` is a `type: recipe` step that runs `auto-drive-to-merge` with `pr_number` taken from `build_result`, `existing_branch` empty, `autodrive_state_dir` set to the same state directory, and `plan_task_id` set to the effective task id. `task_description`, `repo_path`, `autodrive_dry_run` and `no_merge` are passed unchanged. Only the PR number is passed because `autodrive-build` uses `pr_number` whenever it is set and looks a branch up only when it is empty. Because the PR already exists, the nested build phase is a no-op: no second branch, build or PR is created. The nested recipe then runs its full crusty loop, merge loop and gate, and files follow-up issues in the same way as a light run.
 
 Every later light step has a condition on `light_eligibility.decision == 'light'` and is skipped. `light-escalate` is the only step in the recipe that names `auto-drive-to-merge`. Exit code 79 from the nested run is passed through and never retried.
 
-## The light-mode marker
+## Nothing is measured inside the loops
 
-`light-mode-marker` writes `<state>/light-mode` after a `light` decision, and only then. The file holds one line, the head SHA that was measured. It is created under `umask 077` through `mktemp` and `mv -f`.
+`light-eligibility` is the only measurement. It runs before the loops, and its decision chooses what runs: the light path, or a nested `auto-drive-to-merge`. Once the light path has started, nothing measures the change again. `autodrive-crusty-round` has no light branch, there is no light-mode marker, and a crusty round on a light run writes the same bytes as a round of `auto-drive-to-merge`.
 
-The marker has one effect: it makes a crusty round measure a moved head again, and escalate when the change is no longer light. It never changes a round's verdict, its findings or its count.
+That is deliberate (#1982). On the light path, a measurement inside the loops could only change the report. An escalation runs `auto-drive-to-merge` on the PR that already exists, so its build phase does nothing and it runs `autodrive-crusty-loop`, `autodrive-merge-loop` and the merge gate: the same files, on the same state directory, that the light path is already running. The minor findings of a light run are classified, filed and gated as in `auto-drive-to-merge`. So a head that grows past the light limits during the crusty loop gets exactly the review and merge criteria a full drive would give it.
 
-`autodrive-crusty-round` looks for the marker in `$(dirname "$AUTODRIVE_ROUND_RECORD")`. No context key is added to `autodrive-crusty-loop`. Crusty re-reviews in the merge phase (`autodrive_crusty_rereview.sh`) use the same state directory, so they measure a moved head too.
+Before #1982 the round re-measured a moved head because the result decided whether a light rule could defer minor findings. That rule is gone, so the re-measurement and its tools were removed: `autodrive_light_round.sh`, `autodrive_light_steps.sh`, the step-03 hook in `autodrive-crusty-round`, the `light-mode-marker` step and the `light-escalated` report path. A crusty round no longer calls `gh pr view` or `git fetch` for light mode, and has no light exit-79 path.
 
-The round tool accepts the marker only when all of these hold:
-
-- it is a regular file, not a symlink, and private to the current user;
-- its content is a 40 or 64 character lowercase hex SHA;
-- `light-eligibility.json` is a private regular file with `decision` `light` and the same head;
-- `escalation.json` is absent.
-
-A marker that fails these checks gives `marker-invalid` or `state-unsafe`. A reviewed head that does not descend from the marker head gives `marker-stale`. In every one of those cases the tool prints `off` and changes nothing. A reviewed head that descends from the marker head but differs from it is measured again, as described below.
-
-### Step-03 of the crusty round
-
-Step-03 of `autodrive-crusty-round` writes the verdict, the parsed concerns and `<record>.findings` first. Then, only when the marker is a regular file, it sources `amplifier-bundle/tools/autodrive_light_steps.sh` from `AUTODRIVE_LAUNCH_TOOLS`, the tool root that step-00 has already checked (#1543), and calls `autodrive_light_step03`. That function:
-
-1. returns at once unless the verdict is `CONCERNS`, its `verdict_source` is `crusty` and the round record path is set;
-2. runs `autodrive_light_round.sh check` from the same root, with stdout sent to `/dev/null`;
-3. returns 79 when the tool exits 79;
-4. on any other non-zero exit, prints `WARNING: autodrive_light_round.sh check exited <rc>; the round is classified without re-measurement.` on stderr and returns 0.
-
-It never assigns `VERDICT`, `SOURCE` or `COUNT`. Step-03 then runs the #1979 `classify` branch unchanged, so a light round whose findings are all minor becomes `MINOR_ONLY`; see [Minor findings and follow-up issues](#minor-findings-and-follow-up-issues).
-
-If `autodrive_light_steps.sh` cannot be loaded, step-03 prints `WARNING: autodrive_light_steps.sh not found under AUTODRIVE_LAUNCH_TOOLS; the moved head is not re-measured.` and continues to `classify`. Exit 79 from the helper is passed through. Step-04, step-05 and step-06 have no light branch.
-
-Without the marker, `autodrive-crusty-round` behaves exactly as it does for `auto-drive-to-merge`: the same steps run, step-03 and step-06 write the same bytes for `CLEAN`, `CONCERNS` and `MINOR_ONLY` rounds, and neither light tool is loaded.
-
-### Escalation inside the loop
-
-When the reviewed head differs from the marker head, `autodrive_light_round.sh check` runs `autodrive_light_eligibility.sh` on `<base>..<reviewed head>` with the limits recorded in `light-eligibility.json`.
-
-The base is the merge-base of the reviewed head and the PR's current base tip, so a head that merged the base branch in (the usual fix for a branch that is behind) is measured on the PR's own change only, as GitHub shows it. The tool reads `baseRefName` and `baseRefOid` with `gh pr view`, checks both, fetches `refs/heads/<baseRefName>` from `origin` if the tip is not present locally, and uses the merge-base only when it descends from the base recorded in `light-eligibility.json`. In every other case (a `gh` failure, an invalid name or SHA, a failed fetch, or a merge-base that does not descend from the recorded base) it logs one `INFO:` line and measures from the recorded base. For a failed fetch, that line includes the first line of the `git fetch` error, cut to 200 characters. That measurement counts any upstream changes the head has merged, so it can only escalate more often. Exit code 79 from `gh` is passed through.
-
-- **`light`.** The tool rewrites `light-eligibility.json` with the new head and the base it measured from, then rewrites `light-mode` with the same head, and prints `{"light_exit":"light"}`.
-- **`escalate` or a fault.** The tool removes `light-mode`, writes `escalation.json` with reason `in-loop-<reason>` or `in-loop-fault-<token>`, and prints `{"light_exit":"escalated","reason":"in-loop-lines"}` (with the matching reason).
-
-Either way the round is then classified like any other round. After an escalation inside the loop, every later round in that state directory, including merge-phase re-reviews, finds no marker and is not measured again. The run stays in the same crusty and merge loops; it does not start a nested `auto-drive-to-merge`, because those loops are the ones that recipe would run. `light-report` prints the path as `light-escalated` with the recorded reason.
-
-## The round tool
-
-`amplifier-bundle/tools/autodrive_light_round.sh` has one command:
-
-```text
-autodrive_light_round.sh check --record <abs path> --pr <N>
-    --reviewed-head <sha> --repo <dir>
-```
-
-| Option | Value |
-| --- | --- |
-| `--record` | The round record path. The state directory is its directory. |
-| `--pr` | The PR number, 1 to 10 digits. |
-| `--reviewed-head` | The head crusty reviewed, a 40 or 64 character lowercase hex SHA. |
-| `--repo` | The worktree used for `git` and `gh`. |
-
-`check` reads no stdin. It never writes, truncates or reads `<record>.findings`, and writes no file next to the round record. The only files it writes are `light-eligibility.json`, `light-mode` and `escalation.json`, as described in [Escalation inside the loop](#escalation-inside-the-loop).
-
-Stdout is exactly one JSON line:
-
-| `light_exit` | `reason` | Meaning |
-| --- | --- | --- |
-| `off` | absent | No marker. |
-| `off` | `marker-invalid`, `marker-stale` or `state-unsafe` | The marker was not accepted. Nothing was measured or written. |
-| `light` | absent | The marker is valid, and the head is unchanged or was measured again within the limits. |
-| `escalated` | `in-loop-<rule>` or `in-loop-fault-<token>` | The head was measured again and is no longer light. The marker is removed and `escalation.json` is written. |
-
-The escalation reason always matches `^in-loop-[a-z][a-z-]{0,54}$`. Any other value is replaced by `in-loop-fault-unknown` before it is written or printed, so stdout and `escalation.json` hold only fixed tokens, SHAs and digits.
-
-| Exit | Meaning |
-| --- | --- |
-| `0` | A decision was printed. |
-| `2` | Usage error: an unknown command (including the retired `defer`), a missing or invalid option. Stdout is empty; one `ERROR:` line goes to stderr. |
-| `79` | `gh` exited 79. The code is final and is passed through, never retried. |
-
-```bash
-bash "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_light_round.sh" check \
-  --record "$STATE/crusty-round-2.json" --pr 1850 \
-  --reviewed-head 4e1d2c3b4a5f60718293a4b5c6d7e8f901a2b3c4 --repo "$WORKTREE"
-# {"light_exit":"light"}
-```
-
-The tool loads only `workflow_gh_retry.sh`, from its own directory, for its `gh` calls. It does not load `autodrive_finding_rules.sh` or `workflow_issue_tracking.sh`, handles no finding text, and makes no `gh issue` or `gh pr comment` call.
+A `light-mode` file left in a reused state directory by an earlier version is ignored; nothing reads, rewrites or removes it.
 
 ## Minor findings and follow-up issues
 
@@ -329,7 +249,7 @@ Light mode has no minor-finding rule of its own. A light drive classifies, colle
 
 The severity rules, the recurrence rule, the word lists, the issue format, the parent comment, the state files and the failure tokens are all documented in [Minor findings end the crusty loop (#1979)](auto-drive-to-merge.md#minor-findings-end-the-crusty-loop-1979). A light drive that escalates part-way therefore produces follow-ups of the same shape as one that does not.
 
-Issue #1982 asked whether light mode should keep its own deferral (one issue per drive, filed inside the round, which turned the round `CLEAN`) or use the per-finding model of #1979. Light mode now uses the per-finding model, so one drive produces one shape of follow-up, whichever recipe ran it. The light-mode marker no longer affects the verdict; only `classify` decides whether a round is minor-only.
+Issue #1982 asked whether light mode should keep its own deferral (one issue per drive, filed inside the round, which turned the round `CLEAN`) or use the per-finding model of #1979. Light mode now uses the per-finding model, so one drive produces one shape of follow-up, whichever recipe ran it. Only `classify` decides whether a round is minor-only.
 
 A round record written by an earlier version, which begins `{"crusty_verdict":"CLEAN",` and has `verdict_source` `light-minor-rule`, is still read as `CLEAN`; there is no code that treats it differently.
 
@@ -338,26 +258,37 @@ A round record written by an earlier version, which begins `{"crusty_verdict":"C
 Every follow-up issue names a plan task. `light-task-id` works out the effective task id once and passes it as `plan_task_id` to `light-escalate`, `light-crusty-loop` and `light-merge-loop`:
 
 1. `plan_task_id`, when it is set;
-2. otherwise `#<issue_number>`, when `issue_number` matches `^0*[1-9][0-9]{0,9}$`;
+2. otherwise `#<issue_number>`, when `issue_number` names an issue (1 to 10 digits after any leading zeros, not all zeros);
 3. otherwise empty.
+
+The effective task id is printed as `autodrive_followups.sh resolve-task` normalises it, which is the form `file` uses: an issue reference becomes `#N` with leading zeros dropped, and any other id is unchanged.
 
 | `plan_task_id` | `issue_number` | Effective task id | Follow-up issues name |
 | --- | --- | --- | --- |
 | `plan/17.104` | `1846` | `plan/17.104` | `plan/17.104` |
-| `1846` | `""` | `1846` | `#1846` |
+| `1846` | `""` | `#1846` | `#1846` |
 | `""` | `1846` | `#1846` | `#1846` |
-| `""` | `007` | `#007` | `#7` |
+| `""` | `007` | `#7` | `#7` |
 | `""` | `0` or `""` | empty | the first `Closes`, `Fixes` or `Resolves #N` in the PR body, then in `task_description` |
 
 When the effective task id is empty, `autodrive_followups.sh file` resolves the task in its usual order. The PR body that `light-open-pr` writes says `Refs #N`, which that fallback does not match, so the issue number reaches `file` only through `issue_number` or `plan_task_id`.
 
-A non-empty `plan_task_id` must satisfy the rule of `resolve_task` in `autodrive_followups.sh`: digits with an optional leading `#` that name an issue from 1 to 10 digits, or 1 to 64 characters from `A-Za-z0-9._:/-`. `light-prereqs` checks this before any work starts, and `light-task-id` checks it again. Either step exits 2 on any other value, such as `#0` or `task 17`, with:
+A non-empty `plan_task_id` must satisfy the one task-id rule, which lives in `autodrive_followups.sh` and is used by both `file` and `light-task-id`: digits with an optional leading `#` that name an issue from 1 to 10 digits, or 1 to 64 characters from `A-Za-z0-9._:/-`. `light-task-id` applies it by calling `autodrive_followups.sh resolve-task --task-id <value>`, before any work starts; the recipe holds no copy of the rule. It exits 2 on any other value, such as `#0` or `task 17`, with:
 
 ```text
 ERROR: auto-drive-light: plan_task_id must be #N or 1 to 64 characters from A-Za-z0-9._:/-
 ```
 
 The value itself is never logged. `light-task-id` prints the effective task id as a plain string, `light_task_id`.
+
+`resolve-task` can be run on its own. It reads no state and makes no network call:
+
+```bash
+bash "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_followups.sh" resolve-task --task-id 007
+# #7
+bash "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_followups.sh" resolve-task --task-id "task 17"; echo "exit $?"
+# exit 2 (stdout empty; one usage line on stderr, without the value)
+```
 
 A drive that ends `MINOR_ONLY` with no task id that resolves stops with `followup-task-unresolved` before the merge gate. A drive that ends `CLEAN` needs no task id.
 
@@ -379,15 +310,14 @@ All files live in the autodrive state directory. They are written under `umask 0
 
 | File | Written by | Content |
 | --- | --- | --- |
-| `light-eligibility.json` | `light-eligibility`; rewritten by `autodrive_light_round.sh check` after a light re-measurement | The tool's JSON line: decision, reason, base, head, measurements, limits. |
-| `escalation.json` | `light-eligibility` or `autodrive_light_round.sh check` | Reason, measurements, `base_sha`, `head_sha`. Present only after an escalation, and never removed by the recipe. |
-| `light-mode` | `light-mode-marker`; rewritten or removed by `autodrive_light_round.sh check` | The measured head SHA. Present only while the decision is `light`. |
+| `light-eligibility.json` | `light-eligibility` | The tool's JSON line: decision, reason, base, head, measurements, limits. |
+| `escalation.json` | `light-eligibility` | Reason, measurements, `base_sha`, `head_sha`. Present only after an escalation, and never removed by the recipe. |
 
 The follow-up files (`<record>.minor`, `<record>.severity`, `followups.jsonl`, `followups.tsv`, `followups.error` and `followups.parent`) are those of [auto-drive-to-merge's state files](auto-drive-to-merge.md#state-files). `light-report` reads `followups.tsv` and no other follow-up file.
 
-Files left by an earlier version in a reused state directory (`follow-up-issue`, `follow-up-linked`, `follow-up-posted-ids`, `follow-up-failed`, `<record>.concerns.tsv` and `<record>.light.json`) are ignored. Nothing reads them and nothing migrates them.
+Files left by an earlier version in a reused state directory (`light-mode`, `follow-up-issue`, `follow-up-linked`, `follow-up-posted-ids`, `follow-up-failed`, `<record>.concerns.tsv` and `<record>.light.json`) are ignored. Nothing reads them and nothing migrates them.
 
-Logs written by the light tools contain only fixed tokens, SHAs and digits. `gh` stderr goes through `gh_sanitize_stderr`.
+Logs written by the light steps contain only fixed tokens, SHAs and digits. `gh` stderr goes through `gh_sanitize_stderr`.
 
 ## Recursion limits
 
@@ -396,25 +326,23 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 ## Security limits
 
 - No step tells an agent to start an orchestrator or recipe. The guard in `issue_1333_leaf_steps_do_not_orchestrate.rs` covers this recipe.
-- `--admin`, `--no-verify`, `SKIP=` and `gh pr merge` do not appear in the recipe or either light tool. Merging happens only through the unchanged merge loop and gate.
+- `--admin`, `--no-verify`, `SKIP=` and `gh pr merge` do not appear in the recipe, the eligibility tool or `autodrive_followups.sh`. Merging happens only through the unchanged merge loop and gate.
 - Bash steps read context only as `RECIPE_VAR_*` values and contain no `{{...}}` templates. Every value is validated before use.
-- `plan_task_id` is validated in `light-prereqs` and again in `light-task-id`, and `file` validates the forwarded value a third time. Its character set contains no quote, brace, newline or `$`, so it cannot inject template or YAML text into the context of the three child recipes.
-- The light tools make one GitHub call, the read-only `gh pr view --json baseRefName,baseRefOid` used for re-measurement. They create no issue and post no comment. `autodrive_followups.sh file` is the only code that writes follow-up issues and parent comments.
+- `plan_task_id` is validated by `light-task-id` through `autodrive_followups.sh resolve-task`, and `file` applies the same function to the forwarded value. Its character set contains no quote, brace, newline or `$`, so it cannot inject template or YAML text into the context of the three child recipes.
+- The light steps make no GitHub call of their own beyond `light-open-pr` and `light-resolve-pr`; the eligibility tool is offline. `autodrive_followups.sh file` is the only code that writes follow-up issues and parent comments.
 - Agent text reaches `gh` only through files (`--body-file`), after `cell()`; see [Cell sanitising](auto-drive-to-merge.md#cell-sanitising).
-- Judging agents run from the review directory. Round and loop recipes, and the light tools, are loaded from the tool root. `auto-drive-light.yaml` loads every tool, including `quick_change_common.sh`, only from `$AMPLIHACK_HOME/amplifier-bundle/tools`; `light-prereqs` checks that each one exists there, and a missing file stops the step rather than falling back to the worktree or another install. Inside `autodrive-crusty-round`, `autodrive_light_steps.sh` and `autodrive_light_round.sh` both come from `AUTODRIVE_LAUNCH_TOOLS`. `autodrive_light_round.sh` sources `workflow_gh_retry.sh` from its own directory only.
+- Judging agents run from the review directory. Round and loop recipes are loaded from the tool root. `auto-drive-light.yaml` loads every tool, including `quick_change_common.sh`, only from `$AMPLIHACK_HOME/amplifier-bundle/tools`; `light-prereqs` checks that each one exists there, and a missing file stops the step rather than falling back to the worktree or another install.
 - Exit code 79 is final at every level and is never retried.
 - `light-implement` and the crusty loop agents carry `[amplihack:no-merge]` in their prompts.
 
 ## Limitations
 
-- **Measured on head change only.** Eligibility is measured when the PR is resolved and again in any `CONCERNS` crusty round whose reviewed head differs from the marker head. A run can therefore start in light mode and escalate part-way through the crusty loop or a merge-phase re-review.
-- **Follow-ups come from the last round only.** As in `auto-drive-to-merge`, `collect` reads only the round that ended the loop. Minor findings raised in rounds before an escalation, or in any earlier round, are filed only when the final record is `MINOR_ONLY` and still lists them.
+- **Measured once, before the loops.** Eligibility is measured when the PR is resolved (and again on a resumed run whose PR head has moved). A head that grows past the limits during the crusty loop stays on the light path. It still gets the review and merge criteria of `auto-drive-to-merge`, because the light path runs the same loops and gate; see [Nothing is measured inside the loops](#nothing-is-measured-inside-the-loops). The `path` in the report is the decision made before the loops, not the size of the merged change.
+- **Follow-ups come from the last round only.** As in `auto-drive-to-merge`, `collect` reads only the round that ended the loop. Minor findings raised in any earlier round are filed only when the final record is `MINOR_ONLY` and still lists them.
 - **Filing happens only after DONE.** Follow-up issues are filed when the crusty loop ends DONE, and again by merge-loop step-02b. A run that stops earlier, for example `STUCK` or `BUDGET_EXHAUSTED`, files none, and a dry run files none.
 - **A task id is needed for minor findings.** A drive that ends `MINOR_ONLY` with no `plan_task_id`, no `issue_number` and no `Closes`, `Fixes` or `Resolves #N` in the PR body or `task_description` stops with `followup-task-unresolved` and does not merge.
 - **The parent comment says the PR closes the issue.** The comment that `file` posts on the task issue says "Merging that PR closes this issue". A light PR's body says `Refs #N`, so merging it does not close the issue; the comment is inaccurate for light runs. The comment format is shared with `auto-drive-to-merge` and is not changed for light mode.
 - **Escalation is permanent.** Once `escalation.json` exists, the state directory never returns to light mode. A new `autodrive_state_dir`, or deleting the file by hand, is needed.
-- **The marker persists.** If `auto-drive-to-merge` is later run by hand on a PR whose state directory still holds a valid `light-mode` marker, its `CONCERNS` rounds measure a moved head again and may escalate. The marker never changes a verdict. An escalation always removes the marker and writes `escalation.json`, and the round cross-checks the marker against `light-eligibility.json`.
-- **The marker can be forged by the same user.** The state directory is private, so only processes running as the same user can write a marker. Such a process could also write any other state file.
 - **Existing branch without a PR.** `existing_branch` without an open PR is refused with `light-existing-branch-no-pr`.
 - **Fork PRs.** PRs from another repository are refused with `light-cross-repo`.
 - **`qa_command` runs PR code.** For a new change it runs the agent's own changes. Set it only to commands you would run on the change yourself.
@@ -424,23 +352,20 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 - **Branch prefix.** New changes use the `quick/` branch prefix from `quick_change_common.sh`. `auto-drive-light` has no equivalent of the `branch_prefix` key that `auto-drive-to-merge` offers (default `feat`). Repositories with other branch-naming conventions need `existing_branch` or `pr_number`.
 - **Eligibility heuristics.** The public API rule reads `lib.rs` only, so a `pub` item added in another module and re-exported through an existing `pub use` is not counted. The recipe contract rule compares top-level `context:` keys only.
 - **Inline `context:` mappings.** The recipe contract rule reads the keys of a block-style `context:` mapping. An inline mapping such as `context: { a: "1" }` is compared as written, so any change to it, including a changed default value, counts as a contract change. `context: {}` counts as no keys.
-- **Re-measurement base.** After the head moves, the change is measured from the merge-base with the PR's current base tip. When that tip cannot be read, fetched or checked, the recorded base is used instead, and a head that merged the base branch then usually escalates with `in-loop-lines`.
 
 ## Files
 
 | Path | Kind | Purpose |
 | --- | --- | --- |
-| `amplifier-bundle/recipes/auto-drive-light.yaml` | recipe | The 18-step recipe described here. |
+| `amplifier-bundle/recipes/auto-drive-light.yaml` | recipe | The 17-step recipe described here. |
 | `amplifier-bundle/tools/autodrive_light_eligibility.sh` | tool | Stateless eligibility measurement. |
-| `amplifier-bundle/tools/autodrive_light_round.sh` | tool | `check`: marker validation, and re-measurement or escalation when the head has moved. Sources `workflow_gh_retry.sh` only. |
-| `amplifier-bundle/tools/autodrive_light_steps.sh` | tool | `autodrive_light_step03`, the light branch of crusty-round step-03, sourced by the round recipe. Functions only. |
-| `amplifier-bundle/tools/autodrive_followups.sh`, `autodrive_followups_check.sh` | tool | `classify`, `collect`, `file`, `check` and `gate`: the only follow-up path, shared with `auto-drive-to-merge` (#1979). Checked by `light-prereqs`. |
+| `amplifier-bundle/tools/autodrive_followups.sh`, `autodrive_followups_check.sh` | tool | `classify`, `collect`, `file`, `check` and `gate`: the only follow-up path, shared with `auto-drive-to-merge` (#1979). `resolve-task`: the one task-id rule, called by `light-task-id`. Checked by `light-prereqs`. |
 | `amplifier-bundle/tools/autodrive_finding_rules.sh` | tool | Sourced only. The security word lists, `cell()` and the minor-finding predicate, used by `autodrive_followups.sh`. Checked by `light-prereqs`. |
-| `amplifier-bundle/recipes/autodrive-crusty-round.yaml` | recipe | Step-03 calls `autodrive_light_step03` when the marker is present, then runs `autodrive_followups.sh classify` on a crusty `CONCERNS` verdict. Step-06 has no light branch. |
+| `amplifier-bundle/recipes/autodrive-crusty-round.yaml` | recipe | Shared with `auto-drive-to-merge` and unchanged by light mode: step-03 runs `autodrive_followups.sh classify` on a crusty `CONCERNS` verdict. No step has a light branch. |
 | `amplifier-bundle/recipes/_recipe_manifest.json` | manifest | Hash entries for `auto-drive-light` and `autodrive-crusty-round`. |
 | `crates/amplihack-cli/tests/issue_1802_auto_drive_light_eligibility.rs` | test | Eligibility rules, boundaries and faults. |
-| `crates/amplihack-cli/tests/issue_1802_auto_drive_light_round.rs` | test | `check` and its marker, staleness, re-measurement, escalation and exit-79 cases; step-03 leaving the verdict unchanged; byte-identical output without the marker; an end-to-end light round through the real follow-up tools with a `gh` stub that fails if step-03 calls it. |
-| `crates/amplihack-cli/tests/issue_1802_auto_drive_light_recipe.rs` | test | Recipe structure, conditions, `plan_task_id` validation and forwarding, the report, and prohibited strings. |
+| `crates/amplihack-cli/tests/issue_1802_auto_drive_light_round.rs` | test | Byte-identical step-03 and step-06 output for a light state directory, with or without a leftover `light-mode` file; no light hook in the round and no in-loop light tool; a head grown past the limits classified with no `gh` call and no escalation; an end-to-end light round through the real follow-up tools with a `gh` stub that fails if step-03 calls it. |
+| `crates/amplihack-cli/tests/issue_1802_auto_drive_light_recipe.rs` | test | Recipe structure, conditions, `plan_task_id` validation through `resolve-task` and forwarding, no copy of the task-id rule, the report, and prohibited strings. |
 
 ## Related
 

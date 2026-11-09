@@ -8,8 +8,10 @@
 //!
 //! Issue #1982 moved light mode to the per-finding follow-up model of #1979:
 //! the effective task id (`plan_task_id`, else `#<issue_number>`) is worked
-//! out by `light-task-id` and forwarded to all three child recipes, the light
-//! hook stays in crusty-round step-03 only, and `light-report` lists the
+//! out once by `light-task-id`, through `autodrive_followups.sh resolve-task`
+//! (no copy of the rule lives in the recipe), and forwarded to all three child
+//! recipes; light mode has no marker and no hook inside the loops, the change
+//! is measured only by `light-eligibility`; and `light-report` lists the
 //! issues from `followups.tsv`. The bash bodies of `light-prereqs`,
 //! `light-task-id` and `light-report` are also run, with fakes on `PATH`.
 
@@ -41,7 +43,6 @@ const STEPS: &[&str] = &[
     "light-resolve-pr",
     "light-eligibility",
     "light-escalate",
-    "light-mode-marker",
     "light-crusty-loop",
     "light-check-unmerged",
     "light-merge-loop",
@@ -59,7 +60,6 @@ const BUILD_STEPS: &[&str] = &[
 ];
 
 const LIGHT_PATH: &[&str] = &[
-    "light-mode-marker",
     "light-crusty-loop",
     "light-check-unmerged",
     "light-merge-loop",
@@ -361,7 +361,6 @@ fn eligibility_step_measures_records_and_handles_escalation() {
         "autodrive_light_eligibility.sh",
         "light-eligibility.json",
         "escalation.json",
-        "light-mode",
         "previously-escalated",
         "RECIPE_VAR_light_max_lines",
         "RECIPE_VAR_light_max_new_modules",
@@ -375,14 +374,21 @@ fn eligibility_step_measures_records_and_handles_escalation() {
 }
 
 #[test]
-fn marker_step_writes_light_mode_atomically() {
-    let cmd = step(&r(), "light-mode-marker")["command"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    for needle in ["light-mode", "umask 077", "mktemp", "mv -f"] {
-        assert!(cmd.contains(needle), "light-mode-marker must use {needle}");
+fn light_mode_has_no_marker() {
+    // #1982: nothing inside the loops reads a light-mode marker any more, so
+    // the recipe neither writes nor removes one.
+    for (id, cmd) in bash_commands(&r()) {
+        assert!(!cmd.contains("light-mode"), "{id} still touches light-mode");
     }
+    let r = r();
+    assert!(
+        r["context"].get("light_marker").is_none(),
+        "light_marker is gone"
+    );
+    assert!(
+        r["context"].get("crusty_round_context").is_none(),
+        "crusty_round_context was declared only for the removed light helper"
+    );
 }
 
 #[test]
@@ -433,7 +439,6 @@ fn report_names_every_path() {
         .unwrap()
         .to_string();
     for path in [
-        "light-escalated",
         "escalate",
         "light",
         "followups.tsv",
@@ -442,6 +447,10 @@ fn report_names_every_path() {
     ] {
         assert!(cmd.contains(path), "light-report must handle {path}");
     }
+    // #1982: the path is decided once, by light-eligibility; no in-loop
+    // escalation exists to report.
+    assert!(!cmd.contains("light-escalated"), "{cmd}");
+    assert!(!cmd.contains("escalation.json"), "{cmd}");
     // #1982: the single-issue file and key are retired.
     assert!(
         !cmd.contains("follow-up-issue"),
@@ -501,7 +510,7 @@ fn prohibited_strings_are_absent_from_bash_steps_and_both_tools() {
     }
     for tool in [
         "amplifier-bundle/tools/autodrive_light_eligibility.sh",
-        "amplifier-bundle/tools/autodrive_light_round.sh",
+        "amplifier-bundle/tools/autodrive_followups.sh",
     ] {
         let text = read(tool);
         for p in PROHIBITED {
@@ -520,11 +529,6 @@ fn exit_79_is_never_retried() {
             "{id}: any retry must exclude exit 79"
         );
     }
-    let round = read("amplifier-bundle/tools/autodrive_light_round.sh");
-    assert!(
-        round.contains("79"),
-        "the round tool passes exit 79 through"
-    );
     assert!(!text.contains("continue_on_error: true"));
 }
 
@@ -533,7 +537,7 @@ fn tools_are_loaded_from_the_tool_root_not_the_worktree() {
     for (id, cmd) in bash_commands(&r()) {
         for tool in [
             "autodrive_light_eligibility.sh",
-            "autodrive_light_round.sh",
+            "autodrive_followups.sh",
             "autodrive_state.sh",
             "quick_change_common.sh",
         ] {
@@ -584,45 +588,32 @@ fn quick_change_common_is_loaded_from_amplihack_home_only() {
     }
     assert_eq!(n, 5, "five steps source quick_change_common.sh");
     let pre = yaml_text(&step(&r(), "light-prereqs"));
-    for f in ["quick_change_common.sh", "autodrive_light_steps.sh"] {
-        assert!(pre.contains(f), "light-prereqs checks {f}");
-    }
+    assert!(
+        pre.contains("quick_change_common.sh"),
+        "light-prereqs checks quick_change_common.sh"
+    );
 }
 
 #[test]
-fn crusty_round_light_hooks_load_the_helper_from_the_launch_tools() {
-    let round = recipe("autodrive-crusty-round");
-    // #1982: the light hook is in step-03 only; step-06 has none.
-    let s06 = step_command("autodrive-crusty-round", "step-06-write-round-record");
-    for gone in [
-        "autodrive_light_steps.sh",
-        "autodrive_light_step06",
-        "light-minor-rule",
-        "light-side-file-invalid",
-        "SUFFIX",
+fn crusty_round_has_no_light_hook() {
+    // #1982: the in-loop re-measurement is gone; neither step-03 nor step-06
+    // loads a light helper, reads a marker or sets a light verdict.
+    for id in [
+        "step-03-extract-crusty-verdict",
+        "step-06-write-round-record",
     ] {
-        assert!(!s06.contains(gone), "step-06 must not contain {gone}");
-    }
-    {
-        let id = "step-03-extract-crusty-verdict";
-        let cmd = round["steps"]
-            .as_sequence()
-            .unwrap()
-            .iter()
-            .find(|s| s["id"].as_str() == Some(id))
-            .unwrap()["command"]
-            .as_str()
-            .unwrap()
-            .to_string();
-        let hook = cmd
-            .lines()
-            .find(|l| l.contains("autodrive_light_steps.sh") && !l.trim_start().starts_with('#'))
-            .unwrap_or_else(|| panic!("{id}: light hook"));
-        assert!(
-            hook.contains(". \"/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_light_steps.sh\""),
-            "{id}: {hook}"
-        );
-        assert!(!hook.contains("AMPLIHACK_HOME"), "{id}: {hook}");
+        let cmd = step_command("autodrive-crusty-round", id);
+        for gone in [
+            "autodrive_light_steps.sh",
+            "autodrive_light_round.sh",
+            "autodrive_light_step",
+            "light-mode",
+            "light-minor-rule",
+            "light-side-file-invalid",
+            "SUFFIX",
+        ] {
+            assert!(!cmd.contains(gone), "{id} must not contain {gone}");
+        }
     }
     assert!(
         read("amplifier-bundle/recipes/autodrive-crusty-round.yaml")
@@ -636,7 +627,7 @@ fn crusty_round_light_hooks_load_the_helper_from_the_launch_tools() {
 // --- the shared round ------------------------------------------------------
 
 #[test]
-fn crusty_round_changes_only_step_03_and_step_06() {
+fn crusty_round_has_no_light_branch_in_any_step() {
     let round = recipe("autodrive-crusty-round");
     let ids: Vec<&str> = round["steps"]
         .as_sequence()
@@ -684,16 +675,7 @@ fn crusty_round_changes_only_step_03_and_step_06() {
         .as_str()
         .unwrap()
         .to_string();
-    assert!(s3.contains("light-mode"));
-    assert!(s3.contains("autodrive_light_steps.sh"));
-    assert!(
-        !s3.contains("light-minor-rule"),
-        "#1982: step-03 never sets a light verdict source"
-    );
-    assert!(
-        s3.contains("[ $? -ne 79 ] || exit 79"),
-        "step-03 keeps the exit 79 passthrough of the light hook"
-    );
+    assert!(!s3.contains("light"), "#1982: step-03 has no light branch");
     let s6 = step("step-06-write-round-record")["command"]
         .as_str()
         .unwrap()
@@ -772,7 +754,7 @@ fn docs_are_linked_and_in_the_nav() {
 
 const CHILDREN: &[&str] = &["light-escalate", "light-crusty-loop", "light-merge-loop"];
 
-/// The exact line `light-prereqs` and `light-task-id` print before exit 2.
+/// The exact line `light-task-id` prints before exit 2.
 const TASK_ID_ERROR: &str =
     "ERROR: auto-drive-light: plan_task_id must be #N or 1 to 64 characters from A-Za-z0-9._:/-";
 
@@ -831,15 +813,13 @@ fn light_task_id_is_a_plain_string_output_of_a_bash_step() {
 }
 
 #[test]
-fn prereqs_check_the_follow_up_tools_and_the_task_id() {
+fn prereqs_check_the_follow_up_tools_and_hold_no_task_id_rule() {
     let cmd = step(&r(), "light-prereqs")["command"]
         .as_str()
         .unwrap()
         .to_string();
     for f in [
         "autodrive_light_eligibility.sh",
-        "autodrive_light_round.sh",
-        "autodrive_light_steps.sh",
         "autodrive_finding_rules.sh",
         "autodrive_followups.sh",
         "autodrive_followups_check.sh",
@@ -848,14 +828,28 @@ fn prereqs_check_the_follow_up_tools_and_the_task_id() {
     ] {
         assert!(cmd.contains(f), "light-prereqs checks {f}");
     }
+    for gone in ["autodrive_light_round.sh", "autodrive_light_steps.sh"] {
+        assert!(!cmd.contains(gone), "light-prereqs must not need {gone}");
+    }
+    // #1982 review: the task id is checked once, by light-task-id through
+    // autodrive_followups.sh resolve-task; no copy of the rule is kept.
+    for (id, cmd) in bash_commands(&r()) {
+        for copy in ["task_ok", "[A-Za-z0-9._:/-]{1,64}", "0*[1-9][0-9]{0,9}"] {
+            assert!(
+                !cmd.contains(copy),
+                "{id} holds a copy of the task-id rule ({copy})"
+            );
+        }
+    }
+    let task = step(&r(), "light-task-id")["command"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert!(
-        cmd.contains("RECIPE_VAR_plan_task_id"),
-        "light-prereqs validates plan_task_id"
+        task.contains("resolve-task --task-id"),
+        "light-task-id calls autodrive_followups.sh resolve-task"
     );
-    assert!(
-        cmd.contains("autodrive_followups.sh:166") || cmd.contains("resolve_task"),
-        "the task_ok copy names the rule it mirrors"
-    );
+    assert!(task.contains("AMPLIHACK_HOME"), "from the tool root only");
 }
 
 /// A scratch repository and the fakes, with a stub `gadugi-test` on `PATH`
@@ -916,24 +910,16 @@ impl StepEnv {
     }
 }
 
-/// True when `resolve_task` in `autodrive_followups.sh` accepts `value`. The
-/// function is cut from the live tool, so the table below is checked against
-/// the rule itself, not against a copy.
-fn resolve_task_accepts(value: &str) -> bool {
-    let tool = read("amplifier-bundle/tools/autodrive_followups.sh");
-    let start = tool
-        .find("resolve_task() {")
-        .expect("autodrive_followups.sh defines resolve_task");
-    let end = start + tool[start..].find("\n}\n").expect("end of resolve_task") + 3;
-    let script = format!("{}\nresolve_task \"$1\" >/dev/null", &tool[start..end]);
-    let o = crate::isolated_amplihack::isolated("bash")
-        .arg("-c")
-        .arg(&script)
-        .arg("bash")
+/// `autodrive_followups.sh resolve-task --task-id <value>`, run from the
+/// live tool: the one task-id rule.
+fn resolve_task(value: &str) -> Output {
+    crate::isolated_amplihack::isolated("bash")
+        .arg(repo_root().join("amplifier-bundle/tools/autodrive_followups.sh"))
+        .arg("resolve-task")
+        .arg("--task-id")
         .arg(value)
         .output()
-        .expect("run resolve_task");
-    o.status.success()
+        .expect("run resolve-task")
 }
 
 fn valid_task_ids() -> Vec<String> {
@@ -943,6 +929,22 @@ fn valid_task_ids() -> Vec<String> {
         "007".into(),
         "#007".into(),
         "1234567890".into(),
+        "plan/17.104".into(),
+        "PLAN-1".into(),
+        "a:b.c_d-e".into(),
+        "https://example.org/t/1".into(),
+        "x".repeat(64),
+    ]
+}
+
+/// What `resolve-task` prints for each of [`valid_task_ids`], in order.
+fn normalised_task_ids() -> Vec<String> {
+    vec![
+        "#1846".into(),
+        "#1846".into(),
+        "#7".into(),
+        "#7".into(),
+        "#1234567890".into(),
         "plan/17.104".into(),
         "PLAN-1".into(),
         "a:b.c_d-e".into(),
@@ -974,34 +976,68 @@ fn invalid_task_ids(canary: &Path) -> Vec<String> {
 }
 
 #[test]
-fn the_task_id_table_matches_resolve_task() {
-    let canary = std::env::temp_dir().join("never-created");
-    for v in valid_task_ids() {
-        assert!(resolve_task_accepts(&v), "resolve_task accepts {v:?}");
+fn resolve_task_accepts_and_normalises_the_task_id_table() {
+    let canary = std::env::temp_dir().join("autodrive-resolve-task-never-created");
+    for (v, want) in valid_task_ids().into_iter().zip(normalised_task_ids()) {
+        let o = resolve_task(&v);
+        assert_eq!(o.status.code(), Some(0), "{v:?}: {}", show(&o));
+        assert_eq!(stdout(&o), want, "{v:?}: {}", show(&o));
+        assert!(stderr(&o).is_empty(), "{v:?}: {}", show(&o));
     }
-    for v in invalid_task_ids(&canary) {
-        assert!(!resolve_task_accepts(&v), "resolve_task refuses {v:?}");
+    for v in invalid_task_ids(&canary).into_iter().chain([String::new()]) {
+        let o = resolve_task(&v);
+        assert_eq!(o.status.code(), Some(2), "{v:?}: {}", show(&o));
+        assert!(stdout(&o).is_empty(), "{v:?}: {}", show(&o));
+        if v.len() >= 5 {
+            assert!(
+                !stderr(&o).contains(v.as_str()),
+                "{v:?}: the value itself is never logged: {}",
+                show(&o)
+            );
+        }
     }
+    assert!(!canary.exists(), "a task id is never evaluated");
+    // Extra options are refused: resolve-task reads no state.
+    let o = crate::isolated_amplihack::isolated("bash")
+        .arg(repo_root().join("amplifier-bundle/tools/autodrive_followups.sh"))
+        .args(["resolve-task", "--task-id", "#1", "--state-dir", "/tmp"])
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(2), "{}", show(&o));
 }
 
 #[test]
-fn light_prereqs_accepts_exactly_the_task_ids_resolve_task_accepts() {
+fn light_task_id_accepts_exactly_the_task_ids_resolve_task_accepts() {
     if skip() {
         return;
     }
     let e = StepEnv::new();
     let canary = e.repo.tmp.path().join("canary");
-    for v in valid_task_ids()
-        .into_iter()
-        .chain(std::iter::once(String::new()))
-    {
-        let o = e.run("light-prereqs", &[("RECIPE_VAR_plan_task_id", &v)]);
+    for (v, want) in valid_task_ids().into_iter().zip(normalised_task_ids()) {
+        let o = e.run(
+            "light-task-id",
+            &[
+                ("RECIPE_VAR_plan_task_id", &v),
+                ("RECIPE_VAR_issue_number", "1846"),
+            ],
+        );
         assert_eq!(o.status.code(), Some(0), "{v:?}: {}", show(&o));
-        assert!(!stderr(&o).contains(TASK_ID_ERROR), "{v:?}: {}", show(&o));
+        assert_eq!(stdout(&o), want, "{v:?}: {}", show(&o));
     }
     for v in invalid_task_ids(&canary) {
-        let o = e.run("light-prereqs", &[("RECIPE_VAR_plan_task_id", &v)]);
+        let o = e.run(
+            "light-task-id",
+            &[
+                ("RECIPE_VAR_plan_task_id", &v),
+                ("RECIPE_VAR_issue_number", "1846"),
+            ],
+        );
         assert_eq!(o.status.code(), Some(2), "{v:?}: {}", show(&o));
+        assert!(
+            stdout(&o).is_empty(),
+            "{v:?}: no task id is printed: {}",
+            show(&o)
+        );
         assert!(
             stderr(&o).lines().any(|l| l == TASK_ID_ERROR),
             "{v:?}: the documented ERROR line: {}",
@@ -1014,14 +1050,25 @@ fn light_prereqs_accepts_exactly_the_task_ids_resolve_task_accepts() {
                 show(&o)
             );
         }
-        assert!(stdout(&o).trim().is_empty(), "{v:?}: {}", show(&o));
     }
     assert!(!canary.exists(), "a task id is never evaluated");
     assert!(
         e.fakes.gh_calls().is_empty(),
-        "light-prereqs makes no gh call: {:?}",
+        "light-task-id makes no gh call: {:?}",
         e.fakes.gh_calls()
     );
+}
+
+#[test]
+fn light_prereqs_does_not_check_the_task_id() {
+    if skip() {
+        return;
+    }
+    // light-task-id is the one check; light-prereqs passes any value through.
+    let e = StepEnv::new();
+    let o = e.run("light-prereqs", &[("RECIPE_VAR_plan_task_id", "task 17")]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert!(!stderr(&o).contains(TASK_ID_ERROR), "{}", show(&o));
 }
 
 #[test]
@@ -1032,10 +1079,10 @@ fn light_task_id_derives_the_effective_task_id() {
     let e = StepEnv::new();
     for (plan, issue, want) in [
         ("plan/17.104", "1846", "plan/17.104"),
-        ("1846", "", "1846"),
+        ("1846", "", "#1846"),
         ("#5", "1846", "#5"),
         ("", "1846", "#1846"),
-        ("", "007", "#007"),
+        ("", "007", "#7"),
         ("", "0", ""),
         ("", "00", ""),
         ("", "", ""),
@@ -1062,38 +1109,6 @@ fn light_task_id_derives_the_effective_task_id() {
             show(&o)
         );
     }
-}
-
-#[test]
-fn light_task_id_validates_again_without_prereqs() {
-    if skip() {
-        return;
-    }
-    // S1: a value that reaches light-task-id without light-prereqs (a resumed
-    // run, or a context edited between steps) is refused again.
-    let e = StepEnv::new();
-    let canary = e.repo.tmp.path().join("canary");
-    for v in invalid_task_ids(&canary) {
-        let o = e.run(
-            "light-task-id",
-            &[
-                ("RECIPE_VAR_plan_task_id", &v),
-                ("RECIPE_VAR_issue_number", "1846"),
-            ],
-        );
-        assert_eq!(o.status.code(), Some(2), "{v:?}: {}", show(&o));
-        assert!(
-            stdout(&o).is_empty(),
-            "{v:?}: no task id is printed: {}",
-            show(&o)
-        );
-        assert!(
-            stderr(&o).lines().any(|l| l == TASK_ID_ERROR),
-            "{v:?}: {}",
-            show(&o)
-        );
-    }
-    assert!(!canary.exists(), "a task id is never evaluated");
 }
 
 /// Runs `light-report` on a light run whose state directory is `dir`.
@@ -1240,6 +1255,10 @@ fn retired_light_follow_up_names_are_gone_from_tools_and_recipes() {
                 "follow-up-posted-ids",
                 "auto-drive-light:pr-",
                 "follow-up-issue",
+                "light-mode",
+                "light-escalated",
+                "autodrive_light_round",
+                "autodrive_light_steps",
             ] {
                 assert!(
                     !text.contains(gone),
@@ -1252,72 +1271,29 @@ fn retired_light_follow_up_names_are_gone_from_tools_and_recipes() {
 }
 
 #[test]
-fn light_tools_make_no_issue_or_comment_call() {
-    for tool in [
-        "amplifier-bundle/tools/autodrive_light_round.sh",
-        "amplifier-bundle/tools/autodrive_light_steps.sh",
-    ] {
-        let text = read(tool);
-        for line in text.lines().filter(|l| !l.trim_start().starts_with('#')) {
-            for gone in [
-                "gh issue",
-                "gh pr comment",
-                "gh api",
-                "gh pr edit",
-                "issue create",
-                "issue comment",
-                "issue list",
-                "pr comment",
-                "label list",
-                "api user",
-            ] {
-                assert!(!line.contains(gone), "{tool}: {gone}: {line}");
-            }
+fn the_only_light_tool_makes_no_issue_or_comment_call() {
+    // #1982: autodrive_light_round.sh and autodrive_light_steps.sh are gone;
+    // the eligibility tool is the only light tool left, and it is offline.
+    for gone in ["autodrive_light_round.sh", "autodrive_light_steps.sh"] {
+        assert!(
+            !repo_root()
+                .join("amplifier-bundle/tools")
+                .join(gone)
+                .exists(),
+            "{gone} must not come back"
+        );
+    }
+    let tool = "amplifier-bundle/tools/autodrive_light_eligibility.sh";
+    let text = read(tool);
+    for line in text.lines().filter(|l| !l.trim_start().starts_with('#')) {
+        for gone in [
+            "gh ",
+            "issue create",
+            "issue comment",
+            "pr comment",
+            "git fetch",
+        ] {
+            assert!(!line.contains(gone), "{tool}: {gone}: {line}");
         }
     }
-    let round = read("amplifier-bundle/tools/autodrive_light_round.sh");
-    for gone in [
-        "autodrive_finding_rules.sh",
-        "workflow_issue_tracking.sh",
-        "CONCERNS=\"$(cat)\"",
-        "follow-up-failed",
-        "light.json",
-        "concerns.tsv",
-        "cell-sanitising",
-        "defer",
-    ] {
-        assert!(
-            !round.contains(gone),
-            "autodrive_light_round.sh still contains {gone}"
-        );
-    }
-    for kept in [
-        "umask 077",
-        "mktemp",
-        "mv -f",
-        "trap",
-        "workflow_gh_retry.sh",
-        "baseRefName,baseRefOid",
-        "79",
-    ] {
-        assert!(
-            round.contains(kept),
-            "autodrive_light_round.sh keeps {kept}"
-        );
-    }
-    let steps = read("amplifier-bundle/tools/autodrive_light_steps.sh");
-    for gone in [
-        "autodrive_light_step06",
-        "_autodrive_light_private",
-        "SC2034",
-        "light-minor-rule",
-        "defer",
-    ] {
-        assert!(
-            !steps.contains(gone),
-            "autodrive_light_steps.sh still contains {gone}"
-        );
-    }
-    assert!(steps.contains("autodrive_light_step03"));
-    assert!(steps.contains(" check "), "step-03 calls the check command");
 }

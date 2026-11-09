@@ -230,8 +230,6 @@ steps:
         COUNT="$(grep -c . "${RECORD}.findings" 2>/dev/null || true)"
       fi
       case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
-      # Issues #1802/#1982: a regular light-mode marker runs autodrive_light_round.sh check (via autodrive_light_steps.sh), which re-measures a moved head and never changes the verdict.
-      LM="$(dirname -- "${RECORD:-.}")/light-mode"; if [ -n "$RECORD" ] && [ -f "$LM" ] && [ ! -L "$LM" ]; then . "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_light_steps.sh" && autodrive_light_step03 || { [ $? -ne 79 ] || exit 79; echo "WARNING: autodrive_light_steps.sh not found under AUTODRIVE_LAUNCH_TOOLS; the moved head is not re-measured." >&2; }; fi
       # Issue #1979: a crusty CONCERNS whose findings are all minor is MINOR_ONLY
       # (autodrive_followups.sh classify, from the launch tools only); COUNT is then the number in <record>.minor.
       FU="${AUTODRIVE_LAUNCH_TOOLS:-}"
