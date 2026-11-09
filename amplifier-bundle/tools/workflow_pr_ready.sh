@@ -56,6 +56,25 @@ gh_with_retry() {
 
 resolve_expected_base_branch() {
   local candidate
+  # #1957 (D3): the base branch step 4 verified. verified-base exits 0 with
+  # the branch, 3 when there is no verified base, anything else on a refusal
+  # (its ERROR line is already on stderr). On 3 the legacy chain is used only
+  # when the caller gave neither base_branch nor base_sha.
+  local vb vb_rc=0 ri_rc=0
+  vb="$(bash "$SCRIPT_DIR/workflow_worktree_source.sh" verified-base)" || vb_rc=$?
+  case "$vb_rc" in
+    0) printf '%s\n' "$vb"; return 0 ;;
+    3) ;;
+    *) return 2 ;;
+  esac
+  bash "$SCRIPT_DIR/workflow_worktree_source.sh" requested-inputs || ri_rc=$?
+  case "$ri_rc" in
+    3) ;;
+    0)
+      echo "ERROR: base_branch/base_sha given but no verified base in worktree_setup; refusing to fall back (issue #1957)." >&2
+      return 2 ;;
+    *) return 2 ;;
+  esac
   candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
   for candidate in origin/main origin/master origin/develop; do
@@ -145,7 +164,10 @@ fi
 current_branch="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || { echo "ERROR: workflow_remote_branch.sh is missing or failed at $SCRIPT_DIR; refusing PR readiness mutation" >&2; exit 1; }
 local_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
 repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
-expected_base="$(resolve_expected_base_branch || true)"
+# #1957: a refused base (D3) stops the run; its ERROR line is already on stderr.
+expected_base_rc=0
+expected_base="$(resolve_expected_base_branch)" || expected_base_rc=$?
+[ "$expected_base_rc" -eq 0 ] || { echo "ERROR: unable to resolve expected base branch for scoped PR validation (exit $expected_base_rc); refusing PR readiness mutation" >&2; exit 1; }
 [ -n "$repo_identity" ] || { echo "ERROR: unable to determine current GitHub repo identity from origin remote" >&2; exit 1; }
 [ -n "$current_branch" ] || { echo "ERROR: current branch is empty; refusing ambiguous PR readiness mutation" >&2; exit 1; }
 [ -n "$local_head" ] || { echo "ERROR: local HEAD does not resolve; refusing ambiguous PR readiness mutation" >&2; exit 1; }

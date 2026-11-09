@@ -121,6 +121,25 @@ load_pr_fields() {
 
 resolve_pr_base_ref() {
   local candidate
+  # #1957 (D3): the base branch step 4 verified. verified-base exits 0 with
+  # the branch, 3 when there is no verified base, anything else on a refusal
+  # (its ERROR line is already on stderr). On 3 the legacy chain is used only
+  # when the caller gave neither base_branch nor base_sha.
+  local vb vb_rc=0 ri_rc=0
+  vb="$(bash "$SCRIPT_DIR/workflow_worktree_source.sh" verified-base)" || vb_rc=$?
+  case "$vb_rc" in
+    0) printf '%s\n' "origin/$vb"; return 0 ;;
+    3) ;;
+    *) return 2 ;;
+  esac
+  bash "$SCRIPT_DIR/workflow_worktree_source.sh" requested-inputs || ri_rc=$?
+  case "$ri_rc" in
+    3) ;;
+    0)
+      echo "ERROR: base_branch/base_sha given but no verified base in worktree_setup; refusing to fall back (issue #1957)." >&2
+      return 2 ;;
+    *) return 2 ;;
+  esac
   candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "$candidate"; return 0; fi
   git remote set-head origin -a >/dev/null 2>&1 || true
@@ -361,7 +380,7 @@ if ! [[ "$ISSUE_NUM" =~ ^[0-9]+$ ]]; then echo "ERROR: issue_number is not numer
 [ -n "$CURRENT_BRANCH" ] || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "current branch is empty; cannot publish from detached HEAD" 1
 LOCAL_HEAD="$(git rev-parse --verify HEAD 2>/dev/null)" || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "local HEAD does not resolve" 1
 
-BASE_REF="$(resolve_pr_base_ref)"
+BASE_REF="$(resolve_pr_base_ref)" || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "expected base branch was refused or could not be resolved (issue #1957)" 1
 BASE_BRANCH="${BASE_REF#origin/}"
 RUNTIME_ARTIFACT_HELPER="${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-${SCRIPT_DIR}/workflow_runtime_artifacts.sh}"
 [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found: $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }

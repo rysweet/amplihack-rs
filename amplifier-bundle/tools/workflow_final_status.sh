@@ -33,6 +33,8 @@ invalid_evidence=""
 normalized_bool="false"
 final_status_rc=0
 final_status_uncertain="false"
+# #1957: set when the expected base branch is refused (D3); the run fails.
+base_refused="false"
 # Issue #1268: the scoped-PR match is a SIGNAL, not the arbiter of terminal
 # success. These carry the adjudicated verdict when the signal misses.
 scope_failure_reason=""
@@ -179,6 +181,25 @@ esac
 
 resolve_expected_base_branch() {
   local candidate
+  # #1957 (D3): the base branch step 4 verified. verified-base exits 0 with
+  # the branch, 3 when there is no verified base, anything else on a refusal
+  # (its ERROR line is already on stderr). On 3 the legacy chain is used only
+  # when the caller gave neither base_branch nor base_sha.
+  local vb vb_rc=0 ri_rc=0
+  vb="$(bash "$SCRIPT_DIR/workflow_worktree_source.sh" verified-base)" || vb_rc=$?
+  case "$vb_rc" in
+    0) printf '%s\n' "$vb"; return 0 ;;
+    3) ;;
+    *) return 2 ;;
+  esac
+  bash "$SCRIPT_DIR/workflow_worktree_source.sh" requested-inputs || ri_rc=$?
+  case "$ri_rc" in
+    3) ;;
+    0)
+      echo "ERROR: base_branch/base_sha given but no verified base in worktree_setup; refusing to fall back (issue #1957)." >&2
+      return 2 ;;
+    *) return 2 ;;
+  esac
   candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
   for candidate in origin/main origin/master origin/develop; do
@@ -195,7 +216,15 @@ validate_final_pr_scope() {
   current_branch="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || { echo "ERROR: workflow_remote_branch.sh is missing or failed at $SCRIPT_DIR" >&2; return 1; }
   local_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
   repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
-  expected_base="$(resolve_expected_base_branch || true)"
+  # #1957: a refused base (exit 2, D3) is recorded and never replaced by a
+  # default; the PR status block then fails the run without adjudicating.
+  local expected_base_rc=0
+  expected_base="$(resolve_expected_base_branch)" || expected_base_rc=$?
+  if [ "$expected_base_rc" -eq 2 ]; then
+    base_refused="true"
+    echo "ERROR: final PR validation refused: the expected base branch was not verified (issue #1957)." >&2
+    return 1
+  fi
   [ -n "$repo_identity" ] && [ -n "$current_branch" ] && [ -n "$local_head" ] && [ -n "$expected_base" ] || {
     echo "ERROR: scoped final PR validation lacks repo, branch, headRefOid, or baseRefName context" >&2
     return 1
@@ -385,7 +414,15 @@ resolve_open_pr_for_current_branch() {
   [ -z "$expected_branch" ] || [ "$branch" = "$expected_branch" ] || { branch_pr_lookup_skip "worktree branch is not the recorded branch"; return 0; }
   case "$branch" in -*|main|master) return 0 ;; esac
   git check-ref-format --branch "$branch" >/dev/null 2>&1 || return 0
-  base="$(cd "$run_dir" && resolve_expected_base_branch 2>/dev/null || true)"
+  # #1957: exit 1 means the legacy chain found nothing (lookup runs without a
+  # base, as before); exit 2 is a D3 refusal, recorded so the run fails.
+  local base_rc=0
+  base="$(cd "$run_dir" && resolve_expected_base_branch)" || base_rc=$?
+  if [ "$base_rc" -eq 2 ]; then
+    base_refused="true"
+    branch_pr_lookup_skip "expected base branch was refused (issue #1957)"
+    return 0
+  fi
   [ -z "$base" ] || [ "$branch" != "$base" ] || return 0
 
   # Never log the raw origin URL: it may embed credentials.
@@ -441,6 +478,15 @@ resolve_open_pr_for_current_branch() {
 }
 
 resolve_open_pr_for_current_branch
+
+if [ "$base_refused" = "true" ]; then
+  terminal_success="false"
+  terminal_state_out="FAILED_BASE_NOT_VERIFIED"
+  terminal_reason_out="base_branch/base_sha was given but no verified base is recorded in worktree_setup (issue #1957)"
+  emit_terminal_evidence
+  echo "ERROR: workflow final status refused: $terminal_reason_out" >&2
+  exit 1
+fi
 
 case "$PUBLISH_STATE" in
   FOLLOWUP_CREATED|EXISTING_OPEN_PR|MERGED|CLOSED_OBSOLETE|NO_DIFF_SUCCESS)
@@ -514,6 +560,10 @@ elif [ "$HOST_TYPE" = "github" ]; then
   if command -v gh >/dev/null 2>&1; then
     if validate_final_pr_scope; then
       gh_pr_view_with_retry "$PR_URL" --json state,mergeable,reviews,statusCheckRollup || true
+    elif [ "$base_refused" = "true" ]; then
+      # #1957 (D3): a refused base is a hard failure. No artifact can prove
+      # success against a base nobody verified, so nothing is adjudicated.
+      final_status_rc=1
     else
       # FIX (#1268): a scope miss no longer ends the run. Adjudicate from the
       # artifacts the run actually produced.
@@ -530,7 +580,7 @@ elif [ "$HOST_TYPE" = "github" ]; then
           ;;
       esac
     fi
-    report_outstanding_prs
+    [ "$base_refused" = "true" ] || report_outstanding_prs
   else
     echo "WARNING: gh CLI not found; skipping final PR status lookup" >&2
   fi
