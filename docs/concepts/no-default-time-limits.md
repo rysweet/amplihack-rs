@@ -57,12 +57,16 @@ Hangs are handled by other means:
 
 ## Limits you can set
 
-Every row below means **no limit unless set**.
+Every row below means **no limit unless set**. For the step timeout,
+"unless set" covers the recipe too: when none of the step-timeout inputs is
+set, a `timeout_seconds` value written in a recipe's own YAML still applies
+to that step. The bundled default-workflow agent steps define none.
 
 | Setting | Bounds | Set it with | Effect of `0` |
 |---|---|---|---|
 | [`AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS`](../reference/environment-variables.md#amplihack_recipe_runner_timeout_secs) | One whole recipe run | Environment variable, whole seconds above 0 | No limit |
-| [`AMPLIHACK_STEP_TIMEOUT`](../reference/environment-variables.md#amplihack_step_timeout) / [`recipe.step_timeout`](../reference/user-config.md#recipestep_timeout) | Each recipe step | `--step-timeout <SECONDS>`, the variable or the config key | No limit |
+| [`AMPLIHACK_STEP_TIMEOUT`](../reference/environment-variables.md#amplihack_step_timeout) / `--step-timeout <SECONDS>` | Each recipe step; overrides each step's YAML `timeout_seconds` | Flag or variable | No limit, even where a step's YAML sets `timeout_seconds` |
+| [`recipe.step_timeout`](../reference/user-config.md#recipestep_timeout) | Each recipe step; overrides each step's YAML `timeout_seconds` | Config key, whole seconds of at least 1 | Rejected as invalid; use `--step-timeout 0` to turn step limits off |
 | [`recipe.usage_limit_max_wait_secs`](../reference/user-config.md#recipeusage_limit_wait) / [`AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS`](../reference/environment-variables.md#amplihack_usage_limit_max_wait_secs) | One wait for a usage limit to reset | Config key or variable | One more attempt with no wait; a capacity wait fails at once as `usage_limit` |
 | `CopilotCliClient::with_timeout` | One Copilot CLI agent call | Builder call in Rust | Not applicable: takes a `Duration` |
 | `AgentConfig.timeout_secs`, `TaskSpec.timeout_secs`, `SdkAdapterConfig.timeout_secs` | Recorded on agent-core configs; not enforced | Config field or `with_timeout` | Stored as `Some(0)`; never means "unlimited" |
