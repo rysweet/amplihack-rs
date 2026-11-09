@@ -51,12 +51,19 @@ dependency with the first method in this list that works:
    explicit mtime.
 5. Inject a clock, when the product measures the time itself.
 6. Isolate shared state: a per-test directory, counter or environment.
-7. Add a debug-only knob, as a last resort. A knob may change which event
-   ends a wait. It never lengthens a window.
+7. Add a debug-only knob, as a last resort. A new knob replaces a deadline
+   with the event it was standing in for, as `AMPLIHACK_TEST_PROBE_WAIT=exit`
+   replaces the probe's 3 s deadline with the candidate's exit. A new knob
+   never lengthens a window.
 
 Product timeouts and budgets keep their defaults in every build. A test
 changes only its own inputs. Never fix a load failure by raising a timeout,
 sleep, delay or retry count.
+
+Two older knob uses, added by #1973 before this rule, do lengthen a window:
+the identity knobs at 600 s in `Fixture::base`, and
+`AMPLIHACK_TEST_AGENT_CHILD_TIMEOUT_SECS` at 600 s in `issue_1760_fixture`.
+They are exceptions, described in [Knobs](#knobs). Do not copy them.
 
 Wall-clock dependencies to look for:
 
@@ -90,6 +97,14 @@ A guard may only end a test that has hung. It never decides a pass:
 - Do not lower a guard to make a hang fail sooner. A real hang taking 10
   minutes to fail is the price of never failing a working test on a stalled
   host.
+
+One helper nests the ceiling: [`stop_until_gone`](#stop_until_gone) calls
+`output_within` inside a `wait_until`, so a real hang there takes about 20
+minutes to fail. It still uses only `CEILING`. Do not add another nesting.
+
+`limit_resume_fs` is in `amplihack-hooks`, so it reaches `CEILING` by
+including `wait.rs` with `#[path]` through `crates/amplihack-hooks/src/test_support.rs`.
+It does not define a local guard.
 
 ## Assert the final state
 
@@ -340,14 +355,21 @@ order of those marks.
 ### Stub files
 
 A stub written in place can fail to start with `ETXTBSY` when another thread
-forks while the file is still open for writing. Every stub, in every kind of
-test, is written by one function:
+forks while the file is still open for writing. Every stub in `amplihack-cli`,
+`amplihack-hooks` and the `amplihack` `integration` target is written by one
+function:
 `crates/amplihack-cli/tests/support/exec_stub.rs::write_executable(path, body, mode)`.
 
 | Test location | How to reach it |
 |---------------|-----------------|
 | `crates/amplihack-cli/tests/` and the `amplihack` `integration` target | `exec_stub::write_executable(path, body, mode)`. |
-| Unit tests inside a crate that has a `test_support` module (`install::clone`'s `fake_git`, `recipe::run`'s `write_stub`, `mermaid_cli`, `codex_plugin`, `session_start::blarify` in `amplihack-hooks`) | `crate::test_support::write_executable(path, body)`, a wrapper that includes `exec_stub.rs` with `#[path]` and passes mode `0755`. |
+| Unit tests in `amplihack-cli` (`install::clone`'s `fake_git`, `recipe::run`'s `write_stub`, `mermaid_cli`, `codex_plugin`, `path_conflicts::tests`, `fleet::tests`, `fleet::tests_issue_1570_reasoner`) | `crate::test_support::write_executable(path, body)`, a wrapper that includes `exec_stub.rs` with `#[path]` and passes mode `0755`. |
+| Unit tests in `amplihack-hooks` (`session_start::blarify`) | The same wrapper in `crates/amplihack-hooks/src/test_support.rs`, which includes `exec_stub.rs` with `#[path]`. |
+
+Other crates still write some stubs in place: `amplihack-utils`
+(`launch_target` tests), `amplihack-remote` (`script/prompt_file_tests.rs`)
+and `amplihack-memory` (`scip_indexing`). They are not covered by this rule
+yet; a follow-up issue tracks moving them to `write_executable`.
 
 A short-lived `sh` writes `<path>.stub-tmp.<pid>`, closes it, sets the mode
 and renames it over `path`. The test process never holds a write descriptor
@@ -355,11 +377,12 @@ that a fork could inherit, and rewriting a stub that is still running
 replaces the directory entry instead of failing with `ETXTBSY`.
 `write_executable` asserts `mode & 0o7000 == 0`, so no stub is setuid,
 setgid or sticky. There is no retry: a stub that fails to start is a bug.
+`output_within` does not retry a spawn that fails with `ETXTBSY` either.
 
-To find a stub writer that bypasses it:
+To find a stub writer in `amplihack-cli` or `amplihack-hooks` that bypasses it:
 
 ```bash
-grep -rn 'set_permissions' crates/*/src | grep '0o7'
+grep -rn 'set_permissions' crates/amplihack-cli/src crates/amplihack-hooks/src | grep '0o7'
 # Output: only write_executable and production code
 ```
 
@@ -680,11 +703,18 @@ seconds knobs read their value with `crate::debug_knob::secs`:
 | `AMPLIHACK_TEST_DETACH_START_SECS` | 15 s | `recipe run --detach` | How long the detach command waits for the pane to start the run. |
 | `AMPLIHACK_TEST_PROBE_WAIT` | unset (3 s per candidate, 10 s in total) | `amplihack_utils::launch_target::probe_wait_mode()` | When `exit`, the `--version` probe waits for the candidate to exit. See [Wait for the version probe to exit](#wait-for-the-version-probe-to-exit). |
 
+The two identity knobs and `AMPLIHACK_TEST_AGENT_CHILD_TIMEOUT_SECS` come
+from #1973. The fixtures set them to 600 s, which lengthens a product window
+instead of replacing it with an event. They are older exceptions to
+[the rule](#the-rule), kept until each is replaced by an event wait. A new
+knob must not follow them.
+
 The hand-fix lock bound in `handfix_plan.rs` keeps passing the
 `IDENTITY_BUDGET` constant in every build, so the budget knob never changes
 it. Its 45 s bound also covers one identity read, so in a debug build the
 read-timeout knob can stretch it: with the knob at the fixtures' 600 s, a
-debug build can hold the lock for about 30 s + 3 × 600 s. In release builds,
+debug build can hold the lock for about 30 s + 3 × 600 s. This is part of
+the #1973 exception above. In release builds,
 and in debug builds with `AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS` unset,
 the bound is 45 s.
 
@@ -695,7 +725,8 @@ script found first on `PATH`. The 10 s limit on each tmux call is inside the
 binary, and no test input reaches it: on a loaded host a slow fake call ended
 as `failed: tmux: …` or as an unknown session state, and the supervisor then
 wrote a different result and an extra log line. `Fx::cmd` therefore sets
-`AMPLIHACK_TEST_AGENT_CHILD_TIMEOUT_SECS` to the 600 s ceiling for every run.
+`AMPLIHACK_TEST_AGENT_CHILD_TIMEOUT_SECS` to 600 s for every run, one of the
+#1973 exceptions listed under [Knobs](#knobs).
 The one test of the limit itself,
 `issue_1760_agent_tmux_scope::a_systemd_run_timeout_is_treated_as_a_failure`,
 removes the knob from its command, so the product's 10 s limit applies and
@@ -738,7 +769,8 @@ When the knob is set to exactly `exit`:
   candidate to exit and still applies the byte cap on its output.
 
 The candidate limit, the byte cap, the rejection reasons and the candidate
-order all still apply. Only the deadline goes. Any other value, including
+order all still apply. The knob replaces the deadline with the candidate's
+exit; it does not set a longer deadline. Any other value, including
 `Exit`, `exit ` and `1`, leaves the 3 s and 10 s limits in place. The value is
 never logged.
 
@@ -824,7 +856,7 @@ test load-safe defaults.
 ### Identity knobs in `Fixture::base`
 
 `Fixture::base` clears the environment and then sets both identity knobs to
-`600`. Every command a rotate test runs therefore has a 10-minute identity
+`600`. This is one of the #1973 exceptions listed under [Knobs](#knobs). Every command a rotate test runs therefore has a 10-minute identity
 budget, and a slow host no longer produces "identity read budget used up".
 
 A test of budget or read-timeout exhaustion must remove both knobs from its
@@ -875,6 +907,8 @@ A test that runs `stop` from a shell whose root resolves elsewhere uses
 `stop_until_gone` has already waited for `pid` to exit before it returns.
 Each attempt is an `output_within` call with its own ceiling, inside a
 `wait_until` with another, so a real hang can take about 20 minutes to fail.
+This is the one known nesting of `CEILING` (see
+[The two hang guards](#the-two-hang-guards)).
 
 It signals nothing itself and never reads a pid from the pid file to signal.
 `a_stubborn…` still asserts a single refusal and does not use it.
@@ -916,7 +950,8 @@ follow-up issue.
 ## The wall-clock scan guard
 
 `crates/amplihack-cli/tests/issue_2019_no_wall_clock_asserts.rs` is a module
-of `cli_integration`. It scans `crates/*/src/**/test*.rs`, `crates/*/tests/**`
+of `cli_integration`, declared with `mod issue_2019_no_wall_clock_asserts;` in
+`crates/amplihack-cli/tests/main.rs`. It scans `crates/*/src/**/test*.rs`, `crates/*/tests/**`
 and `tests/**` for `elapsed()` or a difference of two `Instant`s used in an
 `assert!` or a comparison, and fails on any match that is not exempt:
 
