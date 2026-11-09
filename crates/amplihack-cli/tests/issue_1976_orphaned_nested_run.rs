@@ -297,6 +297,16 @@ fn a_nested_run_whose_parent_is_already_dead_never_starts_the_runner() {
         fx.runner_pid().is_none(),
         "no runner may start under a dead parent"
     );
+    // The pointer contract holds without a runner: one early, one final,
+    // sharing a run_id.
+    let fin = final_record(&stderr);
+    let early = stderr
+        .lines()
+        .filter_map(|l| l.strip_prefix(LOG_POINTER_PREFIX))
+        .filter_map(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+        .find(|v| v["event"] == "early")
+        .unwrap_or_else(|| panic!("no early log pointer record in stderr:\n{stderr}"));
+    assert_eq!(early["run_id"], fin["run_id"], "early {early} final {fin}");
 }
 
 /// Case 3: the PID is alive but its start time does not match (PID reuse).

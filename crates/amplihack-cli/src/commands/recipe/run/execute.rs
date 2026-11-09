@@ -785,6 +785,9 @@ pub(super) fn execute_recipe_via_rust(
                         binary.as_path(),
                     )
                     .with_settings(run_settings.clone());
+                    // The pointer contract is one `early` then one `final`
+                    // per run_id, even when no runner is spawned.
+                    correlation.emit_early();
                     record_orphan(&correlation, None, &guard.tree_id);
                 }
                 return AttemptOutcome::Final(Err(anyhow::Error::new(
