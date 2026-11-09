@@ -52,6 +52,10 @@ mod issue_1962_seed_cmd;
 mod issue_1962_seed_output;
 #[path = "issue_1962_seed_scan.rs"]
 mod issue_1962_seed_scan;
+#[path = "issue_2030_guards.rs"]
+mod issue_2030_guards;
+#[path = "issue_2030_no_prompt_in_argv.rs"]
+mod issue_2030_no_prompt_in_argv;
 
 #[path = "active_agent_binary_default_test.rs"]
 mod active_agent_binary_default;

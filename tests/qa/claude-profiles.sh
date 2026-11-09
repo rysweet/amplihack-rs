@@ -33,7 +33,7 @@ cat > "$QA_BIN_DIR/claude" <<'CLAUDE'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "--version" ]]; then
-  echo "2.1.247 (Claude Code)"
+  echo "2.1.319 (Claude Code)"
   exit 0
 fi
 record="${QA_PROFILE_RECORD:?}"
