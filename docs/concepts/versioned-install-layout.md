@@ -232,26 +232,28 @@ your uid, these entries in `/proc/<pid>/`:
 The check is read-only. It never uses `ptrace`, never sends a signal and
 never logs or stores an environment value.
 
-Processes owned by other uids are skipped. A process that makes itself
-non-dumpable has `/proc` entries its own user cannot read. For such a
-process the installer reads only `/proc/<pid>/status` and `/proc/<pid>/stat`,
-which stay readable:
+Processes owned by other uids are skipped. A non-dumpable process has
+`/proc` entries its own user cannot read. A process becomes non-dumpable by
+calling `prctl(PR_SET_DUMPABLE, 0)`, as `ssh-agent` and `gpg-agent` do, or by
+running a set-user-ID, set-group-ID or file-capability program, such as the
+systemd user manager (`systemd --user`), its `(sd-pam)` helper, or `ping` on
+distributions that give it `cap_net_raw`. For such a process the installer
+reads only `/proc/<pid>/stat`, which stays readable, and takes its start
+(fork) time from it:
 
-- If it holds any capability (`CapInh`, `CapPrm`, `CapEff` or `CapAmb` is not
-  zero), or its real, effective, saved and filesystem ids differ, it runs a
-  privileged executable, which is never a release file. It is taken to use
-  no release. The systemd user manager (`systemd --user`) and its `(sd-pam)`
-  helper are such processes.
-- Otherwise, for example `ssh-agent` or `gpg-agent`, it is taken to use every
-  candidate created after it started (with 2 seconds of slack for the
-  kernel's whole-second boot time). A process that started before a release
-  existed did not inherit a path into it, and it has not run a release binary
-  since, because that `exec` would have made it dumpable again. Older
-  candidates can be removed.
+- Every candidate that existed when it started is kept (with 2 seconds of
+  slack for the kernel's whole-second boot time). The process may have
+  inherited its working directory, root, open files or environment there from
+  its parent. This holds for privileged processes too: a privileged
+  executable is never a release file, but a recipe step that runs `ping` from
+  inside a release gives `ping` a working directory in that release.
+- A candidate created after it started can be removed. The process did not
+  inherit a path into it, and it has not run a release binary since, because
+  that `exec` would have made it dumpable again.
 
-If neither can be told (the start time or a candidate's creation time cannot
-be read), the result is unknown and every candidate is kept. Install then
-prints:
+If the start time cannot be read, the result is unknown and every candidate
+is kept. A candidate whose creation time cannot be read is kept for every
+non-dumpable process. Install then prints:
 
 ```
 ℹ Old amplihack releases kept: a running process of this user could not be inspected, so no release was removed (~/.amplihack/releases)
@@ -593,8 +595,11 @@ These checks accept a link into a release and still reject anything else:
 
 ## Known limits
 
-- A non-dumpable process of your user without privileges, such as
-  `ssh-agent`, keeps every release created after it started until it exits.
+- A non-dumpable process of your user, such as `ssh-agent` or
+  `systemd --user`, keeps every release that existed when it started until
+  it exits. The systemd user manager starts at login, so releases from before
+  the current login are kept until you log out of every session. Releases
+  installed since then are removed once unused.
   Each such release is about 640 MB, most of it `amplihack-asset-resolver`.
 - Only the merge guard is pinned to one release per run. A recipe step that
   reads `$AMPLIHACK_HOME/amplifier-bundle/<file>` by path after a switch reads
@@ -629,7 +634,7 @@ done
 
 Do not delete release directories by hand while runs are alive. Running
 `amplihack install` again removes those that are no longer used, except those
-created after an unprivileged non-dumpable process of your user started (see
+that already existed when a non-dumpable process of your user started (see
 [Cleanup of old releases](#cleanup-of-old-releases)). To list processes whose
 `/proc` entries cannot be read:
 

@@ -854,36 +854,9 @@ fn unsupported_scan_has_its_own_notice() {
 
 #[cfg(target_os = "linux")]
 mod opaque_process {
-    use super::release_layout::{may_postdate, proc_scan, scan_with};
+    use super::release_layout::{may_predate, proc_scan, scan_with};
     use super::{Fixture, cleanup_unused_with};
     use std::time::{Duration, UNIX_EPOCH};
-
-    const PLAIN: &str = "Name:\tssh-agent\nUid:\t1000\t1000\t1000\t1000\n\
-        Gid:\t1000\t1000\t1000\t1000\nCapInh:\t0000000000000000\n\
-        CapPrm:\t0000000000000000\nCapEff:\t0000000000000000\n\
-        CapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\n";
-
-    #[test]
-    fn a_process_with_no_capabilities_and_one_id_is_not_privileged() {
-        assert!(!proc_scan::is_privileged(PLAIN));
-    }
-
-    #[test]
-    fn the_systemd_user_manager_and_sd_pam_are_privileged() {
-        // systemd --user: CAP_WAKE_ALARM effective. (sd-pam): inheritable only.
-        let manager = PLAIN.replace("CapEff:\t0000000000000000", "CapEff:\t0000000800000000");
-        let sd_pam = PLAIN.replace("CapInh:\t0000000000000000", "CapInh:\t0000000800000000");
-        assert!(proc_scan::is_privileged(&manager));
-        assert!(proc_scan::is_privileged(&sd_pam));
-    }
-
-    #[test]
-    fn mixed_ids_or_missing_lines_count_as_privileged() {
-        let setuid = PLAIN.replace("Uid:\t1000\t1000\t1000\t1000", "Uid:\t1000\t0\t0\t0");
-        assert!(proc_scan::is_privileged(&setuid));
-        let truncated: String = PLAIN.lines().take(3).map(|l| format!("{l}\n")).collect();
-        assert!(proc_scan::is_privileged(&truncated));
-    }
 
     #[test]
     fn start_ticks_are_counted_from_the_last_parenthesis() {
@@ -903,24 +876,27 @@ mod opaque_process {
     }
 
     #[test]
-    fn only_a_release_created_before_the_process_started_is_free() {
+    fn only_a_release_created_after_the_process_started_is_free() {
         let started = UNIX_EPOCH + Duration::from_secs(1_000_000);
-        assert!(!may_postdate(
+        assert!(may_predate(
             Some(started - Duration::from_secs(60)),
             started
         ));
-        assert!(may_postdate(
+        assert!(!may_predate(
             Some(started + Duration::from_secs(60)),
             started
         ));
-        assert!(may_postdate(Some(started), started), "a tie is kept");
-        assert!(may_postdate(None, started), "an unknown time is kept");
+        assert!(may_predate(Some(started), started), "a tie is kept");
+        assert!(may_predate(None, started), "an unknown time is kept");
     }
 
     #[test]
-    fn an_opaque_process_frees_only_releases_older_than_itself() {
-        // An uninspectable process started between the two releases: the
-        // older release is removed, the newer one is kept for that pid.
+    fn an_opaque_process_keeps_the_releases_that_existed_when_it_started() {
+        // A setgid or file-capability child (`ping`) of a recipe step whose
+        // working directory is in the older release is non-dumpable. It
+        // started after that release was created, so it may have inherited
+        // its cwd there: the release is kept, privileges or not. The newer
+        // release did not exist when it started and is removed.
         let fx = Fixture::new();
         let old = fx.release("0.9.40");
         let new = fx.release("0.9.41");
@@ -941,26 +917,17 @@ mod opaque_process {
             })
         })
         .unwrap();
-        assert!(!old.exists(), "older than the process: removed");
-        assert!(new.exists(), "newer than the process: kept");
-        assert_eq!(report.removed, vec![old]);
-        assert_eq!(report.kept_in_use, vec![(new, vec![777])]);
+        assert!(old.exists(), "existed when the process started: kept");
+        assert!(!new.exists(), "created after the process started: removed");
+        assert_eq!(report.removed, vec![new]);
+        assert_eq!(report.kept_in_use, vec![(old, vec![777])]);
         assert!(!report.unknown);
     }
 
     #[test]
-    fn a_privileged_opaque_process_keeps_nothing_and_an_unknown_one_keeps_all() {
+    fn an_opaque_process_with_no_start_time_keeps_every_release() {
         let fx = Fixture::new();
         let r0 = fx.release("0.9.40");
-        let report = cleanup_unused_with(&fx.amp, &[], |candidates| {
-            scan_with(candidates, &vec![None; candidates.len()], &[1, 2], |_| {
-                Err(proc_scan::Opaque::Privileged)
-            })
-        })
-        .unwrap();
-        assert!(!r0.exists());
-        assert!(report.kept_in_use.is_empty());
-
         let r1 = fx.release("0.9.41");
         let report = cleanup_unused_with(&fx.amp, &[], |candidates| {
             scan_with(candidates, &vec![None; candidates.len()], &[3], |_| {
@@ -968,7 +935,9 @@ mod opaque_process {
             })
         })
         .unwrap();
+        assert!(r0.exists());
         assert!(r1.exists());
+        assert!(report.removed.is_empty());
         assert!(report.unknown);
     }
 

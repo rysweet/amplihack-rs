@@ -1176,17 +1176,20 @@ pub fn in_use_paths(candidates: &[PathBuf]) -> InUse {
 /// not using anything.
 ///
 /// A same-user process whose `/proc` entries cannot be read (it is
-/// non-dumpable) cannot be inspected, but its `status` and `stat` can:
+/// non-dumpable, such as `ssh-agent`, the systemd user manager, or a setgid
+/// or file-capability program like `ping`) cannot be inspected, but its
+/// `stat` can. Its start (fork) time decides what it may use:
 ///
-/// - One that holds capabilities or mixed user or group ids, such as the
-///   systemd user manager and its `(sd-pam)` helper, runs a privileged
-///   executable, which is never a release file, so it uses no release.
-/// - Any other, such as `ssh-agent`, may use only a release created after it
-///   started. A process started earlier did not inherit a path into it, and
-///   it has not exec'd a release binary since, because that exec would have
-///   made it dumpable again.
+/// - A release that existed when it started may hold its working directory,
+///   root, open files, maps or environment, inherited from its parent. That
+///   release is kept. Holding privileges does not change this: a privileged
+///   executable is never a release file, but its `cwd` and inherited file
+///   descriptors can still be inside one.
+/// - A release created after it started was not inherited. The process has
+///   not exec'd a release binary since either, because that exec would have
+///   made it dumpable again. That release can be removed.
 ///
-/// When neither can be told, the result is [`InUse::Unknown`].
+/// When the start time cannot be read, the result is [`InUse::Unknown`].
 pub fn scan_pids(candidates: &[PathBuf], pids: &[u32]) -> InUse {
     #[cfg(target_os = "linux")]
     {
@@ -1250,18 +1253,13 @@ pub(crate) fn scan_with(
                 }
             }
             Err(proc_scan::Opaque::Gone) => {}
-            Err(proc_scan::Opaque::Privileged) => {
-                tracing::debug!(
-                    "release cleanup: pid {pid} runs with privileges, so it runs no release"
-                );
-            }
             Err(proc_scan::Opaque::StartedAt(started)) => {
                 tracing::debug!(
-                    "release cleanup: pid {pid} cannot be inspected; keeping releases created \
-                     after it started"
+                    "release cleanup: pid {pid} cannot be inspected; keeping releases that \
+                     existed when it started"
                 );
                 for (index, created) in created.iter().enumerate() {
-                    if may_postdate(*created, started) {
+                    if may_predate(*created, started) {
                         used.entry(candidates[index].clone()).or_default().push(pid);
                     }
                 }
@@ -1278,19 +1276,20 @@ pub(crate) fn scan_with(
     InUse::Known(used)
 }
 
-/// Clock slack for [`may_postdate`]: the kernel's boot time is whole seconds.
+/// Clock slack for [`may_predate`]: the kernel's boot time is whole seconds.
 #[cfg(target_os = "linux")]
 const START_TIME_SLACK: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// Whether a candidate created at `created` might have been created after a
-/// process started at `started`. An unknown creation time might.
+/// Whether a candidate created at `created` might already have existed when
+/// a process started at `started`, so the process may have inherited a path
+/// into it. An unknown creation time might.
 #[cfg(target_os = "linux")]
-pub(crate) fn may_postdate(
+pub(crate) fn may_predate(
     created: Option<std::time::SystemTime>,
     started: std::time::SystemTime,
 ) -> bool {
     match created {
-        Some(created) => created + START_TIME_SLACK >= started,
+        Some(created) => created <= started + START_TIME_SLACK,
         None => true,
     }
 }
@@ -1410,30 +1409,20 @@ pub(crate) mod proc_scan {
             .collect())
     }
 
-    /// What `/proc/<pid>/status` and `stat` tell about a process whose other
-    /// entries could not be read.
+    /// What `/proc/<pid>/stat` tells about a process whose other entries
+    /// could not be read.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) enum Opaque {
         /// It exited meanwhile.
         Gone,
-        /// It holds capabilities or mixed ids: it runs a privileged executable.
-        Privileged,
         /// It started at this time.
         StartedAt(std::time::SystemTime),
-        /// Neither could be read.
+        /// Its start time could not be read.
         Unknown,
     }
 
     pub(crate) fn classify_opaque(pid: u32) -> Opaque {
         let dir = PathBuf::from(format!("/proc/{pid}"));
-        let status = match fs::read_to_string(dir.join("status")) {
-            Ok(status) => status,
-            Err(e) if gone(&e) => return Opaque::Gone,
-            Err(_) => return Opaque::Unknown,
-        };
-        if is_privileged(&status) {
-            return Opaque::Privileged;
-        }
         let stat = match fs::read_to_string(dir.join("stat")) {
             Ok(stat) => stat,
             Err(e) if gone(&e) => return Opaque::Gone,
@@ -1455,35 +1444,6 @@ pub(crate) mod proc_scan {
             }
             _ => Opaque::Unknown,
         }
-    }
-
-    /// Whether a `/proc/<pid>/status` shows any capability set non-empty, or
-    /// real, effective, saved and filesystem ids that differ.
-    pub(crate) fn is_privileged(status: &str) -> bool {
-        let mut seen = 0;
-        for line in status.lines() {
-            let Some((key, value)) = line.split_once(':') else {
-                continue;
-            };
-            match key {
-                "CapInh" | "CapPrm" | "CapEff" | "CapAmb" => {
-                    seen += 1;
-                    if value.trim().bytes().any(|b| b != b'0') {
-                        return true;
-                    }
-                }
-                "Uid" | "Gid" => {
-                    seen += 1;
-                    let ids: Vec<&str> = value.split_whitespace().collect();
-                    if ids.is_empty() || ids.iter().any(|id| *id != ids[0]) {
-                        return true;
-                    }
-                }
-                _ => {}
-            }
-        }
-        // A status missing any of these lines is not trusted as unprivileged.
-        seen < 6
     }
 
     /// Field 22 of `/proc/<pid>/stat`: start time in clock ticks after boot.
