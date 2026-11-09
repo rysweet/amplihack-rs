@@ -27,6 +27,18 @@ turned off on 9 Nov 2026 on Ryan's word, through bb:0. A pull request does not
 need to be up to date with `main` before it merges. Merge `main` into a pull
 request only to resolve a real conflict.
 
+Two older pages were written when strict was on:
+[Merge Flow Reference](../reference/merge-flow.md) and
+[Branch Protection Guard Reference](../reference/branch-protection-guard.md).
+Both now carry a note pointing here; where they disagree with this page, this
+page wins.
+
+The guard workflow, `.github/workflows/branch-protection-guard.yml`, still
+fails when strict is off once `BRANCH_PROTECTION_READ_TOKEN` is set. Today
+that token is absent, so the guard skips with a warning. Retiring or inverting
+the guard is tracked in
+[#2203](https://github.com/rysweet/amplihack-rs/issues/2203).
+
 ## Checks that are not required
 
 | Check | Why it is not required |
