@@ -88,6 +88,7 @@ hook_repair_jsafe() {
 hook_repair_hooks_dir() {
   local dir
   dir="$(git rev-parse --git-path hooks 2>/dev/null)" || return 1
+  [ -n "$dir" ] || return 1
   case "$dir" in /*) ;; *) dir="$(pwd -P)/${dir}" ;; esac
   printf '%s' "$dir"
 }
@@ -574,9 +575,11 @@ hook_repair_run() {
     hook_repair_usage "--fix-message applies to push only"; return 2
   fi
 
-  local wt gd hr hooks bin round_recipe health_recipe
+  local wt gd hr hooks bin round_recipe health_recipe attempt_dir physical tmp_root
   wt="$(git rev-parse --show-toplevel 2>/dev/null)" || { hook_repair_usage "not inside a git work tree"; return 2; }
-  wt="$(cd "$wt" && pwd -P)"
+  [[ "$wt" == /* && -d "$wt" ]] || { hook_repair_usage "empty or invalid worktree path"; return 2; }
+  wt="$(cd -- "$wt" && pwd -P)" || { hook_repair_usage "could not canonicalise worktree"; return 2; }
+  [[ "$wt" == /* && "$wt" != / && -d "$wt" ]] || { hook_repair_usage "invalid canonical worktree path"; return 2; }
   bin="${AMPLIHACK_BIN:-amplihack}"
   round_recipe="${HOOK_REPAIR_ROUND_RECIPE:-${HOOK_REPAIR_TOOLS_DIR%/*}/recipes/hook-rejection-repair.yaml}"
   health_recipe="${HOOK_REPAIR_HEALTH_RECIPE:-${HOOK_REPAIR_TOOLS_DIR%/*}/recipes/loop-health-evaluator.yaml}"
@@ -587,7 +590,19 @@ hook_repair_run() {
   # the operation.
   local rc=0 out
   gd="$(git rev-parse --absolute-git-dir 2>/dev/null)" || gd=""
-  out="$([ -n "$gd" ] && umask 077 && mktemp "${gd}/hook-repair-attempt.XXXXXX" 2>/dev/null)" || out=""
+  [[ "$gd" == /* && -d "$gd" ]] || { hook_repair_usage "empty or invalid Git metadata path"; return 2; }
+  gd="$(cd -- "$gd" && pwd -P)" || { hook_repair_usage "could not canonicalise Git metadata"; return 2; }
+  [[ "$gd" == /* && "$gd" != / && -d "$gd" ]] || { hook_repair_usage "invalid canonical Git metadata path"; return 2; }
+  out=""
+  if attempt_dir="$(umask 077 && mktemp -d "${gd:?}/hook-repair-attempt.XXXXXX" 2>/dev/null)"; then
+    case "$attempt_dir" in "${gd:?}/hook-repair-attempt."*) ;; *) hook_repair_usage "invalid first-attempt allocation"; return 2 ;; esac
+    [[ -d "$attempt_dir" && ! -L "$attempt_dir" && -O "$attempt_dir" ]] \
+      || { hook_repair_usage "first-attempt allocation is not an owned directory"; return 2; }
+    physical="$(cd -- "$attempt_dir" && pwd -P)" || { hook_repair_usage "could not canonicalise first-attempt allocation"; return 2; }
+    [[ -n "$physical" && "$physical" == "$attempt_dir" && "${attempt_dir%/*}" == "$gd" ]] \
+      || { hook_repair_usage "first-attempt allocation escaped Git metadata"; return 2; }
+    out="${attempt_dir:?}/attempt.out"
+  fi
   if [ -z "$out" ]; then
     # With nowhere to keep the output the failure cannot be classified: the
     # command runs and a failure is returned unrepaired. Its output is still
@@ -599,29 +614,45 @@ hook_repair_run() {
   fi
   if hook_repair_attempt "$out" "$output_file" "$@"; then rc=0; else rc=$?; fi
   if [ "$rc" -eq 0 ]; then
-    rm -f -- "$out"; HOOK_REPAIR_STATUS="ok"; return 0
+    rm -rf -- "${attempt_dir:?}"; HOOK_REPAIR_STATUS="ok"; return 0
   fi
   # Resolved only once something has failed; the success path skips it. An
   # unresolvable directory leaves hooks empty, so hook_repair_is_rejection
   # finds no hook and returns not_hook: the loop never runs without one.
   hooks="$(hook_repair_hooks_dir)" || hooks=""
   if ! hook_repair_is_rejection "$op" "$rc" "$out" "$hooks"; then
-    rm -f -- "$out"; HOOK_REPAIR_STATUS="not_hook"; return "$rc"
+    rm -rf -- "${attempt_dir:?}"; HOOK_REPAIR_STATUS="not_hook"; return "$rc"
   fi
 
   # A hook rejected the operation: from here on everything goes in a private
   # evidence directory outside the worktree.
-  hr="$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/hook-repair.XXXXXX")" \
-    || { rm -f -- "$out"; hook_repair_usage "could not create a private evidence directory under ${TMPDIR:-/tmp}"; return 2; }
-  hr="$(cd "$hr" && pwd -P)"
+  tmp_root="${TMPDIR:-/tmp}"
+  [[ "$tmp_root" == /* && -d "$tmp_root" ]] \
+    || { rm -rf -- "${attempt_dir:?}"; hook_repair_usage "TMPDIR must name an existing absolute directory"; return 2; }
+  tmp_root="$(cd -- "$tmp_root" && pwd -P)" \
+    || { rm -rf -- "${attempt_dir:?}"; hook_repair_usage "could not canonicalise TMPDIR"; return 2; }
+  [[ "$tmp_root" == /* && "$tmp_root" != / && -d "$tmp_root" ]] \
+    || { rm -rf -- "${attempt_dir:?}"; hook_repair_usage "invalid canonical TMPDIR"; return 2; }
+  hr="$(umask 077 && mktemp -d "${tmp_root:?}/hook-repair.XXXXXX")" \
+    || { rm -rf -- "${attempt_dir:?}"; hook_repair_usage "could not create a private evidence directory under ${tmp_root}"; return 2; }
+  case "$hr" in "${tmp_root:?}/hook-repair."*) ;; *)
+    rm -rf -- "${attempt_dir:?}"; hook_repair_usage "invalid evidence allocation"; return 2 ;;
+  esac
+  [[ -d "$hr" && ! -L "$hr" && -O "$hr" ]] \
+    || { rm -rf -- "${attempt_dir:?}"; hook_repair_usage "evidence allocation is not an owned directory"; return 2; }
+  physical="$(cd -- "$hr" && pwd -P)" \
+    || { rm -rf -- "${attempt_dir:?}"; hook_repair_usage "could not canonicalise evidence allocation"; return 2; }
+  [[ -n "$physical" && "$physical" == "$hr" && "${hr%/*}" == "$tmp_root" ]] \
+    || { rm -rf -- "${attempt_dir:?}"; hook_repair_usage "evidence allocation escaped TMPDIR"; return 2; }
   case "$hr/" in
     "$wt"/*)
-      rm -rf -- "$hr"; rm -f -- "$out"
+      rm -rf -- "${hr:?}" "${attempt_dir:?}"
       hook_repair_usage "the evidence directory ${hr} lies inside the worktree ${wt}; set TMPDIR outside it (SR-14)"
       return 2 ;;
   esac
   mv -f -- "$out" "${hr}/attempt.out" \
-    || { rm -rf -- "$hr"; rm -f -- "$out"; hook_repair_usage "could not move the first attempt's output into ${hr}"; return 2; }
+    || { rm -rf -- "${hr:?}" "${attempt_dir:?}"; hook_repair_usage "could not move the first attempt's output into ${hr}"; return 2; }
+  rm -rf -- "${attempt_dir:?}"
   out="${hr}/attempt.out"
 
   local ids prev_ids="" verdict="" reasoning="" status="" round=0 prev_hash agent_status evaluation

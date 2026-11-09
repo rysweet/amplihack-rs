@@ -91,6 +91,7 @@ pub(super) fn rd(session: f64, week: f64, observed_at: Option<i64>) -> Probed {
         still_running: false,
         observed_at,
         carried: false,
+        passive: false,
     }
 }
 
@@ -107,6 +108,7 @@ pub(super) fn exh(session: f64, week: f64) -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 
@@ -634,7 +636,11 @@ fn gate_rereads_a_stale_target_and_decides_again_without_writing() {
         got.fresh_lines,
         ["reread: spare reading stale s=11% w=20%; fresh s=43% w=100%"]
     );
-    assert!(!e.rs.ledger.exists(), "the gate writes no ledger");
+    assert_eq!(
+        e.rs.load_ledger().unwrap().unwrap().account.as_deref(),
+        Some("u-work"),
+        "the gate preserves the ledger"
+    );
     assert!(!e.rs.log.exists(), "the gate writes no log; the cycle does");
 }
 

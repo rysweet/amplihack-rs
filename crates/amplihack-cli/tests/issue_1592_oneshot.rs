@@ -206,6 +206,10 @@ fn the_hold_blocks_an_upgrade_back_and_hold_zero_allows_it() {
 #[test]
 fn a_dry_run_changes_nothing_and_prints_only_would_and_cycle_lines() {
     let f = Fixture::new();
+    // Issue #1962: a dry run reads the usage endpoint only and never starts `claude`.
+    f.usage_direct("work", 90, 20);
+    f.usage_direct("spare", 10, 20);
+    f.usage_direct("extra", 50, 60);
     let before = snapshot(&f);
     let out = f.ok(&["profile", "rotate", "--dry-run"]);
     assert_eq!(snapshot(&f), before, "dry run wrote or moved something");
@@ -220,6 +224,7 @@ fn a_dry_run_changes_nothing_and_prints_only_would_and_cycle_lines() {
         ls.iter().any(|l| l.starts_with("would swap work->spare")),
         "{ls:?}"
     );
+    assert!(f.probe_envs().is_empty(), "the dry run started claude");
 }
 
 #[test]
@@ -273,6 +278,8 @@ fn an_unknown_login_is_adopted_as_default_original() {
         "primaryApiKey": "SECRET-KEY-HOME"
     });
     private_file(&f.home.join(".claude.json"), &home_json.to_string());
+    // Issue #1753: identity comes from the login, so it names the stranger too.
+    assert_eq!(login(&f.home_login()), f.live_ino);
     f.usage("stranger", 95, 10);
     let out = f.ok(&["profile", "rotate"]);
     assert!(

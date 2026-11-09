@@ -1,9 +1,9 @@
 //! An account: as `.claude.json` files name it (moved from `identify`, which
 //! re-exports it), or as the OAuth profile endpoint reports it for a token
 //! ([`Account::from_profile`]). Issue #1886: hand-change recovery and
-//! `profile verify` decide whose login a folder holds only from the server's
-//! answer, never from `.claude.json`; the swap, duplicate and login checks,
-//! the adopt rules and display still read `.claude.json`.
+//! `profile verify` and rotation decide whose login a folder holds from the
+//! server answer. Rotation display repair uses that trusted identity.
+//! Standalone login and display callers retain their existing semantics.
 
 use super::ledger::safe_account;
 use crate::commands::profile::auto_switch::kit::read_claude_json;
@@ -83,6 +83,17 @@ impl Account {
         self.email.as_deref().or(self.uuid.as_deref()).unwrap_or("")
     }
 
+    /// Whether this names one account in one organization: only such an
+    /// account can be seeded as a record (issue #1962).
+    pub fn has_uuid_and_org(&self) -> bool {
+        self.uuid.is_some() && self.org.is_some()
+    }
+
+    /// The e-mail, when the server sent one that is safe to print.
+    pub fn email(&self) -> Option<&str> {
+        self.email.as_deref()
+    }
+
     /// The account in `dir/.claude.json`.
     pub fn of_dir(dir: &Path) -> Option<Self> {
         Self::from_value(&read_claude_json(dir)?.0)
@@ -100,6 +111,21 @@ impl Account {
             (None, None) => matches!((&self.email, &other.email), (Some(a), Some(b)) if a == b),
             _ => false,
         }
+    }
+
+    /// A display block derived only from trusted identity.
+    pub fn block(&self) -> serde_json::Value {
+        let mut b = serde_json::Map::new();
+        for (k, v) in [
+            ("accountUuid", &self.uuid),
+            ("organizationUuid", &self.org),
+            ("emailAddress", &self.email),
+        ] {
+            if let Some(v) = v {
+                b.insert(k.into(), v.clone().into());
+            }
+        }
+        b.into()
     }
 
     /// The value stored in the ledger: the uuid, else the e-mail.

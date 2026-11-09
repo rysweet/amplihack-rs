@@ -97,6 +97,14 @@ fn fx() -> Fx {
     rs.save_ledger(&RotateLedger {
         live: Some(WORK.into()),
         account: Some("u-work".into()),
+        login_identity: Some(
+            crate::commands::profile::rotate::login_identity::Identity::new(
+                &(crate::commands::profile::rotate::cred_identity::DEFAULT_READ)(
+                    &home.join(".claude"),
+                )
+                .unwrap(),
+            ),
+        ),
         since: Some(now() - 7200),
         swapped_at: Some(now() - 7200),
         ..RotateLedger::default()
@@ -136,6 +144,7 @@ fn probed(session: f64) -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 

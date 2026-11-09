@@ -40,7 +40,8 @@ fn private(path: &Path, body: &str) {
 
 /// An OAuth login (issue #1700: its top-level keys are read for the kind).
 fn login(path: &Path) {
-    private(path, r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#);
+    private(path, &super::tests::tests_fixture_identity::body(path));
+    fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o700)).unwrap();
 }
 
 fn acct(uuid: &str, email: &str) -> String {
@@ -84,6 +85,11 @@ fn env() -> Env {
     );
     let rs = RotateState::new(&root);
     rs.ensure().unwrap();
+    let state = crate::commands::profile::auto_switch::kit::State::new(&root).unwrap();
+    for name in ["work", "spare", "extra"] {
+        let a = Account::of_dir(&root.join(name)).unwrap();
+        crate::commands::profile::expected::record(&state, &n(name), &a).unwrap();
+    }
     Env {
         _tmp: tmp,
         home,
@@ -241,6 +247,12 @@ fn missing_or_unsafe_account_values_count_as_missing() {
     assert!(Account::from_claude_json(long.as_bytes()).is_none());
     let ctl = acct("u\u{1b}1", "");
     assert!(Account::from_claude_json(ctl.as_bytes()).is_none());
+    for bidi in ['\u{202a}', '\u{202e}', '\u{2066}', '\u{2069}'] {
+        assert!(!super::ledger::safe_account(&format!("a{bidi}@b")));
+        let a = acct(&format!("u{bidi}1"), "");
+        assert!(Account::from_claude_json(a.as_bytes()).is_none());
+    }
+    assert!(super::ledger::safe_account("work@example.com"));
 }
 
 #[test]
@@ -335,6 +347,7 @@ fn login_less_profiles_of_one_user_in_two_orgs_are_not_ambiguous() {
         &e.home.join(".claude.json"),
         &acct_org("u-work", "o-personal", "work@example.com"),
     );
+    seed_ownership(&e, &["work", "personal"], true);
     assert_eq!(e.live(), (LiveId::Known(n("personal")), None));
 }
 
@@ -352,6 +365,7 @@ fn login_less_profiles_with_the_same_user_and_org_are_ambiguous() {
         &e.home.join(".claude.json"),
         &acct_org("u-work", "o1", "work@example.com"),
     );
+    seed_ownership(&e, &["work", "twin"], true);
     assert_eq!(e.live().0, LiveId::Ambiguous);
 }
 
@@ -366,7 +380,9 @@ fn a_prototype_ledger_whose_profile_is_in_another_org_is_ignored() {
         &e.home.join(".claude.json"),
         &acct_org("u-work", "o-personal", "work@example.com"),
     );
+    seed_ownership(&e, &["work"], true);
     e.prototype(r#"{"live":"work","since":1}"#);
+    seed_ownership(&e, &["work"], true);
     assert_eq!(e.live().1, Some("account does not match"));
 }
 
@@ -377,6 +393,7 @@ fn without_any_match_the_login_is_adopted() {
         &e.home.join(".claude.json"),
         &acct("u-new", "new@example.com"),
     );
+    seed_ownership(&e, &[], true);
     assert_eq!(e.live().0, LiveId::Adopt);
 }
 
@@ -387,6 +404,7 @@ fn a_matching_profile_that_has_a_login_is_not_live() {
         &e.home.join(".claude.json"),
         &acct("u-spare", "spare@example.com"),
     );
+    seed_ownership(&e, &[], true);
     assert_eq!(e.live().0, LiveId::Adopt, "spare still has its own login");
 }
 
@@ -424,7 +442,10 @@ fn a_prototype_ledger_whose_profile_has_no_account_is_used() {
     fs::remove_file(e.root().join("extra/.credentials.json")).unwrap();
     fs::remove_file(e.root().join("extra/.claude.json")).unwrap();
     e.prototype(r#"{"live":"extra","since":5}"#);
-    assert_eq!(e.live(), (LiveId::Known(n("extra")), None));
+    assert_eq!(
+        e.live(),
+        (LiveId::Known(n("work")), Some("account does not match"))
+    );
 }
 
 #[test]
@@ -562,4 +583,18 @@ fn a_root_that_cannot_be_listed_is_an_error_not_an_empty_list() {
     fs::write(&file, "").unwrap();
     let store = ProfileStore::new(file);
     assert!(candidates(&store, &e.input(None)).is_err());
+}
+
+fn seed_ownership(e: &Env, profiles: &[&str], seed_home: bool) {
+    let state = crate::commands::profile::auto_switch::kit::State::new(e.root()).unwrap();
+    for p in profiles {
+        let a = Account::of_dir(&e.root().join(p)).unwrap();
+        crate::commands::profile::expected::record(&state, &n(p), &a).unwrap();
+    }
+    if seed_home {
+        let path = e.home.join(".claude/.credentials.json");
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        v["task1753FakeIdentity"] = Account::of_dir(&e.home).unwrap().block();
+        private(&path, &v.to_string());
+    }
 }

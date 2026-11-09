@@ -462,7 +462,7 @@ fn a_failed_home_read_is_unsure_and_reads_no_profile() {
     let t = tree(&[L, M], &[L, M]);
     let a = t.with(t.answers(Err(reason::HTTP_429)), M, Ok(acct_m()));
     let (f, calls) = t.assess(&a);
-    assert_eq!(f, Finding::Unsure(Why::HomeFailed));
+    assert_eq!(f, Finding::Unsure(Why::Home(reason::HTTP_429)));
     assert_eq!(calls, vec![t.home.join(".claude")], "one request only");
 }
 
@@ -513,7 +513,10 @@ fn an_unreadable_profile_and_no_match_is_unsure() {
     let t = tree(&[L, M, K], &[M, K]);
     let a = t.with(t.answers(Ok(acct_m())), M, Err(reason::HTTP_401));
     let a = t.with(a, K, Ok(acct_k()));
-    assert_eq!(t.assess(&a).0, Finding::Unsure(Why::Unread(vec![n(M)])));
+    assert_eq!(
+        t.assess(&a).0,
+        Finding::Unsure(Why::Unread(vec![(n(M), reason::HTTP_401)]))
+    );
 }
 
 /// Same account uuid in another organization is another account.
@@ -609,9 +612,10 @@ fn assess_stops_when_the_budget_runs_out() {
 
 fn every_why() -> Vec<Why> {
     vec![
-        Why::HomeFailed,
+        Why::Home(reason::TIMEOUT),
         Why::Many(vec![n(K), n(M)]),
-        Why::Unread(vec![n(K), n(M)]),
+        Why::Unread(vec![(n(K), reason::HTTP_429), (n(M), reason::TIMEOUT)]),
+        Why::Unread(Vec::new()),
         Why::OutOfTime,
         Why::ClockBack,
         Why::NotRecorded(n(M)),
@@ -637,6 +641,23 @@ fn every_note_is_one_line_of_printable_ascii() {
     }
 }
 
+/// Issue #1962 (S7): a note saved in the ledger's `guidance` must fit its line
+/// limit, or the failed read would make the ledger unreadable.
+#[test]
+fn a_long_note_fits_the_guidance_line_limit() {
+    let names: Vec<(ProfileName, &'static str)> = (0..200)
+        .map(|i| (n(&format!("a-long-profile-name-{i:03}")), reason::HTTP_429))
+        .collect();
+    let note = msg::note_unsure(&n(L), &Why::Unread(names));
+    assert!(
+        note.len() <= super::ledger::MAX_GUIDANCE_LINE,
+        "{}",
+        note.len()
+    );
+    assert!(note.is_char_boundary(note.len()));
+    assert!(note.starts_with("note: cannot tell"), "{note}");
+}
+
 #[test]
 fn note_texts_are_the_documented_ones() {
     let (l, m) = (n(L), n(M));
@@ -647,14 +668,21 @@ fn note_texts_are_the_documented_ones() {
     let why = |w: Why| msg::note_unsure(&l, &w);
     let head = "note: cannot tell whose login is in ~/.claude (live=lima): ";
     for (w, text) in [
-        (Why::HomeFailed, "~/.claude could not be read"),
+        (
+            Why::Home(reason::HTTP_429),
+            "~/.claude identity read failed: http 429",
+        ),
         (
             Why::Many(vec![n(K), n(M)]),
             "it holds the same account as more than one profile (kilo, mike)",
         ),
         (
-            Why::Unread(vec![n(K), n(M)]),
-            "profile kilo, mike could not be read",
+            Why::Unread(vec![(n(K), reason::HTTP_429), (n(M), reason::TIMEOUT)]),
+            "profile kilo not read (http 429), mike not read (timeout)",
+        ),
+        (
+            Why::Unread(Vec::new()),
+            "the profile root could not be listed",
         ),
         (Why::OutOfTime, "the reads ran out of time"),
         (Why::ClockBack, "the last swap time is later than now"),
@@ -788,6 +816,10 @@ mod note_live_account {
             live: LiveId::Known(n(live)),
             proto: None,
             account: account.map(String::from),
+            trusted_live: None,
+            identity_refusal: None,
+            identity_cause: None,
+            candidate_refusals: Vec::new(),
             candidates: Vec::new(),
             skips: Vec::new(),
             sees_sessions: true,

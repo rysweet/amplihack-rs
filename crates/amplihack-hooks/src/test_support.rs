@@ -66,6 +66,28 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// Points the hook state root (issue #1963) at a throwaway home directory.
+///
+/// Sets `HOME` to `home` and removes `AMPLIHACK_HOME`, so the state root
+/// resolves to `<home>/.amplihack` and no test can reach the real
+/// `~/.amplihack`. Both variables are restored on drop. The guard takes no
+/// lock of its own: the caller must already hold [`env_lock`] and keep it for
+/// the guard's lifetime.
+#[allow(dead_code)]
+pub(crate) struct IsolatedStateHome {
+    _home: EnvVarGuard,
+    _amp: EnvVarGuard,
+}
+
+/// See [`IsolatedStateHome`]. The caller must already hold [`env_lock`].
+#[allow(dead_code)]
+pub(crate) fn isolate_state_home(home: &std::path::Path) -> IsolatedStateHome {
+    IsolatedStateHome {
+        _home: EnvVarGuard::set("HOME", home),
+        _amp: EnvVarGuard::unset("AMPLIHACK_HOME"),
+    }
+}
+
 /// CWD restoration must finish while the caller still owns `env_lock()`.
 pub(crate) struct CwdGuard {
     previous: std::path::PathBuf,
@@ -83,4 +105,24 @@ impl Drop for CwdGuard {
             eprintln!("test CWD restoration failed: {error}");
         }
     }
+}
+
+/// The scratch base no framework lookup can see past; the rule is shared
+/// with `amplihack-cli` and `amplihack-types` (see the file's documentation).
+#[path = "../../amplihack-cli/tests/support/scratch_base.rs"]
+#[allow(dead_code)]
+pub(crate) mod scratch_base;
+
+#[cfg(unix)]
+#[path = "../../amplihack-cli/tests/support/exec_stub.rs"]
+#[allow(dead_code)]
+mod exec_stub;
+
+/// Writes an executable stub at `path` (mode 0755) through the shared
+/// `exec_stub` writer, so no fork of this process can inherit a write
+/// descriptor to it and make a concurrent exec fail with `ETXTBSY` (issue
+/// #1973).
+#[cfg(unix)]
+pub(crate) fn write_executable(path: &std::path::Path, body: &str) {
+    exec_stub::write_executable(path, body, 0o755);
 }

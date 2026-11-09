@@ -416,6 +416,25 @@ impl State {
             .map_err(|e| invariant(format!("{DIR}/{sub}/{name}.json: {e}")))
     }
 
+    /// [`State::write_sub_json`] for a file that must not be replaced (issue
+    /// #1962): `Ok(false)` when the name already exists, which is left as it
+    /// is. A symlink at the name is refused and never followed.
+    pub fn create_sub_json(
+        &self,
+        sub: &str,
+        name: &str,
+        v: &serde_json::Value,
+    ) -> Result<bool, ProfileError> {
+        self.ensure()?;
+        let dir = self.dir.join(sub);
+        self.ensure_sub(&dir)?;
+        let bytes = serde_json::to_vec_pretty(v).map_err(|e| invariant(e.to_string()))?;
+        let shown = |e: std::io::Error| invariant(format!("{DIR}/{sub}/{name}.json: {e}"));
+        fsx::PrivateTemp::create(&dir, &format!("{name}.json"))
+            .and_then(|temp| temp.link_new(&bytes))
+            .map_err(shown)
+    }
+
     /// Removes a file written by [`State::write_sub_json`]. A file that is
     /// already absent is not an error; a symlink is removed, never followed.
     pub fn remove_sub_json(&self, sub: &str, name: &str) -> Result<(), ProfileError> {

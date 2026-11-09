@@ -172,11 +172,14 @@ fn a_parked_profile_is_refused() {
 fn a_profile_without_an_account_is_refused() {
     let e = env();
     private(&e.root.join("spare/.claude.json"), "{}");
+    let mut cred = super::tests_swap::json(&e.slot("spare"));
+    cred.as_object_mut().unwrap().remove("task1753FakeIdentity");
+    private(&e.slot("spare"), &cred.to_string());
     assert_refused(
         &e,
         "spare",
         "profile spare is not a rotate candidate (no account): \
-         its .claude.json has no usable oauthAccount",
+         its trusted login identity is unavailable",
     );
 }
 
@@ -199,6 +202,10 @@ fn snap_with(skip: Skip, sees_sessions: bool) -> Snap {
         live: LiveId::Known(n("work")),
         proto: None,
         account: None,
+        trusted_live: None,
+        identity_refusal: None,
+        identity_cause: None,
+        candidate_refusals: Vec::new(),
         candidates: Vec::new(),
         skips: vec![(n("work"), Skip::Live), (n("spare"), skip)],
         sees_sessions,

@@ -66,11 +66,16 @@ struct Mover<'r> {
 /// refusal; nothing else moved. A refusal leaves no new directory: the
 /// checks that can refuse run before it is made, and the one after it
 /// removes it again (only while it is empty).
-fn move_aside(c: &Confirmed<'_>, mv: &Mover<'_>) -> Result<PathBuf, (String, Fix)> {
+fn move_aside(
+    c: &Confirmed<'_>,
+    mv: &Mover<'_>,
+) -> Result<(PathBuf, super::identify::Account), (String, Fix)> {
     let changed = || (CHANGED.to_string(), Fix::Retry);
     // SEC-9: each read ends within IDENTITY_READ_TIMEOUT, so the two
     // re-reads together take at most 10 seconds; with `assess` the cycle
     // holds its lock for at most IDENTITY_BUDGET + 3 reads, 45 seconds.
+    // That bound holds in release builds and in debug builds with the
+    // AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS knob unset (issue #1973).
     let here = (mv.read)(&mv.home.join(".claude")).map_err(|_| changed())?;
     let there = (mv.read)(&mv.store.root().join(c.m.as_str())).map_err(|_| changed())?;
     if !here.same(&there) {
@@ -105,16 +110,17 @@ fn move_aside(c: &Confirmed<'_>, mv: &Mover<'_>) -> Result<PathBuf, (String, Fix
         return Err((reason, Fix::ByHand));
     }
     abort_point("rotate-handfix-moved");
-    Ok(to)
+    Ok((to, here))
 }
 
-/// Records `m` as live: `since` is the cycle's time; the display-only
-/// `account`, the alert key, the guidance and the suspicion are cleared.
-fn record(l: &mut RotateLedger, m: &ProfileName, t: i64) {
+/// Records `m` and its confirmed full identity; clears prior guidance and
+/// suspicion. The grace and independent-reading requirements are unchanged.
+fn record(l: &mut RotateLedger, m: &ProfileName, account: &super::identify::Account, t: i64) {
     l.live = Some(m.to_string());
-    l.account = None;
+    l.account = Some(account.key().to_string());
+    l.login_identity = Some(super::login_identity::Identity::new(account));
     l.since = Some(t);
-    l.alert = None;
+    super::alert::clear_alert(l);
     l.guidance = None;
     l.hand_suspect = None;
 }
@@ -189,8 +195,8 @@ pub fn step_with<'a>(
                 t,
             };
             match move_aside(&c, &mv) {
-                Ok(to) => {
-                    record(&mut ledger, &c.m, t);
+                Ok((to, account)) => {
+                    record(&mut ledger, &c.m, &account, t);
                     (Step::Recovered, vec![msg::recovered_moved(&c.m, &to)])
                 }
                 Err(why) => {
@@ -224,7 +230,7 @@ pub fn min_gap(ctx: &Ctx) -> i64 {
 /// only for a confirmed suspicion; the readings are `ctx.identity`'s.
 pub fn step(ctx: &Ctx, state: &State, out: &mut Sink, t: i64) -> Result<Step, ProfileError> {
     let env_for = || Env::system(ctx.store.root(), state, ctx.scan);
-    let read = |p: &Path| (ctx.identity)(p);
+    let read = |p: &Path| ctx.identity_reader().oauth(p);
     let (store, rs, home) = (&ctx.store, &ctx.rs, &ctx.home);
     step_with(store, rs, home, out, env_for, &read, min_gap(ctx), t)
 }

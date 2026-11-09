@@ -90,7 +90,7 @@ fn hang_up(fx: &Fx, mut child: Child) {
     // SAFETY: kill has no memory-safety preconditions.
     assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGHUP) }, 0);
     fx.claude_release();
-    if !wait_until(30, || child.try_wait().unwrap().is_some()) {
+    if !wait_until(|| child.try_wait().unwrap().is_some()) {
         let _ = child.kill();
         panic!("amplihack did not exit after SIGHUP");
     }
@@ -102,9 +102,7 @@ fn launch_and_lose(fx: &Fx, dir: &Path, config: &Path, c: Command) -> Value {
     fx.claude_mode("wait:0");
     let mut c = c;
     let mut child = c.spawn().expect("spawn amplihack");
-    let started = wait_until(30, || {
-        fx.claude_started() || child.try_wait().unwrap().is_some()
-    });
+    let started = wait_until(|| fx.claude_started() || child.try_wait().unwrap().is_some());
     if !(started && fx.claude_started()) {
         let _ = child.kill();
         let out = child.wait_with_output().unwrap();
@@ -113,9 +111,7 @@ fn launch_and_lose(fx: &Fx, dir: &Path, config: &Path, c: Command) -> Value {
     let argv = ["claude", "--model", "opus"];
     fx.add_proc(&Proc::new(CLAUDE_PID, SELF_PID, &argv, dir).start(START));
     fx.sessions_file(config, CLAUDE_PID, CONV_C, START, dir);
-    let found = wait_until(15, || {
-        try_agent(fx).is_some_and(|e| e["conversation_id"] == CONV_C)
-    });
+    let found = wait_until(|| try_agent(fx).is_some_and(|e| e["conversation_id"] == CONV_C));
     if !found {
         let _ = child.kill();
         panic!("the id thread recorded nothing: {:?}", try_agent(fx));

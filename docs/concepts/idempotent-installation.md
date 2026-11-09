@@ -94,7 +94,7 @@ The second run of `amplihack install` produces output identical to the first, bu
 ```
 ✓ Python 3.11.4 detected
 ✓ amplihack Python package detected
-✓ Using bundled framework assets...
+📦 Using framework source /home/alice/src/amplihack-rs (v1.2.99, from AMPLIHACK_HOME)
 ✓ Updated amplihack → ~/.local/bin/amplihack
 ✓ Updated amplihack-hooks → ~/.local/bin/amplihack-hooks
 ✓ Staged framework assets (47 files, 12 directories)

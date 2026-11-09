@@ -1,13 +1,6 @@
-//! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude`
-//! on the account with the most capacity left, by moving logins between
-//! `~/.claude` and the profiles. One-shot, `--dry-run`, and a background
-//! `watch` with `start`, `stop` and `status` (`autostart`). `profile switch
-//! NAME` moves a login with the same swap and pins rotation to it (`switch`,
-//! `pin`). See Rotate in docs/reference/profile-command.md.
-//!
-//! Login files are never opened, read, copied or hashed: they are checked
-//! with `lstat` and moved with rename and exchange calls only.
-
+//! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude` on
+//! the account with the most capacity left; `profile switch` uses the same swap.
+//! See docs/reference/profile-command.md.
 #[cfg(unix)]
 mod account;
 #[cfg(unix)]
@@ -20,6 +13,8 @@ mod autostart;
 pub(super) mod backup;
 #[cfg(unix)]
 mod candidates;
+#[cfg(unix)]
+mod capacity;
 #[cfg(unix)]
 pub(in crate::commands::profile) mod change_log;
 #[cfg(unix)]
@@ -61,6 +56,8 @@ mod history;
 #[cfg(unix)]
 pub(super) mod identify;
 #[cfg(unix)]
+mod identity_claims;
+#[cfg(unix)]
 mod inflight;
 #[cfg(unix)]
 pub(super) mod key_check;
@@ -68,6 +65,8 @@ pub(super) mod key_check;
 pub(super) mod ledger;
 #[cfg(unix)]
 mod log;
+#[cfg(unix)]
+mod login_identity;
 #[cfg(unix)]
 mod lost;
 #[cfg(unix)]
@@ -99,6 +98,8 @@ mod recover;
 #[cfg(unix)]
 mod revalidate;
 #[cfg(unix)]
+pub(super) mod seed;
+#[cfg(unix)]
 mod sessions_daily;
 #[cfg(unix)]
 mod settings;
@@ -107,11 +108,15 @@ mod spend_blocks;
 #[cfg(unix)]
 mod swap;
 #[cfg(unix)]
+mod swap_authorize;
+#[cfg(unix)]
 mod swap_back;
 #[cfg(unix)]
 mod swap_check;
 #[cfg(unix)]
 mod swap_expect;
+#[cfg(unix)]
+mod swap_finish;
 #[cfg(unix)]
 mod switch;
 #[cfg(all(test, unix))]
@@ -190,7 +195,6 @@ mod tests_switch_candidates;
 mod tests_switch_hold;
 #[cfg(all(test, unix))]
 mod tests_switch_race;
-
 use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
 
 // Issue #1797: `Probes` is what the usage history records from a cycle.
@@ -206,7 +210,6 @@ pub(super) use log::timestamp;
 pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rotator};
 
 // Auto-switch's overflow gate (`gate_record`): the running rotator's own
-// settings, or, when no rotator runs, the `AMPLIHACK_ROTATE_*` variables.
 #[cfg(all(test, unix))]
 pub(super) use gate_record::effective_at as overflow_gate_at;
 #[cfg(unix)]
@@ -296,8 +299,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
     }
 }
 
-/// `profile switch NAME` (#1691): swaps NAME's login into `~/.claude`, pins
-/// rotation to it and makes it the default, in three lines. A later failed
+/// `profile switch NAME` swaps the login and pins rotation. A later failed
 /// write is an error, not a refusal. If the login cannot move, NAME is still
 /// made the default for new launches and printed, then the refusal exits 1.
 pub(in crate::commands::profile) fn switch_live(

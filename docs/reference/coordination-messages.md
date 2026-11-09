@@ -285,13 +285,13 @@ The provenance, nested-session and workflow-active gates record no outcome: `las
 
 ## State file
 
-The hook keeps one file per session at:
+The hook keeps one file per session in the hook state root, outside the project:
 
 ```text
-<project>/.claude/runtime/classification_state/<session>.json
+<state root>/runtime/sessions/<session key>/classification_state.json
 ```
 
-`<session>` is the session ID with every character outside `[A-Za-z0-9_-]` replaced by `_`. An example after a coordination note at turn 7:
+`<state root>` is `$AMPLIHACK_HOME` when that is an absolute path with no `..` component, otherwise `$HOME/.amplihack`. `<session key>` is the session ID with every character outside `[A-Za-z0-9_-]` replaced by `_`, or `unknown-session` when the ID is absent or blank. See [Hook State Root Reference](./hook-state-root.md). When no state root resolves, nothing is read or written, and a new topic gets the same output as when the outcome cannot be written. An example after a coordination note at turn 7:
 
 ```json
 {
@@ -325,7 +325,7 @@ Before this feature, a state file created by turn resolution held `last_classifi
 
 State writes are best-effort. A write failure is logged at debug level with the error and path, never the prompt, and does not fail the hook. An unreadable or malformed file is treated as empty, which leans towards emitting the routing prompt, not suppressing it.
 
-A failed write on a new topic is the exception: the hook does not emit the routing prompt. The prompt is held back like a throttled one, so an unmarked prompt receives `{}` and a marked one the note. The throttle cannot see a classification that was never written. Under a runtime that sends no turn number, the hook's own `observed_turns` counter cannot advance either, so every prompt stays at turn 0, which is always a new topic. Emitting the routing prompt after a failed write would therefore route every prompt in every session of the project. This happens when the project directory cannot be written or the disk is full. Before this feature, the failed write returned an error and the hook emitted `{}`; unmarked prompts are handled the same way now. A single failed write followed by successful ones costs at most one extra or one missed reminder.
+A failed write on a new topic is the exception: the hook does not emit the routing prompt. The prompt is held back like a throttled one, so an unmarked prompt receives `{}` and a marked one the note. The throttle cannot see a classification that was never written. Under a runtime that sends no turn number, the hook's own `observed_turns` counter cannot advance either, so every prompt stays at turn 0, which is always a new topic. Emitting the routing prompt after a failed write would therefore route every prompt in every session of the project. This happens when the state root cannot be written or the disk is full. Before this feature, the failed write returned an error and the hook emitted `{}`; unmarked prompts are handled the same way now. A single failed write followed by successful ones costs at most one extra or one missed reminder.
 
 ## Security properties
 

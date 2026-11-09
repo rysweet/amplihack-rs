@@ -20,5 +20,10 @@ pub use hook_io::HookInput;
 pub use paths::ProjectDirs;
 /// Session ID sanitizer to prevent path traversal.
 pub use paths::sanitize_session_id;
+/// Hook state-root resolution and per-session state directories (#1963).
+pub use paths::{
+    UNKNOWN_SESSION_KEY, amplihack_state_root, resolve_state_root, session_state_dir,
+    session_state_dir_under,
+};
 /// Deserialized settings from `settings.json`.
 pub use settings::Settings;

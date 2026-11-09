@@ -43,6 +43,7 @@ record nested
 "#;
 
 struct Fixture {
+    identity: Option<crate::support::profile_default::LoginIdentities>,
     _tmp: tempfile::TempDir,
     home: PathBuf,
     root: PathBuf,
@@ -63,7 +64,8 @@ impl Fixture {
             fs::create_dir_all(d).unwrap();
         }
         executable(&tools.join("claude"), FAKE_CLAUDE);
-        let f = Self {
+        let mut f = Self {
+            identity: None,
             _tmp: tmp,
             home,
             root,
@@ -77,7 +79,7 @@ impl Fixture {
         // Since #1691 the fake `claude`'s `profile switch` moves a login into
         // `~/.claude`, so there must be one to move: W's is live, and X, Y
         // and Z each have one stored.
-        give_logins(&f.home, &f.root, "W", &["X", "Y", "Z"]);
+        f.identity = Some(give_logins(&f.home, &f.root, "W", &["X", "Y", "Z"]));
         f
     }
 
@@ -126,6 +128,9 @@ impl Fixture {
         }
         // Set after the removal above, which would otherwise drop it.
         c.env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
+        if let Some(identity) = &self.identity {
+            identity.configure(&mut c);
+        }
         c
     }
 

@@ -259,6 +259,8 @@ fn returns_additional_context_without_mutating_prompt() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = test_hook();
@@ -310,6 +312,8 @@ fn extracts_prompt_from_extra_prompt_key() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = test_hook();
@@ -339,6 +343,8 @@ fn extracts_prompt_from_user_message_dict() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = test_hook();
@@ -370,6 +376,8 @@ fn dev_prompt_initializes_workflow_enforcement_state_and_warning_path() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = test_hook();
@@ -381,10 +389,11 @@ fn dev_prompt_initializes_workflow_enforcement_state_and_warning_path() {
         })
         .unwrap();
 
-    let workflow_state = dir
+    let workflow_state = home
         .path()
-        .join(".claude/runtime/workflow_state/workflow-session.json");
+        .join(".amplihack/runtime/sessions/workflow-session/workflow_state.json");
     assert!(workflow_state.exists());
+    assert!(!dir.path().join(".claude/runtime/workflow_state").exists());
     assert!(
         result["hookSpecificOutput"]["additionalContext"]
             .as_str()
@@ -429,17 +438,9 @@ fn load_user_preferences_uses_amplihack_root_override() {
     let _guard = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Framework roots found by walking up from the project rank above
-    // AMPLIHACK_ROOT. A temp project is not a safe start: a recipe step's
-    // `TMPDIR` lies under `~/.amplihack`, which carries `.claude/`, so the
-    // walk would find the real install first (PR #1885). The filesystem root
-    // has no ancestors to climb.
-    let project = std::path::Path::new("/");
-    assert!(
-        !project.join(".claude").exists() && !project.join("src/amplihack/.claude").exists(),
-        "/.claude exists on this host; this test needs a project with no framework above it"
-    );
-    let framework = tempfile::tempdir().unwrap();
+    let base = crate::test_support::scratch_base::scratch_base();
+    let project = tempfile::tempdir_in(&base).unwrap();
+    let framework = tempfile::tempdir_in(&base).unwrap();
     fs::create_dir_all(framework.path().join(".claude/context")).unwrap();
     fs::write(
         framework.path().join(".claude/context/USER_PREFERENCES.md"),
@@ -450,7 +451,7 @@ fn load_user_preferences_uses_amplihack_root_override() {
     unsafe { std::env::set_var("AMPLIHACK_ROOT", framework.path()) };
 
     let (context, has_learned_patterns) =
-        preferences::load_user_preferences_with_patterns(&ProjectDirs::new(project));
+        preferences::load_user_preferences_with_patterns(&ProjectDirs::new(project.path()));
 
     match previous {
         Some(value) => unsafe { std::env::set_var("AMPLIHACK_ROOT", value) },

@@ -175,7 +175,10 @@ impl Fixture {
             eprintln!("SKIP: jq is not installed; the stub orch helper needs it");
             return None;
         }
-        let tmp = tempfile::tempdir().unwrap();
+        // Outside the real `~/.claude` and `~/.amplihack`: `assert_no_real_home`
+        // fails on any file naming them, and every fixture path appears in the
+        // stub logs (tests/support/scratch_base.rs).
+        let tmp = tempfile::tempdir_in(crate::support::scratch_base::scratch_base()).unwrap();
         let p = |n: &str| tmp.path().join(n);
         let (bin, log, stub, state, repo, cwd, task) = (
             p("bin"),

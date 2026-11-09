@@ -215,6 +215,7 @@ fn a_timed_out_candidate_does_not_hide_a_usable_one() {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     };
     // "a-slow" sorts first, so a tie-break bug would pick it.
     let cands = [measured("a-slow", &slow), measured("b-spare", &spare)];
@@ -504,6 +505,48 @@ fn direct_probe(session: f64, week: f64) -> Probe {
         direct_failure: None,
         spend: crate::commands::profile::usage_source::Spend::NotApplicable,
         extra_shape: None,
+    }
+}
+
+#[test]
+fn identity_trust_changes_join_the_original_read_without_reclassifying_it() {
+    use super::measure::{Key, Reads, join_pending};
+    for (started, next) in [
+        (
+            Key::UnboundCandidate(name("spare")),
+            Key::Candidate(name("spare")),
+        ),
+        (
+            Key::Candidate(name("spare")),
+            Key::UnboundCandidate(name("spare")),
+        ),
+    ] {
+        let mut reads = Reads::with_cancel(
+            Duration::from_secs(30),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let (send, recv) = std::sync::mpsc::channel();
+        reads.start_all(
+            vec![(
+                started.clone(),
+                Box::new(move || {
+                    recv.recv().unwrap();
+                    direct_probe(10.0, 20.0)
+                }),
+            )],
+            1,
+        );
+        let mut keys = [next];
+        join_pending(&reads, &mut keys);
+        assert_eq!(keys[0], started);
+        send.send(()).unwrap();
+        let results = gather(
+            &mut reads,
+            &keys,
+            |_| panic!("no duplicate read"),
+            Wait::Full,
+        );
+        assert_eq!(results[0].0, started);
     }
 }
 

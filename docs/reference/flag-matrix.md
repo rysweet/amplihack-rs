@@ -1,14 +1,14 @@
 ---
 title: Launch flag matrix
 type: reference
-updated: 2026-10-05
+updated: 2026-11-06
 ---
 
 # Launch Flag Matrix — Reference
 
 How `amplihack` builds the subprocess command line for each supported AI
 tool. Covers `--dangerously-skip-permissions`, `--model`, `--allow-all`,
-and extra-args passthrough.
+the Codex agent-step sandbox and hook-trust flags, and extra-args passthrough.
 
 ## Contents
 
@@ -68,6 +68,9 @@ Launcher flag injection behavior is derived from `command.rs`. Codex resume uses
 | `--dangerously-skip-permissions` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `--model` (auto-inject) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `--allow-all` (auto-inject) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| `--sandbox workspace-write` + network override (auto-inject) | ❌ | ❌ | ❌ | ❌ | ❌ | Codex agent step (`exec`) only, unless the caller chose a sandbox |
+| `--dangerously-bypass-hook-trust` (auto-inject) | ❌ | ❌ | ❌ | ❌ | ❌ | Codex agent step (`exec`) only |
+| `--dangerously-bypass-approvals-and-sandbox` (auto-inject) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ (never) |
 | `--resume` | ✅ | ✅ | ✅ | ✅ | ✅ | Native `resume` subcommand |
 | `--continue` | ✅ | ✅ | ✅ | ✅ | ✅ | Native `resume --last` |
 | `--plugin-dir` (UVX auto-inject only) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -107,10 +110,31 @@ The UVX rows describe automatic launcher injection only. Codex accepts explicit 
    (LiteLLM proxy) launches still add `--no-remote` and `--no-remote-export`;
    on Copilot 1.0.105 these stop the launch (#1747).
 
-5. **UVX plugin args**: `--plugin-dir` and `--add-dir` are injected only
+5. **Codex agent step**: when the Codex argv contains an `exec` (or `e`)
+   subcommand, `--sandbox workspace-write`,
+   `-c sandbox_workspace_write.network_access=true` and
+   `--dangerously-bypass-hook-trust` are inserted directly after that token,
+   and therefore before `resume` in `exec resume` (issue #1985). The sandbox
+   and network pair is skipped when the caller already chose a sandbox:
+   `--sandbox X`, `--sandbox=X` or `-s X` for any `X`; attached `-s<mode>`
+   or `-s=<mode>` for `read-only`, `workspace-write` or `danger-full-access`;
+   `--approve-for-me`, `--dangerously-bypass-approvals-and-sandbox` or `--yolo`;
+   or a `-c` override whose trimmed key is `sandbox_mode`, as `-c V`, `-cV`,
+   `-c=V`, `--config V` or `--config=V`. The network pair alone is skipped when the
+   caller sets `sandbox_workspace_write.network_access`; hook trust is skipped
+   only when already present. A `-p` profile is not a sandbox choice: the
+   command-line `--sandbox` overrides the profile's `sandbox_mode`. The
+   approvals bypass is never injected, and interactive argv (no `exec`) is
+   unchanged. When the sandbox pair is added, amplihack writes one stderr
+   line naming the added items (issue #2010); no line is written when the
+   caller chose a sandbox. See [Codex agent-step flags](./launch-flag-injection.md#codex-agent-step-flags)
+   and [Sandbox and hook trust for agent steps](../howto/install-codex-plugin.md#sandbox-and-hook-trust-for-agent-steps).
+
+6. **UVX plugin args**: `--plugin-dir` and `--add-dir` are injected only
    for `claude` when running in a UVX deployment.
 
-6. **Extra args**: Remaining arguments are passed through unchanged,
+7. **Extra args**: Remaining arguments are passed through unchanged (apart
+   from rule 5 for Codex `exec`),
    appended after injected flags, subject to Codex mode/conflict validation
    and the managed recipe restrictions in [Codex invocation modes](#codex-invocation-modes).
    Claude and Copilot retain their existing passthrough behavior.
@@ -172,6 +196,10 @@ its full flag capabilities.
 | Copilot suppressed | `copilot`, `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` | (no flags) |
 | Copilot no-remote | `copilot`, `--no-remote` | `--allow-all --no-remote` |
 | Codex default | `codex`, no extra args | (no flags) |
+| Codex agent step | `codex`, `exec --output-last-message F -` | `exec --sandbox workspace-write -c sandbox_workspace_write.network_access=true --dangerously-bypass-hook-trust --output-last-message F -` |
+| Codex agent step, caller sandbox | `codex`, `exec --sandbox read-only -` | `exec --dangerously-bypass-hook-trust --sandbox read-only -` |
+| Codex agent step, profile | `codex`, `-p ci exec -` | `-p ci exec --sandbox workspace-write -c sandbox_workspace_write.network_access=true --dangerously-bypass-hook-trust -` |
+| Codex interactive resume | `codex`, `resume --last` | `resume --last` (unchanged) |
 | User model override | `claude`, `--model sonnet` | `--model sonnet` (no duplicate) |
 
 ## Related
@@ -207,6 +235,7 @@ before `resume` and `exec resume`.
 | Prompt transport | Positional; terminal stdin retained | Positional; terminal stdin retained | Complete stdin with EOF | Complete stdin with EOF |
 | Model | Caller-selected | Caller-selected | Caller-selected | Caller-selected |
 | Profile / add-dir / sandbox | Native caller options | Native caller options | Native caller options | Unsupported local combinations rejected in v1 |
+| Injected sandbox and hook trust | None | None | `workspace-write` with network, hook trust bypassed, unless the caller chose a sandbox | Same as exec fresh, placed before `resume` |
 | Final response file | Not used | Not used | `--output-last-message` | `--output-last-message` |
 
 Resume uses a session ID or `--last`; conflicting selections fail. Managed recipes reject competing positional prompts, `--prompt`, output-file overrides, `--json`, and mode-changing passthrough. These restrictions preserve complete instructions and the final-message contract. Raw native CLI support can be broader than the managed integration. No directory is made writable solely for prompt staging.

@@ -34,6 +34,8 @@ mod root_config;
 mod rotate;
 mod rotate_args;
 mod run;
+#[cfg(unix)]
+mod seed_cmd;
 mod settings_refresh;
 mod shared_dirs;
 mod store;
@@ -217,6 +219,9 @@ pub enum ProfileError {
     RotateRefused(String),
     #[error("profile verify: {0}")]
     Verify(String),
+    /// `profile seed-record` refused: the whole line, reason included.
+    #[error("{0}")]
+    SeedRefused(String),
     #[error("rotate state is inconsistent: {0}")]
     RotateInconsistent(String),
     #[error("rotation gate did not settle")]
@@ -309,6 +314,9 @@ impl ProfileError {
             }
             Self::Verify(_) => {
                 "nothing was moved; see \"profile verify\" in docs/reference/profile-command.md"
+            }
+            Self::SeedRefused(_) => {
+                "nothing was moved; see \"profile seed-record\" in docs/reference/profile-command.md"
             }
             Self::RotateInconsistent(_) => {
                 "see the Recovery section of docs/howto/claude-profile-rotation.md"
@@ -429,6 +437,17 @@ pub enum ProfileCommands {
     },
     /// Show each profile's weekly and session usage as a bar view, in the
     /// order the rotator ranks headroom
+    ///
+    /// Rate: the capacity summary's rate covers the last 6 h. It starts at
+    /// the oldest history entry in that window written by `profile usage`
+    /// (which tried every login; one it could not read is left out of the
+    /// rate), or written by the rotator and holding every login read now.
+    /// That start entry must itself be at least 4.5 h old, or the rate and
+    /// runway are unknown. Only logins read at both ends count. Each login
+    /// counts its net rise within each week, and a week resets when its
+    /// reset time passes or its figure falls by more than 10 points, so a
+    /// smaller fall adds nothing and the rate is never negative. Each
+    /// login's use is weighted by its capacity weight.
     Usage {
         /// Profiles to probe (default: all)
         names: Vec<String>,
@@ -441,7 +460,11 @@ pub enum ProfileCommands {
         /// Show reset times in UTC instead of local time (bar view only)
         #[arg(long, conflicts_with_all = ["json", "table", "summary_json"])]
         utc: bool,
-        /// Print one JSON object: the --json rows and the capacity summary
+        /// Print one JSON object: the --json rows and the capacity summary.
+        /// Its rate covers the last 6 h, starts at the oldest entry in that
+        /// window from `profile usage` or from a rotator cycle holding every
+        /// login read now, needs that entry to be at least 4.5 h old, and is
+        /// weighted
         #[arg(long, conflicts_with_all = ["json", "raw"])]
         summary_json: bool,
         /// Also print what `claude` wrote to stdout and stderr
@@ -479,6 +502,15 @@ pub enum ProfileCommands {
         /// into that profile's empty folder (moves only; lists the moves first)
         #[arg(long)]
         fix: bool,
+    },
+    /// Show the account a profile with no record would be recorded with, from one
+    /// fresh reading; --write records it. Moves no login
+    #[cfg(unix)]
+    SeedRecord {
+        name: String,
+        /// Write the record, under the rotate lock; never replaces a record
+        #[arg(long)]
+        write: bool,
     },
     /// Show or override each profile's kind: subscription or api-key (billed per token)
     #[cfg(unix)]
@@ -637,6 +669,8 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
         ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
         ProfileCommands::Overflow { command } => overflow::run(&store, command)?,
+        #[cfg(unix)]
+        ProfileCommands::SeedRecord { name, write } => seed_cmd::run(&store, &name, write)?,
         #[cfg(unix)]
         ProfileCommands::Verify { fix } => {
             let s = verify_cmd::run(&store, fix)?;
