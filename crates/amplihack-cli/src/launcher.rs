@@ -39,6 +39,12 @@ impl ManagedChild {
         self.child.wait().context("failed to wait for child")
     }
 
+    /// Take the child's stdin pipe, when it was spawned with `Stdio::piped()`
+    /// (issue #2030: the prompt goes to the agent on stdin, not in argv).
+    pub fn take_stdin(&mut self) -> Option<std::process::ChildStdin> {
+        self.child.stdin.take()
+    }
+
     /// Get the child's PID.
     pub fn id(&self) -> u32 {
         self.child.id()
