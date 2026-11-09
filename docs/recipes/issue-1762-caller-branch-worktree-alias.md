@@ -347,9 +347,10 @@ The alias is in effect when the resolver's output is not empty and differs from
   `step-18c-push-feedback-changes` and `step-20b-push-cleanup`) write at most
   `refs/heads/<B>` on `origin`, as a fast-forward, and never push the alias as
   a branch. No push uses `--force`, `--force-with-lease` or a `+` refspec.
-- The orphan sweep is the only part of a run that can push a ref named after
-  the alias: `refs/amplihack-archive/<alias>`, for a stale alias worktree with
-  unmerged commits. See [Cleaning up alias worktrees](#cleaning-up-alias-worktrees).
+- The orphan sweep never writes to any remote (#2061). For a stale alias
+  worktree with unmerged commits it writes the local ref
+  `refs/amplihack-archive/<alias>` only. See
+  [Cleaning up alias worktrees](#cleaning-up-alias-worktrees).
 - The `-u` fallbacks in steps 18c and 20b name `<B>` as the destination, so a
   missing `origin/<B>` tracking ref cannot publish the alias name or point the
   alias at a new upstream.
@@ -543,7 +544,7 @@ handles them like any task worktree:
 |---|---|
 | Newer than `AMPLIHACK_WORKTREE_STALE_SECS` (default 86400) | Left alone |
 | Stale, clean, and its changes already in the base | Removed together with the alias branch |
-| Stale and holding commits not in the base | Archived to `refs/amplihack-archive/<alias>` and kept. The alias is never on `origin`, so the best-effort archive push writes `refs/amplihack-archive/<alias>` on `origin`, which branch listings do not show. |
+| Stale and holding commits not in the base | Archived to the local ref `refs/amplihack-archive/<alias>` and kept. Nothing is pushed to `origin` ([#2061](issue-2061-sweep-local-archive.md)). |
 | Uncommitted or untracked files | Left alone |
 
 To remove one by hand:
