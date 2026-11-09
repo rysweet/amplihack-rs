@@ -4,13 +4,18 @@
 //! # Responsibilities
 //!
 //! 1. **Metrics**: Records tool invocation metrics (tool name, category,
-//!    timestamp) to a JSONL file for later analysis.
+//!    timestamp) to `runtime/sessions/<key>/metrics/post_tool_use_metrics.jsonl`
+//!    under the amplihack state root for later analysis.
 //! 2. **Validation**: Performs tool-specific result validation for
 //!    Write/Edit/MultiEdit operations and emits warnings on failure.
 //! 3. **Blarify staleness** (parity with `blarify_staleness_hook.py`):
 //!    When a code file is modified via Write/Edit/MultiEdit the hook writes a
-//!    `.amplihack/blarify_stale` marker file so that the next session start (or
-//!    explicit `amplihack index-code`) knows to trigger a re-index.
+//!    `runtime/projects/<project key>/blarify_stale` marker under the state
+//!    root, keyed by a hash of the working directory.
+//!
+//! All state is written under the amplihack state root
+//! (`AMPLIHACK_HOME`, else `$HOME/.amplihack`), never the working directory
+//! (#1963). With no state root, these writes are skipped.
 //!
 //! None of these operations block the tool — failure policy is `Open`.
 
@@ -23,7 +28,7 @@ mod workflow;
 mod tests;
 
 use crate::protocol::{FailurePolicy, Hook};
-use amplihack_types::{HookInput, ProjectDirs};
+use amplihack_types::{HookInput, ProjectDirs, amplihack_state_root, session_state_dir_under};
 use serde_json::Value;
 
 // Re-export for crate-level access (used by user_prompt.rs).
@@ -42,7 +47,7 @@ use std::fs;
 #[cfg(test)]
 use validation::{extract_written_paths, is_code_file};
 #[cfg(test)]
-use workflow::{WorkflowEnforcementState, read_workflow_state, write_workflow_state};
+use workflow::WorkflowEnforcementState;
 
 pub struct PostToolUseHook;
 
@@ -76,20 +81,43 @@ impl Hook for PostToolUseHook {
             tracing::warn!("{}", w);
         }
 
-        // Blarify staleness detection (parity with blarify_staleness_hook.py).
-        mark_blarify_stale_if_needed(&tool_name, &tool_input);
-
+        // Launcher detection only reads the working directory.
         let dirs = ProjectDirs::from_cwd();
         if let Some(message) = launcher::copilot_post_tool_use_message(&dirs, &tool_name) {
             tracing::info!("{}", message);
         }
 
-        let workflow_warning =
-            update_workflow_enforcement(&tool_name, &tool_input, session_id.as_deref());
+        // Every write below goes under the state root, never the cwd (#1963).
+        let Some(state_root) = amplihack_state_root() else {
+            tracing::warn!(
+                "post-tool-use state not saved: no amplihack state root (set HOME or AMPLIHACK_HOME)"
+            );
+            return Ok(Value::Object(serde_json::Map::new()));
+        };
+
+        // Blarify staleness detection (parity with blarify_staleness_hook.py).
+        mark_blarify_stale_if_needed(&state_root, &tool_name, &tool_input);
+
+        let workflow_warning = update_workflow_enforcement(
+            &state_root,
+            &tool_name,
+            &tool_input,
+            session_id.as_deref(),
+        );
 
         // Record the tool metric with category.
-        if let Err(e) = save_tool_metric(&tool_name, session_id.as_deref(), warning.as_deref()) {
-            tracing::warn!("Failed to save tool metric: {}", e);
+        let session_dir = session_state_dir_under(&state_root, session_id.as_deref());
+        if let Err(e) = save_tool_metric(
+            &session_dir,
+            &tool_name,
+            session_id.as_deref(),
+            warning.as_deref(),
+        ) {
+            tracing::warn!(
+                "Failed to save tool metric under {}: {}",
+                session_dir.display(),
+                e
+            );
         }
 
         let mut output = serde_json::Map::new();
