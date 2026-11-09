@@ -83,10 +83,12 @@ fn active_workflow_wins_over_the_marker() {
 
 // ---- robustness and security (S3 to S11) ----
 
-/// Put a file where the state directory should be, so every state write fails.
+/// Put a file where the sessions directory of the state root should be, so
+/// every state write fails.
 fn make_state_unwritable(iso: &Isolated) {
-    fs::create_dir_all(iso.dir.path().join(".claude/runtime")).unwrap();
-    fs::write(iso.state_dir(), "not a directory").unwrap();
+    let sessions = iso.sessions_dir();
+    fs::create_dir_all(sessions.parent().unwrap()).unwrap();
+    fs::write(sessions, "not a directory").unwrap();
 }
 
 #[test]
