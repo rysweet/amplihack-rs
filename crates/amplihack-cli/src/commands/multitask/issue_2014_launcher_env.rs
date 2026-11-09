@@ -189,6 +189,8 @@ impl Drop for StopGuard {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(handle) = self.handle.take() {
+            // Only reached on panic paths; `finish()` asserts the join on the
+            // normal path. A second panic inside Drop would abort the process.
             let _ = handle.join();
         }
     }

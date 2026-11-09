@@ -128,9 +128,8 @@ profile store are never reached. To test the exports themselves, pass
 `recipe_run_script` or `classic_run_script`. `getter` is private to
 `command_builder_tests.rs`, so write such tests in that file; only `no_env`
 and `keep` are `pub(super)`. Do not widen `getter` to import it elsewhere.
-Do not set the variables in the
-process for these tests. The two-argument launchers are tested only by
-`issue_2014_launcher_env.rs`, under `with_env`.
+Do not set the variables in the process for these tests. The two-argument
+launchers are tested only by `issue_2014_launcher_env.rs`, under `with_env`.
 
 See [Bug Fix #2014](../bugfixes/bugfix-2014-multitask-launcher-env-race.md)
 for the seam and the regression tests.
