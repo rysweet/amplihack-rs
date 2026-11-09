@@ -9,6 +9,10 @@
 //! `emailAddress` is present; other keys are ignored. An absent key or a
 //! top-level `null` still loads as `None`.
 //!
+//! The readers that feed the writers (`Account::from_profile`,
+//! `Account::from_block`) apply the same e-mail rule, so a stored identity
+//! always loads again; the tests at the end pin that.
+//!
 //! Every refused case checks the exact message, that the value never reaches
 //! Display or Debug, and that the file is left byte-identical. Assertion
 //! messages name only the case index, never a body.
@@ -204,4 +208,123 @@ fn identity_valid_applies_the_rule() {
     assert!(!identity(json!({"accountUuid": "uuid-work", "organizationUuid": 7})).valid());
     assert!(!identity(json!({"emailAddress": "a@b@c"})).valid());
     assert!(!identity(json!("uuid-work")).valid());
+}
+
+// --- Writers follow the loader's rule ----------------------------------------
+//
+// `swap_finish` and `handfix` store `Identity::new(account)` for an account
+// read by `Account::from_profile` (the server answer) or `Account::from_block`
+// (`.claude.json`). Both readers apply the loader's e-mail rule, so a stored
+// identity always passes `Identity::valid` and the next `load_ledger` accepts
+// it. These tests pin that invariant over every e-mail the refusal table uses
+// and over values that lower-casing would push past the 320-byte limit.
+
+/// Every string e-mail from the refusal table, plus inputs that only fail
+/// after lower-casing and a few the readers must still accept.
+fn writer_emails() -> Vec<String> {
+    let mut v: Vec<String> = refused()
+        .iter()
+        .filter_map(|b| b.get("emailAddress")?.as_str().map(str::to_string))
+        .collect();
+    assert!(v.len() >= 10, "the refusal table lost its e-mail cases");
+    // 306 bytes as sent; 456 bytes once `İ` (2 bytes) lowers to `i̇` (3).
+    v.push(format!("{}@x.com", "\u{0130}".repeat(150)));
+    // Exactly 320 bytes as sent, 321 once lowered.
+    v.push(format!("\u{0130}{}@x.com", "a".repeat(312)));
+    v.extend(
+        [
+            "no-at",
+            "a b@x.com",
+            "a@b",
+            "Work.Person@Example.COM",
+            "\u{0130}@x.com",
+        ]
+        .map(String::from),
+    );
+    v
+}
+
+fn profile(uuid: Option<&str>, email: &str) -> Value {
+    let mut account = json!({"email": email});
+    if let Some(u) = uuid {
+        account["uuid"] = u.into();
+    }
+    json!({"account": account, "organization": {"uuid": "org-work"}})
+}
+
+fn claude_block(uuid: Option<&str>, email: &str) -> Value {
+    let mut b = json!({"emailAddress": email, "organizationUuid": "org-work"});
+    if let Some(u) = uuid {
+        b["accountUuid"] = u.into();
+    }
+    b
+}
+
+#[test]
+fn every_account_a_reader_produces_stores_a_valid_identity() {
+    for (i, email) in writer_emails().iter().enumerate() {
+        for uuid in [None, Some("uuid-work")] {
+            for (src, account) in [
+                ("profile", Account::from_profile(&profile(uuid, email))),
+                ("block", Account::from_block(&claude_block(uuid, email))),
+            ] {
+                let Some(account) = account else {
+                    assert!(uuid.is_none(), "case {i} {src}: a uuid alone is an account");
+                    continue;
+                };
+                assert!(
+                    Identity::new(&account).valid(),
+                    "case {i} {src}: writer produced an identity the loader refuses"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_malformed_server_email_counts_as_missing() {
+    for (i, email) in writer_emails().iter().enumerate() {
+        let accepted = identity(json!({"emailAddress": email})).valid();
+        let read = Account::from_profile(&profile(Some("uuid-work"), email)).unwrap();
+        assert_eq!(
+            read.email().is_some(),
+            accepted,
+            "case {i}: reader and loader disagree"
+        );
+        assert_eq!(
+            Account::from_profile(&profile(None, email)).is_some(),
+            accepted,
+            "case {i}: e-mail-only account"
+        );
+    }
+}
+
+#[test]
+fn lower_casing_cannot_push_a_stored_email_over_the_limit() {
+    let at_limit = format!("\u{0130}{}@x.com", "a".repeat(312));
+    assert_eq!(at_limit.len(), 320);
+    assert!(at_limit.to_lowercase().len() > 320);
+    let account = Account::from_profile(&profile(Some("uuid-work"), &at_limit)).unwrap();
+    assert!(account.email().is_none());
+    assert!(!identity(json!({"emailAddress": at_limit})).valid());
+    let fits = Account::from_profile(&profile(None, "\u{0130}@x.com")).unwrap();
+    assert_eq!(fits.email(), Some("i\u{0307}@x.com"));
+}
+
+#[test]
+fn a_swap_finish_style_save_of_any_reader_account_loads_again() {
+    for (i, email) in writer_emails().iter().enumerate() {
+        let Some(account) = Account::from_profile(&profile(Some("uuid-work"), email)) else {
+            panic!("case {i}: uuid account missing");
+        };
+        let r = root();
+        let l = RotateLedger {
+            live: Some("work".into()),
+            account: Some(account.key().to_string()),
+            login_identity: Some(Identity::new(&account)),
+            ..RotateLedger::default()
+        };
+        r.rs.save_ledger(&l).unwrap();
+        assert!(r.rs.load_ledger().is_ok(), "case {i}: own write refused");
+    }
 }

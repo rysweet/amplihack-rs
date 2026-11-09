@@ -9279,7 +9279,12 @@ For session/display callers, an account is read from the `oauthAccount`
 object of a `.claude.json`:
 `accountUuid` (the user), `organizationUuid` (the organization) and
 `emailAddress`. A value that is not a string, is over 320 bytes or contains
-control characters counts as missing. Only these fields are read.
+control characters counts as missing. The e-mail address is lower-cased, and
+it also counts as missing unless the lower-cased form is still at most 320
+bytes and has exactly one `@`, text on both sides of it and no whitespace.
+The profile endpoint's answer (`account.uuid`, `organization.uuid` and
+`account.email`), which rotation and `profile verify` read, follows the same
+rules. Only these fields are read.
 
 | Left | Right | Same account |
 |------|-------|--------------|
@@ -9308,6 +9313,9 @@ a pending transaction with the binary that understands its journal.
 When the rotator loads the ledger, a present `login_identity` must meet
 the rule below. This is stricter than the session reading above: there, an
 unsafe value counts as missing, whereas in the ledger it stops the rotator.
+The values are the same, though: amplihack writes `login_identity` only from
+an account read under the rules above, so a block it wrote always loads
+again. Only a hand edit or a foreign writer can produce a block that fails.
 
 - it is a JSON object;
 - each of `accountUuid`, `organizationUuid` and `emailAddress`, where
@@ -9316,7 +9324,8 @@ unsafe value counts as missing, whereas in the ledger it stops the rotator.
   isolate characters (U+202A to U+202E and U+2066 to U+2069); a key set to
   `null`, a number or any other non-string fails;
 - `emailAddress`, where present, contains exactly one `@`, has text on both
-  sides of it and contains no whitespace;
+  sides of it and contains no whitespace, and is still at most 320 bytes
+  once lower-cased;
 - at least one of `accountUuid` and `emailAddress` is present, so `{}` and a
   block holding only `organizationUuid` fail.
 
@@ -9329,6 +9338,14 @@ the file is never overwritten: the cycle ends with the
 [unreadable-ledger stop](#unreadable-ledger-stop), `profile switch` refuses
 with the same line, and no login moves. The block is never repaired, dropped
 or replaced silently.
+
+Other readers of the rotate ledger treat a refused ledger as absent, as they
+do for any other unreadable ledger: `profile verify` and the profile-kind check name
+no live profile, `profile usage` and `profile overflow` warn and show no
+API-key or spend block, and auto-switch's takeover and overflow checks fall
+back to the choices they make with no ledger. The Claude Code status line
+reads the auto-switch ledger (`<root>/.auto-switch.d/ledger.json`), not this
+one, and is unaffected.
 
 To recover, stop the rotator with `amplihack profile rotate stop`. In
 `<root>/.auto-switch.d/rotate/ledger.json`, remove the `login_identity` key
