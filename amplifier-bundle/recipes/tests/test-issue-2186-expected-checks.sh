@@ -238,6 +238,8 @@ check "EC-reads-at-head" "check-runs, status, runs and workflow contents are rea
 check "EC-runs-event-pr" "workflow runs are read for event=pull_request" grep -qF 'event=pull_request' "${CALLS}"
 check "EC-paginate" "check-runs, runs and jobs are read with --paginate" \
   bash -c 'for e in check-runs actions/runs\? /jobs rules/branches; do grep -E "$e" "$1" | grep -q -- --paginate || exit 1; done' _ "${CALLS}"
+check "EC-check-runs-filter-all" "check-runs are requested with filter=all, not GitHub's default latest" \
+  grep -qF "commits/${HEAD}/check-runs?per_page=100&filter=all" "${CALLS}"
 ran_check "EC-no-other-sha" "nothing is read at any SHA other than the head" \
   bash -c '! grep -oE "[0-9a-f]{40}" "$1" | grep -vxF "$2" | grep -q .' _ "${CALLS}" "$HEAD"
 
@@ -704,6 +706,49 @@ match_case comment-line "a commented-out job is not expected" '  real:
 #  ghost:
 #    name: Ghost
 ' "Real" GREEN
+
+# A comment after a key is not its value: `pull_request: # note` and
+# `jobs: # build jobs` must scan as empty values, not as inline ones.
+comment_case() { # comment_case <id> <description> <yaml>
+  local fx; fx="$(new_fx)"; ec_wf "$fx" c.yml "$3"
+  ec_run "$fx" 1006 .github/workflows/c.yml __HEAD__; ec_job "$fx" 1006 Commented completed success
+  run_helper "$fx"
+  expect "EC-comment-$1" "$2 stays GREEN" GREEN 0
+  ran_check "EC-comment-$1-no-inline" "$2 gives no inline-value reason" \
+    bash -c '! grep -qF "inline" "$1"' _ "${WORK}/out"
+}
+comment_case after-keys "comments after on:, pull_request: and jobs:" "name: C
+on: # triggers
+  pull_request: # note
+    branches: [main] # base
+jobs: # build jobs
+  c: # the job
+    name: Commented # shown name
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+"
+comment_case after-flow-list "a comment after an on: flow list" "name: C
+on: [pull_request] # x
+jobs:
+  c:
+    name: Commented
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo
+"
+
+# A tab inside a quoted job name must not shift the scanner's fields: the job
+# has no job-level if:, so absent from a completed run it blocks.
+FX="$(new_fx)"
+ec_wf "$FX" t.yml "$(printf 'name: T\non: pull_request\njobs:\n  t:\n    name: "x\t1"\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n')"
+ec_run "$FX" 1007 .github/workflows/t.yml __HEAD__; ec_job "$FX" 1007 Other completed success
+run_helper "$FX"
+if verdict_is MISSING 1 && ! has_prefix "not created (job-level if:"; then
+  pass "EC-S-tab-in-name" "a tab in a job name does not turn the job into an if: job"
+else
+  fail "EC-S-tab-in-name" "a tab in a job name does not turn the job into an if: job"; explain
+fi
 
 # ---------------------------------------------------------------------------
 # 9. Security.

@@ -41,19 +41,15 @@ case "$BASE" in
   ''|-*|/*|*/|*..*|*//*|*.lock|*[!A-Za-z0-9._/-]*) usage "BASE_REF is not a plain branch name" ;;
 esac
 
-# Without jq nothing can be read, and the verdict cannot be built with jq.
-fatal_nojq() {
+# Stop with an UNREADABLE verdict (a literal, so it works without jq).
+fatal() {
   echo "blocker: expected checks unreadable: $1"
   printf '%s\n' '{"ci_status":"UNREADABLE","missing":[],"blockers":1}'
   exit 1
 }
-command -v jq >/dev/null 2>&1 || fatal_nojq "jq is not installed"
-if [ "$(printf '%s' '"YQ=="' | jq -r '@base64d' 2>/dev/null)" != "a" ]; then
-  echo "blocker: expected checks unreadable: jq 1.6 or later is required (@base64d)"
-  jq -cn '{ci_status: "UNREADABLE", missing: [], blockers: 1}'
-  exit 1
-fi
-T="$(mktemp -d "${TMPDIR:-/tmp}/autodrive-ec.XXXXXX" 2>/dev/null)" || fatal_nojq "no private temporary directory"
+command -v jq >/dev/null 2>&1 || fatal "jq is not installed"
+[ "$(printf '%s' '"YQ=="' | jq -r '@base64d' 2>/dev/null)" = "a" ] || fatal "jq 1.6 or later is required (@base64d)"
+T="$(mktemp -d "${TMPDIR:-/tmp}/autodrive-ec.XXXXXX" 2>/dev/null)" || fatal "no private temporary directory"
 trap 'rm -rf -- "$T"' EXIT
 : > "${T}/unr"
 unr() { printf '%s\n' "$1" >> "${T}/unr"; }
@@ -75,7 +71,8 @@ get() {
     grep -qF '(HTTP 404)' "${GOT}.err" && return 4
     return 1
   fi
-  [ -s "${GOT}.raw" ] && jq -s . "${GOT}.raw" > "$GOT" 2>/dev/null
+  # Only gh's 404 above may return 4, so a jq failure is always 1.
+  [ -s "${GOT}.raw" ] && jq -s . "${GOT}.raw" > "$GOT" 2>/dev/null || return 1
 }
 
 # read_into <out> <paginate> <endpoint> <jq filter over the pages>: writes the
@@ -107,8 +104,9 @@ read_into "${T}/branch.json" 0 "branches/${BASE}" \
 jq -cn --slurpfile a "${T}/rules.json" --slurpfile b "${T}/branch.json" \
   '($a[0] + $b[0]) | reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end)' > "${T}/req.json"
 
-# --- What exists at the head: check-runs and commit statuses.
-read_into "${T}/cr.json" 1 "commits/${SHA}/check-runs?per_page=100" \
+# --- What exists at the head: check-runs (filter=all, so S1 sees every suite)
+# and commit statuses.
+read_into "${T}/cr.json" 1 "commits/${SHA}/check-runs?per_page=100&filter=all" \
   'if all(.[]; type == "object" and (.check_runs | type) == "array") then
      [.[].check_runs[] | {id, name, status, conclusion, suite: (.check_suite.id // null)}]
    else error("shape") end'
@@ -156,6 +154,7 @@ function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
 function val(s,   c, e) {
   s = trim(s); c = substr(s, 1, 1)
   if (c == "\"" || c == SQ) { e = index(substr(s, 2), c); return (e > 0) ? substr(s, 2, e - 1) : substr(s, 2) }
+  if (c == "#") return ""
   sub(/[ \t]+#.*$/, "", s); return trim(s)
 }
 function key(s) { sub(/[ \t]*:([ \t].*)?$/, "", s); return val(s) }
@@ -167,7 +166,7 @@ function items(s, k,   n, a, i, v) {
     for (i = 1; i <= n; i++) { v = val(a[i]); if (v != "") print k "\t" v }
   } else if (s != "") print k "\t" s
 }
-function flush() { if (jk != "") print "J\t" jk "\t" jn "\t" jif; jk = "" }
+function flush() { if (jk != "") { gsub(/\t/, " ", jk); gsub(/\t/, " ", jn); print "J\t" jk "\t" jn "\t" jif }; jk = "" }
 BEGIN { SQ = sprintf("%c", 39); KEYRE = "^[^ #-][^:]*:([ \t]|$)" }
 { sub(/\r$/, "") }
 /^[ \t]*(#|$)/ { next }
@@ -254,12 +253,16 @@ while IFS= read -r P; do
      || ! jq -R -s -c --arg base "$BASE" "$DECIDE" "${F}.tsv" > "${F}.d" 2>/dev/null; then
     unr "${P} could not be scanned"; continue
   fi
-  ERRM="$(jq -r '.error // empty' "${F}.d")"
-  if [ -n "$ERRM" ]; then unr "${P} could not be scanned (${ERRM})"; continue; fi
-  [ "$(jq -r '.expected' "${F}.d")" = "true" ] || continue
+  DEC="$(jq -r 'if .error then "error: " + .error elif .expected then "yes" else "no" end' "${F}.d")"
+  case "$DEC" in
+    "error: "*) unr "${P} could not be scanned (${DEC#error: })"; continue ;;
+    yes) ;;
+    *) continue ;;
+  esac
   # D6: the latest run (highest id) for this path at the head decides.
-  RID="$(jq -r --arg p "$P" '[.[] | select(.path == $p)] | max_by(.id) | .id // empty' "${T}/runs.json")"
-  RST="$(jq -r --arg p "$P" '[.[] | select(.path == $p)] | max_by(.id) | .status // empty' "${T}/runs.json")"
+  RID=""; RST=""
+  IFS=$'\t' read -r RID RST < <(jq -r --arg p "$P" \
+    '[.[] | select(.path == $p)] | max_by(.id) | [.id // "", .status // ""] | @tsv' "${T}/runs.json")
   echo null > "${F}.j"
   if [ -n "$RID" ]; then
     read_into "${F}.j" 1 "actions/runs/${RID}/jobs?per_page=100" \
@@ -352,16 +355,13 @@ $req[0] as $req | $wfs[0] as $wfs | $st[0] as $st
              elif any($cats[]; . == "R") then "RED" elif any($cats[]; . == "P") then "PENDING"
              elif $n > 0 then "RED" else "GREEN" end) }
 '
-if ! jq -n -c --arg sha "$SHA" --slurpfile req "${T}/req.json" --slurpfile cr "${T}/cr.json" \
+# One jq run evaluates and prints the lines and the verdict; the output is
+# buffered so a failed evaluation prints nothing but the UNREADABLE verdict.
+if ! jq -n -r --arg sha "$SHA" --slurpfile req "${T}/req.json" --slurpfile cr "${T}/cr.json" \
      --slurpfile st "${T}/st.json" --slurpfile wfs "${T}/wfs.json" --slurpfile unr "${T}/unr.json" \
-     "$EVAL" > "${T}/result.json" 2>/dev/null; then
-  echo "blocker: expected checks unreadable: the evaluation failed"
-  jq -cn '{ci_status: "UNREADABLE", missing: [], blockers: 1}'
-  exit 1
+     "${EVAL} | .lines[], ({ci_status: .status, missing, blockers} | tojson)" > "${T}/result" 2>/dev/null; then
+  fatal "the evaluation failed"
 fi
-jq -r '.lines[]' "${T}/result.json"
-STATUS="$(jq -r '.status' "${T}/result.json")"
-jq -cn --arg s "$STATUS" --argjson m "$(jq -c '.missing' "${T}/result.json")" \
-  --argjson n "$(jq '.blockers' "${T}/result.json")" '{ci_status: $s, missing: $m, blockers: $n}'
-[ "$STATUS" = "GREEN" ] && exit 0
+cat "${T}/result"
+case "$(tail -n 1 "${T}/result")" in '{"ci_status":"GREEN",'*) exit 0 ;; esac
 exit 1

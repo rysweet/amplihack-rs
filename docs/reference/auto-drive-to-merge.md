@@ -3331,6 +3331,10 @@ the base branch, which the helper always enforces.
 - **Workflow list read at the head only.** A pull request that deletes or
   renames a workflow removes it from the defined jobs. Required checks from
   the base branch still apply, and crusty reviews workflow changes.
+- **Only active workflows are expected.** A workflow that `actions/workflows`
+  does not list as `active` is not expected. A workflow that the pull request
+  adds, and that has never run, is therefore not required. As with deleted
+  workflows, required checks from the base branch are the defence.
 - **Required checks from `branches/<base>`.** Classic protection is read from
   the branch object, not the admin-only protection endpoint.
 - **Jobs with a job-level `if:`.** One absent from a completed run is noted,
@@ -3339,8 +3343,10 @@ the base branch, which the helper always enforces.
   gives it nothing new; required checks still apply.
 - **jq 1.6 or later** is required; older jq gives `UNREADABLE`.
 - **`neutral` blocks** on every check at the head, expected or not.
-- **`skipped` passes only for a defined job.** A required status or check-run
-  that reports `skipped` with no job behind it blocks.
+- **`skipped` passes only for a defined job.** A required check that reports
+  `skipped` passes when its name matches a job in one of the pull request's
+  workflows, as GitHub itself treats a skipped required check. A required
+  status or check-run that reports `skipped` with no job behind it blocks.
 
 `GH_REPO` and `GH_HOST` are taken from the operator's environment, as for every
 other `gh` call in this workflow.

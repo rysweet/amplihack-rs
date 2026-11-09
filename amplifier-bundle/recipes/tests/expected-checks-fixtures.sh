@@ -67,6 +67,8 @@ case "$P" in
   branches/*/protection*) echo '{"message":"Must have admin rights to Repository.","status":"404"}'; echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
   branches/*) emit branch.json ;;
   commits/*/check-runs)
+    # The helper must ask for every run (filter=all), not GitHub's latest only.
+    [ "$(qv filter)" = all ] || { echo "gh: fake route wants filter=all on check-runs" >&2; exit 1; }
     S="${P#commits/}"; S="${S%%/*}"
     emit check-runs.json "(.check_runs |= map(select(.head_sha == \"${S}\"))) | .total_count = (.check_runs | length)" ;;
   commits/*/status)
