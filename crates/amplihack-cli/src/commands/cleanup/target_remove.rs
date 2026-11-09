@@ -76,7 +76,7 @@ pub(super) enum Refusal {
 impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InUse => f.write_str("in use: .cargo-lock held"),
+            Self::InUse => f.write_str("in use: .cargo-lock is held"),
             Self::ChangedSincePlan => f.write_str("changed since plan"),
             Self::Link(reason) => write!(f, "link not followed: {}", reason.as_str()),
             Self::NotManaged => f.write_str("outside the folders cleanup manages"),
@@ -336,8 +336,9 @@ pub(super) fn inspect_entry(
 }
 
 /// Takes `LOCK_EX | LOCK_NB` on `lock` when it is a real file. `Ok(None)`
-/// when there is no lock file, or it is a link (cargo never makes one, and
-/// it is never opened through). Anything that stops the check is `InUse`.
+/// when there is no lock file. A linked lock is `InUse`: cargo never makes
+/// one, so the target is kept, and the link is never opened through.
+/// Anything else that stops the check is `InUse` too.
 fn lock_one(lock: &Path) -> Result<Option<fs::File>, Refusal> {
     let file = match fs::OpenOptions::new()
         .read(true)
@@ -346,7 +347,6 @@ fn lock_one(lock: &Path) -> Result<Option<fs::File>, Refusal> {
     {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) if error.raw_os_error() == Some(libc::ELOOP) => return Ok(None),
         Err(_) => return Err(Refusal::InUse),
     };
     // SAFETY: the fd is valid for the life of `file`; closing it releases

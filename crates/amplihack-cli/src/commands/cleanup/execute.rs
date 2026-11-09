@@ -294,7 +294,22 @@ fn remove_run_target(
         refuse!("in use by a running process");
     }
     match target_remove::remove(&item.path, shape, roots, links, true) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            // (a) the run removed this worktree; (b) the checkout was gone.
+            let event = if after_checkout_gone.is_some() {
+                "a"
+            } else {
+                "b"
+            };
+            tracing::info!(
+                path = %item.path.display(),
+                event,
+                reason = %item.reason,
+                run_id = item.run_id.as_deref().unwrap_or(""),
+                "removed pre-commit target"
+            );
+            Ok(())
+        }
         Err(target_remove::RemoveError::Refused(refusal)) => refuse!("{refusal}"),
         Err(target_remove::RemoveError::Io(error)) => {
             Err(error).with_context(|| format!("cannot remove {}", item.path.display()))

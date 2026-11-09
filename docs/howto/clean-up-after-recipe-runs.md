@@ -541,10 +541,16 @@ The bundled recipe helpers do the same after their own worktree removals, in
 
 ```bash
 command -v amplihack >/dev/null 2>&1 \
-  && amplihack cleanup --apply --worktree-target "$wt" >/dev/null 2>&1 || true
+  && amplihack cleanup --apply --worktree-target "$wt" >/dev/null || true
 ```
 
-No helper deletes a target with `rm`. If `amplihack` is not installed, the
+The report on stdout is discarded, but errors and refusals still go to
+stderr, so they appear in the step log. No helper deletes a target with `rm`.
+
+When a helper runs inside an active run, that run usually records the
+target itself, so the call skips it as recorded by another live run. This
+is expected: the target is removed under rule (b) once the run has ended,
+because its checkout is gone by then. If `amplihack` is not installed, the
 target stays and is removed later under rule (b), if a run recorded it, or by
 the hook's stale-cache reclaim.
 
@@ -575,6 +581,10 @@ checkout path:
 | is relative | `amplihack cleanup: --worktree-target needs an absolute path: <path>` |
 | still exists, including the main checkout or a dangling link at that path | `amplihack cleanup: --worktree-target: checkout still exists: <path>` |
 | has a parent folder that cannot be resolved | `amplihack cleanup: --worktree-target: cannot resolve the parent of <path>` |
+| cannot be examined, for example because a parent folder denies access | `amplihack cleanup: --worktree-target: cannot examine checkout <path>: <error>` |
+
+Only "not found" counts as removed. Any other error leaves the checkout's
+state unknown, and the target is kept.
 
 It does not take the cleanup lock, so it can run while a sweep is in
 progress. It exits with `0` when nothing was found or the target was skipped,
@@ -924,18 +934,27 @@ Every target removal, whether by the sweep, after a worktree removal or by
 
 1. takes an exclusive, non-blocking lock on `<target>/.cargo-lock` and on the
    `.cargo-lock` of each real subfolder, such as `debug/` and `release/`.
-   Lock files are opened without following links and are never created;
+   Lock files are opened without following links and are never created.
+   A `.cargo-lock` that is itself a link counts as held, because Cargo never
+   makes one;
 2. if any lock is held, or a subfolder cannot be listed, skips the target
-   with `in use: .cargo-lock held` and deletes nothing;
+   with `in use: .cargo-lock is held` and deletes nothing;
 3. keeps every lock until the removal is finished, so a build cannot start in
    the target while it is being deleted;
 4. removes the resolved target folder without following links inside it,
    then, for a linked target, the link;
-5. logs each removal, with path, shape and event, at `info` level.
+5. logs each removal at `info` level with the path and shape, and a second
+   line with the event (`a`, `b` or `c` from
+   [When a target is removed](#when-a-target-is-removed)), the reason and the
+   run id.
 
 A held lock never makes cleanup wait or retry. The target is skipped and
 looked at again by the next sweep. A running process with a file open in the
 target also keeps it.
+
+Locks are checked one folder level deep only. A cross-compiled profile keeps
+its lock at `<target>/<triple>/<profile>/.cargo-lock`, which is not locked;
+such a build is protected by the running-process check instead.
 
 An error of any kind while checking a target, such as a permission error, a
 path in an unknown state, or a folder that cannot be listed, is a reason to
@@ -1013,7 +1032,7 @@ the folder that holds the destinations, for example
 again. If cleanup prints a warning that it ignored the entry, check that the
 folder exists, is owned by you, and is not writable by others.
 
-**A target is skipped with `in use: .cargo-lock held`.** A Cargo build is
+**A target is skipped with `in use: .cargo-lock is held`.** A Cargo build is
 using it. The next sweep looks at it again; nothing needs to be done.
 
 **A target stays after its worktree was removed.** Check how the worktree was

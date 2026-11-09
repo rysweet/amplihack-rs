@@ -605,7 +605,7 @@ struct Candidate<'a> {
 }
 
 /// The plan-time lock text of a five-field target (issue #2039, D8).
-const REASON_TARGET_IN_USE: &str = "in use: .cargo-lock held";
+const REASON_TARGET_IN_USE: &str = "in use: .cargo-lock is held";
 
 struct Collector<'a> {
     s: &'a Settings,
@@ -997,14 +997,14 @@ impl Collector<'_> {
                     }
                 };
                 let item = match verdict {
-                    Ok((reason, after_checkout_gone)) => {
-                        let lock_text = if c.owned.target.is_some() {
-                            REASON_TARGET_IN_USE
-                        } else {
-                            "in use: .cargo-lock is held"
-                        };
-                        target_item(c, &run.dir, reason, after_checkout_gone, id, lock_text)
-                    }
+                    Ok((reason, after_checkout_gone)) => target_item(
+                        c,
+                        &run.dir,
+                        reason,
+                        after_checkout_gone,
+                        id,
+                        REASON_TARGET_IN_USE,
+                    ),
                     Err(reason) => Item::skip(Category::RunTarget, path, reason, Some(id)),
                 };
                 self.items.push(item);
@@ -1153,7 +1153,7 @@ impl Collector<'_> {
                 self.items.push(Item::skip(
                     Category::UntaggedTarget,
                     &path,
-                    "in use: .cargo-lock is held",
+                    REASON_TARGET_IN_USE,
                     None,
                 ));
                 continue;
@@ -1373,20 +1373,18 @@ fn target_item(
     }
     // A legacy real folder keeps its #1808 removal, which needs no Cargo
     // shape; it still holds the `.cargo-lock` locks while deleting.
-    if c.owned.target.is_none() && shape == Shape::Dir {
-        return Item {
-            category: Category::RunTarget,
-            path: path.clone(),
-            canonical: c.canonical.clone(),
-            size_bytes: dir.and_then(tree_size),
-            reason,
-            run_id: Some(id.to_string()),
-            op: Op::RemoveDir {
-                run_dir: Some(run_dir.to_path_buf()),
-                cargo_lock: true,
-            },
-        };
-    }
+    let op = if c.owned.target.is_none() && shape == Shape::Dir {
+        Op::RemoveDir {
+            run_dir: Some(run_dir.to_path_buf()),
+            cargo_lock: true,
+        }
+    } else {
+        Op::RemoveTarget {
+            run_dir: run_dir.to_path_buf(),
+            shape,
+            after_checkout_gone,
+        }
+    };
     Item {
         category: Category::RunTarget,
         path: path.clone(),
@@ -1394,11 +1392,7 @@ fn target_item(
         size_bytes: dir.and_then(tree_size),
         reason,
         run_id: Some(id.to_string()),
-        op: Op::RemoveTarget {
-            run_dir: run_dir.to_path_buf(),
-            shape,
-            after_checkout_gone,
-        },
+        op,
     }
 }
 
@@ -1524,7 +1518,9 @@ fn worktree_target_entries(
             paths.push(path);
         }
     }
-    let runs = scan_runs(&settings.work_root);
+    // Listing the runs reads every run folder; most removed worktrees have
+    // no target, so it happens only once a target is found.
+    let mut runs: Option<Result<Vec<RunInfo>>> = None;
     let mut out = Vec::new();
     for path in paths {
         if fs::symlink_metadata(&path).is_err() {
@@ -1538,23 +1534,21 @@ fn worktree_target_entries(
             action,
             run_id: run_id.map(String::from),
         };
-        let shape = match target_remove::inspect(&path, roots, links, true) {
-            Ok(shape) => shape,
+        let checked = target_remove::inspect(&path, roots, links, true).and_then(|shape| {
+            target_remove::resolved(&path, &shape).map(|resolved| (shape, resolved))
+        });
+        let (shape, resolved) = match checked {
+            Ok(checked) => checked,
             Err(refusal) => {
                 out.push(entry(Action::Skipped, refusal.to_string(), None));
                 continue;
             }
         };
-        let resolved = match target_remove::resolved(&path, &shape) {
-            Ok(resolved) => resolved,
-            Err(refusal) => {
-                out.push(entry(Action::Skipped, refusal.to_string(), None));
-                continue;
-            }
-        };
-        let other = match &runs {
+        let other = match runs.get_or_insert_with(|| scan_runs(&settings.work_root)) {
             Ok(runs) => {
-                other_live_owner(runs, &path, "").or_else(|| other_live_owner(runs, &resolved, ""))
+                let own = run_id.unwrap_or("");
+                other_live_owner(runs, &path, own)
+                    .or_else(|| other_live_owner(runs, &resolved, own))
             }
             Err(error) => Some(format!("cannot list runs: {error:#}")),
         };
@@ -1563,13 +1557,14 @@ fn worktree_target_entries(
             continue;
         }
         let dir = (!matches!(shape, Shape::DanglingLink)).then_some(resolved.as_path());
-        let size = dir.and_then(tree_size);
         // A held build lock is the more precise reason, so it is checked
-        // before the process scan; `remove` takes the locks for real.
+        // before the process scan; `remove` takes the locks for real. It is
+        // also checked before the size walk: a target in use is not walked.
         if dir.is_some_and(cargo_lock_held) {
-            out.push(entry(Action::Skipped, REASON_TARGET_IN_USE.into(), size));
+            out.push(entry(Action::Skipped, REASON_TARGET_IN_USE.into(), None));
             continue;
         }
+        let size = dir.and_then(tree_size);
         if !settings.apply {
             out.push(entry(Action::WouldRemove, REASON.into(), size));
             continue;
@@ -1584,7 +1579,16 @@ fn worktree_target_entries(
         }
         out.push(
             match target_remove::remove(&path, &shape, roots, links, true) {
-                Ok(()) => entry(Action::Removed, REASON.into(), size),
+                Ok(()) => {
+                    tracing::info!(
+                        path = %path.display(),
+                        event = "c",
+                        reason = REASON,
+                        run_id = run_id.unwrap_or(""),
+                        "removed pre-commit target"
+                    );
+                    entry(Action::Removed, REASON.into(), size)
+                }
                 Err(target_remove::RemoveError::Refused(refusal)) => {
                     entry(Action::Skipped, refusal.to_string(), size)
                 }
@@ -1606,11 +1610,7 @@ pub(crate) fn worktree_target_sweep(settings: &Settings, checkout: &Path) -> Vec
     let roots = ManagedRoots::new(settings);
     let links = LinkRoots::from_env(&roots);
     let mut procs = None;
-    let entries = worktree_target_entries(checkout, settings, &roots, &links, &mut procs, None);
-    for e in entries.iter().filter(|e| e.action == Action::Removed) {
-        tracing::info!(path = %e.path.display(), event = "worktree removed", "removed pre-commit target");
-    }
-    entries
+    worktree_target_entries(checkout, settings, &roots, &links, &mut procs, None)
 }
 
 // ----- cleanup record -------------------------------------------------------

@@ -325,11 +325,17 @@ fn run_worktree_target(args: &CleanupArgs, checkout: &Path) -> Result<bool> {
             checkout.display()
         );
     }
-    if std::fs::symlink_metadata(checkout).is_ok() {
-        bail!(
+    // Only "not found" means gone; any other error leaves the state unknown.
+    match std::fs::symlink_metadata(checkout) {
+        Ok(_) => bail!(
             "--worktree-target: checkout still exists: {}",
             checkout.display()
-        );
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => bail!(
+            "--worktree-target: cannot examine checkout {}: {e}",
+            checkout.display()
+        ),
     }
     if targets::target_name(checkout).is_none() {
         bail!(

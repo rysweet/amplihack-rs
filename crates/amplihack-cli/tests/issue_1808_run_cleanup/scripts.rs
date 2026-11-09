@@ -617,6 +617,12 @@ fn teardown_sites_use_worktree_target_and_never_rm_a_target() {
         for line in text.lines().filter(|l| l.contains(call)) {
             assert!(line.contains("|| true"), "{file}: best effort: {line}");
             assert!(line.contains("command -v amplihack"), "{file}: {line}");
+            // Failures stay visible in the step log: stderr is never hidden.
+            let after = &line[line.find(call).unwrap()..];
+            assert!(
+                !after.contains("2>&1") && !after.contains("2>/dev/null"),
+                "{file}: --worktree-target must not hide stderr: {line}"
+            );
         }
     }
     for file in [

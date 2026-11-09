@@ -243,7 +243,7 @@ fn held_cargo_lock_keeps_a_run_target() {
 
     let report = fx.cleanup_json(&["--apply"]);
 
-    assert_kept(&report, &tgt, "in use: .cargo-lock held");
+    assert_kept(&report, &tgt, "in use: .cargo-lock is held");
 }
 
 /// D4: another active run that records the same target keeps it.

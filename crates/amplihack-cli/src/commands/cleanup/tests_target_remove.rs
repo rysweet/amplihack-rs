@@ -23,7 +23,7 @@
 //!   - Every ownership check in `inspect` and `remove` compares with `uid`.
 //! - `pub(super) enum LinkReason` and `pub(super) enum Refusal` whose single
 //!   `Display` gives every report text:
-//!   `in use: .cargo-lock held`, `changed since plan`, and
+//!   `in use: .cargo-lock is held`, `changed since plan`, and
 //!   `link not followed: <not a cargo target|outside allowed roots|link chain|foreign owner>`.
 //! - `pub(super) enum RemoveError { Refused(Refusal), Io(std::io::Error) }`.
 //! - `pub(super) fn inspect(path: &Path, roots: &ManagedRoots, links: &LinkRoots,
@@ -46,7 +46,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 
 const NAME: &str = "amplihack-precommit-target-0123456789ab";
 const OTHER: &str = "amplihack-precommit-target-ba9876543210";
-const IN_USE: &str = "in use: .cargo-lock held";
+const IN_USE: &str = "in use: .cargo-lock is held";
 const CHANGED: &str = "changed since plan";
 
 struct Fx {
@@ -548,7 +548,10 @@ fn a_linked_cargo_lock_is_never_opened_through_or_deleted() {
     // Hold the outside file: a lock taken through the link would conflict.
     let _held = hold(&outside.join("lockfile"));
 
-    let _ = fx.remove(&dir, &Shape::Dir, &fx.no_links(), false);
+    // Cargo never makes a linked lock, so the target is kept as in use.
+    let result = fx.remove(&dir, &Shape::Dir, &fx.no_links(), false);
+    assert_eq!(refusal_text(result), IN_USE);
+    assert!(dir.join("debug/blob").exists(), "the target must be kept");
     assert_eq!(
         fs::read_to_string(outside.join("lockfile")).unwrap(),
         "precious"
@@ -626,7 +629,7 @@ fn refusal_display_texts_are_the_documented_ones() {
     let dir = cargo_dir(&fx.targets.join(NAME));
     let _held = hold(&dir.join(".cargo-lock"));
     let text = refusal_text(fx.remove(&dir, &Shape::Dir, &fx.no_links(), false));
-    assert_eq!(text, "in use: .cargo-lock held");
+    assert_eq!(text, "in use: .cargo-lock is held");
     assert!(!text.contains('\n'));
 }
 

@@ -307,7 +307,7 @@ fn checked_out_branch_ignores_a_tag_with_the_same_name() {
 // - report texts: `checkout gone`, `worktree removed by run cleanup`,
 //   `worktree kept`, `checkout not owned by this run`,
 //   `reused target; checkout still exists`, `checkout state unknown: <error>`,
-//   `in use: .cargo-lock held`.
+//   `in use: .cargo-lock is held`.
 
 const T1: &str = "amplihack-precommit-target-0123456789ab";
 const T2: &str = "amplihack-precommit-target-abcdef012345";
@@ -520,6 +520,26 @@ fn untagged_target_links_are_still_not_followed() {
     assert!(dest.join("debug/keep-me").exists(), "{entries:#?}");
 }
 
+/// A folder a managed link points at is not an untagged target on its own:
+/// removing it alone would leave the link dangling. The same folder with no
+/// link to it is removed, so the guard is what keeps it.
+#[test]
+fn untagged_folder_behind_a_managed_link_is_not_planned() {
+    let fx = Fx::new();
+    let linked = cargo_target(&fx.hook_base.join(T2));
+    symlink(&linked, fx.work.targets_dir().join(T1)).unwrap();
+    let control = cargo_target(&fx.hook_base.join("amplihack-precommit-target-fedcba987654"));
+
+    let entries = run_sweep(&fx.settings(&[Category::UntaggedTarget]), true).unwrap();
+
+    assert!(
+        !entries.iter().any(|e| e.path == linked),
+        "a link destination must not be planned: {entries:#?}"
+    );
+    assert!(linked.join("debug/keep-me").exists());
+    assert_eq!(entry(&entries, &control).action, Action::Removed);
+}
+
 /// D9, SR1: a forged 5-field line naming a folder outside the managed roots
 /// is skipped even when its checkout is gone.
 #[test]
@@ -562,7 +582,7 @@ fn new_format_target_with_held_cargo_lock_is_in_use() {
 
     let e = entry(&entries, &t);
     assert_eq!(e.action, Action::Skipped, "{e:?}");
-    assert_eq!(e.reason, "in use: .cargo-lock held");
+    assert_eq!(e.reason, "in use: .cargo-lock is held");
     assert!(t.join("debug/keep-me").exists());
     drop(lock);
     let entries = run_sweep(&far_keep(&fx), true).unwrap();

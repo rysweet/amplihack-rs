@@ -114,6 +114,50 @@ fn refuses_a_path_whose_parent_cannot_be_resolved() {
     );
 }
 
+/// Restores a folder's mode on drop, so a failed test can still be cleaned.
+struct ModeGuard(PathBuf, u32);
+
+impl Drop for ModeGuard {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(self.1));
+    }
+}
+
+/// SR6: only "not found" means the checkout is gone. A checkout that cannot
+/// be examined, here because its parent is mode 000, is refused and its
+/// target is kept.
+#[test]
+fn refuses_a_checkout_that_cannot_be_examined() {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: root ignores mode 000");
+        return;
+    }
+    let fx = Fx::new();
+    let locked = fx.root.join("locked");
+    let wt = locked.join("feat");
+    fs::create_dir_all(&wt).unwrap();
+    let tgt = cargo_target_at(&fx.work.join("targets").join(hook_target_name(&wt)));
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let _restore = ModeGuard(locked.clone(), 0o755);
+
+    let out = worktree_target(&fx, &["--apply"], &wt);
+
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "--worktree-target: cannot examine checkout {}",
+            wt.display()
+        )),
+        "{}",
+        describe(&out)
+    );
+    assert!(tgt.join("debug/blob").exists(), "the target must be kept");
+}
+
 #[test]
 fn removes_the_target_of_a_removed_worktree() {
     let fx = Fx::new();
@@ -249,7 +293,7 @@ fn keeps_a_target_whose_cargo_lock_is_held() {
 
     let e = entry_for(&report, &tgt);
     assert_eq!(e["action"], "skipped", "{e:#}");
-    assert_eq!(e["reason"], "in use: .cargo-lock held");
+    assert_eq!(e["reason"], "in use: .cargo-lock is held");
     assert!(tgt.join("debug/blob").exists());
 }
 
