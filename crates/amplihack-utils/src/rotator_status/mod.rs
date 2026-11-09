@@ -6,6 +6,7 @@
 //! - [`auto_switch_on`], [`parse_toggle`]: the auto-switch toggle (`gate.rs`).
 //! - [`read_cycle`]: the rotate ledger's last cycle (`ledger.rs`).
 //! - [`rotator_down`], [`daemon_state`]: whether the rotator runs (`daemon.rs`).
+//! - [`swap_record`]: the record the rotator writes after a swap (issue #2085).
 //!
 //! Nothing here creates, changes or locks a file.
 
@@ -14,6 +15,7 @@ mod daemon;
 mod gate;
 mod ledger;
 mod root;
+pub mod swap_record;
 
 #[cfg(unix)]
 pub use daemon::{
@@ -33,32 +35,26 @@ pub use root::{
 
 use std::time::Duration;
 
-/// How long the hook waits for a fresh rotator cycle with capacity: one
-/// week, the longest any usage limit lasts, so a session stopped while every
-/// login is spent resumes when the first one resets (issue #1659).
+/// The limit-resume hook's lifetime cap: one week, the longest any usage
+/// limit lasts. A session stopped while every login is spent waits this
+/// long for a swap record (issues #1659, #2085); the deadline never resumes.
 pub const MAX_WAIT: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-
-/// How often the hook reads the ledger during the first `SLOW_POLL_AFTER`.
-pub const POLL_INTERVAL: Duration = Duration::from_secs(15);
-
-/// After this long the hook reads the ledger every `SLOW_POLL_INTERVAL`.
-pub const SLOW_POLL_AFTER: Duration = Duration::from_secs(60 * 60);
-
-/// How often the hook reads the ledger once a wait has gone on for an hour:
-/// a week of waiting is about 2,000 small reads.
-pub const SLOW_POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
 /// For a ledger without `last_cycle.measured_at` (a rotator older than
 /// #1659), a cycle counts as fresh only when it was recorded more than this
-/// many seconds after the hook started, so its usage probe (30 s by
-/// default) began after the limit was hit.
+/// many seconds after the wait started, so its usage probe (30 s by
+/// default) began after the limit was hit. Used by the recipe-run wait.
 pub const FRESH_MARGIN_SECS: i64 = 60;
 
+/// Time the hook keeps between its own deadline (`MAX_WAIT`) and the
+/// timeout Claude Code enforces, for logging and exiting (issue #2085).
+pub const LIMIT_RESUME_TIMEOUT_MARGIN: Duration = Duration::from_secs(300);
+
 /// The `timeout` registered for the `StopFailure` hook. It must exceed
-/// `MAX_WAIT + SLOW_POLL_INTERVAL`, so the hook always decides before Claude Code
-/// stops it. Here rather than in the hooks crate because the CLI installs
-/// the hook and does not depend on that crate.
+/// `MAX_WAIT + LIMIT_RESUME_TIMEOUT_MARGIN`, so the hook always decides
+/// before Claude Code stops it. Here rather than in the hooks crate because
+/// the CLI installs the hook and does not depend on that crate.
 pub const LIMIT_RESUME_TIMEOUT_SECS: u64 = 608_400;
 
 const _: () =
-    assert!(MAX_WAIT.as_secs() + SLOW_POLL_INTERVAL.as_secs() < LIMIT_RESUME_TIMEOUT_SECS);
+    assert!(MAX_WAIT.as_secs() + LIMIT_RESUME_TIMEOUT_MARGIN.as_secs() < LIMIT_RESUME_TIMEOUT_SECS);

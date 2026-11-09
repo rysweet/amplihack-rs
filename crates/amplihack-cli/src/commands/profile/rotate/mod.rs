@@ -118,6 +118,8 @@ mod swap_expect;
 #[cfg(unix)]
 mod swap_finish;
 #[cfg(unix)]
+mod swap_record;
+#[cfg(unix)]
 mod switch;
 #[cfg(all(test, unix))]
 pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
@@ -203,11 +205,9 @@ pub(super) use self::{identify::is_live, observe::Probes, platform_block::platfo
 #[cfg(unix)]
 pub(in crate::commands::profile) use autostart::autostart_line;
 #[cfg(unix)]
-pub(super) use control::{clear_overflow_block, overflow_blocks};
-#[cfg(unix)]
-pub(super) use log::timestamp;
-#[cfg(unix)]
 pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rotator};
+#[cfg(unix)]
+pub(super) use {control::clear_overflow_block, control::overflow_blocks, log::timestamp};
 
 // Auto-switch's overflow gate (`gate_record`): the running rotator's own
 #[cfg(all(test, unix))]
