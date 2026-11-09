@@ -1786,167 +1786,208 @@ pending_file = "crates/amplihack-workflows/tests/fixtures/canonical_staging/audi
 
 [[role]]
 ref_id = "workflow-prep::step-02-clarify-requirements"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-prep::step-02b-analyze-codebase"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-prep::step-02c-resolve-ambiguity"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-design::step-05-architecture"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-design::step-05b-api-design"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-design::step-05c-database-design"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-design::step-05d-security-review"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-design::step-05e-design-consolidation"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-design::step-06-documentation"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-design::step-06b-documentation-review"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-design::step-06c-documentation-refinement"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-tdd::step-07-write-tests"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-tdd::step-08-implement"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-tdd::step-08c-work-verifier"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-tdd::step-08b-integration"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-refactor-review::step-09-refactor"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-refactor-review::step-09b-optimize"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-refactor-review::step-10-pre-commit-review"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-refactor-review::step-10b-security-review"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-refactor-review::step-10c-philosophy-check"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-refactor-review::step-11-incorporate-feedback"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-refactor-review::step-11b-implement-feedback"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-precommit-test::step-12-run-precommit"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-precommit-test::step-13-local-testing"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-publish::step-14-bump-version"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-publish::step-16b-outside-in-fix-loop"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-pr-review::step-17b-reviewer-agent"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-pr-review::step-17c-security-review"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-pr-review::step-17d-philosophy-guardian"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-pr-review::step-17e-address-blocking-issues"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-pr-review::step-18a-analyze-feedback"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-pr-review::step-18b-implement-feedback"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-pr-review::step-19a-philosophy-check"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-pr-review::step-19b-patterns-check"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-finalize::step-20-final-cleanup"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-finalize::step-20c-quality-audit"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-finalize::step-22-ensure-mergeable"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-finalize::agentic-finalizer"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "autodrive-crusty-round::step-02-crusty-review"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "autodrive-crusty-round::step-04-address-concerns"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::every_authorised_agent_explicitly_defers_staging"
+note = "Source policy (decision 17.146-1): the loop asserts auto_stage: false for each authorised role, and removing_any_authorised_opt_out_is_named_by_the_policy_check proves the removal of each opt-out is named. The 25 runner-backed native removal runs stay #[ignore]d and outstanding."
 
 [[role]]
 ref_id = "workflow-terminal-adjudication::terminal-state-adjudicator"
-pending_file = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"
+rust_test = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::nested_adjudicator_is_a_visible_scope_exclusion"
+note = "The 41st row is a scope exclusion, not an authorised role; the_adjudicator_is_excluded_by_the_inventory_not_by_its_recipe shows only the inventory keeps it out."
 
 [[site]]
 ref_id = "autodrive-crusty-round::step-04-address-concerns"

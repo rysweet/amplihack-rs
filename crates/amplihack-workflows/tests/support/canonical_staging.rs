@@ -708,3 +708,56 @@ pub fn executed(run: &Run) {
             .unwrap()
     );
 }
+
+/// The recipe files one policy check reads: the repository's recipes, or a
+/// copy in a test-owned directory. The directory is a value, never an
+/// environment variable, so tests in one process cannot disturb each other.
+#[derive(Clone, Debug)]
+pub struct RecipeSet {
+    dir: PathBuf,
+}
+
+impl RecipeSet {
+    /// `amplifier-bundle/recipes` in this repository.
+    pub fn source() -> Self {
+        Self {
+            dir: root().join("amplifier-bundle/recipes"),
+        }
+    }
+
+    /// `<dir>/<asset>.yaml` for every asset.
+    pub fn from_dir(dir: &Path) -> Self {
+        Self {
+            dir: dir.to_path_buf(),
+        }
+    }
+
+    pub fn recipe(&self, asset: &str) -> Value {
+        let path = self.dir.join(format!("{asset}.yaml"));
+        let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        serde_yaml::from_slice(&bytes).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+    }
+
+    pub fn step(&self, asset: &str, step_id: &str) -> Option<Value> {
+        self.recipe(asset)["steps"]
+            .as_sequence()?
+            .iter()
+            .find(|s| s["id"].as_str() == Some(step_id))
+            .cloned()
+    }
+}
+
+/// One line per authorised case whose step does not set
+/// `auto_stage: false` (or is missing), in inventory order.
+pub fn policy_failures(set: &RecipeSet, cases: &[Case]) -> Vec<String> {
+    cases
+        .iter()
+        .filter(|c| c.authorised_edit)
+        .filter(|c| {
+            set.step(&c.asset, &c.step_id)
+                .and_then(|s| s.get("auto_stage").and_then(Value::as_bool))
+                != Some(false)
+        })
+        .map(|c| format!("{} / {}: omitted or enabled auto_stage", c.asset, c.step_id))
+        .collect()
+}

@@ -390,7 +390,9 @@ directory. The runner-backed removal runs (the 25 native runs in
 remain outstanding; this control does not replace them. If the owner rejects
 this reading, the role rows return to pending and nothing else changes.
 
-The policy check is the function `policy_failures(&RecipeSet) -> Vec<String>`,
+The policy check is the function
+`policy_failures(&RecipeSet, &[Case]) -> Vec<String>` in
+`crates/amplihack-workflows/tests/support/canonical_staging.rs`,
 which `every_authorised_agent_explicitly_defers_staging` also calls. The
 control checks:
 
@@ -401,8 +403,11 @@ control checks:
    `["<asset> / <step_id>: omitted or enabled auto_stage"]`. The control also
    asserts that the edit removed exactly one line, inside the target step,
    and that every other step parses the same as before.
-3. **Adjudicator mutant.** Removing the adjudicator's opt-out leaves the
-   result empty, and the adjudicator stays in the scope-exclusion list.
+3. **Adjudicator mutant.** The adjudicator step has no `auto_stage` line in
+   its recipe, so there is no opt-out to remove. The unmodified recipes still
+   pass because the inventory lists it as the one scope exclusion; marking it
+   authorised makes the check name it
+   (`the_adjudicator_is_excluded_by_the_inventory_not_by_its_recipe`).
 4. **Sensitivity.** A check that ignores one step leaves exactly one case
    undetected, so the control would notice a weakened check.
 
