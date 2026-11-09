@@ -37,18 +37,6 @@ fn execute_recipe_via_rust_for_test(
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
 ) -> Result<RecipeRunResult> {
-    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            for (key, value) in self.0.drain(..) {
-                match value {
-                    Some(value) => unsafe { std::env::set_var(key, value) },
-                    None => unsafe { std::env::remove_var(key) },
-                }
-            }
-        }
-    }
-
     let inherited_identity = [
         (
             "AMPLIHACK_TREE_ID",
@@ -62,19 +50,8 @@ fn execute_recipe_via_rust_for_test(
     let is_outer_orchestration = inherited_identity
         .iter()
         .all(|(key, inherited)| std::env::var_os(key).as_deref() == *inherited);
-    let _restore = is_outer_orchestration.then(|| {
-        // #1984: the one list of outer-run variables, RUN_DIR and RUN_ID included.
-        EnvRestore(
-            crate::test_support::OUTER_RUN_IDENTITY_VARS
-                .into_iter()
-                .map(|key| {
-                    let previous = std::env::var_os(key);
-                    unsafe { std::env::remove_var(key) };
-                    (key, previous)
-                })
-                .collect(),
-        )
-    });
+    // #1984: the one list of outer-run variables, RUN_DIR and RUN_ID included.
+    let _restore = is_outer_orchestration.then(crate::test_support::clear_outer_run_env);
 
     execute_recipe_via_rust(
         recipe_path,

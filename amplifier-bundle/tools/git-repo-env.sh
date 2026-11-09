@@ -25,7 +25,9 @@
 # Sourcing only defines the names below. Both lists are assigned
 # unconditionally so the environment cannot shrink them, both functions are
 # redefined over any exported import, and `builtin unset` ignores an exported
-# `unset` function. bash 3.2 safe: no arrays, no function-local variables.
+# `unset` function. That guards against accidental overrides only: an exported
+# `builtin` function or BASH_ENV can still defeat it, and whoever can set those
+# can replace git itself. bash 3.2 safe: no arrays, no function-local variables.
 
 AMPLIHACK_GIT_REPO_ENV_VARS="GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR GIT_DIR GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_INDEX_FILE GIT_INDEX_VERSION GIT_NAMESPACE GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_QUARANTINE_PATH GIT_WORK_TREE"
 AMPLIHACK_RUN_IDENTITY_VARS="AMPLIHACK_RECIPE_RUN_ID AMPLIHACK_RUN_DIR AMPLIHACK_RUN_ID AMPLIHACK_SESSION_TREE_DIR AMPLIHACK_TREE_ID"
@@ -61,6 +63,3 @@ amplihack_clear_run_identity_env() {
     builtin unset _AMPLIHACK_CLEARED
     return 0
 }
-
-# shellcheck disable=SC2317 # `true` runs only when this file is executed, not sourced
-return 0 2>/dev/null || true

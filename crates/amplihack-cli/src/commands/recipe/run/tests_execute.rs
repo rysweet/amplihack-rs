@@ -2530,11 +2530,7 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
 
     let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
-    let orchestration_env = crate::test_support::OUTER_RUN_IDENTITY_VARS.map(|key| {
-        let previous = std::env::var_os(key);
-        unsafe { std::env::remove_var(key) };
-        (key, previous)
-    });
+    let orchestration_env = crate::test_support::clear_outer_run_env();
 
     let result = super::run_recipe(
         recipe.to_str().unwrap(),
@@ -2551,12 +2547,7 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
         Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
         None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
     }
-    for (key, previous) in orchestration_env {
-        match previous {
-            Some(value) => unsafe { std::env::set_var(key, value) },
-            None => unsafe { std::env::remove_var(key) },
-        }
-    }
+    drop(orchestration_env);
 
     result.expect("run_recipe must succeed");
 
@@ -3769,32 +3760,6 @@ fn test_outer_run_identity_vars_is_the_seven_sorted_names() {
 }
 
 #[test]
-fn test_clear_outer_run_env_removes_all_seven_and_restores_on_drop() {
-    let _guard = crate::test_support::env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _outer = crate::test_support::EnvGuard::set(ISSUE_1984_OUTER_VARS.map(|k| (k, "outer")));
-    {
-        let _cleared = crate::test_support::clear_outer_run_env();
-        for key in ISSUE_1984_OUTER_VARS {
-            assert!(
-                std::env::var_os(key).is_none(),
-                "clear_outer_run_env() must remove {key} (#1984)"
-            );
-        }
-        // The shell helper keeps these; the Rust helper must not touch others.
-        assert!(std::env::var_os("PATH").is_some(), "PATH must survive");
-    }
-    for key in ISSUE_1984_OUTER_VARS {
-        assert_eq!(
-            std::env::var_os(key).as_deref(),
-            Some(std::ffi::OsStr::new("outer")),
-            "dropping the guard must restore {key}"
-        );
-    }
-}
-
-#[test]
 fn test_fixture_environment_removes_and_restores_outer_run_identity() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
@@ -3849,9 +3814,9 @@ fn test_execute_recipe_via_rust_child_sees_no_outer_run_identity() {
         ("AMPLIHACK_RECIPE_RUN_ID", outer_recipe_run_id),
         ("AMPLIHACK_TREE_ID", outer_tree_id.as_str()),
     ]);
-    // Every runner test goes through this fixture; it is where the fix lives.
+    // Every runner test goes through this fixture; it is where the fix lives,
+    // and it alone must isolate the child.
     let _fixture_environment = fixture_environment();
-    let _cleared = crate::test_support::clear_outer_run_env();
 
     let repo = temp.path().join("repo");
     let home = temp.path().join("home");

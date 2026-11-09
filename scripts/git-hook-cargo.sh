@@ -99,12 +99,13 @@ set -euo pipefail
 # The repository-selecting GIT_* names live in one shell file shared with
 # auto-drive (#2033). It is found from this script's own path, never by asking
 # git, because GIT_DIR may still be set here.
-_git_repo_env="$(unset CDPATH; cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)/amplifier-bundle/tools/git-repo-env.sh"
+_git_repo_env="$(unset CDPATH; cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/amplifier-bundle/tools/git-repo-env.sh"
 if [ ! -f "$_git_repo_env" ] || [ -L "$_git_repo_env" ]; then
     echo "ERROR: git-repo-env.sh missing or a symlink at $_git_repo_env; refusing to run tests with inherited GIT_* (#2033)" >&2
     exit 1
 fi
-# shellcheck source=../amplifier-bundle/tools/git-repo-env.sh
+# shellcheck source-path=SCRIPTDIR/..
+# shellcheck source=amplifier-bundle/tools/git-repo-env.sh
 . "$_git_repo_env"
 amplihack_clear_git_repo_env
 unset _git_repo_env

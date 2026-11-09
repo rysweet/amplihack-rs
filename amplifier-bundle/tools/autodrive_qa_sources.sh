@@ -3,8 +3,9 @@
 # .amplihack/qa.toml and one clean CI test step. Only autodrive_qa_evidence.sh
 # loads this file, from its own physical directory and after
 # autodrive_trust.sh, whose autodrive_qa_scope.sh gives the changed paths and
-# the merge base this file reads (_autodrive_qa_scan, _AD_PATHS, _AD_PATHS_STATE,
-# _AD_MB). The merge gate never uses these sources; it measures their evidence.
+# the merge base this file reads (_autodrive_qa_scan, _AD_PATHS,
+# _AD_PATHS_STATE, _AD_MB). The merge gate never uses these sources; it
+# measures the evidence they feed.
 #
 # Public functions:
 #   autodrive_qa_config <dir>  .amplihack/qa.toml: none, ok or invalid
@@ -12,13 +13,12 @@
 #   autodrive_qa_report <dir>  every answer the evidence tool needs, at once
 # Contract: docs/reference/auto-drive-to-merge.md, "Choosing the QA command".
 #
-# This file DEFINES functions and runs nothing it reads (no eval, no shell on
-# built text, awk never calls a command). git runs via autodrive_trust_git, no
-# remote. qa.toml and the workflows come from the merge-base tree (HEAD's when
-# no base is given). Output is a fixed token, a `dir`-alphabet directory, or a
-# command-alphabet command. LC_ALL=C; bash 3.2+, git, awk, head and tr.
-# Sourced alone, it still clears inherited GIT_* via $H/git-repo-env.sh (#2033).
-[ -n "${H:-}" ] && [ -f "$H/git-repo-env.sh" ] && [ ! -L "$H/git-repo-env.sh" ] && . "$H/git-repo-env.sh" && amplihack_clear_git_repo_env; :
+# This file only DEFINES functions and runs nothing it reads: no eval, no shell
+# on built text, and awk never calls a command. git runs via autodrive_trust_git
+# and never contacts a remote. qa.toml and the workflows come from the
+# merge-base tree (HEAD's when no base is given), never the working tree.
+# Output is a fixed token, a directory in the `dir` alphabet, or a command in
+# the command alphabet. LC_ALL=C; bash 3.2+, git, awk, head and tr.
 
 # _autodrive_qa_toml_changed: return 0 when the changed paths hold
 # .amplihack/qa.toml or .amplihack itself: the pull request choosing its suite.

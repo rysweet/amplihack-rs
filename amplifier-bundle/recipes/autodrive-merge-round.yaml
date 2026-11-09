@@ -40,22 +40,18 @@ context:
   autodrive_tools_dir: ""
 
 steps:
-  # The tools this round runs, found ONCE: the first amplifier-bundle/tools under AMPLIHACK_HOME, REPO_PATH, the git toplevel,
-  # ~/.copilot or ~/.amplihack holding them all; later steps read autodrive_tools_dir. A missing install fails here by name (#1517).
+  # The tools this round runs, found ONCE: the first amplifier-bundle/tools under AMPLIHACK_HOME, REPO_PATH, ~/.copilot or
+  # ~/.amplihack holding them all; later steps read autodrive_tools_dir. A missing install fails here by name (#1517).
+  # No git toplevel: an inherited GIT_WORK_TREE could point it at a planted tree (#2033).
   - id: "step-00-tools-dir"
     type: "bash"
     command: |
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
-      TOP=""; SEARCHED=""
-      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        TOP="$(git rev-parse --show-toplevel 2>/dev/null)"
-      else
-        echo "[skip] not a git repo; the git toplevel is not searched for the auto-drive tools" >&2
-      fi
+      SEARCHED=""
       NEED="autodrive_merge_ready_files.sh autodrive_platform_facts.sh autodrive_round_evidence.sh"
       NEED="${NEED} autodrive_state.sh autodrive_trust.sh git-identity.sh git-repo-env.sh"
-      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
         [ -n "$c" ] || continue
         D="$c/amplifier-bundle/tools"; SEARCHED="${SEARCHED}${SEARCHED:+, }${D}"; OK="true"
         for t in $NEED; do [ -f "$D/$t" ] || OK="false"; done

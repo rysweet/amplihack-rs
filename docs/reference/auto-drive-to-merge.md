@@ -1434,11 +1434,13 @@ Inside auto-drive, criterion 1 follows qa-team's repo-type table (see
 | `step-05-write-round-record` | bash | `merge_round_record_written` | `autodrive_round_evidence.sh round-record` writes the round record under `umask 077`: `merge_ready_verdict`, `blocker_count`, `head_sha`, `round_label`, `test_signal`, `ci_signal`, `qa_status`, `ci_status`, `qa_evidence_sha`. |
 
 `step-00-tools-dir` finds the round's tools once: the first
-`amplifier-bundle/tools/` under `$AMPLIHACK_HOME`, `$REPO_PATH`, the git
-toplevel, `~/.copilot`, then `~/.amplihack` that holds every one of
+`amplifier-bundle/tools/` under `$AMPLIHACK_HOME`, `$REPO_PATH`,
+`~/.copilot`, then `~/.amplihack` that holds every one of
 `autodrive_merge_ready_files.sh`, `autodrive_platform_facts.sh`,
-`autodrive_round_evidence.sh`, `autodrive_state.sh`, `autodrive_trust.sh` and
-`git-identity.sh`, so the tools never come from two installs. It prints the
+`autodrive_round_evidence.sh`, `autodrive_state.sh`, `autodrive_trust.sh`,
+`git-identity.sh` and `git-repo-env.sh`, so the tools never come from two
+installs. It does not search the git toplevel, because an inherited
+`GIT_WORK_TREE` could point that search at a planted tree (#2033). It prints the
 physical path, which later bash steps read as
 `"${RECIPE_VAR_autodrive_tools_dir:-}"` and step-04's prompt uses to source
 `git-identity.sh`. Later steps check the value before use; see

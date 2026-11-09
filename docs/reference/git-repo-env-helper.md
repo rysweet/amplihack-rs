@@ -77,8 +77,8 @@ From a clean shell both lines read `none`.
 
 Sourcing the file only defines the names below. It changes no variable, runs
 no command and prints nothing. It is bash 3.2 safe (no arrays, `local`,
-`mapfile` or `declare -g`), works under `set -euo pipefail`, and ends with
-`return 0 2>/dev/null || true`, so sourcing it always succeeds.
+`mapfile` or `declare -g`) and works under `set -euo pipefail`. Its last
+command is a function definition, so sourcing it always returns 0.
 
 | Name | Kind | Value or effect |
 | --- | --- | --- |
@@ -105,7 +105,9 @@ Behaviour that callers rely on:
   assigned unconditionally, never as `${VAR:-default}`. Sourcing the file
   redefines both functions, replacing any exported `BASH_FUNC_` import of the
   same name, and `builtin unset` is used so an exported `unset` function has
-  no effect.
+  no effect. This guards against accidental overrides only: an exported
+  `builtin` function, `BASH_ENV` or any other `BASH_FUNC_*` import can defeat
+  it, and whoever can set those can replace `git` as well.
 
 ## The two lists
 
@@ -152,14 +154,19 @@ recipe run, as amplihack-rs's do, must not join or write into the outer one.
 | --- | --- | --- | --- |
 | [`scripts/git-hook-cargo.sh`](../../scripts/git-hook-cargo.sh) (amplihack-rs `pre-commit` and `pre-push`) | yes | no | First thing after `set -euo pipefail`. |
 | [`autodrive_qa_evidence.sh`](../../amplifier-bundle/tools/autodrive_qa_evidence.sh) | yes | yes | Straight after its helper directory `H` is found, before `cd "$REPO_PATH"`, the scan subshell and `git rev-parse HEAD`. |
-| [`autodrive_qa_sources.sh`](../../amplifier-bundle/tools/autodrive_qa_sources.sh) | yes | no | When sourced, if `$H/git-repo-env.sh` exists and is not a symbolic link. Protects it when another script sources it on its own. |
 | `autodrive-merge-evidence.yaml` `step-01-sync-with-base` | yes | yes | Before its first `git` command. Its `git push` runs the target repository's pre-push hook and tests. |
 | `autodrive-merge-evidence.yaml` `step-02-qa-team-scenarios` | yes | yes | Before `git rev-parse` and before it runs `autodrive_qa_evidence.sh`. |
 | `autodrive-merge-round.yaml` `step-04` (fix and commit) | yes | yes | In the bash block of the step's agent prompt, which the agent runs. Replaces the old partial `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE`; `unset GH_REPO` stays. |
 
 `autodrive-merge-round.yaml` `step-00-tools-dir` lists `git-repo-env.sh` in
 `NEED`, so a tools directory without the helper is refused before the round
-starts.
+starts. Step-00 runs no git command and does not search the git toplevel, so
+an inherited `GIT_WORK_TREE` cannot choose the directory step-04 loads the
+helper from.
+
+[`autodrive_qa_sources.sh`](../../amplifier-bundle/tools/autodrive_qa_sources.sh)
+does not load the helper. Its only loader, `autodrive_qa_evidence.sh`, has
+cleared both lists before it sources the file.
 
 Steps that run no repository command are unchanged: `step-00-merge-ready-files`,
 the steps of `auto-drive-to-merge.yaml`, `autodrive-prerequisites`,
@@ -176,9 +183,9 @@ No caller asks git where the helper is: `GIT_DIR` or `GIT_WORK_TREE` may still
 be set at that point, and a planted worktree could then supply the file.
 
 - **`git-hook-cargo.sh`** finds it from its own path:
-  `"$(unset CDPATH; cd -- "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/amplifier-bundle/tools/git-repo-env.sh"`.
-- **`autodrive_qa_evidence.sh` and `autodrive_qa_sources.sh`** load it from
-  their own directory `$H`, like their other helpers.
+  `"$(unset CDPATH; cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)/amplifier-bundle/tools/git-repo-env.sh"`.
+- **`autodrive_qa_evidence.sh`** loads it from its own directory `$H`, like
+  its other helpers.
 - **`autodrive-merge-round.yaml` step-04** uses `{{autodrive_tools_dir}}`,
   which step-00 already checked. The load is in the bash block of the step's
   agent prompt, so the agent runs it.
@@ -203,11 +210,6 @@ apart: the [drift guard](#the-drift-guard) checks the hook's message and the
 three `STOP` lines, and the [end-to-end test](#the-end-to-end-test) checks the
 `autodrive-qa-helpers-not-found` message.
 
-`autodrive_qa_sources.sh` is the exception: it is sourced by
-`autodrive_qa_evidence.sh`, which has already loaded and called the helper, so
-a missing helper there only skips the extra clear and leaves the sourcing
-status at 0.
-
 ## The QA evidence fields
 
 `qa-evidence.json` has two fields at the end of its one JSON line. Both are
@@ -221,8 +223,7 @@ unaffected.
 | `git_env_cleared` | `AMPLIHACK_GIT_ENV_CLEARED` from the tool's first call: the git names that were set when the tool started, in list order, or `none`. |
 | `run_env_cleared` | `AMPLIHACK_RUN_ENV_CLEARED` from the tool's first call, or `none`. |
 
-The tool captures both values straight after its own call. The second call
-made when it sources `autodrive_qa_sources.sh` does not change them.
+The tool captures both values straight after its own call.
 
 A run started from a hook, with every git name pointing at another
 repository, ends like this (other fields left out):

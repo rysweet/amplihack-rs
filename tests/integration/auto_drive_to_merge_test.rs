@@ -3190,24 +3190,35 @@ fn merge_round_finds_its_tools_once() {
         Some("autodrive_tools_dir")
     );
     let cmd = field(s, "command");
-    for needle in TOOL_SEARCH_NEEDLES.iter().chain(
-        [
-            "autodrive_merge_ready_files.sh",
-            "autodrive_platform_facts.sh",
-            "autodrive_round_evidence.sh",
-            "autodrive_state.sh",
-            "autodrive_trust.sh",
-            "git-identity.sh",
-            "ERROR: autodrive-tools-not-found",
-            "pwd -P",
-        ]
-        .iter(),
-    ) {
+    // #2033: the git toplevel is not searched; an inherited GIT_WORK_TREE
+    // could point it at a planted tree that supplies git-repo-env.sh.
+    for needle in TOOL_SEARCH_NEEDLES
+        .iter()
+        .filter(|n| **n != "git rev-parse --show-toplevel")
+        .chain(
+            [
+                "autodrive_merge_ready_files.sh",
+                "autodrive_platform_facts.sh",
+                "autodrive_round_evidence.sh",
+                "autodrive_state.sh",
+                "autodrive_trust.sh",
+                "git-identity.sh",
+                "git-repo-env.sh",
+                "ERROR: autodrive-tools-not-found",
+                "pwd -P",
+            ]
+            .iter(),
+        )
+    {
         assert!(
             cmd.contains(needle),
             "step-00-tools-dir must reference `{needle}`"
         );
     }
+    assert!(
+        !cmd.contains("git rev-parse --show-toplevel"),
+        "step-00 must not search the git toplevel for tools (#2033)"
+    );
     let text = recipe_text("autodrive-merge-round");
     assert_eq!(
         text.matches("for c in \"${AMPLIHACK_HOME:-}\"").count(),
