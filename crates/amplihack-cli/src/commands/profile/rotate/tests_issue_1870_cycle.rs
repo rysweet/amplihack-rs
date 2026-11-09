@@ -76,7 +76,9 @@ fn measure_a(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let probes = probes_for(
         snap,
         &[
-            ("spare", rd(11.0, 95.0, Some(at - 60))),
+            // Issue #2013 (D4): w=90%, so spare's weekly headroom (10) beats
+            // work's (3) by --margin and the margin rule chooses it.
+            ("spare", rd(11.0, 90.0, Some(at - 60))),
             ("spare2", running),
         ],
     );
@@ -98,7 +100,7 @@ fn a_regression_an_old_reading_is_read_again_and_the_full_login_is_not_chosen() 
     assert_eq!(swaps(&log), 0, "{log}");
     assert_eq!(calls(&CALLS_A), ["spare"]);
     assert!(
-        log.contains("reread: spare reading stale s=11% w=95%; fresh s=43% w=100%"),
+        log.contains("reread: spare reading stale s=11% w=90%; fresh s=43% w=100%"),
         "{log}"
     );
     assert!(
@@ -220,7 +222,8 @@ fn reread_d(_: &Ctx, _: &ProfileName, _: Duration) -> Probed {
 
 fn measure_d(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
-    let probes = probes_for(snap, &[("spare", rd(11.0, 95.0, Some(at - 60)))]);
+    // Issue #2013 (D4): w=90%, so the margin rule chooses spare.
+    let probes = probes_for(snap, &[("spare", rd(11.0, 90.0, Some(at - 60)))]);
     decide_measured(ctx, snap, rd(0.0, 97.0, None), probes, at)
 }
 
@@ -262,17 +265,19 @@ fn reread_e(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
 
 fn measure_e(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
-    let probes = probes_for(snap, &[("spare", rd(11.0, 93.0, Some(at - 90)))]);
-    // `work` is past --week-at; spare's gain (4) is under --margin (5) and
-    // its week is lower, so the decision is a plan-room move.
+    let probes = probes_for(snap, &[("spare", rd(11.0, 90.0, Some(at - 90)))]);
+    // `work` is past --week-at; spare is not eligible (its week is at
+    // --week-at), but its weekly headroom (10) beats work's (3) by --margin.
+    // Issue #2013 (D3, D4): plan-room and the threshold rule rank alike, so
+    // this move is the threshold rule's margin swap, with the same target.
     let m = decide_measured(ctx, snap, rd(0.0, 97.0, None), probes, at)?;
     assert_eq!(
         m.decision,
         Decision::Swap {
             to: n("spare"),
-            reason: Reason::PlanRoom
+            reason: Reason::Threshold
         },
-        "the fixture must reach a plan-room swap before the gate"
+        "the fixture must reach a margin swap before the gate"
     );
     Ok(m)
 }
@@ -287,7 +292,7 @@ fn e_a_plan_room_target_is_read_again_before_the_move() {
     assert_eq!(ino_at(&e.live()), Some(e.l));
     assert_eq!(calls(&CALLS_E), ["spare"]);
     assert!(
-        log.contains("reread: spare reading stale s=11% w=93%; fresh s=43% w=100%"),
+        log.contains("reread: spare reading stale s=11% w=90%; fresh s=43% w=100%"),
         "{log}"
     );
     assert!(!log.contains("reason=plan-room"), "{log}");

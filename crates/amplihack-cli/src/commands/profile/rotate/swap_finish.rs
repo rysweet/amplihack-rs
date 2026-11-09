@@ -24,8 +24,20 @@ pub(super) fn finish(
             super::login_identity::UNAVAILABLE.into(),
         ));
     }
-    let block = incoming.account().map(Account::block);
-    patch_home_account(home, block.as_ref())?;
+    // Issue #2013 (D13): the block comes from the verified incoming identity,
+    // never from the target profile's own `.claude.json`. With none (an
+    // API-key profile) the file is left as it was.
+    if let Some(account) = incoming.account() {
+        match write_home_account(home, account) {
+            Ok(()) => {}
+            // `swap` refuses this before J0; only a file damaged since then,
+            // during recovery, gets here. The per-cycle repair finishes it.
+            Err(ProfileError::RotateRefused(m)) if m == HOME_JSON_UNREADABLE => {
+                eprintln!("warning: {HOME_JSON_UNREADABLE}; its account was not updated");
+            }
+            Err(e) => return Err(e),
+        }
+    }
     step(rs, &mut j, Phase::S3)?;
     let mut l = rs.load_ledger()?.unwrap_or_default();
     l.live = Some(j.to.clone());
@@ -44,28 +56,24 @@ pub(super) fn finish(
     Ok(())
 }
 
-/// `s3`: replaces only `oauthAccount` in `$HOME/.claude.json`, keeping
-/// every other key and the file's mode. A missing file is created. With no
-/// block (an API-key profile without `oauthAccount`) the file is left
-/// byte for byte as it was.
-fn patch_home_account(home: &Path, block: Option<&serde_json::Value>) -> Result<(), ProfileError> {
-    let Some(block) = block else {
-        return Ok(());
-    };
+/// `s3` and the per-cycle home repair (issue #2013, D8): replaces only
+/// `oauthAccount` in `$HOME/.claude.json` with the block built from the
+/// verified `account`, keeping every other key and the file's mode. A
+/// missing file is created `0600`. A file that does not parse as a JSON
+/// object is never rewritten ([`HOME_JSON_UNREADABLE`]), and a symlink, a
+/// file that is not regular or one owned by another user is refused by
+/// `write_atomic_keep_mode`. A block that already matches writes nothing.
+pub(super) fn write_home_account(home: &Path, account: &Account) -> Result<(), ProfileError> {
+    let block = account.block();
     let mut v = match read_claude_json(home) {
         Some((v, _)) => v,
         None if !exists(&home.join(CLAUDE_JSON)) => serde_json::json!({}),
-        // `swap` refuses this before J0; only a file damaged since then,
-        // during recovery, gets here.
-        None => {
-            eprintln!("warning: {HOME_JSON_UNREADABLE}; its account was not updated");
-            return Ok(());
-        }
+        None => return Err(refused(HOME_JSON_UNREADABLE)),
     };
-    if v.get("oauthAccount") == Some(block) {
+    if v.get("oauthAccount") == Some(&block) {
         return Ok(());
     }
-    v["oauthAccount"] = block.clone();
+    v["oauthAccount"] = block;
     let bytes = serde_json::to_vec_pretty(&v).map_err(|e| refused(e.to_string()))?;
     write_atomic_keep_mode(home, CLAUDE_JSON, &bytes).map_err(ProfileError::Io)
 }

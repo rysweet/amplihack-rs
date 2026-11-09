@@ -15,10 +15,11 @@
 //!   one included, and a slot the live probe frees goes to the next
 //!   candidate (fake `claude` scripts only; never a real one).
 
-use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, best, decide};
+use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, decide};
 use super::log::{Shown, msg};
 use super::measure::reading;
 use super::overflow::{plan_usable, regains};
+use super::rank::best_eligible;
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::usage_cmd::{ErrorReason, Probe};
@@ -184,7 +185,7 @@ fn a_timed_out_live_login_shows_failed_in_the_cycle_line() {
 fn a_timed_out_candidate_is_never_the_target() {
     let slow = reading("slow", &timed_out());
     let cands = [measured("a-slow", &slow)];
-    assert_eq!(best(&cands), None);
+    assert_eq!(best_eligible(&settings(), &cands), None);
     // At a threshold with only an unknown candidate there is no swap.
     assert_eq!(
         decide(
@@ -216,12 +217,14 @@ fn a_timed_out_candidate_does_not_hide_a_usable_one() {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     };
     // "a-slow" sorts first, so a tie-break bug would pick it.
     let cands = [measured("a-slow", &slow), measured("b-spare", &spare)];
     assert_eq!(
-        best(&cands).map(|(n, h)| (n.as_str(), h)),
-        Some(("b-spare", 90))
+        best_eligible(&settings(), &cands).map(|m| m.name.as_str()),
+        Some("b-spare")
     );
     assert_eq!(
         decide(
@@ -677,7 +680,8 @@ fn a_stalled_read_is_still_running_then_used_by_the_next_cycle() {
             &[(name("spare"), Shown::of(&got["spare"]))],
             None
         ),
-        "cycle live=work work:s=10%,w=20% spare:unknown, still running"
+        // Issue #2013 (D7).
+        "cycle live=work work:s=10%,w=20% spare:running"
     );
     assert!(fl.busy(&"spare"));
 

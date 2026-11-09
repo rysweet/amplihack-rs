@@ -25,7 +25,8 @@ use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use std::path::Path;
 
-/// The ALERT kind of the same-account stop; written on every cycle.
+/// The ALERT kind of the same-account stop; set on every cycle, and written
+/// at most once an hour (issue #2013, D11).
 pub const SAME_ACCOUNT: &str = "same-account";
 
 const LEDGER_UNREADABLE: &str = "the rotate ledger is unreadable";

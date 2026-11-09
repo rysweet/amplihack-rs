@@ -70,6 +70,8 @@ fn measured(session: f64, week: f64, reset: Option<i64>) -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
@@ -87,6 +89,8 @@ fn exhausted(reset: Option<i64>) -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
@@ -100,6 +104,8 @@ fn failed() -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
@@ -113,6 +119,8 @@ fn spend_limited() -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 

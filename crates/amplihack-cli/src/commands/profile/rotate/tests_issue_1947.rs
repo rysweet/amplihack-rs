@@ -394,7 +394,10 @@ fn shared_readers_treat_a_malformed_email_as_missing() {
         .unwrap();
     };
     write(claude_block(None, "no-at"));
-    assert!(!home_readable(home.path()));
+    // Issue #2013 (D8): the file parses, so it is usable; the block names no
+    // account and is repaired from the verified identity, never trusted.
+    assert!(home_readable(home.path()));
+    assert!(Account::of_dir(home.path()).is_none());
     write(claude_block(None, "work@example.com"));
     assert!(home_readable(home.path()));
 }

@@ -498,7 +498,9 @@ fn a_read_still_running_shows_unknown_still_running() {
     assert_eq!(msg::usage(&s, ","), "unknown, still running");
     assert_eq!(
         msg::cycle(Some(&name("work")), &s, &[], None),
-        "cycle live=work work:unknown, still running"
+        // Issue #2013 (D7): the cycle line names it; a `reading:` line says
+        // how long it has run.
+        "cycle live=work work:running"
     );
 }
 

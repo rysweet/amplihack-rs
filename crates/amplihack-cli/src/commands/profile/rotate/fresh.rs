@@ -16,6 +16,7 @@ use super::fresh_msg;
 use super::log::Shown;
 use super::measure;
 use super::observe::{Measurement, Snap, decide_measured};
+use super::settings::Settings;
 use super::swap_back;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::now;
@@ -64,22 +65,44 @@ pub fn read_at(p: &Probed, measured_at: i64) -> Option<i64> {
     Some(p.observed_at.unwrap_or(measured_at))
 }
 
-/// Whether a reading taken at `read_at` is stale `now`: no reading time,
-/// more than [`MAX_READING_AGE_SECS`] old, strictly older than the live
-/// reading (`None` when the live probe failed), or, for a damped login, not
-/// strictly later than `damped_at`.
+/// Issue #2013 (D5): the oldest a reading may be for a decision: one
+/// `--interval`, capped at [`MAX_READING_AGE_SECS`]; the cap alone for an
+/// interval of 0.
+pub fn max_age(s: &Settings) -> i64 {
+    let cap = MAX_READING_AGE_SECS;
+    match i64::try_from(s.interval) {
+        Ok(0) => cap,
+        Ok(i) => i.min(cap),
+        Err(_) => cap,
+    }
+}
+
+/// Whether a reading taken at `read_at` is stale `now`: no reading time, a
+/// reading time later than `now`, more than `max_age` seconds old, strictly
+/// older than the live reading (`None` when the live probe failed), or,
+/// for a damped login, not strictly later than `damped_at`. The arithmetic
+/// saturates, so no time overflows.
 pub fn stale(
     read_at: Option<i64>,
     live_read_at: Option<i64>,
     damped_at: Option<i64>,
     now: i64,
+    max_age: i64,
 ) -> bool {
     let Some(at) = read_at else {
         return true;
     };
-    now.saturating_sub(at) > MAX_READING_AGE_SECS
+    at > now
+        || now.saturating_sub(at) > max_age
         || live_read_at.is_some_and(|live| at < live)
         || damped_at.is_some_and(|d| at <= d)
+}
+
+/// Whether the reading of `p`, measured from `measured_at`, is fresh at
+/// `now` on age alone (D5): it has a reading time, not in the future, at
+/// most `max_age` seconds old.
+pub fn fresh_at(p: &Probed, measured_at: i64, now: i64, max_age: i64) -> bool {
+    !stale(read_at(p, measured_at), None, None, now, max_age)
 }
 
 /// The target of a swap chosen by reading; `None` for `overflow-in`, whose
@@ -173,8 +196,9 @@ pub(super) fn settle(
             break;
         };
         let damped_at = damped.get(to.as_str()).copied();
-        let t = now();
-        if !stale(read_at(&probes[i].1, m.measured_at), live_at, damped_at, t) {
+        let t = ctx.now();
+        let at = read_at(&probes[i].1, m.measured_at);
+        if !stale(at, live_at, damped_at, t, max_age(&ctx.settings)) {
             break;
         }
         if handled >= max_handled {
@@ -238,7 +262,7 @@ fn fresh_probe(
         return Probed::failed();
     }
     // The reading time of a re-read is when it finished.
-    p.observed_at = Some(now());
+    p.observed_at = Some(ctx.now());
     p.carried = false;
     // Issue #1970: a re-read is made with passive readings off, so it is a
     // direct reading and never checked as a stale cached one.

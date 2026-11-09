@@ -308,7 +308,9 @@ fn failed_probe_log_lines() {
             &Shown::from_reading(r(0.0, 12.0)),
             Reason::FailedProbe
         ),
-        "swap work->spare live failed target s=0% w=12% reason=failed-probe"
+        // Issue #2013 (D7): a failed probe shows why; with no reason recorded,
+        // `no reading`.
+        "swap work->spare live probe failed: no reading target s=0% w=12% reason=failed-probe"
     );
 }
 

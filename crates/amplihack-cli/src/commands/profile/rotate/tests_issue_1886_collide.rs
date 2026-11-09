@@ -149,6 +149,8 @@ fn work_out_spare_free(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     };
     let work = probed(
         Reading::Exhausted {

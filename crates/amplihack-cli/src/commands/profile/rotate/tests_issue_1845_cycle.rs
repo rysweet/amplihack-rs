@@ -38,8 +38,16 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 const CREDS: &str = ".credentials.json";
-const ALERT: &str =
+/// The one-shot command's error, as `ALERT: <error>`.
+const REFUSED: &str =
     "ALERT: swap refused: the login in ~/.claude is not the account recorded for profile work";
+/// Issue #2013 (D10): the logged refusal, with its evidence and fix. The
+/// record holds a UUID only, so it is shown as `another account`.
+const ALERT: &str = "ALERT: swap refused (account-mismatch, profile work): the login in \
+     ~/.claude is not the account recorded for profile work. Evidence: \
+     credentials/verified=work@example.com, ledger=work@example.com, record=another account, \
+     .claude.json=work@example.com. Fix: run plain claude, /login to the account recorded for \
+     work, then wait for the next cycle";
 
 fn n(s: &str) -> ProfileName {
     ProfileName::parse(s).unwrap()
@@ -144,6 +152,8 @@ fn work_out_spare_free(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     };
     let spare = Probed {
         reading: Reading::Measured {
@@ -157,6 +167,8 @@ fn work_out_spare_free(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     };
     decide_measured(ctx, snap, work, vec![(n("spare"), spare)], now())
 }
@@ -198,7 +210,7 @@ fn assert_no_account(lines: &[String]) {
             "u-work",
             "u-spare",
             "SENTINEL",
-            "@example.com",
+            // Issue #2013 (D10): refusal evidence names e-mail addresses.
             "sk-ant",
             "accessToken",
         ] {
@@ -243,7 +255,8 @@ fn a_mismatched_record_alerts_once_over_two_watch_cycles() {
     }
     let log = f.logged();
     let alerts: Vec<&String> = log.iter().filter(|l| l.starts_with("ALERT:")).collect();
-    assert_eq!(alerts, vec![ALERT, ALERT], "{log:?}");
+    // Issue #2013 (D11): the second refusal is within the hour, so counted.
+    assert_eq!(alerts, vec![ALERT], "{log:?}");
     assert!(!log.iter().any(|l| l.starts_with("swap ")), "{log:?}");
     assert_no_account(&log);
     let l = f.rs.load_ledger().unwrap().unwrap();
@@ -265,7 +278,7 @@ fn a_one_shot_cycle_returns_the_refusal() {
     match run_cycle(&mut c, Mode::OneShot) {
         Err(e @ ProfileError::RotateRefused(_)) => {
             assert!(super::swap::is_account_mismatch(&e), "{e}");
-            assert_eq!(format!("ALERT: {e}"), ALERT);
+            assert_eq!(format!("ALERT: {e}"), REFUSED);
         }
         other => panic!("expected the refusal, got {other:?}"),
     }

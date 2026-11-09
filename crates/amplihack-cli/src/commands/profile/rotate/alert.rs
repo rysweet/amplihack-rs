@@ -3,11 +3,11 @@
 //! recording a cycle that ends on an ALERT. An advisory ALERT (#1907) is
 //! stored in `ledger.advisory_alert` instead, which does not block a resume.
 
+use super::alert_limit::{self, Note};
 use super::cycle::{Ctx, CycleOutcome, save};
 use super::ledger::{RotateLedger, safe_account};
 use super::log::Sink;
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::name::ProfileName;
 
 /// The ALERT kind for "no profile has capacity". The only kind that may be
@@ -66,30 +66,59 @@ pub fn alert_once(out: &mut Sink, l: &mut RotateLedger, key: &str, t: i64, line:
     }
 }
 
-/// Writes an ALERT once per key and records the cycle as alerted.
+/// Writes an ALERT and records the cycle as alerted. The ledger's `alert`
+/// holds `<kind>:<live>` on every such cycle. With `limit` (issue #2013,
+/// D11: a refusal or a same-account stop), the line goes through the hourly
+/// alert limit under that key; without it, it is written once per ledger
+/// key. The one-shot command prints it every time either way.
 pub(super) fn alert(
     ctx: &Ctx,
     out: &mut Sink,
     kind: &str,
     live: Option<&ProfileName>,
     line: &str,
+    limit: Option<&str>,
 ) -> Result<(), ProfileError> {
-    let t = now();
+    let t = ctx.now();
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-    if kind == "trusted-identity"
-        || kind == "account_mismatch"
-        || kind == super::seed::SAME_ACCOUNT
-        || line.contains("trusted login identity")
-    {
-        // Always written, unlike `alert_once`, but stored as `should_alert`
-        // stores it: `advisory_alert` is cleared too, since a ledger with
-        // both fields set fails `valid_alerts` and stops every later load.
-        should_alert(&mut l, &alert_key(kind, live));
-        out.emit(t, line);
-    } else {
-        alert_once(out, &mut l, &alert_key(kind, live), t, line);
+    let key = alert_key(kind, live);
+    match limit {
+        Some(limit) => {
+            // Stored as `should_alert` stores it: `advisory_alert` is cleared
+            // too, since a ledger with both fields set fails `valid_alerts`.
+            should_alert(&mut l, &key);
+            note_line(out, &mut l, limit, t, line);
+        }
+        None => alert_once(out, &mut l, &key, t, line),
     }
     save(ctx, &mut l, CycleOutcome::Alerted, t, None, None)
+}
+
+/// Writes `line` through the alert limit under `key` in `l` (issue #2013,
+/// D11); a suppressed line is still printed by the one-shot command.
+pub(super) fn note_line(out: &mut Sink, l: &mut RotateLedger, key: &str, t: i64, line: &str) {
+    match alert_limit::note(&mut l.alert_log, key, t, line) {
+        Note::Log(text) => out.emit(t, &text),
+        Note::Suppress => out.print(t, line),
+    }
+}
+
+/// [`note_line`] with the ledger loaded and saved around it, for a line
+/// written outside a cycle's own ledger update. Without a ledger the line is
+/// written as it is.
+pub(super) fn limited(
+    ctx: &Ctx,
+    out: &mut Sink,
+    key: &str,
+    line: &str,
+) -> Result<(), ProfileError> {
+    let t = ctx.now();
+    let Some(mut l) = ctx.rs.load_ledger()? else {
+        out.emit(t, line);
+        return Ok(());
+    };
+    note_line(out, &mut l, key, t, line);
+    ctx.rs.save_ledger(&l)
 }
 
 /// The ALERT key kind for a refused swap: its reason, without control

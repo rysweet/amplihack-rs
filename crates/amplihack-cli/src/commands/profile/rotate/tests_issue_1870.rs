@@ -92,6 +92,8 @@ pub(super) fn rd(session: f64, week: f64, observed_at: Option<i64>) -> Probed {
         observed_at,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
@@ -109,6 +111,8 @@ pub(super) fn exh(session: f64, week: f64) -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
@@ -174,40 +178,59 @@ fn a_still_running_unknown_or_failed_probe_has_no_reading_time() {
 
 #[test]
 fn no_reading_time_is_stale() {
-    assert!(fresh::stale(None, Some(T), None, T));
-    assert!(fresh::stale(None, None, None, T));
+    assert!(fresh::stale(None, Some(T), None, T, 300));
+    assert!(fresh::stale(None, None, None, T, 300));
 }
 
 #[test]
 fn a_reading_300_seconds_old_is_fresh_and_301_is_stale() {
-    assert!(!fresh::stale(Some(T - 300), None, None, T));
-    assert!(fresh::stale(Some(T - 301), None, None, T));
+    assert!(!fresh::stale(Some(T - 300), None, None, T, 300));
+    assert!(fresh::stale(Some(T - 301), None, None, T, 300));
 }
 
 #[test]
 fn a_reading_older_than_the_live_reading_is_stale_and_an_equal_one_fresh() {
-    assert!(fresh::stale(Some(T - 1), Some(T), None, T));
-    assert!(!fresh::stale(Some(T), Some(T), None, T));
-    assert!(!fresh::stale(Some(T), Some(T - 60), None, T));
+    assert!(fresh::stale(Some(T - 1), Some(T), None, T, 300));
+    assert!(!fresh::stale(Some(T), Some(T), None, T, 300));
+    assert!(!fresh::stale(Some(T), Some(T - 60), None, T, 300));
 }
 
 #[test]
 fn with_the_live_probe_failed_only_the_age_test_applies() {
-    assert!(!fresh::stale(Some(T - 200), None, None, T));
-    assert!(fresh::stale(Some(T - 400), None, None, T));
+    assert!(!fresh::stale(Some(T - 200), None, None, T, 300));
+    assert!(fresh::stale(Some(T - 400), None, None, T, 300));
 }
 
 #[test]
 fn a_damped_login_needs_a_reading_strictly_later_than_the_swap_away() {
-    assert!(fresh::stale(Some(T - 30), Some(T - 30), Some(T - 30), T));
-    assert!(fresh::stale(Some(T - 40), None, Some(T - 30), T));
-    assert!(!fresh::stale(Some(T - 29), Some(T - 30), Some(T - 30), T));
+    assert!(fresh::stale(
+        Some(T - 30),
+        Some(T - 30),
+        Some(T - 30),
+        T,
+        300
+    ));
+    assert!(fresh::stale(Some(T - 40), None, Some(T - 30), T, 300));
+    assert!(!fresh::stale(
+        Some(T - 29),
+        Some(T - 30),
+        Some(T - 30),
+        T,
+        300
+    ));
 }
 
 #[test]
 fn a_clock_far_behind_the_reading_does_not_overflow() {
-    assert!(!fresh::stale(Some(i64::MAX), None, None, T));
-    assert!(fresh::stale(Some(i64::MIN), None, Some(i64::MIN), i64::MAX));
+    // Issue #2013 (D5): a reading time later than now is stale.
+    assert!(fresh::stale(Some(i64::MAX), None, None, T, 300));
+    assert!(fresh::stale(
+        Some(i64::MIN),
+        None,
+        Some(i64::MIN),
+        i64::MAX,
+        300
+    ));
 }
 
 // --- gated_target -------------------------------------------------------------

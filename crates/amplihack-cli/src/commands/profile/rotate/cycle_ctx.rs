@@ -8,7 +8,7 @@ use super::super::ledger::RotateState;
 use super::super::revalidate;
 use super::super::settings::Settings;
 use super::MeasureFn;
-use crate::commands::profile::auto_switch::kit::{Liveness, scan_system};
+use crate::commands::profile::auto_switch::kit::{Liveness, now, scan_system};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::probe_limits::ProbeMode;
 use crate::commands::profile::store::ProfileStore;
@@ -54,6 +54,12 @@ pub struct Ctx {
     pub(in crate::commands::profile::rotate) read_only: bool,
     /// The seed note this process last logged; a repeat is not logged.
     pub(in crate::commands::profile::rotate) last_seed_note: Option<String>,
+    /// Issue #2013 (D12): the clock freshness, the alert limit and the home
+    /// repair read. The system clock; only `#[cfg(test)]` code replaces it.
+    pub(in crate::commands::profile::rotate) clock: fn() -> i64,
+    /// When the current cycle's locked prelude started, by [`Self::clock`]:
+    /// alert-limit keys not seen since then are cleared when it is saved.
+    pub(in crate::commands::profile::rotate) cycle_started_at: i64,
 }
 
 impl Ctx {
@@ -81,6 +87,8 @@ impl Ctx {
             identity_budget: super::super::login_identity::Budget::new(),
             read_only: false,
             last_seed_note: None,
+            clock: now,
+            cycle_started_at: 0,
         }
     }
 
@@ -90,10 +98,15 @@ impl Ctx {
     }
 
     /// `env`, direct only in a read-only run, so `claude` never starts.
+    /// Issue #2013 (D5): a passive reading is accepted only within the age
+    /// limit ([`super::super::fresh::max_age`]), so the cycle never measures
+    /// with one it may not decide on.
     pub(in crate::commands::profile::rotate) fn read_env(&self, mut env: SourceEnv) -> SourceEnv {
         if let Some(mode) = self.read_only_mode() {
             env.mode = mode;
         }
+        let cap = u64::try_from(super::super::fresh::max_age(&self.settings)).unwrap_or(0);
+        env.passive_max_age = env.passive_max_age.min(cap);
         env
     }
 
@@ -104,6 +117,11 @@ impl Ctx {
             return None;
         }
         no_refresh_dirs(&self.store)
+    }
+
+    /// The time now, by the injected clock (D12).
+    pub(in crate::commands::profile::rotate) fn now(&self) -> i64 {
+        (self.clock)()
     }
 
     pub(in crate::commands::profile::rotate) fn stopping(&self) -> bool {

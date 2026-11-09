@@ -122,7 +122,8 @@ fn the_documented_log_lines_and_errors_are_present() {
         "ALERT: the API key is blocked (<reason>) until <time>; API-key profiles are not used",
         "ALERT: the API key is blocked (<reason>) and no plan or credit profile can be used; staying on <name>",
         "ALERT: more than one API-key profile could be live in ~/.claude; no swap",
-        "ALERT: swap refused: <name> has no oauth login and is not an API-key profile",
+        // Issue #2013 (D10): the refusal line names its kind, evidence and fix.
+        "ALERT: swap refused (api-key, profile <name>): <name> has no oauth login and is not an API-key profile. Evidence:",
         "skip: API-key profile <name> is not marked; it is never used. To allow per-token billing, run: amplihack profile overflow add <name>",
         "platform block not recorded: <error kind>",
         "profile <name> is an API-key profile; the API-key tier is fixed at 10, so --tier cannot be set",

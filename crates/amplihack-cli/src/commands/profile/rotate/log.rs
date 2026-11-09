@@ -190,6 +190,8 @@ pub fn cut(s: &str, max: usize) -> String {
 
 #[path = "log_shown.rs"]
 mod shown;
+#[cfg(test)]
+pub use shown::failure_text;
 pub use shown::{Shown, shown, shown_of};
 
 /// The message grammar of docs/reference/profile-command.md, Rotate log.
@@ -229,6 +231,7 @@ pub mod msg {
         }
     }
 
+    /// Issue #2013 (D7): both readings in the [`reading`] format.
     pub fn swap(
         from: &ProfileName,
         to: &ProfileName,
@@ -238,13 +241,14 @@ pub mod msg {
     ) -> String {
         format!(
             "swap {from}->{to} live {} target {} reason={}",
-            usage(live, " "),
-            usage(target, " "),
+            reading(live),
+            reading(target),
             reason.as_str()
         )
     }
 
-    /// Every measured profile, live first; the API-key one as `per-token`.
+    /// Every measured profile, live first; the API-key one as `per-token`;
+    /// each other as [`cell`] shows it.
     pub fn cycle(
         live: Option<&ProfileName>,
         reading: &Shown,
@@ -257,12 +261,14 @@ pub mod msg {
         for (n, r) in std::iter::once((live, reading)).chain(sorted) {
             let shown = match n {
                 Some(_) if n == platform => "per-token".to_string(),
-                _ => usage(r, ","),
+                _ => cell(r),
             };
             out.push_str(&format!(" {}:{shown}", n.map_or("-", ProfileName::as_str)));
         }
         out
     }
+
+    pub use super::shown::{cell, no_room, reading, reading_lines};
 
     pub const NO_LOGIN: &str = "ALERT: no login in ~/.claude; no swap";
     pub const AMBIGUOUS: &str =

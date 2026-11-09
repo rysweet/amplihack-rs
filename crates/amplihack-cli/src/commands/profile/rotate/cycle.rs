@@ -2,7 +2,7 @@
 //! (unlocked), decide, revalidate under the lock and swap, record. See
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
-use super::alert::{alert, alert_key, refusal_kind};
+use super::alert::{NO_CAPACITY, alert, alert_key, note_line, refusal_kind};
 use super::capacity::{self, Room};
 use super::decide::Decision;
 use super::dry_run::dry_run;
@@ -28,13 +28,22 @@ use super::swap_back;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::shared_dirs;
+use refusal::Cause;
 use std::time::Duration;
 
 pub(super) const LOCK_WAIT: Duration = Duration::from_secs(2);
+#[path = "alert_limit.rs"]
+pub(super) mod alert_limit;
 #[path = "cycle_ctx.rs"]
 mod ctx;
+#[path = "home_repair.rs"]
+pub(super) mod home_repair;
 #[path = "cycle_outcome.rs"]
 mod outcome;
+#[path = "rank.rs"]
+pub(super) mod rank;
+#[path = "refusal.rs"]
+pub(super) mod refusal;
 pub use ctx::Ctx;
 pub use outcome::{CycleOutcome, Mode};
 /// Steps 4 and 5 of a cycle: measure, then decide.
@@ -50,6 +59,9 @@ pub(super) fn save(
     measured_at: Option<i64>,
     tag: Option<Tag>,
 ) -> Result<(), ProfileError> {
+    // Issue #2013 (D11): a limited line whose cause did not occur in this
+    // cycle is written at once when it next occurs.
+    super::alert_limit::prune(&mut l.alert_log, ctx.cycle_started_at);
     overflow_record::record(&ctx.rs, l, o.as_str(), t, measured_at, tag)
 }
 
@@ -69,7 +81,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         }
         Prelude::AutoSwitchInconsistent => {
             let line = msg::AUTO_SWITCH_INCONSISTENT;
-            alert(ctx, &mut out, "auto-switch", None, line)?;
+            alert(ctx, &mut out, "auto-switch", None, line, None)?;
             return Ok(CycleOutcome::Alerted);
         }
         Prelude::Inconsistent(reason) => {
@@ -79,17 +91,26 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 "inconsistent",
                 None,
                 &msg::inconsistent(&reason),
+                None,
             )?;
             return match mode {
                 Mode::Watch => Ok(CycleOutcome::Alerted),
                 _ => Err(ProfileError::RotateInconsistent(reason)),
             };
         }
-        Prelude::LiveUnusable { kind, live, line } => {
-            alert(ctx, &mut out, kind, live.as_ref(), &line)?;
-            if kind == "account_mismatch" && mode != Mode::Watch {
-                let reason = line.strip_prefix("ALERT: swap refused: ").unwrap_or(&line);
-                return Err(ProfileError::RotateRefused(reason.into()));
+        Prelude::LiveUnusable {
+            kind,
+            live,
+            line,
+            limit,
+            reason,
+        } => {
+            alert(ctx, &mut out, kind, live.as_ref(), &line, limit.as_deref())?;
+            if kind == "account_mismatch"
+                && mode != Mode::Watch
+                && let Some(reason) = reason
+            {
+                return Err(ProfileError::RotateRefused(reason));
             }
             return Ok(CycleOutcome::Alerted);
         }
@@ -135,12 +156,17 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         Some(stub) => stub(ctx, &first)?,
         None => measure_and_decide(ctx, &first)?,
     };
-    let (live_shown, others_shown) = shown(&m);
+    let max_age = fresh::max_age(&ctx.settings);
+    let (live_shown, others_shown) = shown(&m, ctx.now(), max_age);
     let (name, platform) = (live_name(&first.live), first.shown_platform());
     out.emit(
         now(),
         &msg::cycle(name, &live_shown, &others_shown, platform),
     );
+    // Issue #2013 (D7): what a stale, failed or running reading was.
+    for line in msg::reading_lines(name, &live_shown, &others_shown, platform) {
+        out.emit(now(), &line);
+    }
     // Issue #1870: before `failed_live` moves on, so it is counted once.
     let m = fresh::gate(ctx, &first, m, Reread::Allowed)?;
     ctx.identity_budget.exclude_measurement(measuring.elapsed());
@@ -190,7 +216,11 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             return Ok(CycleOutcome::Skipped);
         }
     };
-    let (live_shown, others_shown) = shown(&m);
+    let (live_shown, others_shown) = shown(&m, ctx.now(), max_age);
+    // Issue #2013 (D6): a live reading too old to use shows no capacity.
+    let live_stale = m.probed.as_ref().is_some_and(|(p, _)| {
+        live_shown.stale && !fresh::fresh_at(p, m.measured_at, ctx.now(), max_age)
+    });
     let Measurement {
         live,
         others,
@@ -207,7 +237,10 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     } = m;
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
     let blocked = capacity::spend_blocked(&l, live_name(&first.live), &new_blocks, t);
-    let room = Room::live(probed.as_ref(), &live, first.platform_live(), tag, blocked);
+    let room = match live_stale {
+        true => Room::Unread,
+        false => Room::live(probed.as_ref(), &live, first.platform_live(), tag, blocked),
+    };
     let stay_line = stay_note(&l, tag, live_name(&first.live), next_plan_reset);
     // Saved before any swap, which reloads the ledger from disk.
     if block_spend_limited(&mut out, &mut l, &new_blocks, t) {
@@ -253,7 +286,16 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                     } else {
                         (refusal_kind(&e), live_name(&first.live))
                     };
-                    alert(ctx, &mut out, &kind, live, &format!("ALERT: {e}"))?;
+                    // Issue #2013 (D10, D11): the cause, the evidence and the
+                    // fix, at most once an hour per kind and profile.
+                    let reason = match &e {
+                        ProfileError::RotateRefused(r) => r.clone(),
+                        other => other.to_string(),
+                    };
+                    let cause = Cause::of(&reason);
+                    let line = refusal::line(cause, live, &reason, &first.evidence);
+                    let limit = cause.key(live);
+                    alert(ctx, &mut out, &kind, live, &line, Some(&limit))?;
                     return match mode {
                         Mode::Watch => Ok(CycleOutcome::Alerted),
                         _ => Err(e),
@@ -296,6 +338,14 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             let reason = || platform_block_reason(ctx);
             let (kind, line) = alert_line(&first, tag, &live, &others, &key_held, reason);
             let key = alert_key(kind, live_name(&first.live));
+            // Issue #2013 (D4): no login is eligible or beats the live
+            // login's weekly headroom by `--margin`; every reading is listed.
+            if kind == NO_CAPACITY
+                && let Some(n) = live_name(&first.live)
+            {
+                let stay = msg::no_room(n, &live_shown, &others_shown);
+                note_line(&mut out, &mut l, &format!("no-room:{n}"), t, &stay);
+            }
             room.alert(&mut out, &mut l, kind, &key, t, &line)
         }
     };

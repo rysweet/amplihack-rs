@@ -72,6 +72,8 @@ pub(super) fn ok(session: f64, week: f64) -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 
@@ -85,6 +87,8 @@ pub(super) fn spent() -> Probed {
         observed_at: None,
         carried: false,
         passive: false,
+        failure: None,
+        started_at: None,
     }
 }
 

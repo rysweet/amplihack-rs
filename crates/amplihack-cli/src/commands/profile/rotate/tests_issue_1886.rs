@@ -829,6 +829,7 @@ mod note_live_account {
             unmarked: Vec::new(),
             detected_mark: None,
             home_no_oauth: api_key,
+            evidence: Default::default(),
             candidate_accounts: Vec::new(),
         }
     }

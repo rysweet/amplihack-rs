@@ -103,8 +103,8 @@ amplihack profile rotate --dry-run
 ```
 
 ```
-cycle live=work work:s=88%,w=41% personal:s=20%,w=35% spare:s=0%,w=12%
-would swap work->spare live s=88% w=41% target s=0% w=12% reason=threshold
+cycle live=work work:s=88%,w=41%,age=2s personal:s=20%,w=35%,age=2s spare:s=0%,w=12%,age=2s
+would swap work->spare live s=88% w=41% age=2s target s=0% w=12% age=2s reason=threshold
 ```
 
 A dry run probes every profile and prints what it would do. It takes no lock,
@@ -122,8 +122,8 @@ amplihack profile rotate
 ```
 
 ```
-2026-10-18T12:40:05Z cycle live=work work:s=88%,w=41% personal:s=20%,w=35% spare:s=0%,w=12%
-2026-10-18T12:40:05Z swap work->spare live s=88% w=41% target s=0% w=12% reason=threshold
+2026-10-18T12:40:05Z cycle live=work work:s=88%,w=41%,age=2s personal:s=20%,w=35%,age=2s spare:s=0%,w=12%,age=2s
+2026-10-18T12:40:05Z swap work->spare live s=88% w=41% age=2s target s=0% w=12% age=2s reason=threshold
 ```
 
 The same lines go to the log. Afterwards `spare`'s login is in `~/.claude` and
@@ -763,13 +763,13 @@ the exact rules.
 
 | Flag | Variable | Default | Meaning |
 |------|----------|---------|---------|
-| `--session-at N` | `AMPLIHACK_ROTATE_SESSION_AT` | `85` | Swap when the live session use reaches N%. |
-| `--week-at N` | `AMPLIHACK_ROTATE_WEEK_AT` | `90` | Swap when the live weekly use reaches N%. |
-| `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | `5` | A threshold swap needs a target with at least N more points of headroom. |
+| `--session-at N` | `AMPLIHACK_ROTATE_SESSION_AT` | `85` | Swap when the live session use reaches N%. A target must be below N%. |
+| `--week-at N` | `AMPLIHACK_ROTATE_WEEK_AT` | `90` | Swap when the live weekly use reaches N%. A target must be below N%. |
+| `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | `5` | When no target is below both thresholds, a target needs at least N more points of weekly headroom than the live login. |
 | `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | `30` | Swap without reaching a threshold when a target has at least N more points of headroom. |
 | `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | No upgrade swap for this long after any swap. `0` turns the hold off. |
 | `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | Use an [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted) only when the next plan reset is further away than this. |
-| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Time between cycles, for `start` and `watch` only. |
+| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Time between cycles, for `start` and `watch` only. A reading older than `min(300, SECS)` seconds is not used. |
 
 A flag beats the variable, and the variable beats the default. For example, to
 rotate earlier and check every five minutes:
@@ -786,24 +786,50 @@ effect on a running background process; run `stop` and then `start`.
 
 ## When a swap happens
 
-Each profile's *headroom* is `100 - max(session %, week %)`. A profile with no
-session window yet counts as 0% session use. A profile that is
-`session_exhausted` or `weekly_exhausted` has headroom 0, whatever its other
-window reads.
+The rotator decides only on fresh readings: a reading taken no longer ago
+than `--interval` seconds, and never more than 300. An older reading is
+shown in the log with its age and `(not used)`, and a failed probe is shown
+as failed, never as its last figures. See
+[Read the log](#read-the-log).
 
-On each cycle the rotator compares the live account with the candidate that
-has the most headroom (ties go to the name that sorts first):
+A login can take over when its fresh reading is below `--session-at` on
+its session and below `--week-at` on its week. Such logins are ranked by
+weekly use first, lowest first, then by session use, then by name. Weekly
+use comes first because a weekly limit lasts for days.
 
-1. **Threshold swap.** If the live session use is at or above `--session-at`,
-   or the weekly use is at or above `--week-at`, it swaps when the candidate
-   has at least `--margin` more headroom. A live account that could not be
-   measured counts as headroom 0, but is swapped only as described in
+On each cycle:
+
+1. **Threshold swap.** If the live session use is at or above
+   `--session-at`, or the weekly use is at or above `--week-at`, the
+   rotator swaps to the first login that can take over. No margin is
+   needed, so the move happens before the live login runs out. A live
+   account that could not be measured is swapped only as described in
    [When the live login cannot be measured](#when-the-live-login-cannot-be-measured).
-2. **ALERT.** If a threshold swap is needed but no candidate has that margin,
-   it writes one `ALERT` line and leaves `~/.claude` alone.
-3. **Upgrade.** If no threshold is reached, it swaps when the candidate has at
-   least `--upgrade-margin` more headroom, unless the last swap was less than
-   `--hold` seconds ago.
+2. **Margin swap.** If no login can take over, it swaps to the first
+   login below 100% on both windows whose weekly headroom (`100 - week %`)
+   is at least `--margin` points more than the live login's.
+3. **Stay.** Otherwise it writes `stay: no login with room`, listing every
+   login's reading, and one `ALERT` line, and leaves `~/.claude` alone.
+4. **Upgrade.** If no threshold is reached, it swaps to the first login,
+   in rank order, that can take over and has at least `--upgrade-margin`
+   more headroom (`100 - max(session %, week %)`), unless the last swap
+   was less than `--hold` seconds ago.
+
+For example, with the defaults, live `nnorth` at 98% of its week, and
+logins at 97%, 11% and 52% weekly, all at 10% session use, the swap goes to
+the login at 11%:
+
+```
+2026-11-05T14:02:12Z swap nnorth->eelsworth live s=10% w=98% age=13s target s=10% w=11% age=13s reason=threshold
+```
+
+The login at 97% is never chosen: it is at `--week-at`. If every other
+login were at 97% or more, none would gain 5 points of weekly headroom over
+`nnorth`, and the rotator would stay.
+
+The plan-room step and auto-switch use the same rule, so they choose the
+same login. The rules in full are in
+[Eligible logins and ranking](../reference/profile-command.md#rotate-eligible-logins-and-ranking).
 
 The hold stops flapping. Just after a swap, the account that was swapped out
 often has its session window reset and looks fresh; without the hold the next
@@ -825,10 +851,11 @@ login fails too. The count starts again after the swap, and the third failure
 comes inside the hold:
 
 ```
-2026-10-20T09:00:05Z cycle live=work work:failed personal:s=20%,w=35% spare:s=0%,w=12%
+2026-10-20T09:00:05Z cycle live=work work:failed personal:s=20%,w=35%,age=2s spare:s=0%,w=12%,age=2s
+2026-10-20T09:00:05Z reading: work probe failed: timeout
 2026-10-20T09:00:05Z stay: live probe failed (1/3)
 2026-10-20T09:10:05Z stay: live probe failed (2/3)
-2026-10-20T09:20:05Z swap work->spare live failed target s=0% w=12% reason=failed-probe
+2026-10-20T09:20:05Z swap work->spare live probe failed: timeout target s=0% w=12% age=2s reason=failed-probe
 2026-10-20T09:30:05Z stay: live probe failed (1/3)
 2026-10-20T09:40:05Z stay: live probe failed (2/3)
 2026-10-20T09:50:05Z stay: live probe failed; held after last swap (1800s left)
@@ -845,7 +872,8 @@ before. When every account is at or above a threshold, the rotator writes
 one `ALERT` and stays, as before.
 
 A probe that timed out or could not run shows as `<name>:failed` in the
-cycle line, never as a percentage, and writes
+cycle line, never as a percentage or as the figures it last read, followed
+by `reading: <name> probe failed: <reason>`, and writes
 `warning: rotate: probe of <name> timed out` (or `failed: <reason>`) to
 `rotate.err`. Its usage is unknown: the rotator does not choose it, does not
 count or record it as exhausted, and probes it again on the next cycle.
@@ -862,8 +890,8 @@ shows `w=100%` and the session it read, for example `s=30%,w=100%`, and
 [Exhausted figures](../reference/profile-command.md#rotate-exhausted-figures).
 
 A login whose read had not finished when the cycle stopped waiting shows as
-`<name>:unknown, still running`. Its usage is unknown for that cycle, as for
-`failed`, and the next cycle uses the result when it arrives; see
+`<name>:running`, followed by `reading: <name> probe running since <n>s (not used)`.
+Its usage is unknown for that cycle, as for `failed`; see
 [Readings that take longer than a cycle](#readings-that-take-longer-than-a-cycle).
 
 To see why a probe fails, run `amplihack profile usage --raw`. If the state
@@ -951,14 +979,18 @@ The details are in the
 A cycle does not wait for every reading. It waits until 2 seconds before
 `--interval` is up, counted from the start of the cycle, and at least
 1 second. A login whose reading has not finished by then shows as
-`<name>:unknown, still running` in the cycle line and counts as unmeasured
-for that cycle. Its reading keeps running, and the next cycle uses the
-result; no second reading of that login starts while one is outstanding.
-With `--interval 120`:
+`<name>:running` in the cycle line and counts as unmeasured for that cycle.
+Its reading keeps running, and the next cycle shows the result, with its
+age counted from when the reading started, but does not decide on it:
+only readings taken in the cycle that uses them are fresh. No second
+reading of that login starts while one is outstanding, and the cycle after
+that reads it as usual. With `--interval 120`:
 
 ```
-2026-11-01T10:00:00Z cycle live=work work:s=41%,w=30% spare:unknown, still running third:s=5%,w=12%
-2026-11-01T10:02:01Z cycle live=work work:s=43%,w=30% spare:s=0%,w=8% third:s=5%,w=12%
+2026-11-01T10:00:00Z cycle live=work work:s=41%,w=30%,age=2s spare:running third:s=5%,w=12%,age=2s
+2026-11-01T10:00:00Z reading: spare probe running since 118s (not used)
+2026-11-01T10:02:01Z cycle live=work work:s=43%,w=30%,age=2s spare:stale third:s=5%,w=12%,age=2s
+2026-11-01T10:02:01Z reading: spare s=0% w=8% stale age=239s (not used)
 ```
 
 A reading still outstanding after twice the probe deadline plus 5 seconds
@@ -1024,8 +1056,8 @@ and a message. When it passes 1 MiB it is renamed to `rotate.log.1`, replacing
 the previous one.
 
 ```
-2026-10-18T13:00:05Z cycle live=spare spare:s=4%,w=13% personal:s=20%,w=35% work:s=88%,w=41%
-2026-10-18T17:10:05Z swap spare->personal live s=86% w=30% target s=0% w=36% reason=threshold
+2026-10-18T13:00:05Z cycle live=spare spare:s=4%,w=13%,age=2s personal:s=20%,w=35%,age=2s work:s=88%,w=41%,age=2s
+2026-10-18T17:10:05Z swap spare->personal live s=86% w=30% age=2s target s=0% w=36% age=2s reason=threshold
 2026-10-18T19:40:05Z ALERT: no profile has capacity live=personal s=97% w=52%
 2026-10-18T19:50:05Z skip: state lock busy
 2026-10-20T09:00:05Z stay: live probe failed (1/3)
@@ -1036,8 +1068,8 @@ A login at its session limit keeps its weekly figure in the log. Here
 moved to `personal`:
 
 ```
-2026-11-01T14:40:05Z cycle live=work work:s=100%,w=62% personal:s=20%,w=35%
-2026-11-01T14:40:05Z swap work->personal live s=100% w=62% target s=20% w=35% reason=threshold
+2026-11-01T14:40:05Z cycle live=work work:s=100%,w=62%,age=2s personal:s=20%,w=35%,age=2s
+2026-11-01T14:40:05Z swap work->personal live s=100% w=62% age=2s target s=20% w=35% age=2s reason=threshold
 ```
 
 To follow one login's weekly use across cycles, including cycles where it
@@ -1056,18 +1088,71 @@ grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
 `change:` lines record who changed the autostart setting or the auto-switch
 toggle; see [See who turned rotation off](#see-who-turned-rotation-off).
 
-The same ALERT is written to the log once. It is written again only after
-something changes: a swap succeeds, a cycle needs no swap, or the reason
-changes. The one-shot `rotate` still prints it on every run. The ALERTs for a
-[manual `/login` in `~/.claude`](#after-a-manual-login-in-claude), their `fix`
-lines, refusals caused by missing or conflicting trusted identity, the
-`has no login anywhere` line and the
-[exhausted-while-off](#see-who-turned-rotation-off) ALERT are the exception:
-they are written on every cycle until the problem is resolved. The log
-holds profile names, percentages, fixed text and, in `recovered:` and `fix`
-lines, paths under your home directory and the profile root. `change:` lines
-also hold a redacted parent command line and run ids. It never holds
-account IDs, e-mail addresses, tokens or Claude's output.
+The same no-capacity ALERT is written to the log once. It is written again
+only after something changes: a swap succeeds, a cycle needs no swap, or the
+reason changes. The one-shot `rotate` still prints it on every run. The
+ALERTs for a [manual `/login` in `~/.claude`](#after-a-manual-login-in-claude),
+their `fix` lines, the `has no login anywhere` line and the
+[exhausted-while-off](#see-who-turned-rotation-off) ALERT are written on
+every cycle until the problem is resolved. Swap refusals are limited to
+once an hour; see [Repeated alerts](#repeated-alerts). The log
+holds profile names, percentages, ages, fixed text and, in `recovered:` and
+`fix` lines, paths under your home directory and the profile root.
+`change:` lines also hold a redacted parent command line and run ids. Swap
+refusals and `repair:` lines hold the e-mail address each source reports,
+so that you can see which source disagreed. Earlier releases never wrote
+an address to this log, so check the log before you share it. The log
+never holds account IDs, organization IDs, tokens or Claude's output.
+
+### Reading ages in the log
+
+Every reading carries its age in seconds. A reading older than
+`--interval` (and never more than 300 seconds) is *stale*: the rotator
+shows it but does not decide on it. A failed probe shows its reason, never
+the figures it read before.
+
+| In the `cycle` line | Followed by | Meaning |
+|---------------------|-------------|---------|
+| `work:s=41%,w=97%,age=35s` | nothing | A fresh reading, used for the decision. |
+| `work:stale` | `reading: work s=41% w=97% stale age=7320s (not used)` | Too old to use. |
+| `work:failed` | `reading: work probe failed: http 429` | The probe failed; there are no figures. |
+| `work:running` | `reading: work probe running since 130s (not used)` | A read from an earlier cycle has not finished. |
+
+When the live login's own reading is stale, the cycle makes no swap on it
+and writes `stay: live reading stale age=<n>s (not used)`. The next cycle
+reads it again as usual.
+
+To see every reading that was not used:
+
+```bash
+grep -E ' reading: | stay: live reading stale' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
+The formats and the age limit are in
+[Reading display](../reference/profile-command.md#reading-display).
+
+### Repeated alerts
+
+A swap refusal, a `repair:` line and a `stay: no login with room` line are
+written at most once an hour for the same cause and profile. The rotator
+counts the repeats it does not write, and the next line written gives the
+count:
+
+```
+2026-11-07T09:14:05Z ALERT: swap refused (account-mismatch, profile nnorth): ...
+2026-11-07T10:14:05Z ALERT: swap refused (account-mismatch, profile nnorth): ... (repeated 29 times since 2026-11-07T09:14:05Z)
+2026-11-07T11:14:05Z ALERT: swap refused (account-mismatch, profile nnorth): ... (repeated 29 times since 2026-11-07T10:14:05Z)
+```
+
+The count and the time in the suffix cover the period since the line was
+last written.
+
+The rotator still tries the swap on every cycle. Once the cause is gone,
+the swap goes ahead in that cycle, and the next occurrence of the same
+cause is written straight away. `amplihack profile rotate status` and the
+ledger's `alert` field show the current state on every cycle, whatever the
+log shows. See
+[Rotate alert limit](../reference/profile-command.md#rotate-alert-limit).
 
 ### Hand-change notes and alerts
 
@@ -1368,7 +1453,16 @@ clear the history, delete `usage-history.jsonl` and `usage-history.lock`.
 ## When no account has capacity
 
 When the `ALERT: no profile has capacity` line is written, the rotator has
-nowhere to move the login, so it stays put. With an
+nowhere to move the login, so it stays put. Just before it, a
+`stay: no login with room` line lists every login's reading with its age,
+so you can see whether the others are near their limits, stale or failed:
+
+```
+2026-11-06T22:49:05Z stay: no login with room; live nnorth s=17% w=98% age=4s; ffarmer s=10% w=97% age=4s; oole s=41% w=99% age=4s; eelsworth probe failed: timeout
+```
+
+That line is written at most once an hour while the situation lasts; see
+[Repeated alerts](#repeated-alerts). With an
 [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted)
 marked, it moves there instead when the next plan reset is far enough away.
 
@@ -1563,7 +1657,7 @@ ALERT (or makes the free swap onto a plan login at a threshold) as it would
 with no overflow profile, and probes again on the next cycle:
 
 ```
-2026-10-24T09:00:05Z cycle live=work work:s=97%,w=91% personal:failed ryan-mistt-org:s=100%,w=100%
+2026-10-24T09:00:05Z cycle live=work work:s=97%,w=91%,age=2s personal:failed ryan-mistt-org:s=100%,w=100%,age=2s
 2026-10-24T09:00:05Z ALERT: no profile has capacity live=work s=97% w=91% (candidates: 1 failed, 1 exhausted)
 ```
 
@@ -1663,11 +1757,11 @@ profile to the same log, as a `per-token` line that ends `auto-switch from
 <profile>`:
 
 ```
-2026-10-24T09:00:05Z cycle live=work work:s=100%,w=91% personal:s=100%,w=100% ryan-mistt-org:s=100%,w=100%
+2026-10-24T09:00:05Z cycle live=work work:s=100%,w=91%,age=2s personal:s=100%,w=100%,age=2s ryan-mistt-org:s=100%,w=100%,age=2s
 2026-10-24T09:00:05Z per-token ryan-mistt-org: no measured plan login below 100%, 0 not measured; earliest reset 2026-10-24T14:00:00Z beyond overflow_wait; marked overflow tier 1; probe ok, no spend limit
-2026-10-24T09:00:05Z swap work->ryan-mistt-org live s=100% w=91% target s=100% w=100% reason=overflow-in
+2026-10-24T09:00:05Z swap work->ryan-mistt-org live s=100% w=91% age=2s target s=100% w=100% age=2s reason=overflow-in
 2026-10-24T09:00:05Z overflow: on ryan-mistt-org; no measured plan login below 100%, next plan reset 2026-10-24T14:00:00Z
-2026-10-24T14:10:05Z swap ryan-mistt-org->personal live s=100% w=100% target s=0% w=62% reason=overflow-out
+2026-10-24T14:10:05Z swap ryan-mistt-org->personal live s=100% w=100% age=2s target s=0% w=62% age=2s reason=overflow-out
 2026-10-24T14:10:05Z overflow: off ryan-mistt-org; back on plan profile personal
 ```
 
@@ -1908,6 +2002,24 @@ error: swap refused: profile work already has a login
 hint: nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md
 ```
 
+In the log, a refusal names its kind, what each source said and the fix:
+
+```
+ALERT: swap refused (has-login, profile work): profile work already has a login. Evidence: credentials/verified=work@example.com, ledger=work@example.com, record=work@example.com, .claude.json=work@example.com. Fix: decide which login work keeps, then run: amplihack profile login work
+```
+
+The evidence values are the accounts reported by the login in `~/.claude`
+(checked with the server), the ledger, the profile's record and the
+`oauthAccount` block of `~/.claude.json`. Only the first three decide;
+`.claude.json` is shown so you can see whether it disagrees. A value shows
+`none` when the source has none and `unreadable` when it could not be
+read. Every kind and its fix are listed in
+[Rotate refusal alerts](../reference/profile-command.md#rotate-refusal-alerts).
+
+The rotator has no separate retry. Each cycle tries again, and the first
+cycle after the cause is gone makes the swap. The same refusal is logged at
+most once an hour, with a count; see [Repeated alerts](#repeated-alerts).
+
 | Reason | What to do |
 |--------|------------|
 | ``profile <name> has no stored login; run `amplihack profile login <name>` first`` | `profile switch <name>` found no login in that profile to move into `~/.claude`. Log it in with `amplihack profile login <name>`, then switch. |
@@ -1918,7 +2030,7 @@ hint: nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotatio
 | `profile root is owned by another user`, `profile root is writable by other users` | Fix the ownership or mode of the profile root (`chmod 700`). |
 | `atomic exchange is not supported here` | The system or filesystem cannot swap two files in one step. Only Linux can. Nothing was moved. |
 | `Claude holds its refresh lock; the swap waits for the next cycle` | A `claude` session is refreshing its token in `~/.claude` or the target profile. The rotator never breaks that lock; it tries again on the next cycle. If it repeats with no `claude` running, see "Stale refresh lock" under Limits. |
-| `~/.claude.json is not a JSON object` | The swap could not record the new account in `~/.claude.json`, so it refuses before anything moves. Repair the file so it holds a JSON object. |
+| `~/.claude.json is not a JSON object` | Kind `home-unreadable`. The file cannot be parsed, so the rotator neither repairs it nor records the new account in it, and refuses before anything moves. The file holds other Claude settings, so it is never rewritten blind. Repair the file so it holds a JSON object. |
 | `the login in ~/.claude is not the account recorded for profile <name>` | The live login would go back to `<name>`, but it is not the account recorded for `<name>`. Saving it there would leave `<name>` holding another account's login. See [The live login is not the profile's account](#the-live-login-is-not-the-profiles-account). |
 | `the recorded account could not be written to the .claude.json of profile <name>: <reason>` | The login in `~/.claude` is the account recorded for `<name>`, but `<root>/<name>/.claude.json` names another account and could not be updated. Moving the login there would leave the file naming the wrong account. Repair the file so it holds a JSON object, or check its ownership and mode; the next cycle writes it. |
 
@@ -1972,16 +2084,32 @@ account, so a `/login` to your personal organization is refused for a
 profile recorded with your team organization.
 
 Before a swap moves the login in `~/.claude` back to the live profile, the
-rotator compares it with that profile's record. If they differ, the swap is
-refused and nothing moves:
+rotator compares the account the server reports for it with that profile's
+record. If they differ, the swap is refused and nothing moves:
 
 ```
-2026-11-01T09:40:05Z ALERT: swap refused: the login in ~/.claude is not the account recorded for profile work
+2026-11-01T09:40:05Z ALERT: swap refused (account-mismatch, profile work): the login in ~/.claude is not the account recorded for profile work. Evidence: credentials/verified=personal@example.com, ledger=work@example.com, record=work@example.com, .claude.json=personal@example.com. Fix: run plain claude, /login to the account recorded for work, then wait for the next cycle
 ```
 
-The ALERT is written on every affected cycle until the conflict is fixed.
-It names the profile and a redacted reason, never the account or token. `amplihack profile switch` reports the same
-refusal and exits 1.
+Here `credentials/verified` differs from the record, so the login in
+`~/.claude` is not `work`'s. The ALERT is written once an hour while the
+conflict lasts, with a count of the cycles not logged. It names the
+accounts by e-mail address, never by ID or token.
+`amplihack profile switch` reports the same refusal on every attempt and
+exits 1.
+
+When only `.claude.json` disagrees, and the server, the ledger and the
+record name the same account, there is no refusal. The cycle rewrites the
+`oauthAccount` block from the verified account, writes one line, and goes
+on with any swap that is due:
+
+```
+2026-11-06T20:32:54Z repair: home account metadata named ffarmer@example.com, verified identity is nnorth@example.com; rewritten
+```
+
+A running Claude Code session can write its old block back; the next cycle
+repairs it again, and the line is logged once an hour. See
+[Home account repair](../reference/profile-command.md#rotate-home-account-repair).
 
 This usually follows a `/login` in `~/.claude` to the wrong account, or a
 browser that signed Claude in to whichever account it already had. To fix
@@ -2132,8 +2260,8 @@ that as a `/login` and moved `rssourcelabs`'s only login aside. Now the next
 cycles simply carry on:
 
 ```
-2026-11-03T04:50:10Z swap rssourcelabs->hharkness live s=91% w=40% target s=3% w=22% reason=threshold
-2026-11-03T04:52:10Z cycle live=hharkness hharkness:s=4%,w=22% rssourcelabs:s=91%,w=40%
+2026-11-03T04:50:10Z swap rssourcelabs->hharkness live s=91% w=40% age=2s target s=3% w=22% age=2s reason=threshold
+2026-11-03T04:52:10Z cycle live=hharkness hharkness:s=4%,w=22%,age=2s rssourcelabs:s=91%,w=40%,age=2s
 ```
 
 After 10 minutes, the server reports `hharkness`'s account for the login in
@@ -2299,10 +2427,10 @@ amplihack profile verify
 ```
 
 ```
-~/.claude (live ffarmer) -> ffarmer@mistt.com: ok
+~/.claude (live ffarmer) -> ffarmer@example.com: ok
 ffarmer -> no login
 mmorrison -> no login
-nnorth -> mmorrison@mistt.com: MISMATCH, recorded for mmorrison
+nnorth -> mmorrison@example.com: MISMATCH, recorded for mmorrison
 ```
 
 Here `nnorth`'s folder holds `mmorrison`'s login, as the 3 November misfire
@@ -2379,7 +2507,9 @@ are in
 
 A missing or stale `oauthAccount` cannot establish ownership or trigger
 recovery. The swap constructs display account details from trusted
-identity, preserving unrelated JSON fields and the existing file mode.
+identity, preserving unrelated JSON fields and the existing file mode, and
+every cycle rewrites a missing or stale block from the verified identity
+when the ledger and the record agree with it, logging a `repair:` line.
 If the display file cannot be safely read or updated, such as when it is
 not a JSON object or its permissions are unsafe, the swap can still
 refuse on that file-safety check before moving a login.
@@ -2575,7 +2705,7 @@ the reason before the swap:
 
 ```
 per-token api-key: no measured plan login below 100%, 0 not measured; earliest reset 2026-11-01T02:14:00Z beyond overflow_wait; marked overflow tier 10; login check passed (primaryApiKey set)
-swap iivanovich->api-key live s=100% w=61% target s=0% w=0% reason=overflow-in
+swap iivanovich->api-key live s=100% w=61% age=2s target s=0% w=0% age=2s reason=overflow-in
 moved ~/.claude onto API key profile api-key (billed per token)
 ```
 
@@ -2715,7 +2845,7 @@ A profile whose login is live in `~/.claude` is not refused: the launch runs
 against `~/.claude`, which holds the login. The rotator likewise refuses any
 swap that would leave `~/.claude` with no OAuth login unless the incoming
 profile is an API-key profile, and logs
-`ALERT: swap refused: <name> has no oauth login and is not an API-key profile`.
+`ALERT: swap refused (api-key, profile <name>): <name> has no oauth login and is not an API-key profile. Evidence: ... Fix: ...`.
 
 ## Live default and duplicate logins
 

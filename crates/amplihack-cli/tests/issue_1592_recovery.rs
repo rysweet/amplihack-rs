@@ -211,7 +211,13 @@ fn a_refused_swap_alerts_once_across_runs_and_records_the_cycle() {
     let alerts = f
         .log()
         .lines()
-        .filter(|l| l.contains("ALERT: swap refused: Claude holds its refresh lock"))
+        // Issue #2013 (D10, D11): the refusal line names its kind and is
+        // written once within the hour.
+        .filter(|l| {
+            l.contains(
+                "ALERT: swap refused (refresh-lock, profile work): Claude holds its refresh lock",
+            )
+        })
         .count();
     assert_eq!(alerts, 1, "{}", f.log());
     let ledger = f.ledger().expect("ledger written");

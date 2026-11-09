@@ -10,8 +10,8 @@ use super::log::msg;
 use super::measure::{self, Live};
 use super::overflow::{OverflowInput, Tag, decide_overflow};
 use super::pin::{self, PinState};
+use super::refusal::Evidence;
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::kind;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{OverflowEntry, PLATFORM_TIER};
@@ -55,6 +55,9 @@ pub struct Snap {
     pub home_no_oauth: bool,
     /// Each candidate's account; step 6 compares the target's (#1721).
     pub candidate_accounts: Vec<(ProfileName, Option<Account>)>,
+    /// Issue #2013 (D10): what each source said about the live account, for
+    /// refusal lines only. Never read by a decision.
+    pub evidence: Evidence,
 }
 
 impl Snap {
@@ -145,46 +148,14 @@ impl Snap {
 #[path = "observe_snapshot.rs"]
 mod take;
 pub use take::snapshot;
+#[path = "observe_alert.rs"]
+mod live_alerts;
+pub use live_alerts::{live_alert, live_alert_for};
 
 pub fn live_name(id: &LiveId) -> Option<&ProfileName> {
     match id {
         LiveId::Known(n) | LiveId::HandChanged(n) | LiveId::HomeUnreadable(n) => Some(n),
         _ => None,
-    }
-}
-
-/// The ALERT for a live login that cannot be used, if any.
-pub fn live_alert(snap: &Snap) -> Option<(&'static str, String)> {
-    if let Some(reason) = &snap.identity_refusal {
-        let kind = if reason.starts_with(super::swap_expect::ACCOUNT_MISMATCH) {
-            "account_mismatch"
-        } else {
-            "trusted-identity"
-        };
-        return Some((kind, format!("ALERT: swap refused: {reason}")));
-    }
-    if !snap.home_no_oauth && snap.trusted_live.is_none() && !matches!(snap.live, LiveId::NoLogin) {
-        let text = snap.identity_cause.map_or_else(
-            || super::login_identity::UNAVAILABLE.to_string(),
-            super::login_identity::unavailable_line,
-        );
-        return Some(("trusted-identity", format!("ALERT: {text}")));
-    }
-    live_alert_for(&snap.live, snap.home_no_oauth)
-}
-
-/// [`live_alert`] for a live login `live`; `home_no_oauth` is
-/// [`Snap::home_no_oauth`].
-pub fn live_alert_for(live: &LiveId, home_no_oauth: bool) -> Option<(&'static str, String)> {
-    match live {
-        LiveId::NoLogin => Some(("no-login", msg::NO_LOGIN.to_string())),
-        LiveId::HandChanged(n) => Some(("hand-change", msg::hand_change(n))),
-        LiveId::HomeUnreadable(n) => Some(("home-unreadable", msg::home_unreadable(n))),
-        LiveId::Ambiguous if home_no_oauth => {
-            Some(("ambiguous", msg::AMBIGUOUS_PLATFORM.to_string()))
-        }
-        LiveId::Ambiguous => Some(("ambiguous", msg::AMBIGUOUS.to_string())),
-        LiveId::Known(_) | LiveId::Adopt => None,
     }
 }
 
@@ -222,7 +193,7 @@ pub struct Measurement {
 }
 
 pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
-    let measured_at = now();
+    let measured_at = ctx.now();
     let platform = snap.platform();
     let live = match &snap.live {
         _ if snap.platform_live() => Live::Platform,
@@ -278,10 +249,21 @@ pub(super) fn decide_measured(
         LiveId::Known(n) => Some(n),
         _ => None,
     };
-    let t = now();
+    let t = ctx.now();
+    // Issue #2013 (D6): a live reading too old to use, or with no reading
+    // time (a result carried from an earlier cycle), gives no decision. It is
+    // not a failed probe; the next cycle's probe reads it again.
+    let max_age = super::fresh::max_age(&ctx.settings);
+    let figures = matches!(
+        probe.reading,
+        Reading::Measured { .. } | Reading::Exhausted { .. }
+    );
+    let stale_live = (figures && !super::fresh::fresh_at(&probe, measured_at, t, max_age))
+        .then(|| super::log::Shown::at(&probe, measured_at, t, max_age).age)
+        .map(|age| age.map_or_else(|| "?".to_string(), |a| a.to_string()));
     let overflow = snap.decision_overflow();
     let unmeasured_plan = snap.unmeasured_plan();
-    let verdict = decide_overflow(&OverflowInput {
+    let mut verdict = decide_overflow(&OverflowInput {
         settings: &ctx.settings,
         live_name,
         live: &probe,
@@ -297,7 +279,7 @@ pub(super) fn decide_measured(
     // A spend limit on a live overflow profile is handled by its block, so
     // it does not count towards the failed live probes.
     let live_over = live_name.is_some_and(|n| overflow.iter().any(|e| &e.name == n));
-    let failed = if live_over && probe.spend_limit {
+    let failed = if (live_over && probe.spend_limit) || stale_live.is_some() {
         ctx.failed_live
     } else {
         next_failed(ctx.failed_live, &probe.reading)
@@ -316,7 +298,14 @@ pub(super) fn decide_measured(
     let home_key = (is_failed_probe_swap(&decision) && !snap.platform_live())
         .then(|| key_check::reachable(&ctx.home).ok())
         .flatten();
-    let (decision, note) = keep_for_home_key(decision, note, home_key);
+    let (mut decision, mut note) = keep_for_home_key(decision, note, home_key);
+    let mut fresh_lines = Vec::new();
+    if let Some(age) = stale_live {
+        // D6: no decision from it; the next cycle's probe reads it again.
+        (decision, note) = (Decision::Stay, None);
+        (verdict.tag, verdict.new_blocks, verdict.key_held) = (None, Vec::new(), Vec::new());
+        fresh_lines.push(format!("stay: live reading stale age={age}s (not used)"));
+    }
     // A damped move off credits is a stay on them.
     let tag = match (&decision, verdict.tag) {
         (Decision::Stay, Some(Tag::Out)) => Some(Tag::On),
@@ -338,7 +327,7 @@ pub(super) fn decide_measured(
         unknown_plan: verdict.unknown_plan,
         key_held: verdict.key_held,
         measured_at,
-        fresh_lines: Vec::new(),
+        fresh_lines,
     })
 }
 

@@ -163,14 +163,16 @@ fn week_threshold_is_inclusive() {
 
 #[test]
 fn margin_of_five_is_inclusive_and_four_is_not_enough() {
-    // live headroom 10.
-    let live = r(90.0, 0.0);
-    let five = [c("spare", r(85.0, 0.0))];
+    // Issue #2013 (D4): the margin is weekly headroom, and applies only when
+    // no candidate is eligible. Live weekly headroom 5; each candidate is at
+    // --week-at or above, so not eligible, but has room.
+    let live = r(10.0, 95.0);
+    let five = [c("spare", r(10.0, 90.0))];
     assert_eq!(
         decide(&settings(), &live, &five, None, NOW),
         swap("spare", Reason::Threshold)
     );
-    let four = [c("spare", r(86.0, 0.0))];
+    let four = [c("spare", r(10.0, 91.0))];
     assert_eq!(
         decide(&settings(), &live, &four, None, NOW),
         Decision::Alert
@@ -188,13 +190,15 @@ fn a_failed_live_probe_needs_a_swap_with_live_headroom_zero() {
             NOW
         ),
         swap("spare", Reason::Threshold),
-        "headroom 5 meets the margin against 0"
+        "weekly headroom 100 meets the margin against 0"
     );
+    // Issue #2013 (D4): a failed live login has no room, so any candidate
+    // with room beats it; one without room never does.
     assert_eq!(
         decide(
             &settings(),
             &Reading::Failed,
-            &[c("spare", r(96.0, 0.0))],
+            &[c("spare", r(100.0, 0.0))],
             None,
             NOW
         ),

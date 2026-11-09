@@ -25,7 +25,9 @@ fn expired_live_is_previewed_not_refreshed() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("would alert: trusted login identity unavailable: token expired"),
+        stdout.contains(
+            "would alert: swap refused (identity-unavailable, profile work): trusted login identity unavailable: token expired."
+        ),
         "{stdout}"
     );
     assert_untouched(&w, &before);

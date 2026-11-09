@@ -8,6 +8,7 @@ use super::cycle::Ctx;
 use super::decide::Probed;
 use super::inflight::{InFlight, Job};
 use crate::binary_finder::BinaryInfo;
+use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::probe_limits::{self, ProbeMode};
 use crate::commands::profile::store::ProfileStore;
@@ -55,7 +56,12 @@ pub(super) fn reading(who: &str, p: &Probe) -> Probed {
             .error
             .map_or_else(|| "unreadable /usage output".to_string(), |e| e.to_string());
         eprintln!("warning: rotate: probe of {who} failed: {why}");
-        return Probed::failed();
+        // Issue #2013 (S9): the log shows the error kind only, never `why`.
+        let failure = Some(p.direct_failure.unwrap_or("error").to_string());
+        return Probed {
+            failure,
+            ..Probed::failed()
+        };
     }
     if p.report.state == UsageState::Timeout {
         eprintln!("warning: rotate: probe of {who} timed out");
@@ -63,43 +69,9 @@ pub(super) fn reading(who: &str, p: &Probe) -> Probed {
     Probed::from_report(&p.report)
 }
 
-/// The probe method, as `profile usage` resolves it. A bad variable falls
-/// back to the default order and warns on stderr. Only [`measure_ordered`]
-/// calls this, once per cycle, so the warning is printed once per cycle;
-/// anything else in the cycle uses [`mode_quiet`].
-pub(super) fn mode() -> ProbeMode {
-    let (mode, warning) = probe_limits::probe_mode_from_env();
-    if let Some(w) = warning {
-        eprintln!("{w}");
-    }
-    mode
-}
-
-/// [`mode`] with no warning: for a read later in a cycle whose
-/// [`measure_ordered`] has already warned about the same variable (the
-/// freshness gate's re-read, issue #1870 review round 4).
-pub(super) fn mode_quiet() -> ProbeMode {
-    probe_limits::probe_mode_from_env().0
-}
-
-/// The probe deadline, as `profile usage` resolves it without a flag. A bad
-/// variable falls back to the default and warns on stderr, as a bad
-/// parallelism variable does. Only [`measure_ordered`] calls this, once per
-/// cycle, so the warning is printed once per cycle; anything else in the
-/// cycle uses [`timeout_quiet`].
-pub(super) fn timeout() -> Duration {
-    let (secs, warning) = probe_limits::timeout_from_env(None);
-    if let Some(w) = warning {
-        eprintln!("{w}");
-    }
-    Duration::from_secs(secs)
-}
-
-/// [`timeout`] with no warning: for the freshness gate's time limit, set
-/// after [`measure_ordered`] has already warned this cycle.
-pub(super) fn timeout_quiet() -> Duration {
-    Duration::from_secs(probe_limits::timeout_from_env(None).0)
-}
+#[path = "measure_env.rs"]
+mod env;
+pub(super) use env::{mode, mode_quiet, timeout, timeout_quiet};
 
 /// The live probe and each candidate's by `claude` only, in the order of
 /// `candidates`, with reset times kept for exhausted readings too: the held
@@ -240,6 +212,13 @@ where
     for k in fl.drop_stale(Instant::now()) {
         eprintln!("warning: rotate: read of {k} still running after its limit; dropped");
     }
+    // Issue #2013 (D7): when each read in flight started, for the log only.
+    let (wall, mono) = (now(), Instant::now());
+    let started_at = |d: Option<Duration>| d.map(|d| wall.saturating_sub(d.as_secs() as i64));
+    let earlier: HashMap<K, Option<i64>> = keys
+        .iter()
+        .map(|k| (k.clone(), started_at(fl.running_for(k, mono))))
+        .collect();
     let mut got: HashMap<K, Probe> = fl.collect().into_iter().collect();
     let jobs: Vec<(K, Job<Probe>)> = keys
         .iter()
@@ -265,11 +244,14 @@ where
                 Some(p) => {
                     let mut probed = reading(&k.to_string(), &p);
                     probed.carried = !started.contains(k);
+                    probed.started_at =
+                        earlier.get(k).copied().flatten().filter(|_| probed.carried);
                     probed
                 }
                 None if fl.busy(k) => {
                     let mut p = Probed::failed();
                     p.still_running = true;
+                    p.started_at = started_at(fl.running_for(k, Instant::now()));
                     p
                 }
                 None => Probed::failed(),

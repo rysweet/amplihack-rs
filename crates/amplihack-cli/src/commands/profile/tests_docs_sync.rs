@@ -569,15 +569,16 @@ fn docs_quote_the_probe_race_note_and_not_the_old_warning() {
 #[cfg(unix)]
 #[test]
 fn docs_quote_the_account_mismatch_refusal_and_alert() {
-    use super::ProfileError as E;
     let refusal = "the login in ~/.claude is not the account recorded for profile";
     assert!(
         super::rotate::DOCUMENTED_REFUSALS.contains(&refusal),
         "swap::DOCUMENTED lists the account-mismatch refusal"
     );
-    let alert = format!("ALERT: {}", E::RotateRefused(format!("{refusal} work")));
+    // Issue #2013 (D10): the logged line names the kind and the profile;
+    // the one-shot error still reads `swap refused: <refusal> <from>`.
+    let alert = format!("ALERT: swap refused (account-mismatch, profile work): {refusal} work.");
     assert!(ROTATE_HOWTO.contains(&alert), "how-to is missing {alert:?}");
-    let row = format!("ALERT: {}", E::RotateRefused(format!("{refusal} <from>")));
+    let row = format!("ALERT: swap refused (account-mismatch, profile <from>): {refusal} <from>.");
     assert!(REFERENCE.contains(&row), "reference is missing {row:?}");
     assert!(REFERENCE.contains("`account_mismatch:<from>`"));
     assert!(REFERENCE.contains(".auto-switch.d/expected/<name>.json"));

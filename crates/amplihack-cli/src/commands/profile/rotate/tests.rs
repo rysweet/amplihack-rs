@@ -45,3 +45,21 @@ mod tests_platform_block;
 mod tests_platform_identify;
 #[path = "tests_settings.rs"]
 mod tests_settings;
+// Issue #2013. These share `tests_issue_2013_common` and the `tests_swap`
+// fixture.
+#[path = "tests_issue_2013_alert.rs"]
+mod tests_issue_2013_alert;
+#[path = "tests_issue_2013_common.rs"]
+pub(super) mod tests_issue_2013_common;
+#[path = "tests_issue_2013_eelsworth.rs"]
+mod tests_issue_2013_eelsworth;
+#[path = "tests_issue_2013_fresh.rs"]
+mod tests_issue_2013_fresh;
+#[path = "tests_issue_2013_rank.rs"]
+mod tests_issue_2013_rank;
+#[path = "tests_issue_2013_refusal.rs"]
+mod tests_issue_2013_refusal;
+#[path = "tests_issue_2013_repair.rs"]
+mod tests_issue_2013_repair;
+#[path = "tests_issue_2013_swap.rs"]
+mod tests_issue_2013_swap;
