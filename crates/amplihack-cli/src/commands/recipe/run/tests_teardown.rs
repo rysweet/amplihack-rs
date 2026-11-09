@@ -83,6 +83,20 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// Points the run's work root at `dir/work` and turns the end-of-run sweep
+/// off. Without this a test inherits `AMPLIHACK_WORK_ROOT` (or falls back to
+/// `$HOME/.amplihack/work`), so `finish` sweeps the developer's real run
+/// folders: it can delete them, and on a full work root the sweep alone
+/// outlasts the timing bounds these tests assert. Same isolation as
+/// `tests_execute.rs`.
+fn isolate_work_root(dir: &Path) -> [EnvVarGuard; 3] {
+    [
+        EnvVarGuard::set("AMPLIHACK_WORK_ROOT", dir.join("work")),
+        EnvVarGuard::unset("AMPLIHACK_WORK_ROOT_EXPLICIT"),
+        EnvVarGuard::set("AMPLIHACK_CLEANUP_ON_EXIT", "0"),
+    ]
+}
+
 /// Write an executable `/bin/sh` stub at `path` and chmod it 0755.
 fn write_stub(path: &Path, body: &str) {
     std::fs::write(path, body).expect("failed to write runner stub");
@@ -125,6 +139,7 @@ fn test_failure_path_reaps_orphaned_descendants() {
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let _work_env = isolate_work_root(temp.path());
     // Ensure a fast failure is not misread as a timeout.
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
@@ -185,6 +200,7 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let _work_env = isolate_work_root(temp.path());
     let _timeout_env = EnvVarGuard::set(RUNNER_TIMEOUT_ENV, "1");
     // Explicit, generous grace so the trapped child can finish cleanly.
     let _grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "5");
@@ -254,6 +270,7 @@ fn test_teardown_grace_window_is_configurable() {
 
         let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
         let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+        let _work_env = isolate_work_root(temp.path());
         let result = execute::execute_recipe_via_rust(
             &recipe,
             &BTreeMap::new(),
@@ -327,6 +344,7 @@ fn test_teardown_is_scoped_to_runner_process_group() {
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let _work_env = isolate_work_root(temp.path());
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
     let result = execute::execute_recipe_via_rust(
@@ -429,6 +447,7 @@ fn depth_guard_spawned(session_depth: &str, max_depth: Option<&str>) -> bool {
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let _work_env = isolate_work_root(temp.path());
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
     // Issue #1326: a genuine nested run names a tree that has sealed a ceiling.
     // Pin both so the probe does not depend on the ambient process ancestry of
@@ -643,6 +662,7 @@ fn test_caller_git_state_restored_after_terminal_failure() {
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let _work_env = isolate_work_root(temp.path());
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
     let result =
@@ -707,6 +727,7 @@ fn test_restore_preserves_durable_child_worktree() {
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let _work_env = isolate_work_root(temp.path());
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
     let result =
@@ -770,6 +791,7 @@ fn test_caller_git_state_restored_after_structured_failure_result() {
 
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let _work_env = isolate_work_root(temp.path());
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
     let result =

@@ -140,7 +140,8 @@ fn summary_lines(stdout: &str) -> Vec<&str> {
         .split_once("\n\nweekly headroom")
         .unwrap_or_else(|| panic!("no summary after a blank line: {stdout}"));
     let mut v = vec!["weekly headroom"];
-    v.extend(block.lines().skip(1));
+    // The Codex block (issue #2001) follows after one empty line.
+    v.extend(block.lines().skip(1).take_while(|l| !l.is_empty()));
     v
 }
 
@@ -194,10 +195,12 @@ fn the_summary_follows_the_table_and_adds_no_probe() {
 fn json_has_no_summary_and_summary_json_holds_the_same_array() {
     let f = Fixture::new();
     let json: serde_json::Value = serde_json::from_str(&usage_ok(&f, &["--json"], &[])).unwrap();
-    assert!(json.is_array(), "--json stays an array");
+    // Issue #2001 keeps `--json` a bare array of Claude rows.
+    assert!(json.is_array(), "{json}");
     let both: serde_json::Value =
         serde_json::from_str(&usage_ok(&f, &["--summary-json"], &[])).unwrap();
     assert_eq!(both["profiles"], json, "the same rows in the same order");
+    assert_eq!(both["codex"], serde_json::json!([]));
     let at = both["at"].as_str().unwrap();
     assert!(at.ends_with('Z') && at.len() == 20, "{at}");
     let s = &both["summary"];

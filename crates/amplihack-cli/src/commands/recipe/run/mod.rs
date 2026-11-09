@@ -87,6 +87,19 @@ fn execute_recipe_via_rust_for_test(
         )
     });
 
+    // A test that has not chosen otherwise must not run the end-of-run sweep:
+    // it resolves the work root from the inherited `AMPLIHACK_WORK_ROOT` or
+    // `$HOME/.amplihack/work`, so it walks (and may delete in) the
+    // developer's real run folders, and on a full work root it outlasts the
+    // timing bounds the recipe-run tests assert. Tests that exercise the
+    // sweep set `AMPLIHACK_CLEANUP_ON_EXIT` themselves.
+    let _no_sweep = std::env::var_os(crate::commands::cleanup::CLEANUP_ON_EXIT_ENV)
+        .is_none()
+        .then(|| {
+            unsafe { std::env::set_var(crate::commands::cleanup::CLEANUP_ON_EXIT_ENV, "0") };
+            EnvRestore(vec![(crate::commands::cleanup::CLEANUP_ON_EXIT_ENV, None)])
+        });
+
     execute_recipe_via_rust(
         recipe_path,
         context,

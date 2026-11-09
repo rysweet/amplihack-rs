@@ -191,12 +191,29 @@ jobs:
       # is set job-wide above, so any cargo running before this step dies with
       # "could not execute process `sccache`". That defect turned Lint & Format
       # red on main and blocked every PR until #1341.
+      # sccache binary: cache first, one download on a miss, else no wrapper (#2105); see "sccache binary" in docs/reference/ci-pipeline.md.
+      - name: Restore sccache binary
+        id: sccache-bin
+        uses: ./.github/actions/sccache-bin
+        with:
+          phase: restore
       - name: Setup sccache
+        if: steps.sccache-bin.outputs.hit != 'true'
+        continue-on-error: true
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.19.0
+          disable_annotations: 'true'
+      - name: Save sccache binary or build without it
+        uses: ./.github/actions/sccache-bin
+        with:
+          phase: finish
+          hit: ${{ steps.sccache-bin.outputs.hit }}
       # sccache's disk cache travels as one Actions cache entry per job (and
       # target); see .github/actions/sccache-restore. Only main saves, so pull
       # requests start from main's entry and add none of their own.
       - name: Restore sccache disk cache
+        if: env.RUSTC_WRAPPER == 'sccache'
         uses: ./.github/actions/sccache-restore
         with:
           key-prefix: sccache-v1-${{ runner.os }}-release-${{ matrix.target }}-
@@ -236,7 +253,7 @@ jobs:
             --features amplihack-hooks-bin/signal
 
       - name: Save sccache disk cache
-        if: always() && github.ref == 'refs/heads/main'
+        if: always() && github.ref == 'refs/heads/main' && env.RUSTC_WRAPPER == 'sccache'
         uses: ./.github/actions/sccache-save
         with:
           key-prefix: sccache-v1-${{ runner.os }}-release-${{ matrix.target }}-

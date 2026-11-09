@@ -405,6 +405,13 @@ impl Fixture {
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),
             )
             .env("HOME", &self.home)
+            // Issue #2001: `profile usage` never reads a Codex account here.
+            // Outside HOME: the empty-root line names the root.
+            .env(
+                "CODEX_PROFILES_ROOT",
+                self.home.with_file_name("no-codex-profiles"),
+            )
+            .env("CODEX_BIN", self.home.join("no-codex"))
             .env("AMPLIHACK_PROFILE_USAGE_API_BASE", &self.identity.base)
             .env(
                 "AMPLIHACK_PROFILE_USAGE_TOKEN_URL",
