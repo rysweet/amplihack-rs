@@ -86,6 +86,13 @@ pub(super) fn build_resume_context(ws: &Workstream) -> HashMap<String, serde_jso
             serde_json::Value::String(ws.resume_checkpoint.clone()),
         );
     }
+    // Issue #1966: only a caller-supplied value, byte for byte; no default.
+    if let Some(v) = &ws.is_critical_code {
+        ctx.insert(
+            "is_critical_code".to_string(),
+            serde_json::Value::String(v.clone()),
+        );
+    }
 
     if !ws.worktree_path.is_empty() {
         ctx.insert(

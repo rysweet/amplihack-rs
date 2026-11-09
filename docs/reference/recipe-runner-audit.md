@@ -151,8 +151,8 @@ Conditions are evaluated using Python `simpleeval.EvalWithCompoundTypes` (NOT Ru
 #### F-COND-4: String literal comparisons fragile to type changes (Medium)
 
 - **Affected**: 4 conditions in consensus-workflow, oxidizer-workflow, long-horizon-memory-eval
-- **Example**: `is_critical_code == 'false'` — works with current coercion but breaks if context provides a boolean.
-- **Fix**: Standardize on `str(var).strip() == 'expected'` pattern (as smart-orchestrator does).
+- **Example**: `is_critical_code == 'false'`. The runner treats a Boolean `false` as equal to the string `'false'` (`values_equal` in the runner's `src/condition.rs`, runner commit `47987fa`, v0.2.2 and later), so a Boolean value does not break this condition on those versions. The failure seen in practice (issue #1966) was that `is_critical_code` was never set, so neither the `'true'` nor the `'false'` route ran and the phase still succeeded.
+- **Fix**: Require the value from the caller, validate it before branching and check afterwards that exactly one route ran. `consensus-workflow` and `consensus-tdd-impl` now do this at three checkpoints; see the [Consensus Criticality Contract](./consensus-criticality-contract.md).
 
 #### F-COND-5: Security is solid (Info)
 

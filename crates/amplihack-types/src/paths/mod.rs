@@ -4,7 +4,14 @@
 //! ad-hoc `.join(".claude")` chains. Single source of truth.
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
+use std::path::{Component, Path, PathBuf};
+
+/// Session key used when a hook payload carries no usable session id.
+///
+/// An id that is absent, empty or only whitespace maps to this key, so the
+/// state for such sessions lands in `runtime/sessions/unknown-session/`.
+pub const UNKNOWN_SESSION_KEY: &str = "unknown-session";
 
 /// Sanitize a session ID to prevent path traversal and metadata injection.
 ///
@@ -31,6 +38,63 @@ pub fn sanitize_session_id(session_id: &str) -> String {
     sanitized
 }
 
+/// Accept a candidate state-root value only if it is an absolute path with
+/// no `..` component. The value is compared as an `OsStr`: it is never
+/// trimmed, canonicalised or checked against the file system.
+fn usable_root(value: &OsStr) -> Option<&Path> {
+    let path = Path::new(value);
+    let acceptable =
+        path.is_absolute() && !path.components().any(|c| matches!(c, Component::ParentDir));
+    acceptable.then_some(path)
+}
+
+/// Resolve the amplihack state root from candidate environment values.
+///
+/// Returns `amplihack_home` when it is an absolute path with no `..`
+/// component, otherwise `<home>/.amplihack` under the same rule for `home`,
+/// otherwise `None`. Values are never trimmed, the working directory and
+/// `.` are never used, and nothing is read from the environment or the file
+/// system, so this function is pure.
+pub fn resolve_state_root(amplihack_home: Option<&OsStr>, home: Option<&OsStr>) -> Option<PathBuf> {
+    if let Some(root) = amplihack_home.and_then(usable_root) {
+        return Some(root.to_path_buf());
+    }
+    home.and_then(usable_root).map(|h| h.join(".amplihack"))
+}
+
+/// The amplihack state root for hook-written runtime state (#1963).
+///
+/// Reads `AMPLIHACK_HOME`, then `HOME`, and applies [`resolve_state_root`].
+/// Returns `None` when neither yields a usable absolute path; callers then
+/// skip their write rather than fall back to the working directory.
+pub fn amplihack_state_root() -> Option<PathBuf> {
+    resolve_state_root(
+        env::var_os("AMPLIHACK_HOME").as_deref(),
+        env::var_os("HOME").as_deref(),
+    )
+}
+
+/// The per-session state directory `<root>/runtime/sessions/<key>`.
+///
+/// The key is [`sanitize_session_id`] of the id when the id has any
+/// non-whitespace character, and [`UNKNOWN_SESSION_KEY`] otherwise. The
+/// fallback is chosen before sanitising, so this never panics, and every key
+/// is exactly one `[A-Za-z0-9_-]+` component. There is no length cap: an id
+/// longer than the file system's `NAME_MAX` makes the later write fail.
+pub fn session_state_dir_under(root: &Path, session_id: Option<&str>) -> PathBuf {
+    let key = match session_id {
+        Some(id) if !id.trim().is_empty() => sanitize_session_id(id),
+        _ => UNKNOWN_SESSION_KEY.to_string(),
+    };
+    root.join("runtime").join("sessions").join(key)
+}
+
+/// The per-session state directory under the resolved state root, or `None`
+/// when no state root resolves. See [`session_state_dir_under`].
+pub fn session_state_dir(session_id: Option<&str>) -> Option<PathBuf> {
+    amplihack_state_root().map(|root| session_state_dir_under(&root, session_id))
+}
+
 /// Directory layout rooted at a project directory.
 ///
 /// Every path that hooks touch is defined here. To change
@@ -45,7 +109,7 @@ pub struct ProjectDirs {
     pub runtime: PathBuf,
     /// `.claude/runtime/locks/` for lock files.
     pub locks: PathBuf,
-    /// `.claude/runtime/metrics/` for tool metrics.
+    /// `.claude/runtime/metrics/`: legacy; hooks no longer write here (#1963).
     pub metrics: PathBuf,
     /// `.claude/runtime/logs/` for session logs.
     pub logs: PathBuf,
