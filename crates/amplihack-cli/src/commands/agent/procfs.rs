@@ -14,17 +14,14 @@ use std::path::{Path, PathBuf};
 const STAT_LIMIT: u64 = 64 * 1024;
 const CMDLINE_LIMIT: u64 = 256 * 1024;
 const ENVIRON_LIMIT: u64 = 16 * 1024 * 1024;
-/// The first buffer for a `/proc` file. `/proc` reports a size of 0, so an
-/// empty buffer would grow from 32 bytes and take eight reads for a
-/// `status`; one page holds a whole `stat`, `status` or typical `cmdline`.
+/// The first buffer for a `/proc` file, which reports size 0: an empty buffer would grow from 32
+/// bytes over eight reads; one page holds a whole `stat`, `status` or typical `cmdline`.
 const FIRST_READ: usize = 4096;
 
-/// `/proc`, or the test root in `AMPLIHACK_TEST_PROC_ROOT` when [`proc_root_from`] allows it,
-/// even in release builds; the one resolver of it (#2042). Left on the real `/proc` on purpose:
-/// `/proc/loadavg`, `util.rs` tree termination, `rotator_down` (see the keep-tests-off guide).
-/// Release builds honour it on purpose: [`proc_root_from`] also needs the test home guard and a
-/// 0700 dir this user owns under the temp dir, so anyone meeting that is already this user.
-/// The liveness work in #2040 must call this resolver, never read `/proc` directly.
+/// `/proc`, or `AMPLIHACK_TEST_PROC_ROOT` when [`proc_root_from`] allows it; the one resolver
+/// (#2040 must call it, never `/proc`). Release builds honour it on purpose: it needs the home
+/// guard and a 0700 temp dir this user owns, so whoever meets that is already this user. On the
+/// real `/proc` on purpose: `/proc/loadavg`, `util.rs` tree kill, `rotator_down` (see the guide).
 pub fn proc_root() -> PathBuf {
     proc_root_from(
         std::env::var_os("AMPLIHACK_TEST_PROC_ROOT").as_deref(),
