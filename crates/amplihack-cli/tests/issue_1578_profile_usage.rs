@@ -63,7 +63,7 @@ fn reset_text(t: i64) -> String {
 /// `/usage` path appends `S <p>` and `E <p>` around a 0.5 s sleep.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 p=$(basename "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
 case " $* " in
@@ -223,6 +223,10 @@ impl Fixture {
             .current_dir(&self.work)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env(
+                crate::isolated_amplihack::PROC_ROOT_ENV,
+                crate::isolated_amplihack::shared_empty_proc_root(),
+            )
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",

@@ -568,6 +568,17 @@ exec "${REAL_GIT:?}" "$@"
 SHIM
     chmod +x "${bin_dir}/git"
     REAL_GIT="${real_git}" "${bin_dir}/git" --version >/dev/null
+    # The checkpoint steps run 'amplihack hygiene artifact-guard' before they
+    # stage. These cases test the commit guard, not the artifact guard, and CI
+    # has no amplihack binary, so a stub accepts exactly that call and refuses
+    # any other, as in test-checkpoint-scoped-format.sh.
+    cat > "${bin_dir}/amplihack" <<'SHIM'
+#!/usr/bin/env bash
+[[ "$*" == 'hygiene artifact-guard --repo . --mode pre-publish' ]] && exit 0
+printf 'amplihack stub: unexpected call: %s\n' "$*" >&2
+exit 97
+SHIM
+    chmod +x "${bin_dir}/amplihack"
 }
 
 run_commit_guard_case() {
@@ -603,6 +614,9 @@ run_commit_guard_case() {
 
     (
         export PATH="${bin_dir}:${PATH}"
+        # This tree's helpers, not the caller's AMPLIHACK_HOME or ~/.amplihack:
+        # CI has neither, and a developer's may be an older install.
+        export AMPLIHACK_HOME="${REPO_ROOT}"
         export REAL_GIT="${real_git}"
         export COMMIT_ENV_LOG="${commit_env_log}"
         export WORKTREE_SETUP_WORKTREE_PATH="${repo}"
@@ -891,7 +905,11 @@ run_worktree_case() {
         fail "workflow-worktree failed for ${label}; it must not require origin/main"
     }
 
-    branch_name="$(grep -o '"branch_name": "[^"]*"' "${stdout_file}" | sed 's/.*": "\(.*\)"/\1/' | tail -1)"
+    # sed -n reads the whole file; the last emitted value wins, as before.
+    # No 'tail' stage: under pipefail an early-exit stage can collapse the
+    # value to "" (issue #1434).
+    branch_name="$(sed -n 's/.*"branch_name": "\([^"]*\)".*/\1/p' "${stdout_file}")"
+    branch_name="${branch_name##*$'\n'}"
     [[ -n "${branch_name}" ]] || fail "workflow-worktree did not emit branch_name for ${label}"
 
     worktree_path="${case_dir}/worktrees/${branch_name}"
@@ -1320,14 +1338,22 @@ run_publish_title_case() {
     local out="$3"
     local err="$4"
 
+    # Issue #1968: no task description and an isolated HOME, so these cases
+    # exercise the last-resort template title. The shim exits 99 on
+    # `gh issue view`, which also shows a failed title lookup does not fail
+    # the publish.
+    mkdir -p "${WORK}/home-929"
     (
         cd "${repo}"
+        unset GH_TOKEN GITHUB_TOKEN GH_REPO GH_HOST GH_ENTERPRISE_TOKEN \
+            TASK_DESCRIPTION RECIPE_VAR_task_description ISSUE_TITLE \
+            RECIPE_VAR_local_testing_gate RECIPE_VAR_precommit_results
+        export HOME="${WORK}/home-929"
         export PATH="${WORK}/publish-title-bin:${PATH}"
         export PUBLISH_GH_LOG="${WORK}/publish-title-gh.log"
         export PUBLISH_PR_TITLE_LOG="${title_log}"
         export REMOTE_HOST_TYPE="github"
         export ISSUE_NUMBER="929"
-        export TASK_DESCRIPTION="Fix issue 929 title selection"
         export AMPLIHACK_HOME="${REPO_ROOT}"
         bash "${PUBLISH_HELPER}"
     ) >"${out}" 2>"${err}"
@@ -1383,6 +1409,718 @@ assert_pr_title_ignores_lockfiles() {
     lock_title="$(head -n1 "${lock_titles}")"
     printf '%s' "${lock_title}" | grep -qi 'Cargo\.lock' \
         || { echo "PR title was: ${lock_title}" >&2; fail "issue #929: a genuinely lockfile-only diff should keep the Cargo.lock scope"; }
+}
+
+# ---------------------------------------------------------------------------
+# Issue #1968 — the publish step measured the branch with a two-dot diff,
+# counted changed files after `head -40`, and titled every PR from the
+# "Update <scope> with <N> changed files" template.
+#
+# Contracts under test:
+#   R1  CHANGED_FILES_ALL, CHANGED_COUNT and the diff stat come from the merge
+#       base (BASE_REF...HEAD). A file that landed on main after the branch was
+#       cut (.github/workflows/ci-1968.yml) appears in neither title nor body.
+#   R2  The count is taken before the display list is cut: 45 changed files
+#       report "45 files changed", 40 entries and "- ... and 5 more".
+#   R3  The title comes from the issue title (gh issue view --json title) with
+#       a conventional type prefix, then from the first non-blank line of
+#       RECIPE_VAR_task_description, and only then from the template with the
+#       true count. Bare TASK_DESCRIPTION and ISSUE_TITLE are never read.
+#   R4  A failed, empty or malformed lookup never fails the publish.
+#   R5  Derived title text is normalised, credential-redacted, defused (no
+#       "(#M)" claim and no closing keyword before a foreign reference), capped
+#       at 200 bytes on a UTF-8 boundary, and never evaluated.
+#   R6  No issue lookup is made without a repository identity.
+#
+# Every case runs in a subshell with HOME under ${WORK}, the gh/task variables
+# unset, and a fake gh first on PATH. Nothing touches the real ~/.claude or
+# ~/.amplihack. These assertions SHOULD FAIL before the #1968 fix lands and MUST
+# PASS afterwards.
+# ---------------------------------------------------------------------------
+
+PUBLISH_1968_ISSUE_TITLE="workflow_publish_pr.sh titles PRs wrongly from a two-dot diff"
+
+install_publish_1968_fake_gh() {
+    # Answers auth, pr list ([], or the file named by PUBLISH_1968_PR_LIST),
+    # issue view --json title and pr create. Every
+    # call's argv is appended to PUBLISH_1968_GH_LOG; pr create records its
+    # --title and the contents of its --body-file (or --body). The issue view
+    # answer is chosen by PUBLISH_1968_ISSUE_MODE. Anything else exits 99.
+    local bin_dir="$1"
+    mkdir -p "${bin_dir}"
+    cat > "${bin_dir}/gh" <<'SHIM'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${PUBLISH_1968_GH_LOG:?PUBLISH_1968_GH_LOG must be set}"
+
+if [[ "${1:-}" == "auth" ]]; then
+    exit 0
+fi
+
+if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
+    if [ -n "${PUBLISH_1968_PR_LIST:-}" ]; then cat -- "${PUBLISH_1968_PR_LIST}"; else printf '[]\n'; fi
+    exit 0
+fi
+
+if [[ "${1:-}" == "issue" && "${2:-}" == "view" && " $* " == *" --json title "* ]]; then
+    case "${PUBLISH_1968_ISSUE_MODE:-answer}" in
+        answer)    printf '{"title":"workflow_publish_pr.sh titles PRs wrongly from a two-dot diff"}\n' ;;
+        hostile)   printf '%s\n' '{"title":"Fixes #7 ((#999)) $(touch PWNED) `id` %s %n \u001b[31m @someone"}' ;;
+        empty)     printf '{"title":""}\n' ;;
+        nulltitle) printf '{"title":null}\n' ;;
+        array)     printf '[]\n' ;;
+        notjson)   printf 'this is not json\n' ;;
+        fail)      echo "HTTP 403: rate limit exceeded" >&2; exit 1 ;;
+        *)         echo "unknown PUBLISH_1968_ISSUE_MODE" >&2; exit 98 ;;
+    esac
+    exit 0
+fi
+
+if [[ "${1:-}" == "pr" && "${2:-}" == "create" ]]; then
+    shift 2
+    title=""
+    body=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --title) title="${2:-}"; shift 2 ;;
+            --title=*) title="${1#--title=}"; shift ;;
+            --body-file) body="$(cat -- "${2:?}")"; shift 2 ;;
+            --body-file=*) body="$(cat -- "${1#--body-file=}")"; shift ;;
+            --body) body="${2:-}"; shift 2 ;;
+            *) shift ;;
+        esac
+    done
+    printf '%s\n' "${title}" >> "${PUBLISH_1968_TITLE_LOG:?PUBLISH_1968_TITLE_LOG must be set}"
+    printf '%s\n' "${body}" >> "${PUBLISH_1968_BODY_LOG:?PUBLISH_1968_BODY_LOG must be set}"
+    printf 'https://github.com/example/repo/pull/1968\n'
+    exit 0
+fi
+
+echo "unexpected gh call: $*" >&2
+exit 99
+SHIM
+    chmod +x "${bin_dir}/gh"
+}
+
+setup_publish_1968_repo() {
+    # setup_publish_1968_repo <repo> <N>
+    # Branch feat/issue-1968-title commits N files: one recipe file plus N-1
+    # files under src/, none under .github. After the branch is cut, a second
+    # clone pushes .github/workflows/ci-1968.yml to main, so origin/main..HEAD
+    # (two dots) shows N+1 files while origin/main...HEAD shows N.
+    local repo="$1"
+    local n="$2"
+    local origin="${repo}.origin.git"
+    local other="${repo}.other"
+
+    git init --bare -b main "${origin}" >/dev/null
+    git init -b main "${repo}" >/dev/null
+    configure_identity "${repo}"
+    printf 'base\n' > "${repo}/README.md"
+    git -C "${repo}" add README.md
+    git -C "${repo}" commit -m "base" >/dev/null
+    git -C "${repo}" remote add origin "${origin}"
+    git -C "${repo}" push -u origin main >/dev/null 2>&1
+    git -C "${repo}" checkout -b feat/issue-1968-title >/dev/null
+
+    mkdir -p "${repo}/amplifier-bundle/recipes" "${repo}/src"
+    printf 'recipe change\n' > "${repo}/amplifier-bundle/recipes/example-1968.yaml"
+    local i
+    for ((i = 1; i < n; i++)); do
+        printf 'change %s\n' "${i}" > "${repo}/src/file-$(printf '%02d' "${i}").rs"
+    done
+    git -C "${repo}" add -A
+    git -C "${repo}" commit -m "branch work for the publish title" >/dev/null
+
+    # main moves on after the branch point.
+    git clone -q "${origin}" "${other}" >/dev/null 2>&1
+    configure_identity "${other}"
+    mkdir -p "${other}/.github/workflows"
+    printf 'name: ci\n' > "${other}/.github/workflows/ci-1968.yml"
+    git -C "${other}" add -A
+    git -C "${other}" commit -m "main gains a workflow file" >/dev/null
+    git -C "${other}" push -q origin main >/dev/null 2>&1
+
+    git -C "${repo}" fetch -q origin >/dev/null 2>&1
+    git -C "${repo}" remote set-head origin main >/dev/null
+    git -C "${repo}" remote set-url origin "https://github.com/example/repo.git"
+
+    # Fixture sanity: the moved base must be visible to a two-dot diff and
+    # invisible to the merge-base diff, or the cases below prove nothing.
+    local two three
+    two="$(git -C "${repo}" diff --name-only origin/main..HEAD | sed '/^$/d' | wc -l | tr -d ' ')"
+    three="$(git -C "${repo}" diff --name-only origin/main...HEAD | sed '/^$/d' | wc -l | tr -d ' ')"
+    [ "${three}" -eq "${n}" ] || fail "1968 fixture: expected ${n} files in origin/main...HEAD, got ${three}"
+    [ "${two}" -eq "$((n + 1))" ] || fail "1968 fixture: expected ${n}+1 files in origin/main..HEAD, got ${two}"
+}
+
+publish_1968_expected_count() {
+    git -C "$1" diff --name-only origin/main...HEAD | sed '/^$/d' | wc -l | tr -d ' '
+}
+
+# shellcheck disable=SC2030,SC2031 # the exports are scoped to the case subshell on purpose
+run_publish_1968_case() {
+    # run_publish_1968_case <repo> <tag> <issue-mode> <task-description> [decoys]
+    # Writes ${WORK}/publish-1968-<tag>.{gh,title,body,out,err}. Returns the
+    # helper's exit status. With "decoys", bare TASK_DESCRIPTION and ISSUE_TITLE
+    # are exported with values the helper must never read.
+    local repo="$1" tag="$2" mode="$3" task="$4" decoys="${5:-}"
+    local prefix="${WORK}/publish-1968-${tag}"
+    : > "${prefix}.gh"; : > "${prefix}.title"; : > "${prefix}.body"
+    mkdir -p "${WORK}/home-1968"
+    (
+        cd "${repo}"
+        unset GH_TOKEN GITHUB_TOKEN GH_REPO GH_HOST GH_ENTERPRISE_TOKEN \
+            TASK_DESCRIPTION RECIPE_VAR_task_description ISSUE_TITLE \
+            RECIPE_VAR_local_testing_gate RECIPE_VAR_precommit_results \
+            WORKFLOW_STARTED_AT RECIPE_STARTED_AT TASK_STARTED_AT \
+            EXPECTED_PR_TITLE_PREFIX PR_EXPECTED_TITLE_PREFIX
+        export HOME="${WORK}/home-1968"
+        export PATH="${WORK}/publish-1968-bin:${PATH}"
+        export PUBLISH_1968_GH_LOG="${prefix}.gh"
+        export PUBLISH_1968_TITLE_LOG="${prefix}.title"
+        export PUBLISH_1968_BODY_LOG="${prefix}.body"
+        export PUBLISH_1968_ISSUE_MODE="${mode}"
+        export REMOTE_HOST_TYPE="github"
+        export ISSUE_NUMBER="1968"
+        export AMPLIHACK_HOME="${REPO_ROOT}"
+        if [ -n "${task}" ]; then export RECIPE_VAR_task_description="${task}"; fi
+        if [ "${decoys}" = "decoys" ]; then
+            export TASK_DESCRIPTION="Fix the bare alias that must never be read"
+            export ISSUE_TITLE="Fix the bare issue title that must never be read"
+        fi
+        bash "${PUBLISH_HELPER}"
+    ) >"${prefix}.out" 2>"${prefix}.err"
+}
+
+dump_publish_1968_case() {
+    local prefix="${WORK}/publish-1968-$1"
+    local part
+    for part in title body gh out err; do
+        echo "--- publish-1968 $1 ${part} ---" >&2
+        cat "${prefix}.${part}" >&2 2>/dev/null || true
+    done
+}
+
+publish_1968_changed_files_section() {
+    # Prints the lines between "## Changed files" and the next "## " heading.
+    awk '/^## Changed files$/ {on = 1; next} /^## / {on = 0} on && NF' "$1"
+}
+
+publish_1968_fail() {
+    local tag="$1"
+    shift
+    dump_publish_1968_case "${tag}"
+    fail "$*"
+}
+
+# Case 5 and 7a: the helpers, sourced through WORKFLOW_PUBLISH_PR_LIB_ONLY.
+# shellcheck disable=SC2030,SC2031 # the exports are scoped to the case subshell on purpose
+assert_publish_1968_helpers() {
+    local log="${WORK}/publish-1968-helpers.gh"
+    : > "${log}"
+    (
+        unset GH_TOKEN GITHUB_TOKEN GH_REPO GH_HOST GH_ENTERPRISE_TOKEN \
+            TASK_DESCRIPTION RECIPE_VAR_task_description ISSUE_TITLE
+        export HOME="${WORK}/home-1968"
+        export PATH="${WORK}/publish-1968-bin:${PATH}"
+        export PUBLISH_1968_GH_LOG="${log}"
+        export PUBLISH_1968_TITLE_LOG="${WORK}/publish-1968-helpers.title"
+        export PUBLISH_1968_BODY_LOG="${WORK}/publish-1968-helpers.body"
+        export WORKFLOW_PUBLISH_PR_LIB_ONLY=1
+        # shellcheck source=/dev/null
+        . "${PUBLISH_HELPER}"
+
+        local fn missing=""
+        for fn in redact_credentials strip_invisible_chars normalise_pr_title_text conventional_pr_title \
+            defuse_issue_refs defuse_mentions cap_pr_title format_changed_files_body \
+            first_task_line lookup_issue_title; do
+            declare -F "${fn}" >/dev/null || missing="${missing} ${fn}"
+        done
+        [ -z "${missing}" ] || fail "issue #1968: workflow_publish_pr.sh does not define helper(s):${missing}"
+
+        eq() { # eq <label> <expected> <actual>
+            [ "$2" = "$3" ] || {
+                printf 'expected: [%s]\nactual:   [%s]\n' "$2" "$3" >&2
+                fail "issue #1968 helper: $1"
+            }
+        }
+        bytes() { printf '%s' "$1" | LC_ALL=C wc -c | tr -d ' '; }
+        rep() { # rep <text> <count>
+            local s="" i
+            for ((i = 0; i < $2; i++)); do s+="$1"; done
+            printf '%s' "${s}"
+        }
+
+        # conventional_pr_title: a leading verb decides; otherwise keyword
+        # groups in the order fix, docs, test, refactor, feat; whole words
+        # only; Conventional Commits prefixes kept in any case and their type
+        # lower-cased, an issue-reference scope dropped; any other "word:" prefix is a component, which becomes the
+        # scope of the inferred type, or is left alone if no type is inferred.
+        local input want
+        while IFS='|' read -r input want; do
+            eq "conventional_pr_title '${input}'" "${want}" "$(conventional_pr_title "${input}")"
+        done <<'ROWS'
+workflow_publish_pr.sh titles PRs wrongly from a two-dot diff|fix: workflow_publish_pr.sh titles PRs wrongly from a two-dot diff
+Add merge-base diff to publish|feat: Add merge-base diff to publish
+Fix issue 929|fix: Fix issue 929
+Add regression test for broken X|feat: Add regression test for broken X
+Add tests for the broken parser|feat: Add tests for the broken parser
+Document why the build fails on macOS|docs: Document why the build fails on macOS
+Tests for the crash on start|test: Tests for the crash on start
+Fixed docs for the parser|fix: Fixed docs for the parser
+Update documentation for the tests|docs: Update documentation for the tests
+Expand tests for the parser|test: Expand tests for the parser
+Testing-only change|test: Testing-only change
+Refactoring the scope loop to add support|refactor: Refactoring the scope loop to add support
+ADD SUPPORT FOR AZDO|feat: ADD SUPPORT FOR AZDO
+#9 crashes on start|fix: #9 crashes on start
+Address latest test_helper output|Address latest test_helper output
+Rename the publish step|Rename the publish step
+feat(publish): already prefixed|feat(publish): already prefixed
+fix!: breaking publish change|fix!: breaking publish change
+docs: tidy the index|docs: tidy the index
+fix(#5): x|fix: x
+feat(GH-3)!: y|feat!: y
+fix(publish): keep a real scope|fix(publish): keep a real scope
+chore: bump the lockfile|chore: bump the lockfile
+release: artifacts are built from the wrong SHA|fix(release): artifacts are built from the wrong SHA
+profile: add rotation support|feat(profile): add rotation support
+tests: crashes on start|fix(tests): crashes on start
+rotate: rename the session|rotate: rename the session
+release(#5): wrong artifacts|fix: release(#5): wrong artifacts
+Fix: crash on startup|fix: crash on startup
+Feat: Add widget|feat: Add widget
+FIX: crash on startup|fix: crash on startup
+Docs(Publish): Tidy the index|docs(Publish): Tidy the index
+Feat(#5)!: Breaking widget|feat!: Breaking widget
+CHORE(GH-3): Bump the lockfile|chore: Bump the lockfile
+Fix the parser: it crashes|fix: Fix the parser: it crashes
+ROWS
+
+        # defuse_issue_refs: every issue reference becomes "issue M", however
+        # a closing keyword round it is written; no "#<digits>" survives.
+        while IFS='|' read -r input want; do
+            eq "defuse_issue_refs '${input}'" "${want}" "$(defuse_issue_refs "${input}")"
+        done <<'ROWS'
+x (#5) y|x (issue 5) y
+fix: #9 bad|fix: issue 9 bad
+Closes owner/repo#3|Closes owner/repo issue 3
+Fixes#7|Fixes issue 7
+fixes:#7|fixes:issue 7
+CLOSES #4|CLOSES issue 4
+Fixes #7 (#999)|Fixes issue 7 (issue 999)
+Resolves: https://github.com/o/r/issues/12|Resolves: issue 12
+Closes issue #7|Closes issue 7
+prefix#7|prefix issue 7
+Refs #12|Refs issue 12
+No references in this title|No references in this title
+Tidy ((#999)) handling|Tidy ((issue 999)) handling
+Closes ((#7))|Closes ((issue 7))
+_Fixes #7_|_Fixes issue 7_
+**Fixes** #7|**Fixes** issue 7
+Fixes **#7**|Fixes **issue 7**
+Fixes `#7`|Fixes `issue 7`
+Fix [#7](https://x/issues/7)|Fix [issue 7](issue 7)
+Fixes GH-7|Fixes issue 7
+Fixes gh-7|Fixes issue 7
+SIGH-7 stays|SIGH-7 stays
+Issue #7 is closed|Issue 7 is closed
+ROWS
+        eq "defuse_issue_refs: a non-breaking space before #7" "Fixes"$'\302\240'"issue 7" \
+            "$(defuse_issue_refs "Fixes"$'\302\240'"#7")"
+        eq "defuse_issue_refs is idempotent" "Fixes issue 7 (issue 999)" \
+            "$(defuse_issue_refs "$(defuse_issue_refs 'Fixes #7 (#999)')")"
+        eq "prefix then defuse a leading #M" "fix: issue 9 crashes on start" \
+            "$(defuse_issue_refs "$(conventional_pr_title '#9 crashes on start')")"
+        local hostile_refs
+        # shellcheck disable=SC2016 # literal backticks are the expected data
+        hostile_refs='Fixes **#7** `#8` [#9](https://x/issues/9) ((#10)) GH-11 a/b#12 #13'
+        case "$(cap_pr_title "$(defuse_issue_refs "$(conventional_pr_title "${hostile_refs}")")" 1968)" in
+            *'#'[0-9]*' (#1968)') fail "issue #1968 helper: a '#<digits>' reference survived before the (#N) suffix" ;;
+            *' (#1968)') ;;
+            *) fail "issue #1968 helper: the (#N) suffix is missing" ;;
+        esac
+
+        # defuse_mentions: body-only; code spans and e-mail addresses left alone.
+        while IFS='|' read -r input want; do
+            eq "defuse_mentions '${input}'" "${want}" "$(defuse_mentions "${input}")"
+        done <<'ROWS'
+ping @someone and @org/team|ping `@someone` and `@org/team`
+mail a@b.com|mail a@b.com
+`code @x` then @y|`code @x` then `@y`
+@a@b|`@a@b`
+no mentions here|no mentions here
+ROWS
+
+        # normalise_pr_title_text
+        eq "normalise: CR/LF/TAB become spaces, runs collapse, ends trimmed" "a b c d" \
+            "$(normalise_pr_title_text $'  a\tb\r\nc    d  ')"
+        eq "normalise: ESC and DEL removed" "x[31myz" \
+            "$(normalise_pr_title_text $'x\x1b[31my\x7fz')"
+        eq "normalise: credentials redacted" \
+            "see https://REDACTED@github.com/x and REDACTED_TOKEN" \
+            "$(normalise_pr_title_text 'see https://user:tok@github.com/x and ghp_ABCDEFGHIJKLMNOP1234')"
+        # shellcheck disable=SC2016 # literal shell text is the expected data
+        eq "normalise: shell text stays literal" '$(touch PWNED) `id` %s %n' \
+            "$(normalise_pr_title_text '$(touch PWNED) `id` %s %n')"
+        eq "normalise: UTF-8 passes through" "caf$(printf '\303\251')" \
+            "$(normalise_pr_title_text "caf$(printf '\303\251')")"
+        eq "normalise: empty input" "" "$(normalise_pr_title_text "")"
+        eq "normalise: a title of only full stops is no title" "" "$(normalise_pr_title_text " . .. ")"
+        eq "normalise: trailing full stops dropped" "Fix the parser" "$(normalise_pr_title_text "Fix the parser.. ")"
+        eq "normalise: input bounded to 8 KiB" "8192" "$(bytes "$(normalise_pr_title_text "$(rep a 10000)")")"
+        eq "normalise: a control character cannot split a token past redaction" "REDACTED_TOKEN" \
+            "$(normalise_pr_title_text $'ghp_ABCDEFGH\x01IJKLMNOPQRSTUVWX')"
+        case "$(normalise_pr_title_text "$(rep 'x ' 506)ghp_ABCDEFGHIJKLMNOPQRSTUV")" in
+            *ghp_*) fail "issue #1968 helper: normalise left a token fragment past byte 1012" ;;
+        esac
+        # Invisible and direction controls: RLO, LRI/PDI, ZWSP, ZWJ, BOM, C1
+        # NEL and the Arabic letter mark are removed; NBSP and accents stay.
+        eq "normalise: bidi and zero-width controls removed" "abcdefgh" \
+            "$(normalise_pr_title_text "a$(printf '\342\200\256')b$(printf '\342\201\246')c$(printf '\342\201\251')d$(printf '\342\200\213')e$(printf '\342\200\215')f$(printf '\357\273\277')g$(printf '\302\205\330\234')h")"
+        eq "normalise: NBSP and accents survive the invisible-character strip" \
+            "a$(printf '\302\240')caf$(printf '\303\251')" \
+            "$(normalise_pr_title_text "a$(printf '\302\240')caf$(printf '\303\251')")"
+        eq "normalise: a zero-width space cannot split a token past redaction" "REDACTED_TOKEN" \
+            "$(normalise_pr_title_text "ghp_ABCDEFGH$(printf '\342\200\213')IJKLMNOPQRSTUVWX")"
+        normalise_pr_title_text "ab$(printf '\377')cd" >/dev/null \
+            || fail "issue #1968 helper: normalise must not fail on bytes that are not valid UTF-8"
+
+        # redact_credentials (shared with sanitize_provider_stderr)
+        eq "redact_credentials" "https://REDACTED@h/x REDACTED_TOKEN and REDACTED_TOKEN" \
+            "$(printf '%s\n' 'https://u:p@h/x ghs_ABCDEFGHIJKLMNOP1234 and github_pat_ABCDEFGHIJKLMNOP_1234' | redact_credentials)"
+        while IFS='|' read -r input want; do
+            eq "redact_credentials '${input}'" "${want}" "$(printf '%s\n' "${input}" | redact_credentials)"
+        done <<'ROWS'
+key sk-ant-api03-ABCDEFGHIJKLMNOPQRST end|key REDACTED_TOKEN end
+key sk-proj-ABCDEFGHIJKLMNOPQRSTUV end|key REDACTED_TOKEN end
+key sk-ABCDEFGHIJKLMNOPQRSTUVWX end|key REDACTED_TOKEN end
+id AKIAABCDEFGHIJKLMNOP end|id REDACTED_TOKEN end
+id ASIAABCDEFGHIJKLMNOP|id REDACTED_TOKEN
+disk-usage-monitoring-for-the-cluster|disk-usage-monitoring-for-the-cluster
+ASIAPACIFICREGIONSERVICESX|ASIAPACIFICREGIONSERVICESX
+ROWS
+
+        # cap_pr_title: <= 200 bytes, suffix kept, trailing spaces dropped,
+        # never splits a UTF-8 sequence.
+        eq "cap_pr_title short" "Add merge-base diff to publish (#1968)" \
+            "$(cap_pr_title "Add merge-base diff to publish" 1968)"
+        local capped
+        capped="$(cap_pr_title "$(rep a 300)" 1968)"
+        eq "cap_pr_title long ASCII is 200 bytes" "200" "$(bytes "${capped}")"
+        [[ "${capped}" == *" (#1968)" ]] || fail "issue #1968 helper: cap_pr_title dropped the (#N) suffix"
+        eq "cap_pr_title drops trailing full stops" "Fix the parser (#5)" \
+            "$(cap_pr_title "Fix the parser..." 5)"
+        eq "cap_pr_title strips a trailing space at the cut" \
+            "$(rep a 191) (#1968)" \
+            "$(cap_pr_title "$(rep a 191) bbbb" 1968)"
+        local accents
+        accents="$(rep "$(printf '\303\251')" 150)"
+        for input in "${accents}" "a${accents}"; do
+            capped="$(cap_pr_title "${input}" 1968)"
+            [ "$(bytes "${capped}")" -le 200 ] || fail "issue #1968 helper: cap_pr_title exceeded 200 bytes on UTF-8 input"
+            [[ "${capped}" == *" (#1968)" ]] || fail "issue #1968 helper: cap_pr_title dropped the suffix on UTF-8 input"
+            if command -v iconv >/dev/null 2>&1; then
+                printf '%s' "${capped}" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 \
+                    || fail "issue #1968 helper: cap_pr_title split a multibyte character"
+            fi
+        done
+
+        # format_changed_files_body
+        eq "format_changed_files_body empty" "- No changed files detected by git diff" \
+            "$(printf '' | format_changed_files_body)"
+        eq "format_changed_files_body one file" $'1 file changed\n- src/a.rs' \
+            "$(printf 'src/a.rs\n' | format_changed_files_body)"
+        eq "format_changed_files_body ignores blank lines" $'2 files changed\n- src/a.rs\n- src/b c.rs' \
+            "$(printf 'src/a.rs\n\nsrc/b c.rs\n' | format_changed_files_body)"
+        local out40 out41 out45 rc
+        out40="$(seq -f 'f%02g' 1 40 | format_changed_files_body)"
+        eq "format_changed_files_body 40: header" "40 files changed" "${out40%%$'\n'*}"
+        eq "format_changed_files_body 40: entries" "40" "$(printf '%s\n' "${out40}" | grep -c '^- f')"
+        if printf '%s\n' "${out40}" | grep -qF 'more'; then fail "issue #1968 helper: 40 files must not get a '... and N more' line"; fi
+        out41="$(seq -f 'f%02g' 1 41 | format_changed_files_body)"
+        eq "format_changed_files_body 41: last line" "- ... and 1 more" "${out41##*$'\n'}"
+        rc=0
+        out45="$(set -o pipefail; seq -f 'f%02g' 1 45 | format_changed_files_body)" || rc=$?
+        eq "format_changed_files_body 45 under pipefail: status" "0" "${rc}"
+        eq "format_changed_files_body 45: header" "45 files changed" "${out45%%$'\n'*}"
+        eq "format_changed_files_body 45: entries" "40" "$(printf '%s\n' "${out45}" | grep -c '^- f')"
+        eq "format_changed_files_body 45: last line" "- ... and 5 more" "${out45##*$'\n'}"
+
+        # first_task_line reads RECIPE_VAR_task_description only.
+        export RECIPE_VAR_task_description=$'\n   \nAdd merge-base diff to publish\r\nSecond line'
+        eq "first_task_line skips blank lines and strips CR" "Add merge-base diff to publish" "$(first_task_line)"
+        # A Markdown heading marker is not title text; "#9" is not a heading.
+        local task want_line
+        while IFS='|' read -r task want_line; do
+            RECIPE_VAR_task_description="$(printf '%b' "${task}")"
+            eq "first_task_line '${task}'" "${want_line}" "$(first_task_line)"
+        done <<'ROWS'
+# rysweet/amplihack-rs issue 1968: workflow_publish_pr.sh titles PRs\nbody|rysweet/amplihack-rs issue 1968: workflow_publish_pr.sh titles PRs
+\n## Fix the publish step\nbody|Fix the publish step
+#\n###   \n  ## Real title|Real title
+#9 crashes on start|#9 crashes on start
+###no space is not a heading|###no space is not a heading
+ROWS
+        unset RECIPE_VAR_task_description
+        export TASK_DESCRIPTION="bare alias" ISSUE_TITLE="bare issue title"
+        eq "first_task_line ignores bare TASK_DESCRIPTION and ISSUE_TITLE" "" "$(first_task_line)"
+        unset TASK_DESCRIPTION ISSUE_TITLE
+
+        # lookup_issue_title: 7a, no identity means no gh call at all.
+        local got
+        rc=0
+        got="$(PUBLISH_1968_ISSUE_MODE=answer lookup_issue_title 1968 "")" || rc=$?
+        eq "7a: lookup_issue_title with no repo identity prints nothing" "" "${got}"
+        eq "7a: lookup_issue_title with no repo identity returns 0" "0" "${rc}"
+        [ ! -s "${log}" ] || { cat "${log}" >&2; fail "issue #1968 helper: lookup_issue_title called gh without a repository identity"; }
+
+        rc=0
+        got="$(PUBLISH_1968_ISSUE_MODE=answer lookup_issue_title 1968 example/repo)" || rc=$?
+        eq "lookup_issue_title answered" "${PUBLISH_1968_ISSUE_TITLE}" "${got}"
+        eq "lookup_issue_title answered: status" "0" "${rc}"
+        grep -qxF 'issue view 1968 --repo example/repo --json title' "${log}" \
+            || { cat "${log}" >&2; fail "issue #1968 helper: lookup_issue_title must run 'gh issue view N --repo R --json title'"; }
+        # A gh failure is reported by its exit status only; gh's own stdout and
+        # stderr ("rate limit exceeded") never reach the output.
+        local mode want
+        for mode in fail empty nulltitle array notjson; do
+            want=""
+            [ "${mode}" != "fail" ] || want="NOTE: gh issue view for #1968 exited 1 (#1968)"
+            # jq's parse-error status differs by version (2 on 1.6, 5 later).
+            [ "${mode}" != "notjson" ] || want="NOTE: gh issue view output for #1968 is not JSON (jq exited N) (#1968)"
+            rc=0
+            got="$(PUBLISH_1968_ISSUE_MODE="${mode}" lookup_issue_title 1968 example/repo 2>&1)" || rc=$?
+            got="$(printf '%s\n' "${got}" | sed -E 's/\(jq exited [0-9]+\)/(jq exited N)/')"
+            eq "lookup_issue_title ${mode}: output (stdout and stderr)" "${want}" "${got}"
+            eq "lookup_issue_title ${mode}: status" "0" "${rc}"
+        done
+    )
+    echo "  PASS[1968-helpers]: prefix, defusal, normalisation, cap, body list, task line and lookup helpers"
+}
+
+assert_pr_title_from_issue_on_moved_base() {
+    install_publish_1968_fake_gh "${WORK}/publish-1968-bin"
+    local repo tag rc title body err expected section
+
+    assert_publish_1968_helpers
+
+    # Case 1: N = 3 on a moved base, issue lookup answered.
+    tag="moved3"; repo="${WORK}/publish-1968-${tag}"
+    setup_publish_1968_repo "${repo}" 3
+    expected="$(publish_1968_expected_count "${repo}")"
+    rc=0; run_publish_1968_case "${repo}" "${tag}" answer "" || rc=$?
+    [ "${rc}" -eq 0 ] || publish_1968_fail "${tag}" "issue #1968 case 1: publish must succeed (exit ${rc})"
+    title="$(head -n1 "${WORK}/publish-1968-${tag}.title")"
+    body="${WORK}/publish-1968-${tag}.body"
+    err="${WORK}/publish-1968-${tag}.err"
+    [ -n "${title}" ] || publish_1968_fail "${tag}" "issue #1968 case 1: no PR title was recorded"
+    if printf '%s' "${title}" | grep -qF '.github'; then publish_1968_fail "${tag}" "issue #1968 case 1(a): title names .github, a file from main: ${title}"; fi
+    if grep -qF '.github' "${body}"; then publish_1968_fail "${tag}" "issue #1968 case 1(a): body lists .github, a file from main"; fi
+    section="$(publish_1968_changed_files_section "${body}")"
+    [ "${section%%$'\n'*}" = "${expected} files changed" ] \
+        || publish_1968_fail "${tag}" "issue #1968 case 1(b): Changed files must open with '${expected} files changed'"
+    [ "${expected}" -eq 3 ] || fail "issue #1968 case 1(b): expected count ${expected} is not 3"
+    [ "$(printf '%s\n' "${section}" | grep -c '^- ')" -eq 3 ] \
+        || publish_1968_fail "${tag}" "issue #1968 case 1(b): Changed files must list exactly the 3 branch files"
+    [ "${title}" = "fix: ${PUBLISH_1968_ISSUE_TITLE} (#1968)" ] \
+        || publish_1968_fail "${tag}" "issue #1968 case 1(c): title must come from the issue title with a fix: prefix, got: ${title}"
+    if printf '%s' "${title}" | grep -qE 'Update .* with [0-9]+ changed files'; then
+        publish_1968_fail "${tag}" "issue #1968 case 1(c): the file-count template must not be used when the issue title is known"
+    fi
+    grep -qxF "Workflow-generated PR for #1968: fix: ${PUBLISH_1968_ISSUE_TITLE}." "${body}" \
+        || publish_1968_fail "${tag}" "issue #1968 case 1: Summary must read 'Workflow-generated PR for #1968: <title>.'"
+    grep -qE '^(Closes|Refs) #1968$' "${body}" \
+        || publish_1968_fail "${tag}" "issue #1968 case 1: the body's own issue reference line must be left intact"
+    grep -qF 'PR title source: issue' "${err}" \
+        || publish_1968_fail "${tag}" "issue #1968 case 1: stderr must name the title source (issue)"
+    if grep -qF 'titles PRs wrongly' "${err}"; then publish_1968_fail "${tag}" "issue #1968 case 1: the title text must not be printed to stderr"; fi
+    grep -qxF 'issue view 1968 --repo example/repo --json title' "${WORK}/publish-1968-${tag}.gh" \
+        || publish_1968_fail "${tag}" "issue #1968 case 1: the issue title must be read with 'gh issue view 1968 --repo example/repo --json title'"
+
+    # Case 2: N = 45; the count is taken before the 40-entry display cut.
+    tag="moved45"; repo="${WORK}/publish-1968-${tag}"
+    setup_publish_1968_repo "${repo}" 45
+    rc=0; run_publish_1968_case "${repo}" "${tag}" answer "" || rc=$?
+    [ "${rc}" -eq 0 ] || publish_1968_fail "${tag}" "issue #1968 case 2: publish must succeed (exit ${rc})"
+    title="$(head -n1 "${WORK}/publish-1968-${tag}.title")"
+    body="${WORK}/publish-1968-${tag}.body"
+    section="$(publish_1968_changed_files_section "${body}")"
+    [ "${section%%$'\n'*}" = "45 files changed" ] \
+        || publish_1968_fail "${tag}" "issue #1968 case 2: Changed files must open with '45 files changed'"
+    [ "$(printf '%s\n' "${section}" | grep -c '^- [^.]')" -eq 40 ] \
+        || publish_1968_fail "${tag}" "issue #1968 case 2: Changed files must list 40 entries"
+    [ "${section##*$'\n'}" = "- ... and 5 more" ] \
+        || publish_1968_fail "${tag}" "issue #1968 case 2: Changed files must end with '- ... and 5 more'"
+    if grep -qE '(^|[^0-9])40 files changed|with 40 changed files' "${body}" \
+        || printf '%s' "${title}" | grep -qE '(^|[^0-9])40 (changed )?files'; then
+        publish_1968_fail "${tag}" "issue #1968 case 2: 40 must never be reported as the count"
+    fi
+    if grep -qF '.github' "${body}"; then publish_1968_fail "${tag}" "issue #1968 case 2: body lists .github, a file from main"; fi
+
+    # Case 3: the lookup fails or yields nothing usable; the first non-blank
+    # line of RECIPE_VAR_task_description is used, and the publish succeeds.
+    local mode task=$'\n   \nAdd merge-base diff to publish\r\nSecond line must not reach the title'
+    for mode in fail notjson array; do
+        tag="task-${mode}"; repo="${WORK}/publish-1968-${tag}"
+        setup_publish_1968_repo "${repo}" 3
+        rc=0; run_publish_1968_case "${repo}" "${tag}" "${mode}" "${task}" || rc=$?
+        [ "${rc}" -eq 0 ] || publish_1968_fail "${tag}" "issue #1968 case 3 (${mode}): a failed issue lookup must not fail the publish (exit ${rc})"
+        title="$(head -n1 "${WORK}/publish-1968-${tag}.title")"
+        [ "${title}" = "feat: Add merge-base diff to publish (#1968)" ] \
+            || publish_1968_fail "${tag}" "issue #1968 case 3 (${mode}): title must come from the task description, got: ${title}"
+        grep -qxF "Workflow-generated PR for #1968: feat: Add merge-base diff to publish." "${WORK}/publish-1968-${tag}.body" \
+            || publish_1968_fail "${tag}" "issue #1968 case 3 (${mode}): Summary must carry the task-derived title"
+        # The Summary repeats the capped title, not the uncapped derived text.
+        local summary
+        summary="$(sed -n '/^Workflow-generated PR for #1968: /{s/^Workflow-generated PR for #1968: //;p;q;}' "${WORK}/publish-1968-${tag}.body")"
+        [ "${summary%.}" = "${title% (#1968)}" ] \
+            || publish_1968_fail "${tag}" "issue #1968 case 3 (${mode}): Summary must equal the capped title without its suffix, got: ${summary}"
+        grep -qF 'PR title source: task' "${WORK}/publish-1968-${tag}.err" \
+            || publish_1968_fail "${tag}" "issue #1968 case 3 (${mode}): stderr must name the title source (task)"
+        if [ "${mode}" = "fail" ]; then
+            grep -qF 'gh issue view for #1968 exited 1' "${WORK}/publish-1968-${tag}.err" \
+                || publish_1968_fail "${tag}" "issue #1968 case 3 (fail): stderr must report the lookup's exit status"
+        fi
+        if grep -qF 'rate limit exceeded' "${WORK}/publish-1968-${tag}.err"; then
+            publish_1968_fail "${tag}" "issue #1968 case 3 (${mode}): gh stderr from the lookup must be discarded"
+        fi
+    done
+
+    # Case 3b: a task line longer than the title cap. The Summary must be the
+    # capped title text, not the whole normalised line.
+    tag="task-long"; repo="${WORK}/publish-1968-${tag}"
+    setup_publish_1968_repo "${repo}" 3
+    rc=0; run_publish_1968_case "${repo}" "${tag}" empty "Add $(printf 'word %.0s' $(seq 1 100))" || rc=$?
+    [ "${rc}" -eq 0 ] || publish_1968_fail "${tag}" "issue #1968 case 3b: publish must succeed (exit ${rc})"
+    title="$(head -n1 "${WORK}/publish-1968-${tag}.title")"
+    [ "$(printf '%s' "${title}" | LC_ALL=C wc -c | tr -d ' ')" -le 200 ] \
+        || publish_1968_fail "${tag}" "issue #1968 case 3b: title exceeds 200 bytes"
+    summary="$(sed -n '/^Workflow-generated PR for #1968: /{s/^Workflow-generated PR for #1968: //;p;q;}' "${WORK}/publish-1968-${tag}.body")"
+    [ -n "${summary}" ] && [ "${summary%.}" = "${title% (#1968)}" ] \
+        || publish_1968_fail "${tag}" "issue #1968 case 3b: Summary must equal the capped title without its suffix, got: ${summary}"
+
+    # Case 4: lookup empty and no task description -> template with the true
+    # count. Bare TASK_DESCRIPTION / ISSUE_TITLE decoys must be ignored (#1684).
+    tag="template45"; repo="${WORK}/publish-1968-${tag}"
+    setup_publish_1968_repo "${repo}" 45
+    rc=0; run_publish_1968_case "${repo}" "${tag}" empty "" decoys || rc=$?
+    [ "${rc}" -eq 0 ] || publish_1968_fail "${tag}" "issue #1968 case 4: publish must succeed (exit ${rc})"
+    title="$(head -n1 "${WORK}/publish-1968-${tag}.title")"
+    [ "${title}" = "Update workflow recipes with 45 changed files (#1968)" ] \
+        || publish_1968_fail "${tag}" "issue #1968 case 4: template title must carry the true count and merge-base scope, got: ${title}"
+    grep -qxF "Concise workflow-generated PR for workflow recipes." "${WORK}/publish-1968-${tag}.body" \
+        || publish_1968_fail "${tag}" "issue #1968 case 4: the template Summary must keep its previous form"
+    grep -qF 'PR title source: template' "${WORK}/publish-1968-${tag}.err" \
+        || publish_1968_fail "${tag}" "issue #1968 case 4: stderr must name the title source (template)"
+
+    # Case 6: hostile issue title. Data, never code; no claims on #7 or #999.
+    tag="hostile"; repo="${WORK}/publish-1968-${tag}"
+    setup_publish_1968_repo "${repo}" 3
+    rc=0; run_publish_1968_case "${repo}" "${tag}" hostile "" || rc=$?
+    [ "${rc}" -eq 0 ] || publish_1968_fail "${tag}" "issue #1968 case 6: publish must succeed on a hostile title (exit ${rc})"
+    title="$(head -n1 "${WORK}/publish-1968-${tag}.title")"
+    body="${WORK}/publish-1968-${tag}.body"
+    # shellcheck disable=SC2016 # literal shell text is the expected data
+    [ "${title}" = 'fix: Fixes issue 7 ((issue 999)) $(touch PWNED) `id` %s %n [31m @someone (#1968)' ] \
+        || publish_1968_fail "${tag}" "issue #1968 case 6: unexpected title for the hostile issue: ${title}"
+    local subject
+    for subject in "title" "body"; do
+        local text
+        if [ "${subject}" = "title" ]; then text="${title}"; else text="$(cat "${body}")"; fi
+        if printf '%s' "${text}" | grep -qF '(#999)'; then publish_1968_fail "${tag}" "issue #1968 case 6: ${subject} still claims #999 with '(#999)'"; fi
+        if printf '%s' "${text}" | grep -qiE '(^|[^A-Za-z0-9_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]*#(7|999)([^0-9]|$)'; then
+            publish_1968_fail "${tag}" "issue #1968 case 6: ${subject} has a closing keyword directly before #7 or #999"
+        fi
+        if printf '%s' "${text}" | LC_ALL=C grep -q "$(printf '\033')"; then
+            publish_1968_fail "${tag}" "issue #1968 case 6: ${subject} contains an ESC byte"
+        fi
+    done
+    grep -qF 'issue 7' "${body}" || publish_1968_fail "${tag}" "issue #1968 case 6: body Summary must carry the defused 'issue 7'"
+    case "${title% (#1968)}" in
+        *'#'[0-9]*) publish_1968_fail "${tag}" "issue #1968 case 6: a '#<digits>' reference survived in the title before its suffix" ;;
+    esac
+    # shellcheck disable=SC2016 # literal backticks are the expected data
+    grep -qF ' `@someone`.' "${body}" \
+        || publish_1968_fail "${tag}" "issue #1968 case 6: the body Summary must put @someone in a code span"
+    # shellcheck disable=SC2016 # literal shell text is the expected data
+    grep -qF '$(touch PWNED) `id` %s %n' "${body}" \
+        || publish_1968_fail "${tag}" "issue #1968 case 6: shell and printf fragments must reach the body literally"
+    if [ -n "$(find "${WORK}" -name PWNED -print -quit)" ]; then
+        publish_1968_fail "${tag}" "issue #1968 case 6: the issue title was executed (PWNED exists)"
+    fi
+
+    # Case 7b: an origin parse_github_repo_identity rejects stops the publish
+    # before any issue lookup or PR creation.
+    tag="noident"; repo="${WORK}/publish-1968-${tag}"
+    setup_publish_1968_repo "${repo}" 3
+    git -C "${repo}" remote set-url origin "https://example.invalid/acme/widgets.git"
+    rc=0; run_publish_1968_case "${repo}" "${tag}" answer "" || rc=$?
+    [ "${rc}" -ne 0 ] || publish_1968_fail "${tag}" "issue #1968 case 7b: a rejected origin must fail the publish"
+    cat "${WORK}/publish-1968-${tag}.out" "${WORK}/publish-1968-${tag}.err" | grep -qF 'FAILED_PR_IDENTITY' \
+        || publish_1968_fail "${tag}" "issue #1968 case 7b: expected FAILED_PR_IDENTITY"
+    if grep -q '^issue view' "${WORK}/publish-1968-${tag}.gh"; then publish_1968_fail "${tag}" "issue #1968 case 7b: gh issue view ran without a repository identity"; fi
+    if grep -q '^pr create' "${WORK}/publish-1968-${tag}.gh"; then publish_1968_fail "${tag}" "issue #1968 case 7b: gh pr create ran without a repository identity"; fi
+
+    # Case 8: no merge base (unrelated history, as in a shallow clone). The
+    # publish still succeeds, warns once, and lists the two-dot range.
+    tag="nomergebase"; repo="${WORK}/publish-1968-${tag}"
+    setup_publish_1968_repo "${repo}" 3
+    git -C "${repo}" checkout -q --orphan feat/issue-1968-orphan
+    git -C "${repo}" rm -rq --cached . >/dev/null
+    printf 'orphan\n' > "${repo}/orphan-1968.txt"
+    git -C "${repo}" add orphan-1968.txt
+    git -C "${repo}" commit -qm "orphan branch" >/dev/null
+    git -C "${repo}" clean -fdq >/dev/null
+    ! git -C "${repo}" merge-base origin/main HEAD >/dev/null 2>&1 \
+        || fail "1968 fixture: the orphan branch must have no merge base with origin/main"
+    expected="$(git -C "${repo}" diff --name-only origin/main..HEAD | sed '/^$/d' | wc -l | tr -d ' ')"
+    rc=0; run_publish_1968_case "${repo}" "${tag}" answer "" || rc=$?
+    [ "${rc}" -eq 0 ] || publish_1968_fail "${tag}" "issue #1968 case 8: no merge base must not fail the publish (exit ${rc})"
+    grep -qF 'WARNING: no merge base between origin/main and HEAD' "${WORK}/publish-1968-${tag}.err" \
+        || publish_1968_fail "${tag}" "issue #1968 case 8: the two-dot fallback must be reported on stderr"
+    section="$(publish_1968_changed_files_section "${WORK}/publish-1968-${tag}.body")"
+    [ "${section%%$'\n'*}" = "${expected} files changed" ] \
+        || publish_1968_fail "${tag}" "issue #1968 case 8: Changed files must count the two-dot range (${expected})"
+
+    # Case 9: one head holds a closed PR with the template title (a run whose
+    # issue lookup failed) and an open PR with a derived title. Both carry
+    # the head sha and the issue token, so only a title prefix could split
+    # them. With no default prefix the tie goes to the open PR; a default of
+    # "Update" picked the closed one and failed with FAILED_CLOSED_UNMERGED.
+    tag="mixedtitles"; repo="${WORK}/publish-1968-${tag}"
+    setup_publish_1968_repo "${repo}" 3
+    jq -nc --arg sha "$(git -C "${repo}" rev-parse HEAD)" '
+      def pr($n; $title; $state):
+        {url: "https://github.com/example/repo/pull/\($n)", number: $n, title: $title,
+         body: "Fixes #1968", state: $state, createdAt: "2026-11-08T10:00:00Z",
+         mergedAt: null, headRefName: "feat/issue-1968-title", baseRefName: "main",
+         headRefOid: $sha, headRepositoryOwner: {login: "example"},
+         headRepository: {name: "repo"}, isCrossRepository: false};
+      [pr(10; "Update workflow recipes with 3 changed files (#1968)"; "CLOSED"),
+       pr(11; "fix: workflow_publish_pr.sh titles PRs wrongly from a two-dot diff (#1968)"; "OPEN")]' \
+        > "${WORK}/publish-1968-${tag}.prs"
+    rc=0; PUBLISH_1968_PR_LIST="${WORK}/publish-1968-${tag}.prs" run_publish_1968_case "${repo}" "${tag}" answer "" || rc=$?
+    [ "${rc}" -eq 0 ] || publish_1968_fail "${tag}" "issue #1968 case 9: a closed template-titled PR beside an open derived-title PR must not fail the publish (exit ${rc})"
+    grep -qF '"existing-open-pr"' "${WORK}/publish-1968-${tag}.out" \
+        || publish_1968_fail "${tag}" "issue #1968 case 9: the open PR must be adopted as existing-open-pr"
+    grep -qF 'https://github.com/example/repo/pull/11' "${WORK}/publish-1968-${tag}.out" \
+        || publish_1968_fail "${tag}" "issue #1968 case 9: the adopted PR must be the open one, #11"
+    if grep -q '^pr create' "${WORK}/publish-1968-${tag}.gh"; then publish_1968_fail "${tag}" "issue #1968 case 9: gh pr create ran although an open PR exists"; fi
+
+    # Static guard: the changed-file list and diff stat are computed once,
+    # from DIFF_RANGE, for both providers. A two-dot literal reintroduced on
+    # either path (the AzDO path has no moved-base case above) fails here.
+    # shellcheck disable=SC2016 # the patterns match literal shell text
+    if grep -nE 'git diff --(name-only|stat) "\$\{BASE_REF\}\.\.HEAD"' "${PUBLISH_HELPER}"; then
+        fail "issue #1968: workflow_publish_pr.sh lists or stats changed files with a two-dot range; use \"\$DIFF_RANGE\""
+    fi
+    # shellcheck disable=SC2016 # the pattern matches literal shell text
+    [ "$(grep -cE 'git diff --(name-only|stat) "\$DIFF_RANGE"' "${PUBLISH_HELPER}")" -eq 2 ] \
+        || fail "issue #1968: expected exactly one --name-only and one --stat computation from \"\$DIFF_RANGE\", shared by both providers"
+
+    echo "  PASS[1968]: merge-base diff, true count, issue/task/template title order, hostile-title defusal, identity guard, no-merge-base fallback and mixed-title tie"
 }
 
 setup_nomerge_probe_repo() {
@@ -2000,7 +2738,11 @@ assert_sanitize_cli_output_redacts_secrets() {
     # flag them, mirroring the fake-constant convention in
     # crates/amplihack-signal/tests/chat_it.rs.
     local fn_def
-    fn_def="$(grep -F 'sanitize_cli_output() {' "${PREP_RECIPE}" "${PREP_TRACKING_TOOL}" 2>/dev/null | head -n1)"
+    # No 'head' stage: under pipefail it can collapse the value to "" (issue
+    # #1434). Take the first hit with a substring instead; no hit leaves it
+    # empty and the check below reports it.
+    fn_def="$(grep -F 'sanitize_cli_output() {' "${PREP_RECIPE}" "${PREP_TRACKING_TOOL}" 2>/dev/null)" || fn_def=""
+    fn_def="${fn_def%%$'\n'*}"
     # grep over several files prefixes each hit with "<file>:"; strip it so the
     # line evals as the function definition it is.
     fn_def="${fn_def#*:}"
@@ -2152,6 +2894,7 @@ assert_1561_worktree_setup_invalid_rows() {
 }
 
 assert_pr_title_ignores_lockfiles
+assert_pr_title_from_issue_on_moved_base
 assert_no_merge_directive_suppresses_auto_merge
 assert_1561_terminal_state_rows
 assert_gh_rate_limit_backoff_contracts

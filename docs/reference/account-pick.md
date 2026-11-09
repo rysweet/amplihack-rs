@@ -392,7 +392,10 @@ directory.
 
 `amplihack codex` with only `AMPLIHACK_CODEX_HOME` set restores `CODEX_HOME`
 from it in the child. A Claude launch with only `AMPLIHACK_CLAUDE_CONFIG_DIR`
-set restores `CLAUDE_CONFIG_DIR` from it in the child.
+set restores `CLAUDE_CONFIG_DIR` from it in the child. When
+`AMPLIHACK_CLAUDE_PROFILE` is also set, the pinned profile decides the
+directory and the alias is not restored; this keeps a step on `~/.claude`
+when its pinned profile has since become the rotator's live one.
 
 ### Pins across recipe steps
 

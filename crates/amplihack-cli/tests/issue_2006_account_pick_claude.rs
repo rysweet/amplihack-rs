@@ -9,7 +9,9 @@
 //! `claude`. A wrapper in front of that fake records the environment of the
 //! launch itself, recognised by the `MARKER2006` prompt, to
 //! `$RECORD_DIR/launch.env`, and passes every other call (the probes)
-//! through.
+//! through. Since #2030 the launch receives a `-p` prompt on stdin with a
+//! bare `-p` in argv, so the wrapper reads stdin for the marker on any
+//! print-mode call that is not a usage probe (`--input-format`).
 
 #![cfg(unix)]
 
@@ -21,13 +23,22 @@ use std::process::{Command, Output};
 
 const MARKER: &str = "MARKER2006";
 const WRAPPER: &str = r#"#!/bin/sh
+record() {
+  {
+    printf 'CLAUDE_CONFIG_DIR=%s\n' "${CLAUDE_CONFIG_DIR-<unset>}"
+    printf 'AMPLIHACK_CLAUDE_PROFILE=%s\n' "${AMPLIHACK_CLAUDE_PROFILE-<unset>}"
+  } > "$RECORD_DIR/launch.env"
+  exit 0
+}
 case " $* " in
-  *" MARKER2006 "*)
-    {
-      printf 'CLAUDE_CONFIG_DIR=%s\n' "${CLAUDE_CONFIG_DIR-<unset>}"
-      printf 'AMPLIHACK_CLAUDE_PROFILE=%s\n' "${AMPLIHACK_CLAUDE_PROFILE-<unset>}"
-    } > "$RECORD_DIR/launch.env"
-    exit 0 ;;
+  *" MARKER2006 "*) record ;;
+  *" --input-format "*) ;;
+  *" -p "*)
+    payload=$(cat)
+    case "$payload" in
+      *MARKER2006*) record ;;
+    esac
+    printf '%s' "$payload" | exec "$(dirname "$0")/claude-fixture" "$@" ;;
 esac
 exec "$(dirname "$0")/claude-fixture" "$@"
 "#;

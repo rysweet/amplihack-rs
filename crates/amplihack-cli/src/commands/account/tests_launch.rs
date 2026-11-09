@@ -15,7 +15,8 @@
 //!   absolute path.
 //! - `launch::claude_config_from_alias(read) -> Option<PathBuf>`:
 //!   `AMPLIHACK_CLAUDE_CONFIG_DIR` when `CLAUDE_CONFIG_DIR` is unset or
-//!   empty and the alias is a non-empty absolute path, else `None`.
+//!   empty, `AMPLIHACK_CLAUDE_PROFILE` is unset or empty, and the alias is a
+//!   non-empty absolute path, else `None`.
 //! - `launch::recipe_aliases(read) -> Vec<(&'static str, OsString)>`: what
 //!   `amplihack recipe run` sets on the runner's process:
 //!   `AMPLIHACK_CODEX_HOME` from `CODEX_HOME` and
@@ -165,4 +166,26 @@ fn an_absolute_claude_alias_is_restored() {
         ("AMPLIHACK_CLAUDE_CONFIG_DIR", "/abs/dir"),
     ]);
     assert_eq!(launch::claude_config_from_alias(&r), None);
+}
+
+#[test]
+fn a_pinned_profile_keeps_its_own_directory_over_the_claude_alias() {
+    // The profile pin decides the directory, which is `~/.claude` (no
+    // CLAUDE_CONFIG_DIR at all) when the pinned profile is the rotator's
+    // live one. A stale alias must not send the step to the profile's own
+    // directory, which no longer holds a login.
+    let r = reader(&[
+        ("AMPLIHACK_CLAUDE_PROFILE", "x"),
+        ("AMPLIHACK_CLAUDE_CONFIG_DIR", "/profiles/x"),
+    ]);
+    assert_eq!(launch::claude_config_from_alias(&r), None);
+    // An empty pin is no pin.
+    let r = reader(&[
+        ("AMPLIHACK_CLAUDE_PROFILE", ""),
+        ("AMPLIHACK_CLAUDE_CONFIG_DIR", "/profiles/x"),
+    ]);
+    assert_eq!(
+        launch::claude_config_from_alias(&r),
+        Some(PathBuf::from("/profiles/x"))
+    );
 }

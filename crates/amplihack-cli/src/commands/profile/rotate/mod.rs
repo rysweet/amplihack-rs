@@ -242,7 +242,7 @@ fn foreign_note_for(
 fn warn_switch_hold(root: &std::path::Path) {
     let exe = std::env::current_exe().ok();
     let rs = ledger::RotateState::new(root);
-    if let Some(note) = foreign_note_for(&rs, std::path::Path::new("/proc"), exe.as_deref()) {
+    if let Some(note) = foreign_note_for(&rs, &daemon::proc_root(), exe.as_deref()) {
         eprintln!("{note}");
     }
 }

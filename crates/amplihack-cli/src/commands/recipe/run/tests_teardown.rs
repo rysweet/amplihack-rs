@@ -37,7 +37,7 @@ mod execute {
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Environment-variable name the deterministic-teardown feature must honour to
 /// configure the SIGTERM -> SIGKILL grace window (in whole seconds).
@@ -105,10 +105,6 @@ fn write_stub(path: &Path, body: &str) {
 }
 
 /// True if a process with `pid` still exists (signal 0 probe).
-fn process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
-}
-
 // -------------------------------------------------------------------------
 // Test 1 — teardown fires on the FAILURE (non-timeout) path.
 //
@@ -326,8 +322,10 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
 
     // Sibling process in the TEST's process group (NOT the runner's session).
+    // It runs until the test kills it, so its survival does not depend on how
+    // long the recipe run takes on a loaded host.
     let mut sibling = std::process::Command::new("/bin/sleep")
-        .arg("8")
+        .arg("infinity")
         .spawn()
         .expect("failed to spawn sibling process");
     let sibling_pid = sibling.id();
@@ -349,7 +347,6 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let _work_env = isolate_work_root(temp.path());
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
-    let started = Instant::now();
     let result = execute::execute_recipe_via_rust(
         &recipe,
         &BTreeMap::new(),
@@ -370,12 +367,13 @@ fn test_teardown_is_scoped_to_runner_process_group() {
 
     // The unrelated sibling (outside the runner's process group) must survive
     // the teardown, proving the reaper is pgid-scoped and not a broadcast.
+    // `try_wait` reports a signalled child even while it is a zombie, which a
+    // `kill(pid, 0)` probe would miss.
     assert!(
-        started.elapsed() < Duration::from_secs(8),
-        "test setup ran too long to validate sibling survival"
-    );
-    assert!(
-        process_alive(sibling_pid),
+        sibling
+            .try_wait()
+            .expect("failed to poll sibling process")
+            .is_none(),
         "teardown must be scoped to the runner's process group and must NOT \
          signal unrelated processes (issue #964)"
     );
@@ -865,16 +863,15 @@ fn generated_tree_ids_are_valid_and_distinct() {
 }
 
 /// The caller holds the shared environment lock through restoration.
-fn fixture_environment() -> crate::test_support::EnvGuard {
-    let saved = crate::test_support::EnvGuard::capture(&[
-        "AMPLIHACK_AGENT_BINARY",
-        "AMPLIHACK_CLEANUP_ON_EXIT",
-        "HOME",
-    ]);
+///
+/// Each run gets a private work root and no end-of-run sweep (issue #2067;
+/// see `test_support::IsolatedWorkRoot`).
+fn fixture_environment() -> (
+    crate::test_support::EnvGuard,
+    crate::test_support::IsolatedWorkRoot,
+) {
+    let saved = crate::test_support::EnvGuard::capture(&["AMPLIHACK_AGENT_BINARY", "HOME"]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
-    // Issue #2067: the end-of-run sweep walks the real work root, which can
-    // take over a minute on a loaded host and break the wall-clock ceilings.
-    unsafe { std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0") };
-    saved
+    (saved, crate::test_support::IsolatedWorkRoot::new())
 }

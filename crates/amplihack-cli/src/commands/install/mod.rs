@@ -56,7 +56,8 @@ pub use uninstall::run_uninstall;
 /// system-prompt fragment is NOT listed — adding it there is what armed a
 /// cwd-sourced restage on every install (see `types::essential_files`), and a
 /// ratchet in the module that consumes the fragment is the one place a future
-/// edit would actually look.
+/// edit would actually look. The per-install contract file written at launch
+/// for `--append-system-prompt-file` (issue #2030) is not listed either.
 #[cfg(test)]
 pub(in crate::commands) fn essential_files_for_test(
     layout: types::SourceLayout,
@@ -314,8 +315,9 @@ pub(super) fn read_layout_marker(claude_dir: &Path) -> Result<Option<SourceLayou
 /// The gaps that are emitted must also each be closable by a restage. Issue
 /// #1266's loop came from listing an asset the restage source could not supply;
 /// the fix was to stop listing it (the system-prompt fragment is `include_str!`d
-/// into the binary now — see `launch::system_prompt_append`), not to special-
-/// case it here. Before adding an entry to `essential_files`, check that a
+/// into the binary now, and written at launch to the 0600 file passed with
+/// `--append-system-prompt-file` — see `launch::system_prompt_append`), not to
+/// special-case it here. Before adding an entry to `essential_files`, check that a
 /// restage can actually satisfy it, or this becomes a loop again.
 fn framework_restage_needed(staging_exists: bool, missing: &[String]) -> bool {
     !staging_exists || !missing.is_empty()

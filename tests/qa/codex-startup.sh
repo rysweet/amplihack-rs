@@ -20,7 +20,7 @@ for provider in claude copilot; do
 #!/bin/sh
 provider=${0##*/}
 case "$*" in
-    *--version*) if [ "$provider" = claude ]; then echo '2.1.0 (Claude Code)'; else echo '0.0.400'; fi;;
+    *--version*) if [ "$provider" = claude ]; then echo '2.1.319 (Claude Code)'; else echo '0.0.400'; fi;;
     *plugin*) echo "$provider:plugin" >> "$HOME/events"; echo '{}';;
     *) echo "$provider:launch" >> "$HOME/events";;
 esac

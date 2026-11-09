@@ -150,7 +150,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_NOT_SET_1551` | test-only |  | Not an env var: a name an env-builder unit test checks is absent. |
 | `AMPLIHACK_NO_FRESHNESS_CHECK` | user preference |  | Skips the binary freshness check. |
 | `AMPLIHACK_NO_RUST_BOOTSTRAP` | user preference |  | Skips the Rust toolchain bootstrap. |
-| `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND` | user preference |  | Skips the system-prompt append. |
+| `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND` | user preference |  | `1` skips the operating contract, its file under `<home>/private/` and the Claude Code 2.1.319 version check. See [Agent Prompt Channels](agent-prompt-channels.md#environment-variables). |
 | `AMPLIHACK_NO_UPDATE_CHECK` | user preference |  | Skips the startup update check. |
 | `AMPLIHACK_NPM_VERSION` | test-only |  | Not an env var: placeholder in the plugin-manifest test. |
 | `AMPLIHACK_ORCHESTRATION_BOOTSTRAP` | test-only |  | Codex front-door contract fixture. |
@@ -172,7 +172,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT` | user preference |  | Session percentage below which a login counts as usable now in the capacity summary of `amplihack profile usage` and the `capacity:` line of `amplihack profile rotate status`, `1` to `100`; default `95`. `--usable-session-pct` overrides it. Does not change any rotation or auto-switch threshold. See [Usable now](profile-command.md#usable-now). |
 | `AMPLIHACK_PROJECT_ID` | user preference |  | Memory learning project id. |
 | `AMPLIHACK_PROJECT_ROOT` | internal |  | Project root exported by the uvx manager. |
-| `AMPLIHACK_PROMPT_DELIVERY` | user preference |  | Prompt delivery mode for agent subprocesses. |
+| `AMPLIHACK_PROMPT_DELIVERY` | user preference |  | Prompt delivery mode for agent subprocesses: `auto` (default), `stdin` or `tempfile`. No value puts the prompt in argv: any other value, including `argv`, logs a warning and is treated as `auto`. Never set it in recipes or bundle config. See [Agent Prompt Channels](agent-prompt-channels.md#automatic-prompt-delivery-never-selects-argv). |
 | `AMPLIHACK_QUEUE_PATH` | test-only |  | Fleet test fixture. |
 | `AMPLIHACK_RECIPE_LOG_JSONL` | user preference |  | Path for structured runner events. |
 | `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` | user preference |  | Whole-run wall-clock limit for the recipe runner. |
@@ -235,6 +235,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_STEP_TIMEOUT` | user preference | `recipe.step_timeout` | Per-step timeout ceiling exported to the recipe runner. |
 | `AMPLIHACK_STUB` | test-only |  | Stub binary marker in recipe and remote tests. |
 | `AMPLIHACK_SUPPLIED` | internal |  | Not an env var: suffix of the `OVERRIDE_IS_AMPLIHACK_SUPPLIED` constant. |
+| `AMPLIHACK_TARGET_LINK_ROOTS` | user preference |  | Colon-separated absolute folders where linked pre-commit targets may point; `amplihack cleanup` removes a linked target (destination and link) only inside these or the managed roots, or, for a link in the host cargo wrapper's layout (`<folder>-<target name>-<12 hex>`), inside the folder holding it. Unset by default; not needed for wrapper links. Read only by `amplihack cleanup`, never by the hook. See [Linked targets](../howto/clean-up-after-recipe-runs.md#linked-targets). |
 | `AMPLIHACK_TASK_DESCRIPTION` | user preference |  | Default `task_description` context for `recipe run`. |
 | `AMPLIHACK_TEARDOWN_GRACE_SECS` | user preference |  | Grace period between SIGTERM and SIGKILL when tearing down the runner. |
 | `AMPLIHACK_TESTTOOL_BINARY_PATH` | test-only |  | `binary_finder` unit-test instance of `AMPLIHACK_<TOOL>_BINARY_PATH`. |
@@ -254,6 +255,8 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_TEST_NONEXISTENT_456` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_789` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_GET_ERR` | test-only |  | `EnvVar` unit test name. |
+| `AMPLIHACK_TEST_PROC_ROOT` | test-only |  | Names a fake process table that `procfs::proc_root()` reads in place of `/proc`. Unlike the debug-only knobs above, it is honoured in release builds too (accepted risk SR-2), but only when `AMPLIHACK_TEST_HOME_GUARD` is set and the path is a private directory owned by this user inside the temp dir; otherwise `/proc` is read, and a debug build prints one stderr line naming the reason (`AMPLIHACK_TEST_PROC_ROOT ignored (...)`). `rotate stop` checks the pid it signals against the real `/proc` whatever this names. `isolated(..)` sets it to a shared empty tree (`PROC_ROOT_ENV`), so no `amplihack profile`, `sessions` or `cleanup` test reads the host's processes; see [Keep Tests off the Host Process Table](../howto/keep-tests-off-the-host-process-table.md). |
+| `AMPLIHACK_TEST_REQUIRE_STRACE` | test-only |  | When non-empty, the `issue_2042_host_proc_strace` tests fail if `strace` is not installed instead of skipping. CI sets it. |
 | `AMPLIHACK_TEST_ROOT_SANDBOX_PROBE` | test-only |  | Root-sandbox spawn test probe. |
 | `AMPLIHACK_TEST_SECURITY_MODE` | test-only |  | Hook protocol test mode. |
 | `AMPLIHACK_TEST_SECURITY_TRANSPORT` | test-only |  | Hook protocol test transport. |

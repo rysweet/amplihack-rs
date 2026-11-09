@@ -225,6 +225,36 @@ fn inconsistent(msg: impl Into<String>) -> ProfileError {
     ProfileError::RotateInconsistent(msg.into())
 }
 
+/// Issue #1947: the reasons [`RotateState::load_ledger`] gives for a ledger
+/// it parsed but whose fields it refuses. Each names a field in fixed text,
+/// never a stored value, so the unreadable-ledger stop and `status` show it.
+const FIELD_REFUSALS: [&str; 7] = [
+    "unknown version",
+    "invalid profile name",
+    "invalid account or alert",
+    "invalid overflow field",
+    "invalid no_room",
+    "invalid hand-change field",
+    "invalid login_identity",
+];
+
+/// The load error for a refused field; `reason` is one of [`FIELD_REFUSALS`].
+fn refuse(reason: &'static str) -> ProfileError {
+    debug_assert!(FIELD_REFUSALS.contains(&reason), "{reason}");
+    inconsistent(format!("rotate ledger: {reason}"))
+}
+
+/// The fixed reason a failed ledger load gave when it refused a field. `None`
+/// for every other failure, such as a read or parse error, whose text may
+/// hold a path or a position and is not shown.
+pub fn refused_field(e: &ProfileError) -> Option<&'static str> {
+    let ProfileError::RotateInconsistent(m) = e else {
+        return None;
+    };
+    let reason = m.strip_prefix("rotate ledger: ")?;
+    FIELD_REFUSALS.iter().copied().find(|r| *r == reason)
+}
+
 /// An account value amplihack may store: non-empty, at most 320 bytes, no
 /// control or bidirectional-override characters ([`unprintable`]).
 pub fn safe_account(v: &str) -> bool {
@@ -283,25 +313,28 @@ impl RotateState {
         let mut l: RotateLedger = serde_json::from_slice(&raw)
             .map_err(|e| inconsistent(format!("{WHAT}: {}", position(&e))))?;
         if l.version != VERSION {
-            return Err(inconsistent(format!("{WHAT}: unknown version")));
+            return Err(refuse("unknown version"));
         }
         if !valid_name(l.live.as_deref()) || !valid_name(l.previous.as_deref()) {
-            return Err(inconsistent(format!("{WHAT}: invalid profile name")));
+            return Err(refuse("invalid profile name"));
         }
         if l.account.as_deref().is_some_and(|a| !safe_account(a)) || !valid_alerts(&l) {
-            return Err(inconsistent(format!("{WHAT}: invalid account or alert")));
+            return Err(refuse("invalid account or alert"));
         }
         if !valid_overflow(&l) {
-            return Err(inconsistent(format!("{WHAT}: invalid overflow field")));
+            return Err(refuse("invalid overflow field"));
         }
         if !no_room::valid(l.no_room.as_ref()) {
-            return Err(inconsistent(format!("{WHAT}: invalid no_room")));
+            return Err(refuse("invalid no_room"));
         }
         if !valid_guidance(l.guidance.as_deref())
             || !valid_lost_login(&l.lost_login)
             || !valid_hand_suspect(l.hand_suspect.as_ref())
         {
-            return Err(inconsistent(format!("{WHAT}: invalid hand-change field")));
+            return Err(refuse("invalid hand-change field"));
+        }
+        if l.login_identity.as_ref().is_some_and(|i| !i.valid()) {
+            return Err(refuse("invalid login_identity"));
         }
         l.swapped_away = super::swap_back::valid(std::mem::take(&mut l.swapped_away), now());
         Ok(Some(l))
@@ -320,7 +353,10 @@ impl RotateState {
     /// The pid of a running `profile rotate watch` whose executable is not
     /// this process's, for example one started before an upgrade.
     pub fn foreign_rotator(&self) -> Option<u32> {
-        self.foreign_rotator_at(Path::new("/proc"), std::env::current_exe().ok().as_deref())
+        self.foreign_rotator_at(
+            &super::daemon::proc_root(),
+            std::env::current_exe().ok().as_deref(),
+        )
     }
 
     /// [`Self::foreign_rotator`] against another `/proc` and executable.

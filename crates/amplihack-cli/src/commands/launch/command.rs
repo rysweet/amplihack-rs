@@ -80,6 +80,10 @@ pub(super) fn isolate_routed_copilot_home(
     Ok(Some(home))
 }
 
+/// The contract path the `#[cfg(test)]` [`build_command`] helper passes.
+#[cfg(test)]
+pub(super) const TEST_CONTRACT_PATH: &str = "/test-home/.amplihack/private/system-prompt-append.md";
+
 #[cfg(test)]
 pub(super) fn build_command(
     binary: &BinaryInfo,
@@ -97,7 +101,9 @@ pub(super) fn build_command(
         None,
         false, // subprocess_safe
         None,  // claude_config_dir
+        Some(Path::new(TEST_CONTRACT_PATH)),
     )
+    .expect("a contract path is supplied")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -110,7 +116,8 @@ pub(super) fn build_command_for_dir(
     add_dir_override: Option<&Path>,
     subprocess_safe: bool,
     claude_config_dir: Option<&Path>,
-) -> Command {
+    contract_file: Option<&Path>,
+) -> Result<Command> {
     let mut cmd = Command::new(&binary.path);
 
     // SEC-2: Only inject --dangerously-skip-permissions when the caller has
@@ -214,21 +221,24 @@ pub(super) fn build_command_for_dir(
     // contrary line there silently wins and amplihack's router is ignored with
     // no error and no warning. See docs/SYSTEM_PROMPT_APPEND.md.
     //
-    // Emits the fragment's CONTENTS: `--append-system-prompt` takes a prompt
-    // string. Injected here, before `cmd.args(extra_args)`, so the user's own
-    // arguments stay last as with every other injection.
-    // The fragment is compiled in, so the only question is whether this binary
-    // and this argv want it: `amplihack copilot` and `amplihack codex` do not
-    // support the flag and the gate answers no for them.
+    // Issue #2030: emits the PATH of the 0600 contract file, never its text.
+    // Text in argv is visible in /proc/<pid>/cmdline, and one `pkill -f` on a
+    // phrase in it ended 34 sessions. The caller wrote the file with
+    // `ensure_contract_file` after the version gate; a true gate with no path
+    // is a bug and fails here rather than falling back to the text form.
+    // Injected before `cmd.args(extra_args)`, so the user's own arguments stay
+    // last as with every other injection. `amplihack copilot` and
+    // `amplihack codex` do not support the flag and the gate answers no.
     let opt_out = std::env::var(system_prompt_append::OPT_OUT_ENV).ok();
-    if system_prompt_append::should_inject_system_prompt_append(
+    if system_prompt_append::contract_injection_applies(
         &binary.name,
+        &binary.path,
         extra_args,
         opt_out.as_deref(),
-    ) && let Some(fragment) = system_prompt_append::installed_fragment()
-    {
-        cmd.arg("--append-system-prompt");
-        cmd.arg(fragment);
+    ) {
+        let path = contract_file.context(system_prompt_append::CONTRACT_PATH_MISSING)?;
+        cmd.arg("--append-system-prompt-file");
+        cmd.arg(path);
     }
 
     // Issue #1985: a recipe agent step on Codex (`amplihack codex -- exec …`)
@@ -256,7 +266,7 @@ pub(super) fn build_command_for_dir(
         cmd.arg("--no-auto-update");
         cmd.arg("--secret-env-vars=COPILOT_PROVIDER_API_KEY");
     }
-    cmd
+    Ok(cmd)
 }
 
 /// Issue #1567: pins the applied login profile for every descendant launch.

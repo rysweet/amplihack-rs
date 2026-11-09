@@ -108,10 +108,15 @@ pub fn recipe_aliases(read: Reader<'_>) -> Vec<(&'static str, OsString)> {
 }
 
 /// The raw Claude config directory a launch restores from the alias: the
-/// alias when `CLAUDE_CONFIG_DIR` itself is unset or empty and the alias is
-/// an absolute path.
+/// alias when `CLAUDE_CONFIG_DIR` itself is unset or empty, no profile is
+/// pinned through `AMPLIHACK_CLAUDE_PROFILE`, and the alias is an absolute
+/// path. A pinned profile has already chosen the directory, which may be
+/// `~/.claude` when the profile is the rotator's live one; the alias must
+/// not override that choice.
 pub fn claude_config_from_alias(read: Reader<'_>) -> Option<PathBuf> {
-    if non_empty(read, CLAUDE_CONFIG_DIR_ENV).is_some() {
+    if non_empty(read, CLAUDE_CONFIG_DIR_ENV).is_some()
+        || non_empty(read, crate::commands::profile::PROFILE_ENV).is_some()
+    {
         return None;
     }
     absolute_alias_warned(read, CLAUDE_CONFIG_DIR_ALIAS)
