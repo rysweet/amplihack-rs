@@ -14,8 +14,9 @@ to clear stale registrations before calling `git worktree add`.
 ## Quick Start
 
 No configuration required. `step-04-setup-worktree` resolves a supported remote
-base ref automatically and handles stale worktree registrations during any
-reattach path.
+base ref automatically, or starts from the `base_branch` / `base_sha` you pass
+(see [Explicit Worktree Source](#explicit-worktree-source-base_branch-base_sha)),
+and handles stale worktree registrations during any reattach path.
 
 ```bash
 # Run the default workflow — step-04 handles stale registrations transparently
@@ -29,10 +30,138 @@ The step works in repositories whose remote default branch is `main`, `master`,
 
 ---
 
+## Explicit Worktree Source (`base_branch`, `base_sha`)
+
+A caller can name the commit the worktree starts from with two inputs, declared
+in both `default-workflow.yaml` and `consensus-workflow.yaml` (issue #1957):
+
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="Fix flaky reconnect in the session store" \
+  -c repo_path="$(pwd)" \
+  -c base_branch=dev
+```
+
+| Inputs | Worktree starts at | PR base |
+| --- | --- | --- |
+| `base_branch=dev` | tip of `origin/dev` after a fetch of `+refs/heads/dev:refs/remotes/origin/dev` | `dev` |
+| `base_sha=<full sha>` | that commit | none: the PR steps refuse |
+| both | the SHA, which must be contained in `origin/dev` | `dev` |
+| neither | the legacy base below, with a WARNING | resolved from `origin/HEAD`, as before |
+
+`base_sha` must be a full 40- or 64-character hex SHA; abbreviated SHAs are
+refused. When an explicit input is set, the fallback chain below is never used
+and a symbolic `origin/HEAD` is never read. If `origin/dev` does not exist on
+the remote, the step stops with an ERROR.
+
+A `base_sha` alone pins the exact tree but does not prove which branch the
+commit came from. The run can build and test from it, but the PR steps refuse
+to publish, because there is no verified branch to target. Pass `base_branch`
+as well when the run must open a PR:
+
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="Fix the reconnect regression introduced at the release commit" \
+  -c repo_path="$(pwd)" \
+  -c base_branch=dev \
+  -c base_sha=3f9c2a7e1b0d4c5a6e7f8091a2b3c4d5e6f70812
+```
+
+Resolution and verification live in
+[`workflow_worktree_source.sh`](../../amplifier-bundle/tools/workflow_worktree_source.md),
+which documents every output key, the fetch-failure table and the full list of
+ERROR messages.
+
+### Order of checks
+
+On the explicit path, all of these run before the deconflict helper and before
+any branch or worktree exists. A refusal exits 1 and leaves the worktree and
+branch lists unchanged.
+
+1. Validate the inputs.
+2. Identity check: `origin` exists and the physical `MAIN_REPO_PATH` equals
+   `git rev-parse --show-toplevel`.
+3. Strict fetch, one attempt each with no retry or sleep: a plain
+   `git fetch origin --no-tags` first, so a failure means origin is
+   unreachable, then the explicit refspec
+   `+refs/heads/<b>:refs/remotes/origin/<b>`. A refspec fetch that fails after
+   the plain fetch worked means the branch is not on origin
+   (`refuse-missing-branch`).
+4. If the plain fetch failed, refuse with `refuse-fetch-failed` whatever the
+   inputs. A cached `origin/<b>` or a locally present commit is never used in
+   place of a fresh fetch.
+5. `git rev-parse --verify --quiet <sha>^{commit}` must print exactly
+   `<sha>`; otherwise `git cat-file -e <sha>` picks `refuse-missing-sha` or
+   `refuse-not-commit` (tags, trees and blobs). Then containment in
+   `origin/<b>`, only when both inputs are set.
+
+`KEPT_AHEAD` and `git worktree add` use `${BASE_SHA:-$BASE_REF}`, so the
+#1565 work-preservation check compares against the verified commit, and with
+both inputs the worktree starts at the pinned SHA, not the branch tip. The
+deconflict helper still gets `--base "$BASE_REF"`; that is the same commit
+except when both inputs are set, where it is the fetched `origin/<b>` tip. A
+kept branch with commits past the pinned SHA is then refused by `KEPT_AHEAD`
+rather than renamed, and nothing is reset. `BASE_REF` itself stays
+`origin/<b>` for the JSON and the later PR steps.
+
+### Checks after creation, and cleanup
+
+After `git worktree add`, `verify-worktree` checks that the worktree's
+toplevel is `WORKTREE_PATH`, that it shares the main repository's git common
+dir, and that the origin URL has not changed. It prints no `RULE:` line; a
+failure prints exactly one `ERROR:` line. Then:
+
+| State (below) | Checked as | Rule | On failure |
+| --- | --- | --- | --- |
+| 3 — new branch | `created` | `HEAD` equals the verified SHA | ERROR; removes the worktree and deletes the branch this run created |
+| 2 — branch existed, worktree attached now | `reused` | `HEAD` contains the verified SHA | ERROR; removes only the worktree |
+| 1 — both existed | `reused` | `HEAD` contains the verified SHA | ERROR; touches nothing |
+
+The step passes `--cleanup-created` to `verify-worktree` in states 2 and 3,
+never in state 1. With that flag the tool removes the worktree, and deletes the
+branch only in `created` mode, before it prints its ERROR line. A kept branch
+that already contains the verified SHA is reused. A rerun whose kept branch
+does not contain it is refused, not fast-forwarded:
+
+```text
+ERROR: reused worktree /home/ryan/src/amplihack-rs/worktrees/feat/issue-1957-pin-base HEAD 0b4e… does not contain verified base 5d1e…; delete branch feat/issue-1957-pin-base or rerun with existing_branch (issue #1957).
+```
+
+### Existing-branch path
+
+`existing_branch` and `pr_number` ignore both inputs. If either is set the step
+logs `INFO: base_branch/base_sha ignored on the existing-branch path`, and the
+JSON reports `"source_verified": "not-applicable"` and
+`"source_rule": "existing-branch"`.
+
+### Old bundles
+
+If `workflow_worktree_source.sh` is missing from the tools directory, the step
+fails closed when an input is set:
+
+```text
+ERROR: base_branch/base_sha given but workflow_worktree_source.sh is missing from <tools-dir>; refusing an unverified worktree source (issue #1957).
+```
+
+With no input set it runs a minimal inline legacy fallback, so older bundles
+still set up a worktree.
+
+---
+
 ## Remote Base Branch Resolution
 
-`workflow-worktree` resolves the base ref before creating or reattaching a
-workflow branch. Resolution is fixed and deterministic:
+With neither `base_branch` nor `base_sha` set, `workflow-worktree` resolves
+the base ref as before and logs:
+
+```text
+WARNING: no base_branch/base_sha given; legacy base resolution (<ref>), source not verified
+```
+
+`<ref>` is the ref actually resolved by the chain below. The tool also prints
+exactly one `RULE: legacy-unverified` line. The JSON reports
+`"source_verified": "legacy"` and `"source_rule": "legacy-unverified"`. The
+legacy `base_branch` is never used by `verified-base`, so the later PR steps
+keep their existing base chain and the PR base does not change. Resolution is fixed and deterministic:
 
 1. `origin/HEAD`
 2. `origin/master`
@@ -189,3 +318,5 @@ git worktree add ./worktrees/test-branch test-branch
 - [step-03 Idempotency Guards](recipe-step-03-idempotency.md) — Issue-creation deduplication
 - [Troubleshoot Worktree](../howto/troubleshoot-worktree.md) — General worktree debugging
 - [Worktree Support](../concepts/worktree-support.md) — Feature overview
+- [Worktree Source Resolution](../../amplifier-bundle/tools/workflow_worktree_source.md) — `base_branch` / `base_sha` contract
+- [worktree_setup Context Propagation](worktree-setup-propagation.md) — JSON fields read by later steps

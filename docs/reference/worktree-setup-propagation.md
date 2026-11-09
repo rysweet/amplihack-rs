@@ -9,6 +9,7 @@ Complete reference for how the `worktree_setup` context variable propagates thro
 - [Which recipes declare worktree_setup](#which-recipes-declare-worktree_setup)
 - [Which recipes do NOT declare worktree_setup](#which-recipes-do-not-declare-worktree_setup)
 - [Related context variable: allow_no_op](#related-context-variable-allow_no_op)
+- [Base inputs: base_branch and base_sha](#base-inputs-base_branch-and-base_sha)
 - [How context flows through sub-recipes](#how-context-flows-through-sub-recipes)
 - [Shell variable expansion](#shell-variable-expansion)
 - [Regression test coverage](#regression-test-coverage)
@@ -25,6 +26,17 @@ Complete reference for how the `worktree_setup` context variable propagates thro
 | `worktree_path` | `/tmp/worktrees/feat-auth-1234` | Absolute path to the created worktree |
 | `branch_name` | `feat/add-auth-1234` | Branch name created or reused |
 | `is_new_worktree` | `true` | Whether a new worktree was created vs. reattached |
+| `base_ref` | `origin/dev` | Ref the worktree was resolved from; a full SHA when only `base_sha` was given |
+| `base_branch` | `dev` | Branch the PR targets; empty when only `base_sha` was given |
+| `base_sha` | `5d1e0c9b8a7f6e5d4c3b2a1908f7e6d5c4b3a291` | Commit the worktree started at; empty on the legacy and existing-branch paths |
+| `source_verified` | `verified` | `verified`, `legacy` or `not-applicable` |
+| `source_rule` | `fetched` | Rule that decided the source: `fetched`, `legacy-unverified` or `existing-branch` |
+
+`consensus-issue-worktree.yaml` (`step3-setup-worktree`) emits the same five
+base fields. `source_rule` is in the JSON because the runner drops the stderr of
+a step that passes, so the `RULE:` line is not kept. See
+[Worktree Source Resolution](../../amplifier-bundle/tools/workflow_worktree_source.md)
+for every value (issue #1957).
 
 Downstream steps — particularly the `step-08c-work-verifier` / `step-08c-enforce-verdict` pair in `workflow-tdd` (issue #615 — replaced the legacy six-escape-hatch bash hollow-success guard with an agentic verifier) — read `WORKTREE_SETUP_WORKTREE_PATH` so the verifier agent runs inside the worktree where implementation actually happened. Without this variable, the verifier cannot inspect the right working tree and may fall back to `INSUFFICIENT_EVIDENCE`.
 
@@ -91,6 +103,65 @@ The empty-string default is intentional. Bash `${VAR:?msg}` and `${VAR:+alt}` gu
 | `true` | step-08c-enforce-verdict short-circuits to exit 0 (orchestration / docs-only / audit / meta) |
 
 `allow_no_op` is declared alongside `worktree_setup` in every post-worktree sub-recipe. The smart-classify-route step in `smart-orchestrator` sets it to `true` when the task classification permits no working-tree edits.
+
+---
+
+## Base inputs: base_branch and base_sha
+
+`default-workflow.yaml` and `consensus-workflow.yaml` declare two inputs next
+to `existing_branch`:
+
+```yaml
+  base_branch: ""   # remote branch the task worktree starts from
+  base_sha: ""      # exact full-length commit; wins over base_branch, which must contain it
+```
+
+They reach `workflow-worktree` and `consensus-issue-worktree` by the normal
+context merge. `smart-orchestrator.yaml`, `autodrive-build.yaml` and
+`auto-drive-to-merge.yaml` forward `{{base_branch}}` and `{{base_sha}}` at
+every call site that already forwards `existing_branch`.
+
+Both keys are in `is_essential_context_key` in
+`crates/amplihack-cli/src/commands/recipe/run/execute.rs`, so the #1023
+environment budget never drops them.
+
+Both step bodies copy the inputs on their first two lines, because the step
+later sets its own local `BASE_BRANCH`:
+
+```bash
+REQ_BASE_BRANCH="${BASE_BRANCH:-}"
+REQ_BASE_SHA="${BASE_SHA:-}"
+```
+
+### How later steps read the verified base
+
+`workflow_publish_pr.sh` (`resolve_pr_base_ref`), `workflow_pr_ready.sh` and
+`workflow_final_status.sh` (`resolve_expected_base_branch`) call
+`workflow_worktree_source.sh verified-base`. Both values come from the recipe
+context, or, only when both context keys are absent, both come from
+`WORKTREE_SETUP_SOURCE_VERIFIED` and `WORKTREE_SETUP_BASE_BRANCH`.
+
+| Exit | Meaning | What the PR tool does |
+| --- | --- | --- |
+| 0 | `source_verified` is exactly `verified`, `base_branch` passes the input check again, and `refs/remotes/origin/<b>` resolves. Prints `<b>`. | Uses `<b>` (`origin/<b>` in `workflow_publish_pr.sh`). |
+| 1 | `verified` was recorded but the name or ref is unusable, or the context cannot be read. One `ERROR:` line. | Refuses. |
+| 3 | Nothing was verified: `legacy`, `not-applicable`, any other value, absent, no context, or a SHA-only run. | Runs `requested-inputs`. |
+
+`workflow_worktree_source.sh requested-inputs` reads the top-level
+`base_branch` and `base_sha` and prints nothing. It exits 0 if either is set,
+3 if neither is, and 1 if the context cannot be read. After a `verified-base`
+exit 3, only a `requested-inputs` exit 3 lets the tool use its existing
+`origin/HEAD` chain; any other result refuses. A missing
+`recipe_context_value.sh` counts as "cannot read" (exit 1), never as "not
+given". When `workflow_publish_pr.sh` refuses, it still writes its publish
+result, with state `FAILED_INVALID_INPUT` (`invalid-input`).
+
+On the legacy path `base_branch` is filled in but `source_verified` is
+`legacy`, so `verified-base` exits 3, `requested-inputs` exits 3, and the PR
+base does not change. A run that set `base_branch` or `base_sha` but has no
+verified `worktree_setup` (lost context, or SHA-only) refuses instead of
+targeting the default branch, and a stale value from a parent run cannot change
+the PR base.
 
 ---
 
@@ -187,6 +258,7 @@ python -m pytest amplifier-bundle/tools/test_default_workflow_fixes.py::TestWork
 
 - [Recipe Executor Environment](./recipe-executor-environment.md) — Context augmentation for shell and agent steps
 - [step-04-setup-worktree](./recipe-step-04-worktree-reattach-prune.md) — Worktree creation and reattach semantics
+- [Worktree Source Resolution](../../amplifier-bundle/tools/workflow_worktree_source.md) — `base_branch` / `base_sha` contract and `verified-base`
 - [Git Worktree Support](../concepts/worktree-support.md) — Runtime directory resolution for worktrees
 - [Recipe Execution Flow](../concepts/recipe-execution-flow.md) — How recipes are loaded and executed
 - [Smart-Orchestrator Recovery](../concepts/smart-orchestrator-recovery.md) — Hollow-success detection and the no-op guard

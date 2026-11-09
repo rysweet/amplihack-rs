@@ -196,6 +196,20 @@ amplihack recipe run default-workflow \
 | --- | --- | --- |
 | `task_description` | Yes | Plain-language task to execute through the workflow. |
 | `repo_path` | Yes | Repository root for workspace setup, checks, commits, and PR work. |
+| `base_branch` | No | Remote branch the task worktree starts from, for example `dev`. The PR targets it. |
+| `base_sha` | No | Exact full-length (40 or 64 hex) commit to start from. Wins over `base_branch`, which must contain it. |
+
+Start a task from `dev` instead of the remote default branch:
+
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="Fix flaky reconnect in the session store" \
+  -c repo_path=. \
+  -c base_branch=dev
+```
+
+`consensus-workflow` takes the same two inputs. `existing_branch` and
+`pr_number` ignore them and log an INFO line.
 
 The normal orchestrated interface remains:
 
@@ -287,6 +301,50 @@ Git-verified `origin/HEAD`, then fall back to `origin/master`, then
 a remote-tracking ref under `refs/remotes/origin/`. If no supported remote base
 source exists, fail closed with a clear error; do not bootstrap from local
 `HEAD` or silently skip push/upstream setup.
+
+### Step 4 — Worktree Setup (explicit `base_branch` / `base_sha`)
+
+**Failure**: A stale clone, a narrowed `remote.origin.fetch`, an `origin/HEAD`
+pointing at the wrong branch, or a changed origin URL makes the worktree start
+from the wrong commit.
+**Resilience**: When `base_branch` or `base_sha` is set, step 4 never reads
+`origin/HEAD`. Checks run in this order, all before a branch or worktree
+exists: validate the inputs (branch passes `git check-ref-format --branch`;
+SHA is full-length hex, abbreviations refused), check `origin` and the repo
+path, fetch `+refs/heads/<b>:refs/remotes/origin/<b>` in strict mode (one
+attempt, no retry), then check the commit exists, is a commit, and is contained
+in `origin/<b>` when both are set. After creation, a new worktree's `HEAD` must
+equal the SHA; a reused one must contain it.
+
+| Inputs | Worktree starts at | PR base | Fetch fails |
+| --- | --- | --- | --- |
+| `base_branch=dev` | tip of `origin/dev` | `dev` | Refuse, `refuse-fetch-failed` |
+| `base_sha=<40 hex>` | that commit | none: the PR steps refuse | Refuse, `refuse-fetch-failed` |
+| both | the SHA, which `origin/dev` must contain | `dev` | Refuse, `refuse-fetch-failed` |
+
+Cached refs never stand in for a fresh fetch, even when the commit is present
+locally. A SHA pins the tree but does not prove which branch it came from, so a
+SHA-only run cannot publish a PR; add `base_branch` when it must.
+
+The PR steps (publish, ready, final status) take the base from
+`workflow_worktree_source.sh verified-base`. Exit 0 gives the verified branch;
+exit 1 stops the step; exit 3 means nothing was verified, and then
+`requested-inputs` decides: exit 3 (no inputs given) keeps the old
+`origin/HEAD` chain, anything else refuses. A run that asked for an explicit
+source never falls back to the default branch.
+
+Each refusal prints one ERROR naming the repo path and the requested and actual
+ref and SHA, never the origin URL. Example:
+
+```text
+ERROR: base_sha 5d1e0c9b8a7f6e5d4c3b2a1908f7e6d5c4b3a291 is not contained in origin/dev (tip 0b4e7a1c2d3e4f5061728394a5b6c7d8e9f0a1b2) in /home/ryan/src/amplihack-rs (issue #1957).
+```
+
+With neither input set, step 4 uses the legacy chain above and logs
+`WARNING: no base_branch/base_sha given; legacy base resolution (<ref>), source not verified`;
+the JSON reports `source_verified: "legacy"`. Do not work around a refusal by
+dropping the inputs. Full contract:
+`amplifier-bundle/tools/workflow_worktree_source.md`.
 
 ### Step 4 — Initial Push (network transient)
 

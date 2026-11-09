@@ -330,6 +330,29 @@ consistently for branch creation, base-branch checks, and worktree reattachment
 diagnostics. Repositories with no valid remote base source fail closed instead
 of falling back to local `HEAD`.
 
+A caller that needs a specific start point passes `base_branch` (for example
+`-c base_branch=dev`), `base_sha` (a full commit SHA), or both. Then the
+fallback chain is not used: the step fetches from origin, checks the commit
+exists and, with both, that the branch contains it, and creates the worktree at
+exactly that commit. Any failed check stops the step before a branch or
+worktree exists.
+
+The rules behind this:
+
+- **A failed fetch always refuses** when either input is set. Cached refs never
+  stand in for freshness, because a stale clone can hold the right commit while
+  pointing at the wrong origin.
+- **The strict fetch makes one attempt**, with no retry and no sleep.
+- **The PR targets the verified branch or nothing.** The PR steps take the
+  base only from a `worktree_setup` marked `verified`. A run that asked for an
+  input but has no verified base refuses instead of using the default branch.
+- **A SHA pins the tree, not the branch.** With `base_sha` alone the run can
+  build and test, but cannot publish a PR. Add `base_branch` for that.
+
+Without either input the step uses the chain above and logs a WARNING that the
+source was not verified; the PR base is resolved as before.
+See [Worktree Source Resolution](../../amplifier-bundle/tools/workflow_worktree_source.md).
+
 ### Step 5: Research and Design
 
 **⚠️ INVESTIGATION-FIRST PATTERN**: If the existing codebase or system is unfamiliar/complex, route through `dev-orchestrator`/`smart-orchestrator` or use the `investigation-workflow` skill/recipe first, then return to development. This is especially valuable when:
