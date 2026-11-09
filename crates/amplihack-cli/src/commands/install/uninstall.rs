@@ -243,6 +243,9 @@ fn remove_unused_releases(amplihack_dir: &Path) -> Result<bool> {
     if report.unknown {
         println!("  {}", release_layout::unknown_scan_notice());
     }
+    if report.unsupported {
+        println!("  {}", release_layout::unsupported_scan_notice());
+    }
     if let Ok(home) = super::paths::home_dir()
         && let Some(kept) = release_layout::format_kept_in_use(&home, &report.kept_in_use)
     {

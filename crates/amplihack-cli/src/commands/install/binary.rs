@@ -179,6 +179,7 @@ pub(super) fn deploy_binaries(
     let mut txn = new_release_txn()?;
     let deployed = deploy_binaries_into(&mut txn, mode, stamp)?;
     commit_release(txn)?;
+    print_path_conflict_advisory();
     Ok(deployed)
 }
 
@@ -219,7 +220,8 @@ pub(super) fn stage_binary(txn: &mut ReleaseTxn, src: &Path, dst: &Path) -> Resu
 
 /// Copy the Rust binaries into `txn`'s `bin/` with 0o755 perms and plan the
 /// `~/.local/bin` links to them (issue #1954).
-/// Emits a PATH advisory if `~/.local/bin` is not in `$PATH`.
+/// Emits a notice if `~/.local/bin` is not in `$PATH`. The PATH conflict
+/// advisory is [`print_path_conflict_advisory`], run after the commit.
 /// Returns the link paths for the manifest, the hooks binary always first
 /// (even when an implicit re-stage kept the installed one), and the installed
 /// binaries an implicit re-stage kept. A kept slot plans no link.
@@ -228,7 +230,6 @@ pub(super) fn deploy_binaries_into(
     mode: InstallMode,
     stamp: Option<&str>,
 ) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
-    let home = home_dir()?;
     let local_bin = super::paths::preferred_user_bin_dir()?;
     fs::create_dir_all(&local_bin)
         .with_context(|| format!("failed to create {}", local_bin.display()))?;
@@ -338,6 +339,20 @@ pub(super) fn deploy_binaries_into(
         tracing::warn!("failed to auto-persist PATH: {e}");
     }
 
+    Ok((deployed, kept))
+}
+
+/// Prints the PATH conflict advisory for the installed `amplihack`.
+///
+/// Call only after [`commit_release`]: the analysis looks at
+/// `~/.local/bin/amplihack`, which is a link that names nothing new until the
+/// release commits. Run before it, on a fresh home the analysis finds no
+/// user-level binary for another `amplihack` on PATH to shadow, and the
+/// advisory never prints.
+pub(super) fn print_path_conflict_advisory() {
+    let Ok(home) = home_dir() else {
+        return;
+    };
     if let Ok(current_exe) = std::env::current_exe()
         && let Ok(report) =
             crate::path_conflicts::analyze_current_process_path_conflicts(home, current_exe)
@@ -345,8 +360,6 @@ pub(super) fn deploy_binaries_into(
     {
         println!("{warning}");
     }
-
-    Ok((deployed, kept))
 }
 
 /// Resolve the on-disk path to copy the running amplihack binary FROM.

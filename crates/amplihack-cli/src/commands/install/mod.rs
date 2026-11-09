@@ -720,8 +720,14 @@ fn local_install_scoped(
             .unwrap_or_default(),
     };
     // Issue #1954: this run's binaries and bundle go into one new release
-    // under ~/.amplihack/releases; the published paths switch to it only
-    // once everything is staged and checked.
+    // under ~/.amplihack/releases. Everything that can fail on the source is
+    // staged and checked inside that release first; nothing a running process
+    // reads changes until `commit_release` switches the links. The mapped
+    // `.claude` trees are not part of a release: they are exchanged after the
+    // commit, so a failure while staging the release leaves every published
+    // path on the old version. If an exchange itself fails, the binaries and
+    // bundle are already on the new release and the trees exchanged so far
+    // stay new; running `amplihack install` again completes the rest.
     let mut release = binary::new_release_txn()?;
     let (deployed_binaries, kept_binaries) =
         deploy_binaries_into(&mut release, mode, stamp.as_deref())?;
@@ -736,14 +742,7 @@ fn local_install_scoped(
     ensure_dirs(&claude_dir)?;
     let pre_dirs = all_rel_dirs(&claude_dir)?;
 
-    println!();
-    println!("📁 Copying essential directories:");
     let (source_root, layout) = find_source_root(repo_root)?;
-    println!(
-        "   Source layout: {} (from {})",
-        layout.marker_str(),
-        source_root.display()
-    );
     if layout == SourceLayout::Bundle {
         validate_framework_bundle_compatibility(&source_root).with_context(|| {
             format!(
@@ -752,20 +751,6 @@ fn local_install_scoped(
             )
         })?;
     }
-    let copied_dirs = copytree_manifest(&source_root, layout, &claude_dir)?;
-    if copied_dirs.is_empty() {
-        bail!(
-            "no essential directories were copied from {} (layout: {}). \
-             The source repository appears to be missing all framework assets. \
-             Verify the checkout is complete.",
-            source_root.display(),
-            layout.marker_str()
-        );
-    }
-
-    // Write the .layout marker atomically so subsequent presence checks
-    // (missing_framework_paths) know which mapping to consult.
-    write_layout_marker(&claude_dir, layout)?;
 
     println!();
     println!("📦 Staging amplifier-bundle (recipes, modules, tools):");
@@ -781,6 +766,32 @@ fn local_install_scoped(
             switch.target.display()
         );
     }
+    // After the commit: the analysis reads ~/.local/bin/amplihack, which
+    // names the new binary only once the links have switched.
+    binary::print_path_conflict_advisory();
+
+    println!();
+    println!("📁 Copying essential directories:");
+    println!(
+        "   Source layout: {} (from {})",
+        layout.marker_str(),
+        source_root.display()
+    );
+    let copied_dirs = copytree_manifest(&source_root, layout, &claude_dir)?;
+    if copied_dirs.is_empty() {
+        bail!(
+            "no essential directories were copied from {} (layout: {}). \
+             The source repository appears to be missing all framework assets. \
+             Verify the checkout is complete.",
+            source_root.display(),
+            layout.marker_str()
+        );
+    }
+
+    // Write the .layout marker atomically so subsequent presence checks
+    // (missing_framework_paths) know which mapping to consult.
+    write_layout_marker(&claude_dir, layout)?;
+
     cleanup_unused_releases(&claude_dir, &switched);
 
     let preferred_amplihack =

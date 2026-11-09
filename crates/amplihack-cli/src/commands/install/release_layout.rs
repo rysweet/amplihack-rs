@@ -1173,7 +1173,20 @@ pub fn in_use_paths(candidates: &[PathBuf]) -> InUse {
 }
 
 /// Scans `pids` only. Processes of other users are skipped; an exited pid is
-/// not using anything; any other error makes the result [`InUse::Unknown`].
+/// not using anything.
+///
+/// A same-user process whose `/proc` entries cannot be read (it is
+/// non-dumpable) cannot be inspected, but its `status` and `stat` can:
+///
+/// - One that holds capabilities or mixed user or group ids, such as the
+///   systemd user manager and its `(sd-pam)` helper, runs a privileged
+///   executable, which is never a release file, so it uses no release.
+/// - Any other, such as `ssh-agent`, may use only a release created after it
+///   started. A process started earlier did not inherit a path into it, and
+///   it has not exec'd a release binary since, because that exec would have
+///   made it dumpable again.
+///
+/// When neither can be told, the result is [`InUse::Unknown`].
 pub fn scan_pids(candidates: &[PathBuf], pids: &[u32]) -> InUse {
     #[cfg(target_os = "linux")]
     {
@@ -1189,24 +1202,24 @@ pub fn scan_pids(candidates: &[PathBuf], pids: &[u32]) -> InUse {
                 (c.clone(), forms)
             })
             .collect();
-        let mut used: BTreeMap<PathBuf, Vec<u32>> = BTreeMap::new();
-        for &pid in pids {
-            match proc_scan::scan_pid(pid, &forms) {
-                Ok(hits) => {
-                    for index in hits {
-                        used.entry(forms[index].0.clone()).or_default().push(pid);
-                    }
-                }
-                Err(proc_scan::Unreadable { entry, error }) => {
-                    tracing::info!(
-                        "release cleanup: pid {pid} /proc/{pid}/{entry} is unreadable ({error}); \
-                         keeping every release"
-                    );
-                    return InUse::Unknown;
-                }
-            }
-        }
-        InUse::Known(used)
+        // When each candidate came into being: its birth time, else its
+        // modification time, which is never earlier than its birth.
+        let created: Vec<Option<std::time::SystemTime>> = candidates
+            .iter()
+            .map(|c| {
+                fs::symlink_metadata(c)
+                    .ok()
+                    .and_then(|m| m.created().or_else(|_| m.modified()).ok())
+            })
+            .collect();
+        scan_with(candidates, &created, pids, |pid| {
+            proc_scan::scan_pid(pid, &forms).map_err(|proc_scan::Unreadable { entry, error }| {
+                tracing::debug!(
+                    "release cleanup: pid {pid} /proc/{pid}/{entry} is unreadable ({error})"
+                );
+                proc_scan::classify_opaque(pid)
+            })
+        })
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -1215,8 +1228,75 @@ pub fn scan_pids(candidates: &[PathBuf], pids: &[u32]) -> InUse {
     }
 }
 
+/// The decision part of [`scan_pids`], with the process lookup injected so
+/// tests can drive it with fixed start and creation times.
+///
+/// `created[i]` is when `candidates[i]` came into being. `look(pid)` returns
+/// the indexes of the candidates `pid` references, or, for a process that
+/// cannot be inspected, what its `status` and `stat` tell.
 #[cfg(target_os = "linux")]
-mod proc_scan {
+pub(crate) fn scan_with(
+    candidates: &[PathBuf],
+    created: &[Option<std::time::SystemTime>],
+    pids: &[u32],
+    mut look: impl FnMut(u32) -> Result<Vec<usize>, proc_scan::Opaque>,
+) -> InUse {
+    let mut used: BTreeMap<PathBuf, Vec<u32>> = BTreeMap::new();
+    for &pid in pids {
+        match look(pid) {
+            Ok(hits) => {
+                for index in hits {
+                    used.entry(candidates[index].clone()).or_default().push(pid);
+                }
+            }
+            Err(proc_scan::Opaque::Gone) => {}
+            Err(proc_scan::Opaque::Privileged) => {
+                tracing::debug!(
+                    "release cleanup: pid {pid} runs with privileges, so it runs no release"
+                );
+            }
+            Err(proc_scan::Opaque::StartedAt(started)) => {
+                tracing::debug!(
+                    "release cleanup: pid {pid} cannot be inspected; keeping releases created \
+                     after it started"
+                );
+                for (index, created) in created.iter().enumerate() {
+                    if may_postdate(*created, started) {
+                        used.entry(candidates[index].clone()).or_default().push(pid);
+                    }
+                }
+            }
+            Err(proc_scan::Opaque::Unknown) => {
+                tracing::info!(
+                    "release cleanup: pid {pid} cannot be inspected and its start time is \
+                     unknown; keeping every release"
+                );
+                return InUse::Unknown;
+            }
+        }
+    }
+    InUse::Known(used)
+}
+
+/// Clock slack for [`may_postdate`]: the kernel's boot time is whole seconds.
+#[cfg(target_os = "linux")]
+const START_TIME_SLACK: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Whether a candidate created at `created` might have been created after a
+/// process started at `started`. An unknown creation time might.
+#[cfg(target_os = "linux")]
+pub(crate) fn may_postdate(
+    created: Option<std::time::SystemTime>,
+    started: std::time::SystemTime,
+) -> bool {
+    match created {
+        Some(created) => created + START_TIME_SLACK >= started,
+        None => true,
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) mod proc_scan {
     use std::ffi::OsStr;
     use std::fs;
     use std::io;
@@ -1330,6 +1410,100 @@ mod proc_scan {
             .collect())
     }
 
+    /// What `/proc/<pid>/status` and `stat` tell about a process whose other
+    /// entries could not be read.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Opaque {
+        /// It exited meanwhile.
+        Gone,
+        /// It holds capabilities or mixed ids: it runs a privileged executable.
+        Privileged,
+        /// It started at this time.
+        StartedAt(std::time::SystemTime),
+        /// Neither could be read.
+        Unknown,
+    }
+
+    pub(crate) fn classify_opaque(pid: u32) -> Opaque {
+        let dir = PathBuf::from(format!("/proc/{pid}"));
+        let status = match fs::read_to_string(dir.join("status")) {
+            Ok(status) => status,
+            Err(e) if gone(&e) => return Opaque::Gone,
+            Err(_) => return Opaque::Unknown,
+        };
+        if is_privileged(&status) {
+            return Opaque::Privileged;
+        }
+        let stat = match fs::read_to_string(dir.join("stat")) {
+            Ok(stat) => stat,
+            Err(e) if gone(&e) => return Opaque::Gone,
+            Err(_) => return Opaque::Unknown,
+        };
+        let boot = fs::read_to_string("/proc/stat")
+            .ok()
+            .and_then(|s| boot_time_secs(&s));
+        // SAFETY: sysconf has no preconditions; it returns -1 on error, which
+        // the check below rejects.
+        let ticks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        match (start_ticks(&stat), boot) {
+            (Some(ticks), Some(boot)) if ticks_per_sec > 0 => {
+                let since_boot =
+                    std::time::Duration::from_secs_f64(ticks as f64 / ticks_per_sec as f64);
+                Opaque::StartedAt(
+                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(boot) + since_boot,
+                )
+            }
+            _ => Opaque::Unknown,
+        }
+    }
+
+    /// Whether a `/proc/<pid>/status` shows any capability set non-empty, or
+    /// real, effective, saved and filesystem ids that differ.
+    pub(crate) fn is_privileged(status: &str) -> bool {
+        let mut seen = 0;
+        for line in status.lines() {
+            let Some((key, value)) = line.split_once(':') else {
+                continue;
+            };
+            match key {
+                "CapInh" | "CapPrm" | "CapEff" | "CapAmb" => {
+                    seen += 1;
+                    if value.trim().bytes().any(|b| b != b'0') {
+                        return true;
+                    }
+                }
+                "Uid" | "Gid" => {
+                    seen += 1;
+                    let ids: Vec<&str> = value.split_whitespace().collect();
+                    if ids.is_empty() || ids.iter().any(|id| *id != ids[0]) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        // A status missing any of these lines is not trusted as unprivileged.
+        seen < 6
+    }
+
+    /// Field 22 of `/proc/<pid>/stat`: start time in clock ticks after boot.
+    /// The command name (field 2) may hold spaces and parentheses, so fields
+    /// are counted from its last `)`.
+    pub(crate) fn start_ticks(stat: &str) -> Option<u64> {
+        let rest = &stat[stat.rfind(')')? + 1..];
+        rest.split_whitespace().nth(19)?.parse().ok()
+    }
+
+    /// The `btime` line of `/proc/stat`: boot time in seconds since the epoch.
+    pub(crate) fn boot_time_secs(proc_stat: &str) -> Option<u64> {
+        proc_stat
+            .lines()
+            .find_map(|line| line.strip_prefix("btime "))?
+            .trim()
+            .parse()
+            .ok()
+    }
+
     /// The process exited (or is a zombie with no files) while being read.
     fn gone(e: &io::Error) -> bool {
         e.kind() == io::ErrorKind::NotFound || e.raw_os_error() == Some(libc::ESRCH)
@@ -1381,6 +1555,8 @@ pub struct CleanupReport {
     pub kept_in_use: Vec<(PathBuf, Vec<u32>)>,
     /// The process scan was incomplete, so nothing was removed.
     pub unknown: bool,
+    /// This platform has no process scan, so nothing was removed.
+    pub unsupported: bool,
     /// Candidates whose removal failed, with the reason.
     pub failed: Vec<(PathBuf, String)>,
 }
@@ -1451,7 +1627,10 @@ pub fn cleanup_unused_with(
             report.unknown = true;
             return Ok(report);
         }
-        InUse::Unsupported => return Ok(report),
+        InUse::Unsupported => {
+            report.unsupported = true;
+            return Ok(report);
+        }
     };
     for candidate in candidates {
         if let Some(pids) = used.get(&candidate) {
@@ -1492,7 +1671,7 @@ fn is_removable_candidate(path: &Path, dir_only: bool) -> bool {
 /// Removes a tree this module owns: made writable first (#1955 modes leave
 /// directories read-only), then `std::fs::remove_dir_all`, which does not
 /// follow symlinks.
-fn remove_tree(path: &Path) -> Result<()> {
+pub(crate) fn remove_tree(path: &Path) -> Result<()> {
     let meta = match fs::symlink_metadata(path) {
         Ok(meta) => meta,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -1593,6 +1772,13 @@ pub fn unknown_scan_notice() -> &'static str {
      so no release was removed (~/.amplihack/releases)"
 }
 
+/// One line for the install output on a platform with no process scan, where
+/// every old release is kept.
+pub fn unsupported_scan_notice() -> &'static str {
+    "ℹ Old amplihack releases kept: this platform cannot tell which releases running \
+     processes use, so no release was removed (~/.amplihack/releases)"
+}
+
 /// Prints what a cleanup did. Removal failures are warnings: the install
 /// itself succeeded.
 pub fn report_cleanup(report: &CleanupReport) {
@@ -1604,6 +1790,9 @@ pub fn report_cleanup(report: &CleanupReport) {
     }
     if report.unknown {
         println!("   {}", unknown_scan_notice());
+    }
+    if report.unsupported {
+        println!("   {}", unsupported_scan_notice());
     }
     if let Some(warning) = kept_in_use_warning(report.kept_in_use.len()) {
         println!("   {warning}");

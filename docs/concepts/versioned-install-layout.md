@@ -163,6 +163,13 @@ with `renameat2(RENAME_EXCHANGE)`. See
 If the install fails before step 4, no link changes. The unpublished release
 directory is removed, and the previous release stays in use.
 
+The [mapped directories under `~/.amplihack/.claude`](#mapped-directories-under-amplihackclaude)
+are not part of a release. They are exchanged after step 4, so a failure while
+the release is staged or checked leaves them on the old version together with
+the links. If exchanging one of them fails, the links and bundle are already on
+the new release and the trees exchanged before it stay new; there is no
+rollback, and running `amplihack install` again exchanges the rest.
+
 ### A failure partway through switching
 
 Switching returns a report of which links switched. It does not roll back. If
@@ -225,25 +232,37 @@ your uid, these entries in `/proc/<pid>/`:
 The check is read-only. It never uses `ptrace`, never sends a signal and
 never logs or stores an environment value.
 
-If any entry of a same-uid process cannot be read for a reason other than
-"process exited", the result is unknown and every candidate is kept.
-Processes owned by other uids are skipped. On non-Linux hosts cleanup is
-skipped. When the result is unknown, install prints:
+Processes owned by other uids are skipped. A process that makes itself
+non-dumpable has `/proc` entries its own user cannot read. For such a
+process the installer reads only `/proc/<pid>/status` and `/proc/<pid>/stat`,
+which stay readable:
+
+- If it holds any capability (`CapInh`, `CapPrm`, `CapEff` or `CapAmb` is not
+  zero), or its real, effective, saved and filesystem ids differ, it runs a
+  privileged executable, which is never a release file. It is taken to use
+  no release. The systemd user manager (`systemd --user`) and its `(sd-pam)`
+  helper are such processes.
+- Otherwise, for example `ssh-agent` or `gpg-agent`, it is taken to use every
+  candidate created after it started (with 2 seconds of slack for the
+  kernel's whole-second boot time). A process that started before a release
+  existed did not inherit a path into it, and it has not run a release binary
+  since, because that `exec` would have made it dumpable again. Older
+  candidates can be removed.
+
+If neither can be told (the start time or a candidate's creation time cannot
+be read), the result is unknown and every candidate is kept. Install then
+prints:
 
 ```
 ℹ Old amplihack releases kept: a running process of this user could not be inspected, so no release was removed (~/.amplihack/releases)
 ```
 
-Processes that make themselves non-dumpable have `/proc` entries their own
-user cannot read. The systemd user manager (`systemd --user` and its
-`(sd-pam)` helper) is one of them, and it runs for as long as the user has a
-login session, so on most systemd hosts automatic cleanup does not run at all.
-`ssh-agent`, `gpg-agent` and `gnome-keyring-daemon` have the same effect.
-While any such process runs, no release is removed. This is deliberate: deleting a tree a process
-might use is the failure this layout exists to prevent. To reclaim the space,
-remove releases by hand once no run uses them. Stopping the process and
-running `amplihack install` again also works, but not for the systemd user
-manager (see [Inspecting an install](#inspecting-an-install)).
+On non-Linux hosts there is no process scan, so every old release is kept,
+and install and `uninstall` print:
+
+```
+ℹ Old amplihack releases kept: this platform cannot tell which releases running processes use, so no release was removed (~/.amplihack/releases)
+```
 
 Anything kept is checked again on the next install. When more than 5 releases
 are kept because they are in use, install prints this warning:
@@ -265,8 +284,10 @@ alive.
 
 Install also copies mapped framework directories (skills, agents, context,
 recipes, tools and so on) into `~/.amplihack/.claude/`. These stay outside the
-release because `~/.claude` publication depends on their paths. They follow
-the same rule:
+release because `~/.claude` publication depends on their paths. They are
+exchanged after the links switch to the new release (see
+[How a switch works](#how-a-switch-works)), one tree at a time, and follow the
+same rule:
 
 - The new tree is built at a staging name, then swapped with the live tree
   using `renameat2(RENAME_EXCHANGE)`, so the path always exists.
@@ -294,8 +315,13 @@ way.
 
 The new commands are already in place at that point, so a failed move only
 prints a warning. A tree that cannot be moved (for example `EXDEV`, because
-`~/.claude` is on another filesystem than `~/.amplihack`) is then removed,
-because leaving it in the scratch directory would block the next install.
+`~/.claude` is on another filesystem than `~/.amplihack`) is removed only when
+the process scan completes and shows that no process uses it, the same rule
+release cleanup applies. Otherwise it is renamed to
+`<name>.unretired-<n>` in the scratch directory, so it does not block the next
+install, and each later install checks it again the same way. A leftover
+`.staging` directory from an install that stopped after the exchange is
+handled the same way, because it holds the command set that was live before.
 
 If `RENAME_EXCHANGE` is not supported (`EINVAL` or `ENOSYS`), install falls
 back to two renames and logs that the path was missing for a few
@@ -567,14 +593,9 @@ These checks accept a link into a release and still reject anything else:
 
 ## Known limits
 
-- Cleanup never runs while a process of your user has `/proc` entries you
-  cannot read (`systemd --user`, `(sd-pam)`, `ssh-agent`, `gpg-agent`,
-  `gnome-keyring-daemon`). The systemd user manager runs for every login
-  session, so on most systemd hosts old releases are never removed
-  automatically. On such a
-  host every install, `--force-refresh` and self-heal adds a release of about
-  640 MB, most of it `amplihack-asset-resolver`. Remove old releases by hand
-  as described in [Inspecting an install](#inspecting-an-install).
+- A non-dumpable process of your user without privileges, such as
+  `ssh-agent`, keeps every release created after it started until it exits.
+  Each such release is about 640 MB, most of it `amplihack-asset-resolver`.
 - Only the merge guard is pinned to one release per run. A recipe step that
   reads `$AMPLIHACK_HOME/amplifier-bundle/<file>` by path after a switch reads
   the new release's file. That file is complete, but may differ from what an
@@ -582,7 +603,7 @@ These checks accept a link into a release and still reject anything else:
 - Mapped directories under `~/.amplihack/.claude/` are swapped, not
   versioned. A run reading them by path after a swap sees the new tree.
 - On non-Linux hosts, cleanup is skipped and old releases accumulate until
-  `amplihack uninstall` or manual removal.
+  removed by hand. Install and `uninstall` print a notice when this happens.
 
 ## Inspecting an install
 
@@ -607,8 +628,8 @@ done
 ```
 
 Do not delete release directories by hand while runs are alive. Running
-`amplihack install` again removes those that are no longer used, unless a
-non-dumpable process of your user is running (see
+`amplihack install` again removes those that are no longer used, except those
+created after an unprivileged non-dumpable process of your user started (see
 [Cleanup of old releases](#cleanup-of-old-releases)). To list processes whose
 `/proc` entries cannot be read:
 
@@ -632,7 +653,7 @@ above for that release prints nothing.
 | `commands/install/tests/issue_1954_install_lock.rs` | Lock re-entrancy on one thread, a second thread or process waiting (ordering checked through a channel, not a timer), no lock passed to a child, a symlinked lock path refused, no truncation, mode 0600 and the exact wait message. |
 | `update/tests/build_install_command.rs` (`exact_handoff_contract_matches_v1_2_107`) | The update hand-off has argv exactly `["install", "--force-refresh"]` and `AMPLIHACK_NO_UPDATE_CHECK=1`, `AMPLIHACK_NONINTERACTIVE=1` and `AMPLIHACK_POST_UPDATE_INSTALL=1` set, as in 1.2.107. Other variables (`AMPLIHACK_REPAIR_ORIGINAL_PATH`, `PATH`) are not part of the check. |
 | `commands/recipe/run/tests_merge_guard_pin.rs` | Pinning rejects a link outside `releases/`, a group-writable release or bundle directory, and never reads `AMPLIHACK_BUNDLE_DIR`. |
-| `commands/install/command_staging/tests.rs` | The previous slash-command set is retired under `releases/.retired/`, not deleted. |
+| `commands/install/command_staging/tests.rs` | The previous slash-command set is retired under `releases/.retired/`, not deleted. When it cannot be retired, it is removed only if the scan shows no process uses it, and otherwise kept as `.unretired-<n>` and checked again by the next install; a leftover `.staging` tree is never deleted unchecked. |
 | `commands/install/tests/deploy_binary_tests.rs` (`stage_binary`) | The #302, #524 and #885 rules on the production path: a deleted source with an installed binary is left alone, a missing source and destination is an error, and re-staging the installed binary copies it without touching the previous release. |
 
 These tests wait on events only: a FIFO or pipe read, `Child::wait`, a

@@ -837,8 +837,168 @@ fn cleanup_keeps_everything_when_the_scan_is_unknown_or_unsupported() {
         let report = cleanup_unused_with(&fx.amp, &[], move |_| scan).unwrap();
         assert!(r0.exists());
         assert!(report.removed.is_empty());
-        if unknown {
-            assert!(report.unknown);
+        assert_eq!(report.unknown, unknown);
+        assert_eq!(
+            report.unsupported, !unknown,
+            "the platform case is reported too"
+        );
+    }
+}
+
+#[test]
+fn unsupported_scan_has_its_own_notice() {
+    let notice = release_layout::unsupported_scan_notice();
+    assert!(notice.contains("no release was removed"), "{notice}");
+    assert_ne!(notice, release_layout::unknown_scan_notice());
+}
+
+#[cfg(target_os = "linux")]
+mod opaque_process {
+    use super::release_layout::{may_postdate, proc_scan, scan_with};
+    use super::{Fixture, cleanup_unused_with};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    const PLAIN: &str = "Name:\tssh-agent\nUid:\t1000\t1000\t1000\t1000\n\
+        Gid:\t1000\t1000\t1000\t1000\nCapInh:\t0000000000000000\n\
+        CapPrm:\t0000000000000000\nCapEff:\t0000000000000000\n\
+        CapBnd:\t000001ffffffffff\nCapAmb:\t0000000000000000\n";
+
+    #[test]
+    fn a_process_with_no_capabilities_and_one_id_is_not_privileged() {
+        assert!(!proc_scan::is_privileged(PLAIN));
+    }
+
+    #[test]
+    fn the_systemd_user_manager_and_sd_pam_are_privileged() {
+        // systemd --user: CAP_WAKE_ALARM effective. (sd-pam): inheritable only.
+        let manager = PLAIN.replace("CapEff:\t0000000000000000", "CapEff:\t0000000800000000");
+        let sd_pam = PLAIN.replace("CapInh:\t0000000000000000", "CapInh:\t0000000800000000");
+        assert!(proc_scan::is_privileged(&manager));
+        assert!(proc_scan::is_privileged(&sd_pam));
+    }
+
+    #[test]
+    fn mixed_ids_or_missing_lines_count_as_privileged() {
+        let setuid = PLAIN.replace("Uid:\t1000\t1000\t1000\t1000", "Uid:\t1000\t0\t0\t0");
+        assert!(proc_scan::is_privileged(&setuid));
+        let truncated: String = PLAIN.lines().take(3).map(|l| format!("{l}\n")).collect();
+        assert!(proc_scan::is_privileged(&truncated));
+    }
+
+    #[test]
+    fn start_ticks_are_counted_from_the_last_parenthesis() {
+        let stat = "3384 ((sd-pam) x) S 3363 3363 3363 0 -1 4194624 41 0 0 0 0 0 0 0 20 0 1 0 1558 \
+                    1 2 3";
+        assert_eq!(proc_scan::start_ticks(stat), Some(1558));
+        assert_eq!(proc_scan::start_ticks("garbage"), None);
+    }
+
+    #[test]
+    fn boot_time_is_read_from_the_btime_line() {
+        assert_eq!(
+            proc_scan::boot_time_secs("cpu 1 2 3\nbtime 1762588000\nprocesses 9\n"),
+            Some(1_762_588_000)
+        );
+        assert_eq!(proc_scan::boot_time_secs("cpu 1 2 3\n"), None);
+    }
+
+    #[test]
+    fn only_a_release_created_before_the_process_started_is_free() {
+        let started = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        assert!(!may_postdate(
+            Some(started - Duration::from_secs(60)),
+            started
+        ));
+        assert!(may_postdate(
+            Some(started + Duration::from_secs(60)),
+            started
+        ));
+        assert!(may_postdate(Some(started), started), "a tie is kept");
+        assert!(may_postdate(None, started), "an unknown time is kept");
+    }
+
+    #[test]
+    fn an_opaque_process_frees_only_releases_older_than_itself() {
+        // An uninspectable process started between the two releases: the
+        // older release is removed, the newer one is kept for that pid.
+        let fx = Fixture::new();
+        let old = fx.release("0.9.40");
+        let new = fx.release("0.9.41");
+        let started = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let report = cleanup_unused_with(&fx.amp, &[], |candidates| {
+            let created: Vec<_> = candidates
+                .iter()
+                .map(|c| {
+                    Some(if *c == old {
+                        started - Duration::from_secs(3600)
+                    } else {
+                        started + Duration::from_secs(3600)
+                    })
+                })
+                .collect();
+            scan_with(candidates, &created, &[777], |_| {
+                Err(proc_scan::Opaque::StartedAt(started))
+            })
+        })
+        .unwrap();
+        assert!(!old.exists(), "older than the process: removed");
+        assert!(new.exists(), "newer than the process: kept");
+        assert_eq!(report.removed, vec![old]);
+        assert_eq!(report.kept_in_use, vec![(new, vec![777])]);
+        assert!(!report.unknown);
+    }
+
+    #[test]
+    fn a_privileged_opaque_process_keeps_nothing_and_an_unknown_one_keeps_all() {
+        let fx = Fixture::new();
+        let r0 = fx.release("0.9.40");
+        let report = cleanup_unused_with(&fx.amp, &[], |candidates| {
+            scan_with(candidates, &vec![None; candidates.len()], &[1, 2], |_| {
+                Err(proc_scan::Opaque::Privileged)
+            })
+        })
+        .unwrap();
+        assert!(!r0.exists());
+        assert!(report.kept_in_use.is_empty());
+
+        let r1 = fx.release("0.9.41");
+        let report = cleanup_unused_with(&fx.amp, &[], |candidates| {
+            scan_with(candidates, &vec![None; candidates.len()], &[3], |_| {
+                Err(proc_scan::Opaque::Unknown)
+            })
+        })
+        .unwrap();
+        assert!(r1.exists());
+        assert!(report.unknown);
+    }
+
+    #[test]
+    fn this_hosts_opaque_processes_never_force_an_unknown_scan() {
+        // Every same-user process whose fd table is unreadable must be
+        // classified from status and stat, so cleanup is not blocked.
+        let me = std::fs::metadata("/proc/self").map(|m| {
+            use std::os::unix::fs::MetadataExt;
+            m.uid()
+        });
+        let Ok(me) = me else { return };
+        for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+            let Some(pid) = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            use std::os::unix::fs::MetadataExt;
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.uid() != me || std::fs::read_dir(entry.path().join("fd")).is_ok() {
+                continue;
+            }
+            assert_ne!(
+                proc_scan::classify_opaque(pid),
+                proc_scan::Opaque::Unknown,
+                "pid {pid}"
+            );
         }
     }
 }

@@ -1782,3 +1782,102 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
     unsafe { std::env::remove_var("AMPLIHACK_HOME") };
     saved
 }
+
+/// Issue #1954 B2: the mapped `.claude` trees are exchanged only after the
+/// release commits, so a bundle that fails its staging check leaves them,
+/// and the published bundle link, exactly as the previous install left them.
+#[test]
+fn failed_bundle_staging_leaves_claude_trees_on_the_old_version() {
+    use crate::commands::install::directories::staging_hook::with_staging_hook;
+
+    fn files(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                let kind = entry.file_type().unwrap();
+                if kind.is_dir() {
+                    stack.push(path);
+                } else if kind.is_file() {
+                    out.push((
+                        path.strip_prefix(root).unwrap().to_path_buf(),
+                        fs::read(&path).unwrap(),
+                    ));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    let bin_dir = temp.path().join("stub_bin");
+    let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
+    let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+    let prev_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin_dir.display(),
+                prev_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ),
+        );
+    }
+
+    create_source_repo(temp.path());
+    local_install(temp.path(), None).unwrap();
+    let claude = temp.path().join(".amplihack/.claude");
+    let link = temp.path().join(".amplihack/amplifier-bundle");
+    let before = files(&claude);
+    let link_before = fs::read_link(&link).unwrap();
+
+    // The next source ships changed agents and skills; its bundle fails the
+    // staging comparison because the staged copy gains a file.
+    for dir in ["agents", "skills"] {
+        fs::write(
+            temp.path()
+                .join("amplifier-bundle")
+                .join(dir)
+                .join("marker.txt"),
+            "changed\n",
+        )
+        .unwrap();
+    }
+    let result = with_staging_hook(
+        |staging| fs::write(staging.join("injected.txt"), "x\n").unwrap(),
+        || local_install(temp.path(), None),
+    );
+
+    let after = files(&claude);
+    let link_after = fs::read_link(&link).unwrap();
+
+    if let Some(v) = prev_hooks {
+        unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
+    } else {
+        unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") };
+    }
+    if let Some(v) = prev_path {
+        unsafe { std::env::set_var("PATH", v) };
+    }
+    crate::test_support::restore_home(previous);
+
+    assert!(result.is_err(), "the staging check must fail the install");
+    assert_eq!(link_after, link_before, "the bundle link did not switch");
+    assert!(
+        before == after,
+        "the .claude trees changed although the release did not commit"
+    );
+}
