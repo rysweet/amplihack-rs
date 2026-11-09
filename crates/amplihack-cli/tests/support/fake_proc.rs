@@ -70,12 +70,20 @@ impl Default for FakeProc {
 
 impl FakeProc {
     pub fn new() -> Self {
+        Self::new_in(std::env::temp_dir())
+    }
+
+    /// A tree inside `parent`, for a test that gives the child a `TMPDIR`
+    /// of its own: the seam honours only a tree inside the child's temp dir,
+    /// so a tree under this process's temp dir would be refused and the
+    /// child would read the host `/proc`.
+    pub fn new_in(parent: impl AsRef<Path>) -> Self {
         let dir = tempfile::Builder::new()
             .prefix("amplihack-fake-proc-")
             // Made 0700 at creation: the default mode follows the umask, and
             // a group-writable tree could be changed after the seam checks it.
             .permissions(std::fs::Permissions::from_mode(0o700))
-            .tempdir()
+            .tempdir_in(parent)
             .expect("create the fake proc root");
         private_dir(&dir.path().join("self"));
         private_file(&dir.path().join("self/environ"), SELF_ENVIRON);

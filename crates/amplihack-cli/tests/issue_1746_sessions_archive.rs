@@ -546,9 +546,18 @@ fn the_test_guard_stops_a_home_or_dest_outside_the_temp_dir_whatever_the_flags()
     chmod(&child_tmp, 0o700);
     let dest = child_tmp.join("dest");
     let d = dest.to_str().unwrap().to_string();
+    // Each run gets a fake process table inside its own TMPDIR (#2042): the
+    // shared tree lies outside these dirs, so the binary would refuse it and
+    // read the host /proc.
     let run = |tmpdir: &std::path::Path, args: &[&str]| {
         let mut c = fx.cmd(args);
         c.env("TMPDIR", tmpdir);
+        #[cfg(target_os = "linux")]
+        let _fake = {
+            let fake = crate::support::fake_proc::FakeProc::new_in(tmpdir);
+            c.env(crate::isolated_amplihack::PROC_ROOT_ENV, fake.path());
+            fake
+        };
         fx.run_cmd(c)
     };
     let refused = |out: &std::process::Output, line: &str| {

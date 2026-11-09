@@ -164,7 +164,15 @@ fn start_status_and_stop() {
 fn the_daemon_swaps_and_logs_like_the_one_shot() {
     let f = Fixture::new();
     let (_reaper, pid) = start(&f, &[]);
-    wait_until("a swap", || f.log().contains("swap work->spare"));
+    // The swap that makes spare live. On a busy host spare's first reading
+    // can still be running, so the daemon may swap work->extra on threshold
+    // and then extra->spare on upgrade; either route ends with spare live,
+    // which the assertions below check.
+    wait_until("a swap to spare", || {
+        f.log()
+            .lines()
+            .any(|l| l.contains(" swap ") && l.contains("->spare live "))
+    });
     let (out, refused) = f.stop_until_gone(pid);
     f.assert_stopped(&out, refused, pid);
     assert_eq!(ino(&f.home_login()), Some(f.spare_ino));
