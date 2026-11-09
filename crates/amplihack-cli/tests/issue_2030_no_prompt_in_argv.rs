@@ -884,37 +884,45 @@ fn codex_passthrough_review_and_fork_options() {
     }
 }
 
-/// Crusty round 2: the caller's piped stdin is replaced by the prompt, and
-/// amplihack says so. A null stdin gets no warning.
+/// Crusty round 4: input piped to amplihack is not dropped when the prompt
+/// takes the agent's stdin. The agent reads the prompt, a blank line, then
+/// the piped input, for Claude `-p` and for `codex exec`. A null stdin adds
+/// nothing after the prompt.
 #[test]
-fn piped_stdin_replaced_by_the_prompt_is_warned_about() {
-    const WARNING: &str = "the input piped to amplihack is not passed on";
-    let f = Fixture::new();
-    let mut c = f.cmd(&["codex", "--subprocess-safe", "--", "exec", SENTINEL]);
-    c.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = c.spawn().expect("spawn amplihack");
-    {
-        use std::io::Write;
-        let mut stdin = child.stdin.take().unwrap();
-        stdin.write_all(b"diff --git a/x b/x\n").unwrap();
-    }
-    let out = child.wait_with_output().unwrap();
-    assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(f.stdin(1), SENTINEL, "the agent gets the prompt only");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains(WARNING), "{stderr}");
-    assert!(!stderr.contains(SENTINEL), "{stderr}");
+fn piped_stdin_follows_the_prompt() {
+    const PIPED: &str = "diff --git a/x b/x\n+added line\n";
+    for args in [
+        vec!["claude", "--subprocess-safe", "--", "-p", SENTINEL],
+        vec!["codex", "--subprocess-safe", "--", "exec", SENTINEL],
+    ] {
+        let f = Fixture::new();
+        let mut c = f.cmd(&args);
+        c.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = c.spawn().expect("spawn amplihack");
+        {
+            use std::io::Write;
+            let mut stdin = child.stdin.take().unwrap();
+            stdin.write_all(PIPED.as_bytes()).unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "{args:?}\n{}", describe(&out));
+        assert_eq!(
+            f.stdin(1),
+            format!("{SENTINEL}\n\n{PIPED}"),
+            "{args:?}: the agent gets the prompt and then the piped input"
+        );
+        assert_argv_clean(&f.argv(1), &[]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("not passed on"), "{stderr}");
+        assert!(!stderr.contains(SENTINEL), "{stderr}");
 
-    let f = Fixture::new();
-    let out = f.run(&mut f.cmd(&["codex", "--subprocess-safe", "--", "exec", SENTINEL]));
-    assert!(out.status.success(), "{}", describe(&out));
-    assert!(
-        !String::from_utf8_lossy(&out.stderr).contains(WARNING),
-        "{}",
-        describe(&out)
-    );
+        let f = Fixture::new();
+        let out = f.run(&mut f.cmd(&args));
+        assert!(out.status.success(), "{args:?}\n{}", describe(&out));
+        assert_eq!(f.stdin(1), SENTINEL, "{args:?}: null stdin adds nothing");
+    }
 }
 
 /// The external LiteLLM gateway, with a stub Copilot reporting a verified

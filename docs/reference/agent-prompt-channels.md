@@ -69,7 +69,7 @@ of `pkill -f`.
 | `amplihack claude -- --system-prompt <text>` | passed through | `--system-prompt-file <per-session file>` |
 | `amplihack claude -- --append-system-prompt <text>` | passed through | `--append-system-prompt-file <per-session file>`; amplihack's contract is not added |
 | Recipe agent steps (the agent CLI child) | `-p <brief> --system-prompt <agent md>` | bare `-p` with the brief on stdin, `--system-prompt-file <per-session file>` (rewritten by `amplihack claude`) |
-| Recipe agent steps (the `amplihack claude` wrapper process) | brief in argv | brief in argv until the runner change and its pin update; see [What argv still contains](#what-argv-still-contains) |
+| Recipe agent steps (the `amplihack claude` wrapper process) | brief in argv | brief in argv until the runner change ([rysweet/amplihack-recipe-runner#205](https://github.com/rysweet/amplihack-recipe-runner/issues/205)) and the pin update ([#2115](https://github.com/rysweet/amplihack-rs/issues/2115)); see [What argv still contains](#what-argv-still-contains) |
 | Auto-mode turn, Claude | stdin above 4096 bytes, argv below | stdin at every size |
 | Auto-mode turn, Codex | argv below 4096 bytes | `codex exec -`, prompt on stdin |
 | Auto-mode turn, Copilot | file reference above 4096 bytes, argv below | pointer sentence at every size, with `--add-dir <private dir>` |
@@ -264,13 +264,20 @@ The rewrite rejects input it cannot rewrite safely:
 Error messages name flags only, never the text.
 
 When the rewrite produced a stdin payload, amplihack spawns the child with a
-piped stdin and writes the payload with `spawn_stdin_writer`. amplihack does
-not read its own stdin in that case. Without a payload, the child inherits
-amplihack's stdin as before.
+piped stdin and writes the payload with `spawn_stdin_writer`. If amplihack's
+own stdin is a pipe, a socket or a non-empty file, it uses
+`spawn_stdin_forwarder` instead: the payload, a blank line, then amplihack's
+stdin copied to the child until end of file, so input piped to
+`amplihack claude -p <text>` still reaches the agent. Once the child has
+exited, amplihack joins the writer only if it has finished; a forwarder still
+blocked on a caller pipe that never closes is left to end with the process.
+Without a payload, the child inherits amplihack's stdin as before.
 
 Under auto-switch or usage-limit supervision, each attempt receives the same
 rewritten payload on stdin and the same per-session files; the payload is held
 in memory until amplihack exits and is never written to the rerun buffer.
+Input piped to amplihack is read once, so only the first attempt receives it,
+as when the agent read the pipe directly before #2030.
 
 `Rewritten` implements `Debug` by hand. It prints `stdin_payload: Some(<n bytes>)`
 and never the text.
@@ -644,14 +651,16 @@ panic payload.
   routed Claude launch needs `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND=1`.
 - Launcher-built interactive `codex` launches with a first prompt receive the
   pointer sentence; the 96 KiB interactive limit is gone.
-- `amplihack codex -- exec <text>` with stdin piped from the caller used to
-  give Codex both, with stdin appended as a `<stdin>` block; the child now
-  receives only `<text>`. When the payload replaces a stdin that is a pipe, a
-  socket or a non-empty file, for Codex or Claude, amplihack prints
-  `amplihack: warning: the prompt goes to the agent on stdin, so the input
-  piped to amplihack is not passed on; put that input in the prompt instead`
-  to stderr. It does not read and join the input itself: a pipe whose writer
-  never closes would hang the launch.
+- Input piped to amplihack is still passed on when the prompt moves to
+  stdin. For `git diff | amplihack claude -p "review this"` and
+  `git diff | amplihack codex -- exec "review this"`, when amplihack's stdin
+  is a pipe, a socket or a non-empty file, the agent's stdin carries the
+  prompt, a blank line, then the piped input unchanged, copied as it arrives.
+  The agent sees end of input when the caller closes the pipe, as it would
+  reading the pipe itself. Codex used to wrap piped input in a `<stdin>`
+  block after the prompt; it now reads prompt and input as one text. A pipe
+  whose writer never closes after the agent exits does not hold amplihack
+  open: the copying thread is left behind and ends with the process.
 - `amplihack copilot -- -p <text>` passes Copilot the pointer sentence and
   `--add-dir <private dir>` instead of the text.
 
@@ -667,11 +676,11 @@ Six cases keep text in a process's argv and are documented exceptions:
 
 | Case | Why | Tracking |
 | --- | --- | --- |
-| The `amplihack claude` wrapper started by a recipe agent step | The recipe runner puts the brief in the wrapper's argv. The agent CLI child below it is clean. The runner change gives Claude a bare `-p` with stdin and `--system-prompt-file`; the wrapper is clean once `RECIPE_RUNNER_REV` is updated to include it | Follow-up issue for the wrapper argv and the pin update |
+| The `amplihack claude` wrapper started by a recipe agent step | The recipe runner puts the brief in the wrapper's argv. The agent CLI child below it is clean. The runner change, [rysweet/amplihack-recipe-runner#205](https://github.com/rysweet/amplihack-recipe-runner/issues/205), starts the wrapper with a bare `-p`, the brief on stdin and `--system-prompt-file`; the wrapper is clean once `RECIPE_RUNNER_REV` is updated to include it | [rysweet/amplihack-recipe-runner#205](https://github.com/rysweet/amplihack-recipe-runner/issues/205) (runner); [#2115](https://github.com/rysweet/amplihack-rs/issues/2115) (pin update, test, removal of this row) |
 | A Docker launch, `amplihack claude --docker -p '<text>'` | The host `docker` process receives the arguments before the rewrite, because the per-session files are host paths the container cannot see. The text is already in the caller's own `amplihack` argv | Accepted risk; a fix needs the private file mounted into the container |
-| `amplihack claude -- '<prompt>'` (interactive first prompt) | The text is in the wrapper's own argv, which the caller supplied, and interactive Claude cannot read its first prompt from stdin | Follow-up issue for an interactive `--prompt-file` option |
-| `amplihack codex -- '<prompt>'` (interactive first prompt) | The text is in the wrapper's own argv, which the caller supplied. The first positional of a bare `codex` may be a subcommand, and that list changes between Codex releases, so the rewrite cannot tell a prompt from a subcommand. `amplihack codex -- exec <text>` and `amplihack codex -- review <text>` are rewritten | Same follow-up as the interactive Claude prompt |
-| `amplihack codex -- resume <session> '<prompt>'` and `amplihack codex -- fork <session> '<prompt>'` (top-level, interactive) | The text is in the wrapper's own argv, which the caller supplied. Both start an interactive Codex session whose terminal UI owns stdin, and their help (codex-cli 0.166.0) offers no `-` or stdin form for the prompt, so there is no other channel. The non-interactive `exec resume` and `exec fork` are rewritten | Same follow-up as the interactive Claude prompt |
+| `amplihack claude -- '<prompt>'` (interactive first prompt) | The text is in the wrapper's own argv, which the caller supplied, and interactive Claude cannot read its first prompt from stdin | [#2116](https://github.com/rysweet/amplihack-rs/issues/2116) (interactive `--prompt-file`) |
+| `amplihack codex -- '<prompt>'` (interactive first prompt) | The text is in the wrapper's own argv, which the caller supplied. The first positional of a bare `codex` may be a subcommand, and that list changes between Codex releases, so the rewrite cannot tell a prompt from a subcommand. `amplihack codex -- exec <text>` and `amplihack codex -- review <text>` are rewritten | [#2116](https://github.com/rysweet/amplihack-rs/issues/2116) |
+| `amplihack codex -- resume <session> '<prompt>'` and `amplihack codex -- fork <session> '<prompt>'` (top-level, interactive) | The text is in the wrapper's own argv, which the caller supplied. Both start an interactive Codex session whose terminal UI owns stdin, and their help (codex-cli 0.166.0) offers no `-` or stdin form for the prompt, so there is no other channel. The non-interactive `exec resume` and `exec fork` are rewritten | [#2116](https://github.com/rysweet/amplihack-rs/issues/2116) |
 | `amplihack amplifier -- run <prompt>` | The text is in the wrapper's own argv, which the caller supplied. Upstream documents only `amplifier run [OPTIONS] [PROMPT]`, with no option arity table, so the rewrite cannot find the prompt safely. No bundled recipe uses this form; amplihack's own Amplifier launches (auto mode, `platform_cli`) use the pointer sentence | Accepted; use `--auto --prompt-file` |
 
 To start an interactive or auto-mode session without prompt text in any argv,
@@ -682,7 +691,7 @@ use `--prompt-file` with `--auto`; see
 
 | Test file | What it checks |
 | --- | --- |
-| `crates/amplihack-cli/tests/issue_2030_no_prompt_in_argv.rs` | Each launch path with a stub agent on `PATH`: argv has no sentinel phrase and no `tail -f /dev/null`; each `*-file` path is a regular 0600 file in a 0700 directory and holds the sentinel; stdin payloads arrive on stdin; per-session files are gone after exit 0, exit 1 and SIGTERM; version gate cases 2.1.318, unparseable and missing; contract file repair for 0644, wrong content and a symlink (the symlink target is unchanged); `private/` as a symlink or foreign-owned fails; a home path with a newline is rejected; no error path echoes the sentinel. The passthrough forms run through the real binary: `amplihack codex -- exec <text>` (plain, with `--json`, and after `--`) gives Codex argv ending in `-`, the text on stdin, and a `/proc/<pid>/cmdline` without the text; `exec -` is unchanged; two prompts fail before any spawn; `exec review --commit <sha>` is unchanged, while `exec review --base main <text>` and `exec fork <id> -i a.png <text>` end in `-` with the text on stdin; a caller's piped stdin gets the warning and a null stdin does not; under the gateway, `-p` with `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` is refused before any spawn, and `-p --allow-all-tools` launches with `--allow-all-paths`, no `--add-dir`, and a pointer file the stub can read; `amplihack copilot -- -p`, `--prompt` and `-i` give the pointer sentence and an `--add-dir` naming only its private directory. `auto_mode_codex_turn_reads_stdin` and `auto_mode_copilot_turn_uses_pointer` cover only the `--auto --prompt-file` path |
+| `crates/amplihack-cli/tests/issue_2030_no_prompt_in_argv.rs` | Each launch path with a stub agent on `PATH`: argv has no sentinel phrase and no `tail -f /dev/null`; each `*-file` path is a regular 0600 file in a 0700 directory and holds the sentinel; stdin payloads arrive on stdin; per-session files are gone after exit 0, exit 1 and SIGTERM; version gate cases 2.1.318, unparseable and missing; contract file repair for 0644, wrong content and a symlink (the symlink target is unchanged); `private/` as a symlink or foreign-owned fails; a home path with a newline is rejected; no error path echoes the sentinel. The passthrough forms run through the real binary: `amplihack codex -- exec <text>` (plain, with `--json`, and after `--`) gives Codex argv ending in `-`, the text on stdin, and a `/proc/<pid>/cmdline` without the text; `exec -` is unchanged; two prompts fail before any spawn; `exec review --commit <sha>` is unchanged, while `exec review --base main <text>` and `exec fork <id> -i a.png <text>` end in `-` with the text on stdin; a caller's piped stdin reaches the agent after the prompt and a blank line, for Claude `-p` and `codex exec`, and a null stdin adds nothing; under the gateway, `-p` with `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` is refused before any spawn, and `-p --allow-all-tools` launches with `--allow-all-paths`, no `--add-dir`, and a pointer file the stub can read; `amplihack copilot -- -p`, `--prompt` and `-i` give the pointer sentence and an `--add-dir` naming only its private directory. `auto_mode_codex_turn_reads_stdin` and `auto_mode_copilot_turn_uses_pointer` cover only the `--auto --prompt-file` path |
 | `crates/amplihack-cli/tests/issue_2030_guards.rs` | Fails CI if any production code calls a `select_mode(` other than `try_select_mode(` (the old selector that answered `Argv` is removed), if any code under `crates/` builds `--append-system-prompt` followed by text, if any bundled recipe passes inline text to `-p` or `exec`, if a bundle file sets `AMPLIHACK_PROMPT_DELIVERY`, or if a `quality-loop.yaml` Copilot call lacks its private directory and `EXIT` trap |
 | `crates/amplihack-cli/src/commands/launch/tests_issue_2030_contract.rs` | A 0644 contract file is repaired to 0600; a symlink is replaced and its target left unchanged; a foreign-owned `private/` is refused; two concurrent first launches both end with one complete file |
 | `crates/amplihack-cli/src/commands/launch/tests_passthrough_rewrite.rs` | Every row of the rewrite table; repeated flags are errors; `format!("{:?}", rewritten)` does not contain the sentinel |

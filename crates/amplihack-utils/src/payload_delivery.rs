@@ -28,9 +28,39 @@ pub struct StdinWriter {
 
 /// Starts a thread that writes `payload` to `stdin` and then closes it.
 pub fn spawn_stdin_writer(stdin: ChildStdin, payload: Vec<u8>) -> StdinWriter {
+    spawn_writer(stdin, payload, None)
+}
+
+/// Starts a thread that writes `payload` to `stdin`, then copies `follow`
+/// to it until `follow` reaches end of file, then closes it.
+///
+/// Used when a prompt takes the child's stdin but the caller also piped
+/// input to the parent: the child gets the prompt first and the piped input
+/// after it, as one stream. The thread blocks on `follow` for as long as its
+/// writer keeps it open, exactly as the child would have done reading it
+/// directly; see [`StdinWriter::finish_if_done`].
+pub fn spawn_stdin_forwarder(
+    stdin: ChildStdin,
+    payload: Vec<u8>,
+    follow: Box<dyn io::Read + Send>,
+) -> StdinWriter {
+    spawn_writer(stdin, payload, Some(follow))
+}
+
+fn spawn_writer(
+    stdin: ChildStdin,
+    payload: Vec<u8>,
+    follow: Option<Box<dyn io::Read + Send>>,
+) -> StdinWriter {
     let handle = std::thread::spawn(move || {
         let mut stdin = stdin;
-        let result = stdin.write_all(&payload).and_then(|()| stdin.flush());
+        let result = stdin
+            .write_all(&payload)
+            .and_then(|()| match follow {
+                Some(mut source) => io::copy(&mut source, &mut stdin).map(drop),
+                None => Ok(()),
+            })
+            .and_then(|()| stdin.flush());
         // Dropping `stdin` closes the pipe, which gives the child EOF.
         drop(stdin);
         match result {
@@ -66,6 +96,17 @@ impl StdinWriter {
             Ok(result) => result,
             Err(_) => Err(io::Error::other("stdin writer thread panicked")),
         }
+    }
+
+    /// Joins the writer thread if it has already ended, and otherwise
+    /// detaches it and returns `None`.
+    ///
+    /// Call this after the child has exited. A forwarder from
+    /// [`spawn_stdin_forwarder`] can still be blocked reading a source whose
+    /// writer never closes it; the child is gone, so nothing it could still
+    /// copy has a reader, and the thread ends with the process.
+    pub fn finish_if_done(self) -> Option<io::Result<()>> {
+        self.handle.is_finished().then(|| self.finish())
     }
 
     /// Joins the writer thread if it finishes within `grace`.

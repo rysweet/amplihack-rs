@@ -568,11 +568,10 @@ fn run_launch_core(
         cmd.current_dir(&execution_dir);
         // Issue #2030, step 6: a rewritten `-p <text>` reaches the child on a
         // piped stdin. Without a payload the child inherits amplihack's stdin.
+        // Input piped to amplihack itself is passed on after the prompt.
+        let forward_caller_stdin = rewritten.stdin_payload.is_some() && caller_stdin_has_input();
         if rewritten.stdin_payload.is_some() {
             cmd.stdin(std::process::Stdio::piped());
-            if caller_stdin_has_input() {
-                eprintln!("{DROPPED_STDIN_WARNING}");
-            }
         }
         let routed_copilot = proxy_config.is_some()
             && proxy_target == Some(amplihack_utils::litellm_proxy::CliTarget::CopilotCli);
@@ -626,6 +625,13 @@ fn run_launch_core(
         };
 
         let stdin_writer = match (rewritten.stdin_payload.as_ref(), child.take_stdin()) {
+            (Some(payload), Some(stdin)) if forward_caller_stdin => {
+                Some(amplihack_utils::payload_delivery::spawn_stdin_forwarder(
+                    stdin,
+                    prompt_then_piped_input_header(payload),
+                    Box::new(std::io::stdin()),
+                ))
+            }
             (Some(payload), Some(stdin)) => {
                 Some(amplihack_utils::payload_delivery::spawn_stdin_writer(
                     stdin,
@@ -637,9 +643,14 @@ fn run_launch_core(
 
         // Wait for child or signal
         let exit_code = wait_for_child_or_signal(&mut child, &shutdown);
-        if let Some(writer) = stdin_writer
-            && let Err(error) = writer.finish()
-        {
+        let written = match stdin_writer {
+            // The child has exited. A forwarder still blocked on a caller
+            // pipe that never closes has no reader left; it is detached.
+            Some(writer) if forward_caller_stdin => writer.finish_if_done(),
+            Some(writer) => Some(writer.finish()),
+            None => None,
+        };
+        if let Some(Err(error)) = written {
             tracing::warn!(%error, "writing the prompt to the agent's stdin failed");
         }
         // Issue #1569: hand back logins the session borrowed, on success and
@@ -821,12 +832,19 @@ fn capture_executable_identity(path: &Path) -> Result<ExecutableIdentity> {
     })
 }
 
-/// Printed when a rewritten prompt takes the agent's stdin while amplihack's
-/// own stdin is a pipe or a non-empty file. `codex exec` would have appended
-/// that input as a `<stdin>` block and `claude -p` would have read it; now
-/// the agent never sees it. amplihack does not read and join it itself: a
-/// pipe whose writer never closes would hang the launch.
-pub(crate) const DROPPED_STDIN_WARNING: &str = "amplihack: warning: the prompt goes to the agent on stdin, so the input piped to amplihack is not passed on; put that input in the prompt instead";
+/// The first bytes the agent reads when a rewritten prompt takes its stdin
+/// and input was also piped to amplihack: the prompt, then a blank line. The
+/// piped input follows unchanged, copied as it arrives, so
+/// `git diff | amplihack claude -p "review this"` still gives the agent both.
+/// amplihack does not wait for the piped input to end before starting the
+/// agent; like `claude -p` reading the pipe itself, the agent sees end of
+/// input when the caller's writer closes it.
+pub(crate) fn prompt_then_piped_input_header(prompt: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(prompt.len() + 2);
+    bytes.extend_from_slice(prompt.as_bytes());
+    bytes.extend_from_slice(b"\n\n");
+    bytes
+}
 
 /// amplihack's stdin is a pipe, a socket or a non-empty regular file, as
 /// opposed to a terminal, `/dev/null` or an empty file.

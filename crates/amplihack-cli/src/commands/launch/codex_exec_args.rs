@@ -6,7 +6,9 @@
 //! and how many, depends on the subcommand: `--commit <SHA>` exists only
 //! under `exec review`, and `-i/--image` takes every following word under
 //! plain `exec` but exactly one under `exec resume` and `exec fork`. So each
-//! scope has its own table, copied from codex-cli 0.166.0's help:
+//! scope has its own table, copied from codex-cli 0.166.0's help. The tables
+//! are in `amplihack-launcher/src/prompt_delivery/codex_options.rs`, the one
+//! copy every Codex argument reader in amplihack uses:
 //!
 //! | Scope | Help text |
 //! | --- | --- |
@@ -39,191 +41,12 @@
 
 use anyhow::{Result, bail};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum Arity {
-    Flag,
-    One,
-    Many,
-}
-
-/// `(long name without --, short letter, arity, hidden)`. A hidden option is
-/// accepted by Codex but not listed in its help (`--yolo`).
-pub(crate) type Opt = (&'static str, Option<char>, Arity, bool);
-
+// The tables live in `amplihack-launcher` so this parser, the launcher's
+// own `codex_args` classifier and `codex_agent_step` read one copy.
 use Arity::{Flag, Many, One};
-
-pub(crate) const ROOT: &[Opt] = &[
-    ("config", Some('c'), One, false),
-    ("enable", None, One, false),
-    ("disable", None, One, false),
-    ("remote", None, One, false),
-    ("remote-auth-token-env", None, One, false),
-    ("strict-config", None, Flag, false),
-    ("image", Some('i'), Many, false),
-    ("model", Some('m'), One, false),
-    ("oss", None, Flag, false),
-    ("local-provider", None, One, false),
-    ("profile", Some('p'), One, false),
-    ("sandbox", Some('s'), One, false),
-    ("approve-for-me", None, Flag, false),
-    (
-        "dangerously-bypass-approvals-and-sandbox",
-        None,
-        Flag,
-        false,
-    ),
-    ("dangerously-bypass-hook-trust", None, Flag, false),
-    ("cd", Some('C'), One, false),
-    ("worktree", None, Flag, false),
-    ("add-dir", None, One, false),
-    ("ask-for-approval", Some('a'), One, false),
-    ("search", None, Flag, false),
-    ("no-alt-screen", None, Flag, false),
-    ("no-daemon", None, Flag, false),
-    ("help", Some('h'), Flag, false),
-    ("version", Some('V'), Flag, false),
-    ("yolo", None, Flag, true),
-];
-
-pub(crate) const EXEC: &[Opt] = &[
-    ("config", Some('c'), One, false),
-    ("enable", None, One, false),
-    ("disable", None, One, false),
-    ("strict-config", None, Flag, false),
-    ("image", Some('i'), Many, false),
-    ("model", Some('m'), One, false),
-    ("oss", None, Flag, false),
-    ("local-provider", None, One, false),
-    ("profile", Some('p'), One, false),
-    ("sandbox", Some('s'), One, false),
-    ("approve-for-me", None, Flag, false),
-    (
-        "dangerously-bypass-approvals-and-sandbox",
-        None,
-        Flag,
-        false,
-    ),
-    ("dangerously-bypass-hook-trust", None, Flag, false),
-    ("cd", Some('C'), One, false),
-    ("worktree", None, Flag, false),
-    ("add-dir", None, One, false),
-    ("thread-source", None, One, false),
-    ("cyber-access-program", None, One, false),
-    ("skip-git-repo-check", None, Flag, false),
-    ("ephemeral", None, Flag, false),
-    ("ignore-user-config", None, Flag, false),
-    ("ignore-rules", None, Flag, false),
-    ("output-schema", None, One, false),
-    ("color", None, One, false),
-    ("json", None, Flag, false),
-    ("output-last-message", Some('o'), One, false),
-    ("help", Some('h'), Flag, false),
-    ("version", Some('V'), Flag, false),
-    ("yolo", None, Flag, true),
-];
-
-pub(crate) const REVIEW: &[Opt] = &[
-    ("config", Some('c'), One, false),
-    ("uncommitted", None, Flag, false),
-    ("base", None, One, false),
-    ("enable", None, One, false),
-    ("commit", None, One, false),
-    ("disable", None, One, false),
-    ("strict-config", None, Flag, false),
-    ("title", None, One, false),
-    ("model", Some('m'), One, false),
-    (
-        "dangerously-bypass-approvals-and-sandbox",
-        None,
-        Flag,
-        false,
-    ),
-    ("dangerously-bypass-hook-trust", None, Flag, false),
-    ("worktree", None, Flag, false),
-    ("thread-source", None, One, false),
-    ("cyber-access-program", None, One, false),
-    ("skip-git-repo-check", None, Flag, false),
-    ("ephemeral", None, Flag, false),
-    ("ignore-user-config", None, Flag, false),
-    ("ignore-rules", None, Flag, false),
-    ("output-schema", None, One, false),
-    ("json", None, Flag, false),
-    ("output-last-message", Some('o'), One, false),
-    ("help", Some('h'), Flag, false),
-    ("yolo", None, Flag, true),
-];
-
-/// Top-level `codex review`, a non-interactive review that reads `-` from
-/// stdin like `exec review`, but with a shorter option list.
-pub(crate) const TOP_REVIEW: &[Opt] = &[
-    ("config", Some('c'), One, false),
-    ("strict-config", None, Flag, false),
-    ("enable", None, One, false),
-    ("uncommitted", None, Flag, false),
-    ("base", None, One, false),
-    ("disable", None, One, false),
-    ("commit", None, One, false),
-    ("title", None, One, false),
-    ("help", Some('h'), Flag, false),
-];
-
-pub(crate) const RESUME: &[Opt] = &[
-    ("config", Some('c'), One, false),
-    ("last", None, Flag, false),
-    ("all", None, Flag, false),
-    ("enable", None, One, false),
-    ("disable", None, One, false),
-    ("image", Some('i'), One, false),
-    ("strict-config", None, Flag, false),
-    ("model", Some('m'), One, false),
-    (
-        "dangerously-bypass-approvals-and-sandbox",
-        None,
-        Flag,
-        false,
-    ),
-    ("dangerously-bypass-hook-trust", None, Flag, false),
-    ("worktree", None, Flag, false),
-    ("thread-source", None, One, false),
-    ("cyber-access-program", None, One, false),
-    ("skip-git-repo-check", None, Flag, false),
-    ("ephemeral", None, Flag, false),
-    ("ignore-user-config", None, Flag, false),
-    ("ignore-rules", None, Flag, false),
-    ("output-schema", None, One, false),
-    ("json", None, Flag, false),
-    ("output-last-message", Some('o'), One, false),
-    ("help", Some('h'), Flag, false),
-    ("yolo", None, Flag, true),
-];
-
-pub(crate) const FORK: &[Opt] = &[
-    ("config", Some('c'), One, false),
-    ("image", Some('i'), One, false),
-    ("enable", None, One, false),
-    ("disable", None, One, false),
-    ("strict-config", None, Flag, false),
-    ("model", Some('m'), One, false),
-    (
-        "dangerously-bypass-approvals-and-sandbox",
-        None,
-        Flag,
-        false,
-    ),
-    ("dangerously-bypass-hook-trust", None, Flag, false),
-    ("worktree", None, Flag, false),
-    ("thread-source", None, One, false),
-    ("cyber-access-program", None, One, false),
-    ("skip-git-repo-check", None, Flag, false),
-    ("ephemeral", None, Flag, false),
-    ("ignore-user-config", None, Flag, false),
-    ("ignore-rules", None, Flag, false),
-    ("output-schema", None, One, false),
-    ("json", None, Flag, false),
-    ("output-last-message", Some('o'), One, false),
-    ("help", Some('h'), Flag, false),
-    ("yolo", None, Flag, true),
-];
+pub(crate) use amplihack_launcher::prompt_delivery::codex_options::{
+    Arity, EXEC, FORK, Opt, RESUME, REVIEW, ROOT, TOP_REVIEW,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Scope {
