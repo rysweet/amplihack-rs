@@ -41,6 +41,8 @@ pub const REUSE: &str = "workflow_alias_reuse.sh";
 pub const DETECT: &str = "workflow_caller_branch.sh";
 /// #1969: step 15's push classification helper.
 pub const PUSH_PLAN: &str = "workflow_push_plan.sh";
+/// #1969: the only copy of the default-branch rule.
+pub const DEFAULT_RULE: &str = "workflow_default_branch.sh";
 
 /// #1969 V1/V4/V6: a suffix that `git check-ref-format --branch` accepts but
 /// that runs `touch PWNED` if any recipe or helper ever evaluates the branch

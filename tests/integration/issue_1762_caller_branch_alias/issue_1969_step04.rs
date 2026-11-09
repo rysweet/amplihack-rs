@@ -269,7 +269,9 @@ fn continues_from_subdirectory_when_caller_is_behind() {
 
 /// R7, R11(d): an unpushed, ahead or tracked-dirty caller stops step 4 with
 /// exit 1 before anything is created, with the planner's reason, the branch
-/// and both fixes (`existing_branch=` with the main clone).
+/// and the hint, which names the main clone and never offers
+/// `existing_branch=<X>` (that re-run would reuse the caller's worktree as
+/// it stands; see `following_the_stop_hint_never_touches_a_dirty_caller`).
 #[test]
 fn refuses_unusable_caller_branch_up_front() {
     type Prepare = fn(&Fx, &Path);
@@ -323,13 +325,10 @@ fn refuses_unusable_caller_branch_up_front() {
             "{why}: the planner's own reason, naming <X>\n{}",
             run.describe()
         );
-        let quoted = format!("existing_branch='{X}'");
-        let main = fx.caller.to_str().unwrap();
-        let continuing = format!("continuing the caller's branch '{X}'");
-        assert!(
-            run.stderr_line_with(&["ERROR:", &continuing, "(#1969)", &quoted, main])
-                .is_some(),
-            "{why}: the stop hint names <X>, existing_branch= and the main clone\n{}",
+        assert_eq!(
+            stop_hint_path(&run, X),
+            fx.caller.to_str().unwrap(),
+            "{why}: the stop hint names <X> and the main clone\n{}",
             run.describe()
         );
     }
@@ -572,26 +571,32 @@ fn repo_path_not_a_repository_creates_nothing() {
     );
 }
 
-/// The stop hint's two copy-paste words, `existing_branch=<word>` and
-/// `repo_path=<word>`, from the "continuing the caller's branch" line.
-fn stop_hint_words(run: &Run, branch: &str) -> (String, String) {
+/// The stop hint's one copy-paste word, `repo_path=<word>`, from the
+/// "continuing the caller's branch" line. The line must not offer
+/// `existing_branch=<value>` for any stop reason: Gate B reuses a worktree
+/// that is not the caller's in place, so that re-run would commit whatever
+/// the caller's worktree holds.
+fn stop_hint_path(run: &Run, branch: &str) -> String {
     let continuing = format!("continuing the caller's branch '{branch}'");
     let line = run
-        .stderr_line_with(&["ERROR:", &continuing, "(#1969)", "-c existing_branch="])
+        .stderr_line_with(&["ERROR:", &continuing, "(#1969)", "-c repo_path="])
         .unwrap_or_else(|| panic!("the stop hint names the branch\n{}", run.describe()));
-    let branch_word = between(line, "-c existing_branch=", " and -c repo_path=")
-        .unwrap_or_else(|| panic!("hint shape: {line}"));
-    let path_word = line
-        .split_once("-c repo_path=")
-        .and_then(|(_, rest)| rest.trim_end().strip_suffix('.'))
-        .unwrap_or_else(|| panic!("hint shape: {line}"));
-    (branch_word.to_owned(), path_word.to_owned())
+    assert!(
+        !line.contains("existing_branch="),
+        "the stop hint never offers an existing_branch= re-run: {line}"
+    );
+    assert!(
+        line.contains("Do not name the branch with -c existing_branch"),
+        "the stop hint warns against the existing_branch route: {line}"
+    );
+    between(line, "-c repo_path=", ". Do not name the branch")
+        .unwrap_or_else(|| panic!("hint shape: {line}"))
+        .to_owned()
 }
 
 /// V6, D6: the stop hint for a branch whose name holds a single quote,
-/// `$(..)` and backticks is shell-inert. Pasting `existing_branch=<word>`
-/// gives back exactly the name, pasting `repo_path=<word>` gives back the
-/// main clone, and nothing runs, in step 4 or in the paste.
+/// `$(..)` and backticks is shell-inert: pasting `repo_path=<word>` gives
+/// back the main clone, and nothing runs, in step 4 or in the paste.
 #[test]
 fn stop_hint_for_hostile_branch_name_is_shell_inert() {
     let fx = Fx::new();
@@ -612,12 +617,7 @@ fn stop_hint_for_hostile_branch_name_is_shell_inert() {
         run.describe()
     );
 
-    let (branch_word, path_word) = stop_hint_words(&run, &name);
-    assert!(
-        branch_word.starts_with('\'') && branch_word.ends_with('\''),
-        "the hint keeps the 'X' form: {branch_word}"
-    );
-    assert_eq!(fx.shell_value(&branch_word), name, "pasted: {branch_word}");
+    let path_word = stop_hint_path(&run, &name);
     assert_eq!(
         fx.shell_value(&path_word),
         fx.caller.to_str().unwrap(),
@@ -626,9 +626,8 @@ fn stop_hint_for_hostile_branch_name_is_shell_inert() {
     fx.assert_nothing_executed(&run, "pasting the stop hint");
 }
 
-/// V6: a plain branch name and a plain path render unchanged in the stop
-/// hint (`existing_branch='<X>'`, `repo_path=<main clone>`), as the docs and
-/// the #1762 tests quote them.
+/// V6: a plain path renders unchanged in the stop hint
+/// (`repo_path=<main clone>`), as the docs quote it.
 #[test]
 fn stop_hint_for_plain_names_is_unchanged() {
     let fx = Fx::new();
@@ -643,9 +642,90 @@ fn stop_hint_for_plain_names_is_unchanged() {
     let run = step4_from(&fx, &wt, Some("1"), &[], None);
 
     assert_eq!(run.code, Some(1), "{}", run.describe());
-    let (branch_word, path_word) = stop_hint_words(&run, X);
-    assert_eq!(branch_word, format!("'{X}'"), "{}", run.describe());
-    assert_eq!(path_word, main, "{}", run.describe());
+    assert_eq!(stop_hint_path(&run, X), main, "{}", run.describe());
+}
+
+/// Crusty round 1: the stop hint after a dirty-tree stop is safe to follow
+/// as printed. The caller's worktree has an uncommitted change to a tracked
+/// file and an untracked file; step 4 refuses; re-running with the hint's
+/// `repo_path=<main clone>` starts a new branch in a new worktree; step 15
+/// there commits and pushes only the run's own file. The caller's worktree,
+/// its branch and origin/<X> are untouched throughout.
+#[test]
+fn following_the_stop_hint_never_touches_a_dirty_caller() {
+    let fx = Fx::new();
+    let wt = caller_worktree(&fx, true);
+    fx.write_in(&wt, "caller.txt", "uncommitted change\n");
+    fx.write_in(&wt, "notes-untracked.txt", "scratch\n");
+    let view = caller_view(&fx, &wt);
+    let untracked = fx.git(&wt, &["status", "--porcelain", "--untracked-files=all"]);
+    let origin_x = fx.origin_sha(X);
+
+    let refused = step4_from(&fx, &wt, Some("1"), &[], None);
+    assert_eq!(refused.code, Some(1), "{}", refused.describe());
+    let hint_path = PathBuf::from(stop_hint_path(&refused, X));
+
+    let rerun = step4_from(&fx, &hint_path, Some("1"), &[], None);
+    assert_eq!(rerun.code, Some(0), "{}", rerun.describe());
+    let setup = rerun.json();
+    let branch = setup["branch_name"]
+        .as_str()
+        .expect("branch_name")
+        .to_owned();
+    assert!(
+        branch.starts_with(DERIVED_PREFIX),
+        "a new derived branch, not <X>: {branch}\n{}",
+        rerun.describe()
+    );
+    assert!(setup.get("local_branch").is_none(), "{}", rerun.describe());
+    let task = PathBuf::from(setup["worktree_path"].as_str().expect("worktree_path"));
+    assert_ne!(
+        task.canonicalize().unwrap(),
+        wt.canonicalize().unwrap(),
+        "the task worktree is never the caller's"
+    );
+
+    fx.write_in(&task, "delegation.txt", "receiver model\n");
+    let publish = step15(&fx, &task, &setup, None);
+    assert_eq!(publish.code, Some(0), "{}", publish.describe());
+    assert_eq!(publish.json()["pushed"], "true", "{}", publish.describe());
+    let committed = fx.git(&task, &["show", "--name-only", "--format=", "HEAD"]);
+    assert_eq!(
+        committed.trim(),
+        "delegation.txt",
+        "only the run's file is committed"
+    );
+
+    assert_eq!(caller_view(&fx, &wt), view, "the caller is untouched");
+    assert_eq!(
+        fx.git(&wt, &["status", "--porcelain", "--untracked-files=all"]),
+        untracked,
+        "the caller's untracked file is still untracked"
+    );
+    assert_eq!(fx.origin_sha(X), origin_x, "origin/<X> does not move");
+}
+
+/// Why the hint does not offer `existing_branch=<X>`: from the main clone,
+/// Gate B reuses the caller's worktree in place, because `existing_branch`
+/// is how a kept worktree is continued with its changes (#1565). The step's
+/// output names the caller's worktree, so step 15 would stage there.
+#[test]
+fn existing_branch_from_main_clone_reuses_the_caller_worktree_in_place() {
+    let fx = Fx::new();
+    let wt = caller_worktree(&fx, true);
+    fx.write_in(&wt, "caller.txt", "uncommitted change\n");
+
+    let run = step4_from(&fx, &fx.caller, Some("1"), &[("EXISTING_BRANCH", X)], None);
+
+    assert_eq!(run.code, Some(0), "{}", run.describe());
+    let setup = run.json();
+    assert_eq!(setup["branch_name"], X, "{}", run.describe());
+    assert_eq!(
+        PathBuf::from(setup["worktree_path"].as_str().expect("worktree_path")),
+        wt.canonicalize().unwrap(),
+        "Gate B reuses the caller's worktree as it stands\n{}",
+        run.describe()
+    );
 }
 
 /// V1, V4: a clean, pushed caller branch with a hostile name is continued

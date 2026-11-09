@@ -10,8 +10,10 @@
 //!   qualified refs so that a tag or local branch called `origin/<target>`
 //!   cannot change the answer (SR-3); exit 2 on any failure, stdout empty.
 //!
-//! The default-branch table is run through the detection helper and the
-//! planner together, so the two copies of the rule cannot drift (D2).
+//! - `workflow_default_branch.sh [--ask-origin] <dir> <branch>`: the only
+//!   copy of the default-branch rule. The table is run through it directly
+//!   and through each of its four callers (the detection helper, the planner,
+//!   the resolver, and step 15 via `--ask-origin`), so they cannot drift.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -348,21 +350,27 @@ fn detect_treats_hostile_branch_name_as_data() {
     fx.assert_nothing_executed(&run, "pasting the nested-run hint");
 }
 
-/// D2: the detection helper and the planner carry the same default-branch
-/// rule. The helper exits 1 for a linked worktree on `name` exactly when the
-/// planner exits 3 for `name`, and both match the table.
+/// D2: every caller of the default-branch rule agrees with the table. The
+/// detection helper exits 1 for a linked worktree on `name`, the planner
+/// exits 3, the resolver leaves `<name>--wt-1` unchanged, and the rule
+/// helper itself exits 0, exactly when `name` is a default branch. Step 15's
+/// `--ask-origin` mode differs only where the local origin/HEAD does not
+/// resolve: there origin's answer (main, in the fixture) replaces the
+/// `develop` guess.
 #[test]
-fn detect_and_planner_agree_on_default_branches() {
-    // (branch, target of origin/HEAD, whether it is a default branch)
+fn every_caller_agrees_on_default_branches() {
+    // (branch, target of origin/HEAD, default branch, default for step 15)
     let cases = [
-        ("main", Some("main"), true),
-        ("master", Some("main"), true),
-        ("trunk", Some("trunk"), true),
-        ("develop", Some("main"), false),
-        ("develop", None, true),
-        (CALLER_BRANCH, Some("main"), false),
+        ("main", Some("main"), true, true),
+        ("master", Some("main"), true, true),
+        ("trunk", Some("trunk"), true, true),
+        ("develop", Some("main"), false, false),
+        ("develop", None, true, false),
+        ("main", None, true, true),
+        (CALLER_BRANCH, Some("main"), false, false),
+        (CALLER_BRANCH, None, false, false),
     ];
-    for (name, origin_head, default) in cases {
+    for (name, origin_head, default, ask_origin_default) in cases {
         let fx = Fx::new();
         // Free `main` so a linked worktree can hold it.
         fx.git(&fx.caller, &["switch", "-q", "--detach"]);
@@ -395,6 +403,72 @@ fn detect_and_planner_agree_on_default_branches() {
             &fx.root,
             &[dir.to_str().unwrap(), fx.caller.to_str().unwrap(), name],
             &[],
+        );
+
+        // The resolver, in an alias worktree for `name`.
+        let alias_name = format!("{name}--wt-1");
+        let alias_dir = fx.root.join("alias").join(alias_name.replace('/', "_"));
+        let alias_s = alias_dir.to_str().unwrap().to_owned();
+        fx.git(
+            &fx.caller,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--no-track",
+                "-b",
+                &alias_name,
+                "--",
+                &alias_s,
+                "main",
+            ],
+        );
+        fx.git(
+            &fx.caller,
+            &["config", &format!("branch.{alias_name}.remote"), "origin"],
+        );
+        fx.git(
+            &fx.caller,
+            &[
+                "config",
+                &format!("branch.{alias_name}.merge"),
+                &format!("refs/heads/{name}"),
+            ],
+        );
+        let resolved = fx.tool(RESOLVER, &alias_dir, &[], &[]);
+        assert_eq!(
+            resolved.code,
+            Some(0),
+            "{why}: resolver\n{}",
+            resolved.describe()
+        );
+        let expected = if default { alias_name.as_str() } else { name };
+        assert_eq!(
+            resolved.stdout,
+            format!("{expected}\n"),
+            "{why}: the resolver disagrees with the table\n{}",
+            resolved.describe()
+        );
+
+        // The rule helper on its own, in both modes.
+        let rule = fx.tool(DEFAULT_RULE, &fx.root, &[dir.to_str().unwrap(), name], &[]);
+        assert_eq!(
+            rule.code,
+            Some(if default { 0 } else { 1 }),
+            "{why}: workflow_default_branch.sh\n{}",
+            rule.describe()
+        );
+        let asked = fx.tool(
+            DEFAULT_RULE,
+            &fx.root,
+            &["--ask-origin", dir.to_str().unwrap(), name],
+            &[],
+        );
+        assert_eq!(
+            asked.code,
+            Some(if ask_origin_default { 0 } else { 1 }),
+            "{why}: workflow_default_branch.sh --ask-origin (step 15)\n{}",
+            asked.describe()
         );
 
         let detect_default = detected.code == Some(1);
@@ -639,4 +713,115 @@ fn push_plan_only_reads_and_ignores_inherited_git_dir() {
         run.describe()
     );
     assert!(state(&fx) == before, "the plan must change nothing");
+}
+
+// ---------------------------------------------------------------------------
+// workflow_default_branch.sh
+// ---------------------------------------------------------------------------
+
+/// The rule helper's usage errors exit 2, which every caller treats as a
+/// failure rather than as "not a default branch".
+#[test]
+fn default_rule_usage_errors_exit_2() {
+    let fx = Fx::new();
+    let caller = fx.caller.to_str().unwrap();
+    let missing = fx.root.join("missing");
+    for (args, why) in [
+        (vec![], "no arguments"),
+        (vec![caller], "one argument"),
+        (vec![caller, "main", "extra"], "three arguments"),
+        (vec!["--ask-origin", caller], "flag and one argument"),
+        (vec![missing.to_str().unwrap(), "main"], "missing directory"),
+        (vec![caller, ""], "empty branch"),
+    ] {
+        let run = fx.tool(DEFAULT_RULE, &fx.root, &args, &[]);
+        assert_eq!(run.code, Some(2), "{why}\n{}", run.describe());
+    }
+}
+
+/// With `--ask-origin`, an origin that gives no answer falls back to the
+/// same `develop` guess as the read-only mode, so step 15 refuses `develop`
+/// rather than pushing to it when it cannot tell.
+#[test]
+fn ask_origin_without_an_answer_falls_back_to_develop() {
+    let fx = Fx::new();
+    fx.git(&fx.caller, &["remote", "set-head", "origin", "-d"]);
+    fx.git(
+        &fx.caller,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            fx.root.join("nowhere.git").to_str().unwrap(),
+        ],
+    );
+    let caller = fx.caller.to_str().unwrap();
+    let develop = fx.tool(
+        DEFAULT_RULE,
+        &fx.root,
+        &["--ask-origin", caller, "develop"],
+        &[],
+    );
+    assert_eq!(develop.code, Some(0), "{}", develop.describe());
+    let feature = fx.tool(
+        DEFAULT_RULE,
+        &fx.root,
+        &["--ask-origin", caller, CALLER_BRANCH],
+        &[],
+    );
+    assert_eq!(feature.code, Some(1), "{}", feature.describe());
+    assert!(
+        !develop.stderr.contains("nowhere.git"),
+        "the ls-remote query's stderr is discarded\n{}",
+        develop.describe()
+    );
+}
+
+/// Each caller fails closed when the rule helper is missing: the detection
+/// helper and the resolver exit 2, the planner stops with exit 1.
+#[test]
+fn callers_fail_closed_without_the_rule_helper() {
+    let fx = Fx::new();
+    let home = fx.bundle_without(DEFAULT_RULE);
+    let tools = home.join("amplifier-bundle/tools");
+    let wt = linked_on_new_branch(&fx, CALLER_BRANCH);
+    let wt_s = wt.to_str().unwrap();
+
+    let mut detect = fx.bash(&wt);
+    detect
+        .arg(tools.join(DETECT))
+        .arg(wt_s)
+        .env("AMPLIHACK_SESSION_DEPTH", "1");
+    let detected = run(&mut detect);
+    assert_eq!(detected.code, Some(2), "detection\n{}", detected.describe());
+    assert!(detected.stdout.is_empty(), "{}", detected.describe());
+
+    let mut plan = fx.bash(&wt);
+    plan.arg(tools.join(PLANNER))
+        .args([wt_s, fx.caller.to_str().unwrap(), CALLER_BRANCH]);
+    let planned = run(&mut plan);
+    assert_eq!(planned.code, Some(1), "planner\n{}", planned.describe());
+    assert!(planned.stdout.is_empty(), "{}", planned.describe());
+
+    let alias_name = format!("{CALLER_BRANCH}--wt-1");
+    let alias_dir = fx.root.join("alias-without-rule");
+    fx.git(
+        &fx.caller,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "--no-track",
+            "-b",
+            &alias_name,
+            "--",
+            alias_dir.to_str().unwrap(),
+            "main",
+        ],
+    );
+    let mut resolve = fx.bash(&alias_dir);
+    resolve.arg(tools.join(RESOLVER));
+    let resolved = run(&mut resolve);
+    assert_eq!(resolved.code, Some(2), "resolver\n{}", resolved.describe());
+    assert!(resolved.stdout.is_empty(), "{}", resolved.describe());
 }

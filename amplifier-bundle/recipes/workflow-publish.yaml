@@ -178,13 +178,9 @@ steps:
       WF_TOOLS="${RUNTIME_ARTIFACT_HELPER%/*}"; [ -f "$WF_TOOLS/workflow_hook_repair.sh" ] || WF_TOOLS="${GIT_IDENTITY_HELPER%/*}"; TARGET="$(bash "$WF_TOOLS/workflow_remote_branch.sh" .)" || exit 2
       [ -n "$TARGET" ] || { echo "ERROR: cannot resolve the branch to push (detached HEAD?); refusing to push (#1969)." >&2; reason="no-push-target"; exit 1; }
       SETUP_BRANCH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r '.branch_name // empty' 2>/dev/null)" || SETUP_BRANCH=""; [ -z "$SETUP_BRANCH" ] || [ "$TARGET" = "$SETUP_BRANCH" ] || { echo "ERROR: push target '$TARGET' does not match worktree_setup.branch_name '$SETUP_BRANCH'; refusing to push (issue #1762)." >&2; exit 1; }
-      # Default-branch backstop (#1969, #858): main, master, the local origin/HEAD target, else origin's HEAD.
-      DEFAULT_BRANCH="$(git symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null || true)"; DEFAULT_BRANCH="${DEFAULT_BRANCH#refs/remotes/origin/}"
-      if [ -z "$DEFAULT_BRANCH" ]; then
-        while IFS= read -r symref_line; do case "$symref_line" in "ref: refs/heads/"*"$(printf '\t')HEAD") DEFAULT_BRANCH="${symref_line#ref: refs/heads/}"; DEFAULT_BRANCH="${DEFAULT_BRANCH%?HEAD}"; break ;; esac; done < <(GIT_TERMINAL_PROMPT=0 git ls-remote --symref origin HEAD 2>/dev/null || true)
-        [ "$(git check-ref-format --branch "$DEFAULT_BRANCH" 2>/dev/null || true)" = "$DEFAULT_BRANCH" ] || DEFAULT_BRANCH=""
-      fi
-      case "$TARGET" in main|master|"${DEFAULT_BRANCH:-main}") echo "ERROR: push target '$TARGET' is the default branch; step 15 never pushes to it (#1969, #858)." >&2; reason="default-branch-target"; exit 1 ;; esac
+      # Default-branch backstop (#1969, #858): the one copy of the rule is workflow_default_branch.sh; --ask-origin asks origin's HEAD when the local origin/HEAD does not resolve.
+      DEFAULT_RC=2; [ ! -f "$WF_TOOLS/workflow_default_branch.sh" ] || { DEFAULT_RC=0; bash "$WF_TOOLS/workflow_default_branch.sh" --ask-origin . "$TARGET" || DEFAULT_RC=$?; }
+      case "$DEFAULT_RC" in 0) echo "ERROR: push target '$TARGET' is the default branch; step 15 never pushes to it (#1969, #858)." >&2; reason="default-branch-target"; exit 1 ;; 1) ;; *) echo "ERROR: cannot decide whether push target '$TARGET' is the default branch (workflow_default_branch.sh exit $DEFAULT_RC); refusing to push (#1969)." >&2; exit 2 ;; esac
       PUSH_PLAN="$WF_TOOLS/workflow_push_plan.sh"; [ -f "$PUSH_PLAN" ] || { echo "ERROR: workflow push plan helper not found: $PUSH_PLAN (#1969)" >&2; exit 2; }
       for wf_helper in "${WORKFLOW_STAGE_CHANGES_HELPER:-$WF_TOOLS/workflow_stage_changes.sh}" "${WORKFLOW_HOOK_REPAIR_HELPER:-$WF_TOOLS/workflow_hook_repair.sh}"; do [ -f "$wf_helper" ] || { echo "ERROR: workflow helper not found: $wf_helper" >&2; exit 2; }; . "$wf_helper"; done
       amplihack hygiene artifact-guard --repo . --mode pre-publish

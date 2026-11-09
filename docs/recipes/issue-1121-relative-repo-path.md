@@ -155,7 +155,7 @@ wt_add_idempotent() {
 > pathspec). This mirrors the existing `--track` form and preserves the
 > flag-injection guard the `--` separator provides. `--no-track` keeps a
 > branch cut from `origin/<base>` from tracking `origin/<base>`; see
-> [#1969](issue-1762-caller-branch-worktree-alias.md#new-branches-have-no-upstream-until-pushed-1969).
+> [#1969](issue-1969-caller-branch-and-explicit-push.md#new-branches-have-no-upstream-until-pushed).
 
 Key guarantees:
 

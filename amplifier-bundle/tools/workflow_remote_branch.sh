@@ -10,8 +10,8 @@
 # Every step that pushes, or looks up the PR by branch, must then use <B>. This
 # tool prints, for the checkout at DIR:
 #   - <P>, when the branch is <P>--wt-<n> with n matching ^[1-9][0-9]*$, <P> is
-#     not empty and not a default branch (main, master, the target of
-#     refs/remotes/origin/HEAD, or develop when origin/HEAD does not resolve),
+#     not empty and not a default branch (as workflow_default_branch.sh
+#     decides),
 #     branch.<name>.remote is origin and branch.<name>.merge is refs/heads/<P>;
 #   - the branch name unchanged, for any other branch;
 #   - nothing, on a detached HEAD, outside a repository or for a missing DIR.
@@ -19,7 +19,8 @@
 # rather than @{u}, so a missing refs/remotes/origin/<P> does not matter.
 #
 # It only reads (`symbolic-ref`, `rev-parse`, `config --get`). Exit status is
-# 0, or 2 on a usage error.
+# 0, or 2 on a usage error or when workflow_default_branch.sh fails or is
+# missing for an alias-shaped name.
 #
 # Callers treat a missing or failing tool as an error, never as the local
 # branch, which from an alias worktree would push or look up <B>--wt-<n>:
@@ -48,15 +49,16 @@ unchanged() { printf '%s\n' "$name"; exit 0; }
 [ "$prefix" != "$name" ] && [ -n "$prefix" ] || unchanged
 case "$n" in ''|0*|*[!0-9]*) unchanged ;; esac
 
-# A default branch never has an alias, so its alias-shaped names stay as they are.
-case "$prefix" in main|master) unchanged ;; esac
-origin_head="$(git -C "$dir" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null || true)"
-origin_head="${origin_head#refs/remotes/origin/}"
-[ -z "$origin_head" ] || [ "$prefix" != "$origin_head" ] || unchanged
-if [ "$prefix" = "develop" ] \
-    && ! git -C "$dir" rev-parse --verify -q "refs/remotes/origin/HEAD^{commit}" >/dev/null 2>&1; then
-  unchanged
-fi
+# A default branch never has an alias, so its alias-shaped names stay as they
+# are. The rule lives only in workflow_default_branch.sh; a missing or failing
+# helper is an error, never "not a default branch".
+default_rc=0
+bash "$(dirname -- "${BASH_SOURCE[0]}")/workflow_default_branch.sh" "$dir" "$prefix" || default_rc=$?
+case "$default_rc" in
+  0) unchanged ;;
+  1) ;;
+  *) echo "ERROR: cannot decide whether '$prefix' is the default branch (workflow_default_branch.sh exit $default_rc) (#1969)." >&2; exit 2 ;;
+esac
 
 remote="$(git -C "$dir" config --get "branch.$name.remote" 2>/dev/null || true)"
 merge="$(git -C "$dir" config --get "branch.$name.merge" 2>/dev/null || true)"

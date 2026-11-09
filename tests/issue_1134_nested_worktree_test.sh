@@ -279,8 +279,10 @@ run_step "${LINKED}" 1139 "top-level task" AMPLIHACK_SESSION_DEPTH=1
 WT_COUNT_AFTER="$(git -C "${MAIN}" worktree list --porcelain | grep -c '^worktree ')"
 BR_COUNT_AFTER="$(git -C "${MAIN}" for-each-ref refs/heads/ | wc -l)"
 if [[ "${RUN_RC}" -ne 0 && "${WT_COUNT_AFTER}" == "${WT_COUNT_BEFORE}" && "${BR_COUNT_AFTER}" == "${BR_COUNT_BEFORE}" ]] \
-    && printf '%s' "${RUN_ERR}" | grep -q "existing_branch='feat/parent'"; then
-    pass "E1-top-level-refusal" "top-level run on an unpushed caller branch stops before creating anything"
+    && printf '%s' "${RUN_ERR}" | grep -q "continuing the caller's branch 'feat/parent' (#1969)" \
+    && printf '%s' "${RUN_ERR}" | grep -q -- "-c repo_path=" \
+    && ! printf '%s' "${RUN_ERR}" | grep -q "existing_branch='feat/parent'"; then
+    pass "E1-top-level-refusal" "top-level run on an unpushed caller branch stops before creating anything, and the hint offers the main clone, not existing_branch"
 else
     fail "E1-top-level-refusal" "rc=${RUN_RC} worktrees ${WT_COUNT_BEFORE}->${WT_COUNT_AFTER} branches ${BR_COUNT_BEFORE}->${BR_COUNT_AFTER}; stderr:\n${RUN_ERR}"
 fi

@@ -41,7 +41,7 @@ steps:
       TOOLS_DIR="$(dirname "$SWEEP_HELPER")"
       # An AMPLIHACK_HOME older than a checkout's recipe lacks newer helpers, so when that tier is
       # incomplete and the checkout holds every helper in STEP_TOOLS, use the checkout's (#1808).
-      STEP_TOOLS="workflow_worktree_root.sh workflow_branch_name.sh workflow_pr_branch.sh workflow_caller_branch_alias.sh workflow_caller_branch.sh workflow_alias_reuse.sh workflow_worktree_deconflict.sh workflow_fetch_origin.sh amplihack_run_owned.sh workflow_runtime_root.sh"
+      STEP_TOOLS="workflow_worktree_root.sh workflow_branch_name.sh workflow_pr_branch.sh workflow_caller_branch_alias.sh workflow_caller_branch.sh workflow_default_branch.sh workflow_alias_reuse.sh workflow_worktree_deconflict.sh workflow_fetch_origin.sh amplihack_run_owned.sh workflow_runtime_root.sh"
       tools_complete() { local t; for t in $STEP_TOOLS; do [ -f "$1/$t" ] || return 1; done; }
       tools_complete "$TOOLS_DIR" || ! tools_complete "$REPO_PATH/amplifier-bundle/tools" || TOOLS_DIR="$REPO_PATH/amplifier-bundle/tools"
       # Worktree anchoring (#1134): a nested run's cwd is normally a LINKED worktree, so anchoring at
@@ -134,10 +134,10 @@ steps:
       [ -z "$EXPLICIT_BRANCH" ] || echo "INFO: task_description names branch '$EXPLICIT_BRANCH' (issue #1426)." >&2
       # CALLER BRANCH (#1969), lowest precedence: a top-level run from a linked worktree on its own
       # branch continues it via the alias path below, or stops before creating anything; never silently.
+      # The stop hint never offers existing_branch: Gate B would reuse the caller's worktree as it stands.
       caller_stop() {
-        local rc=$? q; [ "$rc" -ne 0 ] || return 0
-        q="$(printf '%s' "$CALLER_BRANCH" | sed "s/'/'\\\\''/g")"
-        printf "ERROR: step 4 was continuing the caller's branch '%s' (#1969) and stopped before creating a branch or worktree. Fix the cause above and re-run, or re-run with -c existing_branch='%s' and -c repo_path=%q.\n" "$CALLER_BRANCH" "$q" "$MAIN_REPO_PATH" >&2
+        local rc=$?; [ "$rc" -ne 0 ] || return 0
+        printf "ERROR: step 4 was continuing the caller's branch '%s' (#1969) and stopped before creating a branch or worktree. Fix the cause above in that worktree and re-run from it, or start a new branch by re-running with -c repo_path=%q. Do not name the branch with -c existing_branch instead: that reuses the caller's worktree as it stands, and step 15 commits and pushes whatever is in it (#858).\n" "$CALLER_BRANCH" "$MAIN_REPO_PATH" >&2
       }
       CALLER_BRANCH=""
       if [ -z "$EXISTING_BRANCH" ] && [ -z "$PR_NUMBER" ] && [ -z "$EXPLICIT_BRANCH" ]; then
@@ -200,7 +200,8 @@ steps:
             echo "ERROR: run 'git worktree prune' or remove the stale registration before retrying; refusing to guess a fallback worktree (issue #858)." >&2
             exit 1
           fi
-          # Gate B: the branch's worktree is the caller checkout. Any other is reused.
+          # Gate B: the branch's worktree is the caller checkout. Any other is reused in place with its changes
+          # and commits (#1565: existing_branch continues a kept worktree), unlike an alias; see #1833.
           [ "$EXISTING_WT_REAL" != "$REPO_REAL" ] || CALLER_ON_BRANCH=true
           [ "$CALLER_ON_BRANCH" = true ] || { WORKTREE_PATH="$EXISTING_WT"; echo "INFO: Reusing existing worktree at '$WORKTREE_PATH'." >&2; }
           [ "$CALLER_ON_BRANCH" = true ] || wt_own reuse-clean-worktree "$WORKTREE_PATH" "$BRANCH_NAME"

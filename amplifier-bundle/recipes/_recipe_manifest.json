@@ -52,8 +52,8 @@
   "workflow-pr-review": "df505dbbcf86363c",
   "workflow-precommit-test": "15d5ca68a3851948",
   "workflow-prep": "3e1dfe776ced6d26",
-  "workflow-publish": "8c11924af0b178e4",
+  "workflow-publish": "e4ac3e3fc27282fc",
   "workflow-refactor-review": "ad94b72c16cecd5d",
   "workflow-tdd": "4a8574462bc30532",
-  "workflow-worktree": "1ec1f2416a48ac2f"
+  "workflow-worktree": "de3fae9727faa16e"
 }

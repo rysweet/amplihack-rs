@@ -12,9 +12,9 @@
 # tool decides whether that is safe and which alias to use; step 4 creates it.
 #
 # Checks, in order; the first failure is the only one reported:
-#   1. <branch> is a default branch (main, master, the target of
-#      refs/remotes/origin/HEAD, or develop when origin/HEAD does not resolve):
-#      INFO line, exit 3. Step 4 then gives the #858 refusal.
+#   1. <branch> is a default branch, as workflow_default_branch.sh decides:
+#      INFO line, exit 3. Step 4 then gives the #858 refusal. The helper
+#      failing or missing: exit 1.
 #   2. The caller has uncommitted changes to tracked files, or its status
 #      cannot be read: exit 1.
 #   3. refs/remotes/origin/<branch> does not resolve: exit 1.
@@ -58,17 +58,12 @@ stop() {
 }
 at_caller="branch '$branch' is checked out in the caller repository at $caller"
 
-# 1. The default branch never gets an alias.
-origin_head="$(git -C "$caller" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null || true)"
-origin_head="${origin_head#refs/remotes/origin/}"
-is_default=false
-case "$branch" in main|master) is_default=true ;; esac
-[ -z "$origin_head" ] || [ "$branch" != "$origin_head" ] || is_default=true
-if [ "$branch" = "develop" ] \
-    && ! git -C "$caller" rev-parse --verify -q "refs/remotes/origin/HEAD^{commit}" >/dev/null 2>&1; then
-  is_default=true
-fi
-if [ "$is_default" = true ]; then
+# 1. The default branch never gets an alias. The rule lives only in
+# workflow_default_branch.sh; a missing or failing helper stops.
+default_rc=0
+bash "$(dirname -- "${BASH_SOURCE[0]}")/workflow_default_branch.sh" "$caller" "$branch" || default_rc=$?
+case "$default_rc" in 0|1) ;; *) stop "cannot decide whether '$branch' is the default branch (workflow_default_branch.sh exit $default_rc); refusing to choose an alias worktree" ;; esac
+if [ "$default_rc" -eq 0 ]; then
   echo "INFO: branch '$branch' is the default branch; it gets no alias worktree (issue #1762)." >&2
   exit 3
 fi

@@ -15,7 +15,8 @@
 #   2. HEAD is detached: exit 1;
 #   3. `git check-ref-format --branch <X>` does not print <X> back unchanged:
 #      ERROR line, exit 2;
-#   4. <X> is a default branch: exit 1;
+#   4. <X> is a default branch (workflow_default_branch.sh exits 0): exit 1;
+#      the helper failing or missing: ERROR line, exit 2;
 #   5. AMPLIHACK_SESSION_DEPTH is a whole number >= 2 (a nested run, #1134):
 #      the nested-run INFO line, exit 1;
 #   6. otherwise: the continuation INFO line on stderr, <X> alone on stdout,
@@ -66,17 +67,15 @@ if [ "$(git -C "$dir" check-ref-format --branch "$branch" 2>/dev/null || true)" 
   exit 2
 fi
 
-# 4. A default branch is never continued. The same rule is copied in
-# workflow_caller_branch_alias.sh (the planner) and workflow_remote_branch.sh
-# (the resolver); keep the three in step.
-origin_head="$(git -C "$dir" symbolic-ref -q refs/remotes/origin/HEAD 2>/dev/null || true)"
-origin_head="${origin_head#refs/remotes/origin/}"
-case "$branch" in main|master) exit 1 ;; esac
-[ -z "$origin_head" ] || [ "$branch" != "$origin_head" ] || exit 1
-if [ "$branch" = "develop" ] \
-    && ! git -C "$dir" rev-parse --verify -q "refs/remotes/origin/HEAD^{commit}" >/dev/null 2>&1; then
-  exit 1
-fi
+# 4. A default branch is never continued. The rule lives only in
+# workflow_default_branch.sh; a missing or failing helper stops here.
+default_rc=0
+bash "$(dirname -- "${BASH_SOURCE[0]}")/workflow_default_branch.sh" "$dir" "$branch" || default_rc=$?
+case "$default_rc" in
+  0) exit 1 ;;
+  1) ;;
+  *) echo "ERROR: cannot decide whether '$branch' is the default branch (workflow_default_branch.sh exit $default_rc) (#1969)." >&2; exit 2 ;;
+esac
 
 # The branch as one shell-inert word for copy-paste hints: 'X' with every
 # single quote written as '\''.

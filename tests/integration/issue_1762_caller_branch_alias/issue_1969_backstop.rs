@@ -9,14 +9,16 @@
 //! 1. the resolver is present (exit 2);
 //! 2. `TARGET` is not empty (exit 1, `no-push-target`);
 //! 3. `TARGET` equals `worktree_setup.branch_name` (exit 1, #1762);
-//! 4. `TARGET` is not a default branch (exit 1, `default-branch-target`);
+//! 4. `TARGET` is not a default branch (exit 1, `default-branch-target`), as
+//!    `workflow_default_branch.sh --ask-origin` decides; a missing or failing
+//!    rule helper exits 2;
 //! 5. `workflow_push_plan.sh` is present (exit 2).
 //!
-//! Step 15's default-branch rule differs on purpose from the helpers' copy:
-//! `main` and `master` always; the target of the local `refs/remotes/origin/HEAD`
-//! when that resolves; otherwise what `git ls-remote --symref origin HEAD`
-//! reports. `develop` is not special, and a resolvable local ref is trusted
-//! without asking `origin`.
+//! Step 15 runs the one shared rule with `--ask-origin`: `main` and `master`
+//! always; the target of the local `refs/remotes/origin/HEAD` when that
+//! resolves; otherwise what `git ls-remote --symref origin HEAD` reports, and
+//! `develop` only when origin gives no answer. A resolvable local ref is
+//! trusted without asking `origin`.
 
 use std::path::{Path, PathBuf};
 
@@ -236,9 +238,11 @@ fn remote_head_is_asked_when_local_origin_head_is_unset() {
     );
 }
 
-/// Step 15's rule has no `develop` fallback: with origin/HEAD unset and
-/// origin's HEAD on main, a task branch called `develop` is pushed. (The
-/// helpers' copy of the rule would treat it as a default branch.)
+/// Step 15 runs the shared rule with `--ask-origin`: with origin/HEAD unset
+/// locally and origin's HEAD on main, origin's answer replaces the `develop`
+/// guess, so a task branch called `develop` is pushed. (The read-only mode,
+/// which never asks origin, treats it as a default branch; see
+/// `ask_origin_without_an_answer_falls_back_to_develop`.)
 #[test]
 fn develop_is_not_a_default_branch_for_step15() {
     let fx = Fx::new();
@@ -412,4 +416,36 @@ fn hostile_branch_name_is_pushed_as_data() {
         &main_before,
         "hostile name, fast-forward",
     );
+}
+
+/// Check 4 fails closed: without `workflow_default_branch.sh`, step 15 exits 2
+/// before staging, with its own `ERROR` line, and pushes nothing. It never
+/// treats a missing rule as "not a default branch".
+#[test]
+fn missing_default_rule_stops_before_staging() {
+    let fx = Fx::new();
+    let home = fx.bundle_without(DEFAULT_RULE);
+    let wt = task_worktree(&fx, "feat/issue-1969-no-rule", false);
+    fx.write_in(&wt, "delegation.txt", "receiver model\n");
+    let was = before(&fx, &wt);
+
+    let run = step15(
+        &fx,
+        &wt,
+        &setup_for(&wt, "feat/issue-1969-no-rule"),
+        Some(&home),
+    );
+
+    assert_eq!(run.code, Some(2), "{}", run.describe());
+    assert!(
+        run.stderr_line_with(&[
+            "ERROR: cannot decide whether push target 'feat/issue-1969-no-rule' is the default branch",
+            "refusing to push (#1969).",
+        ])
+        .is_some(),
+        "{}",
+        run.describe()
+    );
+    assert_eq!(run.json()["pushed"], "false", "{}", run.describe());
+    assert_untouched(&fx, &wt, &run, &was, "no rule helper");
 }

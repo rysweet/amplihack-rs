@@ -51,7 +51,7 @@ Step 15 now does the following:
 A wrong or missing upstream can no longer send the work to another branch or
 block it. Step 4 also creates new branches with `--no-track`, so a branch cut
 from `origin/<base>` no longer gets `origin/<base>` as its upstream. See
-[New branches have no upstream until pushed](../recipes/issue-1762-caller-branch-worktree-alias.md#new-branches-have-no-upstream-until-pushed-1969).
+[New branches have no upstream until pushed](../recipes/issue-1969-caller-branch-and-explicit-push.md#new-branches-have-no-upstream-until-pushed).
 
 ---
 
@@ -77,6 +77,7 @@ fail, the earlier one decides the exit status and the `reason`:
 | 2 | `TARGET` is not empty | `ERROR: cannot resolve the branch to push (detached HEAD?); refusing to push (#1969).` | `1` | `no-push-target` |
 | 3 | `TARGET` equals `worktree_setup.branch_name` when that is set (#1762) | `ERROR: push target '<TARGET>' does not match worktree_setup.branch_name '<B>'; refusing to push (issue #1762).` | `1` | (none) |
 | 4 | `TARGET` is not a default branch | `ERROR: push target '<TARGET>' is the default branch; step 15 never pushes to it (#1969, #858).` | `1` | `default-branch-target` |
+| 4 | `workflow_default_branch.sh` is present and exits 0 or 1 | `ERROR: cannot decide whether push target '<TARGET>' is the default branch (workflow_default_branch.sh exit <rc>); refusing to push (#1969).` | `2` | (none) |
 | 5 | `workflow_push_plan.sh` is present | `ERROR: workflow push plan helper not found: <path> (#1969)` | `2` | (none) |
 
 For example, a detached HEAD in an install that lacks `workflow_push_plan.sh`
@@ -88,53 +89,62 @@ therefore refused instead of pushing that branch.
 
 ### Default-branch backstop
 
-Check 4 treats `TARGET` as a default branch when any of the following holds:
+Check 4 runs `workflow_default_branch.sh --ask-origin . "$TARGET"`, the one
+copy of the default-branch rule that step 4's helpers and the resolver also
+run. The rule and its callers are described under
+[The default-branch rule](../recipes/issue-1969-caller-branch-and-explicit-push.md#the-default-branch-rule-workflow_default_branchsh).
+`TARGET` is a default branch when any of the following holds:
 
 - it is `main` or `master`;
-- the local `refs/remotes/origin/HEAD` resolves and points at
-  `refs/remotes/origin/<TARGET>`;
+- it is the target of the local `refs/remotes/origin/HEAD`;
 - the local `refs/remotes/origin/HEAD` does not resolve, and `origin`'s own
   `HEAD`, as reported by `git ls-remote --symref origin HEAD`, points at
-  `refs/heads/<TARGET>`.
+  `refs/heads/<TARGET>`;
+- the local `refs/remotes/origin/HEAD` does not resolve, `origin` gives no
+  valid answer, and `TARGET` is `develop`.
 
 The `ls-remote` query is the only network access before staging. It is
 bounded as follows:
 
-- **It runs only when the local ref is missing.** When
-  `refs/remotes/origin/HEAD` resolves, step 15 uses it and does not ask
+- **It runs only when the local ref does not resolve.** When
+  `refs/remotes/origin/HEAD` resolves, the rule uses it and does not ask
   `origin`, even if the local ref is stale.
 - **It cannot prompt or leak.** It runs with `GIT_TERMINAL_PROMPT=0`. Its
   stderr is discarded, so a credential in an error message is never printed.
-- **Its output is parsed strictly.** Step 15 uses only a line of the exact
-  form `ref: refs/heads/<name>`, a tab, `HEAD`. Every other line is ignored.
-  `<name>` is used only if `git check-ref-format --branch <name>` prints it
-  back unchanged, and it is only ever compared with `TARGET`, never run.
-- **It fails open.** If the query fails, prints no matching line, or the name
-  is rejected, only `main` and `master` are refused, and the step
-  continues. A remote that cannot answer `ls-remote` will most likely reject
+- **Its output is parsed strictly.** Only a line of the exact form
+  `ref: refs/heads/<name>`, a tab, `HEAD` is used. Every other line is
+  ignored. `<name>` is used only if `git check-ref-format --branch <name>`
+  prints it back unchanged, and it is only ever compared with `TARGET`, never
+  run.
+- **Without an answer it falls back to the read-only rule.** If the query
+  fails, prints no matching line, or the name is rejected, `main`, `master`
+  and `develop` are refused, as in the read-only mode, and any other target
+  is pushed. A remote that cannot answer `ls-remote` will most likely reject
   the push that follows as well, so this risk is accepted.
 
-This rule differs on purpose from the one copied into
-`workflow_caller_branch.sh`, `workflow_caller_branch_alias.sh` and
-`workflow_remote_branch.sh`:
+The read-only mode used by step 4's helpers and the resolver differs only in
+the third and fourth rows: it never asks `origin`, so when the local ref does
+not resolve it always treats `develop` as the default branch.
 
-| | The three helpers | Step 15 |
+| | Read-only mode (helpers, resolver) | `--ask-origin` (step 15) |
 |---|---|---|
 | `main`, `master` | Default | Default |
 | Local `refs/remotes/origin/HEAD` target | Default | Default |
-| `develop` when the local ref does not resolve | Default | Not a default branch |
-| `origin`'s `HEAD`, asked with `ls-remote` | Not consulted | Default, when the local ref does not resolve |
+| `origin`'s `HEAD`, asked with `ls-remote`, when the local ref does not resolve | Not consulted | Default |
+| `develop` when the local ref does not resolve | Default | Default only when `origin` gives no answer |
 
-The `detect_and_planner_agree_on_default_branches` test covers the three
-helpers only. Step 15's rule is covered by its own tests; see
+The `every_caller_agrees_on_default_branches` test runs one table through the
+rule helper in both modes and through all four callers;
+`default_branch_rule_has_one_copy` checks that none of them carries its own
+copy. Step 15's behaviour is also covered by its own tests; see
 [Verification](#verification).
 
 Since #858, no run legitimately commits on the default branch, so this check
 is a backstop. It matters for a clone whose default branch has another name,
 for example `trunk`, and whose `refs/remotes/origin/HEAD` is unset. Step 4's
-[caller-branch detection](../recipes/issue-1762-caller-branch-worktree-alias.md#caller-branch-continuation-1969)
+[caller-branch detection](../recipes/issue-1969-caller-branch-and-explicit-push.md#caller-branch-continuation)
 uses local refs only, so it cannot recognise `trunk` as the default branch and
-may continue it. Step 15 asks `origin` and refuses the push. Refresh the
+may continue it. Step 15's `--ask-origin` mode asks `origin` and refuses the push. Refresh the
 local ref with `git remote set-head origin --auto`, and protect the default
 branch on the server; this check does not replace branch protection.
 
@@ -412,6 +422,8 @@ repository:
 | Missing `workflow_push_plan.sh` | Helper removed from the tools directory | Exit 2 before any commit or push. |
 | Nothing staged before the first push | Two commits, nothing staged, no `origin/<b>` | The #282 line ends `2 commit(s) ahead of origin.` |
 | Unrecognised default branch | The bare `origin`'s `HEAD` points at `refs/heads/trunk`; the clone's `refs/remotes/origin/HEAD` is unset; the task worktree is on `trunk` | Step 15 prints `ERROR: push target 'trunk' is the default branch; step 15 never pushes to it (#1969, #858).`, exits 1 with `reason="default-branch-target"` before staging; `origin/trunk` is unchanged. |
+| `develop` with origin answering `main` | The clone's `refs/remotes/origin/HEAD` is unset; the bare `origin`'s `HEAD` is `main`; the task worktree is on `develop` | `origin`'s answer replaces the `develop` guess, so the push goes ahead. |
+| Missing `workflow_default_branch.sh` | Rule helper removed from the tools directory | Exit 2 before staging, with `ERROR: cannot decide whether push target '<TARGET>' is the default branch …`; nothing pushed. |
 | Check order | Detached HEAD and `workflow_push_plan.sh` removed | Exit 1 with `reason="no-push-target"`, not exit 2. |
 | Hostile branch name | A branch name containing a single quote and `$(…)` | `commit_result` is valid JSON and nothing is executed. |
 

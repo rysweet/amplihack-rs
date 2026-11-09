@@ -222,6 +222,55 @@ fn detection_helper_is_listed_in_step_tools() {
     );
 }
 
+/// Crusty round 1: the default-branch rule has one copy,
+/// `workflow_default_branch.sh`. Each caller runs it and none reads
+/// origin/HEAD, names main/master or guesses develop itself; step 4 lists
+/// the helper in STEP_TOOLS so the #1808 complete-tools rule accounts for it.
+#[test]
+fn default_branch_rule_has_one_copy() {
+    let step4 = step_text("workflow-worktree", "step-04-setup-worktree", "command");
+    let tools = code_lines(&step4)
+        .find(|l| l.trim_start().starts_with("STEP_TOOLS="))
+        .expect("step 4 defines STEP_TOOLS");
+    assert!(
+        tools.split(['"', ' ']).any(|w| w == DEFAULT_RULE),
+        "{DEFAULT_RULE} is in STEP_TOOLS: {tools}"
+    );
+    let callers = [
+        (DETECT.to_owned(), read(&tool_path(DETECT))),
+        (PLANNER.to_owned(), read(&tool_path(PLANNER))),
+        (RESOLVER.to_owned(), read(&tool_path(RESOLVER))),
+        ("workflow-publish.yaml step 15".to_owned(), step15()),
+    ];
+    let inline =
+        Regex::new(r#"refs/remotes/origin/HEAD|main\|master|"develop"|ls-remote"#).unwrap();
+    for (name, text) in &callers {
+        assert!(
+            code_lines(text).any(|l| l.contains(DEFAULT_RULE)),
+            "{name} runs {DEFAULT_RULE}"
+        );
+        for line in code_lines(text) {
+            assert!(
+                !inline.is_match(line),
+                "{name} carries no copy of the default-branch rule: {line}"
+            );
+        }
+    }
+    assert!(
+        code_lines(&step15()).any(|l| l.contains(DEFAULT_RULE) && l.contains("--ask-origin")),
+        "step 15 asks origin through the helper"
+    );
+    let status =
+        Regex::new(r"(?:^|[\s;&|(]|\$\()git(?:\s+-C\s+\S+|\s+--no-optional-locks)*\s+status\b")
+            .unwrap();
+    for line in code_lines(&read(&tool_path(DEFAULT_RULE))) {
+        assert!(
+            !status.is_match(line),
+            "{DEFAULT_RULE} never runs git status (fsmonitor): {line}"
+        );
+    }
+}
+
 /// R9: both recipes stay within the brick limit (`< 400`, at most 399).
 #[test]
 fn recipes_stay_under_brick_limit() {
