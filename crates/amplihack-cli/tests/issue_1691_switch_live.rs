@@ -423,7 +423,7 @@ fn a_profile_open_in_a_session_still_becomes_the_default() {
     // it, as before #1691. An earlier hold on work stays and is named.
     let f = Fixture::new();
     f.ok(&["profile", "switch", "work"]);
-    let mut session = std::process::Command::new("sleep")
+    let mut session = std::process::Command::new(crate::support::session_holder::claude_sleep())
         .arg("600")
         .env("CLAUDE_CONFIG_DIR", f.root.join("spare"))
         .spawn()

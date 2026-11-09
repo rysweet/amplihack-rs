@@ -39,6 +39,7 @@ use super::tests_issue_1886::{
 use super::tests_swap::{ino_at, n, private};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
+use crate::commands::profile::proc_snapshot::ProcSource;
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::tests_fake_http::Reply;
 use crate::commands::profile::usage_direct::reason;
@@ -1014,7 +1015,7 @@ fn set_reading(p: PathBuf, a: Answer) {
 fn ctx(f: &Fx, measure: super::cycle::MeasureFn) -> Ctx {
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(f.store.clone(), f.home.clone(), s);
-    ctx.scan = |_| Liveness::Known(BTreeSet::new());
+    ctx.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::new()));
     ctx.measure = Some(measure);
     ctx.identity = by_path;
     ctx

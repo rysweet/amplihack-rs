@@ -11,6 +11,7 @@ use super::switch::{Switched, switch_in};
 use super::tests_swap::{Env, env, ino_at, n, private};
 use crate::commands::profile::auto_switch::kit::{Liveness, State, now};
 use crate::commands::profile::expected;
+use crate::commands::profile::proc_snapshot::ProcSource;
 use std::fs;
 use std::path::Path;
 
@@ -66,7 +67,7 @@ fn fixture() -> Env {
 fn context(e: &Env) -> Ctx {
     let settings = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), settings);
-    ctx.scan = |_| Liveness::Known(Default::default());
+    ctx.procs = ProcSource::from_fn(|_| Liveness::Known(Default::default()));
     ctx.identity = read_fake;
     ctx
 }

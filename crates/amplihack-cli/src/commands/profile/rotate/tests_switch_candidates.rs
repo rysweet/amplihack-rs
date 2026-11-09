@@ -4,9 +4,9 @@
 //! docs/reference/profile-command.md. Each end-to-end case builds the real
 //! state on the `tests_swap.rs` fixture (a running process, an auto-switch
 //! lease, the exclude list, a park marker) and asserts, through
-//! `assert_refused`, that nothing changed. A running session is a real child
-//! process with `CLAUDE_CONFIG_DIR` set, found by the same `/proc` scan the
-//! rotator uses, so those cases are Linux only. `not_a_candidate` is also
+//! `assert_refused`, that nothing changed. A running session is reported by
+//! a synthetic `ProcSource` (issue #2040): no real process is started or
+//! scanned. `not_a_candidate` is also
 //! checked for every reason directly, including the ones the fixture cannot
 //! reach end to end (`/proc` unreadable, a `hosting` directory without a
 //! running session).
@@ -24,34 +24,18 @@ use super::settings;
 use super::switch::not_a_candidate;
 use super::switch::{Switched, switch_in};
 use super::tests_swap::{CREDS, Env, env, ino_at, n, private};
-use super::tests_switch::assert_refused;
+use super::tests_switch::{assert_refused, assert_refused_seeing};
 use crate::commands::profile::auto_switch::kit::Liveness;
 use crate::commands::profile::pointer;
+use crate::commands::profile::proc_snapshot::ProcSource;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
 
-/// A child process whose environment names `dir` as its Claude config
-/// directory; killed when dropped.
-struct Session(std::process::Child);
-
-impl Session {
-    fn in_dir(dir: &Path) -> Self {
-        Self(
-            std::process::Command::new("/bin/sleep")
-                .arg("600")
-                .env("CLAUDE_CONFIG_DIR", dir)
-                .spawn()
-                .expect("spawn sleep"),
-        )
-    }
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
+/// Running sessions in the profiles `names`, as the `/proc` scan would
+/// report them (issue #2040: no real process is started or scanned).
+fn sessions_in(names: &[&str]) -> ProcSource {
+    let live: std::collections::BTreeSet<String> = names.iter().map(|s| s.to_string()).collect();
+    ProcSource::from_fn(move |_| Liveness::Known(live.clone()))
 }
 
 /// Writes the auto-switch ledger: directory → the account live in it.
@@ -84,12 +68,12 @@ fn ledger_bytes(e: &Env) -> Vec<u8> {
 #[test]
 fn a_profile_with_a_running_session_is_refused() {
     let e = env();
-    let _s = Session::in_dir(&e.root.join("spare"));
-    assert_refused(
+    assert_refused_seeing(
         &e,
         "spare",
         "profile spare is not a rotate candidate (session running): \
          a running process has CLAUDE_CONFIG_DIR set to it",
+        Some(&sessions_in(&["spare"])),
     );
 }
 
@@ -98,8 +82,7 @@ fn a_profile_with_a_running_session_is_refused() {
 fn a_running_session_in_another_profile_does_not_block_the_switch() {
     let e = env();
     e.store.add(&n("other")).unwrap();
-    let _s = Session::in_dir(&e.root.join("other"));
-    super::tests_switch::switch(&e, "spare").unwrap();
+    super::tests_switch::switch_seeing(&e, "spare", Some(&sessions_in(&["other"]))).unwrap();
     e.assert_finished();
 }
 
@@ -110,14 +93,14 @@ fn a_profile_whose_login_is_leased_is_refused() {
     // spare's account is live in `host`, whose session is still running, so
     // auto-switch recovery leaves the lease in place.
     e.store.add(&n("host")).unwrap();
-    let _s = Session::in_dir(&e.root.join("host"));
     hosts(&e, &[("host", "spare")]);
     let before = ledger_bytes(&e);
-    assert_refused(
+    assert_refused_seeing(
         &e,
         "spare",
         "profile spare is not a rotate candidate (leased): \
          auto-switch has lent its login to another profile's session",
+        Some(&sessions_in(&["host"])),
     );
     assert_eq!(ledger_bytes(&e), before, "the lease is untouched");
 }
@@ -130,10 +113,14 @@ fn a_profile_hosting_another_login_is_refused() {
     // in it. The rotator checks the running session first, so that is the
     // reason given; `hosting` itself is checked below.
     e.store.add(&n("other")).unwrap();
-    let _s = Session::in_dir(&e.root.join("spare"));
     hosts(&e, &[("spare", "other")]);
     let before = ledger_bytes(&e);
-    assert_refused(&e, "spare", "(session running)");
+    assert_refused_seeing(
+        &e,
+        "spare",
+        "(session running)",
+        Some(&sessions_in(&["spare"])),
+    );
     assert_eq!(ledger_bytes(&e), before, "the hosted login is untouched");
 }
 
@@ -299,11 +286,11 @@ fn a_profile_with_no_recorded_skip_is_a_candidate() {
 // --- the default for new launches survives a refused live move ---------------
 
 /// The whole switch with `/proc` unscannable: `Liveness::Unsupported`, what
-/// `scan_system` returns on macOS and every other non-Linux system.
+/// `ProcSource::system()` gives on macOS and every other non-Linux system.
 fn switch_without_liveness(e: &Env, name: &str) -> Switched {
     let s = settings::resolve(&TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
-    ctx.scan = |_| Liveness::Unsupported;
+    ctx.procs = ProcSource::from_fn(|_| Liveness::Unsupported);
     match switch_in(ctx, &n(name)) {
         Ok(Ok(s)) => s,
         Ok(Err(f)) => panic!("unexpected partial failure: {}", f.what),
@@ -364,8 +351,12 @@ fn a_refused_switch_keeps_an_earlier_hold_and_says_so() {
         super::tests_switch::switch(&e, "work").unwrap(),
         Switched::AlreadyLive(n("work"))
     );
-    let _s = Session::in_dir(&e.root.join("spare"));
-    let held = assert_refused(&e, "spare", "(session running)");
+    let held = assert_refused_seeing(
+        &e,
+        "spare",
+        "(session running)",
+        Some(&sessions_in(&["spare"])),
+    );
     assert_eq!(held, Some(n("work")));
     assert_eq!(pin::read(&e.rs), PinState::Pinned(n("work")));
     assert_eq!(pointer::read(&e.root).unwrap(), Some(n("spare")));

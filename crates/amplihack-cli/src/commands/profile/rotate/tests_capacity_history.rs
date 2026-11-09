@@ -25,6 +25,7 @@ use super::capacity_line;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
 use crate::commands::profile::capacity_summary;
+use crate::commands::profile::proc_snapshot::ProcSource;
 use crate::commands::profile::usage_cmd::ENV_CREDENTIAL_VARS;
 use crate::commands::profile::usage_history::{self, Entry, Point, Writer, from_probes, to_line};
 use crate::test_support::{EnvGuard, env_lock};
@@ -207,7 +208,7 @@ fn from_probes_counts_a_passive_reading_over_300_s_old_as_unknown() {
 fn ctx(e: &Env, measure: super::super::cycle::MeasureFn) -> Ctx {
     let s = settings::resolve(&super::super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut c = Ctx::new(e.store.clone(), e.home.clone(), s);
-    c.scan = |_| Liveness::Known(BTreeSet::new());
+    c.procs = ProcSource::from_fn(|_| Liveness::Known(BTreeSet::new()));
     c.measure = Some(measure);
     c
 }

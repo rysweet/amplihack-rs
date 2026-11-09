@@ -26,7 +26,7 @@ mod home_line;
 #[cfg(unix)]
 pub(super) mod kit;
 #[cfg(unix)]
-mod liveness;
+pub(super) mod liveness;
 #[cfg(unix)]
 mod mv;
 #[cfg(unix)]
@@ -355,7 +355,7 @@ pub fn return_after_session(dir: &Path) {
         }
         let result = state::State::new(root).and_then(|s| {
             let _lock = s.lock()?;
-            swap::recover(&s).map(|_| ())
+            swap::recover_after_session(&s).map(|_| ())
         });
         if let Err(e) = result {
             eprintln!("warning: auto-switch could not return logins: {e}");

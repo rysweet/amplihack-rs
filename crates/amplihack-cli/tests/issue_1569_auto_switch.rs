@@ -7,8 +7,9 @@
 //! amplihack prints.
 //!
 //! The swap tests need `/proc`, so they are Linux-only. A "holder" process
-//! (`sleep` with `CLAUDE_CONFIG_DIR` set) stands in for a running Claude
-//! session, which is how auto-switch decides a directory is live.
+//! (a copy of `sleep` under `claude-session/`, with `CLAUDE_CONFIG_DIR` set)
+//! stands in for a running Claude session, which is how auto-switch decides
+//! a directory is live. Since issue #2040 a plain `sleep` no longer counts.
 
 #![cfg(unix)]
 
@@ -279,7 +280,7 @@ impl Fixture {
     /// A process standing in for a Claude session running in `name`.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux-only swap tests
     fn hold(&self, name: &str) -> Holder {
-        let child = Command::new("sleep")
+        let child = Command::new(crate::support::session_holder::claude_sleep())
             .arg("120")
             .env_clear()
             .env("CLAUDE_CONFIG_DIR", self.dir(name))

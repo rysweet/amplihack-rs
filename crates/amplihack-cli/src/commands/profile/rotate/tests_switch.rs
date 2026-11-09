@@ -35,6 +35,7 @@ use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::State;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::pointer;
+use crate::commands::profile::proc_snapshot::ProcSource;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
@@ -80,7 +81,17 @@ fn log(e: &Env) -> String {
 }
 
 pub(super) fn switch(e: &Env, name: &str) -> Result<Switched, ProfileError> {
-    match switch_live(&e.store, &e.home, &n(name)) {
+    switch_seeing(e, name, None)
+}
+
+/// [`switch`], with running sessions from `procs` when it is set
+/// (issue #2040), instead of this host's `/proc`.
+pub(super) fn switch_seeing(
+    e: &Env,
+    name: &str,
+    procs: Option<&ProcSource>,
+) -> Result<Switched, ProfileError> {
+    match switch_live_seeing(e, name, procs) {
         Ok(Ok(s)) => Ok(s),
         Ok(Err(f)) => panic!("unexpected partial failure: {}", f.what),
         Err(err) => Err(err),
@@ -101,9 +112,35 @@ fn snap_but_default(e: &Env) -> Vec<(String, FileState)> {
 /// profile an earlier switch still holds rotation on.
 #[track_caller]
 pub(super) fn assert_refused(e: &Env, name: &str, want: &str) -> Option<ProfileName> {
+    assert_refused_seeing(e, name, want, None)
+}
+
+/// `switch_live`, or the same switch with `ctx.procs` set to `procs`.
+fn switch_live_seeing(
+    e: &Env,
+    name: &str,
+    procs: Option<&ProcSource>,
+) -> Result<Result<Switched, super::switch::AfterSwapFailure>, ProfileError> {
+    let Some(procs) = procs else {
+        return switch_live(&e.store, &e.home, &n(name));
+    };
+    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None)?;
+    let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
+    ctx.procs = procs.clone();
+    super::switch::switch_in(ctx, &n(name))
+}
+
+/// [`assert_refused`], with running sessions from `procs` when it is set.
+#[track_caller]
+pub(super) fn assert_refused_seeing(
+    e: &Env,
+    name: &str,
+    want: &str,
+    procs: Option<&ProcSource>,
+) -> Option<ProfileName> {
     let before = snap_but_default(e);
     let pin_before = pin::read(&e.rs);
-    let held = match switch_live(&e.store, &e.home, &n(name)) {
+    let held = match switch_live_seeing(e, name, procs) {
         Ok(Ok(Switched::DefaultOnly { reason, held })) => {
             assert!(reason.contains(want), "refusal {reason:?} lacks {want:?}");
             assert!(
@@ -630,10 +667,10 @@ fn a_pin_change_invalidates_the_cycle_snapshot() {
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
     let state = State::new(&e.root).unwrap();
-    let before = snapshot(&ctx, &state).unwrap();
+    let before = snapshot(&ctx, &state, super::observe::Read::Cached).unwrap();
     assert_eq!(before.pin, PinState::None);
     pin::write(&e.rs, &n("spare")).unwrap();
-    let after = snapshot(&ctx, &state).unwrap();
+    let after = snapshot(&ctx, &state, super::observe::Read::Cached).unwrap();
     assert_eq!(after.pin, PinState::Pinned(n("spare")));
     assert_ne!(
         before, after,

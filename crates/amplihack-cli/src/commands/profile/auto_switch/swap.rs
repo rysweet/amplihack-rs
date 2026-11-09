@@ -6,7 +6,7 @@
 use super::candidate::{self, Pool};
 use super::config::Config;
 use super::fsx;
-use super::liveness::{self, Liveness};
+use super::liveness::Liveness;
 use super::mv::{self, MoveError, abort_point};
 use super::overflow_inputs::OverflowInputs;
 use super::per_token;
@@ -17,6 +17,7 @@ use super::state::{
 use super::usage::{self, Attribution, RateLimits};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::proc_snapshot::{Fresh, ProcSource};
 use crate::commands::profile::rotate::CheckNote;
 use crate::commands::profile::rotate::identify::Account;
 use std::fs;
@@ -262,6 +263,36 @@ pub fn recover(state: &State) -> Result<Option<Liveness>, ProfileError> {
 
 /// `recover`, plus one line for each thing it did, for `repair`.
 pub fn recover_reporting(state: &State) -> Result<(Option<Liveness>, Vec<String>), ProfileError> {
+    recover_reporting_with(state, &ProcSource::system())
+}
+
+/// [`recover_reporting`] reading running sessions from `procs`. The read is
+/// confirmed (issue #2040): when a hosted directory looks ended in the
+/// cached answer, a fresh read decides before any login is returned.
+pub fn recover_reporting_with(
+    state: &State,
+    procs: &ProcSource,
+) -> Result<(Option<Liveness>, Vec<String>), ProfileError> {
+    recover_reading(state, |root, hosted| {
+        procs.confirmed(root, |l| hosted.iter().any(|n| !l.is_live(n)))
+    })
+}
+
+/// [`recover`] for the launcher once its Claude has exited: the running
+/// sessions are read afresh. A cached snapshot written during the session
+/// still holds that session's own processes for up to 30 seconds, which
+/// would keep its borrowed login away until a later recovery.
+pub fn recover_after_session(state: &State) -> Result<Option<Liveness>, ProfileError> {
+    let procs = ProcSource::system();
+    recover_reading(state, |root, _| procs.liveness(root, Fresh::Forced)).map(|(live, _)| live)
+}
+
+/// Recovery with `read` giving the running sessions, asked only when a
+/// directory hosts a borrowed login, with the hosted directories' names.
+fn recover_reading(
+    state: &State,
+    read: impl FnOnce(&Path, &[ProfileName]) -> Liveness,
+) -> Result<(Option<Liveness>, Vec<String>), ProfileError> {
     let mut done = Vec::new();
     let mut ledger = state.load_ledger()?;
     if let Some(j) = state.load_journal()? {
@@ -276,7 +307,12 @@ pub fn recover_reporting(state: &State) -> Result<(Option<Liveness>, Vec<String>
         cleanup_rerun(state);
         return Ok((None, done));
     }
-    let live = liveness::scan_system(&state.root);
+    let hosted_names: Vec<ProfileName> = ledger
+        .hosts
+        .keys()
+        .filter_map(|d| ProfileName::parse(d).ok())
+        .collect();
+    let live = read(&state.root, &hosted_names);
     let hosted: Vec<(String, HostEntry)> = ledger
         .hosts
         .iter()
@@ -485,10 +521,16 @@ pub fn swap_check(
     if !worth_checking {
         return Ok(());
     }
-    let live = match recover(state)? {
+    let procs = ProcSource::system();
+    let live = match recover_reporting_with(state, &procs)?.0 {
         Some(live) => live,
-        None => liveness::scan_system(&state.root),
+        None => procs.liveness(&state.root, Fresh::Cached),
     };
+    if !swap_allowed(state, &live, owner) {
+        return Ok(());
+    }
+    // Issue #2040: a swap is decided on a fresh read, never on the cache.
+    let live = procs.liveness(&state.root, Fresh::Forced);
     if !swap_allowed(state, &live, owner) {
         return Ok(());
     }

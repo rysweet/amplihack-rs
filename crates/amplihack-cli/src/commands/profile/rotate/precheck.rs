@@ -37,11 +37,11 @@ fn real_dev(p: &Path) -> Option<u64> {
 fn nothing() {}
 
 impl Env<'static> {
-    /// The sessions `scan` finds (the cycle's own `Ctx::scan`), the
-    /// auto-switch ledger and real devices.
-    pub fn system(root: &Path, state: &State, scan: fn(&Path) -> Liveness) -> Self {
+    /// The sessions `liveness` the caller read (through the cycle's own
+    /// `Ctx::procs`), the auto-switch ledger and real devices.
+    pub fn system(state: &State, liveness: Liveness) -> Self {
         Self {
-            liveness: scan(root),
+            liveness,
             auto_switch: state.load_ledger().ok(),
             dev: &real_dev,
             after_create: &nothing,

@@ -161,7 +161,7 @@ fn barred_profile_folder_is_never_refreshed() {
             "pre_swap_fingerprint": null}}})
         .to_string(),
     );
-    let mut session = std::process::Command::new("sleep")
+    let mut session = std::process::Command::new(crate::support::session_holder::claude_sleep())
         .arg("600")
         .env("CLAUDE_CONFIG_DIR", w.f.root.join("spare"))
         .spawn()

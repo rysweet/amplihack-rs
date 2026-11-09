@@ -21,8 +21,9 @@ use super::overflow_record::{
 use super::pin::{self, Gate as PinGate}; // the switch-hold gate
 use super::plan_room::no_room;
 pub use super::prelude::prototype_guard;
-use super::prelude::{Prelude, locked_prelude};
+use super::prelude::{Prelude, locked_prelude, log_sink};
 use super::revalidate::{self, Verdict};
+use super::run_lock::{self, Taken};
 use super::swap::{self, Source};
 use super::swap_back;
 use crate::commands::profile::ProfileError;
@@ -54,6 +55,28 @@ pub(super) fn save(
 }
 
 pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError> {
+    // Issue #2040 (D10): one rotate run at a time, real or dry, held until
+    // this function returns. Taken before anything is read.
+    let _run_lock = match run_lock::take(&ctx.rs) {
+        Ok(Taken::Held(lock)) => lock,
+        Ok(Taken::Busy(pid)) => {
+            if mode == Mode::Watch {
+                log_sink(ctx, false).emit(now(), msg::RUN_BUSY);
+                return Ok(CycleOutcome::Skipped);
+            }
+            return Err(ProfileError::RotateRunning(pid));
+        }
+        // A run lock file that fails a check: the daemon keeps running and
+        // says so each cycle until the file is fixed.
+        Err(ProfileError::RotateRefused(reason))
+            if mode == Mode::Watch && reason.starts_with(run_lock::REFUSED_HEAD) =>
+        {
+            let reason = reason.strip_suffix("; nothing was read").unwrap_or(&reason);
+            log_sink(ctx, false).emit(now(), &format!("skip: {reason}"));
+            return Ok(CycleOutcome::Skipped);
+        }
+        Err(e) => return Err(e),
+    };
     // Issue #1962: set for each run, so a real cycle never inherits it.
     ctx.read_only = mode == Mode::DryRun;
     if mode == Mode::DryRun {
