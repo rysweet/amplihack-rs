@@ -1,8 +1,8 @@
 ---
 title: Keep Tests Passing Under Host Load
 type: howto
-updated: 2026-11-07
-related: issue #1973, issue #1765, issue #1961, issue #2019, issue #2017
+updated: 2026-11-09
+related: issue #1973, issue #1765, issue #1961, issue #2019, issue #1977, issue #1998, issue #2036, issue #2017
 ---
 
 # Keep Tests Passing Under Host Load
@@ -10,21 +10,28 @@ related: issue #1973, issue #1765, issue #1961, issue #2019, issue #2017
 A test that measures wall-clock time also measures how busy the host is. On a
 loaded host such a test fails, and the next run fails on a different subset,
 so a push can take several attempts. This guide is for contributors who write
-or change tests in `amplihack-cli` and `amplihack-hooks`. It explains how to
-write a test that host speed cannot decide, which shared helpers and test
-knobs to use, and how to prove a fix under CPU load.
+or change tests in `amplihack-cli`, `amplihack-hooks` and `amplihack-utils`.
+It explains how to write a test that host speed cannot decide, which shared
+helpers and test knobs to use, and how to prove a fix under confined CPU load.
 
 ## Contents
 
 - [The rule](#the-rule)
+- [The two hang guards](#the-two-hang-guards)
 - [Assert the final state](#assert-the-final-state)
 - [Wait on the condition](#wait-on-the-condition)
+- [Wait on an event](#wait-on-an-event)
 - [Change a test input](#change-a-test-input)
+- [Test that a timeout fires](#test-that-a-timeout-fires)
 - [Inject a clock](#inject-a-clock)
 - [Run a private copy of the binary](#run-a-private-copy-of-the-binary)
 - [Use a debug-only knob](#use-a-debug-only-knob)
+- [Wait for the version probe to exit](#wait-for-the-version-probe-to-exit)
+- [Recipe runner tests](#recipe-runner-tests)
+- [Fleet TUI tests](#fleet-tui-tests)
 - [Rotator tests](#rotator-tests)
 - [Checks that something does not happen](#checks-that-something-does-not-happen)
+- [The wall-clock scan guard](#the-wall-clock-scan-guard)
 - [What not to do](#what-not-to-do)
 - [Prove a fix under load](#prove-a-fix-under-load)
 - [Limits of a CPU-only proof](#limits-of-a-cpu-only-proof)
@@ -32,31 +39,57 @@ knobs to use, and how to prove a fix under CPU load.
 
 ## The rule
 
-No test passes or fails because of how long something took, unless the rule
-under test is itself about time. Remove a wall-clock dependency with the first
-method in this list that works:
+No test passes or fails because of how long something took. A test ends when
+an event happens, and asserts the outcome of that event. Remove a wall-clock
+dependency with the first method in this list that works:
 
 1. Assert the final state.
-2. Wait on the condition with `wait_until`, under the 10-minute ceiling.
-3. Change a test input: a stub, a time scale, a function parameter or an
+2. Wait on the event itself: a join, a channel message, a barrier, a gate, a
+   child's exit, a readiness file or a pidfd.
+3. Wait on the condition with `wait_until`, under the 10-minute ceiling.
+4. Change a test input: a stub, a time scale, a function parameter or an
    explicit mtime.
-4. Inject a clock, when the product measures the time itself.
-5. Add a debug-only knob, as a last resort.
+5. Inject a clock, when the product measures the time itself.
+6. Isolate shared state: a per-test directory, counter or environment.
+7. Add a debug-only knob, as a last resort. A knob may change which event
+   ends a wait. It never lengthens a window.
 
 Product timeouts and budgets keep their defaults in every build. A test
-changes only its own inputs.
+changes only its own inputs. Never fix a load failure by raising a timeout,
+sleep, delay or retry count.
 
 Wall-clock dependencies to look for:
 
-| Dependency | Example before #1973 |
-|------------|----------------------|
+| Dependency | Example before #1973 and #2019 |
+|------------|--------------------------------|
 | An exit timeout | "amplihack did not exit within 60 s" |
 | A budget measured from real time | the 30 s identity budget, measured from the start of a rotate cycle |
 | A fixed sleep used to order two events | `sleep(Duration::from_millis(1200))` before writing a file |
-| An `elapsed < N` assertion | `elapsed < 5 s` after `--skip-update-check` |
-| A product timeout no test input reaches | the 10 s limit on each tmux, `systemd-run` and git call of `amplihack agent`, run against a shell-script fake tmux |
+| An `elapsed < N` assertion | `elapsed < 5 s` after `--skip-update-check`; `start.elapsed() < 3 s` in the `limit_resume_fs` racers; `< 25 s` in three recipe tests |
+| A product timeout no test input reaches | the 10 s limit on each tmux call of `amplihack agent`; the 3 s `--version` probe in `launch_target` |
 | A lock wait or request deadline measured inside the product | the 5 s `FsGuard` lock timeout, timed with real sleeps; the `usage_direct` refresh deadline, run against a slow fake server |
+| A sleep followed by "nothing happened" | sleeping 2.3 s, then asserting an orphan's marker file is absent |
+| A quiet-period read | reading a PTY until no bytes arrive for 500 ms |
 | A binary that another build replaces mid-run | `current_exe()/../../amplihack`, re-linked by cargo while a test runs it |
+
+## The two hang guards
+
+A test that waits on an event must still end if the event never comes. Two
+guards do that, and no test adds a third:
+
+| Guard | Value | Where | Why it exists |
+|-------|-------|-------|---------------|
+| `CEILING` | 600 s | `crates/amplihack-cli/tests/support/wait.rs`, included with `#[path]` by the `amplihack-cli` lib tests (`crate::test_support::wait`), `amplihack-hooks`'s `limit_resume_fs` and the `amplihack` `integration` target | Ends every wait on a child process, a channel, a PTY or a pidfd if the event never comes. |
+| `HANG_GUARD` | 120 s | `commands::profile::tests_usage_direct` only | Bounds the real socket timeouts of a request whose deadline is held still by a fake clock. Without it a request to a gated fake server could block forever. |
+
+A guard may only end a test that has hung. It never decides a pass:
+
+- No test asserts that something finished within a guard.
+- A guard's failure message names the event it was waiting for. A
+  `HANG_GUARD` failure contains the word `hung`.
+- Do not lower a guard to make a hang fail sooner. A real hang taking 10
+  minutes to fail is the price of never failing a working test on a stalled
+  host.
 
 ## Assert the final state
 
@@ -135,16 +168,16 @@ checked another way. Name that check in the PR's per-test table.
 
 `crates/amplihack-cli/tests/support/wait.rs` holds the shared wait helpers.
 Integration tests in `crates/amplihack-cli/tests/` reach it as
-`crate::support::wait`; the `amplihack` package's `integration` target
-reaches it as `crate::wait` through the `#[path]` line shown in
-[Assert the final state](#assert-the-final-state).
+`crate::support::wait`; lib tests in `amplihack-cli` reach it as
+`crate::test_support::wait`; the `amplihack` package's `integration` target
+reaches it as `crate::wait`.
 
 | Item | What it does |
 |------|--------------|
 | `CEILING` | `Duration::from_secs(600)`. The single ceiling for every wait. |
 | `wait_until(what, cond)` | Calls `cond` every 50 ms until it returns `true`. Panics at `CEILING`. |
-| `output_within(what, &mut cmd)` | Runs `cmd` with stdout and stderr piped and drained on helper threads, and returns its `Output`. Retries a spawn that fails with `ExecutableFileBusy` up to 50 times, 20 ms apart. Kills and reaps the child at `CEILING`, then panics. |
-| `wait_child(what, &mut child)` | Waits for a child you spawned yourself, with `try_wait`. Kills and reaps it at `CEILING`, then panics. |
+| `output_within(what, &mut cmd)` | Runs `cmd` with stdout and stderr piped and drained on helper threads, and returns its `Output`. Kills and reaps the child at `CEILING`, then panics. |
+| `wait_child(what, &mut child)` | Waits for a child you spawned yourself. Kills and reaps it at `CEILING`, then panics. |
 
 `what` names the condition in words. A timeout panic reads like this:
 
@@ -166,9 +199,9 @@ wait::wait_until("the rotator to log its first cycle", || {
 });
 ```
 
-A real hang now takes up to 10 minutes to fail. That is the price of never
-failing a working test on a stalled host. A ceiling longer than any expected
-stall is the point; do not shorten it to make a hang fail sooner.
+`wait_until` polls a cheap condition such as a file or a log line. Do not use
+it to rerun a heavy check, such as a whole command, on an interval. Wait for
+that command's exit instead.
 
 Older local helpers (`wait_for`, `wait_bounded`, `run_bounded`) in
 `issue_1592_daemon`, `issue_1592_root_rotator`, `issue_1606_detach` and
@@ -177,6 +210,72 @@ Do not add a new local wait helper with its own ceiling.
 
 `issue_1760_fixture::wait_until` takes only the condition and uses the same
 10-minute `CEILING`; it returns `false` when the condition never held.
+
+## Wait on an event
+
+When the test controls both sides, wait on the event itself instead of
+polling. These helpers exist for that.
+
+### Channels and barriers
+
+Threads that race start together on a `std::sync::Barrier` and send their
+outcome over an `mpsc` channel. The test collects every outcome with
+`recv_timeout(CEILING)` and asserts on the outcomes, never on how long the
+race took. See [Racing threads](#racing-threads).
+
+### `Gate`
+
+`crate::test_support::test_gate::Gate` holds one side of a test at a known
+point until the test lets it go. A fake server's handler calls
+`gate.arrive_and_wait()`. The test calls `gate.wait_arrived(what)` to learn
+that the handler has been reached, makes its assertions, then calls
+`gate.open()`:
+
+```rust
+use crate::test_support::test_gate::Gate;
+
+let gate = Gate::new(); // an Arc
+let fake = FakeServer::start({
+    let gate = gate.clone();
+    move |_req| {
+        gate.arrive_and_wait();
+        Response::json(200, TOKEN_BODY)
+    }
+});
+
+let reader = std::thread::spawn(move || read_with(&ep, &req, &ctx));
+gate.wait_arrived("the token handler to be reached");
+assert!(lock_path.exists(), "the refresh must hold the lock while the POST is open");
+gate.open();
+let r = reader.join().expect("reader thread panicked");
+```
+
+`wait_arrived` is bounded by `CEILING`. A gate used out of order, such as
+`open()` twice or `wait_arrived` after `open()`, panics with a message that
+contains `gate`. `tests_usage_direct` and `rotate::tests_daemon` share it.
+
+### `PtyReader`
+
+`PtyReader::spawn(master)` reads a PTY on its own thread and sends each chunk
+on a channel. `reader.wait_for(needle)` returns once the text read so far
+contains `needle`, bounded by `CEILING`. It replaces `read_until_quiet` and
+`drain(duration)`. See [Fleet TUI tests](#fleet-tui-tests).
+
+### `wait_pid_gone` and `KillOnDrop`
+
+On Linux, `crate::test_support::pidfd_wait` waits for a process the test did
+not spawn, such as an orphan left behind by a recipe step:
+
+| Item | What it does |
+|------|--------------|
+| `parse_pid(text)` | Accepts ASCII digits only. Rejects `0`, `1` and the test's own pid. A missing or bad pid file fails the test. |
+| `PidFd::open(pid)` | Opens a pidfd. Call it while the process is known to be alive, so a later reuse of the pid cannot point it at another process. |
+| `wait_pid_gone(&pidfd, what)` | Blocks until the process exits, bounded by `CEILING`. |
+| `KillOnDrop(pidfd)` | Sends `SIGKILL` through the pidfd when dropped, so a failing test leaves nothing behind. |
+
+`ESRCH` from `PidFd::open` counts as "gone" only after the teardown under
+test has run. Before that it is a failure. These helpers need Linux 5.3 or
+later and are `cfg(target_os = "linux")`.
 
 ## Change a test input
 
@@ -189,11 +288,7 @@ input instead of measuring real time.
 | A function parameter | `mermaid_cli::version_probe_succeeds_within(bin, configure, timeout)`. `version_probe_succeeds` calls it with `VERSION_PROBE_TIMEOUT`; the environment-capture test passes 600 s. `codex_plugin` tests call `native_with_timeout` with 600 s. |
 | An explicit mtime | The blarify staleness test sets `src/app.py` to now minus 60 s and `blarify.json` to now with `File::set_modified`, instead of sleeping 1 s between writes. |
 | A stub | A recording `npm` stub, or the rotator fixture's `FAKE_CLAUDE`. |
-
-Tests that check a timeout itself keep their short timeout and a generous
-upper bound. `version_probe_is_bounded_for_hanging_binaries` still uses
-500 ms and asserts under 30 s; see
-[Bound a timeout without measuring speed](./keep-tests-from-changing-path-and-home.md#bound-a-timeout-without-measuring-speed).
+| A per-test directory | `issue_1811_governor` gives each test its own governor state directory, so parallel tests never share admissions. |
 
 ### Ordering two events
 
@@ -225,25 +320,70 @@ state, and the wait would run to the reset.
 
 Both return the child's `Output`, with stderr rebuilt from the lines read.
 
+### Starting children together
+
+`issue_1811_governor` starts several children that must contend for the
+governor at the same time. Each child's stub writes `ready.N` into the test's
+state directory and then blocks reading a FIFO. The test waits for every
+`ready.N` file, then opens the FIFO for writing and closes it, which releases
+all children at once. It asserts the number of children admitted, not when
+they were admitted.
+
+### Comparing times from one clock
+
+`issue_1743_autodrive_budget` compares ledger values with each other, never
+with the test's own `Instant::now()`. Every value it compares comes from the
+product's clock. Where the test needs to know when a stub step started and
+ended, the stub writes start and end marks to files, and the test asserts the
+order of those marks.
+
 ### Stub files
 
 A stub written in place can fail to start with `ETXTBSY` when another thread
-forks at the same moment. Which fix applies depends on where the test lives:
+forks while the file is still open for writing. Every stub, in every kind of
+test, is written by one function:
+`crates/amplihack-cli/tests/support/exec_stub.rs::write_executable(path, body, mode)`.
 
-| Test location | Fix |
-|---------------|-----|
+| Test location | How to reach it |
+|---------------|-----------------|
 | `crates/amplihack-cli/tests/` and the `amplihack` `integration` target | `exec_stub::write_executable(path, body, mode)`. |
-| Unit tests inside a crate that has a `test_support` module (`mermaid_cli` and `codex_plugin` in `amplihack-cli`, `session_start::blarify` in `amplihack-hooks`) | `crate::test_support::write_executable(path, body)`, a wrapper that includes `exec_stub.rs` with `#[path]` and passes mode `0755`. |
+| Unit tests inside a crate that has a `test_support` module (`install::clone`'s `fake_git`, `recipe::run`'s `write_stub`, `mermaid_cli`, `codex_plugin`, `session_start::blarify` in `amplihack-hooks`) | `crate::test_support::write_executable(path, body)`, a wrapper that includes `exec_stub.rs` with `#[path]` and passes mode `0755`. |
 
-There is one writer, `crates/amplihack-cli/tests/support/exec_stub.rs`. A
-short-lived `sh` writes `<path>.stub-tmp.<pid>`, sets the mode and renames it
-over `path`. The test process never holds a write descriptor that a fork
-could inherit, and rewriting a stub that is still running replaces the
-directory entry instead of failing with `ETXTBSY`.
-| Anywhere neither is possible | Retry the spawn once when it fails with `ErrorKind::ExecutableFileBusy`. |
+A short-lived `sh` writes `<path>.stub-tmp.<pid>`, closes it, sets the mode
+and renames it over `path`. The test process never holds a write descriptor
+that a fork could inherit, and rewriting a stub that is still running
+replaces the directory entry instead of failing with `ETXTBSY`.
+`write_executable` asserts `mode & 0o7000 == 0`, so no stub is setuid,
+setgid or sticky. There is no retry: a stub that fails to start is a bug.
 
-Quote every argument in the stub and never interpolate test input into
-`sh -c`.
+To find a stub writer that bypasses it:
+
+```bash
+grep -rn 'set_permissions' crates/*/src | grep '0o7'
+# Output: only write_executable and production code
+```
+
+Quote every path in a stub, pass paths as positional arguments, and never
+interpolate test input into `sh -c`.
+
+## Test that a timeout fires
+
+Some tests exist to prove that a timeout fires: the recipe runner's hang
+test, a lock that gives up. Such a test:
+
+1. Uses an injected clock and advances it, when the product takes one.
+2. Otherwise keeps a short product timeout as the trigger only.
+3. Asserts the outcome: the "timed out" error, and that every process the
+   step started is gone (see [Recipe runner tests](#recipe-runner-tests)).
+4. Never asserts an upper bound on elapsed time. A timeout that fires late
+   on a busy host is correct behaviour.
+
+`tests_execute.rs` and `tests_teardown.rs` used to assert that the runner
+returned within 25 s or 8 s; those assertions are gone. A bound test this
+sweep did not convert is listed in the
+[scan guard's allowlist](#the-wall-clock-scan-guard) with its follow-up
+issue. For a fake that hangs, see
+[Bound a timeout without measuring speed](./keep-tests-from-changing-path-and-home.md#bound-a-timeout-without-measuring-speed).
 
 ## Inject a clock
 
@@ -270,7 +410,8 @@ pub struct SystemClock;
 
 No environment variable, global or config setting selects a clock. Production
 code always passes `SystemClock`, and no fake ships in a library. Each test
-module that needs a fake defines its own.
+module that needs a fake defines its own. A `*_with(.., clock)` function
+takes all of its time from the clock it is given.
 
 These seams take a clock:
 
@@ -279,34 +420,53 @@ These seams take a clock:
 | `amplihack_utils::secure_files` lock wait | `lock_exclusive_timeout(file, timeout)` calls the `_with` form with `&SystemClock` | `lock_exclusive_timeout_with(file, timeout, &clock)` |
 | `amplihack_hooks::limit_resume::guard::FsGuard` | `FsGuard::new(root)` uses `LOCK_TIMEOUT` (5 s) and `SystemClock`; `with_lock_timeout(root, t)` uses `SystemClock` | `FsGuard::with_clock(root, timeout, Arc::new(clock))` |
 | `amplihack-cli` `profile::usage_direct` read and refresh | `read(ep, req)` and `refresh_expired(ep, req)` pass `Ctx::system()`: `SystemClock` and the process-wide refresh counter | `read_with(ep, req, &ctx)` and `refresh_expired_with(ep, req, &ctx)`, where `ctx` is `Ctx::new(&clock, &refreshing)` |
+| `amplihack-cli` `profile::usage_direct` stop path | `wait_for_refreshes(limit)` calls `wait_for_refreshes_on(&REFRESHING, limit, &SystemClock)` | `wait_for_refreshes_on(&counter, limit, &clock)` |
 
-The existing call signatures and defaults do not change: the 5 s lock timeout,
-`REFRESH_BUDGET`, `MAX_STEP`, the 60 s expiry window and the global
-`REFRESHING` counter are the same in every build.
+On non-unix targets `lock_exclusive_timeout` and its `_with` form return
+`ErrorKind::Unsupported`. They fail closed and never fall back to no lock.
+
+The existing call signatures and defaults do not change in any build. Unit
+tests pin each one:
+
+| Default | Value | Pinned by |
+|---------|-------|-----------|
+| `LOCK_TIMEOUT` | 5 s | `limit_resume_fs::default_lock_timeout_is_five_seconds` |
+| `MAX_STEP` | 10 s | `usage_direct` unit test |
+| `REFRESH_BUDGET` | 3 s | `usage_direct` unit test |
+| Expiry margin | 60 s | `usage_direct` unit tests at 59 s (refreshed) and 61 s (not refreshed) |
+| `wait_for_refreshes` poll | 50 ms | `usage_direct` unit test |
+| `PER_CANDIDATE_PROBE_TIMEOUT`, `TOTAL_PROBE_BUDGET` | 3 s, 10 s | `launch_target` unit tests |
 
 ### Frozen and advancing fakes
 
 A fake keeps virtual time as a base `Instant` plus an `AtomicU64` offset in
-nanoseconds. No third-party crate is used. There are two kinds:
+nanoseconds. No third-party crate is used. There are three kinds:
 
 | Fake | `now()` | `sleep(d)` | Use it when |
 |------|---------|------------|-------------|
 | Advancing | base + offset | adds `d` to the offset and returns at once | the rule under test is about time, such as "a commit fails only after 5 s" |
-| Frozen | base + offset | really sleeps a short time, and leaves the offset alone | elapsed time is not the subject, and a slow host must not run a deadline out |
+| Frozen | base + offset | calls `std::thread::yield_now()`, and leaves the offset alone | elapsed time is not the subject, and a slow host must not run a deadline out |
+| `PanicOnSleep` | base + offset | panics | the code under test must return without waiting at all |
 
-A test can also call `advance(d)` on either kind to move virtual time from a
-fake HTTP handler, so "the token endpoint took 300 ms" costs no real time.
+A test can also call `advance(d)` on the advancing and frozen fakes to move
+virtual time from a fake HTTP handler, so "the token endpoint took 300 ms"
+costs no real time.
 
-The frozen fake's `sleep()` must really sleep, for a short fixed time such as
-1 ms. If it returned at once, a lock wait under a frozen clock would retry in
-a tight loop and keep a CPU busy for as long as the lock is held.
+The frozen fake's `sleep()` yields instead of sleeping. Under contention a
+lock wait spins on `yield_now` for as long as another thread holds the lock.
+That holder's critical section is short and bounded, so the spin is too; the
+fake's doc comment says so.
 
 A frozen clock makes a lock wait unbounded, because virtual time never reaches
 the timeout. That is why `FsGuard::with_clock` is documented as test-only, and
-why every test that uses a frozen clock has a hang guard (see below).
+why every test that uses a frozen clock collects its results under
+[`CEILING`](#the-two-hang-guards).
 
-Example from `limit_resume_fs::default_lock_timeout_is_five_seconds`. The test
-holds the lock through another handle, then commits with an advancing clock:
+### The default lock timeout
+
+`limit_resume_fs::default_lock_timeout_is_five_seconds` uses virtual time
+only. It holds the lock through another handle, then commits with an
+advancing clock:
 
 ```rust
 assert_eq!(LOCK_TIMEOUT, Duration::from_secs(5));
@@ -316,42 +476,61 @@ let clock = AdvancingClock::new(); // an Arc
 let mut g = FsGuard::with_clock(root, LOCK_TIMEOUT, clock.clone());
 assert!(matches!(g.commit(/* .. */), Err(CommitError::Io)));
 
-let at_failure = clock.elapsed();
+// Still waiting at 4.9 s: a retry began at or after 4.9 s.
 let (last_start, _) = *clock.sleeps.lock().unwrap().last().unwrap();
-assert!(last_start < LOCK_TIMEOUT);
-assert!(at_failure >= LOCK_TIMEOUT);
+assert!(last_start >= Duration::from_millis(4900) && last_start < LOCK_TIMEOUT);
+// Gave up only once virtual time reached 5 s.
+assert!(clock.elapsed() >= LOCK_TIMEOUT);
 ```
 
-The test asserts on virtual time only. The old assertion that the failure took
-between 4.5 s and 8 s of real time is gone.
+No real time passes, and the old assertion that the failure took between
+4.5 s and 8 s of real time is gone.
 
-### Hang guards
+### Racing threads
 
-A wait that a fake clock cannot end must still end. Each such test sets a
-named constant, `HANG_GUARD = Duration::from_secs(120)`, and no test asserts on
-it. It only turns a real hang into a test failure:
+`eight_racing_waiters_for_one_session_wake_it_once` and
+`eight_racing_hooks_on_one_event_commit_exactly_once` start eight threads on a
+`Barrier`, give each a frozen clock, and send every outcome over an `mpsc`
+channel. The test collects them with `recv_timeout(CEILING)` and asserts:
 
-- The eight racing threads in `eight_racing_waiters_for_one_session_wake_it_once`
-  and `eight_racing_hooks_on_one_event_commit_exactly_once` start together on
-  a `Barrier`, use a frozen clock, and send their results over an `mpsc`
-  channel. The test collects them with `recv_timeout(HANG_GUARD)` and still
-  asserts one `Ok`, seven `Duplicate` and `resumes == 1`.
-- In `tests_usage_direct`, tests where elapsed time is not the subject set the
-  request timeout to `HANG_GUARD`. The ureq socket timeouts are still real and
-  are derived from the time left on the injected clock, so a server that never
-  answers still ends the request.
+- exactly one wake or commit, and `resumes == 1`;
+- every other outcome is `Duplicate` or already handled;
+- no outcome is a lock timeout or `Busy`.
 
-A hang guard is not a limit the product must meet. Do not lower it to make a
-hang fail sooner, and do not assert that something finished within it.
+The last check replaces the old `start.elapsed() < 3 s`. Its purpose was to
+prove that no racer waited out the lock timeout; asserting that no racer
+timed out proves the same thing, and with a frozen clock a timeout cannot
+happen by accident. The racers contain no real sleep.
 
 ### Deadlines in `usage_direct`
 
 `Deadline` reads the injected clock, and the socket step of each request comes
 from the pure functions `get_step` and `post_step`. Unit tests check those
 functions directly, so the property that a refresh `POST` keeps its full step
-no longer needs a slow server. Tests about the deadline move time only through
-the fake clock, for example by calling `clock.advance(300 ms)` from a fake
-handler instead of sleeping, and assert the outcome, never the elapsed time.
+needs no slow server. Tests about the deadline move time only through the
+fake clock, for example by calling `clock.advance(300 ms)` from a fake handler
+instead of sleeping, and assert the outcome, never the elapsed time.
+
+A stalled server is a `Gate` that the test never opens before the deadline.
+The test advances the fake clock past the deadline, then opens the gate. The
+real ureq socket timeouts are derived from the time left on the injected
+clock and bounded by `HANG_GUARD`, so they act only as triggers and cannot
+change the outcome. `RETURN_SLACK`, `COUNTER_WAIT` and the old real
+`SEND_MARGIN` are gone; the virtual margins are named `V_SEND_MARGIN` and
+`V_REFRESH_T`.
+
+These tests run on virtual time and gates or channels only:
+
+- `a_held_lock_is_refresh_busy_and_left_alone`
+- `a_set_stop_flag_takes_no_lock_and_sends_no_post`
+- `a_401_refreshes_once_writes_back_and_reads_again`
+- `a_second_401_after_the_refresh_is_not_refreshed_again`
+- `a_401_refresh_and_retry_share_one_deadline`
+- `a_refresh_with_the_budget_left_saves_the_rotated_token`
+- `a_refresh_answer_with_no_refresh_token_keeps_the_old_one`
+- `a_slow_refresh_within_the_deadline_still_reads`
+- `a_token_expiring_within_60_seconds_is_refreshed_before_the_first_get`
+- `the_refresh_counter_covers_a_refresh_in_progress`
 
 ### A counter per test
 
@@ -360,7 +539,7 @@ wait for them before the process exits. In production that is the
 process-wide `REFRESHING`. Tests that ran in parallel shared it, so one test's
 refresh could make another test's `wait_for_refreshes` wait.
 
-Each rewritten test now passes its own counter:
+Each test passes its own counter:
 
 ```rust
 let counter = AtomicUsize::new(0);
@@ -373,9 +552,30 @@ assert_eq!(counter.load(Ordering::SeqCst), 0);
 ```
 
 `read_uses_the_process_wide_counter` pins the default path: it calls `read()`
-with a blocked handler and asserts that `refreshes_in_progress()` is at least
-1 before it releases the handler. Without it, `read()` could stop using
-`REFRESHING` and `wait_for_refreshes` would no longer see a refresh.
+with a gated handler and asserts that `refreshes_in_progress()` is at least
+1 before it opens the gate. `wait_for_refreshes` has a matching test that
+pins it to `REFRESHING`.
+
+### `wait_for_refreshes_on`
+
+```rust
+pub(crate) fn wait_for_refreshes_on(
+    counter: &AtomicUsize,
+    limit: Duration,
+    clock: &dyn Clock,
+) -> bool
+```
+
+It returns `true` when `counter` reaches 0, and `false` when `limit` has
+passed on `clock`. A counter already at 0 returns `true` at once without
+calling `sleep`, which a `PanicOnSleep` clock proves. On `false` the stop
+path behaves as before and does not remove a lock it does not own.
+
+`rotate::tests_daemon` uses it for the #2036 case: a gated token handler, a
+reader thread, and a channel that reports the `POST` was sent. The test
+asserts the lock is held, opens the gate, asserts
+`finish_refreshes(refresh_grace(CEILING))` returns `true`, joins the reader,
+then asserts the counter is 0 and no lock file remains.
 
 ## Run a private copy of the binary
 
@@ -414,8 +614,9 @@ std::os::unix::fs::symlink(&bin, plugin_bin.join("amplihack"))?;
 cmd.env("VALIDATION_TEST_CLI", &bin);
 ```
 
-Do not build the path from `std::env::current_exe()` and `../../amplihack`.
-That path is the shared build output, and cargo may replace it during the run.
+`codex_frontdoor_contract/fixture.rs` uses it too. Do not build the path from
+`std::env::current_exe()` and `../../amplihack`. That path is the shared
+build output, and cargo may replace it during the run.
 
 ### Python bytecode in the source tree
 
@@ -454,7 +655,7 @@ passing install test is not evidence that every directory was staged.
 Add a knob only when no test input can reach the limit. Every knob follows
 the pattern in
 `crates/amplihack-cli/src/commands/profile/limit_wait/clock.rs`, and new
-knobs read their value with `crate::debug_knob::secs`:
+seconds knobs read their value with `crate::debug_knob::secs`:
 
 - The name starts with `AMPLIHACK_TEST_`. The rotator daemon removes every
   `AMPLIHACK_ROTATE*` variable before it starts, so a knob with that prefix
@@ -462,10 +663,10 @@ knobs read their value with `crate::debug_knob::secs`:
 - The name and its parser exist only under `#[cfg(debug_assertions)]`. The
   `#[cfg(not(debug_assertions))]` twin returns the constant, so a release
   binary contains neither the name nor the parser.
-- The value is whole seconds. The parser accepts ASCII digits only, checked
-  before parsing, in the range `1..=3600`. Anything else (unset, empty, `0`,
-  `+5`, ` 5`, Unicode digits, a value above `u64::MAX`) gives the default.
-  It never panics and never logs the raw value.
+- A seconds value is whole seconds. The parser accepts ASCII digits only,
+  checked before parsing, in the range `1..=3600`. Anything else (unset,
+  empty, `0`, `+5`, ` 5`, Unicode digits, a value above `u64::MAX`) gives the
+  default. It never panics and never logs the raw value.
 - The knob has a test for the unset default and for invalid values.
 - The PR gives the reason no test input could do the job.
 
@@ -477,6 +678,7 @@ knobs read their value with `crate::debug_knob::secs`:
 | `AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS` | 5 s (`IDENTITY_READ_TIMEOUT`) | `cred_identity::identity_read_timeout()`, used by `read_with` | Time one identity read may take. |
 | `AMPLIHACK_TEST_AGENT_CHILD_TIMEOUT_SECS` | 10 s (`tmux::CHILD_TIMEOUT`) | `agent::tmux::child_timeout()`, used for every tmux call, the `systemd-run` scope launch in `server.rs` and the git call in `dirty.rs` | Time each child process of `amplihack agent` may take. |
 | `AMPLIHACK_TEST_DETACH_START_SECS` | 15 s | `recipe run --detach` | How long the detach command waits for the pane to start the run. |
+| `AMPLIHACK_TEST_PROBE_WAIT` | unset (3 s per candidate, 10 s in total) | `amplihack_utils::launch_target::probe_wait_mode()` | When `exit`, the `--version` probe waits for the candidate to exit. See [Wait for the version probe to exit](#wait-for-the-version-probe-to-exit). |
 
 The hand-fix lock bound in `handfix_plan.rs` keeps passing the
 `IDENTITY_BUDGET` constant in every build, so the budget knob never changes
@@ -503,12 +705,116 @@ Check that a release binary contains no test knob:
 
 ```bash
 cargo build --release -p amplihack-cli --bin amplihack
-strings target/release/amplihack | grep -c -e AMPLIHACK_TEST_IDENTITY_ -e AMPLIHACK_TEST_AGENT_
+strings target/release/amplihack \
+  | grep -c -e AMPLIHACK_TEST_IDENTITY_ -e AMPLIHACK_TEST_AGENT_ -e AMPLIHACK_TEST_PROBE_WAIT
 # Output: 0
 ```
 
 The full list of test-only variables is in the
 [environment variable reference](../reference/amplihack-env-vars.md).
+
+## Wait for the version probe to exit
+
+`amplihack_utils::launch_target` picks a launch target by running each
+candidate with `--version`. Each probe may take 3 s
+(`PER_CANDIDATE_PROBE_TIMEOUT`) and all probes together 10 s
+(`TOTAL_PROBE_BUDGET`). Tests that launch `amplihack` against a stub agent
+binary missed that 3 s window on a loaded host, and the launch then picked no
+target.
+
+No test input reaches the probe, so a debug-only knob changes which event
+ends it:
+
+```bash
+AMPLIHACK_TEST_PROBE_WAIT=exit
+```
+
+When the knob is set to exactly `exit`:
+
+- `resolve_from_candidates` reads it once per call. Nothing caches it in a
+  global.
+- The `TOTAL_PROBE_BUDGET` check is skipped.
+- `probe_version` calls `run_capped_output_to_exit`, which waits for the
+  candidate to exit and still applies the byte cap on its output.
+
+The candidate limit, the byte cap, the rejection reasons and the candidate
+order all still apply. Only the deadline goes. Any other value, including
+`Exit`, `exit ` and `1`, leaves the 3 s and 10 s limits in place. The value is
+never logged.
+
+Both forms share one private function, `run_capped(cmd, Option<Duration>,
+limit)`, which computes its deadline with `checked_add`. The public timeout
+wrapper never passes `None`. In a release build the name, the reader and the
+`to_exit` path do not exist.
+
+`isolated(..)` sets the knob on every child after `env_clear`, in both
+`tests/support/isolated_amplihack.rs` and the `amplihack-cli` test support,
+without widening its allow-list. These tests depend on it:
+
+| Test | Cause confirmed |
+|------|-----------------|
+| `issue_1659_limit_resume_gate` (2 tests) | the 3 s probe of the stub agent |
+| `issue_1870_*` (3 tests) | the 3 s probe of the stub agent |
+| `codex_frontdoor_contract` (2 tests) | the 3 s probe, and the binary path (now `amplihack_bin()`) |
+| `claude_code_plugin_manifest::shell` | the 3 s probe of the stub agent |
+
+Each of these tests waits for its child with `support::wait::output_within`
+or `wait_child`, bounded only by `CEILING`.
+
+## Recipe runner tests
+
+### `RecipeFixture`
+
+`commands::recipe::run` tests build a `RecipeFixture`. It:
+
+1. Takes the crate's `home_env_lock`.
+2. Sets `RECIPE_RUNNER_RS_PATH`, `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` and
+   the home through `EnvVarGuard`, which restores them on drop.
+3. Puts the home, the agent binary and the runner stub under its own
+   `TempDir` (mode `0700`), via `isolated(..)`.
+4. Asserts that the resolved `amplihack_home` is under that `TempDir` before
+   anything runs.
+
+No bare `set_var` or `remove_var` remains in `tests_execute.rs`, and no
+recipe test reads the real `~/.amplihack`.
+
+### A runner that hangs
+
+The pipe-hang tests run the runner on a worker thread that sends its result
+over a channel. The test receives it with `recv_timeout(CEILING)`. The stub
+writes a `done` file when it finishes, and the test asserts that file, the
+"timed out" error, and that the stub's process tree is gone. The `< 25 s`
+assertions are gone.
+
+### Teardown leaves no orphan
+
+`tests_teardown.rs` proves that teardown kills a step's orphans:
+
+1. The step's stub starts a sibling `/bin/cat` that blocks reading a FIFO,
+   and writes the orphan's pid to a pid file.
+2. The test waits for the pid file, parses it with `parse_pid`, opens a
+   pidfd while the orphan is alive, and wraps it in `KillOnDrop`.
+3. Teardown runs.
+4. The test calls `wait_pid_gone` and asserts the orphan's marker file does
+   not exist.
+
+A drop guard reaps the `cat` sibling on every path. The orphan stub has no
+fallback writer. The 2.3 s sleep and the `< 8 s` assertion are gone.
+
+## Fleet TUI tests
+
+The fleet TUI tests run the TUI in a PTY. They wait on the text the TUI
+prints, not on a quiet period:
+
+```rust
+let reader = PtyReader::spawn(pty.master);
+reader.wait_for("q quit");      // the first frame has rendered
+pty.write_all(b"q")?;
+wait::wait_child("the fleet TUI to exit after q", &mut child);
+```
+
+`read_until_quiet`, `drain(duration)` and the deadline loops they used are
+gone. Exit is waited on with `wait_child`, bounded only by `CEILING`.
 
 ## Rotator tests
 
@@ -588,134 +894,157 @@ panics. `issue_1592_daemon::start_status_and_stop` uses it to check that
 
 ## Checks that something does not happen
 
-A test that a thing does not happen cannot wait on a condition. Prefer a
-positive marker: a later event that proves the earlier one was skipped. When
-no marker exists, keep a short window. Load can make such a window miss a
-fault but never fail a working test.
+A test that a thing does not happen cannot wait for it. Run the actor to an
+event first, then assert that the thing did not happen:
 
-Kept windows:
+| Check | Event to wait on first |
+|-------|------------------------|
+| "no `POST` was sent" | join the reader thread |
+| "the lock was left alone" | join the thread, or receive its "done" message |
+| "the orphan was killed" | `wait_pid_gone` on its pidfd |
+| "the step wrote nothing" | reap the step's exit with `wait_child` |
 
-| Test | Window |
-|------|--------|
-| `issue_1592_daemon::watch_follows_the_auto_switch_toggle` | 3 s with no cycle after the toggle is turned off |
-| `issue_1592_daemon::a_foreign_process…` | 200 ms before checking that the foreign process is still alive |
+A sleep followed by "nothing happened" is not allowed: on a loaded host the
+sleep can end before the actor has done anything, and the test passes while
+proving nothing. Prefer a positive marker, a later event that proves the
+earlier one was skipped.
 
 Sleeps that remain because the rule under test is about time, such as
-`Fixture::wait_past_damping`, are listed in the PR that keeps them.
+`Fixture::wait_past_damping`, are listed in the PR that keeps them, with a
+follow-up issue.
+
+## The wall-clock scan guard
+
+`crates/amplihack-cli/tests/issue_2019_no_wall_clock_asserts.rs` is a module
+of `cli_integration`. It scans `crates/*/src/**/test*.rs`, `crates/*/tests/**`
+and `tests/**` for `elapsed()` or a difference of two `Instant`s used in an
+`assert!` or a comparison, and fails on any match that is not exempt:
+
+- a file that contains `impl Clock for` (it measures injected time);
+- `issue_1973_wait_helpers.rs` and the guard itself;
+- an entry in the allowlist.
+
+The allowlist is a list of `(path, issue number)` pairs. It can only shrink:
+an entry whose file no longer matches fails the guard, so a fixed test must
+also leave the list. Every entry names its follow-up issue.
+
+The guard does not follow symlinks and skips `target/`, `worktrees/` and
+`.git/`. It checks its own matcher against inline samples, so a matcher that
+stops matching fails too.
+
+Run it alone:
+
+```bash
+cargo test -p amplihack-cli --test cli_integration issue_2019_no_wall_clock_asserts::
+# Output: test result: ok. N passed; 0 failed; 0 ignored; ...
+```
+
+When it fails, change how the test waits. Add an allowlist entry only with a
+filed follow-up issue, and only for a test the current PR does not touch.
 
 ## What not to do
 
 - Do not mark a test `#[ignore]`, pass `--skip`, or exclude it in the
   pre-push hook.
+- Do not raise a timeout, sleep, delay or retry count to make a test pass.
 - Do not add retries, lower parallelism or split the test run in the hook.
 - Do not delete a test or weaken an assertion. Removing an `elapsed` check is
   allowed only when another check proves the behaviour.
-- Do not add a fixed sleep to order two events.
+- Do not add a fixed sleep to order two events, or before a negative check.
+- Do not add a hang guard beyond `CEILING` and `HANG_GUARD`, and do not
+  assert that something finished within one.
 - Do not select a fake clock from an environment variable, global or config
   setting. Pass it through a `_with` function or constructor.
 - Do not change a product timeout's default.
+- Do not write a stub with `fs::write` and `set_permissions`. Use
+  `write_executable`.
+- Do not call `set_var` in a test. Use `EnvVarGuard` under the crate's lock,
+  or pass the value as a parameter.
 - Do not pause, cap or renice other sessions to make a run pass.
-- Do not signal a process by `pkill -f`, `killall` or a pid read from a file.
-  Signal only processes the test spawned.
+- Do not signal a process by `pkill -f`, `killall` or a pid read from a file
+  without a pidfd. Signal only processes the test spawned, or a pidfd opened
+  while the process was known to be alive.
 
 ## Prove a fix under load
 
-The pre-push hook runs `cargo test`, which shares one process per test
-target; CI runs `cargo nextest`, which does not. Build first, then run the
-test binaries directly so the cargo lock does not queue them.
+The acceptance check is three passes in a row of the whole workspace with 16
+CPU-bound loops running beside it.
 
-1. Build the test binaries without running them and note each `Executable`
-   path:
+### Confine the load
+
+Deliberate load must be confined to named CPUs and must end by itself. Load
+spread across every core, or with no end time, has taken the whole host
+down. Use exactly this shape: 16 loops, pinned to CPUs 56-71, at
+`nice -n 19`, each ending after at most 1800 s:
+
+```bash
+systemd-run --user --scope -p AllowedCPUs=56-71 -- bash -c '
+  for _ in $(seq 16); do
+    timeout 1800 taskset -c 56-71 nice -n 19 bash -c "while :; do :; done" &
+  done
+  wait'
+```
+
+Never raise the 1800 s limit. Pick other CPUs only if 56-71 do not exist on
+the host, and keep the count equal to the CPUs named.
+
+### Run one pass
+
+Each pass gets a new scope, started immediately before the test run:
+
+1. Start the load scope in the background and record its PID. Log the time
+   it started.
 
    ```bash
-   export TMPDIR=<scratch dir>/tmp/issue-1973
+   export TMPDIR=/d0/ryan/tmp/issue-2019
    mkdir -p -m 0700 "$TMPDIR"
-   cargo test --no-run -p amplihack-cli --lib --test cli_integration 2>&1 | grep Executable
-   cargo test --no-run -p amplihack-hooks --lib 2>&1 | grep Executable
-   cargo test --no-run -p amplihack --test integration 2>&1 | grep Executable
+   log="$TMPDIR/pass-1.log"
+   date -u +'load start %FT%TZ' >"$log"
+   systemd-run --user --scope -p AllowedCPUs=56-71 -- bash -c '...' &
+   load_pid=$!
    ```
 
-   Replace `<scratch dir>` with a directory on a file system with room for
-   the tests' temporary files. Keep `/tmp` in the path: some pre-push tests
-   walk up from their temporary directory and expect `/tmp` in it.
-
-   `skip_update_check_flag` and `recipe_e2e` are modules of the `amplihack`
-   package's `integration` target. In the commands below, `$CLI_INTEGRATION`,
-   `$CLI_LIB`, `$HOOKS_LIB` and `$INTEGRATION` stand for the `Executable`
-   paths these commands print.
-
-2. Confirm the filters select exactly the tests listed in the PR (R1), and
-   that none of them is ignored. Save R1, one `name: test` line per test, as
-   `$TMPDIR/r1-cli.txt`, then compare:
+2. Run the workspace and keep its output:
 
    ```bash
-   filters=(issue_1592_ issue_1606_ issue_1618_ issue_1634_
-     issue_1760_ issue_1801_capacity_wait issue_1569_auto_switch
-     codex_frontdoor_contract)
-   "$CLI_INTEGRATION" --list "${filters[@]}" | grep ': test$' | sort \
-     | diff - <(sort "$TMPDIR/r1-cli.txt")
-   "$CLI_INTEGRATION" --list --ignored "${filters[@]}" | grep ': test$'
+   cargo test --workspace --locked >>"$log" 2>&1
+   echo "cargo exit $?" >>"$log"
    ```
 
-   The `diff` must print nothing, and the `--ignored` listing must print
-   nothing. Do the same for each other binary with its own filters.
-
-3. Run the binaries under load with the script below. It stops before
-   starting if `/` or the file system holding `$TMPDIR` is more than 97% full. It then starts one busy
-   loop per CPU at the tests' own nice level, logs `uptime` every minute,
-   runs all binaries at the same time with the default test threads, and
-   stops everything when they finish or when it is interrupted:
+3. Wait on the literal PID, then log the time the load ended:
 
    ```bash
-   #!/usr/bin/env bash
-   set -u
-   for mount in / "$TMPDIR"; do
-     used=$(df --output=pcent "$mount" | tail -n 1 | tr -dc 0-9)
-     if [ "$used" -gt 97 ]; then
-       echo "stop: $mount is ${used}% full" >&2
-       exit 2
-     fi
-   done
-
-   out="$TMPDIR/proof-$(date -u +%Y%m%dT%H%M%SZ)"
-   mkdir -p -m 0700 "$out"
-   pids=()
-   cleanup() {
-     trap - EXIT INT TERM
-     [ "${#pids[@]}" -gt 0 ] && kill "${pids[@]}" 2>/dev/null
-     wait 2>/dev/null
-   }
-   trap cleanup EXIT
-   trap 'cleanup; exit 130' INT
-   trap 'cleanup; exit 143' TERM
-
-   for _ in $(seq "$(nproc)"); do ( while :; do :; done ) & pids+=($!); done
-   ( while :; do uptime; sleep 60; done ) >"$out/uptime.log" & pids+=($!)
-
-   tests=()
-   "$CLI_INTEGRATION" >"$out/cli.log" 2>&1 & tests+=($!)
-   "$CLI_LIB" install:: >"$out/cli-lib.log" 2>&1 & tests+=($!)
-   "$HOOKS_LIB" blarify >"$out/hooks.log" 2>&1 & tests+=($!)
-   "$INTEGRATION" skip_update_check recipe_e2e >"$out/integration.log" 2>&1 & tests+=($!)
-   pids+=("${tests[@]}")
-
-   rc=0
-   for t in "${tests[@]}"; do wait "$t" || rc=1; done
-   grep -h '^test result' "$out"/*.log
-   exit "$rc"
+   wait "$load_pid"
+   date -u +'load end %FT%TZ' >>"$log"
    ```
 
-   The handlers kill only the processes the script started, the test
-   binaries included, and an interrupt ends the script instead of returning
-   to the `wait` loop.
+4. From the `Running …` lines in the log, list the test binaries that started
+   before the load ended. The binaries holding the tests in scope must be
+   among them. If the load ended first, rerun the pass; do not lengthen it.
+5. Confirm no busy loop is left:
 
-4. Run it twice. Each `test result` line must show `0 failed` and
-   `0 ignored`. Put the commands, the `uptime` readings and the summaries in
-   the PR, after removing tokens, email addresses and home-directory paths.
-   Do not attach full logs.
+   ```bash
+   pgrep -f 'while :; do :; done'
+   # Output: (nothing)
+   ```
 
-5. Push normally, without `--no-verify`. The pre-push hook's full run is
-   further evidence.
+   Use `pgrep` only to check. Never stop a process by pattern.
+
+Run three passes. Each `test result` line must show `0 failed`. Put the
+commands, the start and end times, the binaries that ran inside each window
+and the pass counts in the PR, after removing tokens, email addresses and
+home-directory paths. Do not attach full logs.
+
+### Other evidence for the PR
+
+- Before the load passes, run every changed test once on an unloaded host.
+- Record the mtimes of `~/.amplihack` and `~/.claude*` before and after the
+  runs and show they did not change.
+- Show that no `cat` or `sh` process is left under `$TMPDIR`.
+- Show the release `strings` check from
+  [Use a debug-only knob](#use-a-debug-only-knob) returns `0`.
+- Push normally, without `--no-verify`. The pre-push hook's full run is
+  further evidence.
 
 ## Limits of a CPU-only proof
 
