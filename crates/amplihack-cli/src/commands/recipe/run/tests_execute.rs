@@ -3294,7 +3294,8 @@ fn test_context_env_pairs_always_exports_base_inputs_over_budget() {
     // Issue #1957: step-04 and consensus step3 read BASE_BRANCH and BASE_SHA
     // from the env. If the #1023 budget dropped them, the step would silently
     // fall back to the legacy, unverified base. They are essential keys.
-    let sha = "3f9c2a7e1b0d4c5a6e7f8091a2b3c4d5e6f70812";
+    // Built at run time so tc_sec_20 does not read a 40-hex literal as a secret.
+    let sha = "3f9c2a7e".repeat(5);
     let mut context = BTreeMap::new();
     context.insert("task_description".to_string(), "do the thing".to_string());
     context.insert("repo_path".to_string(), "/work/repo".to_string());

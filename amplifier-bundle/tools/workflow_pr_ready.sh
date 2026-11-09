@@ -167,10 +167,10 @@ repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.ur
 # #1957: a refused base (D3) stops the run; its ERROR line is already on stderr.
 expected_base_rc=0
 expected_base="$(resolve_expected_base_branch)" || expected_base_rc=$?
-[ "$expected_base_rc" -eq 0 ] || { echo "ERROR: unable to resolve expected base branch for scoped PR validation (exit $expected_base_rc); refusing PR readiness mutation" >&2; exit 1; }
 [ -n "$repo_identity" ] || { echo "ERROR: unable to determine current GitHub repo identity from origin remote" >&2; exit 1; }
 [ -n "$current_branch" ] || { echo "ERROR: current branch is empty; refusing ambiguous PR readiness mutation" >&2; exit 1; }
 [ -n "$local_head" ] || { echo "ERROR: local HEAD does not resolve; refusing ambiguous PR readiness mutation" >&2; exit 1; }
+[ "$expected_base_rc" -eq 0 ] || { echo "ERROR: unable to resolve expected base branch for scoped PR validation (exit $expected_base_rc); refusing PR readiness mutation" >&2; exit 1; }
 [ -n "$expected_base" ] || { echo "ERROR: unable to resolve expected base branch for scoped PR validation" >&2; exit 1; }
 [ -x "$PR_SCOPE_HELPER" ] || { echo "ERROR: workflow_pr_scope.sh missing or not executable at $PR_SCOPE_HELPER" >&2; exit 1; }
 if [[ "$PR_NUMBER" =~ [^[:space:]] ]] && ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
