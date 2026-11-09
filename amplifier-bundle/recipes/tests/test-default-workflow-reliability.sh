@@ -101,6 +101,13 @@ fi
 # already-resolved worktree root (#1561), even when TMPDIR is a symlink.
 WORK="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/default-workflow-reliability-XXXXXX")" && pwd -P)"
 [[ -n "${DEFAULT_WORKFLOW_RELIABILITY_KEEP_WORK:-}" ]] || trap 'rm -rf -- "${WORK:?}"' EXIT
+# #2043/#1978: step-04 makes a per-branch runtime root through
+# workflow_runtime_root.sh. Keep it under $WORK so the EXIT trap removes it,
+# instead of leaving it in $TMPDIR/amplihack-runtime or the user's
+# $XDG_RUNTIME_DIR after the run.
+unset AMPLIHACK_RUNTIME_ROOT
+export XDG_RUNTIME_DIR="${WORK}/runtime"
+mkdir -m 700 "${XDG_RUNTIME_DIR}"
 STEP04="${WORK}/step-04-setup-worktree.sh"
 STEP_TDD_CHECKPOINT="${WORK}/checkpoint-after-implementation.sh"
 STEP_REFACTOR_REVIEW_CHECKPOINT="${WORK}/checkpoint-after-review-feedback.sh"
