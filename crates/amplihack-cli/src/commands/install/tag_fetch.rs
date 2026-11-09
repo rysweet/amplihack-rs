@@ -1,8 +1,10 @@
 //! Fetch the tree of one exact release tag (issue #1955).
 //!
-//! The tree isn't checked against a published hash: its version is checked by
-//! the caller, and the git route is limited by time only.
+//! The caller checks the tree's version and, in a release build, compares it
+//! with the release manifest embedded in the binary (issue #1972). The git
+//! route is limited by time only.
 
+use super::bundle_manifest::{self, ManifestDiff};
 use super::clone;
 use super::framework_source::SourceVersion;
 use super::paths::sanitize_text;
@@ -40,6 +42,11 @@ pub(super) const TARBALL_LIMITS: TarballLimits = TarballLimits {
 /// on top of the unpacked limit, when capping the decompressed stream.
 const ENTRY_OVERHEAD_BYTES: u64 = 4096;
 
+/// The caller's check of a fetched tree: its version, then the release
+/// manifest. An `Err` holding [`FetchedManifestMismatch`] lets a fetcher try
+/// another route; any other `Err` is returned as it is.
+pub(super) type VerifyTree<'a> = dyn Fn(&Path) -> Result<()> + 'a;
+
 /// Fetches one exact tag into `destination` and returns the tree's root.
 /// Injected in tests; there is no production env var.
 pub(super) trait TagFetcher {
@@ -49,6 +56,21 @@ pub(super) trait TagFetcher {
         destination: &Path,
         budget: Duration,
     ) -> Result<PathBuf>;
+
+    /// [`TagFetcher::fetch`], then `verify` on the tree. A fetcher with more
+    /// than one route overrides this, so a tree one route got wrong does not
+    /// stop the next route from being tried.
+    fn fetch_verified(
+        &self,
+        version: &semver::Version,
+        destination: &Path,
+        budget: Duration,
+        verify: &VerifyTree<'_>,
+    ) -> Result<PathBuf> {
+        let root = self.fetch(version, destination, budget)?;
+        verify(&root)?;
+        Ok(root)
+    }
 }
 
 /// The only error self-heal may continue past, and only with a compatible
@@ -100,6 +122,31 @@ impl std::fmt::Display for FetchedWrongVersion {
 
 impl std::error::Error for FetchedWrongVersion {}
 
+/// Issue #1972: a fetched tree that does not match the release manifest
+/// embedded in the binary (message M4). A hard failure: it is not a network
+/// failure, so it must never be, or downcast to, [`SourceFetchFailed`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FetchedManifestMismatch {
+    pub(super) version: String,
+    pub(super) diff: ManifestDiff,
+}
+
+impl std::fmt::Display for FetchedManifestMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let subject = format!("the tree fetched for release tag v{}", self.version);
+        write!(
+            f,
+            "{}\nThis is not a network failure: the tag's contents differ from the release this \
+             binary was built with, so nothing was staged and the installed bundle and version \
+             stamp were not changed.\nPlease report this at \
+             https://github.com/rysweet/amplihack-rs/issues.",
+            bundle_manifest::render_release_mismatch(&subject, &self.version, &self.diff)
+        )
+    }
+}
+
+impl std::error::Error for FetchedManifestMismatch {}
+
 /// D2: only a build with `AMPLIHACK_RELEASE_VERSION` set and no `+` metadata.
 /// `v1.2.0` is a real tag, so a dev build fetching it would stage a very old
 /// bundle and succeed.
@@ -110,6 +157,14 @@ pub(super) fn fetch_allowed(version: &str, release_env_set: bool) -> bool {
 pub(super) type BoundedHttpGet = dyn Fn(&str, Duration) -> Result<Vec<u8>>;
 
 /// The production [`TagFetcher`]: git first, then the tag tarball.
+///
+/// Issue #1972: git writes a checkout through its config, the tarball does
+/// not. [`super::clone::run_bounded_git`] turns off every conversion it knows
+/// of, but a git tree that still fails the release manifest says nothing yet
+/// about the release, so the tarball is tried before the mismatch is reported.
+/// Only a tarball tree that differs too is a [`FetchedManifestMismatch`]; with
+/// the tarball out of reach it is a [`SourceFetchFailed::Failed`], which the
+/// launch backoff and self-heal treat as a network failure.
 pub(super) struct ReleaseTagFetcher {
     pub(super) git: Option<PathBuf>,
     pub(super) http: Box<BoundedHttpGet>,
@@ -131,6 +186,16 @@ impl TagFetcher for ReleaseTagFetcher {
         destination: &Path,
         budget: Duration,
     ) -> Result<PathBuf> {
+        self.fetch_verified(version, destination, budget, &|_| Ok(()))
+    }
+
+    fn fetch_verified(
+        &self,
+        version: &semver::Version,
+        destination: &Path,
+        budget: Duration,
+        verify: &VerifyTree<'_>,
+    ) -> Result<PathBuf> {
         // SEC-7: checked here as well as in D2, because the refspec and the URL
         // are built from this. Semver limits the rest to `[0-9A-Za-z.-]`.
         if !version.build.is_empty() {
@@ -145,13 +210,26 @@ impl TagFetcher for ReleaseTagFetcher {
 
         match &self.git {
             Some(git) => match fetch_with_git(git, &tag, destination, deadline) {
-                Ok(root) => return Ok(root),
+                Ok(root) => match verify(&root) {
+                    Ok(()) => return Ok(root),
+                    Err(error) => match error.downcast_ref::<FetchedManifestMismatch>() {
+                        Some(mismatch) => {
+                            let reason = format!(
+                                "the checked-out tree differs from the release manifest ({})",
+                                mismatch.diff.summary()
+                            );
+                            tracing::warn!("{tag}: git: {reason}; trying the tarball");
+                            failures.push(format!("git: {reason}"));
+                        }
+                        None => return Err(error),
+                    },
+                },
                 Err(reason) => failures.push(format!("git: {reason}")),
             },
             None => failures.push("git: not found on PATH".to_string()),
         }
-        // A partial tree from the failed route must not be mistaken for the
-        // tarball's.
+        // A partial or mismatched tree from the git route must not be mistaken
+        // for the tarball's.
         let tarball_result = clear_directory(destination).and_then(|()| {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -160,7 +238,9 @@ impl TagFetcher for ReleaseTagFetcher {
             fetch_tarball(&self.http, &tag, destination, remaining)
         });
         match tarball_result {
-            Ok(root) => Ok(root),
+            // A mismatch here is the release's own: the tarball is the bytes
+            // the tag holds, with no local config in between.
+            Ok(root) => verify(&root).map(|()| root),
             Err(reason) => {
                 failures.push(format!("tarball: {reason}"));
                 Err(SourceFetchFailed::Failed {

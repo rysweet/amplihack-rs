@@ -15,18 +15,18 @@ use std::process::Command;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-const REPO_URL: &str = "https://github.com/rysweet/amplihack-rs";
+pub(super) const REPO_URL: &str = "https://github.com/rysweet/amplihack-rs";
 const TARBALL_URL: &str =
     "https://github.com/rysweet/amplihack-rs/archive/refs/tags/v1.2.99.tar.gz";
 
-fn version() -> semver::Version {
+pub(super) fn version() -> semver::Version {
     semver::Version::parse("1.2.99").unwrap()
 }
 
-const LONG: Duration = Duration::from_secs(30);
+pub(super) const LONG: Duration = Duration::from_secs(30);
 
 /// A `git` that logs its arguments and environment, then runs `then`.
-fn recording_git(dir: &Path, then: &str) -> PathBuf {
+pub(super) fn recording_git(dir: &Path, then: &str) -> PathBuf {
     let path = dir.join("bin/git");
     write_script(
         &path,
@@ -44,16 +44,16 @@ fn recording_git(dir: &Path, then: &str) -> PathBuf {
     path
 }
 
-fn log(dir: &Path, name: &str) -> String {
+pub(super) fn log(dir: &Path, name: &str) -> String {
     fs::read_to_string(dir.join(name)).unwrap_or_default()
 }
 
 /// Records each URL and budget it's asked for, then answers with `body`.
-struct RecordingHttp {
-    calls: Rc<RefCell<Vec<(String, Duration)>>>,
+pub(super) struct RecordingHttp {
+    pub(super) calls: Rc<RefCell<Vec<(String, Duration)>>>,
 }
 
-fn recording_http(
+pub(super) fn recording_http(
     body: impl Fn() -> anyhow::Result<Vec<u8>> + 'static,
 ) -> (RecordingHttp, Box<BoundedHttpGet>) {
     let calls = Rc::new(RefCell::new(Vec::new()));
@@ -67,7 +67,7 @@ fn recording_http(
     )
 }
 
-fn refused_http() -> (RecordingHttp, Box<BoundedHttpGet>) {
+pub(super) fn refused_http() -> (RecordingHttp, Box<BoundedHttpGet>) {
     recording_http(|| anyhow::bail!("offline"))
 }
 
@@ -365,7 +365,9 @@ fn tag_tarball(version: &str) -> Vec<u8> {
     })
 }
 
-fn gz_of(fill: impl FnOnce(&mut tar::Builder<flate2::write::GzEncoder<&mut Vec<u8>>>)) -> Vec<u8> {
+pub(super) fn gz_of(
+    fill: impl FnOnce(&mut tar::Builder<flate2::write::GzEncoder<&mut Vec<u8>>>),
+) -> Vec<u8> {
     let mut bytes = Vec::new();
     {
         let encoder = flate2::write::GzEncoder::new(&mut bytes, flate2::Compression::fast());

@@ -626,6 +626,9 @@ fn acquire_from_download(
             version: "1.2.99".to_string(),
             may_fetch: true,
         },
+        // These tests are about compatibility, and each fetcher serves its own
+        // tree; the release manifest has its own tests in `issue_1972_*`.
+        None,
         fetcher,
         &|candidate| {
             validate_framework_bundle_compatibility(candidate).map_err(|err| format!("{err:#}"))
@@ -769,7 +772,7 @@ fn copy_amplifier_bundle_errors_when_source_missing() {
     fs::create_dir_all(&repo_root).unwrap();
     fs::create_dir_all(&claude_dir).unwrap();
 
-    let result = directories::copy_amplifier_bundle(&repo_root, &claude_dir);
+    let result = directories::copy_amplifier_bundle(&repo_root, &claude_dir, None);
 
     assert!(
         result.is_err(),
@@ -799,7 +802,7 @@ fn copy_amplifier_bundle_rejects_symlinked_source_root() {
     fs::write(elsewhere.join("secret.txt"), "private").unwrap();
     std::os::unix::fs::symlink(&elsewhere, repo_root.join("amplifier-bundle")).unwrap();
 
-    let result = directories::copy_amplifier_bundle(&repo_root, &claude_dir);
+    let result = directories::copy_amplifier_bundle(&repo_root, &claude_dir, None);
 
     assert!(
         result.is_err(),
@@ -838,7 +841,7 @@ fn copy_amplifier_bundle_replaces_existing_atomically() {
             "Composable smart task orchestrator v1",
         ),
     );
-    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+    directories::copy_amplifier_bundle(&repo_root, &claude_dir, None).unwrap();
 
     let staged = temp.path().join(".amplihack/amplifier-bundle");
     assert!(
@@ -857,7 +860,7 @@ fn copy_amplifier_bundle_replaces_existing_atomically() {
     )
     .unwrap();
     fs::write(bundle_src.join("recipes/new-recipe.yaml"), "fresh\n").unwrap();
-    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+    directories::copy_amplifier_bundle(&repo_root, &claude_dir, None).unwrap();
 
     assert!(
         fs::read_to_string(staged.join("recipes/smart-orchestrator.yaml"))
@@ -904,7 +907,7 @@ fn copy_amplifier_bundle_stages_the_merge_guard_executable() {
     .unwrap();
     fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
 
-    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+    directories::copy_amplifier_bundle(&repo_root, &claude_dir, None).unwrap();
 
     let staged = temp
         .path()
@@ -941,7 +944,7 @@ fn copy_amplifier_bundle_stages_the_merge_guard_at_exactly_0755() {
         .unwrap();
         fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(source_mode)).unwrap();
 
-        directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+        directories::copy_amplifier_bundle(&repo_root, &claude_dir, None).unwrap();
 
         let staged_dir = temp
             .path()
@@ -998,7 +1001,7 @@ fn copy_amplifier_bundle_removes_group_write_from_tools_and_gate_files() {
     .unwrap();
     fs::set_permissions(&tools, fs::Permissions::from_mode(0o775)).unwrap();
 
-    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+    directories::copy_amplifier_bundle(&repo_root, &claude_dir, None).unwrap();
 
     let staged = temp.path().join(".amplihack/amplifier-bundle/tools");
     let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o7777;
@@ -1027,7 +1030,7 @@ fn copy_amplifier_bundle_replaces_stale_installed_assets_instead_of_merging() {
     .unwrap();
 
     issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
-    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+    directories::copy_amplifier_bundle(&repo_root, &claude_dir, None).unwrap();
 
     assert!(
         !staged.join("recipes/old-smart-orchestrator.yaml").exists(),
@@ -1092,12 +1095,12 @@ fn issue_734_copy_rejects_stale_monolithic_smart_orchestrator_without_overwritin
 
     let good_repo = temp.path().join("good-repo");
     issue_734_create_bundle_repo(&good_repo, issue_734_compatible_smart_orchestrator());
-    directories::copy_amplifier_bundle(&good_repo, &claude_dir).unwrap();
+    directories::copy_amplifier_bundle(&good_repo, &claude_dir, None).unwrap();
 
     let stale_repo = temp.path().join("stale-repo");
     issue_734_create_bundle_repo(&stale_repo, issue_734_stale_monolithic_smart_orchestrator());
 
-    let result = directories::copy_amplifier_bundle(&stale_repo, &claude_dir);
+    let result = directories::copy_amplifier_bundle(&stale_repo, &claude_dir, None);
 
     assert!(
         result.is_err(),
@@ -1747,13 +1750,18 @@ fn run_install_force_refresh_true_skips_bundled_root() {
             may_fetch: true,
         };
 
-        run_install_with_fetcher(
+        // With the release manifest a release build carries (issue #1972), so
+        // the tag tree is checked against it at the fetch and again after the
+        // copy, on the production path.
+        let release = super::issue_1972_support::served_release(crate::VERSION);
+        run_install_with_manifest(
             None,
             false,
             true,
             false,
             InstallMode::Explicit,
             &binary,
+            Some(&release),
             &fetcher,
         )
         .expect("force_refresh=true must install from the release tag");

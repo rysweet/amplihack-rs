@@ -1,9 +1,13 @@
-//! Issue #1955, end to end through `run_install_with_fetcher`: the real install
+//! Issue #1955, end to end through `run_install_with_manifest`: the real install
 //! path with an injected fetcher and an isolated HOME. No test here reaches the
 //! network: see `InstallEnv`.
+//!
+//! These tests mark their source trees with sentinel files to tell them apart,
+//! so they run with no release manifest, as a dev build does. The same flow
+//! with a manifest is in `issue_1972_staging` and `issue_1955_fetch_backoff`.
 
 use super::super::framework_source::{BinaryIdentity, bundle_kept_without_source};
-use super::super::run_install_with_fetcher;
+use super::super::run_install_with_manifest;
 use super::super::tag_fetch::{
     EXPLICIT_FETCH_BUDGET, FetchedWrongVersion, IMPLICIT_FETCH_BUDGET, SourceFetchFailed,
 };
@@ -28,7 +32,16 @@ fn install(
     binary: &BinaryIdentity,
     fetcher: &FakeFetcher,
 ) -> anyhow::Result<()> {
-    run_install_with_fetcher(local, false, force_refresh, false, mode, binary, fetcher)
+    run_install_with_manifest(
+        local,
+        false,
+        force_refresh,
+        false,
+        mode,
+        binary,
+        None,
+        fetcher,
+    )
 }
 
 fn explicit(force_refresh: bool, fetcher: &FakeFetcher) -> anyhow::Result<()> {
@@ -227,13 +240,14 @@ fn a_refusal_comes_before_the_interactive_wizard() {
     let binary = release_binary();
 
     assert_refused_with_no_change(&fx, || {
-        run_install_with_fetcher(
+        run_install_with_manifest(
             None,
             true,
             false,
             false,
             InstallMode::Explicit,
             &binary,
+            None,
             &fetcher,
         )
     });

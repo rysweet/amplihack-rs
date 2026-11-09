@@ -7,9 +7,10 @@
 use super::super::InstallMode;
 use super::super::fetch_backoff::{BACKOFF_WINDOW, MARKER_FILE};
 use super::super::framework_source::BinaryIdentity;
-use super::super::run_install_with_fetcher;
+use super::super::run_install_with_manifest;
 use super::super::tag_fetch::SourceFetchFailed;
 use super::issue_1955_support::*;
+use super::issue_1972_support::served_release;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -22,9 +23,20 @@ fn release_binary() -> BinaryIdentity {
 }
 
 /// `force_refresh`, because the compile-time root would match this test build
-/// and no fetch would run.
+/// and no fetch would run. With the release manifest a release build carries,
+/// which the serving fetcher's tree matches (issue #1972).
 fn install(mode: InstallMode, fetcher: &FakeFetcher) -> anyhow::Result<()> {
-    run_install_with_fetcher(None, false, true, false, mode, &release_binary(), fetcher)
+    let release = served_release(crate::VERSION);
+    run_install_with_manifest(
+        None,
+        false,
+        true,
+        false,
+        mode,
+        &release_binary(),
+        Some(&release),
+        fetcher,
+    )
 }
 
 fn marker(fx: &InstallEnv) -> PathBuf {
@@ -120,13 +132,15 @@ fn a_build_that_may_not_fetch_records_nothing() {
         may_fetch: false,
     };
 
-    let err = run_install_with_fetcher(
+    // A build that may not fetch never activates a release manifest.
+    let err = run_install_with_manifest(
         None,
         false,
         true,
         false,
         InstallMode::Implicit,
         &binary,
+        None,
         &fetcher,
     )
     .expect_err("no source");

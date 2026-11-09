@@ -141,7 +141,7 @@ impl Fixture {
 
     fn install(&self, mode: InstallMode) {
         assert_home_is(&self.home);
-        local_install_scoped(&self.repo, None, false, mode)
+        local_install_scoped(&self.repo, None, false, mode, None)
             .unwrap_or_else(|e| panic!("{mode:?} install failed: {e:#}"));
     }
 }
@@ -347,7 +347,7 @@ fn pre_502_state_restages_once_then_stops() {
             notice,
             || {
                 installs.set(installs.get() + 1);
-                local_install_scoped(&fx.repo, None, false, InstallMode::Implicit)
+                local_install_scoped(&fx.repo, None, false, InstallMode::Implicit, None)
             },
         )
         .expect("launch")

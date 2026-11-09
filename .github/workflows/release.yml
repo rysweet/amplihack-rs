@@ -136,10 +136,52 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # ── Release bundle manifest (issue #1972) ─────────────────────────────
+  # The SHA-256 of every file in amplifier-bundle/, generated once from the
+  # version-bump commit. Every build leg embeds these exact bytes (checked
+  # against the digest output below) and the release attaches them as
+  # amplifier-bundle-manifest.txt. R4: the stamp commit in `release` may only
+  # change Cargo.toml, Cargo.lock and package.json, so the tag's
+  # amplifier-bundle/ is the tree hashed here. No cargo, no cache, no secrets.
+  bundle-manifest:
+    name: Generate bundle manifest
+    needs: version-bump
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sha256: ${{ steps.generate.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.version-bump.outputs.sha }}
+          persist-credentials: false
+      - name: Generate and self-check the manifest
+        id: generate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bundle-manifest"
+          manifest="$RUNNER_TEMP/bundle-manifest/amplifier-bundle-manifest.txt"
+          bash scripts/generate-bundle-manifest.sh amplifier-bundle > "$manifest"
+          if [ ! -s "$manifest" ]; then
+            echo "::error::the generated bundle manifest is empty"
+            exit 1
+          fi
+          (cd amplifier-bundle && sha256sum --strict --quiet -c "$manifest")
+          digest=$(sha256sum "$manifest" | cut -d' ' -f1)
+          echo "sha256=${digest}" >> "$GITHUB_OUTPUT"
+          echo "Bundle manifest: $(wc -l < "$manifest") files, sha256 ${digest}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: amplifier-bundle-manifest
+          path: ${{ runner.temp }}/bundle-manifest/amplifier-bundle-manifest.txt
+          if-no-files-found: error
+
   # ── Build release binaries ────────────────────────────────────────────
   build:
     name: Build ${{ matrix.target }}
-    needs: version-bump
+    needs: [version-bump, bundle-manifest]
     runs-on: ${{ matrix.runner }}
     # actions: read lets the sccache composite actions list cache entries to
     # tell a rate-limited restore or save from a real miss.
@@ -219,6 +261,33 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
           echo "PKG_CONFIG_ALLOW_CROSS=1" >> "$GITHUB_ENV"
 
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: amplifier-bundle-manifest
+          path: ${{ runner.temp }}/bundle-manifest
+
+      - name: Embed the release bundle manifest
+        # Issue #1972: overwrite the committed empty placeholder, which
+        # `include_str!` compiles in, with the manifest generated above. The
+        # digest check proves every leg embeds the same bytes the release
+        # attaches.
+        shell: bash
+        env:
+          MANIFEST_SHA256: ${{ needs.bundle-manifest.outputs.sha256 }}
+          MANIFEST: ${{ runner.temp }}/bundle-manifest/amplifier-bundle-manifest.txt
+        run: |
+          set -euo pipefail
+          if ! [[ "${MANIFEST_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::bundle-manifest did not output a SHA-256 digest"
+            exit 1
+          fi
+          actual=$(sha256sum "${MANIFEST}" | cut -d' ' -f1)
+          if [ "${actual}" != "${MANIFEST_SHA256}" ]; then
+            echo "::error::downloaded bundle manifest has sha256 ${actual}, expected ${MANIFEST_SHA256}"
+            exit 1
+          fi
+          cp "${MANIFEST}" crates/amplihack-cli/release/amplifier-bundle-manifest.txt
+
       - name: Build release
         # `AMPLIHACK_RELEASE_VERSION` is read at build time by `option_env!` in
         # `amplihack_cli::VERSION` (and by the matching `const VERSION` in the
@@ -234,6 +303,16 @@ jobs:
           cargo build --release --locked --target ${{ matrix.target }} \
             -p amplihack -p amplihack-hooks-bin \
             --features amplihack-hooks-bin/signal
+
+      - name: Check the binary carries the release bundle manifest
+        # Issue #1972: an empty or stale embed turns the install check off with
+        # no error, and the binary would pass for a dev build. Every manifest
+        # line must be in the built binary's bytes, or the release stops here.
+        shell: bash
+        env:
+          MANIFEST: ${{ runner.temp }}/bundle-manifest/amplifier-bundle-manifest.txt
+          BINARY: target/${{ matrix.target }}/release/amplihack
+        run: bash scripts/check-embedded-bundle-manifest.sh "${MANIFEST}" "${BINARY}"
 
       - name: Save sccache disk cache
         if: always() && github.ref == 'refs/heads/main'
@@ -265,7 +344,7 @@ jobs:
   # ── Create GitHub Release ─────────────────────────────────────────────
   release:
     name: Create Release
-    needs: [version-bump, build]
+    needs: [version-bump, bundle-manifest, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -287,6 +366,25 @@ jobs:
           find artifacts -name '*.tar.gz' -exec cp {} release-assets/ \;
           find artifacts -name '*.sha256' -exec cp {} release-assets/ \;
           ls -la release-assets/
+
+      - name: Attach the release bundle manifest
+        # Issue #1972: the same bytes every build leg embedded, by exact path.
+        shell: bash
+        env:
+          MANIFEST_SHA256: ${{ needs.bundle-manifest.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          manifest=artifacts/amplifier-bundle-manifest/amplifier-bundle-manifest.txt
+          if ! [[ "${MANIFEST_SHA256}" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::bundle-manifest did not output a SHA-256 digest"
+            exit 1
+          fi
+          actual=$(sha256sum "${manifest}" | cut -d' ' -f1)
+          if [ "${actual}" != "${MANIFEST_SHA256}" ]; then
+            echo "::error::downloaded bundle manifest has sha256 ${actual}, expected ${MANIFEST_SHA256}"
+            exit 1
+          fi
+          cp "${manifest}" release-assets/amplifier-bundle-manifest.txt
 
       - name: Check for an existing tag
         # Issue #1526: tag a one-commit child of the released `main` SHA whose
@@ -389,6 +487,10 @@ jobs:
 
           # Stage by name: the downloaded artifacts/ and the collected
           # release-assets/ are in the working tree too.
+          # Issue #1972 R4: the guard below also keeps amplifier-bundle/ out
+          # of the stamp commit, so the tag's bundle is the tree the
+          # bundle-manifest job hashed. Widening it breaks every fetch of the
+          # release tag in a release binary.
           git add Cargo.toml Cargo.lock
           if [ -f package.json ]; then git add package.json; fi
           STAGED=$(git diff --cached --name-only)

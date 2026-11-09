@@ -173,8 +173,14 @@ fn a_runner_that_times_out_still_names_the_run() {
 
 /// The caller holds the shared environment lock through restoration.
 fn fixture_environment() -> crate::test_support::EnvGuard {
-    let saved = crate::test_support::EnvGuard::capture(&["AMPLIHACK_AGENT_BINARY", "HOME"]);
+    let saved = crate::test_support::EnvGuard::capture(&[
+        "AMPLIHACK_AGENT_BINARY",
+        "AMPLIHACK_CLEANUP_ON_EXIT",
+        "HOME",
+    ]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    // The end-of-run sweep would otherwise run over the real work root (#2067).
+    unsafe { std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0") };
     saved
 }
