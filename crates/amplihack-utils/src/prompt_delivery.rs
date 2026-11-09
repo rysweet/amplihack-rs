@@ -3,23 +3,29 @@
 //! Implements the delivery modes (`argv` / `tempfile` / `stdin` /
 //! `file-reference`) plus an `auto` selector and an `AMPLIHACK_PROMPT_DELIVERY` env-var override.
 //!
-//! Tracking issue: Simard #1897. Working reference (shell-mktemp pattern):
-//! Simard #1878. Originating apostrophe-truncation bug: Simard #1871.
+//! Tracking issues: Simard #1897 (the helper), amplihack-rs #2030 (prompt
+//! text never in argv). Working reference (shell-mktemp pattern): Simard
+//! #1878. Originating apostrophe-truncation bug: Simard #1871.
 //!
 //! ## Contract summary
 //!
-//! - **Env var:** `AMPLIHACK_PROMPT_DELIVERY` ∈ `{auto, argv, tempfile, stdin}`,
+//! - **Never argv (#2030):** a prompt in argv is visible in
+//!   `/proc/<pid>/cmdline`, so any `pkill -f` or `pgrep -f` that matches a
+//!   phrase in it hits the agent. [`try_select_mode`] and [`deliver`] never
+//!   return or build [`DeliveryMode::Argv`], whatever was requested.
+//! - **Env var:** `AMPLIHACK_PROMPT_DELIVERY` ∈ `{auto, tempfile, stdin}`,
 //!   case-insensitive. Unset / empty / unrecognised values all resolve to
-//!   `auto` (unrecognised emits a `tracing::warn!`). `file-reference` is not
-//!   a request value; it is only ever selected by `auto` or by degrading.
-//! - **Auto rule:** prompts ≤ [`AUTO_TEMPFILE_THRESHOLD_BYTES`] stay on
-//!   `argv` when the target binary supports it; otherwise the helper picks
-//!   `tempfile`, then `stdin`, then `file-reference`, then falls back to
-//!   `argv` (issue #1570: a single argv element is capped at 128 KiB).
-//! - **Explicit override:** wins over `auto`. If the requested mode is not
-//!   supported by the binary, the helper degrades deterministically through
-//!   `tempfile → stdin → file-reference → argv` (skipping modes that rank
-//!   above the request) and emits a `tracing::warn!`.
+//!   `auto` (unrecognised emits a `tracing::warn!`). `argv` was removed by
+//!   #2030 (R1.2): the variable is inherited by every nested step, so it is
+//!   now an unrecognised value. `file-reference` is not a request value; it
+//!   is only ever selected by `auto` or by degrading.
+//! - **Auto rule:** `stdin`, then `file-reference`, then `tempfile`, then a
+//!   [`NoSafeChannel`] error. Prompt size does not affect the choice.
+//! - **Explicit override:** wins over `auto`, and degrades only through
+//!   channels that keep the prompt out of argv:
+//!   `tempfile → stdin → file-reference`, `stdin → file-reference`.
+//!   A [`PromptDelivery::Argv`] request (only reachable from code, never
+//!   from the env var) is treated exactly as `auto`.
 //! - **Lifecycle:** [`deliver`] returns a [`DeliveryHandle`] that owns the
 //!   underlying [`tempfile::NamedTempFile`] (for `tempfile` and
 //!   `file-reference` modes) or marks
@@ -71,7 +77,7 @@ pub fn sanitize_prompt_nul(prompt: &str) -> Cow<'_, str> {
 // Public types
 // ---------------------------------------------------------------------------
 
-/// Caller-requested delivery mode. `Auto` defers to [`select_mode`].
+/// Caller-requested delivery mode. `Auto` defers to [`try_select_mode`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PromptDelivery {
     Auto,
@@ -86,7 +92,11 @@ pub enum PromptDelivery {
 /// [`crate::flag_matrix::FlagSet`](`crates/amplihack-launcher/src/flag_matrix.rs`)
 /// — kept here as a stand-alone struct so `amplihack-utils` does not depend
 /// on `amplihack-launcher`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// `DeliveryCaps::default()` has no channels at all: every field is `false`
+/// or `None`. A launcher that is not recognised gets the default, so it
+/// receives [`NoSafeChannel`] instead of argv.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DeliveryCaps {
     pub supports_argv: bool,
     pub supports_tempfile: bool,
@@ -195,11 +205,6 @@ impl DeliveryHandle {
 // Public constants
 // ---------------------------------------------------------------------------
 
-/// Auto-promotion threshold (bytes). Prompts strictly larger than this
-/// promote out of `argv` when the binary supports a longer-form channel.
-/// Rationale: PTY canonical-mode line cap per Simard #1879.
-pub const AUTO_TEMPFILE_THRESHOLD_BYTES: usize = 4096;
-
 /// Env-var name that selects the delivery mode at runtime.
 pub const ENV_VAR_NAME: &str = "AMPLIHACK_PROMPT_DELIVERY";
 
@@ -231,7 +236,6 @@ pub fn from_env() -> PromptDelivery {
     }
     match trimmed.to_ascii_lowercase().as_str() {
         "auto" => PromptDelivery::Auto,
-        "argv" => PromptDelivery::Argv,
         "tempfile" => PromptDelivery::Tempfile,
         "stdin" => PromptDelivery::Stdin,
         other => {
@@ -239,7 +243,7 @@ pub fn from_env() -> PromptDelivery {
                 env = ENV_VAR_NAME,
                 value = other,
                 "unrecognised prompt-delivery mode; falling back to auto. \
-                 Valid values: auto, argv, tempfile, stdin (case-insensitive)."
+                 Valid values: auto, tempfile, stdin (case-insensitive)."
             );
             PromptDelivery::Auto
         }
@@ -247,97 +251,94 @@ pub fn from_env() -> PromptDelivery {
 }
 
 // ---------------------------------------------------------------------------
-// select_mode
+// NoSafeChannel
 // ---------------------------------------------------------------------------
 
-/// Resolve the actual delivery mode for a request.
+/// Fixed text of [`NoSafeChannel`]. It never contains prompt text.
+const NO_SAFE_CHANNEL_MESSAGE: &str = "no channel keeps this prompt out of the command line: \
+the agent CLI accepts none of stdin, a prompt file or a file reference";
+
+/// Returned when no delivery channel keeps the prompt out of argv (#2030).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NoSafeChannel {
+    /// What the caller asked for.
+    pub requested: PromptDelivery,
+    /// What the binary offers.
+    pub caps: DeliveryCaps,
+}
+
+impl std::fmt::Display for NoSafeChannel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(NO_SAFE_CHANNEL_MESSAGE)
+    }
+}
+
+impl std::error::Error for NoSafeChannel {}
+
+impl From<NoSafeChannel> for std::io::Error {
+    fn from(err: NoSafeChannel) -> Self {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, err)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// try_select_mode
+// ---------------------------------------------------------------------------
+
+/// Pick the delivery mode for a spawn, or for a doctor report.
 ///
-/// See module-level docs for the algorithm. Both the `auto` rule and the
-/// explicit-override degradation chain prefer
-/// `tempfile → stdin → file-reference → argv` when their preferred mode is
-/// unsupported.
-pub fn select_mode(
+/// Never returns [`DeliveryMode::Argv`]. `Auto` tries `stdin`, then
+/// `file-reference`, then `tempfile`. An explicit request degrades only
+/// through channels that keep the prompt out of argv. A
+/// [`PromptDelivery::Argv`] request is treated as `Auto` (#2030, R1.2).
+/// When no channel fits, the answer is [`NoSafeChannel`]: reports show it as
+/// "unavailable" and spawns fail. The size of a prompt never matters.
+pub fn try_select_mode(
     requested: PromptDelivery,
-    prompt_size: usize,
     caps: &DeliveryCaps,
-) -> DeliveryMode {
-    match requested {
-        PromptDelivery::Auto => select_auto(prompt_size, caps),
-        PromptDelivery::Argv => {
-            if caps.supports_argv {
-                DeliveryMode::Argv
-            } else {
-                tracing::warn!("argv mode unsupported by binary capabilities; degrading");
-                degrade_chain(caps)
+) -> Result<DeliveryMode, NoSafeChannel> {
+    let order: &[DeliveryMode] = match requested {
+        // R1.2: an `Argv` request is not a delivery channel; it picks exactly
+        // what `Auto` picks. `DeliveryMode::Argv` is never in any order list.
+        PromptDelivery::Auto | PromptDelivery::Argv => &[
+            DeliveryMode::Stdin,
+            DeliveryMode::FileReference,
+            DeliveryMode::Tempfile,
+        ],
+        PromptDelivery::Tempfile => &[
+            DeliveryMode::Tempfile,
+            DeliveryMode::Stdin,
+            DeliveryMode::FileReference,
+        ],
+        // Stdin never degrades to tempfile: the two have different process
+        // contracts (a bare flag reading stdin versus a path argument).
+        PromptDelivery::Stdin => &[DeliveryMode::Stdin, DeliveryMode::FileReference],
+    };
+    let chosen = order.iter().copied().find(|m| supports(caps, *m));
+    match chosen {
+        Some(mode) => {
+            if order[0] != mode && requested != PromptDelivery::Argv {
+                tracing::warn!(
+                    requested = ?requested,
+                    selected = ?mode,
+                    "requested prompt-delivery mode unsupported by binary; degrading"
+                );
             }
+            Ok(mode)
         }
-        PromptDelivery::Tempfile => {
-            if caps.supports_tempfile {
-                DeliveryMode::Tempfile
-            } else {
-                tracing::warn!("tempfile mode unsupported by binary capabilities; degrading");
-                if caps.supports_stdin {
-                    DeliveryMode::Stdin
-                } else if caps.supports_file_reference {
-                    DeliveryMode::FileReference
-                } else {
-                    DeliveryMode::Argv
-                }
-            }
-        }
-        PromptDelivery::Stdin => {
-            if caps.supports_stdin {
-                DeliveryMode::Stdin
-            } else {
-                tracing::warn!("stdin mode unsupported by binary capabilities; degrading");
-                if caps.supports_file_reference {
-                    DeliveryMode::FileReference
-                } else {
-                    DeliveryMode::Argv
-                }
-            }
-        }
+        None => Err(NoSafeChannel {
+            requested,
+            caps: *caps,
+        }),
     }
 }
 
-fn select_auto(prompt_size: usize, caps: &DeliveryCaps) -> DeliveryMode {
-    if prompt_size <= AUTO_TEMPFILE_THRESHOLD_BYTES && caps.supports_argv {
-        return DeliveryMode::Argv;
-    }
-    if caps.supports_tempfile {
-        return DeliveryMode::Tempfile;
-    }
-    if caps.supports_stdin {
-        return DeliveryMode::Stdin;
-    }
-    if caps.supports_file_reference {
-        return DeliveryMode::FileReference;
-    }
-    if caps.supports_argv {
-        tracing::warn!(
-            prompt_size,
-            mode = "argv",
-            "no long-form delivery mode supported by binary; falling back to argv"
-        );
-        DeliveryMode::Argv
-    } else {
-        tracing::warn!(
-            prompt_size,
-            "binary advertises no supported delivery modes; defaulting to argv"
-        );
-        DeliveryMode::Argv
-    }
-}
-
-fn degrade_chain(caps: &DeliveryCaps) -> DeliveryMode {
-    if caps.supports_tempfile {
-        DeliveryMode::Tempfile
-    } else if caps.supports_stdin {
-        DeliveryMode::Stdin
-    } else if caps.supports_file_reference {
-        DeliveryMode::FileReference
-    } else {
-        DeliveryMode::Argv
+fn supports(caps: &DeliveryCaps, mode: DeliveryMode) -> bool {
+    match mode {
+        DeliveryMode::Argv => caps.supports_argv,
+        DeliveryMode::Tempfile => caps.supports_tempfile,
+        DeliveryMode::Stdin => caps.supports_stdin,
+        DeliveryMode::FileReference => caps.supports_file_reference,
     }
 }
 
@@ -347,8 +348,9 @@ fn degrade_chain(caps: &DeliveryCaps) -> DeliveryMode {
 
 /// Apply prompt delivery to a [`Command`].
 ///
-/// Mutates `cmd` as required by the selected mode:
-/// - [`Argv`](DeliveryMode::Argv): appends the prompt as a single argv element.
+/// Mutates `cmd` as required by the selected mode. The prompt is never
+/// appended to argv: [`try_select_mode`] never selects
+/// [`Argv`](DeliveryMode::Argv), and a request for it is treated as `Auto`.
 /// - [`Tempfile`](DeliveryMode::Tempfile): writes the prompt to a fresh
 ///   `tempfile::NamedTempFile` with mode `0600` (Unix), then appends
 ///   `caps.tempfile_flag` (when non-empty) followed by the path.
@@ -361,6 +363,11 @@ fn degrade_chain(caps: &DeliveryCaps) -> DeliveryMode {
 ///   [`FILE_REFERENCE_TEMPLATE`].
 ///
 /// Returns a [`DeliveryHandle`] whose lifetime guards the temp resources.
+///
+/// # Errors
+///
+/// Returns [`std::io::ErrorKind::InvalidInput`] (from [`NoSafeChannel`]) when
+/// no channel keeps the prompt out of argv; `cmd` is left unchanged.
 pub fn deliver(
     cmd: &mut Command,
     prompt: &str,
@@ -368,23 +375,19 @@ pub fn deliver(
     caps: &DeliveryCaps,
 ) -> std::io::Result<DeliveryHandle> {
     // Issue #898: strip NUL bytes so a single stray NUL in agent/bash step
-    // output cannot abort the whole workflow at child spawn. Mode selection
-    // uses the *original* prompt length (not the sanitized length) to stay
-    // consistent with stdin-path callers that compute select_mode on the raw
-    // prompt. Sanitization affects only the delivered bytes.
-    let mode = select_mode(requested, prompt.len(), caps);
+    // output cannot abort the whole workflow at child spawn. Sanitization
+    // affects only the delivered bytes.
+    let mode = try_select_mode(requested, caps)?;
     let prompt = sanitize_prompt_nul(prompt);
     let prompt = prompt.as_ref();
     match mode {
-        DeliveryMode::Argv => {
-            cmd.arg(prompt);
-            Ok(DeliveryHandle {
-                mode,
-                path: None,
-                _tempfile: None,
-                _tempdir: None,
-            })
+        // Unreachable through `try_select_mode`; fail closed rather than
+        // ever building an argv delivery (R5).
+        DeliveryMode::Argv => Err(NoSafeChannel {
+            requested,
+            caps: *caps,
         }
+        .into()),
         DeliveryMode::Tempfile => {
             let named = write_private_tempfile(prompt)?;
             let path = named.path().to_path_buf();
@@ -417,7 +420,7 @@ pub fn deliver(
             // (Copilot's `--add-dir`) exposes only this prompt, never the
             // shared temp root (issue #1570, security review).
             let dir = tempfile::Builder::new()
-                .prefix("simard-prompt-dir-")
+                .prefix("amplihack-prompt-")
                 .tempdir()?;
             #[cfg(unix)]
             {

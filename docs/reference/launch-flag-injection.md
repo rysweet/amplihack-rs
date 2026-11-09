@@ -289,10 +289,13 @@ skipped, `--x=y` and attached short forms are single tokens, and a bare `--`
 ends the scan. As in clap, one `=` after a short option is dropped, so
 `-s=read-only` is `-s read-only`. A `-c` key is trimmed before it is compared,
 so `-c 'sandbox_mode = "read-only"'` is a sandbox choice. A `-` followed by a
-non-ASCII character is passed through for Codex to reject. The lists of
-options that take a value are shared with the mode parser in
-`crates/amplihack-launcher/src/prompt_delivery/codex_args.rs`
-(`LONG_OPTIONS_WITH_VALUE` and `SHORT_OPTIONS_WITH_VALUE`). If no `exec` is
+non-ASCII character is passed through for Codex to reject. Whether an
+option takes a value comes from the per-scope Codex option tables in
+`crates/amplihack-launcher/src/prompt_delivery/codex_options.rs`
+(`codex_options::takes_value`): an option takes a value if the root, `exec`,
+`exec resume` or `exec fork` table says so. The launcher's mode parser
+(`codex_args.rs`) and the prompt rewrite (`codex_exec_args.rs`) read the same
+tables, which are checked against the saved codex-cli help. If no `exec` is
 found, the argv is passed through unchanged.
 
 The flags that choose a sandbox on their own are `--approve-for-me`,

@@ -536,6 +536,65 @@ impl SeedRun {
             .push(("target", path.to_path_buf(), String::new()));
         self
     }
+
+    /// Issue #2039: a 5-field line
+    /// `target<TAB><path><TAB><TAB><origin><TAB><checkout>`.
+    pub fn owns_new_target(mut self, path: &Path, origin: &str, checkout: &Path) -> Self {
+        self.owned.push((
+            "target",
+            path.to_path_buf(),
+            format!("\t{origin}\t{}", checkout.display()),
+        ));
+        self
+    }
+
+    /// A run that is still active: this test process's pid and start ticks.
+    pub fn active() -> Self {
+        let pid = std::process::id();
+        let mut run = Self::ended(0);
+        run.pid = pid;
+        run.pid_start_ticks = start_ticks(pid);
+        run.ended_hours_ago = None;
+        run
+    }
+}
+
+/// Issue #2039: the hook's target name for `checkout`, computed the way the
+/// hook does (`printf '%s' "$top" | sha256sum`, first 12 hex characters).
+pub fn hook_target_name(checkout: &Path) -> String {
+    let out = Command::new("/bin/sh")
+        .arg("-c")
+        .arg("printf '%s' \"$1\" | sha256sum | cut -c1-12")
+        .arg("sh")
+        .arg(checkout)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", describe(&out));
+    format!(
+        "amplihack-precommit-target-{}",
+        String::from_utf8_lossy(&out.stdout).trim()
+    )
+}
+
+/// Issue #2039: a cargo-shaped target folder at `path` (profile with
+/// `.fingerprint`, `.cargo-lock` files, `.rustc_info.json`, a tag, a blob).
+pub fn cargo_target_at(path: &Path) -> PathBuf {
+    fs::create_dir_all(path.join("debug/.fingerprint")).unwrap();
+    fs::write(path.join(".rustc_info.json"), "{}").unwrap();
+    fs::write(path.join(".cargo-lock"), "").unwrap();
+    fs::write(path.join("debug/.cargo-lock"), "").unwrap();
+    fs::write(
+        path.join("CACHEDIR.TAG"),
+        "Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .unwrap();
+    fs::write(path.join("debug/blob"), vec![7u8; 256]).unwrap();
+    path.to_path_buf()
+}
+
+/// True when something (a file, folder or link, even dangling) is at `path`.
+pub fn present(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
 }
 
 /// The pid of a process that has exited.

@@ -71,7 +71,7 @@ fn private_file(path: &Path, body: &str) {
 /// - otherwise prints `done as <profile>` and exits `$EXIT_CODE`.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 p="${AMPLIHACK_CLAUDE_PROFILE-<unset>}"
 echo "$p" >> "$RECORD_DIR/attempts"

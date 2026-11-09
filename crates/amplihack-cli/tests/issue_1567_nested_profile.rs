@@ -24,7 +24,7 @@ fn executable(path: &Path, body: &str) {
 /// starts a nested launch; the nested one (second run) only records.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.0 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 record() {
   {

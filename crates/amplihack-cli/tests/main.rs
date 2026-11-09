@@ -52,6 +52,10 @@ mod issue_1962_seed_cmd;
 mod issue_1962_seed_output;
 #[path = "issue_1962_seed_scan.rs"]
 mod issue_1962_seed_scan;
+#[path = "issue_2030_guards.rs"]
+mod issue_2030_guards;
+#[path = "issue_2030_no_prompt_in_argv.rs"]
+mod issue_2030_no_prompt_in_argv;
 
 #[path = "active_agent_binary_default_test.rs"]
 mod active_agent_binary_default;
@@ -295,6 +299,8 @@ mod issue_1973_wait_helpers;
 mod issue_1979_crusty_minor_followups;
 #[path = "issue_1985_codex_agent_step_flags.rs"]
 mod issue_1985_codex_agent_step_flags;
+#[path = "issue_2001_codex_usage.rs"]
+mod issue_2001_codex_usage;
 #[path = "issue_2010_codex_exec_notice.rs"]
 mod issue_2010_codex_exec_notice;
 #[path = "issue_2042_fake_proc_seam.rs"]

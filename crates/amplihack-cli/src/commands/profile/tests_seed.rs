@@ -303,14 +303,28 @@ mod race_and_nested {
         fs::create_dir_all(&sub).unwrap();
         fs::write(sub.join("a.md"), "a").unwrap();
         // Hook fires after the entry was classified, before it is opened.
+        // The hook receives the display path relative to the source root, so
+        // resolve it against `source`; a bare relative path would act on the
+        // process working directory and could plant a symlink in the checkout.
+        // The hook must succeed and must fire; otherwise the test checks
+        // nothing, which is how the relative-path bug went unnoticed.
+        let source_root = source.clone();
+        let swapped = std::rc::Rc::new(std::cell::Cell::new(false));
+        let hook_swapped = std::rc::Rc::clone(&swapped);
         super::super::store::test_hook::set_before_open(Some(Box::new(move |p| {
             if p.ends_with("victim") {
-                let _ = fs::remove_dir_all(p);
-                let _ = symlink(&outside, p);
+                let target = source_root.join(p);
+                fs::remove_dir_all(&target).unwrap();
+                symlink(&outside, &target).unwrap();
+                hook_swapped.set(true);
             }
         })));
         let res = store.add(&n("w"));
         super::super::store::test_hook::set_before_open(None);
+        assert!(
+            swapped.get(),
+            "before_open hook never swapped the directory"
+        );
         let dir = store.root().join("w");
         let leaked = dir.exists()
             && walk(&dir).iter().any(|f| {

@@ -16,9 +16,13 @@ mod command;
 pub(crate) mod fixture;
 #[path = "issue_1808_run_cleanup/logs.rs"]
 mod logs;
+#[path = "issue_1808_run_cleanup/run_targets.rs"]
+mod run_targets;
 #[path = "issue_1808_run_cleanup/runner.rs"]
 mod runner;
 #[path = "issue_1808_run_cleanup/scripts.rs"]
 mod scripts;
 #[path = "issue_1808_run_cleanup/sweep.rs"]
 mod sweep;
+#[path = "issue_1808_run_cleanup/worktree_target.rs"]
+mod worktree_target;

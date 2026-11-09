@@ -8,7 +8,9 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
+
+use tempfile::TempDir;
 
 use crate::error::{DelegationError, Result};
 
@@ -72,14 +74,88 @@ pub fn validate_working_dir(working_dir: &str) -> Result<()> {
 }
 
 /// Configuration for spawning a platform subprocess.
-#[derive(Debug, Clone)]
+///
+/// Issue #2030: `command` never holds prompt text. The prompt reaches the
+/// child on `stdin`, or through a pointer sentence naming a 0600 file inside
+/// the 0700 directory owned by `prompt_guard`. Whoever spawns the child must
+/// write `stdin` to it and keep `prompt_guard` alive until the child has been
+/// waited on; dropping the last guard removes the file.
+#[derive(Clone, Default)]
 pub struct SpawnConfig {
-    /// The command and its arguments.
+    /// The command and its arguments. No prompt text.
     pub command: Vec<String>,
     /// Working directory for the child process.
     pub working_dir: String,
     /// Environment variables to set (merged with inherited env).
     pub environment: HashMap<String, String>,
+    /// Text to write to the child's stdin, then close it.
+    pub stdin: Option<String>,
+    /// Owns the private directory holding the pointer's prompt file.
+    pub prompt_guard: Option<Arc<TempDir>>,
+}
+
+impl std::fmt::Debug for SpawnConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let stdin = self
+            .stdin
+            .as_ref()
+            .map(|s| format!("Some(<{} bytes>)", s.len()))
+            .unwrap_or_else(|| "None".to_string());
+        f.debug_struct("SpawnConfig")
+            .field("command", &self.command)
+            .field("working_dir", &self.working_dir)
+            .field(
+                "environment_keys",
+                &self.environment.keys().collect::<Vec<_>>(),
+            )
+            .field("stdin", &format_args!("{stdin}"))
+            .field(
+                "prompt_guard",
+                &self.prompt_guard.as_ref().map(|g| g.path().to_path_buf()),
+            )
+            .finish()
+    }
+}
+
+/// The pointer sentence, identical to
+/// `amplihack_utils::prompt_delivery::FILE_REFERENCE_TEMPLATE` so the `/proc`
+/// parsers keep matching.
+const FILE_REFERENCE_TEMPLATE: &str = "Read and follow the complete instructions in the file {path}. Its contents are the task prompt.";
+
+/// Write `prompt` to a 0600 file in a fresh 0700 `amplihack-prompt-*`
+/// directory and return the pointer sentence and the directory's guard.
+fn pointer_to_private_file(prompt: &str) -> Result<(String, Arc<TempDir>)> {
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let io_err = |e: std::io::Error| {
+        DelegationError::Failed(format!("cannot write the prompt to a private file: {e}"))
+    };
+    let dir = tempfile::Builder::new()
+        .prefix("amplihack-prompt-")
+        .tempdir()
+        .map_err(io_err)?;
+    #[cfg(unix)]
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).map_err(io_err)?;
+    let path = dir.path().join("prompt.md");
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(&path).map_err(io_err)?;
+    file.write_all(prompt.as_bytes()).map_err(io_err)?;
+    file.sync_all().map_err(io_err)?;
+    let path_text = path.to_string_lossy();
+    if path_text.contains('\n') || path_text.contains('\0') {
+        return Err(DelegationError::Failed(
+            "prompt file path contains a newline or NUL".into(),
+        ));
+    }
+    Ok((
+        FILE_REFERENCE_TEMPLATE.replace("{path}", &path_text),
+        Arc::new(dir),
+    ))
 }
 
 /// Abstraction over a coding-assistant CLI.
@@ -140,10 +216,10 @@ impl PlatformCli for ClaudeCodeCli {
         validate_working_dir(working_dir)?;
         validate_extra_args(extra_args)?;
         let prompt = self.format_prompt(goal, persona, context);
-        let mut cmd = vec!["claude".to_string(), "-p".to_string(), prompt];
-        for (i, a) in extra_args.iter().enumerate() {
-            cmd.insert(1 + i, a.clone());
-        }
+        // Issue #2030: `claude -p` reads the prompt from stdin.
+        let mut cmd = vec!["claude".to_string()];
+        cmd.extend(extra_args.iter().cloned());
+        cmd.push("-p".to_string());
         let mut env = environment.clone();
         env.insert("AMPLIHACK_NONINTERACTIVE".into(), "1".into());
         env.insert("CI".into(), "true".into());
@@ -151,6 +227,8 @@ impl PlatformCli for ClaudeCodeCli {
             command: cmd,
             working_dir: working_dir.into(),
             environment: env,
+            stdin: Some(prompt),
+            prompt_guard: None,
         })
     }
 
@@ -180,24 +258,26 @@ impl PlatformCli for CopilotCli {
 
     fn build_spawn_config(
         &self,
-        goal: &str,
-        persona: &str,
+        _goal: &str,
+        _persona: &str,
         working_dir: &str,
-        environment: &HashMap<String, String>,
+        _environment: &HashMap<String, String>,
         extra_args: &[String],
-        context: &str,
+        _context: &str,
     ) -> Result<SpawnConfig> {
         validate_working_dir(working_dir)?;
         validate_extra_args(extra_args)?;
-        let prompt = self.format_prompt(goal, persona, context);
-        let mut cmd = vec!["gh".into(), "copilot".into(), "suggest".into()];
-        cmd.extend(extra_args.iter().cloned());
-        cmd.push(prompt);
-        Ok(SpawnConfig {
-            command: cmd,
-            working_dir: working_dir.into(),
-            environment: environment.clone(),
-        })
+        // Issue #2030: `gh copilot suggest` takes its request only as an
+        // argument and only turns it into a shell command. It reads no stdin
+        // and no files, so it has no channel for the prompt other than argv,
+        // where any local user can read it. Refuse rather than send it a
+        // "read this file" sentence it cannot act on.
+        Err(DelegationError::Validation(
+            "no safe channel for the delegation prompt: `gh copilot suggest` accepts it only \
+             on the command line, where other local users can read it (issue #2030). \
+             Delegate to claude-code or amplifier instead."
+                .into(),
+        ))
     }
 
     fn parse_output(&self, output: &str) -> HashMap<String, String> {
@@ -236,13 +316,17 @@ impl PlatformCli for AmplifierCli {
         validate_working_dir(working_dir)?;
         validate_extra_args(extra_args)?;
         let prompt = self.format_prompt(goal, persona, context);
+        // Issue #2030: the pointer sentence, never the prompt, in argv.
+        let (pointer, guard) = pointer_to_private_file(&prompt)?;
         let mut cmd = vec!["amplifier".into(), "run".into()];
         cmd.extend(extra_args.iter().cloned());
-        cmd.push(prompt);
+        cmd.push(pointer);
         Ok(SpawnConfig {
             command: cmd,
             working_dir: working_dir.into(),
             environment: environment.clone(),
+            stdin: None,
+            prompt_guard: Some(guard),
         })
     }
 
@@ -321,6 +405,15 @@ fn version_from_binary(command: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_reference_template_matches_prompt_delivery() {
+        // The `/proc` parsers match this exact sentence (#2030).
+        assert_eq!(
+            FILE_REFERENCE_TEMPLATE,
+            amplihack_utils::prompt_delivery::FILE_REFERENCE_TEMPLATE
+        );
+    }
 
     #[test]
     fn validate_extra_args_ok() {
