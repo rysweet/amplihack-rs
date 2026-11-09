@@ -334,11 +334,30 @@ in the order it appears in the argv; `network access` stands for
 | both | `amplihack: codex exec: added --sandbox workspace-write (#1985)` |
 
 The line is written once per launch, and only to stderr, so a step's stdout
-and its `--output-last-message` file are unchanged. The recipe runner streams
-stderr and keeps a tail of it, so the line does appear in recipe logs. The
-line is built from fixed text only: it never contains the caller's arguments,
-paths, profile names, prompt text or anything read from `config.toml`, so it
-is safe to keep in CI logs.
+and its `--output-last-message` file are unchanged. The line is built from
+fixed text only: it never contains the caller's arguments, paths, profile
+names, prompt text or anything read from `config.toml`, so it is safe to keep
+in CI logs.
+
+**Where the line is seen.** The line is reliably seen only when a person runs
+`amplihack codex -- exec` directly, or when a caller captures that process's
+stderr itself. In a recipe run it usually is not seen. Under the recipe runner
+pinned in `claude-plugin/recipe-runner.rev` (recipe-runner-rs `4d5187e`,
+`src/adapters/cli_subprocess.rs`), an agent step's stderr is not streamed to
+the recipe log:
+
+- the runner writes it to a file under `/tmp/amplihack-agent-stderr/`;
+- when the step succeeds, the runner deletes that file, so the line is gone;
+- when the step fails, the error quotes only the last 4000 bytes of the file.
+  The notice is the first line written to stderr, so after a long Codex run it
+  is usually not in that excerpt. The file is kept, and its path is printed
+  after `--- stderr-log:`, so the line can still be found there;
+- when a failed attempt is retried because of a rate limit, its file is deleted
+  before the retry.
+
+Issue #2066 tracks keeping or surfacing `amplihack:` lines from agent steps.
+Until it is fixed, finding no line in a recipe log does not mean no flags were
+added; the table above is the record of what an agent step receives.
 
 No line is written when:
 

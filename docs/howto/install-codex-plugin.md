@@ -133,7 +133,9 @@ When amplihack adds the sandbox, it writes one line to stderr before Codex start
 amplihack: codex exec: added --sandbox workspace-write, network access, --dangerously-bypass-hook-trust (#1985)
 ```
 
-The line names only what was added. If the caller already set the network override, `network access` is left out; if the caller already passed `--dangerously-bypass-hook-trust`, that flag is left out. The line goes only to stderr, so a step's stdout and its `--output-last-message` file are unchanged. The recipe runner streams stderr and keeps a tail of it, so the line does appear in recipe logs. No line is printed when the caller passed its own sandbox, even though the hook-trust flag is still added, and none is printed for an argv without `exec`. There is no option to turn the line off.
+The line names only what was added. If the caller already set the network override, `network access` is left out; if the caller already passed `--dangerously-bypass-hook-trust`, that flag is left out. The line goes only to stderr, so a step's stdout and its `--output-last-message` file are unchanged. No line is printed when the caller passed its own sandbox, even though the hook-trust flag is still added, and none is printed for an argv without `exec`. There is no option to turn the line off.
+
+The line is reliably seen only when you run `amplihack codex -- exec` yourself. In a recipe run it usually is not seen. The recipe runner pinned in `claude-plugin/recipe-runner.rev` (recipe-runner-rs `4d5187e`) does not stream an agent step's stderr to the recipe log. It writes the stderr to a file under `/tmp/amplihack-agent-stderr/` and deletes that file when the step succeeds. When the step fails, the error quotes only the last 4000 bytes, which after a long Codex run usually leaves the notice out; the full file is kept at the path printed after `--- stderr-log:`. Finding no line in a recipe log therefore does not mean no flags were added. Issue #2066 tracks keeping these lines from agent steps. The full rules are in [launch flag injection](../reference/launch-flag-injection.md).
 
 ### Why the flags are added
 
