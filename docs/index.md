@@ -885,6 +885,7 @@ Quick references, guides, and additional resources.
 - [Platform Bridge API Reference](reference/platform-bridge-api.md) - Complete API documentation
 - [Power Steering File Locking](reference/power-steering-file-locking.md) - Prevents counter race conditions
 - [UserPromptSubmit Hook API Reference](reference/user-prompt-submit-hook-api.md) - Framework injection API
+- [Hook State Root Reference](reference/hook-state-root.md) - Where `amplihack-hooks` writes metrics, transcripts and session state, and why never into the working directory
 - [Doc Graph Quick Reference](doc_graph_quick_reference.md) - Navigate documentation
 
 ### Developing amplihack

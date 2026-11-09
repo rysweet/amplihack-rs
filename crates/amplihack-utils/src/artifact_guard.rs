@@ -1129,10 +1129,12 @@ fn is_launcher_owned_runtime_file(path: &str) -> bool {
 /// Whether `path` is the `.claude/runtime` directory or anything beneath it.
 ///
 /// The whole `<repo>/.claude/runtime/` subtree is runtime bookkeeping that the
-/// launcher, session tracker, and *every* agent's PostToolUse metrics hook write
-/// continuously as a normal, unavoidable part of running an agent: session logs,
-/// metrics (`metrics/post_tool_use_metrics.jsonl`, appended on every tool call),
-/// locks, and power-steering state. This tree is `.gitignore`d and tool-generated.
+/// launcher, session tracker and Stop hook write as a normal part of running an
+/// agent: launcher context, locks, power-steering state and reflection logs.
+/// Since #1963 the hooks write tool metrics, transcripts and session state under
+/// the amplihack state root instead, but older binaries, and files they left
+/// behind, still put `metrics/post_tool_use_metrics.jsonl` and session logs here.
+/// This tree is `.gitignore`d and tool-generated.
 ///
 /// The guard exempts it — but only when it appears as **untracked or
 /// ignored-present** output (see [`rule_for_path`]). Flagging that output turned
