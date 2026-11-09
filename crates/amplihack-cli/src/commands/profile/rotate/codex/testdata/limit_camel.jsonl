@@ -1,0 +1,1 @@
+{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100},"rateLimitReachedType":"primary"}}}

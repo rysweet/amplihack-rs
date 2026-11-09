@@ -229,6 +229,14 @@ impl Fixture {
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),
             )
             .env("HOME", &self.home)
+            // Issue #2001: never read a Codex account here.
+            // Outside HOME: the empty-root line names the root, and the
+            // output must not name HOME.
+            .env(
+                "CODEX_PROFILES_ROOT",
+                self.home.with_file_name("no-codex-profiles"),
+            )
+            .env("CODEX_BIN", self.home.join("no-codex"))
             .env("AMPLIHACK_CLAUDE_BINARY_PATH", self.tools.join("claude"))
             .env("RECORD_DIR", &self.records)
             .env("CANNED", &self.canned)
@@ -270,7 +278,8 @@ impl Fixture {
         let v: serde_json::Value = serde_json::from_str(&stdout)
             .unwrap_or_else(|e| panic!("stdout must be only JSON ({e}): {stdout:?}"));
         (
-            v.as_array().expect("a JSON array").clone(),
+            // Issue #2001: the Claude rows are under `claude`.
+            v["claude"].as_array().expect("a `claude` array").clone(),
             text(&out.stderr),
         )
     }
@@ -300,6 +309,12 @@ fn text(b: &[u8]) -> String {
 
 /// Data rows of the table: lines after the header that start a row (not
 /// indented raw text, and not the `times:` and `order:` footer lines).
+/// The `claude` array of a `--json` run (issue #2001).
+fn claude_rows(stdout: &[u8]) -> Vec<serde_json::Value> {
+    let v: serde_json::Value = serde_json::from_slice(stdout).unwrap();
+    v["claude"].as_array().expect("a `claude` array").clone()
+}
+
 fn table_rows(stdout: &str) -> Vec<&str> {
     let mut lines = stdout.lines();
     let header = lines.next().unwrap_or_default();
@@ -307,6 +322,8 @@ fn table_rows(stdout: &str) -> Vec<&str> {
     // The capacity summary (issue #1797) follows the table.
     lines
         .take_while(|l| !l.starts_with("weekly headroom "))
+        // The Codex block (issue #2001) is printed last.
+        .take_while(|l| !l.starts_with("Codex: ") && !l.starts_with("Codex accounts under "))
         .filter(|l| !l.starts_with(' ') && !l.is_empty())
         .filter(|l| !l.starts_with("times: ") && !l.starts_with("order: "))
         .collect()
@@ -655,7 +672,7 @@ fn a_bad_parallel_value_warns_and_every_profile_is_still_probed() {
     );
     let n: usize = warning.rsplit(' ').next().unwrap().parse().unwrap();
     assert!((2..=4).contains(&n), "derived bound {n}");
-    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = claude_rows(&out.stdout);
     assert!(!rows.is_empty());
 }
 
@@ -703,7 +720,7 @@ fn a_refused_profile_directory_is_an_error_row_not_a_failure() {
     let f = Fixture::new(false);
     fs::set_permissions(f.root.join("b"), fs::Permissions::from_mode(0o755)).unwrap();
     let out = f.ok(&["profile", "usage", "--json"]);
-    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = claude_rows(&out.stdout);
     assert_eq!(names(&rows), ["c", "a", "d", "b"], "error rows sort last");
     assert_eq!(rows[3]["state"], "error");
     assert_eq!(rows[3]["error"], "profile directory refused");
@@ -763,12 +780,17 @@ fn setup_failures_exit_non_zero_before_probing() {
 fn no_profiles_prints_the_list_message_or_an_empty_array() {
     let f = Fixture::empty();
     let out = f.ok(&["profile", "usage"]);
+    let stdout = text(&out.stdout);
+    let first = stdout.lines().next().unwrap_or_default();
     assert_eq!(
-        text(&out.stdout).trim(),
-        "no profiles; create one with `amplihack profile add <name>`"
+        first, "no profiles; create one with `amplihack profile add <name>`",
+        "{stdout}"
     );
+    // Issue #2001: the Codex block follows, after one empty line.
+    assert!(stdout.contains("\n\nCodex: no accounts under "), "{stdout}");
     let out = f.ok(&["profile", "usage", "--json"]);
-    assert_eq!(text(&out.stdout).trim(), "[]");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v, serde_json::json!({"claude": [], "codex": []}));
 }
 
 impl Fixture {
@@ -904,7 +926,7 @@ fn a_swap_during_the_probe_is_warned_and_not_recorded() {
         1,
         "{stderr}"
     );
-    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = claude_rows(&out.stdout);
     let c = rows.iter().find(|r| r["profile"] == "c").unwrap();
     assert_eq!(c["state"], "ok");
     assert_eq!(c["session"]["used_percentage"], 40.0);
@@ -954,7 +976,7 @@ fn an_auto_switch_swap_during_the_probe_is_not_recorded() {
         ),
         "{stderr}"
     );
-    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = claude_rows(&out.stdout);
     let b = rows.iter().find(|r| r["profile"] == "b").unwrap();
     assert_eq!(b["account"], "b", "the account live when the probe started");
     let u = f.usage_json().expect("usage.json written");
@@ -1074,7 +1096,7 @@ fn text_mode_runs_only_usage() {
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", text(&out.stderr));
-    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = claude_rows(&out.stdout);
     assert_eq!(session(&rows[0]), 20.0);
     assert_eq!(f.recorded("stdin.a"), None);
     assert_eq!(f.recorded("args-request.a"), None);
@@ -1106,7 +1128,7 @@ fn a_bad_method_warns_once_and_still_uses_the_request() {
             "warning: ignored AMPLIHACK_PROFILE_USAGE_PROBE \"Text\" (use direct, auto or text); using the default order"
         ]
     );
-    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = claude_rows(&out.stdout);
     assert_eq!(session(&rows[0]), 42.0);
 }
 

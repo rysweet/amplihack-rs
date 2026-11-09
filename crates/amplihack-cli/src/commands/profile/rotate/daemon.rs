@@ -214,6 +214,7 @@ pub(super) fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, 
     let (out, err) = (errors.file()?, errors.file()?);
     let mut cmd = std::process::Command::new(std::env::current_exe()?);
     cmd.args(spawned_args(s))
+        .args(super::codex::spawn_link_args(s)?)
         .stdin(std::process::Stdio::null())
         .stdout(out)
         .stderr(err);
@@ -248,6 +249,7 @@ pub fn watch(
     store: &ProfileStore,
     home: PathBuf,
     s: Settings,
+    codex_link: PathBuf,
     spawned: bool,
     supervised: Option<Option<String>>,
 ) -> Result<(), ProfileError> {
@@ -317,6 +319,7 @@ pub fn watch(
                 Ok(_) => {}
                 Err(e) => log_line(&rs, &failure(&e)),
             }
+            super::codex::in_watch(&ctx, &codex_link);
         } else if !idle {
             idle = true;
             log_line(&rs, msg::IDLE);

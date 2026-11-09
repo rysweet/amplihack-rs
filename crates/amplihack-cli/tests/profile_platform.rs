@@ -280,7 +280,8 @@ fn usage_json_carries_the_kind() {
     let f = Fixture::new();
     add_console(&f);
     let out = f.ok(&["profile", "usage", "--json"]);
-    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = v["claude"].as_array().expect("a `claude` array (#2001)");
     let console = rows.iter().find(|r| r["profile"] == "console").unwrap();
     assert_eq!(console["kind"], "api-key");
     assert_eq!(console["state"], "api_key");

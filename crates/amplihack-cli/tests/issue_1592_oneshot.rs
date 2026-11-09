@@ -427,7 +427,8 @@ fn profile_usage_attributes_home_to_the_rotated_in_profile() {
     let f = Fixture::new();
     f.ok(&["profile", "rotate"]);
     let out = f.ok(&["profile", "usage", "--json"]);
-    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let rows = v["claude"].as_array().expect("a `claude` array (#2001)");
     let live: Vec<_> = rows
         .iter()
         .filter(|r| r["live_in"] == "~/.claude")
@@ -442,9 +443,12 @@ fn profile_usage_attributes_home_to_the_rotated_in_profile() {
 fn probes_get_no_rotate_settings_and_the_live_probe_has_no_config_dir() {
     let f = Fixture::new();
     // The fixture's autostart opt-out is itself an `AMPLIHACK_ROTATE*`
-    // variable; the one-shot form never autostarts, so drop it here.
+    // variable; the one-shot form never autostarts, so drop it here. So is
+    // its Codex opt-out (issue #2005); without it the Codex part only
+    // finds no accounts.
     let mut c = f.cmd(&["profile", "rotate", "--hold", "0"]);
-    c.env_remove("AMPLIHACK_ROTATE_AUTOSTART");
+    c.env_remove("AMPLIHACK_ROTATE_AUTOSTART")
+        .env_remove("AMPLIHACK_ROTATE_CODEX");
     let out = c.output().unwrap();
     assert!(out.status.success(), "{}", text(&out.stderr));
     let envs = f.probe_envs();

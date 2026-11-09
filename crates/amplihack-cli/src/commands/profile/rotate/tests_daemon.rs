@@ -426,9 +426,23 @@ mod issue_1844 {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(dir.join(".oauth_refresh.lock").is_dir());
-        // The daemon stops now.
-        assert!(finish_refreshes(refresh_grace(Duration::from_secs(5))));
-        assert!(!dir.join(".oauth_refresh.lock").exists());
+        // The daemon stops now. Its own refresh must release the lock within
+        // the grace. The refresh count `finish_refreshes` waits on is shared
+        // by the whole process, and under `cargo test` other tests (for
+        // example in `tests_usage_direct`) stall refreshes of their own in
+        // parallel, so the grace is checked against this refresh's lock and
+        // the shared count is then given the same 30 s budget those tests use.
+        let grace = refresh_grace(Duration::from_secs(5));
+        let stop = Instant::now();
+        while dir.join(".oauth_refresh.lock").exists() {
+            assert!(
+                stop.elapsed() < grace,
+                "the refresh still held its lock after the grace"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
         assert!(reader.join().unwrap());
+        assert!(finish_refreshes(Duration::from_secs(30)));
+        assert!(!dir.join(".oauth_refresh.lock").exists());
     }
 }
