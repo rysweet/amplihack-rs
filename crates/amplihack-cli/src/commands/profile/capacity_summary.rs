@@ -13,8 +13,13 @@
 //!   known reset, grouped within 60 s of the earliest.
 //! - Rate: from the oldest entry no more than 6 h old that covers every
 //!   current login (a `profile usage` line, or a rotator line that read
-//!   them all), which must be at least 4.5 h old; a reset, seen as `w_reset` passing or a fall in `w`,
-//!   adds the earlier `w` back. Runway is weighted headroom over the rate.
+//!   them all), which must be at least 4.5 h old. Issue #1970: each login
+//!   counts its net rise in `w` within each week. A reset is `w_reset`
+//!   passing or a fall of more than [`RESET_FALL`] points; a smaller fall is
+//!   a stale reading and adds nothing, so the rate is never negative.
+//!   Readings from a week already over, and a stale passive reading now,
+//!   are left out. Each login's use is weighted. Runway is weighted
+//!   headroom over the rate.
 //! - `rotate status` takes no runway from a rotator line that left logins
 //!   out; see [`status_line`].
 //! - Rounding is half away from zero and happens only when printed; a value
@@ -22,13 +27,17 @@
 
 use super::capacity_weight::Weights;
 use super::usage_cmd::{sanitize_display, utc_time as iso};
-use super::usage_history::{Entry, Point, Snapshot, Writer};
+use super::usage_history::{Entry, Point, Snapshot, Writer, stale};
 use serde::{Serialize, Serializer};
+use std::collections::BTreeMap;
 
 /// How far back the rate looks.
 pub(super) const RATE_WINDOW: i64 = 6 * 3600;
 /// The youngest start the rate accepts.
 const RATE_MIN_SPAN: i64 = 4 * 3600 + 30 * 60;
+/// Issue #1970: a fall in a login's week of more than this many points
+/// between two readings is a reset. A smaller fall is a stale reading.
+pub(super) const RESET_FALL: u8 = 10;
 /// Session resets this close to the earliest are one reset.
 const RESET_GROUP: i64 = 60;
 /// Weekly resets up to this far ahead are listed.
@@ -106,19 +115,50 @@ fn shown(name: &str) -> String {
     sanitize_display(name, false)
 }
 
-/// Whether a reset came between `a` and `b`, which was read at `b_at`.
+/// Whether the week reset between reading `a` and reading `b`, which was
+/// taken at `b_at`: `a`'s reset time has passed, or `w` fell by more than
+/// [`RESET_FALL`] points. Anthropic can reset a week early, so a large fall
+/// is a reset even while `a`'s reset time is still ahead.
 fn reset_between(a: &Point, b: &Point, b_at: i64) -> bool {
-    a.w_reset.is_some_and(|r| r <= b_at) || b.w < a.w
+    a.w_reset.is_some_and(|r| r <= b_at) || a.w.saturating_sub(b.w) > RESET_FALL
 }
 
-/// Points of the week used from `a` to `b`. After a reset, everything `b`
-/// shows was used since: the earlier `a.w` is added back to the fall.
-fn used_between(a: &Point, b: &Point, b_at: i64) -> i64 {
-    if reset_between(a, b, b_at) {
-        i64::from(b.w)
-    } else {
-        i64::from(b.w) - i64::from(a.w)
+/// Whether `p`, taken at `at`, is a figure from a week that had already
+/// ended when it was taken.
+fn week_ended(p: &Point, at: i64) -> bool {
+    p.w_reset.is_some_and(|r| r <= at)
+}
+
+/// Points of the week used over one login's `readings`, oldest first; the
+/// first is the start.
+///
+/// The readings are split into weeks at each reset ([`reset_between`]).
+/// Within a week the true figure only rises, so each week counts its
+/// highest figure minus the figure it started at: the start's for the
+/// first week, 0 for each later one. A lower reading within a week is a
+/// stale one and adds nothing. The highest figure, not the last, is used,
+/// because the last before a reset may be stale. Never negative: the
+/// highest figure of a week is at least the figure it started at.
+fn used_over(readings: &[(i64, &Point)]) -> i64 {
+    let Some(((_, first), rest)) = readings.split_first() else {
+        return 0;
+    };
+    let mut week_start = i64::from(first.w);
+    let mut peak = week_start;
+    let mut prev = *first;
+    let mut used = 0i64;
+    for (at, p) in rest {
+        let w = i64::from(p.w);
+        if reset_between(prev, p, *at) {
+            used = used.saturating_add(peak - week_start);
+            week_start = 0;
+            peak = w;
+        } else {
+            peak = peak.max(w);
+        }
+        prev = *p;
     }
+    used.saturating_add(peak - week_start)
 }
 
 /// Whether `e` may be the start of the rate for the logins in `current`.
@@ -141,11 +181,29 @@ fn can_start(e: &Entry, current: &Snapshot) -> bool {
     }
 }
 
-/// Weighted login-weeks an hour over the rate window, counting only
-/// profiles valid at both ends. The start is the oldest entry in the window
-/// that [`can_start`]; entries before it are not used. `None` without such
-/// a start at least 4.5 h old or with no profile at both ends.
-fn rate_of(i: &Inputs<'_>) -> Option<f64> {
+/// The parts of the rate, before the 4.5 h minimum is applied.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct RateParts {
+    /// The time of the start entry.
+    pub(super) start: i64,
+    /// Seconds from the start to now.
+    pub(super) span: i64,
+    /// For each login valid at both ends: the points of the week it used
+    /// over the span, and its weight.
+    pub(super) used: BTreeMap<String, (i64, f64)>,
+}
+
+/// The parts of the rate over the 6 h window. The start is the oldest
+/// entry in the window that [`can_start`]; entries before it are not used.
+/// `None` without such a start; the span is not checked here.
+///
+/// Each login with a reading at the start and now counts [`used_over`] its
+/// readings: the start, each later entry that holds it, then now. A reading
+/// from a week that had already ended when it was taken is left out, and a
+/// login whose start reading is one is not counted. The current reading is
+/// left out too when it is passive and [`stale`] against the login's last
+/// reading in the window, since it is then a cached figure.
+pub(super) fn rate_parts(i: &Inputs<'_>) -> Option<RateParts> {
     let from = i.now.saturating_sub(RATE_WINDOW);
     let mut window: Vec<&Entry> = i
         .history
@@ -155,28 +213,48 @@ fn rate_of(i: &Inputs<'_>) -> Option<f64> {
     window.sort_by_key(|e| e.at);
     let first = window.iter().position(|e| can_start(e, i.current))?;
     let (start, rest) = window[first..].split_first()?;
-    let span = i.now.saturating_sub(start.at);
-    if span < RATE_MIN_SPAN {
-        return None;
-    }
-    let mut total = 0.0;
-    let mut counted = false;
+    let mut used = BTreeMap::new();
     for (name, now_point) in &i.current.points {
-        let Some(mut prev) = start.profiles.get(name) else {
+        let Some(at_start) = start
+            .profiles
+            .get(name)
+            .filter(|p| !week_ended(p, start.at))
+        else {
             continue;
         };
-        counted = true;
-        let mut used = 0i64;
-        for e in rest {
-            if let Some(p) = e.profiles.get(name) {
-                used += used_between(prev, p, e.at);
-                prev = p;
-            }
+        let mut readings = vec![(start.at, at_start)];
+        readings.extend(rest.iter().filter_map(|e| {
+            e.profiles
+                .get(name)
+                .filter(|p| !week_ended(p, e.at))
+                .map(|p| (e.at, p))
+        }));
+        let last = readings.last().map(|(_, p)| *p);
+        let current_stale =
+            week_ended(now_point, i.now) || (now_point.passive && stale(last, now_point, i.now));
+        if !current_stale {
+            readings.push((i.now, now_point));
         }
-        used += used_between(prev, now_point, i.now);
-        total += i.weights.of(name) * used as f64;
+        used.insert(name.clone(), (used_over(&readings), i.weights.of(name)));
     }
-    counted.then(|| total / 100.0 / (span as f64 / 3600.0))
+    Some(RateParts {
+        start: start.at,
+        span: i.now.saturating_sub(start.at),
+        used,
+    })
+}
+
+/// Weighted login-weeks an hour over the rate window: the [`rate_parts`]
+/// with each login's points times its weight, over 100 and the span in
+/// hours. `None` when the start is less than 4.5 h old or no login is valid
+/// at both ends. Never negative.
+fn rate_of(i: &Inputs<'_>) -> Option<f64> {
+    let p = rate_parts(i)?;
+    if p.span < RATE_MIN_SPAN || p.used.is_empty() {
+        return None;
+    }
+    let total: f64 = p.used.values().map(|(u, w)| w * *u as f64).sum();
+    Some(total / 100.0 / (p.span as f64 / 3600.0))
 }
 
 /// Usable now: the week is below 100% and the session is below the
@@ -268,6 +346,11 @@ pub(super) fn compute(i: &Inputs<'_>) -> Summary {
 /// login as unknown left it out: skipped as busy (and so likely being used
 /// up) or a failed probe. A `profile usage` line, or an older line without
 /// a writer, tried every login; its unknowns are failed readings.
+///
+/// A stale passive reading does not make its login unknown while the
+/// history holds a figure of the week now running: the writer records that
+/// figure instead (`usage_history::stale_replaced`, issue #1970), so a cycle
+/// that read a cached figure still reads every login here.
 fn reads_every_login(e: &Entry) -> bool {
     e.by != Some(Writer::Rotate) || e.unknown.is_empty()
 }
