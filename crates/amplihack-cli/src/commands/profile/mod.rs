@@ -437,6 +437,17 @@ pub enum ProfileCommands {
     },
     /// Show each profile's weekly and session usage as a bar view, in the
     /// order the rotator ranks headroom
+    ///
+    /// Rate: the capacity summary's rate covers the last 6 h. It starts at
+    /// the oldest history entry in that window written by `profile usage`
+    /// (which tried every login; one it could not read is left out of the
+    /// rate), or written by the rotator and holding every login read now.
+    /// That start entry must itself be at least 4.5 h old, or the rate and
+    /// runway are unknown. Only logins read at both ends count. Each login
+    /// counts its net rise within each week, and a week resets when its
+    /// reset time passes or its figure falls by more than 10 points, so a
+    /// smaller fall adds nothing and the rate is never negative. Each
+    /// login's use is weighted by its capacity weight.
     Usage {
         /// Profiles to probe (default: all)
         names: Vec<String>,
@@ -449,7 +460,11 @@ pub enum ProfileCommands {
         /// Show reset times in UTC instead of local time (bar view only)
         #[arg(long, conflicts_with_all = ["json", "table", "summary_json"])]
         utc: bool,
-        /// Print one JSON object: the --json rows and the capacity summary
+        /// Print one JSON object: the --json rows and the capacity summary.
+        /// Its rate covers the last 6 h, starts at the oldest entry in that
+        /// window from `profile usage` or from a rotator cycle holding every
+        /// login read now, needs that entry to be at least 4.5 h old, and is
+        /// weighted
         #[arg(long, conflicts_with_all = ["json", "raw"])]
         summary_json: bool,
         /// Also print what `claude` wrote to stdout and stderr

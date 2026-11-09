@@ -91,6 +91,7 @@ pub(super) fn rd(session: f64, week: f64, observed_at: Option<i64>) -> Probed {
         still_running: false,
         observed_at,
         carried: false,
+        passive: false,
     }
 }
 
@@ -107,6 +108,7 @@ pub(super) fn exh(session: f64, week: f64) -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 

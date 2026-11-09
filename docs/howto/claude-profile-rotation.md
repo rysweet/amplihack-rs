@@ -1167,8 +1167,8 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
    the background.
 2. If no rotator is running, the hook exits at once (`rotator-down`).
    Otherwise it reads the rotator's ledger every 15 seconds. It waits for a
-   cycle that started measuring after the limit hit and ended `swapped` or
-   `stayed` with no ALERT, or for a
+   rotator cycle whose measurement, or the reading behind it, was taken after
+   the limit hit and that ended `swapped` or `stayed` with no ALERT, or for a
    [`profile switch`](#switch-to-a-login-by-hand) made after the limit hit. After the first hour it reads the ledger
    every 5 minutes instead. It stops waiting if you turn auto-switch off
    (`disabled`), if you send a prompt in that session during the wait, for
@@ -1332,9 +1332,12 @@ full. The rows above the summary show which they are.
 The runway needs about six hours of history. Each rotator cycle and each
 `profile usage` run without profile names adds a line to
 `<root>/.auto-switch.d/usage-history.jsonl`. Until there is enough it reads
-`unknown`. The rate is per hour, worked out from between four and a half and
-six hours of history, and it starts from a line that read every login: a
-`profile usage` line, or a rotator line from a cycle that skipped none. A
+`unknown`. The rate is per hour and uses between four and a half and six
+hours of history. It is each login's net rise in weekly use, weighted by
+its [capacity weight](../reference/profile-command.md#capacity-weights).
+A dip of 10 points or less, such as a stale status-line figure, adds
+nothing. It starts from a `profile usage` line, or from a rotator line
+from a cycle that skipped none of the logins read now. A
 rotator cycle does not probe logins that are running a session, so while
 some are busy, run `amplihack profile usage` now and then (every few hours)
 to give the runway a starting point.

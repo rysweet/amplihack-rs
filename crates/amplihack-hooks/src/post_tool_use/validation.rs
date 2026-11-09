@@ -3,9 +3,11 @@
 //! Validates Write/Edit/MultiEdit results and marks the blarify index as stale
 //! when code files are modified.
 
-use amplihack_types::ProjectDirs;
+use crate::state_dir::create_private_dir_all;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 // ---------------------------------------------------------------------------
@@ -94,25 +96,61 @@ pub(super) fn extract_written_paths(tool_name: &str, tool_input: &Value) -> Vec<
     paths
 }
 
+/// The project key: the first 16 lowercase hex digits of the SHA-256 of the
+/// canonicalised project path, or of the path as given if it cannot be
+/// canonicalised. The path itself never appears in a path component.
+fn project_key(project_root: &Path) -> String {
+    let canonical = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    let digest = Sha256::digest(canonical.as_os_str().as_encoded_bytes());
+    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// `<state root>/runtime/projects/<project key>/blarify_stale` (#1963).
+///
+/// The marker describes the project's code graph, so it is keyed by project
+/// rather than by session.
+pub(super) fn blarify_marker_path(state_root: &Path, project_root: &Path) -> PathBuf {
+    state_root
+        .join("runtime")
+        .join("projects")
+        .join(project_key(project_root))
+        .join("blarify_stale")
+}
+
 /// Write a staleness marker if any modified path is a code file.
 ///
-/// The marker is `.amplihack/blarify_stale` relative to the project root
-/// (`ProjectDirs::from_cwd()`).  The content is a JSON object recording the
-/// modified file path and timestamp so operators can correlate what triggered
-/// the staleness.
-pub(super) fn mark_blarify_stale_if_needed(tool_name: &str, tool_input: &Value) {
+/// The marker lives under the amplihack state root at the path given by
+/// [`blarify_marker_path`] for the current working directory; nothing is
+/// written under the working directory itself. The content is a JSON object
+/// recording the modified file path and timestamp so operators can correlate
+/// what triggered the staleness.
+pub(super) fn mark_blarify_stale_if_needed(state_root: &Path, tool_name: &str, tool_input: &Value) {
     let paths = extract_written_paths(tool_name, tool_input);
     let code_path = paths.iter().find(|p| is_code_file(p));
     let Some(path) = code_path else {
         return;
     };
 
-    let dirs = ProjectDirs::from_cwd();
-    // The marker lives at <project_root>/.amplihack/blarify_stale
-    let marker = dirs.root.join(".amplihack").join("blarify_stale");
+    let project_root = match std::env::current_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            tracing::debug!("blarify staleness: no working directory ({}), skipped", e);
+            return;
+        }
+    };
+    let marker = blarify_marker_path(state_root, &project_root);
+    let Some(marker_dir) = marker.parent() else {
+        return;
+    };
 
-    if let Err(e) = fs::create_dir_all(marker.parent().expect("marker has parent")) {
-        tracing::warn!("blarify staleness: failed to create dir: {}", e);
+    if let Err(e) = create_private_dir_all(marker_dir) {
+        tracing::warn!(
+            "blarify staleness: failed to create {}: {}",
+            marker_dir.display(),
+            e
+        );
         return;
     }
 
@@ -129,7 +167,11 @@ pub(super) fn mark_blarify_stale_if_needed(tool_name: &str, tool_input: &Value) 
     });
 
     if let Err(e) = fs::write(&marker, content.to_string()) {
-        tracing::warn!("blarify staleness: failed to write marker: {}", e);
+        tracing::warn!(
+            "blarify staleness: failed to write {}: {}",
+            marker.display(),
+            e
+        );
     } else {
         tracing::debug!(
             "blarify staleness marker written (tool={}, path={})",
@@ -249,6 +291,36 @@ mod tests {
         });
         let paths = extract_written_paths("MultiEdit", &input);
         assert_eq!(paths, vec!["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn blarify_marker_path_is_project_keyed_under_state_root() {
+        let root = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let marker = blarify_marker_path(root.path(), project.path());
+        let key_dir = marker.parent().unwrap();
+        assert_eq!(marker.file_name().unwrap(), "blarify_stale");
+        assert_eq!(
+            key_dir.parent().unwrap(),
+            root.path().join("runtime").join("projects")
+        );
+        let key = key_dir.file_name().unwrap().to_str().unwrap();
+        assert_eq!(key.len(), 16);
+        assert!(
+            key.chars()
+                .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c))
+        );
+        assert_eq!(marker, blarify_marker_path(root.path(), project.path()));
+    }
+
+    #[test]
+    fn blarify_marker_path_falls_back_to_uncanonicalised_path() {
+        let root = Path::new("/state");
+        let missing = Path::new("/definitely/not/a/real/project-1963");
+        let a = blarify_marker_path(root, missing);
+        let b = blarify_marker_path(root, Path::new("/definitely/not/a/real/project-1964"));
+        assert_ne!(a, b);
+        assert!(!a.to_string_lossy().contains("project-1963"));
     }
 
     #[test]

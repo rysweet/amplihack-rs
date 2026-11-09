@@ -4,6 +4,8 @@
 //! the step inherits the host `config.toml`, which may set
 //! `sandbox_mode = "danger-full-access"`, and Codex silently skips hooks whose
 //! trust is not recorded. This module is pure: it reads only the argv tail.
+//! It also describes the injection as one stderr line for issue #2010, which
+//! the caller prints; the module itself still does no I/O.
 //!
 //! The value-taking option tables are shared with the launcher's parser in
 //! `amplihack-launcher/src/prompt_delivery/codex_args.rs`.
@@ -146,26 +148,81 @@ fn caller_bypassed_hook_trust(items: &[Item<'_>]) -> bool {
         .any(|item| matches!(item, Item::Opt { name, value: None, .. } if *name == HOOK_TRUST))
 }
 
+/// What the agent-step injection adds to one argv tail. The argv and the
+/// stderr notice are both derived from this, so they cannot disagree.
+struct Plan {
+    /// Index of the `exec`/`e` subcommand; flags are spliced in after it.
+    index: usize,
+    /// `--sandbox workspace-write` is added.
+    sandbox: bool,
+    /// The network override is added. Only ever true together with `sandbox`.
+    network: bool,
+    /// `--dangerously-bypass-hook-trust` is added.
+    hook_trust: bool,
+}
+
+/// Decides what to inject, or `None` when the argv has no `exec` subcommand.
+fn plan(args: &[String]) -> Option<Plan> {
+    let index = exec_subcommand_index(args)?;
+    let parsed = items(args);
+    let sandbox = !caller_chose_sandbox(&parsed);
+    Some(Plan {
+        index,
+        sandbox,
+        network: sandbox && !caller_set_network(&parsed),
+        hook_trust: !caller_bypassed_hook_trust(&parsed),
+    })
+}
+
 /// Returns the Codex argv tail with the agent-step flags spliced in directly
 /// after `exec`/`e` (before `resume`, which rejects `--sandbox` in codex-cli
 /// 0.166.0). Argv without an `exec` subcommand is returned unchanged. Never
 /// adds the approvals bypass, `--yolo` or `danger-full-access`.
 pub(super) fn codex_agent_step_args(args: &[String]) -> Vec<String> {
-    let Some(index) = exec_subcommand_index(args) else {
+    let Some(plan) = plan(args) else {
         return args.to_vec();
     };
-    let parsed = items(args);
     let mut injected: Vec<&str> = Vec::new();
-    if !caller_chose_sandbox(&parsed) {
+    if plan.sandbox {
         injected.extend(SANDBOX);
-        if !caller_set_network(&parsed) {
-            injected.extend(NETWORK);
-        }
     }
-    if !caller_bypassed_hook_trust(&parsed) {
+    if plan.network {
+        injected.extend(NETWORK);
+    }
+    if plan.hook_trust {
         injected.push(HOOK_TRUST);
     }
     let mut out = args.to_vec();
-    out.splice(index + 1..index + 1, injected.into_iter().map(String::from));
+    out.splice(
+        plan.index + 1..plan.index + 1,
+        injected.into_iter().map(String::from),
+    );
     out
+}
+
+/// Issue #2010: the stderr line naming what [`codex_agent_step_args`] adds,
+/// for example `amplihack: codex exec: added --sandbox workspace-write,
+/// network access, --dangerously-bypass-hook-trust (#1985)`.
+///
+/// Returns `None` unless `--sandbox workspace-write` is added. When the caller
+/// chose a sandbox, the hook-trust bypass may still be added but no line is
+/// returned; issue #2048 tracks reporting that case. Issue #2009 covers
+/// whether the bypass is added at all, not whether it is reported.
+///
+/// Pure. The text is built only from fixed constants, never from caller argv,
+/// so paths, `-c` values, profile names and prompt text cannot reach stderr.
+pub(super) fn codex_agent_step_notice(args: &[String]) -> Option<String> {
+    let plan = plan(args).filter(|plan| plan.sandbox)?;
+    let sandbox = SANDBOX.join(" ");
+    let mut added: Vec<&str> = vec![&sandbox];
+    if plan.network {
+        added.push("network access");
+    }
+    if plan.hook_trust {
+        added.push(HOOK_TRUST);
+    }
+    Some(format!(
+        "amplihack: codex exec: added {} (#1985)",
+        added.join(", ")
+    ))
 }

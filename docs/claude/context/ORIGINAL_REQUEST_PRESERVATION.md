@@ -46,7 +46,7 @@ amplihack approach:
 ```
 .claude/tools/amplihack/context_preservation.py
 .claude/tools/amplihack/hooks/pre_compact.py
-.claude/runtime/logs/<session_id>/ORIGINAL_REQUEST.md
+${AMPLIHACK_HOME:-~/.amplihack}/runtime/sessions/<session_key>/logs/ORIGINAL_REQUEST.md
 ```
 
 ## Golden Rule

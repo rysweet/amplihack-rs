@@ -843,9 +843,15 @@ fn generated_tree_ids_are_valid_and_distinct() {
 }
 
 /// The caller holds the shared environment lock through restoration.
-fn fixture_environment() -> crate::test_support::EnvGuard {
+///
+/// Each run gets a private work root and no end-of-run sweep (issue #2067;
+/// see `test_support::IsolatedWorkRoot`).
+fn fixture_environment() -> (
+    crate::test_support::EnvGuard,
+    crate::test_support::IsolatedWorkRoot,
+) {
     let saved = crate::test_support::EnvGuard::capture(&["AMPLIHACK_AGENT_BINARY", "HOME"]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
-    saved
+    (saved, crate::test_support::IsolatedWorkRoot::new())
 }

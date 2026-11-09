@@ -14,6 +14,8 @@ mod default_branch;
 mod issue_1570_launcher;
 #[cfg(test)]
 mod issue_1642_repo_identity;
+#[cfg(test)]
+mod issue_1966_criticality;
 mod launcher;
 #[cfg(test)]
 mod launcher_tests;

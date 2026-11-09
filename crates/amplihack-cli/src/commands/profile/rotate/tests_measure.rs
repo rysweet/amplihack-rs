@@ -215,6 +215,7 @@ fn a_timed_out_candidate_does_not_hide_a_usable_one() {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     };
     // "a-slow" sorts first, so a tie-break bug would pick it.
     let cands = [measured("a-slow", &slow), measured("b-spare", &spare)];

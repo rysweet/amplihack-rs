@@ -439,6 +439,10 @@ impl World {
         self.checked(self.command(&["profile", "switch", to]))
     }
 
+    pub fn status(&self) -> Output {
+        self.checked(self.command(&["profile", "rotate", "status"]))
+    }
+
     pub fn verify(&self) -> Output {
         self.checked(self.command(&["profile", "verify"]))
     }

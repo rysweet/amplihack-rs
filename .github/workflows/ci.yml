@@ -260,6 +260,13 @@ jobs:
       - name: Recipes — PR always opens after successful push (issue #495)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-pr-always-opens.sh
+      # Holds the #1968 publish coverage (merge-base diff, derived titles,
+      # issue-reference defusal, redaction, hostile titles, mixed-title tie)
+      # and the earlier #929 cases. About 70 seconds; HOME is a fresh
+      # directory so nothing reads or writes the runner's configuration.
+      - name: Recipes — default workflow reliability contracts (issues #929, #1968)
+        shell: bash
+        run: HOME="$(mktemp -d)" bash amplifier-bundle/recipes/tests/test-default-workflow-reliability.sh
       - name: Recipes — checkpoint formatting stays within task edits
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-checkpoint-scoped-format.sh
@@ -293,6 +300,11 @@ jobs:
       - name: Recipes — cleanup never deletes other runs' or uncommitted worktrees (issues #1494, #1560)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1494-1560-worktree-safety.sh
+      - name: Recipes — worktree sweep archives locally, never pushes, locks per repository (issue #2061)
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-2061-sweep-no-push.sh
       - name: Recipes — re-run never destroys an existing worktree's work (issue #1565)
         shell: bash
         env:
@@ -355,10 +367,12 @@ jobs:
         shell: bash
         run: |
           if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh
+            shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh \
+              amplifier-bundle/recipes/tests/test-issue-2061-sweep-no-push.sh
           else
             sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-            shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh
+            shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh \
+              amplifier-bundle/recipes/tests/test-issue-2061-sweep-no-push.sh
           fi
       - name: Recipes — shellcheck worktree deconflict helper (concurrency)
         shell: bash
