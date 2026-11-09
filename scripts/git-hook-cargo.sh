@@ -39,6 +39,13 @@
 # the whole defect. A given checkout still reuses its own cache across runs,
 # which is the reason to set the variable at all.
 #
+# Issue #2039: the name is the checkout hash only, with no run suffix, so
+# every recipe run that commits in a checkout reuses that checkout's target
+# instead of building a new one each run. Inside a run the target is recorded
+# in the run's owned-paths as `created` or `reused` with the checkout path, and
+# `amplihack cleanup` removes it when the run's worktree is removed or the
+# checkout is gone -- never by age, and never from this script.
+#
 # 3. the disk those caches live on (issue #1440)
 #
 # Per-checkout caches are 6-16 GB each and nothing ever removed them, so they
@@ -143,9 +150,12 @@ CACHE_PREFIX="amplihack-precommit-target-"
 # with the hook's repository rather than this checkout -- the very confusion
 # this script exists to remove -- and every worktree driven by the same hook
 # would collide on one cache again.
+checkout_toplevel() {
+    git rev-parse --show-toplevel 2>/dev/null
+}
+
 checkout_hash() {
-    local root digest
-    root="$(git rev-parse --show-toplevel 2>/dev/null)" || root="$PWD"
+    local root="$1" digest
     # sha256sum is coreutils; shasum ships with macOS.
     if command -v sha256sum >/dev/null 2>&1; then
         digest="$(printf '%s' "$root" | sha256sum)"
@@ -211,36 +221,65 @@ cache_root() {
     printf '%s' "${TMPDIR:-/tmp}"
 }
 
-# Issue #1808: the run id suffix, only for an id cleanup would also accept.
-run_suffix() {
+# Issue #1808: a run id cleanup would also accept, `^[0-9a-f-]{1,64}$`.
+valid_run_id() {
     local id="${AMPLIHACK_RUN_ID:-}"
-    [ -n "$id" ] || return 0
-    [ "${#id}" -le 64 ] || return 0
+    [ -n "$id" ] || return 1
+    [ "${#id}" -le 64 ] || return 1
     case "$id" in
-        *[!0-9a-f-]*) return 0 ;;
+        *[!0-9a-f-]*) return 1 ;;
     esac
-    printf -- '-run-%s' "$id"
+    return 0
 }
 
-# Issue #1808: inside a run, record the target in the run's owned-paths so
-# cleanup may remove it once the run is eligible. Only a run folder named
-# after the validated run id is written to, and a symlinked file is refused.
+# Issue #2039: inside a run, record the target in the run's owned-paths as
+#   target<TAB><dir><TAB><TAB><origin><TAB><checkout>
+# where <origin> is `created` or `reused` (decided before cargo runs) and
+# <checkout> is the toplevel the target belongs to. Cleanup removes the target
+# only on an event (the run's worktree removed, the checkout gone, or an
+# explicit worktree teardown), never by age.
+#
+# Only a run folder named after the validated run id is written to, and a
+# symlinked file is refused. Nothing is written when the checkout is unknown
+# or a path holds a tab, CR or newline (the line could not be read back), or
+# when a line for this target already exists. Every value goes through
+# printf '%s', so a path is data and never a format or an option.
 record_owned_target() {
-    local dir="$1" run_dir="${AMPLIHACK_RUN_DIR:-}" owned line
-    [ -n "$(run_suffix)" ] || return 0
+    local dir="$1" origin="$2" checkout="$3" run_dir="${AMPLIHACK_RUN_DIR:-}" owned prefix line
+    local bad=$'*[\t\r\n]*'
+    valid_run_id || return 0
+    [ -n "$checkout" ] || return 0
     case "$run_dir" in
         /*) ;;
+        *) return 0 ;;
+    esac
+    case "$checkout" in
+        /*) ;;
+        *) return 0 ;;
+    esac
+    # shellcheck disable=SC2254
+    case "$dir$checkout" in
+        $bad) return 0 ;;
+    esac
+    case "$origin" in
+        created | reused) ;;
         *) return 0 ;;
     esac
     [ "$(basename -- "$run_dir")" = "$AMPLIHACK_RUN_ID" ] || return 0
     [ -d "$run_dir" ] && [ ! -L "$run_dir" ] || return 0
     owned="$run_dir/owned-paths"
     [ -L "$owned" ] && return 0
-    line="$(printf 'target\t%s\t' "$dir")"
-    if [ -f "$owned" ] && grep -qxF -- "$line" "$owned" 2>/dev/null; then
-        return 0
+    prefix="$(printf 'target\t%s\t' "$dir")"
+    if [ -f "$owned" ]; then
+        # An exact prefix match: the quoted pattern is literal, so a path
+        # holding *, ? or [ matches only itself.
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+                "$prefix"*) return 0 ;;
+            esac
+        done < "$owned"
     fi
-    (umask 077 && printf 'target\t%s\t\n' "$dir" >> "$owned") 2>/dev/null \
+    (umask 077 && printf 'target\t%s\t\t%s\t%s\n' "$dir" "$origin" "$checkout" >> "$owned") 2>/dev/null \
         || printf 'amplihack: warning: could not record cache ownership for %s\n' "$dir" >&2
 }
 
@@ -385,7 +424,7 @@ is_protected_path() {
 }
 
 # Age-based (LRU) reclaim. CACHE_PREFIX* matches both the hash-only name and
-# the `-run-<run id>` name (issue #1808), and owned_by_me below keeps it to the
+# the older `-run-<run id>` name (issues #1808, #2039), and owned_by_me below keeps it to the
 # user's own entries. Every worktree gets its own hash, so parallel agents
 # multiply these fast; without this the only thing that ever frees the space is
 # a human noticing a full disk.
@@ -528,7 +567,13 @@ else
     CACHE_OWNED=1
     MY_UID="$(id -u)"
     _cache_root="$(cache_root)"
-    _cache_dir="$_cache_root/$CACHE_PREFIX$(checkout_hash)$(run_suffix)"
+    # Issue #2039: one target per checkout. The name is the checkout hash
+    # only, inside or outside a run, so every run that commits in a checkout
+    # reuses its build. The toplevel is read once: it is both the hash input
+    # and the checkout recorded for cleanup. When git cannot name it, $PWD is
+    # hashed and nothing is recorded.
+    _checkout="$(checkout_toplevel)" || _checkout=""
+    _cache_dir="$_cache_root/$CACHE_PREFIX$(checkout_hash "${_checkout:-$PWD}")"
     export CARGO_TARGET_DIR="$_cache_dir"
     # Issue #1771, in this order: clear a dangling link at the current path so
     # cargo can create a real directory, reclaim stale siblings, then tag the
@@ -545,12 +590,18 @@ else
                 || printf 'amplihack: could not remove %q\n' "$_cache_dir" >&2
         fi
     fi
+    # Issue #2039 (D3): created or reused is decided before cargo runs, after
+    # a dangling link was cleared (so it counts as created) and before the
+    # reclaim or the tag can change what is there.
+    if [ -e "$_cache_dir" ] || [ -L "$_cache_dir" ]; then
+        _origin=reused
+    else
+        _origin=created
+    fi
     reclaim_stale_caches "$_cache_root" "$_cache_dir"
     if [ "$_cache_dir_ours" -eq 1 ]; then
         write_cachedir_tag "$_cache_dir"
-        # Issue #1808: inside a run, record the (possibly not yet created)
-        # target so cleanup may remove it once the run is eligible.
-        record_owned_target "$_cache_dir"
+        record_owned_target "$_cache_dir" "$_origin" "$_checkout"
     fi
 fi
 

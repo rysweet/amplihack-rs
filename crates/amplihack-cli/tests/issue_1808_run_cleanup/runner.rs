@@ -226,7 +226,9 @@ printf 'WT_BASE=%s\n' "$(bash "{wt}" base "{repo}")" >> "$RECORD_DIR/env"
     );
     let name = target.file_name().unwrap().to_string_lossy().into_owned();
     assert!(name.starts_with("amplihack-precommit-target-"), "{name}");
-    assert!(name.ends_with(&format!("-run-{run_id}")), "{name}");
+    // Issue #2039 (D1): one target per checkout, no run suffix.
+    assert!(!name.contains("-run-"), "{name}");
+    assert!(!name.contains(&run_id), "{name}");
     // #1771: the hook leaves a missing target for cargo to create (cargo
     // tags a target it creates); the stand-in command here is not cargo.
     // Tagging an existing target is covered in `scripts.rs`.
@@ -237,12 +239,17 @@ printf 'WT_BASE=%s\n' "$(bash "{wt}" base "{repo}")" >> "$RECORD_DIR/env"
 
     let owned = fs::read_to_string(fx.runs_dir().join(&run_id).join("owned-paths"))
         .expect("the hook records its target in owned-paths");
-    assert!(
-        owned
-            .lines()
-            .any(|l| l.starts_with(&format!("target\t{}", target.display()))),
-        "owned-paths: {owned}"
-    );
+    // Issue #2039 (D2, D3): one 5-field line, `created` because the target
+    // did not exist, with the absolute checkout path.
+    let line = owned
+        .lines()
+        .find(|l| l.starts_with(&format!("target\t{}\t", target.display())))
+        .unwrap_or_else(|| panic!("owned-paths: {owned}"));
+    let fields: Vec<&str> = line.split('\t').collect();
+    assert_eq!(fields.len(), 5, "{line:?}");
+    assert_eq!(fields[2], "", "{line:?}");
+    assert_eq!(fields[3], "created", "{line:?}");
+    assert!(fields[4].starts_with('/'), "{line:?}");
 
     let wt_base = PathBuf::from(&env["WT_BASE"]);
     assert!(
