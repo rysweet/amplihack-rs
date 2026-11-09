@@ -846,6 +846,133 @@ fn copilot_passthrough_prompt_uses_pointer() {
     }
 }
 
+/// Crusty round 2: which Codex options take a value depends on the
+/// subcommand. Review option values stay put; the text after a fork `-i`
+/// value is the prompt.
+#[test]
+fn codex_passthrough_review_and_fork_options() {
+    for (form, want_tail, want_stdin) in [
+        (
+            vec!["exec", "review", "--commit", "abc123"],
+            vec!["review", "--commit", "abc123"],
+            "",
+        ),
+        (
+            vec!["exec", "review", "--base", "main", SENTINEL],
+            vec!["review", "--base", "main", "-"],
+            SENTINEL,
+        ),
+        (
+            vec!["exec", "fork", "abc-123", "-i", "a.png", SENTINEL],
+            vec!["fork", "abc-123", "-i", "a.png", "-"],
+            SENTINEL,
+        ),
+    ] {
+        let f = Fixture::new();
+        let mut args = vec!["codex", "--subprocess-safe", "--"];
+        args.extend(&form);
+        let out = f.run(&mut f.cmd(&args));
+        assert!(out.status.success(), "{form:?}\n{}", describe(&out));
+        let argv = f.argv(1);
+        assert_argv_clean(&argv, &[]);
+        assert_proc_cmdline_clean(&f, 1);
+        assert!(
+            argv.ends_with(&want_tail.iter().map(|a| a.to_string()).collect::<Vec<_>>()),
+            "{form:?}: {argv:?}"
+        );
+        assert_eq!(f.stdin(1), want_stdin, "{form:?}");
+    }
+}
+
+/// Crusty round 2: the caller's piped stdin is replaced by the prompt, and
+/// amplihack says so. A null stdin gets no warning.
+#[test]
+fn piped_stdin_replaced_by_the_prompt_is_warned_about() {
+    const WARNING: &str = "the input piped to amplihack is not passed on";
+    let f = Fixture::new();
+    let mut c = f.cmd(&["codex", "--subprocess-safe", "--", "exec", SENTINEL]);
+    c.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = c.spawn().expect("spawn amplihack");
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"diff --git a/x b/x\n").unwrap();
+    }
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.stdin(1), SENTINEL, "the agent gets the prompt only");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains(WARNING), "{stderr}");
+    assert!(!stderr.contains(SENTINEL), "{stderr}");
+
+    let f = Fixture::new();
+    let out = f.run(&mut f.cmd(&["codex", "--subprocess-safe", "--", "exec", SENTINEL]));
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(
+        !String::from_utf8_lossy(&out.stderr).contains(WARNING),
+        "{}",
+        describe(&out)
+    );
+}
+
+/// The external LiteLLM gateway, with a stub Copilot reporting a verified
+/// version.
+fn gateway(c: &mut Command) -> &mut Command {
+    c.env("AMPLIHACK_LITELLM_ENDPOINT", "http://127.0.0.1:9")
+        .env("AMPLIHACK_LITELLM_API_KEY", "sk-qa")
+        .env("AMPLIHACK_LITELLM_MODEL", "claude-opus-5.5")
+        .env(
+            "STUB_VERSION",
+            amplihack_utils::litellm_proxy::COPILOT_ISOLATED_RUNTIME_VERSION,
+        )
+}
+
+/// Crusty round 2: under the gateway Copilot gets no `--add-dir`, so the
+/// pointer file is readable only with path access.
+///
+/// These runs have no terminal, so amplihack runs subprocess-safe and adds
+/// `--allow-all-paths` even when the caller's `--allow-all-tools` stops it
+/// adding `--allow-all`: that form (Copilot's own `--help` example) launches
+/// and Copilot can read the file. On a terminal there is no subprocess-safe
+/// grant; that case is `copilot_path_access_on_a_terminal` in
+/// `tests_codex_copilot_rewrite.rs`. `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1`
+/// removes every grant, so that launch is refused before anything runs.
+#[test]
+fn gateway_copilot_prompt_needs_path_access() {
+    let f = Fixture::new();
+    let out = f.run(
+        gateway(&mut f.cmd(&["copilot", "--", "-p", SENTINEL, "--allow-all-tools"]))
+            .env("AMPLIHACK_COPILOT_NO_ALLOW_ALL", "1"),
+    );
+    assert!(!out.status.success(), "{}", describe(&out));
+    assert_eq!(f.runs(), 0, "nothing is spawned\n{}", describe(&out));
+    let all = describe(&out);
+    assert!(all.contains("add --allow-all-paths"), "{all}");
+    assert!(!all.contains(SENTINEL), "{all}");
+
+    for (extra, grant) in [
+        (vec!["--allow-all-tools"], "--allow-all-paths"),
+        (
+            vec!["--allow-all-tools", "--allow-all-paths"],
+            "--allow-all-paths",
+        ),
+        (vec![], "--allow-all"),
+    ] {
+        let f = Fixture::new();
+        let mut args = vec!["copilot", "--", "-p", SENTINEL];
+        args.extend(&extra);
+        let out = f.run(gateway(&mut f.cmd(&args)));
+        assert!(out.status.success(), "{extra:?}\n{}", describe(&out));
+        let argv = f.argv(1);
+        assert_argv_clean(&argv, &[]);
+        assert!(!argv.iter().any(|a| a == "--add-dir"), "{argv:?}");
+        assert!(argv.iter().any(|a| a == grant), "{extra:?}: {argv:?}");
+        assert_eq!(f.content(1, "pointer"), SENTINEL, "{extra:?}");
+    }
+}
+
 #[test]
 fn env_argv_is_not_an_opt_in_and_keeps_the_task_out_of_argv() {
     // R1.2: `AMPLIHACK_PROMPT_DELIVERY=argv` is inherited by every nested

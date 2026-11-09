@@ -8,6 +8,7 @@ mod checkout;
 /// Issue #1985 — sandbox and hook-trust flags for Codex agent steps.
 mod codex_agent_step;
 mod codex_copilot_rewrite;
+mod codex_exec_args;
 mod command;
 mod context;
 /// Issue #2030 — the 0600 contract file and the Claude Code version gate.
@@ -26,6 +27,8 @@ mod tests_blarify;
 mod tests_codex_agent_step;
 #[cfg(test)]
 mod tests_codex_copilot_rewrite;
+#[cfg(test)]
+mod tests_codex_exec_args;
 #[cfg(test)]
 mod tests_command;
 #[cfg(test)]
@@ -358,10 +361,13 @@ fn run_launch_core(
     let rewritten = match agent_binary_for_tool(tool) {
         Some(AgentBinary::Claude) => passthrough_rewrite::rewrite_claude_passthrough(&extra_args)?,
         Some(AgentBinary::Codex) => codex_copilot_rewrite::rewrite_codex_passthrough(&extra_args)?,
-        // The external LiteLLM gateway refuses `--add-dir` for Copilot.
-        Some(AgentBinary::Copilot) => {
-            codex_copilot_rewrite::rewrite_copilot_passthrough(&extra_args, !proxy_enabled)?
-        }
+        // The external LiteLLM gateway refuses `--add-dir` for Copilot, so
+        // there the pointer file is readable only with path access.
+        Some(AgentBinary::Copilot) => codex_copilot_rewrite::rewrite_copilot_passthrough(
+            &extra_args,
+            !proxy_enabled,
+            copilot_has_path_access(&extra_args, subprocess_safe),
+        )?,
         _ => passthrough_rewrite::Rewritten::unchanged(extra_args.clone()),
     };
     let extra_args = rewritten.args.clone();
@@ -564,6 +570,9 @@ fn run_launch_core(
         // piped stdin. Without a payload the child inherits amplihack's stdin.
         if rewritten.stdin_payload.is_some() {
             cmd.stdin(std::process::Stdio::piped());
+            if caller_stdin_has_input() {
+                eprintln!("{DROPPED_STDIN_WARNING}");
+            }
         }
         let routed_copilot = proxy_config.is_some()
             && proxy_target == Some(amplihack_utils::litellm_proxy::CliTarget::CopilotCli);
@@ -810,6 +819,46 @@ fn capture_executable_identity(path: &Path) -> Result<ExecutableIdentity> {
         metadata,
         digest: hasher.finalize().into(),
     })
+}
+
+/// Printed when a rewritten prompt takes the agent's stdin while amplihack's
+/// own stdin is a pipe or a non-empty file. `codex exec` would have appended
+/// that input as a `<stdin>` block and `claude -p` would have read it; now
+/// the agent never sees it. amplihack does not read and join it itself: a
+/// pipe whose writer never closes would hang the launch.
+pub(crate) const DROPPED_STDIN_WARNING: &str = "amplihack: warning: the prompt goes to the agent on stdin, so the input piped to amplihack is not passed on; put that input in the prompt instead";
+
+/// amplihack's stdin is a pipe, a socket or a non-empty regular file, as
+/// opposed to a terminal, `/dev/null` or an empty file.
+#[cfg(unix)]
+fn caller_stdin_has_input() -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    // `/dev/stdin` names fd 0 on Linux and macOS; metadata follows it to the
+    // pipe or file itself.
+    match std::fs::metadata("/dev/stdin") {
+        Ok(meta) => {
+            let kind = meta.file_type();
+            kind.is_fifo() || kind.is_socket() || (kind.is_file() && meta.len() > 0)
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn caller_stdin_has_input() -> bool {
+    false
+}
+
+/// Copilot will run with access to every path: the caller passed
+/// `--allow-all`, `--allow-all-paths` or `--yolo`, or [`build_command`] adds
+/// `--allow-all` or the subprocess-safe `--allow-all-paths`.
+fn copilot_has_path_access(extra_args: &[String], subprocess_safe: bool) -> bool {
+    extra_args
+        .iter()
+        .take_while(|a| a.as_str() != "--")
+        .any(|a| matches!(a.as_str(), "--allow-all" | "--allow-all-paths" | "--yolo"))
+        || command::should_inject_copilot_allow_all(extra_args)
+        || (subprocess_safe && command::should_inject_subprocess_safe_flags(extra_args).1)
 }
 
 fn preflight_proxy_binary(

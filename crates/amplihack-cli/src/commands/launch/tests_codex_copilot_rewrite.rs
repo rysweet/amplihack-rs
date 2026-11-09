@@ -46,6 +46,40 @@ fn codex_exec_positional_goes_to_stdin() {
             vec!["exec", "fork", "abc-123", SENTINEL],
             vec!["exec", "fork", "abc-123", "-"],
         ),
+        // Crusty round 2: option values are not prompts, per subcommand.
+        (
+            vec!["exec", "review", "--base", "main", SENTINEL],
+            vec!["exec", "review", "--base", "main", "-"],
+        ),
+        (
+            vec![
+                "exec", "review", "--commit", "abc123", "--title", "t", SENTINEL,
+            ],
+            vec!["exec", "review", "--commit", "abc123", "--title", "t", "-"],
+        ),
+        (
+            vec!["exec", "--cyber-access-program", "standard", SENTINEL],
+            vec!["exec", "--cyber-access-program", "standard", "-"],
+        ),
+        // `-i` takes one value under fork and resume, so the text after it
+        // is the prompt.
+        (
+            vec!["exec", "fork", "abc-123", "-i", "a.png", SENTINEL],
+            vec!["exec", "fork", "abc-123", "-i", "a.png", "-"],
+        ),
+        (
+            vec!["exec", "resume", "abc-123", "--image", "a.png", SENTINEL],
+            vec!["exec", "resume", "abc-123", "--image", "a.png", "-"],
+        ),
+        // Plain exec: `-i` is variadic, so the prompt goes before it.
+        (
+            vec!["exec", SENTINEL, "-i", "a.png", "b.png"],
+            vec!["exec", "-", "-i", "a.png", "b.png"],
+        ),
+        (
+            vec!["exec", "-i", "a.png", "--", SENTINEL],
+            vec!["exec", "-i", "a.png", "--", "-"],
+        ),
     ] {
         let (args, payload) = codex(&input);
         assert_eq!(args, s(&expected), "{input:?}");
@@ -75,6 +109,15 @@ fn codex_cases_left_unchanged() {
         vec!["exec", "resume", "--last"],
         vec!["exec", "fork", "abc-123"],
         vec!["exec", "help", "resume"],
+        // Crusty round 2: review option values stay where they are.
+        vec!["exec", "review", "--commit", "abc123"],
+        vec!["exec", "review", "--base", "main"],
+        vec!["exec", "review", "--uncommitted", "--title", "t"],
+        vec!["exec", "--cyber-access-program", "standard"],
+        vec!["exec", "fork", "abc-123", "-i", "a.png"],
+        // One image value, prompt on stdin.
+        vec!["exec", "-i", "a.png"],
+        vec!["exec", "-i", "a.png", "-i", "b.png"],
         vec!["--model", "gpt-5"],
         // Interactive Codex and other subcommands: documented exception.
         vec![SENTINEL],
@@ -100,6 +143,32 @@ fn codex_two_prompts_is_an_error_without_the_text() {
             message.contains("more than one positional prompt"),
             "{message}"
         );
+        assert!(!message.contains("SENTINEL"), "{message}");
+    }
+}
+
+#[test]
+fn codex_ambiguous_commands_are_refused_without_the_text() {
+    for (input, expected) in [
+        // A variadic `--image` took the text: Codex would read it as an
+        // image path and keep it on argv.
+        (
+            vec!["exec", "-i", "a.png", SENTINEL],
+            "--image took 2 values",
+        ),
+        (
+            vec!["exec", "--image", "a.png", "b.png", SENTINEL],
+            "took 3 values",
+        ),
+        // An option amplihack does not know, followed by a word.
+        (
+            vec!["exec", "--option-from-a-later-codex", SENTINEL],
+            "does not know whether",
+        ),
+    ] {
+        let err = rewrite_codex_passthrough(&s(&input)).expect_err("refused");
+        let message = format!("{err:#}");
+        assert!(message.contains(expected), "{input:?}: {message}");
         assert!(!message.contains("SENTINEL"), "{message}");
     }
 }
@@ -135,7 +204,7 @@ fn copilot_prompt_flags_get_the_pointer_sentence() {
         (vec!["--interactive", SENTINEL], "--interactive"),
         (vec!["--model", "gpt-5", "-p", SENTINEL, "--silent"], "-p"),
     ] {
-        let r = rewrite_copilot_passthrough(&s(&input), true).unwrap();
+        let r = rewrite_copilot_passthrough(&s(&input), true, true).unwrap();
         assert!(
             !r.args.iter().any(|a| a.contains("SENTINEL")),
             "{:?}",
@@ -158,7 +227,7 @@ fn copilot_prompt_flags_get_the_pointer_sentence() {
 
 #[test]
 fn copilot_without_grant_dir_adds_no_add_dir() {
-    let r = rewrite_copilot_passthrough(&s(&["-p", SENTINEL]), false).unwrap();
+    let r = rewrite_copilot_passthrough(&s(&["-p", SENTINEL]), false, true).unwrap();
     assert_eq!(r.args.len(), 2);
     assert_eq!(r.args[0], "-p");
     assert!(r.args[1].starts_with(FILE_REFERENCE_PREFIX));
@@ -174,16 +243,59 @@ fn copilot_cases_left_unchanged() {
         vec!["--", "-p", SENTINEL],
         vec![],
     ] {
-        let r = rewrite_copilot_passthrough(&s(&input), true).unwrap();
+        let r = rewrite_copilot_passthrough(&s(&input), true, true).unwrap();
         assert_eq!(r.args, s(&input), "{input:?}");
     }
 }
 
 #[test]
 fn copilot_same_flag_twice_is_an_error_without_the_text() {
-    let err = rewrite_copilot_passthrough(&s(&["-p", SENTINEL, "--prompt", "again"]), true)
+    let err = rewrite_copilot_passthrough(&s(&["-p", SENTINEL, "--prompt", "again"]), true, true)
         .expect_err("two prompts");
     let message = format!("{err:#}");
     assert!(message.contains("given twice"), "{message}");
     assert!(!message.contains("SENTINEL"), "{message}");
+}
+
+/// Crusty round 2: under the gateway (no `--add-dir`) a `-p` run without path
+/// access could not open its own prompt file, so it is refused before any
+/// file is written. `-i` is interactive: Copilot asks the user.
+#[test]
+fn copilot_prompt_without_add_dir_or_path_access_is_refused() {
+    for input in [vec!["-p", SENTINEL], vec!["--prompt", SENTINEL]] {
+        let err = rewrite_copilot_passthrough(&s(&input), false, false).expect_err("refused");
+        let message = format!("{err:#}");
+        assert!(message.contains("add --allow-all-paths"), "{message}");
+        assert!(!message.contains("SENTINEL"), "{message}");
+    }
+    let r = rewrite_copilot_passthrough(&s(&["-i", SENTINEL]), false, false).unwrap();
+    assert!(r.args[1].starts_with(FILE_REFERENCE_PREFIX), "{:?}", r.args);
+    // `--add-dir` alone is enough.
+    rewrite_copilot_passthrough(&s(&["-p", SENTINEL]), true, false).unwrap();
+}
+
+/// Crusty round 2: on a terminal (not subprocess-safe) a caller's
+/// `--allow-all-tools` stops amplihack adding `--allow-all`, so Copilot has
+/// no path access, and under the gateway a `-p` launch is refused.
+#[test]
+fn copilot_path_access_on_a_terminal() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    unsafe { std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL") };
+    let access = |args: &[&str], safe: bool| super::copilot_has_path_access(&s(args), safe);
+    assert!(!access(&["-p", "x", "--allow-all-tools"], false));
+    assert!(access(&["-p", "x", "--allow-all-tools"], true));
+    assert!(access(&["-p", "x"], false), "amplihack adds --allow-all");
+    for grant in ["--allow-all", "--allow-all-paths", "--yolo"] {
+        assert!(access(&["--allow-all-tools", grant], false), "{grant}");
+    }
+    assert!(!access(
+        &["--allow-all-tools", "--", "--allow-all-paths"],
+        false
+    ));
+    unsafe { std::env::set_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL", "1") };
+    assert!(!access(&["-p", "x"], true));
+    assert!(access(&["-p", "x", "--allow-all-paths"], true));
+    unsafe { std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL") };
 }

@@ -93,7 +93,11 @@ operating contract, as before #2030.
 
 The same holds when a caller passes the prompt through the wrapper:
 `amplihack codex -- exec <text>` becomes `exec -` with the text on stdin, and
-`amplihack copilot -- -p <text>` becomes `-p` and the pointer sentence. Two
+`amplihack copilot -- -p <text>` becomes `-p` and the pointer sentence.
+Codex options take values differently under each `exec` subcommand, so the
+rewrite reads them with one table per subcommand, checked against Codex's
+saved help text, and refuses a command line where it cannot tell which word
+is the prompt rather than leave the prompt on argv. Two
 passthrough forms are left alone and listed as exceptions: an interactive
 first prompt (`amplihack claude -- '<text>'`, `amplihack codex -- '<text>'`)
 and `amplihack amplifier -- run <text>`. See

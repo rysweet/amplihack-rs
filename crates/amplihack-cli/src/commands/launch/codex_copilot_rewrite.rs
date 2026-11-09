@@ -12,7 +12,15 @@
 //! | `exec fork <session> <text>` | `exec fork <session> -`, text on stdin |
 //! | `exec -`, or `exec` with no prompt | unchanged |
 //! | `exec` with two positional prompts | error; Codex accepts one |
+//! | `exec --image a b` (several values in one `--image`) and no prompt | error; one value may be the prompt |
+//! | `exec` with an option amplihack does not know, followed by a word | error; that word may be the prompt |
 //! | `exec help ...` | unchanged |
+//!
+//! Option values are never read as the prompt: `exec review --commit <sha>`
+//! is unchanged, and `exec review --base main <text>` becomes
+//! `exec review --base main -`. Which options take a value differs by
+//! subcommand, so [`super::codex_exec_args`] keeps one table per subcommand,
+//! checked against the saved Codex help text.
 //! | interactive `codex <text>`, any other subcommand | unchanged (documented exception) |
 //!
 //! The `-` takes the place of the text, so the argument order is otherwise
@@ -36,78 +44,44 @@
 //! goes to a 0600 file in the per-session 0700 directory and Copilot gets
 //! [`FILE_REFERENCE_TEMPLATE`] naming it. `--add-dir <that directory>` is
 //! added in front, except under the external LiteLLM gateway, whose launch
-//! policy refuses `--add-dir`.
+//! policy refuses `--add-dir`. There Copilot can open the file only with
+//! `--allow-all-paths` (also implied by `--allow-all` and `--yolo`), which
+//! amplihack adds through `--allow-all` unless the caller passed an
+//! `--allow-all-*` flag or set `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1`. A `-p`
+//! launch under the gateway without that access is refused before anything
+//! is written: it would run with a prompt Copilot cannot open.
 
+use super::codex_exec_args::{Scope, parse_exec_line};
 use super::passthrough_rewrite::{Rewritten, write_private_file};
-use amplihack_launcher::prompt_delivery::{LONG_OPTIONS_WITH_VALUE, SHORT_OPTIONS_WITH_VALUE};
 use amplihack_utils::prompt_delivery::{FILE_REFERENCE_PREFIX, FILE_REFERENCE_TEMPLATE};
 use anyhow::{Result, bail};
 use tempfile::TempDir;
-
-/// Indices of the positional arguments of a Codex argv, skipping option
-/// values with the launcher's arity tables. `--image`/`-i` takes every
-/// following non-option token, as clap does, except under `exec resume`,
-/// where it takes one.
-fn codex_positionals(args: &[String]) -> Vec<usize> {
-    let mut out: Vec<usize> = Vec::new();
-    let mut after_delimiter = false;
-    let mut i = 0;
-    while i < args.len() {
-        let arg = args[i].as_str();
-        if after_delimiter || arg == "-" || !arg.starts_with('-') {
-            out.push(i);
-        } else if arg == "--" {
-            after_delimiter = true;
-        } else if arg == "--image" || arg == "-i" {
-            let exec_resume = matches!(
-                out.as_slice(),
-                [cmd, sub, ..] if matches!(args[*cmd].as_str(), "exec" | "e") && args[*sub] == "resume"
-            );
-            i += 1;
-            if !exec_resume {
-                while i + 1 < args.len() && !args[i + 1].starts_with('-') {
-                    i += 1;
-                }
-            }
-        } else if arg.starts_with("--") {
-            if !arg.contains('=') && LONG_OPTIONS_WITH_VALUE.contains(&arg) {
-                i += 1;
-            }
-        } else if arg.len() == 2 && SHORT_OPTIONS_WITH_VALUE.contains(&arg) {
-            i += 1;
-        }
-        i += 1;
-    }
-    out
-}
 
 /// Rewrite `amplihack codex` passthrough arguments; see the module docs.
 ///
 /// # Errors
 ///
-/// `exec` was given more than one positional prompt. The message names no
-/// argument text.
+/// - `exec` was given more than one positional prompt;
+/// - a variadic `exec --image` took more than one value and no prompt was
+///   found, so one of those values may be the prompt;
+/// - [`parse_exec_line`] refused the command line.
+///
+/// No message names argument text.
 pub(crate) fn rewrite_codex_passthrough(args: &[String]) -> Result<Rewritten> {
     let unchanged = || Ok(Rewritten::unchanged(args.to_vec()));
-    let positions = codex_positionals(args);
-    let Some((&command, rest)) = positions.split_first() else {
+    let Some(line) = parse_exec_line(args)? else {
         return unchanged();
     };
-    if !matches!(args[command].as_str(), "exec" | "e") {
-        return unchanged();
-    }
-    let last = args
-        .iter()
-        .take_while(|a| a.as_str() != "--")
-        .any(|a| a == "--last");
-    let prompts: &[usize] = match rest.first().map(|&i| args[i].as_str()) {
-        Some("help") => return unchanged(),
-        Some("review") => &rest[1..],
-        Some("resume") if last => &rest[1..],
-        Some("resume") | Some("fork") => rest.get(2..).unwrap_or(&[]),
-        _ => rest,
+    let prompts: &[usize] = match line.scope {
+        Scope::Resume if !line.last => line.positionals.get(1..).unwrap_or(&[]),
+        Scope::Fork => line.positionals.get(1..).unwrap_or(&[]),
+        _ => &line.positionals,
     };
     match prompts {
+        [] if line.widest_image > 1 => bail!(
+            "codex exec --image took {} values and no prompt was found, so one of them may be the prompt; give each image its own -i, or put `--` before the prompt",
+            line.widest_image
+        ),
         [] => unchanged(),
         [only] if args[*only] == "-" => unchanged(),
         [only] => {
@@ -145,11 +119,22 @@ fn copilot_prompt_flag(arg: &str) -> Option<(&'static str, Option<&str>)> {
 /// `grant_dir` adds `--add-dir <per-session directory>` when a pointer file
 /// was written. Pass `false` under the external LiteLLM gateway.
 ///
+/// `path_access`: Copilot will run with `--allow-all-paths` (or
+/// `--allow-all`/`--yolo`, given by the caller or added by amplihack). Without
+/// `--add-dir` it is the only way a `-p` run can open the pointer file, which
+/// is outside the workspace.
+///
 /// # Errors
 ///
+/// - `-p`/`--prompt` text with neither `grant_dir` nor `path_access`: Copilot
+///   could not open the file and no user is there to approve the read;
 /// - the same prompt flag was given twice;
 /// - a private file could not be written, or its path holds a newline.
-pub(crate) fn rewrite_copilot_passthrough(args: &[String], grant_dir: bool) -> Result<Rewritten> {
+pub(crate) fn rewrite_copilot_passthrough(
+    args: &[String],
+    grant_dir: bool,
+    path_access: bool,
+) -> Result<Rewritten> {
     let mut out: Vec<String> = Vec::with_capacity(args.len() + 2);
     let mut dir: Option<TempDir> = None;
     let mut i = 0;
@@ -180,7 +165,15 @@ pub(crate) fn rewrite_copilot_passthrough(args: &[String], grant_dir: bool) -> R
         } else {
             // One file per flag kind: `-p` and `--prompt` share a name, so a
             // second prompt fails with "given twice" from `create_new`.
-            let name = if matches!(flag, "-p" | "--prompt") {
+            let prompt_mode = matches!(flag, "-p" | "--prompt");
+            // `-i` is interactive: Copilot asks the user before reading the
+            // file. A `-p` run has no one to ask.
+            if prompt_mode && !grant_dir && !path_access {
+                bail!(
+                    "amplihack copilot {flag}: under the external LiteLLM gateway Copilot gets no --add-dir, so it can read the private prompt file only with path access, and this launch has none (an --allow-all-* flag without --allow-all-paths, or AMPLIHACK_COPILOT_NO_ALLOW_ALL=1); add --allow-all-paths"
+                );
+            }
+            let name = if prompt_mode {
                 "copilot-prompt.md"
             } else {
                 "copilot-interactive.md"
