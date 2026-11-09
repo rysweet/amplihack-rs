@@ -50,6 +50,10 @@ mod issue_1962_seed_cmd;
 mod issue_1962_seed_output;
 #[path = "issue_1962_seed_scan.rs"]
 mod issue_1962_seed_scan;
+#[path = "issue_1976_orphaned_nested_run.rs"]
+mod issue_1976_orphaned_nested_run;
+#[path = "issue_1976_removed_should_publish.rs"]
+mod issue_1976_removed_should_publish;
 
 #[path = "active_agent_binary_default_test.rs"]
 mod active_agent_binary_default;

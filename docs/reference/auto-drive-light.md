@@ -34,6 +34,7 @@ The recipe is `amplifier-bundle/recipes/auto-drive-light.yaml`. It was added for
 - [The follow-up issue](#the-follow-up-issue)
 - [Merge criteria](#merge-criteria)
 - [State files](#state-files)
+- [Orphaned rounds](#orphaned-rounds)
 - [Recursion limits](#recursion-limits)
 - [Security limits](#security-limits)
 - [Limitations](#limitations)
@@ -386,8 +387,23 @@ All files live in the autodrive state directory. They are written under `umask 0
 | `follow-up-linked` | `autodrive_light_round.sh` | Present once the PR comment is posted. |
 | `follow-up-posted-ids` | `autodrive_light_round.sh` | One id per line. Lines that do not match `^[A-Za-z0-9._-]{1,64}$` are ignored when the file is read and dropped when it is next written. |
 | `follow-up-failed` | `autodrive_light_round.sh` | A fixed token. No free text. |
+| `orphaned.json` | a nested `amplihack recipe run` | Written when a round's parent run exited. See [Orphaned rounds](#orphaned-rounds). |
 
 Logs written by the light tools contain only counts, ids, digits and fixed tokens. `gh` stderr goes through `gh_sanitize_stderr`.
+
+## Orphaned rounds
+
+The light recipe's crusty and merge rounds run through `autodrive_loop.sh`,
+so they follow the same rule as `auto-drive-to-merge`. When the parent
+`amplihack recipe run` of a round exits, the round prints
+`orphaned: parent recipe run <pid> exited; stopping`, writes `orphaned.json`
+in the state directory, tears down its runner and exits `75`. Its final
+correlation record has `status: "orphaned"`. A `--detach` pane root is never
+watched. See [Orphaned rounds](auto-drive-to-merge.md#orphaned-rounds) for the
+file format and the checks made before it is written.
+
+An escalated run counts the same way: the nested `auto-drive-to-merge` run's
+own rounds watch that run, not the light run above it.
 
 ## Recursion limits
 

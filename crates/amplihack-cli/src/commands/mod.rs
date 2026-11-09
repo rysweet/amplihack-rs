@@ -736,6 +736,9 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                 &context_from_file,
                 context.clone(),
             )?;
+            // Issue #1976: a removed context key fails closed here, before
+            // the --detach branch and before any worktree, tmux or git work.
+            recipe::reject_removed_context_keys(&resolved, &mut std::io::stderr())?;
             // Issue #1606: --detach / --no-detach, else `recipe.detach` for
             // the directory the steps run in.
             let detach = detach

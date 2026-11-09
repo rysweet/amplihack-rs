@@ -40,6 +40,7 @@ PR to this recipe when the change exceeds its eligibility rules.
 - [No silent merge](#no-silent-merge)
 - [Merges outside the gate are refused (#1551)](#merges-outside-the-gate-are-refused-1551)
 - [Exit code 79 is terminal](#exit-code-79-is-terminal)
+- [Orphaned rounds](#orphaned-rounds)
 - [Usage limits are not STUCK](#usage-limits-are-not-stuck)
 - [No-progress stop and usage budget](#no-progress-stop-and-usage-budget)
 - [Recursion context propagation](#recursion-context-propagation)
@@ -3374,6 +3375,71 @@ round log is handed to it through `autodrive_round_tail.sh`, which drops the
 partial first line of the 20000-byte tail and keeps the summary header when
 a long summary would push it out of the window. See
 [Agent output lines are not refusals](loop-health-evaluator.md#agent-output-lines-are-not-refusals).
+
+## Orphaned rounds
+
+A round or evaluator run that loses its driver stops itself. Before #1976 a
+fixer round whose parent run was killed kept running headless and could still
+push and comment.
+
+`autodrive_loop.sh` starts each round and evaluator with a nested
+`amplihack recipe run`. It sets `AMPLIHACK_AUTODRIVE_STATE_DIR="$STATE_DIR"`
+on that command, and the nested run inherits `AMPLIHACK_PARENT_RECIPE_PID`
+and `AMPLIHACK_PARENT_RECIPE_STARTTIME` from the run above it. When that
+parent `amplihack recipe run` exits, the nested run:
+
+1. prints `orphaned: parent recipe run <pid> exited; stopping` on stderr;
+2. writes `orphaned.json` in the state directory;
+3. tears down its runner's process group with `SIGTERM` then `SIGKILL`;
+4. exits `75`.
+
+The parent is the `amplihack recipe run` one level up, never the human's
+shell or Claude session. The pane root of a `--detach` run watches nothing,
+because `--detach` removes the parent and state-directory variables from the
+pane environment. A detached auto-drive therefore keeps running after the
+launching session ends; only its own nested rounds stop when it stops. The
+watch is event-driven (`pidfd_open` and `poll()` with no timeout) and
+Linux-only. See
+[Nested runs and orphan stops](./recipe-cli-reference.md#nested-runs-and-orphan-stops).
+
+### `orphaned.json`
+
+```json
+{
+  "parent_pid": 41822,
+  "tree_id": "t-41790",
+  "run_id": "0c1f8e2a-6b7d-4a52-9e0f-3d4c5b6a7e81",
+  "reason": "parent recipe run exited",
+  "timestamp": "2026-06-12T04:25:02Z"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `parent_pid` | PID of the parent run that exited. |
+| `tree_id` | `AMPLIHACK_TREE_ID` of the orphaned run; omitted when unset. |
+| `run_id` | `run_id` of the orphaned run, matching its correlation pointers. |
+| `reason` | Always `parent recipe run exited`. |
+| `timestamp` | RFC 3339 time of the stop. |
+
+The file holds only these fields, never context values or log text. It is
+written only when `AMPLIHACK_AUTODRIVE_STATE_DIR` is an absolute path to a
+directory that is not a symlink, is owned by the current user, and has no
+group or other write bit. It is created as `.orphaned.json.<pid>.tmp` with
+mode `0600` and `O_NOFOLLOW`, synced, then renamed to `orphaned.json`. If any
+check fails, the file is skipped with a warning; the stderr line and the
+final correlation record, with `status: "orphaned"`, `parent_pid` and
+`reason`, are still written.
+
+### How the loop and the report read it
+
+Exit `75` from a round is an ordinary non-zero round result, not a terminal
+refusal like [exit 79](#exit-code-79-is-terminal). In practice the loop that
+would read it has already gone, since its exit is what orphaned the round.
+The run report and auto-drive status read `orphaned.json` and show the round
+as orphaned with the parent PID, so a stopped drive is told apart from a
+round that failed on its own. On [resume](#resume), the file is left in place
+as a record of the earlier stop.
 
 ## Usage limits are not STUCK
 

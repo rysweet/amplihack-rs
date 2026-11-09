@@ -173,7 +173,7 @@ export NODE_OPTIONS=--max-old-space-size=32768
 | `terminal_state` | Stable state such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, `SUPERSEDED`, `FAILED_MEANINGFUL_DIFF`, `FAILED_IMPLEMENTATION`, `FAILED_REPORTING`, or `BLOCKED_CI`. |
 | `terminal_reason` | Human-readable evidence for the decision. |
 | `publish_status` | Publish-facing status using the same vocabulary as `terminal_state`. |
-| `should_publish` | `true` only when the workflow should continue through a publish path for meaningful work. |
+| `should_publish` | Read by later steps as `terminal_state.should_publish`. Internal output, not a caller option. `true` only when the workflow should continue through a publish path for meaningful work. The caller context key `should_publish` was removed by #1976; see [Removed context keys](./recipe-cli-reference.md#removed-context-keys). |
 | `should_finalize` | `true` when finalization should emit a non-mutating final decision. |
 | `should_run_ci_wait` | `true` only when CI waiting remains valid for the active provider path. |
 | `should_merge` | `true` only when merge remains valid for green, active work. |

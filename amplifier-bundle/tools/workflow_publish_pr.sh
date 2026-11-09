@@ -356,8 +356,29 @@ HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
 # #1762: in an alias worktree (<B>--wt-<n> tracking origin/<B>) the PR head is <B>.
 CURRENT_BRANCH="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "workflow_remote_branch.sh is missing or failed at $SCRIPT_DIR; cannot name the PR head branch" 1
 [ "$CURRENT_BRANCH" = "$(git branch --show-current)" ] || PR_HEAD_ARG="$CURRENT_BRANCH"
-ISSUE_NUM="$ISSUE_NUMBER"
-if ! [[ "$ISSUE_NUM" =~ ^[0-9]+$ ]]; then echo "ERROR: issue_number is not numeric: $ISSUE_NUM" >&2; exit 1; fi
+# Issue #1976 (D7): classify issue_number once. All digits is a linked issue.
+# Empty, or a local tracking reference in the step-03b character set
+# (workflow-prep.yaml) with at most 128 characters after `local-`, is "no
+# linked issue": no (#N), no AB#, no claim check, no closing keyword. Anything
+# else fails closed before any provider call. Only a value that passed one of
+# these anchored checks reaches the title, the body or a `gh`/`az` argument.
+ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+HAS_ISSUE_LINK=false
+LOCAL_ISSUE_REF=""
+ISSUE_NUM=""
+if [[ "$ISSUE_NUMBER" =~ ^[0-9]+$ ]]; then
+  HAS_ISSUE_LINK=true
+  ISSUE_NUM="$ISSUE_NUMBER"
+elif [ -z "$ISSUE_NUMBER" ]; then
+  :
+elif [[ "$ISSUE_NUMBER" =~ ^local-[A-Za-z0-9._:-]{1,128}$ ]]; then
+  LOCAL_ISSUE_REF="$ISSUE_NUMBER"
+else
+  INVALID_ISSUE_SHOWN="$(printf '%s' "$ISSUE_NUMBER" | LC_ALL=C tr -d '\000-\037\177')"
+  INVALID_ISSUE_SHOWN="${INVALID_ISSUE_SHOWN:0:64}"
+  finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" \
+    "issue_number '${INVALID_ISSUE_SHOWN}' is neither numeric nor a local tracking id" 1
+fi
 [ -n "$CURRENT_BRANCH" ] || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "current branch is empty; cannot publish from detached HEAD" 1
 LOCAL_HEAD="$(git rev-parse --verify HEAD 2>/dev/null)" || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "local HEAD does not resolve" 1
 
@@ -398,9 +419,15 @@ if [ "$HOST_TYPE" = "azdo" ]; then
   [ -n "$CHANGED_FILES_BODY" ] || CHANGED_FILES_BODY="- No changed files detected by git diff"
   DIFF_STAT=$(git diff --stat "${BASE_REF}..HEAD" 2>/dev/null | tail -20 || true)
   DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
-  PR_TITLE="Update ${CURRENT_BRANCH} (AB#${ISSUE_NUM})"
+  if $HAS_ISSUE_LINK; then
+    PR_TITLE="Update ${CURRENT_BRANCH} (AB#${ISSUE_NUM})"
+    AZDO_SUMMARY="Workflow-generated Azure DevOps PR for AB#${ISSUE_NUM}."
+  else
+    PR_TITLE="Update ${CURRENT_BRANCH}"
+    AZDO_SUMMARY="Workflow-generated Azure DevOps PR with no linked work item."
+  fi
   PR_TITLE="${PR_TITLE:0:200}"
-  PR_BODY=$(printf '## Summary\nWorkflow-generated Azure DevOps PR for AB#%s.\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n' "$ISSUE_NUM" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY")
+  PR_BODY=$(printf '## Summary\n%s\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n' "$AZDO_SUMMARY" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY")
   if ! AZDO_CREATED_JSON="$(az_repos_pr_create_with_retry)"; then
     finish_publish "BLOCKED_PROVIDER" "azdo-pr-create-failed" "failure" "AzDO PR creation failed; provider state is ambiguous" 1
   fi
@@ -465,7 +492,9 @@ fi
 # a claiming pull request. No `gh` on PATH, a rate limit, an API error or a
 # missing helper all warn and return 0, because an unreadable answer is not
 # evidence that an issue is unclaimed — nor that it is claimed.
-if [ -f "$CLAIM_CHECK_HELPER" ]; then
+if ! $HAS_ISSUE_LINK; then
+  : # Issue #1976: no linked issue, so there is no claim to check.
+elif [ -f "$CLAIM_CHECK_HELPER" ]; then
   if ! CLAIM_OUTPUT="$(bash "$CLAIM_CHECK_HELPER" --issue "$ISSUE_NUM" --repo "$REPO_IDENTITY" --head "$CURRENT_BRANCH" 2>&1 >/dev/null)"; then
     printf '%s\n' "$CLAIM_OUTPUT" >&2
     finish_publish "FAILED_DUPLICATE_CLAIM" "duplicate-issue-claim" "failure" \
@@ -508,7 +537,7 @@ else
 fi
 case "$FIRST_CHANGED" in amplifier-bundle/recipes/*) PR_SCOPE="workflow recipes" ;; crates/amplihack-cli/*) PR_SCOPE="amplihack CLI" ;; crates/*) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f2)" ;; tests/*) PR_SCOPE="regression coverage" ;; docs/*) PR_SCOPE="documentation" ;; "") PR_SCOPE="workflow changes" ;; *) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f1)" ;; esac
 if [ "$CHANGED_COUNT" -gt 1 ]; then PR_TITLE="Update ${PR_SCOPE} with ${CHANGED_COUNT} changed files"; else PR_TITLE="Update ${PR_SCOPE}"; fi
-PR_TITLE="${PR_TITLE} (#${ISSUE_NUM})"
+if $HAS_ISSUE_LINK; then PR_TITLE="${PR_TITLE} (#${ISSUE_NUM})"; fi
 PR_TITLE="${PR_TITLE:0:200}"
 CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d; s/^/- /')
 [ -n "$CHANGED_FILES_BODY" ] || CHANGED_FILES_BODY="- No changed files detected by git diff"
@@ -525,13 +554,22 @@ DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
 # describing what somebody intended to do about it. An unreachable helper yields
 # the conservative `Refs`: under-linking costs a manual close, over-linking
 # closes a live bug silently.
-if [ -f "$ISSUE_REFERENCE_HELPER" ]; then
-  ISSUE_KEYWORD="$(printf '%s\n' "$CHANGED_FILES" | bash "$ISSUE_REFERENCE_HELPER" --keyword)"
+if ! $HAS_ISSUE_LINK; then
+  # Issue #1976: a local run has no issue to link or close.
+  if [ -n "$LOCAL_ISSUE_REF" ]; then
+    ISSUE_LINK="No linked issue (local tracking reference \`${LOCAL_ISSUE_REF}\`)."
+  else
+    ISSUE_LINK="No linked issue."
+  fi
 else
-  echo "WARNING: workflow_issue_reference.sh not found at ${ISSUE_REFERENCE_HELPER} — using the non-closing 'Refs' keyword (#1361)" >&2
-  ISSUE_KEYWORD="Refs"
+  if [ -f "$ISSUE_REFERENCE_HELPER" ]; then
+    ISSUE_KEYWORD="$(printf '%s\n' "$CHANGED_FILES" | bash "$ISSUE_REFERENCE_HELPER" --keyword)"
+  else
+    echo "WARNING: workflow_issue_reference.sh not found at ${ISSUE_REFERENCE_HELPER} — using the non-closing 'Refs' keyword (#1361)" >&2
+    ISSUE_KEYWORD="Refs"
+  fi
+  ISSUE_LINK="${ISSUE_KEYWORD:-Refs} #${ISSUE_NUM}"
 fi
-ISSUE_LINK="${ISSUE_KEYWORD:-Refs} #${ISSUE_NUM}"
 PR_BODY=$(printf '## Summary\nConcise workflow-generated PR for %s.\n\n## Issue\n%s\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n\n## Behavior\n%s\n\n## Validation\n%s\n\n## Risk\n%s\n\n## Checklist\n- [x] Branch has %s commit(s) ahead of %s\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$PR_SCOPE" "$ISSUE_LINK" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY" "$BEHAVIOR_BODY" "$VALIDATION_BODY" "$RISK_BODY" "$COMMITS_AHEAD" "$BASE_BRANCH")
 
 PUBLISH_STATE="FOLLOWUP_CREATED"

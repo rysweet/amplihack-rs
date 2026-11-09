@@ -76,7 +76,7 @@ review, and finalize. It returns these outputs:
 | `terminal_state` | Stable status such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, `SUPERSEDED`, `FAILED_MEANINGFUL_DIFF`, `FAILED_IMPLEMENTATION`, `FAILED_REPORTING`, or `BLOCKED_CI`. |
 | `terminal_reason` | Human-readable evidence for the decision. |
 | `publish_status` | Publish-facing status using the same vocabulary as the terminal state. |
-| `should_publish` | `true` only when meaningful unmerged work should continue through a publish path. |
+| `terminal_state.should_publish` | Internal output, not a caller option. `true` only when meaningful unmerged work should continue through a publish path. The caller context key `should_publish` was removed by #1976; see [Removed context keys](../reference/recipe-cli-reference.md#removed-context-keys). |
 | `should_finalize` | `true` when the workflow should route to finalize so it can emit the non-mutating final decision. |
 | `should_run_ci_wait` | `true` only when CI should be waited on for an active publish path. |
 | `should_merge` | `true` only when merge remains valid for green, active work. |
@@ -496,7 +496,8 @@ spec as an empty optional section and does not fail under `set -u`.
 When the terminal-state gate returns `MERGED`, `CLOSED_OBSOLETE`, or
 `NO_DIFF_SUCCESS`, `workflow-publish` treats the publish step as complete and
 does not run version bump, stage, commit, push, PR create/update, CI wait, or
-merge commands. When it returns `should_publish=true`, publish keeps the normal
+merge commands. When it returns `terminal_state.should_publish=true` (an
+internal output, never set by the caller), publish keeps the normal
 behavior: meaningful diffs are committed and pushed, an existing PR is updated
 or a follow-up PR is created, and the status is reported as `FOLLOWUP_CREATED`
 when that PR represents the remaining work.
