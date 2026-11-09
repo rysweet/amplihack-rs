@@ -15,11 +15,13 @@
 //!   the test process, and `isolated(..)` sets them again after its
 //!   `env_clear()`;
 //! - (b) a git started through `amplihack_git::command()`, with no askpass
-//!   program and no terminal, fails at once with `terminal prompts disabled`;
+//!   program and no terminal, exits by itself with `terminal prompts
+//!   disabled`;
 //! - (c) under `script` and plain `timeout`, in a compound command so that the
-//!   trap is armed, git with none of the variables stops (the control), while
-//!   git with `GIT_TERMINAL_PROMPT=0` alone (c1) or with all three (c2) exits
-//!   at once;
+//!   trap is armed, git with none of the variables prints the username prompt
+//!   and is seen stopped on `SIGTTIN` (the control), while git with
+//!   `GIT_TERMINAL_PROMPT=0` alone (c1) or with all three (c2) exits by itself
+//!   without prompting;
 //! - (d) the three recipe prompts that run long commands tell the agent how to
 //!   run them so that a prompt cannot stop them, and step 12's evidence schema
 //!   is unchanged;
@@ -30,8 +32,16 @@
 //! `127.0.0.1` that answers `401`, from a temporary `HOME` with
 //! `GIT_CONFIG_GLOBAL=/dev/null` and `GIT_CONFIG_NOSYSTEM=1`, so no stored
 //! credential can reach it. Each URL names its server's port and this
-//! process's id (`http://127.0.0.1:<port>/issue-1764-<pid>.git`), so a process
-//! left behind can be found, and this file looks for one after each run.
+//! process's id (`http://127.0.0.1:<port>/issue-1764-<pid>.git`), and that URL
+//! is the marker by which the test finds every process a case started.
+//!
+//! The test waits only on events (#2099). The prompt is seen as bytes on the
+//! pipe from `script`; the control's stop on `SIGTTIN` is reported by the
+//! kernel to a `ptrace` tracer; a case that does not prompt is judged by the
+//! exit of its child. When a case ends, on success, failure or panic, an
+//! [`Owned`] guard opens a pidfd for each process of this user whose
+//! arguments contain the marker, sends `SIGKILL` through it, waits until the
+//! pidfd reports the exit and scans again until none is left.
 
 use std::ffi::OsStr;
 use std::fs::{self, File};
@@ -42,24 +52,12 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_yaml::Value;
 
 use crate::auto_drive_to_merge::BRICK_LINE_BUDGET;
 use crate::isolated_amplihack::{NO_GIT_PROMPT_ENV, isolated};
-
-/// The inner `timeout` in part (c), in seconds. (c1) and (c2) must finish
-/// well inside it.
-const INNER_SECS: u64 = 8;
-
-/// How long part (c) lets each `script` run before killing it. Longer than
-/// [`INNER_SECS`], so GNU `timeout` reports 124 first; uutils `timeout` is
-/// stopped with git and never does.
-const PTY_DEADLINE: Duration = Duration::from_secs(20);
-
-/// How long part (b) lets git run before killing it.
-const BUILDER_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Proxy settings that would send git's request somewhere other than the
 /// loopback server.
@@ -157,80 +155,456 @@ impl Drop for AlwaysUnauthorised {
     }
 }
 
-/// How a child started by [`run_until`] ended.
+// ── Process events ───────────────────────────────────────────────────────────
+//
+// The unsafe code in this file is in the five wrappers below and the geteuid
+// call in `owned_by_me`. Each wrapper reads `errno` straight after its call.
+
+/// Open a pidfd for `pid`. ESRCH means the process has already gone.
+#[cfg(target_os = "linux")]
+fn pidfd_open(pid: libc::pid_t) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::os::fd::{FromRawFd, OwnedFd, RawFd};
+    // SAFETY: pidfd_open takes a PID and a flags word and touches no memory
+    // of this process.
+    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if raw < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `raw` is a descriptor the kernel has just created for this
+    // call, so nothing else owns it.
+    Ok(unsafe { OwnedFd::from_raw_fd(raw as RawFd) })
+}
+
+/// Send `signal` through `pidfd`, which names exactly the process it was
+/// opened for, so a reused PID cannot receive it.
+#[cfg(target_os = "linux")]
+fn pidfd_send_signal(pidfd: &std::os::fd::OwnedFd, signal: libc::c_int) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: the descriptor is open for the duration of the call, the
+    // siginfo pointer is null (the kernel fills it in as for kill) and the
+    // flags are 0.
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd.as_raw_fd(),
+            signal,
+            std::ptr::null::<libc::siginfo_t>(),
+            0u32,
+        )
+    };
+    if rc < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Block until `pidfd` reports that its process has exited (POLLIN). A
+/// signal that interrupts the wait repeats the same call.
+#[cfg(target_os = "linux")]
+fn poll_exit(pidfd: &std::os::fd::OwnedFd) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    loop {
+        let mut entry = libc::pollfd {
+            fd: pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: `entry` is a valid, writable pollfd for the duration of the
+        // call, and the count is 1.
+        let rc = unsafe { libc::poll(&mut entry, 1, -1) };
+        if rc >= 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+/// `PTRACE_SEIZE` (options 0), `PTRACE_CONT` or `PTRACE_DETACH` on `pid`,
+/// with `signal` as the data word of the two restarts.
+#[cfg(target_os = "linux")]
+fn ptrace_request(
+    request: libc::c_uint,
+    pid: libc::pid_t,
+    signal: libc::c_int,
+) -> std::io::Result<()> {
+    // SAFETY: none of these requests reads or writes memory through the
+    // address or data words: the address is null, and the data word is 0 for
+    // PTRACE_SEIZE and a signal number for the restarts.
+    let rc = unsafe {
+        libc::ptrace(
+            request as _,
+            pid,
+            std::ptr::null_mut::<libc::c_void>(),
+            signal as libc::c_long as *mut libc::c_void,
+        )
+    };
+    if rc < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// `waitpid(pid, __WALL)` for one specific traced process. A signal that
+/// interrupts the wait repeats the same call.
+#[cfg(target_os = "linux")]
+fn waitpid_wall(pid: libc::pid_t) -> std::io::Result<libc::c_int> {
+    loop {
+        let mut status: libc::c_int = 0;
+        // SAFETY: `status` is a valid, writable int for the duration of the
+        // call, and `pid` names one process, never a group or any child.
+        let rc = unsafe { libc::waitpid(pid, &mut status, libc::__WALL) };
+        if rc == pid {
+            return Ok(status);
+        }
+        let error = std::io::Error::last_os_error();
+        if rc >= 0 || error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(std::io::Error::other(format!(
+                "waitpid({pid}, __WALL) returned {rc}: {error}"
+            )));
+        }
+    }
+}
+
+// ── Cleanup by marker ────────────────────────────────────────────────────────
+
+/// The arguments of `pid`, joined by spaces, if it can still be read.
+/// Processes that have exited (zombies) have none.
+#[cfg(target_os = "linux")]
+fn cmdline_of(pid: libc::pid_t) -> Option<String> {
+    let raw = fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    Some(String::from_utf8_lossy(&raw).replace('\0', " "))
+}
+
+/// Whether `/proc/<pid>` belongs to this user.
+#[cfg(target_os = "linux")]
+fn owned_by_me(pid: libc::pid_t) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid has no arguments and cannot fail.
+    let me = unsafe { libc::geteuid() };
+    fs::metadata(format!("/proc/{pid}")).is_ok_and(|meta| meta.uid() == me)
+}
+
+/// The PIDs of this user's processes whose arguments contain the full
+/// `marker` URL, never this test process. Entries that cannot be read are
+/// skipped.
+#[cfg(target_os = "linux")]
+fn marker_pids(marker: &str) -> Vec<libc::pid_t> {
+    let me = std::process::id() as libc::pid_t;
+    let Ok(entries) = fs::read_dir("/proc") else {
+        eprintln!("issue #1764: cannot read /proc; no process for {marker} can be found");
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<libc::pid_t>().ok())
+        .filter(|&pid| pid != me && owned_by_me(pid))
+        .filter(|&pid| cmdline_of(pid).is_some_and(|line| line.contains(marker)))
+        .collect()
+}
+
+/// Kill and reap every process of this user that carries `marker`, and
+/// `child`, waiting only on exit events.
+///
+/// Each pass opens a pidfd for each marker process, checks again that the
+/// process behind it still carries the marker, sends `SIGKILL` through the
+/// pidfd, kills and waits for the direct child, then blocks until each pidfd
+/// reports the exit. `SIGKILL` ends a stopped process without continuing it.
+/// The next pass finds any process forked before its parent died; the loop
+/// ends when a pass kills nothing. Errors are printed, never raised: this
+/// runs from `Drop`, possibly while a failed assertion unwinds.
+#[cfg(target_os = "linux")]
+fn reap_marked(marker: &str, mut child: Option<Child>) {
+    loop {
+        let mut killed = Vec::new();
+        for pid in marker_pids(marker) {
+            let pidfd = match pidfd_open(pid) {
+                Ok(pidfd) => pidfd,
+                Err(error) if error.raw_os_error() == Some(libc::ESRCH) => continue,
+                Err(error) => {
+                    eprintln!("issue #1764: pidfd_open({pid}) for {marker} failed: {error}");
+                    continue;
+                }
+            };
+            // The PID may have been reused between the scan and the open.
+            if !cmdline_of(pid).is_some_and(|line| line.contains(marker)) {
+                continue;
+            }
+            match pidfd_send_signal(&pidfd, libc::SIGKILL) {
+                Ok(()) => {}
+                Err(error) if error.raw_os_error() == Some(libc::ESRCH) => {}
+                Err(error) => {
+                    eprintln!("issue #1764: SIGKILL to {pid} for {marker} failed: {error}");
+                    continue;
+                }
+            }
+            killed.push((pid, pidfd));
+        }
+        if let Some(mut child) = child.take() {
+            match child.kill() {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::InvalidInput => {}
+                Err(error) => eprintln!(
+                    "issue #1764: killing child {} for {marker} failed: {error}",
+                    child.id()
+                ),
+            }
+            if let Err(error) = child.wait() {
+                eprintln!(
+                    "issue #1764: waiting for child {} for {marker} failed: {error}",
+                    child.id()
+                );
+            }
+        }
+        if killed.is_empty() {
+            return;
+        }
+        for (pid, pidfd) in &killed {
+            if let Err(error) = poll_exit(pidfd) {
+                eprintln!("issue #1764: waiting for {pid} for {marker} to exit failed: {error}");
+                return;
+            }
+        }
+    }
+}
+
+/// Owns the direct child of one case and the marker URL that every process
+/// the case starts carries. Dropping it, on success, failure or panic, runs
+/// [`reap_marked`]. It never panics.
+#[cfg(target_os = "linux")]
+struct Owned {
+    child: Option<Child>,
+    marker: String,
+}
+
+#[cfg(target_os = "linux")]
+impl Owned {
+    fn child(&mut self) -> &mut Child {
+        self.child
+            .as_mut()
+            .expect("the guard holds its child until it is dropped")
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for Owned {
+    fn drop(&mut self) {
+        reap_marked(&self.marker, self.child.take());
+    }
+}
+
+// ── Prompt and stop ──────────────────────────────────────────────────────────
+
+/// The bytes git writes when it asks for a username. The prompt has no
+/// newline after it.
+#[cfg(target_os = "linux")]
+const PROMPT: &[u8] = b"Username for '";
+
+/// What precedes the same bytes in git's error when terminal prompts are off
+/// (`fatal: could not read Username for '…': terminal prompts disabled`).
+#[cfg(target_os = "linux")]
+const NOT_A_PROMPT: &[u8] = b"could not read ";
+
+/// What [`read_until_prompt`] saw: the prompt, or the end of the output
+/// without one. Each holds the output read so far.
+#[cfg(target_os = "linux")]
 #[derive(Debug)]
-enum Ran {
+enum Watched {
+    Prompt(String),
+    Eof(String),
+}
+
+/// Whether `output` holds the username prompt: [`PROMPT`] not preceded by
+/// [`NOT_A_PROMPT`].
+#[cfg(target_os = "linux")]
+fn holds_prompt(output: &[u8]) -> bool {
+    output
+        .windows(PROMPT.len())
+        .enumerate()
+        .any(|(at, window)| window == PROMPT && !output[..at].ends_with(NOT_A_PROMPT))
+}
+
+/// Read `output` with blocking reads until the username prompt appears or the
+/// output ends. It scans bytes, not lines, so a prompt split across two reads
+/// is still found. It only reads; nothing is ever written back.
+#[cfg(target_os = "linux")]
+fn read_until_prompt<R: Read>(mut output: R) -> Watched {
+    let mut seen = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match output.read(&mut chunk) {
+            Ok(0) => return Watched::Eof(String::from_utf8_lossy(&seen).into_owned()),
+            Ok(n) => {
+                // The whole output is scanned again after each read: it is
+                // short, and a match split across reads needs no tail logic.
+                seen.extend_from_slice(&chunk[..n]);
+                if holds_prompt(&seen) {
+                    return Watched::Prompt(String::from_utf8_lossy(&seen).into_owned());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => panic!(
+                "reading the output of `script` failed: {error}; read so far: {}",
+                String::from_utf8_lossy(&seen)
+            ),
+        }
+    }
+}
+
+/// The fields 2 (state) and 4 (parent PID) of `/proc/<pid>/stat`.
+#[cfg(target_os = "linux")]
+fn state_and_parent(pid: libc::pid_t) -> Option<(char, libc::pid_t)> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name may hold spaces; the fields follow its closing `)`.
+    let mut fields = stat.rsplit_once(')')?.1.split_whitespace();
+    let state = fields.next()?.chars().next()?;
+    let parent = fields.next()?.parse().ok()?;
+    Some((state, parent))
+}
+
+/// Whether `ancestor` is reached by following parent links up from `pid`.
+#[cfg(target_os = "linux")]
+fn descends_from(pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
+    let mut at = pid;
+    while at > 1 {
+        match state_and_parent(at) {
+            Some((_, parent)) if parent == ancestor => return true,
+            Some((_, parent)) => at = parent,
+            None => return false,
+        }
+    }
+    false
+}
+
+/// The `git ls-remote <url>` process under `script_pid`, owned by this user,
+/// found with one `/proc` scan after the prompt has appeared. Panics if there
+/// is none: the tracer may only ever attach to a descendant of the test.
+#[cfg(target_os = "linux")]
+fn git_ls_remote_under(script_pid: libc::pid_t, url: &str) -> libc::pid_t {
+    let candidates: Vec<libc::pid_t> = marker_pids(url)
+        .into_iter()
+        .filter(|&pid| {
+            let Ok(raw) = fs::read(format!("/proc/{pid}/cmdline")) else {
+                return false;
+            };
+            let argv: Vec<&[u8]> = raw.split(|&b| b == 0).collect();
+            argv.len() >= 3
+                && Path::new(OsStr::new(&*String::from_utf8_lossy(argv[0])))
+                    .file_name()
+                    .is_some_and(|name| name == "git")
+                && argv[1] == b"ls-remote"
+                && argv[2..].contains(&url.as_bytes())
+        })
+        .filter(|&pid| descends_from(pid, script_pid))
+        .collect();
+    match candidates.as_slice() {
+        [pid] => *pid,
+        _ => panic!(
+            "the control printed the prompt, but there is not exactly one \
+             `git ls-remote {url}` process under script {script_pid}: {candidates:?}; \
+             processes for the URL: {:#?}",
+            processes_mentioning(url)
+        ),
+    }
+}
+
+/// How the control's stop was established.
+#[cfg(target_os = "linux")]
+#[derive(Debug, PartialEq, Eq)]
+enum Armed {
+    /// The kernel reported the process stopped on `SIGTTIN` to a tracer.
+    Sigttin,
+    /// `PTRACE_SEIZE` failed with EPERM (a sandbox), so the stop could not be
+    /// observed; the prompt alone counts.
+    PtraceDenied,
+}
+
+/// Attach to `pid` with `PTRACE_SEIZE` and wait for the kernel to report it
+/// stopped on `SIGTTIN`, then detach and leave it stopped.
+///
+/// Run it on its own thread and join that thread: every ptrace call and the
+/// wait happen here, on one thread. A process that was already stopped is
+/// reported as a group-stop (`PTRACE_EVENT_STOP`). A process that had not
+/// yet dequeued the signal is reported in a signal-delivery stop; it is then
+/// restarted with `SIGTTIN`, which puts it in the group-stop, and that report
+/// is awaited too, so it is stopped when this returns. Only EPERM from the
+/// seize maps to [`Armed::PtraceDenied`]; any other error, or any other stop,
+/// panics, after detaching if the seize succeeded.
+#[cfg(target_os = "linux")]
+fn sigttin_seen(pid: libc::pid_t) -> Armed {
+    if let Err(error) = ptrace_request(libc::PTRACE_SEIZE as libc::c_uint, pid, 0) {
+        if error.raw_os_error() == Some(libc::EPERM) {
+            eprintln!(
+                "issue #1764: PTRACE_SEIZE on {pid} was refused ({error}); the SIGTTIN \
+                 stop is not observed and the prompt alone counts"
+            );
+            return Armed::PtraceDenied;
+        }
+        panic!("PTRACE_SEIZE on {pid} failed: {error}");
+    }
+    let detach = |signal: libc::c_int| {
+        if let Err(error) = ptrace_request(libc::PTRACE_DETACH as libc::c_uint, pid, signal) {
+            panic!("PTRACE_DETACH from {pid} failed: {error}");
+        }
+    };
+    let mut restarted = false;
+    loop {
+        let status = match waitpid_wall(pid) {
+            Ok(status) => status,
+            Err(error) => {
+                // The process is no longer reported, so there is nothing
+                // left to detach from.
+                panic!("waiting for the traced process {pid} failed: {error}")
+            }
+        };
+        if !libc::WIFSTOPPED(status) {
+            panic!("the traced process {pid} ended instead of stopping: status {status:#x}");
+        }
+        let signal = libc::WSTOPSIG(status);
+        let group_stop = status >> 16 == libc::PTRACE_EVENT_STOP;
+        match (signal, group_stop) {
+            (libc::SIGTTIN, true) => {
+                detach(0);
+                return Armed::Sigttin;
+            }
+            (libc::SIGTTIN, false) if !restarted => {
+                // Deliver the signal; the group-stop it causes is reported
+                // next.
+                if let Err(error) =
+                    ptrace_request(libc::PTRACE_CONT as libc::c_uint, pid, libc::SIGTTIN)
+                {
+                    detach(libc::SIGTTIN);
+                    panic!("PTRACE_CONT of {pid} with SIGTTIN failed: {error}");
+                }
+                restarted = true;
+            }
+            _ => {
+                // Pass on any signal it was about to receive, so the process
+                // behaves as if it had never been traced.
+                detach(if group_stop { 0 } else { signal });
+                panic!(
+                    "the traced process {pid} stopped with signal {signal} (group-stop: \
+                     {group_stop}, status {status:#x}), not on SIGTTIN"
+                );
+            }
+        }
+    }
+}
+
+/// How a case's child ended.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+enum Outcome {
     /// The child exited by itself; `code` is `None` if a signal ended it.
     Exited {
         code: Option<i32>,
-        elapsed: Duration,
         stdout: String,
         stderr: String,
     },
-    /// The deadline passed, or the test saw what it was waiting for, and the
-    /// test killed the child. The output is read only through `Debug`, in
-    /// failure messages.
-    #[allow(dead_code)]
-    Killed { stdout: String, stderr: String },
-}
-
-/// Kills and reaps its child when dropped, so a panicking assertion cannot
-/// leave a stopped git behind. It signals only this one child: no process
-/// group, no `pkill`.
-struct Reaped(Child);
-
-impl Drop for Reaped {
-    fn drop(&mut self) {
-        if matches!(self.0.try_wait(), Ok(None)) {
-            let _ = self.0.kill();
-        }
-        let _ = self.0.wait();
-    }
-}
-
-/// Run `command` with stdin null and its output in files, and kill it if it
-/// has not exited within `limit` or as soon as `give_up()` is true. Files
-/// rather than pipes, so neither a full pipe nor a grandchild holding one open
-/// can stall the test.
-fn run_until(command: &mut Command, limit: Duration, give_up: &dyn Fn() -> bool) -> Ran {
-    let out = tempfile::tempdir().expect("tempdir for the child's output");
-    let stdout_path = out.path().join("stdout");
-    let stderr_path = out.path().join("stderr");
-    let started = Instant::now();
-    // Never the test's own stdin: `script` would put a developer's terminal
-    // into raw mode.
-    let mut child = Reaped(
-        command
-            .stdin(Stdio::null())
-            .stdout(File::create(&stdout_path).expect("stdout file"))
-            .stderr(File::create(&stderr_path).expect("stderr file"))
-            .spawn()
-            .expect("spawn the child"),
-    );
-    let code = loop {
-        if let Some(status) = child.0.try_wait().expect("poll the child") {
-            break Some(status.code());
-        }
-        if started.elapsed() >= limit || give_up() {
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-    let elapsed = started.elapsed();
-    drop(child);
-    let read = |path: &Path| {
-        String::from_utf8_lossy(&fs::read(path).expect("read the child's output")).into_owned()
-    };
-    let (stdout, stderr) = (read(&stdout_path), read(&stderr_path));
-    match code {
-        Some(code) => Ran::Exited {
-            code,
-            elapsed,
-            stdout,
-            stderr,
-        },
-        None => Ran::Killed { stdout, stderr },
-    }
+    /// The output held the username prompt.
+    Prompted { output: String },
 }
 
 /// Point a git (or a `script` that runs one) at `home` and away from every
@@ -250,21 +624,15 @@ fn sealed_from_credentials<'a>(command: &'a mut Command, home: &Path) -> &'a mut
         .env("LC_ALL", "C")
 }
 
-/// Fail if a process whose command line contains `marker` is still running
-/// 5 s after the child that started it has gone.
+/// Fail if a process whose command line contains `marker` is still running.
+/// Called once a case's [`Owned`] guard has dropped, which waited for every
+/// marker process to exit, so one check suffices.
 fn assert_nothing_left_behind(marker: &str) {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let left = processes_mentioning(marker);
-        if left.is_empty() {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "processes for {marker} outlived the test's child: {left:#?}"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let left = processes_mentioning(marker);
+    assert!(
+        left.is_empty(),
+        "processes for {marker} outlived the case that started them: {left:#?}"
+    );
 }
 
 /// Every process (by `/proc`) whose command line contains `marker`, as
@@ -287,19 +655,6 @@ fn processes_mentioning(marker: &str) -> Vec<String> {
                 .then(|| format!("{pid} {}", cmdline.trim_end()))
         })
         .collect()
-}
-
-/// Whether a process whose command line contains `marker` is stopped (state
-/// `T` in `/proc/<pid>/stat`), as git is when a terminal read trips `SIGTTIN`.
-fn stopped_mentioning(marker: &str) -> bool {
-    processes_mentioning(marker).iter().any(|line| {
-        let pid = line.split(' ').next().unwrap_or_default();
-        fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
-            // The state follows the `)` that closes the command name.
-            stat.rsplit_once(')')
-                .is_some_and(|(_, rest)| rest.trim_start().starts_with('T'))
-        })
-    })
 }
 
 fn on_path(tool: &str) -> bool {
@@ -404,14 +759,18 @@ fn part_a_cargo_config_holds_only_the_env_table() {
 // ── (b) Git builder ──────────────────────────────────────────────────────────
 
 /// A git started through the builder, with no askpass program and a null
-/// stdin, fails at once with `terminal prompts disabled` instead of opening
+/// stdin, exits by itself with `terminal prompts disabled` instead of opening
 /// the terminal. On CI, where there is no terminal, the message is what tells
 /// this apart from the `No such device or address` failure that hid the trap.
+/// The test waits for git's own exit; nothing is timed.
+#[cfg(target_os = "linux")]
 #[test]
 fn part_b_builder_git_fails_at_once_without_askpass() {
     let server = AlwaysUnauthorised::start();
     let url = server.url();
     let home = tempfile::tempdir().expect("temp HOME");
+    let out = tempfile::tempdir().expect("tempdir for git's stdout");
+    let stdout_path = out.path().join("stdout");
 
     let mut git = amplihack_git::command();
     // This process already has the variable from `[env]`, so git's behaviour
@@ -436,28 +795,69 @@ fn part_b_builder_git_fails_at_once_without_askpass() {
         git.env_remove(var);
     }
 
-    let ran = run_until(&mut git, BUILDER_DEADLINE, &|| false);
-    match &ran {
-        Ran::Exited {
+    let mut child = git
+        .stdin(Stdio::null())
+        .stdout(File::create(&stdout_path).expect("stdout file"))
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn git");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let mut guard = Owned {
+        child: Some(child),
+        marker: url.clone(),
+    };
+    let drain = std::thread::spawn(move || {
+        let mut text = Vec::new();
+        stderr
+            .read_to_end(&mut text)
+            .expect("read git's stderr to its end");
+        String::from_utf8_lossy(&text).into_owned()
+    });
+    let stderr = drain
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    let status = guard.child().wait().expect("wait for git");
+    let outcome = Outcome::Exited {
+        code: status.code(),
+        stdout: String::from_utf8_lossy(&fs::read(&stdout_path).expect("read git's stdout"))
+            .into_owned(),
+        stderr,
+    };
+    drop(guard);
+    assert_nothing_left_behind(&url);
+
+    match &outcome {
+        Outcome::Exited {
             code: Some(code),
             stderr,
             ..
         } if *code != 0 => assert!(
             stderr.contains("terminal prompts disabled"),
-            "git failed, but not because terminal prompts are off: {ran:#?}"
+            "git failed, but not because terminal prompts are off: {outcome:#?}"
         ),
         _ => panic!(
-            "git should have exited non-zero by itself within {BUILDER_DEADLINE:?}, \
-             with `terminal prompts disabled`: {ran:#?}"
+            "git should have exited non-zero by itself, not by a signal, with \
+             `terminal prompts disabled`: {outcome:#?}"
         ),
     }
-    assert_nothing_left_behind(&url);
 }
 
 // ── (c) Pseudo-terminal ──────────────────────────────────────────────────────
 
+/// One case of part (c): its guard, what its output showed, and the
+/// directory that holds its `HOME` and `script`'s stderr. Drop the guard
+/// before the directory.
+#[cfg(target_os = "linux")]
+struct Scripted {
+    guard: Owned,
+    watched: Watched,
+    dir: tempfile::TempDir,
+}
+
 /// Run `timeout 8 git ls-remote <url>` under `script`, in a pseudo-terminal,
-/// with `remove` taken out of the environment that `isolated(..)` builds.
+/// with `remove` taken out of the environment that `isolated(..)` builds, and
+/// read `script`'s output until git's username prompt appears or the output
+/// ends.
 ///
 /// The shell command must be compound. Given one simple command, the shell
 /// execs it, `timeout` becomes the session leader and stays in the foreground
@@ -466,13 +866,16 @@ fn part_b_builder_git_fails_at_once_without_askpass() {
 /// a background group, and a read of the terminal stops it on `SIGTTIN`.
 /// Only the port and the process id are put into the shell string.
 ///
-/// The run is killed as soon as git is seen stopped, so the control need not
-/// wait for the inner `timeout` or [`PTY_DEADLINE`]; in (c1) and (c2) a
-/// stopped git is a failure either way.
-fn git_under_script(server: &AlwaysUnauthorised, remove: &[&str]) -> Ran {
-    let home = tempfile::tempdir().expect("temp HOME");
+/// The `8` affects only GNU `timeout`, which ignores `SIGTTIN`, keeps
+/// running and reports 124; uutils `timeout` is stopped with git. No check
+/// reads the value.
+#[cfg(target_os = "linux")]
+fn git_under_script(server: &AlwaysUnauthorised, remove: &[&str]) -> Scripted {
+    let dir = tempfile::tempdir().expect("tempdir for the case");
+    let home = dir.path().join("home");
+    fs::create_dir(&home).expect("create the temp HOME");
     let inner = format!(
-        "timeout {INNER_SECS} git ls-remote http://127.0.0.1:{port}/issue-1764-{pid}.git \
+        "timeout 8 git ls-remote http://127.0.0.1:{port}/issue-1764-{pid}.git \
          </dev/null; rc=$?; echo \"rc=$rc\"; exit $rc",
         port = server.port,
         pid = std::process::id(),
@@ -481,12 +884,67 @@ fn git_under_script(server: &AlwaysUnauthorised, remove: &[&str]) -> Ran {
     script
         .args(["-qec", &inner, "/dev/null"])
         .env("SHELL", "/bin/sh");
-    sealed_from_credentials(&mut script, home.path());
+    sealed_from_credentials(&mut script, &home);
     for var in remove {
         script.env_remove(var);
     }
-    let url = server.url();
-    run_until(&mut script, PTY_DEADLINE, &|| stopped_mentioning(&url))
+    // Never the test's own stdin: `script` would put a developer's terminal
+    // into raw mode.
+    let child = script
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(File::create(dir.path().join("stderr")).expect("stderr file"))
+        .spawn()
+        .expect("spawn script");
+    let mut guard = Owned {
+        child: Some(child),
+        marker: server.url(),
+    };
+    // The pipe stays open in the child until the guard drops, so `script`
+    // never writes into a closed pipe while git is stopped.
+    let stdout = guard
+        .child()
+        .stdout
+        .as_mut()
+        .expect("script's stdout is piped");
+    let watched = read_until_prompt(stdout);
+    Scripted {
+        guard,
+        watched,
+        dir,
+    }
+}
+
+/// How `case` ended: the prompt, or the exit of `script` once its output has
+/// ended.
+#[cfg(target_os = "linux")]
+fn outcome(case: &mut Scripted) -> Outcome {
+    match &case.watched {
+        Watched::Prompt(output) => Outcome::Prompted {
+            output: output.clone(),
+        },
+        Watched::Eof(output) => {
+            let status = case.guard.child().wait().expect("wait for script");
+            Outcome::Exited {
+                code: status.code(),
+                stdout: output.clone(),
+                stderr: String::from_utf8_lossy(
+                    &fs::read(case.dir.path().join("stderr")).expect("read script's stderr"),
+                )
+                .into_owned(),
+            }
+        }
+    }
+}
+
+/// End `case`: reap every process it started, then remove its directory, then
+/// check that nothing carrying `url` is left.
+#[cfg(target_os = "linux")]
+fn finish(case: Scripted, url: &str) {
+    let Scripted { guard, dir, .. } = case;
+    drop(guard);
+    drop(dir);
+    assert_nothing_left_behind(url);
 }
 
 /// The status in the `rc=<n>` line the inner shell prints. Git's prompt ends
@@ -498,35 +956,95 @@ fn rc_line(stdout: &str) -> Option<i32> {
         .find_map(|line| line.trim().rsplit_once("rc=")?.1.parse().ok())
 }
 
-/// `ran` must have finished by itself, well inside the inner `timeout`, with
-/// a status other than 124. Returns its output.
-fn assert_fails_at_once<'a>(label: &str, ran: &'a Ran) -> &'a str {
-    match ran {
-        Ran::Exited {
-            elapsed, stdout, ..
-        } if *elapsed < Duration::from_secs(INNER_SECS)
-            && rc_line(stdout).is_some_and(|rc| rc != 124) =>
-        {
+/// `outcome` must be an exit by itself, without the prompt, with an `rc=`
+/// line other than 124. Returns its output.
+#[cfg(target_os = "linux")]
+fn assert_exits_by_itself<'a>(label: &str, outcome: &'a Outcome) -> &'a str {
+    match outcome {
+        Outcome::Exited { stdout, .. } if rc_line(stdout).is_some_and(|rc| rc != 124) => {
             stdout.as_str()
         }
-        _ => panic!(
-            "{label}: git should have failed at once, printing an rc= line other than \
-             124 in under {INNER_SECS} s: {ran:#?}"
+        Outcome::Prompted { output } => panic!(
+            "{label}: git printed the username prompt, so it would have waited on the \
+             terminal: {output}"
+        ),
+        Outcome::Exited { .. } => panic!(
+            "{label}: git should have exited by itself without prompting, printing an \
+             rc= line other than 124: {outcome:#?}"
         ),
     }
 }
 
+/// The control: with none of the three variables, git must print the
+/// username prompt, and `git ls-remote` must be seen stopped on `SIGTTIN`.
+///
+/// The prompt on the pipe is the event that starts the check. The test then
+/// finds `git ls-remote` under `script` and, on a thread it joins, attaches
+/// with `ptrace` and waits until the kernel reports the stop. If `ptrace` is
+/// refused with EPERM, the prompt alone counts. If GNU `timeout` ends git
+/// first, its 124 counts. Any other ending fails with `trap was not armed`.
+#[cfg(target_os = "linux")]
+fn assert_control_stops_on_sigttin(case: &mut Scripted, url: &str) {
+    let trap_not_armed = |shown: &dyn std::fmt::Debug| -> ! {
+        panic!(
+            "trap was not armed: with none of the three variables, git under plain \
+             `timeout` in a pseudo-terminal should have printed the username prompt and \
+             stopped on SIGTTIN (or GNU `timeout` should have reported rc=124). Without \
+             the trap, (c1) and (c2) prove nothing: {shown:#?}"
+        )
+    };
+    if matches!(case.watched, Watched::Prompt(_)) {
+        let script_pid = case.guard.child().id() as libc::pid_t;
+        let git = git_ls_remote_under(script_pid, url);
+        let traced = std::thread::spawn(move || sigttin_seen(git)).join();
+        match traced {
+            Ok(Armed::Sigttin) => return,
+            Ok(Armed::PtraceDenied) => {
+                eprintln!(
+                    "issue #1764 part (c): the control prompted; ptrace was refused, so \
+                     its SIGTTIN stop was not observed"
+                );
+                return;
+            }
+            Err(panic) => {
+                // GNU `timeout` ignores SIGTTIN and ends git with 124; if it
+                // did so before the tracer attached, the tracer fails, and
+                // the 124 in the rest of the output is the proof instead.
+                let mut rest = String::new();
+                let stdout = case
+                    .guard
+                    .child()
+                    .stdout
+                    .as_mut()
+                    .expect("script's stdout is piped");
+                if stdout.read_to_string(&mut rest).is_err() || rc_line(&rest) != Some(124) {
+                    std::panic::resume_unwind(panic);
+                }
+                eprintln!(
+                    "issue #1764 part (c): GNU `timeout` ended the control with 124 \
+                     before the tracer saw the stop"
+                );
+                return;
+            }
+        }
+    }
+    let ended = outcome(case);
+    match &ended {
+        Outcome::Exited { stdout, .. } if rc_line(stdout) == Some(124) => {}
+        _ => trap_not_armed(&ended),
+    }
+}
+
 /// The trap, and the variables that keep git out of it, in a real
-/// pseudo-terminal. The control has none of the three variables and must not
-/// finish normally: the test kills `script` as soon as it sees git stopped
-/// (or GNU `timeout` reports 124 first), which closes the pseudo-terminal and
-/// hangs up the stopped group.
+/// pseudo-terminal. The control has none of the three variables: it must
+/// print the username prompt and `git ls-remote` must be seen stopped on
+/// `SIGTTIN` (through `ptrace`), or GNU `timeout` must report 124. (c1) and
+/// (c2) must exit by themselves without prompting. Each case is reaped
+/// through pidfds, by its marker URL, before the next one starts, and the
+/// test then checks that no process using the URL is left.
+#[cfg(target_os = "linux")]
 #[test]
 fn part_c_plain_timeout_trap_in_a_pseudo_terminal() {
-    if !cfg!(target_os = "linux") {
-        eprintln!("issue #1764 part (c) skipped: it needs util-linux `script` on Linux");
-        return;
-    }
     if let Some(missing) = ["script", "timeout"]
         .into_iter()
         .find(|tool| !on_path(tool))
@@ -538,31 +1056,23 @@ fn part_c_plain_timeout_trap_in_a_pseudo_terminal() {
     let url = server.url();
     let all: Vec<&str> = NO_GIT_PROMPT_ENV.iter().map(|(name, _)| *name).collect();
 
-    let control = git_under_script(&server, &all);
-    let armed = match &control {
-        Ran::Killed { .. } => true,
-        Ran::Exited { stdout, .. } => rc_line(stdout) == Some(124),
-    };
-    assert!(
-        armed,
-        "trap was not armed: with none of the three variables, git under plain \
-         `timeout` in a pseudo-terminal should have stopped on SIGTTIN (seen stopped, \
-         rc=124, or killed at the test's {PTY_DEADLINE:?} deadline). Without the trap, (c1) and \
-         (c2) prove nothing: {control:#?}"
-    );
-    assert_nothing_left_behind(&url);
+    let mut control = git_under_script(&server, &all);
+    assert_control_stops_on_sigttin(&mut control, &url);
+    finish(control, &url);
 
-    let c1 = git_under_script(&server, &["GIT_ASKPASS", "SSH_ASKPASS"]);
-    let c1_out = assert_fails_at_once("(c1) GIT_TERMINAL_PROMPT=0 alone", &c1);
+    let mut c1 = git_under_script(&server, &["GIT_ASKPASS", "SSH_ASKPASS"]);
+    let c1_outcome = outcome(&mut c1);
+    finish(c1, &url);
+    let c1_out = assert_exits_by_itself("(c1) GIT_TERMINAL_PROMPT=0 alone", &c1_outcome);
     assert!(
         c1_out.contains("terminal prompts disabled"),
-        "(c1) must fail because terminal prompts are off: {c1:#?}"
+        "(c1) must fail because terminal prompts are off: {c1_outcome:#?}"
     );
-    assert_nothing_left_behind(&url);
 
-    let c2 = git_under_script(&server, &[]);
-    assert_fails_at_once("(c2) all three variables", &c2);
-    assert_nothing_left_behind(&url);
+    let mut c2 = git_under_script(&server, &[]);
+    let c2_outcome = outcome(&mut c2);
+    finish(c2, &url);
+    assert_exits_by_itself("(c2) all three variables", &c2_outcome);
 }
 
 // ── (d) Recipe text ──────────────────────────────────────────────────────────
@@ -716,4 +1226,367 @@ fn howto_is_linked_and_offers_no_weakening() {
             "the #1764 how-to must not offer `{weakening}`"
         );
     }
+}
+
+// ── #2099 contract ───────────────────────────────────────────────────────────
+//
+// Issue #2099: the test reaps every process it started by its marker URL and
+// waits only on events. Everything above this heading is the implementation
+// these checks read; nothing below it is searched, so the needles may appear
+// here. Words that the static grep in the #2099 design also searches for are
+// written with `concat!` so that the grep finds only real uses.
+
+/// The source of this file above the `#2099 contract` heading.
+fn implementation_source() -> &'static str {
+    const MARKER: &str = "// ── #2099 contract";
+    include_str!("issue_1764_git_never_prompts_test.rs")
+        .split_once(MARKER)
+        .map(|(head, _)| head)
+        .expect("the #2099 contract heading is present")
+}
+
+/// R1, R1a, AC4 to AC6, R11: no wall-clock wait, no deadline, no elapsed-time
+/// check, no group or pattern signal, no subreaper and no wait on any child.
+#[test]
+fn issue_2099_waits_on_events_and_signals_only_its_own_processes() {
+    let source = implementation_source();
+    let lower = source.to_lowercase();
+    for needle in [
+        concat!("thread::", "sl", "eep"),
+        concat!("Inst", "ant"),
+        concat!("PTY_", "DEAD", "LINE"),
+        concat!("BUILDER_", "DEAD", "LINE"),
+        "INNER_SECS",
+        "run_until",
+        "stopped_mentioning",
+        "try_wait",
+        "elapsed",
+        "struct Reaped",
+        "enum Ran",
+        concat!("pk", "ill"),
+        concat!("kill", "pg"),
+        concat!("libc::", "kill("),
+        concat!("kill(", "-"),
+        concat!("kill(", "0"),
+        concat!("SUB", "REAPER"),
+        concat!("P_", "ALL"),
+        concat!("waitpid(", "-1"),
+        concat!("/", "environ"),
+        "closes the pseudo-terminal",
+        "hangs up the stopped group",
+    ] {
+        assert!(
+            !source.contains(needle),
+            "#2099: the #1764 test must not contain `{needle}`"
+        );
+    }
+    assert!(
+        !lower.contains(concat!("dead", "line")),
+        "#2099: no comment or name in the #1764 test may describe a deadline"
+    );
+    for line in source
+        .lines()
+        .filter(|l| l.contains(concat!("Dur", "ation")))
+    {
+        let line = line.trim();
+        assert!(
+            line.starts_with("use std::time::") || line.contains("set_read_timeout"),
+            "#2099: the only time value left is AlwaysUnauthorised's read timeout, \
+             not `{line}`"
+        );
+    }
+}
+
+/// D1, D3, D5: the control is proved by the prompt bytes and a ptrace-observed
+/// SIGTTIN stop; cleanup goes through pidfds; the inner `timeout 8` stays.
+#[test]
+fn issue_2099_names_the_events_it_waits_on() {
+    let source = implementation_source();
+    for needle in [
+        "Username for '",
+        "PTRACE_SEIZE",
+        "PTRACE_DETACH",
+        "PTRACE_EVENT_STOP",
+        "__WALL",
+        "SIGTTIN",
+        "SYS_pidfd_open",
+        "SYS_pidfd_send_signal",
+        "POLLIN",
+        "SIGKILL",
+        "EPERM",
+        "timeout 8",
+        "trap was not armed",
+        "// SAFETY:",
+    ] {
+        assert!(
+            source.contains(needle),
+            "#2099: the #1764 test must use `{needle}`"
+        );
+    }
+}
+
+/// The guide's rows for parts (b) and (c) describe the new behaviour (the
+/// how-to step of #2099).
+#[test]
+fn issue_2099_howto_rows_describe_events_not_deadlines() {
+    let howto = read(&workspace_root().join("docs/howto/keep-tests-from-prompting-for-git.md"));
+    let row = |prefix: &str| -> String {
+        howto
+            .lines()
+            .find(|line| line.starts_with(prefix))
+            .unwrap_or_else(|| panic!("the how-to has a `{prefix}` row"))
+            .to_string()
+    };
+    let (b, c) = (row("| (b) Git builder"), row("| (c) Pseudo-terminal"));
+    for (name, text) in [("(b)", &b), ("(c)", &c)] {
+        assert!(
+            !text.contains(concat!("dead", "line")),
+            "how-to row {name} must not describe a deadline: {text}"
+        );
+        assert!(
+            text.contains("by itself"),
+            "how-to row {name} must say git exits by itself: {text}"
+        );
+    }
+    for needle in [
+        "SIGTTIN",
+        "124",
+        "terminal prompts disabled",
+        "without prompting",
+    ] {
+        assert!(
+            c.contains(needle),
+            "how-to row (c) must mention `{needle}`: {c}"
+        );
+    }
+}
+
+/// Reads a fixed list of chunks, so a test can split the prompt across reads.
+#[cfg(target_os = "linux")]
+struct Chunks(std::collections::VecDeque<Vec<u8>>);
+
+#[cfg(target_os = "linux")]
+impl Read for Chunks {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let Some(mut chunk) = self.0.pop_front() else {
+            return Ok(0);
+        };
+        let n = chunk.len().min(buf.len());
+        buf[..n].copy_from_slice(&chunk[..n]);
+        if n < chunk.len() {
+            self.0.push_front(chunk.split_off(n));
+        }
+        Ok(n)
+    }
+}
+
+/// D1: the reader scans bytes, so it finds a prompt that has no newline and
+/// is split across two reads at any point.
+#[cfg(target_os = "linux")]
+#[test]
+fn issue_2099_reader_finds_a_prompt_split_across_reads() {
+    let output = b"Cloning\r\nUsername for 'http://127.0.0.1:1/x.git': ";
+    for split in 1..output.len() {
+        let chunks = Chunks([output[..split].to_vec(), output[split..].to_vec()].into());
+        match read_until_prompt(chunks) {
+            Watched::Prompt(seen) => assert!(
+                seen.contains("Username for '"),
+                "split at {split}: the prompt text is kept: {seen:?}"
+            ),
+            Watched::Eof(seen) => panic!("split at {split}: prompt missed: {seen:?}"),
+        }
+    }
+}
+
+/// D2: output with no prompt reaches EOF and keeps every byte, including the
+/// `rc=` line that (c1) and (c2) are judged by.
+#[cfg(target_os = "linux")]
+#[test]
+fn issue_2099_reader_reports_eof_without_a_prompt() {
+    let output =
+        b"fatal: could not read Username for 'http://x': terminal prompts disabled\r\nrc=128\r\n";
+    // (c1) prints git's error `could not read Username for '…'`, which holds
+    // the prompt's bytes. The reader must not take it for the prompt, or (c1)
+    // would fail as prompted: the prompt is `Username for '` not preceded by
+    // `could not read `.
+    match read_until_prompt(Chunks([b"rc=128\r\n".to_vec()].into())) {
+        Watched::Eof(seen) => assert_eq!(rc_line(&seen), Some(128)),
+        Watched::Prompt(seen) => panic!("no prompt was written: {seen:?}"),
+    }
+    match read_until_prompt(Chunks([output.to_vec()].into())) {
+        Watched::Eof(seen) => {
+            assert!(seen.contains("terminal prompts disabled"));
+            assert_eq!(rc_line(&seen), Some(128));
+        }
+        Watched::Prompt(seen) => panic!(
+            "git's `could not read Username for '…'` error is not a prompt; (c1) \
+             prints it and must not fail as prompted: {seen:?}"
+        ),
+    }
+    match read_until_prompt(Chunks(std::collections::VecDeque::new())) {
+        Watched::Eof(seen) => assert!(seen.is_empty()),
+        Watched::Prompt(seen) => panic!("empty output has no prompt: {seen:?}"),
+    }
+}
+
+/// The status line follows the prompt on the same line in the control.
+#[test]
+fn issue_2099_rc_line_reads_the_status_after_a_prompt() {
+    assert_eq!(rc_line("Username for 'http://x': rc=124\r\n"), Some(124));
+    assert_eq!(rc_line("noise\nrc=128\n"), Some(128));
+    assert_eq!(rc_line("no status here\n"), None);
+}
+
+/// A marker unique to one unit test, in the same shape as the server URL.
+#[cfg(target_os = "linux")]
+fn unit_marker(name: &str) -> String {
+    format!(
+        "http://127.0.0.1:0/issue-1764-{}-{name}.git",
+        std::process::id()
+    )
+}
+
+/// D4, D5, AC8: dropping `Owned` kills and reaps the direct child and a
+/// stopped grandchild found by the marker, and leaves nothing behind. The
+/// readiness event is the `ready` line; no wait is timed.
+#[cfg(target_os = "linux")]
+#[test]
+fn issue_2099_owned_reaps_child_and_stopped_grandchild_by_marker() {
+    use std::io::{BufRead, BufReader};
+    let marker = unit_marker("reap");
+    // The grandchild stops itself with SIGSTOP; the child waits on it, which
+    // returns only when it ends.
+    let mut child = Command::new("sh")
+        .args([
+            "-c",
+            "sh -c 'kill -STOP $$' \"$0\" & echo ready; wait",
+            &marker,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sh");
+    let mut ready = String::new();
+    BufReader::new(child.stdout.take().expect("piped stdout"))
+        .read_line(&mut ready)
+        .expect("read the ready line");
+    assert_eq!(ready.trim(), "ready");
+
+    let found = marker_pids(&marker);
+    assert!(
+        found.contains(&(child.id() as libc::pid_t)),
+        "marker_pids finds the direct child: {found:?}"
+    );
+    assert!(
+        found.len() >= 2,
+        "marker_pids finds the grandchild too: {found:?}"
+    );
+    assert!(
+        !found.contains(&(std::process::id() as libc::pid_t)),
+        "marker_pids never returns the test process"
+    );
+
+    drop(Owned {
+        child: Some(child),
+        marker: marker.clone(),
+    });
+    assert!(
+        processes_mentioning(&marker).is_empty(),
+        "Owned::drop left processes behind: {:#?}",
+        processes_mentioning(&marker)
+    );
+    assert!(marker_pids(&marker).is_empty());
+}
+
+/// S12: dropping `Owned` after its child has already exited and been reaped
+/// by nobody, or with no child at all, does not panic.
+#[cfg(target_os = "linux")]
+#[test]
+fn issue_2099_owned_drop_tolerates_exited_and_missing_children() {
+    let marker = unit_marker("exited");
+    let child = Command::new("sh")
+        .args(["-c", "exit 0", &marker])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sh");
+    drop(Owned {
+        child: Some(child),
+        marker: marker.clone(),
+    });
+    drop(Owned {
+        child: None,
+        marker: marker.clone(),
+    });
+    assert!(processes_mentioning(&marker).is_empty());
+}
+
+/// D1: ptrace reports the SIGTTIN stop of a process the test started, whether
+/// the stop comes before or after the seize, and leaves it stopped, never
+/// continued, for `Owned` to reap. The child has its own process group, so the group is not
+/// orphaned and the kernel does not discard SIGTTIN.
+#[cfg(target_os = "linux")]
+#[test]
+fn issue_2099_sigttin_seen_reports_the_stop() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::process::CommandExt;
+    let marker = unit_marker("sigttin");
+    let mut child = Command::new("sh")
+        .args(["-c", "echo ready; kill -TTIN $$; echo resumed", &marker])
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn sh");
+    let mut stdout = BufReader::new(child.stdout.take().expect("piped stdout"));
+    let pid = child.id() as libc::pid_t;
+    let guard = Owned {
+        child: Some(child),
+        marker: marker.clone(),
+    };
+    let mut ready = String::new();
+    stdout.read_line(&mut ready).expect("read the ready line");
+    assert_eq!(ready.trim(), "ready");
+
+    let armed = std::thread::spawn(move || sigttin_seen(pid))
+        .join()
+        .expect("the tracer thread does not panic");
+    if armed == Armed::PtraceDenied {
+        eprintln!("issue #2099: ptrace denied; stop not observed");
+    }
+    drop(guard);
+    assert!(processes_mentioning(&marker).is_empty());
+    // A process detached from a group-stop is woken for a moment before it
+    // stops again, so `/proc/<pid>/stat` may read `R` straight after the
+    // join. The event that shows it stayed stopped until `Owned` killed it is
+    // the end of its output without the line it prints when continued.
+    let mut rest = String::new();
+    stdout
+        .read_to_string(&mut rest)
+        .expect("read the rest of the output");
+    assert!(
+        !rest.contains("resumed"),
+        "detach must leave the process stopped, not continue it: {rest:?}"
+    );
+}
+
+/// S5: any ptrace error other than EPERM panics; a process that has gone is
+/// ESRCH, so the tracer must not report it as armed or as denied.
+#[cfg(target_os = "linux")]
+#[test]
+fn issue_2099_sigttin_seen_panics_on_a_process_that_has_gone() {
+    let mut child = Command::new("true")
+        .stdin(Stdio::null())
+        .spawn()
+        .expect("spawn true");
+    let pid = child.id() as libc::pid_t;
+    child.wait().expect("reap true");
+    let traced = std::thread::spawn(move || sigttin_seen(pid)).join();
+    assert!(
+        traced.is_err(),
+        "sigttin_seen on a reaped PID must panic, not report a result"
+    );
 }
