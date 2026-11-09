@@ -55,8 +55,13 @@ impl LinkReason {
 /// Why a target is left alone. One `Display` holds every report text.
 #[derive(Debug)]
 pub(super) enum Refusal {
-    /// A build holds a `.cargo-lock`, or a lock could not be checked.
+    /// A build holds a `.cargo-lock`.
     InUse,
+    /// A `.cargo-lock` could not be checked. The text names the reason and
+    /// the path: `linked lock: <path>`, `permission denied: <path>` or
+    /// `lock check failed: <path>: <error>`. The target is kept, as for
+    /// [`Refusal::InUse`].
+    LockCheck(String),
     /// The shape or the link destination differs from the plan.
     ChangedSincePlan,
     Link(LinkReason),
@@ -78,6 +83,7 @@ impl fmt::Display for Refusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InUse => f.write_str("in use: .cargo-lock is held"),
+            Self::LockCheck(text) => f.write_str(text),
             Self::ChangedSincePlan => f.write_str("changed since plan"),
             Self::Link(reason) => write!(f, "link not followed: {}", reason.as_str()),
             Self::NotManaged => f.write_str("outside the folders cleanup manages"),
@@ -407,15 +413,45 @@ pub(super) fn is_wrapper_redirect(at: &Path, dest: &Path, links: &LinkRoots) -> 
     }
 }
 
+/// The lock taken on each `.cargo-lock`: exclusive when removing, shared
+/// when only checking at plan time. Both are non-blocking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LockMode {
+    Exclusive,
+    Shared,
+}
+
+impl LockMode {
+    fn flags(self) -> libc::c_int {
+        match self {
+            Self::Exclusive => libc::LOCK_EX | libc::LOCK_NB,
+            Self::Shared => libc::LOCK_SH | libc::LOCK_NB,
+        }
+    }
+}
+
 /// Length of the hex key the host cargo wrapper appends to a redirected
 /// target's name.
 const WRAPPER_KEY_LEN: usize = 12;
 
-/// Takes `LOCK_EX | LOCK_NB` on `lock` when it is a real file. `Ok(None)`
-/// when there is no lock file. A linked lock is `InUse`: cargo never makes
-/// one, so the target is kept, and the link is never opened through.
-/// Anything else that stops the check is `InUse` too.
-fn lock_one(lock: &Path) -> Result<Option<fs::File>, Refusal> {
+/// Why an `io::Error` met while checking `path` keeps the target.
+fn lock_check_refusal(path: &Path, error: &std::io::Error) -> Refusal {
+    let text = if error.raw_os_error() == Some(libc::ELOOP) {
+        // O_NOFOLLOW on a link. Cargo never makes a linked lock, and the
+        // link is never opened through.
+        format!("linked lock: {}", path.display())
+    } else if error.kind() == std::io::ErrorKind::PermissionDenied {
+        format!("permission denied: {}", path.display())
+    } else {
+        format!("lock check failed: {}: {error}", path.display())
+    };
+    Refusal::LockCheck(text)
+}
+
+/// Locks `lock` with `mode` when it is a real file. `Ok(None)` when there is
+/// no lock file. A lock held by another process is [`Refusal::InUse`]; any
+/// other problem, including a linked lock, is [`Refusal::LockCheck`].
+fn lock_one(lock: &Path, mode: LockMode) -> Result<Option<fs::File>, Refusal> {
     let file = match fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
@@ -423,37 +459,48 @@ fn lock_one(lock: &Path) -> Result<Option<fs::File>, Refusal> {
     {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(Refusal::InUse),
+        Err(error) => return Err(lock_check_refusal(lock, &error)),
     };
     // SAFETY: the fd is valid for the life of `file`; closing it releases
     // the lock.
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    let rc = unsafe { libc::flock(file.as_raw_fd(), mode.flags()) };
     if rc != 0 {
-        return Err(Refusal::InUse);
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::EWOULDBLOCK) {
+            return Err(Refusal::InUse);
+        }
+        return Err(lock_check_refusal(lock, &error));
     }
     Ok(Some(file))
 }
 
-/// Exclusive locks on `dir/.cargo-lock` and on the `.cargo-lock` of every
+/// Locks, with `mode`, `dir/.cargo-lock` and the `.cargo-lock` of every
 /// real subfolder, such as `debug/` and `release/`. A folder that cannot be
-/// listed counts as held: a lock in it would be unseen.
+/// listed is a refusal: a lock in it would be unseen.
 ///
-/// The caller must keep the returned handles until the delete is done;
-/// dropping them earlier lets a build start between the check and the
-/// delete.
-pub(super) fn lock_cargo_tree(dir: &Path) -> Result<Vec<fs::File>, Refusal> {
+/// With [`LockMode::Exclusive`] the caller must keep the returned handles
+/// until the delete is done; dropping them earlier lets a build start
+/// between the check and the delete.
+pub(super) fn lock_cargo_tree_with(dir: &Path, mode: LockMode) -> Result<Vec<fs::File>, Refusal> {
     let mut held = Vec::new();
-    held.extend(lock_one(&dir.join(".cargo-lock"))?);
-    let entries = fs::read_dir(dir).map_err(|_| Refusal::InUse)?;
+    held.extend(lock_one(&dir.join(".cargo-lock"), mode)?);
+    let entries = fs::read_dir(dir).map_err(|e| lock_check_refusal(dir, &e))?;
     for entry in entries {
-        let entry = entry.map_err(|_| Refusal::InUse)?;
+        let entry = entry.map_err(|e| lock_check_refusal(dir, &e))?;
         // DirEntry::file_type does not follow a link.
-        let kind = entry.file_type().map_err(|_| Refusal::InUse)?;
+        let kind = entry
+            .file_type()
+            .map_err(|e| lock_check_refusal(&entry.path(), &e))?;
         if kind.is_dir() {
-            held.extend(lock_one(&entry.path().join(".cargo-lock"))?);
+            held.extend(lock_one(&entry.path().join(".cargo-lock"), mode)?);
         }
     }
     Ok(held)
+}
+
+/// [`lock_cargo_tree_with`] in [`LockMode::Exclusive`], for removal.
+pub(super) fn lock_cargo_tree(dir: &Path) -> Result<Vec<fs::File>, Refusal> {
+    lock_cargo_tree_with(dir, LockMode::Exclusive)
 }
 
 /// Removes the target at `path`, which was planned as `expected`.

@@ -332,6 +332,110 @@ fn follow_on_target_removal_respects_a_held_lock() {
 
     assert_eq!(entry_for(&report, &wt)["action"], "removed", "{report:#}");
     assert!(tgt.join("debug/blob").exists());
+    // The kept target is in the report with its reason, not only in the log.
+    assert_kept(&report, &tgt, "in use: .cargo-lock is held");
+}
+
+/// Review of PR #2152: a target that rule (c) keeps is shown in the text
+/// report too, with its reason.
+#[test]
+fn follow_on_target_kept_is_in_the_text_report() {
+    let mut fx = Fx::new();
+    let wt = fx.worktree("feat-busy-text");
+    let tgt = target_for(&fx, &wt);
+    fx.hold_flock(&tgt.join(".cargo-lock"));
+    fx.gh_closed("feat-busy-text", 2043, 72, true);
+    fx.seed_run(&SeedRun::ended(72).owns_worktree(&wt, "feat-busy-text"));
+
+    let out = fx.cleanup(&["--apply"]);
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
+    let text = String::from_utf8_lossy(&out.stdout);
+    let want = tgt.to_string_lossy();
+    // The entry line, then its reason on the next line.
+    let lines: Vec<&str> = text.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.contains(want.as_ref()))
+        .unwrap_or_else(|| panic!("no line for {want}: {}", describe(&out)));
+    assert!(lines[at].contains("skipped"), "{}", lines[at]);
+    assert_eq!(
+        lines.get(at + 1).map(|l| l.trim()),
+        Some("reason: in use: .cargo-lock is held"),
+        "{text}"
+    );
+    assert!(tgt.join("debug/blob").exists());
+}
+
+/// Review of PR #2152: with `--only run-target` no worktree is removed, so
+/// rule (a) cannot apply; the target is kept and the reason says why.
+#[test]
+fn only_run_target_keeps_a_created_target_and_says_why() {
+    let fx = Fx::new();
+    let wt = fx.worktree("feat-only-tgt");
+    let tgt = target_for(&fx, &wt);
+    fx.gh_closed("feat-only-tgt", 2044, 72, true);
+    fx.seed_run(
+        &SeedRun::ended(72)
+            .owns_worktree(&wt, "feat-only-tgt")
+            .owns_new_target(&tgt, "created", &wt),
+    );
+
+    let report = fx.cleanup_json(&["--apply", "--only", "run-target"]);
+
+    assert!(wt.exists(), "{report:#}");
+    assert_kept(&report, &tgt, "worktree kept: run-worktree not selected");
+}
+
+/// Review of PR #2152: with `--only run-worktree` there is no rule (a) item,
+/// so a `created` record does not stop rule (c) from taking the target of the
+/// worktree it removes.
+#[test]
+fn only_run_worktree_takes_a_created_target_by_rule_c() {
+    let fx = Fx::new();
+    let wt = fx.worktree("feat-only-wt");
+    let tgt = target_for(&fx, &wt);
+    fx.gh_closed("feat-only-wt", 2045, 72, true);
+    fx.seed_run(
+        &SeedRun::ended(72)
+            .owns_worktree(&wt, "feat-only-wt")
+            .owns_new_target(&tgt, "created", &wt),
+    );
+
+    let report = fx.cleanup_json(&["--apply", "--only", "run-worktree"]);
+
+    assert_eq!(entry_for(&report, &wt)["action"], "removed", "{report:#}");
+    let e = entry_for(&report, &tgt);
+    assert_eq!(e["action"], "removed", "{e:#}");
+    assert_eq!(reason(&e), "worktree removed");
+    assert!(!present(&tgt));
+}
+
+/// Review of PR #2152: a `created` target refused at plan time has no rule
+/// (a) item, so rule (c) checks it again after the worktree goes. Here the
+/// lock is still held, so it is kept, and it is reported once.
+#[test]
+fn created_target_refused_at_plan_time_is_checked_by_rule_c_and_reported_once() {
+    let mut fx = Fx::new();
+    let wt = fx.worktree("feat-plan-refused");
+    let tgt = target_for(&fx, &wt);
+    fx.hold_flock(&tgt.join("debug/.cargo-lock"));
+    fx.gh_closed("feat-plan-refused", 2046, 72, true);
+    fx.seed_run(
+        &SeedRun::ended(72)
+            .owns_worktree(&wt, "feat-plan-refused")
+            .owns_new_target(&tgt, "created", &wt),
+    );
+
+    let report = fx.cleanup_json(&["--apply"]);
+
+    assert_eq!(entry_for(&report, &wt)["action"], "removed", "{report:#}");
+    let want = tgt.to_string_lossy().to_string();
+    let found = entries(&report)
+        .iter()
+        .filter(|e| e["path"].as_str() == Some(want.as_str()))
+        .count();
+    assert_eq!(found, 1, "one entry for the target: {report:#}");
+    assert_kept(&report, &tgt, "in use: .cargo-lock is held");
 }
 
 /// Dry run: a target that would go is reported `would-remove`, nothing is

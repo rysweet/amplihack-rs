@@ -24,7 +24,7 @@ use crate::commands::hygiene::cleanup::{
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -120,6 +120,10 @@ enum Op {
     RemoveWorktree {
         main: PathBuf,
         run_dir: PathBuf,
+        /// This sweep also planned a rule (a) removal of the checkout's
+        /// target as its own item, which reports it; rule (c) then leaves
+        /// that target alone (issue #2039).
+        rule_a_target: bool,
     },
     /// `tmp-leftover` and `untagged-target` folders, and the real folder of
     /// a legacy run target; never a link.
@@ -256,33 +260,15 @@ fn idle_for(path: &Path, now: SystemTime, keep: Duration) -> Option<(Duration, u
     (age >= keep).then_some((age, stats.size))
 }
 
-/// Whether a build holds `.cargo-lock` in `dir` or one level below it. A
-/// folder that cannot be listed counts as held: a lock below it is unseen.
-fn cargo_lock_held(dir: &Path) -> bool {
-    let mut locks = vec![dir.join(".cargo-lock")];
-    let Ok(rd) = fs::read_dir(dir) else {
-        return true;
-    };
-    for entry in rd.flatten() {
-        if entry.file_type().is_ok_and(|t| t.is_dir()) {
-            locks.push(entry.path().join(".cargo-lock"));
-        }
-    }
-    locks.iter().any(|lock| lock_is_held(lock))
-}
-
-fn lock_is_held(lock: &Path) -> bool {
-    let Ok(file) = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(lock)
-    else {
-        return false;
-    };
-    use std::os::fd::AsRawFd;
-    // SAFETY: the fd is valid for the life of `file`; closing it releases the lock.
-    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
-    rc != 0
+/// Why `dir` must be kept because of its `.cargo-lock` files, checked in
+/// `dir` and one level below it: a build holds one (`in use: .cargo-lock is
+/// held`), or a lock or folder could not be checked, with its own reason. A
+/// folder that cannot be listed is refused: a lock below it is unseen. The
+/// shared locks taken are released before this returns.
+fn cargo_lock_refusal(dir: &Path) -> Option<String> {
+    target_remove::lock_cargo_tree_with(dir, target_remove::LockMode::Shared)
+        .err()
+        .map(|refusal| refusal.to_string())
 }
 
 /// Takes an exclusive, non-blocking lock on `path` (created 0600, never
@@ -603,9 +589,6 @@ struct Candidate<'a> {
     /// For a target: what [`target_remove::inspect`] found.
     shape: Option<Shape>,
 }
-
-/// The plan-time lock text of a five-field target (issue #2039, D8).
-const REASON_TARGET_IN_USE: &str = "in use: .cargo-lock is held";
 
 struct Collector<'a> {
     s: &'a Settings,
@@ -933,6 +916,8 @@ impl Collector<'_> {
                 }
             }
 
+            // This run's worktree items start here; rule (a) marks them below.
+            let first_item = self.items.len();
             // One verdict per worktree, from its own branch (D6).
             let mut verdicts: Vec<Verdict> = Vec::new();
             // Worktrees this sweep plans to remove, for rule (a) of #2039.
@@ -992,21 +977,27 @@ impl Collector<'_> {
                         Verdict::Eligible { reason } => Ok((reason.clone(), None)),
                         Verdict::Skip { reason } => Err(reason.clone()),
                     },
-                    Some(record) => {
-                        new_target_verdict(&record.checkout, record.origin, run, &removed_worktrees)
-                    }
+                    Some(record) => new_target_verdict(
+                        &record.checkout,
+                        record.origin,
+                        run,
+                        want_wt,
+                        &removed_worktrees,
+                    ),
                 };
                 let item = match verdict {
-                    Ok((reason, after_checkout_gone)) => target_item(
-                        c,
-                        &run.dir,
-                        reason,
-                        after_checkout_gone,
-                        id,
-                        REASON_TARGET_IN_USE,
-                    ),
+                    Ok((reason, after_checkout_gone)) => {
+                        target_item(c, &run.dir, reason, after_checkout_gone, id)
+                    }
                     Err(reason) => Item::skip(Category::RunTarget, path, reason, Some(id)),
                 };
+                if let Op::RemoveTarget {
+                    after_checkout_gone: Some(checkout),
+                    ..
+                } = &item.op
+                {
+                    mark_rule_a_target(&mut self.items[first_item..], checkout);
+                }
                 self.items.push(item);
             }
         }
@@ -1043,6 +1034,7 @@ impl Collector<'_> {
             op: Op::RemoveWorktree {
                 main,
                 run_dir: run_dir.to_path_buf(),
+                rule_a_target: false,
             },
         }
     }
@@ -1149,13 +1141,9 @@ impl Collector<'_> {
                     .push(Item::skip(Category::UntaggedTarget, &path, reason, None));
                 continue;
             }
-            if cargo_lock_held(&path) {
-                self.items.push(Item::skip(
-                    Category::UntaggedTarget,
-                    &path,
-                    REASON_TARGET_IN_USE,
-                    None,
-                ));
+            if let Some(reason) = cargo_lock_refusal(&path) {
+                self.items
+                    .push(Item::skip(Category::UntaggedTarget, &path, reason, None));
                 continue;
             }
             self.items.push(Item {
@@ -1313,10 +1301,15 @@ impl Collector<'_> {
 /// target is kept too (`worktree kept`), because the next commit there would
 /// otherwise rebuild it from nothing. See "When a target is removed" in
 /// `docs/howto/clean-up-after-recipe-runs.md`.
+///
+/// `worktrees_selected` is false when the sweep does not include the
+/// `run-worktree` category (`--only run-target`): no worktree is removed then,
+/// so rule (a) cannot apply and the reason says why.
 fn new_target_verdict(
     checkout: &Path,
     origin: TargetOrigin,
     run: &RunInfo,
+    worktrees_selected: bool,
     removed_worktrees: &[PathBuf],
 ) -> Result<(String, Option<PathBuf>), String> {
     match fs::symlink_metadata(checkout) {
@@ -1344,9 +1337,24 @@ fn new_target_verdict(
                     "worktree removed by run cleanup".to_string(),
                     Some(checkout.to_path_buf()),
                 ))
+            } else if !worktrees_selected {
+                Err("worktree kept: run-worktree not selected".to_string())
             } else {
                 Err("worktree kept".to_string())
             }
+        }
+    }
+}
+
+/// Marks the worktree item for `checkout` among `items` as having a planned
+/// rule (a) target removal, so rule (c) does not act on that target too.
+fn mark_rule_a_target(items: &mut [Item], checkout: &Path) {
+    let canonical = canonical_or_self(checkout);
+    for item in items {
+        if let Op::RemoveWorktree { rule_a_target, .. } = &mut item.op
+            && (item.canonical == canonical || item.path == checkout)
+        {
+            *rule_a_target = true;
         }
     }
 }
@@ -1368,15 +1376,14 @@ fn target_item(
     reason: String,
     after_checkout_gone: Option<PathBuf>,
     id: &str,
-    lock_text: &str,
 ) -> Item {
     let path = &c.owned.path;
     let Some(shape) = c.shape.clone() else {
         return Item::skip(Category::RunTarget, path, "not a folder", Some(id));
     };
     let dir = target_dir(c);
-    if dir.is_some_and(cargo_lock_held) {
-        return Item::skip(Category::RunTarget, path, lock_text, Some(id));
+    if let Some(reason) = dir.and_then(cargo_lock_refusal) {
+        return Item::skip(Category::RunTarget, path, reason, Some(id));
     }
     // A legacy real folder keeps its #1808 removal, which needs no Cargo
     // shape; it still holds the `.cargo-lock` locks while deleting.
@@ -1436,7 +1443,16 @@ fn apply_items(items: Vec<Item>, settings: &Settings, locked: bool) -> Vec<Entry
     let roots = ManagedRoots::new(settings);
     let links = LinkRoots::from_env(&roots);
     let mut entries = Vec::with_capacity(items.len());
+    // Targets already reported by rule (c), so a later plan-time entry for
+    // the same target is not reported a second time.
+    let mut followed: HashSet<PathBuf> = HashSet::new();
     for item in items {
+        if item.category == Category::RunTarget
+            && matches!(item.op, Op::Skip)
+            && followed.contains(&report_key(&item.path))
+        {
+            continue;
+        }
         let mut follow_on = Vec::new();
         let archive = matches!(item.op, Op::Archive { .. });
         let (action, reason) = match (&item.op, settings.apply) {
@@ -1473,13 +1489,11 @@ fn apply_items(items: Vec<Item>, settings: &Settings, locked: bool) -> Vec<Entry
             action,
             run_id: item.run_id,
         });
-        // Rule (c) of #2039: the target of a worktree removed just now. Only
-        // what was removed is reported; anything else is a warning and never
-        // changes the worktree's own result.
+        // Rule (c) of #2039: the target of a worktree removed just now. Every
+        // result is reported, a kept target with its reason; it never changes
+        // the worktree's own result.
         for e in follow_on {
-            if e.action == Action::Removed {
-                entries.push(e);
-            } else {
+            if e.action != Action::Removed {
                 tracing::warn!(
                     path = %e.path.display(),
                     action = e.action.as_str(),
@@ -1487,6 +1501,8 @@ fn apply_items(items: Vec<Item>, settings: &Settings, locked: bool) -> Vec<Entry
                     "target of a removed worktree was not removed"
                 );
             }
+            followed.insert(report_key(&e.path));
+            entries.push(e);
         }
     }
     // Sorted by category, then path; except that worktrees and run targets
@@ -1500,6 +1516,15 @@ fn apply_items(items: Vec<Item>, settings: &Settings, locked: bool) -> Vec<Entry
     };
     entries.sort_by(|a, b| key(a).cmp(&key(b)));
     entries
+}
+
+/// `path` with its parent folder resolved, so a recorded target path and the
+/// path rule (c) builds compare equal after the target is gone.
+fn report_key(path: &Path) -> PathBuf {
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => canonical_or_self(parent).join(name),
+        _ => path.to_path_buf(),
+    }
 }
 
 /// Removes, or with `settings.apply == false` reports, the pre-commit target
@@ -1567,8 +1592,8 @@ fn worktree_target_entries(
         // A held build lock is the more precise reason, so it is checked
         // before the process scan; `remove` takes the locks for real. It is
         // also checked before the size walk: a target in use is not walked.
-        if dir.is_some_and(cargo_lock_held) {
-            out.push(entry(Action::Skipped, REASON_TARGET_IN_USE.into(), None));
+        if let Some(reason) = dir.and_then(cargo_lock_refusal) {
+            out.push(entry(Action::Skipped, reason, None));
             continue;
         }
         let size = dir.and_then(tree_size);

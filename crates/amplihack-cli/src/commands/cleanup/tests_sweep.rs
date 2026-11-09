@@ -248,18 +248,39 @@ fn unreadable_cleanup_record_is_an_error() {
     assert!(fs::symlink_metadata(&record).unwrap().is_symlink());
 }
 
-/// P1-5: a folder that cannot be listed counts as holding a Cargo lock.
+/// P1-5: a folder that cannot be listed keeps the target, with its own
+/// reason rather than `in use` (review of PR #2152).
 #[test]
-fn unlistable_folder_counts_as_cargo_lock_held() {
+fn unlistable_folder_is_refused_with_its_own_reason() {
     if euid() == 0 {
         return;
     }
     let fx = Fx::new();
     let dir = dir_with_file(&fx.root.join("locked"));
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
-    let held = cargo_lock_held(&dir);
+    let refusal = cargo_lock_refusal(&dir);
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
-    assert!(held);
+    // The folder's own `.cargo-lock` is the first thing it cannot open.
+    let refusal = refusal.expect("an unlistable folder is refused");
+    assert!(
+        refusal.starts_with(&format!("permission denied: {}", dir.display())),
+        "{refusal}"
+    );
+}
+
+/// A free lock is no refusal; the shared lock taken to check it is released.
+#[test]
+fn free_cargo_lock_is_no_refusal_and_is_released() {
+    let fx = Fx::new();
+    let dir = dir_with_file(&fx.root.join("free"));
+    fs::create_dir_all(dir.join("debug")).unwrap();
+    fs::write(dir.join("debug/.cargo-lock"), "").unwrap();
+    assert_eq!(cargo_lock_refusal(&dir), None);
+    let file = fs::File::open(dir.join("debug/.cargo-lock")).unwrap();
+    use std::os::fd::AsRawFd;
+    // SAFETY: the fd is valid for the life of `file`.
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    assert_eq!(rc, 0, "the check left a lock behind");
 }
 
 /// P1-3: the end-of-run sweep only covers run-owned categories.

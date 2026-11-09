@@ -275,6 +275,11 @@ create a Cargo-shaped folder in it, and cleanup will remove that folder if a
 link you own points at it. Use mode `0755` or `0700` if that matters on your
 host.
 
+Use a folder that holds only build output. A folder inside your home folder,
+such as `~/src`, is accepted, but a link you own that points at a project's
+own `target/` folder under it would let cleanup remove that project's build
+output.
+
 A link to another disk that is neither in the variable nor in the wrapper's
 layout is reported as `link not followed: outside allowed roots` and left
 alone, with its destination. The other rules for linked targets are in

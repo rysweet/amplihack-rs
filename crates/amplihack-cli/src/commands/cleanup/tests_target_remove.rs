@@ -558,14 +558,39 @@ fn a_linked_cargo_lock_is_never_opened_through_or_deleted() {
     // Hold the outside file: a lock taken through the link would conflict.
     let _held = hold(&outside.join("lockfile"));
 
-    // Cargo never makes a linked lock, so the target is kept as in use.
+    // Cargo never makes a linked lock, so the target is kept, with its own
+    // reason (review of PR #2152).
     let result = fx.remove(&dir, &Shape::Dir, &fx.no_links(), false);
-    assert_eq!(refusal_text(result), IN_USE);
+    let text = refusal_text(result);
+    assert!(
+        text.starts_with("linked lock: ") && text.ends_with("debug/.cargo-lock"),
+        "{text}"
+    );
     assert!(dir.join("debug/blob").exists(), "the target must be kept");
     assert_eq!(
         fs::read_to_string(outside.join("lockfile")).unwrap(),
         "precious"
     );
+}
+
+/// A lock that cannot be opened keeps the target with `permission denied`,
+/// not `in use` (review of PR #2152).
+#[test]
+fn an_unreadable_cargo_lock_keeps_the_target_with_its_own_reason() {
+    if euid() == 0 {
+        return;
+    }
+    let fx = Fx::new();
+    let dir = cargo_dir(&fx.targets.join(NAME));
+    let lock = dir.join("debug/.cargo-lock");
+    fs::set_permissions(&lock, fs::Permissions::from_mode(0o000)).unwrap();
+    let text = refusal_text(fx.remove(&dir, &Shape::Dir, &fx.no_links(), false));
+    fs::set_permissions(&lock, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(
+        text.starts_with("permission denied: ") && text.ends_with("debug/.cargo-lock"),
+        "{text}"
+    );
+    assert!(dir.join("debug/blob").exists(), "the target must be kept");
 }
 
 #[test]

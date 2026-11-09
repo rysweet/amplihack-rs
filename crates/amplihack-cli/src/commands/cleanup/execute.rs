@@ -156,14 +156,18 @@ pub(super) fn execute(
             let _held = if *cargo_lock {
                 match target_remove::lock_cargo_tree(target) {
                     Ok(held) => held,
-                    Err(_) => refuse!("in use: .cargo-lock is held"),
+                    Err(refusal) => refuse!("{refusal}"),
                 }
             } else {
                 Vec::new()
             };
             remove_real_dir(target)
         }
-        Op::RemoveWorktree { main, run_dir } => {
+        Op::RemoveWorktree {
+            main,
+            run_dir,
+            rule_a_target,
+        } => {
             run_still_inactive(run_dir)?;
             refuse_if_other_live_owner(item, settings)?;
             if !is_real_dir(target) {
@@ -199,42 +203,29 @@ pub(super) fn execute(
                     sanitized_stderr_short(&output.stderr)
                 );
             }
-            follow_on.extend(follow_on_target(item, run_dir, settings, roots, links));
+            if !rule_a_target {
+                follow_on.extend(follow_on_target(item, settings, roots, links));
+            }
             Ok(())
         }
     }
 }
 
 /// Rule (c) of issue #2039: the target of the worktree `item` removed just
-/// now, unless this run records a `created` target for that checkout, which
-/// rule (a) handles as its own item.
+/// now. The caller skips this when the sweep planned a rule (a) removal of
+/// that target as its own item; a `created` record alone is not enough,
+/// because under `--only run-worktree`, or when the rule (a) item was refused
+/// at plan time, no such item exists.
 fn follow_on_target(
     item: &Item,
-    run_dir: &Path,
     settings: &Settings,
     roots: &ManagedRoots,
     links: &LinkRoots,
 ) -> Vec<Entry> {
-    let checkout = item.canonical.as_path();
-    let recorded = match read_owned_paths(run_dir) {
-        Ok(owned) => owned.iter().any(|o| {
-            o.target.as_ref().is_some_and(|r| {
-                r.origin == TargetOrigin::Created
-                    && (r.checkout == checkout || r.checkout == item.path)
-            })
-        }),
-        Err(error) => {
-            tracing::warn!(run_dir = %run_dir.display(), %error, "owned-paths unreadable; the removed worktree's target is left for a later sweep");
-            return Vec::new();
-        }
-    };
-    if recorded {
-        return Vec::new();
-    }
     // A fresh process scan: the worktree was in use a moment ago.
     let mut procs = None;
     worktree_target_entries(
-        checkout,
+        item.canonical.as_path(),
         settings,
         roots,
         links,

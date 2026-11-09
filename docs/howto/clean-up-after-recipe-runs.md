@@ -426,6 +426,7 @@ In every other case the target is kept and the entry says why:
 | Case | Reason |
 | --- | --- |
 | The run's worktree for that checkout is kept, for example because its PR is open. | `worktree kept` |
+| The sweep does not include the `run-worktree` category (`--only run-target`), so no worktree is removed and rule (a) cannot apply. | `worktree kept: run-worktree not selected` |
 | The checkout is not a worktree this run recorded, such as the main checkout or a worktree the run adopted. | `checkout not owned by this run` |
 | The origin is `reused` and the checkout still exists, for example the main checkout. | `reused target; checkout still exists` |
 | The checkout path could not be checked, for example `EACCES`. | `checkout state unknown: <error>` |
@@ -522,6 +523,12 @@ must pass the same checks as an entry of `AMPLIHACK_TARGET_LINK_ROOTS`
 `AMPLIHACK_TARGET_LINK_ROOTS` does not need to be set; it is only for links
 with some other layout.
 
+Use a folder that holds only build output for each entry of
+`AMPLIHACK_TARGET_LINK_ROOTS`, such as `/mnt/build/cargo-targets`. An entry
+such as `~/src` is accepted, because it is not your home folder or one of
+its parents, but a link you own that points at a project's own `target/`
+folder under it would then let cleanup remove that project's build output.
+
 Entries of `AMPLIHACK_TARGET_LINK_ROOTS`, and the folder derived from a
 wrapper link, that are
 `/`, your home folder or one of its parents, relative, missing, owned by
@@ -555,12 +562,21 @@ with the reason `symbolic link; not followed`.
 
 When `amplihack cleanup` removes a worktree, including during the run-end
 sweep, it then removes that worktree's target by itself. The one exception is
-a target the run's `owned-paths` records as `created` for the same checkout:
-rule (a) removes that one, so the follow-on step skips it to avoid handling
-it twice. A target recorded as `reused` for the run's own worktree, or not
-recorded at all, is removed by this step in the same sweep, with the reason
-`worktree removed`; it does not wait for rule (b) at a later sweep. A failure
-here is printed as a warning and does not change the worktree's result.
+a target for which the same sweep has already planned a rule (a) removal as
+its own entry; the follow-on step skips that one to avoid handling it twice.
+A `created` record alone is not enough: under `--only run-worktree`, or when
+the rule (a) entry was refused at plan time (for example because its
+`.cargo-lock` was held), there is no such entry, and this step checks the
+target again after the worktree is gone. A target recorded as `reused` for
+the run's own worktree, or not recorded at all, is also removed by this step
+in the same sweep, with the reason `worktree removed`; it does not wait for
+rule (b) at a later sweep.
+
+Whatever happens to the target, it is listed in the report. A target this
+step keeps is shown as `skipped` with its reason, in both text and JSON
+output, and a warning is written to the log. A target is listed once: when
+this step reports it, a plan-time entry for the same target is dropped. The
+result never changes the worktree's own entry.
 
 The bundled recipe helpers do the same after their own worktree removals, in
 `workflow-worktree.yaml`, `workflow_worktree_sweep.sh` and
@@ -612,6 +628,14 @@ checkout path:
 
 Only "not found" counts as removed. Any other error leaves the checkout's
 state unknown, and the target is kept.
+
+The target name is computed from the checkout's parent folder, so that folder
+must still exist. When a helper removes the folder that held the worktree as
+well as the worktree, the call exits with `1` and the message
+`cannot resolve the parent of <path>`, and the target stays. The bundled
+helpers end the call in `|| true`, so this does not fail the step; the
+message is in the step log. The target is then removed under rule (b), if a
+run recorded it, or by the hook's stale-cache reclaim.
 
 It does not take the cleanup lock, so it can run while a sweep is in
 progress. It exits with `0` when nothing was found or the target was skipped,
@@ -964,8 +988,18 @@ Every target removal, whether by the sweep, after a worktree removal or by
    Lock files are opened without following links and are never created.
    A `.cargo-lock` that is itself a link counts as held, because Cargo never
    makes one;
-2. if any lock is held, or a subfolder cannot be listed, skips the target
-   with `in use: .cargo-lock is held` and deletes nothing;
+2. if any lock is held, skips the target with `in use: .cargo-lock is held`
+   and deletes nothing. If a lock or a subfolder cannot be checked, it skips
+   the target with a reason that names the problem and the path, and deletes
+   nothing:
+
+   | Reason | Meaning |
+   | --- | --- |
+   | `in use: .cargo-lock is held` | A build holds the lock. |
+   | `linked lock: <path>` | The `.cargo-lock` is a link. Cargo never makes one. |
+   | `permission denied: <path>` | The lock file or folder cannot be opened. |
+   | `lock check failed: <path>: <error>` | Any other error while opening or locking. |
+
 3. keeps every lock until the removal is finished, so a build cannot start in
    the target while it is being deleted;
 4. removes the resolved target folder without following links inside it,
@@ -974,6 +1008,11 @@ Every target removal, whether by the sweep, after a worktree removal or by
    line with the event (`a`, `b` or `c` from
    [When a target is removed](#when-a-target-is-removed)), the reason and the
    run id.
+
+The locks are kept while `remove_dir_all` runs, so the `.cargo-lock` files
+are deleted while cleanup still holds them. A build that opened one of them
+just before that point finds its target folder gone and fails; nothing else
+is removed. The next build in that checkout starts from an empty target.
 
 A held lock never makes cleanup wait or retry. The target is skipped and
 looked at again by the next sweep. A running process with a file open in the
@@ -1064,6 +1103,11 @@ same checks.
 
 **A target is skipped with `in use: .cargo-lock is held`.** A Cargo build is
 using it. The next sweep looks at it again; nothing needs to be done.
+
+**A target is skipped with `linked lock`, `permission denied` or
+`lock check failed`.** Cleanup could not check a `.cargo-lock` at the path
+shown. Fix the permissions, or remove the link if you made it, and run
+cleanup again.
 
 **A target stays after its worktree was removed.** Check how the worktree was
 removed. `git worktree remove` run by hand does not remove the target; call
