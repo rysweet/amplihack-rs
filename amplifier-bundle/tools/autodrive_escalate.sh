@@ -39,6 +39,7 @@ usage_limit_stop() { usage_limit_failure "$1" "$2" || return 0; escalate "USAGE_
 # evaluator: the evaluator would inherit the same dead parent, stop at once
 # and leave no LOOP_HEALTH line, so the loop would report a driver crash as
 # STUCK. docs/reference/auto-drive-to-merge.md#how-the-loop-treats-exit-75.
+AUTODRIVE_EXIT_ORPHANED=75 # a nested recipe run whose parent run exited (#1976)
 orphan_stop() {
   [ "${1:-0}" = "$AUTODRIVE_EXIT_ORPHANED" ] || return 0
   escalate "ORPHANED" "${2} exited ${AUTODRIVE_EXIT_ORPHANED}: the recipe run above this loop exited, so the nested run stopped itself; see orphaned.json in the state directory" orphaned

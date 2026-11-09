@@ -50,8 +50,6 @@
 set -uo pipefail
 
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
-# shellcheck disable=SC2034 # read by orphan_stop in the sourced autodrive_escalate.sh
-AUTODRIVE_EXIT_ORPHANED=75 # a nested recipe run whose parent run exited (#1976)
 
 LOOP_NAME=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; ALSO_CLEAN=""; VERDICT_FIELD=""
 REPO="."; REVIEW_DIR=""; STATE_DIR=""; TASK_FILE_IN=""; ROUND_CTX=(); BEFORE_ROUND=""; CTX_REFUSED=""; BUDGET_CTX=(); BEFORE_CTX=(); AD_PR=""
@@ -240,8 +238,7 @@ while :; do
       -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" \
       "${ROUND_CTX[@]}" -c "review_dir=${REVIEW_REAL}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
   ROUND_RC=$?; usage_add round "$T0"
-  tail -n 200 "$LOG" >&2 || true
-  orphan_stop "$ROUND_RC" "round ${ROUND_LABEL}"
+  tail -n 200 "$LOG" >&2 || true; orphan_stop "$ROUND_RC" "round ${ROUND_LABEL}" # exit 75 (#1976)
 
   if terminal_refusal "$ROUND_RC" "$LOG"; then
     echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from '${ROUND_RECIPE}' (#1327/#1332). Final: the guard is never retried into." >&2
@@ -329,8 +326,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
       -c "loop_clean_token=${TOKEN_SAFE}" -c "loop_round_verdict=${EVAL_VERDICT}" ) \
       >"$HEALTH_LOG" 2>&1
   HEALTH_RC=$?; usage_add evaluator "$T0"
-  tail -n 120 "$HEALTH_LOG" >&2 || true
-  orphan_stop "$HEALTH_RC" "the loop-health evaluator for ${ROUND_LABEL}"
+  tail -n 120 "$HEALTH_LOG" >&2 || true; orphan_stop "$HEALTH_RC" "the loop-health evaluator for ${ROUND_LABEL}"
 
   if terminal_refusal "$HEALTH_RC" "$HEALTH_LOG"; then
     echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from loop-health-evaluator. Final; not retried." >&2
