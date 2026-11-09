@@ -48,8 +48,6 @@ impl Liveness {
 pub struct ProcRecord {
     pub pid: u32,
     pub ppid: u32,
-    /// Field 22 of `/proc/<pid>/stat`; 0 when there is no `stat`.
-    pub start_time: u64,
     pub zombie: bool,
     /// The exe or command line names Claude or amplihack.
     pub claude_like: bool,
@@ -137,11 +135,9 @@ fn record(dir: &Path, pid: u32, root: &Path, uid: u32) -> Option<ProcRecord> {
     if st.uid != uid {
         return None;
     }
-    let start_time = start_time(dir);
     let mut r = ProcRecord {
         pid,
         ppid: st.ppid,
-        start_time,
         zombie: st.state == 'Z',
         claude_like: false,
         profile: None,
@@ -297,23 +293,6 @@ fn status(dir: &Path) -> Option<Status> {
         uid: uid?,
         ppid,
     })
-}
-
-/// Field 22 of `/proc/<pid>/stat`, parsed after the last `)` so that any
-/// `comm` is safe. A `stat` that is missing, unreadable or malformed is 0,
-/// so the process still counts.
-fn start_time(dir: &Path) -> u64 {
-    match fsx::read_bounded_nofollow(&dir.join("stat"), MAX_SMALL) {
-        Ok(Some((raw, _))) => parse_start_time(&raw).unwrap_or(0),
-        Ok(None) | Err(_) => 0,
-    }
-}
-
-fn parse_start_time(raw: &[u8]) -> Option<u64> {
-    let close = raw.iter().rposition(|&b| b == b')')?;
-    let rest = std::str::from_utf8(&raw[close + 1..]).ok()?;
-    // Fields 3 onwards follow the `)`: field 22 is the 20th.
-    rest.split_ascii_whitespace().nth(19)?.parse().ok()
 }
 
 fn looks_like_claude(dir: &Path) -> bool {

@@ -1045,7 +1045,7 @@ ls -l "${XDG_RUNTIME_DIR:-$HOME/.amplihack/runtime}/amplihack/"
 -rw------- 1 ryan ryan    0 Nov  8 10:14 proc-snapshot-3f9a6c0e1b2d4a57.lock
 ```
 
-The file holds pids, parent pids, start times and profile names only; it
+The file holds pids, parent pids and profile names only; it
 holds no paths, command lines or environment contents. You never need to
 edit or remove it. A damaged, foreign or unsafe file is ignored and
 replaced, and if the directory cannot be used, every check reads `/proc`

@@ -4148,8 +4148,8 @@ directory never shares a snapshot with the real one.
   "writer_pid": 41822,
   "outcome": "ok",
   "procs": [
-    { "pid": 40211, "ppid": 40190, "start_time": 801122, "zombie": false, "claude_like": true, "profile": "work", "environ_unreadable": false },
-    { "pid": 41822, "ppid": 41790, "start_time": 918273, "zombie": false, "claude_like": true, "environ_unreadable": false }
+    { "pid": 40211, "ppid": 40190, "zombie": false, "claude_like": true, "profile": "work", "environ_unreadable": false },
+    { "pid": 41822, "ppid": 41790, "zombie": false, "claude_like": true, "environ_unreadable": false }
   ]
 }
 ```
@@ -4164,7 +4164,6 @@ directory never shares a snapshot with the real one.
 | `outcome` | `ok`, or `unsupported` when `/proc` could not be used for the scan. |
 | `procs` | One record for each of your processes that the scan saw, including the writer itself. |
 | `procs[].pid`, `procs[].ppid` | The process and its parent. |
-| `procs[].start_time` | Field 22 of `/proc/<pid>/stat`, in clock ticks since boot. |
 | `procs[].zombie` | `true` for a process in state `Z`. |
 | `procs[].claude_like` | `true` when the process looks like Claude Code or amplihack; see [Which processes are read](#which-processes-are-read). |
 | `procs[].profile` | The profile whose directory the process's `CLAUDE_CONFIG_DIR` resolves to. Absent, or `null`, when it names none. |
@@ -4266,12 +4265,10 @@ For each numbered entry in `/proc`, the scan reads, in this order:
 
 1. `status`, for the uid, state and parent pid. A process with another uid
    is skipped and nothing more is read.
-2. `stat`, for the start time. Fields are counted from after the last `)`,
-   so a command name that contains `)` or spaces is read correctly. A `stat`
-   that is missing, unreadable or cannot be parsed gives a start time of 0,
-   and the process is still read, so it can still count as running.
-3. The `exe` link, to decide whether the process is a candidate.
-4. `environ`, only for candidates.
+2. The `exe` link, to decide whether the process is a candidate.
+3. `environ`, only for candidates.
+
+`stat` is not read.
 
 A process of yours is a candidate when any of these holds:
 
@@ -4284,7 +4281,7 @@ A process of yours is a candidate when any of these holds:
   contains `claude` or `amplihack`, or cannot be read. `cmdline` is read
   only in this case.
 
-The `status`, `stat` and `cmdline` reads are each limited to 64 KiB, and
+The `status` and `cmdline` reads are each limited to 64 KiB, and
 `environ` to the existing environment limit. A process that is not a
 candidate never has its environment read. `claude_like` uses the same two
 markers as before.

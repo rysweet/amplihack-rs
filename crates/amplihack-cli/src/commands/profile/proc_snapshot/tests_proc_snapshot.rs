@@ -233,7 +233,6 @@ fn rec(pid: u32, profile: Option<&str>) -> ProcRecord {
     ProcRecord {
         pid,
         ppid: 1,
-        start_time: u64::from(pid) * 10,
         zombie: false,
         claude_like: true,
         profile: profile.map(str::to_string),
@@ -273,7 +272,7 @@ fn snap_json(uid: u32, hash: &str, taken_at: i64, procs: serde_json::Value) -> S
 /// A record in the documented format.
 fn proc_json(pid: u32, profile: Option<&str>) -> serde_json::Value {
     let mut v = serde_json::json!({
-        "pid": pid, "ppid": 1, "start_time": 7, "zombie": false,
+        "pid": pid, "ppid": 1, "zombie": false,
         "claude_like": true, "environ_unreadable": false,
     });
     if let Some(p) = profile {

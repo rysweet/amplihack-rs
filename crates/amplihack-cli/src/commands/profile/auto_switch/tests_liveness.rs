@@ -217,10 +217,10 @@ fn liveness_never_prints_environ() {
 // `collect(proc_root, canonical_root, euid)` records every same-uid process,
 // the caller included; `derive(&collected, reader_pid)` drops the reader and
 // gives the same `Liveness` that `scan` gave. For each process the scan reads
-// `status`, then `stat`, then the `exe` link, then `cmdline` only for
+// `status`, then the `exe` link, then `cmdline` only for
 // `node`, `bun` or `deno`, then `environ` only for a candidate. The fixtures
-// above have no `exe` link and no `stat`, and must keep their meaning (AC7):
-// an unreadable `exe` is a candidate, and a missing `stat` is start time 0.
+// above have no `exe` link, and must keep their meaning (AC7): an unreadable
+// `exe` is a candidate. `stat` is never read.
 // An unreadable `environ` or `cmdline` is simulated with a directory in its
 // place, so these tests also hold when run as root.
 
@@ -409,7 +409,6 @@ fn collect_records_the_fields_of_each_same_uid_process_and_the_caller() {
     p.on_x(SELF_PID, None, b"claude\0");
     p.process(211, UID + 1, "S (sleeping)", &[&p.config_dir("Y")], &p.root);
     let r = p.record(210).expect("a same-uid process is recorded");
-    assert_eq!(r.start_time, 801_122);
     assert_eq!(r.profile.as_deref(), Some("X"));
     assert!(r.claude_like && !r.zombie && !r.environ_unreadable);
     assert!(p.record(SELF_PID).is_some(), "the writer records itself");
@@ -461,45 +460,28 @@ fn collect_is_unsupported_when_its_own_environment_cannot_be_read() {
     );
 }
 
+/// `stat` is not read, so a crafted or missing one changes nothing: the
+/// process still counts.
 #[test]
-fn a_comm_with_parentheses_and_spaces_is_parsed_from_the_last_paren() {
-    let p = FakeProc::new();
-    let dir = p.on_x(214, None, b"claude\0");
-    fs::write(dir.join("stat"), stat_line(214, "a) b (c", 99_001)).unwrap();
-    assert_eq!(p.record(214).unwrap().start_time, 99_001);
-    assert!(p.scan().is_live(&n("X")));
-}
-
-/// SR19: crafted `stat` contents never panic; the process still counts
-/// (start_time 0).
-#[test]
-fn a_malformed_stat_still_counts_with_start_time_zero() {
+fn the_stat_file_does_not_affect_liveness() {
     for stat in [
-        "214 (claude S 1 2 3".to_string(),
-        "214 (claude) S 1".to_string(),
-        "214 (claude) S 1 214 214 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 notanumber 0 0".to_string(),
-        "214 (claude) S 1 214 214 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 \
-         99999999999999999999999999 0 0"
-            .to_string(),
-        String::from_utf8_lossy(b"\xff\xfe)").into_owned(),
-        String::new(),
+        Some(
+            "214 (a) b (c) S 1 214 214 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 99001 0 0".to_string(),
+        ),
+        Some("214 (claude S 1 2 3".to_string()),
+        Some(String::from_utf8_lossy(b"\xff\xfe)").into_owned()),
+        Some(String::new()),
+        None,
     ] {
         let p = FakeProc::new();
         let dir = p.on_x(214, None, b"claude\0");
-        fs::write(dir.join("stat"), &stat).unwrap();
-        assert_eq!(p.record(214).unwrap().start_time, 0, "{stat:?}");
+        match &stat {
+            Some(s) => fs::write(dir.join("stat"), s).unwrap(),
+            None => fs::remove_file(dir.join("stat")).unwrap(),
+        }
+        assert!(p.record(214).is_some(), "{stat:?}");
         assert!(p.scan().is_live(&n("X")), "{stat:?} still counts");
     }
-}
-
-/// AC7: the fixtures above have no `stat`; such a process still counts.
-#[test]
-fn a_missing_stat_still_counts_with_start_time_zero() {
-    let p = FakeProc::new();
-    let env = p.config_dir("X");
-    p.process(215, UID, "S (sleeping)", &[&env], &p.root);
-    assert_eq!(p.record(215).unwrap().start_time, 0);
-    assert!(p.scan().is_live(&n("X")));
 }
 
 #[test]
