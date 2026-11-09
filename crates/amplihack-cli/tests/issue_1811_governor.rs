@@ -85,7 +85,9 @@ fn concurrent_starts_never_exceed_the_limit() {
     let f = Fixture::new();
     f.readings(&[("alpha", 10.0, 20.0)]);
     f.governor_config("max_concurrency = 2");
-    let children: Vec<_> = (0..4)
+    // Every admitted stub is held until the test releases it, so the runs
+    // overlap for real however slow the host is (issue #1977: no sleep).
+    let mut children: Vec<_> = (0..4)
         .map(|i| {
             f.cmd(&[
                 "claude",
@@ -96,11 +98,31 @@ fn concurrent_starts_never_exceed_the_limit() {
                 "x",
             ])
             .env("AMPLIHACK_GOVERNOR_WAIT", "120")
-            .env("STUB_SLEEP", "2")
+            .env("STUB_HOLD", "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap()
         })
         .collect();
+    let mut released = std::collections::HashSet::new();
+    while released.len() < 4 {
+        // Wait until as many stubs are held as the limit allows; release
+        // them only then, so a governor that admitted more is seen.
+        let want = (4 - released.len()).min(2);
+        crate::support::wait::wait_until("the admitted stubs to be held", || {
+            f.held(&released).len() >= want
+        });
+        let held = f.held(&released);
+        assert!(held.len() <= 2, "admitted {} at once: {held:?}", held.len());
+        for pid in held {
+            f.release(&pid);
+            released.insert(pid);
+        }
+    }
+    for c in &mut children {
+        crate::support::wait::wait_child("a governed claude", c);
+    }
     for c in children {
         let out = c.wait_with_output().unwrap();
         assert!(out.status.success(), "{}", describe(&out));

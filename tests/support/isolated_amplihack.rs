@@ -32,6 +32,10 @@
 //!   test that calls `.env()` or `.stdin()` afterwards wins, and a test that
 //!   clears another command's environment calls [`no_git_prompt`] itself
 //!   after `env_clear()`.
+//! - `AMPLIHACK_TEST_PROBE_WAIT=exit` ([`PROBE_WAIT_ENV`], issue #2019), so a
+//!   debug build's `--version` probe of a stub waits for the stub to exit
+//!   instead of giving up after 3 s on a busy host. Release builds never read
+//!   it.
 
 #![allow(dead_code)]
 
@@ -52,6 +56,10 @@ pub const HOME_GUARD_ENV: &str = "AMPLIHACK_TEST_HOME_GUARD";
 
 /// The variable that turns the rotator's launch autostart off.
 pub const ROTATE_AUTOSTART_ENV: &str = "AMPLIHACK_ROTATE_AUTOSTART";
+
+/// The debug-only knob that makes the launch-target `--version` probe wait
+/// for the candidate's exit instead of its 3 s / 10 s deadline (issue #2019).
+pub const PROBE_WAIT_ENV: &str = "AMPLIHACK_TEST_PROBE_WAIT";
 
 /// The variable naming the Claude login profile root.
 pub const PROFILE_ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
@@ -135,6 +143,7 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
     command
         .env("HOME", shared_temp_home())
         .env(HOME_GUARD_ENV, "1")
-        .env(ROTATE_AUTOSTART_ENV, "0");
+        .env(ROTATE_AUTOSTART_ENV, "0")
+        .env(PROBE_WAIT_ENV, "exit");
     command
 }

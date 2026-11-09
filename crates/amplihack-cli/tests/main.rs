@@ -291,6 +291,12 @@ mod issue_1973_rotate_fixture;
 mod issue_1973_wait_helpers;
 #[path = "issue_1979_crusty_minor_followups.rs"]
 mod issue_1979_crusty_minor_followups;
+#[path = "issue_1985_codex_agent_step_flags.rs"]
+mod issue_1985_codex_agent_step_flags;
+#[path = "issue_2010_codex_exec_notice.rs"]
+mod issue_2010_codex_exec_notice;
+#[path = "issue_2019_no_wall_clock_asserts.rs"]
+mod issue_2019_no_wall_clock_asserts;
 #[path = "issue_2019_private_binary.rs"]
 mod issue_2019_private_binary;
 #[path = "issue_439_no_per_step_timeout.rs"]

@@ -377,13 +377,19 @@ fn stuck_lock_times_out_as_io_error() {
         Duration::ZERO,
     )
     .unwrap();
-    let mut g = FsGuard::with_lock_timeout(r.path(), Duration::from_millis(200));
-    let start = Instant::now();
+    // Issue #2019: the give-up is checked on virtual time, so a loaded host
+    // cannot fail it. The outcome (an Io error and no marker) is the proof.
+    let clock = AdvancingClock::new();
+    let mut g = FsGuard::with_clock(r.path(), Duration::from_millis(200), clock.clone());
     assert!(matches!(
         g.commit(&ev(1), &sess(), NOW, NOW),
         Err(CommitError::Io)
     ));
-    assert!(start.elapsed() < Duration::from_secs(3));
+    assert!(
+        clock.elapsed() >= Duration::from_millis(200),
+        "gave up at {:?} of virtual time, before the 200 ms timeout",
+        clock.elapsed()
+    );
     drop(held);
     assert!(!g.seen(&ev(1)).unwrap(), "no marker after a failed lock");
 }
@@ -431,8 +437,9 @@ impl Clock for AdvancingClock {
 }
 
 /// Virtual time that never moves, so a lock wait on it never times out
-/// however loaded the host is. `sleep` really sleeps 1 ms so a waiter
-/// yields instead of spinning a CPU while the lock is held.
+/// however loaded the host is. `sleep` yields the thread instead of
+/// sleeping: the spin is bounded by the lock holder's critical section, and
+/// no real time is spent (issue #2019, A5).
 struct FrozenClock(Instant);
 
 impl FrozenClock {
@@ -447,7 +454,7 @@ impl Clock for FrozenClock {
     }
 
     fn sleep(&self, _d: Duration) {
-        std::thread::sleep(Duration::from_millis(1));
+        std::thread::yield_now();
     }
 }
 
@@ -491,6 +498,101 @@ fn default_lock_timeout_is_five_seconds() {
     assert!(
         at_failure < LOCK_TIMEOUT + Duration::from_millis(100),
         "the commit waited {at_failure:?} of virtual time, past one retry beyond 5 s"
+    );
+    assert!(!g.seen(&ev(1)).unwrap(), "no marker after a failed lock");
+}
+
+/// Virtual time that moves only by what is slept on it, and drops the held
+/// lock on the first sleep that starts at or after `release_at`: the holder
+/// lets go at that point of virtual time, an event the waiter must see.
+struct ReleasingClock {
+    inner: Arc<AdvancingClock>,
+    release_at: Duration,
+    held: Mutex<Option<amplihack_utils::secure_files::ExclusiveLock>>,
+    released_at: Mutex<Option<Duration>>,
+}
+
+impl Clock for ReleasingClock {
+    fn now(&self) -> Instant {
+        self.inner.now()
+    }
+
+    fn sleep(&self, d: Duration) {
+        self.inner.sleep(d);
+        let now = self.inner.elapsed();
+        if now >= self.release_at
+            && let Some(lock) = self.held.lock().unwrap().take()
+        {
+            drop(lock);
+            *self.released_at.lock().unwrap() = Some(now);
+        }
+    }
+}
+
+/// The default lock wait does not give up before 5 s: a holder that lets go
+/// at 4.9 s of virtual time is waited for, and the commit succeeds.
+#[test]
+fn a_lock_released_at_4_9_virtual_seconds_is_still_taken() {
+    let r = root();
+    let d = resume_dir(r.path());
+    private_dir(&d);
+    let held = lock_exclusive_timeout(
+        open_private_nofollow(&d.join("lock")).unwrap(),
+        Duration::ZERO,
+    )
+    .unwrap();
+    let release_at = LOCK_TIMEOUT - Duration::from_millis(100);
+    let clock = Arc::new(ReleasingClock {
+        inner: AdvancingClock::new(),
+        release_at,
+        held: Mutex::new(Some(held)),
+        released_at: Mutex::new(None),
+    });
+    let mut g = FsGuard::with_clock(r.path(), LOCK_TIMEOUT, clock.clone());
+    let got = g.commit(&ev(1), &sess(), NOW, NOW);
+    let released_at = clock
+        .released_at
+        .lock()
+        .unwrap()
+        .expect("the holder let go during the wait");
+    assert!(released_at < LOCK_TIMEOUT, "released at {released_at:?}");
+    assert!(
+        got.is_ok(),
+        "a lock freed at {released_at:?} of virtual time must be taken: {got:?}"
+    );
+    assert!(g.seen(&ev(1)).unwrap(), "the commit wrote its marker");
+}
+
+/// The same holder letting go only at 5 s is too late: the wait has given up.
+#[test]
+fn a_lock_released_only_at_5_virtual_seconds_is_given_up_on() {
+    let r = root();
+    let d = resume_dir(r.path());
+    private_dir(&d);
+    let held = lock_exclusive_timeout(
+        open_private_nofollow(&d.join("lock")).unwrap(),
+        Duration::ZERO,
+    )
+    .unwrap();
+    let clock = Arc::new(ReleasingClock {
+        inner: AdvancingClock::new(),
+        release_at: LOCK_TIMEOUT + Duration::from_secs(60),
+        held: Mutex::new(Some(held)),
+        released_at: Mutex::new(None),
+    });
+    let mut g = FsGuard::with_clock(r.path(), LOCK_TIMEOUT, clock.clone());
+    assert!(matches!(
+        g.commit(&ev(1), &sess(), NOW, NOW),
+        Err(CommitError::Io)
+    ));
+    let gave_up = clock.inner.elapsed();
+    assert!(
+        gave_up >= LOCK_TIMEOUT,
+        "gave up at {gave_up:?}, before 5 s"
+    );
+    assert!(
+        clock.released_at.lock().unwrap().is_none(),
+        "the wait ended before the holder let go"
     );
     assert!(!g.seen(&ev(1)).unwrap(), "no marker after a failed lock");
 }

@@ -547,7 +547,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// The real clock and the process-wide counter that
-    /// [`refreshes_in_progress`] and [`wait_for_refreshes`] read (SR-9).
+    /// `refreshes_in_progress` and [`wait_for_refreshes`] read (SR-9).
     pub(super) fn system() -> Ctx<'static> {
         Ctx {
             clock: &SystemClock,
@@ -811,6 +811,7 @@ fn get_usage(
 // ---------------------------------------------------------------------------
 
 /// Refreshes holding or about to take a lock right now, in this process.
+#[cfg(test)]
 pub(super) fn refreshes_in_progress() -> usize {
     REFRESHING.load(Ordering::SeqCst)
 }
@@ -818,12 +819,25 @@ pub(super) fn refreshes_in_progress() -> usize {
 /// Waits up to `limit` for every refresh in progress to release its lock;
 /// whether none is left.
 pub(super) fn wait_for_refreshes(limit: Duration) -> bool {
-    let start = Instant::now();
-    while refreshes_in_progress() > 0 {
-        if start.elapsed() >= limit {
+    wait_for_refreshes_on(&REFRESHING, limit, &SystemClock)
+}
+
+/// [`wait_for_refreshes`] on any counter and clock (issue #2019): `true` once
+/// `counter` is 0, `false` once `limit` has passed on `clock` with refreshes
+/// still running. A counter already at 0 returns without sleeping. Between
+/// checks it sleeps [`POLL`] on `clock`. A `limit` too large to add to the
+/// clock's present has no end.
+pub(crate) fn wait_for_refreshes_on(
+    counter: &AtomicUsize,
+    limit: Duration,
+    clock: &dyn Clock,
+) -> bool {
+    let deadline = clock.now().checked_add(limit);
+    while counter.load(Ordering::SeqCst) > 0 {
+        if deadline.is_some_and(|end| clock.now() >= end) {
             return false;
         }
-        std::thread::sleep(POLL);
+        clock.sleep(POLL);
     }
     true
 }

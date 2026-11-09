@@ -96,21 +96,11 @@ fn test_execute_recipe_via_rust_propagates_asset_resolver_env() {
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"resolver\":\"$AMPLIHACK_ASSET_RESOLVER\",\"home\":\"$AMPLIHACK_HOME\",\"graph\":\"$AMPLIHACK_GRAPH_DB_PATH\",\"legacy_graph_alias\":\"$AMPLIHACK_KUZU_DB_PATH\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-    std::fs::write(&resolver, "#!/bin/sh\nexit 0\n").expect("failed to write resolver stub");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-        std::fs::set_permissions(&resolver, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod resolver");
-    }
+    );
+    crate::test_support::write_executable(&resolver, "#!/bin/sh\nexit 0\n");
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: env-probe\nsteps: []\n").expect("failed to write recipe");
@@ -210,18 +200,10 @@ fn test_execute_recipe_via_rust_sets_home_from_working_dir_bundle_root() {
     std::fs::create_dir_all(&bundle).expect("failed to create bundle root");
     std::fs::create_dir_all(&home).expect("failed to create home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"home-probe\",\"success\":true,\"step_results\":[],\"context\":{\"home\":\"$AMPLIHACK_HOME\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-    }
+    );
 
     let recipe = repo.join("recipe.yaml");
     std::fs::write(&recipe, "name: home-probe\nsteps: []\n").expect("failed to write recipe");
@@ -273,18 +255,10 @@ fn test_execute_recipe_via_rust_propagates_agent_binary_env() {
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"agent_binary\":\"$AMPLIHACK_AGENT_BINARY\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-    }
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: env-probe\nsteps: []\n").expect("failed to write recipe");
@@ -338,15 +312,10 @@ fn test_execute_recipe_via_rust_sets_pager_safe_env() {
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"pager-probe\",\"success\":true,\"step_results\":[],\"context\":{\"git_pager\":\"$GIT_PAGER\",\"gh_pager\":\"$GH_PAGER\",\"pager\":\"$PAGER\",\"less\":\"$LESS\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: pager-probe\nsteps: []\n").expect("failed to write recipe");
@@ -436,15 +405,10 @@ fn test_execute_recipe_via_rust_forces_noninteractive_and_strips_claudecode() {
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"subprocess-env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"noninteractive\":\"$AMPLIHACK_NONINTERACTIVE\",\"claudecode\":\"${CLAUDECODE+present}\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: subprocess-env-probe\nsteps: []\n")
@@ -509,15 +473,10 @@ fn test_execute_recipe_via_rust_reports_nonzero_exit_with_stderr() {
     let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
-    std::fs::write(&runner, "#!/bin/sh\necho \"runner exploded\" >&2\nexit 2\n")
-        .expect("failed to write runner stub");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-    }
+    crate::test_support::write_executable(
+        &runner,
+        "#!/bin/sh\necho \"runner exploded\" >&2\nexit 2\n",
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: env-probe\nsteps: []\n").expect("failed to write recipe");
@@ -561,11 +520,7 @@ fn test_execute_recipe_via_rust_reports_signal_kill_clearly() {
     let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
-    std::fs::write(&runner, "#!/bin/sh\nkill -TERM $$\n").expect("failed to write runner stub");
-
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    crate::test_support::write_executable(&runner, "#!/bin/sh\nkill -TERM $$\n");
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: env-probe\nsteps: []\n").expect("failed to write recipe");
@@ -611,12 +566,10 @@ fn test_execute_recipe_via_rust_sets_stable_run_id_env_and_result_metadata() {
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":true,\"step_results\":[],\"context\":{\"env_run_id\":\"$AMPLIHACK_RECIPE_RUN_ID\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: correlation-probe\nsteps: []\n")
@@ -668,12 +621,10 @@ fn test_execute_recipe_via_rust_emits_early_and_final_success_log_pointers() {
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":true,\"step_results\":[],\"context\":{}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: correlation-probe\nsteps: []\n")
@@ -775,12 +726,10 @@ fn test_execute_recipe_via_rust_nonzero_exit_emits_failure_pointer_and_result_su
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":false,\"step_results\":[],\"context\":{}}\nEOF\nexit 7\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: correlation-probe\nsteps: []\n")
@@ -839,9 +788,7 @@ fn test_execute_recipe_via_rust_parse_failure_emits_final_pointer() {
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(&runner, "#!/bin/sh\necho 'not-json'\nexit 0\n")
-        .expect("failed to write runner stub");
-    make_executable(&runner);
+    crate::test_support::write_executable(&runner, "#!/bin/sh\necho 'not-json'\nexit 0\n");
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: parse-failure-probe\nsteps: []\n")
@@ -1131,7 +1078,7 @@ fn test_large_context_does_not_hit_e2big() {
 
     // Stub: reject --context-file like the real runner, else report the
     // number of --set arguments and their total size.
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         r#"#!/bin/sh
 sets=0; bytes=0; prev=""
@@ -1144,14 +1091,7 @@ for arg in "$@"; do
 done
 echo "{\"recipe_name\":\"large-ctx\",\"success\":true,\"step_results\":[],\"context\":{\"sets\":\"$sets\",\"bytes\":\"$bytes\"}}"
 "#,
-    )
-    .expect("failed to write runner stub");
-
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-    }
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: large-ctx\nsteps: []\n").expect("failed to write recipe");
@@ -1208,18 +1148,10 @@ fn test_step_timeout_propagated_as_env_var() {
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
     // Stub captures the AMPLIHACK_STEP_TIMEOUT env var and returns it in context.
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-    }
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: timeout-probe\nsteps: []\n").expect("failed to write recipe");
@@ -1280,18 +1212,10 @@ fn test_step_timeout_zero_disables_timeouts() {
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-    }
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: timeout-probe\nsteps: []\n").expect("failed to write recipe");
@@ -1352,18 +1276,10 @@ fn test_step_timeout_none_does_not_set_env_var() {
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
     // Stub captures env var; if unset, shell expands $VAR to empty string.
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-            .expect("failed to chmod runner");
-    }
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: timeout-probe\nsteps: []\n").expect("failed to write recipe");
@@ -1413,13 +1329,6 @@ fn test_step_timeout_none_does_not_set_env_var() {
 /// Returns true if recipe-runner-rs appears to be available on this system.
 fn which_recipe_runner_available() -> bool {
     crate::rust_toolchain::find_recipe_runner().is_some()
-}
-
-#[cfg(unix)]
-fn make_executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
 }
 
 fn restore_env_var(key: &str, previous: Option<std::ffi::OsString>) {
@@ -1798,12 +1707,10 @@ fn test_execute_recipe_via_rust_sets_isolated_runtime_directories() {
     std::fs::create_dir_all(&repo).expect("failed to create repo dir");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"runtime-isolation-probe\",\"success\":true,\"step_results\":[],\"context\":{\"runtime_dir\":\"$AMPLIHACK_WORKFLOW_RUNTIME_DIR\",\"artifact_dir\":\"$AMPLIHACK_WORKFLOW_ARTIFACT_DIR\",\"tmpdir\":\"$TMPDIR\",\"tmp\":\"$TMP\",\"temp\":\"$TEMP\",\"run_id\":\"$AMPLIHACK_RUN_ID\",\"run_dir\":\"$AMPLIHACK_RUN_DIR\",\"tmpdir_exists\":\"$(test -d \"$TMPDIR\" && echo yes)\"}}\nEOF\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
 
     let recipe = repo.join("recipe.yaml");
     std::fs::write(&recipe, "name: runtime-isolation-probe\nsteps: []\n")
@@ -1894,18 +1801,13 @@ fn test_execute_recipe_via_rust_verbose_does_not_pass_progress_flag_to_child() {
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
     // Stub records its argv and exits 0 with empty stdout (parser treats as success).
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
-        format!(
+        &format!(
             "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
             log = arg_log.display()
         ),
-    )
-    .expect("failed to write runner stub");
-
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
@@ -1946,18 +1848,13 @@ fn test_execute_recipe_via_rust_non_verbose_does_not_pass_progress() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
-        format!(
+        &format!(
             "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
             log = arg_log.display()
         ),
-    )
-    .expect("failed to write runner stub");
-
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
@@ -2004,19 +1901,17 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
     let runner = temp.path().join("recipe-runner-rs");
     // The stub writes 0xFF (invalid UTF-8 start byte), then a valid line,
     // then enough valid lines to fill a typical pipe buffer (~64KB on Linux).
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\n\
          printf '\\xff\\n' >&2\n\
          echo 'after-bad-bytes' >&2\n\
          i=0; while [ $i -lt 200 ]; do echo \"flood-line-$i\" >&2; i=$((i+1)); done\n\
+         : > \"$0.done\"\n\
          exit 0\n",
-    )
-    .expect("failed to write runner stub");
+    );
 
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    let done_file = temp.path().join("recipe-runner-rs.done");
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
@@ -2025,20 +1920,28 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
     unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner) };
 
     // The real assertion is that this does not hang. If the pump dies, the
-    // child's stderr pipe fills (~64KB) and SIGPIPE/blocking-write hangs the
-    // child. With a 30s test timeout, that hang would manifest as the test
-    // being killed by the runner — but locally just observed via wall-clock.
-    let start = std::time::Instant::now();
-    let result = execute::execute_recipe_via_rust(
-        &recipe,
-        &BTreeMap::new(),
-        false, // dry_run
-        true,  // verbose
-        temp.path(),
-        &[],
-        None, // step_timeout
+    // child's stderr pipe fills (~64KB) and the child blocks on its write
+    // forever. The run happens on a worker thread; its answer is awaited for
+    // at most `CEILING`, a hang guard that never decides a pass (#1998).
+    let (tx, rx) = std::sync::mpsc::channel();
+    {
+        let (recipe, dir) = (recipe.clone(), temp.path().to_path_buf());
+        std::thread::spawn(move || {
+            let result = execute::execute_recipe_via_rust(
+                &recipe,
+                &BTreeMap::new(),
+                false, // dry_run
+                true,  // verbose
+                &dir,
+                &[],
+                None, // step_timeout
+            );
+            let _ = tx.send(result.map(|_| ()).map_err(|e| format!("{e:#}")));
+        });
+    }
+    let result = rx.recv_timeout(crate::test_support::wait::CEILING).expect(
+        "hung: non-UTF-8 stderr stopped the pump and the child blocked on a full stderr pipe",
     );
-    let elapsed = start.elapsed();
 
     match prev_runner {
         Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
@@ -2046,16 +1949,10 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
     }
 
     result.expect("non-UTF-8 stderr must NOT abort the pump or hang the child");
-    // This is a hang-detector, not a performance assertion. A healthy run is
-    // sub-second, but the meaningful failure is a *pipe-hang* where the pump
-    // dies and the child blocks on a full ~64KB stderr pipe until the 30s test
-    // harness kills it. The ceiling is deliberately loose (25s, well under the
-    // 30s harness timeout) so CPU contention on a saturated nextest run cannot
-    // flake it, while a genuine hang still trips it.
+    // The stub wrote every flood line before it marked itself done.
     assert!(
-        elapsed < std::time::Duration::from_secs(25),
-        "non-UTF-8 stderr caused suspiciously slow run ({elapsed:?}) — \
-         pump likely died and child blocked on full stderr pipe"
+        done_file.exists(),
+        "the runner did not write all of its stderr"
     );
 }
 
@@ -2068,11 +1965,15 @@ fn test_execute_recipe_via_rust_times_out_hung_runner() {
     let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
-    std::fs::write(&runner, "#!/bin/sh\n/bin/sleep 5\n").expect("failed to write runner stub");
-
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    // The runner blocks on a FIFO nobody opens for writing: it never ends on
+    // its own, so only the 1 s product timeout can end it, however slow the
+    // host is (#1998: a `sleep 5` could finish first on a loaded host).
+    let hold = temp.path().join("hold");
+    mkfifo(&hold);
+    crate::test_support::write_executable(
+        &runner,
+        &format!("#!/bin/sh\n/bin/cat '{}' >/dev/null\n", hold.display()),
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: timeout-probe\nsteps: []\n").expect("failed to write recipe");
@@ -2084,7 +1985,6 @@ fn test_execute_recipe_via_rust_times_out_hung_runner() {
         std::env::set_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", "1");
     }
 
-    let start = std::time::Instant::now();
     let result = execute::execute_recipe_via_rust(
         &recipe,
         &BTreeMap::new(),
@@ -2094,7 +1994,6 @@ fn test_execute_recipe_via_rust_times_out_hung_runner() {
         &[],
         None,
     );
-    let elapsed = start.elapsed();
 
     match prev_runner {
         Some(value) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", value) },
@@ -2112,24 +2011,12 @@ fn test_execute_recipe_via_rust_times_out_hung_runner() {
         "error should report timeout: {msg}"
     );
     // The parent timeout (1s, set above) firing is proven by the "timed out"
-    // error assertion — that is the real intent of this test. This elapsed
-    // ceiling is a hang-detector, not a performance assertion: it guards against
-    // the pathological case where the timeout path fails to kill the runner and
-    // the child runs until the 30s test harness kills it. The ceiling is
-    // deliberately loose (25s, well under the 30s harness) because process
-    // spawn, timeout polling, the tree-kill, and stderr-pump teardown can add
-    // several seconds of overhead under a saturated nextest run — keying it
-    // tightly to the runner's own sleep flakes because that cleanup overhead is
-    // comparable to the timeout-vs-natural-completion gap.
-    assert!(
-        elapsed < std::time::Duration::from_secs(25),
-        "parent timeout should bound hung runner well under the harness limit, \
-         elapsed {elapsed:?}"
-    );
+    // error: the runner never ends on its own, so returning at all means the
+    // timeout path killed and reaped it. No elapsed-time ceiling (#1998).
 }
 
 #[test]
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
@@ -2138,18 +2025,27 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("orphan-marker");
-    std::fs::write(
+    let hold = temp.path().join("hold");
+    mkfifo(&hold);
+    // Every process of the runner's tree carries a token of this test in its
+    // environment. The orphan blocks on a FIFO nobody opens for writing, so
+    // it ends only by a signal; the runner itself blocks the same way, so
+    // only the 1 s product timeout ends the run (#1998: no sleeps).
+    let token = format!(
+        "{}-{}",
+        std::process::id(),
+        temp.path().file_name().unwrap().to_string_lossy()
+    );
+    crate::test_support::write_executable(
         &runner,
-        format!(
-            "#!/bin/sh\n(/bin/sleep 2; echo orphan > '{}') &\n/bin/sleep 5\n",
-            marker.display()
+        &format!(
+            "#!/bin/sh\nexport {ORPHAN_TOKEN_ENV}='{token}'\n\
+             (/bin/cat '{hold}' >/dev/null; echo orphan > '{marker}') &\n\
+             /bin/cat '{hold}' >/dev/null\n",
+            hold = hold.display(),
+            marker = marker.display(),
         ),
-    )
-    .expect("failed to write runner stub");
-
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: timeout-tree-probe\nsteps: []\n")
@@ -2181,12 +2077,66 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
         None => unsafe { std::env::remove_var("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS") },
     }
 
-    result.expect_err("hung recipe-runner must time out");
-    std::thread::sleep(std::time::Duration::from_millis(2_300));
+    let err = result.expect_err("hung recipe-runner must time out");
+    assert!(format!("{err:#}").contains("timed out"), "{err:#}");
+    // The runner was reaped before the call returned. A descendant that
+    // survived the tree kill keeps its token for as long as it lives, so the
+    // wait ends only when no process of the tree is left; a survivor fails
+    // the test as hung at `CEILING`.
+    crate::test_support::wait::wait_until(
+        "timeout cleanup to terminate the recipe-runner descendants",
+        || processes_with_token(&token).is_empty(),
+    );
     assert!(
         !marker.exists(),
         "timeout cleanup must terminate recipe-runner descendants"
     );
+}
+
+/// The variable that marks the processes of one test's runner tree.
+#[cfg(target_os = "linux")]
+const ORPHAN_TOKEN_ENV: &str = "AMPLIHACK_TEST_ORPHAN_TOKEN";
+
+/// Pids of live processes whose environment holds `ORPHAN_TOKEN_ENV=token`.
+/// A pid reused by an unrelated process cannot match: it has no token.
+#[cfg(target_os = "linux")]
+fn processes_with_token(token: &str) -> Vec<u32> {
+    let needle = format!("{ORPHAN_TOKEN_ENV}={token}");
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        panic!("cannot list /proc to look for surviving descendants");
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        // A process that exited meanwhile, or one of another user, has no
+        // readable environment and is not one of ours.
+        let Ok(environ) = std::fs::read(entry.path().join("environ")) else {
+            continue;
+        };
+        if environ
+            .split(|b| *b == 0)
+            .any(|var| var == needle.as_bytes())
+        {
+            found.push(pid);
+        }
+    }
+    found
+}
+
+/// Makes a FIFO at `path`.
+#[cfg(unix)]
+fn mkfifo(path: &Path) {
+    let status = std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .expect("failed to run mkfifo");
+    assert!(status.success(), "mkfifo {} failed", path.display());
 }
 
 // -------------------------------------------------------------------------
@@ -2197,17 +2147,13 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
 /// (one per line) to `arg_log` and exits 0 with empty stdout.
 #[cfg(unix)]
 fn write_argv_logging_stub(runner: &Path, arg_log: &Path) {
-    std::fs::write(
+    crate::test_support::write_executable(
         runner,
-        format!(
+        &format!(
             "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
             log = arg_log.display()
         ),
-    )
-    .expect("failed to write runner stub");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    );
 }
 
 #[test]
@@ -2505,19 +2451,15 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
-        format!(
+        &format!(
             "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\n\
              echo '{{\"recipe_name\":\"probe\",\"success\":true,\"step_results\":[],\"context\":{{}}}}'\n\
              exit 0\n",
             log = arg_log.display()
         ),
-    )
-    .expect("failed to write runner stub");
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner");
+    );
 
     let recipe_dir = temp.path().join("co-located");
     std::fs::create_dir_all(&recipe_dir).unwrap();
@@ -2828,12 +2770,10 @@ fn test_execute_recipe_via_rust_exports_context_as_env_under_set_u() {
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\nset -u\nprintf '{\"recipe_name\":\"ctx-env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"task\":\"%s\",\"repo\":\"%s\"}}' \"$TASK_DESCRIPTION\" \"$REPO_PATH\"\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: ctx-env-probe\nsteps: []\n").expect("failed to write recipe");
@@ -2903,12 +2843,10 @@ fn test_execute_recipe_via_rust_exports_context_to_nested_subprocess() {
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\nset -u\nNESTED_TASK=$(sh -c 'set -u; printf %s \"$TASK_DESCRIPTION\"')\nNESTED_REPO=$(sh -c 'set -u; printf %s \"$REPO_PATH\"')\nprintf '{\"recipe_name\":\"nested-ctx-probe\",\"success\":true,\"step_results\":[],\"context\":{\"nested_task\":\"%s\",\"nested_repo\":\"%s\"}}' \"$NESTED_TASK\" \"$NESTED_REPO\"\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: nested-ctx-probe\nsteps: []\n").expect("failed to write recipe");
@@ -2979,12 +2917,10 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
 
     // No `set -u` here: LD_PRELOAD is legitimately unset, so we read it with a
     // `:-` default to distinguish "unset" (safe) from "attacker value" (bug).
-    std::fs::write(
+    crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\nprintf '{\"recipe_name\":\"sec-probe\",\"success\":true,\"step_results\":[],\"context\":{\"task\":\"%s\",\"path\":\"%s\",\"preload\":\"%s\",\"ahome\":\"%s\"}}' \"${TASK_DESCRIPTION:-MISSING}\" \"$PATH\" \"${LD_PRELOAD:-}\" \"${AMPLIHACK_HOME:-}\"\n",
-    )
-    .expect("failed to write runner stub");
-    make_executable(&runner);
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: sec-probe\nsteps: []\n").expect("failed to write recipe");
@@ -3393,6 +3329,7 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
     let saved = crate::test_support::EnvGuard::capture(&[
         "AMPLIHACK_AGENT_BINARY",
         "AMPLIHACK_ASSET_RESOLVER",
+        "AMPLIHACK_CLEANUP_ON_EXIT",
         "AMPLIHACK_GRAPH_DB_PATH",
         "AMPLIHACK_HOME",
         "AMPLIHACK_KUZU_DB_PATH",
@@ -3413,6 +3350,9 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
     ]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    // Issue #2067: the end-of-run sweep walks the real work root, which can
+    // take over a minute on a loaded host and break the wall-clock ceilings.
+    unsafe { std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0") };
     saved
 }
 
@@ -3593,17 +3533,12 @@ mod issue_1570_nested_environment {
             .map(|(label, var)| format!("\"{label}\":\"${{{var}-<unset>}}\""))
             .collect::<Vec<_>>()
             .join(",");
-        std::fs::write(
+        crate::test_support::write_executable(
             &runner,
-            format!(
+            &format!(
                 "#!/bin/sh\ncat <<EOF\n{{\"recipe_name\":\"nested-env\",\"success\":true,\"step_results\":[],\"context\":{{{fields}}}}}\nEOF\n"
             ),
-        )
-        .unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        );
         let recipe = temp.path().join("recipe.yaml");
         std::fs::write(&recipe, "name: nested-env\nsteps: []\n").unwrap();
 

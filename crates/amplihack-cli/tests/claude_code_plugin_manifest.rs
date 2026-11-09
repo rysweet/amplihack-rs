@@ -290,11 +290,10 @@ fn install_runtime_never_runs_amplihack_install() {
 mod shell {
     use super::repo_root;
     use std::fs;
-    use std::io::Write;
+    use std::io::{Seek, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
-    use std::process::{Command, Output, Stdio};
-    use std::time::{Duration, Instant};
+    use std::process::{Child, Command, Output, Stdio};
 
     const SCRIPTS: &[&str] = &["amplihack-hook", "bootstrap", "install-runtime"];
 
@@ -352,11 +351,57 @@ mod shell {
         for (k, v) in envs {
             cmd.env(k, v);
         }
-        let mut child = spawn_script(&mut cmd);
-        // A no-op path exits without reading stdin, so the write can race a
-        // closed pipe; that is the behavior under test, not a failure.
-        let _ = child.stdin.take().unwrap().write_all(input);
-        child.wait_with_output().unwrap()
+        // The input comes from a file, so a no-op path that exits without
+        // reading stdin cannot race a pipe write. The wait is the script's
+        // exit, bounded only by the hang guard `CEILING` (issue #2019).
+        let mut stdin = tempfile::tempfile().unwrap();
+        stdin.write_all(input).unwrap();
+        stdin.seek(std::io::SeekFrom::Start(0)).unwrap();
+        cmd.stdin(stdin);
+        crate::support::wait::output_within(&format!("{}", script.display()), &mut cmd)
+    }
+
+    /// A process whose command line names `install-runtime`, standing in for
+    /// a live installer. It blocks on its stdin until dropped, so it cannot
+    /// exit early on a busy host the way a `sleep` could.
+    struct LiveInstaller(Child);
+
+    impl LiveInstaller {
+        fn start() -> Self {
+            Self(
+                Command::new("sh")
+                    .args(["-c", "read _line || :", "install-runtime"])
+                    .stdin(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            )
+        }
+
+        fn id(&self) -> u32 {
+            self.0.id()
+        }
+    }
+
+    impl Drop for LiveInstaller {
+        fn drop(&mut self) {
+            drop(self.0.stdin.take());
+            crate::support::wait::wait_child("the stand-in installer", &mut self.0);
+        }
+    }
+
+    /// Proves, after bootstrap has exited, that it never started an
+    /// installer. bootstrap creates `install.lock` before it forks one, and
+    /// the fixture's installer touches `installer-ran` before it removes the
+    /// lock, so a started installer always leaves one of the two behind.
+    /// Reading the lock first and the marker second closes the gap between
+    /// them. No sleep is involved (issue #2019).
+    fn assert_no_installer_started(home: &Path, data: &Path) {
+        let lock_held = data.join("install.lock").exists();
+        let ran = home.join("installer-ran").exists();
+        assert!(
+            !lock_held && !ran,
+            "an installer was started (lock {lock_held}, marker {ran})"
+        );
     }
 
     fn hook_script() -> std::path::PathBuf {
@@ -642,7 +687,21 @@ mod shell {
         let stub = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
         let bin = bootstrap_fixture();
-        let started = Instant::now();
+        // This installer parks on a FIFO the test opens only at the end, so
+        // bootstrap returning while the lock is still held proves it did not
+        // wait for the install (issue #2019: no elapsed-time check).
+        let hold = home.path().join("hold");
+        assert!(
+            Command::new("mkfifo")
+                .arg(&hold)
+                .status()
+                .unwrap()
+                .success()
+        );
+        write_exe(
+            &bin.path().join("install-runtime"),
+            "#!/bin/sh\ntouch \"$HOME/installer-ran\"\ncat \"$HOME/hold\" >/dev/null\nrm -rf \"$AMPLIHACK_PLUGIN_INSTALL_LOCK\"\n",
+        );
         let out = run(
             &bin.path().join("bootstrap"),
             home.path(),
@@ -654,30 +713,35 @@ mod shell {
             ],
         );
         assert!(out.status.success());
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "bootstrap must not block"
-        );
         let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         let context = json["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap();
         assert!(context.contains("being installed"), "{context}");
-        assert!(data.path().join("install-runtime.log").exists());
 
-        let marker = home.path().join("installer-ran");
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !marker.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        assert!(marker.exists(), "install-runtime was not started");
+        assert!(
+            wait_for(&home.path().join("installer-ran")),
+            "install-runtime was not started"
+        );
+        // The forked child opens the log before it runs the installer, so
+        // the log exists once the marker does.
+        assert!(data.path().join("install-runtime.log").exists());
+        assert!(
+            data.path().join("install.lock").exists(),
+            "bootstrap must not block: it returned only after the install ended"
+        );
+        // Release the parked installer.
+        drop(fs::OpenOptions::new().write(true).open(&hold).unwrap());
+        crate::support::wait::wait_until("the installer to release its lock", || {
+            !data.path().join("install.lock").exists()
+        });
     }
 
+    /// Waits for `path` to appear, bounded only by the hang guard `CEILING`.
     fn wait_for(path: &Path) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !path.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
-        }
+        crate::support::wait::wait_until(&format!("{} to appear", path.display()), || {
+            path.exists()
+        });
         path.exists()
     }
 
@@ -741,9 +805,7 @@ mod shell {
             &envs,
         );
         assert!(out.status.success() && out.stdout.is_empty());
-        std::thread::sleep(Duration::from_millis(300));
-        assert!(!home.path().join("installer-ran").exists());
-        assert!(!data.path().join("install.lock").exists());
+        assert_no_installer_started(home.path(), data.path());
     }
 
     #[test]
@@ -771,11 +833,8 @@ mod shell {
             .as_str()
             .unwrap();
         assert!(context.contains("failed"), "{context}");
-        std::thread::sleep(Duration::from_millis(300));
-        assert!(
-            !home.path().join("installer-ran").exists(),
-            "must not retry yet"
-        );
+        // Must not retry yet.
+        assert_no_installer_started(home.path(), data.path());
     }
 
     #[test]
@@ -797,8 +856,7 @@ mod shell {
             br#"{"hook_event_name":"SessionStart","source": "compact"}"#,
         );
         assert!(out.status.success());
-        std::thread::sleep(Duration::from_millis(300));
-        assert!(!home.path().join("installer-ran").exists());
+        assert_no_installer_started(home.path(), data.path());
     }
 
     /// Age a path with POSIX `touch -t` (GNU `-d` is not portable).
@@ -818,13 +876,9 @@ mod shell {
         let data = tempfile::tempdir().unwrap();
         let lock = data.path().join("install.lock");
         fs::create_dir(&lock).unwrap();
-        // A process whose command line names install-runtime stands in for a
-        // live installer.
-        let mut installer = Command::new("sh")
-            .args(["-c", "sleep 30", "install-runtime"])
-            .spawn()
-            .unwrap();
-        fs::write(lock.join("pid"), format!("{}\n", installer.id())).unwrap();
+        let installer = LiveInstaller::start();
+        let pid = format!("{}\n", installer.id());
+        fs::write(lock.join("pid"), &pid).unwrap();
         age(&lock);
         let bin = bootstrap_fixture();
         let envs = [
@@ -838,14 +892,20 @@ mod shell {
             &[],
             &envs,
         );
-        std::thread::sleep(Duration::from_millis(300));
-        let _ = installer.kill();
-        let _ = installer.wait();
         assert!(out.status.success());
+        // A reclaim rewrites the pid file before bootstrap forks, and the
+        // fixture installer touches its marker before it removes the lock;
+        // reading the pid first and the marker second proves neither ran.
+        assert_eq!(
+            fs::read_to_string(lock.join("pid")).ok().as_deref(),
+            Some(pid.as_str()),
+            "the live installer's lock was reclaimed"
+        );
         assert!(
             !home.path().join("installer-ran").exists(),
             "second installer started"
         );
+        drop(installer);
     }
 
     #[test]
@@ -926,7 +986,7 @@ mod shell {
         let open_stdin = child.stdin.take();
         let exported = wait_for(&env_file);
         drop(open_stdin);
-        let _ = child.wait();
+        crate::support::wait::wait_child("bootstrap", &mut child);
         assert!(exported, "no environment exported while stdin stayed open");
         assert!(
             fs::read_to_string(&env_file)
@@ -1347,10 +1407,7 @@ fi
         let home_data = tempfile::tempdir().unwrap();
         let lock = home_data.path().join("install.lock");
         fs::create_dir(&lock).unwrap();
-        let mut installer = Command::new("sh")
-            .args(["-c", "sleep 30", "install-runtime"])
-            .spawn()
-            .unwrap();
+        let installer = LiveInstaller::start();
         fs::write(lock.join("pid"), format!("{}\n", installer.id())).unwrap();
         let home = tempfile::tempdir().unwrap();
         let stub = tempfile::tempdir().unwrap();
@@ -1367,8 +1424,7 @@ fi
             &[],
             &envs,
         );
-        let _ = installer.kill();
-        let _ = installer.wait();
+        drop(installer);
         assert!(out.status.success());
         assert!(String::from_utf8_lossy(&out.stdout).contains("another install is running"));
         assert!(lock.exists(), "a running installer's lock was removed");
@@ -1425,8 +1481,7 @@ fi
             !context.contains("rm "),
             "must not suggest a retry: {context}"
         );
-        std::thread::sleep(Duration::from_millis(300));
-        assert!(!home.path().join("installer-ran").exists());
+        assert_no_installer_started(home.path(), data.path());
     }
 
     #[test]
@@ -1521,10 +1576,7 @@ fi
 
     #[test]
     fn without_a_usable_ps_a_live_installers_lock_is_kept() {
-        let mut installer = Command::new("sh")
-            .args(["-c", "sleep 30", "install-runtime"])
-            .spawn()
-            .unwrap();
+        let installer = LiveInstaller::start();
         let pid = installer.id();
         let (out, data) = manual_install_against(
             |lock| {
@@ -1533,8 +1585,7 @@ fi
             },
             &[("ps", "#!/bin/sh\nexit 1\n")],
         );
-        let _ = installer.kill();
-        let _ = installer.wait();
+        drop(installer);
         assert!(String::from_utf8_lossy(&out.stdout).contains("another install is running"));
         assert!(data.path().join("install.lock").exists());
     }

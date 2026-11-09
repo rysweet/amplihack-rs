@@ -14,7 +14,9 @@
 //! that pin the shipped default.
 //!
 //! The stub `claude` answers `--version`, appends `S <ns>` and `E <ns>`
-//! around an optional `$STUB_SLEEP` to `$RECORD_DIR/marks`, writes its argv
+//! to `$RECORD_DIR/marks` around an optional hold: with `$STUB_HOLD` set it
+//! makes the FIFO `hold.<pid>`, touches `ready.<pid>` and blocks until the
+//! test opens that FIFO ([`Fixture::held`], [`Fixture::release`]). It writes its argv
 //! to `$RECORD_DIR/args.<pid>`, prints `STUB-OUT` and exits 0.
 
 #![cfg(unix)]
@@ -35,7 +37,11 @@ esac
 echo "S $(date +%s%N)" >> "$RECORD_DIR/marks"
 printf '%s\n' "$@" > "$RECORD_DIR/args.$$"
 env | grep -E '^AMPLIHACK_(TREE_ID|SESSION_DEPTH)=' > "$RECORD_DIR/env.$$" || true
-[ -n "$STUB_SLEEP" ] && sleep "$STUB_SLEEP"
+if [ -n "$STUB_HOLD" ]; then
+  mkfifo "$RECORD_DIR/hold.$$"
+  : > "$RECORD_DIR/ready.$$"
+  cat "$RECORD_DIR/hold.$$" > /dev/null
+fi
 echo "E $(date +%s%N)" >> "$RECORD_DIR/marks"
 echo STUB-OUT
 exit 0
@@ -212,6 +218,8 @@ impl Fixture {
             .current_dir(&self.work)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            // `env_clear` dropped the probe knob `isolated` set (issue #2019).
+            .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
@@ -256,6 +264,38 @@ impl Fixture {
     }
 
     /// The largest number of stub `claude` processes running at once.
+    /// Pids of stubs that are running, admitted and held (`$STUB_HOLD`),
+    /// leaving out those in `released`.
+    pub fn held(&self, released: &std::collections::HashSet<String>) -> Vec<String> {
+        let mut pids: Vec<String> = fs::read_dir(&self.records)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|e| {
+                        e.file_name()
+                            .to_str()
+                            .and_then(|n| n.strip_prefix("ready."))
+                            .map(str::to_string)
+                    })
+                    .filter(|pid| !released.contains(pid))
+                    .collect()
+            })
+            .unwrap_or_default();
+        pids.sort();
+        pids
+    }
+
+    /// Lets the held stub `pid` finish: opening its FIFO for writing and
+    /// closing it ends the stub's read.
+    pub fn release(&self, pid: &str) {
+        drop(
+            fs::OpenOptions::new()
+                .write(true)
+                .open(self.records.join(format!("hold.{pid}")))
+                .unwrap_or_else(|e| panic!("release stub {pid}: {e}")),
+        );
+    }
+
     pub fn max_overlap(&self) -> usize {
         let marks = fs::read_to_string(self.records.join("marks")).unwrap_or_default();
         let mut events: Vec<(u128, i32)> = marks

@@ -21,6 +21,19 @@ pub(crate) fn cwd_env_lock() -> &'static Mutex<()> {
     env_lock()
 }
 
+/// One lock for tests that start a token refresh or read the refresh count
+/// (issue #2036). The count (`usage_direct::refreshes_in_progress`) covers the
+/// whole process, and the rotator's stop waits for it to reach zero, so a test
+/// that checks it must not run beside another test's refresh. Poisoning is
+/// ignored: a failed test must not fail the others.
+pub(crate) fn refresh_count_lock() -> std::sync::MutexGuard<'static, ()> {
+    static REFRESH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    REFRESH_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[path = "../tests/support/scratch_base.rs"]
 #[allow(dead_code)]
 mod scratch_base;
@@ -345,3 +358,22 @@ mod exec_stub;
 pub(crate) fn write_executable(path: &Path, body: &str) {
     exec_stub::write_executable(path, body, 0o755);
 }
+
+/// The one hang guard of `tests/support/wait.rs`, for lib tests (issue #2019).
+#[path = "../tests/support/wait.rs"]
+pub(crate) mod wait;
+
+/// A gate that holds one side of a test at a known point (issue #2019).
+#[path = "test_support/test_gate.rs"]
+pub(crate) mod test_gate;
+
+/// Wait on and kill a process through a pidfd (issue #2019).
+#[cfg(target_os = "linux")]
+#[path = "test_support/pidfd_wait.rs"]
+pub(crate) mod pidfd_wait;
+
+// Issue #2019: contracts of the event-wait helpers (`test_gate`, `wait`,
+// `pidfd_wait`) and of the stub writer's mode check.
+#[cfg(unix)]
+#[path = "test_support/tests_2019_helpers.rs"]
+mod tests_2019_helpers;

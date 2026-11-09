@@ -9,12 +9,11 @@ use std::path::{Path, PathBuf};
 fn write_executable(dir: &Path, name: &str) -> PathBuf {
     fs::create_dir_all(dir).unwrap();
     let path = dir.join(name);
-    fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+    // No write descriptor in this process, so no ETXTBSY (#2019).
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    crate::test_support::write_executable(&path, "#!/bin/sh\nexit 0\n");
+    #[cfg(not(unix))]
+    fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
     path
 }
 

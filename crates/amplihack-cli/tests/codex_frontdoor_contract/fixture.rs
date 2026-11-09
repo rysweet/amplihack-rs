@@ -86,34 +86,35 @@ esac
         );
         // Framework is staged by a different provider, before Codex is present.
         if staged {
-            let out = crate::isolated_amplihack::isolated(&cli)
-                .args(["install", "--local", source.to_str().unwrap()])
-                .env("HOME", home.path())
-                .env("PATH", &tools)
-                .env("AMPLIHACK_AGENT_BINARY", "claude")
-                .env("AMPLIHACK_SOURCE_ROOT", &source)
-                .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
-                .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
-                .env(
-                    "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
-                    tools.join("amplihack-hooks"),
-                )
-                .env_remove("AMPLIHACK_ORCHESTRATION_BOOTSTRAP")
-                .env_remove("AMPLIHACK_DEFAULT_MODEL")
-                .env_remove("AMPLIHACK_HOME")
-                .env_remove("AMPLIHACK_ASSET_RESOLVER")
-                .env_remove("AMPLIHACK_SESSION_ID")
-                .env_remove("AMPLIHACK_SESSION_DEPTH")
-                .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
-                .env_remove("AMPLIHACK_CODEX_BINARY_PATH")
-                .env_remove("CODEX_BINARY_PATH")
-                .env_remove("CODEX_HOME")
-                .env("RECIPE_RUNNER_RS_PATH", tools.join("recipe-runner-rs"))
-                // `install` resolves hook scope from its cwd; keep it off the
-                // process cwd, which this binary shares with every other test module.
-                .current_dir(home.path())
-                .output()
-                .unwrap();
+            let out = crate::support::wait::output_within(
+                "amplihack install (staging)",
+                crate::isolated_amplihack::isolated(&cli)
+                    .args(["install", "--local", source.to_str().unwrap()])
+                    .env("HOME", home.path())
+                    .env("PATH", &tools)
+                    .env("AMPLIHACK_AGENT_BINARY", "claude")
+                    .env("AMPLIHACK_SOURCE_ROOT", &source)
+                    .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
+                    .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
+                    .env(
+                        "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
+                        tools.join("amplihack-hooks"),
+                    )
+                    .env_remove("AMPLIHACK_ORCHESTRATION_BOOTSTRAP")
+                    .env_remove("AMPLIHACK_DEFAULT_MODEL")
+                    .env_remove("AMPLIHACK_HOME")
+                    .env_remove("AMPLIHACK_ASSET_RESOLVER")
+                    .env_remove("AMPLIHACK_SESSION_ID")
+                    .env_remove("AMPLIHACK_SESSION_DEPTH")
+                    .env_remove("AMPLIHACK_SKIP_AUTO_INSTALL")
+                    .env_remove("AMPLIHACK_CODEX_BINARY_PATH")
+                    .env_remove("CODEX_BINARY_PATH")
+                    .env_remove("CODEX_HOME")
+                    .env("RECIPE_RUNNER_RS_PATH", tools.join("recipe-runner-rs"))
+                    // `install` resolves hook scope from its cwd; keep it off the
+                    // process cwd, which this binary shares with every other test module.
+                    .current_dir(home.path()),
+            );
             assert!(
                 out.status.success(),
                 "staging failed: {} {}",
@@ -219,7 +220,18 @@ esac
             String::from_utf8_lossy(&out.stderr)
         );
         let argv = fs::read_to_string(home.path().join("launch-argv")).unwrap();
-        assert!(argv.contains("exec\n--model\nfixture-model\n-\n"), "{argv}");
+        // Issue #1985: an agent step gets the sandbox, network and hook-trust
+        // flags right after `exec`, ahead of the caller's own arguments.
+        assert!(
+            argv.contains(
+                "exec\n--sandbox\nworkspace-write\n-c\nsandbox_workspace_write.network_access=true\n--dangerously-bypass-hook-trust\n--model\nfixture-model\n-\n"
+            ),
+            "{argv}"
+        );
+        assert!(
+            !argv.contains("--dangerously-bypass-approvals-and-sandbox"),
+            "{argv}"
+        );
         assert!(
             home.path()
                 .join(".amplihack/codex/ownership.json")

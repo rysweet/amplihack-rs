@@ -335,12 +335,13 @@ mod issue_1844 {
     use super::super::inflight::{finish_refreshes, refresh_grace};
     use crate::commands::profile::tests_fake_http::{FakeHttp, Reply};
     use crate::commands::profile::usage_direct::{Endpoints, Request, read};
+    use crate::test_support::wait::CEILING;
     use serde_json::json;
     use std::ffi::OsStr;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::AtomicBool;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     static NO_CANCEL: AtomicBool = AtomicBool::new(false);
 
@@ -358,6 +359,9 @@ mod issue_1844 {
 
     #[test]
     fn stopping_during_a_stalled_refresh_leaves_no_refresh_lock() {
+        // The stop waits for the process-wide refresh count; no other test's
+        // refresh may run beside this one (issue #2036).
+        let _serial = crate::test_support::refresh_count_lock();
         let now = chrono::Utc::now().timestamp();
         let iso = |t: i64| {
             chrono::DateTime::from_timestamp(t, 0)
@@ -369,13 +373,18 @@ mod issue_1844 {
             "five_hour": {"utilization": 5.0, "resets_at": iso(now + 3600)},
             "seven_day": {"utilization": 6.0, "resets_at": iso(now + 86_400)}
         });
+        // The token answer is held at a gate until the test has seen the
+        // refresh lock taken and asked the daemon to stop (issue #2019: an
+        // event, not a 1.2 s delay raced against a 5 s poll).
+        let gate = crate::test_support::test_gate::Gate::new();
+        let at_gate = gate.clone();
         let fake = FakeHttp::start(move |s, _| {
             if s.method == "POST" {
+                at_gate.arrive_and_wait();
                 Reply::json(
                     200,
                     &json!({"access_token": "FAKE-NEW-1844-d", "expires_in": 3600}),
                 )
-                .after(Duration::from_millis(1200))
             } else if s.header("authorization") == Some("Bearer FAKE-NEW-1844-d") {
                 Reply::json(200, &body)
             } else {
@@ -409,23 +418,21 @@ mod issue_1844 {
                 journals: &journals,
                 allow_refresh: true,
                 cancel: &NO_CANCEL,
-                timeout: Duration::from_secs(5),
+                // The hang guard only; the gate decides when the refresh ends.
+                timeout: CEILING,
                 now_ms: chrono::Utc::now().timestamp_millis(),
             };
             read(&ep, &req).is_ok()
         });
-        let start = Instant::now();
-        while fake.count("POST", "/v1/oauth/token") == 0 {
-            assert!(
-                start.elapsed() < Duration::from_secs(5),
-                "no refresh started"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(dir.join(".oauth_refresh.lock").is_dir());
-        // The daemon stops now.
-        assert!(finish_refreshes(refresh_grace(Duration::from_secs(5))));
+        gate.wait_arrived("the refresh POST");
+        let held = dir.join(".oauth_refresh.lock").is_dir();
+        // The daemon stops now, with the refresh still held at the gate.
+        let stopper = std::thread::spawn(|| finish_refreshes(refresh_grace(CEILING)));
+        gate.open();
+        assert!(held, "the refresh did not hold Claude's lock");
+        assert!(stopper.join().unwrap(), "the stop gave up on the refresh");
         assert!(!dir.join(".oauth_refresh.lock").exists());
+        assert_eq!(fake.count("POST", "/v1/oauth/token"), 1);
         assert!(reader.join().unwrap());
     }
 }

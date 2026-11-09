@@ -1,6 +1,31 @@
 //! Recognize command positions without rewriting caller arguments.
 use std::io::{self, ErrorKind};
 
+/// Codex long options that take a separate value when written without `=`.
+/// Shared with amplihack-cli's agent-step flag injection (issue #1985).
+pub const LONG_OPTIONS_WITH_VALUE: &[&str] = &[
+    "--ask-for-approval",
+    "--model",
+    "--profile",
+    "--config",
+    "--sandbox",
+    "--cd",
+    "--image",
+    "--add-dir",
+    "--enable",
+    "--disable",
+    "--local-provider",
+    "--output-last-message",
+    "--output-schema",
+    "--color",
+    "--thread-source",
+    "--remote",
+    "--remote-auth-token-env",
+];
+
+/// Codex short options that take a value, either separate or attached.
+pub const SHORT_OPTIONS_WITH_VALUE: &[&str] = &["-a", "-m", "-p", "-c", "-s", "-C", "-i", "-o"];
+
 pub(super) struct Mode {
     pub exec: bool,
     pub resume: bool,
@@ -65,27 +90,8 @@ pub(super) fn classify(args: &[String]) -> io::Result<Mode> {
                 index += 1;
                 continue;
             }
-            let long_value = [
-                "--ask-for-approval",
-                "--model",
-                "--profile",
-                "--config",
-                "--sandbox",
-                "--cd",
-                "--image",
-                "--add-dir",
-                "--enable",
-                "--disable",
-                "--local-provider",
-                "--output-last-message",
-                "--output-schema",
-                "--color",
-                "--thread-source",
-                "--remote",
-                "--remote-auth-token-env",
-            ]
-            .contains(&name);
-            let short_value = ["-a", "-m", "-p", "-c", "-s", "-C", "-i", "-o"]
+            let long_value = LONG_OPTIONS_WITH_VALUE.contains(&name);
+            let short_value = SHORT_OPTIONS_WITH_VALUE
                 .iter()
                 .any(|prefix| arg.starts_with(prefix));
             if (long_value && !arg.contains('=')) || (short_value && arg.len() == 2) {

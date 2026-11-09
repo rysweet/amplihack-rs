@@ -3552,6 +3552,8 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
             .current_dir(tmp.path())
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            // `env_clear` dropped the probe knob `isolated` set (issue #2019).
+            .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
             .env("TMPDIR", std::env::temp_dir())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &home)

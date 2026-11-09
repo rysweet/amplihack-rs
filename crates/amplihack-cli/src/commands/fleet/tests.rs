@@ -2,7 +2,6 @@ use super::*;
 use crate::command_error;
 use crate::test_support::{ClearedGraphDbEnv, home_env_lock};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 
 fn restore_var(name: &str, previous: Option<std::ffi::OsString>) {
     match previous {
@@ -22,15 +21,10 @@ fn azlin_lookup(azlin: Option<&Path>, path: &Path, home: Option<&Path>) -> Azlin
     }
 }
 
+/// Through the shared stub writer: no write descriptor in this process, so
+/// a sibling test's fork cannot make the exec fail with ETXTBSY (#2019).
 fn write_executable(path: &Path, content: &str) {
-    use std::io::Write as _;
-    let mut file = fs::File::create(path).unwrap();
-    file.write_all(content.as_bytes()).unwrap();
-    file.sync_all().unwrap();
-    drop(file);
-    let mut perms = fs::metadata(path).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(path, perms).unwrap();
+    crate::test_support::write_executable(path, content);
 }
 
 #[test]

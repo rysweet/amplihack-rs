@@ -457,7 +457,7 @@ tests pin each one:
 | `MAX_STEP` | 10 s | `usage_direct` unit test |
 | `REFRESH_BUDGET` | 3 s | `usage_direct` unit test |
 | Expiry margin | 60 s | `usage_direct` unit tests at 59 s (refreshed) and 61 s (not refreshed) |
-| `wait_for_refreshes` poll | 50 ms | `usage_direct` unit test |
+| `wait_for_refreshes` poll | 20 ms (`usage_direct::POLL`) | `tests_wait_for_refreshes` |
 | `PER_CANDIDATE_PROBE_TIMEOUT`, `TOTAL_PROBE_BUDGET` | 3 s, 10 s | `launch_target` unit tests |
 
 ### Frozen and advancing fakes
@@ -955,7 +955,13 @@ of `cli_integration`, declared with `mod issue_2019_no_wall_clock_asserts;` in
 and `tests/**` for `elapsed()` or a difference of two `Instant`s used in an
 `assert!` or a comparison, and fails on any match that is not exempt:
 
-- a file that contains `impl Clock for` (it measures injected time);
+- a file that contains `impl Clock for` (it measures injected time), except
+  for a check on a name bound to `Instant::now()` in that file, which is still
+  reported: injected time is exempt, real time in the same file is not;
+- a `VIRTUAL_TIME` entry `(path, proof)`: a file whose `elapsed()` reads a
+  fake through a seam other than `Clock` (the `limit_wait` tests read
+  `WaitDeps`). The entry holds the text that proves the fake is there, and
+  fails the guard once that text is gone;
 - `issue_1973_wait_helpers.rs` and the guard itself;
 - an entry in the allowlist.
 

@@ -122,6 +122,36 @@ quotes it expands in the new session and reads the server's markers.
 
 This makes amplihack agent-agnostic: `amplihack <command>` will use the configured binary for all agent subprocess calls (skills, recipes, orchestrator). Added in PR #3174.
 
+#### Codex agent steps
+
+With `AMPLIHACK_AGENT_BINARY=codex`, each agent step runs as
+`amplihack codex -- exec …`, and amplihack adds these flags
+directly after `exec`:
+
+```text
+--sandbox workspace-write -c sandbox_workspace_write.network_access=true --dangerously-bypass-hook-trust
+```
+
+The reasons:
+
+- The host `config.toml` may set `sandbox_mode = "danger-full-access"` for
+  interactive lanes. Without an explicit `--sandbox`, agent steps would
+  inherit it.
+- Codex skips an untrusted hook without saying so, which would turn off the
+  command-check hook (software-factory #149) for every step.
+- A full `default-workflow` run under workspace-write with network access
+  completed the same steps as one under danger-full-access, with no per-job
+  preparation.
+
+The rules: the caller's own sandbox choice in the step's arguments wins (no
+`--sandbox` or network override is then added); amplihack never adds
+`--dangerously-bypass-approvals-and-sandbox` or `--yolo`; interactive
+`amplihack codex` sessions are unchanged. Prompt text must reach Codex on
+stdin, never in argv, and agent steps should run only in trusted checkouts,
+because hook trust is bypassed. The full rules, the `exec resume` placement and
+the preconditions are in
+[Sandbox and hook trust for agent steps](../howto/install-codex-plugin.md#sandbox-and-hook-trust-for-agent-steps).
+
 ## Quick Examples
 
 ### Development Workflow

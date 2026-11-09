@@ -34,10 +34,10 @@ mod execute {
     pub(super) use super::super::execute::{new_tree_id, resolve_claimed_depth};
     pub(super) use super::execute_recipe_via_rust_for_test as execute_recipe_via_rust;
 }
+use crate::test_support::wait::CEILING;
 use std::collections::BTreeMap;
-use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
-use std::time::{Duration, Instant};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 /// Environment-variable name the deterministic-teardown feature must honour to
 /// configure the SIGTERM -> SIGKILL grace window (in whole seconds).
@@ -83,16 +83,109 @@ impl Drop for EnvVarGuard {
     }
 }
 
-/// Write an executable `/bin/sh` stub at `path` and chmod it 0755.
+/// Write an executable `/bin/sh` stub at `path` (mode 0755) through
+/// `write_executable`, which never holds a write descriptor on it in this
+/// process, so a sibling test's fork cannot make its exec fail with ETXTBSY.
 fn write_stub(path: &Path, body: &str) {
-    std::fs::write(path, body).expect("failed to write runner stub");
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
-        .expect("failed to chmod runner stub");
+    crate::test_support::write_executable(path, body);
 }
 
-/// True if a process with `pid` still exists (signal 0 probe).
-fn process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+/// Makes a FIFO at `path`.
+fn mkfifo(path: &Path) {
+    let status = std::process::Command::new("mkfifo")
+        .arg(path)
+        .status()
+        .expect("failed to run mkfifo");
+    assert!(status.success(), "mkfifo {} failed", path.display());
+}
+
+/// Runs `execute_recipe_via_rust` for `recipe` on a worker thread and hands
+/// back a receiver for whether it failed, so the test can act while the
+/// runner is still running. The receive is bounded by `CEILING` only.
+fn execute_on_worker(recipe: &Path, working_dir: &Path) -> mpsc::Receiver<bool> {
+    let (tx, rx) = mpsc::channel();
+    let (recipe, working_dir) = (recipe.to_path_buf(), working_dir.to_path_buf());
+    std::thread::spawn(move || {
+        let result = execute::execute_recipe_via_rust(
+            &recipe,
+            &BTreeMap::new(),
+            false,
+            true,
+            &working_dir,
+            &[],
+            None,
+        );
+        let _ = tx.send(result.is_err());
+    });
+    rx
+}
+
+/// A runner that starts an orphan in its own process group and then exits 1
+/// once the test opens `go`. The orphan writes its pid to `pid` and blocks
+/// opening the FIFO `hold`, which nothing ever opens for writing, so it ends
+/// only by a signal; it would write `marker` only if released.
+struct OrphanProbe {
+    runner: PathBuf,
+    recipe: PathBuf,
+    pid: PathBuf,
+    go: PathBuf,
+    marker: PathBuf,
+}
+
+impl OrphanProbe {
+    fn new(dir: &Path) -> Self {
+        let probe = Self {
+            runner: dir.join("recipe-runner-rs"),
+            recipe: dir.join("recipe.yaml"),
+            pid: dir.join("orphan.pid"),
+            go: dir.join("go"),
+            marker: dir.join("orphan-marker"),
+        };
+        let hold = dir.join("hold");
+        mkfifo(&hold);
+        mkfifo(&probe.go);
+        write_stub(
+            &probe.runner,
+            &format!(
+                "#!/bin/sh
+                 /bin/sh -c 'echo $$ > \"$1\"; /bin/cat \"$2\" >/dev/null; echo leaked > \"$3\"'                  orphan '{}' '{}' '{}' &
+                 read _go < '{}'
+                 exit 1
+",
+                probe.pid.display(),
+                hold.display(),
+                probe.marker.display(),
+                probe.go.display(),
+            ),
+        );
+        std::fs::write(&probe.recipe, "name: orphan-probe\nsteps: []\n")
+            .expect("failed to write recipe");
+        probe
+    }
+
+    /// Opens a pidfd for the orphan while it is known to be alive: the
+    /// runner is still blocked on `go`, so no teardown has run yet.
+    fn orphan(&self) -> crate::test_support::pidfd_wait::PidFd {
+        use crate::test_support::pidfd_wait::{PidFd, parse_pid};
+        crate::test_support::wait::wait_until("the orphan to write its pid", || {
+            std::fs::read_to_string(&self.pid)
+                .ok()
+                .is_some_and(|raw| parse_pid(&raw).is_ok())
+        });
+        let raw = std::fs::read_to_string(&self.pid).expect("orphan pid file");
+        let pid = parse_pid(&raw).expect("orphan pid");
+        PidFd::open(pid).expect("pidfd of the live orphan")
+    }
+
+    /// Lets the runner exit 1, which starts the teardown.
+    fn release_runner(&self) {
+        drop(
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&self.go)
+                .expect("open the runner's go FIFO"),
+        );
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -106,51 +199,39 @@ fn process_alive(pid: u32) -> bool {
 // -------------------------------------------------------------------------
 #[test]
 fn test_failure_path_reaps_orphaned_descendants() {
+    use crate::test_support::pidfd_wait::{KillOnDrop, wait_pid_gone};
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
-    let runner = temp.path().join("recipe-runner-rs");
-    let marker = temp.path().join("orphan-marker");
+    // The runner starts an orphan and then FAILS (exit 1), not a timeout.
+    let probe = OrphanProbe::new(temp.path());
 
-    // Spawn a descendant that writes the marker after 2s, then FAIL (exit 1).
-    // This is a failure, NOT a timeout.
-    write_stub(
-        &runner,
-        &format!(
-            "#!/bin/sh\n(/bin/sleep 2; echo leaked > '{}') &\nexit 1\n",
-            marker.display()
-        ),
-    );
-
-    let recipe = temp.path().join("recipe.yaml");
-    std::fs::write(&recipe, "name: fail-leak-probe\nsteps: []\n").expect("failed to write recipe");
-
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
+    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &probe.runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     // Ensure a fast failure is not misread as a timeout.
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
-    let result = execute::execute_recipe_via_rust(
-        &recipe,
-        &BTreeMap::new(),
-        false,
-        true,
-        temp.path(),
-        &[],
-        None,
+    let done = execute_on_worker(&probe.recipe, temp.path());
+    let orphan = KillOnDrop(probe.orphan());
+    probe.release_runner();
+    let failed = done
+        .recv_timeout(CEILING)
+        .expect("hung: execute_recipe_via_rust did not return");
+    assert!(failed, "non-zero runner exit must surface as an error");
+
+    // The orphan blocks until signalled, so it ends only if the teardown
+    // reaped it (issue #964); a surviving orphan fails here as hung.
+    wait_pid_gone(
+        &orphan.0,
+        "failure-path teardown to reap the orphaned recipe-runner descendant",
     );
-
-    result.expect_err("non-zero runner exit must surface as an error");
-
-    // Give the descendant time to write its marker if it was NOT reaped.
-    std::thread::sleep(Duration::from_millis(2_300));
     assert!(
-        !marker.exists(),
+        !probe.marker.exists(),
         "failure-path teardown must reap orphaned recipe-runner descendants \
          (issue #964): descendant survived and wrote {}",
-        marker.display()
+        probe.marker.display()
     );
 }
 
@@ -176,11 +257,16 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("graceful-marker");
 
+    // The runner blocks on a FIFO nobody opens for writing, so only the
+    // timeout's teardown ends it, however slow the host is.
+    let hold = temp.path().join("hold");
+    mkfifo(&hold);
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\ntrap 'echo graceful > \"{}\"; exit 0' TERM\n/bin/sleep 30\n",
-            marker.display()
+            "#!/bin/sh\ntrap 'echo graceful > \"{}\"; exit 0' TERM\n/bin/cat \"{}\" >/dev/null\n",
+            marker.display(),
+            hold.display()
         ),
     );
 
@@ -205,8 +291,8 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
 
     result.expect_err("hung recipe-runner must time out");
 
-    // Allow the SIGTERM trap to run and write the marker within the grace window.
-    std::thread::sleep(Duration::from_millis(2_000));
+    // The teardown reaps the runner before it returns, and the runner writes
+    // the marker in its SIGTERM trap before it exits: no wait is needed.
     assert!(
         marker.exists(),
         "graceful teardown must deliver SIGTERM before SIGKILL so the runner \
@@ -239,18 +325,31 @@ fn test_teardown_grace_window_is_configurable() {
     let _timeout_env = EnvVarGuard::set(RUNNER_TIMEOUT_ENV, "1");
     let grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "0");
 
-    // Runs one timeout->teardown cycle against a runner whose SIGTERM handler
-    // needs ~1s to finish; returns whether the clean-exit marker was written.
-    let run_once = |grace: &str| -> bool {
+    // Runs one timeout->teardown cycle; returns whether the SIGTERM handler's
+    // clean-exit marker was written. With `slow_cleanup` the handler first
+    // blocks on a FIFO nobody opens for writing, so only SIGKILL ends it.
+    // The teardown reaps the runner before it returns, so the marker, which
+    // the handler writes before the runner exits, is settled by then.
+    let run_once = |grace: &str, slow_cleanup: bool| -> bool {
         grace_env.apply(grace);
         let temp = tempfile::tempdir().expect("failed to create temp dir");
         let runner = temp.path().join("recipe-runner-rs");
         let marker = temp.path().join("clean-exit-marker");
+        let hold = temp.path().join("hold");
+        mkfifo(&hold);
+        let cleanup_hold = temp.path().join("cleanup-hold");
+        mkfifo(&cleanup_hold);
+        let on_term = if slow_cleanup {
+            format!("/bin/cat \"{}\" >/dev/null;", cleanup_hold.display())
+        } else {
+            String::new()
+        };
         write_stub(
             &runner,
             &format!(
-                "#!/bin/sh\ntrap '/bin/sleep 1; echo done > \"{}\"; exit 0' TERM\n/bin/sleep 30\n",
-                marker.display()
+                "#!/bin/sh\ntrap '{on_term} echo done > \"{}\"; exit 0' TERM\n/bin/cat \"{}\" >/dev/null\n",
+                marker.display(),
+                hold.display(),
             ),
         );
         let recipe = temp.path().join("recipe.yaml");
@@ -258,23 +357,18 @@ fn test_teardown_grace_window_is_configurable() {
 
         let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
         let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-        let result = execute::execute_recipe_via_rust(
-            &recipe,
-            &BTreeMap::new(),
-            false,
-            true,
-            temp.path(),
-            &[],
-            None,
-        );
-        result.expect_err("hung recipe-runner must time out");
-        // Wait comfortably past the 1s cleanup for either outcome to settle.
-        std::thread::sleep(Duration::from_millis(1_800));
+        let done = execute_on_worker(&recipe, temp.path());
+        let failed = done
+            .recv_timeout(CEILING)
+            .expect("hung: the teardown did not end the runner");
+        assert!(failed, "hung recipe-runner must time out");
         marker.exists()
     };
 
-    let wrote_with_zero_grace = run_once("0");
-    let wrote_with_ample_grace = run_once("4");
+    // grace = 0: the cleanup cannot finish before the escalation to SIGKILL.
+    let wrote_with_zero_grace = run_once("0", true);
+    // grace = 4: the cleanup is immediate, so the grace window lets it finish.
+    let wrote_with_ample_grace = run_once("4", false);
 
     assert!(
         !wrote_with_zero_grace,
@@ -302,6 +396,8 @@ fn test_teardown_grace_window_is_configurable() {
 // -------------------------------------------------------------------------
 #[test]
 fn test_teardown_is_scoped_to_runner_process_group() {
+    use crate::test_support::pidfd_wait::{KillOnDrop, wait_pid_gone};
+    use std::os::unix::process::ExitStatusExt;
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -309,62 +405,57 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
 
     // Sibling process in the TEST's process group (NOT the runner's session).
-    let mut sibling = std::process::Command::new("/bin/sleep")
-        .arg("8")
+    // It blocks on its stdin, so it exits only when the test closes it or a
+    // signal reaches it; its exit status tells the two apart.
+    let mut sibling = std::process::Command::new("/bin/cat")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
         .spawn()
         .expect("failed to spawn sibling process");
-    let sibling_pid = sibling.id();
+    struct Reap<'a>(&'a mut std::process::Child);
+    impl Drop for Reap<'_> {
+        fn drop(&mut self) {
+            drop(self.0.stdin.take());
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let sibling = Reap(&mut sibling);
 
-    let runner = temp.path().join("recipe-runner-rs");
-    let marker = temp.path().join("orphan-marker");
-    write_stub(
-        &runner,
-        &format!(
-            "#!/bin/sh\n(/bin/sleep 2; echo leaked > '{}') &\nexit 1\n",
-            marker.display()
-        ),
-    );
-    let recipe = temp.path().join("recipe.yaml");
-    std::fs::write(&recipe, "name: scope-probe\nsteps: []\n").expect("failed to write recipe");
-
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
+    let probe = OrphanProbe::new(temp.path());
+    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &probe.runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
-    let started = Instant::now();
-    let result = execute::execute_recipe_via_rust(
-        &recipe,
-        &BTreeMap::new(),
-        false,
-        true,
-        temp.path(),
-        &[],
-        None,
-    );
-    result.expect_err("non-zero runner exit must surface as an error");
+    let done = execute_on_worker(&probe.recipe, temp.path());
+    let orphan = KillOnDrop(probe.orphan());
+    probe.release_runner();
+    let failed = done
+        .recv_timeout(CEILING)
+        .expect("hung: execute_recipe_via_rust did not return");
+    assert!(failed, "non-zero runner exit must surface as an error");
 
     // Runner's own orphan must be reaped.
-    std::thread::sleep(Duration::from_millis(2_300));
+    wait_pid_gone(
+        &orphan.0,
+        "teardown to reap the runner's orphaned descendant (issue #964)",
+    );
     assert!(
-        !marker.exists(),
+        !probe.marker.exists(),
         "teardown must reap the runner's orphaned descendant (issue #964)"
     );
 
-    // The unrelated sibling (outside the runner's process group) must survive
-    // the teardown, proving the reaper is pgid-scoped and not a broadcast.
+    // The unrelated sibling (outside the runner's process group) must
+    // survive the teardown, proving the reaper is pgid-scoped and not a
+    // broadcast: closing its stdin ends it with status 0, where any signal
+    // the teardown sent would show as a signal death.
+    drop(sibling.0.stdin.take());
+    let status = crate::test_support::wait::wait_child("the sibling cat", sibling.0);
     assert!(
-        started.elapsed() < Duration::from_secs(8),
-        "test setup ran too long to validate sibling survival"
-    );
-    assert!(
-        process_alive(sibling_pid),
+        status.success() && status.signal().is_none(),
         "teardown must be scoped to the runner's process group and must NOT \
-         signal unrelated processes (issue #964)"
+         signal unrelated processes (issue #964): sibling ended with {status:?}"
     );
-
-    // Clean up the sibling deterministically.
-    unsafe { libc::kill(sibling_pid as libc::pid_t, libc::SIGKILL) };
-    let _ = sibling.wait();
 }
 
 // =========================================================================
@@ -844,8 +935,36 @@ fn generated_tree_ids_are_valid_and_distinct() {
 
 /// The caller holds the shared environment lock through restoration.
 fn fixture_environment() -> crate::test_support::EnvGuard {
-    let saved = crate::test_support::EnvGuard::capture(&["AMPLIHACK_AGENT_BINARY", "HOME"]);
+    let saved = crate::test_support::EnvGuard::capture(&[
+        "AMPLIHACK_AGENT_BINARY",
+        "AMPLIHACK_CLEANUP_ON_EXIT",
+        "HOME",
+    ]);
+    // Issue #2019: the runner and anything it stages see a temp HOME, never
+    // the developer's real ~/.amplihack.
+    let home = fixture_home();
+    unsafe { std::env::set_var("HOME", home) };
+    assert!(
+        std::env::var_os("HOME").is_some_and(|h| Path::new(&h).starts_with(std::env::temp_dir())),
+        "the recipe fixture's HOME must be under the temp dir"
+    );
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    // Issue #2067: the end-of-run sweep walks the real work root, which can
+    // take over a minute on a loaded host and break the wall-clock ceilings.
+    unsafe { std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0") };
     saved
+}
+
+/// One temp HOME for this test binary's recipe fixtures, kept for the
+/// process lifetime (the tests that use it run under `home_env_lock`).
+fn fixture_home() -> &'static Path {
+    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        tempfile::Builder::new()
+            .prefix("amplihack-recipe-home-")
+            .tempdir()
+            .expect("create the recipe fixture HOME")
+    })
+    .path()
 }
