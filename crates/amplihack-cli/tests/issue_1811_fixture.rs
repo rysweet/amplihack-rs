@@ -16,8 +16,9 @@
 //! The stub `claude` answers `--version`, appends `S <ns>` and `E <ns>`
 //! to `$RECORD_DIR/marks` around an optional hold: with `$STUB_HOLD` set it
 //! makes the FIFO `hold.<pid>`, touches `ready.<pid>` and blocks until the
-//! test opens that FIFO ([`Fixture::held`], [`Fixture::release`]). It writes its argv
-//! to `$RECORD_DIR/args.<pid>`, prints `STUB-OUT` and exits 0.
+//! test opens that FIFO ([`Fixture::held`], [`Fixture::release`]). It writes
+//! its argv to `$RECORD_DIR/args.<pid>`, prints `STUB-OUT` and exits 0. The
+//! readers of those records are in `issue_1811_fixture/records.rs`.
 
 #![cfg(unix)]
 #![allow(dead_code)]
@@ -28,6 +29,9 @@ use crate::support::profile_default::{give_logins, set_default};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+
+#[path = "issue_1811_fixture/records.rs"]
+mod records;
 use std::process::{Command, Output};
 
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
@@ -252,68 +256,6 @@ impl Fixture {
         let p = self.work.join("gov.yaml");
         fs::write(&p, RECIPE).unwrap();
         p
-    }
-
-    /// How many times the stub `claude` started.
-    pub fn claude_runs(&self) -> usize {
-        fs::read_to_string(self.records.join("marks"))
-            .unwrap_or_default()
-            .lines()
-            .filter(|l| l.starts_with("S "))
-            .count()
-    }
-
-    /// The largest number of stub `claude` processes running at once.
-    /// Pids of stubs that are running, admitted and held (`$STUB_HOLD`),
-    /// leaving out those in `released`.
-    pub fn held(&self, released: &std::collections::HashSet<String>) -> Vec<String> {
-        let mut pids: Vec<String> = fs::read_dir(&self.records)
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter_map(|e| {
-                        e.file_name()
-                            .to_str()
-                            .and_then(|n| n.strip_prefix("ready."))
-                            .map(str::to_string)
-                    })
-                    .filter(|pid| !released.contains(pid))
-                    .collect()
-            })
-            .unwrap_or_default();
-        pids.sort();
-        pids
-    }
-
-    /// Lets the held stub `pid` finish: opening its FIFO for writing and
-    /// closing it ends the stub's read.
-    pub fn release(&self, pid: &str) {
-        drop(
-            fs::OpenOptions::new()
-                .write(true)
-                .open(self.records.join(format!("hold.{pid}")))
-                .unwrap_or_else(|e| panic!("release stub {pid}: {e}")),
-        );
-    }
-
-    pub fn max_overlap(&self) -> usize {
-        let marks = fs::read_to_string(self.records.join("marks")).unwrap_or_default();
-        let mut events: Vec<(u128, i32)> = marks
-            .lines()
-            .filter_map(|l| {
-                let (k, t) = l.split_once(' ')?;
-                let t: u128 = t.trim().parse().ok()?;
-                Some((t, if k == "S" { 1 } else { -1 }))
-            })
-            .collect();
-        // At equal times, count an end before a start.
-        events.sort();
-        let (mut cur, mut max) = (0i32, 0i32);
-        for (_, d) in events {
-            cur += d;
-            max = max.max(cur);
-        }
-        max as usize
     }
 
     /// Every file under the temporary directory, with its bytes.
