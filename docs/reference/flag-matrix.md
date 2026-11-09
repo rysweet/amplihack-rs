@@ -125,7 +125,9 @@ The UVX rows describe automatic launcher injection only. Codex accepts explicit 
    only when already present. A `-p` profile is not a sandbox choice: the
    command-line `--sandbox` overrides the profile's `sandbox_mode`. The
    approvals bypass is never injected, and interactive argv (no `exec`) is
-   unchanged. See [Codex agent-step flags](./launch-flag-injection.md#codex-agent-step-flags)
+   unchanged. When the sandbox pair is added, amplihack writes one stderr
+   line naming the added items (issue #2010); no line is written when the
+   caller chose a sandbox. See [Codex agent-step flags](./launch-flag-injection.md#codex-agent-step-flags)
    and [Sandbox and hook trust for agent steps](../howto/install-codex-plugin.md#sandbox-and-hook-trust-for-agent-steps).
 
 6. **UVX plugin args**: `--plugin-dir` and `--add-dir` are injected only

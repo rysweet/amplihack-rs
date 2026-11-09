@@ -13,8 +13,8 @@
 #      or unmerged-meaningful worktrees are PRESERVED (archived first, never
 #      destroyed).
 #   2. Cleanup-on-failure — a failed/aborted run prunes its own worktree+branch,
-#      but only AFTER archiving/pushing any unique commits (never destroy
-#      unmerged meaningful work).
+#      but only AFTER archiving any unique commits to a local ref (never
+#      destroy unmerged meaningful work; nothing is pushed since #2061).
 #
 # Design (from the approved spec): the destructive lifecycle logic lives in a
 # self-contained helper `amplifier-bundle/tools/workflow_worktree_sweep.sh` to
@@ -147,7 +147,9 @@ STEP04="$(extract_step "${WORKTREE_YAML}" "step-04-setup-worktree")"
 if [[ -z "${STEP04}" ]]; then
     fail "A8-step" "could not extract step-04-setup-worktree from workflow-worktree.yaml"
 else
-    if printf '%s\n' "${STEP04}" | grep -qE 'workflow_worktree_sweep\.sh'; then
+    # Here-strings, not `printf | grep -q`: grep -q exits on the first match and,
+    # under pipefail, the SIGPIPE to printf would fail this check intermittently.
+    if grep -qE 'workflow_worktree_sweep\.sh' <<<"${STEP04}"; then
         pass "A8-invoke" "step-04 invokes workflow_worktree_sweep.sh"
     else
         fail "A8-invoke" "step-04 does not invoke workflow_worktree_sweep.sh"
@@ -156,8 +158,8 @@ fi
 
 # A9: the inline sweep call is best-effort (graceful no-op): guarded by a
 # file-existence test and/or `|| true` so a missing helper never aborts setup.
-if printf '%s\n' "${STEP04}" | grep -E 'workflow_worktree_sweep\.sh' \
-       | grep -qE '(\|\| true|-f )'; then
+SWEEP_CALLS="$(grep -E 'workflow_worktree_sweep\.sh' <<<"${STEP04}" || true)"
+if grep -qE '(\|\| true|-f )' <<<"${SWEEP_CALLS}"; then
     pass "A9-best-effort" "step-04 sweep call is best-effort (guarded / '|| true')"
 else
     fail "A9-best-effort" "step-04 sweep call is not guarded best-effort"
