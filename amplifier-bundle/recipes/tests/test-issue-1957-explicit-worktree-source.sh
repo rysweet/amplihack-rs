@@ -16,7 +16,8 @@
 #                   refs/remotes/origin/<b> resolves); exit 1 one ERROR line
 #                   (verified but the name is invalid, the ref is missing, or
 #                   the context cannot be read); exit 3 no verified base.
-#   requested-inputs  exit 0 base_branch or base_sha was given; exit 3 neither;
+#   requested-inputs  exit 0 base_branch or base_sha was given; exit 3 neither,
+#                   or worktree_setup.source_verified is exactly not-applicable;
 #                   exit 1 the context cannot be read (a missing helper counts
 #                   as "cannot read"). Prints nothing on stdout.
 #
@@ -288,7 +289,7 @@ awk '/^[[:space:]]*- id: "step3-setup-worktree"[[:space:]]*$/ { found = 1; next 
 
 # The inputs are captured before anything else in the body can assign
 # BASE_BRANCH (the recipes' own local variable of that name).
-first_code_lines() { grep -vE '^[[:space:]]*(#|$)' "$1" | head -n 2; }
+first_code_lines() { awk '!/^[[:space:]]*(#|$)/ { if (++n <= 2) print }' "$1"; }
 for s in "$STEP04" "$STEP3"; do
     check A13 "$(basename "$s") captures REQ_BASE_BRANCH and REQ_BASE_SHA on its first code lines" \
         test "$(first_code_lines "$s")" = "$(printf '%s\n%s' 'REQ_BASE_BRANCH="${BASE_BRANCH:-}"' 'REQ_BASE_SHA="${BASE_SHA:-}"')"
@@ -605,19 +606,53 @@ check d4 "sha only, present locally, fetch failed: refused, not trusted offline"
     bash -c '[[ "$1" == *"base_sha '"'"'$2'"'"'"* ]]' _ "$(last_line "$RES_ERR")" "$D_OLD"
 resolve "$D" --recipe default --repo "$D" --base-sha "$MISSING_SHA"
 expect_refusal d5 refuse-fetch-failed
-# A failed run makes at most two git fetch calls (plain strict, then the
-# explicit-refspec strict) and never sleeps.
+# A failed run makes exactly one git fetch call (D2) and never sleeps.
 : > "${SCRATCH}/git-calls"; rm -f "${SCRATCH}/sleep-calls"
 RES_RC=0
 (cd "$D" && env -i "${BASE_ENV[@]}" PATH="$STUB_PATH" bash "$SRC" resolve --recipe default --repo "$D" --base-branch dev) \
     >/dev/null 2>"${SCRATCH}/res.err" </dev/null || RES_RC=$?
-check d-all "a failed fetch is refused (rc=$RES_RC) after at most two fetch calls ($(grep -c '^fetch ' "${SCRATCH}/git-calls"))" \
-    bash -c '[[ "$1" = 1 ]] && (( $(grep -c "^fetch " "$2") >= 1 && $(grep -c "^fetch " "$2") <= 2 ))' _ "$RES_RC" "${SCRATCH}/git-calls"
+check d-all "a failed fetch is refused (rc=$RES_RC) after exactly one fetch call ($(grep -c '^fetch ' "${SCRATCH}/git-calls"))" \
+    bash -c '[[ "$1" = 1 ]] && (( $(grep -c "^fetch " "$2") == 1 ))' _ "$RES_RC" "${SCRATCH}/git-calls"
 check d-all "a failed fetch never sleeps" test ! -e "${SCRATCH}/sleep-calls"
 git -C "$D" remote set-url origin "$DREMOTE"
 resolve "$D" --recipe default --repo "$D" --base-branch dev
 expect_ok d6 verified fetched
 check d-all "no D1 refusal created a branch or worktree" test "$(snap "$D")" = "$D_BEFORE"
+
+# --- T-partial: origin is reachable and the branch exists, but the branch
+# fetch fails. That is a fetch failure, not a missing branch (17b #3). A stub
+# fails every `git fetch` that carries a refspec and forwards everything else.
+PSTUBS="${SCRATCH}/pstubs"
+mkdir -p "$PSTUBS"
+cat > "$PSTUBS/git" <<STUB
+#!/bin/sh
+case "\$*" in
+    *fetch*+refs/heads/*) echo "fatal: simulated transfer failure" >&2; exit 128 ;;
+esac
+exec "$REAL_GIT" "\$@"
+STUB
+chmod +x "$PSTUBS/git"
+RES_RC=0
+(cd "$D" && env -i "${BASE_ENV[@]}" PATH="${PSTUBS}:${PATH}" bash "$SRC" resolve --recipe default --repo "$D" --base-branch dev) \
+    >"${SCRATCH}/res.out" 2>"${SCRATCH}/res.err" </dev/null || RES_RC=$?
+RES_OUT="$(cat "${SCRATCH}/res.out")"; RES_ERR="$(cat "${SCRATCH}/res.err")"
+expect_refusal T-partial refuse-fetch-failed
+check T-partial "the branch exists on origin, so the refusal is not refuse-missing-branch" \
+    bash -c '! printf "%s\n" "$1" | grep -qxF "RULE: refuse-missing-branch"' _ "$RES_ERR"
+RES_RC=0
+(cd "$D" && env -i "${BASE_ENV[@]}" PATH="${PSTUBS}:${PATH}" bash "$SRC" resolve --recipe default --repo "$D" --base-branch no-such-branch) \
+    >"${SCRATCH}/res.out" 2>"${SCRATCH}/res.err" </dev/null || RES_RC=$?
+RES_OUT="$(cat "${SCRATCH}/res.out")"; RES_ERR="$(cat "${SCRATCH}/res.err")"
+expect_refusal T-partial refuse-missing-branch
+check T-partial "no D1 refusal created a branch or worktree" test "$(snap "$D")" = "$D_BEFORE"
+
+# --- S2: C1 control bytes (0x80-0x9F) and DEL in a path are replaced ---
+resolve "$T" --recipe default --repo "${SCRATCH}/c1"$'\x9b'"31m"$'\x85\x7f' --base-branch dev
+expect_refusal T-c1 refuse-origin-identity
+check T-c1 "stderr has no byte in 0x7F-0x9F" \
+    bash -c '[ -z "$(printf "%s" "$1" | LC_ALL=C tr -dc "\177-\237")" ]' _ "$RES_ERR"
+check T-c1 "the replaced bytes show as ?" \
+    bash -c '[[ "$1" == *"c1?31m??"* ]]' _ "$(last_line "$RES_ERR")"
 
 # --- SR-6: a path with a newline cannot forge a second ERROR line ---
 resolve "$T" --recipe default --repo "${SCRATCH}/nl"$'\n'"ERROR: fake" --base-branch dev
@@ -774,6 +809,20 @@ check B-ri "base_branch given: exit 0 and nothing on stdout (rc=$RI_RC)" test "$
 ri RECIPE_VAR_base_sha="$DEV_OLD"
 check B-ri "base_sha given: exit 0 and nothing on stdout (rc=$RI_RC)" test "$RI_RC" = 0 -a -z "$RI_OUT"
 check B-ri "the SHA value is never printed" bash -c '[[ "$1" != *"$2"* ]]' _ "$RI_OUT$RI_ERR" "$DEV_OLD"
+# B-na: step 4 ignored the inputs on the existing-branch path and recorded
+# not-applicable, so they count as not requested (crusty round-1, concern 2).
+# Only the exact value counts; a lost worktree_setup still reports the inputs.
+ri RECIPE_VAR_base_branch=dev RECIPE_VAR_base_sha="$DEV_OLD" \
+    "$(ws '{"source_verified":"not-applicable","source_rule":"existing-branch","base_branch":""}')"
+check B-na "not-applicable with base_branch and base_sha set: exit 3 (rc=$RI_RC)" test "$RI_RC" = 3 -a -z "$RI_OUT"
+check B-na "not-applicable: one INFO line naming the ignored inputs, no ERROR" \
+    bash -c '[[ "$1" == "INFO: "*"not-applicable"* ]] && ! printf "%s\n" "$1" | grep -q "^ERROR: "' _ "$RI_ERR"
+for sv in legacy verified Not-Applicable "not-applicable " ""; do
+    ri RECIPE_VAR_base_branch=dev "$(ws "{\"source_verified\":\"$sv\"}")"
+    check B-na "source_verified '$sv' with base_branch set: exit 0 (rc=$RI_RC)" test "$RI_RC" = 0
+done
+ri RECIPE_VAR_base_branch=dev "$(ws '{"base_branch":"dev"}')"
+check B-na "source_verified absent with base_branch set: exit 0 (rc=$RI_RC)" test "$RI_RC" = 0
 CTXOK="${SCRATCH}/ctx-ok.json"
 printf '{"base_branch":"dev"}\n' > "$CTXOK"
 ri AMPLIHACK_CONTEXT_FILE="$CTXOK"
@@ -856,12 +905,13 @@ pt_refused() {
     check "$1" "$2 ($3): exits non-zero (rc=$PT_RC)" test "$PT_RC" != 0
     check "$1" "$2 ($3): stderr has the D3 ERROR line" \
         bash -c 'printf "%s\n" "$1" | grep -qxF "$2"' _ "$PT_ERR" "$D3_ERR"
-    check "$1" "$2 ($3): gh is never called past auth (got: $(printf '%s' "$PT_GH" | head -n 1))" test -z "$PT_GH"
+    check "$1" "$2 ($3): gh is never called past auth (got: ${PT_GH%%$'\n'*})" test -z "$PT_GH"
     check "$1" "$2 ($3): no success line" \
         bash -c '[[ "$1" != *"All 23 workflow steps completed successfully"* ]]' _ "$PT_OUT"
     check "$1" "$2 ($3): no legacy base was chosen (no origin/HEAD fallback message)" \
         bash -c '[[ "$1" != *"no supported remote base ref"* ]]' _ "$PT_ERR"
 }
+pub_field() { awk '/^\{/{l=$0} END{print l}' <<<"$PT_OUT" | jq -r --arg k "$1" '.[$k] // ""' 2>/dev/null; }
 PR_EVIDENCE=(
     'RECIPE_VAR_implementation_terminal_evidence={"implementation_completed":true}'
     'RECIPE_VAR_verification_terminal_evidence={"verification_completed":true}'
@@ -895,11 +945,28 @@ for tool in workflow_publish_pr.sh workflow_pr_ready.sh workflow_final_status.sh
     check P-legacy "$tool (no inputs): no verified-base or requested-inputs ERROR" \
         bash -c '! printf "%s\n" "$1" | grep -qE "^ERROR: (cannot read|verified base_branch)"' _ "$PT_ERR"
     check P-legacy "$tool (no inputs): legacy resolution did not abort; the tool reached gh" test -n "$PT_GH"
+    # P-na: existing_branch plus base_branch. Step 4 recorded not-applicable
+    # and ignored the inputs, so the PR tools take the legacy chain as for a
+    # run with no inputs, never the D3 refusal.
+    run_pr_tool "$tool" RECIPE_VAR_base_branch=dev RECIPE_VAR_existing_branch=feat/issue-1957-pr-probe "${PR_EVIDENCE[@]}" \
+        'RECIPE_VAR_worktree_setup={"source_verified":"not-applicable","source_rule":"existing-branch","base_ref":"","base_branch":"","base_sha":""}'
+    check P-na "$tool (existing branch, base_branch set, not-applicable): no D3 ERROR" \
+        bash -c '! printf "%s\n" "$1" | grep -qxF "$2"' _ "$PT_ERR" "$D3_ERR"
+    check P-na "$tool (existing branch, base_branch set, not-applicable): no ERROR line from base resolution" \
+        bash -c '! printf "%s\n" "$1" | grep -qE "^ERROR: (cannot read|verified base_branch|base_branch/base_sha given)"' _ "$PT_ERR"
+    check P-na "$tool (existing branch, base_branch set, not-applicable): the legacy chain was used; the tool reached gh" test -n "$PT_GH"
+    if [ "$tool" = workflow_publish_pr.sh ]; then
+        check P-na "$tool (not-applicable): no FAILED_INVALID_INPUT publish result" \
+            bash -c '[[ "$1" != FAILED_INVALID_INPUT ]]' _ "$(pub_field state)"
+    fi
+    if [ "$tool" = workflow_final_status.sh ]; then
+        check P-na "$tool (not-applicable): not FAILED_BASE_NOT_VERIFIED" \
+            bash -c '[[ "$1" != *FAILED_BASE_NOT_VERIFIED* ]]' _ "$PT_OUT$PT_ERR"
+    fi
 done
 
 # P-publish-result: a D3 refusal in workflow_publish_pr.sh still writes its
 # publish result through finish_publish (FAILED_INVALID_INPUT / invalid-input).
-pub_field() { awk '/^\{/{l=$0} END{print l}' <<<"$PT_OUT" | jq -r --arg k "$1" '.[$k] // ""' 2>/dev/null; }
 for pub_case in "base_branch given, no worktree_setup|RECIPE_VAR_base_branch=dev" \
                 "unreadable context|AMPLIHACK_CONTEXT_FILE=${CTXBAD}"; do
     run_pr_tool workflow_publish_pr.sh "${pub_case#*|}" "${PR_EVIDENCE[@]}"
@@ -947,7 +1014,7 @@ run_recipe() {
     WT="$(json_get "$RUN_JSON" worktree_path)"
 }
 wt_head() { git -C "$WT" rev-parse HEAD 2>/dev/null; }
-run_tail() { printf '%s\n' "$RUN_STDERR" | tail -n 4 | tr '\n' '|'; }
+run_tail() { awk '{ l[NR] = $0 } END { for (i = (NR > 4 ? NR - 3 : 1); i <= NR; i++) printf "%s|", l[i] }' <<<"$RUN_STDERR"; }
 
 for R_ in default consensus; do
     echo " -- recipe: $R_"

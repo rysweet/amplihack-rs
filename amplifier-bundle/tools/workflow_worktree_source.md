@@ -62,6 +62,12 @@ workflow_worktree_source.sh requested-inputs
 stdout carries only machine output. Every `INFO:`, `WARNING:`, `RULE:` and
 `ERROR:` line goes to stderr.
 
+`verify-worktree` has three uses: `created --cleanup-created` for a new branch
+and worktree, `reused --cleanup-created` for a worktree attached in this run to
+a branch that already existed (on failure the worktree is removed and the
+branch is kept), and `reused` without the flag for a branch and worktree that
+both existed.
+
 ### Example: start a workflow from `dev`
 
 ```bash
@@ -174,8 +180,10 @@ outside the allow-list replaced by `?`. A crafted input therefore cannot write a
 fake `RULE:` or `ERROR:` line, or send control bytes to the terminal.
 
 Paths (`--repo`, the worktree, the main repository, `show-toplevel` output) are
-printed in full, with every control byte, including newline and carriage
-return, replaced by `?`. A path that contains a newline therefore cannot add a
+printed in full, with every control byte replaced by `?`: 0x00 to 0x1F
+(including newline and carriage return), DEL, and 0x80 to 0x9F, which some
+terminals act on. The replacement is bytewise, so a non-ASCII letter whose
+UTF-8 form uses a byte in 0x80 to 0x9F is shown partly as `?`. A path that contains a newline therefore cannot add a
 second `ERROR:` line either.
 
 ### What resolve never does on the explicit path
@@ -282,17 +290,25 @@ workflow_worktree_source.sh requested-inputs; echo "exit $?"
 # Output: exit 0
 ```
 
-It takes no arguments; any argument is a usage error (exit 2). It reads the
-top-level `base_branch` and `base_sha` with
-`recipe_context_value.sh <key> -`, and prints nothing on stdout, so the values
-never reach a log.
+It takes no arguments; any argument is a usage error (exit 2). It first reads
+`worktree_setup.source_verified`. When that is exactly `not-applicable`, step 4
+took the `existing_branch` or `pr_number` path and ignored `base_branch` and
+`base_sha` (it says so in an `INFO:` line), so the inputs count as not
+requested: it prints one `INFO:` line on stderr and exits 3, and the PR tools
+use the legacy chain. Otherwise it reads the top-level `base_branch` and
+`base_sha` with `recipe_context_value.sh <key> -`. It prints nothing on stdout,
+so the values never reach a log.
+
+An absent `worktree_setup.source_verified` does not count as `not-applicable`:
+the input check still runs, so a lost `worktree_setup` with inputs set is
+refused rather than falling back.
 
 | Exit | When |
 |---|---|
-| 0 | `base_branch` or `base_sha` is non-empty. |
-| 1 | `recipe_context_value.sh` exits 1 or 2 for either key, or is missing from the bundle. One `ERROR:` line. A context that cannot be read is never taken as "not requested". |
+| 0 | `source_verified` is not `not-applicable`, and `base_branch` or `base_sha` is non-empty. |
+| 1 | `recipe_context_value.sh` exits 1 or 2 for `worktree_setup.source_verified` or either key, or is missing from the bundle. One `ERROR:` line. A context that cannot be read is never taken as "not requested". |
 | 2 | Any argument was given. |
-| 3 | Both keys are absent or empty. |
+| 3 | `source_verified` is exactly `not-applicable`, or both keys are absent or empty. |
 
 ---
 
@@ -338,6 +354,7 @@ supported remote ref resolves, so a caller can tell "refused" (2) from
 | 1 or 2 | not run | Refuse. |
 | 3 | 3 | Legacy chain (`origin/HEAD`, then the fallbacks), unchanged. |
 | 3 | 0 | Refuse: inputs were given but nothing was verified. |
+| 3 (`not-applicable`) | 3 | Legacy chain: step 4 ignored the inputs on the existing-branch path. |
 | 3 | 1 or 2 | Refuse: the context cannot be read. |
 
 The call sites capture the function's status the same way, and lose their
@@ -397,7 +414,7 @@ Runs that never set either input see exit 3 twice and behave as before.
 | 0 | Success. For `resolve`, the six output lines were printed. |
 | 1 | Refused. Exactly one `ERROR:` line, and it is always the last line on stderr. For `resolve`, nothing was created. `verify-worktree` runs after the worktree exists; what the recipe then removes is in the [cleanup table](#how-the-recipes-call-it). |
 | 2 | Usage error: unknown subcommand, unknown or repeated flag, missing value, or any argument to `verified-base` or `requested-inputs`. |
-| 3 | `verified-base`: no verified base. `requested-inputs`: no input was given. Never used by `resolve` or `verify-worktree`. |
+| 3 | `verified-base`: no verified base. `requested-inputs`: no input was given, or step 4 recorded `not-applicable`. Never used by `resolve` or `verify-worktree`. |
 
 ---
 
@@ -425,8 +442,8 @@ On a refusal stdout is empty and the `RULE:` line on stderr names the refusal:
 |---|---|
 | `refuse-invalid-input` | `base_branch` or `base_sha` failed the input rules. |
 | `refuse-origin-identity` | No `origin` remote, or `--repo` is not the repository top. |
-| `refuse-fetch-failed` | An input was set and the plain strict fetch failed. |
-| `refuse-missing-branch` | `refs/remotes/origin/<b>` does not exist after the fetch. |
+| `refuse-fetch-failed` | An input was set and the strict fetch failed for any reason other than a missing branch. |
+| `refuse-missing-branch` | The branch fetch failed and `git ls-remote --exit-code` reports no `refs/heads/<b>` on origin, or `refs/remotes/origin/<b>` does not exist after the fetch. |
 | `refuse-missing-sha` | `base_sha` is not in the object database. |
 | `refuse-not-commit` | `base_sha` names a tag, tree or blob: `rev-parse --verify <sha>^{commit}` does not equal `<sha>`. |
 | `refuse-not-contained` | `base_sha` is not an ancestor of `origin/<b>`. |
@@ -445,16 +462,18 @@ runs earlier and is not undone.)
 2. **Identity check before the fetch.** `origin` exists, and the physical
    `--repo` equals `git rev-parse --show-toplevel`. The origin URL is piped
    straight into `git hash-object --stdin` and never printed.
-3. **Strict fetch.** First `workflow_fetch_origin.sh --strict`; its failure
-   means origin is unreachable and the run refuses with `refuse-fetch-failed`
-   (see [When the fetch fails](#when-the-fetch-fails)). With a branch, then
-   `workflow_fetch_origin.sh --strict +refs/heads/<b>:refs/remotes/origin/<b>`.
-   Each strict fetch is one attempt, so a failed run makes at most two `git
-   fetch` calls and never sleeps.
-   The explicit refspec means a narrowed `remote.origin.fetch` cannot leave
-   `origin/<b>` stale. If that second fetch fails after the first worked, the
-   branch is not on origin (`refuse-missing-branch`); a cached `origin/<b>` is
-   not used.
+3. **Strict fetch.** One `workflow_fetch_origin.sh --strict` call. With a
+   branch it fetches only `+refs/heads/<b>:refs/remotes/origin/<b>`, so a
+   narrowed `remote.origin.fetch` cannot leave `origin/<b>` stale; with a SHA
+   alone it is a plain fetch. Strict mode is one attempt, so a run makes one
+   `git fetch` call and never sleeps. A refspec fetch also fails when the
+   branch is not on origin, so after a failed branch fetch the tool runs
+   `git ls-remote --exit-code origin refs/heads/<b>` only to name the reason:
+   exit 2 (origin answered and has no such branch) gives
+   `refuse-missing-branch`; any other result, including a fetch that failed
+   while the branch exists, gives `refuse-fetch-failed` (see
+   [When the fetch fails](#when-the-fetch-fails)). Both refuse, and a cached
+   `origin/<b>` is never used.
 4. **Result checks**, only after a fetch that exited 0. The branch tip exists.
    For a SHA, `git rev-parse --verify --quiet <sha>^{commit}` must print
    exactly `<sha>`. When it does not, `git cat-file -e <sha>` decides the
@@ -471,7 +490,10 @@ After the recipe creates the worktree, `verify-worktree` runs the checks in
 ## When the fetch fails
 
 A failure means the strict `git fetch` exited non-zero. Strict mode makes one
-attempt with no retry and no sleep. Nothing is inferred from other signals.
+attempt with no retry and no sleep. The only other signal read is the
+`git ls-remote --exit-code` check described in step 3 of the resolve order,
+which picks `refuse-missing-branch` over `refuse-fetch-failed` when origin
+answers that the branch does not exist.
 
 | Inputs | Fetch failed | Result | Exit | `source_verified` | `source_rule` |
 |---|---|---|---|---|---|
@@ -721,6 +743,8 @@ recipes, extracted with awk, and covers:
 | f | `base_sha` alone; both inputs, contained and not contained | Success, success at the SHA, refusal. |
 | g | no inputs | Legacy `base_ref`, the WARNING, `source_verified=legacy`. |
 | h | `existing_branch` plus base inputs | `source_verified=not-applicable`. |
+| B | `requested-inputs` with `source_verified=not-applicable` and `base_branch`/`base_sha` set | Exit 3 with one `INFO:` line; `legacy`, `verified`, near-miss spellings and an absent field still exit 0. |
+| P | all three real PR tools with `existing_branch`, `base_branch` set and `source_verified=not-applicable` | Legacy chain, no D3 refusal; publish is not `FAILED_INVALID_INPUT` and final status is not `FAILED_BASE_NOT_VERIFIED`. |
 | B | `verified-base` with `legacy`, `not-applicable`, an unknown value, `verified` with a missing ref | Exit 3, 3, 3, and 1 with one ERROR line. |
 | B | inputs given and no `worktree_setup`; a SHA-only run | All three real PR tools, run under their own `set -euo pipefail`, refuse with the `ERROR:` line, and a `gh` stub that fails if called is never reached. |
 | B | no inputs and no verified base (`verified-base` 3, `requested-inputs` 3) | All three real PR tools, run under `set -euo pipefail`, finish and use the legacy base from `origin/HEAD`. |

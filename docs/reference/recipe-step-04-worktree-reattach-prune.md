@@ -81,13 +81,12 @@ branch lists unchanged.
 1. Validate the inputs.
 2. Identity check: `origin` exists and the physical `MAIN_REPO_PATH` equals
    `git rev-parse --show-toplevel`.
-3. Strict fetch, one attempt each with no retry or sleep: a plain
-   `git fetch origin --no-tags` first, so a failure means origin is
-   unreachable, then the explicit refspec
-   `+refs/heads/<b>:refs/remotes/origin/<b>`. A refspec fetch that fails after
-   the plain fetch worked means the branch is not on origin
-   (`refuse-missing-branch`).
-4. If the plain fetch failed, refuse with `refuse-fetch-failed` whatever the
+3. One strict fetch, one attempt with no retry or sleep. With a branch it
+   fetches only `+refs/heads/<b>:refs/remotes/origin/<b>`; with a SHA alone it
+   is a plain `git fetch origin --no-tags`. When the branch fetch fails,
+   `git ls-remote --exit-code origin refs/heads/<b>` names the reason: exit 2
+   means the branch is not on origin (`refuse-missing-branch`).
+4. Any other fetch failure refuses with `refuse-fetch-failed` whatever the
    inputs. A cached `origin/<b>` or a locally present commit is never used in
    place of a fresh fetch.
 5. `git rev-parse --verify --quiet <sha>^{commit}` must print exactly

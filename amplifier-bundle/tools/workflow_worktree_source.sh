@@ -10,6 +10,9 @@
 #       [--base-branch <branch>] [--base-sha <sha>]
 #   workflow_worktree_source.sh verify-worktree <worktree-path> <sha> created|reused \
 #       <main-repo-path> <origin-fingerprint> [--branch <branch>] [--cleanup-created]
+#     A worktree attached in this run to a branch that already existed is checked
+#     as `reused --cleanup-created`: on failure the worktree is removed and the
+#     branch is kept.
 #   workflow_worktree_source.sh verified-base
 #   workflow_worktree_source.sh requested-inputs
 #
@@ -26,9 +29,10 @@
 #   3  no verified base: legacy, not-applicable, any other value, an absent
 #      field, no context, or a SHA-only run (base_branch empty)
 #
-# requested-inputs: 0 base_branch or base_sha was given, 3 neither, 1 the
-# context cannot be read (one ERROR line), 2 usage error. Prints nothing on
-# stdout and never prints a value.
+# requested-inputs: 0 base_branch or base_sha was given, 3 neither, or
+# worktree_setup.source_verified is exactly `not-applicable` (step 4 ignored
+# the inputs on the existing-branch path), 1 the context cannot be read (one
+# ERROR line), 2 usage error. Prints nothing on stdout and never prints a value.
 #
 # Rules this file keeps: no eval, every expansion quoted, `git -C` on every git
 # call, and the origin URL is only ever piped into `git hash-object`, never
@@ -50,11 +54,13 @@ show() {
     printf '%s' "${1:0:64}" | tr -c 'A-Za-z0-9._/+-' '?'
 }
 
-# show_path <path>: the path with every control byte (newline, CR, escape)
-# replaced by `?`. Not truncated, so the path stays usable for diagnosis, but
-# it cannot start a new RULE:/ERROR: line (SR-6).
+# show_path <path>: the path with every control byte replaced by `?`: 0x00-0x1F
+# (newline, CR, escape), DEL and the C1 bytes 0x80-0x9F, which some terminals
+# act on. Bytewise (LC_ALL=C), so a UTF-8 letter that uses a byte in 0x80-0x9F
+# shows partly as `?`. Not truncated, so the path stays usable for diagnosis,
+# but it cannot start a new RULE:/ERROR: line (SR-6).
 show_path() {
-    printf '%s' "$1" | tr '[:cntrl:]' '?'
+    printf '%s' "$1" | tr '\000-\037\177-\237' '?'
 }
 
 usage() {
@@ -248,18 +254,29 @@ cmd_resolve() {
     fp="$(origin_fingerprint "$repo")"
     [ -n "$fp" ] || refuse refuse-origin-identity "cannot read the origin remote of $(show_path "$repo") (issue #1957)."
 
-    # 3. Strict fetch. A plain fetch first, so a failure means origin is
-    # unreachable; then the explicit refspec, so a narrowed remote.origin.fetch
-    # cannot leave origin/<b> stale. A refspec fetch that fails after a plain
-    # fetch worked means the branch is not on origin.
-    local fetched=1 branch_fetched=1
-    run_fetch "$repo" --strict || fetched=0
-    if [ "$fetched" -eq 1 ] && [ -n "$bb" ]; then
-        run_fetch "$repo" --strict "+refs/heads/${bb}:refs/remotes/origin/${bb}" || branch_fetched=0
+    # 3. One strict fetch (D2). With a branch it carries the explicit refspec,
+    # so a narrowed remote.origin.fetch cannot leave origin/<b> stale; without
+    # one it is a plain fetch. A refspec fetch also fails when the branch is
+    # not on origin, so after a failure `git ls-remote --exit-code` only names
+    # the reason: exit 2 (origin answered, no such branch) is
+    # refuse-missing-branch, anything else is refuse-fetch-failed. Both refuse.
+    local fetched=1 missing_branch=0
+    if [ -n "$bb" ]; then
+        run_fetch "$repo" --strict "+refs/heads/${bb}:refs/remotes/origin/${bb}" || fetched=0
+        if [ "$fetched" -eq 0 ]; then
+            local ls_rc=0
+            git -C "$repo" ls-remote --exit-code origin "refs/heads/${bb}" >/dev/null 2>&1 || ls_rc=$?
+            [ "$ls_rc" -ne 2 ] || missing_branch=1
+        fi
+    else
+        run_fetch "$repo" --strict || fetched=0
     fi
 
     # 4. D1: with an explicit input, a failed fetch always refuses. Cached
     # refs, or an object already in the clone, never stand in for a fetch.
+    if [ "$missing_branch" -eq 1 ]; then
+        refuse refuse-missing-branch "base_branch '$bb' not found on origin in $(show_path "$repo") (refs/remotes/origin/$bb missing after fetch) (issue #1957)."
+    fi
     if [ "$fetched" -eq 0 ]; then
         refuse refuse-fetch-failed "git fetch origin failed in $(show_path "$repo") (requested base_branch '$(show "$bb")', base_sha '$(show "$bs")'); cached refs cannot prove freshness, so no worktree is created (issue #1957)."
     fi
@@ -267,8 +284,7 @@ cmd_resolve() {
     # 5. Result checks.
     local tip=""
     if [ -n "$bb" ]; then
-        [ "$branch_fetched" -eq 1 ] \
-            && tip="$(git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/${bb}^{commit}" 2>/dev/null)" \
+        tip="$(git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/${bb}^{commit}" 2>/dev/null)" \
             && [ -n "$tip" ] \
             || refuse refuse-missing-branch "base_branch '$bb' not found on origin in $(show_path "$repo") (refs/remotes/origin/$bb missing after fetch) (issue #1957)."
     fi
@@ -427,7 +443,24 @@ cmd_verified_base() {
 
 cmd_requested_inputs() {
     [ "$#" -eq 0 ] || usage "requested-inputs takes no arguments"
-    local key v rc any=0
+    local key v rc any=0 sv="" rc_sv=0
+    # Step 4 ignores base_branch/base_sha on the existing_branch and pr_number
+    # paths and records source_verified `not-applicable`. Those inputs were not
+    # used, so they are reported as not requested and the PR tools take the
+    # legacy chain, as step 4 promised. Only the exact recorded value counts:
+    # an absent worktree_setup still falls through to the input check below,
+    # so a lost worktree_setup is never taken as "nothing asked for".
+    sv="$(context_value worktree_setup.source_verified)" || rc_sv=$?
+    case "$rc_sv" in
+        0) if [ "$sv" = not-applicable ]; then
+               echo "INFO: worktree_setup.source_verified is not-applicable (existing-branch path); base_branch/base_sha were ignored by step 4, so they count as not requested (issue #1957)." >&2
+               return 3
+           fi ;;
+        3) ;;
+        *)
+            echo "ERROR: cannot read worktree_setup.source_verified from the recipe context (helper exit $rc_sv); refusing to treat the inputs as not given (issue #1957)." >&2
+            return 1 ;;
+    esac
     for key in base_branch base_sha; do
         rc=0
         v="$(context_value "$key")" || rc=$?
