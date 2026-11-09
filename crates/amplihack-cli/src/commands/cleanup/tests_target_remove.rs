@@ -449,7 +449,17 @@ fn link_roots_without_the_variable_are_the_managed_roots_and_reject_foreign_owne
         "managed roots only: {:?}",
         none.allowed()
     );
-    assert!(!none.allowed().iter().any(|a| a.starts_with("/d0")));
+    // Exactly the managed roots, whatever disk the test folder is on (a
+    // check for "/d0" failed when TMPDIR was on /d0).
+    let managed = [
+        fs::canonicalize(&fx.targets).unwrap(),
+        fs::canonicalize(&fx.hook_base).unwrap(),
+    ];
+    assert!(
+        none.allowed().iter().all(|a| managed.contains(a)),
+        "managed roots only: {:?}",
+        none.allowed()
+    );
 
     let foreign = fx.links_with(&[fx.disk.as_path()], euid().wrapping_add(1));
     assert!(
