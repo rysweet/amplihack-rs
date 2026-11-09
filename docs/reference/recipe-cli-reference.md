@@ -202,7 +202,9 @@ The final correlation record has `status: "orphaned"`; see
 [Recipe Run Correlation Reference](./recipe-run-correlation.md#final-statuses).
 When `AMPLIHACK_AUTODRIVE_STATE_DIR` is set, the run also writes
 `orphaned.json` there; see
-[Orphaned rounds](./auto-drive-to-merge.md#orphaned-rounds).
+[Orphaned rounds](./auto-drive-to-merge.md#orphaned-rounds). `recipe run`
+removes `AMPLIHACK_AUTODRIVE_STATE_DIR` from its runner's environment, so runs
+nested below that level never write the file.
 
 The parent is always another `amplihack recipe run`, never the human's shell
 or Claude session. A top-level run, including the pane root of a `--detach`
@@ -260,7 +262,7 @@ amplihack recipe show default-workflow --format yaml
 | `AMPLIHACK_RECIPE_SNIPPET_BYTES` | runner | Maximum recent output bytes retained per child source and stream. |
 | `AMPLIHACK_PARENT_RECIPE_PID` | nested `recipe run` | Set by `amplihack recipe run` on its runner child. A nested run that inherits it watches that parent. See [Nested runs and orphan stops](#nested-runs-and-orphan-stops). Treat as read-only. |
 | `AMPLIHACK_PARENT_RECIPE_STARTTIME` | nested `recipe run` | Start time of the parent run, from field 22 of `/proc/<pid>/stat`. Guards against a reused PID. Treat as read-only. |
-| `AMPLIHACK_AUTODRIVE_STATE_DIR` | nested `recipe run` | Set by `autodrive_loop.sh` on each round. An orphaned run writes `orphaned.json` here. |
+| `AMPLIHACK_AUTODRIVE_STATE_DIR` | nested `recipe run` | Set by `autodrive_loop.sh` on each round. An orphaned run writes `orphaned.json` here. `recipe run` removes it from its runner's environment, so only the round's own run writes the file. |
 | `AMPLIHACK_RECIPE_LOG_JSONL` | runner | Optional path for structured JSONL lifecycle, heartbeat, output snippet, and failure events. |
 
 See [Environment Variables](./environment-variables.md) for full details.

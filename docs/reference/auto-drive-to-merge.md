@@ -3417,7 +3417,7 @@ Linux-only. See
 | Field | Meaning |
 | --- | --- |
 | `parent_pid` | PID of the parent run that exited. |
-| `tree_id` | `AMPLIHACK_TREE_ID` of the orphaned run; omitted when unset. |
+| `tree_id` | `AMPLIHACK_TREE_ID` of the orphaned run. |
 | `run_id` | `run_id` of the orphaned run, matching its correlation pointers. |
 | `reason` | Always `parent recipe run exited`. |
 | `timestamp` | RFC 3339 time of the stop. |
@@ -3431,15 +3431,20 @@ check fails, the file is skipped with a warning; the stderr line and the
 final correlation record, with `status: "orphaned"`, `parent_pid` and
 `reason`, are still written.
 
-### How the loop and the report read it
+Only the round's own `recipe run` writes the file. `recipe run` removes
+`AMPLIHACK_AUTODRIVE_STATE_DIR` from the runner's environment before the
+runner starts, so a run nested below the round cannot write or overwrite it.
+
+### How the loop treats exit 75
 
 Exit `75` from a round is an ordinary non-zero round result, not a terminal
 refusal like [exit 79](#exit-code-79-is-terminal). In practice the loop that
 would read it has already gone, since its exit is what orphaned the round.
-The run report and auto-drive status read `orphaned.json` and show the round
-as orphaned with the parent PID, so a stopped drive is told apart from a
-round that failed on its own. On [resume](#resume), the file is left in place
-as a record of the earlier stop.
+`orphaned.json` is a record for people and for later tools. Nothing in the
+auto-drive loop or the run report reads it yet. On [resume](#resume) the file
+is not cleared, so it may describe an earlier stop rather than the current
+round. A reader and clearing on resume are tracked in
+[#2093](https://github.com/rysweet/amplihack-rs/issues/2093).
 
 ## Usage limits are not STUCK
 

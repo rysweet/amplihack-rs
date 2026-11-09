@@ -347,6 +347,13 @@ fn a_run_exports_its_pid_and_start_time_to_the_runner() {
         cmdline.contains("recipe") && cmdline.contains("run"),
         "the exported pid is the `recipe run` process: {cmdline}"
     );
+    // The fixture sets AMPLIHACK_AUTODRIVE_STATE_DIR on `recipe run`; only
+    // that level may write orphaned.json, so the runner never inherits it.
+    assert_eq!(
+        fx.runner_env("AMPLIHACK_AUTODRIVE_STATE_DIR"),
+        None,
+        "the state dir is removed from the runner's environment"
+    );
     assert!(
         fx.orphan_record().is_none(),
         "a top-level run is never orphaned"

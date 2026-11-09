@@ -76,10 +76,9 @@ fn orphan_cell() -> &'static OnceLock<OrphanInfo> {
 
 /// Stop the run because its parent `recipe run` exited. A stop signal that
 /// arrived first is kept: the flag is only set when it is still clear.
-/// Returns whether this call marked the run orphaned.
-pub(crate) fn request_orphan_stop(info: OrphanInfo) -> bool {
+pub(crate) fn request_orphan_stop(info: OrphanInfo) {
     let _ = orphan_cell().set(info);
-    request_orphan_stop_in(received())
+    request_orphan_stop_in(received());
 }
 
 pub(crate) fn request_orphan_stop_in(flag: &AtomicUsize) -> bool {
@@ -87,12 +86,10 @@ pub(crate) fn request_orphan_stop_in(flag: &AtomicUsize) -> bool {
         .is_ok()
 }
 
-/// Whether the pending stop is an orphan stop. A signal stored after the
-/// orphan request replaces the value, and then this is false.
-pub(crate) fn is_orphaned() -> bool {
-    is_orphaned_in(received())
-}
-
+/// Whether the pending stop in `flag` is an orphan stop. A signal stored
+/// after the orphan request replaces the value, and then this is false.
+/// Production code decides from the value it captured with [`pending`].
+#[cfg(test)]
 pub(crate) fn is_orphaned_in(flag: &AtomicUsize) -> bool {
     pending_in(flag) == Some(ORPHANED as i32)
 }
@@ -196,6 +193,7 @@ mod tests {
         assert_eq!(StoppedBySignal(1).exit_code(), 129);
         assert_eq!(StoppedBySignal(15).exit_code(), 143);
     }
+
     // Issue #1976: an orphaned nested run stops with its own reason. The flag
     // value is the only source of that reason (C-S6). These use the `_in`
     // forms on a private flag, as the tests above do, so they never touch the

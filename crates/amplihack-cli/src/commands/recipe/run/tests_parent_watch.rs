@@ -193,7 +193,7 @@ fn a_reaped_pid_is_gone() {
 fn record() -> OrphanRecord {
     OrphanRecord {
         parent_pid: 4242,
-        tree_id: Some("tree-1976".to_string()),
+        tree_id: "tree-1976".to_string(),
         run_id: "run-1976".to_string(),
     }
 }

@@ -19,15 +19,14 @@ pub(crate) const ORPHAN_RECORD_FILE: &str = "orphaned.json";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OrphanRecord {
     pub(crate) parent_pid: i32,
-    pub(crate) tree_id: Option<String>,
+    pub(crate) tree_id: String,
     pub(crate) run_id: String,
 }
 
 #[derive(Serialize)]
 struct OrphanRecordFile<'a> {
     parent_pid: i32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tree_id: Option<&'a str>,
+    tree_id: &'a str,
     run_id: &'a str,
     reason: &'a str,
     timestamp: String,
@@ -66,7 +65,7 @@ pub(crate) fn write_orphan_record(dir: &Path, record: &OrphanRecord) -> Result<(
 
     let body = serde_json::to_string(&OrphanRecordFile {
         parent_pid: record.parent_pid,
-        tree_id: record.tree_id.as_deref(),
+        tree_id: &record.tree_id,
         run_id: &record.run_id,
         reason: super::correlation::ORPHAN_REASON,
         timestamp: Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),

@@ -749,6 +749,11 @@ pub(super) fn execute_recipe_via_rust(
                 command.env_remove(super::parent_watch::PARENT_STARTTIME_ENV);
             }
         }
+        // Issue #1976: only the round's own `recipe run` may write the drive's
+        // orphaned.json; nested runs below it must not overwrite it. This
+        // level reads the variable from its own environment, so removing it
+        // on the child does not affect this run.
+        command.env_remove(super::orphan_record::AUTODRIVE_STATE_DIR_ENV);
 
         Ok(command)
     };
@@ -771,7 +776,8 @@ pub(super) fn execute_recipe_via_rust(
             if let Some(signal) = super::stop_signal::pending() {
                 // Issue #1976: an orphan stop before any runner started still
                 // leaves its final record and orphaned.json.
-                if super::stop_signal::is_orphaned() {
+                // The captured value alone decides the status (C-S6).
+                if signal == super::stop_signal::ORPHANED as i32 {
                     let correlation = RecipeRunCorrelation::new(
                         recipe_name.clone(),
                         working_dir,
@@ -1082,8 +1088,10 @@ fn spawn_with_streaming_stderr(
                 reap_recipe_runner_group(child.id(), recipe_runner_teardown_grace());
                 crate::commands::recipe::stop::terminate(&tree);
                 crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
-                // Issue #1976: the flag value alone decides the status.
-                if super::stop_signal::is_orphaned() {
+                // Issue #1976: the captured signal value alone decides the
+                // status; a signal stored after an orphan request replaces it
+                // and is a Failure.
+                if signal == super::stop_signal::ORPHANED as i32 {
                     record_orphan(&correlation, child_pid, tree_id);
                 } else {
                     correlation.emit_final(
@@ -1437,7 +1445,7 @@ fn record_orphan(
     );
     super::orphan_record::write_to_state_dir(&super::orphan_record::OrphanRecord {
         parent_pid,
-        tree_id: Some(tree_id.to_string()),
+        tree_id: tree_id.to_string(),
         run_id: correlation.run_id().to_string(),
     });
     summary

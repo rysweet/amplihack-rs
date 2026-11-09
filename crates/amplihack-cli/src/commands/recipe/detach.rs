@@ -321,10 +321,6 @@ fn session_exists(session: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
-/// The caller's environment for the run: every agent session marker removed,
-/// and the resolved agent binary set with the tag `recipe run` would export.
-/// The capacity governor's parent and recipe markers are removed too (issue
-/// #1811): a detached run is independent work and asks for a slot of its own.
 /// Variables a detached pane never inherits. A pane root is a top-level run
 /// (issue #1976, D8): it must not watch the launching run as its parent, nor
 /// write into another drive's state directory. The governor markers are
@@ -342,6 +338,10 @@ pub(crate) fn keeps_in_pane(name: &str) -> bool {
     !PANE_ENV_REMOVED.contains(&name)
 }
 
+/// The caller's environment for the run: every agent session marker removed,
+/// and the resolved agent binary set with the tag `recipe run` would export.
+/// The capacity governor's parent and recipe markers are removed too (issue
+/// #1811): a detached run is independent work and asks for a slot of its own.
 fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
     let mut env: BTreeMap<String, String> = std::env::vars_os()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
@@ -698,6 +698,7 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(read_spec(&path).unwrap(), spec);
     }
+
     /// Issue #1976 (D8, C-S12): a detached run is a top-level run. Its pane
     /// must never watch the launching run as a parent, nor write into another
     /// drive's state directory. `child_env` and the `tmux new-session`
