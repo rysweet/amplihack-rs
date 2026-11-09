@@ -1448,9 +1448,12 @@ full. The rows above the summary show which they are.
 The runway needs about six hours of history. Each rotator cycle and each
 `profile usage` run without profile names adds a line to
 `<root>/.auto-switch.d/usage-history.jsonl`. Until there is enough it reads
-`unknown`. The rate is per hour, worked out from between four and a half and
-six hours of history, and it starts from a line that read every login: a
-`profile usage` line, or a rotator line from a cycle that skipped none. A
+`unknown`. The rate is per hour and uses between four and a half and six
+hours of history. It is each login's net rise in weekly use, weighted by
+its [capacity weight](../reference/profile-command.md#capacity-weights).
+A dip of 10 points or less, such as a stale status-line figure, adds
+nothing. It starts from a `profile usage` line, or from a rotator line
+from a cycle that skipped none of the logins read now. A
 rotator cycle does not probe logins that are running a session, so while
 some are busy, run `amplihack profile usage` now and then (every few hours)
 to give the runway a starting point.
