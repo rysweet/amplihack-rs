@@ -28,6 +28,8 @@ mod swap;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_hardening;
+#[cfg(test)]
 mod tests_inuse;
 #[cfg(test)]
 mod tests_link;

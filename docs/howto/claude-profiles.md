@@ -2208,6 +2208,27 @@ and the variables in
   write it, the step writes `skipped reason=not_supervised` and runs once.
 - **Claude Code and Unix only.**
 
+## Codex accounts
+
+Codex logins are not amplihack profiles. Each Codex account is a directory
+under `~/.codex-profiles` (or `CODEX_PROFILES_ROOT`) that you sign in to with
+`CODEX_HOME=<dir> codex login`. amplihack works with them in three places:
+
+- `amplihack profile usage` lists every Codex account after the Claude rows,
+  read live; see
+  [See your Codex accounts in the same view](#see-your-codex-accounts-in-the-same-view).
+- `amplihack profile rotate` keeps the `~/.codex` symlink pointed at the
+  Codex account with the most room, the way it keeps `~/.claude` on the best
+  Claude login. A job started with an explicit `CODEX_HOME` keeps its
+  account.
+- `amplihack profile codex-resume` resumes a Codex session that stopped on a
+  usage limit, on another account or after the limit resets.
+
+To set them up, see
+[How to Rotate Codex Accounts Automatically](codex-profile-rotation.md). The
+flags, log lines and exit statuses are in the
+[Rotate Codex reference](../reference/profile-command.md#rotate-codex).
+
 ## Limits
 
 - `run <name> -- args` forwards args literally with no shell; `-- "; rm -rf ~"`

@@ -9019,9 +9019,11 @@ On Unix, each rotate cycle also measures every Codex account and keeps the
 default Codex home on the account with the most room. The default home is a
 symlink, `~/.codex` unless [configured](#codex-rotate-settings), that points
 at one account directory under the Codex profiles root. A swap points the
-symlink at another account. Nothing is copied, no account directory is
-renamed, and no file inside an account directory is opened. The
-[how-to](../howto/codex-profile-rotation.md) walks through setting it up.
+symlink at another account. Nothing is copied and no account directory is
+renamed. The rotator opens no file inside an account directory; the
+[narrow exceptions](#what-the-codex-rotation-does-not-do) belong to
+`codex-resume`. The [how-to](../howto/codex-profile-rotation.md) walks
+through setting it up.
 
 The Codex part runs once per cycle, straight after the Claude part:
 
@@ -9163,9 +9165,13 @@ codex cycle live=<label|-> <label>:<window>=<p>%@<reset>,...,room=<h> ... unread
 | `<window>=<p>%@<reset>` | One per window reported, primary first. `<window>` is the window label from [Codex row layout](#codex-row-layout) (`5h`, `7d`, ...). `<p>` is the used percentage rounded down; `-` when none was reported. `<reset>` is the reset in UTC as `MM-DDTHH:MMZ`, `-` when none was reported, and `?` when `resetsAt` is not a usable time (see [Codex reset times](#codex-reset-times)). |
 | `credits=<c>` | When credits were reported: the balance with no trailing zeros, or `yes` / `no`. |
 | `room=<h>` | The account's room from [Codex next choice](#codex-next-choice), with no trailing zeros: `59`, `12.5`, `0.5` (credits above the floor) or `-1`. |
-| `unread=` | Present when an account could not be read: `<label>(not-signed-in)`, `<label>(timeout)` or `<label>(error:<reason>)`, comma-separated. A `~/.codex` account that is not signed in is left out, as in `profile usage`. |
+| `unread=` | Present when an account could not be read: `<label>(not-signed-in)`, `<label>(timeout)` or `<label>(error:<reason>)`, comma-separated. `error:` covers a reader that exits non-zero and a reply that is not valid JSON. A `~/.codex` account that is not signed in is left out, as in `profile usage`. An account listed here is never chosen. |
 | `read=` | The latest read time of the cycle, RFC 3339 in UTC. |
 | `-> ...` | The [decision](#codex-decision). |
+
+Failed reads go in `unread=`, not in a separate `unmeasured(...)` entry, so
+an account appears once on the line whether or not it was read. Scripts that
+look for accounts that could not be read match `unread=`.
 
 For example:
 
@@ -9216,14 +9222,24 @@ Codex lock.
    path and the Codex program's location.
 4. Check that the [default home is not in use](#codex-default-home-in-use).
 5. Write the journal to `codex-state.json` with phase `prepared` and fsync it.
+   The journal records the old and new targets and the inode of each.
 6. Create a symlink at `<link>.amplihack-swap` whose content is the absolute
-   path `<root>/<label>` of the new account, then `rename()` it over the
-   link, which is atomic, and fsync the link's parent directory. A `rename`
+   path `<root>/<label>` of the new account. Just before the rename, check
+   once more that the link still points at the journal's old target and
+   that the old and new targets still have the inodes the journal recorded;
+   if not, remove the temp symlink, keep the journal and refuse with
+   `journal-mismatch` and `detail=link-changed`, `detail=old-account-replaced`
+   or `detail=new-account-replaced`. Then `rename()` the temp symlink over the link, which
+   is atomic, and fsync the link's parent directory. A `rename`
    error (`EISDIR`, `ENOTEMPTY`, `ENOTDIR`, ...) is returned as an error;
    nothing is deleted to make the rename succeed.
 7. Set the journal phase to `linked`, write the
    [`change:` line](#rotate-change-log) for `codex_home`, write the
    `codex swap` line, set `last_swap_at`, and remove the journal.
+
+The account directories keep their inodes across a swap: only the link's
+target changes. That is how the tests check that logins are moved by
+re-pointing, never copied.
 
 A Codex process that starts between step 4 and step 6 and uses the default
 home is not covered. That window is microseconds long, and closing it would
@@ -9244,6 +9260,7 @@ codex refuse reason=<code>[ detail=<word>]
 | `link-dangling` | The link's target does not exist. |
 | `journal-mismatch` | An open journal does not match the configured link or the current link, or the link moved between the decision and the swap. Also used when `codex-state.json` cannot be loaded (`detail=state-unreadable`). The journal and the state file are kept for you to inspect. |
 | `default-home-in-use` | A Codex process of yours uses the default home; see [Codex default home in use](#codex-default-home-in-use). |
+| `proc-unreadable` | The process list could not be read, so the rotator cannot tell whether the default home is in use: `/proc` is missing (every platform but Linux), cannot be listed, or is mounted with `hidepid`. The swap is deferred. |
 | `lock-busy` | The Codex lock (`.auto-switch.d/rotate/lock`) was held. |
 | `codex-bin-in-home` | The Codex program is inside the current account directory or under the link; see [Adopting an existing `~/.codex`](#adopting-an-existing-codex). |
 
@@ -9266,21 +9283,33 @@ swap the rotator looks for such a process:
 - The process uses the default home when `CODEX_HOME` is absent, or equals
   the link once both are made absolute without following the link. A
   relative `CODEX_HOME` is resolved against that process's `/proc/<pid>/cwd`.
-- A process that exits during the scan is skipped. Anything else that cannot
-  be read (`/proc` not listable, `EACCES` on `environ`, an unreadable `cwd`)
-  counts as in use.
+- A process that exits during the scan is skipped. A Codex process whose
+  `environ` or `cwd` cannot be read (`EACCES`) counts as in use.
+- `/proc/<pid>/environ` and `cmdline` are the only files read, each with a
+  size limit. Process environments are never logged.
 
-The refusal is `codex refuse reason=default-home-in-use detail=pid-<pid>`, or
-`detail=proc-unreadable` when `/proc` could not be listed. On hosts that
-mount `/proc` with `hidepid`, swaps are refused until that is changed; this
-is on purpose. Processes are never signalled.
+The refusal is `codex refuse reason=default-home-in-use detail=pid-<pid>`.
+When `/proc` itself is missing or cannot be listed, the refusal is
+`codex refuse reason=proc-unreadable` and the swap is deferred.
+
+The scan is Linux-only and fails closed. On macOS and other Unix systems
+there is no `/proc`, and on Linux hosts that mount `/proc` with `hidepid`
+other processes cannot be seen, so every Codex swap is refused with
+`proc-unreadable`. The cycle line, the readings and `codex-resume` still
+work there; only the link is never moved. This is on purpose: a swap under a
+running `codex` could send its token refresh to the wrong account.
+Processes are never signalled.
 
 #### Codex recovery
 
-When a cycle finds an open journal, it takes the lock and finishes or undoes
-the swap. Paths in the journal are never trusted: `link` must equal the
-configured link, and the old and new targets must both pass the root rule,
-or the result is `journal-mismatch` and the journal is kept. The temp path is
+Recovery is the first thing a cycle does. When a cycle finds an open
+journal, it takes the lock and finishes or undoes the swap. Paths in the
+journal are never trusted: `link` must equal the configured link, and the
+old and new targets are each inspected with the same checks as the
+[link rules](#default-codex-home-link) (they must exist, be direct children
+of the canonical profiles root and not be symlinks). A journal that names a
+path outside the root, or fails any check, gives `journal-mismatch`; the
+journal is kept for you to inspect and nothing is changed. The temp path is
 always worked out from the configured link.
 
 | Link points at | Action | Line |
@@ -9369,6 +9398,20 @@ and no swap or recovery runs, and `codex-resume` fails with status 1.
   file inside an account directory. Account directories and the link are
   touched only by `read_dir`, `lstat`, `readlink`, `stat`, `symlink`,
   `rename` and `mkdir`.
+- `codex-resume` has exactly two narrow exceptions. The only file it reads
+  that may sit beside an account is the events file you name with
+  `--events`, under the [events file rules](#session-id). The only thing it
+  writes inside an account directory is one rollout symlink under
+  `<chosen account>/sessions/`, creating any missing directories on that
+  path with `mkdir` (mode `0700`). It never follows a symlinked directory on
+  that path, whether it found or created it, never overwrites an existing
+  entry, and its source must resolve
+  inside `<from-home>/sessions` with a name ending in `-<id>.jsonl` for the
+  validated id.
+- `codex app-server`, started by the reader, reads its own `auth.json` and
+  may refresh the account's tokens. That is the user's own `codex` acting
+  with the user's authority, as any `codex` run does; amplihack never sees
+  the contents.
 - It never renames, moves or copies an account directory or a login.
 - It never converts a real `~/.codex` into a link.
 - It never changes a process, or a job started with an explicit
@@ -9382,6 +9425,13 @@ or moving credentials, not from a compromised user account.
 
 The Codex rotation runs only on Unix. On other platforms `rotate` fails with
 `RotateUnsupported` before the Codex part, as it already does.
+
+| Platform | Readings and cycle line | Link swaps | `codex-resume` |
+|----------|-------------------------|------------|----------------|
+| Linux, `/proc` readable | yes | yes | yes |
+| Linux with `hidepid` | yes | no; `proc-unreadable` | yes |
+| macOS and other Unix (no `/proc`) | yes | no; `proc-unreadable` | yes |
+| Windows | no | no | no; `RotateUnsupported` |
 
 ### Codex resume command
 
@@ -9448,12 +9498,13 @@ lives in one function with fixture tests.
    the [`--codex-floor`](#codex-rotate-settings) value from
    `AMPLIHACK_ROTATE_CODEX_FLOOR`.
 3. If no account has room: each signed-in account's reset is the `resetsAt`
-   of its fullest window, and the deadline is the earliest of those. With
-   none, stop with `no-reset-known`. Otherwise sleep once until the deadline
-   (not at all if it has passed), read every account once more, leaving out
-   only limited accounts, so the account the session used can now be chosen.
-   If none has room, stop with `no-room-after-reset`. There is no loop and no
-   retry.
+   of its fullest window, and the deadline is the earliest of those, taken
+   from this live reading. With none, stop with `no-reset-known` (status 4).
+   A deadline later than 7 days from now is cut to 7 days from now; a
+   deadline already passed means no sleep. Otherwise sleep once until the
+   deadline, read every account once more, leaving out only limited
+   accounts, so the account the session used can now be chosen. If none has
+   room, stop with `no-room-after-reset`. There is no loop and no retry.
 4. Take the Codex lock without waiting (`lock-busy` if it is held), count
    the records again and, under 3, add the resume record, then release the
    lock. Counting and adding happen under one lock, so two wrappers cannot
@@ -9471,6 +9522,10 @@ lives in one function with fixture tests.
    `<root>/<label>` of the chosen account, and `OPENAI_API_KEY` and
    `CODEX_API_KEY` removed so the chosen account is the one billed. Stdin,
    stdout and stderr are inherited; the command waits for it.
+
+The sleep in step 3 is the only wait in the Codex code. It waits for a
+known event time, the window reset Codex itself reported, once; it does not
+wake on an interval or poll. Tests replace the clock, so no test sleeps.
 
 Codex must follow the rollout symlink for a resume on another account to
 work. If a Codex version does not, the resume on another account fails in

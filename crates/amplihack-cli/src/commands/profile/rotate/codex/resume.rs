@@ -24,6 +24,31 @@ const EXIT_USAGE: i32 = 2;
 const EXIT_CAPPED: i32 = 3;
 const EXIT_NO_ROOM: i32 = 4;
 
+/// The longest the one wait for a reset may last: 7 days, the length of
+/// the weekly window. A later reset time is cut to this.
+pub(super) const MAX_WAIT_SECS: i64 = 7 * 86_400;
+
+/// What the no-room path does with the earliest reset time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Wait {
+    /// No reading gave a reset time: stop with `no-reset-known`.
+    Unknown,
+    /// The reset is now or past: read again at once, with no sleep.
+    Now,
+    /// Sleep once until this epoch second, then read again.
+    Until(i64),
+}
+
+/// The one wait for `earliest_reset`, seen at `now`: never into the past
+/// and never longer than [`MAX_WAIT_SECS`].
+pub(super) fn wait_plan(earliest_reset: Option<i64>, now: i64) -> Wait {
+    match earliest_reset {
+        None => Wait::Unknown,
+        Some(reset) if reset <= now => Wait::Now,
+        Some(reset) => Wait::Until(reset.min(now.saturating_add(MAX_WAIT_SECS))),
+    }
+}
+
 /// The command's arguments.
 pub(in crate::commands::profile::rotate) struct ResumeRequest {
     pub session: Option<String>,
@@ -229,11 +254,14 @@ fn resume(
     let (to, after_reset) = match choose(&rows, Some(&from), floor) {
         Some(to) => (to, false),
         None => {
-            let Some(deadline) = earliest_reset(&rows) else {
-                log.line(clock.now(), &lines::resume_none("no-reset-known", &id));
-                return Ok(EXIT_NO_ROOM);
-            };
-            clock.sleep_until(deadline);
+            match wait_plan(earliest_reset(&rows), clock.now()) {
+                Wait::Unknown => {
+                    log.line(clock.now(), &lines::resume_none("no-reset-known", &id));
+                    return Ok(EXIT_NO_ROOM);
+                }
+                Wait::Now => {}
+                Wait::Until(deadline) => clock.sleep_until(deadline),
+            }
             let Some(to) = choose(&read(), None, floor) else {
                 log.line(clock.now(), &lines::resume_none("no-room-after-reset", &id));
                 return Ok(EXIT_NO_ROOM);

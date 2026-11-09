@@ -173,3 +173,25 @@ fn a_too_open_state_file_is_reported_in_a_keep_cycle() {
     assert_eq!(m.permissions().mode() & 0o777, 0o644, "the file is kept");
     assert_eq!(c.live().as_deref(), Some("ggrant"));
 }
+
+#[test]
+fn resume_does_not_follow_a_symlinked_folder_below_sessions() {
+    // FS-6: every folder codex-resume walks or creates under
+    // `<dst>/sessions/` is checked, not only `sessions` itself.
+    let c = setup();
+    let outside = c.base.join("outside-year");
+    fs::create_dir_all(&outside).unwrap();
+    let sessions = c.account("ggrant").join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    fs::set_permissions(&sessions, fs::Permissions::from_mode(0o700)).unwrap();
+    std::os::unix::fs::symlink(&outside, sessions.join("2026")).unwrap();
+
+    let out = c.resume(&["--session", SESSION, "--from-home", &from(&c, "ffarmer")]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert_eq!(
+        fs::read_dir(&outside).unwrap().count(),
+        0,
+        "a folder or link was made outside the account"
+    );
+    assert!(c.resumes().is_empty(), "codex must not start");
+}

@@ -469,7 +469,7 @@ pub enum ProfileCommands {
         /// Its rate covers the last 6 h, starts at the oldest entry in that
         /// window from `profile usage` or from a rotator cycle holding every
         /// login read now, needs that entry to be at least 4.5 h old, and is
-        /// weighted. It also holds the Codex rows
+        /// weighted
         #[arg(long, conflicts_with_all = ["json", "raw"])]
         summary_json: bool,
         /// Also print what `claude` wrote to stdout and stderr

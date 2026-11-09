@@ -38,7 +38,11 @@ The exact flags, line formats, refusal codes and exit statuses are in the
 
 You need:
 
-- Linux or another Unix system. Codex rotation does not run on Windows.
+- Linux, to have `~/.codex` swapped. On macOS and other Unix systems the
+  rotator still reads every account and writes the Codex lines, and
+  `codex-resume` works, but every swap is refused with `proc-unreadable`
+  because the rotator cannot see which `codex` processes are running. Codex
+  rotation does not run on Windows.
 - A `codex` that supports `codex app-server`, installed outside your account
   directories (see [Make `~/.codex` a link](#make-codex-a-link)).
 - One directory per Codex account under `~/.codex-profiles` (or
@@ -150,6 +154,10 @@ Use the root `amplihack profile root` prints if yours is not the default.
 | `-> none(damped)` | The best account beats the live one by less than `--margin` points. |
 | `-> none(recovering)` | An interrupted swap was finished or undone this cycle; a `codex recover` line follows. |
 
+An account that could not be read is listed in `unread=` with the reason
+(`not-signed-in`, `timeout`, or `error:<reason>` when the reader failed or
+replied with something that is not JSON). It is never chosen.
+
 `codex skip reason=no-accounts` means there is nothing under the profiles
 root. `codex skip reason=no-codex-bin` means no `codex` was found on `PATH`.
 
@@ -160,10 +168,11 @@ A refusal changes nothing and is tried again on the next cycle.
 | Code | What to do |
 |------|------------|
 | `home-not-link` | `~/.codex` is a real directory, is missing, or `~/.codex.amplihack-swap` is not a symlink. [Make `~/.codex` a link](#make-codex-a-link), or remove the stray `~/.codex.amplihack-swap` after checking what it is. |
-| `link-outside-root` | Point the link at a direct child of the profiles root, and make your home and the root private (`chmod go-w`). |
+| `link-outside-root` | Point the link at a direct child of the profiles root. With `detail=parent-not-private` or `detail=root-not-private`, make your home or the root yours and not group- or world-writable (`chmod go-w`). |
 | `link-dangling` | The account the link points at is gone. Point the link at an existing account. |
 | `journal-mismatch` | An interrupted swap does not match the link, or `codex-state.json` is damaged. Inspect `~/.amplihack/claude-profiles/.auto-switch.d/rotate/codex-state.json`, fix the link by hand, then remove the `journal` entry or the file; see [Clearing a Codex journal mismatch](../reference/profile-command.md#clearing-a-codex-journal-mismatch). |
-| `default-home-in-use` | A `codex` running without `CODEX_HOME` uses `~/.codex`. The rotator waits until it exits. |
+| `default-home-in-use` | A `codex` running without `CODEX_HOME` uses `~/.codex`. The rotator tries again each cycle and swaps once it has exited. |
+| `proc-unreadable` | The rotator cannot list processes: there is no `/proc` (macOS, other Unix) or `/proc` is mounted with `hidepid`. Swaps stay off on that host; readings and `codex-resume` still work. |
 | `lock-busy` | Another rotator action held the lock. Nothing to do. |
 | `codex-bin-in-home` | Install `codex` outside the account directories; see [Make `~/.codex` a link](#make-codex-a-link). |
 
@@ -246,16 +255,19 @@ It writes one line to stderr and the rotate log:
 codex resume session=0199a213-81c0-7800-8aa1-bbab2a035a53 personal->work reason=room args=1
 ```
 
-If no account has room, it sleeps once until the earliest reset, reads again
-and resumes on whichever account has room then, which may be the original
-one (`reason=after-reset`). If there is still none, it exits `4`:
+If no account has room, it sleeps once until the earliest reset that the
+live reading reported (at most 7 days ahead), reads again and resumes on
+whichever account has room then, which may be the original one
+(`reason=after-reset`). It does not poll while it waits. If no reading gave
+a reset time, it exits `4` at once with `reason=no-reset-known`. If there is
+still no room after the reset, it also exits `4`:
 
 ```
 codex resume none reason=no-room-after-reset session=0199a213-81c0-7800-8aa1-bbab2a035a53
 ```
 
 A session is resumed at most 3 times in 24 hours; the fourth call exits `3`
-with `reason=capped`.
+with `reason=capped`. This is the same cap as Claude's limit-resume hook.
 
 With a session id you already know, skip the events file:
 
@@ -271,15 +283,19 @@ environment, so the chosen account is the one billed. The exit codes are in
 
 - A `codex` that starts in the microseconds between the in-use check and the
   link swap is not covered.
-- On hosts that mount `/proc` with `hidepid`, the rotator cannot see whether
-  `~/.codex` is in use, so it refuses every swap with
-  `default-home-in-use`.
+- The in-use check reads `/proc`, so it works only on Linux. Where it cannot
+  run (macOS, other Unix, or Linux with `hidepid`), every swap is refused
+  with `proc-unreadable`. This fails closed on purpose.
 - A resume on another account needs Codex to follow the symlinked rollout. If
   your Codex version does not, the resume fails in Codex, and only waiting
   for the same account's reset works.
 - The usage-limit wording Codex prints may change between versions. The
   rotator also matches the `rate_limit_reached_type` field and the
   `usage_limit_reached` code.
-- amplihack never opens `auth.json` or any other file in an account
-  directory, and never moves or copies a login. Codex itself may refresh an
-  account's tokens while it reads it, as any `codex` run does.
+- amplihack never opens `auth.json` and never moves or copies a login. The
+  rotator opens no file in an account directory. `codex-resume` reads only
+  the events file you name, and writes only one rollout symlink under the
+  chosen account's `sessions/`, never over an existing entry; see
+  [What the Codex rotation does not do](../reference/profile-command.md#what-the-codex-rotation-does-not-do).
+  Codex itself may refresh an account's tokens while it reads it, as any
+  `codex` run does.

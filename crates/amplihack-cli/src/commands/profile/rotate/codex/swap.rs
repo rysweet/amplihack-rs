@@ -5,7 +5,7 @@
 use super::super::log::Sink;
 use super::cycle::{CodexCtx, Env};
 use super::inuse::{InUse, default_home_in_use};
-use super::link::{LinkState, inspect, relink, swap_tmp};
+use super::link::{Expect, LinkState, inspect, mismatch_detail, relink_checked, swap_tmp};
 use super::state::{CodexJournal, CodexPhase, load, save, try_lock};
 use super::{FaultPoint, account_of, fault_stop, lines};
 use crate::commands::profile::ProfileError;
@@ -23,10 +23,11 @@ pub(super) enum RefuseCode {
     DefaultHomeInUse,
     LockBusy,
     CodexBinInHome,
+    ProcUnreadable,
 }
 
 /// Every refusal code, as documented in the reference's table.
-pub(super) const DOCUMENTED: [&str; 7] = [
+pub(super) const DOCUMENTED: [&str; 8] = [
     "home-not-link",
     "link-outside-root",
     "link-dangling",
@@ -34,11 +35,12 @@ pub(super) const DOCUMENTED: [&str; 7] = [
     "default-home-in-use",
     "lock-busy",
     "codex-bin-in-home",
+    "proc-unreadable",
 ];
 
 impl RefuseCode {
     #[cfg(test)]
-    pub(super) const ALL: [RefuseCode; 7] = [
+    pub(super) const ALL: [RefuseCode; 8] = [
         Self::HomeNotLink,
         Self::LinkOutsideRoot,
         Self::LinkDangling,
@@ -46,6 +48,7 @@ impl RefuseCode {
         Self::DefaultHomeInUse,
         Self::LockBusy,
         Self::CodexBinInHome,
+        Self::ProcUnreadable,
     ];
 
     pub(super) fn as_str(self) -> &'static str {
@@ -57,6 +60,7 @@ impl RefuseCode {
             Self::DefaultHomeInUse => DOCUMENTED[4],
             Self::LockBusy => DOCUMENTED[5],
             Self::CodexBinInHome => DOCUMENTED[6],
+            Self::ProcUnreadable => DOCUMENTED[7],
         }
     }
 }
@@ -127,10 +131,8 @@ fn rule_refusal(ctx: &CodexCtx<'_>, env: &Env, old_target: &Path) -> Option<Refu
             RefuseCode::DefaultHomeInUse,
             &format!("pid-{pid}"),
         )),
-        InUse::ProcUnreadable => Some(Refusal::with(
-            RefuseCode::DefaultHomeInUse,
-            "proc-unreadable",
-        )),
+        // Fail closed: without a readable /proc no swap can be shown safe.
+        InUse::ProcUnreadable => Some(Refusal::bare(RefuseCode::ProcUnreadable)),
     }
 }
 
@@ -197,7 +199,7 @@ pub(super) fn run(
         from: from.to_string(),
         to: to_label.clone(),
         link: ctx.link.to_path_buf(),
-        old_target,
+        old_target: old_target.clone(),
         new_target: new_target.clone(),
         from_ino,
         to_ino,
@@ -206,7 +208,23 @@ pub(super) fn run(
     state.journal = Some(journal.clone());
     save(&ctx.rs.dir, &state, now)?;
     fault_stop(ctx.hooks.fault, FaultPoint::AfterJournal);
-    relink(ctx.link, &new_target, ctx.hooks.fault)?;
+    let expect = Expect {
+        old_target: &old_target,
+        old_ino: from_ino,
+        new_ino: to_ino,
+    };
+    if let Err(e) = relink_checked(ctx.link, &expect, &new_target, ctx.hooks.fault) {
+        // The link or an account changed after the journal was written.
+        // Nothing was renamed; the journal stays open and the next cycle's
+        // recovery rolls it back or keeps it for a person to inspect.
+        return match mismatch_detail(&e) {
+            Some(detail) => {
+                Refusal::with(RefuseCode::JournalMismatch, detail).emit(out, now);
+                Ok(())
+            }
+            None => Err(e.into()),
+        };
+    }
     journal.phase = CodexPhase::Linked;
     state.journal = Some(journal);
     save(&ctx.rs.dir, &state, now)?;

@@ -295,7 +295,7 @@ fn a_codex_process_whose_codex_home_is_the_link_refuses() {
 }
 
 #[test]
-fn a_missing_proc_root_counts_as_in_use() {
+fn a_missing_proc_root_refuses_with_proc_unreadable() {
     let c = CodexFixture::standard();
     let mut cmd = c.cmd(&["profile", "rotate"]);
     cmd.env(PROC_ROOT_ENV, c.base.join("no-proc"));
@@ -303,7 +303,7 @@ fn a_missing_proc_root_counts_as_in_use() {
     assert!(out.status.success());
     assert_eq!(
         c.codex_log().last().map(String::as_str),
-        Some("codex refuse reason=default-home-in-use detail=proc-unreadable")
+        Some("codex refuse reason=proc-unreadable")
     );
     assert_eq!(c.live().as_deref(), Some("ffarmer"));
 }

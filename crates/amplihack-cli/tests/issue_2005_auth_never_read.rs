@@ -147,3 +147,155 @@ fn no_codex_rotation_source_names_a_credential_file_to_open() {
         }
     }
 }
+
+// ---- SEC-AUTH-3: the live reader is covered by the same scan ----
+
+fn reader_src() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../amplihack-utils/src/codex_capacity")
+}
+
+/// Source lines that are code: `//` comments and doc comments are dropped,
+/// so a comment may say a file is never read.
+fn code_lines(src: &str) -> impl Iterator<Item = &str> {
+    src.lines().filter(|l| !l.trim_start().starts_with("//"))
+}
+
+#[test]
+fn the_live_reader_never_names_a_credential_file_or_opens_one() {
+    let dir = reader_src();
+    let entries = fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("the reader {} must exist: {e}", dir.display()));
+    let mut seen = 0;
+    for e in entries {
+        let p = e.unwrap().path();
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        if !name.ends_with(".rs") || name.starts_with("tests") {
+            continue;
+        }
+        seen += 1;
+        let src = fs::read_to_string(&p).unwrap();
+        for line in code_lines(&src) {
+            for word in ["auth.json", "config.toml", ".credentials.json"] {
+                assert!(!line.contains(word), "{name} names {word}: {line}");
+            }
+            for f in [
+                "File::open",
+                "fs::read(",
+                "fs::read_to_string",
+                "OpenOptions",
+            ] {
+                assert!(
+                    !line.contains(f),
+                    "{name} opens a file ({f}); the reader only talks to codex app-server: {line}"
+                );
+            }
+        }
+    }
+    assert!(
+        seen >= 3,
+        "expected mod.rs, parse.rs and rpc.rs in {}",
+        dir.display()
+    );
+}
+
+#[test]
+fn the_resume_cap_module_opens_no_file() {
+    let p =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../amplihack-utils/src/limit_resume_cap.rs");
+    let src = fs::read_to_string(&p).unwrap();
+    for line in code_lines(&src) {
+        for f in ["File::open", "fs::read", "OpenOptions", "auth.json"] {
+            assert!(!line.contains(f), "limit_resume_cap.rs: {line}");
+        }
+    }
+}
+
+// ---- TEST-1: the test-only variables are read only in debug builds ----
+
+/// Every non-test `.rs` file under `dir`, recursively.
+fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    for e in fs::read_dir(dir).unwrap() {
+        let p = e.unwrap().path();
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        if p.is_dir() {
+            if name != "testdata" {
+                rust_files(&p, out);
+            }
+        } else if name.ends_with(".rs") && !name.starts_with("tests") {
+            out.push(p);
+        }
+    }
+}
+
+/// The nearest `#[cfg(...)]` line above `idx`, if any.
+fn nearest_cfg<'a>(lines: &[&'a str], idx: usize) -> Option<&'a str> {
+    lines[..idx]
+        .iter()
+        .rev()
+        .map(|l| l.trim())
+        .find(|l| l.starts_with("#[cfg("))
+}
+
+#[test]
+fn test_only_codex_variables_are_read_only_under_debug_assertions() {
+    let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rust_files(&src_root, &mut files);
+    let mut names: Vec<String> = Vec::new();
+    let mut hits = 0;
+    // Pass 1: the constants that hold the names, each gated.
+    for p in &files {
+        let src = fs::read_to_string(p).unwrap();
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, l) in lines.iter().enumerate() {
+            let t = l.trim_start();
+            if t.starts_with("//") || !t.contains("\"AMPLIHACK_TEST_CODEX_") {
+                continue;
+            }
+            hits += 1;
+            assert_eq!(
+                lines[..i]
+                    .iter()
+                    .rev()
+                    .map(|l| l.trim())
+                    .find(|l| !l.starts_with("///") && !l.starts_with("//")),
+                Some("#[cfg(debug_assertions)]"),
+                "{}:{}: a test-only variable name outside #[cfg(debug_assertions)]: {l}",
+                p.display(),
+                i + 1
+            );
+            if let Some(name) = t
+                .strip_prefix("const ")
+                .or_else(|| t.strip_prefix("pub(super) const "))
+                .or_else(|| t.strip_prefix("pub(crate) const "))
+                .or_else(|| t.strip_prefix("pub const "))
+                .and_then(|r| r.split(':').next())
+            {
+                names.push(name.trim().to_string());
+            }
+        }
+    }
+    assert!(hits >= 2, "expected the PROC_ROOT and FAULT variable names");
+    // Pass 2: every read of an env var through those constants is gated.
+    for p in &files {
+        let src = fs::read_to_string(p).unwrap();
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, l) in lines.iter().enumerate() {
+            let t = l.trim_start();
+            if t.starts_with("//") || !t.contains("var") {
+                continue;
+            }
+            for n in &names {
+                if t.contains(&format!("var_os({n}")) || t.contains(&format!("var({n}")) {
+                    assert_eq!(
+                        nearest_cfg(&lines, i),
+                        Some("#[cfg(debug_assertions)]"),
+                        "{}:{}: {n} is read outside #[cfg(debug_assertions)]",
+                        p.display(),
+                        i + 1
+                    );
+                }
+            }
+        }
+    }
+}

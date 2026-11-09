@@ -987,7 +987,7 @@ fn the_reference_quotes_the_codex_texts_the_code_prints() {
 
 /// The refusal codes, word for word as `rotate::codex::swap::DOCUMENTED`
 /// (checked against that array in `rotate/codex/tests.rs`).
-const CODEX_REFUSALS: [&str; 7] = [
+const CODEX_REFUSALS: [&str; 8] = [
     "home-not-link",
     "link-outside-root",
     "link-dangling",
@@ -995,6 +995,7 @@ const CODEX_REFUSALS: [&str; 7] = [
     "default-home-in-use",
     "lock-busy",
     "codex-bin-in-home",
+    "proc-unreadable",
 ];
 
 #[test]
@@ -1012,7 +1013,6 @@ fn the_reference_tables_every_codex_refusal_code() {
         "detail=root-not-private",
         "detail=state-unreadable",
         "detail=pid-<pid>",
-        "detail=proc-unreadable",
     ] {
         assert!(REFERENCE.contains(detail), "reference is missing {detail}");
     }
@@ -1098,5 +1098,52 @@ fn the_codex_rotation_howto_is_linked_and_in_the_nav() {
     assert!(
         howto.contains("amplihack profile codex-resume"),
         "how-to shows codex-resume"
+    );
+}
+
+#[test]
+fn an_unreadable_process_list_is_its_own_refusal_not_a_detail() {
+    assert!(
+        REFERENCE.contains("codex refuse reason=proc-unreadable"),
+        "reference must quote the proc-unreadable refusal line"
+    );
+    assert!(
+        !REFERENCE.contains("detail=proc-unreadable"),
+        "proc-unreadable is a reason, not a detail of default-home-in-use"
+    );
+}
+
+#[test]
+fn the_profiles_howto_has_a_codex_accounts_section_linking_the_rotation_howto() {
+    let start = HOWTO
+        .lines()
+        .position(|l| l == "## Codex accounts")
+        .expect("docs/howto/claude-profiles.md needs a `## Codex accounts` section (AC11)");
+    let section: Vec<&str> = HOWTO
+        .lines()
+        .skip(start + 1)
+        .take_while(|l| !l.starts_with("## "))
+        .collect();
+    let section = section.join("\n");
+    assert!(
+        section.contains("codex-profile-rotation.md"),
+        "the Codex accounts section must link codex-profile-rotation.md"
+    );
+    assert!(
+        section.contains("CODEX_PROFILES_ROOT"),
+        "the Codex accounts section names the profiles root variable"
+    );
+}
+
+#[test]
+fn the_reference_states_the_narrow_account_directory_rule() {
+    // FS-6: codex-resume may mkdir under <account>/sessions/ (0700), never
+    // follows a symlinked folder there and never overwrites an entry.
+    for text in ["symlinked directory", "`0700`", "sessions/"] {
+        assert!(REFERENCE.contains(text), "reference is missing {text:?}");
+    }
+    assert!(
+        !REFERENCE.contains("never opens a file in an account directory"),
+        "the old, too-broad rule must be replaced by the FS-6 rule"
     );
 }

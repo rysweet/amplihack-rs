@@ -24,8 +24,8 @@
 //!   margin: u8 }`; `Decision::{Keep, Swap { from, to }, None(NoneReason)}`;
 //!   `NoneReason::{NoRoom, NoLive, Recovering, Held, Damped}`;
 //!   `Decision::text()` is the cycle line's `-> ...` part.
-//! - `swap::{RefuseCode, DOCUMENTED}`: `RefuseCode::ALL: [RefuseCode; 7]`,
-//!   `RefuseCode::as_str()`, `DOCUMENTED: [&str; 7]`.
+//! - `swap::{RefuseCode, DOCUMENTED}`: `RefuseCode::ALL: [RefuseCode; 8]`,
+//!   `RefuseCode::as_str()`, `DOCUMENTED: [&str; 8]`.
 //! - `limit::{limit_hit_reading, limit_hit_event}`.
 //! - `clock::{Clock, TestClock}`: `Clock { fn now(&self) -> i64; fn
 //!   sleep_until(&self, deadline: i64); }`; `TestClock::new(now)`,
@@ -230,7 +230,9 @@ fn decision_text_is_the_cycle_line_tail() {
 // ---- refusal codes ----
 
 #[test]
-fn refusal_codes_are_the_documented_seven() {
+fn refusal_codes_are_the_documented_eight() {
+    // `proc-unreadable` is its own code (not a detail of
+    // `default-home-in-use`): the reference's refusal table lists it.
     let want = [
         "home-not-link",
         "link-outside-root",
@@ -239,6 +241,7 @@ fn refusal_codes_are_the_documented_seven() {
         "default-home-in-use",
         "lock-busy",
         "codex-bin-in-home",
+        "proc-unreadable",
     ];
     assert_eq!(DOCUMENTED, want);
     let all: Vec<&str> = RefuseCode::ALL.iter().map(|c| c.as_str()).collect();

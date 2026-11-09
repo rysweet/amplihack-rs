@@ -75,7 +75,89 @@ pub(super) fn swap_tmp(link: &Path) -> PathBuf {
 /// symlink at the temp path is replaced; anything else there is an error.
 /// A `rename` error is returned with only the new temp symlink removed;
 /// nothing else is deleted.
+#[cfg(test)]
 pub(super) fn relink(link: &Path, new_target: &Path, fault: Option<FaultPoint>) -> io::Result<()> {
+    relink_inner(link, new_target, None, fault)
+}
+
+/// What the journal recorded about a swap: the link's target and inode
+/// before it, and the new account's inode.
+pub(super) struct Expect<'a> {
+    pub old_target: &'a Path,
+    pub old_ino: u64,
+    pub new_ino: u64,
+}
+
+/// The error [`relink_checked`] returns when the link or an account no
+/// longer matches the journal. Its text starts with `journal-mismatch`.
+#[derive(Debug)]
+pub(super) struct Mismatch(pub &'static str);
+
+impl std::fmt::Display for Mismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "journal-mismatch: {}", self.0)
+    }
+}
+
+impl std::error::Error for Mismatch {}
+
+/// The `detail=` word of a [`Mismatch`] error, or `None` for any other
+/// error.
+pub(super) fn mismatch_detail(e: &io::Error) -> Option<&'static str> {
+    e.get_ref()
+        .and_then(|inner| inner.downcast_ref::<Mismatch>())
+        .map(|m| m.0)
+}
+
+/// As [`relink`], but just before the rename the link must still be a
+/// symlink to `expect.old_target` with inode `expect.old_ino`, and
+/// `new_target` must still have inode `expect.new_ino`. Otherwise nothing
+/// is renamed, the temp symlink is removed and a [`Mismatch`] error is
+/// returned.
+pub(super) fn relink_checked(
+    link: &Path,
+    expect: &Expect<'_>,
+    new_target: &Path,
+    fault: Option<FaultPoint>,
+) -> io::Result<()> {
+    relink_inner(link, new_target, Some(expect), fault)
+}
+
+/// `None` when the link and both accounts still match `expect`, or the
+/// reason they do not.
+fn recheck(link: &Path, expect: &Expect<'_>, new_target: &Path) -> Option<&'static str> {
+    match std::fs::symlink_metadata(link) {
+        Ok(m) if m.file_type().is_symlink() => {}
+        _ => return Some("link-changed"),
+    }
+    let Ok(raw) = std::fs::read_link(link) else {
+        return Some("link-changed");
+    };
+    let abs = if raw.is_absolute() {
+        raw
+    } else {
+        link.parent().unwrap_or(Path::new("/")).join(raw)
+    };
+    match std::fs::canonicalize(&abs) {
+        Ok(t) if t == expect.old_target => {}
+        _ => return Some("link-changed"),
+    }
+    match std::fs::metadata(expect.old_target) {
+        Ok(m) if m.ino() == expect.old_ino => {}
+        _ => return Some("old-account-replaced"),
+    }
+    match std::fs::metadata(new_target) {
+        Ok(m) if m.ino() == expect.new_ino => None,
+        _ => Some("new-account-replaced"),
+    }
+}
+
+fn relink_inner(
+    link: &Path,
+    new_target: &Path,
+    expect: Option<&Expect<'_>>,
+    fault: Option<FaultPoint>,
+) -> io::Result<()> {
     if !new_target.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -95,6 +177,10 @@ pub(super) fn relink(link: &Path, new_target: &Path, fault: Option<FaultPoint>) 
         Err(e) => return Err(e),
     }
     symlink(new_target, &tmp)?;
+    if let Some(reason) = expect.and_then(|x| recheck(link, x, new_target)) {
+        std::fs::remove_file(&tmp)?;
+        return Err(io::Error::other(Mismatch(reason)));
+    }
     if let Err(e) = std::fs::rename(&tmp, link) {
         // Only the symlink just made is removed.
         if let Err(rm) = std::fs::remove_file(&tmp) {
