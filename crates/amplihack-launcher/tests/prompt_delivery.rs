@@ -15,9 +15,7 @@ use amplihack_launcher::flag_matrix::{
 use amplihack_launcher::prompt_delivery::{
     DeliveryWarning, build_command_with_prompt_delivery, build_tool_command_with_prompt_delivery,
 };
-use amplihack_utils::prompt_delivery::{
-    AUTO_TEMPFILE_THRESHOLD_BYTES, DeliveryMode, FILE_REFERENCE_PREFIX, PromptDelivery,
-};
+use amplihack_utils::prompt_delivery::{DeliveryMode, FILE_REFERENCE_PREFIX, PromptDelivery};
 
 const PAYLOAD_SIZE: usize = 64 * 1024;
 
@@ -80,11 +78,11 @@ fn capability_matrix_covers_all_prompt_binaries_without_speculation() {
         "Copilot receives large prompts as a file reference"
     );
 
+    // Issue #2030: `codex exec -` reads stdin; interactive Codex clears stdin
+    // at the call site and takes the pointer.
     let codex = prompt_delivery_caps_for(AgentBinary::Codex);
-    assert!(
-        !codex.supports_tempfile && !codex.supports_stdin && !codex.supports_file_reference,
-        "Interactive Codex preserves terminal stdin; exec stdin is selected by the mode-aware builder"
-    );
+    assert!(!codex.supports_tempfile);
+    assert!(codex.supports_stdin && codex.supports_file_reference);
 
     let amplifier = prompt_delivery_caps_for(AgentBinary::Amplifier);
     assert!(
@@ -98,15 +96,16 @@ fn capability_matrix_covers_all_prompt_binaries_without_speculation() {
 }
 
 #[test]
-fn argv_only_builders_still_use_one_structured_argv_element_for_raw_prompt() {
-    // Issue #1570: at or below the auto threshold every binary stays on argv.
-    let prompt = synthetic_prompt()[..AUTO_TEMPFILE_THRESHOLD_BYTES].to_string();
+fn auto_never_puts_a_short_prompt_in_argv() {
+    // Issue #2030: the 4 KiB threshold is gone; no binary keeps a short
+    // prompt on argv under Auto.
+    let prompt = synthetic_prompt()[..4096].to_string();
 
-    for binary in [
-        AgentBinary::Claude,
-        AgentBinary::Copilot,
-        AgentBinary::Codex,
-        AgentBinary::Amplifier,
+    for (binary, expected) in [
+        (AgentBinary::Claude, DeliveryMode::Stdin),
+        (AgentBinary::Copilot, DeliveryMode::FileReference),
+        (AgentBinary::Codex, DeliveryMode::FileReference),
+        (AgentBinary::Amplifier, DeliveryMode::FileReference),
     ] {
         let delivered = build_tool_command_with_prompt_delivery(
             binary,
@@ -117,21 +116,11 @@ fn argv_only_builders_still_use_one_structured_argv_element_for_raw_prompt() {
         )
         .expect("delivery-aware launcher command should build");
 
-        assert_eq!(
-            delivered.selected_mode,
-            DeliveryMode::Argv,
-            "{binary} keeps prompts of {AUTO_TEMPFILE_THRESHOLD_BYTES} bytes or fewer on argv"
-        );
-        assert!(
-            delivered.delivery_handle.tempfile_path().is_none(),
-            "{binary} argv mode must not create a tempfile"
-        );
-
+        assert_eq!(delivered.selected_mode, expected, "{binary}");
         let args = argv(&delivered.command);
-        assert_eq!(
-            args.iter().filter(|arg| *arg == &prompt).count(),
-            1,
-            "{binary} must pass the raw prompt exactly once as one argv element, not via shell splitting. Args: {args:?}"
+        assert!(
+            !args.iter().any(|arg| arg == &prompt),
+            "{binary} must not pass the prompt in argv. Args: {args:?}"
         );
     }
 }
@@ -167,7 +156,10 @@ fn unsupported_tempfile_request_degrades_to_file_reference_with_warning() {
 }
 
 #[test]
-fn amplifier_argv_uses_documented_positional_prompt_contract() {
+fn amplifier_argv_request_gets_the_pointer_not_the_prompt() {
+    // Issue #2030 R1.2: an explicit `Argv` request is treated as `Auto`, which
+    // gives Amplifier the pointer sentence in the documented positional slot
+    // of `amplifier run [OPTIONS] [PROMPT]`.
     let prompt = "issue #709: keep `$PATH`, quotes, and\nnewlines as one argv element";
     let extra_args = vec![
         "--dry-run".to_string(),
@@ -180,24 +172,22 @@ fn amplifier_argv_uses_documented_positional_prompt_contract() {
         Path::new("/tmp"),
         &extra_args,
         prompt,
-        PromptDelivery::Auto,
+        PromptDelivery::Argv,
     )
-    .expect("Amplifier argv prompt delivery should build");
+    .expect("Amplifier pointer delivery should build");
 
-    assert_eq!(delivered.selected_mode, DeliveryMode::Argv);
-    assert!(
-        delivered.delivery_handle.tempfile_path().is_none(),
-        "Amplifier argv mode must not create a tempfile"
-    );
-
+    assert_eq!(delivered.selected_mode, DeliveryMode::FileReference);
     let args = argv(&delivered.command);
-    let expected_args: Vec<String> = ["run", "--dry-run", "--model", "amp-test", prompt]
-        .into_iter()
-        .map(String::from)
-        .collect();
     assert_eq!(
-        args, expected_args,
-        "Amplifier must use the documented `amplifier run [OPTIONS] [PROMPT]` shape without a synthetic --prompt flag"
+        &args[..4],
+        &["run", "--dry-run", "--model", "amp-test"],
+        "no synthetic --prompt flag: {args:?}"
+    );
+    assert_eq!(args.len(), 5, "{args:?}");
+    assert!(args[4].starts_with(FILE_REFERENCE_PREFIX), "{args:?}");
+    assert!(
+        args.iter().all(|a| !a.contains("issue #709")),
+        "prompt text must not appear in argv: {args:?}"
     );
 }
 
@@ -265,7 +255,7 @@ fn generic_long_form_builder_keeps_large_prompt_out_of_argv_when_caps_support_te
 
 #[test]
 fn prompt_delivery_report_matches_doctor_order_and_effective_modes() {
-    let report = prompt_delivery_report_for(PromptDelivery::Tempfile, PAYLOAD_SIZE);
+    let report = prompt_delivery_report_for(PromptDelivery::Tempfile);
 
     let binaries: Vec<_> = report.entries.iter().map(|entry| entry.binary).collect();
     assert_eq!(
@@ -286,12 +276,12 @@ fn prompt_delivery_report_matches_doctor_order_and_effective_modes() {
     assert_eq!(
         modes,
         vec![
-            DeliveryMode::Stdin,
-            DeliveryMode::FileReference,
-            DeliveryMode::Argv,
-            DeliveryMode::FileReference,
+            Some(DeliveryMode::Stdin),
+            Some(DeliveryMode::FileReference),
+            Some(DeliveryMode::Stdin),
+            Some(DeliveryMode::FileReference),
         ],
-        "an unsupported tempfile request degrades through stdin, file-reference, argv per binary"
+        "an unsupported tempfile request degrades through stdin, then file-reference, per binary"
     );
     assert!(
         report.entries.iter().all(|entry| !entry.warning.is_empty()),
@@ -368,9 +358,11 @@ fn codex_exec_prompt_tokens_do_not_reopen_resume_option_parsing() {
 }
 
 #[test]
-fn codex_interactive_byte_limit_is_inclusive_after_command_like_option_value() {
+fn codex_interactive_prompt_after_command_like_option_value_uses_the_pointer() {
+    // Issue #2030: the 96 KiB interactive cap existed only because the prompt
+    // was in argv; the pointer has no size limit.
     let args = ["--model".into(), "exec".into()];
-    let prompt = "é".repeat(48 * 1024);
+    let prompt = "é".repeat(48 * 1024) + "x";
     let delivered = build_tool_command_with_prompt_delivery(
         AgentBinary::Codex,
         Path::new("."),
@@ -378,17 +370,9 @@ fn codex_interactive_byte_limit_is_inclusive_after_command_like_option_value() {
         &prompt,
         PromptDelivery::Auto,
     )
-    .expect("exactly 96 KiB remains valid interactive input");
-    assert_eq!(delivered.selected_mode, DeliveryMode::Argv);
-    let error = build_tool_command_with_prompt_delivery(
-        AgentBinary::Codex,
-        Path::new("."),
-        &args,
-        &(prompt + "x"),
-        PromptDelivery::Auto,
-    )
-    .expect_err("one byte above the interactive limit must fail");
-    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    .expect("interactive Codex takes the pointer at any size");
+    assert_eq!(delivered.selected_mode, DeliveryMode::FileReference);
+    assert!(delivered.stdin_payload.is_none());
 }
 
 #[test]
@@ -447,7 +431,7 @@ fn codex_root_options_before_resume_still_validate_conflicting_session_selection
 }
 
 #[test]
-fn codex_command_like_values_and_delimited_tokens_preserve_interactive_limits() {
+fn codex_command_like_values_and_delimited_tokens_stay_interactive() {
     for args in [
         vec!["--model", "exec"],
         vec!["--profile", "resume"],
@@ -462,23 +446,20 @@ fn codex_command_like_values_and_delimited_tokens_preserve_interactive_limits() 
             PromptDelivery::Auto,
         )
         .unwrap();
-        assert_eq!(delivered.selected_mode, DeliveryMode::Argv);
+        assert_eq!(delivered.selected_mode, DeliveryMode::FileReference);
         assert!(delivered.stdin_payload.is_none());
-        for (prompt, mode) in [
-            ("x".repeat(96 * 1024 + 1), PromptDelivery::Auto),
-            ("task".into(), PromptDelivery::Stdin),
-        ] {
-            assert!(
-                build_tool_command_with_prompt_delivery(
-                    AgentBinary::Codex,
-                    Path::new("."),
-                    &args,
-                    &prompt,
-                    mode,
-                )
-                .is_err()
-            );
-        }
+        // An explicit stdin request never pipes interactive stdin: it degrades
+        // to the pointer.
+        let delivered = build_tool_command_with_prompt_delivery(
+            AgentBinary::Codex,
+            Path::new("."),
+            &args,
+            "task",
+            PromptDelivery::Stdin,
+        )
+        .unwrap();
+        assert_eq!(delivered.selected_mode, DeliveryMode::FileReference);
+        assert!(delivered.stdin_payload.is_none());
     }
 }
 
@@ -588,15 +569,23 @@ fn codex_leading_dash_prompt_is_passed_after_delimiter_without_nul_regression() 
         PromptDelivery::Argv,
     )
     .expect("a leading-dash prompt is valid input");
+    // Issue #2030: interactive Codex gets the pointer sentence after `--`;
+    // the prompt itself is in the 0600 file, never in argv.
+    assert_eq!(delivered.selected_mode, DeliveryMode::FileReference);
     let args = argv(&delivered.command);
     let pos = args.iter().position(|a| a == "--").expect("`--` separator");
-    assert_eq!(args.get(pos + 1).map(String::as_str), Some("--not-a-flag"));
+    assert!(
+        args.get(pos + 1)
+            .is_some_and(|a| a.starts_with(FILE_REFERENCE_PREFIX)),
+        "{args:?}"
+    );
+    assert!(args.iter().all(|a| a != "--not-a-flag"), "{args:?}");
 }
 
 #[test]
 fn claude_and_copilot_still_accept_ordinary_prompts_unchanged() {
     for binary in [AgentBinary::Claude, AgentBinary::Copilot] {
-        build_tool_command_with_prompt_delivery(
+        let delivered = build_tool_command_with_prompt_delivery(
             binary,
             Path::new("."),
             &[],
@@ -604,6 +593,14 @@ fn claude_and_copilot_still_accept_ordinary_prompts_unchanged() {
             PromptDelivery::Argv,
         )
         .expect("non-Codex binaries are unaffected by Codex NUL validation");
+        // Issue #2030 R1.2: the Argv request never puts the prompt in argv.
+        assert_ne!(delivered.selected_mode, DeliveryMode::Argv, "{binary}");
+        assert!(
+            argv(&delivered.command)
+                .iter()
+                .all(|a| !a.contains("ordinary prompt")),
+            "{binary}: prompt text must not appear in argv"
+        );
     }
 }
 
