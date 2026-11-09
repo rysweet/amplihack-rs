@@ -6,6 +6,7 @@
 //! an inotify descriptor, which the kernel makes readable when a directory
 //! changes. A step that never ends or a file that never appears holds the
 //! test until the harness stops it. Nothing here sends a signal.
+#![cfg(target_os = "linux")]
 
 use std::ffi::CString;
 use std::fs;

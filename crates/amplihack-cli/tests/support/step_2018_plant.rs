@@ -3,6 +3,7 @@
 //! Live processes in planted records are the test process itself and
 //! `cat` children the test owns; dead ones use pids above any `pid_max`,
 //! so no planted pid can name someone else's process.
+#![cfg(target_os = "linux")]
 
 use crate::support::proc_watch::start_ticks;
 use crate::support::step_2018::Fx;

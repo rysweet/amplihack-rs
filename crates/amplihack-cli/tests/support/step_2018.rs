@@ -20,6 +20,7 @@
 //!
 //! The `Drop` guard SIGKILLs every pid a stub or the fixture recorded that is
 //! still alive, after checking that it is greater than 1.
+#![cfg(target_os = "linux")]
 
 use crate::support::amplihack_bin::amplihack_bin;
 use crate::support::proc_watch::{alive, read_pid_file, wait_for_fs};
