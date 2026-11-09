@@ -658,7 +658,8 @@ fn a_hostile_bash_env_in_the_test_process_never_creates_its_sentinel() {
 /// A `git` placed first on PATH for the binary under test only. When the
 /// Git subcommand (the first argument after the global options
 /// `--literal-pathspecs`, `-C <dir>` and `-c <name=value>`) is `add`, it
-/// records a marker and exits `code`; every other call runs the real git.
+/// records a marker, writes `fake git add: exit <code>` to stderr and exits
+/// `code`; every other call runs the real git.
 /// Fixture setup uses `which("git")` from the host PATH, so the fake never
 /// affects setup.
 fn add_exits_shim(sb: &Sandbox, code: i32) -> PathBuf {
@@ -677,7 +678,7 @@ fn add_exits_shim(sb: &Sandbox, code: i32) -> PathBuf {
              \x20   *) sub=$a; break ;;\n\
              \x20 esac\n\
              done\n\
-             if [ \"$sub\" = add ]; then : > '{marker}'; exit {code}; fi\n\
+             if [ \"$sub\" = add ]; then : > '{marker}'; echo \"fake git add: exit {code}\" >&2; exit {code}; fi\n\
              exec '{real}' \"$@\"\n",
             marker = marker.display(),
             real = which("git").display(),
@@ -704,8 +705,8 @@ fn refs(sb: &Sandbox, repo: &Path) -> String {
 const REFUSAL: &str = "stage_workflow_changes: strict refusal: ";
 
 /// Pin test for ApprovedRow 17.126-stage-strict-79: a real Git exit 79 from
-/// the staging child reaches the caller as 79, with no stdout and no
-/// refusal line, and HEAD and the refs are unchanged.
+/// the staging child reaches the caller as 79, with no stdout, Git's stderr
+/// byte for byte and no refusal line, and HEAD and the refs are unchanged.
 #[test]
 fn stage_strict_passes_a_real_git_79_through() {
     let sb = Sandbox::new();
@@ -720,6 +721,11 @@ fn stage_strict_passes_a_real_git_79_through() {
     assert!(marker.exists(), "the fake git add must have run");
     assert_eq!(status(&out), 79, "stderr: {}", stderr(&out));
     assert!(out.stdout.is_empty(), "no stdout on a non-zero status");
+    assert_eq!(
+        stderr(&out),
+        "fake git add: exit 79\n",
+        "only Git's own stderr"
+    );
     assert!(!stderr(&out).contains(REFUSAL), "{}", stderr(&out));
     assert_eq!(refs(&sb, &a), refs_before);
 }

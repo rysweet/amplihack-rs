@@ -200,7 +200,14 @@ impl Owner {
         }
         // The checkpoint engine is the real binary under test, whatever
         // `amplihack` stub a fixture puts on PATH (#1554). Only the test
-        // targets of the binary package know its path.
+        // targets of the binary package know its path. A fixture that
+        // removed AMPLIHACK_BIN would otherwise count as having set it.
+        assert!(
+            !command
+                .get_envs()
+                .any(|(key, value)| key == "AMPLIHACK_BIN" && value.is_none()),
+            "a fixture must set AMPLIHACK_BIN or leave it alone, never remove it"
+        );
         if let Some(engine) = option_env!("CARGO_BIN_EXE_amplihack")
             && !command.get_envs().any(|(key, _)| key == "AMPLIHACK_BIN")
         {

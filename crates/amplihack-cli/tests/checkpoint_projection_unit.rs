@@ -203,7 +203,10 @@ fn py_repr_float_copy_agrees_with_the_engine() {
         "checkpoint_projection::py_repr_float differs from the engine's num::py_repr_float"
     );
     // repr(float) is the shortest text that reads back as the same float.
-    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    // The xorshift seed is fixed, so every run checks the same 20,000 values;
+    // a failure names the seed and the value's bits.
+    const SEED: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut state = SEED;
     for _ in 0..20_000 {
         state ^= state << 13;
         state ^= state >> 7;
@@ -213,8 +216,15 @@ fn py_repr_float_copy_agrees_with_the_engine() {
             continue;
         }
         let text = p::py_repr_float(value);
-        let back: f64 = text.parse().unwrap_or_else(|e| panic!("{text}: {e}"));
-        assert_eq!(back.to_bits(), value.to_bits(), "{text}");
+        let bits = state;
+        let back: f64 = text
+            .parse()
+            .unwrap_or_else(|e| panic!("{text}: {e} (seed {SEED:#x}, bits {bits:#x})"));
+        assert_eq!(
+            back.to_bits(),
+            bits,
+            "{text} (seed {SEED:#x}, bits {bits:#x})"
+        );
     }
 }
 
@@ -1175,7 +1185,11 @@ fn issue_1671_driver_runs_no_python() {
             "{DRIVER_1671} still runs python3: {line}"
         );
     }
-    assert!(src.contains("for tool in git jq; do"));
+    // The python3 preflight became a jq, sed and cmp preflight that also
+    // refuses a sed that is not GNU sed.
+    assert!(src.contains("for tool in git jq sed cmp; do"));
+    assert!(src.contains("GNU sed is required"));
+    assert!(!src.contains("command -v python3"));
 }
 
 #[test]

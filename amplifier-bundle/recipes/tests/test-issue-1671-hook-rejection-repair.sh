@@ -1,3 +1,11 @@
+for tool in git jq cmp sed; do
+    command -v "${tool}" >/dev/null 2>&1 || { echo "HARNESS-ERROR: ${tool} is required" >&2; exit 2; }
+done
+# The fixing stub and the mutation canary rely on GNU sed (`--`, byte-exact
+# substitution under LC_ALL=C); BSD sed fails differently, so refuse it here.
+SED_VERSION="$(sed --version 2>/dev/null | sed -n 1p)" || SED_VERSION=""
+[[ "${SED_VERSION}" == *"GNU sed"* ]] || { echo "HARNESS-ERROR: GNU sed is required (found: ${SED_VERSION:-a sed without --version})" >&2; exit 2; }
+echo "#1671 harness tools: $(jq --version) / ${SED_VERSION}" >&2
 #!/usr/bin/env bash
 # shellcheck disable=SC1090  # the helpers under test are sourced from computed paths
 # test-issue-1671-hook-rejection-repair.sh — a rejected git hook in a
@@ -65,9 +73,15 @@ TDD_RECIPE="${RECIPES}/workflow-tdd.yaml"
 REFACTOR_RECIPE="${RECIPES}/workflow-refactor-review.yaml"
 PUBLISH_RECIPE="${RECIPES}/workflow-publish.yaml"
 
-for tool in git jq; do
+for tool in git jq sed cmp; do
     command -v "${tool}" >/dev/null 2>&1 || { echo "HARNESS-ERROR: ${tool} is required" >&2; exit 2; }
 done
+# The fixing stub's byte-exact substitution needs GNU sed (`--` and LC_ALL=C
+# byte handling); BSD sed behaves differently, so refuse it rather than guess.
+SED_VERSION="$(sed --version 2>/dev/null | sed -n 1p)" || SED_VERSION=""
+[[ "${SED_VERSION}" == *"GNU sed"* ]] || { echo "HARNESS-ERROR: GNU sed is required (found: ${SED_VERSION:-a sed without --version})" >&2; exit 2; }
+echo "#1671 harness tools: $(jq --version) / ${SED_VERSION}" >&2
+unset SED_VERSION
 # The checkpoint engine is the real `amplihack internal workflow-checkpoint`
 # (#1554); the stub below forwards exactly that subcommand to it. A Rust
 # caller passes AMPLIHACK_REAL_BIN; a standalone run builds the binary once.
@@ -2077,6 +2091,14 @@ mutation_canary() {
         -c "hook_repair_worktree=${repo}" >> "${dir}/out"
     # Preserve the substitution order used by the nested commit repair cases.
     canary_bytes "${repo}/tracked.txt" 'formatted FORMAT_ME\n'
+    # The byte check itself must see a single-byte difference: one changed
+    # byte, one extra byte and one missing byte are each refused.
+    local wrong
+    for wrong in 'formatted FORMAT_mE\n' 'formatted FORMAT_ME\r\n' 'formatted FORMAT_ME'; do
+        if ( canary_bytes "${repo}/tracked.txt" "${wrong}" ) 2>/dev/null; then
+            canary_error "canary_bytes accepted a one-byte difference"
+        fi
+    done
 }
 
 # =============================================================================

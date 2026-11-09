@@ -517,3 +517,6 @@ pub mod canonical_staging_checkpoint_fixture;
 // this binary through `issue_1671_hook_rejection_repair::phase_projection_reentry`.
 #[path = "checkpoint_projection.rs"]
 pub mod checkpoint_projection;
+// Edge probes for `Owner::project` that outlive the Python reference (#1554).
+#[path = "checkpoint_projection_probes.rs"]
+mod checkpoint_projection_probes;

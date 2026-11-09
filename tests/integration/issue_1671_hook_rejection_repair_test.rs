@@ -390,6 +390,9 @@ fn hook_rejection_repair_shell_contract_passes() {
     let before = names(fixture.path());
     let (bash, bash_version) = gnu_bash();
     eprintln!("#1671 bridge runs {} ({bash_version})", bash.display());
+    let tools = bridge_tool_versions(&bash_version);
+    eprintln!("#1671 bridge tools:\n{tools}");
+    record_bridge_tools(&tools);
     // The Rust PhaseProjection shim lives in its own directory, outside the
     // fixture whose entries the #1937 leftover check compares.
     let shim_dir = tempfile::Builder::new()
@@ -491,4 +494,49 @@ fn gnu_bash() -> (PathBuf, String) {
         }
     }
     panic!("no GNU bash 4 or later among {candidates:?}; set AMPLIHACK_GNU_BASH");
+}
+
+/// The first `--version` line of each host tool the #1671 bridge needs
+/// besides bash: jq reads the result fields and GNU sed makes the fixing
+/// stub's byte-exact edit. A missing tool, or a sed that is not GNU sed,
+/// fails the test with the tool's name rather than deep inside the script.
+fn bridge_tool_versions(bash_version: &str) -> String {
+    let first_line = |tool: &str| -> String {
+        let out = Command::new(tool)
+            .arg("--version")
+            .output()
+            .unwrap_or_else(|err| panic!("the #1671 bridge needs {tool} on PATH: {err}"));
+        assert!(
+            out.status.success(),
+            "the #1671 bridge needs {tool}: `{tool} --version` exited {:?}",
+            out.status.code()
+        );
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_owned()
+    };
+    let jq = first_line("jq");
+    let sed = first_line("sed");
+    assert!(
+        sed.contains("GNU sed"),
+        "the #1671 bridge needs GNU sed; `sed --version` printed {sed:?}"
+    );
+    format!("bash\t{bash_version}\njq\t{jq}\nsed\t{sed}\n")
+}
+
+/// With `CANONICAL_STAGING_EVIDENCE_DIR` set, keep the tool versions in a
+/// new subdirectory of that report directory, as the five controls do.
+fn record_bridge_tools(tools: &str) {
+    let Some(root) = std::env::var_os("CANONICAL_STAGING_EVIDENCE_DIR") else {
+        return;
+    };
+    fs::create_dir_all(&root).expect("create the evidence root");
+    let dir = tempfile::Builder::new()
+        .prefix("canonical-staging-evidence-issue-1671-bridge-")
+        .tempdir_in(&root)
+        .expect("create the bridge evidence directory")
+        .keep();
+    fs::write(dir.join("tools.tsv"), tools).expect("record the bridge tool versions");
 }
