@@ -106,7 +106,7 @@ steps:
             return 0
           fi
           echo "INFO: Removing stale worktree at '$wt' (was '${cur:-none}', need '$branch')." >&2
-          git worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+          { git worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"; }; command -v amplihack >/dev/null 2>&1 && amplihack cleanup --apply --worktree-target "$wt" >/dev/null || true
         fi
         case "$mode" in
           attach) git worktree add -- "$wt" "$branch" >&2 ;;

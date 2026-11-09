@@ -379,6 +379,23 @@ All jobs use `Swatinem/rust-cache@v2` with two shared rules:
 build leg; each `cross-compile` leg keys by `matrix.target`. CI always passes
 from a cold cache — caching is an optimization only.
 
+### sccache binary
+
+Jobs that set `RUSTC_WRAPPER: sccache` get the binary from the Actions cache
+(key `sccache-bin-v0.19.0-${{ runner.os }}-${{ runner.arch }}`, via
+`.github/actions/sccache-bin`) and check it against the sha256 pinned in
+`.github/scripts/sccache-bin.sh` and against `--version`. Only on a miss does
+`Setup sccache` download it, once; a binary that passes is saved. A cached
+binary that fails the checks produces a warning naming the cache entry to
+delete, because the key is immutable and a later save cannot replace it. With no
+usable binary the job writes `RUSTC_WRAPPER=`, skips the disk-cache steps and
+`sccache --show-stats`, prints
+`::warning::sccache binary unavailable (cache miss and download failed); building without RUSTC_WRAPPER`
+and builds uncached. There is no retry, sleep or timeout: a failed download is
+handled by building uncached, not by waiting (issue #2105). Test the fallback
+with `gh workflow run ci.yml --ref <branch> -f simulate_sccache_missing=true`;
+the dispatch input is declared in `.github/workflows/ci.yml`.
+
 ## Recipe runner pin ancestry
 
 The `Recipe runner pin` workflow (`.github/workflows/recipe-runner-pin.yml`)

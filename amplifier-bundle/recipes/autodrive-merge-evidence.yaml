@@ -32,6 +32,8 @@ context:
   pr_number: ""
   autodrive_qa_evidence: ""
   autodrive_round_label: "round"
+  # The round's step-00-tools-dir result; empty when this recipe runs alone.
+  autodrive_tools_dir: ""
 
 steps:
   - id: "step-01-sync-with-base"
@@ -41,17 +43,12 @@ steps:
       set -uo pipefail
       # #2033: inherited GIT_* (a hook's GIT_DIR, GIT_WORK_TREE, ...) and the outer
       # run's AMPLIHACK_* identity are cleared before any git command, so the
-      # repository's own hooks and tests act on this checkout. The helper is found
-      # by path, never through git, which those variables could redirect.
-      GE=""; GS=""
-      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
-        [ -n "$c" ] || continue
-        GS="${GS}${GS:+, }${c}/amplifier-bundle/tools"
-        [ -f "$c/amplifier-bundle/tools/git-repo-env.sh" ] && [ ! -L "$c/amplifier-bundle/tools/git-repo-env.sh" ] \
-          && { GE="$c/amplifier-bundle/tools/git-repo-env.sh"; break; }
-      done
-      { [ -n "$GE" ] && . "$GE"; } || { echo "STOP: git-repo-env.sh not found or a symlink (searched ${GS:-no root}) (#2033)" >&2; exit 1; }
-      amplihack_clear_git_repo_env; amplihack_clear_run_identity_env
+      # repository's own hooks and tests act on this checkout. The helper comes from
+      # the tools directory autodrive-merge-round's step-00-tools-dir found once
+      # (it requires git-repo-env.sh there); run alone, from AMPLIHACK_HOME. Never
+      # through git, which those variables could redirect. Same line as merge-round step-04.
+      TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-${AMPLIHACK_HOME:-}/amplifier-bundle/tools}"
+      [ ! -L "$TOOLS_D/git-repo-env.sh" ] && . "$TOOLS_D/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }
       echo "INFO: cleared git env: ${AMPLIHACK_GIT_ENV_CLEARED}; run env: ${AMPLIHACK_RUN_ENV_CLEARED} (#2033)" >&2
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
@@ -101,17 +98,12 @@ steps:
       set -uo pipefail
       # #2033: inherited GIT_* (a hook's GIT_DIR, GIT_WORK_TREE, ...) and the outer
       # run's AMPLIHACK_* identity are cleared before any git command, so the
-      # repository's own hooks and tests act on this checkout. The helper is found
-      # by path, never through git, which those variables could redirect.
-      GE=""; GS=""
-      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
-        [ -n "$c" ] || continue
-        GS="${GS}${GS:+, }${c}/amplifier-bundle/tools"
-        [ -f "$c/amplifier-bundle/tools/git-repo-env.sh" ] && [ ! -L "$c/amplifier-bundle/tools/git-repo-env.sh" ] \
-          && { GE="$c/amplifier-bundle/tools/git-repo-env.sh"; break; }
-      done
-      { [ -n "$GE" ] && . "$GE"; } || { echo "STOP: git-repo-env.sh not found or a symlink (searched ${GS:-no root}) (#2033)" >&2; exit 1; }
-      amplihack_clear_git_repo_env; amplihack_clear_run_identity_env
+      # repository's own hooks and tests act on this checkout. The helper comes from
+      # the tools directory autodrive-merge-round's step-00-tools-dir found once
+      # (it requires git-repo-env.sh there); run alone, from AMPLIHACK_HOME. Never
+      # through git, which those variables could redirect. Same line as merge-round step-04.
+      TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-${AMPLIHACK_HOME:-}/amplifier-bundle/tools}"
+      [ ! -L "$TOOLS_D/git-repo-env.sh" ] && . "$TOOLS_D/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }
       echo "INFO: cleared git env: ${AMPLIHACK_GIT_ENV_CLEARED}; run env: ${AMPLIHACK_RUN_ENV_CLEARED} (#2033)" >&2
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
       T=""; SEARCHED=""

@@ -1443,7 +1443,9 @@ installs. It does not search the git toplevel, because an inherited
 `GIT_WORK_TREE` could point that search at a planted tree (#2033). It prints the
 physical path, which later bash steps read as
 `"${RECIPE_VAR_autodrive_tools_dir:-}"` and step-04's prompt uses to source
-`git-identity.sh`. Later steps check the value before use; see
+`git-identity.sh` and `git-repo-env.sh`. The round passes it to
+`autodrive-merge-evidence` as `autodrive_tools_dir`, whose steps 01 and 02
+load `git-repo-env.sh` from it with step-04's line. Later steps check the value before use; see
 [The merge round's tools directory](#the-merge-rounds-tools-directory). A path holding a quote, backslash,
 `$`, backtick, control byte or template brace is skipped, because it reaches
 that prompt. No complete root fails the step with

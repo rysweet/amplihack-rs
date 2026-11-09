@@ -212,6 +212,9 @@ remove_worktree_and_branch() {
         git -C "$repo" worktree remove --force -- "$path" >/dev/null 2>&1 \
             || rm -rf -- "$path" 2>/dev/null \
             || log_warn "Could not fully remove worktree directory '${path}'."
+        # Issue #2039: remove the worktree's pre-commit target through the
+        # single audited entry point; best effort, never an rm here.
+        command -v amplihack >/dev/null 2>&1 && amplihack cleanup --apply --worktree-target "$path" >/dev/null || true
     fi
     git -C "$repo" worktree prune >/dev/null 2>&1 || true
     if [ -n "$branch" ] && git -C "$repo" show-ref --verify --quiet "refs/heads/${branch}"; then
@@ -435,6 +438,7 @@ cleanup_on_failure() {
         log_info "cleanup_on_failure: branch '${branch}' not present; pruning any stale worktree dir."
         if [ -n "$path" ] && within_worktrees_dir "$repo" "$path" && ! has_uncommitted_work "$path"; then
             git -C "$repo" worktree remove --force -- "$path" >/dev/null 2>&1 || rm -rf -- "$path" 2>/dev/null || true
+            command -v amplihack >/dev/null 2>&1 && amplihack cleanup --apply --worktree-target "$path" >/dev/null || true
             git -C "$repo" worktree prune >/dev/null 2>&1 || true
         fi
         return 0

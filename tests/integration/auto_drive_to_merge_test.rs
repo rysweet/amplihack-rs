@@ -5702,15 +5702,34 @@ fn issue_2033_step_00_tools_dir_requires_the_helper() {
 #[test]
 fn issue_2033_merge_evidence_steps_clear_before_any_git_command() {
     let recipe = recipe_yaml("autodrive-merge-evidence");
+    // One lookup per round: the evidence steps load git-repo-env.sh from the
+    // tools directory merge-round's step-00 found, not from a search of their own.
+    let round = recipe_yaml("autodrive-merge-round");
+    let passed = step(&round, "merge-evidence")
+        .get("context")
+        .and_then(|c| c.get("autodrive_tools_dir"))
+        .and_then(Value::as_str);
+    assert_eq!(
+        passed,
+        Some("{{autodrive_tools_dir}}"),
+        "merge-round must pass autodrive_tools_dir to autodrive-merge-evidence (#2033)"
+    );
+    assert!(
+        recipe
+            .get("context")
+            .and_then(|c| c.get("autodrive_tools_dir"))
+            .is_some(),
+        "autodrive-merge-evidence must declare autodrive_tools_dir in its context"
+    );
     for id in ["step-01-sync-with-base", "step-02-qa-team-scenarios"] {
         let cmd = field(step(&recipe, id), "command");
         assert!(
-            cmd.contains("STOP: git-repo-env.sh not found or a symlink (searched"),
+            cmd.contains("STOP: cannot load git-repo-env.sh from the tools directory (#2033)"),
             "{id} must stop with the #2033 message when the helper is missing"
         );
         assert!(
-            cmd.contains("(#2033)"),
-            "{id} must name #2033 in its STOP line"
+            cmd.contains("${RECIPE_VAR_autodrive_tools_dir:-"),
+            "{id} must load git-repo-env.sh from the round's tools directory"
         );
         let lines: Vec<&str> = cmd.lines().collect();
         let first = |pred: &dyn Fn(&str) -> bool| lines.iter().position(|l| pred(l));

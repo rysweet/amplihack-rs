@@ -8,16 +8,27 @@
 # the checkout under test.
 #
 # This runs amplifier-bundle/tools/autodrive_qa_evidence.sh, unmodified, on a
-# caller repository while every repository-selecting git variable points at a
-# decoy repository. The suite command commits with no `-C`, so a failed
-# isolation commits into the decoy. Cases:
-#   1. clean environment: git_env_cleared and run_env_cleared are `none`;
-#   2. all 12 git names at the decoy, all 5 run-identity names set: the same
-#      exit status and qa_status as case 1, head_sha is the caller's, the
-#      decoy is byte-for-byte unchanged, the caller gains one commit, and the
-#      evidence names all 12 and all 5 variables;
-#   3. git-repo-env.sh missing beside the tool: exit 1 by name, no evidence;
-#   4. git-repo-env.sh a symlink: the same as case 3.
+# caller repository (REPO_PATH). The acceptance suite behaves like a normal
+# test suite: it creates its own scratch repository under TMPDIR, commits
+# there with no `-C`, and checks that git resolved the scratch repository.
+# With the variables inherited, that commit lands in whichever repository
+# they name. Cases:
+#   control  the suite, run directly with every git name at a throwaway
+#            repository, changes it: proof the suite would show a leak;
+#   1. clean environment: PASS, git_env_cleared and run_env_cleared are
+#      `none`, the caller is byte-identical (index, HEAD, refs, objects,
+#      worktree files);
+#   2. all 12 git names at a decoy repository, all 5 run-identity names set:
+#      the same exit status and qa_status as case 1, head_sha is the caller's,
+#      the caller AND the decoy are byte-identical, and the evidence names all
+#      12 and all 5 variables (issue #2033, Acceptance);
+#   3. all 12 git names at REPO_PATH's own .git, the Product-Management #742
+#      damage: PASS, the caller is byte-identical;
+#   4. extra, not the acceptance proof: a suite that commits in REPO_PATH
+#      itself, git names at the decoy: the commit lands in the caller and the
+#      decoy is byte-identical;
+#   5. git-repo-env.sh missing beside the tool: exit 1 by name, no evidence;
+#   6. git-repo-env.sh a symlink: the same as case 5.
 # Only exit statuses and before-and-after snapshots are compared: no sleep,
 # timeout or clock read.
 #
@@ -92,7 +103,42 @@ snapshot() {
 }
 commits() { git -C "$1" rev-list --count HEAD; }
 
-SUITE='echo changed >> README && git add -A && git commit --allow-empty -q -m x'
+# The acceptance suite: git work in a scratch repository it makes itself, as a
+# real test suite does. It fails unless git resolved that scratch repository.
+SCRATCH_SUITE='t="$(mktemp -d "$TMPDIR/scratch.XXXXXX")" && cd "$t" && git init -q . && git commit --allow-empty -q -m scratch && test "$(git rev-parse --show-toplevel)" = "$(pwd -P)" && test "$(git rev-list --count HEAD)" = 1'
+# The extra case only: a suite that commits in the checkout under test.
+COMMIT_SUITE='echo changed >> README && git add -A && git commit --allow-empty -q -m x'
+SUITE="$SCRATCH_SUITE"
+
+# git_env_at <repo>: the 12 repository-selecting names, all pointing at <repo>.
+git_env_at() {
+    printf '%s\n' \
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES=$1/.git/objects" \
+        "GIT_CEILING_DIRECTORIES=$WORK" \
+        "GIT_COMMON_DIR=$1/.git" \
+        "GIT_DIR=$1/.git" \
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM=1" \
+        "GIT_INDEX_FILE=$1/.git/index" \
+        "GIT_INDEX_VERSION=4" \
+        "GIT_NAMESPACE=leak" \
+        "GIT_OBJECT_DIRECTORY=$1/.git/objects" \
+        "GIT_PREFIX=sub/" \
+        "GIT_QUARANTINE_PATH=$1/.git/objects/incoming-leak" \
+        "GIT_WORK_TREE=$1"
+}
+RUN_ENV=(
+    "AMPLIHACK_RECIPE_RUN_ID=outer-recipe-run"
+    "AMPLIHACK_RUN_DIR=$WORK/outer-run"
+    "AMPLIHACK_RUN_ID=outer-run-id"
+    "AMPLIHACK_SESSION_TREE_DIR=$WORK/outer-tree"
+    "AMPLIHACK_TREE_ID=outer-tree-id"
+)
+# same <id> <label> <before> <after>: fail unless two snapshots match.
+same() {
+    [[ "$3" == "$4" ]] && return 0
+    fail "$1" "$2 changed: $(diff <(printf '%s\n' "$3") <(printf '%s\n' "$4") | head -n 6 | tr '\n' '|')"
+    return 1
+}
 
 # run_tool <tool> <evidence> [NAME=value]... — sets RC and OUT (the last line).
 run_tool() {
@@ -110,63 +156,83 @@ run_tool() {
 
 echo "== #2033: auto-drive QA runs repository tests with the git env cleared =="
 
+# --- Control: the suite does show a leak when nothing clears the names ----
+ok=1
+CONTROL="$WORK/control"
+make_repo "$CONTROL"
+mapfile -t CONTROL_ENV < <(git_env_at "$CONTROL")
+control_before="$(snapshot "$CONTROL" objects)"
+mkdir -p "$WORK/control-tmp"
+( cd "$CALLER" && env "${CONTROL_ENV[@]}" "${ID_ENV[@]}" TMPDIR="$WORK/control-tmp" bash -c "$SCRATCH_SUITE" ) >/dev/null 2>&1 \
+    && { ok=0; fail control "the suite passed with the git names leaked; it cannot tell a leak from a clean run"; }
+[[ "$control_before" != "$(snapshot "$CONTROL" objects)" ]] \
+    || { ok=0; fail control "the leaked suite left the repository its git names chose unchanged; it cannot show the #742 damage"; }
+[[ "$ok" == 1 ]] && pass control "with the names leaked, the suite fails and writes into the named repository"
+
 # --- Case 1: clean environment -------------------------------------------
 ok=1
-before_caller="$(commits "$CALLER")"
+caller_before="$(snapshot "$CALLER" objects)"
 run_tool "$TOOL" "$WORK/ev1.json"
 CLEAN_RC="$RC"
 CLEAN_STATUS="$(printf '%s' "$OUT" | field_of qa_status 2>/dev/null || echo '<invalid>')"
 [[ "$CLEAN_RC" == 0 ]] || { ok=0; fail clean "exit $CLEAN_RC: $(tail -n 3 "$WORK/ev1.json.err" | tr '\n' '|')"; }
-[[ "$CLEAN_STATUS" == PASS ]] || { ok=0; fail clean "qa_status=$CLEAN_STATUS (the suite should commit and pass)"; }
-[[ "$(commits "$CALLER")" == $((before_caller + 1)) ]] || { ok=0; fail clean "the caller did not gain one commit"; }
+[[ "$CLEAN_STATUS" == PASS ]] || { ok=0; fail clean "qa_status=$CLEAN_STATUS (the scratch-repository suite should pass)"; }
+same clean "the caller repository" "$caller_before" "$(snapshot "$CALLER" objects)" || ok=0
 for f in git_env_cleared run_env_cleared; do
     got="$(printf '%s' "$OUT" | field_of "$f" 2>/dev/null || echo '<invalid>')"
     [[ "$got" == none ]] || { ok=0; fail clean "$f=$got, want none"; }
 done
-[[ "$ok" == 1 ]] && { pass clean "clean run records none and none"; CASES_PASSED=$((CASES_PASSED + 1)); }
+[[ "$ok" == 1 ]] && { pass clean "clean run passes, records none and none, caller byte-identical"; CASES_PASSED=$((CASES_PASSED + 1)); }
 
 # --- Case 2: every git name at the decoy, every run name set ---------------
 ok=1
-DECOY_ENV=(
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES=$DECOY/.git/objects"
-    "GIT_CEILING_DIRECTORIES=$WORK"
-    "GIT_COMMON_DIR=$DECOY/.git"
-    "GIT_DIR=$DECOY/.git"
-    "GIT_DISCOVERY_ACROSS_FILESYSTEM=1"
-    "GIT_INDEX_FILE=$DECOY/.git/index"
-    "GIT_INDEX_VERSION=4"
-    "GIT_NAMESPACE=decoy"
-    "GIT_OBJECT_DIRECTORY=$DECOY/.git/objects"
-    "GIT_PREFIX=sub/"
-    "GIT_QUARANTINE_PATH=$DECOY/.git/objects/incoming-decoy"
-    "GIT_WORK_TREE=$DECOY"
-    "AMPLIHACK_RECIPE_RUN_ID=outer-recipe-run"
-    "AMPLIHACK_RUN_DIR=$WORK/outer-run"
-    "AMPLIHACK_RUN_ID=outer-run-id"
-    "AMPLIHACK_SESSION_TREE_DIR=$WORK/outer-tree"
-    "AMPLIHACK_TREE_ID=outer-tree-id"
-)
+mapfile -t DECOY_ENV < <(git_env_at "$DECOY")
 decoy_before="$(snapshot "$DECOY" objects)"
+caller_before="$(snapshot "$CALLER" objects)"
 caller_head="$(git -C "$CALLER" rev-parse HEAD)"
-before_caller="$(commits "$CALLER")"
-run_tool "$TOOL" "$WORK/ev2.json" "${DECOY_ENV[@]}"
+run_tool "$TOOL" "$WORK/ev2.json" "${DECOY_ENV[@]}" "${RUN_ENV[@]}"
 status="$(printf '%s' "$OUT" | field_of qa_status 2>/dev/null || echo '<invalid>')"
 [[ "$RC" == "$CLEAN_RC" ]] || { ok=0; fail decoy "exit $RC, the clean run exited $CLEAN_RC"; }
 [[ "$status" == "$CLEAN_STATUS" ]] || { ok=0; fail decoy "qa_status=$status, the clean run gave $CLEAN_STATUS"; }
 head_sha="$(printf '%s' "$OUT" | field_of head_sha 2>/dev/null || echo '<invalid>')"
 [[ "$head_sha" == "$caller_head" ]] || { ok=0; fail decoy "head_sha=$head_sha, want the caller's $caller_head"; }
-decoy_after="$(snapshot "$DECOY" objects)"
-[[ "$decoy_before" == "$decoy_after" ]] \
-    || { ok=0; fail decoy "the decoy repository changed: $(diff <(printf '%s\n' "$decoy_before") <(printf '%s\n' "$decoy_after") | head -n 6 | tr '\n' '|')"; }
-[[ "$(commits "$CALLER")" == $((before_caller + 1)) ]] || { ok=0; fail decoy "the caller did not gain exactly one commit"; }
+same decoy "the decoy repository" "$decoy_before" "$(snapshot "$DECOY" objects)" || ok=0
+same decoy "the caller repository" "$caller_before" "$(snapshot "$CALLER" objects)" || ok=0
 got="$(printf '%s' "$OUT" | field_of git_env_cleared 2>/dev/null || echo '<invalid>')"
 [[ "$got" == "$GIT_NAMES" ]] || { ok=0; fail decoy "git_env_cleared=<$got>, want <$GIT_NAMES>"; }
 got="$(printf '%s' "$OUT" | field_of run_env_cleared 2>/dev/null || echo '<invalid>')"
 [[ "$got" == "$RUN_NAMES" ]] || { ok=0; fail decoy "run_env_cleared=<$got>, want <$RUN_NAMES>"; }
 [[ "$OUT" != *"$DECOY"* && "$OUT" != *outer-run-id* ]] || { ok=0; fail decoy "the evidence recorded a variable's value, not only its name"; }
-[[ "$ok" == 1 ]] && { pass decoy "decoy untouched, caller committed, all 12 and 5 names recorded"; CASES_PASSED=$((CASES_PASSED + 1)); }
+[[ "$ok" == 1 ]] && { pass decoy "caller and decoy byte-identical, all 12 and 5 names recorded"; CASES_PASSED=$((CASES_PASSED + 1)); }
 
-# --- Cases 3 and 4: the helper is missing, or a symlink ---------------------
+# --- Case 3: every git name at REPO_PATH itself (Product-Management #742) ---
+ok=1
+mapfile -t SELF_ENV < <(git_env_at "$CALLER")
+caller_before="$(snapshot "$CALLER" objects)"
+run_tool "$TOOL" "$WORK/ev3.json" "${SELF_ENV[@]}" "${RUN_ENV[@]}"
+status="$(printf '%s' "$OUT" | field_of qa_status 2>/dev/null || echo '<invalid>')"
+[[ "$RC" == 0 && "$status" == PASS ]] || { ok=0; fail self "exit $RC, qa_status=$status, want 0 and PASS: $(tail -n 3 "$WORK/ev3.json.err" | tr '\n' '|')"; }
+same self "the caller repository" "$caller_before" "$(snapshot "$CALLER" objects)" || ok=0
+got="$(printf '%s' "$OUT" | field_of git_env_cleared 2>/dev/null || echo '<invalid>')"
+[[ "$got" == "$GIT_NAMES" ]] || { ok=0; fail self "git_env_cleared=<$got>, want <$GIT_NAMES>"; }
+[[ "$ok" == 1 ]] && { pass self "git names at REPO_PATH: the scratch suite passes, caller byte-identical"; CASES_PASSED=$((CASES_PASSED + 1)); }
+
+# --- Case 4 (extra): a suite that commits in REPO_PATH, git names at decoy ---
+# Not the acceptance proof: it shows only where git wrote. It checks that the
+# working directory, not the inherited names, picks the repository.
+ok=1
+decoy_before="$(snapshot "$DECOY" objects)"
+before_caller="$(commits "$CALLER")"
+SUITE="$COMMIT_SUITE"
+run_tool "$TOOL" "$WORK/ev4.json" "${DECOY_ENV[@]}"
+SUITE="$SCRATCH_SUITE"
+status="$(printf '%s' "$OUT" | field_of qa_status 2>/dev/null || echo '<invalid>')"
+[[ "$RC" == 0 && "$status" == PASS ]] || { ok=0; fail commit-here "exit $RC, qa_status=$status, want 0 and PASS"; }
+same commit-here "the decoy repository" "$decoy_before" "$(snapshot "$DECOY" objects)" || ok=0
+[[ "$(commits "$CALLER")" == $((before_caller + 1)) ]] || { ok=0; fail commit-here "the commit did not land in the checkout under test"; }
+[[ "$ok" == 1 ]] && { pass commit-here "a committing suite writes to REPO_PATH, never the decoy"; CASES_PASSED=$((CASES_PASSED + 1)); }
+
+# --- Cases 5 and 6: the helper is missing, or a symlink ---------------------
 WANT_MSG='ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh, autodrive_trust.sh or git-repo-env.sh is missing'
 refusal_case() {
     local id="$1" dir="$WORK/tools-$1" ev="$WORK/ev-$1.json" before
@@ -189,9 +255,9 @@ refusal_case symlink
 
 echo
 echo "passed checks: $PASS_COUNT, failed checks: $FAIL_COUNT"
-if [[ "$FAIL_COUNT" -eq 0 && "$CASES_PASSED" -eq 4 ]]; then
-    echo "PASS: 4/4 cases (issue #2033)"
+if [[ "$FAIL_COUNT" -eq 0 && "$CASES_PASSED" -eq 6 ]]; then
+    echo "PASS: 6/6 cases (issue #2033)"
     exit 0
 fi
-echo "FAIL: ${CASES_PASSED}/4 cases (issue #2033)" >&2
+echo "FAIL: ${CASES_PASSED}/6 cases (issue #2033)" >&2
 exit 1

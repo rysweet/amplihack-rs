@@ -173,9 +173,15 @@ the steps of `auto-drive-to-merge.yaml`, `autodrive-prerequisites`,
 `autodrive-check-unmerged`, and the `type: recipe` delegations (the delegated
 recipe's own steps do the clearing).
 
-`autodrive_trust_git` in `autodrive_trust.sh` keeps its own shorter
-`env -u` list. It always runs inside a process that has already cleared the
-full list.
+`autodrive_trust_git` in `autodrive_trust.sh` does not source the helper.
+`autodrive_trust.sh` is one of the merge guard's `GATE_FILES`, and every file
+the merge gate sources gets the guard's mode check, so loading another helper
+there would widen that trusted set. It holds the one recorded copy instead:
+`AUTODRIVE_TRUST_GIT_UNSET_VARS` is the helper's 12 names, in the helper's
+order, followed by `GIT_REPLACE_REF_BASE`, and `autodrive_trust_git` removes
+each of them with `env -u` before git runs. The
+[drift guard](#the-drift-guard) fails CI when that copy differs from the
+helper's list.
 
 ## Finding the helper
 
@@ -189,11 +195,14 @@ be set at that point, and a planted worktree could then supply the file.
 - **`autodrive-merge-round.yaml` step-04** uses `{{autodrive_tools_dir}}`,
   which step-00 already checked. The load is in the bash block of the step's
   agent prompt, so the agent runs it.
-- **`autodrive-merge-evidence.yaml` steps 01 and 02** search
-  `amplifier-bundle/tools/git-repo-env.sh` under `$AMPLIHACK_HOME`,
-  `$REPO_PATH`, `~/.copilot` and `~/.amplihack`, in that order. Step-02 finds
-  `autodrive_qa_evidence.sh` with the same search; it no longer searches the
-  directory from `git rev-parse --show-toplevel` (`$TOP`).
+- **`autodrive-merge-evidence.yaml` steps 01 and 02** use the same tools
+  directory: merge-round passes `autodrive_tools_dir` into the sub-recipe,
+  so the helper is looked up once per round, in step-00. When
+  merge-evidence runs on its own, that value is empty and the steps use
+  `$AMPLIHACK_HOME/amplifier-bundle/tools`. The load line is the same as
+  step-04's. Step-02 finds `autodrive_qa_evidence.sh` by searching
+  `$AMPLIHACK_HOME`, `$REPO_PATH`, `~/.copilot` and `~/.amplihack`. It no
+  longer searches the directory from `git rev-parse --show-toplevel` (`$TOP`).
 
 Every loader refuses a helper that is missing or is a symbolic link, and
 stops with a non-zero exit:
@@ -202,8 +211,8 @@ stops with a non-zero exit:
 | --- | --- | --- |
 | `git-hook-cargo.sh` | `ERROR: git-repo-env.sh missing or a symlink at <path>; refusing to run tests with inherited GIT_* (#2033)` | 1 |
 | `autodrive_qa_evidence.sh` | `ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh, autodrive_trust.sh or git-repo-env.sh is missing` | 1, and no evidence file is written |
-| merge-evidence steps 01 and 02 | `STOP: git-repo-env.sh not found or a symlink (searched <roots>) (#2033)` | 1 |
-| merge-round step-04 | `STOP: cannot load git-repo-env.sh from the tools directory (#2033)` | 1, from the agent's bash block; the step itself has no exit of its own |
+| merge-evidence steps 01 and 02 | `STOP: cannot load git-repo-env.sh from the tools directory (#2033)` | 1 |
+| merge-round step-04 | the same message | 1, from the agent's bash block; the step itself has no exit of its own |
 
 The tests check these exact strings, so the code and this table cannot drift
 apart: the [drift guard](#the-drift-guard) checks the hook's message and the
@@ -263,16 +272,19 @@ a refusal message changes. It checks:
    survive the call.
 4. **No hand-written copies.** `scripts/git-hook-cargo.sh`,
    `autodrive_qa_evidence.sh` and `autodrive_qa_sources.sh` have no line naming
-   `GIT_QUARANTINE_PATH`; only the helper may list the names.
+   `GIT_QUARANTINE_PATH`; only the helper may list the names. The one
+   exception is `autodrive_trust.sh` (see [Who sources it](#who-sources-it)):
+   its `AUTODRIVE_TRUST_GIT_UNSET_VARS` must equal the helper's list followed
+   by `GIT_REPLACE_REF_BASE`, and `autodrive_trust_git`, run with all 13 names
+   set, must start git with none of them in its environment.
 5. **The hook still clears.** The existing behaviour check runs
    `git-hook-cargo.sh` with every name set and confirms its children see none.
    It also runs the hook with the helper missing and with the helper replaced
    by a symbolic link, and checks for the exact `ERROR: git-repo-env.sh missing
    or a symlink` message in [the refusal table](#finding-the-helper) and exit 1.
-   It checks that `autodrive-merge-evidence.yaml` contains the exact `STOP:
-   git-repo-env.sh not found or a symlink` line in steps 01 and 02, and that
-   `autodrive-merge-round.yaml` step-04 contains the exact `STOP: cannot load
-   git-repo-env.sh` line.
+   It checks that `autodrive-merge-evidence.yaml` steps 01 and 02 and
+   `autodrive-merge-round.yaml` step-04 all contain the exact `STOP: cannot
+   load git-repo-env.sh from the tools directory (#2033)` line.
 
 Before the change is merged, each check is shown to fail on a broken copy of
 the helper or list (a mutation check), and that failure is recorded in the
@@ -291,16 +303,25 @@ bash tests/issue_1278_git_env_isolation.sh
 runs `autodrive_qa_evidence.sh` against a caller repository and a decoy
 repository, both under one `mktemp -d` directory. It sets a temporary `HOME`,
 `GIT_CONFIG_NOSYSTEM=1` and `GIT_CONFIG_GLOBAL=/dev/null`, so no real git
-configuration, hook path or `~/.amplihack` is read. The suite command is
-`git add -A && git commit --allow-empty -m x` with no `-C`, so a failed
-isolation commits into the wrong repository.
+configuration, hook path or `~/.amplihack` is read.
+
+The acceptance suite behaves like a normal test suite: it creates a scratch
+repository under `TMPDIR`, runs `git init` and `git commit --allow-empty` there
+with no `-C`, and fails unless `git rev-parse --show-toplevel` is that scratch
+directory. With the variables inherited, the commit lands in whichever
+repository they name. A *snapshot* of a repository is the `sha256sum` of its
+index, `.git/HEAD`, `git rev-parse HEAD`, `git for-each-ref`, `git ls-files -s`,
+the hash of every worktree file, and the list of object files.
 
 | Case | Setup | Expected |
 | --- | --- | --- |
-| 1. Clean | No git or run-identity variable set. | `git_env_cleared` and `run_env_cleared` are `none`. |
-| 2. Decoy | All 12 git names point into the decoy; all 5 run-identity names hold `outer-…` values. | Exit status and `qa_status` equal case 1. `head_sha` is the caller's commit. The decoy's index bytes, `HEAD`, `git for-each-ref`, `git ls-files` and object list are unchanged. The caller gains exactly one commit. `git_env_cleared` lists all 12 names in order; `run_env_cleared` lists all 5. |
-| 3. Helper missing | `git-repo-env.sh` removed from a copy of the tools directory. | Exit 1, stderr contains the exact message `ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh, autodrive_trust.sh or git-repo-env.sh is missing`, no evidence file. |
-| 4. Helper is a symlink | `git-repo-env.sh` replaced by a symbolic link. | The same as case 3. |
+| Control | The suite run directly, without the tool, with all 12 git names at a throwaway repository. | The suite fails and the throwaway repository's snapshot changes. This shows the suite can detect a leak. |
+| 1. Clean | No git or run-identity variable set. | `qa_status` is `PASS`; `git_env_cleared` and `run_env_cleared` are `none`; the caller's snapshot is unchanged. |
+| 2. Decoy | All 12 git names point into the decoy; all 5 run-identity names hold `outer-…` values. | Exit status and `qa_status` equal case 1. `head_sha` is the caller's commit. The caller's and the decoy's snapshots are both unchanged. `git_env_cleared` lists all 12 names in order; `run_env_cleared` lists all 5. |
+| 3. Self | All 12 git names point at `REPO_PATH`'s own `.git`, as in the Product-Management #742 damage. | `qa_status` is `PASS` and the caller's snapshot is unchanged. |
+| 4. Commit here (extra) | A suite that commits in `REPO_PATH` itself; git names at the decoy. | The commit lands in the caller and the decoy's snapshot is unchanged. This shows where git wrote, so it is not the acceptance proof. |
+| 5. Helper missing | `git-repo-env.sh` removed from a copy of the tools directory. | Exit 1, stderr contains the exact message `ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh, autodrive_trust.sh or git-repo-env.sh is missing`, no evidence file, the caller's snapshot is unchanged. |
+| 6. Helper is a symlink | `git-repo-env.sh` replaced by a symbolic link. | The same as case 5. |
 
 The test asserts the exact `PASS` line below as well as each case. It uses
 only exit statuses and before-and-after snapshots; it has no
@@ -309,7 +330,7 @@ sleep, timeout or clock read. CI runs it next to
 
 ```bash
 bash amplifier-bundle/recipes/tests/test-issue-2033-qa-git-env.sh
-# Output ends: PASS: 4/4 cases (issue #2033)
+# Output ends: PASS: 6/6 cases (issue #2033)
 ```
 
 ## What is not cleared
@@ -327,9 +348,10 @@ bash amplifier-bundle/recipes/tests/test-issue-2033-qa-git-env.sh
 - **Not a sandbox.** Clearing the variables stops tests from acting on another
   repository by accident. The suite still runs the branch's code, as
   described under [Running the suite commands](auto-drive-to-merge.md#running-the-suite-commands).
-- **Equal trust for `REPO_PATH`.** The merge-evidence steps may load the helper
-  from the PR's own tree. That trusts the tree no more than running its QA tool
-  and tests already does, and `$AMPLIHACK_HOME` is searched first.
+- **Equal trust for `REPO_PATH`.** Step-00 of the merge round may pick the
+  tools directory from the PR's own tree. That trusts the tree no more than
+  running its QA tool and tests already does, and `$AMPLIHACK_HOME` is
+  searched first.
 - **Symlinked parent directories** are not detected, the same as for the other
   autodrive helpers.
 - **Other repositories** need amplihack installed: `amplihack install` copies

@@ -53,6 +53,21 @@ fn execute_recipe_via_rust_for_test(
     // #1984: the one list of outer-run variables, RUN_DIR and RUN_ID included.
     let _restore = is_outer_orchestration.then(crate::test_support::clear_outer_run_env);
 
+    // A test that has not chosen otherwise must not run the end-of-run sweep:
+    // it resolves the work root from the inherited `AMPLIHACK_WORK_ROOT` or
+    // `$HOME/.amplihack/work`, so it walks (and may delete in) the
+    // developer's real run folders, and on a full work root it outlasts the
+    // timing bounds the recipe-run tests assert. Tests that exercise the
+    // sweep set `AMPLIHACK_CLEANUP_ON_EXIT` themselves.
+    let _no_sweep = std::env::var_os(crate::commands::cleanup::CLEANUP_ON_EXIT_ENV)
+        .is_none()
+        .then(|| {
+            crate::test_support::EnvGuard::set([(
+                crate::commands::cleanup::CLEANUP_ON_EXIT_ENV,
+                "0",
+            )])
+        });
+
     execute_recipe_via_rust(
         recipe_path,
         context,

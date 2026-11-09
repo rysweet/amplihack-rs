@@ -435,6 +435,28 @@ for copy in scripts/git-hook-cargo.sh \
     fi
 done
 
+# 6.6a autodrive_trust.sh keeps the one recorded copy: it is a merge-guard
+# GATE_FILE and does not load git-repo-env.sh (see its comment). Its list must
+# be the helper's 12 names in order, then GIT_REPLACE_REF_BASE, and
+# autodrive_trust_git must remove every one of them before git runs.
+TRUST_SH="$REPO_ROOT/amplifier-bundle/tools/autodrive_trust.sh"
+trust_list="$(env -i PATH="$PATH" HOME="$HOME" AUTODRIVE_TRUST_GIT_UNSET_VARS=GIT_DIR bash -c '. "$0" >/dev/null 2>&1; printf "%s" "$AUTODRIVE_TRUST_GIT_UNSET_VARS"' "$TRUST_SH" 2>&1)"
+assert_eq "autodrive_trust.sh unsets git-repo-env.sh's list, then GIT_REPLACE_REF_BASE" \
+    "$shell_order GIT_REPLACE_REF_BASE" "$trust_list"
+TRUST_REPO="$TMPROOT/trust-repo"
+git init -q "$TRUST_REPO"
+trust_seen="$(for v in $shell_order GIT_REPLACE_REF_BASE; do printf '%s=/decoy ' "$v"; done)"
+# The alias prints git's environment, then a marker, so a git that refused to
+# start (as it would with GIT_DIR=/decoy) cannot pass for a clean one.
+# shellcheck disable=SC2086 # word-splitting the NAME=value list is intended
+trust_out="$(env -i PATH="$PATH" HOME="$HOME" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null $trust_seen \
+    bash -c '. "$0" >/dev/null 2>&1; autodrive_trust_git "$1" -c alias.envdump="!env; echo TRUST_GIT_RAN" envdump' "$TRUST_SH" "$TRUST_REPO" 2>&1)"
+case "$trust_out" in
+    *TRUST_GIT_RAN*) assert_eq "autodrive_trust_git passes none of the 13 names to git" "" \
+        "$(printf '%s\n' "$trust_out" | grep -E '^GIT_[A-Z_]+=/decoy$' | tr '\n' ' ')" ;;
+    *) record_fail "autodrive_trust_git passes none of the 13 names to git" "git did not run: $trust_out" ;;
+esac
+
 # 6.7 The hook refuses a missing or symlinked helper, by exact message, and
 # runs nothing. A scratch tree holds a copy of the hook so the real helper is
 # never moved.
@@ -464,7 +486,7 @@ ROUND_YAML="$REPO_ROOT/amplifier-bundle/recipes/autodrive-merge-round.yaml"
 step_body() { awk -v id="  - id: \"$2\"" '$0 == id { on = 1; print; next } on && /^  - id:/ { exit } on { print }' "$1"; }
 for sid in step-01-sync-with-base step-02-qa-team-scenarios; do
     case "$(step_body "$EVIDENCE_YAML" "$sid")" in
-        *'STOP: git-repo-env.sh not found or a symlink (searched '*') (#2033)'*)
+        *'STOP: cannot load git-repo-env.sh from the tools directory (#2033)'*)
             record_pass "merge-evidence $sid has the exact #2033 STOP line" ;;
         *) record_fail "merge-evidence $sid has the exact #2033 STOP line" "not found in $sid" ;;
     esac

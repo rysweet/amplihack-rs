@@ -21,9 +21,9 @@
 #
 # Callers source autodrive_state.sh first: autodrive_blob_hash,
 # autodrive_manifest_row, autodrive_crusty_final and autodrive_clear_phase live
-# there. This file only DEFINES functions, two read-only variables and the
-# _AD_SCOPE_OK flag; sourcing it has no other side effect. Needs bash 3.2 or
-# later, git and coreutils.
+# there. This file only DEFINES functions, two read-only variables,
+# AUTODRIVE_TRUST_GIT_UNSET_VARS and the _AD_SCOPE_OK flag; sourcing it has no
+# other side effect. Needs bash 3.2 or later, git and coreutils.
 #
 # Same-user limit: these checks catch an agent following instructions found in
 # branch text, an accidental edit, and the replay of an older record. They are
@@ -56,14 +56,32 @@ autodrive_is_sha() {
   return 0
 }
 
+# The names autodrive_trust_git removes from git's environment: the 12
+# repository-selecting names of git-repo-env.sh, in its order, then
+# GIT_REPLACE_REF_BASE, which does not select a repository but would let replace
+# refs rewrite the history walked here.
+#
+# This is a copy of AMPLIHACK_GIT_REPO_ENV_VARS rather than a load of
+# git-repo-env.sh because this file is one of the merge guard's GATE_FILES
+# (crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs): every file the
+# merge gate sources gets the guard's mode check, so loading another helper
+# here would widen that trusted set. tests/issue_1278_git_env_isolation.sh
+# fails CI unless this value is git-repo-env.sh's list followed by
+# GIT_REPLACE_REF_BASE (#2033). Assigned unconditionally, so the environment
+# cannot shorten it.
+AUTODRIVE_TRUST_GIT_UNSET_VARS="GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR GIT_DIR GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_INDEX_FILE GIT_INDEX_VERSION GIT_NAMESPACE GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_QUARANTINE_PATH GIT_WORK_TREE GIT_REPLACE_REF_BASE"
+
 # autodrive_trust_git <repo> <git args...>: git with history rewriting turned
-# off. Replace refs and grafts cannot change what is walked, an inherited
-# GIT_DIR or GIT_WORK_TREE cannot point git at another repository, and git
-# never prompts for credentials.
+# off. Replace refs and grafts cannot change what is walked, no inherited
+# repository-selecting variable (GIT_DIR, GIT_WORK_TREE, GIT_NAMESPACE and the
+# rest of AUTODRIVE_TRUST_GIT_UNSET_VARS) can point git at another repository,
+# and git never prompts for credentials.
 autodrive_trust_git() {
-  local repo="$1"; shift
-  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
-    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_REPLACE_REF_BASE \
+  local repo="$1" v
+  local -a unset_args=()
+  shift
+  for v in $AUTODRIVE_TRUST_GIT_UNSET_VARS; do unset_args+=(-u "$v"); done
+  env "${unset_args[@]}" \
     GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null GIT_TERMINAL_PROMPT=0 LC_ALL=C \
     git -C "$repo" "$@"
 }

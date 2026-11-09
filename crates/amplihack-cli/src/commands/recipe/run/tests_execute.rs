@@ -3373,11 +3373,19 @@ fn test_budget_dropped_values_still_delivered_via_set_args() {
 }
 
 /// The caller holds the shared environment lock through restoration.
-fn fixture_environment() -> crate::test_support::EnvGuard {
+///
+/// Each run gets a private work root and no end-of-run sweep, so these tests
+/// neither create run folders in nor sweep the caller's work root, normally
+/// the real `~/.amplihack/work` (issue #2067; see
+/// `test_support::IsolatedWorkRoot`). The work root guard is the second
+/// element and drops last.
+fn fixture_environment() -> (
+    crate::test_support::EnvGuard,
+    crate::test_support::IsolatedWorkRoot,
+) {
     let mut keys = vec![
         "AMPLIHACK_AGENT_BINARY",
         "AMPLIHACK_ASSET_RESOLVER",
-        "AMPLIHACK_CLEANUP_ON_EXIT",
         "AMPLIHACK_GRAPH_DB_PATH",
         "AMPLIHACK_HOME",
         "AMPLIHACK_KUZU_DB_PATH",
@@ -3400,16 +3408,104 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
     let saved = crate::test_support::EnvGuard::capture(&keys);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
-    // Issue #2067: the end-of-run sweep walks the real work root, which can
-    // take over a minute on a loaded host and break the wall-clock ceilings.
-    unsafe { std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0") };
     // Issue #1984: inside a recipe-run session the outer run's identity and
     // depth would reach the runner, which then joins or is refused by the outer
     // tree. Tests that need a value set it after this fixture.
     for key in crate::test_support::OUTER_RUN_IDENTITY_VARS {
         unsafe { std::env::remove_var(key) };
     }
-    saved
+    (saved, crate::test_support::IsolatedWorkRoot::new())
+}
+
+#[test]
+#[cfg(unix)]
+fn fixture_environment_keeps_runs_out_of_the_inherited_work_root() {
+    // Issue #2067: a test run under a recipe inherits the caller's
+    // AMPLIHACK_WORK_ROOT (normally the real ~/.amplihack/work). The fixture
+    // must put the run folder in a private work root, leave the inherited
+    // root untouched, turn the end-of-run sweep off, and restore everything.
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let inherited = temp.path().join("inherited-work");
+    let _caller = crate::test_support::EnvGuard::capture(&[
+        "AMPLIHACK_WORK_ROOT",
+        "AMPLIHACK_WORK_ROOT_EXPLICIT",
+        "AMPLIHACK_CLEANUP_ON_EXIT",
+    ]);
+    unsafe {
+        std::env::set_var("AMPLIHACK_WORK_ROOT", &inherited);
+        std::env::set_var("AMPLIHACK_WORK_ROOT_EXPLICIT", "1");
+        std::env::remove_var("AMPLIHACK_CLEANUP_ON_EXIT");
+    }
+
+    let private_root = {
+        let fixture = fixture_environment();
+        let repo = temp.path().join("repo");
+        let amplihack_home = temp.path().join("amplihack-home");
+        let runner = temp.path().join("recipe-runner-rs");
+        std::fs::create_dir_all(&repo).expect("failed to create repo dir");
+        std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+        std::fs::write(
+            &runner,
+            "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"work-root-probe\",\"success\":true,\"step_results\":[],\"context\":{\"run_dir\":\"$AMPLIHACK_RUN_DIR\"}}\nEOF\n",
+        )
+        .expect("failed to write runner stub");
+        make_executable(&runner);
+        let recipe = repo.join("recipe.yaml");
+        std::fs::write(&recipe, "name: work-root-probe\nsteps: []\n")
+            .expect("failed to write recipe");
+        unsafe {
+            std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+            std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+        }
+        assert!(!crate::commands::cleanup::cleanup_on_exit_enabled());
+
+        let result = execute::execute_recipe_via_rust(
+            &recipe,
+            &BTreeMap::new(),
+            false,
+            false,
+            &repo,
+            &[],
+            None,
+        )
+        .expect("recipe run must succeed");
+        let run_dir = PathBuf::from(
+            result
+                .context
+                .get("run_dir")
+                .and_then(JsonValue::as_str)
+                .unwrap_or_default(),
+        );
+        let private_root = fixture.1.path();
+        assert!(
+            run_dir.starts_with(private_root.join("runs")) && run_dir.join("run.json").is_file(),
+            "the run folder {} must be under the fixture's work root {}",
+            run_dir.display(),
+            private_root.display()
+        );
+        assert!(
+            !inherited.exists(),
+            "the inherited work root must not be created or written"
+        );
+        private_root
+    };
+
+    assert_eq!(
+        std::env::var_os("AMPLIHACK_WORK_ROOT").as_deref(),
+        Some(inherited.as_os_str())
+    );
+    assert_eq!(
+        std::env::var_os("AMPLIHACK_WORK_ROOT_EXPLICIT").as_deref(),
+        Some(std::ffi::OsStr::new("1"))
+    );
+    assert_eq!(std::env::var_os("AMPLIHACK_CLEANUP_ON_EXIT"), None);
+    assert!(
+        !private_root.exists(),
+        "the fixture's work root must be removed when the fixture drops"
+    );
 }
 
 // -------------------------------------------------------------------------

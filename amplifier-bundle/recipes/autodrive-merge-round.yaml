@@ -112,6 +112,7 @@ steps:
       pr_number: "{{pr_number}}"
       autodrive_qa_evidence: "{{autodrive_qa_evidence}}"
       autodrive_round_label: "{{autodrive_round_label}}"
+      autodrive_tools_dir: "{{autodrive_tools_dir}}"
   # D5: hash qa-evidence.json before any agent runs; step-03 re-hashes, step-05 records.
   - id: "step-00d-qa-evidence-hash"
     type: "bash"
