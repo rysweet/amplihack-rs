@@ -46,7 +46,7 @@ amplihack approach:
 ```
 crates/amplihack-hooks/src/context_preservation/
 crates/amplihack-hooks/src/pre_compact/
-.claude/runtime/logs/<session_id>/ORIGINAL_REQUEST.md
+${AMPLIHACK_HOME:-~/.amplihack}/runtime/sessions/<session_key>/logs/ORIGINAL_REQUEST.md
 ```
 
 ## Golden Rule

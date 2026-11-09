@@ -934,11 +934,14 @@ fn generated_tree_ids_are_valid_and_distinct() {
 }
 
 /// The environment a recipe fixture runs in: a temp `HOME` owned by this
-/// fixture and the variables it changed. Dropping it restores the variables
-/// first and then removes the temp `HOME`, so no `amplihack-recipe-home-*`
-/// directory outlives the test.
+/// fixture, a private work root with no end-of-run sweep (issue #2067; see
+/// `test_support::IsolatedWorkRoot`), and the variables it changed. Field
+/// order is drop order: the variables are restored first, then the work root
+/// guard restores its variables and removes its folder, then the temp `HOME`
+/// is removed, so no `amplihack-recipe-home-*` directory outlives the test.
 struct FixtureEnvironment {
     _env: crate::test_support::EnvGuard,
+    _work_root: crate::test_support::IsolatedWorkRoot,
     _home: tempfile::TempDir,
 }
 
@@ -950,15 +953,14 @@ fn fixture_environment() -> FixtureEnvironment {
         .prefix("amplihack-recipe-home-")
         .tempdir()
         .expect("create the recipe fixture HOME");
+    let work_root = crate::test_support::IsolatedWorkRoot::new();
     let mut env = crate::test_support::EnvGuard::capture(&[]);
     env.assign("HOME", home.path());
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     env.assign("AMPLIHACK_AGENT_BINARY", "claude");
-    // Issue #2067: the end-of-run sweep walks the real work root, which can
-    // take over a minute on a loaded host and break the wall-clock ceilings.
-    env.assign("AMPLIHACK_CLEANUP_ON_EXIT", "0");
     FixtureEnvironment {
         _env: env,
+        _work_root: work_root,
         _home: home,
     }
 }

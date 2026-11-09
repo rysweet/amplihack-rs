@@ -260,6 +260,13 @@ jobs:
       - name: Recipes — PR always opens after successful push (issue #495)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-pr-always-opens.sh
+      # Holds the #1968 publish coverage (merge-base diff, derived titles,
+      # issue-reference defusal, redaction, hostile titles, mixed-title tie)
+      # and the earlier #929 cases. About 70 seconds; HOME is a fresh
+      # directory so nothing reads or writes the runner's configuration.
+      - name: Recipes — default workflow reliability contracts (issues #929, #1968)
+        shell: bash
+        run: HOME="$(mktemp -d)" bash amplifier-bundle/recipes/tests/test-default-workflow-reliability.sh
       - name: Recipes — checkpoint formatting stays within task edits
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-checkpoint-scoped-format.sh

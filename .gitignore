@@ -27,6 +27,8 @@ out/
 # Amplihack runtime directories (auto-generated)
 .claude/logs/
 .claude/runtime/
+# Hook state when AMPLIHACK_HOME points at this checkout (#1963)
+/runtime/
 index.scip
 .amplihack/
 observability/litellm/.env

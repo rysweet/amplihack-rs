@@ -1181,10 +1181,10 @@ mod tests {
     }
 
     #[cfg(unix)]
+    /// Written through `test_support::write_executable`, so no concurrent
+    /// fork can hold a write descriptor to the script when it is spawned
+    /// (`ETXTBSY`, issue #1973).
     fn fake_git(dir: &Path, body: &str) -> PathBuf {
-        // Written through `write_executable` (temp name, close, rename), so
-        // no fork of this process holds a write descriptor on it and its
-        // exec cannot fail with ETXTBSY (issue #2019).
         let path = dir.join("git");
         crate::test_support::write_executable(&path, &format!("#!/bin/sh\n{body}\n"));
         path
