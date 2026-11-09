@@ -245,9 +245,11 @@ normalise_pr_title_text() {
 }
 
 # conventional_pr_title <text>: prefixes "<type>: ". Only the Conventional
-# Commits types in pr_title_types count as an existing prefix; such text is
-# returned unchanged, except that a scope made only of an issue reference is
-# dropped: "fix(#5): x" becomes "fix: x". Any other lowercase "word: rest"
+# Commits types in pr_title_types count as an existing prefix, in any case
+# (Conventional Commits 1.0.0, item 16: types are not case-sensitive). Such a
+# type is lower-cased and the rest returned unchanged, except that a scope made
+# only of an issue reference is dropped: "fix(#5): x" becomes "fix: x" and
+# "Fix: x" becomes "fix: x". Any other lowercase "word: rest"
 # (a component, as in "release: ..." or "profile: ...") is not a type: the
 # type is inferred from the rest and the word becomes the scope, so
 # "release: built from the wrong SHA" becomes "fix(release): built from the
@@ -258,16 +260,21 @@ normalise_pr_title_text() {
 # can be inferred is returned unchanged.
 pr_title_types='feat|fix|docs|test|refactor|chore|perf|ci|build|style|revert|security'
 conventional_pr_title() {
-  local text="$1" scope="" rest lower first rule group re
+  local text="$1" scope="" rest lower first rule group re word typed
   local issue_scope_re="^(${pr_title_types})\((#[0-9]+|[Gg][Hh]-[0-9]+)\)(!?): (.*)\$"
   local existing_prefix_re="^(${pr_title_types})(\([^)]*\))?!?: "
   local component_re='^([a-z][a-z0-9_-]*): (.*[^ ].*)$'
-  if [[ "$text" =~ $issue_scope_re ]]; then
+  # The leading word up to "(", "!" or ":" with only that word lower-cased, so
+  # "Fix: x" and "FEAT(ui): y" match the type regexes below. The scope and the
+  # rest keep their case. Used only when one of those regexes matches.
+  word="${text%%[(!:]*}"
+  typed="$(printf '%s' "$word" | LC_ALL=C tr '[:upper:]' '[:lower:]')${text#"$word"}"
+  if [[ "$typed" =~ $issue_scope_re ]]; then
     printf '%s%s: %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
     return 0
   fi
-  if [[ "$text" =~ $existing_prefix_re ]]; then
-    printf '%s\n' "$text"
+  if [[ "$typed" =~ $existing_prefix_re ]]; then
+    printf '%s\n' "$typed"
     return 0
   fi
   rest="$text"

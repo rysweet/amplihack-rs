@@ -98,8 +98,11 @@ the title text. Every title ends with ` (#<issue>)`.
   whole-word group to match, in the order fix, docs, test, refactor, feat.
   Only the Conventional Commits types `feat`, `fix`, `docs`, `test`,
   `refactor`, `chore`, `perf`, `ci`, `build`, `style`, `revert` and `security`
-  count as an existing prefix. Such a prefix is kept, but a scope made only of
-  an issue reference is dropped: `fix(#5): x` becomes `fix: x`. Any other
+  count as an existing prefix, written in any case, since Conventional Commits
+  1.0.0 (item 16) does not treat types as case-sensitive. Such a prefix is
+  kept with its type lower-cased, and a scope made only of an issue reference
+  is dropped: `Fix: x` becomes `fix: x` and `fix(#5): x` becomes `fix: x`. The
+  scope and the rest of the title keep their case. Any other
   lowercase `word:` prefix is a component, as in many of this repository's
   issue titles (`release:`, `profile:`, `recipes:`). The type is inferred from
   the rest of the title and the component becomes its scope:

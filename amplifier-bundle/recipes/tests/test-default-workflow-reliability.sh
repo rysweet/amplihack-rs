@@ -891,7 +891,11 @@ run_worktree_case() {
         fail "workflow-worktree failed for ${label}; it must not require origin/main"
     }
 
-    branch_name="$(grep -o '"branch_name": "[^"]*"' "${stdout_file}" | sed 's/.*": "\(.*\)"/\1/' | tail -1)"
+    # sed -n reads the whole file; the last emitted value wins, as before.
+    # No 'tail' stage: under pipefail an early-exit stage can collapse the
+    # value to "" (issue #1434).
+    branch_name="$(sed -n 's/.*"branch_name": "\([^"]*\)".*/\1/p' "${stdout_file}")"
+    branch_name="${branch_name##*$'\n'}"
     [[ -n "${branch_name}" ]] || fail "workflow-worktree did not emit branch_name for ${label}"
 
     worktree_path="${case_dir}/worktrees/${branch_name}"
@@ -1636,8 +1640,8 @@ assert_publish_1968_helpers() {
 
         # conventional_pr_title: a leading verb decides; otherwise keyword
         # groups in the order fix, docs, test, refactor, feat; whole words
-        # only; Conventional Commits prefixes kept, an issue-reference scope
-        # dropped; any other "word:" prefix is a component, which becomes the
+        # only; Conventional Commits prefixes kept in any case and their type
+        # lower-cased, an issue-reference scope dropped; any other "word:" prefix is a component, which becomes the
         # scope of the inferred type, or is left alone if no type is inferred.
         local input want
         while IFS='|' read -r input want; do
@@ -1671,6 +1675,13 @@ profile: add rotation support|feat(profile): add rotation support
 tests: crashes on start|fix(tests): crashes on start
 rotate: rename the session|rotate: rename the session
 release(#5): wrong artifacts|fix: release(#5): wrong artifacts
+Fix: crash on startup|fix: crash on startup
+Feat: Add widget|feat: Add widget
+FIX: crash on startup|fix: crash on startup
+Docs(Publish): Tidy the index|docs(Publish): Tidy the index
+Feat(#5)!: Breaking widget|feat!: Breaking widget
+CHORE(GH-3): Bump the lockfile|chore: Bump the lockfile
+Fix the parser: it crashes|fix: Fix the parser: it crashes
 ROWS
 
         # defuse_issue_refs: every issue reference becomes "issue M", however
@@ -1811,17 +1822,17 @@ ROWS
             "$(printf 'src/a.rs\n\nsrc/b c.rs\n' | format_changed_files_body)"
         local out40 out41 out45 rc
         out40="$(seq -f 'f%02g' 1 40 | format_changed_files_body)"
-        eq "format_changed_files_body 40: header" "40 files changed" "$(printf '%s\n' "${out40}" | head -n1)"
+        eq "format_changed_files_body 40: header" "40 files changed" "${out40%%$'\n'*}"
         eq "format_changed_files_body 40: entries" "40" "$(printf '%s\n' "${out40}" | grep -c '^- f')"
         if printf '%s\n' "${out40}" | grep -qF 'more'; then fail "issue #1968 helper: 40 files must not get a '... and N more' line"; fi
         out41="$(seq -f 'f%02g' 1 41 | format_changed_files_body)"
-        eq "format_changed_files_body 41: last line" "- ... and 1 more" "$(printf '%s\n' "${out41}" | tail -n1)"
+        eq "format_changed_files_body 41: last line" "- ... and 1 more" "${out41##*$'\n'}"
         rc=0
         out45="$(set -o pipefail; seq -f 'f%02g' 1 45 | format_changed_files_body)" || rc=$?
         eq "format_changed_files_body 45 under pipefail: status" "0" "${rc}"
-        eq "format_changed_files_body 45: header" "45 files changed" "$(printf '%s\n' "${out45}" | head -n1)"
+        eq "format_changed_files_body 45: header" "45 files changed" "${out45%%$'\n'*}"
         eq "format_changed_files_body 45: entries" "40" "$(printf '%s\n' "${out45}" | grep -c '^- f')"
-        eq "format_changed_files_body 45: last line" "- ... and 5 more" "$(printf '%s\n' "${out45}" | tail -n1)"
+        eq "format_changed_files_body 45: last line" "- ... and 5 more" "${out45##*$'\n'}"
 
         # first_task_line reads RECIPE_VAR_task_description only.
         export RECIPE_VAR_task_description=$'\n   \nAdd merge-base diff to publish\r\nSecond line'
@@ -1894,7 +1905,7 @@ assert_pr_title_from_issue_on_moved_base() {
     if printf '%s' "${title}" | grep -qF '.github'; then publish_1968_fail "${tag}" "issue #1968 case 1(a): title names .github, a file from main: ${title}"; fi
     if grep -qF '.github' "${body}"; then publish_1968_fail "${tag}" "issue #1968 case 1(a): body lists .github, a file from main"; fi
     section="$(publish_1968_changed_files_section "${body}")"
-    [ "$(printf '%s\n' "${section}" | head -n1)" = "${expected} files changed" ] \
+    [ "${section%%$'\n'*}" = "${expected} files changed" ] \
         || publish_1968_fail "${tag}" "issue #1968 case 1(b): Changed files must open with '${expected} files changed'"
     [ "${expected}" -eq 3 ] || fail "issue #1968 case 1(b): expected count ${expected} is not 3"
     [ "$(printf '%s\n' "${section}" | grep -c '^- ')" -eq 3 ] \
@@ -1922,11 +1933,11 @@ assert_pr_title_from_issue_on_moved_base() {
     title="$(head -n1 "${WORK}/publish-1968-${tag}.title")"
     body="${WORK}/publish-1968-${tag}.body"
     section="$(publish_1968_changed_files_section "${body}")"
-    [ "$(printf '%s\n' "${section}" | head -n1)" = "45 files changed" ] \
+    [ "${section%%$'\n'*}" = "45 files changed" ] \
         || publish_1968_fail "${tag}" "issue #1968 case 2: Changed files must open with '45 files changed'"
     [ "$(printf '%s\n' "${section}" | grep -c '^- [^.]')" -eq 40 ] \
         || publish_1968_fail "${tag}" "issue #1968 case 2: Changed files must list 40 entries"
-    [ "$(printf '%s\n' "${section}" | tail -n1)" = "- ... and 5 more" ] \
+    [ "${section##*$'\n'}" = "- ... and 5 more" ] \
         || publish_1968_fail "${tag}" "issue #1968 case 2: Changed files must end with '- ... and 5 more'"
     if grep -qE '(^|[^0-9])40 files changed|with 40 changed files' "${body}" \
         || printf '%s' "${title}" | grep -qE '(^|[^0-9])40 (changed )?files'; then
@@ -2055,7 +2066,8 @@ assert_pr_title_from_issue_on_moved_base() {
     [ "${rc}" -eq 0 ] || publish_1968_fail "${tag}" "issue #1968 case 8: no merge base must not fail the publish (exit ${rc})"
     grep -qF 'WARNING: no merge base between origin/main and HEAD' "${WORK}/publish-1968-${tag}.err" \
         || publish_1968_fail "${tag}" "issue #1968 case 8: the two-dot fallback must be reported on stderr"
-    [ "$(publish_1968_changed_files_section "${WORK}/publish-1968-${tag}.body" | head -n1)" = "${expected} files changed" ] \
+    section="$(publish_1968_changed_files_section "${WORK}/publish-1968-${tag}.body")"
+    [ "${section%%$'\n'*}" = "${expected} files changed" ] \
         || publish_1968_fail "${tag}" "issue #1968 case 8: Changed files must count the two-dot range (${expected})"
 
     # Case 9: one head holds a closed PR with the template title (a run whose
@@ -2712,7 +2724,11 @@ assert_sanitize_cli_output_redacts_secrets() {
     # flag them, mirroring the fake-constant convention in
     # crates/amplihack-signal/tests/chat_it.rs.
     local fn_def
-    fn_def="$(grep -F 'sanitize_cli_output() {' "${PREP_RECIPE}" "${PREP_TRACKING_TOOL}" 2>/dev/null | head -n1)"
+    # No 'head' stage: under pipefail it can collapse the value to "" (issue
+    # #1434). Take the first hit with a substring instead; no hit leaves it
+    # empty and the check below reports it.
+    fn_def="$(grep -F 'sanitize_cli_output() {' "${PREP_RECIPE}" "${PREP_TRACKING_TOOL}" 2>/dev/null)" || fn_def=""
+    fn_def="${fn_def%%$'\n'*}"
     # grep over several files prefixes each hit with "<file>:"; strip it so the
     # line evals as the function definition it is.
     fn_def="${fn_def#*:}"
