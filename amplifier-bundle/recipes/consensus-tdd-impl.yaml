@@ -17,7 +17,10 @@ recursion:
   max_depth: 6
   max_total_steps: 100
 
-context: {}
+context:
+  # Issue #1966: required caller input, exactly true or false; nothing in this
+  # workflow sets it. See docs/reference/consensus-criticality-contract.md.
+  is_critical_code: ""
 
 steps:
   - id: "step4-write-tests"
@@ -66,6 +69,19 @@ steps:
   # STEP 5: IMPLEMENT THE SOLUTION (N-VERSION FOR CRITICAL CODE)
   # CONSENSUS TRIGGER: If implementation involves critical code paths
   # ============================================================================
+
+  # Issue #1966: fail before either route unless is_critical_code is exactly
+  # 'true' or 'false'. No condition: a direct run is checked the same way.
+  - id: "step5-validate-criticality"
+    type: "bash"
+    command: |
+      set -u
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/recipe_context_value.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: amplifier-bundle/tools/recipe_context_value.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      . "$H/recipe_context_value.sh" || exit 1
+      [ -r "$H/consensus_criticality.sh" ] || { echo "ERROR: amplifier-bundle/tools/consensus_criticality.sh not found or not readable" >&2; exit 2; }
+      . "$H/consensus_criticality.sh" || exit 2
+      cc_validate_input || exit $?
 
   - id: "step5-standard-implementation"
     condition: "is_critical_code == 'false'"
@@ -337,6 +353,22 @@ steps:
       ```
     output: "n_version_implementations"
     parse_json: true
+
+  # Issue #1966: no condition. Fails unless exactly one route completed, then
+  # outputs the route word. Checks: amplifier-bundle/tools/consensus_criticality.sh.
+  - id: "step5-require-complete-route"
+    type: "bash"
+    command: |
+      set -u
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/recipe_context_value.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: amplifier-bundle/tools/recipe_context_value.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      . "$H/recipe_context_value.sh" || exit 1
+      [ -r "$H/consensus_criticality.sh" ] || { echo "ERROR: amplifier-bundle/tools/consensus_criticality.sh not found or not readable" >&2; exit 2; }
+      . "$H/consensus_criticality.sh" || exit 2
+      cc_require_route || exit $?
+      echo "implementation route complete: $CC_ROUTE" >&2
+      printf '%s' "$CC_ROUTE"
+    output: "implementation_route"
 
   # ============================================================================
   # STEP 6: REFACTOR AND SIMPLIFY (EXPERT PANEL REVIEW)
