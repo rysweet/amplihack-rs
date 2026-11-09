@@ -303,6 +303,11 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: bash amplifier-bundle/recipes/tests/test-issue-1626-consensus-rerun-preserves-work.sh
+      - name: Recipes — explicit, verified worktree source (issue #1957)
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-1957-explicit-worktree-source.sh
       - name: Recipes — a rejected git hook is repaired, never bypassed (issue #1671)
         shell: bash
         env:

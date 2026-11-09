@@ -285,6 +285,8 @@ mod issue_1846_exhausted_reading;
 mod issue_1870_reread_probe_mode;
 #[path = "issue_1955_install_cli.rs"]
 mod issue_1955_install_cli;
+#[path = "issue_1957_explicit_worktree_source.rs"]
+mod issue_1957_explicit_worktree_source;
 #[path = "issue_1973_rotate_fixture.rs"]
 mod issue_1973_rotate_fixture;
 #[path = "issue_1973_wait_helpers.rs"]
