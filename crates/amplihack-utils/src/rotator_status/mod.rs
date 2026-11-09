@@ -18,7 +18,7 @@ mod root;
 #[cfg(unix)]
 pub use daemon::{
     DaemonState, daemon_state, foreign_rotator, is_rotator, parse_pid, pid_path, rotator_down,
-    rotator_down_at,
+    rotator_down_at, running_on_host,
 };
 pub use gate::{
     DEFAULT_THRESHOLD, DEFAULT_TIER, EnvToggle, MAX_TIER, MAX_TOGGLE_BYTES, TOGGLE_ENV,

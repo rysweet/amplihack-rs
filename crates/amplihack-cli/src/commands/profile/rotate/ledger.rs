@@ -353,7 +353,10 @@ impl RotateState {
     /// The pid of a running `profile rotate watch` whose executable is not
     /// this process's, for example one started before an upgrade.
     pub fn foreign_rotator(&self) -> Option<u32> {
-        self.foreign_rotator_at(Path::new("/proc"), std::env::current_exe().ok().as_deref())
+        self.foreign_rotator_at(
+            &super::daemon::proc_root(),
+            std::env::current_exe().ok().as_deref(),
+        )
     }
 
     /// [`Self::foreign_rotator`] against another `/proc` and executable.
