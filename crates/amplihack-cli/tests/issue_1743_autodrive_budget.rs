@@ -566,31 +566,49 @@ fn a_converged_round_keeps_done_and_records_its_row() {
 }
 
 #[test]
-fn rejected_light_rounds_on_one_head_with_empty_findings_do_not_stop() {
-    let Some(fx) = Fixture::new() else { return };
-    fx.plan(&["CONCERNS|0|0|1|"]);
-    fx.set("eval_stuck_after", "3");
-    let o = fx.run("crusty", &[]);
-    let r = result(&o);
-    assert!(
-        !r["reason"].as_str().unwrap().contains(DECIDED),
-        "{}",
-        show(&o)
-    );
-    assert_eq!(fx.evaluator_calls().len(), 4);
+fn a_leftover_light_json_does_not_exempt_a_round() {
+    // Issue #1982: nothing writes `<record>.light.json` any more, and a file
+    // that an earlier auto-drive-light left beside a record is not read. A
+    // round on an unchanged head with unchanged open items stops as STUCK in
+    // code, whether the leftover file sits beside the current record, the
+    // previous one, or both.
+    for plan in [
+        &["CONCERNS|0|0|1|a,b"][..],
+        &["CONCERNS|0|0|1|", "CONCERNS|0|0|0|"][..],
+        &["CONCERNS|0|0|0|a", "CONCERNS|0|0|1|a"][..],
+    ] {
+        let Some(fx) = Fixture::new() else { return };
+        fx.plan(plan);
+        let o = fx.run("crusty", &[]);
+        assert_eq!(o.status.code(), Some(1), "{plan:?}: {}", show(&o));
+        let r = result(&o);
+        assert_eq!(r["loop_result"], "STUCK", "{plan:?}: {}", show(&o));
+        assert_eq!(r["round_label"], "round-2", "{plan:?}: {}", show(&o));
+        assert!(
+            r["reason"].as_str().unwrap().contains(DECIDED),
+            "{plan:?}: a leftover .light.json must not exempt the round: {}",
+            show(&o)
+        );
+        assert_eq!(
+            fx.evaluator_calls(),
+            ["round-1"],
+            "{plan:?}: round-2 never reaches the evaluator"
+        );
+    }
 }
 
 #[test]
-fn the_round_after_a_light_round_is_exempt_too() {
-    let Some(fx) = Fixture::new() else { return };
-    // Round 1 is a rejected light round; round 2 is a normal non-clean round
-    // with no findings on the same head; round 3 repeats round 2.
-    fx.plan(&["CONCERNS|0|0|1|", "CONCERNS|0|0|0|"]);
-    let o = fx.run("crusty", &[]);
-    let r = result(&o);
-    assert_eq!(r["round_label"], "round-3", "{}", show(&o));
-    assert!(r["reason"].as_str().unwrap().contains(DECIDED));
-    assert_eq!(fx.evaluator_calls(), ["round-1", "round-2"]);
+fn the_progress_rule_reads_no_light_file() {
+    let body =
+        crate::support::auto_drive_light::read("amplifier-bundle/tools/autodrive_progress.sh");
+    assert!(
+        !body.contains(".light.json"),
+        "autodrive_progress.sh must not read <record>.light.json (#1982)"
+    );
+    assert!(
+        !body.contains("#1802"),
+        "the #1802 light exemption and its header clause are removed"
+    );
 }
 
 #[test]

@@ -27,11 +27,12 @@ context:
   should_finalize: "true"
   should_run_ci_wait: "true"
   should_merge: "true"
-  # #1561/#1684: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
+  # #1561/#1684/#1968: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
   repo_path: ""
   version_bump: ""
   local_testing_gate: ""
   precommit_results: ""
+  task_description: ""
 
 steps:
   - id: "publish-terminal-state"
@@ -352,8 +353,7 @@ steps:
       # PUBLISH_STATE="no-diff"; PUBLISH_STATE="existing-open-pr"; PUBLISH_STATE="already-merged"; PUBLISH_STATE="closed-after-merge"; PUBLISH_STATE="closed-unmerged-with-diff".
       # Provider-aware states: GitHub preserves existing scoped PR behavior; AzDO uses REMOTE_HOST_TYPE=azdo with az repos pr list/create.
       # Terminal vocabulary: MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED, EXISTING_OPEN_PR, BLOCKED_CI, BLOCKED_PROVIDER.
-      # gh pr create is called by the helper only after PUBLISH_STATE classification.
-      # gh pr create failed is surfaced by workflow_publish_pr.sh as FAILED_PR_CREATE.
+      # gh pr create is called by the helper only after PUBLISH_STATE classification; gh pr create failed is surfaced by workflow_publish_pr.sh as FAILED_PR_CREATE.
       PUBLISH_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="$(pwd)/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || { echo "ERROR: workflow publish helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $PUBLISH_HELPER; cwd=$(pwd)" >&2; exit 1; }
       bash "$PUBLISH_HELPER"
     output: "pr_publish_result"
