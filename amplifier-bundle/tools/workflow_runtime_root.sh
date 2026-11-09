@@ -42,10 +42,17 @@ if [ -z "$root" ]; then
         # -m applies to the last component only, which is the one this creates.
         # shellcheck disable=SC2174
         mkdir -p -m 700 "$parent" || exit 1
+        # Check again: closes the window between the check above and mkdir.
+        if [ -L "$parent" ]; then
+            echo "ERROR: runtime parent ${parent} is a symlink; refusing it" >&2
+            exit 1
+        fi
         if [ ! -O "$parent" ]; then
             echo "ERROR: runtime parent ${parent} is not owned by $(id -un); refusing it" >&2
             exit 1
         fi
+        # A parent made by older code may be 0755 or 0775.
+        chmod 700 "$parent" || exit 1
         root="${parent}/${branch}"
         if [ -L "$root" ]; then
             echo "ERROR: runtime root ${root} is a symlink; refusing it" >&2

@@ -264,34 +264,24 @@ check T1 "the five runtime folders exist" rt_dirs_exist "$WORK/xdg/amplihack-run
 out="$(AMPLIHACK_RUNTIME_ROOT="$WORK/given" XDG_RUNTIME_DIR="$WORK/xdg" bash "$RT_ROOT" feat/x 2>/dev/null)"; rc=$?
 check T2 "a set AMPLIHACK_RUNTIME_ROOT is kept" bash -c '[[ "$1" = 0 && "$2" = "$3/given" ]]' _ "$rc" "$out" "$WORK"
 check T2 "the five runtime folders exist under it" rt_dirs_exist "$WORK/given"
-# T3 keeps the real helper's fallback selection and checks all five mkdir
-# destinations, but maps its filesystem writes into an owned fixture.
-RT_TMP_BRANCH="issue-1808-test-$$-${RANDOM}"
+# T3 runs the real fallback with TMPDIR pointed at an owned fixture, so it
+# never writes to the shared /tmp (#2043).
 RT_TMP_FIXTURE="$(mktemp -d "${WORK:?}/runtime-fallback.XXXXXX")" || exit 2
-: "${RT_TMP_FIXTURE:?}"
-rt_private_fallback() (
-    export RT_FALLBACK_BRANCH="${RT_TMP_BRANCH:?}" RT_FALLBACK_FIXTURE="${RT_TMP_FIXTURE:?}"
-    mkdir() {
-        [[ "${1:-}" == -p ]] || return 2
-        shift
-        local path suffix
-        for path in "$@"; do
-            case "${path}" in
-                "/tmp/amplihack-runtime/${RT_FALLBACK_BRANCH:?}/"*) ;;
-                *) echo "unexpected runtime fallback mkdir destination: ${path}" >&2; return 2 ;;
-            esac
-            suffix="${path#"/tmp/amplihack-runtime/${RT_FALLBACK_BRANCH:?}/"}"
-            case "${suffix}" in locks|reflection|logs|metrics|provenance) ;; *) return 2 ;; esac
-            command mkdir -p "${RT_FALLBACK_FIXTURE:?}/runtime/${suffix:?}" || return $?
-        done
-    }
-    export -f mkdir
-    env -u AMPLIHACK_RUNTIME_ROOT -u XDG_RUNTIME_DIR bash "${RT_ROOT:?}" "${RT_TMP_BRANCH:?}"
-)
-out="$(rt_private_fallback 2>/dev/null)"; rc=$?
-check T3 "without XDG_RUNTIME_DIR the root is /tmp/amplihack-runtime/<branch>" \
-    bash -c '[[ "$1" = 0 && "$2" = "/tmp/amplihack-runtime/$3" ]]' _ "$rc" "$out" "$RT_TMP_BRANCH"
-check T3 "the five fallback folders exist inside the owned fixture" rt_dirs_exist "${RT_TMP_FIXTURE:?}/runtime"
+out="$(env -u AMPLIHACK_RUNTIME_ROOT -u XDG_RUNTIME_DIR TMPDIR="${RT_TMP_FIXTURE:?}" bash "$RT_ROOT" feat/x 2>/dev/null)"; rc=$?
+check T3 "without XDG_RUNTIME_DIR the root is \$TMPDIR/amplihack-runtime/<branch>" \
+    bash -c '[[ "$1" = 0 && "$2" = "$3/amplihack-runtime/feat/x" ]]' _ "$rc" "$out" "$RT_TMP_FIXTURE"
+check T3 "the five fallback folders exist" rt_dirs_exist "${RT_TMP_FIXTURE:?}/amplihack-runtime/feat/x"
+check T3 "the fallback parent is private (0700)" \
+    bash -c '[[ "$(stat -c %a "$1")" = 700 ]]' _ "${RT_TMP_FIXTURE:?}/amplihack-runtime"
+chmod 755 "${RT_TMP_FIXTURE:?}/amplihack-runtime"
+env -u AMPLIHACK_RUNTIME_ROOT -u XDG_RUNTIME_DIR TMPDIR="${RT_TMP_FIXTURE:?}" bash "$RT_ROOT" feat/x >/dev/null 2>&1
+check T3 "an existing 0755 parent is made private again" \
+    bash -c '[[ "$(stat -c %a "$1")" = 700 ]]' _ "${RT_TMP_FIXTURE:?}/amplihack-runtime"
+RT_LINK_FIXTURE="$(mktemp -d "${WORK:?}/runtime-link.XXXXXX")" || exit 2
+ln -s "${RT_TMP_FIXTURE:?}/amplihack-runtime" "${RT_LINK_FIXTURE:?}/amplihack-runtime"
+out="$(env -u AMPLIHACK_RUNTIME_ROOT -u XDG_RUNTIME_DIR TMPDIR="${RT_LINK_FIXTURE:?}" bash "$RT_ROOT" feat/x 2>&1)"; rc=$?
+check T3 "a symlinked fallback parent is refused" \
+    bash -c '[[ "$1" = 1 && "$2" = *"is a symlink"* ]]' _ "$rc" "$out"
 out="$(bash "$RT_ROOT" 2>&1)"; rc=$?
 check T4 "no branch name is an error" bash -c '[[ "$1" = 1 && "$2" = *usage* ]]' _ "$rc" "$out"
 : > "$WORK/blocker"

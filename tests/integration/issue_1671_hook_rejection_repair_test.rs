@@ -364,13 +364,13 @@ fn script_path() -> PathBuf {
     workspace_root().join("amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh")
 }
 
-/// The root that holds this test's bulk fixture: `TMPDIR` unless it is on
-/// tmpfs, then `CARGO_TARGET_TMPDIR`, then `/tmp`.
+/// The root that holds this test's bulk fixture: `TMPDIR` unless it counts
+/// as tmpfs, then `CARGO_TARGET_TMPDIR`, then `/tmp`.
 fn fixture_root() -> PathBuf {
     let tmpdir = std::env::var_os("TMPDIR").map(PathBuf::from);
     let root = pick_fixture_root(
         tmpdir.as_deref(),
-        &is_tmpfs,
+        &counts_as_tmpfs,
         option_env!("CARGO_TARGET_TMPDIR"),
     );
     assert!(
@@ -424,10 +424,17 @@ fn is_tmpfs(path: &Path) -> bool {
     rc == 0 && f_type == TMPFS_MAGIC
 }
 
-/// Off Linux no path counts as tmpfs.
+/// Off Linux no mount is detected as tmpfs; `counts_as_tmpfs` still treats
+/// `/tmp` as one.
 #[cfg(not(target_os = "linux"))]
 fn is_tmpfs(_path: &Path) -> bool {
     false
+}
+
+/// #2043 D5: tmpfs by mount type, or a path that canonicalises to `/tmp`
+/// (the shared directory #2043 is about, whatever it is mounted on).
+fn counts_as_tmpfs(path: &Path) -> bool {
+    is_tmpfs(path) || path.canonicalize().is_ok_and(|c| c == Path::new("/tmp"))
 }
 
 /// #2043 D2/D3: check a boundary log written by the 1671 suite.
@@ -503,17 +510,13 @@ fn boundary_violations(log: &str, slack: usize) -> Result<Vec<String>, String> {
 /// Names under `root` that a 1671 run or this harness creates.
 fn hook_repair_leftovers(root: &Path) -> BTreeSet<OsString> {
     fs::read_dir(root)
-        .map(|it| {
-            it.filter_map(Result::ok)
-                .map(|e| e.file_name())
-                .filter(|n| {
-                    let n = n.to_string_lossy();
-                    n.starts_with("issue-1671-hook-repair-")
-                        || n.starts_with("issue-1937-hook-repair-")
-                })
-                .collect()
+        .unwrap_or_else(|e| panic!("#2043: read_dir {}: {e}", root.display()))
+        .map(|e| e.expect("#2043: leftover dir entry").file_name())
+        .filter(|n| {
+            let n = n.to_string_lossy();
+            n.starts_with("issue-1671-hook-repair-") || n.starts_with("issue-1937-hook-repair-")
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// A bash command for the suite with all real configuration kept out.
@@ -621,17 +624,12 @@ fn hook_rejection_repair_shell_contract_passes() {
         violations.join("\n")
     );
 
-    let fixture_path = fixture.path().to_path_buf();
     let ours: BTreeSet<OsString> = [fixture.path(), boundary.path()]
         .iter()
         .filter_map(|p| p.file_name().map(OsString::from))
         .collect();
     fixture.close().expect("remove owned fixture");
     boundary.close().expect("remove owned boundary log");
-    assert!(
-        !fixture_path.exists(),
-        "#2043: the fixture must be gone after close()"
-    );
     // Other runs may share this root and hold their own live fixtures, so
     // only the names this test created are checked; the suite's own $WORK
     // lives inside the fixture's tmp, which the #1937 checks above cover.
@@ -810,7 +808,7 @@ fn is_tmpfs_is_false_for_missing_and_nul_paths() {
 fn is_tmpfs_matches_the_mount_table_on_linux() {
     assert!(!is_tmpfs(Path::new("/proc")), "procfs is not tmpfs");
     // Use the host's own mount table, not an assumption about /tmp.
-    let mounts = fs::read_to_string("/proc/self/mounts").unwrap_or_default();
+    let mounts = fs::read_to_string("/proc/self/mounts").expect("read /proc/self/mounts");
     if let Some(point) = mounts
         .lines()
         .map(|l| l.split(' ').collect::<Vec<_>>())
@@ -827,6 +825,25 @@ fn is_tmpfs_matches_the_mount_table_on_linux() {
 #[test]
 fn is_tmpfs_is_false_off_linux() {
     assert!(!is_tmpfs(Path::new("/tmp")));
+}
+
+#[test]
+fn counts_as_tmpfs_is_true_for_literal_tmp() {
+    if Path::new("/tmp").is_dir() {
+        assert!(
+            counts_as_tmpfs(Path::new("/tmp")),
+            "/tmp always counts as tmpfs"
+        );
+    }
+    let disk = tempfile::Builder::new()
+        .prefix("issue-2043-counts-as-tmpfs-")
+        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .expect("create a dir under CARGO_TARGET_TMPDIR");
+    assert!(
+        !counts_as_tmpfs(disk.path()),
+        "{} is under the build's target dir, not /tmp",
+        disk.path().display()
+    );
 }
 
 // --- #2043 D2/D3: boundary log rule (pure, strict parser) ---------------

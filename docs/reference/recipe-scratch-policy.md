@@ -279,12 +279,15 @@ fn pick_fixture_root(
 - **tmpfs detection, Linux:** `libc::statfs` on the path, then `f_type`
   compared with `0x0102_1994` (`TMPFS_MAGIC`). A path containing a NUL byte,
   or a failed `statfs` call, counts as not tmpfs.
-- **tmpfs detection, other platforms:** no path counts as tmpfs.
+- **`/tmp` itself, every platform:** a path that canonicalises to `/tmp`
+  counts as tmpfs whatever it is mounted on, because it is the shared
+  directory #2043 is about. Off Linux this is the only check.
 - After choosing, the harness asserts the root is not on tmpfs, unless the
   choice was the `/tmp` fallback.
 
 The function is pure; four unit tests cover the four rows with `is_tmpfs`
-injected, so they do not depend on the host's mounts.
+injected, so they do not depend on the host's mounts. The harness passes it
+`counts_as_tmpfs` (mount-type check or `/tmp`), which has its own unit test.
 
 ## The hook-repair suite: per-case removal
 
