@@ -3393,6 +3393,7 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
     let saved = crate::test_support::EnvGuard::capture(&[
         "AMPLIHACK_AGENT_BINARY",
         "AMPLIHACK_ASSET_RESOLVER",
+        "AMPLIHACK_CLEANUP_ON_EXIT",
         "AMPLIHACK_GRAPH_DB_PATH",
         "AMPLIHACK_HOME",
         "AMPLIHACK_KUZU_DB_PATH",
@@ -3413,7 +3414,25 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
     ]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    // No test here checks the end-of-run sweep. Without this, each run sweeps
+    // the work root inherited from the caller, which on a busy build host
+    // holds thousands of run folders: one sweep took about 50 s at load 150
+    // and tripped the 25 s hang ceilings in the timeout and non-UTF-8 tests.
+    unsafe { std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0") };
     saved
+}
+
+#[test]
+fn fixture_environment_turns_off_the_end_of_run_sweep() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = std::env::var_os("AMPLIHACK_CLEANUP_ON_EXIT");
+    {
+        let _fixture_environment = fixture_environment();
+        assert!(!crate::commands::cleanup::cleanup_on_exit_enabled());
+    }
+    assert_eq!(std::env::var_os("AMPLIHACK_CLEANUP_ON_EXIT"), before);
 }
 
 // -------------------------------------------------------------------------
