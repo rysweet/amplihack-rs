@@ -8,6 +8,7 @@
 #   autodrive_followups.sh file     --state-dir <dir> --pr <N> [--task-id <id>] [--task-text-file <file>]
 #   autodrive_followups.sh check    --state-dir <dir> --pr <N>
 #   autodrive_followups.sh gate     --state-dir <dir> --pr <N>
+#   autodrive_followups.sh resolve-task --task-id <id>
 #
 # classify  Step-03 of autodrive-crusty-round.yaml, on a crusty CONCERNS. Writes
 #           <record>.severity (`id<TAB>minor|major` per concern). Prints
@@ -35,18 +36,17 @@
 #           a changed list is posted again. On failure: followups.error, exit 1
 #           (gh's 79 is final and passed through); a full run removes it.
 # check     No network: is every finding filed, and the parent comment posted?
-# gate      The merge gate's call: check, as one evidence or blocker line.
-#           Both are in autodrive_followups_check.sh, which documents them.
+# gate      check as one evidence or blocker line (autodrive_followups_check.sh).
+# resolve-task  The one task-id rule (#1982): prints the id `file` uses for --task-id
+#           (#N, zeros dropped, or the id), else exit 2; the value is never logged.
 #
 # Exit 2 is a usage error. Agent text reaches gh only through --body-file,
 # after cell() (sanitised, HTML-escaped, mentions and links broken); the title
-# is sanitised text with the same breaks (break_refs), not HTML-escaped,
-# clipped to 80 characters and passed as one argument.
+# is sanitised text with the same breaks (break_refs), clipped to 80, one argument.
 # State files are private (umask 077, written through mktemp and mv -f), and a
 # symlinked or loose state file is refused. Logs carry ids, numbers and tokens.
-# A row append that fails after gh succeeded makes a rerun file that one finding
-# again; that duplicate window is accepted. Contract:
-# docs/reference/auto-drive-to-merge.md (minor findings end the crusty loop).
+# A row append failing after gh succeeded refiles that finding on a rerun
+# (accepted). Contract: docs/reference/auto-drive-to-merge.md.
 
 set -uo pipefail
 shopt -u patsub_replacement 2>/dev/null || true
@@ -59,13 +59,22 @@ ID_RE='^[A-Za-z0-9._-]{1,64}$'
 
 usage() {
   echo "ERROR: autodrive_followups: $1" >&2
-  echo "usage: autodrive_followups.sh classify|collect|file|check|gate --state-dir <dir> [--record <abs path>] [--pr <N>] [--task-id <id>] [--task-text-file <file>]" >&2
+  echo "usage: autodrive_followups.sh classify|collect|file|check|gate|resolve-task [--state-dir <dir>] [--record <abs path>] [--pr <N>] [--task-id <id>] [--task-text-file <file>]" >&2
   exit 2
+}
+# resolve_task <value>: the normalised task id (#N for an issue reference).
+resolve_task() {
+  if [[ "$1" =~ ^#?[0-9]+$ ]]; then
+    [[ "$1" =~ ^#?0*([1-9][0-9]{0,9})$ ]] || return 1
+    printf '#%s' "${BASH_REMATCH[1]}"; return 0
+  fi
+  [[ "$1" =~ ^[A-Za-z0-9._:/-]{1,64}$ ]] || return 1
+  printf '%s' "$1"
 }
 
 # --- arguments -----------------------------------------------------------------
 CMD="${1:-}"
-case "$CMD" in classify|collect|file|check|gate) shift ;; *) usage "the command must be classify, collect, file, check or gate" ;; esac
+case "$CMD" in classify|collect|file|check|gate|resolve-task) shift ;; *) usage "the command must be classify, collect, file, check, gate or resolve-task" ;; esac
 RECORD=""; STATE=""; PR=""; TASK_ID=""; TASK_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -81,6 +90,9 @@ while [ $# -gt 0 ]; do
   esac
   shift 2
 done
+if [ "$CMD" = resolve-task ]; then # no state, no network
+  [ -z "$STATE$RECORD$PR$TASK_FILE" ] && resolve_task "$TASK_ID" && exit 0
+  usage "resolve-task takes only --task-id, as #N or 1 to 64 characters from A-Za-z0-9._:/-"; fi
 [ -n "$STATE" ] || usage "--state-dir is required"
 [[ "$STATE" =~ [[:cntrl:]] ]] && usage "--state-dir contains a control character"
 STATE="${STATE%/}"; [ -n "$STATE" ] || usage "--state-dir must not be /"
@@ -162,15 +174,6 @@ parent_commented() {
 }
 filed_ids() { [ -e "$TSV" ] && LC_ALL=C awk -F '\t' 'NF { print $1 }' "$TSV" | jq -Rsc 'split("\n") | map(select(length > 0))' || printf '[]'; }
 
-# resolve_task <value>: the normalised task id (#N for an issue reference).
-resolve_task() {
-  if [[ "$1" =~ ^#?[0-9]+$ ]]; then
-    [[ "$1" =~ ^#?0*([1-9][0-9]{0,9})$ ]] || return 1
-    printf '#%s' "${BASH_REMATCH[1]}"; return 0
-  fi
-  [[ "$1" =~ ^[A-Za-z0-9._:/-]{1,64}$ ]] || return 1
-  printf '%s' "$1"
-}
 # closing_ref: stdin text -> the number of its first Closes/Fixes/Resolves #N.
 # clip_line <text>: its first line, sanitised (when workflow_issue_tracking.sh
 # is loaded), with control characters removed, clipped to 200 characters.
