@@ -20,7 +20,6 @@
 use crate::isolated_amplihack::{PROFILE_ROOT_ENV, isolated};
 use crate::support::profile_rotate::*;
 use crate::support::test_path::test_path;
-use crate::support::wait::output_within;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -318,6 +317,15 @@ fn helper_unarmed() {
 
 // ---------------------------------------------------------------- tests
 
+/// The fixture's copy of the variable name must match the one `lifetime.rs`
+/// reads. `tests_source_scan::the_lifetime_variable_survives_spawn` fixes
+/// that side to the same literal, so a rename of either copy fails here or
+/// there by name rather than as a rotator that never arms in D7.
+#[test]
+fn the_fixture_names_the_variable_the_watcher_reads() {
+    assert_eq!(LIFETIME_FD_ENV, "AMPLIHACK_TEST_ROTATOR_LIFETIME_FD");
+}
+
 /// D7: SIGKILL the test process that started a rotator from an armed
 /// fixture, and the rotator exits through its normal stop path.
 #[test]
@@ -389,7 +397,8 @@ fn an_unarmed_rotator_outlives_its_starter() {
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
         .env("AMPLIHACK_SKIP_REFLECTION", "1");
-    let out = output_within("`profile auto-switch off`", &mut off);
+    // A short command that exits on its own: wait on its exit, with no ceiling.
+    let out = off.output().expect("run `profile auto-switch off`");
     assert_no_secrets(&out);
     assert!(
         out.status.success(),

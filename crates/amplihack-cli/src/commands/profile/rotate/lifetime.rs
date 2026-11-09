@@ -1,25 +1,8 @@
 //! Issue #2095: a test-spawned rotator ends with the test process that
 //! started it. Production never arms this; it changes nothing outside tests.
 //!
-//! # Why test rotators leaked
-//!
-//! `issue_1592_daemon.rs`, `issue_1746_daily_archive_rotator.rs` and
-//! `issue_1592_root_rotator.rs` run `profile rotate start`, which goes
-//! through `daemon::start` → `launch_core` → `daemon::spawn`. `spawn` starts
-//! `profile rotate watch … --spawned` with `setsid`, so the watcher is in its
-//! own session, is reparented to init when `start` exits, and is not tied to
-//! the test process in any way the kernel enforces.
-//!
-//! - A test that completes stops its rotator with `profile rotate stop`
-//!   (`stop_until_gone`), so it does not leak.
-//! - A test that panics does not leak either: unwinding runs the `Reaper` or
-//!   `Guard` drops, which signal the pid the fixture's pid file names. The
-//!   one gap is `issue_1592_root_rotator.rs`, where the pid file is read and
-//!   parsed after `start` returns but before `Guard` exists; a panic there
-//!   leaves the watcher running.
-//! - SIGKILL, `abort` or a cancelled `cargo test` runs no destructor, so the
-//!   watcher outlives the test and keeps cycling against a deleted temporary
-//!   root.
+//! Why test rotators leaked, and the options that were rejected, are in
+//! `docs/concepts/test-rotator-lifetime.md`.
 //!
 //! # The mechanism
 //!
@@ -31,10 +14,6 @@
 //! read returns end of file, and the thread sets the watcher's existing stop
 //! flag. The watcher then leaves by its SIGTERM path: probes are cancelled,
 //! refreshes finish and the pid file is removed.
-//!
-//! `PR_SET_PDEATHSIG` was rejected because it fires when the `start` CLI
-//! exits, not when the test exits. A child subreaper was rejected because it
-//! would change the whole multi-threaded test binary.
 //!
 //! The `start` CLI keeps its inherited, non-close-on-exec read end, and its
 //! children may inherit it. That is harmless: a read end cannot delay end of

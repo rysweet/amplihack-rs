@@ -111,6 +111,12 @@ print, log, panic or exit, and the watcher behaves exactly as it did before
 #2095. Values such as `""`, `"x"`, `"-1"`, `"2"`, `" 5"` and
 `"99999999999"` are all ignored, as is a guard of `0` or `true`.
 
+Because a failed arming check is silent, nothing in the rotate log shows
+whether a watcher was armed. The integration test
+`a_killed_test_takes_its_rotator_with_it` (D7) is the only check that a
+rotator started by the fixture arms: if arming stopped working, the watcher
+would outlive the killed helper and that test would fail.
+
 ## What the watcher does when the pipe closes
 
 `watch()` in `rotate/daemon.rs` calls `lifetime::arm(&stop)` once,
@@ -205,8 +211,8 @@ because the kernel closes the write end.
 | File | What it checks |
 |------|----------------|
 | `src/commands/profile/rotate/tests_lifetime.rs` | `armed_fd` rejects every bad variable, guard and fd case; a closed fd (`i32::MAX`), a regular file and a pipe with `FD_CLOEXEC` set are all refused; the writer from `std::io::pipe()` has `FD_CLOEXEC` set; data leaves `stop` false and dropping the writer sets it. |
-| `src/commands/profile/rotate/tests_source_scan.rs` | `lifetime.rs` is a planned rotate file; the variable name does not start with `AMPLIHACK_ROTATE`. |
-| `tests/issue_2095_test_rotator_lifetime.rs` | `a_killed_test_takes_its_rotator_with_it`: a helper test starts an armed rotator and is SIGKILLed; the watcher exits and its pid file is removed. `an_unarmed_rotator_outlives_its_starter`: the same with an unarmed fixture; after the helper is reaped, the watcher writes a new `idle: auto-switch is off` log line and is still alive with its pid file present. Linux only. |
+| `src/commands/profile/rotate/tests_source_scan.rs` | `lifetime.rs` is a planned rotate file; it declares the variable as `AMPLIHACK_TEST_ROTATOR_LIFETIME_FD`, which does not start with `AMPLIHACK_ROTATE`. |
+| `tests/issue_2095_test_rotator_lifetime.rs` | `a_killed_test_takes_its_rotator_with_it`: a helper test starts an armed rotator and is SIGKILLed; the watcher exits and its pid file is removed. `an_unarmed_rotator_outlives_its_starter`: the same with an unarmed fixture; after the helper is reaped, the watcher writes a new `idle: auto-switch is off` log line and is still alive with its pid file present. `the_fixture_names_the_variable_the_watcher_reads`: the fixture's copy of the variable name is the same literal. Linux only. |
 
 The integration tests use no sleep or deadline. They wait on the helper's
 stdout line, `wait()`, a pidfd `poll(-1)` and inotify events.
