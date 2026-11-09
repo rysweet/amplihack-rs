@@ -85,6 +85,8 @@ fn counted(e: &Env, ctx: &mut Ctx, answers: Vec<Collected>) -> Reads {
             let i = c.fetch_add(1, Ordering::SeqCst);
             answers[i.min(answers.len() - 1)].clone()
         }),
+        // Synthetic pids: every recorded process is still running.
+        may_be_running: Arc::new(|_: &Path, _: u32, _: u32| true),
     });
     Reads {
         scans,

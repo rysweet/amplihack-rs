@@ -15,6 +15,11 @@
 //!   cached answer would permit an action, by a forced read whose answer is
 //!   returned.
 //!
+//! - A record served from the snapshot file whose process has since exited
+//!   is dropped before the answer is drawn, so a session that ended never
+//!   stays live for the rest of the freshness period. Only records that
+//!   could change the answer are checked, one `status` read each.
+//!
 //! Nothing here blocks, sleeps or retries. A cache fault (a directory or
 //! file that fails a check, a failed write) never changes an answer: the
 //! caller scans for itself and nothing is kept.
@@ -42,6 +47,9 @@ pub enum Fresh {
 pub type Clock = Arc<dyn Fn() -> i64 + Send + Sync>;
 /// `(proc_root, canonical_root, uid)` to the records of one scan.
 pub type CollectFn = Arc<dyn Fn(&Path, &Path, u32) -> Collected + Send + Sync>;
+/// `(proc_root, pid, uid)`: whether a snapshot record's process may still
+/// be running; false only when it has certainly gone.
+pub type RunningFn = Arc<dyn Fn(&Path, u32, u32) -> bool + Send + Sync>;
 #[cfg(test)]
 type FixedFn = dyn Fn(&Path) -> Liveness + Send + Sync;
 
@@ -57,6 +65,7 @@ pub struct SourceDeps {
     /// The reader's own pid, dropped from every answer.
     pub pid: u32,
     pub collect: CollectFn,
+    pub may_be_running: RunningFn,
 }
 
 impl SourceDeps {
@@ -75,6 +84,7 @@ impl SourceDeps {
             uid,
             pid,
             collect: Arc::new(liveness::collect),
+            may_be_running: Arc::new(liveness::may_be_running),
         }
     }
 }
@@ -196,7 +206,7 @@ fn read(d: &SourceDeps, root: &Path, fresh: Fresh) -> Liveness {
     if fresh == Fresh::Cached
         && let Found::Fresh(snap) = store.read(d.uid, (d.clock)())
     {
-        return derive(snap, d.pid);
+        return derive(d, snap);
     }
     match store.try_lock() {
         Ok(Lock::Held(_lock)) => {
@@ -214,7 +224,7 @@ fn read(d: &SourceDeps, root: &Path, fresh: Fresh) -> Liveness {
         Ok(Lock::Busy) => match fresh {
             Fresh::Forced => Liveness::Everything,
             Fresh::Cached => match store.read(d.uid, (d.clock)()) {
-                Found::Fresh(snap) | Found::Stale(snap) => derive(snap, d.pid),
+                Found::Fresh(snap) | Found::Stale(snap) => derive(d, snap),
                 Found::Missing => Liveness::Everything,
             },
         },
@@ -240,8 +250,24 @@ fn warn_no_cache(path: &Path, why: &str) {
     });
 }
 
-fn derive(snap: Snapshot, pid: u32) -> Liveness {
-    liveness::derive(&snap.into_collected(), pid)
+/// The answer from a snapshot file, without the records of processes that
+/// have exited since it was taken. A record that cannot change the answer
+/// (no profile, and not an unreadable Claude-like environment) is kept
+/// unchecked.
+fn derive(d: &SourceDeps, snap: Snapshot) -> Liveness {
+    let collected = match snap.into_collected() {
+        Collected::Procs(procs) => Collected::Procs(
+            procs
+                .into_iter()
+                .filter(|r| {
+                    let matters = r.profile.is_some() || (r.claude_like && r.environ_unreadable);
+                    !matters || r.pid == d.pid || (d.may_be_running)(&d.proc_root, r.pid, d.uid)
+                })
+                .collect(),
+        ),
+        other => other,
+    };
+    liveness::derive(&collected, d.pid)
 }
 
 /// The checked snapshot store for this proc root and canonical `root`, or

@@ -4184,6 +4184,15 @@ snapshot is never enough on its own to move a login: every path that acts
 reads `/proc` afresh first, as set out in
 [Commands that read afresh](#commands-that-read-afresh).
 
+A snapshot can list a session that has since ended. Before a snapshot
+answers, each process it lists in a profile directory, and each Claude-like
+process whose environment could not be read, is checked against
+`/proc/<pid>/status`. A process with no `/proc` entry, a zombie, or a pid
+that now belongs to another user is dropped from the answer. So when a
+session ends, `auto-switch repair`, `auto-switch status` and the next launch
+see it at once, not up to 30 seconds later. A pid that the same user reuses
+still counts as a running session, which errs towards live.
+
 The snapshot is used on Linux only. On every other Unix the answer is
 `Unsupported`, as before, and no snapshot file is read or written.
 

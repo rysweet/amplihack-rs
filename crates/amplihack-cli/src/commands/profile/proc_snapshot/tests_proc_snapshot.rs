@@ -119,6 +119,8 @@ impl Fx {
                 let i = scans.fetch_add(1, Ordering::SeqCst);
                 answers[i.min(answers.len() - 1)].clone()
             }),
+            // Synthetic pids: every recorded process is still running.
+            may_be_running: Arc::new(|_: &Path, _: u32, _: u32| true),
         }
     }
 
@@ -578,6 +580,112 @@ fn the_readers_own_unreadable_environment_does_not_make_everything_live() {
     f.plant_valid(T0, serde_json::json!([r, proc_json(OTHER, Some("X"))]));
     let s = f.source(READER, vec![live(&[])]);
     assert_eq!(s.liveness(&f.root, Fresh::Cached), known(&["X"]));
+}
+
+/// A source whose snapshot reads answer from the file, with `gone` the
+/// pids whose processes have exited since; every check is recorded.
+fn source_with_gone(f: &Fx, gone: &[u32], checked: &Arc<Mutex<Vec<u32>>>) -> ProcSource {
+    let mut d = f.deps(READER, vec![live(&[])]);
+    let gone: Vec<u32> = gone.to_vec();
+    let checked = Arc::clone(checked);
+    d.may_be_running = Arc::new(move |_: &Path, pid: u32, _: u32| {
+        checked.lock().unwrap().push(pid);
+        !gone.contains(&pid)
+    });
+    ProcSource::with(d)
+}
+
+#[test]
+fn a_snapshot_record_whose_process_has_exited_is_not_live() {
+    // The session in X ended after the snapshot was taken: its login must
+    // be returnable now, not after the freshness period (issue #1569).
+    let f = fx();
+    f.plant_valid(
+        T0,
+        serde_json::json!([proc_json(OTHER, Some("X")), proc_json(OTHER + 1, Some("Y"))]),
+    );
+    let checked = Arc::new(Mutex::new(Vec::new()));
+    let s = source_with_gone(&f, &[OTHER], &checked);
+    assert_eq!(s.liveness(&f.root, Fresh::Cached), known(&["Y"]));
+    assert_eq!(f.scans(), 0, "the snapshot still answers without a scan");
+}
+
+#[test]
+fn an_exited_unreadable_claude_record_no_longer_makes_everything_live() {
+    let f = fx();
+    let mut r = proc_json(OTHER, None);
+    r["environ_unreadable"] = serde_json::json!(true);
+    f.plant_valid(T0, serde_json::json!([r, proc_json(OTHER + 1, Some("X"))]));
+    let checked = Arc::new(Mutex::new(Vec::new()));
+    let s = source_with_gone(&f, &[OTHER], &checked);
+    assert_eq!(s.liveness(&f.root, Fresh::Cached), known(&["X"]));
+}
+
+#[test]
+fn a_stale_snapshot_served_under_a_busy_lock_drops_exited_records_too() {
+    let f = fx();
+    f.plant_valid(T0, serde_json::json!([proc_json(OTHER, Some("X"))]));
+    f.at(T0 + FRESH_SECS * 10);
+    let _held = f.hold_lock();
+    let checked = Arc::new(Mutex::new(Vec::new()));
+    let s = source_with_gone(&f, &[OTHER], &checked);
+    assert_eq!(s.liveness(&f.root, Fresh::Cached), known(&[]));
+}
+
+#[test]
+fn only_records_that_can_change_the_answer_are_checked() {
+    let f = fx();
+    f.plant_valid(
+        T0,
+        serde_json::json!([
+            proc_json(OTHER, None),
+            proc_json(READER, Some("Y")),
+            proc_json(OTHER + 1, Some("X")),
+        ]),
+    );
+    let checked = Arc::new(Mutex::new(Vec::new()));
+    let s = source_with_gone(&f, &[], &checked);
+    assert_eq!(s.liveness(&f.root, Fresh::Cached), known(&["X"]));
+    assert_eq!(*checked.lock().unwrap(), vec![OTHER + 1]);
+}
+
+#[test]
+fn may_be_running_reads_the_status_of_the_pid() {
+    use crate::commands::profile::auto_switch::liveness::may_be_running;
+    let f = fx();
+    let uid = euid();
+    let status = |pid: u32, body: String| {
+        let d = f.proc_root.join(pid.to_string());
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("status"), body).unwrap();
+    };
+    status(
+        1,
+        format!("Name:\tclaude\nState:\tS (sleeping)\nUid:\t{uid}\t{uid}\n"),
+    );
+    status(
+        2,
+        format!("Name:\tclaude\nState:\tZ (zombie)\nUid:\t{uid}\t{uid}\n"),
+    );
+    status(
+        3,
+        format!("Name:\tclaude\nState:\tS (sleeping)\nUid:\t{}\n", uid + 1),
+    );
+    status(4, "garbled".to_string());
+    assert!(may_be_running(&f.proc_root, 1, uid), "running");
+    assert!(!may_be_running(&f.proc_root, 2, uid), "a zombie has ended");
+    assert!(
+        !may_be_running(&f.proc_root, 3, uid),
+        "pid now another user's"
+    );
+    assert!(
+        may_be_running(&f.proc_root, 4, uid),
+        "doubt counts as running"
+    );
+    assert!(
+        !may_be_running(&f.proc_root, 5, uid),
+        "no /proc entry: exited"
+    );
 }
 
 #[test]

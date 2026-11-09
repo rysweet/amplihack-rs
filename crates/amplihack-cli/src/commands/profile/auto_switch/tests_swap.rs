@@ -490,6 +490,8 @@ mod issue_2040 {
                 let i = c.fetch_add(1, Ordering::SeqCst);
                 answers[i.min(answers.len() - 1)].clone()
             }),
+            // Synthetic pids: every recorded process is still running.
+            may_be_running: Arc::new(|_: &Path, _: u32, _: u32| true),
         });
         (s, scans)
     }

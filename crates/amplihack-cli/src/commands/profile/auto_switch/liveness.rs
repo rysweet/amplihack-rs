@@ -263,6 +263,26 @@ pub(crate) fn claude_config_dirs(
     Ok(dirs)
 }
 
+/// Whether `pid` may still be a running process of `uid` under
+/// `proc_root`: false only when it has certainly exited (no `/proc/<pid>`,
+/// or the kernel answers `ESRCH`), is a zombie, or now belongs to another
+/// user. Any other doubt answers true. A snapshot record whose process
+/// fails this no longer makes a directory live (issue #2040): a session that
+/// ended must not keep its borrowed login away for the rest of the
+/// freshness period. A reused pid of the same user still counts, which
+/// errs towards live.
+pub fn may_be_running(proc_root: &Path, pid: u32, uid: u32) -> bool {
+    let path = proc_root.join(pid.to_string()).join("status");
+    match fsx::read_bounded_nofollow(&path, MAX_SMALL) {
+        Ok(None) => false,
+        Ok(Some((raw, _))) => match parse_status(&raw) {
+            Some(st) => st.uid == uid && st.state != 'Z',
+            None => true,
+        },
+        Err(e) => !exited_mid_read(&e),
+    }
+}
+
 struct Status {
     state: char,
     uid: u32,
@@ -272,7 +292,11 @@ struct Status {
 /// unparsable state or uid is `None`.
 fn status(dir: &Path) -> Option<Status> {
     let (raw, _) = fsx::read_bounded_nofollow(&dir.join("status"), MAX_SMALL).ok()??;
-    let text = String::from_utf8_lossy(&raw);
+    parse_status(&raw)
+}
+
+fn parse_status(raw: &[u8]) -> Option<Status> {
+    let text = String::from_utf8_lossy(raw);
     let mut state = None;
     let mut uid = None;
     for line in text.lines() {
