@@ -90,7 +90,8 @@ amplihack recipe run auto-drive-to-merge \
   -c task_description="Add rate limiting to the public API" \
   -c repo_path=/home/user/src/myproject
 
-# Against a PR that already exists — phase 1 becomes a no-op.
+# Against a PR that already exists — phase 1 becomes a no-op, and the task
+# comes from the PR and its linked issue.
 amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c repo_path=.
 
 # Verify everything, report what it WOULD merge, merge nothing.
@@ -99,7 +100,7 @@ amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c autodrive_dry_run=
 
 | Context var | Default | Meaning |
 | --- | --- | --- |
-| `task_description` | `""` | What to build. Passed to `default-workflow`. Also the last place the plan task id is looked for (`Closes #N`, `Fixes #N` or `Resolves #N`). |
+| `task_description` | `""` | What to build. Passed to `default-workflow`. Also the last place the plan task id is looked for (`Closes #N`, `Fixes #N` or `Resolves #N`). Optional when the operator sets `pr_number`: the task is then taken from the PR's title and body and the same-repository issue it links with `Closes #N`, `Fixes #N`, `Resolves #N` or `Refs #N`. A fork PR, a linked issue not written by a repository member, or a PR or issue that cannot be read fails the run. `existing_branch` alone does not supply a task, even when the branch has a PR. With neither a task nor an operator `pr_number`, the run refuses with exit `2`. An operator task always wins (see [The task when only `pr_number` is given](../../../docs/reference/auto-drive-to-merge.md#the-task-when-only-pr_number-is-given-2187)). |
 | `plan_task_id` | `""` | The plan task each follow-up issue is linked to, such as `1979`, `#1979` or `plan/17.104`. When empty, the first `Closes #N`, `Fixes #N` or `Resolves #N` in the PR body is used, then the same in `task_description`. Needed only when minor findings are filed. |
 | `requirements` | `""` | Extra requirements, passed through. |
 | `repo_path` | `.` | Repository to work in. |
@@ -332,5 +333,6 @@ run to their natural end. A false timeout costs more than a slow run.
 | `amplifier-bundle/tools/autodrive_followups_check.sh` | The `check` and `gate` commands: the merge gate's offline follow-up check. |
 | `amplifier-bundle/tools/autodrive_finding_rules.sh` | The minor-finding rules and text sanitising used by `autodrive_followups.sh`, for auto-drive-to-merge and auto-drive-light alike. |
 | `amplifier-bundle/tools/autodrive_state.sh` | Resumable local state; platform truth for merged-ness. |
+| `amplifier-bundle/tools/autodrive_task_from_pr.sh` | The task taken from the PR and its linked issue when only `pr_number` is given (#2187). |
 
 Full reference: [Auto Drive To Merge](../../../docs/reference/auto-drive-to-merge.md).

@@ -44,6 +44,12 @@ context:
   repo_path: "."
   pr_number: ""
   pr_url: ""
+  # #2187: optional when the operator set the PR (autodrive_pr_input, else
+  # pr_number) and it equals the preflight PR: step-02 then takes the task
+  # from the PR and the same-repo issue it links (Closes/Fixes/Resolves/Refs
+  # #N). Fork PRs and issues not written by a repository member are refused;
+  # an unreadable PR or issue fails the run. With neither, the loop refuses
+  # (exit 2). An operator task always wins.
   task_description: ""
   # #1979: the plan task id the follow-up issues name; see auto-drive-to-merge.yaml.
   plan_task_id: ""
@@ -196,7 +202,8 @@ steps:
       . "$H/recipe_context_value.sh" || exit 1
       TASK_IN="$(umask 077; mktemp)" || exit 1
       trap 'rm -f -- "$TASK_IN"' EXIT
-      write_context_value task_description "$TASK_IN" || { echo "ERROR: task_description unavailable" >&2; exit 1; }
+      TD_RC=0
+      write_context_value task_description "$TASK_IN" || TD_RC=$?
       # Commits after the clean crusty round go back to crusty BEFORE each
       # merge round, from this shell, so that crusty loop runs at this step's
       # depth like phase 2's. Started from a merge round step it would be one
@@ -231,6 +238,17 @@ steps:
       # PR's one linked worktree, where only each round's commit step works.
       REVIEW_DIR="$(bash "$(dirname "$LOOP_HELPER")/autodrive_worktree_guard.sh" review-dir "$REPO")" || { echo "STOP: cannot resolve the review dir from the preflight repo ($REPO) [autodrive-merge-loop/step-02] (#1528)" >&2; exit 1; }
       PR_WORKTREE="$(bash "$(dirname "$LOOP_HELPER")/autodrive_pr_worktree.sh" resolve --repo "$REPO" --pr "$PR")" || { echo "STOP: cannot resolve the PR's linked worktree; rounds never run in the launch checkout (#1528)" >&2; exit 1; }
+      # #2187: no task, and the operator's PR (autodrive_pr_input when set, else
+      # pr_number) equals the preflight PR as a string: take the task from the
+      # PR. Its text is untrusted; the helper writes it only to the task file.
+      if declare -p RECIPE_VAR_autodrive_pr_input >/dev/null 2>&1; then OP_PR="${RECIPE_VAR_autodrive_pr_input:-}"; else OP_PR="${RECIPE_VAR_pr_number:-}"; fi
+      case "$OP_PR" in ''|*[!0-9]*) OP_PR="" ;; esac
+      if [ ! -s "$TASK_IN" ] && [ -n "$OP_PR" ] && [ "$OP_PR" = "$PR" ]; then
+        TFP="$(dirname "$LOOP_HELPER")/autodrive_task_from_pr.sh"
+        [ -f "$TFP" ] || { echo "ERROR: autodrive-tools-not-found: ${TFP} (needed to take the task from PR #${PR}; pass task_description) [autodrive-merge-loop/step-02]" >&2; exit 1; }
+        . "$TFP" || exit 1
+        : > "$TASK_IN"; autodrive_task_from_pr "$PR" "$TASK_IN" "$REPO" || exit 1
+      elif [ "$TD_RC" -ne 0 ]; then echo "ERROR: task_description unavailable" >&2; exit 1; fi
       bash "$LOOP_HELPER" --task-file "$TASK_IN" \
         --loop-name "merge-ready" \
         --before-round "$REREVIEW" \
