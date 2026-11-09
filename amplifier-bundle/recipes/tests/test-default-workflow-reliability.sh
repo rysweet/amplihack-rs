@@ -568,6 +568,17 @@ exec "${REAL_GIT:?}" "$@"
 SHIM
     chmod +x "${bin_dir}/git"
     REAL_GIT="${real_git}" "${bin_dir}/git" --version >/dev/null
+    # The checkpoint steps run 'amplihack hygiene artifact-guard' before they
+    # stage. These cases test the commit guard, not the artifact guard, and CI
+    # has no amplihack binary, so a stub accepts exactly that call and refuses
+    # any other, as in test-checkpoint-scoped-format.sh.
+    cat > "${bin_dir}/amplihack" <<'SHIM'
+#!/usr/bin/env bash
+[[ "$*" == 'hygiene artifact-guard --repo . --mode pre-publish' ]] && exit 0
+printf 'amplihack stub: unexpected call: %s\n' "$*" >&2
+exit 97
+SHIM
+    chmod +x "${bin_dir}/amplihack"
 }
 
 run_commit_guard_case() {
@@ -603,6 +614,9 @@ run_commit_guard_case() {
 
     (
         export PATH="${bin_dir}:${PATH}"
+        # This tree's helpers, not the caller's AMPLIHACK_HOME or ~/.amplihack:
+        # CI has neither, and a developer's may be an older install.
+        export AMPLIHACK_HOME="${REPO_ROOT}"
         export REAL_GIT="${real_git}"
         export COMMIT_ENV_LOG="${commit_env_log}"
         export WORKTREE_SETUP_WORKTREE_PATH="${repo}"
