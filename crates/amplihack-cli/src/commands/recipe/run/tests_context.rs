@@ -697,6 +697,9 @@ mod capacity_warning {
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        // The run folder goes under a private work root, not the caller's
+        // (issue #2067).
+        let _work_root = crate::test_support::IsolatedWorkRoot::new();
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let root = tmp.path().join("profiles");

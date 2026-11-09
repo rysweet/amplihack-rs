@@ -72,9 +72,22 @@ fn unread(v: &[(ProfileName, &'static str)]) -> String {
 
 /// Issue #1962: the rotate ledger cannot be read, so nothing may move and no
 /// record may be written. `cause` is the fresh identity reading's cause, or
-/// `ok`.
-pub fn ledger_unreadable(cause: &str) -> String {
-    format!("rotate ledger unreadable; live identity: {cause}; nothing moved, no record written")
+/// `readable`. Issue #1947: `field` is the fixed reason the load gave when it
+/// refused a field ([`super::ledger::refused_field`]), shown in brackets.
+pub fn ledger_unreadable(field: Option<&str>, cause: &str) -> String {
+    let field = field.map_or_else(String::new, |f| format!(" ({f})"));
+    format!(
+        "rotate ledger unreadable{field}; live identity: {cause}; nothing moved, no record written"
+    )
+}
+
+/// The `live:` value of `profile rotate status` for an unreadable ledger,
+/// naming the refused field as [`ledger_unreadable`] does (issue #1947).
+pub fn status_live_unreadable(field: Option<&str>) -> String {
+    field.map_or_else(
+        || "- (ledger unreadable)".into(),
+        |f| format!("- (ledger unreadable: {f})"),
+    )
 }
 
 /// Issue #1886: a confirmed suspicion that would leave `l` with no login
