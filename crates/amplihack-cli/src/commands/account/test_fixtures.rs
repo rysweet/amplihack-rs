@@ -182,15 +182,19 @@ impl Drop for FifoTrap {
         // Release a writer still waiting for a reader, then join it. If the
         // pipe is already gone nothing can release the writer, so it is left
         // detached rather than joined (a join would never return).
-        let released = fs::OpenOptions::new()
+        //
+        // The reader is held open until the join returns. If it were closed
+        // at once, a writer thread not yet inside `open` would find no reader
+        // when it got there and block forever, and so would the join.
+        let reader = fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NONBLOCK)
-            .open(&self.path)
-            .is_ok();
+            .open(&self.path);
         if let Some(h) = self.writer.take()
-            && released
+            && reader.is_ok()
         {
             let _ = h.join();
         }
+        drop(reader);
     }
 }
