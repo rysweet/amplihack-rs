@@ -1167,8 +1167,8 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
    the background.
 2. If no rotator is running, the hook exits at once (`rotator-down`).
    Otherwise it reads the rotator's ledger every 15 seconds. It waits for a
-   cycle that started measuring after the limit hit and ended `swapped` or
-   `stayed` with no ALERT, or for a
+   rotator cycle whose measurement, or the reading behind it, was taken after
+   the limit hit and that ended `swapped` or `stayed` with no ALERT, or for a
    [`profile switch`](#switch-to-a-login-by-hand) made after the limit hit. After the first hour it reads the ledger
    every 5 minutes instead. It stops waiting if you turn auto-switch off
    (`disabled`), if you send a prompt in that session during the wait, for
