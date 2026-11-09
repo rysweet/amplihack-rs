@@ -722,6 +722,15 @@ jobs:
           -p amplihack -p amplihack-hooks-bin
           --features amplihack-hooks-bin/signal
 
+      # The Build (native) step compiles the binaries only. Compile the CLI
+      # integration tests as well, so Darwin-only libc signature drift (such as
+      # openpty's *mut termios/winsize) fails CI. Compile only; no test runs (issue #1940).
+      - name: Test compile — CLI integration tests (macOS, issue #1940)
+        if: contains(matrix.target, 'apple-darwin')
+        run: >
+          cargo test --release --locked --no-run --target ${{ matrix.target }}
+          -p amplihack-cli --test cli_integration
+
       # Outside-in: drive the real hooks binary through session-stop and
       # user-prompt-submit, as Claude Code does (issue #1483).
       - name: Outside-in — memory injection via the real hooks binary (issue #1483)
