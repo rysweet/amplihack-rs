@@ -1012,12 +1012,13 @@ ignored. See the
 Optional upper bound on one usage-limit wait. Unset, a wait lasts until the
 reset plus 120 seconds, however far away the reset is, or, for a
 [capacity wait](./profile-command.md#capacity-wait) with no readable reset,
-until a login has capacity or the run is stopped. When set, it ends any
+until a login has capacity, the run is stopped or the rotator stops. When set, it ends any
 wait that would last longer. For a wait on a reset, `0` means no wait but
 one more attempt; for a capacity wait, `0` means the step ends at once as a
 usage limit. Overrides the config files; empty means unset; an invalid
 value prints one warning, naming the variable only, and is ignored. A typo
-such as `10m` therefore leaves the wait with no limit.
+such as `10m` therefore leaves the config-file value in force, or no limit
+if no config file sets one.
 
 ```sh
 # Wait at most two hours for a usage limit to lift, in this shell only
@@ -1081,8 +1082,11 @@ for every limit amplihack lets you set.
 **Type:** string (whole number of seconds)
 **Default:** unset: no idle limit
 **Config key:** none
-**Read by:** the [idle watchdog](./idle-watchdog.md), used by Claude and
-Copilot agent subprocesses that amplihack starts
+**Read by:** the [idle watchdog](./idle-watchdog.md), for Claude agent
+subprocesses and multitask workstreams that amplihack starts (not Copilot CLI
+calls or remote runs). For multitask it sets the quiet period required
+before a workstream past an explicit `--max-runtime` is interrupted; there
+unset, `0` or malformed means 300 seconds.
 
 Optional idle limit on an agent subprocess: when set above 0, a child that
 writes nothing to standard output or standard error for this many seconds

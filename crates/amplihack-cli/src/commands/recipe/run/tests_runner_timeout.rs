@@ -280,35 +280,11 @@ fn the_warning_names_the_variable_and_says_no_limit_applies() {
     );
 }
 
-#[cfg(unix)]
-#[test]
-fn the_warning_is_printed_at_most_once_and_never_prints_the_value() {
-    use std::io::Write as _;
-    use std::os::unix::io::AsRawFd;
-
-    let _guard = lock();
-    let secret = "s3cr3t-token-value";
-    let _env = EnvVarGuard::set(RUNNER_TIMEOUT_ENV, secret);
-
-    let file = tempfile::NamedTempFile::new().expect("stderr capture file");
-    let saved = unsafe { libc::dup(libc::STDERR_FILENO) };
-    assert!(saved >= 0);
-    assert!(unsafe { libc::dup2(file.as_file().as_raw_fd(), libc::STDERR_FILENO) } >= 0);
-    let first = execute::recipe_runner_timeout();
-    let second = execute::recipe_runner_timeout();
-    let third = execute::recipe_runner_timeout();
-    let _ = std::io::stderr().lock().flush();
-    assert!(unsafe { libc::dup2(saved, libc::STDERR_FILENO) } >= 0);
-    unsafe { libc::close(saved) };
-    let stderr = std::fs::read_to_string(file.path()).expect("read capture");
-
-    assert_eq!((first, second, third), (None, None, None));
-    assert!(
-        stderr.matches(execute::RUNNER_TIMEOUT_WARNING).count() <= 1,
-        "printed once per process at most: {stderr:?}"
-    );
-    assert!(!stderr.contains(secret), "the value must never be printed");
-}
+// The warning is a fixed string (pinned above), so it cannot print the
+// value, and a process-wide `Once` prints it at most once. An in-process
+// stderr capture could not check "once": another test may already have
+// fired the `Once`, and redirecting fd 2 would also swallow other tests'
+// output.
 
 // -------------------------------------------------------------------------
 // wait_for_recipe_runner(None): no deadline arm

@@ -296,13 +296,11 @@ fn run_output_with_timeout_inner(
     drop(stdin_writer);
     // Name only the program: the arguments may hold a prompt under argv
     // delivery.
-    let timeout = timeout.expect("wait returns without exit only when a limit is set");
-    bail!(
-        "subprocess `{}` timed out after {:?} (pid {})",
-        cmd.get_program().to_string_lossy(),
-        timeout,
-        pid
-    )
+    let program = cmd.get_program().to_string_lossy();
+    match timeout {
+        Some(limit) => bail!("subprocess `{program}` timed out after {limit:?} (pid {pid})"),
+        None => bail!("subprocess `{program}` ended its wait without an exit status (pid {pid})"),
+    }
 }
 
 /// Maps how a stdin writer ended to the result of the call.
@@ -948,25 +946,15 @@ mod tests {
     #[test]
     fn run_untimed_waits_for_the_child_and_returns_its_status() {
         use std::io::Write as _;
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicBool, Ordering};
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let (reader, mut writer) = std::io::pipe().unwrap();
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.args(["-c", "read -r _; exit 5"]).stdin(reader);
-        let released = Arc::new(AtomicBool::new(false));
-        let release = {
-            let released = Arc::clone(&released);
-            std::thread::spawn(move || {
-                released.store(true, Ordering::SeqCst);
-                writer.write_all(b"go\n").unwrap();
-            })
-        };
+        let release = std::thread::spawn(move || writer.write_all(b"go\n").unwrap());
         let status = run_untimed(cmd).unwrap();
         release.join().unwrap();
-        assert!(released.load(Ordering::SeqCst));
         assert_eq!(status.code(), Some(5));
     }
 

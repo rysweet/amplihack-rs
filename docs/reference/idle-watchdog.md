@@ -191,7 +191,7 @@ child only when it returns `true`.
 
 | Variable                      | Default  | Applies To                | Meaning                                                   |
 | ----------------------------- | -------- | ------------------------- | --------------------------------------------------------- |
-| `AMPLIHACK_IDLE_TIMEOUT_SECS` | unset: no idle limit | all watchdog entry points | When set above 0, kill a child after this many seconds with no output. A malformed value warns once and applies no limit. |
+| `AMPLIHACK_IDLE_TIMEOUT_SECS` | unset: no idle limit (multitask: 300 s quiet before a `--max-runtime` interrupt) | Claude subprocesses (site 6) and multitask; not the Copilot CLI client or remote runs | When set above 0, kill a child after this many seconds with no output. A malformed value warns once and applies no limit. |
 | `AMPLIHACK_IDLE_POLL_MS`      | `1000`   | async + sync waits        | How often the supervising loop checks progress/exit (ms). |
 
 Notes:
@@ -210,7 +210,9 @@ Notes:
 
 - A per-call `Option<Duration>` (e.g. a step's configured timeout) is
   reinterpreted as an **idle-timeout override** via `IdleConfig::with_idle`, not
-  as a wall-clock deadline. A call with `None` falls back to `from_env()`.
+  as a wall-clock deadline. With `None`, site 6 falls back to `from_env()`;
+  the Copilot CLI client and the remote executor use `IdleConfig::none()`
+  (no idle limit).
 - The Copilot adapter's `f64` timeout (site 5) is no longer a wall-clock cap: the
   `MAX_TIMEOUT` clamp is removed so large values pass through unchanged (only a
   1.0 s lower bound remains). The subprocess is supervised by the site-3 client's

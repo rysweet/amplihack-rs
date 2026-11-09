@@ -72,13 +72,17 @@ to that step. The bundled default-workflow agent steps define none.
 | `AgentConfig.timeout_secs`, `TaskSpec.timeout_secs`, `SdkAdapterConfig.timeout_secs` | Recorded on agent-core configs; not enforced | Config field or `with_timeout` | Stored as `Some(0)`; never means "unlimited" |
 | `--max-runtime` | One multitask workstream | Command-line flag | Not applicable |
 
-An unparseable value for either environment variable is ignored. amplihack
+An unparseable `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` is ignored. amplihack
 prints one warning on standard error that names the variable but not its
 value, and no limit applies:
 
 ```
 warning: ignored AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS (not a whole number of seconds above 0); no limit applies
 ```
+
+An invalid `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` is also reported by name
+and ignored, but the `recipe.usage_limit_max_wait_secs` value from a config
+file then applies; with no config value there is no limit.
 
 To give a CI recipe run at most four hours:
 

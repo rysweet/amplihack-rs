@@ -53,24 +53,29 @@ fn an_explicit_default_max_runtime_is_kept() {
 fn a_workstream_without_max_runtime_is_never_timed_out() {
     use crate::commands::multitask::state::enforce_timeouts;
     let dir = tempfile::tempdir().unwrap();
-    let mut ws = Workstream::new(
-        9,
-        "feat/long".into(),
-        "d".into(),
-        "t".into(),
-        "default-workflow".into(),
-        dir.path(),
-        dir.path(),
-    );
-    ws.lifecycle_state = "running".into();
-    ws.max_runtime = None;
-    let Some(start) =
-        std::time::Instant::now().checked_sub(std::time::Duration::from_secs(3 * 3600))
-    else {
-        return; // Host uptime below three hours: nothing to measure against.
+    let running = |max_runtime: Option<u64>| {
+        let mut ws = Workstream::new(
+            9,
+            "feat/long".into(),
+            "d".into(),
+            "t".into(),
+            "default-workflow".into(),
+            dir.path(),
+            dir.path(),
+        );
+        ws.lifecycle_state = "running".into();
+        ws.start_time = Some(std::time::Instant::now());
+        ws.max_runtime = max_runtime;
+        ws
     };
-    ws.start_time = Some(start);
-    let mut all = [ws];
+    // Control: a limit already reached is enforced, so the assertion below
+    // cannot pass on a no-op.
+    let mut all = [running(Some(0))];
+    enforce_timeouts(&mut all, &std::collections::HashMap::new());
+    assert_eq!(all[0].lifecycle_state, "timed_out_resumable");
+
+    // With no limit, elapsed time is never compared at all.
+    let mut all = [running(None)];
     enforce_timeouts(&mut all, &std::collections::HashMap::new());
     assert_eq!(all[0].lifecycle_state, "running");
 }

@@ -20,8 +20,10 @@ const INTERRUPT_IDLE_WINDOW: Duration = Duration::from_secs(300);
 
 /// Issue #867: a past-max_runtime child may be interrupted only if its log file
 /// has stopped growing for the idle window (`AMPLIHACK_IDLE_TIMEOUT_SECS`, or
-/// [`INTERRUPT_IDLE_WINDOW`] when unset). A probe error is treated as "still
-/// live" — never interrupt.
+/// [`INTERRUPT_IDLE_WINDOW`] when that is unset, `0` or malformed: the watchdog
+/// warning's "no idle limit" is about killing a child, while this window only
+/// guards an interrupt the caller already opted into). A probe error is
+/// treated as "still live" — never interrupt.
 pub(super) fn child_is_idle(log_file: &Path) -> bool {
     let idle = IdleConfig::from_env()
         .idle_timeout

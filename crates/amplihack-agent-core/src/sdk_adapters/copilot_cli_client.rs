@@ -248,9 +248,9 @@ impl SdkClient for CopilotCliClient {
         };
         let outcome = wait_with_idle_watchdog_sync(&mut child, stdout_pipe, stderr_pipe, cfg);
 
-        if outcome.killed_for_idle {
-            // Only reachable with an idle window set.
-            let idle_secs = cfg.idle_timeout.map_or(0, |idle| idle.as_secs());
+        // The watchdog kills for idleness only with an idle window set.
+        if let (true, Some(idle)) = (outcome.killed_for_idle, cfg.idle_timeout) {
+            let idle_secs = idle.as_secs();
             warn!(
                 idle_secs,
                 "copilot CLI produced no output for the idle window; reaped"
