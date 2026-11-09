@@ -146,6 +146,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             governor,
             claude_args,
         } => {
+            // Issue #2018 (D2): a headless recipe step binds to its parent
+            // before the usage-limit supervisor runs, so the supervisor ends
+            // with the runner. `run_launch_core` repeats the call (a no-op
+            // here) to cover the launch paths that do not come through here.
+            crate::step_lifetime::bind_launcher_if_headless();
             if let Some(instruction) = append {
                 reject_gateway_append()?;
                 return append::run_append(&instruction);
@@ -208,6 +213,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             governor,
             claude_args,
         } => {
+            // Issue #2018 (D2): a headless recipe step binds to its parent
+            // before the usage-limit supervisor runs, so the supervisor ends
+            // with the runner. `run_launch_core` repeats the call (a no-op
+            // here) to cover the launch paths that do not come through here.
+            crate::step_lifetime::bind_launcher_if_headless();
             if let Some(instruction) = append {
                 reject_gateway_append()?;
                 return append::run_append(&instruction);
@@ -288,6 +298,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             prompt_file,
             args,
         } => {
+            // Issue #2018 (D2): a headless recipe step binds to its parent
+            // before the usage-limit supervisor runs, so the supervisor ends
+            // with the runner. `run_launch_core` repeats the call (a no-op
+            // here) to cover the launch paths that do not come through here.
+            crate::step_lifetime::bind_launcher_if_headless();
             if let Some(instruction) = append {
                 reject_gateway_append()?;
                 return append::run_append(&instruction);
@@ -364,6 +379,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             prompt_file,
             args,
         } => {
+            // Issue #2018 (D2): a headless recipe step binds to its parent
+            // before the usage-limit supervisor runs, so the supervisor ends
+            // with the runner. `run_launch_core` repeats the call (a no-op
+            // here) to cover the launch paths that do not come through here.
+            crate::step_lifetime::bind_launcher_if_headless();
             if let Some(instruction) = append {
                 reject_gateway_append()?;
                 return append::run_append(&instruction);
@@ -410,6 +430,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             prompt_file,
             args,
         } => {
+            // Issue #2018 (D2): a headless recipe step binds to its parent
+            // before the usage-limit supervisor runs, so the supervisor ends
+            // with the runner. `run_launch_core` repeats the call (a no-op
+            // here) to cover the launch paths that do not come through here.
+            crate::step_lifetime::bind_launcher_if_headless();
             if let Some(instruction) = append {
                 reject_gateway_append()?;
                 return append::run_append(&instruction);
@@ -777,6 +802,7 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
             )
         }
         RecipeCommands::Stop { target } => recipe::stop::run_stop(&target),
+        RecipeCommands::Steps { orphans, format } => recipe::steps::run_steps(orphans, &format),
         RecipeCommands::DetachedChild { log, spec } => {
             let code = recipe::detach::run_detached_child(&spec, &log)?;
             if code == 0 {

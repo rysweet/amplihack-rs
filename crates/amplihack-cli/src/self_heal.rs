@@ -567,6 +567,12 @@ fn args_should_skip(args: &[OsString]) -> bool {
     if matches!(positionals.as_slice(), ["profile", "statusline", ..]) {
         return true;
     }
+    // `recipe steps` (issue #2018) only reads step records. It needs no
+    // framework asset, must create nothing under `~/.amplihack`, and its JSON
+    // output is parsed by scripts, so it never triggers auto-install.
+    if matches!(positionals.as_slice(), ["recipe", "steps", ..]) {
+        return true;
+    }
 
     // First non-flag positional is the subcommand candidate.
     for arg in args.iter().skip(1) {
@@ -1105,6 +1111,29 @@ steps:
             .unwrap();
             assert_eq!(calls.get(), 0);
             assert!(notice.is_empty());
+        }
+        assert!(!tmp.path().join(".amplihack").exists());
+    }
+
+    /// Issue #2018: the read-only `recipe steps` listing creates nothing.
+    #[test]
+    fn recipe_steps_skips_startup_self_heal() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        for argv in [
+            &["amplihack", "recipe", "steps"][..],
+            &["amplihack", "recipe", "steps", "--orphans", "-f", "json"][..],
+        ] {
+            let calls = Cell::new(0u32);
+            let mut notice = Vec::new();
+            ensure_assets_match_binary_version_with(
+                &args(argv),
+                &mut notice,
+                counting_installer(&calls, crate::VERSION),
+            )
+            .unwrap();
+            assert_eq!(calls.get(), 0, "{argv:?}");
+            assert!(notice.is_empty(), "{argv:?}");
         }
         assert!(!tmp.path().join(".amplihack").exists());
     }

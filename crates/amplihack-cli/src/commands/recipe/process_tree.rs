@@ -11,7 +11,7 @@ use std::os::unix::fs::MetadataExt;
 /// One process: its id, parent, process group, and start time (clock ticks
 /// after boot), which tells it apart from a later process given the same pid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct Proc {
+pub(crate) struct Proc {
     pub pid: i32,
     pub ppid: i32,
     pub pgid: i32,
@@ -42,7 +42,7 @@ fn read_stat(pid: i32) -> Option<Proc> {
 /// Parse a stat line. The command name is in parentheses and may itself
 /// contain spaces and `)`, so the fields are read after the last `)`: state
 /// (field 3), ppid (4), pgrp (5), ..., starttime (22).
-fn parse_stat(pid: i32, stat: &str) -> Option<Proc> {
+pub(crate) fn parse_stat(pid: i32, stat: &str) -> Option<Proc> {
     let rest = &stat[stat.rfind(')')? + 1..];
     let fields: Vec<&str> = rest.split_whitespace().collect();
     let state = *fields.first()?;
@@ -58,7 +58,7 @@ fn parse_stat(pid: i32, stat: &str) -> Option<Proc> {
 }
 
 /// The start time of `pid` while it exists and is not a zombie.
-pub(super) fn start_time(pid: i32) -> Option<u64> {
+pub(crate) fn start_time(pid: i32) -> Option<u64> {
     read_stat(pid).map(|p| p.start)
 }
 

@@ -15,12 +15,15 @@ use std::process::Command;
 pub mod detach;
 pub mod list;
 mod parse;
-/// Issue #1606: the processes `recipe stop` signals.
+/// Issue #1606: the processes `recipe stop` signals. Issue #2018 also reads
+/// start times through it, for step records and their classification.
 #[cfg(target_os = "linux")]
-mod process_tree;
+pub(crate) mod process_tree;
 mod resolve;
 pub mod run;
 pub mod show_validate;
+/// Issue #2018: `recipe steps`.
+pub mod steps;
 /// Issue #1606: `recipe stop`.
 pub mod stop;
 

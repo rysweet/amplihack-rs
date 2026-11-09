@@ -255,6 +255,7 @@ nav:
       - Framework Source Selection: reference/framework-source-selection.md
       - Install/Update PATH Conflicts: reference/install-update-path-conflicts.md
       - recipe Command: reference/recipe-command.md
+      - Recipe Step Records and Lifetime: reference/recipe-step-records.md
       - RustyClawd Command: reference/rustyclawd-command.md
       - uvx-help Command: reference/uvx-help-command.md
       - resolve-bundle-asset Command: reference/resolve-bundle-asset-command.md

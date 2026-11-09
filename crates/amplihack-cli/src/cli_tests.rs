@@ -894,4 +894,94 @@ mod tests {
             assert!(sessions.find_subcommand(sub).is_some(), "{sub}");
         }
     }
+
+    // ------------------------------------------------------------------
+    // Issue #2018: `amplihack recipe steps [--orphans] [-f table|json]`.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn recipe_steps_defaults_to_table_without_the_orphan_filter() {
+        let cli = Cli::try_parse_from(["amplihack", "recipe", "steps"])
+            .expect("recipe steps should parse with no arguments");
+        match cli.command {
+            Commands::Recipe {
+                command: RecipeCommands::Steps { orphans, format },
+            } => {
+                assert!(!orphans);
+                assert_eq!(format, "table");
+            }
+            other => panic!("expected recipe steps, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recipe_steps_parses_orphans_and_both_format_spellings() {
+        for args in [
+            [
+                "amplihack",
+                "recipe",
+                "steps",
+                "--orphans",
+                "--format",
+                "json",
+            ],
+            ["amplihack", "recipe", "steps", "--orphans", "-f", "json"],
+        ] {
+            let cli = Cli::try_parse_from(args).expect("recipe steps should parse");
+            match cli.command {
+                Commands::Recipe {
+                    command: RecipeCommands::Steps { orphans, format },
+                } => {
+                    assert!(orphans, "{args:?}");
+                    assert_eq!(format, "json", "{args:?}");
+                }
+                other => panic!("expected recipe steps, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn recipe_steps_accepts_table_explicitly() {
+        let cli = Cli::try_parse_from(["amplihack", "recipe", "steps", "-f", "table"])
+            .expect("table is a valid format");
+        match cli.command {
+            Commands::Recipe {
+                command: RecipeCommands::Steps { orphans, format },
+            } => {
+                assert!(!orphans);
+                assert_eq!(format, "table");
+            }
+            other => panic!("expected recipe steps, got {other:?}"),
+        }
+    }
+
+    /// D9: only `table` and `json`; `yaml`, which `recipe list` accepts, is
+    /// a usage error here (exit 2).
+    #[test]
+    fn recipe_steps_rejects_yaml_and_unknown_formats() {
+        for format in ["yaml", "csv", "JSON", ""] {
+            let err = Cli::try_parse_from(["amplihack", "recipe", "steps", "--format", format])
+                .expect_err("only table and json are accepted");
+            assert_eq!(err.exit_code(), 2, "--format {format:?}");
+        }
+    }
+
+    #[test]
+    fn recipe_steps_takes_no_positional_arguments() {
+        let err = Cli::try_parse_from(["amplihack", "recipe", "steps", "run-id"])
+            .expect_err("recipe steps takes no positional argument");
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn recipe_help_lists_steps() {
+        let cmd = Cli::command();
+        let recipe = cmd
+            .find_subcommand("recipe")
+            .expect("recipe command should exist");
+        let steps = recipe
+            .find_subcommand("steps")
+            .expect("recipe steps should be a visible subcommand");
+        assert!(!steps.is_hide_set(), "recipe steps must not be hidden");
+    }
 }

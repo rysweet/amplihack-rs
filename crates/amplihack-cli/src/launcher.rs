@@ -27,6 +27,53 @@ impl ManagedChild {
         Ok(Self { child })
     }
 
+    /// Spawn the agent of a headless recipe step, bound to this launcher.
+    ///
+    /// Issue #2018. On Linux the child sets SIGTERM as its parent-death
+    /// signal between `fork` and `exec`, then checks that this process is
+    /// still its parent, so the agent ends when the launcher does, even if
+    /// the launcher is killed with SIGKILL. It does not call `setsid` or
+    /// `setpgid`: the agent stays in the launcher's process group and
+    /// session, as an interactive agent does.
+    ///
+    /// The parent-death signal follows the thread that forks the child, so
+    /// call this from a thread that lives as long as the agent (the main
+    /// thread in `run_launch_core`).
+    ///
+    /// # Errors
+    ///
+    /// If the kernel refuses `PR_SET_PDEATHSIG`, or the launcher is already
+    /// gone (`ESRCH`), the spawn fails and the agent never runs: a headless
+    /// step never runs an unbound agent. The raw OS error stays reachable
+    /// for `enrich_spawn_error`, as with [`Self::spawn`].
+    ///
+    /// Off Linux this is [`Self::spawn`].
+    pub fn spawn_bound_to_parent(mut cmd: Command) -> Result<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt;
+            // Captured before the fork; the check after prctl catches a
+            // launcher that died in between.
+            let parent = std::process::id() as libc::pid_t;
+            // SAFETY: `pre_exec` runs after fork and before exec. The closure
+            // captures only a `pid_t` and calls only `prctl`, `getppid`,
+            // `Error::last_os_error` and `Error::from_raw_os_error`, which do
+            // not allocate, lock or touch the environment.
+            unsafe {
+                cmd.pre_exec(move || {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::getppid() != parent {
+                        return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                    }
+                    Ok(())
+                });
+            }
+        }
+        Self::spawn(cmd)
+    }
+
     /// Non-blocking check: has the child exited?
     pub fn try_wait(&mut self) -> Result<Option<ExitStatus>> {
         self.child
@@ -275,6 +322,163 @@ mod tests {
 
         assert_eq!(child_pgid, parent_pgid);
         drop(child);
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #2018: a headless step's agent is bound to its launcher.
+    // ------------------------------------------------------------------
+
+    /// Alive and not a zombie, from `/proc`.
+    #[cfg(target_os = "linux")]
+    fn running(pid: i32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next())
+                .is_some_and(|state| state != "Z" && state != "X")
+        })
+    }
+
+    /// The bound spawn starts neither a new session nor a new process group:
+    /// the agent stays in the launcher's group, as an interactive one does.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_bound_to_parent_keeps_child_in_the_launchers_process_group() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut cmd = Command::new("/bin/sleep");
+        cmd.arg("60");
+        let child = ManagedChild::spawn_bound_to_parent(cmd).unwrap();
+        let pid = i32::try_from(child.id()).unwrap();
+
+        // SAFETY: getpgrp/getpgid/getsid only query kernel process state.
+        let (parent_pgid, child_pgid, parent_sid, child_sid) = unsafe {
+            (
+                libc::getpgrp(),
+                libc::getpgid(pid),
+                libc::getsid(0),
+                libc::getsid(pid),
+            )
+        };
+        assert_eq!(child_pgid, parent_pgid, "same process group");
+        assert_eq!(child_sid, parent_sid, "same session");
+        drop(child);
+    }
+
+    /// The parent-death signal follows the thread that forked the child.
+    /// Forking from a thread that then exits is therefore an observable test
+    /// of the binding: the bound child receives SIGTERM.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spawn_bound_to_parent_delivers_sigterm_when_the_forking_thread_exits() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut child = std::thread::spawn(|| {
+            let mut cmd = Command::new("/bin/sleep");
+            cmd.arg("60");
+            ManagedChild::spawn_bound_to_parent(cmd).unwrap()
+        })
+        .join()
+        .unwrap();
+
+        // Blocks until the kernel ends the child, which it does by sending
+        // SIGTERM when the forking thread exits.
+        let status = child.wait().unwrap();
+        assert_eq!(status.signal(), Some(libc::SIGTERM), "status: {status:?}");
+    }
+
+    /// The interactive path is unchanged: `spawn` sets no parent-death
+    /// signal, so the exit of the forking thread cannot end the child.
+    ///
+    /// The kernel sends the signal while the forking thread exits, which may
+    /// be after `join` returns, so waiting and then looking would prove
+    /// nothing. The test instead has the child report its own parent-death
+    /// signal (`PR_GET_PDEATHSIG`) through a pipe, from a hook that runs in
+    /// the child just before `exec`, after `spawn` has done all it does. The
+    /// signal is read from the child itself, so there is nothing to race.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn plain_spawn_survives_the_exit_of_its_forking_thread() {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        use std::os::unix::process::CommandExt;
+
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (mut reader, writer) = std::io::pipe().unwrap();
+        let report_fd = writer.as_raw_fd();
+        let mut child = std::thread::spawn(move || {
+            let mut cmd = Command::new("/bin/sleep");
+            cmd.arg("60");
+            // SAFETY: the hook runs after fork and before exec and calls only
+            // `prctl` and `write`, both async-signal-safe, on a descriptor
+            // that stays open until exec closes it.
+            unsafe {
+                cmd.pre_exec(move || {
+                    let mut sig: libc::c_int = -1;
+                    if libc::prctl(libc::PR_GET_PDEATHSIG, &mut sig as *mut libc::c_int) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    let bytes = sig.to_ne_bytes();
+                    if libc::write(report_fd, bytes.as_ptr().cast(), bytes.len()) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            ManagedChild::spawn(cmd).unwrap()
+        })
+        .join()
+        .unwrap();
+        let pid = i32::try_from(child.id()).unwrap();
+
+        // With this process's write end closed, and the child's copy closed
+        // at exec, the read ends at the child's report.
+        drop(writer);
+        let mut report = Vec::new();
+        reader.read_to_end(&mut report).unwrap();
+        let sig = i32::from_ne_bytes(report.as_slice().try_into().unwrap());
+        assert_eq!(sig, 0, "an unbound child must have no parent-death signal");
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "an unbound child must survive its forking thread"
+        );
+        assert!(running(pid));
+        drop(child);
+    }
+
+    /// A failed bound spawn keeps the raw OS error reachable, so
+    /// `run_launch_core` can pass it to `enrich_spawn_error` exactly as it
+    /// does for `spawn`.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_bound_to_parent_failure_keeps_the_os_error() {
+        let cmd = Command::new("/nonexistent/issue-2018/agent");
+        let err = ManagedChild::spawn_bound_to_parent(cmd)
+            .err()
+            .expect("a missing program cannot be spawned");
+        let raw = err
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::raw_os_error);
+        assert_eq!(raw, Some(libc::ENOENT), "{err:#}");
+    }
+
+    /// A bound child that exits on its own reports its own status: the
+    /// binding changes nothing about a normal run.
+    #[cfg(unix)]
+    #[test]
+    fn spawn_bound_to_parent_reports_the_childs_exit_status() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "exit 7"]);
+        let mut child = ManagedChild::spawn_bound_to_parent(cmd).unwrap();
+        assert_eq!(child.wait().unwrap().code(), Some(7));
     }
 
     // ------------------------------------------------------------------

@@ -45,11 +45,26 @@ pub(crate) fn sanitize_path(p: &Path) -> String {
     sanitize_text(&p.display().to_string())
 }
 
-/// `text` with every control character replaced by `?`, for one-line warnings.
+/// `text` with every control character (C0, DEL and C1) and every
+/// bidirectional formatting character (U+202A to U+202E, U+2066 to U+2069)
+/// replaced by `?`, for one-line warnings and table cells. Issue #2018 added
+/// the bidi characters, which can reorder a line on a terminal.
 pub(crate) fn sanitize_text(text: &str) -> String {
     text.chars()
-        .map(|c| if c.is_control() { '?' } else { c })
+        .map(|c| {
+            if c.is_control() || is_bidi_formatting(c) {
+                '?'
+            } else {
+                c
+            }
+        })
         .collect()
+}
+
+/// The embedding, override and isolate characters that change the display
+/// order of a line.
+fn is_bidi_formatting(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
 pub(super) fn preferred_user_bin_dir() -> Result<PathBuf> {
@@ -190,4 +205,75 @@ fn atomic_write(path: &Path, body: &[u8]) -> Result<()> {
     std::fs::rename(&tmp, path)
         .with_context(|| format!("failed to rename {} to {}", tmp.display(), path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod sanitize_text_tests {
+    //! Issue #2018: `sanitize_text` is the one sanitiser for `recipe steps`
+    //! table cells and the step-record diagnostic. It replaces C0, DEL and
+    //! C1 control characters and the bidirectional formatting characters
+    //! U+202A to U+202E and U+2066 to U+2069 with `?`.
+
+    use super::{sanitize_path, sanitize_text};
+    use std::path::Path;
+
+    #[test]
+    fn control_characters_become_question_marks() {
+        for (name, c) in [
+            ("ESC", '\u{1b}'),
+            ("BEL", '\u{7}'),
+            ("newline", '\n'),
+            ("carriage return", '\r'),
+            ("tab", '\t'),
+            ("NUL", '\0'),
+            ("DEL", '\u{7f}'),
+            ("CSI (U+009B)", '\u{9b}'),
+        ] {
+            assert_eq!(sanitize_text(&format!("a{c}b")), "a?b", "{name}");
+        }
+    }
+
+    #[test]
+    fn bidirectional_formatting_characters_become_question_marks() {
+        let bidi = [
+            '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}',
+            '\u{2068}', '\u{2069}',
+        ];
+        for c in bidi {
+            assert_eq!(
+                sanitize_text(&format!("a{c}b")),
+                "a?b",
+                "U+{:04X} must be replaced",
+                c as u32
+            );
+        }
+    }
+
+    #[test]
+    fn a_terminal_title_escape_cannot_survive() {
+        let out = sanitize_text("\u{1b}]0;x\u{7}/home/alice\nforged");
+        assert_eq!(out, "?]0;x?/home/alice?forged");
+        assert!(!out.contains('\u{1b}') && !out.contains('\n'));
+    }
+
+    #[test]
+    fn ordinary_text_is_left_alone() {
+        for text in [
+            "/home/alice/src/myapp",
+            "caf\u{e9} \u{2192} \u{65e5}\u{672c}",
+            "unsupported format 2",
+            // Neighbours of the bidi ranges are not formatting characters.
+            "\u{2029}\u{202F}\u{2065}\u{206A}",
+        ] {
+            assert_eq!(sanitize_text(text), text);
+        }
+    }
+
+    #[test]
+    fn sanitize_path_applies_the_same_rule() {
+        assert_eq!(
+            sanitize_path(Path::new("/tmp/a\u{202E}b\u{1b}c")),
+            "/tmp/a?b?c"
+        );
+    }
 }

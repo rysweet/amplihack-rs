@@ -293,6 +293,14 @@ mod issue_1973_wait_helpers;
 mod issue_1979_crusty_minor_followups;
 #[path = "issue_1985_codex_agent_step_flags.rs"]
 mod issue_1985_codex_agent_step_flags;
+#[path = "issue_2018_step_lifetime.rs"]
+mod issue_2018_step_lifetime;
+#[path = "issue_2018_step_records.rs"]
+mod issue_2018_step_records;
+#[path = "issue_2018_steps_cli.rs"]
+mod issue_2018_steps_cli;
+#[path = "issue_2018_steps_exit.rs"]
+mod issue_2018_steps_exit;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
