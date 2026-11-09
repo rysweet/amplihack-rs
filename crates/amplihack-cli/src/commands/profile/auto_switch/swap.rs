@@ -508,6 +508,18 @@ pub fn swap_check(
     rl: &RateLimits,
     cfg: &Config,
 ) -> Result<(), ProfileError> {
+    swap_check_with(state, profiles, owner, rl, cfg, &ProcSource::system())
+}
+
+/// [`swap_check`] reading running sessions from `procs`.
+pub(super) fn swap_check_with(
+    state: &State,
+    profiles: &[ProfileName],
+    owner: &ProfileName,
+    rl: &RateLimits,
+    cfg: &Config,
+    procs: &ProcSource,
+) -> Result<(), ProfileError> {
     let now = fsx::now();
     // Most updates need no move: decide that cheaply, before recovery and
     // the `/proc` scan. The status-line wrapper ran recovery moments ago in
@@ -521,16 +533,10 @@ pub fn swap_check(
     if !worth_checking {
         return Ok(());
     }
-    let procs = ProcSource::system();
-    let live = match recover_reporting_with(state, &procs)?.0 {
+    let live = match recover_reporting_with(state, procs)?.0 {
         Some(live) => live,
         None => procs.liveness(&state.root, Fresh::Cached),
     };
-    if !swap_allowed(state, &live, owner) {
-        return Ok(());
-    }
-    // Issue #2040: a swap is decided on a fresh read, never on the cache.
-    let live = procs.liveness(&state.root, Fresh::Forced);
     if !swap_allowed(state, &live, owner) {
         return Ok(());
     }
@@ -561,18 +567,34 @@ pub fn swap_check(
     // directory, no running process may be using the directory. An API-key
     // profile is never swapped into a running session: its `.credentials.json`
     // is no login on its own, so the session would be logged out (#1804).
-    let eligible = |c: &ProfileName| {
-        let n = c.as_str();
-        !overflow.not_plan.contains(c)
-            && ledger.leased_to(n).is_none()
-            && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))
-            && (ledger.hosts.contains_key(n) || n == owner.as_str() || !live.is_live(c))
-    };
-    let Some(target) =
+    let pick = |live: &Liveness| {
+        let eligible = |c: &ProfileName| {
+            let n = c.as_str();
+            !overflow.not_plan.contains(c)
+                && ledger.leased_to(n).is_none()
+                && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))
+                && (ledger.hosts.contains_key(n) || n == owner.as_str() || !live.is_live(c))
+        };
         candidate::select_with_overflow(&pool, &overflow.pool(), &current, eligible).cloned()
-    else {
+    };
+    // The cached read picks the target, so an update with nothing to swap to
+    // costs no `/proc` scan. Issue #2040: when the pick rests on the cache
+    // saying no session runs in the target's directory, `/proc` is read
+    // afresh and the target is picked again from that read.
+    let Some(mut target) = pick(&live) else {
         return Ok(());
     };
+    let t = target.as_str();
+    if !ledger.hosts.contains_key(t) && t != owner.as_str() {
+        let fresh = procs.liveness(&state.root, Fresh::Forced);
+        if !swap_allowed(state, &fresh, owner) {
+            return Ok(());
+        }
+        let Some(confirmed) = pick(&fresh) else {
+            return Ok(());
+        };
+        target = confirmed;
+    }
     if !ledger.hosts.contains_key(target.as_str()) {
         snapshot_account(state, target.as_str());
     }

@@ -64,6 +64,8 @@ mod tests_home_line;
 #[cfg(all(test, unix))]
 mod tests_issue_1804;
 #[cfg(all(test, unix))]
+mod tests_issue_2040_swap;
+#[cfg(all(test, unix))]
 mod tests_liveness;
 #[cfg(all(test, unix))]
 mod tests_mv;
