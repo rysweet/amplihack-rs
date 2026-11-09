@@ -359,6 +359,8 @@ if [[ "$shim_ok" -eq 1 ]] && PATH="$SHIM" "$SHIM/git" --version >/dev/null 2>&1 
         file_has "$SCRATCH/g1.err" "WARN: flock not found; running sweep without a lock."
     check G3 "the archive is still created" eq "$(ref_sha "$R" "$ARCHIVE")" "$(ref_sha "$R" refs/heads/feat/a)"
     check G4 "the pre-push hook never ran" file_empty "$LOG"
+elif [[ "${CI:-}" == "true" ]]; then
+    fail "G-shim" "could not build a PATH shim without flock; scenario G must run under CI"
 else
     skip G "could not build a PATH shim without flock; fallback covered by inspection"
 fi

@@ -106,7 +106,7 @@ All messages go to stderr.
 | `WARN: Refusing to archive '<branch>': '<sha>' is not a full object name.` | The SHA argument failed the format check; nothing written, the worktree is kept |
 | `INFO: Archived '<branch>' (<sha>) to refs/amplihack-archive/<branch>.` | Archive ref created or moved |
 | `INFO: archive refs/amplihack-archive/<branch> already current at <sha>` | Archive ref already held the SHA; nothing written |
-| `WARN: Could not archive '<branch>' to refs/amplihack-archive/<branch> locally.` | `update-ref` failed; the worktree is kept |
+| `WARN: Could not archive '<branch>' to refs/amplihack-archive/<branch> locally. git: <error>` | `update-ref` failed; the git error follows `git:` and the worktree is kept |
 | `INFO: sweep skipped: lock held: <abs path>` | Another sweep of this repository holds the lock |
 | `WARN: flock not found; running sweep without a lock.` | util-linux `flock` is missing |
 | `WARN: cannot open lock <abs path>; running sweep without a lock.` | The lock file could not be opened |

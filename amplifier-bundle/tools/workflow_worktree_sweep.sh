@@ -171,7 +171,7 @@ content_merged() {
 # keep the worktree on 1.
 archive_branch() {
     local repo="$1" branch="$2" sha="$3"
-    local ref="${ARCHIVE_NS}/${branch}" current now
+    local ref="${ARCHIVE_NS}/${branch}" current now err
     if [[ ! "$sha" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
         log_warn "Refusing to archive '${branch}': '${sha}' is not a full object name."
         return 1
@@ -181,7 +181,7 @@ archive_branch() {
         log_info "archive ${ref} already current at ${sha}"
         return 0
     fi
-    if git -C "$repo" update-ref -m "amplihack worktree archive" "$ref" "$sha" "${current:-}" 2>/dev/null; then
+    if err="$(git -C "$repo" update-ref -m "amplihack worktree archive" "$ref" "$sha" "${current:-}" 2>&1)"; then
         log_info "Archived '${branch}' (${sha}) to ${ref}."
         return 0
     fi
@@ -192,7 +192,7 @@ archive_branch() {
         log_info "archive ${ref} already current at ${sha}"
         return 0
     fi
-    log_warn "Could not archive '${branch}' to ${ref} locally."
+    log_warn "Could not archive '${branch}' to ${ref} locally.${err:+ git: $(printf '%s' "$err" | tr '\n' ' ')}"
     return 1
 }
 
@@ -472,7 +472,7 @@ cleanup_on_failure() {
 # flock, unresolvable common dir, symlinked lock path, unopenable file) warn
 # and run unlocked, as before #2061. No wait, timeout or retry. Always returns 0.
 sweep_locked() {
-    local repo="${1:-}" common lock fd
+    local repo="${1:-}" common lock fd reason=""
     # Invalid input: let sweep log its own message; there is nothing to lock.
     if [ -z "$repo" ] || [ ! -d "$repo" ] \
         || ! git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -480,34 +480,26 @@ sweep_locked() {
         return 0
     fi
     if ! command -v flock >/dev/null 2>&1; then
-        log_warn "flock not found; running sweep without a lock."
-        sweep "$repo"
-        return 0
+        reason="flock not found"
+    elif ! common="$(common_git_dir "$repo")"; then
+        reason="could not resolve the common git dir of '${repo}'"
+    else
+        lock="${common}/amplihack-worktree-sweep.lock"
+        if [ -L "$lock" ]; then
+            reason="lock path ${lock} is a symlink"
+        # Append mode never truncates an existing file.
+        elif ! { exec {fd}>>"$lock"; } 2>/dev/null; then
+            reason="cannot open lock ${lock}"
+        elif ! flock -n "$fd"; then
+            exec {fd}>&-
+            log_info "sweep skipped: lock held: ${lock}"
+            return 0
+        fi
     fi
-    if ! common="$(common_git_dir "$repo")"; then
-        log_warn "could not resolve the common git dir of '${repo}'; running sweep without a lock."
-        sweep "$repo"
-        return 0
-    fi
-    lock="${common}/amplihack-worktree-sweep.lock"
-    if [ -L "$lock" ]; then
-        log_warn "lock path ${lock} is a symlink; running sweep without a lock."
-        sweep "$repo"
-        return 0
-    fi
-    # Append mode never truncates an existing file.
-    if ! { exec {fd}>>"$lock"; } 2>/dev/null; then
-        log_warn "cannot open lock ${lock}; running sweep without a lock."
-        sweep "$repo"
-        return 0
-    fi
-    if ! flock -n "$fd"; then
-        exec {fd}>&-
-        log_info "sweep skipped: lock held: ${lock}"
-        return 0
-    fi
+    [ -n "$reason" ] && log_warn "${reason}; running sweep without a lock."
     sweep "$repo"
-    exec {fd}>&-
+    # fd is open only when no fallback applied.
+    [ -z "$reason" ] && exec {fd}>&-
     return 0
 }
 

@@ -147,9 +147,7 @@ STEP04="$(extract_step "${WORKTREE_YAML}" "step-04-setup-worktree")"
 if [[ -z "${STEP04}" ]]; then
     fail "A8-step" "could not extract step-04-setup-worktree from workflow-worktree.yaml"
 else
-    # Here-string, not printf | grep -q: under pipefail an early grep exit
-    # gives printf SIGPIPE and the check fails at random.
-    if grep -qE 'workflow_worktree_sweep\.sh' <<<"${STEP04}"; then
+    if printf '%s\n' "${STEP04}" | grep -qE 'workflow_worktree_sweep\.sh'; then
         pass "A8-invoke" "step-04 invokes workflow_worktree_sweep.sh"
     else
         fail "A8-invoke" "step-04 does not invoke workflow_worktree_sweep.sh"
@@ -158,7 +156,7 @@ fi
 
 # A9: the inline sweep call is best-effort (graceful no-op): guarded by a
 # file-existence test and/or `|| true` so a missing helper never aborts setup.
-if grep -E 'workflow_worktree_sweep\.sh' <<<"${STEP04}" \
+if printf '%s\n' "${STEP04}" | grep -E 'workflow_worktree_sweep\.sh' \
        | grep -qE '(\|\| true|-f )'; then
     pass "A9-best-effort" "step-04 sweep call is best-effort (guarded / '|| true')"
 else
