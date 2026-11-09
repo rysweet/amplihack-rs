@@ -19,7 +19,9 @@ files:
 The multitask launcher builders now take the environment as arguments. The
 tests pass an empty environment, so they no longer depend on what other tests
 in the same process do to `AMPLIHACK_CLAUDE_PROFILE` and
-`AMPLIHACK_CLAUDE_PROFILE_ROOT`. Production behaviour is unchanged.
+`AMPLIHACK_CLAUDE_PROFILE_ROOT`. The only change in production behaviour is that
+`launch_workstream` no longer panics when any environment variable is not
+valid UTF-8.
 
 ## Contents
 
@@ -167,7 +169,7 @@ real profile root.
 
 ## The regression tests
 
-`issue_2014_launcher_env.rs` is compiled only on Unix and holds three tests.
+`issue_2014_launcher_env.rs` is compiled only on Unix and holds four tests.
 They reuse `test_workstream` and `assert_script_is_lf_only_and_bash_valid`
 from `launcher_tests.rs`.
 
@@ -223,6 +225,19 @@ panic in the main thread closes the window and does not leave the mutator
 running. If the checks are pointed at `write_recipe_launcher` and
 `write_classic_launcher` instead, the test fails with the UTF-8 error from
 [Cause](#cause).
+
+### `launch_workstream_tolerates_a_non_utf8_variable_and_sets_the_delegate`
+
+`launch_workstream` used to copy the process environment with
+`std::env::vars()` before it started `run.sh`. That call panics when any
+variable is not valid UTF-8, so `amplihack multitask` could crash instead of
+starting the workstream. The child now inherits the environment, and only
+`AMPLIHACK_DELEGATE` is set on its `Command`, so the child sees the same
+variables as before.
+
+The test sets `AMPLIHACK_CLAUDE_PROFILE_ROOT` to `/\xff` under `with_env`,
+launches a `run.sh` that writes `$AMPLIHACK_DELEGATE` to a file, waits for
+the child, and checks the file.
 
 ## Running the tests
 

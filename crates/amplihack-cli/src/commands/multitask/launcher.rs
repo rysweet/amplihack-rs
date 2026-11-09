@@ -128,16 +128,15 @@ pub(super) fn launch_workstream(
 ) -> Result<()> {
     let issue = ws.issue;
 
-    let mut env_vars: HashMap<String, String> = std::env::vars().collect();
-    env_vars.insert("AMPLIHACK_DELEGATE".to_string(), delegate.to_string());
-
+    // The child inherits the process environment. Copying it with
+    // `std::env::vars()` would panic on any non-UTF-8 variable.
     let run_sh = ws.work_dir.join("run.sh");
     let child = Command::new("bash")
         .arg(&run_sh)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .current_dir(&ws.work_dir)
-        .envs(&env_vars)
+        .env("AMPLIHACK_DELEGATE", delegate)
         .spawn()
         .with_context(|| format!("[{issue}] Failed to launch workstream"))?;
 
