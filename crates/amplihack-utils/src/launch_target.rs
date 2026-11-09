@@ -45,9 +45,10 @@
 //!   filter that stops amplihack executing its own broken install. Anyone who
 //!   can plant a binary on your `$PATH` can already run code as you.
 
+#[cfg(debug_assertions)]
+use crate::binary_finder::run_capped_output_to_exit;
 use crate::binary_finder::{
-    PROBE_CAPTURE_LIMIT, run_capped_output_to_exit, run_capped_output_with_timeout, strip_ansi,
-    truncate_chars_with_notice,
+    PROBE_CAPTURE_LIMIT, run_capped_output_with_timeout, strip_ansi, truncate_chars_with_notice,
 };
 use crate::claude_native::has_placeholder_shape;
 use std::collections::HashMap;
@@ -385,12 +386,15 @@ pub const TOTAL_PROBE_BUDGET: Duration = Duration::from_secs(10);
 /// a test's `--version` stub is then waited on until it exits, so a busy host
 /// cannot turn a healthy stub into `ProbeTimedOut`. It replaces the deadline
 /// with the event the deadline stood in for; it never means a longer deadline.
+///
+/// Release builds have no `Exit` variant, so the only capture path they
+/// contain is [`run_capped_output_with_timeout`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub(crate) enum ProbeWait {
     /// Bounded by [`PER_CANDIDATE_PROBE_TIMEOUT`] and [`TOTAL_PROBE_BUDGET`].
     Deadline,
     /// Wait for the candidate to exit; the total budget is not checked.
+    #[cfg(debug_assertions)]
     Exit,
 }
 
@@ -424,6 +428,7 @@ fn probe_wait_mode() -> ProbeWait {
 pub(crate) fn probe_limit(mode: ProbeWait, budget: Duration) -> Option<Duration> {
     match mode {
         ProbeWait::Deadline => Some(PER_CANDIDATE_PROBE_TIMEOUT.min(budget)),
+        #[cfg(debug_assertions)]
         ProbeWait::Exit => None,
     }
 }
@@ -706,6 +711,7 @@ pub(crate) fn resolve_from_candidates_with(
                 }
                 let remaining = match mode {
                     ProbeWait::Deadline => TOTAL_PROBE_BUDGET.checked_sub(started.elapsed()),
+                    #[cfg(debug_assertions)]
                     ProbeWait::Exit => Some(TOTAL_PROBE_BUDGET),
                 };
                 let Some(budget) = remaining else {
@@ -942,7 +948,14 @@ fn probe_version(path: &Path, timeout: Option<Duration>) -> Result<String, Rejec
     }
     let run = match timeout {
         Some(timeout) => run_capped_output_with_timeout(cmd, timeout, PROBE_CAPTURE_LIMIT),
+        #[cfg(debug_assertions)]
         None => run_capped_output_to_exit(cmd, PROBE_CAPTURE_LIMIT).map(Some),
+        // Release builds have no `ProbeWait::Exit`, so `probe_limit` never
+        // returns `None`. Should that change, the production bound applies.
+        #[cfg(not(debug_assertions))]
+        None => {
+            run_capped_output_with_timeout(cmd, PER_CANDIDATE_PROBE_TIMEOUT, PROBE_CAPTURE_LIMIT)
+        }
     };
     match run {
         Ok(Some(output)) if output.status.success() => {

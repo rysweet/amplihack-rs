@@ -246,7 +246,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_TEST_NONEXISTENT_456` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_789` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_GET_ERR` | test-only |  | `EnvVar` unit test name. |
-| `AMPLIHACK_TEST_PROBE_WAIT` | test-only |  | Read only in debug builds, by `amplihack_utils::launch_target`. Exactly `exit` makes the `--version` probe of each launch candidate wait for the candidate to exit instead of the 3 s per-candidate and 10 s total limits; any other value leaves the limits in place. `isolated(..)` sets it on every test child; see [Keep Tests Passing Under Host Load](../howto/keep-tests-passing-under-host-load.md#wait-for-the-version-probe-to-exit). |
+| `AMPLIHACK_TEST_PROBE_WAIT` | test-only |  | Read only in debug builds, by `amplihack_utils::launch_target`. Exactly `exit` makes the `--version` probe of each launch candidate wait for the candidate to exit instead of the 3 s per-candidate and 10 s total limits; any other value leaves the limits in place. `isolated(..)` sets it on every test child. Do not set it in a shell: it removes the probe bound, so a candidate that hangs on `--version` hangs the launch; see [Keep Tests Passing Under Host Load](../howto/keep-tests-passing-under-host-load.md#wait-for-the-version-probe-to-exit). |
 | `AMPLIHACK_TEST_ROOT_SANDBOX_PROBE` | test-only |  | Root-sandbox spawn test probe. |
 | `AMPLIHACK_TEST_SECURITY_MODE` | test-only |  | Hook protocol test mode. |
 | `AMPLIHACK_TEST_SECURITY_TRANSPORT` | test-only |  | Hook protocol test transport. |

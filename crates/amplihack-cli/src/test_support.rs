@@ -133,6 +133,26 @@ impl EnvGuard {
         }
         Self { previous }
     }
+
+    /// Set `key` to `value` until the guard is dropped. The value `key` had
+    /// before the guard first touched it is restored on drop, panics included.
+    pub(crate) fn assign(&mut self, key: &str, value: impl AsRef<OsStr>) {
+        self.remember(key);
+        unsafe { std::env::set_var(key, value) };
+    }
+
+    /// Remove `key` until the guard is dropped, restoring it on drop.
+    pub(crate) fn clear(&mut self, key: &str) {
+        self.remember(key);
+        unsafe { std::env::remove_var(key) };
+    }
+
+    fn remember(&mut self, key: &str) {
+        if !self.previous.iter().any(|(name, _)| name == key) {
+            self.previous
+                .push((OsString::from(key), std::env::var_os(key)));
+        }
+    }
 }
 
 /// Runs `f` under the shared env lock with each variable set (or removed when

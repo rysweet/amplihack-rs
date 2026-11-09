@@ -460,12 +460,18 @@ pub(crate) fn run_capped_output_with_timeout(
 /// The byte cap and the SEC-4 rule still hold: once the child has exited the
 /// call returns, even if a grandchild still holds a pipe open.
 ///
-/// On unix both pipes are read non-blocking from this thread. When the child
-/// has exited, every byte it wrote is already in the pipes, so a final
-/// non-blocking drain collects all of it without waiting for an EOF that a
-/// grandchild may withhold. Nothing here decides an outcome by time: the
-/// `poll` interval only bounds how long an exit goes unnoticed while a pipe
-/// is still open.
+/// On unix both pipes are read non-blocking from this thread, one read per
+/// pipe per wake, so a writer that never pauses cannot hold the loop away
+/// from the exit check. When the child has exited, every byte it wrote is
+/// already in the pipes: a final pass reads exactly what each pipe holds at
+/// that moment (`FIONREAD`) and stops, without waiting for an EOF that a
+/// grandchild may withhold or reading what a grandchild writes afterwards.
+/// Nothing here decides an outcome by time: the `poll` interval only bounds
+/// how long an exit goes unnoticed while a pipe is still open.
+///
+/// Compiled only in debug builds: release builds have one capture path,
+/// [`run_capped_output_with_timeout`].
+#[cfg(debug_assertions)]
 pub(crate) fn run_capped_output_to_exit(mut cmd: Command, limit: usize) -> anyhow::Result<Output> {
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
@@ -487,7 +493,7 @@ pub(crate) fn run_capped_output_to_exit(mut cmd: Command, limit: usize) -> anyho
     result
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, debug_assertions))]
 mod to_exit {
     use std::io::Read;
     use std::os::fd::{AsRawFd, RawFd};
@@ -509,19 +515,20 @@ mod to_exit {
         let mut err_open = true;
         loop {
             if out_open {
-                out_open = drain_ready(&mut stdout, limit, &mut out)?;
+                out_open = read_ready(&mut stdout, limit, &mut out)?;
             }
             if err_open {
-                err_open = drain_ready(&mut stderr, limit, &mut err)?;
+                err_open = read_ready(&mut stderr, limit, &mut err)?;
             }
             if let Some(status) = child.try_wait()? {
                 // The child is gone, so everything it wrote is in the pipes
-                // now. A grandchild may keep them open; it is not waited on.
+                // now. A grandchild may keep them open, and may keep writing;
+                // neither is waited on.
                 if out_open {
-                    drain_ready(&mut stdout, limit, &mut out)?;
+                    read_what_is_there(&mut stdout, limit, &mut out)?;
                 }
                 if err_open {
-                    drain_ready(&mut stderr, limit, &mut err)?;
+                    read_what_is_there(&mut stderr, limit, &mut err)?;
                 }
                 return Ok(Output {
                     status,
@@ -577,19 +584,17 @@ mod to_exit {
         Ok(())
     }
 
-    /// Reads what `pipe` holds now. `Ok(false)` at EOF, `Ok(true)` when the
-    /// pipe is empty but still open. Bytes past `limit` are read and dropped
-    /// so the writer never blocks on a full pipe.
-    fn drain_ready(pipe: &mut impl Read, limit: usize, buf: &mut Vec<u8>) -> anyhow::Result<bool> {
+    /// One read of at most one chunk. `Ok(false)` at EOF, `Ok(true)` when
+    /// the pipe is still open. Bytes past `limit` are read and dropped so the
+    /// writer never blocks on a full pipe.
+    fn read_ready(pipe: &mut impl Read, limit: usize, buf: &mut Vec<u8>) -> anyhow::Result<bool> {
         let mut chunk = [0u8; 8192];
         loop {
             match pipe.read(&mut chunk) {
                 Ok(0) => return Ok(false),
                 Ok(n) => {
-                    if buf.len() < limit {
-                        let take = n.min(limit - buf.len());
-                        buf.extend_from_slice(&chunk[..take]);
-                    }
+                    keep(buf, &chunk[..n], limit);
+                    return Ok(true);
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(true),
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -599,9 +604,50 @@ mod to_exit {
             }
         }
     }
+
+    /// Reads the bytes `pipe` holds at this moment, once, and stops. Bytes a
+    /// grandchild writes after the count is taken are not read, so a writer
+    /// that never pauses cannot keep the probe running.
+    fn read_what_is_there(
+        pipe: &mut (impl Read + AsRawFd),
+        limit: usize,
+        buf: &mut Vec<u8>,
+    ) -> anyhow::Result<()> {
+        let mut pending: libc::c_int = 0;
+        // SAFETY: FIONREAD writes one c_int, the byte count of an open pipe.
+        if unsafe { libc::ioctl(pipe.as_raw_fd(), libc::FIONREAD, &mut pending) } < 0 {
+            return Err(anyhow::Error::new(std::io::Error::last_os_error())
+                .context("could not count the probe's pending output"));
+        }
+        let mut left = usize::try_from(pending).unwrap_or(0);
+        let mut chunk = [0u8; 8192];
+        while left > 0 {
+            let want = left.min(chunk.len());
+            match pipe.read(&mut chunk[..want]) {
+                Ok(0) => break,
+                Ok(n) => {
+                    keep(buf, &chunk[..n], limit);
+                    left -= n;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => {
+                    return Err(anyhow::Error::new(e).context("reading the probe's output failed"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn keep(buf: &mut Vec<u8>, bytes: &[u8], limit: usize) {
+        if buf.len() < limit {
+            let take = bytes.len().min(limit - buf.len());
+            buf.extend_from_slice(&bytes[..take]);
+        }
+    }
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), debug_assertions))]
 mod to_exit {
     use std::process::{Child, ChildStderr, ChildStdout, Output};
     use std::sync::Mutex;

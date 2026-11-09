@@ -335,7 +335,9 @@ mod issue_1844 {
     use super::super::inflight::{finish_refreshes, refresh_grace};
     use crate::commands::profile::tests_fake_http::{FakeHttp, Reply};
     use crate::commands::profile::usage_direct::{Endpoints, Request, read};
+    use crate::commands::profile::usage_direct::{refresh_counter, wait_for_refreshes_on};
     use crate::test_support::wait::CEILING;
+    use amplihack_utils::clock::{Clock, SystemClock};
     use serde_json::json;
     use std::ffi::OsStr;
     use std::fs;
@@ -357,6 +359,39 @@ mod issue_1844 {
         );
     }
 
+    #[test]
+    fn finish_refreshes_returns_at_once_when_no_refresh_runs() {
+        // With the count at zero there is nothing to wait for, whatever the
+        // grace; no time is spent or measured.
+        let _serial = crate::test_support::refresh_count_lock();
+        assert!(finish_refreshes(Duration::ZERO));
+    }
+
+    /// `SystemClock` that reports, once, the first time the waiter sleeps.
+    /// `wait_for_refreshes_on` sleeps only while the count is above zero, so
+    /// the report means the stop has seen the held refresh and is waiting.
+    struct ReportsFirstWait {
+        waiting: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    }
+
+    impl Clock for ReportsFirstWait {
+        fn now(&self) -> std::time::Instant {
+            SystemClock.now()
+        }
+        fn sleep(&self, d: Duration) {
+            if let Some(tx) = self.waiting.lock().unwrap().take() {
+                let _ = tx.send(());
+            }
+            SystemClock.sleep(d);
+        }
+    }
+
+    /// The stop must wait for a refresh it finds in progress. The stopper
+    /// runs what `finish_refreshes` runs (`wait_for_refreshes_on` on the
+    /// process-wide count with the real clock and the stop's grace), on a
+    /// clock that reports its first wait. Only after that report, with the
+    /// stopper still running, is the refresh let finish; so the test proves
+    /// the order, not just the outcome.
     #[test]
     fn stopping_during_a_stalled_refresh_leaves_no_refresh_lock() {
         // The stop waits for the process-wide refresh count; no other test's
@@ -427,7 +462,20 @@ mod issue_1844 {
         gate.wait_arrived("the refresh POST");
         let held = dir.join(".oauth_refresh.lock").is_dir();
         // The daemon stops now, with the refresh still held at the gate.
-        let stopper = std::thread::spawn(|| finish_refreshes(refresh_grace(CEILING)));
+        let (tx, waiting) = std::sync::mpsc::channel();
+        let stopper = std::thread::spawn(move || {
+            let clock = ReportsFirstWait {
+                waiting: std::sync::Mutex::new(Some(tx)),
+            };
+            wait_for_refreshes_on(refresh_counter(), refresh_grace(CEILING), &clock)
+        });
+        waiting
+            .recv()
+            .expect("the stop returned without waiting for the held refresh");
+        assert!(
+            !stopper.is_finished(),
+            "the stop finished while the refresh was still held"
+        );
         gate.open();
         assert!(held, "the refresh did not hold Claude's lock");
         assert!(stopper.join().unwrap(), "the stop gave up on the refresh");

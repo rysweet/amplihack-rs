@@ -220,3 +220,46 @@ fn wait_for_refreshes_delegates_to_wait_for_refreshes_on_with_the_global_counter
         "the wrapper must not keep its own wall-clock loop:\n{body}"
     );
 }
+
+#[test]
+fn a_timed_out_wait_removes_no_lock_it_does_not_own() {
+    // S3.2: when the stop gives up, the refresh lock left in place may by
+    // then belong to someone else, here a Claude that took the lock again
+    // (a new inode) after ours was gone. The timed-out wait must not touch
+    // it, and the late release of our own lock must leave it alone too.
+    use super::auto_switch::kit::{REFRESH_LOCK, release_refresh_lock_at, take_refresh_lock_at};
+    use std::os::unix::fs::MetadataExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let lock = dir.join(REFRESH_LOCK);
+    let ours = take_refresh_lock_at(dir).expect("take the refresh lock");
+    // The foreign lock is made while ours still exists, so the filesystem
+    // cannot hand it our inode, then moved into place.
+    let foreign = dir.join("foreign-lock");
+    std::fs::create_dir(&foreign).unwrap();
+    std::fs::remove_dir(&lock).unwrap();
+    std::fs::rename(&foreign, &lock).unwrap();
+    let theirs = std::fs::symlink_metadata(&lock).unwrap().ino();
+    assert_ne!(ours, theirs, "the foreign lock must be a different inode");
+
+    // A refresh still counted, on a clock that only moves when slept on, so
+    // the wait times out in virtual time.
+    let counter = AtomicUsize::new(1);
+    let clock = Stepping::new(&counter, None);
+    let limit = Duration::from_secs(5);
+    assert!(!wait_for_refreshes_on(&counter, limit, &clock));
+    assert!(clock.elapsed() >= limit, "the timeout is on virtual time");
+    assert_eq!(
+        std::fs::symlink_metadata(&lock).map(|m| m.ino()).ok(),
+        Some(theirs),
+        "the timed-out wait removed a lock it did not own"
+    );
+
+    assert!(!release_refresh_lock_at(dir, ours));
+    assert_eq!(
+        std::fs::symlink_metadata(&lock).map(|m| m.ino()).ok(),
+        Some(theirs),
+        "releasing our inode removed someone else's lock"
+    );
+}

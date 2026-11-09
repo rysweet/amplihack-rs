@@ -115,6 +115,7 @@ impl FsGuard {
     /// A guard whose commit lock wait is timed on `clock`. For tests only:
     /// a clock whose time never moves forward makes the wait unbounded
     /// while another commit holds the lock.
+    #[doc(hidden)]
     pub fn with_clock(root: &Path, lock_timeout: Duration, clock: Arc<dyn Clock>) -> Self {
         Self {
             root: root.to_path_buf(),

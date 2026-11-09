@@ -189,6 +189,55 @@ fn run_to_exit_returns_when_the_child_exits_even_if_a_grandchild_holds_the_pipe(
     std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn run_to_exit_returns_when_a_grandchild_never_stops_writing() {
+    // `yes` inherits stdout and writes without pause after `sh` has exited.
+    // The drain reads one chunk per wake and, after the exit, only the bytes
+    // already in the pipe, so the flood cannot keep the probe running. The
+    // test leaves nothing behind: `sh` leads its own process group, which the
+    // guard kills on drop (panics included), and `yes` also dies of SIGPIPE
+    // once the capture closes its read end.
+    use std::os::unix::process::CommandExt;
+    struct KillGroupOnDrop(std::path::PathBuf);
+    impl Drop for KillGroupOnDrop {
+        fn drop(&mut self) {
+            let pgid = std::fs::read_to_string(&self.0)
+                .ok()
+                .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
+                .filter(|pid| *pid > 1);
+            if let Some(pgid) = pgid {
+                // SAFETY: signals only the process group `sh` created.
+                unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            }
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("pgid");
+    let _group = KillGroupOnDrop(pid_file.clone());
+    let mut cmd = Command::new("/bin/sh");
+    cmd.args([
+        "-c",
+        "echo $$ >\"$1\"; yes & printf 'claude 1.2.3\\n' >&2; exit 0",
+        "sh",
+    ])
+    .arg(&pid_file)
+    .process_group(0);
+    // The test harness timeout is the only outer bound; nothing here waits
+    // on a clock.
+    let out = run_capped_output_to_exit(cmd, PROBE_CAPTURE_LIMIT).expect("spawn sh");
+    assert!(out.status.success(), "{:?}", out.status);
+    assert!(
+        out.stdout.len() <= PROBE_CAPTURE_LIMIT,
+        "the byte cap still holds: {}",
+        out.stdout.len()
+    );
+    assert_eq!(
+        out.stderr, b"claude 1.2.3\n",
+        "what the child wrote before it exited is kept"
+    );
+}
+
 /// The knob name and its reader are compiled only in debug builds. A release
 /// binary must not contain the name (the PR also checks this with `strings`).
 #[test]

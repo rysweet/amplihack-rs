@@ -816,6 +816,13 @@ pub(super) fn refreshes_in_progress() -> usize {
     REFRESHING.load(Ordering::SeqCst)
 }
 
+/// The process-wide refresh count itself, for a test that waits on it with a
+/// clock of its own (issue #2019).
+#[cfg(test)]
+pub(super) fn refresh_counter() -> &'static AtomicUsize {
+    &REFRESHING
+}
+
 /// Waits up to `limit` for every refresh in progress to release its lock;
 /// whether none is left.
 pub(super) fn wait_for_refreshes(limit: Duration) -> bool {

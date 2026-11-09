@@ -97,6 +97,7 @@ pub fn lock_exclusive_timeout(file: fs::File, timeout: Duration) -> io::Result<E
 ///
 /// A clock whose time never moves forward makes the wait unbounded while the
 /// lock is held, so only tests should pass anything but `SystemClock`.
+#[doc(hidden)]
 #[cfg(unix)]
 pub fn lock_exclusive_timeout_with(
     file: fs::File,
@@ -129,6 +130,7 @@ pub fn lock_exclusive_timeout_with(
 }
 
 /// Not supported off Unix: always `ErrorKind::Unsupported`.
+#[doc(hidden)]
 #[cfg(not(unix))]
 pub fn lock_exclusive_timeout_with(
     _file: fs::File,

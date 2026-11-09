@@ -933,38 +933,32 @@ fn generated_tree_ids_are_valid_and_distinct() {
     assert_ne!(a, b, "two ids from one process must differ");
 }
 
-/// The caller holds the shared environment lock through restoration.
-fn fixture_environment() -> crate::test_support::EnvGuard {
-    let saved = crate::test_support::EnvGuard::capture(&[
-        "AMPLIHACK_AGENT_BINARY",
-        "AMPLIHACK_CLEANUP_ON_EXIT",
-        "HOME",
-    ]);
-    // Issue #2019: the runner and anything it stages see a temp HOME, never
-    // the developer's real ~/.amplihack.
-    let home = fixture_home();
-    unsafe { std::env::set_var("HOME", home) };
-    assert!(
-        std::env::var_os("HOME").is_some_and(|h| Path::new(&h).starts_with(std::env::temp_dir())),
-        "the recipe fixture's HOME must be under the temp dir"
-    );
-    // These assertions exercise generic runner/Claude staging, without a Codex stub.
-    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
-    // Issue #2067: the end-of-run sweep walks the real work root, which can
-    // take over a minute on a loaded host and break the wall-clock ceilings.
-    unsafe { std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0") };
-    saved
+/// The environment a recipe fixture runs in: a temp `HOME` owned by this
+/// fixture and the variables it changed. Dropping it restores the variables
+/// first and then removes the temp `HOME`, so no `amplihack-recipe-home-*`
+/// directory outlives the test.
+struct FixtureEnvironment {
+    _env: crate::test_support::EnvGuard,
+    _home: tempfile::TempDir,
 }
 
-/// One temp HOME for this test binary's recipe fixtures, kept for the
-/// process lifetime (the tests that use it run under `home_env_lock`).
-fn fixture_home() -> &'static Path {
-    static HOME: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        tempfile::Builder::new()
-            .prefix("amplihack-recipe-home-")
-            .tempdir()
-            .expect("create the recipe fixture HOME")
-    })
-    .path()
+/// The caller holds the shared environment lock until the fixture drops.
+fn fixture_environment() -> FixtureEnvironment {
+    // Issue #2019: the runner and anything it stages see a temp HOME, never
+    // the developer's real ~/.amplihack.
+    let home = tempfile::Builder::new()
+        .prefix("amplihack-recipe-home-")
+        .tempdir()
+        .expect("create the recipe fixture HOME");
+    let mut env = crate::test_support::EnvGuard::capture(&[]);
+    env.assign("HOME", home.path());
+    // These assertions exercise generic runner/Claude staging, without a Codex stub.
+    env.assign("AMPLIHACK_AGENT_BINARY", "claude");
+    // Issue #2067: the end-of-run sweep walks the real work root, which can
+    // take over a minute on a loaded host and break the wall-clock ceilings.
+    env.assign("AMPLIHACK_CLEANUP_ON_EXIT", "0");
+    FixtureEnvironment {
+        _env: env,
+        _home: home,
+    }
 }

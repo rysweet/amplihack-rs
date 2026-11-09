@@ -271,10 +271,13 @@ contains `gate`. `tests_usage_direct` and `rotate::tests_daemon` share it.
 
 ### `PtyReader`
 
-`PtyReader::spawn(master)` reads a PTY on its own thread and sends each chunk
-on a channel. `reader.wait_for(needle)` returns once the text read so far
-contains `needle`, bounded by `CEILING`. It replaces `read_until_quiet` and
-`drain(duration)`. See [Fleet TUI tests](#fleet-tui-tests).
+`PtyReader::spawn(master)` owns a PTY master, reads it with blocking reads on
+its own thread and sends each chunk on an `mpsc` channel. When the read
+reports EOF or EIO, because the child closed its side, the thread sends an
+explicit end-of-stream message. `reader.wait_for(predicate)` blocks on
+`recv()` until the output so far satisfies `predicate` and returns it, or
+returns `Closed` with the captured output once the stream has ended. It has
+no deadline of its own. See [Fleet TUI tests](#fleet-tui-tests).
 
 ### `wait_pid_gone` and `KillOnDrop`
 
@@ -592,13 +595,20 @@ pub(crate) fn wait_for_refreshes_on(
 It returns `true` when `counter` reaches 0, and `false` when `limit` has
 passed on `clock`. A counter already at 0 returns `true` at once without
 calling `sleep`, which a `PanicOnSleep` clock proves. On `false` the stop
-path behaves as before and does not remove a lock it does not own.
+path behaves as before and does not remove a lock it does not own:
+`a_timed_out_wait_removes_no_lock_it_does_not_own` times the wait out on
+virtual time with a foreign lock (another inode) in place, and asserts that
+the lock is still there and that releasing the old inode leaves it alone.
 
-`rotate::tests_daemon` uses it for the #2036 case: a gated token handler, a
-reader thread, and a channel that reports the `POST` was sent. The test
-asserts the lock is held, opens the gate, asserts
-`finish_refreshes(refresh_grace(CEILING))` returns `true`, joins the reader,
-then asserts the counter is 0 and no lock file remains.
+`rotate::tests_daemon` uses it for the #2036 case, and proves the order, not
+only the outcome. A gated token handler holds the refresh. The stopper runs
+what `finish_refreshes` runs, `wait_for_refreshes_on` on the process-wide
+count (`usage_direct::refresh_counter()`, test-only) with the stop's grace,
+on a clock that delegates to `SystemClock` and reports its first `sleep` over
+a channel. It sleeps only while the count is above zero, so the report means
+the stop is waiting on the held refresh. The test receives it, asserts the
+stopper has not finished, opens the gate, asserts the stop returns `true`,
+joins the reader, then asserts that no lock file remains.
 
 ## Run a private copy of the binary
 
@@ -774,10 +784,21 @@ exit; it does not set a longer deadline. Any other value, including
 `Exit`, `exit ` and `1`, leaves the 3 s and 10 s limits in place. The value is
 never logged.
 
-Both forms share one private function, `run_capped(cmd, Option<Duration>,
-limit)`, which computes its deadline with `checked_add`. The public timeout
-wrapper never passes `None`. In a release build the name, the reader and the
-`to_exit` path do not exist.
+The exit wait is a second capture function, `run_capped_output_to_exit`,
+beside the production `run_capped_output_with_timeout`. It is compiled only
+in debug builds: in a release build `ProbeWait::Exit`, the knob's name, its
+reader and the `to_exit` modules do not exist, so a release binary has one
+capture path. The exit wait reads each pipe once per wake, so a grandchild
+that writes without pause cannot hold it away from the exit check. Once the
+child has exited it reads, once, the bytes each pipe holds at that moment
+(`FIONREAD`) and returns, without waiting for an EOF a grandchild may
+withhold. Folding the two functions into one is left to a follow-up issue,
+because it would change the release capture path that every launch uses.
+
+`AMPLIHACK_TEST_PROBE_WAIT` is a test-only knob and exists only in debug
+builds. Do not set it in a shell: with it set, a debug `amplihack` has no
+bound on the `--version` probe, and a candidate that hangs on `--version`
+hangs the launch.
 
 `isolated(..)` sets the knob on every child after `env_clear`, in both
 `tests/support/isolated_amplihack.rs` and the `amplihack-cli` test support,
@@ -795,20 +816,32 @@ or `wait_child`, bounded only by `CEILING`.
 
 ## Recipe runner tests
 
-### `RecipeFixture`
+### `fixture_environment()` and `EnvGuard`
 
-`commands::recipe::run` tests build a `RecipeFixture`. It:
+Each `commands::recipe::run` test module has a `fixture_environment()`
+helper. A test takes the crate's `home_env_lock()` first and then calls it:
 
-1. Takes the crate's `home_env_lock`.
-2. Sets `RECIPE_RUNNER_RS_PATH`, `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` and
-   the home through `EnvVarGuard`, which restores them on drop.
-3. Puts the home, the agent binary and the runner stub under its own
-   `TempDir` (mode `0700`), via `isolated(..)`.
-4. Asserts that the resolved `amplihack_home` is under that `TempDir` before
-   anything runs.
+```rust
+let _guard = crate::test_support::home_env_lock()
+    .lock()
+    .unwrap_or_else(|poisoned| poisoned.into_inner());
+let mut fixture_env = fixture_environment();
+fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+fixture_env.assign("AMPLIHACK_HOME", &amplihack_home);
+fixture_env.clear("AMPLIHACK_STEP_TIMEOUT");
+```
 
-No bare `set_var` or `remove_var` remains in `tests_execute.rs`, and no
-recipe test reads the real `~/.amplihack`.
+The helper returns a `crate::test_support::EnvGuard`. `EnvGuard::assign`
+and `EnvGuard::clear` record a variable's value the first time the guard
+touches it, and the guard restores every recorded variable when it is
+dropped, panics included. There is no manual restore block, and no bare
+`set_var` or `remove_var` remains in `tests_execute.rs`.
+
+In `tests_teardown.rs` the helper also gives each fixture its own temp
+`HOME`, a `TempDir` named `amplihack-recipe-home-*`. The fixture owns it:
+dropping the fixture restores the variables and then removes the directory,
+so no recipe test reads the real `~/.amplihack` and none leaves a home
+directory behind.
 
 ### A runner that hangs
 
@@ -835,18 +868,40 @@ fallback writer. The 2.3 s sleep and the `< 8 s` assertion are gone.
 
 ## Fleet TUI tests
 
-The fleet TUI tests run the TUI in a PTY. They wait on the text the TUI
-prints, not on a quiet period:
+The fleet TUI tests in `tests/integration/no_python_probe_test.rs` run the
+TUI in a PTY. `FleetTuiProbe` hands the PTY master to a
+[`PtyReader`](#ptyreader) and keeps a second handle for keystrokes. Every key
+a test sends is followed by a wait for the screen text that key produces:
 
 ```rust
-let reader = PtyReader::spawn(pty.master);
-reader.wait_for("q quit");      // the first frame has rendered
-pty.write_all(b"q")?;
-wait::wait_child("the fleet TUI to exit after q", &mut child);
+let mut probe = FleetTuiProbe::new(&bin, None);
+probe.wait_for_text("q quit");                      // the first frame
+probe.send_and_wait_for(b"d", "Prepared proposal for vm-1/claude-1:");
+probe.send_and_wait_for(b"\x1b", "[fleet]");        // Esc back to Fleet
+let cleaned = probe.finish();                       // q, read to EOF, reap
 ```
 
-`read_until_quiet`, `drain(duration)` and the deadline loops they used are
-gone. Exit is waited on with `wait_child`, bounded only by `CEILING`.
+- `send_and_wait_for` looks only at the text drawn after the key, so text
+  already on the screen cannot satisfy it. Choose text that the key's new
+  state adds, such as the active tab label (`[detail]`, `[fleet]`) or a
+  status line.
+- `send_and_wait_for_frame` waits for a whole frame drawn after the key. Use
+  it when the key removes text, such as closing the help overlay.
+- A lone `Esc` is sent on its own and its effect awaited before the next key,
+  so the TUI cannot read it as the start of an escape sequence.
+- Files the TUI's helpers write, such as the azlin shim's logs and the task
+  queue, are written before the status line that reports them, so they are
+  read once after that line appears.
+- `finish` sends `q`, reads to the end of the stream and reaps the child.
+
+The probe holds its child in `KillOnDrop`: a failed test kills the TUI, the
+PTY closes and the reader thread ends. No wait in these tests has a deadline.
+A hung TUI is ended by the test harness's own timeout.
+
+`read_until_quiet`, `drain(duration)`, `poll_until_output_contains`,
+`poll_file_for_content`, `wait_for_exit` and their 20 ms and 50 ms sleeps are
+gone. So is the fixture's 2 s delay on the second VM: the frame drawn while
+that VM is polled is captured however long the poll takes.
 
 ## Rotator tests
 
@@ -958,10 +1013,14 @@ and `tests/**` for `elapsed()` or a difference of two `Instant`s used in an
 - a file that contains `impl Clock for` (it measures injected time), except
   for a check on a name bound to `Instant::now()` in that file, which is still
   reported: injected time is exempt, real time in the same file is not;
-- a `VIRTUAL_TIME` entry `(path, proof)`: a file whose `elapsed()` reads a
-  fake through a seam other than `Clock` (the `limit_wait` tests read
-  `WaitDeps`). The entry holds the text that proves the fake is there, and
-  fails the guard once that text is gone;
+- a `VIRTUAL_TIME` entry `(path, proof)`. It exempts a file whose `elapsed()`
+  reads a fake through a seam other than `Clock`, so the `impl Clock for`
+  rule cannot see it. There are two entries, both `limit_wait` tests, which
+  read virtual time through `WaitDeps`:
+  `limit_wait/tests_wait.rs` must contain `impl WaitDeps for Fake`, and
+  `limit_wait/tests_wait_ends.rs` must contain `use super::tests_wait::{Fake`.
+  An entry whose proof text is gone fails the guard, so the exemption cannot
+  outlive the fake;
 - `issue_1973_wait_helpers.rs` and the guard itself;
 - an entry in the allowlist.
 
@@ -972,6 +1031,11 @@ also leave the list. Every entry names its follow-up issue.
 The guard does not follow symlinks and skips `target/`, `worktrees/` and
 `.git/`. It checks its own matcher against inline samples, so a matcher that
 stops matching fails too.
+
+The guard finds wall-clock asserts and comparisons on `elapsed()`. It does
+not find a deadline loop, such as `while Instant::now() < deadline`, that
+decides whether a test passes. Matching such loops by pattern would also
+flag production deadlines. Review a new test for them by hand.
 
 Run it alone:
 
@@ -999,8 +1063,8 @@ filed follow-up issue, and only for a test the current PR does not touch.
 - Do not change a product timeout's default.
 - Do not write a stub with `fs::write` and `set_permissions`. Use
   `write_executable`.
-- Do not call `set_var` in a test. Use `EnvVarGuard` under the crate's lock,
-  or pass the value as a parameter.
+- Do not call `set_var` in a test. Use `EnvGuard` (`assign`, `clear`) under
+  the crate's lock, or pass the value as a parameter.
 - Do not pause, cap or renice other sessions to make a run pass.
 - Do not signal a process by `pkill -f`, `killall` or a pid read from a file
   without a pidfd. Signal only processes the test spawned, or a pidfd opened
