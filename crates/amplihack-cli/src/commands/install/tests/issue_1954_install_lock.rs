@@ -21,6 +21,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, TryRecvError};
+use std::thread::JoinHandle;
 
 struct Fixture {
     _temp: tempfile::TempDir,
@@ -47,9 +48,9 @@ fn mode(path: &Path) -> u32 {
 #[test]
 fn lock_wait_message_is_exact() {
     assert_eq!(
-        install_lock::wait_message(Path::new("/home/ryan/.amplihack/.install.lock")),
+        install_lock::wait_message(Path::new("/home/u/.amplihack/.install.lock")),
         "⏳ waiting for another amplihack install to finish \
-         (lock: /home/ryan/.amplihack/.install.lock)"
+         (lock: /home/u/.amplihack/.install.lock)"
     );
     assert_eq!(
         install_lock::lock_path(Path::new("/home/u")),
@@ -102,13 +103,25 @@ enum LockEvent {
     Acquired,
 }
 
+/// The next event from the contending thread. If the thread died without
+/// sending one, its own panic is raised here instead of a bare `RecvError`.
+fn next_event(rx: &mpsc::Receiver<LockEvent>, thread: &mut Option<JoinHandle<()>>) -> LockEvent {
+    match rx.recv() {
+        Ok(event) => event,
+        Err(_) => match thread.take().expect("thread joined once").join() {
+            Err(payload) => std::panic::resume_unwind(payload),
+            Ok(()) => panic!("the contending thread exited without sending an event"),
+        },
+    }
+}
+
 #[test]
 fn lock_second_thread_blocks() {
     let fx = Fixture::new();
     let path = lock_file(&fx);
     let guard = install_lock::acquire_at(&path).unwrap();
     let (tx, rx) = mpsc::channel();
-    let thread = {
+    let mut thread = Some({
         let path = path.clone();
         std::thread::spawn(move || {
             tx.send(LockEvent::Attempting).unwrap();
@@ -117,10 +130,10 @@ fn lock_second_thread_blocks() {
             tx.send(LockEvent::Acquired).unwrap();
             drop(g);
         })
-    };
+    });
 
     // The thread is about to block on the lock.
-    assert_eq!(rx.recv().unwrap(), LockEvent::Attempting);
+    assert_eq!(next_event(&rx, &mut thread), LockEvent::Attempting);
     // While this thread holds it, no other process can take it either, and
     // the contending thread has not reported `Acquired`.
     if have_flock() {
@@ -141,11 +154,11 @@ fn lock_second_thread_blocks() {
 
     drop(guard);
     assert_eq!(
-        rx.recv().unwrap(),
+        next_event(&rx, &mut thread),
         LockEvent::Acquired,
         "it acquires once released"
     );
-    thread.join().unwrap();
+    thread.take().unwrap().join().unwrap();
 }
 
 #[test]

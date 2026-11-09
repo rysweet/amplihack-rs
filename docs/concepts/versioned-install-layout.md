@@ -406,12 +406,19 @@ does only what 1.2.107 does: it renames the new binary over
 `install --force-refresh` and `AMPLIHACK_NO_UPDATE_CHECK=1`,
 `AMPLIHACK_NONINTERACTIVE=1` and `AMPLIHACK_POST_UPDATE_INSTALL=1` set. The
 test then reads `.installed-by` in the new release and checks that the pid
-is not the stub's, the version is the new one, `post_update=1`, and `exe` is
-`$HOME/.local/bin/amplihack`. On the first update that is the path of the
-new binary: the regular file 1.2.107 renamed into place, not a path under
-`releases/`. It also
-checks that the stub wrote nothing under `~/.amplihack`, and that a run parked
-in the old real-directory bundle finishes normally.
+is the stub's child (the new binary's process) and not the stub's own, the
+version is the new one, and `post_update=1`. `exe` must be non-empty and be
+one of: `$HOME/.local/bin/amplihack` as written or canonicalized, the built
+binary, or the new release's `bin/amplihack`. The test accepts all of these
+because `current_exe` and `canonicalize` can resolve to different paths. On
+the first update the path is that of the new binary: the regular file
+1.2.107 renamed into place.
+
+The stub lists `~/.amplihack` just before it starts the new binary, and the
+test checks that this listing equals the one it took before starting the
+stub, so the old binary's part of the hand-off wrote nothing there. The test
+also checks that a run parked in the old real-directory bundle finishes
+normally.
 
 An old 1.2.107 process still running after the update runs 1.2.107's own
 self-heal code, not this release's. That code already has the #1526
@@ -600,7 +607,7 @@ Do not delete release directories by hand while runs are alive. Running
 | Test | Covers |
 |------|--------|
 | `tests/issue_1954_install_leaves_live_runs_alone.rs` | A bash run with its working directory and an open file in the bundle, and a signal sentinel, stay alive across two `--force-refresh` installs and a self-heal. The run reports ready through a FIFO and blocks on a "go" FIFO that the test writes only after the installs finish; the test then joins it with `wait()`. The run finishes normally, the sentinel records no signal, and each link read before, between and after the installs names its old target or a complete release. Fails on the code before this layout. |
-| `tests/issue_1954_first_install_restager.rs` | The first update from 1.2.107: a stub old binary hands off as 1.2.107 does, and `.installed-by` shows the new binary (not the stub) built and switched the release. A run parked in the old real-directory bundle finishes. |
+| `tests/issue_1954_first_install_restager.rs` | The first update from 1.2.107: a stub old binary hands off as 1.2.107 does, and `.installed-by` shows the new binary (not the stub) built and switched the release, and a listing of `~/.amplihack` taken by the stub just before it starts the new binary matches the one taken before the stub ran. A run parked in the old real-directory bundle finishes. |
 | `tests/issue_1954_no_foreign_signals.rs` | Source scan: no `kill`, `killpg`, `Signal::` or `kill`/`pkill`/`killall` command in install, update, self-heal, lock, layout or uninstall code, except `util.rs` and `Child::kill`. |
 | `commands/install/tests/issue_1954_release_layout.rs` | Release naming, atomic switch over a file, link or directory, switching only planned links, a partial switch report with the per-link keep set, exchange fallback, `EXDEV` retire, in-use cleanup (holders signal readiness on stdout and are released by closing stdin), the exact message text and the security rules above. Also the `.installed-by` record (fields, sanitised `exe`, planted symlink not followed, garbage or oversized file reads as `None`) and this release's #1526 downgrade guard (`self_heal_from_older_binary_leaves_newer_release_alone`): self-heal from an older binary leaves a newer release alone. |
 | `commands/install/tests/issue_1954_install_lock.rs` | Lock re-entrancy on one thread, a second thread or process waiting (ordering checked through a channel, not a timer), no lock passed to a child, a symlinked lock path refused, no truncation, mode 0600 and the exact wait message. |

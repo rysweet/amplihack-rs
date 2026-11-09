@@ -40,7 +40,7 @@
 //! does not hold.
 
 use crate::support::amplihack_bin::amplihack_bin;
-use crate::support::events::{SCRIPT_PREAMBLE, await_line, mkfifo, release};
+use crate::support::events::{SCRIPT_PREAMBLE, await_line, mkfifo, open_ready, release};
 use crate::support::exec_stub::write_executable;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -270,6 +270,9 @@ impl Host {
         let go = self.work.join(format!("{name}.go"));
         mkfifo(&ready);
         mkfifo(&go);
+        // Open the read end before the child exists, so an early exit
+        // cannot lose its `exit:` line (see `support::events`).
+        let ready_handle = open_ready(&ready);
         let out = fs::File::create(self.work.join(format!("{name}.out"))).unwrap();
         let err_path = self.work.join(format!("{name}.err"));
         let err = fs::File::create(&err_path).unwrap();
@@ -300,7 +303,7 @@ impl Host {
             ready: String::new(),
         };
         // A panic here drops `parked`, which kills and reaps the child.
-        parked.ready = await_line(&ready, &err_path);
+        parked.ready = await_line(ready_handle, &ready, &err_path);
         parked
     }
 

@@ -470,7 +470,7 @@ pub fn write_installed_by(release_root: &Path, version: &str) -> Result<()> {
     let exe = std::env::current_exe()
         .and_then(fs::canonicalize)
         .map_err(|e| {
-            tracing::debug!("release: exe for {INSTALLED_BY} unknown: {e}");
+            tracing::info!("release: exe for {INSTALLED_BY} unknown: {e}");
             e
         })
         .ok();

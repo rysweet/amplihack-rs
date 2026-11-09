@@ -20,12 +20,16 @@
 //! If this holds, the first update from 1.2.107 needs no window without
 //! recipe runs: the old binary only renames a file, which leaves every
 //! inode a running process holds intact.
+//!
+//! The stub also lists `~/.amplihack` just before it starts the new
+//! binary. That listing must equal the one the test takes before it starts
+//! the stub: the old binary's part of the hand-off writes nothing there.
 
 use crate::issue_1954_install_leaves_live_runs_alone::{
     Host, RUN_SCRIPT, plant_legacy_layout, proc_link, published_release, text,
 };
 use crate::support::amplihack_bin::amplihack_bin;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -34,15 +38,18 @@ use std::process::{Command, Stdio};
 /// after the download. `$NEW_BIN` is the "downloaded" binary. It writes only
 /// to `$work` and to `~/.local/bin/amplihack` (by rename), never under
 /// `~/.amplihack`. The install runs as a child, not through `exec`, so the
-/// stub's pid and the new binary's pid differ.
+/// stub's pid and the new binary's pid differ. `$2` is where it writes its
+/// listing of `~/.amplihack`, taken just before it starts the new binary.
 const OLD_BINARY_STUB: &str = r#"set -euo pipefail
 work="$1"
+listing="$2"
 echo $$ > "$work/old.pid"
 bin="$HOME/.local/bin"
 cp "$NEW_BIN" "$bin/amplihack.tmp"
 chmod 755 "$bin/amplihack.tmp"
 mv -f "$bin/amplihack.tmp" "$bin/amplihack"
 echo "old: renamed the new binary over $bin/amplihack" >> "$work/old.trace"
+{ find "$HOME/.amplihack" -print 2>/dev/null || true; } | LC_ALL=C sort > "$listing"
 AMPLIHACK_NO_UPDATE_CHECK=1 AMPLIHACK_NONINTERACTIVE=1 AMPLIHACK_POST_UPDATE_INSTALL=1 \
   "$bin/amplihack" install --force-refresh &
 new=$!
@@ -84,6 +91,25 @@ fn parse_record(text: &str) -> BTreeMap<String, String> {
     map
 }
 
+/// Every path under `root`, `root` included, as `find -print` names them.
+/// Symlinks are listed, not followed. A missing `root` gives an empty set.
+fn listing(root: &Path) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.is_dir()
+            && let Ok(entries) = fs::read_dir(&path)
+        {
+            stack.extend(entries.flatten().map(|e| e.path()));
+        }
+        found.insert(path.to_string_lossy().into_owned());
+    }
+    found
+}
+
 fn canonical(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
@@ -113,9 +139,13 @@ fn the_new_binary_restages_on_the_first_update_and_a_live_run_survives() {
     let stub = host.work.join("old-binary.sh");
     fs::write(&stub, OLD_BINARY_STUB).unwrap();
     let new_bin = amplihack_bin();
+    let dot_amplihack = host.home.join(".amplihack");
+    let listing_before = listing(&dot_amplihack);
+    let stub_listing = host.work.join("old-binary.listing");
     let output = Command::new("/bin/bash")
         .arg(&stub)
         .arg(&host.work)
+        .arg(&stub_listing)
         .env_clear()
         .env("HOME", &host.home)
         .env("TMPDIR", host.temp.path())
@@ -145,6 +175,23 @@ fn the_new_binary_restages_on_the_first_update_and_a_live_run_survives() {
          trace:\n{}",
         host.work_file("old.trace")
     );
+
+    // The old binary wrote nothing under ~/.amplihack before it started the
+    // new one.
+    match fs::read_to_string(&stub_listing) {
+        Err(e) => failures.push(format!("the stub wrote no listing: {e}")),
+        Ok(stub_text) => {
+            let at_handoff: BTreeSet<String> = stub_text.lines().map(str::to_string).collect();
+            let added: Vec<&String> = at_handoff.difference(&listing_before).collect();
+            let removed: Vec<&String> = listing_before.difference(&at_handoff).collect();
+            if !added.is_empty() || !removed.is_empty() {
+                failures.push(format!(
+                    "the old binary changed ~/.amplihack before the hand-off: \
+                     added {added:?}, removed {removed:?}"
+                ));
+            }
+        }
+    }
 
     // The bundle link names a complete release of this version.
     let release = match published_release(&host, &host.bundle(), "amplifier-bundle") {
