@@ -222,17 +222,17 @@ fn poll_exit(pidfd: &std::os::fd::OwnedFd) -> std::io::Result<()> {
     }
 }
 
-/// `PTRACE_SEIZE` (options 0), `PTRACE_CONT` or `PTRACE_DETACH` on `pid`,
-/// with `signal` as the data word of the two restarts.
+/// `PTRACE_SEIZE` (options 0) or `PTRACE_DETACH` on `pid`, with `signal` as
+/// the data word of the detach.
 #[cfg(target_os = "linux")]
 fn ptrace_request(
     request: libc::c_uint,
     pid: libc::pid_t,
     signal: libc::c_int,
 ) -> std::io::Result<()> {
-    // SAFETY: none of these requests reads or writes memory through the
-    // address or data words: the address is null, and the data word is 0 for
-    // PTRACE_SEIZE and a signal number for the restarts.
+    // SAFETY: neither request reads or writes memory through the address or
+    // data words: the address is null, and the data word is 0 for
+    // PTRACE_SEIZE and a signal number for the detach.
     let rc = unsafe {
         libc::ptrace(
             request as _,
@@ -259,10 +259,15 @@ fn waitpid_wall(pid: libc::pid_t) -> std::io::Result<libc::c_int> {
         if rc == pid {
             return Ok(status);
         }
-        let error = std::io::Error::last_os_error();
-        if rc >= 0 || error.kind() != std::io::ErrorKind::Interrupted {
+        if rc >= 0 {
             return Err(std::io::Error::other(format!(
-                "waitpid({pid}, __WALL) returned {rc}: {error}"
+                "waitpid({pid}, __WALL) returned {rc}"
+            )));
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(std::io::Error::other(format!(
+                "waitpid({pid}, __WALL) failed: {error}"
             )));
         }
     }
@@ -453,15 +458,17 @@ fn read_until_prompt<R: Read>(mut output: R) -> Watched {
     }
 }
 
-/// The fields 2 (state) and 4 (parent PID) of `/proc/<pid>/stat`.
+/// Field 4 (parent PID) of `/proc/<pid>/stat`.
 #[cfg(target_os = "linux")]
-fn state_and_parent(pid: libc::pid_t) -> Option<(char, libc::pid_t)> {
+fn parent_of(pid: libc::pid_t) -> Option<libc::pid_t> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // The command name may hold spaces; the fields follow its closing `)`.
-    let mut fields = stat.rsplit_once(')')?.1.split_whitespace();
-    let state = fields.next()?.chars().next()?;
-    let parent = fields.next()?.parse().ok()?;
-    Some((state, parent))
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(1)?
+        .parse()
+        .ok()
 }
 
 /// Whether `ancestor` is reached by following parent links up from `pid`.
@@ -469,9 +476,9 @@ fn state_and_parent(pid: libc::pid_t) -> Option<(char, libc::pid_t)> {
 fn descends_from(pid: libc::pid_t, ancestor: libc::pid_t) -> bool {
     let mut at = pid;
     while at > 1 {
-        match state_and_parent(at) {
-            Some((_, parent)) if parent == ancestor => return true,
-            Some((_, parent)) => at = parent,
+        match parent_of(at) {
+            Some(parent) if parent == ancestor => return true,
+            Some(parent) => at = parent,
             None => return false,
         }
     }
@@ -526,12 +533,13 @@ enum Armed {
 ///
 /// Run it on its own thread and join that thread: every ptrace call and the
 /// wait happen here, on one thread. A process that was already stopped is
-/// reported as a group-stop (`PTRACE_EVENT_STOP`). A process that had not
-/// yet dequeued the signal is reported in a signal-delivery stop; it is then
-/// restarted with `SIGTTIN`, which puts it in the group-stop, and that report
-/// is awaited too, so it is stopped when this returns. Only EPERM from the
-/// seize maps to [`Armed::PtraceDenied`]; any other error, or any other stop,
-/// panics, after detaching if the seize succeeded.
+/// reported as a group-stop (`PTRACE_EVENT_STOP`) and is detached with no
+/// signal. A process that had not yet dequeued the signal is reported in a
+/// signal-delivery stop, which already shows the trap is armed; detaching
+/// with `SIGTTIN` delivers the signal, so the process stops as it would have
+/// done untraced. Only EPERM from the seize maps to [`Armed::PtraceDenied`];
+/// any other error, or any other stop, panics, after detaching if the seize
+/// succeeded.
 #[cfg(target_os = "linux")]
 fn sigttin_seen(pid: libc::pid_t) -> Armed {
     if let Err(error) = ptrace_request(libc::PTRACE_SEIZE as libc::c_uint, pid, 0) {
@@ -549,46 +557,38 @@ fn sigttin_seen(pid: libc::pid_t) -> Armed {
             panic!("PTRACE_DETACH from {pid} failed: {error}");
         }
     };
-    let mut restarted = false;
-    loop {
-        let status = match waitpid_wall(pid) {
-            Ok(status) => status,
-            Err(error) => {
-                // The process is no longer reported, so there is nothing
-                // left to detach from.
-                panic!("waiting for the traced process {pid} failed: {error}")
-            }
-        };
-        if !libc::WIFSTOPPED(status) {
-            panic!("the traced process {pid} ended instead of stopping: status {status:#x}");
+    let status = match waitpid_wall(pid) {
+        Ok(status) => status,
+        Err(error) => {
+            // The process is no longer reported, so there is nothing left to
+            // detach from.
+            panic!("waiting for the traced process {pid} failed: {error}")
         }
-        let signal = libc::WSTOPSIG(status);
-        let group_stop = status >> 16 == libc::PTRACE_EVENT_STOP;
-        match (signal, group_stop) {
-            (libc::SIGTTIN, true) => {
-                detach(0);
-                return Armed::Sigttin;
-            }
-            (libc::SIGTTIN, false) if !restarted => {
-                // Deliver the signal; the group-stop it causes is reported
-                // next.
-                if let Err(error) =
-                    ptrace_request(libc::PTRACE_CONT as libc::c_uint, pid, libc::SIGTTIN)
-                {
-                    detach(libc::SIGTTIN);
-                    panic!("PTRACE_CONT of {pid} with SIGTTIN failed: {error}");
-                }
-                restarted = true;
-            }
-            _ => {
-                // Pass on any signal it was about to receive, so the process
-                // behaves as if it had never been traced.
-                detach(if group_stop { 0 } else { signal });
-                panic!(
-                    "the traced process {pid} stopped with signal {signal} (group-stop: \
-                     {group_stop}, status {status:#x}), not on SIGTTIN"
-                );
-            }
+    };
+    if !libc::WIFSTOPPED(status) {
+        panic!("the traced process {pid} ended instead of stopping: status {status:#x}");
+    }
+    let signal = libc::WSTOPSIG(status);
+    let group_stop = status >> 16 == libc::PTRACE_EVENT_STOP;
+    match (signal, group_stop) {
+        (libc::SIGTTIN, true) => {
+            detach(0);
+            Armed::Sigttin
+        }
+        (libc::SIGTTIN, false) => {
+            // Signal-delivery stop on SIGTTIN: the trap is armed. Detaching
+            // with SIGTTIN delivers it, so the process stops untraced.
+            detach(libc::SIGTTIN);
+            Armed::Sigttin
+        }
+        _ => {
+            // Pass on any signal it was about to receive, so the process
+            // behaves as if it had never been traced.
+            detach(if group_stop { 0 } else { signal });
+            panic!(
+                "the traced process {pid} stopped with signal {signal} (group-stop: \
+                 {group_stop}, status {status:#x}), not on SIGTTIN"
+            );
         }
     }
 }
@@ -981,18 +981,11 @@ fn assert_exits_by_itself<'a>(label: &str, outcome: &'a Outcome) -> &'a str {
 /// The prompt on the pipe is the event that starts the check. The test then
 /// finds `git ls-remote` under `script` and, on a thread it joins, attaches
 /// with `ptrace` and waits until the kernel reports the stop. If `ptrace` is
-/// refused with EPERM, the prompt alone counts. If GNU `timeout` ends git
-/// first, its 124 counts. Any other ending fails with `trap was not armed`.
+/// refused with EPERM, the prompt alone counts, and a tracer failure panics.
+/// Without a prompt, GNU `timeout`'s 124 counts. Any other ending fails with
+/// `trap was not armed`.
 #[cfg(target_os = "linux")]
 fn assert_control_stops_on_sigttin(case: &mut Scripted, url: &str) {
-    let trap_not_armed = |shown: &dyn std::fmt::Debug| -> ! {
-        panic!(
-            "trap was not armed: with none of the three variables, git under plain \
-             `timeout` in a pseudo-terminal should have printed the username prompt and \
-             stopped on SIGTTIN (or GNU `timeout` should have reported rc=124). Without \
-             the trap, (c1) and (c2) prove nothing: {shown:#?}"
-        )
-    };
     if matches!(case.watched, Watched::Prompt(_)) {
         let script_pid = case.guard.child().id() as libc::pid_t;
         let git = git_ls_remote_under(script_pid, url);
@@ -1006,32 +999,20 @@ fn assert_control_stops_on_sigttin(case: &mut Scripted, url: &str) {
                 );
                 return;
             }
-            Err(panic) => {
-                // GNU `timeout` ignores SIGTTIN and ends git with 124; if it
-                // did so before the tracer attached, the tracer fails, and
-                // the 124 in the rest of the output is the proof instead.
-                let mut rest = String::new();
-                let stdout = case
-                    .guard
-                    .child()
-                    .stdout
-                    .as_mut()
-                    .expect("script's stdout is piped");
-                if stdout.read_to_string(&mut rest).is_err() || rc_line(&rest) != Some(124) {
-                    std::panic::resume_unwind(panic);
-                }
-                eprintln!(
-                    "issue #1764 part (c): GNU `timeout` ended the control with 124 \
-                     before the tracer saw the stop"
-                );
-                return;
-            }
+            // Re-raise at once: reading on would block for ever if git is
+            // still stopped, turning a tracer failure into a hang.
+            Err(panic) => std::panic::resume_unwind(panic),
         }
     }
     let ended = outcome(case);
     match &ended {
         Outcome::Exited { stdout, .. } if rc_line(stdout) == Some(124) => {}
-        _ => trap_not_armed(&ended),
+        _ => panic!(
+            "trap was not armed: with none of the three variables, git under plain \
+             `timeout` in a pseudo-terminal should have printed the username prompt and \
+             stopped on SIGTTIN (or GNU `timeout` should have reported rc=124). Without \
+             the trap, (c1) and (c2) prove nothing: {ended:#?}"
+        ),
     }
 }
 
@@ -1525,8 +1506,8 @@ fn issue_2099_owned_drop_tolerates_exited_and_missing_children() {
 
 /// D1: ptrace reports the SIGTTIN stop of a process the test started, whether
 /// the stop comes before or after the seize, and leaves it stopped, never
-/// continued, for `Owned` to reap. The child has its own process group, so the group is not
-/// orphaned and the kernel does not discard SIGTTIN.
+/// continued, for `Owned` to reap. The child has its own process group, so
+/// the group is not orphaned and the kernel does not discard SIGTTIN.
 #[cfg(target_os = "linux")]
 #[test]
 fn issue_2099_sigttin_seen_reports_the_stop() {
@@ -1573,20 +1554,20 @@ fn issue_2099_sigttin_seen_reports_the_stop() {
     );
 }
 
-/// S5: any ptrace error other than EPERM panics; a process that has gone is
-/// ESRCH, so the tracer must not report it as armed or as denied.
+/// S5: any ptrace error other than EPERM panics. A PID at `pid_max`, which no
+/// process can hold, gives ESRCH, so the tracer must not report it as armed
+/// or as denied.
 #[cfg(target_os = "linux")]
 #[test]
 fn issue_2099_sigttin_seen_panics_on_a_process_that_has_gone() {
-    let mut child = Command::new("true")
-        .stdin(Stdio::null())
-        .spawn()
-        .expect("spawn true");
-    let pid = child.id() as libc::pid_t;
-    child.wait().expect("reap true");
+    let pid: libc::pid_t = fs::read_to_string("/proc/sys/kernel/pid_max")
+        .expect("read /proc/sys/kernel/pid_max")
+        .trim()
+        .parse()
+        .expect("pid_max is a number");
     let traced = std::thread::spawn(move || sigttin_seen(pid)).join();
     assert!(
         traced.is_err(),
-        "sigttin_seen on a reaped PID must panic, not report a result"
+        "sigttin_seen on a PID no process can hold must panic, not report a result"
     );
 }
