@@ -206,6 +206,18 @@ When `AMPLIHACK_AUTODRIVE_STATE_DIR` is set, the run also writes
 removes `AMPLIHACK_AUTODRIVE_STATE_DIR` from its runner's environment, so runs
 nested below that level never write the file.
 
+A run started outside the tree does not inherit the parent variables.
+`--detach` removes them from the pane's environment, and
+`$(amplihack agent-binary --shell)` removes them from the command it
+prefixes. The prefix matters for a raw `tmux new-session` started from a
+step: if that command starts the tmux server, the server copies the step's
+environment, parent variables included, into its global environment and gives
+them to every later session (tmux(1), "GLOBAL AND SESSION ENVIRONMENT"). A
+`recipe run` in such a session, started without the prefix, would watch a
+parent that has exited and stop at once with exit `75`. Start it as
+`tmux new-session -d "$(amplihack agent-binary --shell) amplihack recipe run ..."`,
+or remove the variables with `env -u`.
+
 The parent is always another `amplihack recipe run`, never the human's shell
 or Claude session. A top-level run, including the pane root of a `--detach`
 run, watches nothing: `--detach` removes `AMPLIHACK_PARENT_RECIPE_PID`,

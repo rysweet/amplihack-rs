@@ -102,8 +102,9 @@ for tool in claude copilot codex; do ln -s stub "$WORK/bin/$tool"; done
 BASE_PATH="$WORK/bin:/usr/bin:/bin"
 
 # Every session marker amplihack knows, in its own order
-# (crates/amplihack-utils/src/agent_binary.rs, SESSION_MARKERS).
-UNSET_ALL="-u CLAUDECODE -u CLAUDE_CODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PROJECT_DIR -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT -u COPILOT_AGENT"
+# (crates/amplihack-utils/src/agent_binary.rs, SESSION_MARKERS), then the
+# #1976 parent-watch variables (recipe/run/parent_watch.rs, PARENT_WATCH_ENV).
+UNSET_ALL="-u CLAUDECODE -u CLAUDE_CODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PROJECT_DIR -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT -u COPILOT_AGENT -u AMPLIHACK_PARENT_RECIPE_PID -u AMPLIHACK_PARENT_RECIPE_STARTTIME -u AMPLIHACK_AUTODRIVE_STATE_DIR"
 
 fail=0
 passed=0

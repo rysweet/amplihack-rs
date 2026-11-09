@@ -328,9 +328,9 @@ fn session_exists(session: &str) -> bool {
 pub(crate) const PANE_ENV_REMOVED: [&str; 5] = [
     crate::commands::governor::GOVERNOR_PARENT_ENV,
     crate::commands::governor::GOVERNOR_RECIPE_ENV,
-    super::run::parent_watch::PARENT_PID_ENV,
-    super::run::parent_watch::PARENT_STARTTIME_ENV,
-    super::run::orphan_record::AUTODRIVE_STATE_DIR_ENV,
+    super::run::parent_watch::PARENT_WATCH_ENV[0],
+    super::run::parent_watch::PARENT_WATCH_ENV[1],
+    super::run::parent_watch::PARENT_WATCH_ENV[2],
 ];
 
 /// Whether the pane may inherit `name`.

@@ -29,7 +29,11 @@
 //!
 //! `env -u` removes every `SESSION_MARKERS` variable the far side holds, so no
 //! marker of the server's starter can contradict the answer, set off the
-//! override notice, or answer for a nested step. The assignments that follow
+//! override notice, or answer for a nested step. It also removes the
+//! `PARENT_WATCH_ENV` variables (issue #1976): a server first started from a
+//! recipe step holds that step's `AMPLIHACK_PARENT_RECIPE_PID`, `_STARTTIME`
+//! and `AMPLIHACK_AUTODRIVE_STATE_DIR`, and a run started in a later session
+//! would otherwise watch a parent that has gone and stop at once with exit 75. The assignments that follow
 //! set the caller's answer. GNU, BSD (macOS) and BusyBox `env` all take `-u`,
 //! and further `NAME=value` words after the hand-off (the templates'
 //! `AMPLIHACK_HOME=...`) are read by `env` the same way. This form works on
@@ -87,6 +91,8 @@ use amplihack_utils::agent_binary::{
 };
 use anyhow::{Context, Result};
 
+use crate::commands::recipe::run::parent_watch::PARENT_WATCH_ENV;
+
 /// Resolve from `dir` (default: the current directory) and print the answer.
 ///
 /// An inferred answer is explained on stderr, which stays on the caller's
@@ -111,7 +117,7 @@ pub fn run_agent_binary(shell: bool, dir: Option<PathBuf>) -> Result<()> {
 /// The line `amplihack agent-binary` prints.
 ///
 /// With `shell`, an `env` prefix for the command that follows it: `-u` for
-/// every session marker, then the two `NAME=value` assignments. Marker names
+/// every session marker and every `PARENT_WATCH_ENV` variable, then the two `NAME=value` assignments. Marker names
 /// are constants, and both values are allowlisted or built from allowlisted
 /// names, so nothing needs quoting. Without it, the binary and the layer that
 /// supplied it, for a person (or `detect_cli`) to read.
@@ -144,7 +150,9 @@ pub(crate) fn render(
     };
     let unset: String = SESSION_MARKERS
         .iter()
-        .map(|(variable, _)| format!("-u {variable} "))
+        .map(|(variable, _)| *variable)
+        .chain(PARENT_WATCH_ENV)
+        .map(|variable| format!("-u {variable} "))
         .collect();
     format!(
         "env {unset}{BINARY_ENV}={} {SOURCE_ENV}={tag}",
@@ -154,16 +162,19 @@ pub(crate) fn render(
 
 #[cfg(test)]
 mod tests {
-    use super::render;
+    use super::{PARENT_WATCH_ENV, render};
     use amplihack_utils::agent_binary::{
         Resolution, ResolutionSource, SESSION_MARKERS, SessionMarker,
     };
 
-    /// `env -u` for every marker, from the canonical list.
+    /// `env -u` for every marker and parent-watch variable, from the
+    /// canonical lists.
     fn unset_every_marker() -> String {
         let unset: Vec<String> = SESSION_MARKERS
             .iter()
-            .map(|(variable, _)| format!("-u {variable}"))
+            .map(|(variable, _)| *variable)
+            .chain(PARENT_WATCH_ENV)
+            .map(|variable| format!("-u {variable}"))
             .collect();
         format!("env {}", unset.join(" "))
     }
@@ -222,6 +233,29 @@ mod tests {
                 "AMPLIHACK_AGENT_BINARY_SOURCE="
             ]
         );
+    }
+
+    /// Crusty review of #2112: a tmux server first started from a recipe
+    /// step holds that step's parent-watch variables globally. The hand-off
+    /// removes all three before the assignments, so a run in a later session
+    /// is a top-level run and does not stop at once with exit 75.
+    #[test]
+    fn the_hand_off_unsets_the_parent_watch_variables() {
+        let line = render(&resolved("claude", ResolutionSource::Env), true, None);
+        let words: Vec<&str> = line.split(' ').collect();
+        assert_eq!(words[0], "env");
+        for variable in [
+            "AMPLIHACK_PARENT_RECIPE_PID",
+            "AMPLIHACK_PARENT_RECIPE_STARTTIME",
+            "AMPLIHACK_AUTODRIVE_STATE_DIR",
+        ] {
+            let at = words
+                .iter()
+                .position(|word| *word == variable)
+                .unwrap_or_else(|| panic!("{variable} is not unset: {line}"));
+            assert_eq!(words[at - 1], "-u", "{line}");
+            assert!(at < words.len() - 2, "the unsets come first: {line}");
+        }
     }
 
     /// Anything observed or read is handed on with an empty tag, so a stale

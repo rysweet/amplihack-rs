@@ -3384,8 +3384,10 @@ push and comment.
 
 `autodrive_loop.sh` starts each round and evaluator with a nested
 `amplihack recipe run`. It sets `AMPLIHACK_AUTODRIVE_STATE_DIR="$STATE_DIR"`
-on that command, and the nested run inherits `AMPLIHACK_PARENT_RECIPE_PID`
-and `AMPLIHACK_PARENT_RECIPE_STARTTIME` from the run above it. When that
+on the round's command only; the evaluator's command does not set it, so an
+orphaned evaluator writes no `orphaned.json`. Both nested runs inherit
+`AMPLIHACK_PARENT_RECIPE_PID` and `AMPLIHACK_PARENT_RECIPE_STARTTIME` from
+the run above the loop. When that
 parent `amplihack recipe run` exits, the nested run:
 
 1. prints `orphaned: parent recipe run <pid> exited; stopping` on stderr;
@@ -3437,13 +3439,33 @@ runner starts, so a run nested below the round cannot write or overwrite it.
 
 ### How the loop treats exit 75
 
-Exit `75` from a round is an ordinary non-zero round result, not a terminal
-refusal like [exit 79](#exit-code-79-is-terminal). In practice the loop that
-would read it has already gone, since its exit is what orphaned the round.
-`orphaned.json` is a record for people and for later tools. Nothing in the
-auto-drive loop or the run report reads it yet. On [resume](#resume) the file
-is not cleared, so it may describe an earlier stop rather than the current
-round. A reader and clearing on resume are tracked in
+The parent a round watches is the `amplihack recipe run` above
+`autodrive_loop.sh`, not the loop. A clean `SIGTERM` to that run tears down
+its process group, loop and round included. The orphan stop matters when that
+run dies without teardown (`SIGKILL`, the OOM killer or a crash); the loop is
+then usually still alive and reads the round's exit code.
+
+Exit `75` from a round, or from the loop-health evaluator, stops the loop at
+once with `loop_result` `ORPHANED` and exit `75`:
+
+```json
+{"loop":"crusty","loop_result":"ORPHANED","round_label":"round-2","reason":"round round-2 exited 75: the recipe run above this loop exited, so the nested run stopped itself; see orphaned.json in the state directory"}
+```
+
+The check runs straight after the child exits, before the round record is
+read, before the progress row is written and before the evaluator starts.
+Without it the loop would record a failed round and start the evaluator,
+which inherits the same dead parent, stops at its pre-spawn check and prints
+no `LOOP_HEALTH` line; the loop would then report the driver crash as
+`STUCK ... loop-health-evaluator returned STUCK`. `ORPHANED` is not a
+judgement about progress, and it is not a terminal refusal like
+[exit 79](#exit-code-79-is-terminal): relaunching auto-drive resumes from the
+recorded round. `orphan_stop` in `autodrive_escalate.sh` makes the decision.
+
+`orphaned.json` is a record for people and for later tools; the loop decides
+from the exit code and does not read it. On [resume](#resume) the file is not
+cleared, so it may describe an earlier stop rather than the current round. A
+reader and clearing on resume are tracked in
 [#2093](https://github.com/rysweet/amplihack-rs/issues/2093).
 
 ## Usage limits are not STUCK

@@ -106,7 +106,11 @@ markers: tmux gives it the server's global environment, which holds the
 markers of whatever started the server. `setsid` and `nohup` keep the
 caller's environment, so they need no hand-off.
 `$(amplihack agent-binary --shell)` prints an inline `env` prefix that removes
-every session marker and sets both variables (#1525). It belongs inside the
+every session marker and sets both variables (#1525). It also removes
+`AMPLIHACK_PARENT_RECIPE_PID`, `AMPLIHACK_PARENT_RECIPE_STARTTIME` and
+`AMPLIHACK_AUTODRIVE_STATE_DIR` (#1976): a tmux server first started from a
+recipe step keeps the step's values, and a run in a later session would watch
+a parent that has gone and stop at once with exit `75`. It belongs inside the
 double-quoted tmux command; in single quotes it expands in the new session and
 reads the server's markers. An answer read from a marker the tmux server holds
 is tagged `AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker variable>`. That

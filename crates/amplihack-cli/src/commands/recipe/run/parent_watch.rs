@@ -17,6 +17,19 @@ pub(crate) const PARENT_PID_ENV: &str = "AMPLIHACK_PARENT_RECIPE_PID";
 /// The parent's start time in clock ticks since boot (field 22 of its stat).
 pub(crate) const PARENT_STARTTIME_ENV: &str = "AMPLIHACK_PARENT_RECIPE_STARTTIME";
 
+/// The variables that tie a run to the `recipe run` above it: the parent it
+/// watches and the auto-drive state directory it may write `orphaned.json`
+/// into. A run started outside that tree must not inherit them: a `--detach`
+/// pane drops them (`detach::PANE_ENV_REMOVED`), and so does a command behind
+/// `$(amplihack agent-binary --shell)`, because a tmux server started from a
+/// step keeps the step's values in its global environment and would hand
+/// them to every later session (crusty review of #2112).
+pub(crate) const PARENT_WATCH_ENV: [&str; 3] = [
+    PARENT_PID_ENV,
+    PARENT_STARTTIME_ENV,
+    super::orphan_record::AUTODRIVE_STATE_DIR_ENV,
+];
+
 /// Field 22 (`starttime`) of a `/proc/<pid>/stat` line. Fields are counted
 /// after the LAST `)`, so a process name holding `)` and spaces cannot shift
 /// them (C-S2).
