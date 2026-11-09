@@ -91,10 +91,6 @@ fn write_stub(path: &Path, body: &str) {
 }
 
 /// True if a process with `pid` still exists (signal 0 probe).
-fn process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
-}
-
 // -------------------------------------------------------------------------
 // Test 1 — teardown fires on the FAILURE (non-timeout) path.
 //
@@ -309,15 +305,13 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
 
     // Sibling process in the TEST's process group (NOT the runner's session).
-    // It never exits by itself, so "still alive" can only mean "not signalled",
-    // however slowly a loaded host runs this test; the guard kills it.
-    let sibling = SiblingGuard(
-        std::process::Command::new("/bin/sleep")
-            .arg("infinity")
-            .spawn()
-            .expect("failed to spawn sibling process"),
-    );
-    let sibling_pid = sibling.0.id();
+    // It runs until the test kills it, so its survival does not depend on how
+    // long the recipe run takes on a loaded host.
+    let mut sibling = std::process::Command::new("/bin/sleep")
+        .arg("infinity")
+        .spawn()
+        .expect("failed to spawn sibling process");
+    let sibling_pid = sibling.id();
 
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("orphan-marker");
@@ -355,23 +349,20 @@ fn test_teardown_is_scoped_to_runner_process_group() {
 
     // The unrelated sibling (outside the runner's process group) must survive
     // the teardown, proving the reaper is pgid-scoped and not a broadcast.
+    // `try_wait` reports a signalled child even while it is a zombie, which a
+    // `kill(pid, 0)` probe would miss.
     assert!(
-        process_alive(sibling_pid),
+        sibling
+            .try_wait()
+            .expect("failed to poll sibling process")
+            .is_none(),
         "teardown must be scoped to the runner's process group and must NOT \
          signal unrelated processes (issue #964)"
     );
-}
 
-/// Kills and reaps the never-exiting sibling of
-/// `test_teardown_is_scoped_to_runner_process_group`, even when an assertion
-/// fails first.
-struct SiblingGuard(std::process::Child);
-
-impl Drop for SiblingGuard {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
+    // Clean up the sibling deterministically.
+    unsafe { libc::kill(sibling_pid as libc::pid_t, libc::SIGKILL) };
+    let _ = sibling.wait();
 }
 
 // =========================================================================
