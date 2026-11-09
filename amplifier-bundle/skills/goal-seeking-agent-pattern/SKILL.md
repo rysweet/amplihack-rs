@@ -804,7 +804,7 @@ if iteration >= MAX_ITERATIONS:
 - Iteration limits prevent infinite loops
 - Pattern matching (test/lint/type) enables targeted fixes
 - Smart waiting (exponential backoff) reduces wait time
-- Never auto-merge: human approval always required
+- Stops at a mergeable PR: the caller's workflow (auto-drive-to-merge gate, or no_merge / autodrive_dry_run) decides the merge
 
 ### Example 3: Pre-Commit Diagnostic Workflow
 
