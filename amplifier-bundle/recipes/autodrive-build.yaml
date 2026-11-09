@@ -34,6 +34,8 @@ context:
   repo_path: "."
   branch_prefix: "feat"
   existing_branch: ""
+  base_branch: ""
+  base_sha: ""
   pr_number: ""
   pr_url: ""
   autodrive_state_dir: ""
@@ -153,6 +155,8 @@ steps:
       repo_path: "{{repo_path}}"
       branch_prefix: "{{branch_prefix}}"
       existing_branch: "{{existing_branch}}"
+      base_branch: "{{base_branch}}"
+      base_sha: "{{base_sha}}"
       # Phase 1 publishes a PR and stops. The merge belongs to phase 3's gate.
       no_merge: "true"
       should_merge: "false"

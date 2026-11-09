@@ -272,11 +272,14 @@ fn is_valid_env_identifier(name: &str) -> bool {
 /// uppercasing) names an ESSENTIAL context variable that bash steps reference
 /// under `set -u` and that must therefore always be mirrored into the env,
 /// regardless of the aggregate budget (issue #1023). The set is small and
-/// known-required: `task_description`, `repo_path`, `existing_branch`, and any
-/// `should_*` flag.
+/// known-required: `task_description`, `repo_path`, `existing_branch`,
+/// `base_branch` and `base_sha` (issue #1957: dropping them would silently
+/// fall back to the legacy, unverified worktree base), and any `should_*` flag.
 fn is_essential_context_key(key: &str) -> bool {
-    matches!(key, "task_description" | "repo_path" | "existing_branch")
-        || key.starts_with("should_")
+    matches!(
+        key,
+        "task_description" | "repo_path" | "existing_branch" | "base_branch" | "base_sha"
+    ) || key.starts_with("should_")
 }
 
 /// Byte cost charged to a single exported env entry for budget accounting:

@@ -41,6 +41,11 @@ context:
   refined_implementation: ""
   # Optional: when set, skip new-branch creation and reuse this branch.
   existing_branch: ""
+  # Optional (#1957): the commit the task worktree starts from. base_sha (full SHA)
+  # decides the commit and must be contained in base_branch; base_branch alone starts
+  # at its fetched tip. Ignored with existing_branch/pr_number. Neither: legacy base.
+  base_branch: ""
+  base_sha: ""
   # Optional: when set, attach to this existing PR rather than opening a new one.
   pr_number: ""
 

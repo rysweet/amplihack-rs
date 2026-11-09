@@ -29,6 +29,9 @@ context:
   # Propagated automatically to default-workflow / consensus-workflow via
   # context-merging. Empty strings preserve legacy behaviour.
   existing_branch: ""
+  # Issue #1957: explicit worktree source, propagated the same way.
+  base_branch: ""
+  base_sha: ""
   pr_number: ""
   decomposition_json: ""
   session_id: ""

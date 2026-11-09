@@ -3079,7 +3079,8 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
 //   * `resolve_context_env_budget()` derives the budget at runtime (sysconf
 //     ARG_MAX minus inherited env minus a reservation) and honors an explicit
 //     `AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES` operator override.
-//   * Essential keys (task_description, repo_path, existing_branch, should_*)
+//   * Essential keys (task_description, repo_path, existing_branch, base_branch,
+//     base_sha (#1957), should_*)
 //     are ALWAYS exported; non-essential keys fill the remaining budget
 //     smallest-first; dropped mirror values are STILL delivered via the
 //     existing pass_context (`--set` / `--context-file`) escape hatch (#784).
@@ -3285,6 +3286,30 @@ fn test_context_env_pairs_always_exports_essentials_over_budget() {
     assert!(
         !map.contains_key("EXTRA_NOTES"),
         "non-essential keys must be dropped under a zero budget: {map:?}"
+    );
+}
+
+#[test]
+fn test_context_env_pairs_always_exports_base_inputs_over_budget() {
+    // Issue #1957: step-04 and consensus step3 read BASE_BRANCH and BASE_SHA
+    // from the env. If the #1023 budget dropped them, the step would silently
+    // fall back to the legacy, unverified base. They are essential keys.
+    let sha = "3f9c2a7e1b0d4c5a6e7f8091a2b3c4d5e6f70812";
+    let mut context = BTreeMap::new();
+    context.insert("task_description".to_string(), "do the thing".to_string());
+    context.insert("repo_path".to_string(), "/work/repo".to_string());
+    context.insert("base_branch".to_string(), "dev".to_string());
+    context.insert("base_sha".to_string(), sha.to_string());
+    context.insert("extra_notes".to_string(), "non-essential".to_string());
+
+    let pairs = execute::context_env_pairs(&context, 0);
+    let map: BTreeMap<String, String> = pairs.iter().cloned().collect();
+
+    assert_eq!(map.get("BASE_BRANCH"), Some(&"dev".to_string()));
+    assert_eq!(map.get("BASE_SHA"), Some(&sha.to_string()));
+    assert!(
+        !map.contains_key("EXTRA_NOTES"),
+        "non-essential keys are still dropped under a zero budget: {map:?}"
     );
 }
 

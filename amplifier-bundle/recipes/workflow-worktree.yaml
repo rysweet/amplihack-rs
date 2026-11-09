@@ -23,6 +23,8 @@ steps:
   - id: "step-04-setup-worktree"
     type: "bash"
     command: |
+      REQ_BASE_BRANCH="${BASE_BRANCH:-}"
+      REQ_BASE_SHA="${BASE_SHA:-}"
       set -euo pipefail
       # Guard: fail-fast if repo_path does not exist (prevents path traversal, catches misconfiguration).
       if [ ! -d "$REPO_PATH" ]; then
@@ -47,7 +49,7 @@ steps:
       TOOLS_DIR="$(dirname "$SWEEP_HELPER")"
       # An AMPLIHACK_HOME older than a checkout's recipe lacks newer helpers, so when that tier is
       # incomplete and the checkout holds every helper in STEP_TOOLS, use the checkout's (#1808).
-      STEP_TOOLS="workflow_worktree_root.sh workflow_branch_name.sh workflow_pr_branch.sh workflow_caller_branch_alias.sh workflow_alias_reuse.sh workflow_worktree_deconflict.sh workflow_fetch_origin.sh amplihack_run_owned.sh workflow_runtime_root.sh"
+      STEP_TOOLS="workflow_worktree_root.sh workflow_branch_name.sh workflow_pr_branch.sh workflow_caller_branch_alias.sh workflow_alias_reuse.sh workflow_worktree_deconflict.sh workflow_fetch_origin.sh workflow_worktree_source.sh amplihack_run_owned.sh workflow_runtime_root.sh"
       tools_complete() { local t; for t in $STEP_TOOLS; do [ -f "$1/$t" ] || return 1; done; }
       tools_complete "$TOOLS_DIR" || ! tools_complete "$REPO_PATH/amplifier-bundle/tools" || TOOLS_DIR="$REPO_PATH/amplifier-bundle/tools"
       # Worktree anchoring (#1134): nested recipe RUNNERS are legitimate, and a
@@ -170,6 +172,7 @@ steps:
         fi
 
         echo "INFO: Targeting existing branch '$BRANCH_NAME' (issue #342 path)." >&2
+        [ -z "${REQ_BASE_BRANCH//[[:space:]]/}${REQ_BASE_SHA//[[:space:]]/}" ] || echo "INFO: base_branch/base_sha ignored on the existing-branch path (issue #1957)." >&2
 
         # Best-effort fetch so remote-only branches resolve. Explicit refspec
         # creates the local remote-tracking ref. Branch name is validated above.
@@ -245,33 +248,31 @@ steps:
         # worktree root (#1561 V4), so emit the physical path.
         WORKTREE_PATH="$(cd -P -- "$WORKTREE_PATH" && pwd -P)" || { echo "ERROR: cannot resolve the worktree path to a physical directory (#1561)" >&2; exit 1; }
         LB_JSON=""; [ -z "$LOCAL_BRANCH" ] || LB_JSON=", \"local_branch_reason\": \"branch_name is checked out in the caller repository (issue #1762)\", \"local_branch\": \"$(json_escape "$LOCAL_BRANCH")\""  # the runner drops a passing step's stderr, so the reason is in the output too
-        printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "", "base_branch": "", "created": %s%s}\n' \
+        printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "", "base_branch": "", "base_sha": "", "source_verified": "not-applicable", "source_rule": "existing-branch", "created": %s%s}\n' \
           "$(json_escape "$WORKTREE_PATH")" "$(json_escape "$BRANCH_NAME")" "$CREATED" "$LB_JSON"
         exit 0
       fi
 
-      # Fetch with retries (tools/workflow_fetch_origin.sh; one plain fetch without it), then resolve
-      # the base without assuming origin/main: a task worktree never branches off the caller's HEAD (#858).
-      if [ -f "$TOOLS_DIR/workflow_fetch_origin.sh" ]; then bash "$TOOLS_DIR/workflow_fetch_origin.sh"
-      else git fetch origin --no-tags >&2 || true; fi
-      resolve_base_ref() {
-        local ref
-        ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-        if [ -z "$ref" ] || ! git rev-parse --verify --quiet "${ref}^{commit}" >/dev/null; then
-          git remote set-head origin -a >/dev/null 2>&1 || true
-          ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-        fi
-        for ref in $ref origin/master origin/develop; do
-          if git rev-parse --verify --quiet "${ref}^{commit}" >/dev/null; then
-            printf '%s\n' "$ref"
-            return 0
-          fi
-        done
-        echo "ERROR: no supported remote base ref found. Expected origin/HEAD, origin/master, or origin/develop." >&2
-        return 1
-      }
-      BASE_REF="$(resolve_base_ref)" || exit 1
-      BASE_BRANCH="${BASE_REF#origin/}"
+      # Worktree source (#1957): tools/workflow_worktree_source.sh fetches, then verifies base_branch/base_sha,
+      # or runs the #858 legacy chain with a WARNING when neither is set. Never the caller's HEAD (#858).
+      if [ -f "$TOOLS_DIR/workflow_worktree_source.sh" ]; then
+        SRC_OUT="$(bash "$TOOLS_DIR/workflow_worktree_source.sh" resolve --recipe default --repo "$MAIN_REPO_PATH" --base-branch "$REQ_BASE_BRANCH" --base-sha "$REQ_BASE_SHA")" || exit 1
+        while IFS='=' read -r k v; do  # a fixed key list, upper-cased into BASE_REF etc.; never eval
+          case "$k" in
+            base_ref|base_branch|base_sha|source_verified|source_rule|origin_fingerprint) printf -v "$(printf '%s' "$k" | tr '[:lower:]' '[:upper:]')" '%s' "$v" ;;
+          esac
+        done <<< "$SRC_OUT"
+      elif [ -n "${REQ_BASE_BRANCH//[[:space:]]/}${REQ_BASE_SHA//[[:space:]]/}" ]; then
+        echo "ERROR: base_branch/base_sha given but workflow_worktree_source.sh is missing from $TOOLS_DIR; refusing an unverified worktree source (issue #1957)." >&2; exit 1
+      else  # an older bundle without the tool and no inputs: fetch and the #858 chain inline, unverified
+        SOURCE_VERIFIED=legacy; SOURCE_RULE=legacy-unverified; BASE_SHA=""; ORIGIN_FINGERPRINT=""
+        if [ -f "$TOOLS_DIR/workflow_fetch_origin.sh" ]; then bash "$TOOLS_DIR/workflow_fetch_origin.sh"; else git fetch origin --no-tags >&2 || true; fi
+        git rev-parse --verify --quiet "refs/remotes/origin/HEAD^{commit}" >/dev/null || git remote set-head origin -a >/dev/null 2>&1 || true
+        BASE_REF="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+        for BASE_REF in $BASE_REF origin/master origin/develop ""; do git rev-parse --verify --quiet "${BASE_REF}^{commit}" >/dev/null && break; done
+        [ -n "$BASE_REF" ] || { echo "ERROR: no supported remote base ref found. Expected origin/HEAD, origin/master, or origin/develop." >&2; exit 1; }
+        BASE_BRANCH="${BASE_REF#origin/}"
+      fi
 
       # BRANCH NAMING (#1426): the explicit branch, else <prefix>/issue-<N>-<tail>.
       # Derived INLINE, never in a bundle helper: re-runs depend on the name (#1121).
@@ -326,21 +327,17 @@ steps:
 
       printf 'Branch: %s\nWorktree: %s\nBase ref: %s\n\n' "${BRANCH_NAME}" "${WORKTREE_PATH}" "${BASE_REF}" >&2
 
-      # --- Idempotency: detect existing branch and/or worktree ---
-      # FIX (issue #3023 / BL-002): Three-state guard makes re-runs safe. State 1:
-      # branch + worktree both exist → reuse; State 2: branch only → add; State 3:
-      # neither → create. grep -Fx: literal exact match against git's absolute
-      # porcelain output (#1121); every add routes through wt_add_idempotent.
-      # #1565: work (dirty, or ahead of BASE_REF) is never reset or deleted; the helper
-      # moved this run off such a branch. If work still shows up here (helper missing,
-      # or new work since), fail loud; never silently reuse stale state either (#200).
+      # --- Idempotency (issue #3023 / BL-002): State 1 branch + worktree → reuse; State 2 branch
+      # only → attach; State 3 neither → create from the verified source (#1957). grep -Fx matches
+      # git's absolute porcelain output (#1121); every add goes through wt_add_idempotent. #1565:
+      # work (dirty, or ahead of the base) is never reset or deleted; fail loud instead (#200).
       refuse_reset() {
         echo "ERROR: refusing to reset existing_branch=${BRANCH_NAME} at ${WORKTREE_PATH} (uncommitted/untracked changes: $1, commits ahead of ${BASE_REF}: ${KEPT_AHEAD}). Re-run with existing_branch=${BRANCH_NAME} to continue it, or move the work aside." >&2
         exit 1
       }
       BRANCH_EXISTS=$(git branch --list "${BRANCH_NAME}")
       WORKTREE_EXISTS=$(git worktree list --porcelain | grep -Fx "worktree ${WORKTREE_PATH}" || true)
-      KEPT_AHEAD=$(git rev-list --count "${BASE_REF}..refs/heads/${BRANCH_NAME}" 2>/dev/null || echo 1)
+      KEPT_AHEAD=$(git rev-list --count "${BASE_SHA:-$BASE_REF}..refs/heads/${BRANCH_NAME}" 2>/dev/null || echo 1)
       case "$KEPT_AHEAD" in ''|*[!0-9]*) KEPT_AHEAD=1 ;; esac
 
       if [ -n "$BRANCH_EXISTS" ] && [ -n "$WORKTREE_EXISTS" ]; then
@@ -349,17 +346,19 @@ steps:
         [ "$KEPT_AHEAD" -eq 0 ] || refuse_reset no
         echo "INFO: Branch '${BRANCH_NAME}' and worktree '${WORKTREE_PATH}' already exist and are clean — reusing." >&2
         wt_own reuse-clean-worktree "${WORKTREE_PATH}" "${BRANCH_NAME}"
-        CREATED=false
+        CREATED=false VERIFY_MODE=reused VERIFY_CLEANUP=""
       elif [ -n "$BRANCH_EXISTS" ]; then
         [ "$KEPT_AHEAD" -eq 0 ] || refuse_reset no
         echo "INFO: Branch '${BRANCH_NAME}' exists (clean) but worktree is missing — adding worktree without -b." >&2
         wt_add_idempotent attach "${WORKTREE_PATH}" "${BRANCH_NAME}"
-        CREATED=true
+        CREATED=true VERIFY_MODE=reused VERIFY_CLEANUP=--cleanup-created
       else
         echo "INFO: Creating new branch and worktree." >&2
-        wt_add_idempotent create "${WORKTREE_PATH}" "${BRANCH_NAME}" "${BASE_REF}"
-        CREATED=true
+        wt_add_idempotent create "${WORKTREE_PATH}" "${BRANCH_NAME}" "${BASE_SHA:-$BASE_REF}"
+        CREATED=true VERIFY_MODE=created VERIFY_CLEANUP=--cleanup-created
       fi
+      # #1957: check the worktree against the verified source; on failure the tool removes only what this run made.
+      [ "$SOURCE_VERIFIED" = legacy ] || bash "$TOOLS_DIR/workflow_worktree_source.sh" verify-worktree "$WORKTREE_PATH" "$BASE_SHA" "$VERIFY_MODE" "$MAIN_REPO_PATH" "$ORIGIN_FINGERPRINT" --branch "$BRANCH_NAME" ${VERIFY_CLEANUP:+"$VERIFY_CLEANUP"} || exit 1
 
       # Push branch to remote with tracking (idempotent). Push failures are
       # suppressed here and surface at step-16 PR creation, so re-runs converge.
@@ -379,16 +378,15 @@ steps:
       echo "" >&2
       echo "=== Worktree Setup Complete ===" >&2
 
-      # Output structured JSON for subsequent steps.
-      # created=false signals that an existing worktree was reused (diagnostic for re-runs).
-      # Consumers accept worktree_setup.worktree_path only as an already-resolved
-      # worktree root (#1561 V4), so emit the physical path.
+      # JSON for later steps: created=false means a reused worktree; source_* record how the base was
+      # verified (#1957). Consumers want an already-resolved worktree root (#1561 V4): the physical path.
       WORKTREE_PATH="$(cd -P -- "$WORKTREE_PATH" && pwd -P)" || { echo "ERROR: cannot resolve the worktree path to a physical directory (#1561)" >&2; exit 1; }
-      printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "%s", "base_branch": "%s", "runtime_root": "%s", "created": %s}\n' \
+      printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "%s", "base_branch": "%s", "base_sha": "%s", "source_verified": "%s", "source_rule": "%s", "runtime_root": "%s", "created": %s}\n' \
         "$(json_escape "$WORKTREE_PATH")" \
         "$(json_escape "$BRANCH_NAME")" \
         "$(json_escape "$BASE_REF")" \
         "$(json_escape "$BASE_BRANCH")" \
+        "$(json_escape "$BASE_SHA")" "$(json_escape "$SOURCE_VERIFIED")" "$(json_escape "$SOURCE_RULE")" \
         "$(json_escape "$AMPLIHACK_RUNTIME_ROOT")" \
         "$CREATED"
     output: "worktree_setup"

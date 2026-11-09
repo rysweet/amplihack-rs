@@ -59,6 +59,15 @@ context:
   # SECURITY: validated via `git check-ref-format --branch` before any use.
   existing_branch: ""
 
+  # Issue #1957: name the commit the task worktree starts from. base_branch is a
+  # remote branch (fetched with an explicit refspec; never the origin/HEAD chain);
+  # base_sha is a full 40- or 64-character hex SHA. With both set, base_sha is the
+  # start commit and must be contained in origin/<base_branch>, which stays the PR
+  # base. Neither set: the legacy base resolution, with a WARNING. Ignored on the
+  # existing_branch / pr_number path. See tools/workflow_worktree_source.md.
+  base_branch: ""
+  base_sha: ""
+
   # Issue #342: alternative to existing_branch — resolve a PR number to its
   # head branch via `gh pr view <N> --json headRefName -q .headRefName`.
   # Empty string => legacy behaviour. Must be a positive integer (regex-validated

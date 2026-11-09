@@ -77,6 +77,8 @@ context:
   # `existing_branch` and `pr_number` both make phase 1 a no-op when the PR is
   # already open, so a re-run picks up at the crusty loop.
   existing_branch: ""
+  base_branch: ""
+  base_sha: ""
   pr_number: ""
   pr_url: ""
 
@@ -190,6 +192,8 @@ steps:
       repo_path: "{{repo_path}}"
       branch_prefix: "{{branch_prefix}}"
       existing_branch: "{{existing_branch}}"
+      base_branch: "{{base_branch}}"
+      base_sha: "{{base_sha}}"
       pr_number: "{{pr_number}}"
       pr_url: "{{pr_url}}"
       autodrive_state_dir: "{{autodrive_state_dir}}"
@@ -202,6 +206,8 @@ steps:
       pr_number: "{{build_result.pr}}"
       autodrive_pr_input: "{{autodrive_pr_input}}"
       existing_branch: "{{existing_branch}}"
+      base_branch: "{{base_branch}}"
+      base_sha: "{{base_sha}}"
       pr_url: "{{build_result.pr_url}}"
       task_description: "{{task_description}}"
       plan_task_id: "{{plan_task_id}}"
@@ -250,6 +256,8 @@ steps:
       pr_number: "{{build_result.pr}}"
       autodrive_pr_input: "{{autodrive_pr_input}}"
       existing_branch: "{{existing_branch}}"
+      base_branch: "{{base_branch}}"
+      base_sha: "{{base_sha}}"
       pr_url: "{{build_result.pr_url}}"
       task_description: "{{task_description}}"
       plan_task_id: "{{plan_task_id}}"

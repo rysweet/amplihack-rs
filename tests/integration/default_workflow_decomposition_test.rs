@@ -806,10 +806,13 @@ fn workflow_pr_review_zero_bs_scan_covers_tracked_and_untracked_without_recursiv
 #[test]
 fn base_branch_detection_remains_explicit_and_fail_loud() {
     for (recipe, step, resolver) in [
+        // Issue #1957: step-04's resolver moved into workflow_worktree_source.sh
+        // (checked below); the step keeps a minimal inline legacy fallback for
+        // an older bundle without that tool, which the other checks still read.
         (
             "workflow-worktree",
             "step-04-setup-worktree",
-            "resolve_base_ref",
+            "workflow_worktree_source.sh\" resolve",
         ),
         (
             "workflow-publish",
@@ -846,6 +849,20 @@ fn base_branch_detection_remains_explicit_and_fail_loud() {
             );
         }
     }
+    let tool_path = recipes_dir()
+        .join("..")
+        .join("tools")
+        .join("workflow_worktree_source.sh");
+    let tool = fs::read_to_string(&tool_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", tool_path.display()));
+    assert!(
+        tool.contains("legacy_default()")
+            && tool.contains("refs/remotes/origin/HEAD")
+            && tool.contains("git -C \"$repo\" remote set-head origin -a")
+            && tool.contains("for ref in $ref origin/master origin/develop; do")
+            && tool.contains("no supported remote base ref found. Expected origin/HEAD, origin/master, or origin/develop."),
+        "workflow_worktree_source.sh must keep step-04's explicit, fail-loud legacy base detection (#858, #1957)"
+    );
 }
 
 /// Issue #1290: the identity preflight must run before any step that does real
