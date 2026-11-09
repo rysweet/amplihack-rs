@@ -190,6 +190,7 @@ fn an_unbounded_wait_ends_on_rotator_capacity_or_a_login_change() {
 #[test]
 fn an_unbounded_wait_stops_on_a_signal_within_one_slice() {
     let mut f = Fake::new();
+    // Fake clock: 6 h + 10 s is simulated; no real time passes.
     f.signal_from = Some((6 * 3600 + 10, libc::SIGTERM));
     assert_eq!(wait(&unbounded(), &mut f), End::Signal(libc::SIGTERM));
     assert_eq!(f.sleeps_after_signal, 0);
