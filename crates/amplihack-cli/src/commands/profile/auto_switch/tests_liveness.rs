@@ -517,3 +517,24 @@ fn malformed_status_lines_skip_the_process_without_panicking() {
         assert!(!p.scan().is_live(&n("X")), "{status:?}");
     }
 }
+
+/// A Claude-like process that exits between its `exe` read and its
+/// `environ` read gives `ESRCH`. That is an exit, not an unreadable
+/// environment: it must not make every directory live. Found by outside-in
+/// testing of #2040, where another session's short-lived `amplihack` exiting
+/// mid-scan turned a whole snapshot into `Everything`.
+#[test]
+fn esrch_on_environ_is_an_exit_not_an_unreadable_environment() {
+    use std::io::{Error, ErrorKind};
+    assert!(liveness::exited_mid_read(&Error::from_raw_os_error(
+        libc::ESRCH
+    )));
+    for refused in [
+        Error::from_raw_os_error(libc::EACCES),
+        Error::from_raw_os_error(libc::EPERM),
+        Error::from_raw_os_error(libc::EIO),
+        Error::from(ErrorKind::InvalidData),
+    ] {
+        assert!(!liveness::exited_mid_read(&refused), "{refused:?}");
+    }
+}

@@ -170,9 +170,18 @@ fn record(dir: &Path, pid: u32, root: &Path, uid: u32) -> Option<ProcRecord> {
                 .and_then(|value| resolve(dir, value, root));
         }
         Ok(None) => return None, // exited
+        Err(e) if exited_mid_read(&e) => return None,
         Err(_) => r.environ_unreadable = r.claude_like,
     }
     Some(r)
+}
+
+/// The process exited between its `exe` read and its `environ` read: the
+/// kernel answers `ESRCH`. Such a process is gone, not unreadable, so it
+/// must not make every directory live (and stay so in the snapshot for 30
+/// seconds). A refused read (`EACCES`, `EPERM`) is still unreadable.
+pub(crate) fn exited_mid_read(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(libc::ESRCH)
 }
 
 /// Whether a process whose `exe` link reads `exe` (`None`: unreadable) may

@@ -4168,7 +4168,7 @@ directory never shares a snapshot with the real one.
 | `procs[].zombie` | `true` for a process in state `Z`. |
 | `procs[].claude_like` | `true` when the process looks like Claude Code or amplihack; see [Which processes are read](#which-processes-are-read). |
 | `procs[].profile` | The profile whose directory the process's `CLAUDE_CONFIG_DIR` resolves to. Absent, or `null`, when it names none. |
-| `procs[].environ_unreadable` | `true` for a `claude_like` process whose environment could not be read. |
+| `procs[].environ_unreadable` | `true` for a `claude_like` process whose environment could not be read. A process that exits between its `exe` read and its `environ` read (the read fails with `ESRCH`) has exited, not refused the read: it is left out of the snapshot, as a process that has exited before its `status` is read is. |
 
 The file holds no paths, command lines, environment contents or
 `CLAUDE_CONFIG_DIR` values. It names the profile root only through its hash,
