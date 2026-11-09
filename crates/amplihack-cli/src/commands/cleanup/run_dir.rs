@@ -123,16 +123,56 @@ impl OwnedKind {
     }
 }
 
+/// Whether the pre-commit hook built a target first or found it already
+/// there (issue #2039, D3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TargetOrigin {
+    Created,
+    Reused,
+}
+
+impl TargetOrigin {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Reused => "reused",
+        }
+    }
+
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "created" => Some(Self::Created),
+            "reused" => Some(Self::Reused),
+            _ => None,
+        }
+    }
+}
+
+/// The extra fields of a five-field target line (issue #2039, D2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TargetRecord {
+    pub origin: TargetOrigin,
+    /// The absolute checkout the target belongs to. Only ever compared,
+    /// checked with `symlink_metadata` or hashed; never opened or removed.
+    pub checkout: PathBuf,
+}
+
+/// One `owned-paths` line. `target` is `Some` only for a five-field target
+/// line, which also has `kind == Target` and `branch == None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OwnedPath {
     pub kind: OwnedKind,
     pub path: PathBuf,
     pub branch: Option<String>,
+    pub target: Option<TargetRecord>,
 }
 
-/// Parses `owned-paths`: `kind<TAB>path<TAB>branch` (the branch may be empty
-/// or missing). Reads at most 10 000 lines and ignores malformed, relative,
-/// unknown-kind and control-character lines.
+/// Parses `owned-paths`. A line is either the legacy
+/// `kind<TAB>path[<TAB>branch]` (the branch may be empty or missing), or the
+/// five-field target line `target<TAB>path<TAB><TAB>origin<TAB>checkout`
+/// written by the pre-commit hook since issue #2039. Reads at most 10 000
+/// lines and drops (never repairs) every other shape: relative paths, unknown
+/// kinds or origins, four or six or more fields, and control characters.
 pub(crate) fn parse_owned_paths(bytes: &[u8]) -> Vec<OwnedPath> {
     let mut out = Vec::new();
     for line in bytes.split(|b| *b == b'\n').take(OWNED_PATHS_MAX_LINES) {
@@ -155,31 +195,65 @@ fn parse_owned_line(line: &[u8]) -> Option<OwnedPath> {
         return None;
     }
     let text = std::str::from_utf8(line).ok()?;
-    let mut fields = text.split('\t');
-    let kind = match fields.next()? {
+    let fields: Vec<&str> = text.split('\t').collect();
+    let kind = match fields[0] {
         "worktree" => OwnedKind::Worktree,
         "target" => OwnedKind::Target,
         _ => return None,
     };
-    let path = PathBuf::from(fields.next()?);
+    let path = PathBuf::from(fields.get(1)?);
     if !path.is_absolute() {
         return None;
     }
-    let branch = fields.next().filter(|b| !b.is_empty()).map(String::from);
-    if fields.next().is_some() {
-        return None;
+    match fields.len() {
+        2 | 3 => Some(OwnedPath {
+            kind,
+            path,
+            branch: fields
+                .get(2)
+                .filter(|b| !b.is_empty())
+                .map(|b| (*b).to_string()),
+            target: None,
+        }),
+        5 => {
+            if kind != OwnedKind::Target || !fields[2].is_empty() {
+                return None;
+            }
+            let origin = TargetOrigin::parse(fields[3])?;
+            let checkout = PathBuf::from(fields[4]);
+            if !checkout.is_absolute() {
+                return None;
+            }
+            Some(OwnedPath {
+                kind,
+                path,
+                branch: None,
+                target: Some(TargetRecord { origin, checkout }),
+            })
+        }
+        _ => None,
     }
-    Some(OwnedPath { kind, path, branch })
 }
 
-/// Formats one `owned-paths` line.
+/// Formats one `owned-paths` line, in the same form it was read: three
+/// fields for a legacy line, five for a target line with a record.
 pub(crate) fn format_owned_line(item: &OwnedPath) -> Vec<u8> {
     let mut line = item.kind.as_str().as_bytes().to_vec();
     line.push(b'\t');
     line.extend_from_slice(item.path.as_os_str().as_bytes());
     line.push(b'\t');
-    if let Some(branch) = &item.branch {
-        line.extend_from_slice(branch.as_bytes());
+    match &item.target {
+        Some(record) => {
+            line.push(b'\t');
+            line.extend_from_slice(record.origin.as_str().as_bytes());
+            line.push(b'\t');
+            line.extend_from_slice(record.checkout.as_os_str().as_bytes());
+        }
+        None => {
+            if let Some(branch) = &item.branch {
+                line.extend_from_slice(branch.as_bytes());
+            }
+        }
     }
     line.push(b'\n');
     line

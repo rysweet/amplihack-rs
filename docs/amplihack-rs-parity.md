@@ -15,28 +15,28 @@ launcher, orchestration, auto-mode, and doctor surfaces.
 ## Subprocess prompt delivery
 
 amplihack-rs routes prompt-bearing subprocess launches through
-`amplihack-utils::prompt_delivery`. The delivery engine supports four concrete
-prompt channels:
+`amplihack-utils::prompt_delivery`. The delivery engine knows four modes; only
+the last three are ever used to launch a process:
 
 | Mode | Behavior | Primary use |
 | --- | --- | --- |
-| `argv` | Appends the prompt as one structured process argument. | Short prompts and binaries with no long-form prompt channel. |
+| `argv` | Reported by `amplihack doctor` as a binary's capability. | Never used to deliver a prompt. |
 | `tempfile` | Writes the prompt to a restricted temporary file and passes the file path using the binary's verified prompt-file contract. | Long prompts when the target binary supports prompt files. |
 | `stdin` | Pipes the prompt to child stdin from a writer thread, then closes stdin. | Long prompts when the target binary supports prompt input from stdin. |
 | `file-reference` | Writes the prompt to a 0600 temporary file and passes one short argument asking the agent to read that file. | Long prompts for agents that can read files but have no prompt-file or stdin contract. |
 
 The Rust launcher, orchestration, and auto-mode paths use the same selector and
-capability metadata. A long prompt is not manually shell-escaped or interpolated
-into a shell command string. Prompts above 4096 bytes never travel in argv when
-the binary supports any other channel, so they cannot exceed Linux
-`MAX_ARG_STRLEN`; see
-[Large Payload Delivery to Child Processes](concepts/large-payload-delivery.md).
+capability metadata. A prompt is not shell-escaped or interpolated into a shell
+command string. No prompt is put in argv under any setting, so prompts neither exceed Linux
+`MAX_ARG_STRLEN` nor appear in `/proc/<pid>/cmdline`; see
+[Large Payload Delivery to Child Processes](concepts/large-payload-delivery.md)
+and [Agent Prompt Channels Reference](reference/agent-prompt-channels.md).
 
 ### Parity status
 
 | Parity area | Rust behavior |
 | --- | --- |
-| Subprocess prompt delivery | `argv`, `tempfile`, `stdin` and `file-reference` are selected through `amplihack-utils::prompt_delivery` using static per-binary capabilities. Unsupported explicit `tempfile` requests degrade to `stdin`, then `file-reference`, then `argv`. Unsupported explicit `stdin` requests degrade to `file-reference`, then `argv`. A binary-specific contract can require rejection instead. |
+| Subprocess prompt delivery | `tempfile`, `stdin` and `file-reference` are selected through `amplihack-utils::prompt_delivery` using static per-binary capabilities. `argv` is never used to deliver a prompt: `AMPLIHACK_PROMPT_DELIVERY=argv` is treated as `auto` with a warning. Unsupported explicit `tempfile` requests degrade to `stdin`, then `file-reference`. Unsupported explicit `stdin` requests degrade to `file-reference`. When nothing fits, the launch fails with `NoSafeChannel`. A binary-specific contract can require rejection instead. |
 
 ## Configuration
 
@@ -44,7 +44,7 @@ Set `AMPLIHACK_PROMPT_DELIVERY` to choose the requested prompt delivery mode.
 This setting applies to migrated subprocess launch paths.
 
 ```bash
-# Default: choose the safest supported channel for the target binary and prompt size.
+# Default: choose a channel that keeps the prompt out of argv.
 unset AMPLIHACK_PROMPT_DELIVERY
 amplihack claude -- "Summarize this repository"
 
@@ -55,10 +55,6 @@ AMPLIHACK_PROMPT_DELIVERY=tempfile \
 # Request stdin delivery once the selected binary has a verified stdin contract.
 AMPLIHACK_PROMPT_DELIVERY=stdin \
   amplihack codex -- "Analyze this generated task description"
-
-# Force argv delivery for compatibility diagnostics.
-AMPLIHACK_PROMPT_DELIVERY=argv \
-  amplihack copilot -- "Short prompt"
 ```
 
 ### `AMPLIHACK_PROMPT_DELIVERY`
@@ -66,12 +62,11 @@ AMPLIHACK_PROMPT_DELIVERY=argv \
 | Value | Meaning |
 | --- | --- |
 | unset, empty, or `auto` | Use automatic mode selection. |
-| `argv` | Request structured argv delivery. |
 | `tempfile` | Request temporary-file delivery. |
 | `stdin` | Request stdin delivery. |
 
-Values are case-insensitive. Unknown values resolve to `auto` and emit a
-warning. The environment variable is a request, not a capability override: a
+Values are case-insensitive. Unknown values, including `argv`, resolve to
+`auto` and emit a warning that names the value. The environment variable is a request, not a capability override: a
 binary only uses `tempfile` or `stdin` when the launcher has a verified contract
 for that binary.
 
@@ -90,10 +85,10 @@ this table.
 
 | Binary | `argv` | `tempfile` | Tempfile flag | `stdin` | `file-reference` | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| Claude Code | Supported | Unsupported | None for task prompts | Supported | Unsupported | `claude -p` reads the task prompt from stdin when no prompt argument is given. `--append-system-prompt` is a system-prompt contract and is not used for task prompts. |
+| Claude Code | Supported | Unsupported | None for task prompts | Supported | Unsupported | `claude -p` reads the task prompt from stdin when no prompt argument is given. The operating contract uses `--append-system-prompt-file` (Claude Code 2.1.319 or later) and is not a task-prompt channel. |
 | GitHub Copilot CLI | Supported | Unsupported | None | Unsupported | Supported | No verified prompt-file or stdin contract. Auto mode runs Copilot with `--add-dir /` and `--allow-all-paths`, so it can read the referenced file. |
-| Codex | Supported | Unsupported | None | Binary-specific | Unsupported | `codex exec` receives the prompt on stdin through the Codex-specific builder; interactive Codex keeps a positional prompt. |
-| Microsoft Amplifier | Supported | Unsupported | None | Unsupported | Supported | Amplifier documents `run [PROMPT]` with no prompt-file or stdin contract. Prompts above 4096 bytes use a file reference. |
+| Codex | Supported | Unsupported | None | Supported (`exec`) | Supported | `codex exec -` receives the prompt on stdin; interactive Codex with a first prompt receives a file reference. |
+| Microsoft Amplifier | Supported | Unsupported | None | Unsupported | Supported | Amplifier documents `run [PROMPT]` with no prompt-file or stdin contract. Every prompt uses a file reference. |
 
 Every caller of `build_tool_command_with_prompt_delivery` that can route to
 Claude must write `DeliveredCommand::stdin_payload` to the child, because the
@@ -117,7 +112,7 @@ amplifier run [OPTIONS] [PROMPT]
 | Structured argv prompt | Supported. The task prompt is one `Command::arg` value. |
 | Temporary prompt file | Unsupported. Amplifier does not document a `--prompt-file`, `--prompt-path`, or equivalent task-prompt file option. |
 | Stdin task prompt | Unsupported. Amplifier does not document stdin as a task-prompt input channel. |
-| File reference | Supported. Prompts above 4096 bytes are written to a 0600 temporary file, and the positional `PROMPT` is a short sentence naming that file. |
+| File reference | Supported. Every prompt is written to a 0600 temporary file, and the positional `PROMPT` is a short sentence naming that file. |
 
 `AMPLIHACK_PROMPT_DELIVERY=tempfile` and
 `AMPLIHACK_PROMPT_DELIVERY=stdin` fail before spawning Amplifier. The launcher
@@ -147,10 +142,9 @@ prompt size and the selected binary's capabilities.
 
 | Requested mode | Selection rule |
 | --- | --- |
-| `auto` | Use `argv` for prompts at or below 4096 bytes when supported. For larger prompts, prefer `tempfile`, then `stdin`, then `file-reference`, then `argv`. Selecting `argv` for a larger prompt logs a warning with the size and mode only. |
-| `argv` | Use `argv` when supported; otherwise degrade to `tempfile`, then `stdin`, then `file-reference`, then `argv`. |
-| `tempfile` | Use `tempfile` when supported; otherwise degrade to `stdin`, then `file-reference`, then `argv`. |
-| `stdin` | Use `stdin` when supported; otherwise degrade to `file-reference`, then `argv`. Do not degrade an explicit stdin request to tempfile, because stdin and prompt-file delivery have different process contracts. |
+| `auto` | Prefer `stdin`, then `file-reference`, then `tempfile`, at every prompt size. Never `argv`. If none is supported, fail with `NoSafeChannel` before spawning. |
+| `tempfile` | Use `tempfile` when supported; otherwise degrade to `stdin`, then `file-reference`, then fail. |
+| `stdin` | Use `stdin` when supported; otherwise degrade to `file-reference`, then fail. Do not degrade an explicit stdin request to tempfile, because stdin and prompt-file delivery have different process contracts. |
 
 `file-reference` is not accepted as a value of `AMPLIHACK_PROMPT_DELIVERY`; it
 is reached only through `auto` or the degrade chain.
@@ -201,8 +195,8 @@ AMPLIHACK_PROMPT_DELIVERY=tempfile \
 
 For Amplifier, doctor reports `capabilities: argv, file-reference`. Runtime
 Amplifier launches reject explicit `tempfile` and `stdin` requests before
-launch. With the requested mode unset, `auto` or `argv`, prompts of 4096 bytes
-or fewer are structured argv and larger prompts use a file reference.
+launch. With the requested mode unset or `auto`, every prompt uses a file
+reference.
 
 ### Run Amplifier with the documented prompt channel
 
@@ -213,8 +207,7 @@ Amplifier's documented prompt input is the positional `PROMPT` argument on
 amplihack amplifier -- run "Explain the authentication flow in this repository"
 ```
 
-A prompt of 4096 bytes or fewer is passed as the positional argument. A longer
-prompt is written to a 0600 temporary file and the positional argument becomes
+The prompt is written to a 0600 temporary file and the positional argument is
 a short sentence asking Amplifier to read it.
 
 ### Use prompt delivery in auto-mode
@@ -258,7 +251,7 @@ fn build_command(prompt: &str) -> std::io::Result<(Command, DeliveryHandle)> {
 
 Public types include `PromptDelivery`, `DeliveryMode`, `DeliveryCaps`, and
 `DeliveryHandle`. Public functions include `from_env()`,
-`select_mode(requested, prompt_size, caps)`, and
+`try_select_mode(requested, caps)`, and
 `deliver(cmd, prompt, requested, caps)`.
 
 ### Launcher API
@@ -321,28 +314,27 @@ Example output:
 ```text
 Prompt delivery
   requested: tempfile
-  auto threshold: 4096 bytes
 
   claude
     capabilities: argv, stdin
-    effective for long prompt: stdin
+    effective: stdin
     warning: requested tempfile is unsupported; degrading to stdin
 
   copilot
     capabilities: argv, file-reference
-    effective for long prompt: file-reference
+    effective: file-reference
     warning: requested tempfile is unsupported; degrading to file-reference
 
   codex
-    capabilities: argv
-    note: codex exec receives prompts on stdin through the Codex-specific builder
-    effective for long prompt: argv
-    warning: requested tempfile is unsupported; degrading to argv
+    capabilities: argv, stdin, file-reference
+    note: codex exec reads the prompt on stdin after `-`
+    effective: stdin
+    warning: requested tempfile is unsupported; degrading to stdin
 
   amplifier
     capabilities: argv, file-reference
     note: no documented prompt-file or stdin contract; long prompts use a file reference
-    effective for long prompt: file-reference
+    effective: file-reference
     warning: requested tempfile is unsupported; degrading to file-reference
 ```
 
@@ -350,7 +342,7 @@ Doctor diagnostics are deterministic:
 
 - they list the requested mode,
 - they list static capabilities per binary,
-- they show the effective mode for a long prompt,
+- they show the effective mode, or `unavailable` when no channel keeps the prompt out of argv (a spawn then fails),
 - they show degradation warnings when a requested mode is unsupported,
 - they never include raw prompt data.
 
@@ -366,13 +358,12 @@ Prompt delivery behavior is defined by these externally visible contracts:
 
 | Contract | Required behavior |
 | --- | --- |
-| Long prompt privacy | For every migrated command builder with a long-form mode, a raw 64 KiB prompt containing apostrophes is absent from child argv when `auto`, `tempfile`, or `stdin` selects `tempfile`, `stdin` or `file-reference`. Binaries with only `argv` support are explicitly exempt and must still pass the prompt as one structured argv element. |
+| Prompt privacy | For every command builder, a prompt of any size, including a short sentinel phrase, is absent from child argv under `auto`, `tempfile` and `stdin`. A builder with no non-argv channel fails with `NoSafeChannel`. `AMPLIHACK_PROMPT_DELIVERY=argv` behaves as `auto`. |
 | Kernel argument limit | A prompt over 128 KiB reaches Claude (stdin), Copilot and Amplifier (file reference) byte for byte, and no argv element exceeds 131,072 bytes. |
 | File-reference argument | The argument is the fixed template with only the temporary path substituted, is under 512 bytes, and the file is mode 0600. |
 | Prompt fidelity | The same 64 KiB apostrophe-containing prompt round-trips unchanged through the selected delivery channel. |
-| Structured argv safety | When `argv` is selected, the prompt is passed as one argv element. Apostrophes, quotes, semicolons, dollar signs, and shell metacharacters are not interpreted by a shell. |
-| Unsupported tempfile request | A requested `tempfile` mode degrades to `stdin`, then `file-reference`, then `argv`, and emits a warning, unless the target binary has a stricter rejection policy. |
-| Unsupported stdin request | A requested `stdin` mode degrades to `file-reference`, then `argv`, and emits a warning, unless the target binary has a stricter rejection policy. It does not degrade to `tempfile`. |
+| Unsupported tempfile request | A requested `tempfile` mode degrades to `stdin`, then `file-reference`, and emits a warning; otherwise it fails. It never degrades to `argv`. |
+| Unsupported stdin request | A requested `stdin` mode degrades to `file-reference` and emits a warning; otherwise it fails. It does not degrade to `tempfile` or `argv`. |
 | Amplifier unsupported mode request | For Amplifier, explicit `tempfile` and `stdin` requests fail before spawning `amplifier`; they do not degrade to `argv`. |
 | Tempfile lifetime | Tempfile and file-reference prompts remain readable until the child process exits and are unlinked when the `DeliveryHandle` is dropped. |
 | Stdin lifecycle | Stdin payloads are written by a writer thread and stdin is closed afterwards. A child that exits without reading all of its input (`BrokenPipe`) is not an error. With no payload, stdin is `Stdio::null()`. |
@@ -402,18 +393,21 @@ Run doctor with the same environment:
 AMPLIHACK_PROMPT_DELIVERY=tempfile amplihack doctor
 ```
 
-If the selected binary lists only `argv`, the requested long-form mode is not
-available for that binary. Doctor reports capability selection only; the
-Amplifier launch path separately rejects explicit `tempfile` and `stdin`
-requests before launch. Use a binary with a verified long-form prompt contract
-or leave `AMPLIHACK_PROMPT_DELIVERY=auto`.
+If the selected binary lists only `argv`, it cannot take a prompt at all: every
+launch fails with `NoSafeChannel`, and setting `AMPLIHACK_PROMPT_DELIVERY=auto`
+does not change that. Doctor reports capability selection only; the Amplifier
+launch path separately rejects explicit `tempfile` and `stdin` requests before
+launch. Use a binary with a verified `tempfile`, `stdin` or `file-reference`
+prompt contract.
 
-### A long prompt still appears in argv
+### Prompt text appears in argv
 
-Check the binary capability row in doctor output. Long prompts remain in child
-argv only when the target binary supports none of `tempfile`, `stdin` and
-`file-reference`; amplihack logs a warning with the prompt size when that
-happens.
+Any prompt text in a child's argv is a bug; report it. amplihack never falls
+back to argv: when the target binary supports none of `tempfile`, `stdin` and
+`file-reference`, the launch fails with `NoSafeChannel` instead. Only the short
+pointer sentence that names the prompt file may appear in argv. To check a
+running agent, see
+[Check Agent Processes for Prompt Text](howto/check-agent-argv-for-prompt-text.md).
 
 ### A tempfile prompt disappears before the child reads it
 

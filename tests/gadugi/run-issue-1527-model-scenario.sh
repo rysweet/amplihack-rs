@@ -85,14 +85,15 @@ echo "binary under test: $BIN"
 
 # --- stub tools -------------------------------------------------------------
 # Each stub writes the argv of every launch, NUL-separated, to its own file,
-# along with the two variables the cases care about. `--version` is answered
-# with a version new enough for the LiteLLM gateway preflight.
+# along with the two variables the cases care about. `--version` answers
+# QA_STUB_VERSION, default 2.1.319: new enough for the session contract file
+# (issue #2030).
 mkdir -p "$WORK/bin"
 cat > "$WORK/bin/stub" <<'STUB'
 #!/bin/sh
 name=$(basename "$0")
 case "${1-}" in
-  --version|-v|version) echo "2.1.247 (Claude Code)"; exit 0 ;;
+  --version|-v|version) echo "${QA_STUB_VERSION:-2.1.319} (Claude Code)"; exit 0 ;;
 esac
 dir="$QA_1527_RECORD/$name"
 mkdir -p "$dir"
@@ -123,7 +124,12 @@ model_of() {
 
 fail=0
 passed=0
-GATEWAY=(AMPLIHACK_LITELLM_ENDPOINT=http://127.0.0.1:9 AMPLIHACK_LITELLM_API_KEY=sk-qa AMPLIHACK_LITELLM_MODEL=claude-opus-5.5)
+# The gateway accepts only the Claude Code versions in
+# VERIFIED_CLAUDE_CODE_VERSIONS (2.1.247), and 2.1.247 predates
+# --append-system-prompt-file, so a gateway launch works only with the session
+# contract turned off (issue #2030). The gateway cases model that.
+GATEWAY=(QA_STUB_VERSION=2.1.247 AMPLIHACK_NO_SYSTEM_PROMPT_APPEND=1
+  AMPLIHACK_LITELLM_ENDPOINT=http://127.0.0.1:9 AMPLIHACK_LITELLM_API_KEY=sk-qa AMPLIHACK_LITELLM_MODEL=claude-opus-5.5)
 PROXY_URL=https://llm-gateway.example.com
 
 # check <id> <tool> <want --model> <want warning: yes|no> <want stderr substring, or -> \

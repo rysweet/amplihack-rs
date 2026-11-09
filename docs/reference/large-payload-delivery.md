@@ -1,7 +1,7 @@
 ---
 title: "Large Payload Delivery Reference"
 description: "API, constants, per-tool channels and shell helpers that keep large prompts, recipe context and GitHub bodies out of single argv elements and environment values."
-last_updated: 2026-10-17
+last_updated: 2026-11-07
 review_schedule: quarterly
 owner: rysweet
 doc_type: reference
@@ -46,34 +46,37 @@ the requested mode and the target tool's capabilities.
 
 | Mode | Name in reports | What the child receives |
 | --- | --- | --- |
-| `Argv` | `argv` | The prompt as one argv element |
+| `Argv` | `argv` | Reporting only (`amplihack doctor`, `flag_matrix`): the binary has no safe channel. No spawn site delivers with it |
 | `Tempfile` | `tempfile` | The tool's prompt-file flag followed by the path of a 0600 temporary file |
 | `Stdin` | `stdin` | The prompt bytes on stdin, which is closed after the last byte |
 | `FileReference` | `file-reference` | One short argument naming a 0600 temporary file that holds the prompt |
 
 ### Automatic selection
 
-With `AMPLIHACK_PROMPT_DELIVERY` unset, empty or `auto`:
+With `AMPLIHACK_PROMPT_DELIVERY` unset, empty or `auto`, prompt size does not
+affect the choice and `argv` is never selected:
 
-| Prompt size | Order tried |
+| Order tried | If none is supported |
 | --- | --- |
-| 4096 bytes or fewer | `argv`, then the order below if argv is unsupported |
-| More than 4096 bytes | `tempfile`, `stdin`, `file-reference`, `argv` |
+| `stdin`, `file-reference`, `tempfile` | `NoSafeChannel` error; nothing is spawned |
 
-Selecting `argv` for a prompt above 4096 bytes logs a `warn!` that contains
-the prompt size and the selected mode only.
+Before issue #2030, `auto` used `argv` for prompts of 4096 bytes or fewer. That
+threshold and `AUTO_TEMPFILE_THRESHOLD_BYTES` are gone; see
+[Agent Prompt Channels Reference](./agent-prompt-channels.md#automatic-prompt-delivery-never-selects-argv).
 
 ### Explicit requests
 
-`AMPLIHACK_PROMPT_DELIVERY` accepts `auto`, `argv`, `tempfile` and `stdin`.
+`AMPLIHACK_PROMPT_DELIVERY` accepts `auto`, `tempfile` and `stdin`. Any other
+value, including `argv`, logs a `tracing::warn!` naming the value and is
+treated as `auto`.
 `file-reference` is not a request value. It is selected only by `auto` or by
-the degrade chain.
+the degrade chain. An explicit request degrades only to channels that keep the
+prompt out of argv.
 
 | Request | Behaviour when unsupported |
 | --- | --- |
-| `argv` | Degrade through `tempfile`, `stdin`, `file-reference`, `argv` |
-| `tempfile` | Degrade through `stdin`, `file-reference`, `argv` |
-| `stdin` | Degrade through `file-reference`, `argv` |
+| `tempfile` | Degrade through `stdin`, `file-reference`, then `NoSafeChannel` |
+| `stdin` | Degrade through `file-reference`, then `NoSafeChannel`; never to `tempfile` |
 
 Amplifier keeps its binary-specific rule: an explicit `tempfile` or `stdin`
 request fails before launch. See [Amplifier Command](./amplifier-command.md#prompt-delivery).
@@ -93,17 +96,16 @@ Read and follow the complete instructions in the file /tmp/.tmpQ3x9Lk. Its conte
 Capabilities are defined in `crates/amplihack-launcher/src/flag_matrix.rs`
 and checked by the test `prompt_delivery_caps_match_verified_cli_contracts`.
 
-| Tool | `argv` | `tempfile` | `stdin` | `file-reference` | Large prompt channel |
+| Tool | `argv` | `tempfile` | `stdin` | `file-reference` | `auto` channel |
 | --- | --- | --- | --- | --- | --- |
 | Claude Code | yes | no | yes | no | `stdin` |
-| Codex | yes | no | see note | no | `stdin` (`codex exec`) |
+| Codex | yes | no | yes (`exec`) | yes | `stdin` with `exec -`; `file-reference` when interactive |
 | GitHub Copilot CLI | yes | no | no | yes | `file-reference` |
 | Microsoft Amplifier | yes | no | no | yes | `file-reference` |
 
-Codex keeps its binary-specific contract in
-`crates/amplihack-launcher/src/prompt_delivery.rs`: `codex exec` receives the
-prompt on stdin, and interactive Codex keeps a positional prompt. Its
-`flag_matrix.rs` entry is unchanged.
+`codex exec` launches add `-` as the prompt argument and receive the prompt on
+stdin. Interactive Codex with a first prompt clears stdin from its caps at the
+call site, so it receives the pointer sentence.
 
 `DeliveredCommand::stdin_payload` is `Some` if and only if the selected mode is
 `Stdin`. Every caller of `build_tool_command_with_prompt_delivery` that can
@@ -144,15 +146,23 @@ pub const FILE_REFERENCE_TEMPLATE: &str;
 /// The text before `{path}` in `FILE_REFERENCE_TEMPLATE`.
 pub const FILE_REFERENCE_PREFIX: &str;
 
-pub const AUTO_TEMPFILE_THRESHOLD_BYTES: usize = 4096;
 pub const ENV_VAR_NAME: &str = "AMPLIHACK_PROMPT_DELIVERY";
 
-pub fn select_mode(
-    requested: PromptDelivery,
-    prompt_size: usize,
-    caps: &DeliveryCaps,
-) -> DeliveryMode;
+/// No channel that keeps the prompt out of argv is available.
+/// Converts to `io::Error` of kind `InvalidInput`.
+pub struct NoSafeChannel {
+    pub requested: PromptDelivery,
+    pub caps: DeliveryCaps,
+}
 
+/// Never returns `Argv`, whatever the prompt size. Used by spawn sites and
+/// by `amplihack doctor`, which shows `NoSafeChannel` as "unavailable".
+pub fn try_select_mode(
+    requested: PromptDelivery,
+    caps: &DeliveryCaps,
+) -> Result<DeliveryMode, NoSafeChannel>;
+
+/// Returns `NoSafeChannel` as an `io::Error`.
 pub fn deliver(
     cmd: &mut Command,
     prompt: &str,
@@ -174,7 +184,7 @@ modes. Dropping it deletes the file. Keep the handle alive until the child's
 use std::process::Command;
 use amplihack_utils::prompt_delivery::{deliver, DeliveryCaps, PromptDelivery};
 
-let caps = DeliveryCaps::argv_only().with_file_reference();
+let caps = DeliveryCaps::default().with_file_reference();
 let prompt = std::fs::read_to_string("/var/tmp/review-prompt.md")?;
 let mut cmd = Command::new("copilot");
 cmd.arg("-p");
@@ -310,8 +320,10 @@ existing behaviour.
 ### Prompt delivery per turn
 
 Each auto-mode turn builds its command through the shared layer and runs it
-with `run_output_with_timeout_stdin`. Claude receives turn prompts above
-4096 bytes on stdin; Copilot and Amplifier receive a file reference.
+with `run_output_with_timeout_stdin`. At every prompt size, Claude receives the
+turn prompt on stdin after a bare `-p`, Codex runs `codex exec -` and reads it
+on stdin, and Copilot and Amplifier receive a file reference. Copilot turns add
+`--add-dir <private dir>` naming only the prompt's 0700 directory.
 `AMPLIHACK_NONINTERACTIVE=1` is set on the child whenever a stdin payload is
 present, so a nested `amplihack claude` does not read the payload as
 interactive input.
@@ -822,7 +834,7 @@ bounded variables `AMPLIHACK_CLAUDE_PROFILE` and `AMPLIHACK_CLAUDE_PROFILE_ROOT`
 | Fleet reasoner (`NativeReasonerBackend::complete`) | `reasoner_command(path, decision)` argv plus the prompt on stdin through `run_output_with_timeout_stdin` | `EnvBuilder::with_launched_agent_binary("claude")` tags the child as a Claude session |
 | `amplihack recipe run` | Context from `--context-file` and `--set`; the environment mirror built by `context_env_pairs` stays inside `resolve_context_env_budget()` | The runner's agent binary comes from `with_resolved_agent_binary(...)` in the same command builder, after the context mirror is applied |
 | `multitask` recipe-mode workstream | `launcher.sh` passes `context.json` (mode 0600) to `amplihack recipe run` with `--context-file` | `run.sh` exports the two profile variables, single-quoted; the exports come before `exec bash launcher.sh` |
-| Recipe agent step (`recipe-runner-rs`) | The step prompt as `-p <prompt>` argv; the system prompt as `--system-prompt` when small, or as a 0600 file passed with `--append-system-prompt-file` when large. Never stdin | Inherited profile; auto-switch may substitute or rerun under another profile |
+| Recipe agent step (`recipe-runner-rs`) | The runner starts `amplihack claude -- -p <prompt> --system-prompt <agent md>`. `amplihack claude` rewrites this for the `claude` child: bare `-p` with the prompt on stdin, and `--system-prompt-file <0600 per-session file>`. The wrapper's own argv still holds the prompt until the runner change and its pin update; see [What argv still contains](./agent-prompt-channels.md#what-argv-still-contains) | Inherited profile; auto-switch may substitute or rerun under another profile |
 
 A recipe-mode workstream writes two scripts. `run.sh` sets the session
 variables and the profile, then hands over to `launcher.sh`. With the profile
@@ -867,9 +879,10 @@ amplihack's own large-payload sites take other paths, and none of these sites ar
 - `--auto` launches are excluded from supervision, so auto mode's per-turn
   stdin prompt is never rerun;
 - `amplihack recipe run` passes context to the runner as `--set` argv, and
-  `recipe-runner-rs` gives each agent step its prompt as `-p` argv (plus a
-  0600 system-prompt file for large prompts), never on stdin. A rerun gets the
-  same argv and reads the same prompt file again;
+  `recipe-runner-rs` gives each agent step its prompt as `-p` argv to
+  `amplihack claude`, which moves it to the `claude` child's stdin. The prompt
+  is held by `amplihack claude`, not taken from its own stdin, so every
+  attempt receives it again;
 - multitask workstreams pass context in `context.json`, which every attempt
   can read again.
 
@@ -900,17 +913,18 @@ see [Security properties](../concepts/large-payload-delivery.md#security-propert
 
 ## Sites that still use argv
 
-These build argv from a prompt but have no caller that passes large text:
-
-| Site | Reason left on argv |
-| --- | --- |
-| `platform_cli/mod.rs` | No caller with unbounded input |
-| `copilot_strategy.rs` | No caller with unbounded input; Copilot has no stdin contract |
-| `turn.rs` | No caller with unbounded input |
+None. Since issue #2030 every site that hands a prompt to an agent CLI uses
+stdin, a `*-file` flag or a file reference: `platform_cli` sends Claude prompts
+on stdin and `amplifier run` prompts as a file reference and refuses
+`gh copilot suggest`, which has no channel but argv, and `copilot_strategy` and the `amplihack-turn` Copilot turn use a
+file reference with `--add-dir`. The
+full list, with the before and after for each path, is in
+[Agent Prompt Channels Reference](./agent-prompt-channels.md#channels-by-launch-path).
 
 ## Related
 
 - [Large Payload Delivery to Child Processes](../concepts/large-payload-delivery.md) - Why the layer exists
+- [Agent Prompt Channels Reference](./agent-prompt-channels.md) - Why no prompt is in an agent's argv, per launch path
 - [Pass Large Recipe Context](../howto/pass-large-recipe-context.md) - Convert recipe steps
 - [amplihack-rs Parity Reference](../amplihack-rs-parity.md) - `AMPLIHACK_PROMPT_DELIVERY` and doctor output
 - [Recipe Context Environment Export](./recipe-context-environment.md) - Context in step environments
