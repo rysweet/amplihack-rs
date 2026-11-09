@@ -82,25 +82,16 @@ fn code_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
 }
 
 #[test]
-fn no_spawn_site_calls_select_mode() {
-    // `select_mode` answers Argv when nothing safe fits; it is for reporting.
-    // Spawn sites call `deliver` or `try_select_mode`.
-    const ALLOWED: &[&str] = &[
-        // Definition, and `select_mode = try_select_mode(..).unwrap_or(Argv)`.
-        "crates/amplihack-utils/src/prompt_delivery.rs",
-        // `amplihack doctor` report only.
-        "crates/amplihack-launcher/src/flag_matrix.rs",
-    ];
+fn no_selector_answers_argv() {
+    // The old `select_mode` answered Argv when nothing safe fitted, so doctor
+    // showed a channel spawns refused. It is gone: every caller, doctor
+    // included, uses `try_select_mode`, which never answers Argv.
     let mut hits = Vec::new();
     for (rel, text) in production_sources() {
-        if ALLOWED.contains(&rel.as_str()) {
-            continue;
-        }
         for (n, line) in code_lines(&text) {
             let mut rest = line;
             while let Some(i) = rest.find("select_mode(") {
-                let before = &rest[..i];
-                if !before.ends_with("try_") && !before.ends_with("fn ") {
+                if !rest[..i].ends_with("try_") {
                     hits.push(format!("{rel}:{}: {}", n + 1, line.trim()));
                 }
                 rest = &rest[i + "select_mode(".len()..];
@@ -109,13 +100,13 @@ fn no_spawn_site_calls_select_mode() {
     }
     assert!(
         hits.is_empty(),
-        "spawn sites must not call select_mode:\n{}",
+        "use try_select_mode; select_mode is removed:\n{}",
         hits.join("\n")
     );
 }
 
 #[test]
-fn prompt_delivery_select_mode_delegates_to_try_select_mode() {
+fn prompt_delivery_deliver_uses_try_select_mode() {
     let src =
         fs::read_to_string(workspace_root().join("crates/amplihack-utils/src/prompt_delivery.rs"))
             .unwrap();
@@ -308,14 +299,4 @@ fn deliver_has_no_argv_arm_that_appends_the_prompt() {
             "the Argv arm of deliver must not append to argv:\n{arm}"
         );
     }
-}
-
-#[test]
-fn turn_file_reference_template_matches_prompt_delivery() {
-    // amplihack-turn keeps its own copy because it does not depend on
-    // amplihack-utils; the `/proc` parsers match this exact sentence.
-    assert_eq!(
-        amplihack_turn::FILE_REFERENCE_TEMPLATE,
-        amplihack_utils::prompt_delivery::FILE_REFERENCE_TEMPLATE
-    );
 }

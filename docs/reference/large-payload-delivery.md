@@ -155,21 +155,12 @@ pub struct NoSafeChannel {
     pub caps: DeliveryCaps,
 }
 
-/// `Auto` never returns `Argv`. `prompt_size` is not used by `Auto`.
+/// Never returns `Argv`, whatever the prompt size. Used by spawn sites and
+/// by `amplihack doctor`, which shows `NoSafeChannel` as "unavailable".
 pub fn try_select_mode(
     requested: PromptDelivery,
-    prompt_size: usize,
     caps: &DeliveryCaps,
 ) -> Result<DeliveryMode, NoSafeChannel>;
-
-/// Reporting only (`amplihack doctor`, `flag_matrix`):
-/// `try_select_mode(..).unwrap_or(DeliveryMode::Argv)`. Never called by a
-/// spawn site; `issue_2030_guards.rs` fails CI if one does.
-pub fn select_mode(
-    requested: PromptDelivery,
-    prompt_size: usize,
-    caps: &DeliveryCaps,
-) -> DeliveryMode;
 
 /// Returns `NoSafeChannel` as an `io::Error`.
 pub fn deliver(

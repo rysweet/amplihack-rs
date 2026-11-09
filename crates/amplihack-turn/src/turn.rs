@@ -122,7 +122,7 @@ pub type PreemptSlot = Arc<Mutex<Option<oneshot::Sender<()>>>>;
 /// The pointer sentence, identical to
 /// `amplihack_utils::prompt_delivery::FILE_REFERENCE_TEMPLATE` so the `/proc`
 /// argv parsers keep matching.
-pub const FILE_REFERENCE_TEMPLATE: &str = "Read and follow the complete instructions in the file {path}. Its contents are the task prompt.";
+pub(crate) const FILE_REFERENCE_TEMPLATE: &str = "Read and follow the complete instructions in the file {path}. Its contents are the task prompt.";
 
 /// One turn's argv plus the private directory holding its prompt file.
 ///
@@ -481,6 +481,17 @@ mod issue_2030_tests {
     use super::*;
 
     const SENTINEL: &str = "SENTINEL-2030-signal-chat-message";
+
+    #[test]
+    fn file_reference_template_matches_prompt_delivery() {
+        // This crate keeps its own copy because it does not depend on
+        // amplihack-utils outside tests; the `/proc` parsers match this
+        // exact sentence.
+        assert_eq!(
+            FILE_REFERENCE_TEMPLATE,
+            amplihack_utils::prompt_delivery::FILE_REFERENCE_TEMPLATE
+        );
+    }
 
     #[cfg(unix)]
     #[test]

@@ -282,42 +282,19 @@ impl From<NoSafeChannel> for std::io::Error {
 }
 
 // ---------------------------------------------------------------------------
-// try_select_mode / select_mode
+// try_select_mode
 // ---------------------------------------------------------------------------
 
-/// Pick the delivery mode for a spawn.
+/// Pick the delivery mode for a spawn, or for a doctor report.
 ///
 /// Never returns [`DeliveryMode::Argv`]. `Auto` tries `stdin`, then
 /// `file-reference`, then `tempfile`. An explicit request degrades only
 /// through channels that keep the prompt out of argv. A
 /// [`PromptDelivery::Argv`] request is treated as `Auto` (#2030, R1.2).
-///
-/// `prompt_size` is kept for callers and is not used: since #2030 the size of
-/// a prompt never moves it onto the command line.
+/// When no channel fits, the answer is [`NoSafeChannel`]: reports show it as
+/// "unavailable" and spawns fail. The size of a prompt never matters.
 pub fn try_select_mode(
     requested: PromptDelivery,
-    prompt_size: usize,
-    caps: &DeliveryCaps,
-) -> Result<DeliveryMode, NoSafeChannel> {
-    resolve_mode(requested, prompt_size, caps)
-}
-
-/// For `amplihack doctor` and `flag_matrix` reporting only.
-///
-/// Equal to `try_select_mode(..).unwrap_or(DeliveryMode::Argv)`. Spawn sites
-/// must call [`deliver`] or [`try_select_mode`]: this function answers `Argv`
-/// when nothing safe fits.
-pub fn select_mode(
-    requested: PromptDelivery,
-    prompt_size: usize,
-    caps: &DeliveryCaps,
-) -> DeliveryMode {
-    resolve_mode(requested, prompt_size, caps).unwrap_or(DeliveryMode::Argv)
-}
-
-fn resolve_mode(
-    requested: PromptDelivery,
-    _prompt_size: usize,
     caps: &DeliveryCaps,
 ) -> Result<DeliveryMode, NoSafeChannel> {
     let order: &[DeliveryMode] = match requested {
@@ -400,7 +377,7 @@ pub fn deliver(
     // Issue #898: strip NUL bytes so a single stray NUL in agent/bash step
     // output cannot abort the whole workflow at child spawn. Sanitization
     // affects only the delivered bytes.
-    let mode = try_select_mode(requested, prompt.len(), caps)?;
+    let mode = try_select_mode(requested, caps)?;
     let prompt = sanitize_prompt_nul(prompt);
     let prompt = prompt.as_ref();
     match mode {

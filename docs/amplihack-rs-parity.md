@@ -251,7 +251,7 @@ fn build_command(prompt: &str) -> std::io::Result<(Command, DeliveryHandle)> {
 
 Public types include `PromptDelivery`, `DeliveryMode`, `DeliveryCaps`, and
 `DeliveryHandle`. Public functions include `from_env()`,
-`select_mode(requested, prompt_size, caps)`, and
+`try_select_mode(requested, caps)`, and
 `deliver(cmd, prompt, requested, caps)`.
 
 ### Launcher API
@@ -317,24 +317,24 @@ Prompt delivery
 
   claude
     capabilities: argv, stdin
-    effective for long prompt: stdin
+    effective: stdin
     warning: requested tempfile is unsupported; degrading to stdin
 
   copilot
     capabilities: argv, file-reference
-    effective for long prompt: file-reference
+    effective: file-reference
     warning: requested tempfile is unsupported; degrading to file-reference
 
   codex
     capabilities: argv, stdin, file-reference
     note: codex exec reads the prompt on stdin after `-`
-    effective for long prompt: stdin
+    effective: stdin
     warning: requested tempfile is unsupported; degrading to stdin
 
   amplifier
     capabilities: argv, file-reference
     note: no documented prompt-file or stdin contract; long prompts use a file reference
-    effective for long prompt: file-reference
+    effective: file-reference
     warning: requested tempfile is unsupported; degrading to file-reference
 ```
 
@@ -342,7 +342,7 @@ Doctor diagnostics are deterministic:
 
 - they list the requested mode,
 - they list static capabilities per binary,
-- they show the effective mode for a long prompt,
+- they show the effective mode, or `unavailable` when no channel keeps the prompt out of argv (a spawn then fails),
 - they show degradation warnings when a requested mode is unsupported,
 - they never include raw prompt data.
 

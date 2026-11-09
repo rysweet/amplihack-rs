@@ -8,7 +8,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 use amplihack_utils::prompt_delivery::{
-    DeliveryCaps, DeliveryMode, PromptDelivery, deliver, sanitize_prompt_nul, select_mode,
+    DeliveryCaps, DeliveryMode, PromptDelivery, deliver, sanitize_prompt_nul, try_select_mode,
 };
 
 fn rabbithole_prompt() -> String {
@@ -183,11 +183,11 @@ fn stdin_delivery_does_not_abort_on_nul_and_payload_is_spawn_safe() {
 
 #[test]
 fn auto_promotes_long_downstream_prompt_to_tempfile_when_supported() {
-    let prompt = long_simard_prompt();
+    // The selector takes no prompt size: a long prompt gets the same answer.
     let caps = DeliveryCaps::argv_and_tempfile("--prompt-file");
 
     assert_eq!(
-        select_mode(PromptDelivery::Auto, prompt.len(), &caps),
+        try_select_mode(PromptDelivery::Auto, &caps).unwrap(),
         DeliveryMode::Tempfile,
         "long downstream prompts must leave argv when a verified tempfile contract exists"
     );

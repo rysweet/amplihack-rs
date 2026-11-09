@@ -22,7 +22,7 @@
 mod checks;
 
 use amplihack_launcher::flag_matrix::{
-    delivery_mode_name, prompt_delivery_name, prompt_delivery_report_for,
+    effective_mode_name, prompt_delivery_name, prompt_delivery_report_for,
 };
 use amplihack_utils::prompt_delivery::{PromptDelivery, from_env};
 use anyhow::{Result, bail};
@@ -105,11 +105,10 @@ pub fn print_summary(results: &[(bool, String)]) -> (usize, usize) {
 
 pub struct PromptDeliveryDoctorOptions {
     pub requested: PromptDelivery,
-    pub diagnostic_prompt_size: usize,
 }
 
 pub fn render_prompt_delivery_diagnostics(options: PromptDeliveryDoctorOptions) -> String {
-    let report = prompt_delivery_report_for(options.requested, options.diagnostic_prompt_size);
+    let report = prompt_delivery_report_for(options.requested);
     let mut output = String::new();
     output.push_str("Prompt delivery\n");
     output.push_str(&format!(
@@ -129,8 +128,8 @@ pub fn render_prompt_delivery_diagnostics(options: PromptDeliveryDoctorOptions) 
             output.push_str(&format!("    note: {}\n", entry.note));
         }
         output.push_str(&format!(
-            "    effective for long prompt: {}\n",
-            delivery_mode_name(entry.effective_mode)
+            "    effective: {}\n",
+            effective_mode_name(entry.effective_mode)
         ));
         if !entry.warning.is_empty() {
             output.push_str(&format!("    warning: {}\n", entry.warning));
@@ -209,7 +208,6 @@ fn run_all_checks() -> Result<()> {
     let r5 = check_amplihack_version();
     let prompt_delivery = render_prompt_delivery_diagnostics(PromptDeliveryDoctorOptions {
         requested: from_env(),
-        diagnostic_prompt_size: 64 * 1024,
     });
 
     // Collect results in canonical display order (1–5), waiting for threads.

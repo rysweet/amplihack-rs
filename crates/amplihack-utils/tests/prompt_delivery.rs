@@ -2,7 +2,7 @@
 //!
 //! Tracks Simard issue #1897 and the linked amplihack-rs follow-up. These
 //! tests are written against the public API surface only; they DELIBERATELY
-//! fail until `prompt_delivery::{from_env, select_mode, deliver}` are
+//! fail until `prompt_delivery::{from_env, try_select_mode, deliver}` are
 //! implemented per the design note.
 //!
 //! Run with:
@@ -17,7 +17,7 @@ use std::process::Command;
 
 use amplihack_utils::prompt_delivery::{
     DeliveryCaps, DeliveryMode, ENV_VAR_NAME, FILE_REFERENCE_PREFIX, FILE_REFERENCE_TEMPLATE,
-    PromptDelivery, deliver, from_env, select_mode, try_select_mode,
+    PromptDelivery, deliver, from_env, try_select_mode,
 };
 
 // ---------------------------------------------------------------------------
@@ -86,7 +86,7 @@ fn with_env<R>(value: Option<&str>, f: impl FnOnce() -> R) -> R {
 fn auto_never_selects_argv_for_small_prompt() {
     // Issue #2030: a short prompt no longer stays on argv.
     let caps = claude_like_caps();
-    let mode = select_mode(PromptDelivery::Auto, 100, &caps);
+    let mode = try_select_mode(PromptDelivery::Auto, &caps).unwrap();
     assert_eq!(
         mode,
         DeliveryMode::Stdin,
@@ -101,7 +101,7 @@ fn auto_never_selects_argv_for_small_prompt() {
 #[test]
 fn auto_selects_stdin_before_tempfile_for_large_prompt() {
     let caps = claude_like_caps();
-    let mode = select_mode(PromptDelivery::Auto, 8 * 1024, &caps);
+    let mode = try_select_mode(PromptDelivery::Auto, &caps).unwrap();
     assert_eq!(
         mode,
         DeliveryMode::Stdin,
@@ -122,7 +122,7 @@ fn auto_falls_back_to_stdin_when_tempfile_unsupported() {
         supports_file_reference: false,
         tempfile_flag: None,
     };
-    let mode = select_mode(PromptDelivery::Auto, 8 * 1024, &caps);
+    let mode = try_select_mode(PromptDelivery::Auto, &caps).unwrap();
     assert_eq!(
         mode,
         DeliveryMode::Stdin,
@@ -136,14 +136,10 @@ fn auto_falls_back_to_stdin_when_tempfile_unsupported() {
 
 #[test]
 fn auto_refuses_when_no_long_form_supported() {
-    // Issue #2030: an argv-only binary has no safe channel; `try_select_mode`
-    // errors and the reporting-only `select_mode` answers Argv.
+    // Issue #2030: an argv-only binary has no safe channel, so the selector
+    // errors; nothing ever answers Argv.
     let caps = codex_like_caps();
-    assert!(try_select_mode(PromptDelivery::Auto, 8 * 1024, &caps).is_err());
-    assert_eq!(
-        select_mode(PromptDelivery::Auto, 8 * 1024, &caps),
-        DeliveryMode::Argv
-    );
+    assert!(try_select_mode(PromptDelivery::Auto, &caps).is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -159,7 +155,7 @@ fn explicit_env_overrides_auto() {
             PromptDelivery::Stdin,
             "env=stdin should parse to Stdin"
         );
-        let mode = select_mode(parsed, 100, &claude_like_caps());
+        let mode = try_select_mode(parsed, &claude_like_caps()).unwrap();
         assert_eq!(
             mode,
             DeliveryMode::Stdin,
@@ -176,7 +172,7 @@ fn explicit_env_overrides_auto() {
 fn explicit_env_with_unsupported_mode_degrades_deterministically() {
     let caps = codex_like_caps(); // argv-only
     assert!(
-        try_select_mode(PromptDelivery::Stdin, 100, &caps).is_err(),
+        try_select_mode(PromptDelivery::Stdin, &caps).is_err(),
         "explicit Stdin on argv-only binary must not degrade to Argv (#2030)"
     );
 
@@ -189,7 +185,7 @@ fn explicit_env_with_unsupported_mode_degrades_deterministically() {
         supports_file_reference: false,
         tempfile_flag: None,
     };
-    let mode = select_mode(PromptDelivery::Tempfile, 100, &caps);
+    let mode = try_select_mode(PromptDelivery::Tempfile, &caps).unwrap();
     assert_eq!(
         mode,
         DeliveryMode::Stdin,
@@ -208,7 +204,7 @@ fn explicit_stdin_request_never_degrades_to_tempfile_or_argv() {
     };
 
     assert!(
-        try_select_mode(PromptDelivery::Stdin, 64 * 1024, &caps).is_err(),
+        try_select_mode(PromptDelivery::Stdin, &caps).is_err(),
         "explicit Stdin on a binary without a verified stdin contract must fail; it must not switch prompt roles by falling back to Tempfile, nor use argv"
     );
 }
@@ -388,7 +384,7 @@ fn deliver_mutates_command_for_tempfile() {
 #[test]
 fn copilot_like_caps_auto_long_prompt_uses_tempfile() {
     let caps = copilot_like_caps();
-    let mode = select_mode(PromptDelivery::Auto, 64 * 1024, &caps);
+    let mode = try_select_mode(PromptDelivery::Auto, &caps).unwrap();
     assert_eq!(
         mode,
         DeliveryMode::Tempfile,
@@ -526,30 +522,30 @@ fn file_reference_prefix_is_the_template_text_before_path() {
 
 #[test]
 fn auto_selection_order_is_stdin_file_reference_tempfile() {
-    let large = 4097;
-    // (argv, tempfile, stdin, file_reference) -> expected mode
-    // (`select_mode` answers Argv only where no safe channel exists.)
+    // (argv, tempfile, stdin, file_reference) -> expected mode; `None` where
+    // no safe channel exists.
     let table = [
-        ((true, true, true, true), DeliveryMode::Stdin),
-        ((true, false, true, true), DeliveryMode::Stdin),
-        ((true, false, false, true), DeliveryMode::FileReference),
-        ((true, false, false, false), DeliveryMode::Argv),
-        ((false, false, true, true), DeliveryMode::Stdin),
-        ((false, false, false, true), DeliveryMode::FileReference),
-        ((true, true, false, true), DeliveryMode::FileReference),
-        ((true, true, false, false), DeliveryMode::Tempfile),
+        ((true, true, true, true), Some(DeliveryMode::Stdin)),
+        ((true, false, true, true), Some(DeliveryMode::Stdin)),
+        (
+            (true, false, false, true),
+            Some(DeliveryMode::FileReference),
+        ),
+        ((true, false, false, false), None),
+        ((false, false, true, true), Some(DeliveryMode::Stdin)),
+        (
+            (false, false, false, true),
+            Some(DeliveryMode::FileReference),
+        ),
+        ((true, true, false, true), Some(DeliveryMode::FileReference)),
+        ((true, true, false, false), Some(DeliveryMode::Tempfile)),
     ];
     for ((argv, tempfile, stdin, file_reference), expected) in table {
         let c = caps(argv, tempfile, stdin, file_reference);
         assert_eq!(
-            select_mode(PromptDelivery::Auto, large, &c),
+            try_select_mode(PromptDelivery::Auto, &c).ok(),
             expected,
-            "auto, {large} bytes, caps {c:?}"
-        );
-        assert_eq!(
-            select_mode(PromptDelivery::Auto, 200 * 1024, &c),
-            expected,
-            "auto, 200 KiB, caps {c:?}"
+            "auto, caps {c:?}"
         );
     }
 }
@@ -558,11 +554,7 @@ fn auto_selection_order_is_stdin_file_reference_tempfile() {
 fn auto_moves_small_prompts_off_argv_with_file_reference() {
     let c = DeliveryCaps::argv_only().with_file_reference();
     assert_eq!(
-        select_mode(PromptDelivery::Auto, 4096, &c),
-        DeliveryMode::FileReference
-    );
-    assert_eq!(
-        select_mode(PromptDelivery::Auto, 4097, &c),
+        try_select_mode(PromptDelivery::Auto, &c).unwrap(),
         DeliveryMode::FileReference
     );
 }
@@ -571,7 +563,7 @@ fn auto_moves_small_prompts_off_argv_with_file_reference() {
 fn auto_small_prompt_without_argv_uses_the_long_form_order() {
     let c = caps(false, false, false, true);
     assert_eq!(
-        select_mode(PromptDelivery::Auto, 10, &c),
+        try_select_mode(PromptDelivery::Auto, &c).unwrap(),
         DeliveryMode::FileReference
     );
 }
@@ -626,7 +618,7 @@ fn explicit_requests_degrade_through_file_reference_before_argv() {
     ];
     for (requested, c, expected) in table {
         assert_eq!(
-            select_mode(requested, 64 * 1024, &c),
+            try_select_mode(requested, &c).unwrap(),
             expected,
             "request {requested:?}, caps {c:?}"
         );
@@ -636,7 +628,7 @@ fn explicit_requests_degrade_through_file_reference_before_argv() {
         (PromptDelivery::Stdin, caps(true, true, false, false)),
     ] {
         assert!(
-            try_select_mode(requested, 64 * 1024, &c).is_err(),
+            try_select_mode(requested, &c).is_err(),
             "request {requested:?}, caps {c:?} has no safe channel"
         );
     }
@@ -647,15 +639,15 @@ fn explicit_supported_requests_still_win_over_file_reference() {
     let c = caps(true, true, true, true);
     // #2030 R1.2: an Argv request is Auto, which prefers stdin.
     assert_eq!(
-        select_mode(PromptDelivery::Argv, 64 * 1024, &c),
+        try_select_mode(PromptDelivery::Argv, &c).unwrap(),
         DeliveryMode::Stdin
     );
     assert_eq!(
-        select_mode(PromptDelivery::Tempfile, 10, &c),
+        try_select_mode(PromptDelivery::Tempfile, &c).unwrap(),
         DeliveryMode::Tempfile
     );
     assert_eq!(
-        select_mode(PromptDelivery::Stdin, 10, &c),
+        try_select_mode(PromptDelivery::Stdin, &c).unwrap(),
         DeliveryMode::Stdin
     );
 }

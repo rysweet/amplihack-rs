@@ -38,8 +38,7 @@ mod turn;
 
 pub use allowlist::ToolAllowlist;
 pub use turn::{
-    CopilotTurnRunner, FILE_REFERENCE_TEMPLATE, PreemptSlot, SerialTurnDriver, TurnArgv,
-    TurnRunner, build_turn_argv,
+    CopilotTurnRunner, PreemptSlot, SerialTurnDriver, TurnArgv, TurnRunner, build_turn_argv,
 };
 
 use async_trait::async_trait;

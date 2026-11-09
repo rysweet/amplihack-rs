@@ -91,6 +91,9 @@ sanitized value for both the `Argv` (`cmd.arg`) and `Tempfile` (`write_all`)
 branches. The NUL-reject block has been removed — `deliver` no longer returns an
 error for NUL-containing prompts.
 
+> **Since #2030:** `select_mode` is removed. `try_select_mode(requested, caps)`
+> takes no prompt size, so the paragraph below no longer applies.
+
 Mode selection is unchanged: `select_mode` continues to run on the **original**
 `prompt.len()`, not the sanitized length. This keeps `deliver`'s choice
 consistent with the stdin callers, which also call

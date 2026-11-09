@@ -13,7 +13,7 @@ use std::process::Command;
 
 use amplihack_utils::prompt_delivery::{
     DeliveryCaps, DeliveryMode, FILE_REFERENCE_PREFIX, NoSafeChannel, PromptDelivery, deliver,
-    select_mode, try_select_mode,
+    try_select_mode,
 };
 
 /// Contract sentinel: a phrase no real prompt contains. If it ever reaches
@@ -68,27 +68,25 @@ fn default_caps_have_no_channels() {
 
 #[test]
 fn try_select_mode_auto_never_argv() {
-    // Exhaustive over caps, and over sizes either side of the old 4 KiB
-    // threshold: Auto must never answer Argv, whatever the size.
+    // Exhaustive over caps: Auto must never answer Argv. The selector takes
+    // no prompt size, so no size can move a prompt onto the command line.
     for caps in all_caps() {
-        for size in [0usize, 1, 4096, 4097, 200 * 1024] {
-            match try_select_mode(PromptDelivery::Auto, size, &caps) {
-                Ok(mode) => {
-                    assert_ne!(
-                        mode,
-                        DeliveryMode::Argv,
-                        "Auto chose argv for caps {caps:?}, size {size}"
-                    );
-                    assert!(has_safe_channel(&caps), "Ok({mode:?}) with no safe channel");
-                }
-                Err(e) => {
-                    assert!(
-                        !has_safe_channel(&caps),
-                        "Auto failed although caps {caps:?} offer a safe channel"
-                    );
-                    assert_eq!(e.requested, PromptDelivery::Auto);
-                    assert_eq!(e.caps, caps);
-                }
+        match try_select_mode(PromptDelivery::Auto, &caps) {
+            Ok(mode) => {
+                assert_ne!(
+                    mode,
+                    DeliveryMode::Argv,
+                    "Auto chose argv for caps {caps:?}"
+                );
+                assert!(has_safe_channel(&caps), "Ok({mode:?}) with no safe channel");
+            }
+            Err(e) => {
+                assert!(
+                    !has_safe_channel(&caps),
+                    "Auto failed although caps {caps:?} offer a safe channel"
+                );
+                assert_eq!(e.requested, PromptDelivery::Auto);
+                assert_eq!(e.caps, caps);
             }
         }
     }
@@ -104,7 +102,7 @@ fn auto_prefers_stdin_then_file_reference_then_tempfile() {
         tempfile_flag: Some("--prompt-file"),
     };
     assert_eq!(
-        try_select_mode(PromptDelivery::Auto, 10, &every).unwrap(),
+        try_select_mode(PromptDelivery::Auto, &every).unwrap(),
         DeliveryMode::Stdin
     );
     let no_stdin = DeliveryCaps {
@@ -112,7 +110,7 @@ fn auto_prefers_stdin_then_file_reference_then_tempfile() {
         ..every
     };
     assert_eq!(
-        try_select_mode(PromptDelivery::Auto, 10, &no_stdin).unwrap(),
+        try_select_mode(PromptDelivery::Auto, &no_stdin).unwrap(),
         DeliveryMode::FileReference
     );
     let tempfile_only = DeliveryCaps {
@@ -121,7 +119,7 @@ fn auto_prefers_stdin_then_file_reference_then_tempfile() {
         ..every
     };
     assert_eq!(
-        try_select_mode(PromptDelivery::Auto, 10, &tempfile_only).unwrap(),
+        try_select_mode(PromptDelivery::Auto, &tempfile_only).unwrap(),
         DeliveryMode::Tempfile
     );
 }
@@ -131,14 +129,14 @@ fn auto_small_prompt_with_argv_and_stdin_uses_stdin() {
     // Before #2030 a 10-byte prompt went on argv. Claude's caps.
     let caps = DeliveryCaps::argv_only().with_stdin();
     assert_eq!(
-        try_select_mode(PromptDelivery::Auto, 10, &caps).unwrap(),
+        try_select_mode(PromptDelivery::Auto, &caps).unwrap(),
         DeliveryMode::Stdin
     );
 }
 
 #[test]
 fn auto_argv_only_caps_are_an_error() {
-    let err = try_select_mode(PromptDelivery::Auto, 10, &DeliveryCaps::argv_only())
+    let err = try_select_mode(PromptDelivery::Auto, &DeliveryCaps::argv_only())
         .expect_err("argv-only caps have no safe channel");
     assert_eq!(err.requested, PromptDelivery::Auto);
     assert_eq!(err.caps, DeliveryCaps::argv_only());
@@ -155,8 +153,8 @@ fn explicit_argv_request_is_treated_as_auto() {
     // `pkill -f`. A `PromptDelivery::Argv` request picks exactly what `Auto`
     // picks, for every capability set.
     for caps in all_caps() {
-        let as_argv = try_select_mode(PromptDelivery::Argv, 10, &caps).ok();
-        let as_auto = try_select_mode(PromptDelivery::Auto, 10, &caps).ok();
+        let as_argv = try_select_mode(PromptDelivery::Argv, &caps).ok();
+        let as_auto = try_select_mode(PromptDelivery::Auto, &caps).ok();
         assert_eq!(as_argv, as_auto, "Argv request with {caps:?}");
     }
 }
@@ -166,14 +164,14 @@ fn explicit_argv_request_on_an_argv_capable_binary_uses_stdin() {
     // Before R1.2 this returned `DeliveryMode::Argv`.
     let caps = DeliveryCaps::argv_only().with_stdin();
     assert_eq!(
-        try_select_mode(PromptDelivery::Argv, 10, &caps).unwrap(),
+        try_select_mode(PromptDelivery::Argv, &caps).unwrap(),
         DeliveryMode::Stdin
     );
 }
 
 #[test]
 fn explicit_argv_request_on_an_argv_only_binary_is_no_safe_channel() {
-    try_select_mode(PromptDelivery::Argv, 10, &DeliveryCaps::argv_only())
+    try_select_mode(PromptDelivery::Argv, &DeliveryCaps::argv_only())
         .expect_err("argv is never a delivery channel, even when asked for by name");
 }
 
@@ -184,24 +182,23 @@ fn explicit_argv_unsupported_degrades_through_safe_channels_only() {
         ..DeliveryCaps::default().with_file_reference()
     };
     assert_eq!(
-        try_select_mode(PromptDelivery::Argv, 10, &caps).unwrap(),
+        try_select_mode(PromptDelivery::Argv, &caps).unwrap(),
         DeliveryMode::FileReference
     );
-    assert!(try_select_mode(PromptDelivery::Argv, 10, &DeliveryCaps::default()).is_err());
+    assert!(try_select_mode(PromptDelivery::Argv, &DeliveryCaps::default()).is_err());
 }
 
 #[test]
 fn explicit_stdin_degrades_to_file_reference_never_argv() {
     let pointer = DeliveryCaps::argv_only().with_file_reference();
     assert_eq!(
-        try_select_mode(PromptDelivery::Stdin, 10, &pointer).unwrap(),
+        try_select_mode(PromptDelivery::Stdin, &pointer).unwrap(),
         DeliveryMode::FileReference
     );
     // Stdin never degrades to tempfile: the two have different process
     // contracts.
     let err = try_select_mode(
         PromptDelivery::Stdin,
-        10,
         &DeliveryCaps::argv_and_tempfile("--prompt-file"),
     )
     .expect_err("stdin request must not degrade to tempfile or argv");
@@ -213,7 +210,6 @@ fn explicit_tempfile_degrades_to_stdin_then_pointer_never_argv() {
     assert_eq!(
         try_select_mode(
             PromptDelivery::Tempfile,
-            10,
             &DeliveryCaps::argv_only().with_stdin()
         )
         .unwrap(),
@@ -222,13 +218,12 @@ fn explicit_tempfile_degrades_to_stdin_then_pointer_never_argv() {
     assert_eq!(
         try_select_mode(
             PromptDelivery::Tempfile,
-            10,
             &DeliveryCaps::argv_only().with_file_reference()
         )
         .unwrap(),
         DeliveryMode::FileReference
     );
-    assert!(try_select_mode(PromptDelivery::Tempfile, 10, &DeliveryCaps::argv_only()).is_err());
+    assert!(try_select_mode(PromptDelivery::Tempfile, &DeliveryCaps::argv_only()).is_err());
 }
 
 #[test]
@@ -241,7 +236,7 @@ fn no_request_ever_yields_argv() {
             PromptDelivery::Stdin,
             PromptDelivery::Tempfile,
         ] {
-            if let Ok(mode) = try_select_mode(requested, 10, &caps) {
+            if let Ok(mode) = try_select_mode(requested, &caps) {
                 assert_ne!(mode, DeliveryMode::Argv, "{requested:?} with {caps:?}");
             }
         }
@@ -254,7 +249,7 @@ fn no_request_ever_yields_argv() {
 
 #[test]
 fn no_safe_channel_message_is_stable() {
-    let err = try_select_mode(PromptDelivery::Auto, 10, &DeliveryCaps::default()).unwrap_err();
+    let err = try_select_mode(PromptDelivery::Auto, &DeliveryCaps::default()).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.starts_with("no channel keeps this prompt out of the command line: "),
@@ -285,29 +280,6 @@ fn no_safe_channel_converts_to_invalid_input() {
         io.to_string()
             .starts_with("no channel keeps this prompt out of the command line: ")
     );
-}
-
-// ---------------------------------------------------------------------------
-// select_mode: reporting only
-// ---------------------------------------------------------------------------
-
-#[test]
-fn select_mode_is_try_select_mode_or_argv() {
-    for caps in all_caps() {
-        for requested in [
-            PromptDelivery::Auto,
-            PromptDelivery::Argv,
-            PromptDelivery::Stdin,
-            PromptDelivery::Tempfile,
-        ] {
-            let expected = try_select_mode(requested, 10, &caps).unwrap_or(DeliveryMode::Argv);
-            assert_eq!(
-                select_mode(requested, 10, &caps),
-                expected,
-                "{requested:?} {caps:?}"
-            );
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------

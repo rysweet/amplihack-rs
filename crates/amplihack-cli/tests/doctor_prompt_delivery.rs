@@ -12,7 +12,6 @@ use amplihack_utils::prompt_delivery::PromptDelivery;
 fn doctor_reports_requested_mode_capabilities_effective_modes_and_warnings() {
     let output = render_prompt_delivery_diagnostics(PromptDeliveryDoctorOptions {
         requested: PromptDelivery::Tempfile,
-        diagnostic_prompt_size: 64 * 1024,
     });
 
     assert!(output.contains("Prompt delivery"));
@@ -33,11 +32,15 @@ fn doctor_reports_requested_mode_capabilities_effective_modes_and_warnings() {
     // Issue #2030: an unsupported tempfile request degrades only to channels
     // that keep the prompt out of argv.
     assert!(
-        !output.contains("effective for long prompt: argv"),
+        !output.contains("effective: argv"),
         "no binary degrades to argv; output:\n{output}"
     );
-    assert!(output.contains("effective for long prompt: stdin"));
-    assert!(output.contains("effective for long prompt: file-reference"));
+    assert!(
+        !output.contains("effective: unavailable"),
+        "every verified binary has a safe channel; output:\n{output}"
+    );
+    assert!(output.contains("effective: stdin"));
+    assert!(output.contains("effective: file-reference"));
     assert!(output.contains("requested tempfile is unsupported; degrading to stdin"));
 }
 
@@ -45,7 +48,6 @@ fn doctor_reports_requested_mode_capabilities_effective_modes_and_warnings() {
 fn doctor_output_never_contains_raw_prompt_material() {
     let output = render_prompt_delivery_diagnostics(PromptDeliveryDoctorOptions {
         requested: PromptDelivery::Stdin,
-        diagnostic_prompt_size: 64 * 1024,
     });
 
     for forbidden in [

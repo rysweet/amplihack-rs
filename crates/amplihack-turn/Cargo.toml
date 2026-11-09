@@ -28,6 +28,8 @@ tracing = { workspace = true }
 tempfile = { workspace = true }
 
 [dev-dependencies]
+# Test only: guards the copied pointer template against drift (#2030).
+amplihack-utils = { workspace = true }
 tokio = { version = "1", features = ["rt", "macros", "time"] }
 async-trait = { workspace = true }
 tracing = { workspace = true }

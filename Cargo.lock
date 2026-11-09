@@ -528,6 +528,7 @@ dependencies = [
 name = "amplihack-turn"
 version = "1.2.0"
 dependencies = [
+ "amplihack-utils",
  "async-trait",
  "tempfile",
  "thiserror 2.0.18",

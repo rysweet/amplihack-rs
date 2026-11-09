@@ -255,7 +255,7 @@ fn generic_long_form_builder_keeps_large_prompt_out_of_argv_when_caps_support_te
 
 #[test]
 fn prompt_delivery_report_matches_doctor_order_and_effective_modes() {
-    let report = prompt_delivery_report_for(PromptDelivery::Tempfile, PAYLOAD_SIZE);
+    let report = prompt_delivery_report_for(PromptDelivery::Tempfile);
 
     let binaries: Vec<_> = report.entries.iter().map(|entry| entry.binary).collect();
     assert_eq!(
@@ -276,10 +276,10 @@ fn prompt_delivery_report_matches_doctor_order_and_effective_modes() {
     assert_eq!(
         modes,
         vec![
-            DeliveryMode::Stdin,
-            DeliveryMode::FileReference,
-            DeliveryMode::Stdin,
-            DeliveryMode::FileReference,
+            Some(DeliveryMode::Stdin),
+            Some(DeliveryMode::FileReference),
+            Some(DeliveryMode::Stdin),
+            Some(DeliveryMode::FileReference),
         ],
         "an unsupported tempfile request degrades through stdin, then file-reference, per binary"
     );

@@ -174,9 +174,14 @@ fn require_file_flag_capability(binary: &Path, version: Option<&str>, what: &str
 /// output. `None` when the probe fails, times out or prints nothing usable.
 pub(crate) fn probe_claude_version(binary: &Path) -> Option<String> {
     use std::io::Read;
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
+    // Its own process group, so `kill_probe` also stops any grandchild that
+    // inherited stdout. Once they are gone the pipe closes and the reader
+    // thread below ends; nothing is left running after a failed probe.
     let mut child = Command::new(binary)
+        .process_group(0)
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -188,7 +193,7 @@ pub(crate) fn probe_claude_version(binary: &Path) -> Option<String> {
         .ok()?;
     let stdout = child.stdout.take()?;
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let result = stdout.take(VERSION_PROBE_MAX_BYTES).read_to_end(&mut buf);
         let _ = tx.send(result.map(|_| buf));
@@ -221,19 +226,42 @@ pub(crate) fn probe_claude_version(binary: &Path) -> Option<String> {
                 if bytes.is_some() {
                     tracing::warn!(binary = %binary.display(), "Claude Code version probe timed out");
                 }
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_probe(&mut child);
                 return None;
             }
             Err(error) => {
                 tracing::warn!(binary = %binary.display(), %error, "Claude Code version probe wait failed");
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_probe(&mut child);
                 return None;
             }
         }
     }
-    Some(String::from_utf8_lossy(&bytes?).into_owned())
+    let bytes = match bytes {
+        Some(bytes) => bytes,
+        None => {
+            // The child has exited but its stdout never closed: a grandchild
+            // still holds it. Stop the group so the reader thread can end.
+            kill_probe(&mut child);
+            return None;
+        }
+    };
+    // The reader already sent its result, so this join returns at once.
+    let _ = reader.join();
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Kill the probe's whole process group and reap the child. Killing the
+/// group closes every copy of the stdout pipe, which ends the reader thread.
+fn kill_probe(child: &mut std::process::Child) {
+    if let Ok(pid) = libc::pid_t::try_from(child.id()) {
+        // SAFETY: `kill` has no memory preconditions; a negative pid names
+        // the process group the child leads (`process_group(0)` above).
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// Write the compiled-in contract to `<home>/private/system-prompt-append.md`

@@ -345,24 +345,14 @@ pub struct NoSafeChannel {
 
 impl From<NoSafeChannel> for std::io::Error; // ErrorKind::InvalidInput
 
-/// Picks the delivery mode. Never returns `Argv`; a `PromptDelivery::Argv`
-/// request is treated as `Auto`. `prompt_size` is kept for callers and does
-/// not affect the choice.
+/// Picks the delivery mode, for spawns and for `amplihack doctor` alike.
+/// Never returns `Argv`; a `PromptDelivery::Argv` request is treated as
+/// `Auto`. The prompt's size never affects the choice. When no channel fits,
+/// doctor shows "unavailable" and a spawn fails with `NoSafeChannel`.
 pub fn try_select_mode(
     requested: PromptDelivery,
-    prompt_size: usize,
     caps: &DeliveryCaps,
 ) -> Result<DeliveryMode, NoSafeChannel>;
-
-/// For `amplihack doctor` and `flag_matrix` reporting only: `Argv` here means
-/// "no safe channel". Equal to `try_select_mode(..).unwrap_or(DeliveryMode::Argv)`.
-/// Spawn sites must call `deliver` or `try_select_mode`; the guard
-/// `no_spawn_site_calls_select_mode` fails CI for any other caller.
-pub fn select_mode(
-    requested: PromptDelivery,
-    prompt_size: usize,
-    caps: &DeliveryCaps,
-) -> DeliveryMode;
 
 /// Calls `try_select_mode` and returns its error as `io::Error`. Prepares
 /// `cmd` for stdin or a file reference; never appends the prompt to argv.
@@ -584,7 +574,7 @@ use `--prompt-file` with `--auto`; see
 | Test file | What it checks |
 | --- | --- |
 | `crates/amplihack-cli/tests/issue_2030_no_prompt_in_argv.rs` | Each launch path with a stub agent on `PATH`: argv has no sentinel phrase and no `tail -f /dev/null`; each `*-file` path is a regular 0600 file in a 0700 directory and holds the sentinel; stdin payloads arrive on stdin; per-session files are gone after exit 0, exit 1 and SIGTERM; version gate cases 2.1.318, unparseable and missing; contract file repair for 0644, wrong content and a symlink (the symlink target is unchanged); `private/` as a symlink or foreign-owned fails; a home path with a newline is rejected; no error path echoes the sentinel |
-| `crates/amplihack-cli/tests/issue_2030_guards.rs` | Fails CI if `select_mode(` is called outside `flag_matrix.rs` and the doctor, if any code under `crates/` builds `--append-system-prompt` followed by text, if any bundled recipe passes inline text to `-p` or `exec`, if a bundle file sets `AMPLIHACK_PROMPT_DELIVERY`, or if a `quality-loop.yaml` Copilot call lacks its private directory and `EXIT` trap |
+| `crates/amplihack-cli/tests/issue_2030_guards.rs` | Fails CI if any production code calls a `select_mode(` other than `try_select_mode(` (the old selector that answered `Argv` is removed), if any code under `crates/` builds `--append-system-prompt` followed by text, if any bundled recipe passes inline text to `-p` or `exec`, if a bundle file sets `AMPLIHACK_PROMPT_DELIVERY`, or if a `quality-loop.yaml` Copilot call lacks its private directory and `EXIT` trap |
 | `crates/amplihack-cli/src/commands/launch/tests_issue_2030_contract.rs` | A 0644 contract file is repaired to 0600; a symlink is replaced and its target left unchanged; a foreign-owned `private/` is refused; two concurrent first launches both end with one complete file |
 | `crates/amplihack-cli/src/commands/launch/tests_passthrough_rewrite.rs` | Every row of the rewrite table; repeated flags are errors; `format!("{:?}", rewritten)` does not contain the sentinel |
 | `crates/amplihack-cli/src/commands/agent/tests_cmdline_issue_2030.rs` | The `/proc` argv parser recognises bare `-p` with `*-file` flags as print mode |

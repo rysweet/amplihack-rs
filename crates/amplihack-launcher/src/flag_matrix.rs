@@ -183,7 +183,6 @@ pub fn prompt_delivery_caps_for(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PromptDeliveryReport {
     pub requested: amplihack_utils::prompt_delivery::PromptDelivery,
-    pub prompt_size: usize,
     pub entries: Vec<PromptDeliveryReportEntry>,
 }
 
@@ -191,19 +190,19 @@ pub struct PromptDeliveryReport {
 pub struct PromptDeliveryReportEntry {
     pub binary: AgentBinary,
     pub caps: amplihack_utils::prompt_delivery::DeliveryCaps,
-    pub effective_mode: amplihack_utils::prompt_delivery::DeliveryMode,
+    /// `None` when no channel keeps the prompt out of argv: a spawn fails
+    /// with `NoSafeChannel`, and doctor shows "unavailable" (#2030).
+    pub effective_mode: Option<amplihack_utils::prompt_delivery::DeliveryMode>,
     pub warning: String,
     pub note: String,
 }
 
 /// Build deterministic prompt-delivery diagnostics for doctor output.
 ///
-/// This is the only non-test caller of the reporting-only
-/// [`amplihack_utils::prompt_delivery::select_mode`]; spawn sites use
-/// `deliver` or `try_select_mode`.
+/// Uses the same [`amplihack_utils::prompt_delivery::try_select_mode`] as
+/// spawn sites, so the report never shows a channel a spawn would refuse.
 pub fn prompt_delivery_report_for(
     requested: amplihack_utils::prompt_delivery::PromptDelivery,
-    prompt_size: usize,
 ) -> PromptDeliveryReport {
     let entries = ALL_BINARIES
         .iter()
@@ -211,7 +210,7 @@ pub fn prompt_delivery_report_for(
         .map(|binary| {
             let caps = prompt_delivery_caps_for(binary);
             let effective_mode =
-                amplihack_utils::prompt_delivery::select_mode(requested, prompt_size, &caps);
+                amplihack_utils::prompt_delivery::try_select_mode(requested, &caps).ok();
             PromptDeliveryReportEntry {
                 binary,
                 caps,
@@ -221,16 +220,12 @@ pub fn prompt_delivery_report_for(
             }
         })
         .collect();
-    PromptDeliveryReport {
-        requested,
-        prompt_size,
-        entries,
-    }
+    PromptDeliveryReport { requested, entries }
 }
 
 fn warning_for(
     requested: amplihack_utils::prompt_delivery::PromptDelivery,
-    effective: amplihack_utils::prompt_delivery::DeliveryMode,
+    effective: Option<amplihack_utils::prompt_delivery::DeliveryMode>,
     caps: &amplihack_utils::prompt_delivery::DeliveryCaps,
 ) -> String {
     use amplihack_utils::prompt_delivery::PromptDelivery;
@@ -246,7 +241,7 @@ fn warning_for(
     format!(
         "requested {} is unsupported; degrading to {}",
         prompt_delivery_name(requested),
-        delivery_mode_name(effective)
+        effective_mode_name(effective)
     )
 }
 
@@ -286,6 +281,14 @@ pub fn delivery_mode_name(mode: amplihack_utils::prompt_delivery::DeliveryMode) 
         amplihack_utils::prompt_delivery::DeliveryMode::Stdin => "stdin",
         amplihack_utils::prompt_delivery::DeliveryMode::FileReference => "file-reference",
     }
+}
+
+/// Name of a report's effective mode; `None` (no safe channel) is
+/// "unavailable", never "argv" (#2030).
+pub fn effective_mode_name(
+    mode: Option<amplihack_utils::prompt_delivery::DeliveryMode>,
+) -> &'static str {
+    mode.map_or("unavailable", delivery_mode_name)
 }
 
 /// All known agent binaries.
@@ -414,6 +417,20 @@ mod tests {
             "file-reference"
         );
         assert_eq!(delivery_mode_name(DeliveryMode::Stdin), "stdin");
+    }
+
+    #[test]
+    fn no_safe_channel_is_reported_unavailable_never_argv() {
+        // #2030: the report uses the spawn selector, so an argv-only binary
+        // shows "unavailable" (a spawn fails) rather than "argv".
+        use amplihack_utils::prompt_delivery::{DeliveryCaps, PromptDelivery, try_select_mode};
+        let effective = try_select_mode(PromptDelivery::Auto, &DeliveryCaps::argv_only()).ok();
+        assert_eq!(effective, None);
+        assert_eq!(effective_mode_name(effective), "unavailable");
+        assert_eq!(
+            effective_mode_name(Some(amplihack_utils::prompt_delivery::DeliveryMode::Stdin)),
+            "stdin"
+        );
     }
 
     #[test]
