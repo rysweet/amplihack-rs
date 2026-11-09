@@ -933,52 +933,45 @@ fn a_stalled_server_is_a_timeout_within_the_deadline() {
 /// `V_REFRESH_T` on a fake clock:
 /// - the 401 comes at once, virtual time has not moved, so the refresh is
 ///   admitted against `REFRESH_BUDGET`;
-/// - the token server's answer moves virtual time to `T - RETRY_LEFT`, so
-///   the rotated tokens are saved and the retry `GET` is given only
-///   `RETRY_LEFT` of the one deadline;
-/// - the retry `GET` is never answered until the read has returned, so it
-///   ends at its socket limit, whatever the host load. Per-request
-///   deadlines would have given it a fresh `T`.
+/// - the token server's answer moves virtual time to `T`, the end of the one
+///   deadline, and the rotated tokens are still saved;
+/// - the retry `GET` is then refused before any request is sent. Per-request
+///   deadlines would have given it a fresh `T`, sent it, and read the `200`
+///   the fake server gives the new token.
+///
+/// Issue #2019: an earlier form left the retry `RETRY_LEFT` (300 ms) and held
+/// it at a gate until its socket timed out. Under host load its connect could
+/// overrun those 300 ms of real time first and end as `transport`. Here no
+/// outcome depends on how long anything takes in real time.
 #[test]
 fn a_401_refresh_and_retry_share_one_deadline() {
-    const RETRY_LEFT: Duration = Duration::from_millis(300);
     let t = V_REFRESH_T;
     assert!(t >= REFRESH_BUDGET + V_SEND_MARGIN);
-    assert!(RETRY_LEFT < get_step(t));
     let clock = FakeClock::new();
-    let gate = Gate::new();
-    let hold = gate.waiter();
     let c = Arc::clone(&clock);
     let fake = FakeHttp::start(move |s, _| {
         if s.path == TOKEN_PATH {
-            c.advance(t - RETRY_LEFT);
+            c.advance(t);
             Reply::json(200, &token_answer())
         } else if bearer(s) == Some(&format!("Bearer {NEW_ACCESS}")) {
-            hold();
             Reply::json(200, &body_100_55())
         } else {
             Reply::json(401, &json!({"error": "expired"}))
         }
     });
-    let _release = gate.release_on_drop();
     let l = login();
     let journals = l.journals();
     let mut req = request(&l, &journals, true);
     req.timeout = t;
     let counter = AtomicUsize::new(0);
     let r = read_with(&endpoints(&fake), &req, &Ctx::new(&*clock, &counter));
-    gate.release();
     assert_eq!(r, Err(reason::TIMEOUT));
     assert_eq!(counter.load(Ordering::SeqCst), 0);
     // The refresh was answered in time, so the rotated tokens are saved
-    // even though the second GET ran out of time.
+    // even though no time was left for the second GET.
     assert_eq!(posts(&fake), 1);
     let gets = gets(&fake);
-    assert_eq!(gets.len(), 2);
-    assert_eq!(
-        bearer(&gets[1]),
-        Some(format!("Bearer {NEW_ACCESS}").as_str())
-    );
+    assert_eq!(gets.len(), 1, "the retry GET must not be sent");
     assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], NEW_ACCESS);
     assert_eq!(l.doc()["claudeAiOauth"]["refreshToken"], NEW_REFRESH);
     assert_eq!(l.entries(), [CREDS]);
