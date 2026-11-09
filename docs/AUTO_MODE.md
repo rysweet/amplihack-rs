@@ -100,8 +100,10 @@ amplihack claude --auto --max-turns 20 --prompt-file /tmp/issue-1570.md
 amplihack copilot --auto --prompt-file=/tmp/issue-1570.md
 ```
 
-Each turn prompt above 4096 bytes is delivered on stdin for Claude and by a
-reference to a private temporary file for Copilot and Amplifier. The objective,
+Each turn prompt, at any size, is delivered on stdin for Claude and Codex
+(`codex exec -`) and by a reference to a private temporary file for Copilot and
+Amplifier. No turn prompt is in the agent's argv; see
+[Agent Prompt Channels Reference](reference/agent-prompt-channels.md). The objective,
 plan and latest evaluation carried between turns are each capped at 32 KiB,
 keeping the most recent output. See
 [Large Payload Delivery Reference](reference/large-payload-delivery.md#auto-mode)
