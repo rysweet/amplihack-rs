@@ -89,16 +89,22 @@ const ALLOWED_LINES: &[(&str, &str)] = &[(
 )];
 
 struct Matcher {
+    /// Each banned substring with its reason, and whether it contains `merge`.
+    banned: Vec<(&'static str, &'static str, bool)>,
     patterns: Vec<(Regex, &'static str)>,
 }
 
 impl Matcher {
     fn new() -> Self {
+        let banned = BANNED_SUBSTRINGS
+            .iter()
+            .map(|(needle, why)| (*needle, *why, needle.contains("merge")))
+            .collect();
         let patterns = APPROVAL_PATTERNS
             .iter()
             .map(|(p, why)| (Regex::new(p).expect("approval pattern compiles"), *why))
             .collect();
-        Self { patterns }
+        Self { banned, patterns }
     }
 
     /// Returns the reason a line violates the rule, or `None` if it does not.
@@ -108,12 +114,15 @@ impl Matcher {
             return None;
         }
         let lower = trimmed.to_lowercase();
-        for (needle, why) in BANNED_SUBSTRINGS {
-            if lower.contains(needle) {
+        // Most lines do not mention `merge`, and a needle that contains it
+        // cannot match them, so only the other needles are searched.
+        let has_merge = lower.contains("merge");
+        for (needle, why, needs_merge) in &self.banned {
+            if (has_merge || !needs_merge) && lower.contains(needle) {
                 return Some(format!("banned phrase {needle:?}: {why}"));
             }
         }
-        if lower.contains("merge") {
+        if has_merge {
             for (re, why) in &self.patterns {
                 if let Some(m) = re.find(&lower) {
                     return Some(format!("approval wording {:?}: {why}", m.as_str()));
@@ -166,6 +175,10 @@ fn bundle_has_no_blanket_no_merge_text() {
         );
         collect_files(&dir, &mut files);
     }
+    assert!(
+        !files.is_empty(),
+        "no files found under amplifier-bundle/{{agents,skills,recipes}}"
+    );
     let catalogue = bundle.join("bundle.md");
     assert!(
         catalogue.is_file(),
@@ -173,7 +186,6 @@ fn bundle_has_no_blanket_no_merge_text() {
         catalogue.display()
     );
     files.push(catalogue);
-    assert!(!files.is_empty(), "no bundle files were scanned");
 
     let matcher = Matcher::new();
     let mut violations = Vec::new();
@@ -212,6 +224,8 @@ fn matcher_self_check() {
         "- NEVER auto-merge without permission",
         "- Never auto-merge: human approval always required",
         "Human Approval Always Required before merge",
+        // A needle without `merge` must still match a line without it.
+        "- Human approval always required",
         "PR is ready but NOT auto-merged.",
         "7. **MERGEABLE**: Ready to merge (but DON'T)",
         // Approval patterns.
