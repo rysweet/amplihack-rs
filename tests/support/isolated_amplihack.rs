@@ -119,35 +119,45 @@ pub fn shared_temp_home() -> &'static Path {
     })
 }
 
+/// The constant `self/environ` of every fake process table.
+pub const SELF_ENVIRON: &[u8] = b"AMPLIHACK_FAKE=1\0";
+
+/// Fill an existing directory `root` with the files every fake process
+/// table holds: `self/` (mode 0700) and `self/environ` (mode 0600) with
+/// [`SELF_ENVIRON`]. `self/environ` must exist, or the liveness scan reports
+/// "unsupported" and counts every profile as live. The one builder for both
+/// [`shared_empty_proc_root`] and `FakeProc` (issue #2042); panics on any
+/// I/O failure.
+pub fn seed_proc_tree(root: &Path) {
+    let dir = root.join("self");
+    DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
+    let environ = dir.join("environ");
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&environ)
+        .and_then(|mut f| f.write_all(SELF_ENVIRON))
+        .unwrap_or_else(|e| panic!("write {}: {e}", environ.display()));
+}
+
 /// An empty fake process table shared by this test process:
-/// `<shared_temp_home>/fake-proc/`, mode 0700, holding only `self/environ`
-/// (mode 0600) with the constant `AMPLIHACK_FAKE=1`. No pid entries, so the
-/// liveness scan sees no sessions and the rotator reads as stale or stopped.
-/// `self/environ` must exist, or the scan reports "unsupported" and counts
-/// every profile as live. Written once and never again: parallel tests share
-/// it. Removed with the shared HOME at exit.
+/// `<shared_temp_home>/fake-proc/`, mode 0700, seeded by [`seed_proc_tree`]
+/// and holding no pid entries, so the liveness scan sees no sessions and the
+/// rotator reads as stale or stopped. Written once and never again: parallel
+/// tests share it. Removed with the shared HOME at exit.
 pub fn shared_empty_proc_root() -> &'static Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {
         let root = shared_temp_home().join("fake-proc");
-        let private_dir = |path: &Path| {
-            DirBuilder::new()
-                .mode(0o700)
-                .create(path)
-                .unwrap_or_else(|e| panic!("create {}: {e}", path.display()));
-        };
-        private_dir(&root);
-        private_dir(&root.join("self"));
-        let environ = root.join("self/environ");
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&environ)
-            // Keep in step with SELF_ENVIRON and the 0700/0600 modes in
-            // crates/amplihack-cli/tests/support/fake_proc.rs.
-            .and_then(|mut f| f.write_all(b"AMPLIHACK_FAKE=1\0"))
-            .unwrap_or_else(|e| panic!("write {}: {e}", environ.display()));
+        DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .unwrap_or_else(|e| panic!("create {}: {e}", root.display()));
+        seed_proc_tree(&root);
         root
     })
 }

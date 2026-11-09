@@ -191,7 +191,7 @@ fn no_shell_no_kill_and_no_unsafe_file_helpers() {
     assert!(found.is_empty(), "{found:#?}");
 }
 
-/// S27: the seam is read in exactly one place.
+/// S27: no top-level agent file reads the seam (#2042 moved it to `procfs/root.rs`).
 #[test]
 fn the_proc_test_seam_is_read_once_and_undocumented() {
     let uses: Vec<String> = sources()
@@ -201,7 +201,7 @@ fn the_proc_test_seam_is_read_once_and_undocumented() {
             std::iter::repeat_n(n, k)
         })
         .collect();
-    assert_eq!(uses, ["procfs.rs"]);
+    assert_eq!(uses, Vec::<String>::new());
 }
 
 /// R10.2: no name from the earlier drafts; S27: no test seam for users.

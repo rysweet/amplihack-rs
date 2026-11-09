@@ -263,10 +263,10 @@ fn rotate_stop_cannot_signal_a_fake_rotator() {
     rotator(&fake, &f, true);
     let out = run_on(&f, fake.path(), &["profile", "rotate", "stop"]);
     assert!(!out.status.success(), "{}", report(&out));
-    // The existing error: the kernel refuses the signal with ESRCH, because
-    // no process can hold a pid above `pid_max`.
+    // `stop` checks the pid against the real `/proc` before it signals, and
+    // no process there can hold a pid above `pid_max`.
     assert!(
-        text(&out.stderr).contains("No such process"),
+        text(&out.stderr).contains("changed before it was signalled"),
         "{}",
         report(&out)
     );

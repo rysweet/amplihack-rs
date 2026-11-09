@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 const MAX_PID_FILE: usize = 32;
 
 pub use amplihack_utils::rotator_status::DaemonState;
+pub(super) use amplihack_utils::rotator_status::running_on_host;
 
 pub(super) fn daemon_err(msg: impl Into<String>) -> ProfileError {
     ProfileError::RotateDaemon(msg.into())

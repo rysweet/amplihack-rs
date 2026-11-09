@@ -3,8 +3,9 @@
 //!
 //! The tree is a `tempfile` directory under `std::env::temp_dir()`, created
 //! with mode 0700 whatever the umask and owned by this user, so it meets
-//! every condition of the binary's seam (`procfs::proc_root_from`, S27). It
-//! always holds `self/environ` = `AMPLIHACK_FAKE=1\0`; without it the
+//! every condition of the binary's seam (`procfs::resolve`, S27). It
+//! always holds `self/environ` = `AMPLIHACK_FAKE=1\0` (`seed_proc_tree`, shared
+//! with the empty tree in `isolated_amplihack.rs`); without it the
 //! liveness scan reports "unsupported" and every profile counts as live.
 //!
 //! Static pids lie in `FAKE_PID_BASE..=i32::MAX`. `FAKE_PID_BASE` is one
@@ -31,9 +32,7 @@ use std::path::{Path, PathBuf};
 /// One above the largest Linux `pid_max` (2^22).
 pub const FAKE_PID_BASE: u32 = 4_194_305;
 
-/// The constant `self/environ` of every fake tree.
-/// Keep in step with `shared_empty_proc_root` in `tests/support/isolated_amplihack.rs`.
-pub const SELF_ENVIRON: &[u8] = b"AMPLIHACK_FAKE=1\0";
+pub use crate::isolated_amplihack::SELF_ENVIRON;
 
 fn private_dir(path: &Path) {
     DirBuilder::new()
@@ -85,8 +84,7 @@ impl FakeProc {
             .permissions(std::fs::Permissions::from_mode(0o700))
             .tempdir_in(parent)
             .expect("create the fake proc root");
-        private_dir(&dir.path().join("self"));
-        private_file(&dir.path().join("self/environ"), SELF_ENVIRON);
+        crate::isolated_amplihack::seed_proc_tree(dir.path());
         Self { dir }
     }
 

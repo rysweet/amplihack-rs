@@ -38,7 +38,7 @@ tests in `crates/amplihack-cli/tests/`.
 All `/proc` reads in profile and sessions code go through one function,
 `commands::agent::procfs::proc_root()`. It returns `/proc`, or the directory
 named in `AMPLIHACK_TEST_PROC_ROOT` when every one of these holds (rule S27 in
-`procfs::proc_root_from`):
+`procfs::resolve`, in `crates/amplihack-cli/src/commands/agent/procfs/root.rs`):
 
 | Condition | Why |
 |-----------|-----|
@@ -47,9 +47,19 @@ named in `AMPLIHACK_TEST_PROC_ROOT` when every one of these holds (rule S27 in
 | It is a directory owned by the effective user | Another user cannot plant a tree. |
 | No other user can write to it | Another user cannot change a tree after it is checked. |
 
-If any condition fails, the code reads the real `/proc` and prints nothing.
-That is why the guard test described below checks the test side: a fixture
-that breaks a condition would otherwise read host processes and still pass.
+If any condition fails, the code reads the real `/proc`. A debug build, which
+is what every test runs, also prints one line to stderr, once per process:
+
+```text
+amplihack: AMPLIHACK_TEST_PROC_ROOT ignored (others can write the directory); reading /proc
+```
+
+The reason is one of: the test home guard is not set, the path does not
+exist, the path is not inside the temp dir, the path is not a directory,
+another user owns the directory, or others can write the directory. An unset
+or empty variable reads `/proc` with no line. Release builds print nothing.
+A test that does not look at stderr can still miss the line, which is why
+the guard test described below also checks the test side.
 
 The seam is compiled into every build, release included. It gives no new
 power: using it needs the home guard and a private directory you already own.
@@ -250,9 +260,11 @@ fs::write(&pid_file, format!("{}\n", FAKE_PID_BASE + 1)).unwrap();
 ```
 
 Without `exe_link` the same entry reads as a foreign rotator. `rotate stop`
-against either entry fails with its existing error text,
-`i/o error: No such process (os error 3)`, and keeps the pid file, because no
-signal can reach a pid above `pid_max`.
+against either entry fails with `the rotator (pid 4194306) changed before it
+was signalled` and keeps the pid file. Just before it signals, `stop` checks
+the pid against the real `/proc` (`rotator_status::running_on_host`), not the
+fake tree, so a fake tree can never choose a real pid to signal; no process
+there holds a pid above `pid_max`.
 
 ## Show a process the test started
 
@@ -314,15 +326,16 @@ starts beside a running, linked rotator.
 ## What the guard test checks
 
 `crates/amplihack-cli/tests/issue_2042_proc_root_guard.rs` spawns nothing. It
-has five tests:
+has six tests; the scanner itself is `tests/support/proc_root_scan.rs`:
 
 | Test | Checks |
 |------|--------|
 | 1 | `isolated(..)` sets `AMPLIHACK_TEST_PROC_ROOT` to a path that is not `/proc`, lies under the temp dir, is a 0700 directory owned by the effective user, and holds only `self/environ`. |
-| 2 | `procfs.rs` reads the variable under the name `AMPLIHACK_TEST_PROC_ROOT`, and its doc comment names the exceptions (`/proc/loadavg`, `util.rs`, `rotator_down`). |
+| 2 | `procfs/root.rs` reads the variable under the name `AMPLIHACK_TEST_PROC_ROOT`, and its doc comment names the exceptions (`/proc/loadavg`, `util.rs`, `rotator_down`, `running_on_host`). No other file under `src/` names the variable, apart from the resolver's unit tests. |
 | 3 | The routed production files in the table above contain no hard-coded `"/proc"`. `util.rs` is not checked; see [the exceptions](#what-still-reads-the-real-proc). |
 | 4 | Scans every `crates/amplihack-cli/tests/**/*.rs`, including `support/`, with the rules below and prints each finding as `file:line rule`. |
 | 5 | Runs the same scanner over in-memory samples: each bad sample gives exactly its own rule, and the good sample gives none. |
+| 6 | The scanner recognises each form of function declaration listed below, and nothing else. |
 
 The scanner rules:
 
@@ -332,7 +345,7 @@ The scanner rules:
 | (b) | `env_remove("AMPLIHACK_TEST_PROC_ROOT")` or `env_remove(PROC_ROOT_ENV)`. |
 | (c) | The variable set to `"/proc"`. |
 | (d) | `env_clear()` in a function that builds an amplihack command, in a file that runs `profile` or `sessions`, with no call to `reapply_proc_root` and no `PROC_ROOT_ENV` after it. `sessions` counts because `sessions/live.rs` reads the process table through the same seam. |
-| (e) | `link_own(..)` with an integer literal, or in a file that neither spawns a process nor runs `rotate start`. |
+| (e) | `link_own(..)` with an integer literal, or in a function that neither spawns a process nor runs `rotate start`. |
 
 The wording of rule (e) is fixed here, and the guard must match it. If the
 guard needs a different rule, change this table and the samples in test 5
@@ -344,8 +357,10 @@ Run it on its own:
 RUST_TEST_THREADS=8 cargo test -p amplihack-cli --test cli_integration issue_2042
 ```
 
-The scanner matches text and splits functions at lines starting with `fn`,
-`pub fn` or `pub(crate) fn`, like the other source-scan guards. It can be
+The scanner matches text and splits functions at lines that declare one:
+`fn`, after any visibility (`pub`, `pub(crate)`, `pub(super)`, `pub(in ..)`)
+and any of `async`, `const` and `unsafe`. Lines before the first function
+form a chunk of their own. Rules (a), (d) and (e) apply per function. It can be
 wrong about code split oddly across lines. Fix a false finding by moving the
 code so it reads plainly (for example, `link_own` next to its `spawn`), not by
 adding an exception.
@@ -354,6 +369,9 @@ adding an exception.
 direction: through the real fixtures, `auto-switch status`, `switch`,
 `rotate status` and `rotate stop` give one result with a marked fake process
 and another with the empty tree. It asserts only on output and exit status.
+`issue_2042_seam_dry_run_and_refusal.rs` does the same for `rotate --dry-run`,
+and checks that a refused tree gives the stderr line above and an accepted
+one does not.
 
 ## What still reads the real `/proc`
 
@@ -363,6 +381,7 @@ and another with the empty tree. It asserts only on output and exit status.
 | `/proc/loadavg` | One file, no other process's data. |
 | `proc_children` and `proc_stat_ppid` in `crates/amplihack-cli/src/util.rs` | They find the binary's own descendants to send `SIGTERM` and `SIGKILL` after a timeout. With a fake root, real descendants would be left running and fake pids would be signalled on the host. |
 | `amplihack-utils::rotator_down` | Outside the CLI crate; unchanged. |
+| `amplihack-utils::running_on_host`, called by `rotate stop` just before it signals | The pid it confirms is signalled, so a fake tree must not choose it. Discovery and `rotate status` still read the fake tree. |
 | Governor, cleanup, recipe and launch scans | Not reached by `profile` tests. If one is, that call site alone moves to `proc_root()`. |
 
 Agent code is not in this table: `agent/pass.rs`, `register.rs` and
@@ -374,7 +393,7 @@ Agent code is not in this table: `agent/pass.rs`, `register.rs` and
 |---------|-------|-----|
 | Guard finding `(a)` | The test builds the command with `Command::new`. | Use `isolated(..)`, or set `PROC_ROOT_ENV` yourself. |
 | Guard finding `(d)` | `env_clear()` with no reapply. | Call `reapply_proc_root(&mut cmd)` straight after it. |
-| A profile is live with the empty tree | The child read the real `/proc`: its `TMPDIR` changed, the home guard is missing, or the tree is not private. | Keep `TMPDIR` at `std::env::temp_dir()`, keep the guard, create the tree with `FakeProc`. |
+| A profile is live with the empty tree, or stderr has `AMPLIHACK_TEST_PROC_ROOT ignored (..)` | The child read the real `/proc`: its `TMPDIR` changed, the home guard is missing, or the tree is not private. The stderr line names which. | Keep `TMPDIR` at `std::env::temp_dir()` (or use `FakeProc::new_in` under the child's temp dir), keep the guard, create the tree with `FakeProc`. Fix the fixture; do not hide the line. |
 | Every profile is live | The tree has no `self/environ`, so liveness reports "unsupported". | Use `FakeProc::new()` or the shared tree; both write it. |
 | A fake rotator reads as foreign | The entry has no `exe` link. | Add `.exe_link(<binary under test>)`. |
 | `rotate status` reports `Stale` for a daemon the test started | Its pid is not in the fake tree. | `fake.link_own(pid)` with the pid from the pid file. |

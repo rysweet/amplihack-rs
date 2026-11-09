@@ -24,7 +24,13 @@ const ID: &str = "4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10";
 /// without stopping it, so none outlives its temporary HOME. It also owns
 /// the test's fake process table (issue #2042), so the tree outlives every
 /// command that reads it.
-struct Reaper(PathBuf, FakeProc);
+struct Reaper(
+    /// The fixture's pid file.
+    PathBuf,
+    /// The fake process table every command of the test reads; dropped
+    /// with the reaper, after the last command.
+    FakeProc,
+);
 
 impl Drop for Reaper {
     fn drop(&mut self) {

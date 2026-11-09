@@ -15,7 +15,13 @@ use std::time::Duration;
 /// Kills whatever pid the fixture's pid file names when a test fails, so no
 /// rotator outlives its temporary HOME. It also owns the test's fake process
 /// table (issue #2042), so the tree outlives every command that reads it.
-struct Reaper(PathBuf, FakeProc);
+struct Reaper(
+    /// The fixture's pid file.
+    PathBuf,
+    /// The fake process table every command of the test reads; dropped
+    /// with the reaper, after the last command.
+    FakeProc,
+);
 
 /// A fake process table for `f`'s commands, owned by the returned reaper.
 fn reaper(f: &Fixture) -> Reaper {
