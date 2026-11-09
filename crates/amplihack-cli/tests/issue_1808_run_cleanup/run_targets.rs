@@ -172,7 +172,9 @@ fn ac6_linked_target_on_a_second_disk_is_removed_with_its_link() {
     std::os::unix::fs::symlink(&dest, &link).unwrap();
     fx.seed_run(&SeedRun::ended(1).owns_new_target(&link, "created", &checkout));
 
-    // Without the setting the link is reported and left alone.
+    // Without the setting the link is reported and left alone: the
+    // destination's name is not the host cargo wrapper's layout, so no
+    // folder is derived from it.
     let out = fx.cleanup_with(&["--apply", "--format", "json"], |c| {
         c.env_remove("AMPLIHACK_TARGET_LINK_ROOTS");
     });
@@ -195,6 +197,36 @@ fn ac6_linked_target_on_a_second_disk_is_removed_with_its_link() {
     assert!(!present(&dest), "destination removed");
     assert!(!present(&link), "link removed");
     assert!(disk.is_dir(), "the allowed root itself stays");
+}
+
+/// Issue #2039 fix item 1: a link laid out by the host cargo wrapper
+/// (`<parent>/<name> -> <disk>/<basename of parent>-<name>-<12 hex>`) is
+/// followed with no `AMPLIHACK_TARGET_LINK_ROOTS` set, so the motivating host
+/// frees its second-disk targets with default settings.
+#[test]
+fn wrapper_linked_target_is_removed_without_link_roots() {
+    let fx = Fx::new();
+    let disk = fx.root.join("d0/cargo-targets");
+    mkdir_0700(&disk);
+    let checkout = fx.root.join("gone-checkout");
+    let name = hook_target_name(&checkout);
+    let dest = cargo_target_at(&disk.join(format!("targets-{name}-f5e95e09b016")));
+    let link = fx.work.join("targets").join(&name);
+    fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&dest, &link).unwrap();
+    fx.seed_run(&SeedRun::ended(1).owns_new_target(&link, "created", &checkout));
+
+    let out = fx.cleanup_with(&["--apply", "--format", "json"], |c| {
+        c.env_remove("AMPLIHACK_TARGET_LINK_ROOTS");
+    });
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let e = entry_for(&report, &link);
+    assert_eq!(e["action"], "removed", "{e:#}");
+    assert_eq!(reason(&e), "checkout gone");
+    assert!(!present(&dest), "destination removed");
+    assert!(!present(&link), "link removed");
+    assert!(disk.is_dir(), "the folder holding it stays");
 }
 
 /// D7: an entry of `AMPLIHACK_TARGET_LINK_ROOTS` that is `$HOME` is ignored,

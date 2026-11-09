@@ -238,17 +238,30 @@ allowed root. The allowed roots are:
 
 - the managed roots: `<work root>/targets` and the XDG cache root
   `${XDG_CACHE_HOME:-$HOME/.cache}/amplihack`;
-- each entry of `AMPLIHACK_TARGET_LINK_ROOTS`.
+- each entry of `AMPLIHACK_TARGET_LINK_ROOTS`;
+- for a link with the host cargo wrapper's layout only, the folder that holds
+  its destination.
 
-`AMPLIHACK_TARGET_LINK_ROOTS` is a colon-separated list of absolute folders.
-It has no default. Set it in the environment of every `amplihack` process
-that may clean up, for example in your shell profile:
+The host cargo wrapper names a moved target
+`<disk>/<name of the link's folder>-<target name>-<12 lowercase hex>`, for
+example
+`/d0/ryan/cargo-targets/amplihack-amplihack-precommit-target-0e047858ba2f-f5e95e09b016`
+for `~/.cache/amplihack/amplihack-precommit-target-0e047858ba2f`. When the
+destination's name is exactly that, built from the link's own name, its
+folder is allowed for that link without any setting, provided the folder
+passes the entry checks below. So candide's `/d0/ryan/cargo-targets` links
+are removed with default settings.
+
+`AMPLIHACK_TARGET_LINK_ROOTS` is a colon-separated list of absolute folders,
+for links with any other layout. It is unset by default. Set it in the
+environment of every `amplihack` process that may clean up, for example in
+your shell profile:
 
 ```bash
-export AMPLIHACK_TARGET_LINK_ROOTS=/d0/ryan/cargo-targets
+export AMPLIHACK_TARGET_LINK_ROOTS=/mnt/build/cargo-targets
 ```
 
-Each entry is resolved to its canonical path. An entry is ignored, with one
+Each entry, and each folder derived from a wrapper link, is resolved to its canonical path. An entry is ignored, with one
 warning naming it, when it:
 
 - is empty or relative;
@@ -262,9 +275,9 @@ create a Cargo-shaped folder in it, and cleanup will remove that folder if a
 link you own points at it. Use mode `0755` or `0700` if that matters on your
 host.
 
-Without the variable, a link to another disk is reported as
-`link not followed: outside allowed roots` and left alone, with its
-destination. The other rules for linked targets are in
+A link to another disk that is neither in the variable nor in the wrapper's
+layout is reported as `link not followed: outside allowed roots` and left
+alone, with its destination. The other rules for linked targets are in
 [Linked targets](../howto/clean-up-after-recipe-runs.md#linked-targets).
 
 The wrapper's own TTL reclaim, described next, is separate. It does not read

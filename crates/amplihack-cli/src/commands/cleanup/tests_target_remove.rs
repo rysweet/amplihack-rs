@@ -39,7 +39,7 @@
 
 use super::super::*;
 // Named explicitly: `sweep` also has a `Refusal` (from `execute.rs`).
-use super::{LinkRoots, Refusal, RemoveError, Shape, inspect, remove};
+use super::{LinkRoots, Refusal, RemoveError, Shape, inspect, is_wrapper_redirect, remove};
 use std::ffi::OsString;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -147,6 +147,16 @@ impl Fx {
         allow_dangling: bool,
     ) -> Result<(), RemoveError> {
         remove(path, expected, &self.roots(), links, allow_dangling)
+    }
+
+    /// `<parent>/<name>` linked the way the host cargo wrapper links it: to
+    /// `<folder>/<basename of parent>-<name>-<12 hex>`, a cargo-shaped folder.
+    fn wrapper_linked(&self, parent: &Path, folder: &Path, name: &str) -> (PathBuf, PathBuf) {
+        let base = parent.file_name().unwrap().to_str().unwrap();
+        let dest = cargo_dir(&folder.join(format!("{base}-{name}-f5e95e09b016")));
+        let link = parent.join(name);
+        symlink(&dest, &link).unwrap();
+        (link, dest)
     }
 
     /// `targets/<name>` linked to `disk/<name>`, a cargo-shaped folder.
@@ -430,7 +440,7 @@ fn link_roots_reject_unsafe_entries_and_accept_group_writable() {
 }
 
 #[test]
-fn link_roots_have_no_default_and_reject_foreign_owned_entries() {
+fn link_roots_without_the_variable_are_the_managed_roots_and_reject_foreign_owned_entries() {
     let fx = Fx::new();
     let none = LinkRoots::parse(&fx.roots(), None, Some(fx.home.as_path()), euid());
     assert_eq!(
@@ -659,4 +669,151 @@ fn target_remove_has_no_timers_retries_or_blocking_locks() {
             );
         }
     }
+}
+
+// ----- host cargo wrapper links (issue #2039, fix item 1) -------------------------
+
+/// The layout candide's cargo wrapper makes is followed with no
+/// `AMPLIHACK_TARGET_LINK_ROOTS`, from either managed root, and removal takes
+/// the destination and the link.
+#[test]
+fn wrapper_link_is_followed_and_removed_without_link_roots() {
+    let fx = Fx::new();
+    for parent in [fx.targets.clone(), fx.hook_base.clone()] {
+        let (link, dest) = fx.wrapper_linked(&parent, &fx.disk, NAME);
+        let shape = fx.inspect(&link, &fx.no_links(), false).unwrap();
+        assert_eq!(shape, Shape::Link { dest: dest.clone() });
+        fx.remove(&link, &shape, &fx.no_links(), false).unwrap();
+        assert!(!exists_no_follow(&dest), "destination removed");
+        assert!(!exists_no_follow(&link), "link removed");
+        assert!(fx.disk.is_dir(), "the folder holding it stays");
+    }
+}
+
+/// A held `.cargo-lock` still stops removal of a wrapper link.
+#[test]
+fn wrapper_link_in_use_is_kept() {
+    let fx = Fx::new();
+    let (link, dest) = fx.wrapper_linked(&fx.targets, &fx.disk, NAME);
+    let shape = fx.inspect(&link, &fx.no_links(), false).unwrap();
+    let _held = hold(&dest.join("debug/.cargo-lock"));
+    assert_eq!(
+        refusal_text(fx.remove(&link, &shape, &fx.no_links(), false)),
+        IN_USE
+    );
+    assert!(dest.join("debug/blob").exists() && exists_no_follow(&link));
+}
+
+/// Only the wrapper's exact name is derived: the entry's own name between the
+/// parent's basename and a 12-hex key. Anything else needs the variable.
+#[test]
+fn names_that_are_not_the_wrapper_layout_are_not_followed() {
+    let fx = Fx::new();
+    let base = fx
+        .targets
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let wrong = [
+        // Another checkout's hash.
+        format!("{base}-{OTHER}-f5e95e09b016"),
+        // Same name as the entry, no key.
+        NAME.to_string(),
+        // Key too short, too long, upper case.
+        format!("{base}-{NAME}-f5e95e09b01"),
+        format!("{base}-{NAME}-f5e95e09b0160"),
+        format!("{base}-{NAME}-F5E95E09B016"),
+        // Wrong parent basename.
+        format!("amplihack-{NAME}-f5e95e09b016"),
+    ];
+    for (i, dest_name) in wrong.iter().enumerate() {
+        let dest = cargo_dir(&fx.disk.join(dest_name));
+        let link = fx.targets.join(NAME);
+        symlink(&dest, &link).unwrap();
+        assert_eq!(
+            link_reason(fx.inspect(&link, &fx.no_links(), false)),
+            "link not followed: outside allowed roots",
+            "case {i}: {dest_name}"
+        );
+        fs::remove_file(&link).unwrap();
+    }
+    // An entry that is not a hook target name is never derived.
+    let odd = "some-cache";
+    let dest = cargo_dir(&fx.disk.join(format!("{base}-{odd}-f5e95e09b016")));
+    assert!(!is_wrapper_redirect(
+        &fx.targets.join(odd),
+        &dest,
+        &fx.no_links()
+    ));
+}
+
+/// The derived folder must pass the same checks as an entry of
+/// `AMPLIHACK_TARGET_LINK_ROOTS`.
+#[test]
+fn wrapper_link_into_an_unsafe_folder_is_not_followed() {
+    let fx = Fx::new();
+    // $HOME itself.
+    let (link, dest) = fx.wrapper_linked(&fx.targets, &fx.home, NAME);
+    assert_eq!(
+        link_reason(fx.inspect(&link, &fx.no_links(), false)),
+        "link not followed: outside allowed roots"
+    );
+    assert!(dest.join("debug/blob").exists());
+    fs::remove_file(&link).unwrap();
+
+    // Writable by others without the sticky bit.
+    let open = fx.root.join("open");
+    fs::create_dir_all(&open).unwrap();
+    fs::set_permissions(&open, fs::Permissions::from_mode(0o777)).unwrap();
+    let (link, dest) = fx.wrapper_linked(&fx.targets, &open, NAME);
+    assert_eq!(
+        link_reason(fx.inspect(&link, &fx.no_links(), false)),
+        "link not followed: outside allowed roots"
+    );
+    assert!(dest.join("debug/blob").exists());
+    fs::remove_file(&link).unwrap();
+
+    // Group-writable is accepted, as for a listed entry (`/d0/ryan/cargo-targets`
+    // is 0775 on candide).
+    let group = fx.root.join("group");
+    fs::create_dir_all(&group).unwrap();
+    fs::set_permissions(&group, fs::Permissions::from_mode(0o775)).unwrap();
+    let (link, dest) = fx.wrapper_linked(&fx.targets, &group, NAME);
+    assert_eq!(
+        fx.inspect(&link, &fx.no_links(), false).unwrap(),
+        Shape::Link { dest }
+    );
+
+    // A folder owned by another uid: checked with a different caller uid.
+    let other = LinkRoots::parse(
+        &fx.roots(),
+        None,
+        Some(fx.home.as_path()),
+        euid().wrapping_add(1),
+    );
+    let dest = fs::canonicalize(fs::read_link(&link).unwrap()).unwrap();
+    assert!(!is_wrapper_redirect(
+        &fs::canonicalize(&fx.targets).unwrap().join(NAME),
+        &dest,
+        &other
+    ));
+}
+
+/// A wrapper-named destination that is not Cargo-shaped is still refused.
+#[test]
+fn wrapper_link_to_a_folder_that_is_not_cargo_shaped_is_refused() {
+    let fx = Fx::new();
+    let base = fx.targets.file_name().unwrap().to_str().unwrap();
+    let dest = fx.disk.join(format!("{base}-{NAME}-f5e95e09b016"));
+    fs::create_dir_all(dest.join("src")).unwrap();
+    fs::write(dest.join("src/lib.rs"), "").unwrap();
+    let link = fx.targets.join(NAME);
+    symlink(&dest, &link).unwrap();
+    assert_eq!(
+        link_reason(fx.inspect(&link, &fx.no_links(), false)),
+        "link not followed: not a cargo target"
+    );
+    assert!(dest.join("src/lib.rs").exists());
 }

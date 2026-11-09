@@ -11,6 +11,7 @@
 //! lock is reported and the target is left for a later sweep.
 
 use super::*;
+use crate::commands::cleanup::targets::is_hook_target_name;
 use std::ffi::OsStr;
 use std::fmt;
 use std::os::fd::AsRawFd;
@@ -117,10 +118,13 @@ impl From<Refusal> for RemoveError {
 
 /// The folders a linked target may point into: the managed roots plus the
 /// accepted entries of `AMPLIHACK_TARGET_LINK_ROOTS`, all canonical. `uid` is
-/// the user every ownership check compares with.
+/// the user every ownership check compares with. `home` (canonical) is kept
+/// so a folder derived from a host cargo wrapper link (see
+/// [`is_wrapper_redirect`]) gets the same safety checks as a listed entry.
 #[derive(Debug, Clone)]
 pub(super) struct LinkRoots {
     allowed: Vec<PathBuf>,
+    home: Option<PathBuf>,
     uid: u32,
 }
 
@@ -137,7 +141,11 @@ impl LinkRoots {
     /// entry is ignored, with a warning, when it is empty, relative, cannot be
     /// resolved, is `/`, is `home` or one of its ancestors, is not owned by
     /// `uid`, or is writable by others without the sticky bit. Group write is
-    /// allowed. There is no built-in default.
+    /// allowed.
+    ///
+    /// The variable is not the only way a second disk is reached: a link
+    /// laid out by the host cargo wrapper is followed without it, see
+    /// [`is_wrapper_redirect`].
     pub(super) fn parse(
         managed: &ManagedRoots,
         value: Option<&OsStr>,
@@ -166,7 +174,7 @@ impl LinkRoots {
                 ),
             }
         }
-        Self { allowed, uid }
+        Self { allowed, home, uid }
     }
 
     pub(super) fn allowed(&self) -> &[PathBuf] {
@@ -323,7 +331,7 @@ pub(super) fn inspect_entry(
     let direct_child = dest
         .parent()
         .is_some_and(|parent| links.allowed().iter().any(|root| root == parent));
-    if !direct_child {
+    if !direct_child && !is_wrapper_redirect(&at, &dest, links) {
         return Err(Refusal::Link(LinkReason::OutsideAllowedRoots));
     }
     if dest_meta.uid() != links.uid {
@@ -334,6 +342,74 @@ pub(super) fn inspect_entry(
     }
     Ok(Shape::Link { dest })
 }
+
+/// Whether the link at `at` is the host cargo wrapper's redirect of a hook
+/// target to another disk, so its destination may be followed without
+/// `AMPLIHACK_TARGET_LINK_ROOTS` (issue #2039, fix item 1).
+///
+/// The wrapper replaces a new target `<parent>/<name>` that would sit on the
+/// root disk with a link to `<disk>/<basename of parent>-<name>-<key>`, where
+/// `<key>` is 12 lowercase hex characters, for example
+/// `~/.cache/amplihack/amplihack-precommit-target-0e047858ba2f ->
+/// /d0/ryan/cargo-targets/amplihack-amplihack-precommit-target-0e047858ba2f-f5e95e09b016`.
+///
+/// All of these must hold:
+/// - the entry name is a hook target name
+///   (`amplihack-precommit-target-` plus 12 hex characters);
+/// - the destination name is exactly `<basename of the entry's parent>-<entry
+///   name>-<12 lowercase hex>`, so it carries the checkout's own hash;
+/// - the destination's folder passes every check an entry of
+///   `AMPLIHACK_TARGET_LINK_ROOTS` must pass: not `/`, not `$HOME` or one of
+///   its parents, owned by the caller, not writable by others without the
+///   sticky bit.
+///
+/// The caller has already required one link step, a real folder at the
+/// destination, and still requires the caller's ownership and a Cargo-shaped
+/// destination after this returns.
+pub(super) fn is_wrapper_redirect(at: &Path, dest: &Path, links: &LinkRoots) -> bool {
+    let Some(entry) = at.file_name().and_then(OsStr::to_str) else {
+        return false;
+    };
+    if !is_hook_target_name(entry) {
+        return false;
+    }
+    let Some(base) = at
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(OsStr::to_str)
+    else {
+        return false;
+    };
+    let Some(dest_name) = dest.file_name().and_then(OsStr::to_str) else {
+        return false;
+    };
+    let Some(key) = dest_name
+        .strip_prefix(base)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .and_then(|rest| rest.strip_prefix(entry))
+        .and_then(|rest| rest.strip_prefix('-'))
+    else {
+        return false;
+    };
+    if key.len() != WRAPPER_KEY_LEN || !key.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return false;
+    }
+    let Some(folder) = dest.parent() else {
+        return false;
+    };
+    match accept_root(folder, links.home.as_deref(), links.uid) {
+        Ok(root) => root == folder,
+        Err(why) => {
+            tracing::debug!(folder = %folder.display(), "wrapper link folder refused: {why}");
+            false
+        }
+    }
+}
+
+/// Length of the hex key the host cargo wrapper appends to a redirected
+/// target's name.
+const WRAPPER_KEY_LEN: usize = 12;
 
 /// Takes `LOCK_EX | LOCK_NB` on `lock` when it is a real file. `Ok(None)`
 /// when there is no lock file. A linked lock is `InUse`: cargo never makes

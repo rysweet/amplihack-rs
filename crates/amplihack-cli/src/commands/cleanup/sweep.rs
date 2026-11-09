@@ -1306,6 +1306,13 @@ impl Collector<'_> {
 /// The D4 table of issue #2039 for a five-field target line: the removal
 /// reason and, for rule (a), the checkout that must be gone at apply time; or
 /// the reason the target is kept.
+///
+/// This deliberately narrows issue #2039's first acceptance line ("after a
+/// run ends, its target is gone") to "gone when the run's worktree is
+/// removed": while a worktree is kept, such as an auto-drive PR worktree, its
+/// target is kept too (`worktree kept`), because the next commit there would
+/// otherwise rebuild it from nothing. See "When a target is removed" in
+/// `docs/howto/clean-up-after-recipe-runs.md`.
 fn new_target_verdict(
     checkout: &Path,
     origin: TargetOrigin,

@@ -68,7 +68,7 @@ for these settings.
 | `AMPLIHACK_LOG_ARCHIVE_DAYS` | `--log-days N` | `30` | Recipe logs and session logs whose modification time is older than this are archived. Maximum `36500`. |
 | `AMPLIHACK_LOG_ARCHIVE_DIR` | none | `<work root>/archive` | Where log archives and `MANIFEST.jsonl` are written. |
 | `AMPLIHACK_CLEANUP_ON_EXIT` | none | `1` | Set to `0` to skip the end-of-run sweep. The run's `runtime/` folder is still removed. |
-| `AMPLIHACK_TARGET_LINK_ROOTS` | none | unset | Colon-separated absolute folders where linked targets may point. See [Linked targets](#linked-targets). |
+| `AMPLIHACK_TARGET_LINK_ROOTS` | none | unset | Extra colon-separated absolute folders where linked targets may point. Not needed for links made by the host cargo wrapper. See [Linked targets](#linked-targets). |
 
 Recipe logs stay in `recipe.log_dir` (default `~/.amplihack/recipe-logs`).
 The work root does not change where they are written.
@@ -445,6 +445,14 @@ that `git worktree remove` refused, keeps the target with the reason
 Every removal, whatever the event, also needs the checks in
 [Safety rules](#safety-rules), including a free `.cargo-lock`.
 
+Issue #2039 asked that a run's target be gone when the run ends. Cleanup
+instead removes it when the run's worktree is removed (events a and c). While
+the worktree is kept, for example an auto-drive PR worktree waiting for
+review, its target stays, because the next commit in that worktree would
+otherwise rebuild it from nothing (2-5 GB of build output). The target goes
+in the same sweep that removes the worktree, or when the checkout folder is
+deleted by any other means (event b).
+
 Example: a run builds in a new worktree for `feat/issue-2039`, commits, and
 its PR merges. At the next sweep the worktree passes its checks and is
 removed, and its target goes with it in the same sweep:
@@ -479,7 +487,8 @@ both when the plan is made and again just before removal:
 - the link points in one step at a real folder: not dangling, not at another
   link, with no link anywhere in the destination's path;
 - the destination is a direct child of an allowed root (see below), not the
-  root itself;
+  root itself, or the link has the host cargo wrapper's layout (see
+  [Links made by the host cargo wrapper](#links-made-by-the-host-cargo-wrapper));
 - the destination is owned by you;
 - the destination looks like a Cargo target: a `CACHEDIR.TAG` with Cargo's
   signature, a `.rustc_info.json`, or `<profile>/.fingerprint` or
@@ -491,12 +500,30 @@ The allowed roots are `<work root>/targets`, the hook's XDG cache folder, and
 the folders in `AMPLIHACK_TARGET_LINK_ROOTS`:
 
 ```bash
-export AMPLIHACK_TARGET_LINK_ROOTS=/d0/ryan/cargo-targets
+export AMPLIHACK_TARGET_LINK_ROOTS=/mnt/build/cargo-targets
 amplihack cleanup --only run-target
 ```
 
-On candide, the targets are linked into `/d0/ryan/cargo-targets`, so this
-variable must be set there before cleanup removes them. Entries that are
+### Links made by the host cargo wrapper
+
+A host cargo wrapper, such as the one on candide, moves a new target off the
+root disk and leaves a link in its place:
+
+```text
+~/.cache/amplihack/amplihack-precommit-target-0e047858ba2f
+  -> /d0/ryan/cargo-targets/amplihack-amplihack-precommit-target-0e047858ba2f-f5e95e09b016
+```
+
+Cleanup follows such a link with no setting. The destination's name must be
+exactly `<name of the link's folder>-<target name>-<12 lowercase hex>`, so it
+carries the checkout's own hash, and the folder that holds the destination
+must pass the same checks as an entry of `AMPLIHACK_TARGET_LINK_ROOTS`
+(below). Every other rule in this list still applies. On candide, therefore,
+`AMPLIHACK_TARGET_LINK_ROOTS` does not need to be set; it is only for links
+with some other layout.
+
+Entries of `AMPLIHACK_TARGET_LINK_ROOTS`, and the folder derived from a
+wrapper link, that are
 `/`, your home folder or one of its parents, relative, missing, owned by
 someone else, or writable by others without the sticky bit are ignored with a
 warning. The full rules are in
@@ -507,7 +534,7 @@ entry is skipped with one of these reasons:
 
 | Reason | Meaning |
 | --- | --- |
-| `link not followed: outside allowed roots` | The destination is not a direct child of an allowed root. Set `AMPLIHACK_TARGET_LINK_ROOTS`. |
+| `link not followed: outside allowed roots` | The destination is not a direct child of an allowed root, and its name is not the host cargo wrapper's layout, or its folder failed the root checks. Set `AMPLIHACK_TARGET_LINK_ROOTS`. |
 | `link not followed: not a cargo target` | The destination does not look like a Cargo target. |
 | `link not followed: link chain` | The link points at another link, or the destination's path contains one. |
 | `link not followed: foreign owner` | The link or the destination belongs to another user. |
@@ -1026,11 +1053,14 @@ PR state.
 end-of-run sweep is running. Wait for it to finish and run the command again.
 
 **A linked target is skipped with `link not followed: outside allowed roots`.**
-The link points at a disk that is not in `AMPLIHACK_TARGET_LINK_ROOTS`. Add
-the folder that holds the destinations, for example
-`export AMPLIHACK_TARGET_LINK_ROOTS=/d0/ryan/cargo-targets`, and run cleanup
+The link points at a disk that is not in `AMPLIHACK_TARGET_LINK_ROOTS`, and
+the destination's name is not the host cargo wrapper's layout. Add the folder
+that holds the destinations, for example
+`export AMPLIHACK_TARGET_LINK_ROOTS=/mnt/build/cargo-targets`, and run cleanup
 again. If cleanup prints a warning that it ignored the entry, check that the
-folder exists, is owned by you, and is not writable by others.
+folder exists, is owned by you, and is not writable by others. A wrapper
+link with this reason means the folder holding its destination failed those
+same checks.
 
 **A target is skipped with `in use: .cargo-lock is held`.** A Cargo build is
 using it. The next sweep looks at it again; nothing needs to be done.
