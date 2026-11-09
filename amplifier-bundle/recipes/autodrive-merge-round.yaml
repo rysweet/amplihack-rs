@@ -54,7 +54,7 @@ steps:
         echo "[skip] not a git repo; the git toplevel is not searched for the auto-drive tools" >&2
       fi
       NEED="autodrive_merge_ready_files.sh autodrive_platform_facts.sh autodrive_round_evidence.sh"
-      NEED="${NEED} autodrive_state.sh autodrive_trust.sh git-identity.sh"
+      NEED="${NEED} autodrive_state.sh autodrive_trust.sh git-identity.sh git-repo-env.sh"
       for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
         [ -n "$c" ] || continue
         D="$c/amplifier-bundle/tools"; SEARCHED="${SEARCHED}${SEARCHED:+, }${D}"; OK="true"
@@ -358,7 +358,7 @@ steps:
       so nothing is staged or committed outside the PR's linked worktree on its head branch (#1528).
       ```bash
       cd "{{repo_path}}" || { echo "STOP: cannot enter the PR worktree (#1528)" >&2; exit 1; }
-      unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO
+      unset GH_REPO; [ ! -L "{{autodrive_tools_dir}}/git-repo-env.sh" ] && . "{{autodrive_tools_dir}}/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }
       bash "{{autodrive_launch_tools}}/autodrive_worktree_guard.sh" commit-dir {{pr_number}} || { echo "STOP: not the PR's linked worktree on its head branch; never stage or commit in the main checkout or another checkout (#1528)" >&2; exit 1; }
       # Commit as the workflow's identity (issue #1394), sourced in THIS block from step-00-tools-dir's git-identity.sh.
       . "{{autodrive_tools_dir}}/git-identity.sh" || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }

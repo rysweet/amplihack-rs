@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-11-05
+last_updated: 2026-11-09
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -2005,6 +2005,15 @@ re-review.
 
 #### Running the suite commands
 
+Before it enters the repository, the tool sources
+[`git-repo-env.sh`](git-repo-env-helper.md) from its own directory and
+clears `GIT_DIR`, `GIT_WORK_TREE` and the other ten git repository selectors,
+and the outer run's `AMPLIHACK_RECIPE_RUN_ID`, `AMPLIHACK_RUN_DIR`,
+`AMPLIHACK_RUN_ID`, `AMPLIHACK_SESSION_TREE_DIR` and `AMPLIHACK_TREE_ID`. A
+suite's `git` commands therefore act on the repository they run in, never on
+a repository an inherited variable names (#2033). A missing or symlinked
+helper stops the tool with `autodrive-qa-helpers-not-found` and no evidence.
+
 The detected Cargo command is the same `--locked` command at every depth, so
 a nested workspace without a `Cargo.lock` fails with `qa-command-failed`.
 That is a QA failure; commit the lock file.
@@ -2115,6 +2124,7 @@ written under `umask 077`. A failed temporary file gives
 | `gadugi_scenario_dir`, `qa_scenarios`, `gadugi_failed_scenarios` | The directory, the counted files, the failed files; relative to the repository root. Where gadugi is not required, the directory is `""`, and in a `rust-cli` repository `qa_scenarios` lists `tests/parity/scenarios/*.yaml` under the detected workspace directory (`.` at the root, `x/y` when nested), not under `qa_dir`. |
 | `gadugi_scenario_count`, `gadugi_scenarios_validated`, `gadugi_scenarios_run`, `gadugi_scenarios_passed`, `gadugi_scenarios_failed` | Files found; that count if validate passed, else `"0"`; runs; passes; failures, counting unnamed, unstaged and (after validate) symlinked or non-regular entries. |
 | `gadugi_scenario_results` | `<file>=<result>` per entry (`PASS`, `FAIL`, or `INVALID` for not run), sorted, from `autodrive_scenario_results`. Informational only. |
+| `git_env_cleared`, `run_env_cleared` | The `GIT_*` repository selectors and outer-run `AMPLIHACK_*` names that were set when the tool started and that it cleared before any `cd`, `git` or suite command, in list order, separated by spaces; `none` when nothing was set. Names only, never values. See the [Git Repository Environment Helper](git-repo-env-helper.md) (#2033). |
 
 For `NO_SCENARIOS`, `VALIDATE_FAILED`, `RUN_FAILED`, or step-02's
 `qa-team-scenarios-do-not-cover-the-change`, step-04 uses `qa-team` and
@@ -4512,7 +4522,7 @@ commit, push.
 
 ```bash
 cd "{{repo_path}}" || { echo "STOP: cannot enter the PR worktree (#1528)" >&2; exit 1; }
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO
+unset GH_REPO; [ ! -L "{{autodrive_tools_dir}}/git-repo-env.sh" ] && . "{{autodrive_tools_dir}}/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }
 bash "{{autodrive_launch_tools}}/autodrive_worktree_guard.sh" commit-dir {{pr_number}} || { echo "STOP: not the PR's linked worktree on its head branch; never stage or commit in the main checkout or another checkout (#1528)" >&2; exit 1; }
 # … source git-identity.sh (issue #1394) …
 amplihack_prepare_git_commit_identity || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }
@@ -4525,7 +4535,7 @@ git push || { echo "STOP: the push failed (#1528)" >&2; exit 1; }
 
 | Line | Why |
 | --- | --- |
-| `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO` | An inherited `GIT_DIR` would make the main checkout the current repository, and `GIT_INDEX_FILE` would make `git add` and `git commit` use an index the guard never read. An inherited `GH_REPO` would make `gh pr view` ask a different repository than the `origin` the push goes to. |
+| `unset GH_REPO; … git-repo-env.sh … amplihack_clear_git_repo_env && amplihack_clear_run_identity_env` | Clears all 12 repository-selecting `GIT_*` names and the outer run's identity ([Git Repository Environment Helper](git-repo-env-helper.md), #2033); a missing or symlinked helper stops the block. An inherited `GIT_DIR` would make the main checkout the current repository, and `GIT_INDEX_FILE` would make `git add` and `git commit` use an index the guard never read. An inherited `GH_REPO` would make `gh pr view` ask a different repository than the `origin` the push goes to. |
 | `commit-dir`: `--show-toplevel` equals `pwd -P` | Refuses a subdirectory of some other checkout. |
 | `commit-dir`: git directory differs from the absolute common directory | True only for a linked worktree. Refuses the main checkout. Needs Git 2.31 or later. |
 | `commit-dir`: current branch equals the pull request's head (`gh pr view <pr> --json headRefName`, empty never matches) | Refuses a linked worktree on some other branch. |
@@ -4698,6 +4708,9 @@ tests here run and pass without #1347.
 
 ## Related references
 
+- [Git Repository Environment Helper](git-repo-env-helper.md) — the `GIT_*`
+  and outer-run `AMPLIHACK_*` variables the QA and merge-round steps clear
+  before running a repository's tests (#2033).
 - [Auto-Drive-Light Recipe](auto-drive-light.md): the smaller recipe for small
   changes, which escalates to this one.
 - [Loop-Health Evaluator](loop-health-evaluator.md) — the agentic terminator

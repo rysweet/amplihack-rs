@@ -63,21 +63,16 @@ fn execute_recipe_via_rust_for_test(
         .iter()
         .all(|(key, inherited)| std::env::var_os(key).as_deref() == *inherited);
     let _restore = is_outer_orchestration.then(|| {
+        // #1984: the one list of outer-run variables, RUN_DIR and RUN_ID included.
         EnvRestore(
-            [
-                "AMPLIHACK_SESSION_TREE_DIR",
-                "AMPLIHACK_TREE_ID",
-                "AMPLIHACK_SESSION_DEPTH",
-                "AMPLIHACK_MAX_DEPTH",
-                "AMPLIHACK_RECIPE_RUN_ID",
-            ]
-            .into_iter()
-            .map(|key| {
-                let previous = std::env::var_os(key);
-                unsafe { std::env::remove_var(key) };
-                (key, previous)
-            })
-            .collect(),
+            crate::test_support::OUTER_RUN_IDENTITY_VARS
+                .into_iter()
+                .map(|key| {
+                    let previous = std::env::var_os(key);
+                    unsafe { std::env::remove_var(key) };
+                    (key, previous)
+                })
+                .collect(),
         )
     });
 

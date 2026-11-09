@@ -48,7 +48,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 24] = [
+const AUTODRIVE_TOOLS: [&str; 25] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
@@ -73,6 +73,7 @@ const AUTODRIVE_TOOLS: [&str; 24] = [
     "autodrive_trust.sh",
     "autodrive_unmerged.sh",
     "autodrive_worktree_guard.sh",
+    "git-repo-env.sh",
 ];
 
 fn workspace_root() -> PathBuf {
@@ -2142,10 +2143,19 @@ fn qa_evidence_step_runs_the_qa_evidence_tool() {
         "REPO_PATH=\"$PWD\" bash \"$T\"",
     ]
     .iter()
-    .chain(TOOL_SEARCH_NEEDLES.iter())
-    {
+    .chain(
+        TOOL_SEARCH_NEEDLES
+            .iter()
+            .filter(|n| **n != "git rev-parse --show-toplevel"),
+    ) {
         assert!(cmd.contains(needle), "step-02 must reference `{needle}`");
     }
+    // #2033: the tool is never found through git, which an inherited
+    // GIT_WORK_TREE could point at a planted worktree.
+    assert!(
+        !cmd.contains("git rev-parse --show-toplevel"),
+        "step-02 must not search the git toplevel for the qa evidence tool (#2033)"
+    );
     let sourced = regex::Regex::new(r#"(^|[;&|\s])(\.|source)\s+"?\$\{?T\b"#).unwrap();
     assert!(
         !sourced.is_match(cmd) && !cmd.contains("eval "),
@@ -5608,4 +5618,124 @@ fn autodrive_round_with_inherited_stale_tools_dir_uses_its_own() {
         "a round whose own tools dir has no round tool used the inherited \
          AUTODRIVE_TOOLS_DIR and kept its verdict (#1607):\n{stdout}\n{stderr}"
     );
+}
+
+// ── Issue #2033: repository commands run with the git and run-identity env cleared ──
+
+const GIT_REPO_ENV_LOAD: &str = ". \"{{autodrive_tools_dir}}/git-repo-env.sh\" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env";
+
+#[test]
+fn issue_2033_step_04_loads_the_helper_instead_of_a_partial_unset() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let prompt = field(step(&recipe, "step-04-address-blockers"), "prompt");
+    assert!(
+        !prompt.contains("unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE"),
+        "step-04 must not keep the partial GIT_* unset (#2033)"
+    );
+    let line = prompt
+        .lines()
+        .find(|l| l.contains("git-repo-env.sh") && l.contains("amplihack_clear_git_repo_env"))
+        .unwrap_or_else(|| panic!("step-04 must source git-repo-env.sh and clear (#2033)"));
+    assert!(
+        line.contains("unset GH_REPO"),
+        "step-04 must keep `unset GH_REPO` on the helper line:\n  {line}"
+    );
+    assert!(
+        line.contains(GIT_REPO_ENV_LOAD),
+        "step-04 must load the helper from the checked tools dir and clear both lists:\n  {line}"
+    );
+    assert!(
+        line.contains("STOP: cannot load git-repo-env.sh from the tools directory (#2033)")
+            && line.contains("exit 1"),
+        "step-04 must stop when the helper cannot be loaded:\n  {line}"
+    );
+    let cd = prompt
+        .lines()
+        .position(|l| l.contains("cd \"{{repo_path}}\""))
+        .expect("step-04 enters the PR worktree");
+    let load = prompt
+        .lines()
+        .position(|l| l.contains(GIT_REPO_ENV_LOAD))
+        .expect("helper line");
+    let first_git = prompt
+        .lines()
+        .enumerate()
+        .skip(cd + 1)
+        .find(|(_, l)| {
+            l.trim_start().starts_with("git ") || l.contains("autodrive_worktree_guard.sh")
+        })
+        .map(|(n, _)| n)
+        .expect("step-04 runs git after entering the worktree");
+    assert!(
+        load < first_git,
+        "step-04 must clear before its first git command (#2033)"
+    );
+}
+
+#[test]
+fn issue_2033_step_00_tools_dir_requires_the_helper() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let cmd = field(step(&recipe, "step-00-tools-dir"), "command");
+    let need: String = cmd
+        .lines()
+        .filter(|l| l.trim_start().starts_with("NEED="))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        need.split(|c: char| c.is_whitespace() || c == '"')
+            .any(|w| w == "git-repo-env.sh"),
+        "step-00-tools-dir NEED must list git-repo-env.sh so a tools dir without it is refused (#2033):\n{need}"
+    );
+}
+
+#[test]
+fn issue_2033_merge_evidence_steps_clear_before_any_git_command() {
+    let recipe = recipe_yaml("autodrive-merge-evidence");
+    for id in ["step-01-sync-with-base", "step-02-qa-team-scenarios"] {
+        let cmd = field(step(&recipe, id), "command");
+        assert!(
+            cmd.contains("STOP: git-repo-env.sh not found or a symlink (searched"),
+            "{id} must stop with the #2033 message when the helper is missing"
+        );
+        assert!(
+            cmd.contains("(#2033)"),
+            "{id} must name #2033 in its STOP line"
+        );
+        let lines: Vec<&str> = cmd.lines().collect();
+        let first = |pred: &dyn Fn(&str) -> bool| lines.iter().position(|l| pred(l));
+        let git_clear = first(&|l: &str| {
+            l.contains("amplihack_clear_git_repo_env") && !l.trim_start().starts_with('#')
+        })
+        .unwrap_or_else(|| panic!("{id} must call amplihack_clear_git_repo_env"));
+        let run_clear = first(&|l: &str| {
+            l.contains("amplihack_clear_run_identity_env") && !l.trim_start().starts_with('#')
+        })
+        .unwrap_or_else(|| panic!("{id} must call amplihack_clear_run_identity_env"));
+        let first_git = first(&|l: &str| {
+            let t = l.trim_start();
+            !t.starts_with('#')
+                && (t.starts_with("git ")
+                    || t.contains(" git ")
+                    || t.contains("$(git ")
+                    || t.contains("if git ")
+                    || t.contains("! git "))
+        })
+        .unwrap_or_else(|| panic!("{id} runs git"));
+        assert!(
+            git_clear < first_git && run_clear < first_git,
+            "{id} must clear both lists before its first git command (#2033)"
+        );
+        // The helper and the tools are never found through git: an inherited
+        // GIT_WORK_TREE could point the lookup at a planted worktree.
+        for l in &lines {
+            let t = l.trim_start();
+            if t.starts_with('#') {
+                continue;
+            }
+            assert!(
+                !(t.starts_with("for c in") && t.contains("\"$TOP\"")),
+                "{id} must not search the git toplevel for tools (#2033):\n  {l}"
+            );
+        }
+    }
 }

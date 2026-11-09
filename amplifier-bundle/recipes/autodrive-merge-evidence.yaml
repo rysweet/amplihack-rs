@@ -39,6 +39,20 @@ steps:
     parse_json: true
     command: |
       set -uo pipefail
+      # #2033: inherited GIT_* (a hook's GIT_DIR, GIT_WORK_TREE, ...) and the outer
+      # run's AMPLIHACK_* identity are cleared before any git command, so the
+      # repository's own hooks and tests act on this checkout. The helper is found
+      # by path, never through git, which those variables could redirect.
+      GE=""; GS=""
+      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+        [ -n "$c" ] || continue
+        GS="${GS}${GS:+, }${c}/amplifier-bundle/tools"
+        [ -f "$c/amplifier-bundle/tools/git-repo-env.sh" ] && [ ! -L "$c/amplifier-bundle/tools/git-repo-env.sh" ] \
+          && { GE="$c/amplifier-bundle/tools/git-repo-env.sh"; break; }
+      done
+      { [ -n "$GE" ] && . "$GE"; } || { echo "STOP: git-repo-env.sh not found or a symlink (searched ${GS:-no root}) (#2033)" >&2; exit 1; }
+      amplihack_clear_git_repo_env; amplihack_clear_run_identity_env
+      echo "INFO: cleared git env: ${AMPLIHACK_GIT_ENV_CLEARED}; run env: ${AMPLIHACK_RUN_ENV_CLEARED} (#2033)" >&2
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
       # `main` requires branches to be up to date before merge (the strict
@@ -85,14 +99,28 @@ steps:
     parse_json: true
     command: |
       set -uo pipefail
+      # #2033: inherited GIT_* (a hook's GIT_DIR, GIT_WORK_TREE, ...) and the outer
+      # run's AMPLIHACK_* identity are cleared before any git command, so the
+      # repository's own hooks and tests act on this checkout. The helper is found
+      # by path, never through git, which those variables could redirect.
+      GE=""; GS=""
+      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+        [ -n "$c" ] || continue
+        GS="${GS}${GS:+, }${c}/amplifier-bundle/tools"
+        [ -f "$c/amplifier-bundle/tools/git-repo-env.sh" ] && [ ! -L "$c/amplifier-bundle/tools/git-repo-env.sh" ] \
+          && { GE="$c/amplifier-bundle/tools/git-repo-env.sh"; break; }
+      done
+      { [ -n "$GE" ] && . "$GE"; } || { echo "STOP: git-repo-env.sh not found or a symlink (searched ${GS:-no root}) (#2033)" >&2; exit 1; }
+      amplihack_clear_git_repo_env; amplihack_clear_run_identity_env
+      echo "INFO: cleared git env: ${AMPLIHACK_GIT_ENV_CLEARED}; run env: ${AMPLIHACK_RUN_ENV_CLEARED} (#2033)" >&2
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
-      TOP=""; T=""; SEARCHED=""
-      if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        TOP="$(git rev-parse --show-toplevel 2>/dev/null)"
-      else
-        echo "[skip] not a git repo; the git toplevel is not searched for autodrive_qa_evidence.sh" >&2
+      T=""; SEARCHED=""
+      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "WARNING: REPO_PATH is not a git work tree once GIT_* is cleared; head_sha and the changed paths will be empty" >&2
       fi
-      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+      # The QA tool is found by the same path search, never through the git
+      # toplevel: an inherited GIT_WORK_TREE could plant one there (#2033).
+      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
         [ -n "$c" ] || continue
         SEARCHED="${SEARCHED}${SEARCHED:+, }${c}/amplifier-bundle/tools"
         [ -f "$c/amplifier-bundle/tools/autodrive_qa_evidence.sh" ] && { T="$c/amplifier-bundle/tools/autodrive_qa_evidence.sh"; break; }

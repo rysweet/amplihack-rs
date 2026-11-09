@@ -736,12 +736,8 @@ mod capacity_warning {
             "name: probe\nsteps:\n  - id: echo\n    type: bash\n    command: echo hi\n",
         )
         .unwrap();
-        let _orchestration = crate::test_support::EnvGuard::unset([
-            "AMPLIHACK_SESSION_TREE_DIR",
-            "AMPLIHACK_TREE_ID",
-            "AMPLIHACK_MAX_DEPTH",
-            "AMPLIHACK_RECIPE_RUN_ID",
-        ]);
+        // #1984: the outer run's identity is cleared; the depth under test is set below.
+        let _orchestration = crate::test_support::clear_outer_run_env();
         let _env = crate::test_support::EnvGuard::set([
             ("HOME", home.to_str().unwrap()),
             ("AMPLIHACK_CLAUDE_PROFILE_ROOT", root.to_str().unwrap()),

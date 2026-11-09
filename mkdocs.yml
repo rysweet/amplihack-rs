@@ -71,6 +71,7 @@ nav:
       - Give Test Logins a Fake Account Identity: howto/give-test-logins-a-fake-account-identity.md
       - Keep Tests from Changing PATH and HOME: howto/keep-tests-from-changing-path-and-home.md
       - Keep Tests from Prompting for Git Credentials: howto/keep-tests-from-prompting-for-git.md
+      - Run recipe::run Tests Inside a Recipe Session: howto/run-recipe-tests-inside-a-recipe-session.md
       - Wait Without Leaving Orphan Processes: howto/wait-without-orphan-processes.md
       - Profile Command Reference: reference/profile-command.md
       - Capacity Governor: reference/capacity-governor.md
@@ -118,6 +119,7 @@ nav:
       - Investigation Workflow: claude/workflow/INVESTIGATION_WORKFLOW.md
       - Quick-Change Recipe: reference/quick-change-recipe.md
       - Auto-Drive-Light Recipe: reference/auto-drive-light.md
+      - Git Repository Environment Helper: reference/git-repo-env-helper.md
       - Recipe CLI Commands: howto/recipe-cli-commands.md
       - Clean Up After Recipe Runs: howto/clean-up-after-recipe-runs.md
       - Recipe CLI Reference: reference/recipe-cli-reference.md

@@ -844,15 +844,23 @@ fn generated_tree_ids_are_valid_and_distinct() {
 
 /// The caller holds the shared environment lock through restoration.
 fn fixture_environment() -> crate::test_support::EnvGuard {
-    let saved = crate::test_support::EnvGuard::capture(&[
+    let mut keys = vec![
         "AMPLIHACK_AGENT_BINARY",
         "AMPLIHACK_CLEANUP_ON_EXIT",
         "HOME",
-    ]);
+    ];
+    keys.extend(crate::test_support::OUTER_RUN_IDENTITY_VARS);
+    let saved = crate::test_support::EnvGuard::capture(&keys);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
     // Issue #2067: the end-of-run sweep walks the real work root, which can
     // take over a minute on a loaded host and break the wall-clock ceilings.
     unsafe { std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0") };
+    // Issue #1984: inside a recipe-run session the outer run's identity and
+    // depth would reach the runner, which then joins or is refused by the outer
+    // tree. Tests that need a value set it after this fixture.
+    for key in crate::test_support::OUTER_RUN_IDENTITY_VARS {
+        unsafe { std::env::remove_var(key) };
+    }
     saved
 }
