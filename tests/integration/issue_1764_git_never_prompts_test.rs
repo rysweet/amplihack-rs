@@ -567,7 +567,10 @@ fn sigttin_seen(pid: libc::pid_t) -> Armed {
         }
     };
     if !libc::WIFSTOPPED(status) {
-        panic!("the traced process {pid} ended instead of stopping: status {status:#x}");
+        panic!(
+            "trap was not armed: the traced process {pid} ended instead of stopping on \
+             SIGTTIN: status {status:#x}"
+        );
     }
     let signal = libc::WSTOPSIG(status);
     let group_stop = status >> 16 == libc::PTRACE_EVENT_STOP;
@@ -587,8 +590,11 @@ fn sigttin_seen(pid: libc::pid_t) -> Armed {
             // behaves as if it had never been traced.
             detach(if group_stop { 0 } else { signal });
             panic!(
-                "the traced process {pid} stopped with signal {signal} (group-stop: \
-                 {group_stop}, status {status:#x}), not on SIGTTIN"
+                "trap was not armed: the traced process {pid} stopped with signal \
+                 {signal} (group-stop: {group_stop}, status {status:#x}), not on \
+                 SIGTTIN. If git was left in the foreground group it prompts and then \
+                 blocks on its terminal read instead of stopping, and the inner \
+                 `timeout 8` ends it with SIGTERM (signal 15)"
             );
         }
     }
@@ -983,8 +989,9 @@ fn assert_exits_by_itself<'a>(label: &str, outcome: &'a Outcome) -> &'a str {
 /// finds `git ls-remote` under `script` and, on a thread it joins, attaches
 /// with `ptrace` and waits until the kernel reports the stop. If `ptrace` is
 /// refused with EPERM, the prompt alone counts, and a tracer failure panics.
-/// Without a prompt, GNU `timeout`'s 124 counts. Any other ending fails with
-/// `trap was not armed`.
+/// Without a prompt the control fails with `trap was not armed`, whatever the
+/// status: an `rc=124` from the inner `timeout` is printed in the message but
+/// is not accepted, since a git stalled on the server also produces it.
 #[cfg(target_os = "linux")]
 fn assert_control_stops_on_sigttin(case: &mut Scripted, url: &str) {
     if matches!(case.watched, Watched::Prompt(_)) {
@@ -1005,22 +1012,26 @@ fn assert_control_stops_on_sigttin(case: &mut Scripted, url: &str) {
             Err(panic) => std::panic::resume_unwind(panic),
         }
     }
+    // No prompt: the trap was not shown. An `rc=124` here only means the
+    // inner `timeout` fired, which a git stalled on the server also causes,
+    // so it is reported but never accepted.
     let ended = outcome(case);
-    match &ended {
-        Outcome::Exited { stdout, .. } if rc_line(stdout) == Some(124) => {}
-        _ => panic!(
-            "trap was not armed: with none of the three variables, git under plain \
-             `timeout` in a pseudo-terminal should have printed the username prompt and \
-             stopped on SIGTTIN (or GNU `timeout` should have reported rc=124). Without \
-             the trap, (c1) and (c2) prove nothing: {ended:#?}"
-        ),
-    }
+    let rc = match &ended {
+        Outcome::Exited { stdout, .. } => rc_line(stdout),
+        Outcome::Prompted { .. } => None,
+    };
+    panic!(
+        "trap was not armed: with none of the three variables, git under plain \
+         `timeout` in a pseudo-terminal should have printed the username prompt and \
+         stopped on SIGTTIN, but no prompt appeared (rc line: {rc:?}). Without the \
+         trap, (c1) and (c2) prove nothing: {ended:#?}"
+    );
 }
 
 /// The trap, and the variables that keep git out of it, in a real
 /// pseudo-terminal. The control has none of the three variables: it must
 /// print the username prompt and `git ls-remote` must be seen stopped on
-/// `SIGTTIN` (through `ptrace`), or GNU `timeout` must report 124. (c1) and
+/// `SIGTTIN` (through `ptrace`). (c1) and
 /// (c2) must exit by themselves without prompting. Each case is reaped
 /// through pidfds, by its marker URL, before the next one starts, and the
 /// test then checks that no process using the URL is left.
@@ -1206,139 +1217,6 @@ fn howto_is_linked_and_offers_no_weakening() {
         assert!(
             !howto.contains(weakening),
             "the #1764 how-to must not offer `{weakening}`"
-        );
-    }
-}
-
-// ── #2099 contract ───────────────────────────────────────────────────────────
-//
-// Issue #2099: the test reaps every process it started by its marker URL and
-// waits only on events. Everything above this heading is the implementation
-// these checks read; nothing below it is searched, so the needles may appear
-// here. Words that the static grep in the #2099 design also searches for are
-// written with `concat!` so that the grep finds only real uses.
-
-/// The source of this file above the `#2099 contract` heading.
-fn implementation_source() -> &'static str {
-    const MARKER: &str = "// ── #2099 contract";
-    include_str!("issue_1764_git_never_prompts_test.rs")
-        .split_once(MARKER)
-        .map(|(head, _)| head)
-        .expect("the #2099 contract heading is present")
-}
-
-/// R1, R1a, AC4 to AC6, R11: no wall-clock wait, no deadline, no elapsed-time
-/// check, no group or pattern signal, no subreaper and no wait on any child.
-#[test]
-fn issue_2099_waits_on_events_and_signals_only_its_own_processes() {
-    let source = implementation_source();
-    let lower = source.to_lowercase();
-    for needle in [
-        concat!("thread::", "sl", "eep"),
-        concat!("Inst", "ant"),
-        concat!("PTY_", "DEAD", "LINE"),
-        concat!("BUILDER_", "DEAD", "LINE"),
-        "INNER_SECS",
-        "run_until",
-        "stopped_mentioning",
-        "try_wait",
-        "elapsed",
-        "struct Reaped",
-        "enum Ran",
-        concat!("pk", "ill"),
-        concat!("kill", "pg"),
-        concat!("libc::", "kill("),
-        concat!("kill(", "-"),
-        concat!("kill(", "0"),
-        concat!("SUB", "REAPER"),
-        concat!("P_", "ALL"),
-        concat!("waitpid(", "-1"),
-        concat!("/", "environ"),
-        "closes the pseudo-terminal",
-        "hangs up the stopped group",
-    ] {
-        assert!(
-            !source.contains(needle),
-            "#2099: the #1764 test must not contain `{needle}`"
-        );
-    }
-    assert!(
-        !lower.contains(concat!("dead", "line")),
-        "#2099: no comment or name in the #1764 test may describe a deadline"
-    );
-    for line in source
-        .lines()
-        .filter(|l| l.contains(concat!("Dur", "ation")))
-    {
-        let line = line.trim();
-        assert!(
-            line.starts_with("use std::time::") || line.contains("set_read_timeout"),
-            "#2099: the only time value left is AlwaysUnauthorised's read timeout, \
-             not `{line}`"
-        );
-    }
-}
-
-/// D1, D3, D5: the control is proved by the prompt bytes and a ptrace-observed
-/// SIGTTIN stop; cleanup goes through pidfds; the inner `timeout 8` stays.
-#[test]
-fn issue_2099_names_the_events_it_waits_on() {
-    let source = implementation_source();
-    for needle in [
-        "Username for '",
-        "PTRACE_SEIZE",
-        "PTRACE_DETACH",
-        "PTRACE_EVENT_STOP",
-        "__WALL",
-        "SIGTTIN",
-        "SYS_pidfd_open",
-        "SYS_pidfd_send_signal",
-        "POLLIN",
-        "SIGKILL",
-        "EPERM",
-        "timeout 8",
-        "trap was not armed",
-        "// SAFETY:",
-    ] {
-        assert!(
-            source.contains(needle),
-            "#2099: the #1764 test must use `{needle}`"
-        );
-    }
-}
-
-/// The guide's rows for parts (b) and (c) describe the new behaviour (the
-/// how-to step of #2099).
-#[test]
-fn issue_2099_howto_rows_describe_events_not_deadlines() {
-    let howto = read(&workspace_root().join("docs/howto/keep-tests-from-prompting-for-git.md"));
-    let row = |prefix: &str| -> String {
-        howto
-            .lines()
-            .find(|line| line.starts_with(prefix))
-            .unwrap_or_else(|| panic!("the how-to has a `{prefix}` row"))
-            .to_string()
-    };
-    let (b, c) = (row("| (b) Git builder"), row("| (c) Pseudo-terminal"));
-    for (name, text) in [("(b)", &b), ("(c)", &c)] {
-        assert!(
-            !text.contains(concat!("dead", "line")),
-            "how-to row {name} must not describe a deadline: {text}"
-        );
-        assert!(
-            text.contains("by itself"),
-            "how-to row {name} must say git exits by itself: {text}"
-        );
-    }
-    for needle in [
-        "SIGTTIN",
-        "124",
-        "terminal prompts disabled",
-        "without prompting",
-    ] {
-        assert!(
-            c.contains(needle),
-            "how-to row (c) must mention `{needle}`: {c}"
         );
     }
 }

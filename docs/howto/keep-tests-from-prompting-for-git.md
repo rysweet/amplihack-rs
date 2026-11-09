@@ -336,7 +336,7 @@ cargo test -p amplihack --test integration issue_1764 -- --nocapture
 |------|------|-------------|
 | (a) Environment | Reads the test process's environment and `isolated("x").get_envs()` | Both have the three variables with the values above |
 | (b) Git builder | `git ls-remote` through `amplihack_git::command()`, with a null stdin and both askpass variables removed | The builder sets `GIT_TERMINAL_PROMPT=0` on the command; git exits non-zero by itself, not by a signal, with `terminal prompts disabled` in stderr |
-| (c) Pseudo-terminal | `git ls-remote` under `script` and plain `timeout`, in a compound command | The control (no variables) prints the username prompt and `git ls-remote` is seen stopped on `SIGTTIN`, or `timeout` reports 124. (c1), with `GIT_TERMINAL_PROMPT=0` and no askpass variable, exits by itself with a status other than 124, without prompting, and prints `terminal prompts disabled`. (c2), with all three variables, exits by itself with a status other than 124 and without prompting. |
+| (c) Pseudo-terminal | `git ls-remote` under `script` and plain `timeout`, in a compound command | The control (no variables) prints the username prompt and `git ls-remote` is seen stopped on `SIGTTIN`. (c1), with `GIT_TERMINAL_PROMPT=0` and no askpass variable, exits by itself with a status other than 124, without prompting, and prints `terminal prompts disabled`. (c2), with all three variables, exits by itself with a status other than 124 and without prompting. |
 | (d) Recipe text | Loads the two recipe files | Each of the three step prompts contains `--foreground`, `setsid`, `/dev/null`, `SIGTTIN` and `GIT_TERMINAL_PROMPT=0`, none contains a setting that weakens TLS, host-key checking or credential storage, and step 12 still contains its `workspace_command` schema |
 | Cargo config | Reads `.cargo/config.toml` | The file holds only the `[env]` table with the three entries |
 | Shell tests | Reads the twelve shell tests | The first two commands after each script's `set` line are the export and `exec </dev/null` |
@@ -356,9 +356,15 @@ test then attaches to that `git ls-remote` process with `ptrace` and waits
 until the kernel reports it stopped on `SIGTTIN`, then detaches and leaves it
 stopped. If `ptrace` is refused with `EPERM`, as in some sandboxes, the
 prompt alone counts and the test prints a note that the stop was not
-observed. The control also passes if its output ends with `rc=124` from GNU
-`timeout`. If it ends any other way, the test fails with `trap was not armed`:
-git was not put in a background group, so (c1) and (c2) would prove nothing.
+observed. If no prompt appears, the control fails with `trap was not armed`,
+whatever its status: an `rc=124` from the inner `timeout` is printed in the
+message but does not count, because a git stalled on the server ends the
+same way without showing the trap. The control also fails with
+`trap was not armed` if the traced git stops on any signal other than
+`SIGTTIN`, or ends instead of stopping. A git left in the foreground group
+prompts and then blocks on its terminal read, and the inner `timeout 8` ends
+it with `SIGTERM`. In each case git was not put in a background group, so
+(c1) and (c2) would prove nothing.
 In (c1) and (c2) the prompt is a failure, and the test fails as soon as it
 appears; otherwise it waits for `script` to exit and checks the status line.
 The test sets no deadline of its own and does not measure elapsed time; the
