@@ -152,23 +152,22 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn power_steer_passes_pointer_and_add_dir_not_prompt_text() {
-        use std::os::unix::fs::PermissionsExt;
+        // The stub is never exec'd: `gh_program` is `/bin/sh`, which reads
+        // `copilot` (its first argument) from the project root as a script.
+        // Exec'ing a file this test had just written could fail with ETXTBSY
+        // when a sibling test thread forked while the write descriptor was open.
         let dir = tempfile::tempdir().unwrap();
-        let bin = dir.path().join("bin");
-        fs::create_dir(&bin).unwrap();
         let log = dir.path().join("log");
-        let gh = bin.join("gh");
         fs::write(
-            &gh,
+            dir.path().join("copilot"),
             format!(
-                "#!/bin/sh\nprev=\nfor a in \"$@\"; do printf 'ARG %s\\n' \"$a\" >> '{log}'; case \"$prev\" in --add-dir) ls \"$a\" | sed 's/^/FILE /' >> '{log}'; cat \"$a\"/* >> '{log}'; echo >> '{log}';; esac; prev=$a; done\n",
+                "prev=\nfor a in \"$@\"; do printf 'ARG %s\\n' \"$a\" >> '{log}'; case \"$prev\" in --add-dir) ls \"$a\" | sed 's/^/FILE /' >> '{log}'; cat \"$a\"/* >> '{log}'; echo >> '{log}';; esac; prev=$a; done\n",
                 log = log.display()
             ),
         )
         .unwrap();
-        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
         let mut strategy = CopilotStrategy::new(dir.path());
-        strategy.gh_program = gh.clone().into_os_string();
+        strategy.gh_program = "/bin/sh".into();
         let result = strategy.power_steer("SENTINEL-2030-power-steer", "s1");
         assert!(result.unwrap());
         let logged = fs::read_to_string(&log).unwrap();
