@@ -140,6 +140,7 @@ nav:
       - Local Tracking Issue-Number Extraction: recipes/issue-815-804-local-tracking-issue-number.md
       - Caller Branch Worktree Alias: recipes/issue-1762-caller-branch-worktree-alias.md
       - Tracking Issue Selection: reference/workflow-tracking-issue-selection.md
+      - Consensus Criticality Contract: reference/consensus-criticality-contract.md
   - Agents:
       - Overview: claude/agents/README.md
       - Core Agents:

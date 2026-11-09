@@ -142,11 +142,9 @@ fn dangerous_expansion_detection() {
 
 #[test]
 fn tilde_resolves_to_home() {
-    // Other tests point HOME at a temp dir while holding env_lock(); hold it
-    // too, or HOME can change between reading it and resolving `~`.
-    let _env = crate::test_support::env_lock()
+    let _guard = env_lock()
         .lock()
-        .unwrap_or_else(|p| p.into_inner());
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = std::env::var("HOME").unwrap();
     let resolved = resolve_path("~").unwrap();
     assert_eq!(
@@ -159,11 +157,9 @@ fn tilde_resolves_to_home() {
 
 #[test]
 fn tilde_slash_resolves_to_home_subpath() {
-    // Other tests point HOME at a temp dir while holding env_lock(); hold it
-    // too, or HOME can change between reading it and resolving `~`.
-    let _env = crate::test_support::env_lock()
+    let _guard = env_lock()
         .lock()
-        .unwrap_or_else(|p| p.into_inner());
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let home = std::env::var("HOME").unwrap();
     let resolved = resolve_path("~/Documents").unwrap();
     let expected = Path::new(&home).join("Documents");
@@ -175,6 +171,9 @@ fn tilde_slash_resolves_to_home_subpath() {
 
 #[test]
 fn tilde_other_user_not_expanded() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let resolved = resolve_path("~other_user");
     if let Some(r) = &resolved {
         let home = std::env::var("HOME").unwrap();
