@@ -177,11 +177,14 @@ struct StopGuard {
 }
 
 impl StopGuard {
-    /// Stops and joins the mutator, failing the test if the mutator panicked.
+    /// Stops and joins the mutator. If the mutator panicked, re-raises its
+    /// panic so the test shows the original message.
     fn finish(mut self) {
         self.stop.store(true, Ordering::SeqCst);
         let handle = self.handle.take().expect("mutator already joined");
-        assert!(handle.join().is_ok(), "mutator thread panicked");
+        if let Err(payload) = handle.join() {
+            std::panic::resume_unwind(payload);
+        }
     }
 }
 
