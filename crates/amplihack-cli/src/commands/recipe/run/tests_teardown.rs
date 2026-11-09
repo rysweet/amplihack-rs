@@ -37,7 +37,7 @@ mod execute {
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Environment-variable name the deterministic-teardown feature must honour to
 /// configure the SIGTERM -> SIGKILL grace window (in whole seconds).
@@ -309,11 +309,15 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
 
     // Sibling process in the TEST's process group (NOT the runner's session).
-    let mut sibling = std::process::Command::new("/bin/sleep")
-        .arg("8")
-        .spawn()
-        .expect("failed to spawn sibling process");
-    let sibling_pid = sibling.id();
+    // It never exits by itself, so "still alive" can only mean "not signalled",
+    // however slowly a loaded host runs this test; the guard kills it.
+    let sibling = SiblingGuard(
+        std::process::Command::new("/bin/sleep")
+            .arg("infinity")
+            .spawn()
+            .expect("failed to spawn sibling process"),
+    );
+    let sibling_pid = sibling.0.id();
 
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("orphan-marker");
@@ -331,7 +335,6 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
-    let started = Instant::now();
     let result = execute::execute_recipe_via_rust(
         &recipe,
         &BTreeMap::new(),
@@ -353,18 +356,22 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     // The unrelated sibling (outside the runner's process group) must survive
     // the teardown, proving the reaper is pgid-scoped and not a broadcast.
     assert!(
-        started.elapsed() < Duration::from_secs(8),
-        "test setup ran too long to validate sibling survival"
-    );
-    assert!(
         process_alive(sibling_pid),
         "teardown must be scoped to the runner's process group and must NOT \
          signal unrelated processes (issue #964)"
     );
+}
 
-    // Clean up the sibling deterministically.
-    unsafe { libc::kill(sibling_pid as libc::pid_t, libc::SIGKILL) };
-    let _ = sibling.wait();
+/// Kills and reaps the never-exiting sibling of
+/// `test_teardown_is_scoped_to_runner_process_group`, even when an assertion
+/// fails first.
+struct SiblingGuard(std::process::Child);
+
+impl Drop for SiblingGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 // =========================================================================
