@@ -1070,6 +1070,9 @@ which bounds each step, and from
 [`AMPLIHACK_RECIPE_TRANSIENT_BUDGET_SECS`](#amplihack_recipe_transient_budget_secs),
 which bounds only the backoff sleeps between transient retries.
 
+See [No default time limits on work](../concepts/no-default-time-limits.md)
+for every limit amplihack lets you set.
+
 ---
 
 ### AMPLIHACK_IDLE_TIMEOUT_SECS

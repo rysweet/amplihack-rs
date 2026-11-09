@@ -127,3 +127,4 @@ A stalled network call should time out; a thinking agent should not.
 - [Idle Watchdog Reference](../reference/idle-watchdog.md) — API and configuration.
 - [Use the Idle Watchdog](../howto/use-idle-watchdog.md) — wire up a call site.
 - [Automode Safety](automode-safety.md) — related agent-safety guardrails.
+- [No Default Time Limits on Work](no-default-time-limits.md) — which limits exist only when you set them.
