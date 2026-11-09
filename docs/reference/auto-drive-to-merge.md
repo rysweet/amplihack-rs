@@ -411,6 +411,11 @@ on whether the `task_description` key was passed at all:
 | passed, empty (the composer always passes it) | exit `2`, no `gh pr view`: `ERROR: --task-file ... is missing or empty; refusing to run without a task` |
 | absent (a loop recipe run on its own without it) | exit `1`: `ERROR: task_description unavailable` |
 
+A `task_description` that was passed but cannot be read (an unreadable
+context file, for example) also fails with exit `1` and `ERROR:
+task_description unavailable`. It is never replaced by the PR text, and no
+`gh` call is made.
+
 The same rule covers a run with no operator PR number, an
 `existing_branch`-only run, and an operator `pr_number` that differs from the
 preflight PR as a string, for example `0042` against `42`. Through the
@@ -437,7 +442,9 @@ The linked-issue section appears only when the PR body links an issue. Titles
 and bodies are copied verbatim, with NUL bytes removed. Nothing is truncated.
 
 The linked issue is the first match, ignoring case, of `Closes`, `Fixes`,
-`Resolves` or `Refs`, then whitespace, then `#N`. Other forms (`Fix #N`,
+`Resolves` or `Refs`, then whitespace, then `#N`, where `N` ends at a
+character that is not a letter, digit or underscore, or at the end of the
+line. `Fixes #42.` links #42; `Fixes #42abc` is not a link. Other forms (`Fix #N`,
 `Closes: #N`) are not links. Only issues in the same repository are followed:
 `owner/repo#N`, URLs and `GH-N` are not links.
 
@@ -476,9 +483,9 @@ existing login. No `-R` and no new token.
 
 ### Failures
 
-Each of these fails step-02 with exit `1`, before any round runs. Step-02
-empties its `--task-file` before the call, so no partial task is used, and
-`autodrive_task_from_pr` leaves its `<out-file>` unchanged:
+Each of these fails step-02 with exit `1`, before any round runs. No partial task
+is used: `autodrive_task_from_pr` leaves its `<out-file>`, step-02's empty
+`--task-file`, unchanged:
 
 | Cause | Error names |
 | --- | --- |
@@ -492,17 +499,40 @@ Each error is one fixed line starting `ERROR: auto-drive:` and ending with
 `pass task_description`:
 
 ```
-ERROR: auto-drive: cannot read PR #2201 to build the task; pass task_description
+ERROR: auto-drive: cannot read PR #2201 to take the task from it; pass task_description
 ```
 
 Pass `-c task_description="..."` to run in any of these cases.
 
-### `autodrive_task_from_pr`
+### `autodrive_resolve_task` and `autodrive_task_from_pr`
 
-Defined in `amplifier-bundle/tools/autodrive_task_from_pr.sh`, its own file
-because `autodrive_state.sh` is at the 400-line brick budget and is one of the
-merge gate's trusted files. Step-02 loads it from beside `autodrive_loop.sh` on
-the launch side, and only on this path.
+Both are defined in `amplifier-bundle/tools/autodrive_task_from_pr.sh`, its
+own file because `autodrive_state.sh` is at the 400-line brick budget and is
+one of the merge gate's trusted files. When `task_description` was read and
+is not empty, step-02 uses it without loading this file. Otherwise step-02 of
+both loops loads it from beside `autodrive_loop.sh` on the launch side and
+calls `autodrive_resolve_task`, which applies the rules above:
+
+```bash
+autodrive_resolve_task "$TD_RC" "$TASK_IN" "$OP_PR" "$PR" "$REPO" || exit 1
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `<td_rc>` | Exit code of `write_context_value task_description`: `0` read, `3` key absent, anything else unreadable. |
+| `<task-file>` | The loop's `--task-file`. |
+| `<operator-pr>` | The operator's PR number (`autodrive_pr_input`, else `pr_number`). |
+| `<preflight-pr>` | The preflight's resolved PR. |
+| `<repo-dir>` | The preflight's `repo`, passed on to `autodrive_task_from_pr`. |
+
+It returns `1` with `ERROR: task_description unavailable` when `<td_rc>` is
+neither `0` nor `3`, before any `gh` call. A non-empty `<task-file>` returns
+`0` with no `gh` call. When the operator's PR equals the preflight PR it
+returns the result of `autodrive_task_from_pr`. Otherwise it returns `1` with
+the same error for `<td_rc>` `3`, and `0` for `<td_rc>` `0`, leaving the loop to
+refuse the empty task with exit `2`.
+
+`autodrive_task_from_pr` builds the task file:
 
 ```bash
 . amplifier-bundle/tools/autodrive_task_from_pr.sh

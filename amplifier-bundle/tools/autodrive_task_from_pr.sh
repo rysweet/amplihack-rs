@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # autodrive_task_from_pr.sh — sourced by step-02 of autodrive-crusty-loop.yaml
 # and autodrive-merge-loop.yaml, only when the task is to be taken from the PR
-# (issue #2187). This file only DEFINES a function; sourcing it has no side
+# (issue #2187). This file only DEFINES functions; sourcing it has no side
 # effects. Kept out of autodrive_state.sh, which is at the brick budget and is
 # one of the merge gate's trusted files; this one has no part in merging.
 
@@ -53,16 +53,21 @@ autodrive_task_from_pr() {
       echo "ERROR: auto-drive: cannot read PR #${pr} to take the task from it; pass task_description" >&2
       exit 1
     fi
-    if ! jq -e '(.title | type) == "string" and ((.body | type) == "string" or .body == null)' "$t/pr.json" > /dev/null 2>&1; then
-      echo "ERROR: auto-drive: PR #${pr} returned an unexpected title or body; pass task_description" >&2
-      exit 1
-    fi
+    # check_text <json> <label>: title a string, body a string or null, and not
+    # both empty. <label> is fixed text plus numbers only.
+    check_text() {
+      if ! jq -e '(.title | type) == "string" and ((.body | type) == "string" or .body == null)' "$1" > /dev/null 2>&1; then
+        echo "ERROR: auto-drive: $2 returned an unexpected title or body; pass task_description" >&2
+        return 1
+      fi
+      if jq -e '.title == "" and ((.body // "") == "")' "$1" > /dev/null 2>&1; then
+        echo "ERROR: auto-drive: $2 has an empty title and body; pass task_description" >&2
+        return 1
+      fi
+    }
+    check_text "$t/pr.json" "PR #${pr}" || exit 1
     if ! jq -e '.isCrossRepository == false' "$t/pr.json" > /dev/null 2>&1; then
       echo "ERROR: auto-drive: PR #${pr} is from a fork or its origin is unknown; its text is not used as a task; pass task_description" >&2
-      exit 1
-    fi
-    if jq -e '.title == "" and ((.body // "") == "")' "$t/pr.json" > /dev/null 2>&1; then
-      echo "ERROR: auto-drive: PR #${pr} has an empty title and body; pass task_description" >&2
       exit 1
     fi
     if ! { jq -j '.title' "$t/pr.json" | tr -d '\000' > "$t/pr-title" \
@@ -72,7 +77,10 @@ autodrive_task_from_pr() {
     fi
     # First same-repo link. The character before the keyword may not be a
     # word character or '/', so prefixes, owner/repo#N and URLs never match.
-    issue="$(grep -aioE '(^|[^A-Za-z0-9_/])(closes|fixes|resolves|refs)[[:space:]]+#[0-9]+' "$t/pr-body" | head -n 1 | grep -oE '[0-9]+$')"
+    # The number must end at a non-word character or the end of the line, so
+    # "Fixes #42abc" is not a link (GitHub does not treat it as one).
+    issue="$(grep -aioE '(^|[^A-Za-z0-9_/])(closes|fixes|resolves|refs)[[:space:]]+#[0-9]+([^0-9A-Za-z_]|$)' "$t/pr-body" \
+      | head -n 1 | grep -oE '#[0-9]+' | tr -d '#')"
     case "$issue" in ''|*[!0-9]*) issue="" ;; esac
     [ "${#issue}" -le 10 ] || issue=""
     {
@@ -91,14 +99,7 @@ autodrive_task_from_pr() {
         echo "ERROR: auto-drive: cannot read issue #${issue}, linked from PR #${pr}; pass task_description" >&2
         exit 1
       fi
-      if ! jq -e '(.title | type) == "string" and ((.body | type) == "string" or .body == null)' "$t/issue.json" > /dev/null 2>&1; then
-        echo "ERROR: auto-drive: issue #${issue}, linked from PR #${pr}, returned an unexpected title or body; pass task_description" >&2
-        exit 1
-      fi
-      if jq -e '.title == "" and ((.body // "") == "")' "$t/issue.json" > /dev/null 2>&1; then
-        echo "ERROR: auto-drive: issue #${issue}, linked from PR #${pr}, has an empty title and body; pass task_description" >&2
-        exit 1
-      fi
+      check_text "$t/issue.json" "issue #${issue}, linked from PR #${pr}," || exit 1
       {
         printf '\n\nLinked issue #%s: ' "$issue" \
           && jq -j '.title' "$t/issue.json" | tr -d '\000' \
@@ -119,4 +120,36 @@ autodrive_task_from_pr() {
   rc=$?
   rm -rf -- "$t"
   return "$rc"
+}
+
+# autodrive_resolve_task <td_rc> <task-file> <operator-pr> <preflight-pr> <repo-dir>
+#
+# Chooses the task for step 02 of both loops (issue #2187). <td_rc> is the exit
+# code of `write_context_value task_description <task-file>`: 0 read, 3 key
+# absent, anything else present but unreadable.
+#   * <td_rc> neither 0 nor 3: "ERROR: task_description unavailable", return 1.
+#     A task the operator supplied but that could not be read is never
+#     replaced by the PR text, and no gh call is made.
+#   * <task-file> not empty: the operator's task stands; no gh call.
+#   * <operator-pr> numeric and equal to <preflight-pr> as a string: the task is
+#     taken from the PR (autodrive_task_from_pr); its exit code is returned.
+#   * otherwise, <td_rc> 3: "ERROR: task_description unavailable", return 1;
+#     <td_rc> 0 (an empty task): return 0, and the loop refuses the empty task.
+autodrive_resolve_task() {
+  local td_rc="${1:-}" task="${2:-}" op_pr="${3:-}" pr="${4:-}" repo_dir="${5:-}"
+  case "$td_rc" in
+    0|3) ;;
+    *) echo "ERROR: task_description unavailable" >&2; return 1 ;;
+  esac
+  [ -s "$task" ] && return 0
+  case "$op_pr" in ''|*[!0-9]*) op_pr="" ;; esac
+  if [ -n "$op_pr" ] && [ "$op_pr" = "$pr" ]; then
+    autodrive_task_from_pr "$pr" "$task" "$repo_dir"
+    return
+  fi
+  if [ "$td_rc" -ne 0 ]; then
+    echo "ERROR: task_description unavailable" >&2
+    return 1
+  fi
+  return 0
 }

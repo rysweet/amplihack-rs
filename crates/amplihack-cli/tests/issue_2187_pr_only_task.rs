@@ -277,6 +277,9 @@ struct StepOpts<'a> {
     pr: String,
     issue: String,
     gh_env: &'a [(&'a str, &'a str)],
+    /// Point `AMPLIHACK_CONTEXT_FILE` at a directory, so the
+    /// `task_description` read fails with exit 1 (present but unreadable).
+    context_unreadable: bool,
 }
 
 impl Default for StepOpts<'_> {
@@ -288,6 +291,7 @@ impl Default for StepOpts<'_> {
             pr: pr_json(PR_TITLE, PR_BODY),
             issue: issue_json(ISSUE_TITLE, ISSUE_BODY),
             gh_env: &[],
+            context_unreadable: false,
         }
     }
 }
@@ -347,7 +351,11 @@ fn run_step(recipe: &str, step_id: &str, preflight_var: &str, o: &StepOpts) -> S
         .unwrap();
     }
     let ctx = root.join("context.json");
-    std::fs::write(&ctx, o.context.to_string()).unwrap();
+    if o.context_unreadable {
+        std::fs::create_dir_all(&ctx).unwrap();
+    } else {
+        std::fs::write(&ctx, o.context.to_string()).unwrap();
+    }
     let preflight = serde_json::json!({
         "state_dir": root.join("state"),
         "pr": "1570",
@@ -719,6 +727,31 @@ fn c1_absent_task_without_operator_pr_still_exits_1_unavailable() {
     });
 }
 
+#[test]
+fn c2_unreadable_task_description_is_never_replaced_by_the_pr_text() {
+    if !jq_available() {
+        return;
+    }
+    // pr_number equals the preflight PR, but the operator's task could not be
+    // read (write_context_value exit 1): the step must fail, not derive.
+    let o = StepOpts {
+        context_unreadable: true,
+        ..Default::default()
+    };
+    each_recipe(&o, |recipe, run| {
+        assert_ne!(run.out.status.code(), Some(0), "{recipe}: {}", run.stderr());
+        assert!(
+            run.stderr().contains("ERROR: task_description unavailable"),
+            "{recipe}: {}",
+            run.stderr()
+        );
+        assert!(run.task_seen.is_none(), "{recipe}");
+        let calls = run.gh.calls();
+        assert!(!called(&calls, "pr view"), "{recipe}: {calls:?}");
+        assert!(calls.is_empty(), "{recipe}: {calls:?}");
+    });
+}
+
 // ---- (d) PR text never reaches argv ---------------------------------------
 
 #[test]
@@ -1024,6 +1057,9 @@ fn unit_link_words_followed_case_insensitively() {
         "refs  #42",
         "text before\nfixes\t#42 after",
         "(Fixes #42)",
+        "Fixes #42.",
+        "Fixes #42, thanks",
+        "body ends with Fixes #42",
     ] {
         let r = helper(body);
         assert!(r.status.success(), "{body:?}: {}", r.stderr);
@@ -1055,6 +1091,8 @@ fn unit_non_links_are_not_followed() {
         "Fixes #--repo",
         "prefixes #42",
         "Fixes #12345678901",
+        "Fixes #42abc",
+        "Fixes #42_x",
     ] {
         let r = helper(body);
         assert!(r.status.success(), "{body:?}: {}", r.stderr);
@@ -1068,6 +1106,18 @@ fn unit_non_links_are_not_followed() {
             "{body:?}"
         );
     }
+}
+
+#[test]
+fn unit_non_link_before_a_link_does_not_hide_it() {
+    if !jq_available() {
+        return;
+    }
+    let r = helper("Fixes #42abc\nCloses #43");
+    assert!(r.status.success(), "{}", r.stderr);
+    let calls = r.gh.calls();
+    assert!(called(&calls, "issue view 43"), "{calls:?}");
+    assert!(!called(&calls, "issue view 42"), "{calls:?}");
 }
 
 #[test]
@@ -1257,6 +1307,96 @@ fn unit_output_symlink_is_replaced_not_written_through() {
 }
 
 // --------------------------------------------------------------------------
+// Unit tests: autodrive_resolve_task called directly
+// --------------------------------------------------------------------------
+
+/// Runs `autodrive_resolve_task <td_rc> <task> <op_pr> 1570 <repo>` with the
+/// stub `gh`; `task` is the task file's starting content.
+/// The `TempDir` is returned so the `gh` log outlives the call.
+fn run_resolve(td_rc: &str, task: &str, op_pr: &str) -> (Output, Vec<u8>, Gh, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let repo = root.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let task_file = root.join("task.txt");
+    std::fs::write(&task_file, task).unwrap();
+    let gh = Gh::new(
+        &root,
+        &pr_json(PR_TITLE, PR_BODY),
+        &issue_json(ISSUE_TITLE, ISSUE_BODY),
+    );
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c")
+        .arg(". \"$1\" || exit 97; autodrive_resolve_task \"$2\" \"$3\" \"$4\" 1570 \"$5\"")
+        .arg("bash")
+        .arg(tools_src().join("autodrive_task_from_pr.sh"))
+        .arg(td_rc)
+        .arg(&task_file)
+        .arg(op_pr)
+        .arg(&repo)
+        .env_clear();
+    gh.apply(&mut cmd);
+    cmd.env("HOME", &root).current_dir(&root);
+    let out = cmd.output().expect("spawn bash");
+    let text = std::fs::read(&task_file).unwrap();
+    (out, text, gh, tmp)
+}
+
+#[test]
+fn unit_resolve_unreadable_task_fails_without_gh() {
+    if !jq_available() {
+        return;
+    }
+    for rc in ["1", "2", "7", ""] {
+        let (out, text, gh, _tmp) = run_resolve(rc, "", "1570");
+        assert_eq!(out.status.code(), Some(1), "td_rc {rc:?}");
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            err.contains("ERROR: task_description unavailable"),
+            "td_rc {rc:?}: {err}"
+        );
+        assert!(text.is_empty(), "td_rc {rc:?}");
+        assert!(gh.calls().is_empty(), "td_rc {rc:?}: {:?}", gh.calls());
+    }
+}
+
+#[test]
+fn unit_resolve_choices() {
+    if !jq_available() {
+        return;
+    }
+    // Operator task stands, no gh call.
+    let (out, text, gh, _tmp) = run_resolve("0", "operator task", "1570");
+    assert!(out.status.success());
+    assert_eq!(text, b"operator task");
+    assert!(gh.calls().is_empty(), "{:?}", gh.calls());
+    // Empty or absent task with the matching PR: derived from the PR.
+    for rc in ["0", "3"] {
+        let (out, text, gh, _tmp) = run_resolve(rc, "", "1570");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(text).unwrap().trim_end_matches('\n'),
+            expected_with_issue()
+        );
+        assert!(called(&gh.calls(), "pr view 1570"), "{:?}", gh.calls());
+    }
+    // No matching PR: absent key fails, empty task is left to the loop.
+    for op in ["", "0042", "1571", "15x70"] {
+        let (out, _, gh, _tmp) = run_resolve("3", "", op);
+        assert_eq!(out.status.code(), Some(1), "{op:?}");
+        assert!(gh.calls().is_empty(), "{op:?}");
+        let (out, text, gh, _tmp) = run_resolve("0", "", op);
+        assert!(out.status.success(), "{op:?}");
+        assert!(text.is_empty(), "{op:?}");
+        assert!(gh.calls().is_empty(), "{op:?}");
+    }
+}
+
+// --------------------------------------------------------------------------
 // Docs and recipe text
 // --------------------------------------------------------------------------
 
@@ -1277,21 +1417,29 @@ fn docs_say_task_description_is_optional_with_pr_number() {
         reference.contains("autodrive_task_from_pr"),
         "the reference doc must describe autodrive_task_from_pr"
     );
+    assert!(
+        reference.contains("autodrive_resolve_task") && a.contains("autodrive_resolve_task"),
+        "the reference doc and SKILL.md must name autodrive_resolve_task"
+    );
 }
 
 #[test]
-fn loop_steps_load_the_state_helper_only_on_the_derivation_path() {
+fn loop_steps_choose_the_task_through_autodrive_resolve_task() {
     for (recipe, step, _) in RECIPES {
         let cmd = step_command(recipe, step);
         assert!(
-            cmd.contains("autodrive_task_from_pr \"$PR\" \"$TASK_IN\" \"$REPO\""),
-            "{recipe}: step-02 must call autodrive_task_from_pr with the preflight PR and repo"
+            cmd.contains("autodrive_resolve_task \"$TD_RC\" \"$TASK_IN\" \"$OP_PR\" \"$PR\" \"$REPO\" || exit 1"),
+            "{recipe}: step-02 must choose the task with autodrive_resolve_task"
+        );
+        assert!(
+            !cmd.contains(": > \"$TASK_IN\""),
+            "{recipe}: the redundant truncation is gone"
         );
         assert!(
             cmd.contains("write_context_value task_description"),
             "{recipe}: the #1570 read stays"
         );
-        let derive = cmd.find("autodrive_task_from_pr").unwrap();
+        let derive = cmd.find("autodrive_resolve_task").unwrap();
         let run_loop = cmd.find("bash \"$LOOP_HELPER\"").unwrap();
         assert!(
             derive < run_loop,

@@ -10,7 +10,8 @@
 //!
 //! These tests run the real step command from each recipe with only
 //! `AMPLIHACK_CONTEXT_FILE` holding the task. `AMPLIHACK_HOME` points at a
-//! directory holding the real `recipe_context_value.sh` and a fake
+//! directory holding the real `recipe_context_value.sh` and
+//! `autodrive_task_from_pr.sh` (#2187) and a fake
 //! `autodrive_loop.sh` that copies the `--task-file` it receives. They skip,
 //! with a note, when `jq` is not installed.
 
@@ -129,10 +130,15 @@ fn run_step(recipe: &str, step_id: &str, preflight_var: &str, context: &str) -> 
         &tools.join("autodrive_crusty_rereview.sh"),
         "#!/usr/bin/env bash\nexit 0\n",
     );
-    crate::support::exec_stub::copy_executable(
-        &repo_root().join("amplifier-bundle/tools/recipe_context_value.sh"),
-        &tools.join("recipe_context_value.sh"),
-    );
+    // #2187: step-02 chooses its task with autodrive_resolve_task from the
+    // real helper; with a task given (or none and no operator PR) it makes no
+    // gh call.
+    for f in ["recipe_context_value.sh", "autodrive_task_from_pr.sh"] {
+        crate::support::exec_stub::copy_executable(
+            &repo_root().join("amplifier-bundle/tools").join(f),
+            &tools.join(f),
+        );
+    }
     // PR #1588 review: step-02 takes the round recipe from the recipes/
     // directory beside the loop driver and refuses when it is missing.
     let recipes = tmp.path().join("home/amplifier-bundle/recipes");

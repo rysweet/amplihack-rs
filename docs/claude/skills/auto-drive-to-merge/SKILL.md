@@ -333,6 +333,6 @@ run to their natural end. A false timeout costs more than a slow run.
 | `amplifier-bundle/tools/autodrive_followups_check.sh` | The `check` and `gate` commands: the merge gate's offline follow-up check. |
 | `amplifier-bundle/tools/autodrive_finding_rules.sh` | The minor-finding rules and text sanitising used by `autodrive_followups.sh`, for auto-drive-to-merge and auto-drive-light alike. |
 | `amplifier-bundle/tools/autodrive_state.sh` | Resumable local state; platform truth for merged-ness. |
-| `amplifier-bundle/tools/autodrive_task_from_pr.sh` | The task taken from the PR and its linked issue when only `pr_number` is given (#2187). |
+| `amplifier-bundle/tools/autodrive_task_from_pr.sh` | Step-02's choice of task (`autodrive_resolve_task`) and the task taken from the PR and its linked issue when only `pr_number` is given (#2187). |
 
 Full reference: [Auto Drive To Merge](../../../docs/reference/auto-drive-to-merge.md).
