@@ -22,7 +22,8 @@
 pub mod record;
 pub mod store;
 
-pub use super::auto_switch::liveness::{Collected, Liveness, ProcRecord};
+use super::auto_switch::liveness;
+pub use liveness::{Collected, Liveness, ProcRecord};
 use record::Snapshot;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -73,7 +74,7 @@ impl SourceDeps {
             clock,
             uid,
             pid,
-            collect: Arc::new(super::auto_switch::liveness::collect),
+            collect: Arc::new(liveness::collect),
         }
     }
 }
@@ -149,7 +150,13 @@ fn system_deps() -> Option<SourceDeps> {
         std::env::var_os("HOME")
             .map(PathBuf::from)
             .and_then(|home| {
-                store::runtime_dir(std::env::var_os("XDG_RUNTIME_DIR").as_deref(), &home, uid)
+                let xdg = std::env::var_os("XDG_RUNTIME_DIR");
+                let dir = store::runtime_dir(xdg.as_deref(), &home, uid);
+                if dir.is_none() {
+                    let tried = xdg.map_or_else(|| home.join(".amplihack/runtime"), PathBuf::from);
+                    warn_no_cache(&tried, "no private runtime directory");
+                }
+                dir
             })
     };
     Some(SourceDeps::new(
@@ -174,12 +181,12 @@ fn read(d: &SourceDeps, root: &Path, fresh: Fresh) -> Liveness {
     };
     let scan = || (d.collect)(&d.proc_root, &root, d.uid);
     let Some(store) = open_store(d, &root) else {
-        return super::auto_switch::liveness::derive(&scan(), d.pid);
+        return liveness::derive(&scan(), d.pid);
     };
     if fresh == Fresh::Cached
         && let Found::Fresh(snap) = store.read(d.uid, (d.clock)())
     {
-        return derive(&snap, d.pid);
+        return derive(snap, d.pid);
     }
     match store.try_lock() {
         Ok(Lock::Held(_lock)) => {
@@ -189,25 +196,40 @@ fn read(d: &SourceDeps, root: &Path, fresh: Fresh) -> Liveness {
             if let Err(e) = store.write(&snap) {
                 tracing::debug!("proc snapshot not kept: {e}");
             }
-            super::auto_switch::liveness::derive(&collected, d.pid)
+            liveness::derive(&collected, d.pid)
         }
         // Someone else is refreshing. A forced read must not trust the file.
         Ok(Lock::Busy) => match fresh {
             Fresh::Forced => Liveness::Everything,
             Fresh::Cached => match store.read(d.uid, (d.clock)()) {
-                Found::Fresh(snap) | Found::Stale(snap) => derive(&snap, d.pid),
+                Found::Fresh(snap) | Found::Stale(snap) => derive(snap, d.pid),
                 Found::Missing => Liveness::Everything,
             },
         },
         Err(e) => {
-            tracing::debug!("proc snapshot lock unusable: {e}; scanning without the cache");
-            super::auto_switch::liveness::derive(&scan(), d.pid)
+            if let Some(runtime) = d.runtime_dir.as_deref() {
+                warn_no_cache(runtime, &format!("lock unusable: {e}"));
+            }
+            liveness::derive(&scan(), d.pid)
         }
     }
 }
 
-fn derive(snap: &Snapshot, pid: u32) -> Liveness {
-    super::auto_switch::liveness::derive(&snap.collected(), pid)
+/// Says once per process, at `warn`, that the snapshot cache cannot be
+/// used, so every read scans `/proc` itself. The answers stay correct; only
+/// the saving is lost. Faults in one snapshot file stay at `debug`.
+fn warn_no_cache(path: &Path, why: &str) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            "proc snapshot cache unusable at {}: {why}; every read scans /proc",
+            path.display()
+        );
+    });
+}
+
+fn derive(snap: Snapshot, pid: u32) -> Liveness {
+    liveness::derive(&snap.into_collected(), pid)
 }
 
 /// The checked snapshot store for this proc root and canonical `root`, or
@@ -218,7 +240,7 @@ fn open_store(d: &SourceDeps, root: &Path) -> Option<Store> {
     match Store::open(runtime, store::key(&proc_root, root)) {
         Ok(s) => Some(s),
         Err(e) => {
-            tracing::debug!("proc snapshot directory unusable: {e}; no cache");
+            warn_no_cache(runtime, &format!("directory unusable: {e}"));
             None
         }
     }

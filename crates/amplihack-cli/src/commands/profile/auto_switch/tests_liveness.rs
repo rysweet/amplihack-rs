@@ -470,9 +470,10 @@ fn a_comm_with_parentheses_and_spaces_is_parsed_from_the_last_paren() {
     assert!(p.scan().is_live(&n("X")));
 }
 
-/// SR19: crafted `stat` contents skip the process; nothing panics.
+/// SR19: crafted `stat` contents never panic; the process still counts
+/// (start_time 0).
 #[test]
-fn a_malformed_stat_skips_the_process_without_panicking() {
+fn a_malformed_stat_still_counts_with_start_time_zero() {
     for stat in [
         "214 (claude S 1 2 3".to_string(),
         "214 (claude) S 1".to_string(),
@@ -486,8 +487,8 @@ fn a_malformed_stat_skips_the_process_without_panicking() {
         let p = FakeProc::new();
         let dir = p.on_x(214, None, b"claude\0");
         fs::write(dir.join("stat"), &stat).unwrap();
-        assert!(p.record(214).is_none(), "{stat:?} is skipped");
-        assert!(!p.scan().is_live(&n("X")), "{stat:?} is skipped");
+        assert_eq!(p.record(214).unwrap().start_time, 0, "{stat:?}");
+        assert!(p.scan().is_live(&n("X")), "{stat:?} still counts");
     }
 }
 

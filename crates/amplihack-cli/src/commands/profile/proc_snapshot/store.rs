@@ -67,16 +67,20 @@ pub fn runtime_dir(xdg: Option<&OsStr>, home: &Path, euid: u32) -> Option<PathBu
 /// Creates `path` with mode `0700` when it is missing, then checks it: a
 /// real directory owned by `euid` with no group or other bits.
 fn private_dir(path: &Path, euid: u32) -> io::Result<()> {
-    match fs::DirBuilder::new().mode(0o700).create(path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e),
-    }
+    create_0700(path)?;
     let m = fs::symlink_metadata(path)?;
     if m.file_type().is_symlink() || !m.is_dir() || m.uid() != euid || m.mode() & 0o077 != 0 {
         return Err(invalid("is not a private directory"));
     }
     Ok(())
+}
+
+/// Creates `path` with mode `0700`; an existing entry is left as it is.
+fn create_0700(path: &Path) -> io::Result<()> {
+    match fs::DirBuilder::new().mode(0o700).create(path) {
+        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => Err(e),
+        _ => Ok(()),
+    }
 }
 
 /// The snapshot files of one key in one checked directory.
@@ -104,11 +108,7 @@ impl Store {
     /// every use without following a symlink.
     pub fn open(runtime: &Path, key: String) -> io::Result<Self> {
         let dir = runtime.join(SUBDIR);
-        match fs::DirBuilder::new().mode(0o700).create(&dir) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e),
-        }
+        create_0700(&dir)?;
         check_private_dir(&dir)?;
         Ok(Self { dir, key })
     }

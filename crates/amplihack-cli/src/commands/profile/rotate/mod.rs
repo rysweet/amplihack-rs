@@ -183,8 +183,6 @@ mod tests_revalidate;
 mod tests_revalidate_cause;
 #[cfg(all(test, unix))]
 mod tests_revalidate_unit;
-#[cfg(all(test, target_os = "linux"))]
-mod tests_run_lock;
 #[cfg(all(test, unix))]
 mod tests_sessions_daily;
 #[cfg(test)]
@@ -210,14 +208,16 @@ pub(super) use self::{identify::is_live, observe::Probes, platform_block::platfo
 pub(in crate::commands::profile) use autostart::autostart_line;
 #[cfg(unix)]
 pub(super) use control::{clear_overflow_block, overflow_blocks};
-#[cfg(all(test, unix))]
-pub(super) use gate_record::effective_at as overflow_gate_at;
-#[cfg(unix)]
-pub(super) use gate_record::{GateSource, effective as overflow_gate, line as overflow_gate_line};
 #[cfg(unix)]
 pub(super) use log::timestamp;
 #[cfg(unix)]
 pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rotator};
+
+// Auto-switch's overflow gate (`gate_record`): the running rotator's own
+#[cfg(all(test, unix))]
+pub(super) use gate_record::effective_at as overflow_gate_at;
+#[cfg(unix)]
+pub(super) use gate_record::{GateSource, effective as overflow_gate, line as overflow_gate_line};
 
 /// The tail of the warning after `profile switch NAME` (#1691) while a rotator
 /// of another amplihack binary, which ignores the switch hold, runs.

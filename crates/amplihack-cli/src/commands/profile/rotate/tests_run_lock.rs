@@ -22,12 +22,12 @@
 //! Running sessions come from `ProcSource::from_fn`, counted per test; no
 //! `/proc` is read and nothing waits on a clock.
 
-use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
-use super::log::msg;
-use super::run_lock::{self, Taken};
-use super::tests_handfix_cycle::never;
-use super::tests_revalidate_cause::ctx_with;
-use super::tests_swap::{Env, env};
+use super::super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
+use super::super::log::msg;
+use super::super::tests_handfix_cycle::never;
+use super::super::tests_revalidate_cause::ctx_with;
+use super::super::tests_swap::{Env, env};
+use super::{self as run_lock, Taken};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::Liveness;
 use crate::commands::profile::proc_snapshot::ProcSource;
@@ -167,7 +167,7 @@ fn ac3_a_watch_cycle_logs_the_busy_line_and_skips() {
 }
 
 fn ino_live(e: &Env) -> Option<u64> {
-    super::tests_swap::ino_at(&e.live())
+    super::super::tests_swap::ino_at(&e.live())
 }
 
 // --- take(): the holder's pid -------------------------------------------------
@@ -178,6 +178,7 @@ fn take_writes_the_holders_pid_and_a_second_take_is_busy_until_it_is_dropped() {
     let held = match run_lock::take(&e.rs).unwrap() {
         Taken::Held(l) => l,
         Taken::Busy(pid) => panic!("free lock reported busy ({pid:?})"),
+        Taken::Refused(r) => panic!("a fresh lock file was refused ({r})"),
     };
     let me = std::process::id();
     assert_eq!(
@@ -227,6 +228,7 @@ fn sr17_an_unreadable_pid_is_unknown_and_its_bytes_never_reach_the_message() {
         let got = match run_lock::take(&e.rs).unwrap() {
             Taken::Busy(pid) => pid,
             Taken::Held(_) => panic!("{raw:?}: the lock is held"),
+            Taken::Refused(r) => panic!("{raw:?}: refused ({r})"),
         };
         assert_eq!(got, *want, "{raw:?}");
         let shown = ProfileError::RotateRunning(got).to_string();
@@ -246,8 +248,11 @@ fn sr17_an_unreadable_pid_is_unknown_and_its_bytes_never_reach_the_message() {
 
 fn refused_reason(e: &Env) -> String {
     match run_lock::take(&e.rs) {
-        Err(ProfileError::RotateRefused(m)) => m,
-        Err(other) => panic!("expected RotateRefused, got {other:?}"),
+        Ok(Taken::Refused(r)) => match run_lock::refusal(r) {
+            ProfileError::RotateRefused(m) => m,
+            other => panic!("refusal() built {other:?}"),
+        },
+        Err(other) => panic!("expected a refusal, got {other:?}"),
         Ok(Taken::Held(_)) => panic!("an unsafe run lock file was accepted"),
         Ok(Taken::Busy(p)) => panic!("an unsafe run lock file was reported busy ({p:?})"),
     }
@@ -357,6 +362,7 @@ fn sr15_a_child_started_while_the_run_lock_is_held_does_not_keep_it() {
     let held = match run_lock::take(&e.rs).unwrap() {
         Taken::Held(l) => l,
         Taken::Busy(_) => panic!("free lock reported busy"),
+        Taken::Refused(r) => panic!("a fresh lock file was refused ({r})"),
     };
     let mut child = std::process::Command::new("cat")
         .stdin(std::process::Stdio::piped())

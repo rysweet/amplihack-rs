@@ -108,7 +108,9 @@ would swap work->spare live s=88% w=41% target s=0% w=12% reason=threshold
 ```
 
 A dry run probes every profile and prints what it would do. It takes the
-[run lock](#when-another-rotate-run-is-in-progress), writes no rotate state, moves nothing and logs nothing.
+[run lock](#when-another-rotate-run-is-in-progress), which on a root that has never rotated
+creates `.auto-switch.d/rotate/` and `rotate-run.lock` and writes its own pid into that file.
+Apart from that lock it writes no rotate state, moves nothing and logs nothing.
 Its check for running sessions may refresh the shared
 [snapshot](#checks-for-running-sessions), which is not rotate state. It never refreshes a
 token or starts `claude`, so an expired login shows as unmeasured with its

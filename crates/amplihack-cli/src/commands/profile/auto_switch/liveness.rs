@@ -131,13 +131,13 @@ pub fn collect(proc_root: &Path, root: &Path, uid: u32) -> Collected {
 }
 
 /// One process's record, or `None` when it is another user's, has exited
-/// or its `status` or `stat` cannot be parsed.
+/// or its `status` cannot be parsed.
 fn record(dir: &Path, pid: u32, root: &Path, uid: u32) -> Option<ProcRecord> {
     let st = status(dir)?;
     if st.uid != uid {
         return None;
     }
-    let start_time = start_time(dir)?;
+    let start_time = start_time(dir);
     let mut r = ProcRecord {
         pid,
         ppid: st.ppid,
@@ -202,10 +202,9 @@ pub fn candidate(exe: Option<&Path>, cmdline: impl FnOnce() -> Option<Vec<u8>>) 
 
 /// The bytes name Claude or amplihack, ignoring ASCII case.
 fn has_marker(raw: &[u8]) -> bool {
-    let lower = raw.to_ascii_lowercase();
     [&b"claude"[..], &b"amplihack"[..]]
         .iter()
-        .any(|m| lower.windows(m.len()).any(|w| w == *m))
+        .any(|m| raw.windows(m.len()).any(|w| w.eq_ignore_ascii_case(m)))
 }
 
 /// The `CLAUDE_CONFIG_DIR` of every process of `uid` other than `self_pid`
@@ -292,13 +291,16 @@ fn status(dir: &Path) -> Option<Status> {
 }
 
 /// Field 22 of `/proc/<pid>/stat`, parsed after the last `)` so that any
-/// `comm` is safe. A `stat` that is missing or cannot be read is 0, so the
-/// process still counts; a malformed one is `None`.
-fn start_time(dir: &Path) -> Option<u64> {
-    let raw = match fsx::read_bounded_nofollow(&dir.join("stat"), MAX_SMALL) {
-        Ok(Some((raw, _))) => raw,
-        Ok(None) | Err(_) => return Some(0),
-    };
+/// `comm` is safe. A `stat` that is missing, unreadable or malformed is 0,
+/// so the process still counts.
+fn start_time(dir: &Path) -> u64 {
+    match fsx::read_bounded_nofollow(&dir.join("stat"), MAX_SMALL) {
+        Ok(Some((raw, _))) => parse_start_time(&raw).unwrap_or(0),
+        Ok(None) | Err(_) => 0,
+    }
+}
+
+fn parse_start_time(raw: &[u8]) -> Option<u64> {
     let close = raw.iter().rposition(|&b| b == b')')?;
     let rest = std::str::from_utf8(&raw[close + 1..]).ok()?;
     // Fields 3 onwards follow the `)`: field 22 is the 20th.

@@ -62,10 +62,11 @@ impl Snapshot {
         }
     }
 
-    pub fn collected(&self) -> Collected {
+    /// The records, moved out: a served snapshot is not used again.
+    pub fn into_collected(self) -> Collected {
         match self.outcome {
             Outcome::Unsupported => Collected::Unsupported,
-            Outcome::Ok => Collected::Procs(self.procs.clone()),
+            Outcome::Ok => Collected::Procs(self.procs),
         }
     }
 

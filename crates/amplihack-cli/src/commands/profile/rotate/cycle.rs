@@ -68,13 +68,11 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         }
         // A run lock file that fails a check: the daemon keeps running and
         // says so each cycle until the file is fixed.
-        Err(ProfileError::RotateRefused(reason))
-            if mode == Mode::Watch && reason.starts_with(run_lock::REFUSED_HEAD) =>
-        {
-            let reason = reason.strip_suffix("; nothing was read").unwrap_or(&reason);
-            log_sink(ctx, false).emit(now(), &format!("skip: {reason}"));
+        Ok(Taken::Refused(reason)) if mode == Mode::Watch => {
+            log_sink(ctx, false).emit(now(), &format!("skip: rotate run lock {reason}"));
             return Ok(CycleOutcome::Skipped);
         }
+        Ok(Taken::Refused(reason)) => return Err(run_lock::refusal(reason)),
         Err(e) => return Err(e),
     };
     // Issue #1962: set for each run, so a real cycle never inherits it.

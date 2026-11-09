@@ -13,9 +13,6 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
-/// How every refusal of the lock file starts.
-pub const REFUSED_HEAD: &str = "rotate run lock ";
-
 /// The most of the file read for the holder's pid.
 const MAX_PID_BYTES: u64 = 32;
 
@@ -28,28 +25,36 @@ pub enum Taken {
     Held(RunLock),
     /// Another run holds it; its pid when the file held a usable one.
     Busy(Option<u32>),
+    /// The lock file failed a check and was left as it is; the bare
+    /// reason, such as `"is not owned by you"`. See [`refusal`].
+    Refused(&'static str),
 }
 
 /// One attempt at the run lock. A lock file that fails a check (a symlink,
 /// not a regular file, not yours, open to group or other users, more than
-/// one link) is `RotateRefused` and is left as it is.
+/// one link) is `Taken::Refused` and is left as it is.
 pub fn take(rs: &RotateState) -> Result<Taken, ProfileError> {
     rs.ensure()?;
-    let mut file = OpenOptions::new()
+    let opened = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(&rs.run_lock)
-        .map_err(|e| match e.raw_os_error() {
-            Some(libc::ELOOP) => refused("is a symlink"),
+        .open(&rs.run_lock);
+    let mut file = match opened {
+        Ok(file) => file,
+        Err(e) => match e.raw_os_error() {
+            Some(libc::ELOOP) => return Ok(Taken::Refused("is a symlink")),
             // O_RDWR on a directory.
-            Some(libc::EISDIR) => refused("is not a regular file"),
-            _ => ProfileError::Io(e),
-        })?;
-    check(&file.metadata().map_err(ProfileError::Io)?)?;
+            Some(libc::EISDIR) => return Ok(Taken::Refused("is not a regular file")),
+            _ => return Err(ProfileError::Io(e)),
+        },
+    };
+    if let Err(reason) = check(&file.metadata().map_err(ProfileError::Io)?) {
+        return Ok(Taken::Refused(reason));
+    }
     match FileExt::try_lock_exclusive(&file) {
         Ok(()) => {
             write_pid(&mut file).map_err(ProfileError::Io)?;
@@ -62,23 +67,24 @@ pub fn take(rs: &RotateState) -> Result<Taken, ProfileError> {
     }
 }
 
-fn refused(reason: &str) -> ProfileError {
-    ProfileError::RotateRefused(format!("{REFUSED_HEAD}{reason}; nothing was read"))
+/// The error a one-shot or dry run fails with for a refused lock file.
+pub fn refusal(reason: &str) -> ProfileError {
+    ProfileError::RotateRefused(format!("rotate run lock {reason}; nothing was read"))
 }
 
 /// The checks, with the documented reasons, word for word.
-fn check(m: &std::fs::Metadata) -> Result<(), ProfileError> {
+fn check(m: &std::fs::Metadata) -> Result<(), &'static str> {
     if !m.is_file() {
-        return Err(refused("is not a regular file"));
+        return Err("is not a regular file");
     }
     if m.uid() != amplihack_utils::secure_files::euid() {
-        return Err(refused("is not owned by you"));
+        return Err("is not owned by you");
     }
     if m.mode() & 0o077 != 0 {
-        return Err(refused("is open to group or other users"));
+        return Err("is open to group or other users");
     }
     if m.nlink() != 1 {
-        return Err(refused("has more than one link"));
+        return Err("has more than one link");
     }
     Ok(())
 }
@@ -105,3 +111,7 @@ fn read_pid(file: &mut File) -> Option<u32> {
     }
     text.parse::<u32>().ok().filter(|&p| p != 0)
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "tests_run_lock.rs"]
+mod tests_run_lock;

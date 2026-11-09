@@ -159,7 +159,7 @@ fn lease_barred_live_login_is_still_refreshed_and_the_cycle_goes_on() {
     );
     // A running session in `work` keeps auto-switch recovery from handing
     // the hosted login back, so the lease is still in force at the refresh.
-    let mut session = std::process::Command::new("sleep")
+    let mut session = std::process::Command::new(crate::support::session_holder::claude_sleep())
         .arg("600")
         .env("CLAUDE_CONFIG_DIR", f.root.join("work"))
         .spawn()
