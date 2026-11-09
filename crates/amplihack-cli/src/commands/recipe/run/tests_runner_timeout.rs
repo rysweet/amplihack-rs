@@ -102,6 +102,13 @@ fn fixture_environment(work_root: &std::path::Path) -> crate::test_support::EnvG
     saved
 }
 
+/// Single-quotes a path for embedding in a stub script; each `'` becomes
+/// `'\''`.
+#[cfg(unix)]
+fn sh_quote(p: &std::path::Path) -> String {
+    format!("'{}'", p.display().to_string().replace('\'', "'\\''"))
+}
+
 /// A FIFO in a per-test tempdir that a stub blocks on until the test
 /// releases it. Dropping the gate always frees a blocked reader and a blocked
 /// release thread: `open(O_RDWR)` never blocks on Linux and counts as both a
@@ -131,10 +138,7 @@ impl Gate {
 
     /// Single-quoted for embedding in a stub script.
     fn quoted(&self) -> String {
-        format!(
-            "'{}'",
-            self.path.display().to_string().replace('\'', "'\\''")
-        )
+        sh_quote(&self.path)
     }
 
     /// Blocks until the stub opens the FIFO, then lets it continue.
@@ -168,8 +172,10 @@ impl Drop for Gate {
 }
 
 /// Kills and reaps a directly spawned stub on drop, panic or not.
+#[cfg(unix)]
 struct ChildGuard(std::process::Child);
 
+#[cfg(unix)]
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -356,8 +362,6 @@ fn a_bounded_wait_reports_the_limit_it_applied() {
         elapsed >= Duration::from_millis(300),
         "the limit must not fire early: {elapsed:?}"
     );
-    drop(child);
-    drop(gate);
 }
 
 // -------------------------------------------------------------------------
@@ -460,8 +464,8 @@ fn ac4_an_explicit_limit_times_out_with_the_existing_message() {
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\numask 077\necho $$ > '{}'\nread _ < {}\n",
-            pidfile.display(),
+            "#!/bin/sh\numask 077\necho $$ > {}\nread _ < {}\n",
+            sh_quote(&pidfile),
             gate.quoted()
         ),
     );
@@ -514,5 +518,4 @@ fn ac4_an_explicit_limit_times_out_with_the_existing_message() {
             "the timed-out runner (pid {pid}) must be torn down"
         );
     }
-    drop(gate);
 }

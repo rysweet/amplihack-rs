@@ -105,7 +105,7 @@ pub struct AgentConfig {
     pub memory_type: MemoryType,
     #[serde(default = "default_max_iterations")]
     pub max_iterations: usize,
-    /// Per-agent time limit in seconds. `None` = no limit (#2022).
+    /// Per-agent time limit in seconds. Recorded only; not enforced. `None` = no limit (#2022).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
 }
@@ -167,7 +167,7 @@ pub struct TaskSpec {
     pub description: String,
     #[serde(default)]
     pub priority: TaskPriority,
-    /// Per-task time limit in seconds. `None` = no limit (#2022).
+    /// Per-task time limit in seconds. Recorded only; not enforced. `None` = no limit (#2022).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
     #[serde(default)]
@@ -195,6 +195,7 @@ impl TaskSpec {
     }
 
     /// The task's time limit, or `None` when no limit is set (#2022).
+    /// Recorded only; not enforced.
     pub fn timeout(&self) -> Option<Duration> {
         self.timeout_secs.map(Duration::from_secs)
     }

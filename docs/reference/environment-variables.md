@@ -1055,7 +1055,7 @@ When a limit is set and reached, amplihack stops the runner's process
 group, writes the run's terminal record and ends with an error such as:
 
 ```
-recipe-runner-rs timed out after 1s (pid 41213, recipe default-workflow, working dir /home/ryan/src/amplihack-rs); recipe run rs-1792335000-41210 ended: timed out
+recipe-runner-rs timed out after 1s (pid 41213, recipe default-workflow, working dir /home/user/src/project); recipe run rs-1792335000-41210 ended: timed out
 ```
 
 ```sh

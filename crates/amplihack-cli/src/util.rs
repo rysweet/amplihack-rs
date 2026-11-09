@@ -295,12 +295,12 @@ fn run_output_with_timeout_inner(
     // wall-clock timeout.
     drop(stdin_writer);
     // Name only the program: the arguments may hold a prompt under argv
-    // delivery. `wait_for_child_exit` returns `None` only when a limit was
-    // set, so `timeout` is `Some` here.
+    // delivery.
+    let timeout = timeout.expect("wait returns without exit only when a limit is set");
     bail!(
         "subprocess `{}` timed out after {:?} (pid {})",
         cmd.get_program().to_string_lossy(),
-        timeout.unwrap_or_default(),
+        timeout,
         pid
     )
 }

@@ -48,8 +48,7 @@ fn run_output_inner(mut cmd: Command, timeout: Option<Duration>) -> Result<Outpu
 
     let _ = child.kill();
     let _ = child.wait();
-    // Reached only when a limit was set.
-    let timeout = timeout.unwrap_or_default();
+    let timeout = timeout.expect("wait returns without exit only when a limit is set");
     bail!("subprocess `{cmd:?}` timed out after {timeout:?} (pid {pid})")
 }
 

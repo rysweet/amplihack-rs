@@ -628,31 +628,49 @@ fn no_limit() -> IdleConfig {
     }
 }
 
-/// A child silent for 2 s (longer than any short window) is reaped, not killed.
+/// With `idle_timeout: None` the watchdog takes the no-kill path; the child
+/// exits only when released over stdin.
 #[test]
 fn sync_silent_child_is_not_killed_without_an_idle_limit() {
+    use std::io::Write as _;
     let mut child = std::process::Command::new("bash")
-        .args(["-c", "sleep 2; echo done"])
+        .args(["-c", "read -r _; echo done"])
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn silent child");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    let release = std::thread::spawn(move || {
+        // The exit-status asserts below decide the result.
+        let _ = stdin.write_all(b"go\n");
+    });
     let (out, err) = (child.stdout.take(), child.stderr.take());
     let outcome = wait_with_idle_watchdog_sync(&mut child, out, err, no_limit());
+    release.join().expect("release thread");
     assert!(!outcome.killed_for_idle);
     assert_eq!(outcome.status.unwrap().code(), Some(0));
     assert!(outcome.stdout.contains("done"), "{:?}", outcome.stdout);
 }
 
+/// With `idle_timeout: None` the watchdog takes the no-kill path; the child
+/// exits only when released over stdin.
 #[tokio::test]
 async fn async_silent_child_is_not_killed_without_an_idle_limit() {
+    use tokio::io::AsyncWriteExt as _;
     let mut child = tokio::process::Command::new("bash")
-        .args(["-c", "sleep 2; echo done"])
+        .args(["-c", "read -r _; echo done"])
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .expect("spawn silent child");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    drop(tokio::spawn(async move {
+        // The exit-status asserts below decide the result.
+        let _ = stdin.write_all(b"go\n").await;
+    }));
     let (out, err) = (child.stdout.take(), child.stderr.take());
     let outcome = wait_with_idle_watchdog(&mut child, out, err, no_limit()).await;
     assert!(!outcome.killed_for_idle);
