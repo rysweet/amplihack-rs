@@ -532,7 +532,7 @@ URL can contain a token.
 | SHA input | `ERROR: base_sha '<shown>' is not a full 40- or 64-character hex SHA; abbreviated SHAs are refused (issue #1957).` |
 | No origin | `ERROR: no 'origin' remote configured in <repo>; refusing to resolve a worktree source (issue #1957).` |
 | Wrong repo | `ERROR: --repo <repo> is not the repository top (show-toplevel: <top>) (issue #1957).` |
-| Fetch failed | `ERROR: git fetch origin failed in <repo>; refusing base_branch '<shown b>' base_sha '<shown s>' because cached refs cannot prove freshness (issue #1957).` |
+| Fetch failed | `ERROR: git fetch origin failed in <repo> (requested base_branch '<shown b>', base_sha '<shown s>'); cached refs cannot prove freshness, so no worktree is created (issue #1957).` |
 | Branch missing | `ERROR: base_branch '<b>' not found on origin in <repo> (refs/remotes/origin/<b> missing after fetch) (issue #1957).` |
 | SHA missing | `ERROR: base_sha <s> not found in <repo> (actual: none) (issue #1957).` |
 | Not a commit | `ERROR: base_sha <s> is not a commit in <repo> (resolves to <actual>) (issue #1957).` |
