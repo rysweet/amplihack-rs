@@ -75,6 +75,8 @@ context:
   # Outputs populated during execution (propagated through phase sub-recipes)
   clarified_requirements: ""
   issue_number: ""
+  # #1887: false|0|no|off disables tracking-issue creation on every host; empty keeps creation on.
+  create_issue: ""
   branch_name: ""
   worktree_path: ""
   # Issue #425: nested-recipe context propagation for the worktree-setup

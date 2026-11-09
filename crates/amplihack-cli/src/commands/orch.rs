@@ -14,7 +14,7 @@
 //! Exposed via the `amplihack orch helper` CLI subcommand so recipes no longer
 //! need to shell into `python3`. See issue #270.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 use std::io::Read;
 use std::path::PathBuf;
@@ -113,7 +113,11 @@ pub enum OrchHelperCommands {
     ///
     /// Equivalent to the `create-workstreams-config` python heredoc in
     /// `smart-orchestrator.yaml`. Each workstream becomes one config entry
-    /// with: `issue: "TBD"`, branch slug, description, task, recipe.
+    /// with: `id`, branch slug, description, task, recipe, and the caller's
+    /// tracking settings (#1900): `issue` from `RECIPE_VAR_issue_number` when
+    /// set, and `context.create_issue` / `context.remote_host_type` from
+    /// `RECIPE_VAR_create_issue` / `RECIPE_VAR_remote_host_type`. With no
+    /// issue number, `create_issue` defaults to `false` (local tracking).
     BuildWorkstreamsConfig,
 
     /// Read JSON from stdin, print the value at `--field` as a string.
@@ -549,7 +553,12 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
                 target.is_some(),
             )
             .unwrap_or("");
-            let path = build_workstreams_config_with_override(&input, effective)?;
+            let tracking = WorkstreamTracking::from_caller(
+                &var("RECIPE_VAR_issue_number"),
+                &var("RECIPE_VAR_create_issue"),
+                &var("RECIPE_VAR_remote_host_type"),
+            )?;
+            let path = build_workstreams_config_with_tracking(&input, effective, &tracking)?;
             println!("{path}");
             Ok(())
         }
@@ -832,10 +841,76 @@ fn non_development_recipe(classification: Option<&str>) -> &'static str {
     }
 }
 
+/// The caller's tracking settings every parallel workstream inherits
+/// (#1887, #1900).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkstreamTracking {
+    /// The caller's `issue_number`; `None` means local tracking.
+    pub issue_number: Option<i64>,
+    /// Passed on as the workstream's `create_issue`. Always set when
+    /// `issue_number` is `None`: the caller's value, else `"false"`.
+    pub create_issue: String,
+    /// Passed on as the workstream's `remote_host_type` when non-empty.
+    pub remote_host_type: String,
+}
+
+impl WorkstreamTracking {
+    /// Build from the caller's raw `issue_number`, `create_issue` and
+    /// `remote_host_type`. `issue_number` may be `N`, `#N` or a GitHub issue
+    /// URL ending in `/issues/N`; any other non-empty value is an error, so a
+    /// typo never turns into a run that files new issues.
+    pub fn from_caller(
+        issue_number: &str,
+        create_issue: &str,
+        remote_host_type: &str,
+    ) -> Result<Self> {
+        let raw = issue_number.trim();
+        let issue_number = if raw.is_empty() {
+            None
+        } else {
+            let digits = raw
+                .rsplit_once("/issues/")
+                .map(|(_, n)| n)
+                .unwrap_or(raw)
+                .trim_start_matches('#')
+                .trim_end_matches('/');
+            match digits.parse::<i64>() {
+                Ok(n) if n > 0 && digits.bytes().all(|b| b.is_ascii_digit()) => Some(n),
+                _ => bail!(
+                    "issue_number {raw:?} is not an issue number; give N, #N or an \
+                     issue URL, or leave it empty for local tracking"
+                ),
+            }
+        };
+        let mut create_issue = create_issue.trim().to_string();
+        if issue_number.is_none() && create_issue.is_empty() {
+            create_issue = "false".to_string();
+        }
+        Ok(Self {
+            issue_number,
+            create_issue,
+            remote_host_type: remote_host_type.trim().to_string(),
+        })
+    }
+}
+
+/// A stable positive workstream id from the branch and description, so a
+/// rerun of the same decomposition finds the saved state of the first run
+/// (the resume the old `"TBD"` convention promised). FNV-1a, kept below
+/// 10^9 so the id stays short in paths and logs.
+fn stable_workstream_id(branch: &str, description: &str) -> i64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in branch.bytes().chain([0u8]).chain(description.bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    (hash % 999_999_999) as i64 + 1
+}
+
 /// Build the workstreams-config tempfile from a decomposition JSON blob and
-/// return the path. Mirrors the `create-workstreams-config` Python heredoc:
-/// each entry has `issue: "TBD"`, `branch: feat/orch-{i}-{slug}`,
-/// `description`, `task`, `recipe` (default `default-workflow`).
+/// return the path. Each entry has `id`, `branch: feat/orch-{i}-{slug}`,
+/// `description`, `task`, `recipe` (default `default-workflow`) and the
+/// default tracking: no `issue` and `context.create_issue = "false"`.
 pub fn build_workstreams_config_to_tempfile(decomp: &str) -> Result<String> {
     build_workstreams_config_with_override(decomp, "")
 }
@@ -848,6 +923,19 @@ pub fn build_workstreams_config_with_override(
     decomp: &str,
     override_value: &str,
 ) -> Result<String> {
+    let tracking = WorkstreamTracking::from_caller("", "", "")?;
+    build_workstreams_config_with_tracking(decomp, override_value, &tracking)
+}
+
+/// [`build_workstreams_config_with_override`] with the caller's tracking
+/// settings (#1900). Every workstream gets the caller's issue number when
+/// there is one, never a placeholder, plus its `create_issue` and
+/// `remote_host_type` in `context`.
+pub fn build_workstreams_config_with_tracking(
+    decomp: &str,
+    override_value: &str,
+    tracking: &WorkstreamTracking,
+) -> Result<String> {
     let override_workflow = select_workflow::valid_override(override_value);
     let obj = extract_json(decomp).unwrap_or(serde_json::json!({}));
     let top_level_task_type = obj.get("task_type").and_then(|v| v.as_str());
@@ -858,6 +946,7 @@ pub fn build_workstreams_config_with_override(
         .unwrap_or_default();
 
     let mut entries: Vec<serde_json::Value> = Vec::with_capacity(workstreams.len());
+    let mut used_ids = std::collections::HashSet::new();
     for (i, ws) in workstreams.iter().enumerate() {
         let idx = i + 1;
         let name = ws
@@ -872,13 +961,34 @@ pub fn build_workstreams_config_with_override(
             .unwrap_or(&name)
             .to_string();
         let recipe = normalise_workstream_recipe(ws, top_level_task_type, override_workflow);
-        entries.push(serde_json::json!({
-            "issue": "TBD",
-            "branch": format!("feat/orch-{idx}-{slug}"),
+        let branch = format!("feat/orch-{idx}-{slug}");
+        let mut context = serde_json::Map::new();
+        if !tracking.create_issue.is_empty() {
+            context.insert("create_issue".into(), tracking.create_issue.clone().into());
+        }
+        if !tracking.remote_host_type.is_empty() {
+            context.insert(
+                "remote_host_type".into(),
+                tracking.remote_host_type.clone().into(),
+            );
+        }
+        // Two ids in one run must differ: they key the work dirs.
+        let mut id = stable_workstream_id(&branch, &name);
+        while !used_ids.insert(id) {
+            id = id % 999_999_999 + 1;
+        }
+        let mut entry = serde_json::json!({
+            "id": id,
+            "branch": branch,
             "description": name,
             "task": task,
             "recipe": recipe,
-        }));
+            "context": context,
+        });
+        if let Some(n) = tracking.issue_number {
+            entry["issue"] = serde_json::json!(n);
+        }
+        entries.push(entry);
     }
 
     let dir = std::env::temp_dir();
@@ -1470,7 +1580,11 @@ mod tests {
         assert_eq!(arr.len(), 2);
 
         // Each entry has the required shape.
-        assert_eq!(arr[0]["issue"], "TBD");
+        // #1900: no placeholder issue; a stable id and local tracking.
+        assert!(arr[0].get("issue").is_none(), "{}", arr[0]);
+        assert!(arr[0]["id"].as_i64().unwrap() > 0);
+        assert_ne!(arr[0]["id"], arr[1]["id"]);
+        assert_eq!(arr[0]["context"]["create_issue"], "false");
         assert_eq!(arr[0]["description"], "API service");
         assert_eq!(arr[0]["task"], "Implement the REST API");
         assert_eq!(arr[0]["recipe"], "default-workflow");
@@ -1488,6 +1602,89 @@ mod tests {
         }
 
         std::fs::remove_file(&path).ok();
+    }
+
+    // --- #1900: caller tracking settings --------------------------------------
+
+    fn config_with_tracking(tracking: &WorkstreamTracking) -> Vec<serde_json::Value> {
+        let decomp = r#"{"task_type": "Development", "workstreams": [
+            {"name": "api", "description": "Build the API"},
+            {"name": "ui", "description": "Build the UI"}
+        ]}"#;
+        let path = build_workstreams_config_with_tracking(decomp, "", tracking).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        serde_json::from_str::<serde_json::Value>(&body)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn caller_issue_number_reaches_every_workstream() {
+        let tracking = WorkstreamTracking::from_caller("#368", "", "github").unwrap();
+        let arr = config_with_tracking(&tracking);
+        assert_eq!(arr.len(), 2);
+        for e in &arr {
+            assert_eq!(e["issue"], 368, "{e}");
+            assert_eq!(e["context"]["remote_host_type"], "github", "{e}");
+            assert!(e["context"].get("create_issue").is_none(), "{e}");
+        }
+        assert_ne!(arr[0]["id"], arr[1]["id"], "ids key the work dirs");
+    }
+
+    #[test]
+    fn no_issue_number_means_local_tracking_unless_caller_says_otherwise() {
+        let arr = config_with_tracking(&WorkstreamTracking::from_caller("", "", "").unwrap());
+        for e in &arr {
+            assert!(e.get("issue").is_none(), "{e}");
+            assert_eq!(e["context"]["create_issue"], "false", "{e}");
+            assert!(e["context"].get("remote_host_type").is_none(), "{e}");
+        }
+        let explicit = WorkstreamTracking::from_caller("", "true", "azdo").unwrap();
+        assert_eq!(explicit.create_issue, "true", "an explicit value is kept");
+        assert_eq!(explicit.remote_host_type, "azdo");
+    }
+
+    #[test]
+    fn issue_number_forms_and_rejects() {
+        for raw in [
+            "368",
+            " #368 ",
+            "https://github.com/o/r/issues/368",
+            "https://github.com/o/r/issues/368/",
+        ] {
+            assert_eq!(
+                WorkstreamTracking::from_caller(raw, "", "")
+                    .unwrap()
+                    .issue_number,
+                Some(368),
+                "{raw}"
+            );
+        }
+        for raw in [
+            "TBD",
+            "0",
+            "-3",
+            "+5",
+            "12a",
+            "https://github.com/o/r/pull/9",
+        ] {
+            let err = WorkstreamTracking::from_caller(raw, "", "")
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("not an issue number"), "{raw}: {err}");
+        }
+    }
+
+    #[test]
+    fn workstream_ids_are_stable_across_runs() {
+        let t = WorkstreamTracking::default();
+        let a = config_with_tracking(&t);
+        let b = config_with_tracking(&t);
+        assert_eq!(a[0]["id"], b[0]["id"], "a rerun must find the saved state");
+        assert_eq!(a[1]["id"], b[1]["id"]);
     }
 
     #[test]

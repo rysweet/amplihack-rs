@@ -19,6 +19,8 @@ mod launcher;
 mod launcher_tests;
 mod log_output;
 mod models;
+#[cfg(test)]
+mod models_tests;
 mod orchestrator;
 mod persistence;
 mod process_scope;
@@ -77,7 +79,7 @@ pub fn run_multitask(
         for item in &items {
             println!(
                 "  [{}] {} (recipe: {})",
-                item.issue,
+                item.workstream_id().unwrap_or(0),
                 item.description_or_default(),
                 item.recipe.as_deref().unwrap_or(recipe)
             );

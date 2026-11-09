@@ -2,7 +2,8 @@
 //! profile down to the nested `amplihack` launch.
 
 use super::command_builder::{
-    classic_run_script, profile_exports, recipe_run_script, sh_single_quote,
+    build_resume_context, classic_run_script, classic_task_markdown, profile_exports,
+    recipe_run_script, sh_single_quote,
 };
 use super::models::Workstream;
 use std::collections::HashMap;
@@ -278,4 +279,39 @@ fn profile_exports_quotes_the_substituted_name() {
         out.contains("export AMPLIHACK_CLAUDE_PROFILE='it'\\''s'\n"),
         "{out}"
     );
+}
+
+/// #1900: a workstream with no tracking issue gets no `issue_number`, so its
+/// recipe uses local tracking; the config's extra context (#1887) is passed
+/// on, but cannot replace the keys the orchestrator sets.
+#[test]
+fn resume_context_local_tracking_and_extra_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ws = workstream(dir.path());
+    ws.tracking_issue = None;
+    ws.extra_context
+        .insert("create_issue".into(), "false".into());
+    ws.extra_context
+        .insert("remote_host_type".into(), "github".into());
+    ws.extra_context.insert("issue_number".into(), "TBD".into());
+    ws.extra_context
+        .insert("task_description".into(), "hijack".into());
+    let ctx = build_resume_context(&ws);
+    assert_eq!(ctx["create_issue"], "false");
+    assert_eq!(ctx["remote_host_type"], "github");
+    assert!(!ctx.contains_key("issue_number"), "{ctx:?}");
+    assert_eq!(ctx["task_description"], "Keep the parent profile");
+    assert!(classic_task_markdown(&ws).starts_with("# Workstream 1567 (local tracking"));
+}
+
+/// #1900: a shared tracking issue goes to the context as `issue_number`,
+/// separate from the workstream's own key.
+#[test]
+fn resume_context_uses_tracking_issue_not_workstream_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut ws = workstream(dir.path());
+    ws.tracking_issue = Some(368);
+    let ctx = build_resume_context(&ws);
+    assert_eq!(ctx["issue_number"], 368);
+    assert!(classic_task_markdown(&ws).starts_with("# Issue #368"));
 }

@@ -264,7 +264,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_WORKFLOW_RUNTIME_DIR` | internal |  | Runtime directory `<run dir>/runtime` handed to recipe steps. |
 | `AMPLIHACK_WORKSPACE_MARKER` | internal |  | Not an env var: the install clone's workspace marker constant. |
 | `AMPLIHACK_WORKSTREAM` | user preference |  | Workstream identity for the capacity governor's fair queue. |
-| `AMPLIHACK_WORKSTREAM_ISSUE` | internal |  | Issue number handed to a multitask workstream. The capacity governor also uses it as the workstream `ws-<n>`. |
+| `AMPLIHACK_WORKSTREAM_ISSUE` | internal |  | The multitask workstream's key: its `id`, else its `issue` (#1900). The capacity governor uses it as the workstream `ws-<n>`. The tracking issue itself is passed in the recipe context as `issue_number`. |
 | `AMPLIHACK_WORKSTREAM_PROGRESS_FILE` | internal |  | Progress file handed to a multitask workstream. |
 | `AMPLIHACK_WORKSTREAM_STATE_FILE` | internal |  | State file handed to a multitask workstream. |
 | `AMPLIHACK_WORKTREE_PATH` | internal |  | Worktree path handed to a multitask workstream. |

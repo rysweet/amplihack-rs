@@ -100,13 +100,18 @@ them simultaneously.
 ```
 [dev-orchestrator] Classified as: Development | Workstreams: 2 — starting execution...
 Launching parallel workstreams (tree: abc12345, depth: 0):
-[{"issue": "TBD", "branch": "feat/orch-1-rest-api", ...},
- {"issue": "TBD", "branch": "feat/orch-2-react-webui", ...}]
+[{"id": 482913377, "branch": "feat/orch-1-rest-api", ..., "context": {"create_issue": "false"}},
+ {"id": 120558431, "branch": "feat/orch-2-react-webui", ..., "context": {"create_issue": "false"}}]
 ---
-[TBD] Launched PID 12345 (recipe mode)
-[TBD] Launched PID 12346 (recipe mode)
+[482913377] Launched PID 12345 (recipe mode)
+[120558431] Launched PID 12346 (recipe mode)
 2 workstreams launched in parallel (recipe mode)
 ```
+
+Each workstream has an `id` derived from its branch and description. With no
+`issue_number`, the workstreams use local tracking and file no issue; pass
+`-c issue_number=N` and every workstream gets `"issue": N` (#1900, see
+[Parallel workstreams](../reference/workflow-tracking-issue-selection.md#parallel-workstreams)).
 
 Both workstreams run in isolated `/tmp` clones. When they complete, you get two
 PRs — one for the API, one for the webui.

@@ -83,10 +83,10 @@ impl ParallelOrchestrator {
     }
 
     pub fn add(&mut self, config: &WorkstreamConfig, default_recipe: &str) -> Result<()> {
-        let issue = config.issue_id();
-        if issue <= 0 {
-            bail!("Invalid issue number: {}", config.issue);
-        }
+        // #1900: the workstream key and the tracking issue are separate; a
+        // workstream with no tracking issue uses local tracking.
+        let tracking_issue = config.tracking_issue().map_err(anyhow::Error::msg)?;
+        let issue = config.workstream_id().map_err(anyhow::Error::msg)?;
 
         let recipe = config
             .recipe
@@ -104,6 +104,8 @@ impl ParallelOrchestrator {
             &self.state_dir,
         );
 
+        ws.tracking_issue = tracking_issue;
+        ws.extra_context = config.context.clone();
         ws.max_runtime = config.max_runtime.unwrap_or(self.default_max_runtime);
         ws.timeout_policy = config
             .timeout_policy
