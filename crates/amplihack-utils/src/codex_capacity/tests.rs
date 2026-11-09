@@ -1468,6 +1468,8 @@ fn reading_never_opens_a_file_in_the_account_and_writes_nothing_there() {
 /// One fake for every account, answering by the account's directory name.
 /// `read_all` drops a `NotSignedIn` row only when its label is
 /// [`HOME_LABEL`], so the home row can point at any directory here.
+/// A `meet*` account reads the FIFO of the same name in `markers` to EOF
+/// before it answers; see [`read_all_reads_the_accounts_at_once`].
 fn by_name(dir: &Path, markers: &Path) -> PathBuf {
     fs::create_dir_all(markers).unwrap();
     let body = format!(
@@ -1481,9 +1483,7 @@ case "$name" in
   slow) sleep 600 ;;
   crash) echo "boom" >&2; exit 2 ;;
   meet*)
-    : > '{m}/'"$name"
-    i=0
-    while [ "$(ls '{m}' | wc -l)" -lt 3 ] && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i+1)); done
+    cat '{m}/'"$name" >/dev/null
     printf '%s\n' '{WEEKLY_ONLY}' ;;
   *) echo "unknown fixture $name" >&2; exit 9 ;;
 esac
@@ -1560,17 +1560,49 @@ fn read_all_keeps_the_input_order_and_each_outcome() {
 
 #[test]
 fn read_all_reads_the_accounts_at_once() {
-    // Each fake waits until all three have started; a serial reader would
-    // leave the first waiting alone until it gave up.
+    // Each `meet*` fake blocks reading its own FIFO until EOF. The release
+    // thread opens the three FIFOs for writing one after another, and each
+    // open blocks until that fake has opened its FIFO for reading. Only once
+    // all three are open does it close them, which gives every fake its EOF
+    // together. A serial `read_all` starts `meet2` only after `meet1` has
+    // finished, so `meet1` waits with its FIFO held open and no EOF until its
+    // deadline, and reads as `timeout`. There is no give-up in the barrier:
+    // the per-account deadline alone decides the outcome.
     let d = scratch();
-    let bin = by_name(d.path(), &d.path().join("m"));
+    let m = d.path().join("m");
+    let bin = by_name(d.path(), &m);
+    let names = ["meet1", "meet2", "meet3"];
+    let fifos: Vec<PathBuf> = names.iter().map(|n| m.join(n)).collect();
+    for f in &fifos {
+        mkfifo(f);
+    }
+    let to_open = fifos.clone();
+    let release = std::thread::spawn(move || {
+        let held: Vec<fs::File> = to_open
+            .iter()
+            .map(|f| fs::OpenOptions::new().write(true).open(f).unwrap())
+            .collect();
+        drop(held);
+    });
     let root = d.path().join("profiles");
-    let accounts = [
-        acct(&root, "meet1"),
-        acct(&root, "meet2"),
-        acct(&root, "meet3"),
-    ];
+    let accounts = names.map(|n| acct(&root, n));
     let rows = read_all(bin.as_os_str(), &accounts, Duration::from_secs(30));
+    // A fake that never opened its FIFO leaves the release thread blocked in
+    // `open`. Readers of our own, held until the thread has ended, let every
+    // open it has left return at once.
+    let unblock: Vec<fs::File> = fifos
+        .iter()
+        .map(|f| {
+            use std::os::unix::fs::OpenOptionsExt;
+            fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(f)
+                .unwrap()
+        })
+        .collect();
+    release.join().unwrap();
+    drop(unblock);
     for r in &rows {
         assert_eq!(kind(&r.outcome), "ok", "{}: {:?}", r.label, r.outcome);
     }
