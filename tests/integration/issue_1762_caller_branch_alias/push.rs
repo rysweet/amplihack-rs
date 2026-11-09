@@ -230,11 +230,12 @@ fn step16b_prompt_does_not_template_branch_name() {
         block.contains("workflow_remote_branch.sh"),
         "the push target comes from the resolver:\n{block}"
     );
-    let push = Regex::new(r#"git push [^\n]*origin "HEAD:\$"#).unwrap();
+    // #1969 (D6): the pull names its source and the push its refspec.
+    let push = Regex::new(r#"git push -u origin "HEAD:refs/heads/\$"#).unwrap();
     assert!(
         block
             .lines()
-            .any(|l| l.contains("git pull --rebase") && push.is_match(l)),
+            .any(|l| l.contains(r#"git pull --rebase origin "$"#) && push.is_match(l)),
         "the fix loop pushes HEAD to the resolved remote branch:\n{block}"
     );
 }

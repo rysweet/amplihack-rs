@@ -234,7 +234,8 @@ fn resolver_ignores_inherited_git_dir() {
 /// another repository's branch.
 #[test]
 fn helpers_are_portable_executables() {
-    for name in [RESOLVER, PLANNER, REUSE] {
+    // #1969 adds the detection and push-plan helpers to the same rules.
+    for name in [RESOLVER, PLANNER, REUSE, DETECT, PUSH_PLAN] {
         let path = tool_path(name);
         let text = read(&path);
         assert!(text.starts_with("#!/usr/bin/env bash\n"), "{name}: shebang");

@@ -215,7 +215,7 @@ Any line that starts with `pub` and whitespace counts: items of every kind (`fn`
 
 **Git configuration snapshot.** Taken by `quick-change-record-base` before the agent runs. The keys it covers are listed under [Security limits](#security-limits); it also covers the contents of the hooks directory. A configuration read that fails is a fault (exit 2), so two empty snapshots can never compare equal.
 
-**Shared configuration.** A linked worktree's local configuration is the repository's `.git/config`, which every worktree shares ([git-worktree, configuration file](https://git-scm.com/docs/git-worktree#_configuration_file)). Other runs write branch upstream entries there while this one is in progress: `workflow-worktree` runs `git branch --set-upstream-to`, `git worktree add -b` from `origin/main` sets an upstream, and `git push -u` writes one ([git-push](https://git-scm.com/docs/git-push)). This recipe's own push step does the same. Branch entries are therefore compared as follows:
+**Shared configuration.** A linked worktree's local configuration is the repository's `.git/config`, which every worktree shares ([git-worktree, configuration file](https://git-scm.com/docs/git-worktree#_configuration_file)). Other runs write branch upstream entries there while this one is in progress: `workflow-worktree` runs `git branch --set-upstream-to`, and `git push -u` writes one ([git-push](https://git-scm.com/docs/git-push)). This recipe's own push step does the same. Branch entries are therefore compared as follows:
 
 | Snapshot line | What it covers |
 | --- | --- |
@@ -223,9 +223,9 @@ Any line that starts with `pub` and whitespace counts: items of every kind (`fn`
 | `branch-upstream` | `branch.<name>.remote` and `branch.<name>.merge` for the branch checked out in the run's worktree, at every configuration level |
 | `branch-other` | Every other `branch.<name>.<key>` entry for that branch, `pushRemote` included, at every configuration level |
 
-Another branch's entries apply only when that branch is checked out, so they are not compared. The run's own entries are, because `default-workflow` pushes with a bare `git push` after a hand-over (`workflow-publish.yaml`), and that push follows them. `push.default`, which decides what a bare push updates, is checked at every level for the same reason.
+Another branch's entries apply only when that branch is checked out, so they are not compared. The run's own entries are, because `default-workflow` steps 18c and 20b push with a bare `git push` after a hand-over when the branch has an upstream (`workflow-pr-review.yaml`, `workflow-finalize.yaml`), and that push follows them. Step 15 does not: it pushes with an explicit refspec (#1969). `push.default`, which decides what a bare push updates, is checked at every level for the same reason.
 
-`--committed` does not compare `branch-upstream`. The recipe's own `git push -u origin <ref>:<ref>` writes it, and it differs from the snapshot whenever the best-effort push in `workflow-worktree` did not happen: the branch then still tracks `origin/main`, as `git worktree add -b` from `origin/main` set it. By the time `--committed` runs, the run can no longer hand over, and the push and PR steps name `origin` and the branch explicitly, so the upstream is not used. Step 4 compares every line.
+`--committed` does not compare `branch-upstream`. The recipe's own `git push -u origin <ref>:<ref>` writes it, and it differs from the snapshot whenever the best-effort push in `workflow-worktree` did not happen: the branch then has no upstream, because `workflow-worktree` creates it with `git worktree add --no-track -b` (#1969). By the time `--committed` runs, the run can no longer hand over, and the push and PR steps name `origin` and the branch explicitly, so the upstream is not used. Step 4 compares every line.
 
 The per-worktree file is read directly, since `git config --worktree` fails in a linked worktree unless `extensions.worktreeConfig` is set.
 

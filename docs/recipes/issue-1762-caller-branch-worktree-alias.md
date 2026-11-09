@@ -7,17 +7,25 @@ has `origin/<branch>` as its upstream. Every later step pushes to `<branch>`
 and looks the pull request up by `<branch>`, so the branch on `origin` is the
 one updated. The caller's clone is not changed.
 
+A top-level run whose `repo_path` is a linked worktree on a feature branch
+continues that branch through the same alias path, without
+`-c existing_branch` (#1969). See
+[Caller-branch continuation](#caller-branch-continuation-1969).
+
 **Affects:**
-- `amplifier-bundle/recipes/workflow-worktree.yaml`: `step-04-setup-worktree` (existing-branch path)
+- `amplifier-bundle/recipes/workflow-worktree.yaml`: `step-04-setup-worktree` (existing-branch path, caller-branch detection, `--no-track` on new branches)
 - `amplifier-bundle/recipes/workflow-publish.yaml`: `step-15-commit-push` and the `step-16b-outside-in-fix-loop` prompt
+- `amplifier-bundle/recipes/consensus-issue-worktree.yaml`: `step3-setup-worktree` (`--no-track` on new branches)
 - `amplifier-bundle/recipes/workflow-pr-review.yaml`: `step-18c-push-feedback-changes`
 - `amplifier-bundle/recipes/workflow-finalize.yaml`: `step-20b-push-cleanup`
 - `amplifier-bundle/recipes/workflow-terminal-state.yaml`: the branch check
 - `amplifier-bundle/tools/workflow_caller_branch_alias.sh` (new): the step-04 planner
 - `amplifier-bundle/tools/workflow_remote_branch.sh` (new): the remote-branch resolver, and the ten tool call sites that use it
 - `amplifier-bundle/tools/workflow_alias_reuse.sh` (new): the checks and fast-forward step 4 runs before reusing an alias worktree
+- `amplifier-bundle/tools/workflow_caller_branch.sh` (#1969): decides whether step 4 continues the caller's branch
+- `amplifier-bundle/tools/workflow_push_plan.sh` (#1969): step 15's ancestry classification against `origin/<B>`
 
-**Closes:** #1762
+**Closes:** #1762, #1969
 
 ---
 
@@ -28,11 +36,14 @@ one updated. The caller's clone is not changed.
 - [When the alias applies](#when-the-alias-applies)
 - [Alias naming and reuse](#alias-naming-and-reuse)
 - [Checks on the caller's checkout](#checks-on-the-callers-checkout)
+- [Caller-branch continuation (#1969)](#caller-branch-continuation-1969)
+- [New branches have no upstream until pushed (#1969)](#new-branches-have-no-upstream-until-pushed-1969)
 - [Messages](#messages)
 - [Step output](#step-output)
 - [How later steps use the remote branch name](#how-later-steps-use-the-remote-branch-name)
 - [Resolver reference: `workflow_remote_branch.sh`](#resolver-reference-workflow_remote_branchsh)
 - [Planner reference: `workflow_caller_branch_alias.sh`](#planner-reference-workflow_caller_branch_aliassh)
+- [Detection reference: `workflow_caller_branch.sh`](#detection-reference-workflow_caller_branchsh)
 - [Missing helpers](#missing-helpers)
 - [Limitations](#limitations)
 - [Cleaning up alias worktrees](#cleaning-up-alias-worktrees)
@@ -69,8 +80,9 @@ the reason:
 {"worktree_path": "/repo/worktrees/fix/142-band-edge-previous-slice--wt-1", "branch_name": "fix/142-band-edge-previous-slice", "base_ref": "", "base_branch": "", "created": false, "local_branch_reason": "branch_name is checked out in the caller repository (issue #1762)", "local_branch": "fix/142-band-edge-previous-slice--wt-1"}
 ```
 
-Publish then runs `git push origin "HEAD:fix/142-band-edge-previous-slice"`
-from the alias worktree. `/repo` keeps its HEAD, index, working tree and
+Publish then runs
+`git push -u origin "HEAD:refs/heads/fix/142-band-edge-previous-slice"` from
+the alias worktree. `/repo` keeps its HEAD, index, working tree and
 branch configuration.
 
 To confirm the mapping by hand:
@@ -115,11 +127,15 @@ All of the following must hold:
 
 1. The run takes the existing-branch path (#342). That happens when
    `-c existing_branch=<B>` is set, when `-c pr_number=<N>` names a PR whose
-   head is `<B>`, or when the task description names a branch that already
-   exists (`Branch: <B>`, issue #1426).
+   head is `<B>`, when the task description names a branch that already
+   exists (`Branch: <B>`, issue #1426), or when a top-level run's `repo_path`
+   is a linked worktree on `<B>` ([#1969](#caller-branch-continuation-1969)).
 2. `<B>` is checked out in the caller's checkout. The caller's checkout is the
-   `repo_path` directory after symbolic links are resolved; it may be a linked
-   worktree. Step 4 detects this either because `git worktree list` reports
+   top level of the checkout that contains `repo_path`, after symbolic links
+   are resolved, so a `repo_path` in a subdirectory gives the same result. It
+   may be a linked worktree. If step 4 cannot resolve that top level, it
+   prints `ERROR: cannot resolve the top level of repo_path '<repo_path>' (issue #858).`
+   and exits 1 before creating anything. Step 4 detects this either because `git worktree list` reports
    `<B>` at that directory (Gate B) or because the caller's `HEAD` is `<B>`
    (Gate C).
 3. `<B>` is not the default branch.
@@ -237,6 +253,203 @@ Nothing on `origin` is overwritten.
 
 ---
 
+## Caller-branch continuation (#1969)
+
+A top-level run whose `repo_path` is a linked worktree on its own feature
+branch continues that branch. Step 4 treats the caller's branch as if
+`-c existing_branch=<X>` had been given and takes the alias path described
+above. The work is committed on `<X>--wt-<n>` and pushed to `origin/<X>`.
+
+Previously, step 4 ignored the caller's branch without saying so. It cut a
+new branch from the base, for example `feat/issue-197-implement-the-delegation`
+from `origin/dev`, and the work never reached `<X>`.
+
+### Example
+
+Suppose `/repo/worktrees/claude/identity-delegation-receiver-model-2254` is a
+linked worktree of `/repo` on the branch
+`claude/identity-delegation-receiver-model-2254`. The branch is pushed, and no
+tracked file has uncommitted changes.
+
+```bash
+W=/repo/worktrees/claude/identity-delegation-receiver-model-2254
+cd "$W" && amplihack recipe run smart-orchestrator \
+  -c repo_path="$W" -c issue_number=197 -c force_single_workstream=true \
+  --context-from-file task_description=task.md
+```
+
+Step 4's stderr includes:
+
+```text
+INFO: repo_path is a linked worktree on branch 'claude/identity-delegation-receiver-model-2254'; continuing caller branch 'claude/identity-delegation-receiver-model-2254' (#1969). The task worktree starts from origin/claude/identity-delegation-receiver-model-2254, so only commits pushed there are carried into it. To start a new branch instead, run from the main clone or name a branch with a 'Branch:' line.
+INFO: Targeting existing branch 'claude/identity-delegation-receiver-model-2254' (issue #342 path).
+INFO: branch 'claude/identity-delegation-receiver-model-2254' is checked out in the caller repository at /repo/worktrees/claude/identity-delegation-receiver-model-2254; the task worktree uses local branch 'claude/identity-delegation-receiver-model-2254--wt-1' with upstream origin/claude/identity-delegation-receiver-model-2254 (issue #1762).
+```
+
+The step output has the same keys as any alias run:
+
+```json
+{"worktree_path": "/repo/worktrees/claude/identity-delegation-receiver-model-2254--wt-1", "branch_name": "claude/identity-delegation-receiver-model-2254", "base_ref": "", "base_branch": "", "created": false, "local_branch_reason": "branch_name is checked out in the caller repository (issue #1762)", "local_branch": "claude/identity-delegation-receiver-model-2254--wt-1"}
+```
+
+Step 15 pushes the run's commits with
+`git push -u origin "HEAD:refs/heads/claude/identity-delegation-receiver-model-2254"`.
+The caller's worktree keeps its HEAD, index and working tree. To bring the
+run's commits into it, run `git pull --ff-only` there after the run.
+
+### When step 4 continues the caller's branch
+
+All of the following must hold:
+
+1. The run names no branch: `existing_branch` and `pr_number` are empty, and
+   the task description has no `Branch:` line (#1426). A `Branch:` line naming
+   a branch that does not exist yet also counts as naming a branch.
+2. `repo_path` is inside a linked worktree, not the main clone.
+3. That worktree's HEAD is on a branch, not detached.
+4. The branch is not the default branch (`main`, `master`, the target of
+   `refs/remotes/origin/HEAD`, or `develop` when `refs/remotes/origin/HEAD`
+   does not resolve). The planner and the resolver use the same rule.
+5. The run is a top-level run. See [Run depth](#run-depth).
+
+In every other case step 4 behaves as before:
+
+| Situation | Result |
+|---|---|
+| `existing_branch`, `pr_number` or a `Branch:` line is given | That branch is used. Detection does not run. |
+| `repo_path` is the main clone, on any branch | A new branch from the base. |
+| `repo_path` is a linked worktree on the default branch | A new branch from the base. |
+| `repo_path` is a linked worktree with a detached HEAD | A new branch from the base. |
+| Nested run (depth 2 or more) | A new branch from the base, and the nested-run `INFO` line. |
+
+### Run depth
+
+The recipe runner exports `AMPLIHACK_SESSION_DEPTH` to every step. A run
+started from a shell sees `1` in its steps. A recipe that another recipe runs
+in the same process, as `smart-orchestrator` runs `default-workflow`, also
+sees `1`. An `amplihack recipe run` started by an agent step inside another
+run sees `2` or more.
+
+| `AMPLIHACK_SESSION_DEPTH` | Treated as |
+|---|---|
+| Unset, empty or not a whole number | Top-level |
+| `0` or `1` | Top-level |
+| `2` or more | Nested |
+
+A nested run keeps the #1134 behaviour: each nested task gets its own branch,
+so two runs never commit to one branch at the same time. Step 4 says so:
+
+```text
+INFO: nested run (depth 2); not continuing caller branch 'feat/parent' (#1969, #1134). Pass -c existing_branch='feat/parent' to continue it.
+```
+
+### What reaches the task worktree
+
+The alias worktree starts at `origin/<X>`. The planner's
+[three checks](#checks-on-the-callers-checkout) apply to the caller's worktree
+as usual:
+
+- Uncommitted changes to tracked files stop the run.
+- Untracked files do not stop the run. They stay in the caller's worktree and
+  the task worktree does not see them.
+- Commits on `<X>` that are not on `origin/<X>` stop the run.
+- A caller that is behind `origin/<X>` is accepted. The alias starts at
+  `origin/<X>`, which already has the caller's commits.
+
+### When continuation stops
+
+When step 4 has chosen to continue the caller's branch and anything fails
+before the task worktree exists, step 4 exits 1 with nothing on stdout and
+creates no branch and no worktree. It never falls back to a new branch. After
+the cause, which is usually one of the planner's [stops](#stops), it prints:
+
+```text
+ERROR: step 4 was continuing the caller's branch '<X>' (#1969) and stopped before creating a branch or worktree. Fix the cause above and re-run, or re-run with -c existing_branch='<X>' and -c repo_path=<main clone>.
+```
+
+`<main clone>` is the path of the main repository. For a branch that was never
+pushed, the full stderr is:
+
+```text
+INFO: repo_path is a linked worktree on branch 'claude/identity-delegation-receiver-model-2254'; continuing caller branch 'claude/identity-delegation-receiver-model-2254' (#1969). ...
+INFO: Targeting existing branch 'claude/identity-delegation-receiver-model-2254' (issue #342 path).
+ERROR: branch 'claude/identity-delegation-receiver-model-2254' is checked out in the caller repository at /repo/worktrees/claude/identity-delegation-receiver-model-2254 but origin/claude/identity-delegation-receiver-model-2254 does not exist. The task worktree tracks origin/claude/identity-delegation-receiver-model-2254 and would not see the branch's commits. Push the branch with 'git push -u origin claude/identity-delegation-receiver-model-2254', or work from a checkout that is not on 'claude/identity-delegation-receiver-model-2254', then re-run (issue #1762).
+ERROR: cannot set up an alias worktree for 'claude/identity-delegation-receiver-model-2254' (planner exit 1; issue #1762).
+ERROR: step 4 was continuing the caller's branch 'claude/identity-delegation-receiver-model-2254' (#1969) and stopped before creating a branch or worktree. Fix the cause above and re-run, or re-run with -c existing_branch='claude/identity-delegation-receiver-model-2254' and -c repo_path=/repo.
+```
+
+There are two ways forward:
+
+- **Fix the cause and re-run.** Commit and push, push, or discard, as the
+  planner's message says.
+- **Use the caller's worktree directly.** Re-run with
+  `-c existing_branch='<X>'` and `-c repo_path=<main clone>`. The caller's
+  worktree is then not the run's caller, so step 4 reuses it as the task
+  worktree (`INFO: Reusing existing worktree at '<path>'.`) and the run
+  commits there. Its uncommitted changes and local commits are then part of
+  the run. Use this only when that is wanted. When the run was started from
+  an alias worktree, `<X>` in the hint is the alias, and this workaround is
+  refused at step 15; see
+  [A run from inside an alias worktree](#limitations).
+
+```bash
+amplihack recipe run smart-orchestrator \
+  -c repo_path=/repo \
+  -c existing_branch='claude/identity-delegation-receiver-model-2254' \
+  -c issue_number=197 --context-from-file task_description=task.md
+```
+
+Step 4 also exits 1 before creating anything when the detection helper itself
+fails (exit 2 or more), for example on a branch name that
+`git check-ref-format --branch` does not print back unchanged:
+
+```text
+ERROR: caller-branch detection failed (workflow_caller_branch.sh exit 2; see above) (#1969).
+```
+
+### Starting a new branch instead
+
+To start a new branch from the base when you are in a linked worktree on a
+feature branch, do one of the following:
+
+- run with `-c repo_path=<main clone>`; step 4 anchors its worktrees at the
+  main clone in either case (#1134), so nothing else changes;
+- put a `Branch: <new-branch>` line in the task description (#1426).
+
+---
+
+## New branches have no upstream until pushed (#1969)
+
+When step 4 creates a branch from the base, it uses `--no-track`:
+
+```bash
+git worktree add --no-track -b "<branch>" -- "<wt>" "origin/<base>"
+```
+
+`consensus-issue-worktree.yaml` `step3-setup-worktree` does the same. Without
+`--no-track`, git's default `branch.autoSetupMerge=true` made `origin/<base>`
+the new branch's upstream, and step 15's bare `git push` then failed with exit
+128 under `push.default=simple`.
+
+The upstream is now set only by a push to the branch's own name:
+
+| Step | Upstream afterwards |
+|---|---|
+| Step 4 creates the branch | None (`branch.<branch>.merge` is unset) |
+| Step 4's best-effort setup push succeeds | `origin/<branch>` |
+| Step 4's setup push fails or is skipped | None |
+| Step 15 pushes | `origin/<branch>`, from `git push -u origin "HEAD:refs/heads/<branch>"` |
+
+Step 15 does not depend on the upstream: it pushes to `origin/<TARGET>` with an
+explicit refspec and compares against `refs/remotes/origin/<TARGET>`. A missing
+`origin/<TARGET>` is a first push, not a skip. See
+[Ancestry-aware step 15 publish](../features/workflow-publish-ancestry-aware-step15.md).
+
+Alias branches are unchanged. They are still created with
+`git worktree add --track -b "<B>--wt-<n>" … "origin/<B>"`, because their
+upstream is how the resolver maps them back to `<B>`.
+
+---
+
 ## Messages
 
 All messages go to stderr. The `INFO` line below and the planner's three stops
@@ -293,6 +506,21 @@ When `<B>` is the default branch, the planner prints an `INFO` line saying that
 `<B>` is the default branch and gets no alias, and step 4 prints the two #858
 `ERROR` lines shown under [The problem](#the-problem) and exits 1.
 
+### Caller-branch continuation
+
+These messages come from step 4's detection of the caller's branch (#1969).
+Each names the branch and `#1969`. Each hint that suggests
+`existing_branch` single-quotes the branch name, so the command can be pasted
+into a shell as it stands.
+
+| When | Message |
+|---|---|
+| Continuing the caller's branch | `INFO: repo_path is a linked worktree on branch '<X>'; continuing caller branch '<X>' (#1969). The task worktree starts from origin/<X>, so only commits pushed there are carried into it. To start a new branch instead, run from the main clone or name a branch with a 'Branch:' line.` |
+| Nested run, branch not continued | `INFO: nested run (depth <N>); not continuing caller branch '<X>' (#1969, #1134). Pass -c existing_branch='<X>' to continue it.` |
+| Continuation stopped before creating anything | `ERROR: step 4 was continuing the caller's branch '<X>' (#1969) and stopped before creating a branch or worktree. Fix the cause above and re-run, or re-run with -c existing_branch='<X>' and -c repo_path=<main clone>.` |
+| The detection helper failed | `ERROR: caller-branch detection failed (workflow_caller_branch.sh exit <rc>; see above) (#1969).` |
+| The detection helper is missing | `WARNING: workflow_caller_branch.sh not found; caller-branch continuation (#1969) disabled. Pass -c existing_branch=<branch> to continue a caller branch.` |
+
 ---
 
 ## Step output
@@ -331,8 +559,8 @@ The alias is in effect when the resolver's output is not empty and differs from
 
 | Step or tool | Purpose | On the alias path |
 |---|---|---|
-| `workflow-publish.yaml` `step-15-commit-push` | Publish | Pushes with `git push origin "HEAD:<B>"`, passes `<B>` to `verify_pushed_ref.sh`, and refuses to push unless the resolved name equals `worktree_setup.branch_name` |
-| `workflow-publish.yaml` `step-16b-outside-in-fix-loop` prompt | Push fixes found by outside-in testing | The prompt's code block resolves `<B>` when it runs and pushes with `git push origin "HEAD:<B>"` |
+| `workflow-publish.yaml` `step-15-commit-push` | Publish | Fetches `origin`, classifies `HEAD` against `refs/remotes/origin/<B>` with `workflow_push_plan.sh`, pushes with `git push -u origin "HEAD:refs/heads/<B>"`, passes `<B>` to `verify_pushed_ref.sh`, and refuses to push unless the resolved name equals `worktree_setup.branch_name`. Every branch, not only an alias, is pushed this way (#1969). |
+| `workflow-publish.yaml` `step-16b-outside-in-fix-loop` prompt | Push fixes found by outside-in testing | The prompt's code block resolves `<B>` when it runs with `rb="$(bash …/workflow_remote_branch.sh .)" && [ -n "$rb" ] \|\| exit 1`, so an empty name from a detached HEAD stops it, then runs `git pull --rebase origin "$rb" && git push -u origin "HEAD:refs/heads/$rb"`, on every branch (#1969) |
 | `workflow-pr-review.yaml` `step-18c-push-feedback-changes` | Push review fixes | `git push origin "HEAD:<B>"`; the `-u` fallback is `git push -u origin "<alias>:<B>"` |
 | `workflow-finalize.yaml` `step-20b-push-cleanup` | Push the cleanup commit | Same as step 18c |
 | `workflow-terminal-state.yaml` | Check the checkout is on `branch_name` | Compares `<B>` with `branch_name` |
@@ -353,12 +581,17 @@ The alias is in effect when the resolver's output is not empty and differs from
 - The `-u` fallbacks in steps 18c and 20b name `<B>` as the destination, so a
   missing `origin/<B>` tracking ref cannot publish the alias name or point the
   alias at a new upstream.
-- Step 15 refuses to push from an alias worktree unless the resolved remote
-  branch equals `worktree_setup.branch_name`. It prints
+- Step 15 refuses to push unless the resolved remote branch equals
+  `worktree_setup.branch_name`, whenever that is set. Before #1969 the check
+  applied only in alias worktrees; it now applies to every branch. It prints
   `ERROR: push target '<resolved>' does not match worktree_setup.branch_name '<B>'; refusing to push (issue #1762).`
   and exits 1.
 - No branch name reaches shell text through `{{...}}` templating. Step 16b
   gets `<B>` from the resolver when its code block runs.
+- Step 15's `-u` points the upstream of the branch it pushed from at
+  `origin/<B>`. For an alias that is the upstream it already had. For an
+  ordinary branch it replaces any upstream left by an older step 4, such as
+  `origin/<base>`.
 
 `commit_result.branch` in the step-15 output still reports the local branch,
 which is the alias. Nothing reads it to push or to look up a pull request.
@@ -458,16 +691,81 @@ worktree.
 
 ---
 
+## Detection reference: `workflow_caller_branch.sh`
+
+```text
+usage: workflow_caller_branch.sh <repo_path>
+```
+
+Step 4 calls it after the #1426 check, and only when `existing_branch`,
+`pr_number` and the `Branch:` line are all empty:
+
+```bash
+bash "$TOOLS_DIR/workflow_caller_branch.sh" "$REPO_PATH"
+```
+
+It runs these checks in order and stops at the first that decides:
+
+| # | Check | Result |
+|---|---|---|
+| 0 | Not exactly one argument, or `repo_path` is not a directory inside a git repository (`git -C <repo_path> rev-parse` fails) | Exit 2, with an `ERROR` line on stderr and nothing on stdout |
+| 1 | `repo_path` is the main clone: its absolute git directory equals the common git directory, compared after `cd -P` | Exit 1 |
+| 2 | HEAD is detached | Exit 1 |
+| 3 | `git check-ref-format --branch <X>` does not print `<X>` back unchanged | Exit 2 |
+| 4 | `<X>` is the default branch | Exit 1 |
+| 5 | `AMPLIHACK_SESSION_DEPTH` is a whole number and is 2 or more | Exit 1, with the nested-run `INFO` line |
+| 6 | Otherwise | Exit 0, `<X>` alone on stdout, the continuation `INFO` line on stderr |
+
+Step 4 acts on the exit status:
+
+| Exit | Step 4 then |
+|---|---|
+| 0 | Sets `EXISTING_BRANCH=<X>`, arms the [stop hint](#when-continuation-stops), and continues on the existing-branch path |
+| 1 | Carries on as before: a new branch from the base |
+| 2 or more | Prints the `caller-branch detection failed` line and exits 1 before creating anything. Exit 2 means bad arguments, a `repo_path` that is not a git repository (check 0), or a branch name git rejects (check 3). |
+
+Example, from the worktree in the [continuation example](#example):
+
+```bash
+C="${AMPLIHACK_HOME:-$HOME/.amplihack}/amplifier-bundle/tools/workflow_caller_branch.sh"
+
+AMPLIHACK_SESSION_DEPTH=1 bash "$C" /repo/worktrees/claude/identity-delegation-receiver-model-2254
+# claude/identity-delegation-receiver-model-2254   (exit 0; the INFO line is on stderr)
+
+bash "$C" /repo
+# (no output, exit 1: the main clone)
+```
+
+The default-branch rule is the same as the planner's check and the
+resolver's. Each of the three helpers carries its own copy with a comment
+naming the others, and a test runs the same table of branch names through all
+three.
+
+The helper only reads. It uses `git rev-parse`, `git symbolic-ref` and
+`git check-ref-format`, and never runs `git status`, so a `core.fsmonitor`
+hook in the caller's repository is not started. Like the other helpers, it
+starts with `set -euo pipefail`, unsets `GIT_DIR`, `GIT_WORK_TREE` and
+`GIT_INDEX_FILE`, is run with `bash` rather than sourced, and works with bash
+3.2. It needs git 2.31 or later for `rev-parse --path-format=absolute`, which
+step 15 already requires.
+
+The helper is listed in step 4's `STEP_TOOLS`, so the #1808 rule that picks a
+complete tools directory takes it into account.
+
+---
+
 ## Missing helpers
 
 | Missing | Effect |
 |---|---|
 | Planner | Step 4 prints `WARNING: <TOOLS_DIR>/workflow_caller_branch_alias.sh not found; cannot create an alias worktree for '<B>' (issue #1762).`, then the two #858 `ERROR` lines, and exits 1 with nothing on stdout. This is the behaviour from before #1762. |
 | Resolver | Bash prints `No such file or directory` with the resolver's path, and no caller uses the local branch name instead. Steps 15, 18c and 20b, the step 16b retry command and `workflow_publish_pr.sh` stop before pushing or opening a PR. `workflow_pr_ready.sh`, `workflow-terminal-state`, finalization's evidence collection and the PR scope check in `workflow_final_status.sh` stop with an `ERROR`. The other lookups fail closed: the open-PR check confirms no PR, the branch PR lookup in `workflow_final_status.sh` is skipped, the terminal evidence verdict is `UNCERTAIN`, and `workflow_pr_head_sync.sh` syncs nothing. |
+| Detection (`workflow_caller_branch.sh`) | Step 4 prints `WARNING: workflow_caller_branch.sh not found; caller-branch continuation (#1969) disabled. Pass -c existing_branch=<branch> to continue a caller branch.` and starts a new branch from the base, as before #1969. The warning is in the run's log because step 4 succeeds; see the note under [Step output](#step-output). |
+| Push plan (`workflow_push_plan.sh`) | Step 15 prints `ERROR: workflow push plan helper not found: <path> (#1969)` and exits 2 before it commits or pushes. |
 | Reuse check | Only a re-run that finds `refs/heads/<B>--wt-<n>` already present is affected. Step 4 prints `ERROR: <TOOLS_DIR>/workflow_alias_reuse.sh not found; cannot check alias '<B>--wt-<n>' before reusing it (issue #1762).` and exits 1 with nothing on stdout. The alias worktree is left as it was; it is neither reused unchecked nor fast-forwarded. A first run, which creates the alias, does not call it. |
 
-All three helpers ship in `amplifier-bundle/tools/`, so an install that lacks
-any one of them is damaged. Without the stop, a run in an alias worktree would push, or
+All of these helpers ship in `amplifier-bundle/tools/`, so an install that
+lacks any one of them is damaged. Without the stop, a run in an alias worktree would push, or
 look up the PR, under the alias name. Reinstall the bundle with
 `amplihack install`.
 
@@ -489,6 +787,9 @@ look up the PR, under the alias name. Reinstall the bundle with
   missing or stale, so a renamed default branch may not be recognised.
   Refresh it with `git remote set-head origin --auto`, and protect the default
   branch on the server. The local check does not replace branch protection.
+  Step 15 has a [default-branch backstop](../features/workflow-publish-ancestry-aware-step15.md#default-branch-backstop)
+  that also asks `origin` for its `HEAD`, so a continued default branch is
+  never pushed.
 - **Concurrent runs.** The reuse pass has no lock. A second run stops if the
   first has left uncommitted or unpushed work in the alias worktree, but a
   second run that starts while the first's worktree is clean and pushed can
@@ -527,6 +828,27 @@ look up the PR, under the alias name. Reinstall the bundle with
   worktree of `<B>`. The fix, refusing to reuse a checkout of `<B>` outside
   `<main>/worktrees/`, is tracked in
   [#1833](https://github.com/rysweet/amplihack-rs/issues/1833).
+- **A run from inside an alias worktree.** A top-level run whose `repo_path`
+  is an alias worktree, on `<X>--wt-<n>`, detects `<X>--wt-<n>` as the
+  caller's branch. The planner then stops, because
+  `origin/<X>--wt-<n>` does not exist, and nothing is created. The stop
+  message suggests `-c existing_branch='<X>--wt-<n>'`, but that workaround
+  does not work here: the resolver maps the alias to `<X>`, so step 15's
+  #1762 guard sees a push target of `<X>` against a
+  `worktree_setup.branch_name` of `<X>--wt-<n>` and refuses to push. Start the
+  run from the original caller's worktree, or run from the main clone with
+  `-c existing_branch='<X>'`.
+- **Two runs from one caller worktree at once.** Both continue `<X>`. If both
+  push, the second push is not a fast-forward of `origin/<X>`, and step 15
+  refuses it with the #978 divergence evidence. Nothing on `origin` is
+  overwritten.
+- **Steps outside publish.** `step-18c-push-feedback-changes` and
+  `step-20b-push-cleanup` still use a bare `git push` when the branch has an
+  upstream. Step 15 sets the correct upstream earlier in the same run. A run
+  that skips step 15 on a branch created before #1969, whose upstream may be
+  `origin/<base>`, can still fail there. `consensus-publish.yaml` and
+  `consensus-pr-feedback.yaml` also use bare pushes, and
+  `consensus-issue-worktree.yaml` does not continue the caller's branch.
 - **The caller later leaves `<B>`.** The next run takes the ordinary path, on
   `<main>/worktrees/<B>`. The old alias worktree stays until the sweep removes
   it.
@@ -565,7 +887,9 @@ builds it. Each child runs through `isolated("bash")`, with a fixture-owned
 `HOME`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
 `GIT_TERMINAL_PROMPT=0`, `GIT_ALLOW_PROTOCOL=file` and stdin from `/dev/null`.
 `AMPLIHACK_HOME` points at the workspace, so the helpers are read from the
-source tree. A fake `gh` logs its arguments and rejects unknown subcommands.
+source tree. `resolver.rs` and the planner contract tests also cover
+`workflow_caller_branch.sh` and `workflow_push_plan.sh`, including a tag
+called `origin/<B>` that must not change the push plan. A fake `gh` logs its arguments and rejects unknown subcommands.
 The fixture branch is `feat/issue-1762-fixture`, so its alias directory is
 `worktrees/feat/issue-1762-fixture--wt-1`.
 
@@ -577,6 +901,9 @@ The fixture branch is `feat/issue-1762-fixture`, so its alias directory is
 | `resolver.rs` | The resolver on its own: its contract and an inherited `GIT_DIR`; and that all three helpers (planner, resolver and reuse check) are executable, start with `set -euo pipefail`, unset the inherited git variables and use nothing newer than bash 3.2 |
 | `consumers.rs` | The open-PR check, the final-status branch lookup and the terminal-state branch check use `<B>`, with a `FAILED_WRONG_BRANCH` control on an alias-shaped branch with another upstream |
 | `push.rs` | Steps 15, 16b, 18c and 20b push to `<B>`: step 15's refusal of a target other than `worktree_setup.branch_name`, the `-u` fallbacks, a missing resolver stopping every push step, and step 16b getting `<B>` without `{{...}}` templating |
+| `issue_1969_step04.rs` | Caller-branch continuation: a clean, pushed caller branch gets an alias worktree whose commits reach `origin/<X>`, with the `INFO` line and no other new branch or worktree; an unpushed, ahead or dirty caller stops with nothing created and `existing_branch=` in stderr; the main clone, a linked worktree on the default branch, a detached HEAD and `AMPLIHACK_SESSION_DEPTH=2` keep the old behaviour; `existing_branch`, `pr_number` and `Branch:` win; a missing or failing detection helper; a `repo_path` that is not a repository. Every case sets `AMPLIHACK_SESSION_DEPTH` explicitly. |
+| `issue_1969_publish.rs` | Step 15 on a branch created with `--no-track` and no setup push, on a branch whose upstream is `origin/<base>`, and on one behind `origin/<TARGET>`; a new commit on an already-pushed branch, which must be pushed as a fast-forward; a stale `@{u}`; a missing `workflow_push_plan.sh`; the nothing-staged line, `ahead of origin.` on a first push; and that `commit_result` is valid JSON on each path |
+| `issue_1969_static.rs` | `--no-track` in step 4's create mode and in `consensus-issue-worktree.yaml`; every `git push` in `workflow-publish.yaml` has `-u origin "HEAD:refs/heads/` and every `git pull` has `origin "`; no force, `--no-verify`, `--mirror` or `--delete`; no `no-upstream` in step 15; the detection helper in `STEP_TOOLS`; both recipes under 400 lines (`< 400`, so at most 399); the default-branch table across the three helpers |
 | `static_checks.rs` | Checks on the files themselves: the planner and resolver contain no write commands, the reuse check's only write is a single `git merge --ff-only` to `origin/<B>`, the step 4 recipe text adds no destructive command (`exit 2`, `branch -D`, `reset --hard`, `clean -f`, `checkout -- .` or a new `--force`; the write it delegates is covered by the reuse-check test), `consensus-issue-worktree.yaml` keeps the #858 refusal, no resolver caller falls back to the local branch name, and this page is linked and in the changelog |
 
 `tests/integration/workflow_worktree_caller_refusal_test.rs` keeps the #858
@@ -594,15 +921,20 @@ names.
 cargo test --test integration issue_1762
 cargo test --test integration workflow_worktree_caller_refusal
 bash tests/issue_1426_branch_name_not_prose.sh
+bash tests/issue_1134_nested_worktree_test.sh
 shellcheck -S warning amplifier-bundle/tools/workflow_remote_branch.sh \
-  amplifier-bundle/tools/workflow_caller_branch_alias.sh
+  amplifier-bundle/tools/workflow_caller_branch_alias.sh \
+  amplifier-bundle/tools/workflow_caller_branch.sh \
+  amplifier-bundle/tools/workflow_push_plan.sh
 ```
 
 ---
 
 ## Related
 
+- [Caller branch continuation and explicit push (#1969)](issue-1969-caller-branch-and-explicit-push.md): summary of the #1969 changes, branch precedence, the step 15 refusals and the nested-run limitation
 - [Branch name generation (#1426)](../features/branch-name-generation.md#item-6-caller-checkout): how the #1426 request to use the `-w` checkout relates to #858 and the alias
 - [Re-runs never destroy an existing worktree's work (#1565)](issue-1565-rerun-preserves-worktree.md): the derived-slug path, and `consensus-issue-worktree.yaml` step 3
 - [Relative-path-safe, idempotent worktree setup (#1121)](issue-1121-relative-repo-path.md): `wt_add_idempotent` and the three-state guard
+- [Ancestry-aware step 15 publish (#978, #1969)](../features/workflow-publish-ancestry-aware-step15.md): the push target, the first push and the `workflow_push_plan.sh` classification
 - [Leak-proof worktree setup (#840)](issue-840-leak-proof-worktree.md): the orphan sweep and the archive namespace

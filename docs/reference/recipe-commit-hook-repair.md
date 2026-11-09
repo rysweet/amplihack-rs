@@ -91,12 +91,18 @@ hook_repair_run commit step-15-commit-push --output "$commit_output_file" \
 hook_repair_run push step-15-commit-push \
   --fix-message "fix: address {hook_ids} pre-push rejection${ISSUE_NUMBER:+ (#$ISSUE_NUMBER)}" \
   --output "$push_stderr_file" \
-  -- git push
+  -- git push -u origin "HEAD:refs/heads/$TARGET"
 ```
 
-The checks that run before step-15's push are untouched: the #978 divergence
-check, the no-upstream check and the already-pushed check. After a push that
-succeeds, `verify_pushed_ref.sh` (#1269) still runs.
+`TARGET` is the output of `workflow_remote_branch.sh`. Before the push, step 15
+fetches `origin` and classifies `HEAD` against `refs/remotes/origin/$TARGET`
+with `workflow_push_plan.sh` (#1969). Hook repair applies only to the two
+classifications that push, `first-push` and `fast-forward`. The other two,
+`already-pushed` and `diverged` (#978), end the step before
+`hook_repair_run push` is called. After a push that succeeds,
+`verify_pushed_ref.sh` (#1269) still runs, with `$TARGET` as the branch. See
+[Ancestry-aware step 15 publish](../features/workflow-publish-ancestry-aware-step15.md)
+for the classification rules.
 
 ## Launcher environment and agent environment
 
