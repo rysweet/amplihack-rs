@@ -26,21 +26,12 @@ on:
   # alive and finds that kind of drift against main, where it belongs.
   schedule:
     - cron: "0 6 * * 1,4"
-  # sccache binary (issue #2105). Every job that sets RUSTC_WRAPPER: sccache
-  # gets the binary from the Actions cache (key
-  # sccache-bin-v0.19.0-${{ runner.os }}-${{ runner.arch }}, via
-  # .github/actions/sccache-bin) and checks it against the sha256 pinned in
-  # that action's helper script and against `--version`. Only on a miss does
-  # Setup sccache download it, once, and a binary that passes the same checks
-  # is saved for the next run. If no usable binary exists the job writes
-  # RUSTC_WRAPPER= and prints one line,
-  #   ::warning::sccache binary unavailable (cache miss and download failed); building without RUSTC_WRAPPER
-  # then builds uncached and still runs every check; the disk-cache steps and
-  # stats calls are skipped. There is no retry, sleep or timeout: under Ryan's
-  # timing rule a slow download is handled by building without the wrapper,
-  # not by waiting longer. To exercise the fallback:
+  # sccache binary (issue #2105): jobs get the sccache binary from the Actions
+  # cache through .github/actions/sccache-bin, and build without RUSTC_WRAPPER
+  # when no usable binary exists. The simulate_sccache_missing input below
+  # tests that fallback:
   #   gh workflow run ci.yml --ref <branch> -f simulate_sccache_missing=true
-  # More in docs/reference/ci-pipeline.md ("sccache binary").
+  # The design is described in docs/reference/ci-pipeline.md ("sccache binary").
   workflow_dispatch:
     inputs:
       simulate_sccache_missing:

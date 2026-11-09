@@ -29,9 +29,12 @@ readonly WARNING='::warning::sccache binary unavailable (cache miss and download
 #   macOS-ARM64  sccache-v0.19.0-aarch64-apple-darwin.tar.gz
 # Each tarball was checked against mozilla's published .sha256 file before the
 # binary inside was hashed (2026-11-08). Any other runner type has no pinned
-# hash, so its binary counts as missing. A version change must update these
-# hashes, WANT_VERSION, the cache key in .github/actions/sccache-bin and the
-# `version:` input of every Setup sccache step in the same commit.
+# hash, so its binary counts as missing. A version change must update, in the
+# same commit: these hashes, WANT_VERSION, the cache key in
+# .github/actions/sccache-bin, the `version:` input of every Setup sccache step
+# in ci.yml and release.yml, and the copies of the hashes (LINUX_X64_SHA,
+# MACOS_ARM64_SHA) in .github/scripts/test-sccache-bin.sh. Search for the old
+# version string to find every place it is written.
 pinned_sha() {
   case "${KEY_OSARCH:-}" in
     Linux-X64) printf '%s' 0b44834be857e21b026f7db49a7762023fedb5eb5ed60725a66f698d8d79a34b ;;
