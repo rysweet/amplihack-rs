@@ -70,7 +70,8 @@ pub enum Violation {
     Missing(String),
     Duplicate(String),
     Invented(String),
-    BothColumns(String),
+    /// More than one of `rust_test`, `disposition` and `pending_file`.
+    MultipleColumns(String),
     NeitherColumn(String),
     IgnoredTarget(String),
     NoSuchTest(String),
@@ -95,6 +96,16 @@ pub enum Violation {
     SharedPinTest(String),
     /// An approved row covers an ID that is not in the inventory.
     UnknownCover(String),
+    /// A `pending_file` that is not a normalised, tracked repository path.
+    PendingFileNotTracked(String),
+    /// A `pending_file` that is not the row's own source file.
+    PendingFileMismatch(String),
+    /// A role row still pending once the removal control (`REMOVAL_CONTROL`)
+    /// exists in the index.
+    PendingRoleAfterControl(String),
+    /// A tracked `.py` file outside the expected set, an expected file
+    /// outside the pinned set, or an expected helper that is not tracked.
+    UnaccountedPython(String),
 }
 
 /// One owner-approved departure from 918c parity, and the reference
@@ -378,6 +389,209 @@ const KINDS: [(&str, &str); 4] = [
     ("site", "sites"),
 ];
 
+// ------------------------------------------- decision 17.146-2 (partial map)
+
+/// The `.py` files tracked when `inventory_map.toml` was created (C-s). The
+/// expected set of every later commit is a subset of these; a new `.py` file
+/// is never accounted for, even with a pending row.
+pub const PINNED_19: [&str; 19] = [
+    "amplifier-bundle/recipes/tests/canonical_staging_checkpoint_audit.py",
+    "amplifier-bundle/recipes/tests/canonical_staging_publication.py",
+    "amplifier-bundle/recipes/tests/test-canonical-staging-harness.py",
+    "amplifier-bundle/recipes/tests/test-checkpoint-conservative-boundaries.py",
+    "amplifier-bundle/recipes/tests/test-checkpoint-publication-boundaries.py",
+    "amplifier-bundle/recipes/tests/test-checkpoint-rebase-identity.py",
+    "amplifier-bundle/recipes/tests/test-checkpoint-refusal-evidence.py",
+    "amplifier-bundle/recipes/tests/test-checkpoint-review-boundaries.py",
+    "amplifier-bundle/recipes/tests/test-checkpoint-scope-history.py",
+    "amplifier-bundle/recipes/tests/test-checkpoint-scope.py",
+    "amplifier-bundle/recipes/tests/test-checkpoint-synthesis-alias.py",
+    "amplifier-bundle/recipes/tests/test-checkpoint-value-transport.py",
+    "amplifier-bundle/recipes/tests/test-minimalist-auto-stage.py",
+    "amplifier-bundle/recipes/tests/test-pragmatic-auto-stage.py",
+    "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py",
+    "amplifier-bundle/recipes/tests/test-pragmatic-crusty-directories.py",
+    "amplifier-bundle/recipes/tests/test-pragmatic-evidence.py",
+    "crates/amplihack-workflows/tests/fixtures/canonical_staging/audit_receipts.py",
+    "crates/amplihack-workflows/tests/fixtures/canonical_staging/private_adapter.py",
+];
+
+/// The five shared Python files. A helper is expected only while a file that
+/// is itself expected uses it; its own pending rows never keep it.
+pub const HELPERS: [&str; 5] = [
+    "amplifier-bundle/recipes/tests/canonical_staging_checkpoint_audit.py",
+    "amplifier-bundle/recipes/tests/canonical_staging_publication.py",
+    "amplifier-bundle/recipes/tests/test-canonical-staging-harness.py",
+    "crates/amplihack-workflows/tests/fixtures/canonical_staging/audit_receipts.py",
+    "crates/amplihack-workflows/tests/fixtures/canonical_staging/private_adapter.py",
+];
+
+/// Each helper and the tracked `.py` files that name it (checked against
+/// `git grep -l -F` in both directions while the helper is tracked).
+pub const HELPER_USERS: [(&str, &[&str]); 5] = [
+    (
+        "amplifier-bundle/recipes/tests/canonical_staging_checkpoint_audit.py",
+        &[
+            "amplifier-bundle/recipes/tests/test-checkpoint-review-boundaries.py",
+            "amplifier-bundle/recipes/tests/test-checkpoint-scope.py",
+            "amplifier-bundle/recipes/tests/test-minimalist-auto-stage.py",
+            "amplifier-bundle/recipes/tests/test-pragmatic-auto-stage.py",
+        ],
+    ),
+    (
+        "amplifier-bundle/recipes/tests/canonical_staging_publication.py",
+        &[
+            "amplifier-bundle/recipes/tests/test-canonical-staging-harness.py",
+            "amplifier-bundle/recipes/tests/test-checkpoint-publication-boundaries.py",
+            "amplifier-bundle/recipes/tests/test-checkpoint-scope.py",
+            "amplifier-bundle/recipes/tests/test-minimalist-auto-stage.py",
+            "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py",
+            "amplifier-bundle/recipes/tests/test-pragmatic-evidence.py",
+        ],
+    ),
+    (
+        "amplifier-bundle/recipes/tests/test-canonical-staging-harness.py",
+        &["amplifier-bundle/recipes/tests/test-checkpoint-scope.py"],
+    ),
+    (
+        "crates/amplihack-workflows/tests/fixtures/canonical_staging/audit_receipts.py",
+        &["amplifier-bundle/recipes/tests/test-checkpoint-scope.py"],
+    ),
+    (
+        "crates/amplihack-workflows/tests/fixtures/canonical_staging/private_adapter.py",
+        &["amplifier-bundle/recipes/tests/test-checkpoint-scope.py"],
+    ),
+];
+
+/// Role rows stay pending with this file until the removal control exists.
+pub const ROLE_PENDING_FILE: &str = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py";
+
+/// The source-level removal control (decision 17.146-1, step 1). Once it is
+/// in the index, no role row may stay pending.
+pub const REMOVAL_CONTROL: &str = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::removing_any_authorised_opt_out_is_named_by_the_policy_check";
+
+/// Each checkpoint site and the last file in port order that names its step.
+/// This is a derivation, not inventory data; it is documented in
+/// `docs/reference/workflow-checkpoint-inventory-map.md` and checked against
+/// `git grep` while the files are tracked.
+pub const SITE_PENDING_FILES: [(&str, &str); 7] = [
+    (
+        "autodrive-crusty-round::step-04-address-concerns",
+        "amplifier-bundle/recipes/tests/test-minimalist-auto-stage.py",
+    ),
+    (
+        "workflow-tdd::checkpoint-after-implementation",
+        "amplifier-bundle/recipes/tests/test-minimalist-auto-stage.py",
+    ),
+    (
+        "workflow-refactor-review::checkpoint-after-review-feedback",
+        "amplifier-bundle/recipes/tests/test-minimalist-auto-stage.py",
+    ),
+    (
+        "workflow-publish::step-16b-outside-in-fix-loop",
+        "amplifier-bundle/recipes/tests/test-minimalist-auto-stage.py",
+    ),
+    (
+        "workflow-publish::step-15-commit-push",
+        "amplifier-bundle/recipes/tests/test-checkpoint-scope.py",
+    ),
+    (
+        "workflow-pr-review::step-18c-push-feedback-changes",
+        "amplifier-bundle/recipes/tests/test-checkpoint-scope.py",
+    ),
+    (
+        "workflow-finalize::step-20b-push-cleanup",
+        "amplifier-bundle/recipes/tests/test-checkpoint-scope.py",
+    ),
+];
+
+/// The Python files a validation run accounts for.
+#[derive(Debug, Clone)]
+pub struct PythonFiles<'a> {
+    /// `git ls-files -z -- '*.py'` (see `tracked_python`).
+    pub tracked: BTreeSet<String>,
+    /// `PINNED_19` in production.
+    pub pinned: &'a [&'a str],
+    /// `HELPER_USERS` in production.
+    pub helper_users: &'a [(&'a str, &'a [&'a str])],
+}
+
+/// The tracked `.py` files, read with `git ls-files -z` through
+/// `amplihack_git::command_in`. A failed listing or a non-UTF-8 path panics.
+pub fn tracked_python(root: &Path) -> BTreeSet<String> {
+    let out = amplihack_git::command_in(root)
+        .args(["ls-files", "-z", "--", "*.py"])
+        .output()
+        .expect("run git ls-files");
+    assert!(
+        out.status.success(),
+        "git ls-files failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            String::from_utf8(p.to_vec())
+                .unwrap_or_else(|e| panic!("a tracked .py path is not UTF-8: {e}"))
+        })
+        .collect()
+}
+
+/// The file part of a Python or procedural reference ID: the text before the
+/// first `::`, which must be a `.py` path of `[A-Za-z0-9_./-]` characters,
+/// followed by a non-empty remainder. Anything else does not parse.
+pub fn ref_file(ref_id: &str) -> Option<&str> {
+    let (file, rest) = ref_id.split_once("::")?;
+    let stem = file.strip_suffix(".py")?;
+    let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-');
+    (!stem.is_empty() && file.chars().all(allowed) && !rest.is_empty()).then_some(file)
+}
+
+/// A repository-relative path as `git ls-files` prints it: not empty, not
+/// absolute, no `.` or `..` segment, no empty segment, no backslash or NUL.
+/// It is compared byte for byte and never canonicalised.
+fn is_normalised_repo_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.contains(['\\', '\0'])
+        && path
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
+}
+
+/// The one rule every guard shares for which `.py` files may be tracked: the
+/// `pending_file` of every pending row that is not a helper, plus each
+/// helper that a file already in the set uses, repeated to a fixed point.
+pub fn expected_tracked_python(
+    map: &toml::Value,
+    helper_users: &[(&str, &[&str])],
+) -> BTreeSet<String> {
+    let is_helper = |f: &str| helper_users.iter().any(|(h, _)| *h == f);
+    let mut expected: BTreeSet<String> = KINDS
+        .iter()
+        .flat_map(|(table, _)| {
+            map.get(*table)
+                .and_then(|r| r.as_array())
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|row| row.get("pending_file").and_then(|f| f.as_str()))
+        .filter(|f| !is_helper(f))
+        .map(str::to_owned)
+        .collect();
+    loop {
+        let before = expected.len();
+        for (helper, users) in helper_users {
+            if users.iter().any(|u| expected.contains(*u)) {
+                expected.insert((*helper).to_owned());
+            }
+        }
+        if expected.len() == before {
+            return expected;
+        }
+    }
+}
+
 pub fn validate(
     ids: &Ids,
     map: &toml::Value,
@@ -385,8 +599,10 @@ pub fn validate(
     corpus: &Corpus,
     approved: &[ApprovedRow],
     doc: &str,
+    py: &PythonFiles<'_>,
 ) -> Result<(), Vec<Violation>> {
     let mut v = Vec::new();
+    let control_exists = index.contains_key(REMOVAL_CONTROL);
     let meta = map.get("meta").and_then(|m| m.as_table());
     if meta
         .and_then(|m| m.get("inventory_source_sha256"))
@@ -496,8 +712,45 @@ pub fn validate(
             }
             let test = row.get("rust_test").and_then(|s| s.as_str());
             let disp = row.get("disposition").and_then(|s| s.as_str());
+            let pending = row.get("pending_file").and_then(|s| s.as_str());
+            let columns = [
+                row.get("rust_test").is_some(),
+                row.get("disposition").is_some(),
+                row.get("pending_file").is_some(),
+            ]
+            .into_iter()
+            .filter(|present| *present)
+            .count();
+            if columns > 1 {
+                v.push(Violation::MultipleColumns(id.clone()));
+                continue;
+            }
+            if let Some(file) = pending {
+                // 17.146-2: the row's behaviour is still in a tracked .py
+                // file. A pending file is never a target or a disposition.
+                if !is_normalised_repo_path(file) || !py.tracked.contains(file) {
+                    v.push(Violation::PendingFileNotTracked(format!("{id}: {file:?}")));
+                }
+                let own = match table {
+                    "role" => Some(ROLE_PENDING_FILE),
+                    "site" => SITE_PENDING_FILES
+                        .iter()
+                        .find(|(site, _)| *site == id)
+                        .map(|(_, f)| *f),
+                    _ => ref_file(&id),
+                };
+                if own != Some(file) {
+                    v.push(Violation::PendingFileMismatch(format!(
+                        "{id}: pending with {file:?}, its own file is {own:?}"
+                    )));
+                }
+                if table == "role" && control_exists {
+                    v.push(Violation::PendingRoleAfterControl(id.clone()));
+                }
+                continue;
+            }
             match (test, disp) {
-                (Some(_), Some(_)) => v.push(Violation::BothColumns(id.clone())),
+                (Some(_), Some(_)) => v.push(Violation::MultipleColumns(id.clone())),
                 (None, None) => v.push(Violation::NeitherColumn(id.clone())),
                 (None, Some(d)) => {
                     if !dispositions.contains(d) {
@@ -557,6 +810,27 @@ pub fn validate(
         }
         for id in expected.difference(&seen) {
             v.push(Violation::Missing(id.clone()));
+        }
+    }
+    // 17.146-2: the tracked .py files are exactly the expected set, and the
+    // expected set stays inside the files pinned when the map was created.
+    let expected = expected_tracked_python(map, py.helper_users);
+    for file in py.tracked.difference(&expected) {
+        v.push(Violation::UnaccountedPython(format!(
+            "{file}: tracked, but no row is pending with it and no pending file uses it"
+        )));
+    }
+    for file in &expected {
+        if !py.pinned.contains(&file.as_str()) {
+            v.push(Violation::UnaccountedPython(format!(
+                "{file}: expected, but not one of the pinned files"
+            )));
+        }
+        let helper = py.helper_users.iter().any(|(h, _)| *h == file);
+        if helper && !py.tracked.contains(file) {
+            v.push(Violation::UnaccountedPython(format!(
+                "{file}: a pending file still uses this helper, but it is not tracked"
+            )));
         }
     }
     // Provenance and audit receipts never stand in for coverage.
@@ -738,7 +1012,12 @@ fn inventory_map_is_complete_and_every_row_resolves() {
     let doc = fs::read_to_string(root().join(DOC)).unwrap();
     let index = scan(&workspace_test_sources());
     let corpus = load_corpus(&root().join(DIR).join("corpus"));
-    if let Err(violations) = validate(&ids, &map, &index, &corpus, &APPROVED_ROWS, &doc) {
+    let py = PythonFiles {
+        tracked: tracked_python(&root()),
+        pinned: &PINNED_19,
+        helper_users: &HELPER_USERS,
+    };
+    if let Err(violations) = validate(&ids, &map, &index, &corpus, &APPROVED_ROWS, &doc, &py) {
         let mut shown: Vec<String> = violations
             .iter()
             .take(40)
@@ -789,8 +1068,9 @@ fn tiny() -> (Ids, toml::Value, RustTestIndex, Corpus, String) {
     for i in 0..41 {
         ids.roles.insert(format!("asset::step-{i}"), i != 40);
     }
-    for i in 0..7 {
-        ids.sites.insert(format!("asset::site-{i}"));
+    // The real site IDs, so the fixed site table of 17.146-2 applies.
+    for (site, _) in SITE_PENDING_FILES {
+        ids.sites.insert(site.to_owned());
     }
     let mut map = String::from("[meta]\ninventory_source_sha256 = \"abc\"\n");
     for id in &ids.python_tests {
@@ -836,7 +1116,15 @@ fn expect(v: Result<(), Vec<Violation>>, want: impl Fn(&Violation) -> bool, what
 fn validator_accepts_the_synthetic_complete_map() {
     let (ids, map, index, corpus, doc) = tiny();
     assert_eq!(
-        validate(&ids, &map, &index, &corpus, TINY_APPROVED, &doc),
+        validate(
+            &ids,
+            &map,
+            &index,
+            &corpus,
+            TINY_APPROVED,
+            &doc,
+            &no_python()
+        ),
         Ok(())
     );
 }
@@ -880,7 +1168,7 @@ fn validator_rejects_each_negative_case_with_a_named_violation() {
                     r.insert("disposition".into(), "17.138-6".into());
                 });
             },
-            |v| matches!(v, Violation::BothColumns(_)),
+            |v| matches!(v, Violation::MultipleColumns(_)),
         ),
         (
             "neither column",
@@ -1090,7 +1378,15 @@ fn validator_rejects_each_negative_case_with_a_named_violation() {
         let (mut ids, mut map, index, mut corpus, mut doc) = tiny();
         apply(&mut ids, &mut map, &mut corpus, &mut doc);
         expect(
-            validate(&ids, &map, &index, &corpus, TINY_APPROVED, &doc),
+            validate(
+                &ids,
+                &map,
+                &index,
+                &corpus,
+                TINY_APPROVED,
+                &doc,
+                &no_python(),
+            ),
             want,
             what,
         );
@@ -1103,7 +1399,16 @@ fn validator_is_mutant_sensitive_to_one_renamed_reference_id() {
     let first = ids.python_tests.iter().next().unwrap().clone();
     ids.python_tests.remove(&first);
     ids.python_tests.insert(format!("{first}_renamed"));
-    let errs = validate(&ids, &map, &index, &corpus, TINY_APPROVED, &doc).unwrap_err();
+    let errs = validate(
+        &ids,
+        &map,
+        &index,
+        &corpus,
+        TINY_APPROVED,
+        &doc,
+        &no_python(),
+    )
+    .unwrap_err();
     assert!(errs.contains(&Violation::Missing(format!("{first}_renamed"))));
     assert!(errs.contains(&Violation::Invented(first)));
 }
@@ -1244,9 +1549,788 @@ fn validator_checks_every_approved_row() {
     for (what, rows, want) in cases {
         let (ids, map, index, corpus, doc) = tiny();
         expect(
-            validate(&ids, &map, &index, &corpus, rows, &doc),
+            validate(&ids, &map, &index, &corpus, rows, &doc, &no_python()),
             want,
             what,
         );
     }
+}
+
+// ============================================================================
+// Decision 17.146-2: a partial map whose unported rows are pending (C-s).
+//
+// Contract for the implementation (TDD; these fail until it exists):
+//
+// * `validate(ids, map, index, corpus, approved, doc, &PythonFiles)`.
+// * `PythonFiles { tracked, pinned, helper_users }`: `tracked` is the `.py`
+//   set from `git ls-files -z` (read by `tracked_python(root)` through
+//   `amplihack_git::command_in`); `pinned` is `PINNED_19` in production;
+//   `helper_users` is `HELPER_USERS`.
+// * A coverage row holds exactly one of `rust_test`, `pending_file` and
+//   `disposition` (`MultipleColumns`, `NeitherColumn`).
+// * `pending_file` is a normalised repository path that is tracked
+//   (`PendingFileNotTracked`) and is the row's own file
+//   (`PendingFileMismatch`): `ref_file(ref_id)` for Python and procedural
+//   rows, `ROLE_PENDING_FILE` for roles, `SITE_PENDING_FILES` for sites.
+// * A role row may not be pending once `REMOVAL_CONTROL` is in the index
+//   (`PendingRoleAfterControl`).
+// * Every tracked `.py` file is in `expected_tracked_python(map,
+//   helper_users)`, and that set is inside `pinned` (`UnaccountedPython`).
+// * `pending_file` is never a disposition.
+// ============================================================================
+
+const ROLE_FILE_LITERAL: &str = "amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py";
+const MINIMALIST: &str = "amplifier-bundle/recipes/tests/test-minimalist-auto-stage.py";
+const SCOPE: &str = "amplifier-bundle/recipes/tests/test-checkpoint-scope.py";
+const HARNESS: &str = "amplifier-bundle/recipes/tests/test-canonical-staging-harness.py";
+const PUBLICATION: &str = "amplifier-bundle/recipes/tests/canonical_staging_publication.py";
+const AUDIT: &str = "amplifier-bundle/recipes/tests/canonical_staging_checkpoint_audit.py";
+const RECEIPTS: &str =
+    "crates/amplihack-workflows/tests/fixtures/canonical_staging/audit_receipts.py";
+const ADAPTER: &str =
+    "crates/amplihack-workflows/tests/fixtures/canonical_staging/private_adapter.py";
+
+/// The port order of decision 17.146 (smallest first), as file names under
+/// `amplifier-bundle/recipes/tests/`.
+const PORT_ORDER: [&str; 14] = [
+    "test-checkpoint-conservative-boundaries.py",
+    "test-pragmatic-crusty-directories.py",
+    "test-checkpoint-rebase-identity.py",
+    "test-checkpoint-value-transport.py",
+    "test-checkpoint-scope-history.py",
+    "test-checkpoint-refusal-evidence.py",
+    "test-checkpoint-synthesis-alias.py",
+    "test-checkpoint-review-boundaries.py",
+    "test-pragmatic-checkpoints.py",
+    "test-pragmatic-auto-stage.py",
+    "test-pragmatic-evidence.py",
+    "test-minimalist-auto-stage.py",
+    "test-checkpoint-publication-boundaries.py",
+    "test-checkpoint-scope.py",
+];
+
+/// The synthetic pinned set: the synthetic test file, a spare test file, a
+/// synthetic helper, and the real fixed files that role and site rows use.
+const SYN_PINNED: &[&str] = &["a.py", "b.py", "h.py", ROLE_FILE_LITERAL, MINIMALIST, SCOPE];
+const SYN_HELPERS: &[(&str, &[&str])] = &[("h.py", &["a.py"])];
+
+fn no_python() -> PythonFiles<'static> {
+    PythonFiles {
+        tracked: BTreeSet::new(),
+        pinned: SYN_PINNED,
+        helper_users: SYN_HELPERS,
+    }
+}
+
+fn set(items: &[&str]) -> BTreeSet<String> {
+    items.iter().map(|s| (*s).to_owned()).collect()
+}
+
+/// `tiny()` with every coverage row pending with its own file, and the
+/// tracked set that this map accounts for.
+fn tiny_pending() -> (
+    Ids,
+    toml::Value,
+    RustTestIndex,
+    Corpus,
+    String,
+    PythonFiles<'static>,
+) {
+    let (ids, mut map, index, corpus, doc) = tiny();
+    for table in ["python_test", "procedural", "role", "site"] {
+        for row in map[table].as_array_mut().unwrap() {
+            let row = row.as_table_mut().unwrap();
+            let id = row["ref_id"].as_str().unwrap().to_owned();
+            for key in [
+                "rust_test",
+                "disposition",
+                "assertions_python",
+                "assertions_rust",
+            ] {
+                row.remove(key);
+            }
+            let file = match table {
+                "role" => ROLE_PENDING_FILE.to_owned(),
+                "site" => site_file(&id).to_owned(),
+                _ => ref_file(&id).expect("synthetic ref parses").to_owned(),
+            };
+            row.insert("pending_file".into(), file.into());
+        }
+    }
+    let py = PythonFiles {
+        tracked: set(&["a.py", "h.py", ROLE_FILE_LITERAL, MINIMALIST, SCOPE]),
+        pinned: SYN_PINNED,
+        helper_users: SYN_HELPERS,
+    };
+    (ids, map, index, corpus, doc, py)
+}
+
+fn site_file(site: &str) -> &'static str {
+    SITE_PENDING_FILES
+        .iter()
+        .find(|(s, _)| *s == site)
+        .map(|(_, f)| *f)
+        .unwrap_or_else(|| panic!("{site} is not in SITE_PENDING_FILES"))
+}
+
+fn row_mut<'a>(map: &'a mut toml::Value, table: &str, ref_id: &str) -> &'a mut toml::value::Table {
+    map[table]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .map(|r| r.as_table_mut().unwrap())
+        .find(|r| r["ref_id"].as_str() == Some(ref_id))
+        .unwrap_or_else(|| panic!("no [[{table}]] row {ref_id}"))
+}
+
+fn push_row(map: &mut toml::Value, table: &str, row: &str) {
+    map[table]
+        .as_array_mut()
+        .unwrap()
+        .push(toml::Value::Table(toml::from_str(row).unwrap()));
+}
+
+#[test]
+fn validator_accepts_a_partial_map_whose_rows_are_pending_with_tracked_files() {
+    let (ids, map, index, corpus, doc, py) = tiny_pending();
+    assert_eq!(
+        validate(&ids, &map, &index, &corpus, TINY_APPROVED, &doc, &py),
+        Ok(())
+    );
+}
+
+#[test]
+fn validator_accepts_a_map_with_both_mapped_and_pending_rows() {
+    let (ids, mut map, index, corpus, doc, py) = tiny_pending();
+    // Map one Python row: the rest stay pending, so a.py is still expected.
+    let first = ids.python_tests.iter().next().unwrap().clone();
+    let row = row_mut(&mut map, "python_test", &first);
+    row.remove("pending_file");
+    row.insert("rust_test".into(), "t.rs::ok".into());
+    row.insert("assertions_python".into(), toml::Value::Integer(2));
+    row.insert("assertions_rust".into(), toml::Value::Integer(2));
+    assert_eq!(
+        validate(&ids, &map, &index, &corpus, TINY_APPROVED, &doc, &py),
+        Ok(())
+    );
+}
+
+#[test]
+fn validator_rejects_each_pending_row_defect_with_a_named_violation() {
+    type Case = (
+        &'static str,
+        fn(&mut Ids, &mut toml::Value, &mut RustTestIndex, &mut PythonFiles<'static>),
+        fn(&Violation) -> bool,
+    );
+    let cases: Vec<Case> = vec![
+        (
+            "pending_file and rust_test",
+            |_, m, _, _| {
+                mutate(m, "python_test", |r| {
+                    r.insert("rust_test".into(), "t.rs::ok".into());
+                });
+            },
+            |v| matches!(v, Violation::MultipleColumns(_)),
+        ),
+        (
+            "pending_file and disposition",
+            |_, m, _, _| {
+                mutate(m, "procedural", |r| {
+                    r.insert("disposition".into(), "17.138-6".into());
+                });
+            },
+            |v| matches!(v, Violation::MultipleColumns(_)),
+        ),
+        (
+            "no column at all",
+            |_, m, _, _| {
+                mutate(m, "role", |r| {
+                    r.remove("pending_file");
+                });
+            },
+            |v| matches!(v, Violation::NeitherColumn(_)),
+        ),
+        (
+            "pending file is not tracked",
+            |_, _, _, p| {
+                p.tracked.remove("a.py");
+            },
+            |v| matches!(v, Violation::PendingFileNotTracked(_)),
+        ),
+        (
+            "absolute pending path, even if some listing held it",
+            |_, m, _, p| {
+                p.tracked.insert("/a.py".into());
+                mutate(m, "python_test", |r| {
+                    r.insert("pending_file".into(), "/a.py".into());
+                });
+            },
+            |v| matches!(v, Violation::PendingFileNotTracked(_)),
+        ),
+        (
+            "a .. segment is refused, never canonicalised",
+            |_, m, _, p| {
+                p.tracked.insert("x/../a.py".into());
+                mutate(m, "python_test", |r| {
+                    r.insert("pending_file".into(), "x/../a.py".into());
+                });
+            },
+            |v| matches!(v, Violation::PendingFileNotTracked(_)),
+        ),
+        (
+            "a . segment is refused, never canonicalised",
+            |_, m, _, p| {
+                p.tracked.insert("./a.py".into());
+                mutate(m, "python_test", |r| {
+                    r.insert("pending_file".into(), "./a.py".into());
+                });
+            },
+            |v| matches!(v, Violation::PendingFileNotTracked(_)),
+        ),
+        (
+            "a backslash is refused",
+            |_, m, _, p| {
+                p.tracked.insert("x\\a.py".into());
+                mutate(m, "python_test", |r| {
+                    r.insert("pending_file".into(), "x\\a.py".into());
+                });
+            },
+            |v| matches!(v, Violation::PendingFileNotTracked(_)),
+        ),
+        (
+            "a Python row pending with another tracked file",
+            |_, m, _, _| {
+                mutate(m, "python_test", |r| {
+                    r.insert("pending_file".into(), ROLE_FILE_LITERAL.into());
+                });
+            },
+            |v| matches!(v, Violation::PendingFileMismatch(_)),
+        ),
+        (
+            "a procedural row pending with another tracked file",
+            |_, m, _, _| {
+                mutate(m, "procedural", |r| {
+                    r.insert("pending_file".into(), SCOPE.into());
+                });
+            },
+            |v| matches!(v, Violation::PendingFileMismatch(_)),
+        ),
+        (
+            "a role row pending with a file other than the fixed role file",
+            |_, m, _, _| {
+                mutate(m, "role", |r| {
+                    r.insert("pending_file".into(), "a.py".into());
+                });
+            },
+            |v| matches!(v, Violation::PendingFileMismatch(_)),
+        ),
+        (
+            "a scope site pending with the minimalist file",
+            |_, m, _, _| {
+                let row = row_mut(m, "site", "workflow-publish::step-15-commit-push");
+                row.insert("pending_file".into(), MINIMALIST.into());
+            },
+            |v| matches!(v, Violation::PendingFileMismatch(_)),
+        ),
+        (
+            "a minimalist site pending with the scope file",
+            |_, m, _, _| {
+                let row = row_mut(m, "site", "workflow-tdd::checkpoint-after-implementation");
+                row.insert("pending_file".into(), SCOPE.into());
+            },
+            |v| matches!(v, Violation::PendingFileMismatch(_)),
+        ),
+        (
+            "a role row pending after the removal control exists",
+            |_, _, i, _| {
+                i.insert(REMOVAL_CONTROL.to_owned(), TestFacts::default());
+            },
+            |v| matches!(v, Violation::PendingRoleAfterControl(_)),
+        ),
+        (
+            "a tracked test file with no pending row",
+            |_, _, _, p| {
+                p.tracked.insert("b.py".into());
+            },
+            |v| matches!(v, Violation::UnaccountedPython(f) if f.contains("b.py")),
+        ),
+        (
+            "a new .py file outside the pinned set, even with a pending row",
+            |i, m, _, p| {
+                i.python_tests.insert("new.py::C.test_new".into());
+                push_row(
+                    m,
+                    "python_test",
+                    "ref_id = \"new.py::C.test_new\"\npending_file = \"new.py\"\n",
+                );
+                p.tracked.insert("new.py".into());
+            },
+            |v| matches!(v, Violation::UnaccountedPython(f) if f.contains("new.py")),
+        ),
+        (
+            "a helper kept only by its own pending rows",
+            |i, m, _, p| {
+                i.procedural.insert("h.py::g@L2".into());
+                push_row(
+                    m,
+                    "procedural",
+                    "ref_id = \"h.py::g@L2\"\npending_file = \"h.py\"\n",
+                );
+                p.helper_users = &[("h.py", &["gone.py"])];
+            },
+            |v| matches!(v, Violation::UnaccountedPython(f) if f.contains("h.py")),
+        ),
+        (
+            "a ref_id whose file part does not parse",
+            |i, m, _, p| {
+                i.python_tests.insert("noext::C.test_x".into());
+                push_row(
+                    m,
+                    "python_test",
+                    "ref_id = \"noext::C.test_x\"\npending_file = \"noext\"\n",
+                );
+                p.tracked.insert("noext".into());
+            },
+            |v| matches!(v, Violation::PendingFileMismatch(_)),
+        ),
+        (
+            "a pending file named as a disposition",
+            |_, m, _, _| {
+                mutate(m, "procedural", |r| {
+                    r.remove("pending_file");
+                    r.insert("disposition".into(), "a.py".into());
+                });
+            },
+            |v| matches!(v, Violation::UnknownDisposition(_)),
+        ),
+    ];
+    for (what, apply, want) in cases {
+        let (mut ids, mut map, mut index, corpus, doc, mut py) = tiny_pending();
+        apply(&mut ids, &mut map, &mut index, &mut py);
+        expect(
+            validate(&ids, &map, &index, &corpus, TINY_APPROVED, &doc, &py),
+            want,
+            what,
+        );
+    }
+}
+
+/// The same defects that refuse a pending row never let a pending row stand
+/// in for a target: a pending row gives no `NoSuchTest`, but it is also not
+/// counted by `assertions_rust`, and an invented disposition is still refused.
+#[test]
+fn pending_rows_leave_the_disposition_rules_unchanged() {
+    let (ids, mut map, index, corpus, doc, py) = tiny_pending();
+    m_disposition_row(&mut map, "17.138-pending");
+    mutate(&mut map, "procedural", |r| {
+        r.remove("pending_file");
+        r.insert("disposition".into(), "17.138-pending".into());
+    });
+    expect(
+        validate(&ids, &map, &index, &corpus, TINY_APPROVED, &doc, &py),
+        |v| matches!(v, Violation::UnrecordedDisposition(_)),
+        "an invented pending disposition beside pending rows",
+    );
+}
+
+fn m_disposition_row(map: &mut toml::Value, id: &str) {
+    map["disposition"].as_array_mut().unwrap()[0]
+        .as_table_mut()
+        .unwrap()
+        .insert("id".into(), id.into());
+}
+
+#[test]
+fn ref_file_takes_the_part_before_the_first_separator_and_refuses_the_rest() {
+    assert_eq!(
+        ref_file("amplifier-bundle/recipes/tests/test-checkpoint-scope.py::GitFixtureTests.test_x"),
+        Some("amplifier-bundle/recipes/tests/test-checkpoint-scope.py")
+    );
+    assert_eq!(
+        ref_file(
+            "amplifier-bundle/recipes/tests/canonical_staging_checkpoint_audit.py::restored_auxiliary_command@L47"
+        ),
+        Some("amplifier-bundle/recipes/tests/canonical_staging_checkpoint_audit.py")
+    );
+    assert_eq!(ref_file("a.py::C.f::nested@L3"), Some("a.py"));
+    for bad in [
+        "noext::C.test_x",
+        "a.txt::f@L1",
+        "::f@L1",
+        "a b.py::f@L1",
+        "dir/x.py",
+        "",
+        "x.py::",
+    ] {
+        assert_eq!(ref_file(bad), None, "{bad:?} must not parse");
+    }
+}
+
+// --------------------------------------------- the expected tracked set
+
+fn pending_map(rows: &[(&str, &str)]) -> toml::Value {
+    let mut text = String::new();
+    for (id, file) in rows {
+        text += &format!("[[procedural]]\nref_id = \"{id}\"\npending_file = \"{file}\"\n");
+    }
+    toml::from_str(&text).unwrap()
+}
+
+#[test]
+fn expected_set_is_empty_when_nothing_is_pending() {
+    let map: toml::Value =
+        toml::from_str("[[procedural]]\nref_id = \"a.py::f@L1\"\nrust_test = \"t.rs::ok\"\n")
+            .unwrap();
+    assert!(expected_tracked_python(&map, &HELPER_USERS).is_empty());
+}
+
+#[test]
+fn expected_set_follows_helper_chains_to_a_fixed_point() {
+    // Listed so that a single pass in list order would miss the publication
+    // helper: it is used only by the harness, which is used by scope.
+    const USERS: &[(&str, &[&str])] = &[
+        ("pub.py", &["harness.py", "other.py"]),
+        ("harness.py", &["scope.py"]),
+    ];
+    let map = pending_map(&[("scope.py::f@L1", "scope.py")]);
+    assert_eq!(
+        expected_tracked_python(&map, USERS),
+        set(&["scope.py", "harness.py", "pub.py"])
+    );
+}
+
+#[test]
+fn a_helper_s_own_pending_rows_do_not_keep_it_expected() {
+    const USERS: &[(&str, &[&str])] = &[("h.py", &["user.py"])];
+    let map = pending_map(&[("h.py::f@L1", "h.py")]);
+    assert!(
+        expected_tracked_python(&map, USERS).is_empty(),
+        "a helper is expected only while an expected file uses it"
+    );
+    let map = pending_map(&[("h.py::f@L1", "h.py"), ("user.py::g@L2", "user.py")]);
+    assert_eq!(
+        expected_tracked_python(&map, USERS),
+        set(&["user.py", "h.py"])
+    );
+}
+
+#[test]
+fn expected_set_for_every_row_pending_is_exactly_the_pinned_19() {
+    // The C-s state: every inventory row pending with its own file. All 19
+    // files are expected: 14 tests with rows, the harness and the two audit
+    // helpers through their users, and the two fixtures through scope.
+    let ids = load_ids(&fs::read_to_string(root().join(DIR).join("inventory_ids.json")).unwrap());
+    let mut text = String::new();
+    for id in ids.python_tests.iter().chain(ids.procedural.iter()) {
+        let file = ref_file(id).unwrap_or_else(|| panic!("{id} parses"));
+        text += &format!("[[procedural]]\nref_id = \"{id}\"\npending_file = \"{file}\"\n");
+    }
+    for id in ids.roles.keys() {
+        text += &format!("[[role]]\nref_id = \"{id}\"\npending_file = \"{ROLE_PENDING_FILE}\"\n");
+    }
+    for id in &ids.sites {
+        text += &format!(
+            "[[site]]\nref_id = \"{id}\"\npending_file = \"{}\"\n",
+            site_file(id)
+        );
+    }
+    let map: toml::Value = toml::from_str(&text).unwrap();
+    let expected = expected_tracked_python(&map, &HELPER_USERS);
+    let pinned: BTreeSet<String> = PINNED_19.iter().map(|s| (*s).to_owned()).collect();
+    assert_eq!(expected, pinned);
+}
+
+#[test]
+fn expected_set_after_each_port_drops_only_that_file_until_scope() {
+    // Port files 1..=13 one by one: each removes exactly its own file, and no
+    // helper, because every helper's last user is test-checkpoint-scope.py.
+    let ids = load_ids(&fs::read_to_string(root().join(DIR).join("inventory_ids.json")).unwrap());
+    let rows: Vec<(String, String)> = ids
+        .python_tests
+        .iter()
+        .chain(ids.procedural.iter())
+        .map(|id| (id.clone(), ref_file(id).unwrap().to_owned()))
+        .collect();
+    let map_without = |ported: &[&str]| -> toml::Value {
+        let mut text = String::new();
+        for (id, file) in &rows {
+            let name = file.rsplit('/').next().unwrap();
+            if !ported.contains(&name) {
+                text += &format!("[[procedural]]\nref_id = \"{id}\"\npending_file = \"{file}\"\n");
+            }
+        }
+        toml::from_str(&text).unwrap()
+    };
+    let mut previous = expected_tracked_python(&map_without(&[]), &HELPER_USERS);
+    for n in 1..PORT_ORDER.len() {
+        let now = expected_tracked_python(&map_without(&PORT_ORDER[..n]), &HELPER_USERS);
+        let gone: Vec<_> = previous.difference(&now).cloned().collect();
+        assert_eq!(
+            gone,
+            vec![format!(
+                "amplifier-bundle/recipes/tests/{}",
+                PORT_ORDER[n - 1]
+            )],
+            "port {n} must remove only its own file"
+        );
+        previous = now;
+    }
+    // Porting scope's rows alone leaves the helpers' own rows pending, and
+    // the helpers become unused: the expected set is then empty, so the
+    // helpers must go in the same commit.
+    assert!(expected_tracked_python(&map_without(&PORT_ORDER), &HELPER_USERS).is_empty());
+}
+
+// ------------------------------------------------------- pinned constants
+
+#[test]
+fn pinned_19_is_the_python_set_tracked_when_the_map_was_created() {
+    let mut want = vec![ADAPTER, RECEIPTS, AUDIT, PUBLICATION, HARNESS];
+    let tests: Vec<String> = PORT_ORDER
+        .iter()
+        .map(|f| format!("amplifier-bundle/recipes/tests/{f}"))
+        .collect();
+    want.extend(tests.iter().map(String::as_str));
+    let want: BTreeSet<&str> = want.into_iter().collect();
+    let got: BTreeSet<&str> = PINNED_19.iter().copied().collect();
+    assert_eq!(got.len(), 19, "PINNED_19 has duplicates");
+    assert_eq!(got, want);
+}
+
+#[test]
+fn helpers_are_exactly_the_five_shared_files_and_are_pinned() {
+    assert_eq!(HELPERS.len(), 5);
+    assert_eq!(
+        HELPERS.iter().copied().collect::<BTreeSet<_>>(),
+        [ADAPTER, RECEIPTS, AUDIT, PUBLICATION, HARNESS]
+            .into_iter()
+            .collect()
+    );
+    assert!(HELPERS.iter().all(|h| PINNED_19.contains(h)));
+    let listed: Vec<&str> = HELPER_USERS.iter().map(|(h, _)| *h).collect();
+    assert_eq!(
+        listed.iter().copied().collect::<BTreeSet<_>>(),
+        HELPERS.iter().copied().collect(),
+        "HELPER_USERS lists each helper once"
+    );
+    assert_eq!(listed.len(), 5);
+    for (helper, users) in HELPER_USERS {
+        assert!(!users.is_empty(), "{helper} has no user");
+        for user in users {
+            assert!(
+                PINNED_19.contains(user),
+                "{helper}: user {user} is not pinned"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_fixed_role_and_site_files_are_the_documented_derivation() {
+    assert_eq!(ROLE_PENDING_FILE, ROLE_FILE_LITERAL);
+    assert_eq!(
+        REMOVAL_CONTROL,
+        "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::removing_any_authorised_opt_out_is_named_by_the_policy_check"
+    );
+    let want: BTreeMap<&str, &str> = [
+        (
+            "autodrive-crusty-round::step-04-address-concerns",
+            MINIMALIST,
+        ),
+        ("workflow-tdd::checkpoint-after-implementation", MINIMALIST),
+        (
+            "workflow-refactor-review::checkpoint-after-review-feedback",
+            MINIMALIST,
+        ),
+        ("workflow-publish::step-16b-outside-in-fix-loop", MINIMALIST),
+        ("workflow-publish::step-15-commit-push", SCOPE),
+        ("workflow-pr-review::step-18c-push-feedback-changes", SCOPE),
+        ("workflow-finalize::step-20b-push-cleanup", SCOPE),
+    ]
+    .into_iter()
+    .collect();
+    let got: BTreeMap<&str, &str> = SITE_PENDING_FILES.iter().copied().collect();
+    assert_eq!(got, want);
+    let ids = load_ids(&fs::read_to_string(root().join(DIR).join("inventory_ids.json")).unwrap());
+    assert_eq!(
+        ids.sites
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        want.keys().copied().collect(),
+        "the table names exactly the seven inventory sites"
+    );
+}
+
+fn git_grep_py(needle: &str) -> BTreeSet<String> {
+    let out = amplihack_git::command_in(root())
+        .args(["grep", "-l", "-z", "-F", "-e", needle, "--", "*.py"])
+        .output()
+        .expect("git grep");
+    // 1 means no match; anything else is an error.
+    assert!(
+        matches!(out.status.code(), Some(0 | 1)),
+        "git grep {needle}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out.stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8(p.to_vec()).unwrap())
+        .collect()
+}
+
+#[test]
+fn each_site_is_pending_with_the_last_tracked_file_in_port_order_that_names_it() {
+    let tracked = tracked_python(&root());
+    for (site, file) in SITE_PENDING_FILES {
+        if !tracked.contains(file) {
+            continue; // ported: its rows are mapped and the validator checks them
+        }
+        let step = site.split_once("::").unwrap().1;
+        let users = git_grep_py(step);
+        assert!(users.contains(file), "{file} does not name {step}");
+        let position = |f: &str| {
+            PORT_ORDER
+                .iter()
+                .position(|p| f.ends_with(&format!("/{p}")))
+        };
+        let mine = position(file).unwrap();
+        for user in &users {
+            if let Some(n) = position(user) {
+                assert!(
+                    n <= mine,
+                    "{site}: {user} names it and is ported after {file}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn helper_users_match_git_grep_in_both_directions() {
+    let tracked = tracked_python(&root());
+    for (helper, users) in HELPER_USERS {
+        if !tracked.contains(helper) {
+            continue;
+        }
+        let stem = helper
+            .rsplit('/')
+            .next()
+            .unwrap()
+            .strip_suffix(".py")
+            .unwrap();
+        let mut found = git_grep_py(stem);
+        found.remove(helper);
+        let listed: BTreeSet<String> = users
+            .iter()
+            .filter(|u| tracked.contains(**u))
+            .map(|u| (*u).to_owned())
+            .collect();
+        assert_eq!(found, listed, "{helper}: users differ from git grep");
+    }
+}
+
+#[test]
+fn tracked_python_reads_git_ls_files_and_matches_the_expected_set() {
+    let tracked = tracked_python(&root());
+    assert!(tracked.iter().all(|p| p.ends_with(".py")));
+    let pinned: BTreeSet<String> = PINNED_19.iter().map(|s| (*s).to_owned()).collect();
+    assert!(
+        tracked.is_subset(&pinned),
+        "a .py file outside PINNED_19 is tracked"
+    );
+    let map: toml::Value = toml::from_str(
+        &fs::read_to_string(root().join(DIR).join("inventory_map.toml"))
+            .expect("commit inventory_map.toml"),
+    )
+    .unwrap();
+    assert_eq!(tracked, expected_tracked_python(&map, &HELPER_USERS));
+}
+
+#[test]
+fn a_real_pending_row_naming_an_untracked_file_is_refused() {
+    let ids = load_ids(&fs::read_to_string(root().join(DIR).join("inventory_ids.json")).unwrap());
+    let mut map: toml::Value = toml::from_str(
+        &fs::read_to_string(root().join(DIR).join("inventory_map.toml"))
+            .expect("commit inventory_map.toml"),
+    )
+    .unwrap();
+    let doc = fs::read_to_string(root().join(DOC)).unwrap();
+    let index = scan(&workspace_test_sources());
+    let corpus = load_corpus(&root().join(DIR).join("corpus"));
+    let py = PythonFiles {
+        tracked: tracked_python(&root()),
+        pinned: &PINNED_19,
+        helper_users: &HELPER_USERS,
+    };
+    let first = ids.python_tests.iter().next().unwrap().clone();
+    let row = row_mut(&mut map, "python_test", &first);
+    for key in ["rust_test", "assertions_python", "assertions_rust", "note"] {
+        row.remove(key);
+    }
+    row.insert(
+        "pending_file".into(),
+        "amplifier-bundle/recipes/tests/test-never-tracked.py".into(),
+    );
+    let errs = validate(&ids, &map, &index, &corpus, &APPROVED_ROWS, &doc, &py).unwrap_err();
+    assert!(
+        errs.iter()
+            .any(|v| matches!(v, Violation::PendingFileNotTracked(_))),
+        "{errs:?}"
+    );
+}
+
+#[test]
+fn the_index_covers_workflows_tests_so_role_targets_resolve() {
+    let index = scan(&workspace_test_sources());
+    for name in [
+        "every_authorised_agent_explicitly_defers_staging",
+        "nested_adjudicator_is_a_visible_scope_exclusion",
+    ] {
+        let key =
+            format!("crates/amplihack-workflows/tests/canonical_staging_policy_test.rs::{name}");
+        let facts = index
+            .get(&key)
+            .unwrap_or_else(|| panic!("{key} not indexed"));
+        assert!(!facts.ignored && !facts.cfg_gated && !facts.env_gated_early_return);
+    }
+}
+
+#[test]
+fn mapped_role_rows_target_only_the_two_source_policy_tests() {
+    let ids = load_ids(&fs::read_to_string(root().join(DIR).join("inventory_ids.json")).unwrap());
+    let map: toml::Value = toml::from_str(
+        &fs::read_to_string(root().join(DIR).join("inventory_map.toml"))
+            .expect("commit inventory_map.toml"),
+    )
+    .unwrap();
+    let policy = "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs";
+    let mut pending = 0;
+    for row in map["role"].as_array().expect("[[role]] rows") {
+        let id = row["ref_id"].as_str().unwrap();
+        match row.get("rust_test").and_then(toml::Value::as_str) {
+            Some(target) => {
+                let want = if ids.roles[id] {
+                    format!("{policy}::every_authorised_agent_explicitly_defers_staging")
+                } else {
+                    format!("{policy}::nested_adjudicator_is_a_visible_scope_exclusion")
+                };
+                assert_eq!(target, want, "{id}");
+            }
+            None => {
+                assert_eq!(
+                    row["pending_file"].as_str(),
+                    Some(ROLE_PENDING_FILE),
+                    "{id}"
+                );
+                pending += 1;
+            }
+        }
+    }
+    // All or nothing: the role rows move together when the control lands.
+    assert!(
+        pending == 0 || pending == 41,
+        "{pending} of 41 role rows pending"
+    );
 }

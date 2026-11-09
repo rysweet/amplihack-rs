@@ -471,6 +471,9 @@ commit hook can rewrite them.
 | `bins/amplihack/tests/workflow_checkpoint_legacy_parity.rs` | the legacy rows at the binary boundary |
 | `bins/amplihack/tests/workflow_checkpoint_exit79.rs` | a terminal 79 from the destination read exits 79 at both sites |
 | `bins/amplihack/tests/workflow_checkpoint_wrappers.rs` | the shell wrappers against the compiled binary and disposable Git remotes |
+| `crates/amplihack-cli/tests/workflow_checkpoint_inventory.rs` and `workflow_checkpoint_map_honesty.rs` | every reference obligation maps to a test that runs normally, or to one of the eight dispositions; see the [inventory map reference](workflow-checkpoint-inventory-map.md) |
+| `crates/amplihack-cli/tests/checkpoint_projection_parity.rs` | the Rust phase projection's scanners and base64 codec match the `regex` and `base64` crates on valid and malformed input |
+| `crates/amplihack-cli/tests/checkpoint_port_*.rs` | one module per ported Python test file, built on the Rust Git fixture; see [Port a checkpoint Python test file to Rust](../howto/port-a-checkpoint-python-test-file.md) |
 
 Each ported test has the name of its Python method without the `test_`
 prefix. Tests that need the environment, `TMPDIR` or Git run the binary as a
@@ -491,3 +494,4 @@ the [canonical staging fixtures README](../../crates/amplihack-workflows/tests/f
 - [Canonical staging test contract](../../amplifier-bundle/recipes/tests/canonical-staging.md) - scope, 17.116 publication rules and delivery requirements
 - [Default workflow agentic finalization](default-workflow-agentic-finalization.md) - the step 15 and step 20b results these actions feed
 - [Binary resolution](binary-resolution.md) - how tools find the `amplihack` binary
+- [Workflow checkpoint inventory map](workflow-checkpoint-inventory-map.md) - how each behaviour of the removed Python helpers maps to a Rust test or an owner disposition

@@ -71,6 +71,8 @@ mod bugfix_341_install_freshness;
 mod bugfix_install_tests;
 #[path = "cargo_cxx_pin_test.rs"]
 mod cargo_cxx_pin;
+#[path = "checkpoint_projection_parity.rs"]
+mod checkpoint_projection_parity;
 #[path = "checkpoint_projection_unit.rs"]
 mod checkpoint_projection_unit;
 #[path = "claude_code_plugin_manifest.rs"]
@@ -329,6 +331,8 @@ mod issue_860_pr_guide_present;
 mod issue_899_merge_validations_abstention;
 #[path = "no_capacity_notice_statusline.rs"]
 mod no_capacity_notice_statusline;
+#[path = "pr2020_python_removal.rs"]
+mod pr2020_python_removal;
 #[path = "pr_712_named_asset_canonicalization.rs"]
 mod pr_712_named_asset_canonicalization;
 #[path = "profile_issue_1804.rs"]
@@ -389,5 +393,7 @@ mod workflow_checkpoint_corpus;
 mod workflow_checkpoint_inventory;
 #[path = "workflow_checkpoint_legacy_guards.rs"]
 mod workflow_checkpoint_legacy_guards;
+#[path = "workflow_checkpoint_map_honesty.rs"]
+mod workflow_checkpoint_map_honesty;
 #[path = "workflow_checkpoint_static_guards.rs"]
 mod workflow_checkpoint_static_guards;

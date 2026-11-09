@@ -1106,6 +1106,64 @@ fn read(rel: &str) -> String {
 
 const FIXTURE: &str = "tests/integration/canonical_staging_checkpoint_fixture.rs";
 const PROJECTION: &str = "tests/integration/checkpoint_projection.rs";
+const PARITY: &str = "crates/amplihack-cli/tests/checkpoint_projection_parity.rs";
+const MAIN_RS: &str = "crates/amplihack-cli/tests/main.rs";
+
+/// The projection is also compiled into `amplihack-workflows`'s
+/// `canonical_staging_checkpoint_test`, whose manifest has neither `regex` nor
+/// `base64` and stays unchanged (C-q, A1 option c). Code only: the doc
+/// comments may still name the Python regex they replace.
+#[test]
+fn rust_projection_uses_neither_the_regex_nor_the_base64_crate() {
+    let src = read(PROJECTION);
+    let code: String = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for banned in [
+        "use regex",
+        "regex::",
+        "Regex::",
+        "Regex>",
+        "use base64",
+        "base64::",
+    ] {
+        assert!(
+            !code.contains(banned),
+            "{PROJECTION} code still uses {banned:?}"
+        );
+    }
+    for surface in ["pub fn b64_encode(", "pub fn b64_decode("] {
+        assert!(code.contains(surface), "{PROJECTION} exposes {surface}..)");
+    }
+}
+
+/// Line 406 of the bounded projection branch ran `python3
+/// test-pragmatic-checkpoints.py --bounded-fixture-projection`. After C-q
+/// nothing in the file names Python; what the branch now computes is checked
+/// by `project_renders_branch_name_for_bounded_step`, not by its source text.
+#[test]
+fn the_bounded_checkpoint_projection_runs_no_python() {
+    const TEST: &str = "crates/amplihack-workflows/tests/canonical_staging_checkpoint_test.rs";
+    let src = read(TEST);
+    for banned in ["python3", ".py\"", "--bounded-fixture-projection"] {
+        assert!(!src.contains(banned), "{TEST} still contains {banned:?}");
+    }
+}
+
+#[test]
+fn the_workflows_manifest_still_has_no_regex_or_base64() {
+    // The rewrite must not reach for the manifest instead (option (a) needs a
+    // new owner authorisation).
+    let manifest = read("crates/amplihack-workflows/Cargo.toml");
+    for line in manifest.lines().map(str::trim) {
+        assert!(
+            !(line.starts_with("regex") || line.starts_with("base64")),
+            "amplihack-workflows/Cargo.toml gained {line:?}"
+        );
+    }
+}
 
 #[test]
 fn owner_project_no_longer_embeds_or_spawns_the_python_projection() {
@@ -1136,9 +1194,54 @@ fn rust_projection_uses_no_yaml_parser_and_no_python() {
     ] {
         assert!(!src.contains(banned), "{PROJECTION} contains {banned:?}");
     }
-    // The block reader is the Python regex, with `\s` spelled out as the
-    // Unicode whitespace class Python's `str` patterns use.
-    assert!(src.contains(r##"r#"(?m)^  - id: "([^"]+)"{PY_WS_CLASS}*$"#"##));
+    // The block reader was the Python regex, with `\s` spelled out as the
+    // Unicode whitespace class Python's `str` patterns use. The module now
+    // scans without the `regex` crate (C-q, A1 option c), so the exact pattern
+    // literal lives in the parity oracle, which compiles it with `Regex::new`
+    // and requires the scanner to agree with it on every input.
+    let parity = read(PARITY);
+    assert!(
+        parity.contains(r##"Regex::new(&format!(r#"(?m)^  - id: "([^"]+)"{PY_WS_CLASS}*$"#))"##),
+        "{PARITY} compiles the original block pattern with Regex::new"
+    );
+    assert!(
+        parity.contains(r#"Regex::new(r"\{\{([^{}]+)\}\}")"#),
+        "{PARITY} compiles the original template pattern with Regex::new"
+    );
+    assert!(
+        parity.contains(r##"r"(?m)^    {}: (.*?){PY_WS_CLASS}*$""##)
+            && parity.contains(r##"r"(?m)^    {}: \|\n((?:(?: {{6,}}.*)?\n)*)""##),
+        "{PARITY} keeps the original scalar and literal patterns"
+    );
+    let ws_class = r#"const PY_WS_CLASS: &str = r"[\t\n\x0B\x0C\r\x1C-\x1F \x{85}\x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}]";"#;
+    assert!(
+        parity.contains(ws_class),
+        "{PARITY} keeps the original PY_WS_CLASS"
+    );
+    for test in [
+        "fn render_bytes_matches_the_template_regex_on_every_edge_case()",
+        "fn blocks_matches_the_block_regex_on_every_edge_case()",
+        "fn blocks_matches_the_block_regex_on_every_short_token_sequence()",
+        "fn try_scalar_matches_the_scalar_regex_for_every_key_and_block()",
+        "fn literal_matches_the_literal_regex_for_every_key_and_block()",
+        "fn b64_decode_matches_the_engine_on_every_short_input()",
+    ] {
+        let at = parity
+            .find(test)
+            .unwrap_or_else(|| panic!("{PARITY} lacks {test}"));
+        let before = &parity[..at];
+        let attr = before.trim_end().rsplit('\n').next().unwrap_or("").trim();
+        assert_eq!(
+            attr, "#[test]",
+            "{test} runs as a plain #[test] (no ignore or cfg)"
+        );
+    }
+    assert!(
+        read(MAIN_RS).contains(
+            "#[path = \"checkpoint_projection_parity.rs\"]\nmod checkpoint_projection_parity;"
+        ),
+        "{MAIN_RS} registers the parity oracle"
+    );
     // The SHA-256 pin of the retained pre-delta asset is kept.
     assert!(src.contains("112ea7497a96d7d0257c409c74bb302df6693e6503770d01e63613783191d706"));
 }
@@ -1248,5 +1351,103 @@ fn issue_1671_reentry_test_is_a_no_op_without_its_variable() {
     assert!(
         head.contains("AMPLIHACK_PROJECTION_REQUEST") && head.contains("return"),
         "the re-entry test must return early when its variable is unset"
+    );
+}
+
+// ------------------------------------------ the bounded checkpoint request
+
+/// A root holding the retained pre-delta assets (the original recipe) and a
+/// current `workflow-publish` recipe with one new capture step, one new
+/// scope reviewer and the bounded checkpoint step. The capture reports an
+/// admitted skip, so the projection runs the checkpoint step next and needs
+/// no Git repository.
+fn bounded_root(dir: &Path) -> PathBuf {
+    const ASSETS: &str = "crates/amplihack-workflows/tests/fixtures/canonical_staging/checkpoint-pre-delta-assets.json";
+    let fake = dir.join("root");
+    fs::create_dir_all(fake.join(ASSETS).parent().unwrap()).unwrap();
+    fs::copy(root().join(ASSETS), fake.join(ASSETS)).unwrap();
+    fs::create_dir_all(fake.join("amplifier-bundle/recipes")).unwrap();
+    fs::write(
+        fake.join("amplifier-bundle/recipes/workflow-publish.yaml"),
+        concat!(
+            "steps:\n",
+            "  - id: \"cq-unit-capture\"\n",
+            "    type: bash\n",
+            "    output: scope\n",
+            "    parse_json: true\n",
+            "    command: |\n",
+            "      printf '%s' '{\"skipped\": true, \"admitted\": false, \"reason\": \"none\"}'\n",
+            "  - id: \"cq-unit-review\"\n",
+            "    agent: reviewer\n",
+            "    output: verdict\n",
+            "  - id: \"step-15-commit-push\"\n",
+            "    type: bash\n",
+            "    command: |\n",
+            "      printf '%s\\n' 'git push origin {{worktree_setup.branch_name}}'\n",
+        ),
+    )
+    .unwrap();
+    fake
+}
+
+fn bounded_request(root: PathBuf, task: &Path, branch_key: &'static str) -> p::ProjectionRequest {
+    p::ProjectionRequest {
+        root,
+        asset: "workflow-publish".into(),
+        owner_paths: vec![b"source.txt".to_vec()],
+        context: d(vec![
+            ("task_description", s("owner task")),
+            (
+                "worktree_setup",
+                d(vec![
+                    ("worktree_path", s(task.to_str().unwrap())),
+                    ("branch_name", s("feat/bounded")),
+                ]),
+            ),
+        ]),
+        branch_key,
+    }
+}
+
+/// The bounded checkpoint branch (`canonical_staging_checkpoint_test`, the
+/// former line 406) reads `worktree_setup.branch_name`, as
+/// `test-pragmatic-checkpoints.py` did; `Owner::project` reads
+/// `local_branch`. A plain test of that path, without the authorised binary
+/// the `#[ignore]`d end-to-end tests need.
+#[test]
+fn project_renders_branch_name_for_bounded_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let task = dir.path().join("task");
+    let home = dir.path().join("home");
+    fs::create_dir_all(&task).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    let env: Vec<(OsString, Option<OsString>)> = hermetic_env(&home)
+        .into_iter()
+        .map(|(k, v)| (k, Some(v)))
+        .collect();
+    let fake = bounded_root(dir.path());
+
+    let request = bounded_request(fake.clone(), &task, "branch_name");
+    assert_eq!(request.branch_key, "branch_name");
+    let result = p::project(&request, &env);
+    assert_eq!(
+        result,
+        p::ShellResult {
+            rc: 0,
+            stdout: b"git push origin feat/bounded\n".to_vec(),
+            stderr: Vec::new(),
+        },
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+
+    // The same request read with the owner projection's key fails: the
+    // bounded context names the branch only as `branch_name`.
+    let result = p::project(&bounded_request(fake, &task, "local_branch"), &env);
+    assert_eq!(result.rc, 1);
+    assert!(result.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&result.stderr),
+        "KeyError: 'local_branch'\n"
     );
 }

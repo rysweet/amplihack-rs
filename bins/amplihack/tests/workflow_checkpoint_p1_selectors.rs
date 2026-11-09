@@ -4,7 +4,7 @@
 //! refuses them with status 2 before any Git child starts.
 //!
 //! Oracle: `git show 918c256cf:amplifier-bundle/tools/workflow_stage_changes.sh`
-//! lines 69-124, run under `python3 -I` in `~/.amplihack/work` on 2026-11-07
+//! lines 69-124, run under `python3 -I` in a local capture (not in the repo) on 2026-11-07
 //! (Python 3.14.10, Git 2.56.0). Probe (a): with GIT_INDEX_FILE=alt, status 0,
 //! `alt` lists the path and the caller's index is untouched. Probe (b): cwd in
 //! A with GIT_DIR/GIT_WORK_TREE naming B, status 0, B has the path staged and A
@@ -155,7 +155,7 @@ fn probe_a(route: Route) {
     assert_eq!(before_index, staged(&sb, &a, None), "A's own index changed");
     // `git add` under an alternate index still writes the new blob into the
     // repository's object store. The 918c STRICT_PATHS_PY oracle does the
-    // same (re-run 2026-11-08 from ~/.amplihack/work/pr2020-oracle/strict.py:
+    // same (re-run 2026-11-08 from a local capture, not in the repo:
     // the only new file in A/.git is the loose object for new.txt). So A must
     // be byte-identical apart from exactly that one object: no index, ref,
     // config or worktree change.

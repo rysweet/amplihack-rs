@@ -217,16 +217,36 @@ run "$WORK/on-pr-branch" FAKE_GH=none
 
 echo "== 7. the recipe step carries all of it end to end =="
 STEP="$WORK/step03c.sh"
-if python3 - "$PREP" "$STEP" <<'PY'
-import importlib.util, pathlib, sys
-recipe = pathlib.Path(sys.argv[1])
-spec = importlib.util.spec_from_file_location("checkpoint_contract", recipe.parent / "tests/test-checkpoint-scope.py")
-contract = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(contract)
-steps = contract.blocks(recipe.read_text())
-assert "step-03c-issue-claim-check" in steps
-open(sys.argv[2], "w").write(contract.literal(steps["step-03c-issue-claim-check"], "command"))
-PY
+# Recipe reader in awk: the canonical block layout (a step starts at
+# `  - id: "<id>"`), and its `    <key>: |` literal, dedented.
+recipe_step_ids() { # recipe_step_ids <recipe>
+  awk '/^  - id: "[^"]+"[[:space:]]*$/ { id = $0; sub(/^  - id: "/, "", id); sub(/"[[:space:]]*$/, "", id); print id }' "$1"
+}
+recipe_step_literal() { # recipe_step_literal <recipe> <step-id> <key>; exit 1 when absent
+  awk -v want="$2" -v key="    $3: |" '
+    /^  - id: "[^"]+"[[:space:]]*$/ {
+      if (inside) inside = 0
+      id = $0; sub(/^  - id: "/, "", id); sub(/"[[:space:]]*$/, "", id)
+      if (id == want && !done) inside = 1
+      next
+    }
+    inside && !grab && !done && $0 == key { grab = 1; next }
+    grab {
+      if ($0 == "" || $0 ~ /^      /) { line[++n] = $0; next }
+      grab = 0; done = 1; inside = 0
+    }
+    END {
+      if (grab) done = 1
+      if (!done) exit 1
+      min = -1
+      for (i = 1; i <= n; i++) if (line[i] ~ /[^ ]/) {
+        match(line[i], /^ */); if (min < 0 || RLENGTH < min) min = RLENGTH
+      }
+      for (i = 1; i <= n; i++) print (line[i] ~ /[^ ]/ ? substr(line[i], min + 1) : "")
+    }' "$1"
+}
+if recipe_step_ids "$PREP" | grep -qx 'step-03c-issue-claim-check' \
+  && recipe_step_literal "$PREP" step-03c-issue-claim-check command >"$STEP"
 then
   pass "workflow-prep still declares step-03c-issue-claim-check"
 else

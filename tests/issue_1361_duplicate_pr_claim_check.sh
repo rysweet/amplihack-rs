@@ -436,18 +436,39 @@ kw() { printf '%s\n' "$1" | bash "$IREF" --keyword; }
 
 echo "== 5. the recipes and the publish helper are wired to all of it =="
 STEP="$WORK/step03c.sh"
-if python3 - "$PREP" "$STEP" <<'PY'
-import importlib.util, pathlib, sys
-recipe, out = pathlib.Path(sys.argv[1]), sys.argv[2]
-spec = importlib.util.spec_from_file_location("checkpoint_contract", recipe.parent / "tests/test-checkpoint-scope.py")
-contract = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(contract)
-steps = contract.blocks(recipe.read_text())
-ids = list(steps)
-assert "step-03c-issue-claim-check" in ids, ids
-assert ids.index("step-03c-issue-claim-check") > ids.index("step-03b-extract-issue-number")
-open(out, "w").write(contract.literal(steps["step-03c-issue-claim-check"], "command"))
-PY
+# Recipe reader in awk: the canonical block layout (a step starts at
+# `  - id: "<id>"`), and its `    <key>: |` literal, dedented.
+recipe_step_ids() { # recipe_step_ids <recipe>
+  awk '/^  - id: "[^"]+"[[:space:]]*$/ { id = $0; sub(/^  - id: "/, "", id); sub(/"[[:space:]]*$/, "", id); print id }' "$1"
+}
+recipe_step_literal() { # recipe_step_literal <recipe> <step-id> <key>; exit 1 when absent
+  awk -v want="$2" -v key="    $3: |" '
+    /^  - id: "[^"]+"[[:space:]]*$/ {
+      if (inside) inside = 0
+      id = $0; sub(/^  - id: "/, "", id); sub(/"[[:space:]]*$/, "", id)
+      if (id == want && !done) inside = 1
+      next
+    }
+    inside && !grab && !done && $0 == key { grab = 1; next }
+    grab {
+      if ($0 == "" || $0 ~ /^      /) { line[++n] = $0; next }
+      grab = 0; done = 1; inside = 0
+    }
+    END {
+      if (grab) done = 1
+      if (!done) exit 1
+      min = -1
+      for (i = 1; i <= n; i++) if (line[i] ~ /[^ ]/) {
+        match(line[i], /^ */); if (min < 0 || RLENGTH < min) min = RLENGTH
+      }
+      for (i = 1; i <= n; i++) print (line[i] ~ /[^ ]/ ? substr(line[i], min + 1) : "")
+    }' "$1"
+}
+PREP_IDS="$(recipe_step_ids "$PREP")"
+claim_at=$(grep -nx 'step-03c-issue-claim-check' <<<"$PREP_IDS" | cut -d: -f1)
+issue_at=$(grep -nx 'step-03b-extract-issue-number' <<<"$PREP_IDS" | cut -d: -f1)
+if [ -n "$claim_at" ] && [ -n "$issue_at" ] && [ "$claim_at" -gt "$issue_at" ] \
+  && recipe_step_literal "$PREP" step-03c-issue-claim-check command >"$STEP"
 then
   pass "workflow-prep declares step-03c-issue-claim-check once the issue number is known"
 else
@@ -504,18 +525,14 @@ grep -q 'workflow_issue_reference.sh' "$PUBLISH_TOOL" \
   || fail "workflow_publish_pr.sh still hardcodes 'Closes #N' in the PR body"
 
 STEP15="$WORK/step15.sh"
-python3 - "$PUBLISH_RECIPE" "$STEP15" <<'PY'
-import importlib.util, pathlib, sys
-recipe = pathlib.Path(sys.argv[1])
-spec = importlib.util.spec_from_file_location("checkpoint_contract", recipe.parent / "tests/test-checkpoint-scope.py")
-contract = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(contract)
-wrapper = contract.literal(contract.blocks(recipe.read_text())["step-15-commit-push"], "command")
-assert "/workflow_publish_checkpoint.sh" in wrapper
-assert wrapper.splitlines().count('bash "$CHECKPOINT_TOOL"') == 1
-helper = recipe.parent.parent / "tools/workflow_publish_checkpoint.sh"
-open(sys.argv[2], "w").write(helper.read_text())
-PY
+: >"$STEP15"
+WRAPPER="$(recipe_step_literal "$PUBLISH_RECIPE" step-15-commit-push command)"
+if grep -qF '/workflow_publish_checkpoint.sh' <<<"$WRAPPER" \
+  && [ "$(grep -cxF 'bash "$CHECKPOINT_TOOL"' <<<"$WRAPPER")" -eq 1 ]; then
+  cat "$(dirname "$PUBLISH_RECIPE")/../tools/workflow_publish_checkpoint.sh" >"$STEP15"
+else
+  fail "step-15 no longer runs workflow_publish_checkpoint.sh exactly once"
+fi
 grep -q 'workflow_issue_reference.sh' "$STEP15" && ! grep -q 'ISSUE_REF="Closes #' "$STEP15" \
   && pass "the step-15 commit message's closing keyword comes from the diff too" \
   || fail "step-15 still hardcodes 'Closes #N' in the commit message"

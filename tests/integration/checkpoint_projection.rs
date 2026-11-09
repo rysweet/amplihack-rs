@@ -42,10 +42,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitStatus, Output, Stdio};
-use std::sync::OnceLock;
-
-use base64::Engine as _;
-use regex::Regex;
 
 // ------------------------------------------------------------------ constants
 
@@ -1024,21 +1020,44 @@ pub fn projected_json_output(raw: &[u8]) -> Result<Ctx, String> {
 
 // ------------------------------------------------------------------- render
 
-fn template_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\{\{([^{}]+)\}\}").expect("template regex"))
+/// The next `{{expr}}` at or after `from`, as the Python pattern
+/// `\{\{([^{}]+)\}\}` finds it: the leftmost `{{`, then one or more
+/// characters that are not braces (newlines included), then `}}`. The inner
+/// run is forced (it stops at the first brace), so a failed start never
+/// needs another split and the search moves on by one byte. Returns
+/// `(start, inner_start, inner_end, end)`; all four are ASCII positions and
+/// therefore character boundaries.
+fn next_template(bytes: &[u8], from: usize) -> Option<(usize, usize, usize, usize)> {
+    let mut start = from;
+    while start + 1 < bytes.len() {
+        if bytes[start] == b'{' && bytes[start + 1] == b'{' {
+            let inner_start = start + 2;
+            let mut inner_end = inner_start;
+            while inner_end < bytes.len() && bytes[inner_end] != b'{' && bytes[inner_end] != b'}' {
+                inner_end += 1;
+            }
+            if inner_end > inner_start
+                && bytes.get(inner_end) == Some(&b'}')
+                && bytes.get(inner_end + 1) == Some(&b'}')
+            {
+                return Some((start, inner_start, inner_end, inner_end + 2));
+            }
+        }
+        start += 1;
+    }
+    None
 }
 
 /// `PhaseProjection.render` as bytes: each `{{expr}}` (no braces inside) is
 /// replaced, left to right and without rescanning, by the value at the
 /// stripped dotted path. No quoting or escaping is added.
 pub fn render_bytes(template: &str, ctx: &Ctx) -> Result<Vec<u8>, String> {
+    let bytes = template.as_bytes();
     let mut out = Vec::with_capacity(template.len());
     let mut last = 0;
-    for caps in template_regex().captures_iter(template) {
-        let whole = caps.get(0).expect("group 0");
-        let inner = caps.get(1).expect("group 1").as_str();
-        out.extend_from_slice(&template.as_bytes()[last..whole.start()]);
+    while let Some((start, inner_start, inner_end, end)) = next_template(bytes, last) {
+        let inner = &template[inner_start..inner_end];
+        out.extend_from_slice(&bytes[last..start]);
         let mut value = ctx;
         for part in py_strip(inner).split('.') {
             match value {
@@ -1050,9 +1069,9 @@ pub fn render_bytes(template: &str, ctx: &Ctx) -> Result<Vec<u8>, String> {
             }
         }
         out.extend_from_slice(&template_bytes(value));
-        last = whole.end();
+        last = end;
     }
-    out.extend_from_slice(&template.as_bytes()[last..]);
+    out.extend_from_slice(&bytes[last..]);
     Ok(out)
 }
 
@@ -1083,29 +1102,60 @@ pub fn recipe_vars(ctx: &Ctx) -> Vec<(OsString, OsString)> {
 
 // --------------------------------------------------- blocks, scalar, literal
 
-/// The Python `\s` class (`str.isspace`) for use inside a regex.
-const PY_WS_CLASS: &str = r"[\t\n\x0B\x0C\r\x1C-\x1F \x{85}\x{A0}\x{1680}\x{2000}-\x{200A}\x{2028}\x{2029}\x{202F}\x{205F}\x{3000}]";
+/// Every position where `(?m)^` matches: the start of the text and every
+/// position just after a `\n` (the `regex` crate's multi-line `^` ignores a
+/// lone `\r`, as Python's does).
+fn line_starts(text: &str) -> impl Iterator<Item = usize> + '_ {
+    std::iter::once(0).chain(text.match_indices('\n').map(|(at, _)| at + 1))
+}
 
-fn block_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(&format!(r#"(?m)^  - id: "([^"]+)"{PY_WS_CLASS}*$"#)).expect("block regex")
-    })
+/// Where `PY\s*$` (Python's `\s` class under `(?m)`) can end when it starts
+/// at `from`: the greedy run of `str.isspace` characters is backed off to the
+/// last position that is the end of the text or sits before a `\n`. `None`
+/// when no such position exists, i.e. the pattern fails here.
+fn ws_then_line_end(text: &str, from: usize) -> Option<usize> {
+    let mut best = None;
+    for (offset, c) in text[from..].char_indices() {
+        if c == '\n' {
+            best = Some(from + offset);
+        }
+        if !py_isspace(u32::from(c)) {
+            return best;
+        }
+    }
+    Some(text.len())
 }
 
 /// `blocks(text)`: split on `^  - id: "<id>"` lines. The Python builds a
 /// dict, so a repeated ID keeps its first position and takes the last body;
 /// this returns the same pairs in the same order.
+///
+/// The lines are found by scanning for the Python pattern
+/// `(?m)^  - id: "([^"]+)"\s*$` the way a regex search does: left to right,
+/// each search resuming where the previous match ended. The ID runs to the
+/// first `"` and may cross a newline; the match ends where the trailing
+/// whitespace reaches a line end.
 pub fn blocks(text: &str) -> Vec<(String, String)> {
-    let matches: Vec<(usize, String)> = block_regex()
-        .captures_iter(text)
-        .map(|c| {
-            (
-                c.get(0).expect("group 0").start(),
-                c.get(1).expect("group 1").as_str().to_owned(),
-            )
-        })
-        .collect();
+    const HEAD: &str = "  - id: \"";
+    let mut matches: Vec<(usize, String)> = Vec::new();
+    let mut resume = 0;
+    for start in line_starts(text) {
+        if start < resume || !text[start..].starts_with(HEAD) {
+            continue;
+        }
+        let id_start = start + HEAD.len();
+        let Some(id_len) = text[id_start..].find('"') else {
+            continue;
+        };
+        if id_len == 0 {
+            continue;
+        }
+        let Some(end) = ws_then_line_end(text, id_start + id_len + 1) else {
+            continue;
+        };
+        matches.push((start, text[id_start..id_start + id_len].to_owned()));
+        resume = end;
+    }
     let mut out: Vec<(String, String)> = Vec::new();
     for (i, (start, id)) in matches.iter().enumerate() {
         let end = matches.get(i + 1).map_or(text.len(), |(next, _)| *next);
@@ -1122,13 +1172,18 @@ pub fn blocks(text: &str) -> Vec<(String, String)> {
 /// `scalar(block, key)` with its failures reported: `true`/`false` become
 /// booleans, a value starting with `"` is `json.loads`ed, anything else has
 /// its single quotes stripped.
+///
+/// The value is what the Python pattern `(?m)^    KEY: (.*?)\s*$` captures:
+/// on the first line that starts with `    KEY: `, the rest of that line
+/// with trailing `str.isspace` characters removed.
 pub fn try_scalar(block: &str, key: &str) -> Result<Option<Ctx>, String> {
-    let pattern = format!(r"(?m)^    {}: (.*?){PY_WS_CLASS}*$", regex::escape(key));
-    let re = Regex::new(&pattern).map_err(|e| format!("ValueError: scalar pattern: {e}"))?;
-    let Some(caps) = re.captures(block) else {
+    let head = format!("    {key}: ");
+    let Some(start) = line_starts(block).find(|&p| block[p..].starts_with(&head)) else {
         return Ok(None);
     };
-    let raw = caps.get(1).map_or("", |m| m.as_str());
+    let rest = &block[start + head.len()..];
+    let line = rest.find('\n').map_or(rest, |nl| &rest[..nl]);
+    let raw = line.trim_end_matches(|c: char| py_isspace(u32::from(c)));
     match raw {
         "true" => return Ok(Some(Ctx::Bool(true))),
         "false" => return Ok(Some(Ctx::Bool(false))),
@@ -1185,16 +1240,26 @@ pub fn py_dedent(text: &str) -> String {
 
 /// `literal(block, key)`: a `key: |` block of lines indented by six or more
 /// spaces (or empty), dedented. The message is the Python one.
+///
+/// This is the Python pattern `(?m)^    KEY: \|\n((?:(?: {6,}.*)?\n)*)`
+/// scanned directly: the first line start that begins with `    KEY: |` and
+/// a newline, then every following complete line (one that ends in `\n`)
+/// that is empty or starts with six spaces, up to the first that is not.
 pub fn literal(block: &str, key: &str) -> Result<String, String> {
-    let pattern = format!(
-        r"(?m)^    {}: \|\n((?:(?: {{6,}}.*)?\n)*)",
-        regex::escape(key)
-    );
-    let re = Regex::new(&pattern).map_err(|e| format!("ValueError: literal pattern: {e}"))?;
-    match re.captures(block) {
-        Some(caps) => Ok(py_dedent(caps.get(1).map_or("", |m| m.as_str()))),
-        None => Err(format!("A canonical literal {key} block is required.")),
+    let head = format!("    {key}: |\n");
+    let Some(start) = line_starts(block).find(|&p| block[p..].starts_with(&head)) else {
+        return Err(format!("A canonical literal {key} block is required."));
+    };
+    let body_start = start + head.len();
+    let mut body_end = body_start;
+    while let Some(nl) = block[body_end..].find('\n') {
+        let line = &block[body_end..body_end + nl];
+        if !(line.is_empty() || line.starts_with("      ")) {
+            break;
+        }
+        body_end += nl + 1;
     }
+    Ok(py_dedent(&block[body_start..body_end]))
 }
 
 /// FIPS 180-4 SHA-256. This module is also compiled into the `amplihack`
@@ -1718,7 +1783,7 @@ impl Fixture {
         };
         let task_bytes = py_path_str(&worktree);
         let task = PathBuf::from(OsString::from_vec(task_bytes.clone()));
-        let branch = require(setup, "local_branch")?.clone();
+        let branch = require(setup, req.branch_key)?.clone();
         let owner = require(&context, "task_description")?.clone();
         let mut fixture = Fixture {
             context,
@@ -1824,6 +1889,11 @@ pub struct ProjectionRequest {
     pub owner_paths: Vec<Vec<u8>>,
     /// The request's `context`, in the order Python parsed it.
     pub context: Ctx,
+    /// The `worktree_setup` key that names the task branch. The owner
+    /// projection (`Owner::project`) reads `local_branch`; the bounded
+    /// checkpoint projection of `test-pragmatic-checkpoints.py`
+    /// (`bounded_fixture_projection`) read `branch_name`.
+    pub branch_key: &'static str,
 }
 
 struct Projection<'a> {
@@ -1833,15 +1903,110 @@ struct Projection<'a> {
     skipped: Option<Ctx>,
 }
 
-fn b64_python() -> base64::engine::GeneralPurpose {
-    // b64decode(validate=True) in CPython 3.14: canonical padding required,
-    // non-zero trailing bits accepted, nothing outside the alphabet.
-    base64::engine::GeneralPurpose::new(
-        &base64::alphabet::STANDARD,
-        base64::engine::GeneralPurposeConfig::new()
-            .with_decode_allow_trailing_bits(true)
-            .with_decode_padding_mode(base64::engine::DecodePaddingMode::RequireCanonical),
-    )
+/// The standard base64 alphabet (RFC 4648 section 4).
+const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn b64_value(byte: u8) -> Option<u32> {
+    let value = match byte {
+        b'A'..=b'Z' => byte - b'A',
+        b'a'..=b'z' => byte - b'a' + 26,
+        b'0'..=b'9' => byte - b'0' + 52,
+        b'+' => 62,
+        b'/' => 63,
+        _ => return None,
+    };
+    Some(u32::from(value))
+}
+
+fn b64_invalid_symbol(offset: usize, byte: u8) -> String {
+    format!("Invalid symbol {byte}, offset {offset}.")
+}
+
+/// Standard base64 with padding, as Python's `base64.b64encode(...).decode()`.
+pub fn b64_encode(input: &[u8]) -> String {
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = u32::from(chunk[0]);
+        let b1 = chunk.get(1).copied().map_or(0, u32::from);
+        let b2 = chunk.get(2).copied().map_or(0, u32::from);
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        let symbols = [(n >> 18) & 63, (n >> 12) & 63, (n >> 6) & 63, n & 63];
+        for (i, symbol) in symbols.iter().enumerate() {
+            if i <= chunk.len() {
+                out.push(char::from(B64_ALPHABET[*symbol as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// CPython 3.14 `base64.b64decode(s, validate=True)`: the standard alphabet
+/// only, canonical `=` padding required, non-zero trailing bits accepted.
+///
+/// The refusals and their messages are the ones the `base64` 0.22 engine
+/// this replaces reported (`GeneralPurposeConfig` with
+/// `decode_allow_trailing_bits(true)` and `DecodePaddingMode::RequireCanonical`),
+/// checked in the same order: a stray last byte of a `4n + 1` input first,
+/// then every complete quad before the last one, then the final one to four
+/// bytes. `checkpoint_projection_parity` compares the two on every short
+/// input.
+pub fn b64_decode(input: &[u8]) -> Result<Vec<u8>, String> {
+    let rem = input.len() % 4;
+    if rem == 1 {
+        let last = input[input.len() - 1];
+        if last != b'=' && b64_value(last).is_none() {
+            return Err(b64_invalid_symbol(input.len() - 1, last));
+        }
+    }
+    let quads_len = input
+        .len()
+        .saturating_sub(rem)
+        .saturating_sub(if rem == 0 { 4 } else { 0 });
+    let mut out = Vec::with_capacity(input.len() / 4 * 3 + 3);
+    for (quad, chunk) in input[..quads_len].chunks_exact(4).enumerate() {
+        let mut n = 0u32;
+        for (i, &byte) in chunk.iter().enumerate() {
+            let value = b64_value(byte).ok_or_else(|| b64_invalid_symbol(quad * 4 + i, byte))?;
+            n |= value << (26 - 6 * i);
+        }
+        out.extend_from_slice(&n.to_be_bytes()[..3]);
+    }
+    let mut morsels = [0u32; 4];
+    let mut morsel_count = 0usize;
+    let mut padding = 0usize;
+    let mut first_padding = 0usize;
+    for (i, &byte) in input[quads_len..].iter().enumerate() {
+        if byte == b'=' {
+            if i < 2 {
+                return Err(b64_invalid_symbol(quads_len + i, byte));
+            }
+            if padding == 0 {
+                first_padding = i;
+            }
+            padding += 1;
+            continue;
+        }
+        if padding > 0 {
+            return Err(b64_invalid_symbol(quads_len + first_padding, b'='));
+        }
+        let value = b64_value(byte).ok_or_else(|| b64_invalid_symbol(quads_len + i, byte))?;
+        morsels[morsel_count] = value;
+        morsel_count += 1;
+    }
+    if !input.is_empty() && morsel_count < 2 {
+        return Err(format!(
+            "Invalid input length: {}",
+            quads_len + morsel_count
+        ));
+    }
+    if !(padding + morsel_count).is_multiple_of(4) {
+        return Err("Invalid padding".to_owned());
+    }
+    let n = (morsels[0] << 26) | (morsels[1] << 20) | (morsels[2] << 14) | (morsels[3] << 8);
+    out.extend_from_slice(&n.to_be_bytes()[..morsel_count * 6 / 8]);
+    Ok(out)
 }
 
 impl Projection<'_> {
@@ -1934,7 +2099,6 @@ impl Projection<'_> {
                 ));
             }
         };
-        let engine = b64_python();
         let mut paths: Vec<Vec<u8>> = Vec::with_capacity(rows.len());
         for row in rows {
             let encoded = match require(row, "path_b64")? {
@@ -1951,11 +2115,7 @@ impl Projection<'_> {
                     ));
                 }
             };
-            paths.push(
-                engine
-                    .decode(encoded.as_bytes())
-                    .map_err(|e| format!("binascii.Error: {e}"))?,
-            );
+            paths.push(b64_decode(encoded.as_bytes()).map_err(|e| format!("binascii.Error: {e}"))?);
         }
         let unique: BTreeSet<Vec<u8>> = paths.iter().cloned().collect();
         let sorted: Vec<Vec<u8>> = unique.iter().cloned().collect();
@@ -2003,7 +2163,7 @@ impl Projection<'_> {
         let approved_paths: Vec<Ctx> = paths
             .iter()
             .filter(|p| self.f.allowed.contains(*p))
-            .map(|p| Ctx::Str(base64::engine::general_purpose::STANDARD.encode(p)))
+            .map(|p| Ctx::Str(b64_encode(p)))
             .collect();
         Ok(Ctx::Dict(vec![
             ("approved".into(), Ctx::Bool(approved)),

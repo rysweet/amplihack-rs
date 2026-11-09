@@ -1,5 +1,5 @@
 # Corpus for `verify-pushed-ref`, captured from the 918c256cf Python (python3 3.14.10,
-# unidata 16.0.0) by ~/.amplihack/work/pr2020-corpus/capture.py. @ROOT@ is the
+# unidata 16.0.0) by a local capture script (not in the repo). @ROOT@ is the
 # canonicalised temp root unless the case sets raw_path = true.
 
 [[case]]

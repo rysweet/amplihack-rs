@@ -99,17 +99,80 @@ fn fixture_keeps_evidence_under_the_assigned_directory_when_the_variable_is_set(
     assert!(evidence.join("probe.json").is_file());
 }
 
+const ADAPTER: &str =
+    "crates/amplihack-workflows/tests/fixtures/canonical_staging/private_adapter.py";
+const RECEIPTS: &str =
+    "crates/amplihack-workflows/tests/fixtures/canonical_staging/audit_receipts.py";
+/// The only Python user of both fixtures (decision 17.146-2 helper table).
+const LAST_USER: &str = "amplifier-bundle/recipes/tests/test-checkpoint-scope.py";
+
+fn tracked_python() -> std::collections::BTreeSet<String> {
+    let out = amplihack_git::command_in(root())
+        .args(["ls-files", "-z", "--", "*.py"])
+        .output()
+        .expect("git ls-files");
+    assert!(out.status.success());
+    out.stdout
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8(p.to_vec()).unwrap())
+        .collect()
+}
+
+/// Why the support source may not name `fixture`, or `None` if it may: a
+/// Python fixture is installed only while it is tracked and its last user
+/// is still tracked (the expected set of 17.146-2).
+fn adapter_violation(
+    src: &str,
+    fixture: &str,
+    tracked: &std::collections::BTreeSet<String>,
+) -> Option<String> {
+    let name = fixture.rsplit('/').next().unwrap();
+    if !src.contains(name) {
+        return None;
+    }
+    if !tracked.contains(fixture) {
+        return Some(format!("{name} is installed but not tracked"));
+    }
+    if !tracked.contains(LAST_USER) {
+        return Some(format!(
+            "{name} is installed after its last user was ported"
+        ));
+    }
+    None
+}
+
 #[test]
 fn the_fixture_installs_no_python_adapter() {
     let src = fs::read_to_string(
         root().join("crates/amplihack-workflows/tests/support/canonical_staging.rs"),
     )
     .unwrap();
-    assert!(
-        !src.contains("private_adapter.py"),
-        "the launcher is still a tracked .py asset"
+    let tracked = tracked_python();
+    for fixture in [ADAPTER, RECEIPTS] {
+        assert_eq!(
+            adapter_violation(&src, fixture, &tracked),
+            None,
+            "{fixture}"
+        );
+    }
+}
+
+#[test]
+fn the_adapter_guard_fails_when_an_adapter_outlives_its_user() {
+    let both: std::collections::BTreeSet<String> = [ADAPTER, LAST_USER]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
+    let installs = "include_str!(\"../fixtures/canonical_staging/private_adapter.py\")";
+    assert_eq!(adapter_violation(installs, ADAPTER, &both), None);
+    assert_eq!(
+        adapter_violation("no adapter", ADAPTER, &Default::default()),
+        None
     );
-    assert!(!src.contains("audit_receipts.py"));
+    let only_adapter: std::collections::BTreeSet<String> = [ADAPTER.to_owned()].into();
+    assert!(adapter_violation(installs, ADAPTER, &only_adapter).is_some());
+    assert!(adapter_violation(installs, ADAPTER, &Default::default()).is_some());
 }
 
 #[test]

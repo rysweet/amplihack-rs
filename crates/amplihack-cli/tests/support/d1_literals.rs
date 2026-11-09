@@ -6,7 +6,7 @@
 // No inner attributes and no crate imports, so `include!` works anywhere.
 //
 // The bytes were dumped with `od -c` from the originals in
-// ~/.amplihack/work/pr2020-d1-original-bytes/ (2026-11-07). The staged
+// a local capture, not in the repo (2026-11-07). The staged
 // no-final-lf fixture file had already been rewritten by the
 // end-of-file-fixer hook (sha256 1ef898c4…, 57 B), which is why these inputs
 // are code, not files. Each user writes them into its own tempdir at run

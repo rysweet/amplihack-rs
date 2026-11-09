@@ -206,7 +206,7 @@ mod first_publication_tests {
     }
 
     /// The R8 D1 reference input (`no-final-lf`, the original bytes kept in
-    /// ~/.amplihack/work/pr2020-d1-original-bytes/no-final-lf.advert): its
+    /// a local capture, not in the repo): its
     /// length, SHA-256 and missing final LF are checked before the call, so a
     /// literal that a hook "fixed" fails here instead of passing vacuously.
     #[test]

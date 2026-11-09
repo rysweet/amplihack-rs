@@ -99,19 +99,37 @@ fn production(src: &str) -> &str {
 }
 
 // ------------------------------------------------------------- no python
+//
+// Decision 17.146-2: each commit of the port is green. The V23 `.py` files
+// still tracked must be exactly the expected set from the validator; the
+// set shrinks by one file per port commit and is empty at the end.
+
+use crate::workflow_checkpoint_inventory::{
+    HELPER_USERS, PINNED_19, expected_tracked_python, tracked_python,
+};
+
+fn inventory_map() -> toml::Value {
+    toml::from_str(&read(
+        "crates/amplihack-cli/tests/fixtures/workflow_checkpoint/inventory_map.toml",
+    ))
+    .expect("inventory_map.toml parses")
+}
 
 #[test]
 fn no_v23_python_file_is_tracked() {
-    let out = amplihack_git::command_in(root())
-        .args(["ls-files", "--", "*.py"])
-        .output()
-        .unwrap();
-    let tracked = String::from_utf8(out.stdout).unwrap();
-    let left: Vec<_> = V23_PY
-        .iter()
-        .filter(|p| tracked.lines().any(|l| l == **p))
-        .collect();
-    assert!(left.is_empty(), "V23 .py files still tracked: {left:#?}");
+    let tracked = tracked_python(&root());
+    let expected = expected_tracked_python(&inventory_map(), &HELPER_USERS);
+    let v23: BTreeSet<String> = V23_PY.iter().map(|p| (*p).to_owned()).collect();
+    let left: BTreeSet<String> = tracked.intersection(&v23).cloned().collect();
+    assert_eq!(
+        left, expected,
+        "V23 .py files tracked beyond the pending set"
+    );
+    assert!(
+        tracked.is_subset(&v23),
+        "a .py file outside V23 is tracked: {:#?}",
+        tracked.difference(&v23).collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -148,6 +166,7 @@ fn recipes_use_the_worktree_path_action_at_all_four_sites() {
 
 #[test]
 fn check_no_python_assets_script_is_byte_identical_to_base_and_passes() {
+    // The byte-identical check runs at every commit.
     let diff = amplihack_git::command_in(root())
         .args([
             "diff",
@@ -162,16 +181,42 @@ fn check_no_python_assets_script_is_byte_identical_to_base_and_passes() {
         diff.success(),
         "scripts/check-no-python-assets.sh was edited"
     );
-    let run = Command::new("bash")
+    let run = Command::new("/bin/bash")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("LC_ALL", "C")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .current_dir(root())
         .arg("scripts/check-no-python-assets.sh")
+        .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
-    assert!(
-        run.status.success(),
-        "check-no-python-assets.sh failed: {}",
-        String::from_utf8_lossy(&run.stderr)
-    );
+    let stderr = String::from_utf8_lossy(&run.stderr).into_owned();
+    let expected = expected_tracked_python(&inventory_map(), &HELPER_USERS);
+    if expected.is_empty() {
+        assert!(
+            run.status.success(),
+            "check-no-python-assets.sh failed: {stderr}"
+        );
+        assert!(run.stderr.is_empty(), "{stderr}");
+    } else {
+        assert_eq!(run.status.code(), Some(1), "{stderr}");
+        let named: BTreeSet<String> = stderr
+            .split_once("\nViolations:\n")
+            .map(|(_, l)| {
+                l.lines()
+                    .filter(|x| !x.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert_eq!(
+            named, expected,
+            "the script must name exactly the pending set"
+        );
+        assert_eq!(tracked_python(&root()), expected);
+    }
 }
 
 // --------------------------------------------------- dispatch meta-test
@@ -693,32 +738,39 @@ fn exit_contract_is_documented_once_and_linked() {
 
 #[test]
 fn mapping_table_covers_every_python_method_with_one_existing_rust_test() {
-    let doc = read("amplifier-bundle/recipes/tests/canonical-staging.md");
-    let table = doc
-        .split("## Python to Rust test mapping")
-        .nth(1)
-        .expect("mapping section missing");
-    let mut rust_names = BTreeSet::new();
-    let mut rows = 0;
-    for l in table.lines().filter(|l| l.starts_with("| `")) {
-        let cells: Vec<&str> = l.split('|').map(str::trim).collect();
-        let py = cells[1].trim_matches('`');
-        let rust = cells[2].trim_matches('`');
-        assert!(py.contains("::"), "row without class::method: {l}");
-        let (path, name) = rust.rsplit_once("::").expect("rust cell is path::name");
-        let src =
-            fs::read_to_string(root().join(path)).unwrap_or_else(|_| panic!("{path} missing"));
+    // Decision 17.146: the mapping is inventory_map.toml, not a doc table.
+    // Every one of cc's 190 methods has one row: mapped to a Rust test that
+    // exists in its file, or pending with a tracked file (17.146-2).
+    let map = inventory_map();
+    let tracked = tracked_python(&root());
+    let rows = map["python_test"].as_array().expect("[[python_test]] rows");
+    assert_eq!(rows.len(), 190, "one row per reference test method");
+    let mut ids = BTreeSet::new();
+    for row in rows {
+        let id = row["ref_id"].as_str().expect("ref_id");
+        assert!(ids.insert(id.to_owned()), "{id} mapped twice");
         assert!(
-            src.contains(&format!("fn {name}(")),
-            "{rust} does not exist"
+            id.contains("::") && id.contains(".test_"),
+            "{id}: not class.method"
         );
-        assert!(rust_names.insert(rust.to_owned()), "{rust} mapped twice");
-        rows += 1;
+        match (
+            row.get("rust_test").and_then(toml::Value::as_str),
+            row.get("pending_file").and_then(toml::Value::as_str),
+        ) {
+            (Some(rust), None) => {
+                let (path, name) = rust.rsplit_once("::").expect("rust_test is path::name");
+                let name = name.split('#').next().unwrap();
+                let src = fs::read_to_string(root().join(path))
+                    .unwrap_or_else(|_| panic!("{path} missing"));
+                assert!(
+                    src.contains(&format!("fn {name}(")),
+                    "{rust} does not exist"
+                );
+            }
+            (None, Some(file)) => assert!(tracked.contains(file), "{id}: {file} is not tracked"),
+            _ => panic!("{id}: exactly one of rust_test or pending_file"),
+        }
     }
-    assert!(
-        rows >= 32,
-        "only {rows} mapped methods; need the 20 + 12 plus harness methods"
-    );
 }
 
 // C-g: reinstated from the PR #2020 work list with the change that makes them
@@ -896,13 +948,113 @@ fn step20b_sync_tests_own_their_tmpdir() {
     );
 }
 
+/// Test modules that name the Python files only as repository paths (the
+/// inventory, its guards and the portability guard). They never read, run
+/// or include one; the include and spawn checks below still apply to them.
+const PATH_DATA_MODULES: [&str; 5] = [
+    "workflow_checkpoint_inventory.rs",
+    "pr2020_python_removal.rs",
+    "workflow_checkpoint_legacy_guards.rs",
+    "workflow_checkpoint_map_honesty.rs",
+    "canonical_staging_portability_test.rs",
+];
+
+/// The basename before each `.py"` in `src` (`[A-Za-z0-9_-]+`), so
+/// `include_str!("../x/private_adapter.py")` gives `private_adapter`.
+fn py_literal_stems(src: &str) -> Vec<String> {
+    src.match_indices(".py\"")
+        .map(|(at, _)| {
+            src[..at]
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect()
+        })
+        .collect()
+}
+
+/// Why `src` may not name the Python files it does, or `None`. Outside the
+/// path-data modules, a `.py` literal must name a file in the expected set
+/// (17.146-2), so a fixture include outlives its last Python user nowhere.
+fn python_use_violation(module: &str, src: &str, expected: &BTreeSet<String>) -> Option<String> {
+    if src.contains("Command::new(\"python3\")") {
+        return Some("spawns python3".into());
+    }
+    if PATH_DATA_MODULES.contains(&module) {
+        let includes = src.lines().any(|l| {
+            (l.contains("include_str!(") || l.contains("include_bytes!(")) && l.contains(".py\"")
+        });
+        return includes.then(|| "a path-data module includes a .py file".into());
+    }
+    let named = |stem: &str| {
+        expected
+            .iter()
+            .any(|f| f.rsplit('/').next() == Some(&format!("{stem}.py")))
+    };
+    // Any included .py file must still be expected.
+    for line in src.lines() {
+        if (line.contains("include_str!(") || line.contains("include_bytes!("))
+            && let Some(stem) = py_literal_stems(line).into_iter().find(|s| !named(s))
+        {
+            return Some(format!(
+                "includes {stem}.py, which is not in the expected tracked set"
+            ));
+        }
+    }
+    // Any literal naming one of the checkpoint Python files must name an
+    // expected one; other `.py` names (setup.py in an unrelated fixture) are
+    // not checkpoint fixtures.
+    let checkpoint_stems: BTreeSet<String> = PINNED_19
+        .iter()
+        .filter_map(|f| f.rsplit('/').next()?.strip_suffix(".py"))
+        .map(str::to_owned)
+        .collect();
+    py_literal_stems(src)
+        .into_iter()
+        .find(|stem| checkpoint_stems.contains(stem) && !named(stem))
+        .map(|stem| format!("names {stem}.py, which is not in the expected tracked set"))
+}
+
+#[test]
+fn python_use_violation_is_mutant_sensitive() {
+    let adapter: BTreeSet<String> =
+        ["crates/amplihack-workflows/tests/fixtures/canonical_staging/private_adapter.py".into()]
+            .into();
+    let include = "include_str!(\"../fixtures/canonical_staging/private_adapter.py\")";
+    assert_eq!(python_use_violation("support.rs", include, &adapter), None);
+    assert!(python_use_violation("support.rs", include, &BTreeSet::new()).is_some());
+    assert!(
+        python_use_violation("support.rs", "read(\"x/audit_receipts.py\")", &adapter).is_some()
+    );
+    assert!(python_use_violation("support.rs", "include_str!(\"x/other.py\")", &adapter).is_some());
+    assert_eq!(
+        python_use_violation("support.rs", "\"setup.py\"", &adapter),
+        None
+    );
+    assert!(python_use_violation("a.rs", "Command::new(\"python3\")", &adapter).is_some());
+    assert_eq!(
+        python_use_violation(
+            "pr2020_python_removal.rs",
+            "const F: &str = \"a/b.py\";",
+            &adapter
+        ),
+        None
+    );
+    assert!(python_use_violation("pr2020_python_removal.rs", include, &adapter).is_some());
+}
+
 #[test]
 fn no_test_spawns_python3_or_includes_a_py_fixture() {
+    let expected = expected_tracked_python(&inventory_map(), &HELPER_USERS);
     let dirs = [
         "crates/amplihack-workflows/tests",
         "crates/amplihack-cli/tests",
         "tests/integration",
     ];
+    let mut wrong = Vec::new();
     for d in dirs {
         let mut stack = vec![root().join(d)];
         while let Some(dir) = stack.pop() {
@@ -924,28 +1076,25 @@ fn no_test_spawns_python3_or_includes_a_py_fixture() {
                 if !checkpoint_related {
                     continue;
                 }
-                assert!(
-                    !src.contains("Command::new(\"python3\")"),
-                    "{} spawns python3",
-                    p.display()
-                );
-                assert!(
-                    !src.contains(".py\")"),
-                    "{} includes a .py fixture",
-                    p.display()
-                );
+                let module = p.file_name().unwrap().to_string_lossy();
+                if let Some(why) = python_use_violation(&module, &src, &expected) {
+                    wrong.push(format!("{}: {why}", p.display()));
+                }
             }
         }
     }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 // ------------------------------------------------- C-a: main.rs and tokens
 
+/// Every `.rs` file under `dir`, skipping `target`. Fails closed: a
+/// directory or entry that cannot be read panics instead of shrinking the
+/// list a guard checks.
 fn rs_files_under(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
-    for e in entries.flatten() {
+    let entries = fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
+    for e in entries {
+        let e = e.unwrap_or_else(|err| panic!("entry under {}: {err}", dir.display()));
         let p = e.path();
         if p.is_dir() {
             if p.file_name().is_some_and(|n| n == "target") {
@@ -981,7 +1130,9 @@ fn the_checkpoint_route_flushes_both_streams_before_it_exits() {
 fn no_production_source_builds_the_interactive_token_with_concat() {
     let mut files = Vec::new();
     for top in ["crates", "bins"] {
+        let before = files.len();
         rs_files_under(&root().join(top), &mut files);
+        assert!(files.len() > before, "no .rs files under {top}");
     }
     let offenders: Vec<_> = files
         .iter()
@@ -1230,4 +1381,18 @@ fn code_of_fn_sees_patterns_inside_macro_invocations() {
 #[should_panic(expected = "fn missing not found")]
 fn code_of_fn_refuses_a_missing_function() {
     code_of_fn("fn present() {}", "missing");
+}
+
+/// The walker fails closed: a missing directory panics instead of returning
+/// an empty list that every guard would pass over.
+#[test]
+fn rs_files_under_panics_on_a_directory_it_cannot_read() {
+    let missing = root().join("target/no-such-dir-for-rs-files-under");
+    assert!(!missing.exists());
+    let result = std::panic::catch_unwind(|| {
+        let mut files = Vec::new();
+        rs_files_under(&missing, &mut files);
+        files
+    });
+    assert!(result.is_err(), "rs_files_under returned for {missing:?}");
 }

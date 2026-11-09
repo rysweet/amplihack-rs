@@ -3,7 +3,6 @@
 //! documented difference list, wrapper portability, the legacy
 //! `advertised-ref` call shape and the inventory mapping.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -276,165 +275,66 @@ fn main_scopes_the_coded_exit_to_workflow_checkpoint() {
 }
 
 // ------------------------------------------------- inventory mapping
+//
+// The map's structure (one row per reference ID, exactly one of rust_test,
+// disposition or pending_file, runnable targets, the eight dispositions) is
+// checked by `validate()` in workflow_checkpoint_inventory.rs. These guards
+// keep the two legacy obligations that `validate()` does not name.
 
 const INVENTORY: &str =
     "crates/amplihack-cli/tests/fixtures/workflow_checkpoint/inventory_map.toml";
+const PUBLICATION_BOUNDARIES: &str =
+    "amplifier-bundle/recipes/tests/test-checkpoint-publication-boundaries.py";
 
-/// `path::name` -> does `fn name(` exist in `path`, and is it `#[ignore]`d?
-fn rust_test_state(spec: &str) -> Option<bool> {
-    let (path, name) = spec.rsplit_once("::")?;
-    let src = fs::read_to_string(root().join(path)).ok()?;
-    let at = src.find(&format!("fn {name}("))?;
-    let head = &src[..at];
-    let attrs = head.rsplit("\n\n").next().unwrap_or("");
-    let attrs = attrs.rsplit('}').next().unwrap_or(attrs);
-    Some(attrs.contains("#[ignore"))
+fn inventory_rows(table: &str) -> Vec<toml::Value> {
+    let doc: toml::Value = toml::from_str(&read(INVENTORY)).expect("inventory_map.toml parses");
+    doc.get(table)
+        .and_then(toml::Value::as_array)
+        .cloned()
+        .unwrap_or_default()
 }
 
 #[test]
-fn inventory_map_covers_cc_inventory_with_runnable_tests_or_dispositions() {
-    let text = read(INVENTORY);
-    let doc: toml::Value = toml::from_str(&text).expect("inventory_map.toml parses");
-    let filter = doc
-        .get("filter")
-        .and_then(|v| v.as_table())
-        .expect("[filter] section");
+fn inventory_map_keeps_provenance_and_audit_receipts_out_of_the_coverage_tables() {
+    let provenance = inventory_rows("provenance");
     assert!(
-        filter
-            .get("rule")
-            .and_then(|v| v.as_str())
-            .is_some_and(|s| !s.is_empty()),
-        "record cc's review-plan.md filter"
+        !provenance.is_empty(),
+        "provenance must be listed separately"
     );
-    let excluded = filter
-        .get("excluded_keys")
-        .and_then(|v| v.as_array())
-        .expect("excluded_keys");
-    let items = doc
-        .get("item")
-        .and_then(|v| v.as_array())
-        .expect("[[item]] rows");
-
-    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-    let mut keys = BTreeSet::new();
-    let mut problems = Vec::new();
-    for item in items {
-        let t = item.as_table().expect("item table");
-        let s = |k: &str| t.get(k).and_then(|v| v.as_str()).unwrap_or("");
-        let key = s("inventory_key");
-        let kind = s("kind");
-        let class = s("class");
-        if !keys.insert(key.to_owned()) {
-            problems.push(format!("{key}: mapped twice"));
-        }
-        if !["behavioural", "provenance", "audit_receipt"].contains(&class) {
-            problems.push(format!("{key}: class {class:?}"));
-        }
-        if !["method", "procedural", "role", "site"].contains(&kind) {
-            problems.push(format!("{key}: kind {kind:?}"));
-        }
-        if class == "behavioural" {
-            *counts.entry(kind.to_owned()).or_default() += 1;
-        }
-        for flag in ["runs_normally", "negative_case", "mutant_sensitive"] {
-            if t.get(flag).and_then(|v| v.as_bool()).is_none() {
-                problems.push(format!("{key}: {flag} must be a boolean"));
-            }
-        }
-        let disposition = s("disposition");
-        match (s("rust_test"), disposition) {
-            ("", "") => problems.push(format!("{key}: no rust_test and no disposition")),
-            ("", d) => {
-                if !d.contains("owner approval required") && !d.contains("approved") {
-                    problems.push(format!(
-                        "{key}: disposition must need or cite owner approval"
-                    ));
-                }
-            }
-            (spec, _) => match rust_test_state(spec) {
-                None => problems.push(format!("{key}: {spec} does not exist")),
-                Some(ignored) => {
-                    let runs = t.get("runs_normally").and_then(|v| v.as_bool()) == Some(true);
-                    if ignored == runs {
-                        problems.push(format!("{key}: runs_normally disagrees with #[ignore]"));
-                    }
-                    if ignored && disposition.is_empty() {
-                        problems.push(format!("{key}: {spec} is ignored without a disposition"));
-                    }
-                    if kind == "method" {
-                        let py = key.rsplit("::").next().unwrap_or("");
-                        let want = py.strip_prefix("test_").unwrap_or(py);
-                        let got = spec.rsplit("::").next().unwrap_or("");
-                        if got != want {
-                            problems.push(format!("{key}: ported name {got} must be {want}"));
-                        }
-                    }
-                }
-            },
+    for table in ["provenance", "audit_receipt"] {
+        for row in inventory_rows(table) {
+            assert!(
+                row.get("ref_id").is_none(),
+                "[[{table}]] {row:?} names a reference ID, so it would count as coverage"
+            );
         }
     }
-    assert_eq!(
-        counts.get("method"),
-        Some(&190),
-        "behavioural methods: {counts:?}"
-    );
-    assert_eq!(counts.get("role"), Some(&40), "roles: {counts:?}");
-    assert_eq!(counts.get("site"), Some(&7), "checkpoint sites: {counts:?}");
-    assert!(
-        counts.get("procedural").copied().unwrap_or(0) > 0,
-        "procedural assertions: {counts:?}"
-    );
-    // The reference has exactly 190 test_ methods; every excluded key must
-    // still name an inventory entry.
-    assert!(
-        excluded
-            .iter()
-            .all(|k| k.as_str().is_some_and(|k| !k.is_empty())),
-        "excluded_keys must be non-empty strings"
-    );
-    assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
 #[test]
-fn inventory_map_keeps_provenance_and_audit_receipts_out_of_the_behavioural_count() {
-    let text = read(INVENTORY);
-    let doc: toml::Value = toml::from_str(&text).unwrap();
-    let items = doc["item"].as_array().unwrap();
-    let receipts = items
-        .iter()
-        .filter(|i| matches!(i["class"].as_str(), Some("provenance" | "audit_receipt")))
-        .count();
-    assert!(
-        receipts > 0,
-        "provenance and audit receipts must be listed separately"
-    );
-}
-
-#[test]
-fn twenty_owner_outgoing_only_controls_and_twelve_owner_controls_are_ported_by_name() {
-    let text = read(INVENTORY);
-    let doc: toml::Value = toml::from_str(&text).unwrap();
-    let items = doc["item"].as_array().unwrap();
-    let in_class = |class: &str| {
-        items
-            .iter()
-            .filter(|i| {
-                i["inventory_key"]
-                    .as_str()
-                    .is_some_and(|k| k.contains(&format!("::{class}::")))
-                    && i.get("rust_test")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|s| !s.is_empty())
-            })
-            .count()
-    };
-    assert_eq!(in_class("OwnerOutgoingOnlyControls"), 20);
-    assert!(
-        items
-            .iter()
-            .filter(|i| i.get("owner_control").and_then(|v| v.as_bool()) == Some(true))
-            .count()
-            == 12,
-        "mark the twelve original owner-control methods with owner_control = true"
-    );
+fn the_twenty_owner_outgoing_only_controls_are_mapped_or_pending_with_their_file() {
+    // The twelve original owner-control methods are among these twenty
+    // (canonical-staging.md); the validator refuses deleting the file while
+    // any of them is still pending, so all twenty are ported before it goes.
+    let owner: Vec<toml::Value> = inventory_rows("python_test")
+        .into_iter()
+        .filter(|r| {
+            r.get("ref_id")
+                .and_then(toml::Value::as_str)
+                .is_some_and(|id| id.contains("::OwnerOutgoingOnlyControls.test_"))
+        })
+        .collect();
+    assert_eq!(owner.len(), 20, "OwnerOutgoingOnlyControls rows");
+    for row in owner {
+        let target = row.get("rust_test").and_then(toml::Value::as_str);
+        let pending = row.get("pending_file").and_then(toml::Value::as_str);
+        match (target, pending) {
+            (Some(t), None) => assert!(
+                t.contains("::") && !t.ends_with(".py"),
+                "{row:?}: rust_test must name a Rust test"
+            ),
+            (None, Some(file)) => assert_eq!(file, PUBLICATION_BOUNDARIES, "{row:?}"),
+            _ => panic!("{row:?}: an owner control is ported or pending, never a disposition"),
+        }
+    }
 }

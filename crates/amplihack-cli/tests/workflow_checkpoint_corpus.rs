@@ -560,9 +560,13 @@ fn bytes(c: &toml::value::Table, key: &str, root: &Path, raw: bool) -> Option<Ve
     })
 }
 
-fn run_action(action: &str) {
+/// Runs every case in `<action>.toml` and returns how many ran and every
+/// mismatch. It asserts nothing itself; the caller makes the one assertion.
+fn run_action(action: &str) -> (usize, Vec<String>) {
     let mut wrong = Vec::new();
-    for c in load(action) {
+    let cases = load(action);
+    let ran = cases.len();
+    for c in cases {
         let name = s(&c, "name").unwrap_or("?").to_owned();
         let tmp = tempfile::Builder::new()
             .prefix("wf-corpus-")
@@ -686,45 +690,212 @@ fn run_action(action: &str) {
             ));
         }
     }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    (ran, wrong)
 }
 
-macro_rules! corpus_tests {
-    ($($fn:ident => $action:literal,)*) => {
-        $(
-            #[test]
-            fn $fn() {
-                run_action($action);
-            }
-        )*
+/// Every action the corpus runner has a test for, in the order of the
+/// `corpus_<action>` functions below.
+const CORPUS_ACTIONS: [&str; 16] = [
+    "selectors",
+    "capture",
+    "admit",
+    "check",
+    "paths",
+    "stage-strict",
+    "before",
+    "sync-fetch-mode",
+    "after",
+    "destination-is-head",
+    "verify-pushed-ref",
+    "advertised-ref",
+    "sha256",
+    "admission-refused-result",
+    "cleanup-skip-result",
+    "worktree-path",
+];
 
-        #[test]
-        fn corpus_runner_covers_every_action() {
-            let covered: BTreeSet<&str> = [$($action),*].into_iter().collect();
-            let actions = action_names();
-            let actions: BTreeSet<&str> = actions.iter().map(String::as_str).collect();
-            assert_eq!(covered, actions);
-        }
-    };
+#[test]
+fn corpus_selectors() {
+    let (ran, wrong) = run_action("selectors");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "selectors: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
 }
 
-corpus_tests! {
-    corpus_selectors => "selectors",
-    corpus_capture => "capture",
-    corpus_admit => "admit",
-    corpus_check => "check",
-    corpus_paths => "paths",
-    corpus_stage_strict => "stage-strict",
-    corpus_before => "before",
-    corpus_sync_fetch_mode => "sync-fetch-mode",
-    corpus_after => "after",
-    corpus_destination_is_head => "destination-is-head",
-    corpus_verify_pushed_ref => "verify-pushed-ref",
-    corpus_advertised_ref => "advertised-ref",
-    corpus_sha256 => "sha256",
-    corpus_admission_refused_result => "admission-refused-result",
-    corpus_cleanup_skip_result => "cleanup-skip-result",
-    corpus_worktree_path => "worktree-path",
+#[test]
+fn corpus_capture() {
+    let (ran, wrong) = run_action("capture");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "capture: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_admit() {
+    let (ran, wrong) = run_action("admit");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "admit: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_check() {
+    let (ran, wrong) = run_action("check");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "check: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_paths() {
+    let (ran, wrong) = run_action("paths");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "paths: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_stage_strict() {
+    let (ran, wrong) = run_action("stage-strict");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "stage-strict: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_before() {
+    let (ran, wrong) = run_action("before");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "before: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_sync_fetch_mode() {
+    let (ran, wrong) = run_action("sync-fetch-mode");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "sync-fetch-mode: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_after() {
+    let (ran, wrong) = run_action("after");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "after: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_destination_is_head() {
+    let (ran, wrong) = run_action("destination-is-head");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "destination-is-head: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_verify_pushed_ref() {
+    let (ran, wrong) = run_action("verify-pushed-ref");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "verify-pushed-ref: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_advertised_ref() {
+    let (ran, wrong) = run_action("advertised-ref");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "advertised-ref: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_sha256() {
+    let (ran, wrong) = run_action("sha256");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "sha256: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_admission_refused_result() {
+    let (ran, wrong) = run_action("admission-refused-result");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "admission-refused-result: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_cleanup_skip_result() {
+    let (ran, wrong) = run_action("cleanup-skip-result");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "cleanup-skip-result: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_worktree_path() {
+    let (ran, wrong) = run_action("worktree-path");
+    assert!(
+        ran > 0 && wrong.is_empty(),
+        "worktree-path: {ran} cases run, {} mismatched\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn corpus_runner_covers_every_action() {
+    let covered: BTreeSet<&str> = CORPUS_ACTIONS.into_iter().collect();
+    let actions = action_names();
+    let actions: BTreeSet<&str> = actions.iter().map(String::as_str).collect();
+    assert_eq!(covered, actions);
 }
 
 // ------------------------------------------- expect_files observations

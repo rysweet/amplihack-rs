@@ -7,8 +7,8 @@
 //!
 //! Every expected value was recorded on 2026-11-07 by running the fragment
 //! extracted with `git show 918c256cf:<path>` under `python3 -I` (Python
-//! unicodedata 16.0.0), outside the repository, in
-//! ~/.amplihack/work/pr2020-oracle/:
+//! unicodedata 16.0.0), outside the repository, in a local capture (not in
+//! the repo):
 //!
 //! * `checkpoint.py` = `CHECKPOINT_PY` of `workflow_publish_checkpoint.sh`;
 //! * `origin_ref.py` = `ORIGIN_REF_PY` of `workflow_pr_head_sync.sh:83-92`;
@@ -470,7 +470,7 @@ fn validate(args: &[&str]) -> Output {
 /// runner_validation.rs, bins/amplihack/src/main.rs or
 /// crates/amplihack-cli/src/lib.rs between v1.2.107 and origin/main
 /// 7b8d32e7e); the capture and its provenance are in
-/// ~/.amplihack/work/pr2020-r17-capture/.
+/// a local capture (not in the repo).
 const ORIGIN_MAIN_RELATIVE_BINARY_STDERR: &[u8] = b"{\"error\":{\"code\":\"INVALID_VALIDATION_REQUEST\",\"details\":{\"provider\":\"claude\"},\"message\":\"provide an absolute binary and all or none of cargo-home, repository and revision\"}}\n";
 
 #[test]

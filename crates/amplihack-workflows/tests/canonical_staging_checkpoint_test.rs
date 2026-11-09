@@ -4,6 +4,16 @@
 #![cfg(unix)]
 #[path = "support/canonical_staging.rs"]
 mod support;
+// The test-only Rust port of `PhaseProjection` (#1554, PR #2020, C-q). It
+// replaces the removed reference driver's bounded fixture projection for
+// the three bounded checkpoint steps. This binary uses only part of the
+// module.
+#[allow(
+    dead_code,
+    reason = "the module is shared with cli_integration and the #1671 bridge"
+)]
+#[path = "../../../tests/integration/checkpoint_projection.rs"]
+mod checkpoint_projection;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -387,6 +397,7 @@ fn checkpoint(
             | ("workflow-pr-review", "step-18c-push-feedback-changes")
             | ("workflow-finalize", "step-20b-push-cleanup")
     );
+    let mut bounded_request = None;
     if bounded {
         let request = f.evidence.join("scope-projection-request.json");
         fs::write(
@@ -403,10 +414,20 @@ fn checkpoint(
             .unwrap(),
         )
         .unwrap();
-        cmd = f.command("python3", &f.task);
-        cmd.arg(root().join("amplifier-bundle/recipes/tests/test-pragmatic-checkpoints.py"))
-            .arg("--bounded-fixture-projection")
-            .arg(&request);
+        // The request is read back as the reference driver read it, so the
+        // context keeps the key order of the JSON file.
+        let written = checkpoint_projection::py_json_loads(&fs::read(&request).unwrap())
+            .expect("the projection request is JSON");
+        bounded_request = Some(checkpoint_projection::ProjectionRequest {
+            root: root(),
+            asset: asset.to_owned(),
+            owner_paths: vec![b"source.txt".to_vec(), b"new source.txt".to_vec()],
+            context: written
+                .get("context")
+                .cloned()
+                .expect("the request has a context"),
+            branch_key: "branch_name",
+        });
     } else {
         cmd.arg(&script);
     }
@@ -438,13 +459,29 @@ fn checkpoint(
         .env("AMPLIHACK_GIT_AUTHOR_EMAIL", "fixture@example.com")
         .env("AMPLIHACK_GIT_COMMITTER_NAME", "Fixture Author")
         .env("AMPLIHACK_GIT_COMMITTER_EMAIL", "fixture@example.com");
-    let invocation = format!("{cmd:?}");
+    let invocation = if bounded_request.is_some() {
+        format!("checkpoint_projection::project({asset}) with the environment of {cmd:?}")
+    } else {
+        format!("{cmd:?}")
+    };
     fs::write(
         f.evidence.join("execution.json"),
         serde_json::to_vec_pretty(&json!({"command":invocation,"state":"running"})).unwrap(),
     )
     .unwrap();
-    let out = cmd.output().unwrap();
+    let out = match bounded_request {
+        // The reference driver ran the projection with its own environment:
+        // the isolated base plus every value set on `cmd` above.
+        Some(request) => {
+            let env: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)> = cmd
+                .get_envs()
+                .map(|(k, v)| (k.to_owned(), v.map(std::ffi::OsStr::to_owned)))
+                .collect();
+            let env = checkpoint_projection::with_python_locale_coercion(&env);
+            checkpoint_projection::project(&request, &env).into()
+        }
+        None => cmd.output().unwrap(),
+    };
     let after_raw = f.raw(&paths, "checkpoint-after"); // Before post-run Git diagnostics.
     fs::write(f.evidence.join("checkpoint.stdout"), &out.stdout).unwrap();
     fs::write(f.evidence.join("checkpoint.stderr"), &out.stderr).unwrap();

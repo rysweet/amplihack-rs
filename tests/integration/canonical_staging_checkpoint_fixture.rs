@@ -176,6 +176,7 @@ impl Owner {
                 .get("context")
                 .cloned()
                 .expect("the request has a context"),
+            branch_key: "local_branch",
         };
         // The projection's environment, which stands for the reference
         // driver's `os.environ`: a fixed isolated base, every value the
