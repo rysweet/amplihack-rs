@@ -6,7 +6,9 @@
 #   workflow_default_branch.sh [--ask-origin] <dir> <branch>
 #
 # This is the only copy of the rule. Its callers are:
-#   - workflow_caller_branch.sh (step 4): a default branch is never continued;
+#   - workflow_caller_branch.sh (step 4): a default branch is never continued,
+#     and an alias-shaped name whose prefix is a default branch is not an
+#     alias (so it is never stopped as one);
 #   - workflow_caller_branch_alias.sh (step 4): a default branch gets no alias;
 #   - workflow_remote_branch.sh (step 15 and later): an alias-shaped name whose
 #     prefix is a default branch is not an alias;

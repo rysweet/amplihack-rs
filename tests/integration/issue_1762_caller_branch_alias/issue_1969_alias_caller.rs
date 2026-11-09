@@ -302,3 +302,156 @@ fn near_alias_names_are_continued() {
         );
     }
 }
+
+/// A default branch never gets a #1762 alias, so `<default>--wt-<n>` is an
+/// ordinary branch. Step 4 must agree with `workflow_remote_branch.sh`, which
+/// maps such a name to itself: it continues the branch, and no line names the
+/// default branch as a push target or as `existing_branch` (crusty round 3:
+/// the alias stop used to print `git push origin 'HEAD:refs/heads/main'`).
+fn assert_default_prefix_is_not_an_alias(fx: &Fx, name: &str, default: &str, why: &str) {
+    let wt = linked_on_new_branch(fx, name);
+    // The real #1762 shape: the alias-looking branch tracks origin/<default>.
+    fx.git(&wt, &["config", &format!("branch.{name}.remote"), "origin"]);
+    fx.git(
+        &wt,
+        &[
+            "config",
+            &format!("branch.{name}.merge"),
+            &format!("refs/heads/{default}"),
+        ],
+    );
+
+    let run = fx.tool(
+        DETECT,
+        &fx.root,
+        &[wt.to_str().unwrap()],
+        &[("AMPLIHACK_SESSION_DEPTH", "1")],
+    );
+    assert_eq!(run.code, Some(0), "{why}: continued\n{}", run.describe());
+    assert_eq!(run.stdout, format!("{name}\n"), "{why}\n{}", run.describe());
+    assert!(continues(&run.stderr), "{why}\n{}", run.describe());
+    assert!(
+        !run.stderr.contains("#1762 alias worktree"),
+        "{why}: no alias stop\n{}",
+        run.describe()
+    );
+    for bad in [
+        format!("refs/heads/{default}'"),
+        format!("refs/heads/{default}\""),
+        format!("existing_branch='{default}'"),
+        format!("publishes to origin/{default} "),
+    ] {
+        assert!(
+            !run.stderr.contains(&bad),
+            "{why}: names the default branch ({bad})\n{}",
+            run.describe()
+        );
+    }
+
+    let resolved = fx.tool(RESOLVER, &fx.root, &[wt.to_str().unwrap()], &[]);
+    assert_eq!(resolved.code, Some(0), "{why}\n{}", resolved.describe());
+    assert_eq!(
+        resolved.stdout,
+        format!("{name}\n"),
+        "{why}: step 15's resolver agrees it is not an alias\n{}",
+        resolved.describe()
+    );
+}
+
+#[test]
+fn main_alias_shape_is_not_an_alias() {
+    let fx = Fx::new();
+    assert_default_prefix_is_not_an_alias(&fx, "main--wt-1", "main", "main--wt-1");
+}
+
+#[test]
+fn master_alias_shape_is_not_an_alias() {
+    let fx = Fx::new();
+    assert_default_prefix_is_not_an_alias(&fx, "master--wt-1", "master", "master--wt-1");
+}
+
+/// `develop` is a default branch only while the local origin/HEAD is unknown.
+#[test]
+fn develop_alias_shape_without_origin_head_is_not_an_alias() {
+    let fx = Fx::new();
+    fx.git(&fx.caller, &["remote", "set-head", "origin", "--delete"]);
+    assert_default_prefix_is_not_an_alias(
+        &fx,
+        "develop--wt-1",
+        "develop",
+        "develop--wt-1, origin/HEAD unset",
+    );
+}
+
+/// The target of the local origin/HEAD is a default branch whatever its name.
+#[test]
+fn origin_head_target_alias_shape_is_not_an_alias() {
+    let fx = Fx::new();
+    fx.git(&fx.caller, &["push", "-q", "origin", "main:trunk"]);
+    fx.git(&fx.caller, &["remote", "set-head", "origin", "trunk"]);
+    assert_default_prefix_is_not_an_alias(
+        &fx,
+        "trunk--wt-1",
+        "trunk",
+        "trunk--wt-1, origin/HEAD -> trunk",
+    );
+}
+
+/// The contrast: while origin/HEAD resolves to main, `develop` is an ordinary
+/// branch, so `develop--wt-1` is its alias and stops (no hint to push main).
+#[test]
+fn develop_alias_with_origin_head_set_still_stops() {
+    let fx = Fx::new();
+    let name = "develop--wt-1";
+    let wt = linked_on_new_branch(&fx, name);
+    let run = fx.tool(
+        DETECT,
+        &fx.root,
+        &[wt.to_str().unwrap()],
+        &[("AMPLIHACK_SESSION_DEPTH", "1")],
+    );
+    assert_eq!(run.code, Some(3), "{}", run.describe());
+    assert!(
+        run.stderr_line_with(&["ERROR: repo_path is a #1762 alias worktree", "'develop'"])
+            .is_some(),
+        "{}",
+        run.describe()
+    );
+    assert!(
+        !run.stderr.contains("refs/heads/main"),
+        "{}",
+        run.describe()
+    );
+}
+
+/// The prefix check fails closed: a default-branch helper that cannot decide
+/// about `<P>` is an error (exit 2), never "not a default branch".
+#[test]
+fn alias_prefix_default_check_failure_is_an_error() {
+    let fx = Fx::new();
+    let name = "feat/x--wt-1";
+    let wt = linked_on_new_branch(&fx, name);
+    let home = fx.bundle_with(
+        DEFAULT_RULE,
+        "#!/usr/bin/env bash\n[ \"$2\" = feat/x ] && exit 9\nexit 1\n",
+    );
+    let mut command = fx.bash(&fx.root);
+    command
+        .arg(home.join("amplifier-bundle/tools").join(DETECT))
+        .arg(&wt)
+        .env("AMPLIHACK_SESSION_DEPTH", "1");
+    let run = run(&mut command);
+    assert_eq!(run.code, Some(2), "{}", run.describe());
+    assert!(run.stdout.is_empty(), "{}", run.describe());
+    assert!(
+        run.stderr_line_with(&["ERROR: cannot decide whether 'feat/x'", "exit 9"])
+            .is_some(),
+        "{}",
+        run.describe()
+    );
+    assert!(
+        !run.stderr.contains("#1762 alias worktree"),
+        "{}",
+        run.describe()
+    );
+}

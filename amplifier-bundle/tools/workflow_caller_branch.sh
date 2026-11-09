@@ -20,9 +20,12 @@
 #   5. AMPLIHACK_SESSION_DEPTH is a whole number >= 2 (a nested run, #1134):
 #      the nested-run INFO line, exit 1;
 #   6. <X> has the #1762 alias form <P>--wt-<n> (the last `--wt-`, n matching
-#      ^[1-9][0-9]*$, <P> not empty: the shape workflow_remote_branch.sh maps,
-#      here with or without the upstream configuration): two ERROR lines,
-#      exit 3. An alias worktree publishes to origin/<P> and is never pushed
+#      ^[1-9][0-9]*$, <P> not empty) and <P> is not a default branch
+#      (workflow_default_branch.sh exits 1 for <P>; exit 0 means a default
+#      branch, which never gets an alias, so <X> is an ordinary branch and
+#      falls through to 7; any other status: ERROR line, exit 2). That is the
+#      shape workflow_remote_branch.sh maps, here with or without the upstream
+#      configuration: two ERROR lines, exit 3. An alias worktree publishes to origin/<P> and is never pushed
 #      or continued as a branch of its own. Continuing <P> from inside it is
 #      not done either: the planner would reuse this very worktree (#858).
 #      The lines name <P> and the checkout to re-run from, and never suggest
@@ -109,10 +112,23 @@ esac
 
 # 6. A #1762 alias worktree is not a branch of its own. This comes after the
 # depth check, so a nested run started in a parent's alias task worktree keeps
-# the #1134 behaviour above.
+# the #1134 behaviour above. A default branch never gets an alias, so
+# <default>--wt-<n> is an ordinary branch here exactly as it is in
+# workflow_remote_branch.sh; asking the same helper keeps step 4 and step 15
+# agreeing on what an alias is, and keeps the hint below from ever naming a
+# default branch as a push target or as existing_branch.
 prefix="${branch%--wt-*}"
 n="${branch##*--wt-}"
 case "$n" in ''|0*|*[!0-9]*) prefix="$branch" ;; esac
+if [ -n "$prefix" ] && [ "$prefix" != "$branch" ]; then
+  prefix_default_rc=0
+  bash "$(dirname -- "${BASH_SOURCE[0]}")/workflow_default_branch.sh" "$dir" "$prefix" || prefix_default_rc=$?
+  case "$prefix_default_rc" in
+    0) prefix="$branch" ;;
+    1) ;;
+    *) echo "ERROR: cannot decide whether '$prefix' is the default branch (workflow_default_branch.sh exit $prefix_default_rc) (#1969)." >&2; exit 2 ;;
+  esac
+fi
 if [ -n "$prefix" ] && [ "$prefix" != "$branch" ]; then
   # The main clone is the first entry; <P>'s checkout, if any, is named in the hint.
   worktrees="$(git -C "$dir" worktree list --porcelain 2>/dev/null)" || worktrees=""

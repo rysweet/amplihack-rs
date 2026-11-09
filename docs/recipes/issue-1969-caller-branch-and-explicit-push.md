@@ -151,8 +151,9 @@ All of the following must hold:
    [`workflow_default_branch.sh`](#the-default-branch-rule-workflow_default_branchsh)
    decides.
 5. The run is a top-level run. See [Run depth](#run-depth).
-6. The branch does not have the #1762 alias form `<B>--wt-<n>`. A top-level
-   run from an alias worktree stops instead; see
+6. The branch does not have the #1762 alias form `<B>--wt-<n>` with a `<B>`
+   that is not a default branch. A top-level run from an alias worktree
+   stops instead; see
    [Runs from an alias worktree](#runs-from-an-alias-worktree).
 
 In every other case step 4 behaves as before:
@@ -263,10 +264,21 @@ So a top-level run whose branch has the alias form stops before creating
 anything. The form is the one
 [`workflow_remote_branch.sh`](issue-1762-caller-branch-worktree-alias.md)
 maps back to `<B>`: the last `--wt-`, then a number matching
-`^[1-9][0-9]*$`, after a non-empty `<B>`. The upstream configuration is not
-needed, so an alias whose upstream was removed stops too. Names such as
-`feat/x--wt-0`, `feat/x--wt-01` or `feat/x--wt-x` are ordinary branches and
-are continued. Step 4 prints, for an alias of a branch checked out in another
+`^[1-9][0-9]*$`, after a non-empty `<B>`, where `<B>` is not a default
+branch. The upstream configuration is not needed, so an alias whose upstream
+was removed stops too. Names such as `feat/x--wt-0`, `feat/x--wt-01` or
+`feat/x--wt-x` are ordinary branches and are continued.
+
+A default branch never gets an alias, so `main--wt-1`, `master--wt-1`,
+`<origin HEAD>--wt-1`, and `develop--wt-1` when `origin/HEAD` is unknown are
+ordinary branches too. Step 4 asks
+[`workflow_default_branch.sh`](#the-default-branch-rule-workflow_default_branchsh)
+about `<B>` before it stops, which is the same question
+`workflow_remote_branch.sh` asks at step 15, so the two agree: such a branch
+is continued and publishes to `origin/main--wt-1`, never to `origin/main`.
+The stop therefore never prints a push to a default branch or
+`existing_branch=<default>`. If the helper fails, step 4 stops with an
+`ERROR` line rather than guessing. Step 4 prints, for an alias of a branch checked out in another
 linked worktree:
 
 ```text
