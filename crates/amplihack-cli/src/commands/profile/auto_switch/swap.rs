@@ -603,11 +603,11 @@ pub(super) fn swap_check_with(
     };
     let t = target.as_str();
     if fresh == Fresh::Cached && !ledger.hosts.contains_key(t) && t != owner.as_str() {
-        let fresh = procs.liveness(&state.root, Fresh::Forced);
-        if !swap_allowed(state, &fresh, owner) {
+        let forced = procs.liveness(&state.root, Fresh::Forced);
+        if !swap_allowed(state, &forced, owner) {
             return Ok(());
         }
-        let Some(confirmed) = pick(&fresh) else {
+        let Some(confirmed) = pick(&forced) else {
             return Ok(());
         };
         target = confirmed;

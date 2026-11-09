@@ -462,7 +462,6 @@ mod issue_2040 {
                 .enumerate()
                 .map(|(i, p)| ProcRecord {
                     pid: 5151 + i as u32,
-                    ppid: 1,
                     zombie: false,
                     claude_like: true,
                     profile: Some(p.to_string()),

@@ -44,7 +44,6 @@ fn on(profiles: &[&str]) -> Collected {
             .enumerate()
             .map(|(i, p)| ProcRecord {
                 pid: OTHER + i as u32,
-                ppid: 1,
                 zombie: false,
                 claude_like: true,
                 profile: Some(p.to_string()),

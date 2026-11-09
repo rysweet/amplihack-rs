@@ -4118,7 +4118,8 @@ used, and every reader scans `/proc` itself, as it did before snapshots
 existed.
 
 When no snapshot can be kept at all (no usable runtime directory, or the
-`amplihack/` directory or the snapshot lock cannot be created or used),
+`amplihack/` directory or the snapshot lock cannot be created or used, or
+the snapshot cannot be written),
 amplihack logs one warning per process, naming the directory:
 `proc snapshot cache unusable at <dir>: <why>; every read scans /proc`. The
 answers are still correct. A snapshot file that is damaged, too old or fails
@@ -4148,8 +4149,8 @@ directory never shares a snapshot with the real one.
   "writer_pid": 41822,
   "outcome": "ok",
   "procs": [
-    { "pid": 40211, "ppid": 40190, "zombie": false, "claude_like": true, "profile": "work", "environ_unreadable": false },
-    { "pid": 41822, "ppid": 41790, "zombie": false, "claude_like": true, "environ_unreadable": false }
+    { "pid": 40211, "zombie": false, "claude_like": true, "profile": "work", "environ_unreadable": false },
+    { "pid": 41822, "zombie": false, "claude_like": true, "environ_unreadable": false }
   ]
 }
 ```
@@ -4163,7 +4164,7 @@ directory never shares a snapshot with the real one.
 | `writer_pid` | The pid of the process that wrote the file. Display only. |
 | `outcome` | `ok`, or `unsupported` when `/proc` could not be used for the scan. |
 | `procs` | One record for each of your processes that the scan saw, including the writer itself. |
-| `procs[].pid`, `procs[].ppid` | The process and its parent. |
+| `procs[].pid` | The process id. |
 | `procs[].zombie` | `true` for a process in state `Z`. |
 | `procs[].claude_like` | `true` when the process looks like Claude Code or amplihack; see [Which processes are read](#which-processes-are-read). |
 | `procs[].profile` | The profile whose directory the process's `CLAUDE_CONFIG_DIR` resolves to. Absent, or `null`, when it names none. |

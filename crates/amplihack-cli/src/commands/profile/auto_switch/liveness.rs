@@ -47,7 +47,6 @@ impl Liveness {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProcRecord {
     pub pid: u32,
-    pub ppid: u32,
     pub zombie: bool,
     /// The exe or command line names Claude or amplihack.
     pub claude_like: bool,
@@ -137,7 +136,6 @@ fn record(dir: &Path, pid: u32, root: &Path, uid: u32) -> Option<ProcRecord> {
     }
     let mut r = ProcRecord {
         pid,
-        ppid: st.ppid,
         zombie: st.state == 'Z',
         claude_like: false,
         profile: None,
@@ -268,30 +266,25 @@ pub(crate) fn claude_config_dirs(
 struct Status {
     state: char,
     uid: u32,
-    ppid: u32,
 }
 
-/// State letter, real uid and parent pid from `/proc/<pid>/status`. A
-/// missing `PPid` line is 0; a missing or unparsable state or uid is `None`.
+/// State letter and real uid from `/proc/<pid>/status`. A missing or
+/// unparsable state or uid is `None`.
 fn status(dir: &Path) -> Option<Status> {
     let (raw, _) = fsx::read_bounded_nofollow(&dir.join("status"), MAX_SMALL).ok()??;
     let text = String::from_utf8_lossy(&raw);
     let mut state = None;
     let mut uid = None;
-    let mut ppid = 0;
     for line in text.lines() {
         if let Some(v) = line.strip_prefix("State:") {
             state = v.trim().chars().next();
         } else if let Some(v) = line.strip_prefix("Uid:") {
             uid = v.split_whitespace().next().and_then(|u| u.parse().ok());
-        } else if let Some(v) = line.strip_prefix("PPid:") {
-            ppid = v.trim().parse().unwrap_or(0);
         }
     }
     Some(Status {
         state: state?,
         uid: uid?,
-        ppid,
     })
 }
 

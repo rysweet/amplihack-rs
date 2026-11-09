@@ -203,8 +203,10 @@ fn read(d: &SourceDeps, root: &Path, fresh: Fresh) -> Liveness {
             let taken_at = (d.clock)();
             let collected = scan();
             let snap = Snapshot::from_collected(&collected, d.uid, store.key(), taken_at, d.pid);
-            if let Err(e) = store.write(&snap) {
-                tracing::debug!("proc snapshot not kept: {e}");
+            if let Err(e) = store.write(&snap)
+                && let Some(runtime) = d.runtime_dir.as_deref()
+            {
+                warn_no_cache(runtime, &format!("write failed: {e}"));
             }
             liveness::derive(&collected, d.pid)
         }
