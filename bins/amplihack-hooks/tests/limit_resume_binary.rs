@@ -89,21 +89,34 @@ impl StandInRotator {
         // A loop keeps `sh` itself running (it never exec's into `sleep`,
         // which would replace the command line the hook checks), and the
         // short sleep means no orphan outlives the kill by more than a
-        // second. No inherited pipes, so nextest sees no leak.
-        let child = Command::new("sh")
+        // second.
+        //
+        // `sh` prints one line once it runs, and this waits for it: until the
+        // fork has exec'd, `/proc/<pid>/cmdline` is still this test binary's,
+        // and a hook started in that window reports `rotator-down` (seen
+        // under a loaded pre-push run). The pipe is dropped once read, so
+        // nextest sees no leak.
+        let mut child = Command::new("sh")
             .args([
                 "-c",
-                "while :; do sleep 1; done",
+                "echo ready; while :; do sleep 1; done",
                 "amplihack",
                 "profile",
                 "rotate",
                 "watch",
             ])
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(child.stdout.take().expect("piped stdout")),
+            &mut line,
+        )
+        .expect("read the stand-in rotator's ready line");
+        assert_eq!(line, "ready\n", "the stand-in rotator did not start");
         let dir = root.join(".auto-switch.d/rotate");
         private_dir(&root.join(".auto-switch.d"));
         private_dir(&dir);
