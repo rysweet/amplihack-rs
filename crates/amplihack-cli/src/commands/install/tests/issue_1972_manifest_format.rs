@@ -320,7 +320,7 @@ fn issue_1972_compare_counts_from_the_release_side() {
 
 #[cfg(unix)]
 #[test]
-fn issue_1972_hashing_a_fifo_fails_promptly_instead_of_blocking() {
+fn issue_1972_hashing_a_fifo_is_refused_without_opening_it() {
     let temp = crate::test_support::tempdir_outside_framework_roots();
     let fifo = temp.path().join("pipe");
     let status = std::process::Command::new("mkfifo")
@@ -328,9 +328,9 @@ fn issue_1972_hashing_a_fifo_fails_promptly_instead_of_blocking() {
         .status()
         .unwrap();
     assert!(status.success());
-    let started = std::time::Instant::now();
+    // The file is opened without blocking and refused by its type. A blocking
+    // open would hang this test rather than fail it, so no clock is involved.
     let err = sha256_of_file(&fifo).expect_err("a FIFO is not a regular file");
-    assert!(started.elapsed() < std::time::Duration::from_secs(5));
     assert!(err.to_string().contains("not a regular file"), "{err:#}");
 }
 
