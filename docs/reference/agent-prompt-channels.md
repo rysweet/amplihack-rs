@@ -233,21 +233,28 @@ argv. `rewrite_claude_passthrough(args)` runs only when the target binary is
 | --- | --- |
 | `-p <text>`, `--print <text>` | bare `-p` or `--print`; `<text>` on stdin |
 | `-p=<text>`, `--print=<text>` | bare `-p` or `--print`; `<text>` on stdin |
-| bare `-p` (next token starts with `-`, or none) | unchanged; stdin inherited from the caller |
+| `-p -- <text>`, `--print [options] -- <text>` | bare `-p` or `--print` with its options; `<text>` on stdin; `--` dropped |
+| bare `-p` with nothing after it | unchanged; stdin inherited from the caller |
+| bare `-p` followed by a token that starts with `-` | unchanged; Claude parses that token as an option |
+| `--` and everything after it, outside print mode | unchanged |
 | `--system-prompt <text>`, `--system-prompt=<text>` | `--system-prompt-file <per-session file>` |
 | `--append-system-prompt <text>`, `--append-system-prompt=<text>` | `--append-system-prompt-file <per-session file>`; counts as user-supplied, so the contract is not added |
 | `--system-prompt-file`, `--append-system-prompt-file` | unchanged |
 | a positional prompt (interactive) and everything after it | unchanged |
 
-A prompt that begins with `-` must use the `=` form, for example
-`--print=-v is broken`, because a bare `-p` followed by a dash token is left
-as a bare flag.
+A prompt that begins with `-` must follow `--`, as in `-p -- "-v is broken"`,
+or use the `=` form, as in `--print=-v is broken`. A bare `-p` followed by a
+dash token is left alone, because the rewrite cannot tell a prompt from a
+mistyped option. Print mode is decided by the tokens before `--`; a `-p` after
+`--` is a positional, not a flag.
 
 The rewrite rejects input it cannot rewrite safely:
 
 | Input | Error |
 | --- | --- |
 | `-p <text>` given twice | `the prompt was given twice (-p/--print); pass it once` |
+| More than one positional after `--` in print mode, or a prompt both before and after `--` | `the prompt was given twice (-p/--print); pass it once` |
+| A per-session file name already in use (the same flag given twice) | `--system-prompt was given twice; pass it once` (or the append flag); any other failure to create the file gives `cannot create a private file for <flag>` |
 | `--system-prompt <text>` and `--system-prompt-file <path>` together | `--system-prompt and --system-prompt-file were both given; pass one` |
 | `--append-system-prompt <text>` and `--append-system-prompt-file <path>` together | `--append-system-prompt and --append-system-prompt-file were both given; pass one` |
 

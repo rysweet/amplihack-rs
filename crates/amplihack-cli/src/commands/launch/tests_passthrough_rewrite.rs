@@ -118,6 +118,78 @@ fn second_print_with_text_is_an_error_that_does_not_echo_it() {
 }
 
 #[test]
+fn print_prompt_after_double_dash_goes_to_stdin() {
+    let dashed = format!("-{SENTINEL}");
+    let cases: &[(&[&str], &[&str], &str)] = &[
+        (&["-p", "--", SENTINEL], &["-p"], SENTINEL),
+        (&["-p", "--", &dashed], &["-p"], &dashed),
+        (
+            &["--print", "--model", "opus", "--", SENTINEL],
+            &["--print", "--model", "opus"],
+            SENTINEL,
+        ),
+    ];
+    for (input, expected, payload) in cases {
+        let r = rewrite(input);
+        assert_eq!(r.args, s(expected), "input {input:?}");
+        assert_eq!(
+            r.stdin_payload.as_deref(),
+            Some(*payload),
+            "input {input:?}"
+        );
+        no_sentinel(&r);
+    }
+}
+
+#[test]
+fn print_mode_with_nothing_after_double_dash_drops_it() {
+    let r = rewrite(&["-p", "--"]);
+    assert_eq!(r.args, s(&["-p"]));
+    assert_eq!(r.stdin_payload, None);
+}
+
+#[test]
+fn more_than_one_print_prompt_around_double_dash_is_an_error() {
+    const FIRST: &str = "FIRST-PROMPT-SENTINEL-2030";
+    const SECOND: &str = "SECOND-PROMPT-SENTINEL-2030";
+    for input in [
+        s(&["-p", "--", FIRST, SECOND]),
+        s(&["-p", FIRST, "--", SECOND]),
+    ] {
+        let err = rewrite_claude_passthrough(&input).expect_err("two prompts");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("the prompt was given twice (-p/--print); pass it once"),
+            "{msg}"
+        );
+        assert!(!msg.contains(FIRST) && !msg.contains(SECOND), "{msg}");
+    }
+}
+
+#[test]
+fn double_dash_outside_print_mode_is_unchanged() {
+    // D9: outside print mode, `--` and everything after it belong to the
+    // caller.
+    for input in [
+        &["--", SENTINEL][..],
+        &["--model", "opus", "--", SENTINEL][..],
+    ] {
+        let r = rewrite(input);
+        assert_eq!(r.args, s(input), "{input:?}");
+        assert_eq!(r.stdin_payload, None, "{input:?}");
+    }
+}
+
+#[test]
+fn dash_leading_token_after_bare_print_is_passed_through_as_an_option() {
+    // Documented in the module table: Claude parses `-x` as an option, so
+    // the rewrite leaves it alone. `-p -- -x` is the form for such a prompt.
+    let r = rewrite(&["-p", "-x"]);
+    assert_eq!(r.args, s(&["-p", "-x"]));
+    assert_eq!(r.stdin_payload, None);
+}
+
+#[test]
 fn args_without_prompt_flags_are_unchanged() {
     let input = ["--model", "opus", "--resume", "abc-123", "--verbose"];
     let r = rewrite(&input);

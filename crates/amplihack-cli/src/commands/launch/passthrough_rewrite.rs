@@ -5,14 +5,19 @@
 //! | Caller passes                                   | Child receives |
 //! | ----------------------------------------------- | -------------- |
 //! | `-p <text>`, `--print <text>`, `-p=<text>`, `--print=<text>` | bare `-p`/`--print`, text on stdin |
-//! | bare `-p` (next token starts with `-`, or none) | unchanged |
+//! | `-p -- <text>` (print mode, one positional after `--`) | bare `-p`, text on stdin, `--` dropped |
+//! | bare `-p` with nothing after it              | unchanged |
+//! | bare `-p` followed by a token starting with `-` | unchanged; Claude parses that token as an option. Use `-p -- <text>` for a prompt that starts with `-` |
 //! | `--system-prompt[=]<text>`                      | `--system-prompt-file <per-session file>` |
 //! | `--append-system-prompt[=]<text>`               | `--append-system-prompt-file <per-session file>` (counts as user-supplied) |
 //! | `--system-prompt-file`, `--append-system-prompt-file` | unchanged |
 //! | an interactive positional prompt and everything after it | unchanged (D9) |
 //!
-//! In print mode (a bare `-p`/`--print` anywhere), a positional prompt is the
-//! print prompt and goes to stdin as well.
+//! In print mode (a bare `-p`/`--print` anywhere before `--`), a positional
+//! prompt is the print prompt and goes to stdin as well, whether it comes
+//! before or after `--`. More than one positional prompt in print mode is an
+//! error. Outside print mode, `--` and everything after it are passed through
+//! unchanged (D9).
 //!
 //! Per-session files are 0600, inside one 0700 `TempDir` named
 //! `amplihack-prompt-*`, created only when needed and removed when the
@@ -152,7 +157,15 @@ impl Builder {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(&path)
-            .with_context(|| format!("{flag} was given twice; pass it once"))?;
+            .map_err(|error| {
+                // The io::Error carries an errno only, never the prompt text.
+                if error.kind() == std::io::ErrorKind::AlreadyExists {
+                    anyhow::anyhow!("{flag} was given twice; pass it once")
+                } else {
+                    anyhow::Error::new(error)
+                        .context(format!("cannot create a private file for {flag}"))
+                }
+            })?;
         file.write_all(text.as_bytes())
             .and_then(|()| file.sync_all())
             .with_context(|| format!("cannot write the {flag} text to a private file"))?;
@@ -187,8 +200,20 @@ pub(crate) fn rewrite_claude_passthrough(args: &[String]) -> Result<Rewritten> {
     while i < args.len() {
         let arg = args[i].as_str();
         if arg == "--" {
-            // Everything after `--` is positional and belongs to the caller.
-            b.out.extend(args[i..].iter().cloned());
+            if print_mode {
+                // In print mode a positional after `--` is the print prompt.
+                // Claude reads it from stdin, and `--` is dropped because
+                // nothing follows it.
+                match &args[i + 1..] {
+                    [] => {}
+                    [text] if b.payload.is_none() => b.set_payload(text)?,
+                    _ => bail!("the prompt was given twice (-p/--print); pass it once"),
+                }
+            } else {
+                // D9: outside print mode, everything after `--` belongs to
+                // the caller.
+                b.out.extend(args[i..].iter().cloned());
+            }
             break;
         }
         match classify(arg) {

@@ -52,7 +52,6 @@ fn ac1_a_step_limited_once_waits_then_retries_with_identical_inputs() {
     // Issue #2030 (D7): `-p <text>` is rewritten to a bare `-p` with the
     // text on the child's stdin, so the child receives the prompt text, not
     // the caller's piped stdin; both attempts receive it byte-exact.
-    let _ = &input;
     assert_eq!(
         first["STDIN"],
         sha256_hex(b"step"),

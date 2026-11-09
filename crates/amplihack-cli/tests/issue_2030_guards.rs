@@ -309,3 +309,13 @@ fn deliver_has_no_argv_arm_that_appends_the_prompt() {
         );
     }
 }
+
+#[test]
+fn turn_file_reference_template_matches_prompt_delivery() {
+    // amplihack-turn keeps its own copy because it does not depend on
+    // amplihack-utils; the `/proc` parsers match this exact sentence.
+    assert_eq!(
+        amplihack_turn::FILE_REFERENCE_TEMPLATE,
+        amplihack_utils::prompt_delivery::FILE_REFERENCE_TEMPLATE
+    );
+}

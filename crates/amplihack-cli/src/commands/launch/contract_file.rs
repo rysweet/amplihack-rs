@@ -194,14 +194,33 @@ pub(crate) fn probe_claude_version(binary: &Path) -> Option<String> {
         let _ = tx.send(result.map(|_| buf));
     });
     let deadline = std::time::Instant::now() + VERSION_PROBE_TIMEOUT;
+    // Block on the reader, not on a poll: stdout reaches EOF when the child
+    // exits, so the answer is taken as soon as it exists instead of at the
+    // next poll tick (see `wait_for_child_exit` in `binary_finder`).
+    let bytes = match rx.recv_timeout(VERSION_PROBE_TIMEOUT) {
+        Ok(Ok(bytes)) => Some(bytes),
+        Ok(Err(error)) => {
+            tracing::warn!(binary = %binary.display(), %error, "Claude Code version probe output could not be read");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(binary = %binary.display(), "Claude Code version probe timed out");
+            None
+        }
+    };
+    // Reap the child. It has almost always exited by the time its stdout
+    // closes; one that keeps running past the deadline is killed and gives
+    // no version, as before.
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(20));
+            Ok(None) if bytes.is_some() && std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
             Ok(None) => {
-                tracing::warn!(binary = %binary.display(), "Claude Code version probe timed out");
+                if bytes.is_some() {
+                    tracing::warn!(binary = %binary.display(), "Claude Code version probe timed out");
+                }
                 let _ = child.kill();
                 let _ = child.wait();
                 return None;
@@ -209,16 +228,12 @@ pub(crate) fn probe_claude_version(binary: &Path) -> Option<String> {
             Err(error) => {
                 tracing::warn!(binary = %binary.display(), %error, "Claude Code version probe wait failed");
                 let _ = child.kill();
+                let _ = child.wait();
                 return None;
             }
         }
     }
-    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    let bytes = rx
-        .recv_timeout(remaining.max(std::time::Duration::from_millis(100)))
-        .ok()?
-        .ok()?;
-    Some(String::from_utf8_lossy(&bytes).into_owned())
+    Some(String::from_utf8_lossy(&bytes?).into_owned())
 }
 
 /// Write the compiled-in contract to `<home>/private/system-prompt-append.md`

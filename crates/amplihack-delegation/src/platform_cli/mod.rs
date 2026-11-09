@@ -409,6 +409,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn file_reference_template_matches_prompt_delivery() {
+        // The `/proc` parsers match this exact sentence (#2030).
+        assert_eq!(
+            FILE_REFERENCE_TEMPLATE,
+            amplihack_utils::prompt_delivery::FILE_REFERENCE_TEMPLATE
+        );
+    }
+
+    #[test]
     fn validate_extra_args_ok() {
         assert!(validate_extra_args(&["--debug".into(), "-v".into()]).is_ok());
     }
