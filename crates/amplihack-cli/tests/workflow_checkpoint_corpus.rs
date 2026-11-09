@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use base64::Engine as _;
 
@@ -585,8 +585,9 @@ fn run_action(action: &str) {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, subst(body.as_str().unwrap_or(""), &root, false)).unwrap();
         }
-        let mut cmd = Command::new(amplihack_bin());
-        // Exactly the environment the 918c capture used: nothing inherited
+        let mut cmd = crate::isolated_amplihack::isolated(amplihack_bin());
+        // Exactly the environment the 918c capture used. `isolated` keeps a
+        // few host variables; clearing again drops them too: nothing inherited
         // from the test process (a recipe step's TASK_DESCRIPTION, a Git
         // selector, BASH_ENV or ENV would change the outcome), then the
         // case's own variables.

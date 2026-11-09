@@ -915,6 +915,9 @@ fn tc_sec_20_no_hardcoded_high_entropy_secrets_in_fleet_source() {
         // The published SHA-256 of "abc" (FIPS 180-2 test vector), the known
         // answer in the #1955 manifest tests.
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        // SHA-256 of the 56-byte D1 no-final-LF fixture (R8, #1554): the
+        // workflow_checkpoint advert test pins the digest of public bytes.
+        "59161683958a9adeaacaf650be033f302e118cdf7b2f739b2b8ada2ac088b337",
     ];
 
     // Regex-free scan: look for very long alphanumeric tokens in string literals.
