@@ -17,7 +17,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Output;
 
-const IGNORED: &str = "AMPLIHACK_TEST_PROC_ROOT ignored";
+use crate::isolated_amplihack::PROC_ROOT_REFUSED as IGNORED;
 
 /// `amplihack ARGS` through the fixture, reading `tree` as `/proc`.
 fn run_on(f: &Fixture, tree: &Path, args: &[&str]) -> Output {

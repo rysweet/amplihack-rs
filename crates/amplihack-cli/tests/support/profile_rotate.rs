@@ -540,6 +540,7 @@ impl Fixture {
             &mut self.cmd(args),
         );
         assert_no_secrets(&out);
+        crate::isolated_amplihack::assert_proc_root_honoured(&text(&out.stderr));
         // A rotate swap off a full login damps it at that whole second, and
         // only a reading strictly later may choose it again (#1870). The
         // fixture cannot read a login directly, so a run in the same second

@@ -162,6 +162,19 @@ pub fn shared_empty_proc_root() -> &'static Path {
     })
 }
 
+/// The start of the stderr line a debug `amplihack` prints, once per
+/// process, when it refuses [`PROC_ROOT_ENV`] and reads the host `/proc`.
+pub const PROC_ROOT_REFUSED: &str = "AMPLIHACK_TEST_PROC_ROOT ignored";
+
+/// Panics if `stderr` shows the child refused its fake process table, for
+/// example because its `TMPDIR` or home guard was lost after `env_clear()`.
+pub fn assert_proc_root_honoured(stderr: &str) {
+    assert!(
+        !stderr.contains(PROC_ROOT_REFUSED),
+        "the child read the host /proc (issue #2042): {stderr}"
+    );
+}
+
 /// Set [`PROC_ROOT_ENV`] to [`shared_empty_proc_root`] on `command`, and
 /// return it. Call it after `env_clear()`; a later `.env()` call wins.
 pub fn reapply_proc_root(command: &mut Command) -> &mut Command {

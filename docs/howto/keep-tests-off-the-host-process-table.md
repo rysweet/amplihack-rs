@@ -72,7 +72,7 @@ a literal `Path::new("/proc")` to a function that already takes a root:
 | `profile/auto_switch/liveness.rs` (`scan`) | `status`, `environ`, `cmdline`, `cwd` of each pid; `self/environ` |
 | `profile/rotate/control.rs` (`owner::describe`) | the owner marker pid's `cmdline` and `exe` |
 | `profile/rotate/owner.rs` (`describe`) | the same, for `rotate owner` |
-| `profile/rotate/daemon.rs` (`state_at`, line 49) | the rotator pid's `cmdline` and `exe` |
+| `profile/rotate/daemon.rs` (`state_at` in `current_state`) | the rotator pid's `cmdline` and `exe` |
 | `profile/rotate/autostart.rs` (`Deps { proc_root }`) | the rotator pid |
 | `profile/rotate/change_log.rs` (`caller`) | the parent pid's `cmdline` |
 | `profile/rotate/ledger.rs` (`foreign_rotator_at`) | the rotator pid named in the pid file |
@@ -80,7 +80,7 @@ a literal `Path::new("/proc")` to a function that already takes a root:
 | `sessions/live.rs` (`claude_config_dirs`) | `environ` of each pid, for live Claude sessions |
 | `sessions/live.rs` (`process_dirs` error path) | nothing; the error names the root that was read |
 
-The other `daemon.rs` site, at line 277 (`owner::supervised` and
+The other `daemon.rs` site, in `watch` (`owner::supervised` and
 `owner::unit_name`, which read `self/cgroup`), already calls `proc_root()`.
 Agent code (`agent/pass.rs`, `register.rs`, `wrapper.rs`) was routed for
 #1760.
@@ -157,8 +157,10 @@ tree and reads the real `/proc`.
 guard set, amplihack ignores a `HOME` outside it; see
 [Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md).
 
-The base fixture in `tests/support/profile_rotate.rs` already calls
-`reapply_proc_root`. Its `with_proc(&FakeProc)` method points every later
+The base fixture in `tests/support/profile_rotate.rs` already sets
+`PROC_ROOT_ENV`, `TMPDIR` and the home guard after `env_clear()`, and its
+`run` fails a test whose child prints the refusal line
+(`assert_proc_root_honoured`). Its `with_proc(&FakeProc)` method points every later
 command of that fixture at a test's own tree. Keep the `FakeProc` alive while
 those commands run: the seam reads the real `/proc` for a tree that is gone,
 so the fixture panics if the tree has been removed. A test that keeps a guard
@@ -326,7 +328,7 @@ starts beside a running, linked rotator.
 ## What the guard test checks
 
 `crates/amplihack-cli/tests/issue_2042_proc_root_guard.rs` spawns nothing. It
-has six tests; the scanner itself is `tests/support/proc_root_scan.rs`:
+has seven tests; the scanner itself is `tests/support/proc_root_scan.rs`:
 
 | Test | Checks |
 |------|--------|
@@ -336,6 +338,7 @@ has six tests; the scanner itself is `tests/support/proc_root_scan.rs`:
 | 4 | Scans every `crates/amplihack-cli/tests/**/*.rs`, including `support/`, with the rules below and prints each finding as `file:line rule`. |
 | 5 | Runs the same scanner over in-memory samples: each bad sample gives exactly its own rule, and the good sample gives none. |
 | 6 | The scanner recognises each form of function declaration listed below, and nothing else. |
+| 7 | `assert_proc_root_honoured`, which the `profile_rotate` fixture's `run` calls on every child, fails on the refusal line. |
 
 The scanner rules:
 

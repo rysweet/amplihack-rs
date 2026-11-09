@@ -77,6 +77,14 @@ fn reapply_restores_the_tree_after_env_clear() {
     );
 }
 
+#[test]
+#[should_panic(expected = "read the host /proc")]
+fn the_fixture_check_fails_on_the_refusal_line() {
+    crate::isolated_amplihack::assert_proc_root_honoured(
+        "amplihack: AMPLIHACK_TEST_PROC_ROOT ignored (x); reading /proc\n",
+    );
+}
+
 // --- 2 and 3: the production side -----------------------------------------
 
 #[test]
