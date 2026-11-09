@@ -21,11 +21,12 @@ pub use coordination::{COORDINATION_NOTE, COORDINATION_PREFIX};
 use crate::prompt_input::extract_user_prompt;
 use crate::protocol::{FailurePolicy, Hook};
 use crate::session_start::{is_nested_recipe_session, is_workflow_active};
-use amplihack_types::{HookInput, ProjectDirs};
+use amplihack_types::{HookInput, ProjectDirs, amplihack_state_root, session_state_dir_under};
 use coordination::{is_explicit_work_request, strip_coordination_prefix};
 use serde_json::{Value, json};
 use state::{ClassificationState, next_observed_turn, record_outcome, state_file};
 use std::fs;
+use std::path::Path;
 
 pub struct WorkflowClassificationReminderHook;
 
@@ -90,10 +91,16 @@ impl Hook for WorkflowClassificationReminderHook {
         // A runtime that reports no turn number gets one we keep ourselves, so
         // both runtimes reach `topic_decision` with the same meaning. Falling back
         // to 0 would pin every Copilot prompt at "first turn".
-        let dirs_for_turn = ProjectDirs::from_cwd();
+        //
+        // The classification state lives under the amplihack state root, never
+        // the project (#1963). `None` means no root resolved: nothing is read
+        // or written, and a new topic is held back (see `record_outcome`).
+        let session_dir =
+            amplihack_state_root().map(|root| session_state_dir_under(&root, Some(&session_id)));
+        let session_dir = session_dir.as_deref();
         let turn_count = match turn_count {
             Some(reported) => reported,
-            None => next_observed_turn(&dirs_for_turn, &session_id),
+            None => next_observed_turn(session_dir, &session_id),
         };
 
         // Issue #1328: a prompt written by amplihack for one of its own recipe
@@ -110,6 +117,8 @@ impl Hook for WorkflowClassificationReminderHook {
 
         // When a workflow is already active, skip classification reminders
         // to prevent recursive workflow invocation (ported from Python PR #3974).
+        // The project directory is only read here, for the semaphore and the
+        // routing prompt template.
         let dirs = ProjectDirs::from_cwd();
         if is_nested_recipe_session() || is_workflow_active(&dirs) {
             return Ok(Value::Object(serde_json::Map::new()));
@@ -123,7 +132,13 @@ impl Hook for WorkflowClassificationReminderHook {
             && !is_explicit_dev_command(body)
             && !is_explicit_work_request(body)
         {
-            record_outcome(&dirs, &session_id, turn_count, rule::COORD_MARKER, false);
+            record_outcome(
+                session_dir,
+                &session_id,
+                turn_count,
+                rule::COORD_MARKER,
+                false,
+            );
             return Ok(context_output(COORDINATION_NOTE));
         }
 
@@ -137,9 +152,15 @@ impl Hook for WorkflowClassificationReminderHook {
         // dev-orchestrator, where the unmarked text gets nothing.
         let marked = marked_body.is_some();
         let text = marked_body.unwrap_or(&prompt);
-        match topic_decision(&dirs, &session_id, turn_count, text) {
+        match topic_decision(session_dir, turn_count, text) {
             TopicDecision::ExplicitDev => {
-                record_outcome(&dirs, &session_id, turn_count, rule::EXPLICIT_DEV, false);
+                record_outcome(
+                    session_dir,
+                    &session_id,
+                    turn_count,
+                    rule::EXPLICIT_DEV,
+                    false,
+                );
                 return Ok(Value::Object(serde_json::Map::new()));
             }
             TopicDecision::Throttled => {
@@ -148,7 +169,7 @@ impl Hook for WorkflowClassificationReminderHook {
                 } else {
                     rule::THROTTLED
                 };
-                record_outcome(&dirs, &session_id, turn_count, rule, false);
+                record_outcome(session_dir, &session_id, turn_count, rule, false);
                 return Ok(held_back_output(marked));
             }
             TopicDecision::NewTopic => {
@@ -165,7 +186,7 @@ impl Hook for WorkflowClassificationReminderHook {
                 // (review round 7 of PR #1752). Such a prompt gets what a
                 // throttled one gets. Before #1742 the failed write returned an
                 // error and the failure policy emitted `{}`.
-                if !record_outcome(&dirs, &session_id, turn_count, rule, true) {
+                if !record_outcome(session_dir, &session_id, turn_count, rule, true) {
                     return Ok(held_back_output(marked));
                 }
             }
@@ -275,12 +296,7 @@ const FOLLOWUP_KEYWORDS: [&str; 10] = [
     "what's the progress",
 ];
 
-fn topic_decision(
-    dirs: &ProjectDirs,
-    session_id: &str,
-    turn_count: u64,
-    user_prompt: &str,
-) -> TopicDecision {
+fn topic_decision(session_dir: Option<&Path>, turn_count: u64, user_prompt: &str) -> TopicDecision {
     if is_explicit_dev_command(user_prompt) {
         return TopicDecision::ExplicitDev;
     }
@@ -318,8 +334,13 @@ fn topic_decision(
         return TopicDecision::Throttled;
     }
 
-    // A session with no classification yet has no window to throttle within.
-    let path = state_file(dirs, session_id);
+    // A session with no classification yet has no window to throttle within,
+    // and with no state root there is no classification to read.
+    let Some(session_dir) = session_dir else {
+        tracing::debug!("workflow classification: no amplihack state root, throttle not read");
+        return TopicDecision::NewTopic;
+    };
+    let path = state_file(session_dir);
     if let Ok(raw) = fs::read_to_string(path)
         && let Ok(state) = serde_json::from_str::<ClassificationState>(&raw)
         && let Some(last_classified) = state.last_classified_turn

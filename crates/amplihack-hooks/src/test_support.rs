@@ -66,6 +66,28 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// Points the hook state root (issue #1963) at a throwaway home directory.
+///
+/// Sets `HOME` to `home` and removes `AMPLIHACK_HOME`, so the state root
+/// resolves to `<home>/.amplihack` and no test can reach the real
+/// `~/.amplihack`. Both variables are restored on drop. The guard takes no
+/// lock of its own: the caller must already hold [`env_lock`] and keep it for
+/// the guard's lifetime.
+#[allow(dead_code)]
+pub(crate) struct IsolatedStateHome {
+    _home: EnvVarGuard,
+    _amp: EnvVarGuard,
+}
+
+/// See [`IsolatedStateHome`]. The caller must already hold [`env_lock`].
+#[allow(dead_code)]
+pub(crate) fn isolate_state_home(home: &std::path::Path) -> IsolatedStateHome {
+    IsolatedStateHome {
+        _home: EnvVarGuard::set("HOME", home),
+        _amp: EnvVarGuard::unset("AMPLIHACK_HOME"),
+    }
+}
+
 /// CWD restoration must finish while the caller still owns `env_lock()`.
 pub(crate) struct CwdGuard {
     previous: std::path::PathBuf,

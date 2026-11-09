@@ -144,6 +144,7 @@ amplihack copilot
 #### General Configuration
 
 - [User Configuration](reference/user-config.md) - Persistent defaults in `~/.amplihack/config.toml` and `.amplihack/config.toml`, and the `amplihack config` command
+- [Config Write Durability](concepts/config-write-durability.md) - Why the first-launch save of `node.heap_consent` skips `fsync` while `config set` and `config unset` keep it
 - [AMPLIHACK_* Environment Variable Audit](reference/amplihack-env-vars.md) - Every `AMPLIHACK_*` name classified as user preference, internal or test-only, with its config key
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
@@ -307,7 +308,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Dev-Orchestrator Routing Contract](reference/dev-orchestrator-routing.md) - Issue #749 target rules for Development and hybrid workstream routing
 - [Verify Dev-Orchestrator Routing](howto/verify-dev-orchestrator-routing.md) - Check deterministic Development-to-default-workflow routing from the CLI
 - [Quick-Change Recipe](reference/quick-change-recipe.md) - Single-session recipe for small changes: diff limits, hand-over to default-workflow, routing precedence and the `Workflow:` log line, `-c workflow=`
-- [Auto-Drive-Light Recipe](reference/auto-drive-light.md) - Smaller drive-to-merge recipe for small PRs: eligibility rules, escalation to auto-drive-to-merge, the minor-only review rule and its follow-up issue
+- [Auto-Drive-Light Recipe](reference/auto-drive-light.md) - Smaller drive-to-merge recipe for small PRs: eligibility rules, escalation to auto-drive-to-merge, the task id its follow-up issues name, and the per-finding follow-up model it shares with auto-drive-to-merge
 - [Correlate Recipe Runs with Logs](howto/correlate-recipe-runs.md) - Match terminal output, final JSON, child process IDs, and runner log paths by run ID
 - [Recipe Executor Environment](reference/recipe-executor-environment.md) - Step-level variables plus subprocess environment contract for forced non-interactive recipe execution
 - [Recipe Commit Hook Repair](reference/recipe-commit-hook-repair.md) - How checkpoint and publish steps hand a rejected git `pre-commit` or `pre-push` hook to a fixing agent, retry under loop-health evaluation, and refuse changes to hook configuration
@@ -800,6 +801,8 @@ Testing strategies, quality assurance, and validation patterns.
 - [Testing Plan](testing/TEST_PLAN.md) - Testing strategy and execution checklist
 - [Skill Frontmatter Type Guard](testing/SKILL_FRONTMATTER_TYPE_GUARD.md) - Regression test catching Copilot CLI frontmatter string-scalar TYPE bugs
 - [Load-Independent Deadline Tests for the Direct Usage Read](bugfixes/bugfix-1962-usage-direct-deadline-tests.md) - How the `tests_usage_direct` deadline tests derive their delays from `REFRESH_BUDGET` and `MAX_STEP` so that a loaded host cannot change their outcome
+- [Merge-Base Diffs and Issue-Derived PR Titles in the Publish Step](bugfixes/bugfix-1968-publish-pr-merge-base-title.md) - How `workflow_publish_pr.sh` lists and counts changed files against the merge base and titles the PR from the issue, with the `Update <scope>` template as the last resort
+- [Honest PR Titles and Honoured No-Merge Directives](bugfixes/bugfix-929-pr-title-and-no-merge.md) - Lockfile-free scope selection for the template title and detection of no-merge directives in the task
 - [Keep the Pre-commit Hooks Portable to macOS](howto/keep-pre-commit-hooks-portable-to-macos.md) - POSIX sed, bash 3.2, Linux-only clippy allows, and libc type aliases
 
 ### Code Review
@@ -886,6 +889,7 @@ Quick references, guides, and additional resources.
 - [Platform Bridge API Reference](reference/platform-bridge-api.md) - Complete API documentation
 - [Power Steering File Locking](reference/power-steering-file-locking.md) - Prevents counter race conditions
 - [UserPromptSubmit Hook API Reference](reference/user-prompt-submit-hook-api.md) - Framework injection API
+- [Hook State Root Reference](reference/hook-state-root.md) - Where `amplihack-hooks` writes metrics, transcripts and session state, and why never into the working directory
 - [Doc Graph Quick Reference](doc_graph_quick_reference.md) - Navigate documentation
 
 ### Developing amplihack

@@ -165,6 +165,58 @@ impl Drop for EnvGuard {
     }
 }
 
+/// A private work root for tests that run a recipe (issue #2067).
+///
+/// `amplihack recipe run` creates its run folder under the work root, which
+/// it takes from `AMPLIHACK_WORK_ROOT` (`cleanup::work_root::resolve_from_env`;
+/// nothing reads an inherited `AMPLIHACK_RUN_ID` or `AMPLIHACK_RUN_DIR`). A
+/// test run under a recipe inherits the caller's root, normally the real
+/// `~/.amplihack/work`, so without this guard each test leaves a run folder
+/// there. This guard points `AMPLIHACK_WORK_ROOT` at `<temp>/work`, removes
+/// `AMPLIHACK_WORK_ROOT_EXPLICIT`, and turns the end-of-run sweep off: the
+/// sweep also lists hook build folders under `$XDG_CACHE_HOME/amplihack` or
+/// `~/.cache/amplihack`, which are outside the work root and are not
+/// isolated here. On drop the variables are restored and then the folder is
+/// removed.
+///
+/// This guard is the only owner of these three variables in any fixture that
+/// uses it. Do not also capture or set them in another `EnvGuard` in the same
+/// fixture: two guards saving one variable restore it in the wrong order.
+/// For example, in a `(EnvGuard, IsolatedWorkRoot)` tuple the first element
+/// drops first, so this guard would then write back the value the other guard
+/// had set, and that value would leak into later tests.
+///
+/// Tests must hold `env_lock()` until this guard drops.
+pub(crate) struct IsolatedWorkRoot {
+    // Field order is drop order: restore the variables before removing the
+    // folder they point at.
+    _env: EnvGuard,
+    dir: tempfile::TempDir,
+}
+
+impl IsolatedWorkRoot {
+    pub(crate) fn new() -> Self {
+        let dir = tempdir_outside_framework_roots();
+        let env = EnvGuard::capture(&[
+            "AMPLIHACK_WORK_ROOT",
+            "AMPLIHACK_WORK_ROOT_EXPLICIT",
+            "AMPLIHACK_CLEANUP_ON_EXIT",
+        ]);
+        unsafe {
+            std::env::set_var("AMPLIHACK_WORK_ROOT", dir.path().join("work"));
+            std::env::remove_var("AMPLIHACK_WORK_ROOT_EXPLICIT");
+            std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0");
+        }
+        Self { _env: env, dir }
+    }
+
+    /// The work root this guard set, `<temp>/work`. It is created by the
+    /// first run, not by the guard.
+    pub(crate) fn path(&self) -> PathBuf {
+        self.dir.path().join("work")
+    }
+}
+
 /// RAII guard giving a test a known agent-binary environment: every
 /// `agent_binary::SESSION_MARKERS` variable removed, and `AMPLIHACK_AGENT_BINARY`
 /// / `AMPLIHACK_AGENT_BINARY_SOURCE` set to `binary` / `tag` (or removed when

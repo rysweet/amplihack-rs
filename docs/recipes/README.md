@@ -360,8 +360,7 @@ Three recipes take a task to a pull request with less supervision than `default-
 | Build | One agent session | One agent session | `default-workflow`, including design and architect steps |
 | Ends at | An open PR | A merged PR | A merged PR |
 | Size check | Diff limits (3 files, 150 lines by default), hands over to `default-workflow` | Eligibility rules (300 lines, no new modules, public API, schema or recipe contract changes by default), escalates to `auto-drive-to-merge` | None |
-| Crusty review loop | No | Yes, with the minor-only rule | Yes |
-| Minor-only concerns | Not reviewed | Deferred to a follow-up issue | Addressed in the PR |
+| Crusty review loop | No | Yes. A round whose findings are all minor ends the loop, and each finding is filed as its own follow-up issue linked to the task before merge | Yes, the same per-finding model |
 | Merge gate | No | The same gate as `auto-drive-to-merge` | Yes |
 | Selected by smart-orchestrator | Yes, for small single-workstream tasks | No, run by name | No, run by name or skill |
 | Existing PR | Not supported | `pr_number` or `existing_branch` | `pr_number` or `existing_branch` |

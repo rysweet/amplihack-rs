@@ -79,7 +79,7 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
             .as_ref()
             .and_then(|l| l.live.clone())
             .unwrap_or_else(|| "-".into()),
-        Err(_) => "- (ledger unreadable)".into(),
+        Err(e) => super::handfix_msg::status_live_unreadable(super::ledger::refused_field(e)),
     };
     let ledger = ledger.ok().flatten();
     let last = match ledger.as_ref().and_then(|l| l.last_cycle.as_ref()) {

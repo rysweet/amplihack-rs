@@ -978,6 +978,8 @@ with unit tests in `pre_tool_use/tests/tail_follow_guard_tests.rs` and
 
 Runs after every tool call (matcher `*`). Records tool usage metrics. No timeout — fail-open.
 
+Metrics, workflow enforcement state and the blarify staleness marker are written under the [hook state root](./hook-state-root.md), never into the session's working directory.
+
 ### 5. UserPromptSubmit — `workflow-classification-reminder`
 
 The **first** of two `UserPromptSubmit` hooks. Injects a workflow classification reminder into the prompt context. Runs via `amplihack-hooks`. 5-second timeout.
@@ -993,6 +995,8 @@ When no Claude account has capacity left, it also shows a [capacity notice](#cap
 ### 7. PreCompact — `pre-compact`
 
 Runs before Claude Code compacts the context window. Exports the current transcript so it can be referenced after compaction.
+
+The transcript copy, the original request and the compaction metadata are written to `<state root>/runtime/sessions/<session key>/logs/`; see [Hook State Root Reference](./hook-state-root.md). With no state root, the hook still succeeds and reports `transcript_path` and `metadata` as `null`. When a state root resolves, a failed transcript export or metadata write still returns the error response; see [Write failures](./hook-state-root.md#write-failures).
 
 ### 8. StopFailure — `limit-resume`
 
@@ -1089,6 +1093,8 @@ check never makes a hook fail.
 ## Hook Runtime Location
 
 Fresh installs register hooks through the native `amplihack-hooks` binary deployed at `~/.local/bin/amplihack-hooks`. The installer writes command strings such as `amplihack-hooks session-start` and `amplihack-hooks user-prompt-submit` into `~/.claude/settings.json`.
+
+The hooks keep their state under `${AMPLIHACK_HOME:-~/.amplihack}/runtime/`. The [Hook State Root Reference](./hook-state-root.md) lists every file, how the root is resolved and what happens when it cannot be.
 
 ## Generated script line endings
 
