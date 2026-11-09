@@ -303,10 +303,15 @@ mod race_and_nested {
         fs::create_dir_all(&sub).unwrap();
         fs::write(sub.join("a.md"), "a").unwrap();
         // Hook fires after the entry was classified, before it is opened.
+        // The hook receives the display path relative to the source root, so
+        // resolve it against `source`; a bare relative path would act on the
+        // process working directory and could plant a symlink in the checkout.
+        let source_root = source.clone();
         super::super::store::test_hook::set_before_open(Some(Box::new(move |p| {
             if p.ends_with("victim") {
-                let _ = fs::remove_dir_all(p);
-                let _ = symlink(&outside, p);
+                let target = source_root.join(p);
+                let _ = fs::remove_dir_all(&target);
+                let _ = symlink(&outside, &target);
             }
         })));
         let res = store.add(&n("w"));
