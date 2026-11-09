@@ -2,13 +2,14 @@
 title: "Bug Fix #2014: multitask launcher tests no longer read the process profile variables"
 type: explanation
 issue: 2014
-updated: 2026-11-08
+updated: 2026-11-09
 files:
   - crates/amplihack-cli/src/commands/multitask/command_builder.rs
   - crates/amplihack-cli/src/commands/multitask/launcher.rs
   - crates/amplihack-cli/src/commands/multitask/command_builder_tests.rs
   - crates/amplihack-cli/src/commands/multitask/launcher_tests.rs
   - crates/amplihack-cli/src/commands/multitask/issue_1570_launcher.rs
+  - crates/amplihack-cli/src/commands/multitask/issue_1966_criticality.rs
   - crates/amplihack-cli/src/commands/multitask/issue_2014_launcher_env.rs
 ---
 
@@ -162,6 +163,9 @@ The following changes go with the seam:
 - `issue_1570_launcher.rs` calls
   `write_recipe_launcher_with(&ws, "amplihack claude", no_env, keep)` and no
   longer has its own `without_profile` wrapper.
+- `issue_1966_criticality.rs`, which reached `main` after this fix was
+  written, makes the same call in its three launcher tests and imports
+  `no_env` and `keep` from `command_builder_tests.rs`.
 
 With an empty getter, `substitute_inherited_profile` and
 `ProfileStore::from_env()` are never called, so these tests do not read any
