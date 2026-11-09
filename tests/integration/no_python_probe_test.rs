@@ -1996,7 +1996,10 @@ fn tc30_fleet_tui_arrow_tab_navigation_wraps_without_python() {
     probe.send_and_wait_for(b"\x1b[C", "[detail]");
     probe.send_and_wait_for(b"\x1b[C", "[editor]");
     probe.send_and_wait_for(b"\x1b[C", "[projects]");
-    let wrapped = probe.send_and_wait_for(b"\x1b[C", "[new]");
+    // The body follows the tab bar, so it is checked in a complete frame.
+    let wrapped = probe.send_and_wait_for_frame(b"\x1b[C", "a frame on the New tab", |frame| {
+        frame.contains("[new]")
+    });
 
     probe.finish();
     assert!(
@@ -2049,7 +2052,11 @@ fn tc32_fleet_tui_up_down_cursor_navigation_updates_preview_without_python() {
     probe.wait_for_text("Selected session: vm-1/claude-1");
 
     probe.send_and_wait_for(b"t", "All Sessions");
-    let down_frame = probe.send_and_wait_for(b"\x1b[B", "Selected session: vm-2/copilot-9");
+    // The preview lines follow the selection line, so each move is checked
+    // in a complete frame.
+    let down_frame = probe.send_and_wait_for_frame(b"\x1b[B", "vm-2/copilot-9 selected", |frame| {
+        frame.contains("Selected session: vm-2/copilot-9")
+    });
     assert!(
         down_frame.contains("Working outside fleet")
             && down_frame.contains("branch: side-quest")
@@ -2057,7 +2064,9 @@ fn tc32_fleet_tui_up_down_cursor_navigation_updates_preview_without_python() {
         "expected down-arrow preview update for vm-2/copilot-9:\n{down_frame}"
     );
 
-    let up_frame = probe.send_and_wait_for(b"\x1b[A", "Selected session: vm-1/claude-1");
+    let up_frame = probe.send_and_wait_for_frame(b"\x1b[A", "vm-1/claude-1 selected", |frame| {
+        frame.contains("Selected session: vm-1/claude-1")
+    });
 
     let cleaned = probe.finish();
     assert!(
