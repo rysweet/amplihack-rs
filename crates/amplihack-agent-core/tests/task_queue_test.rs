@@ -179,12 +179,14 @@ fn drain_priority_removes_matching() {
 fn task_spec_defaults() {
     let t = TaskSpec::new("test");
     assert_eq!(t.priority, TaskPriority::Normal);
-    assert_eq!(t.timeout_secs, 120);
+    assert_eq!(t.timeout_secs, None); // #2022: no default limit
+    assert_eq!(t.timeout(), None);
     assert!(t.tags.is_empty());
 }
 
 #[test]
 fn task_spec_timeout_duration() {
     let t = TaskSpec::new("x").with_timeout(30);
-    assert_eq!(t.timeout(), std::time::Duration::from_secs(30));
+    assert_eq!(t.timeout_secs, Some(30));
+    assert_eq!(t.timeout(), Some(std::time::Duration::from_secs(30)));
 }
