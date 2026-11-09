@@ -237,14 +237,29 @@ workflow's recipes, tools, or skill.
 The merge gate does not trust the loop that preceded it. In the run that
 merges, it re-verifies — and writes down, before merging — the head SHA, draft
 state, mergeability and merge-state, review decision, unresolved review
-threads, the full CI rollup, the `qa-team` evidence, and the merge-ready round
+threads, the expected CI checks at the head, the `qa-team` evidence, and the merge-ready round
 record. It also checks, without a network call, that every minor crusty
 finding has a filed follow-up issue. Everything is bound to **one** head SHA, and the merge itself passes
 `--match-head-commit`, so GitHub refuses the merge if the head moved after the
 evidence was captured.
 
-**An unreadable criterion is a failure, never a pass.** Unreadable CI, zero
-reported checks, unreadable review threads, missing `qa-team` evidence, an
+**CI green means every expected check exists at the head SHA and passed.**
+`autodrive_expected_checks.sh` builds the expected set from the base branch's
+required checks and every job of each active `pull_request` workflow at the
+head, then looks for each one at that SHA. A check that was never created is
+named (`expected check '<name>' was never created at <sha>`) and blocks; so
+does an expected set that cannot be read. `neutral` always blocks, and a
+`skipped` required check passes only when a defined job at the head explains
+it. Merge-evidence step-03 runs the same
+helper from `$AMPLIHACK_HOME` and lowers `ci_status` to `MISSING`, `PENDING`,
+`RED` or `UNREADABLE`. Known limits: a path-filtered workflow with no run is
+only noted; a job with a job-level `if:` absent from a completed run is only
+noted; jobs match by literal name or prefix; required checks match by
+name, not app id; the workflow list is read at the head only
+([details](../../../docs/reference/auto-drive-to-merge.md#limits-of-the-expected-set)).
+
+**An unreadable criterion is a failure, never a pass.** Unreadable CI, a
+missing expected check, zero reported checks, unreadable review threads, missing `qa-team` evidence, an
 absent round record — each is a blocker. After the merge, the platform must
 confirm `MERGED`; a `gh` success that the platform does not confirm is
 reported as not merged.
@@ -328,6 +343,7 @@ run to their natural end. A false timeout costs more than a slow run.
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | Phase 3 loop + merge gate. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | The uncapped, agentically-terminated loop driver. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | The evidence gate and the fixed merge argv. |
+| `amplifier-bundle/tools/autodrive_expected_checks.sh` | Read-only: builds the expected checks for one head SHA and decides `ci_status`. |
 | `amplifier-bundle/tools/autodrive_followups.sh` | Classifies minor-only rounds, files the follow-up issues and lists them on the plan task issue. |
 | `amplifier-bundle/tools/autodrive_followups_check.sh` | The `check` and `gate` commands: the merge gate's offline follow-up check. |
 | `amplifier-bundle/tools/autodrive_finding_rules.sh` | The minor-finding rules and text sanitising used by `autodrive_followups.sh`, for auto-drive-to-merge and auto-drive-light alike. |

@@ -154,9 +154,32 @@ steps:
       else
         STATUS="RED"
       fi
-      echo "INFO: CI for #${PR}: ${STATUS} (total=${TOTAL:-?} failing=${FAILING:-?})" >&2
-      printf '{"ci_status":"%s","ci_total":"%s","ci_pending":"%s","ci_failing":"%s","ci_signal":"%s:%s/%s"}\n' \
-        "$STATUS" "${TOTAL:-0}" "$PENDING" "${FAILING:-}" "$STATUS" "${FAILING:-?}" "${TOTAL:-?}"
+      SIG="${STATUS}:${FAILING:-?}/${TOTAL:-?}"
+      # #2186: a green rollup only lists the checks that exist. Every expected
+      # check must exist at the head and pass, so GREEN is lowered to the
+      # verdict of autodrive_expected_checks.sh, run read-only and only from
+      # AMPLIHACK_HOME (never from a path the PR fills). No new wait.
+      if [ "$STATUS" = "GREEN" ]; then
+        HB="$(gh pr view "$PR" --json headRefOid,baseRefName --jq '.headRefOid + " " + .baseRefName' 2>/dev/null)" || HB=""
+        H="${HB%% *}"; B="${HB#* }"; ECS=""; EC_RC=1
+        if [ -n "${AMPLIHACK_HOME:-}" ] && [ -f "${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_expected_checks.sh" ] \
+           && [ -n "$H" ] && [ -n "$B" ] && [ "$H" != "$HB" ]; then
+          EC_OUT="$(/bin/bash -p "${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_expected_checks.sh" "$H" "$B" 2>/dev/null)"; EC_RC=$?
+          EC_LAST="$(printf '%s\n' "$EC_OUT" | tail -n1)"
+          ECS="$(printf '%s' "$EC_LAST" | jq -r '.ci_status // empty' 2>/dev/null)"
+        fi
+        case "${ECS}:${EC_RC}" in
+          GREEN:0) ;;
+          RED:*|PENDING:*|MISSING:*)
+            STATUS="$ECS"
+            M="$(printf '%s' "$EC_LAST" | jq -r '.missing | join(",")' 2>/dev/null | tr -cd 'A-Za-z0-9 ._/()&:,+-')"
+            SIG="$(printf '%s' "${STATUS}:missing=${M}" | cut -c1-300)" ;;
+          *) STATUS="UNREADABLE"; SIG="expected-checks-unreadable" ;;
+        esac
+      fi
+      echo "INFO: CI for #${PR}: ${STATUS} (total=${TOTAL:-?} failing=${FAILING:-?} signal=${SIG})" >&2
+      printf '{"ci_status":"%s","ci_total":"%s","ci_pending":"%s","ci_failing":"%s","ci_signal":"%s"}\n' \
+        "$STATUS" "${TOTAL:-0}" "$PENDING" "${FAILING:-}" "$SIG"
     output: "ci_evidence"
 
 output:

@@ -104,6 +104,7 @@ digits "$PR" || PR=""
 # empty reviewDecision) stays in place instead of collapsing; the base ref
 # is last, so a `|` inside it lands in BASE and fails the check below.
 # CHECKS sums up the rollup as pass, not-passed or none (see the header).
+# CHECKS is advisory (approval and other-blockers advice); CI green is decided by autodrive_expected_checks.sh (#2186).
 VIEW_OK="false"
 STATE=""; DRAFT=""; MERGEABLE=""; MSTATE=""; DECISION=""; HEAD=""; CHECKS=""; BASE=""
 VIEW_FIELDS="state,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,statusCheckRollup,baseRefName"
