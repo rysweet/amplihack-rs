@@ -504,7 +504,7 @@ fn auto_mode_hands_an_inherited_guess_on_tagged_and_persists_nothing() {
         bin.join("claude"),
         format!(
             "#!/bin/sh\n\
-             if [ \"$1\" = \"--version\" ]; then echo '2.0.0 (Claude Code)'; exit 0; fi\n\
+             if [ \"$1\" = \"--version\" ]; then echo '2.1.319 (Claude Code)'; exit 0; fi\n\
              printf '%s|%s\\n' \"${{AMPLIHACK_AGENT_BINARY-<unset>}}\" \"${{{SOURCE_ENV}-<unset>}}\" >> '{}'\n\
              exit 0\n",
             probe.display()

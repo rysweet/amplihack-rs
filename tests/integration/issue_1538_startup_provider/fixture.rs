@@ -96,7 +96,7 @@ impl Fixture {
         .unwrap();
         fs::write(home.join(".codex/config.toml"), b"model = \"user-owned\"\n").unwrap();
         fs::write(home.join(".codex/hooks.json"), b"{\"foreign\":true}\n").unwrap();
-        for (provider, version) in [("claude", "2.1.0 (Claude Code)"), ("copilot", "0.0.400")] {
+        for (provider, version) in [("claude", "2.1.319 (Claude Code)"), ("copilot", "0.0.400")] {
             executable(
                 &tools.join(provider),
                 &format!(
@@ -202,6 +202,9 @@ esac"#
             .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
             .env("IS_SANDBOX", "1")
+            // AMPLIHACK_HOME is the source checkout here, so the launcher
+            // would write its contract file into the repository (#2030).
+            .env("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND", "1")
             .env(
                 "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
                 self.tools.join("amplihack-hooks"),

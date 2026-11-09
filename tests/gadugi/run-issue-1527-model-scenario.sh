@@ -92,7 +92,7 @@ cat > "$WORK/bin/stub" <<'STUB'
 #!/bin/sh
 name=$(basename "$0")
 case "${1-}" in
-  --version|-v|version) echo "2.1.247 (Claude Code)"; exit 0 ;;
+  --version|-v|version) echo "2.1.319 (Claude Code)"; exit 0 ;;
 esac
 dir="$QA_1527_RECORD/$name"
 mkdir -p "$dir"
