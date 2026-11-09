@@ -229,7 +229,7 @@ amplihack goal-agent-generator execute \
 - Iterative fix loop with max iterations
 - Pattern matching for common failures
 - Smart waiting with exponential backoff
-- Stops at mergeable state; the caller's workflow decides the merge
+- Stops at mergeable state; the merge belongs to the calling workflow
 
 **Location**: `~/.amplihack/.claude/agents/amplihack/specialized/ci-diagnostic-workflow.md`
 

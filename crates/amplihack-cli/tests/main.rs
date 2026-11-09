@@ -303,8 +303,6 @@ mod issue_1985_codex_agent_step_flags;
 mod issue_2001_codex_usage;
 #[path = "issue_2010_codex_exec_notice.rs"]
 mod issue_2010_codex_exec_notice;
-#[path = "issue_2181_no_blanket_no_merge_text.rs"]
-mod issue_2181_no_blanket_no_merge_text;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

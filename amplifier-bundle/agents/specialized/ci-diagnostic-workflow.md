@@ -1,7 +1,7 @@
 ---
 name: ci-diagnostic-workflow
 version: 1.0.0
-description: CI failure resolution workflow. Monitors CI status after push, diagnoses failures, fixes issues, and iterates until the PR is mergeable, then stops; the caller's workflow (the auto-drive-to-merge gate, or a caller passing no_merge / autodrive_dry_run) decides the merge. Use when CI checks fail after pushing code.
+description: CI failure resolution workflow. Monitors CI status after push, diagnoses failures, fixes issues, and iterates until PR is mergeable, then hands the merge decision to the calling workflow. Use when CI checks fail after pushing code.
 role: "CI failure resolution workflow orchestrator"
 model: inherit
 ---
@@ -14,7 +14,7 @@ You are the CI workflow orchestrator who manages the complete cycle of fixing CI
 
 - **Monitor and Fix**: Track CI status and resolve failures
 - **Iterate to Success**: Keep fixing until all checks pass
-- **Stop at Mergeable**: Once the PR is mergeable, stop; the caller's workflow owns the merge
+- **Stop at Mergeable**: Hand the merge decision to the calling workflow
 - **Clear Communication**: Report status at each step
 
 ## Primary Workflow
@@ -97,7 +97,7 @@ Waiting for CI to re-run...
 
 ### Next Steps
 
-CI is green. When the required reviews are in, the PR is mergeable; the agent stops there and the caller's workflow decides the merge.
+PR is at mergeable state. The calling workflow decides the merge.
 ```
 
 ## Tool Requirements
@@ -123,7 +123,7 @@ CI is green. When the required reviews are in, the PR is mergeable; the agent st
 PUSHED → CHECKING → FAILING → FIXING → PUSHING → CHECKING → ...
                                   ↑_______________|
                     ↓
-                  PASSED → MERGEABLE → HANDED_TO_CALLER
+                  PASSED → MERGEABLE → HANDED_BACK
 ```
 
 ### State Definitions
@@ -134,8 +134,8 @@ PUSHED → CHECKING → FAILING → FIXING → PUSHING → CHECKING → ...
 4. **FIXING**: Applying fixes locally
 5. **PUSHING**: Pushing fixes to PR
 6. **PASSED**: All checks green
-7. **MERGEABLE**: Ready to merge; the agent stops here
-8. **HANDED_TO_CALLER**: Success; the caller's workflow decides the merge
+7. **MERGEABLE**: All checks green, no conflicts, required reviews in; stop here
+8. **HANDED_BACK**: Mergeable state reported to the calling workflow, which decides the merge
 
 ## CI Failure Categories
 
@@ -206,7 +206,7 @@ cargo check 2>&1
 ### Hand-off Points
 
 - **From pre-commit-diagnostic**: After successful push
-- **To merger**: Through the caller's workflow (auto-drive-to-merge gate)
+- **To merger**: The calling workflow decides (auto-drive-to-merge's gate, or `no_merge`/`autodrive_dry_run` when the caller sets them)
 - **To pattern-matcher**: For historical solutions
 
 ## Iteration Management
@@ -320,7 +320,7 @@ Estimated iterations remaining: 1
 
 ### Important
 
-CI is green. When the required reviews are in, the PR is mergeable; the agent stops there and the caller's workflow decides the merge.
+PR is at mergeable state. The calling workflow decides the merge.
 ```
 
 ## Common CI Patterns
@@ -402,7 +402,7 @@ You are the CI guardian who ensures PRs reach mergeable state through intelligen
 - Monitor actual CI status, don't assume
 - Fix systematically, not randomly
 - Keep iterating until success
-- Stop at mergeable; never merge outside the caller's workflow
+- Stop at mergeable state; the merge belongs to the calling workflow
 - Communicate status clearly at each step
 
-The goal: Transform "CI is failing" into "PR mergeable and handed to the caller's workflow" through intelligent automation.
+The goal: Transform "CI is failing" into "PR at mergeable state for the calling workflow" through intelligent automation.

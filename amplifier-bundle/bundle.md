@@ -167,7 +167,7 @@ agents:
     description: "Azure Kubernetes Service (AKS) expert with deep knowledge of production deployments, networking, security, and operations"
   amplihack:ci-diagnostic-workflow:
     path: agents/specialized/ci-diagnostic-workflow.md
-    description: "CI failure resolution workflow. Monitors CI status after push, diagnoses failures, fixes issues, and iterates until the PR is mergeable, then stops; the caller's workflow (the auto-drive-to-merge gate, or a caller passing no_merge / autodrive_dry_run) decides the merge. Use when CI checks fail after pushing code."
+    description: "CI failure resolution workflow. Monitors CI status after push, diagnoses failures, fixes issues, and iterates until PR is mergeable (never auto-merges). Use when CI checks fail after pushing code."
   amplihack:cleanup:
     path: agents/specialized/cleanup.md
     description: "Post-task cleanup specialist. Reviews git status, removes temporary artifacts, eliminates unnecessary complexity, ensures philosophy compliance. Use proactively after completing tasks or todo lists."
