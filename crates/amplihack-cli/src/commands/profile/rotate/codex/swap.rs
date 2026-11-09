@@ -82,12 +82,24 @@ impl Refusal {
     }
 }
 
+/// The refusal for a `codex-state.json` that cannot be loaded, naming why:
+/// `detail=state-unreadable:<why>`.
+pub(super) fn state_unreadable(e: &std::io::Error) -> Refusal {
+    let text = e.to_string();
+    let why = text.strip_prefix("codex-state.json: ").unwrap_or(&text);
+    Refusal(
+        RefuseCode::JournalMismatch,
+        Some(format!("state-unreadable:{why}")),
+    )
+}
+
 /// The refusal for a link that is not a link to an account.
 pub(super) fn link_refusal(state: &LinkState) -> Option<Refusal> {
     match state {
         LinkState::Link { .. } => None,
         LinkState::NotLink => Some(Refusal::bare(RefuseCode::HomeNotLink)),
         LinkState::Missing => Some(Refusal::with(RefuseCode::HomeNotLink, "missing")),
+        LinkState::Unreadable => Some(Refusal::with(RefuseCode::HomeNotLink, "unreadable")),
         LinkState::OutsideRoot => Some(Refusal::bare(RefuseCode::LinkOutsideRoot)),
         LinkState::Dangling => Some(Refusal::bare(RefuseCode::LinkDangling)),
     }
@@ -164,8 +176,8 @@ pub(super) fn run(
             Refusal::bare(RefuseCode::JournalMismatch).emit(out, now);
             return Ok(());
         }
-        Err(_) => {
-            Refusal::with(RefuseCode::JournalMismatch, "state-unreadable").emit(out, now);
+        Err(e) => {
+            state_unreadable(&e).emit(out, now);
             return Ok(());
         }
     };

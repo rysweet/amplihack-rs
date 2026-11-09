@@ -9144,8 +9144,10 @@ The printed path must not start with `~/.codex-profiles/` or `~/.codex/`.
    `none(no-live)`, write the refusal for the link's state. When it is
    `none(recovering)`, run [Codex recovery](#codex-recovery). When
    `codex-state.json` cannot be loaded, write
-   `codex refuse reason=journal-mismatch detail=state-unreadable` instead,
-   whatever the decision, and run no swap or recovery.
+   `codex refuse reason=journal-mismatch detail=state-unreadable:<why>`
+   instead, whatever the decision, and run no swap or recovery. `<why>` is
+   the load error, for example `is_a_symlink`, `unknown_version` or
+   `line_1_column_2`.
 
 A cycle writes one `codex cycle` or `codex skip` line, and after a
 `codex cycle` line at most one of `codex swap`, `codex refuse`,
@@ -9255,10 +9257,10 @@ codex refuse reason=<code>[ detail=<word>]
 
 | Code | When |
 |------|------|
-| `home-not-link` | The link path is a real directory or file, or does not exist (`detail=missing`), or `<link>.amplihack-swap` exists and is not a symlink (`detail=swap-path-not-link`). |
+| `home-not-link` | The link path is a real directory or file, or does not exist (`detail=missing`), or cannot be examined, for example because permission is denied (`detail=unreadable`), or `<link>.amplihack-swap` exists and is not a symlink (`detail=swap-path-not-link`). |
 | `link-outside-root` | The link's target is not a direct child of the profiles root, or the link's parent or the root is not private (`detail=parent-not-private`, `detail=root-not-private`). |
 | `link-dangling` | The link's target does not exist. |
-| `journal-mismatch` | An open journal does not match the configured link or the current link, or the link moved between the decision and the swap. Also used when `codex-state.json` cannot be loaded (`detail=state-unreadable`). The journal and the state file are kept for you to inspect. |
+| `journal-mismatch` | An open journal does not match the configured link or the current link, or the link moved between the decision and the swap. Also used when `codex-state.json` cannot be loaded (`detail=state-unreadable:<why>`, where `<why>` is the load error). The journal and the state file are kept for you to inspect. |
 | `default-home-in-use` | A Codex process of yours uses the default home; see [Codex default home in use](#codex-default-home-in-use). |
 | `proc-unreadable` | The process list could not be read, so the rotator cannot tell whether the default home is in use: `/proc` is missing (every platform but Linux), cannot be listed, or is mounted with `hidepid`. The swap is deferred. |
 | `lock-busy` | The Codex lock (`.auto-switch.d/rotate/lock`) was held. |
@@ -9402,7 +9404,7 @@ hold Codex data.
 The file must be a regular file owned by you with mode `0600` or narrower,
 and is written atomically, never through a symlink. A file that is not, that
 does not parse, or that has a `version` other than `1` is never overwritten:
-every cycle writes `codex refuse reason=journal-mismatch detail=state-unreadable`
+every cycle writes `codex refuse reason=journal-mismatch detail=state-unreadable:<why>`
 and no swap or recovery runs, and `codex-resume` fails with status 1.
 
 #### What the Codex rotation does not do

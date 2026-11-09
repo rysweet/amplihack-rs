@@ -1011,7 +1011,8 @@ fn the_reference_tables_every_codex_refusal_code() {
         "detail=swap-path-not-link",
         "detail=parent-not-private",
         "detail=root-not-private",
-        "detail=state-unreadable",
+        "detail=state-unreadable:<why>",
+        "detail=unreadable",
         "detail=pid-<pid>",
     ] {
         assert!(REFERENCE.contains(detail), "reference is missing {detail}");

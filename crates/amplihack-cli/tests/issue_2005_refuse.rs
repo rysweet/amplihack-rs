@@ -310,16 +310,19 @@ fn a_missing_proc_root_refuses_with_proc_unreadable() {
 
 #[test]
 fn an_unreadable_state_file_refuses_and_is_never_overwritten() {
-    for body in [
-        "{not json".to_string(),
-        serde_json::json!({"version": 2, "resumes": []}).to_string(),
+    for (body, why) in [
+        ("{not json".to_string(), "line_1_column_2"),
+        (
+            serde_json::json!({"version": 2, "resumes": []}).to_string(),
+            "unknown_version",
+        ),
     ] {
         let c = CodexFixture::standard();
         c.write_state(&serde_json::json!({}));
         fs::write(c.state_path(), &body).unwrap();
         one_refusal(
             &c,
-            "codex refuse reason=journal-mismatch detail=state-unreadable",
+            &format!("codex refuse reason=journal-mismatch detail=state-unreadable:{why}"),
         );
         assert_eq!(fs::read_to_string(c.state_path()).unwrap(), body);
     }
@@ -332,7 +335,7 @@ fn a_state_file_with_a_wide_mode_is_refused_and_kept() {
     fs::set_permissions(c.state_path(), fs::Permissions::from_mode(0o644)).unwrap();
     one_refusal(
         &c,
-        "codex refuse reason=journal-mismatch detail=state-unreadable",
+        "codex refuse reason=journal-mismatch detail=state-unreadable:not_private__mode_0600_or_narrower_",
     );
     let m = fs::metadata(c.state_path()).unwrap();
     assert_eq!(m.permissions().mode() & 0o777, 0o644);
@@ -349,7 +352,7 @@ fn a_state_file_that_is_a_symlink_is_refused_and_not_followed() {
     std::os::unix::fs::symlink(&real, c.state_path()).unwrap();
     one_refusal(
         &c,
-        "codex refuse reason=journal-mismatch detail=state-unreadable",
+        "codex refuse reason=journal-mismatch detail=state-unreadable:is_a_symlink",
     );
     assert_eq!(
         fs::read_to_string(&real).unwrap(),

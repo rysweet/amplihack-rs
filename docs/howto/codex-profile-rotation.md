@@ -167,7 +167,7 @@ A refusal changes nothing and is tried again on the next cycle.
 
 | Code | What to do |
 |------|------------|
-| `home-not-link` | `~/.codex` is a real directory, is missing, or `~/.codex.amplihack-swap` is not a symlink. [Make `~/.codex` a link](#make-codex-a-link), or remove the stray `~/.codex.amplihack-swap` after checking what it is. |
+| `home-not-link` | `~/.codex` is a real directory, is missing, cannot be examined (`detail=unreadable`, usually a permission problem on its folder), or `~/.codex.amplihack-swap` is not a symlink. [Make `~/.codex` a link](#make-codex-a-link), or remove the stray `~/.codex.amplihack-swap` after checking what it is. |
 | `link-outside-root` | Point the link at a direct child of the profiles root. With `detail=parent-not-private` or `detail=root-not-private`, make your home or the root yours and not group- or world-writable (`chmod go-w`). |
 | `link-dangling` | The account the link points at is gone. Point the link at an existing account. |
 | `journal-mismatch` | An interrupted swap does not match the link, or `codex-state.json` is damaged. Inspect `~/.amplihack/claude-profiles/.auto-switch.d/rotate/codex-state.json`, fix the link by hand, then remove the `journal` entry or the file; see [Clearing a Codex journal mismatch](../reference/profile-command.md#clearing-a-codex-journal-mismatch). |

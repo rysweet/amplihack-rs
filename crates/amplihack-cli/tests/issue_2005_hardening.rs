@@ -167,7 +167,8 @@ fn a_too_open_state_file_is_reported_in_a_keep_cycle() {
     assert!(log[n - 2].ends_with(" -> keep"), "{log:?}");
     assert_eq!(
         log[n - 1],
-        "codex refuse reason=journal-mismatch detail=state-unreadable"
+        "codex refuse reason=journal-mismatch \
+         detail=state-unreadable:not_private__mode_0600_or_narrower_"
     );
     let m = fs::metadata(c.state_path()).unwrap();
     assert_eq!(m.permissions().mode() & 0o777, 0o644, "the file is kept");

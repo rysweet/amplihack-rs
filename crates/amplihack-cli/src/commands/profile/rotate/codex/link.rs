@@ -15,8 +15,10 @@ pub(super) enum LinkState {
         label: String,
         ino: u64,
     },
-    /// A real directory, a file, or something that cannot be examined.
+    /// A real directory or a file.
     NotLink,
+    /// The link path cannot be examined (for example, permission denied).
+    Unreadable,
     /// A symlink whose target is not a direct child of the root.
     OutsideRoot,
     /// A symlink whose target does not exist.
@@ -32,12 +34,12 @@ pub(super) enum LinkState {
 pub(super) fn inspect(link: &Path, root: &Path) -> LinkState {
     match std::fs::symlink_metadata(link) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return LinkState::Missing,
-        Err(_) => return LinkState::NotLink,
+        Err(_) => return LinkState::Unreadable,
         Ok(m) if !m.file_type().is_symlink() => return LinkState::NotLink,
         Ok(_) => {}
     }
     let Ok(abs) = target_of(link) else {
-        return LinkState::NotLink;
+        return LinkState::Unreadable;
     };
     if std::fs::metadata(&abs).is_err() {
         return LinkState::Dangling;

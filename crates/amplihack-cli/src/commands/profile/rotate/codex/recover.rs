@@ -7,7 +7,7 @@ use super::super::log::Sink;
 use super::cycle::{CodexCtx, Env};
 use super::link::{LinkState, inspect, swap_tmp};
 use super::state::{CodexJournal, CodexPhase, load, save, try_lock};
-use super::swap::{Refusal, RefuseCode, finish};
+use super::swap::{Refusal, RefuseCode, finish, state_unreadable};
 use super::{account_of, lines};
 use crate::commands::profile::ProfileError;
 use std::path::Path;
@@ -38,8 +38,8 @@ pub(super) fn run(
     };
     let mut state = match load(&ctx.rs.dir) {
         Ok(s) => s,
-        Err(_) => {
-            Refusal::with(RefuseCode::JournalMismatch, "state-unreadable").emit(out, now);
+        Err(e) => {
+            state_unreadable(&e).emit(out, now);
             return Ok(());
         }
     };

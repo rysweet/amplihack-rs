@@ -9,7 +9,7 @@ use super::super::settings::Settings;
 use super::decide::{DecideInput, Decision, NoneReason, decide};
 use super::link::{LinkState, inspect};
 use super::state::load;
-use super::swap::{Refusal, RefuseCode, link_refusal};
+use super::swap::link_refusal;
 use super::{Hooks, find_codex_bin, lines, recover, swap};
 use crate::commands::profile::ProfileError;
 use amplihack_utils::codex_capacity::{HOME_LABEL, list_accounts, profiles_root, timeout_from_env};
@@ -115,8 +115,8 @@ fn cycle(ctx: &CodexCtx<'_>, out: &mut Sink) -> Result<(), ProfileError> {
     );
     // An unreadable state file is reported every cycle; no swap, recovery
     // or other refusal runs until it is fixed.
-    if state.is_err() {
-        Refusal::with(RefuseCode::JournalMismatch, "state-unreadable").emit(out, now());
+    if let Err(e) = &state {
+        swap::state_unreadable(e).emit(out, now());
         return Ok(());
     }
     let journal = st.and_then(|s| s.journal.clone());

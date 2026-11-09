@@ -4,7 +4,8 @@
 //! Contract:
 //! - `inspect(link: &Path, root: &Path) -> LinkState`, with
 //!   `LinkState::{Link { target: PathBuf, label: String, ino: u64 },
-//!   NotLink, OutsideRoot, Dangling, Missing}`. `target` is canonical.
+//!   NotLink, Unreadable, OutsideRoot, Dangling, Missing}`. `target` is
+//!   canonical.
 //! - `swap_tmp(link) -> PathBuf` is `<link>.amplihack-swap`.
 //! - `relink(link, new_target, fault) -> io::Result<()>` writes an absolute
 //!   symlink at `swap_tmp(link)` and renames it over `link`; a rename
@@ -59,6 +60,23 @@ fn a_relative_link_is_resolved_from_its_parent() {
     let t = setup();
     mklink(&t, Path::new("../profiles/b"));
     assert!(matches!(inspect(&t.link, &t.root), LinkState::Link { label, .. } if label == "b"));
+}
+
+#[test]
+fn a_link_that_cannot_be_examined_is_unreadable_not_a_directory() {
+    // Review of #2162: a permission error is not reported as a real
+    // directory (`home-not-link` with no detail).
+    use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        return; // root reads through mode 000
+    }
+    let t = setup();
+    mklink(&t, &t.root.join("a"));
+    let parent = t.link.parent().unwrap();
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o000)).unwrap();
+    let state = inspect(&t.link, &t.root);
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(state, LinkState::Unreadable);
 }
 
 #[test]
