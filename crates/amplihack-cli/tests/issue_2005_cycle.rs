@@ -258,6 +258,35 @@ fn a_custom_home_link_is_the_one_inspected_and_swapped() {
 }
 
 #[test]
+fn a_real_home_directory_beside_a_custom_link_never_blocks_a_swap() {
+    // Review of #2162: with the link configured elsewhere, a signed-in
+    // `~/.codex` directory that ranks first must not be chosen (a swap to it
+    // is refused as link-outside-root every cycle); the next account is.
+    let c = CodexFixture::standard();
+    fs::remove_file(&c.link).unwrap();
+    let other = c.f.home.join("links").join("codex-default");
+    fs::create_dir_all(other.parent().unwrap()).unwrap();
+    fs::set_permissions(other.parent().unwrap(), fs::Permissions::from_mode(0o700)).unwrap();
+    std::os::unix::fs::symlink(c.account("ffarmer"), &other).unwrap();
+    trapped(&c.link);
+    c.reading(".codex", 1, 1);
+    let mut cmd = c.cmd(&["profile", "rotate"]);
+    cmd.env("AMPLIHACK_ROTATE_CODEX_HOME_LINK", &other);
+    let out = c.run_cmd("rotate with a custom link and a real ~/.codex", cmd);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let log = c.codex_log();
+    let line = cycle_line(&log);
+    assert!(!line.contains("~/.codex"), "{line}");
+    assert!(line.ends_with(" -> swap ffarmer->ggrant"), "{line}");
+    assert!(
+        !log.iter().any(|l| l.contains("link-outside-root")),
+        "{log:?}"
+    );
+    assert_eq!(fs::read_link(&other).unwrap(), c.account("ggrant"));
+    assert!(fs::symlink_metadata(&c.link).unwrap().is_dir());
+}
+
+#[test]
 fn invalid_codex_settings_are_rotate_config_errors_naming_the_source() {
     let c = CodexFixture::standard();
     type Case<'a> = (Vec<&'a str>, Option<(&'a str, &'a str)>, &'a str);

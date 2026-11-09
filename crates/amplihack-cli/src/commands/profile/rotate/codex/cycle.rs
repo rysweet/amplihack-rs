@@ -77,12 +77,14 @@ fn cycle(ctx: &CodexCtx<'_>, out: &mut Sink) -> Result<(), ProfileError> {
     let root_c = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
     let link_state = inspect(ctx.link, &root_c);
     let live = match &link_state {
-        LinkState::Link { target, label, .. } => {
-            // The live account is read once, under its own label.
-            accounts.retain(|a| {
-                a.label != HOME_LABEL
-                    || std::fs::canonicalize(&a.path).ok().as_ref() != Some(target)
-            });
+        LinkState::Link { label, .. } => {
+            // The live account is read once, under its own label. With a
+            // link in place `~/.codex` is either that link (the live
+            // account) or, when another link is configured, a directory
+            // outside the root that a swap must refuse; it is never a swap
+            // target, so it is not read or ranked. Left in, it could rank
+            // first and block every swap as `link-outside-root`.
+            accounts.retain(|a| a.label != HOME_LABEL);
             Some(label.clone())
         }
         _ => None,

@@ -7,7 +7,7 @@ use crate::commands::profile::ProfileError;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, symlink};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, symlink};
 use std::path::{Component, Path, PathBuf};
 
 /// The most of an events file read.
@@ -92,11 +92,18 @@ pub(super) fn read_events(
     }
     let file = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC | libc::O_NOFOLLOW)
         .open(&canon)
         .map_err(|e| refused(path, &e.to_string()))?;
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
+    let opened = file.metadata().map_err(|e| refused(path, &e.to_string()))?;
+    if !opened.is_file() {
         return Err(refused(path, "not a regular file"));
+    }
+    // The path is opened again by name after the checks; a directory on it
+    // swapped in between would open another file. Only the file checked
+    // above is read.
+    if (opened.dev(), opened.ino()) != (meta.dev(), meta.ino()) {
+        return Err(refused(path, "it changed while it was being checked"));
     }
     let mut reader = BufReader::new(file.take(MAX_EVENTS_BYTES));
     let mut scan = EventsScan {
