@@ -4,6 +4,7 @@
 //! Each test runs the real `amplihack` binary, isolated, with stub agent CLIs
 //! first on `PATH`. A stub records, per run `n`:
 //! - `argv.<n>`: its argv, NUL-separated (what `/proc/<pid>/cmdline` shows);
+//! - `cmdline.<n>`: a copy of the stub's own `/proc/$$/cmdline`;
 //! - `stdin.<n>`: everything on its stdin;
 //! - `files.<n>`: for each argument after a `--*-file` or `--add-dir` flag,
 //!   one tab-separated line `flag  path  <type>:<mode>:<uid>  <parent mode>`;
@@ -39,6 +40,7 @@ if [ "$1" = "--version" ]; then
 fi
 echo run >> "$RECORD_DIR/calls"
 n=$(grep -c '^run$' "$RECORD_DIR/calls")
+cp /proc/$$/cmdline "$RECORD_DIR/cmdline.$n" 2>/dev/null
 : > "$RECORD_DIR/files.$n.tmp"
 : > "$RECORD_DIR/argv.$n.tmp"
 prev=
@@ -671,7 +673,7 @@ fn auto_mode_turn_uses_stdin() {
 }
 
 #[test]
-fn copilot_uses_pointer() {
+fn auto_mode_copilot_turn_uses_pointer() {
     let f = Fixture::new();
     let task = task_file(&f);
     let out = f.run(&mut f.cmd(&[
@@ -701,8 +703,11 @@ fn copilot_uses_pointer() {
     );
 }
 
+/// Auto mode only (`--auto --prompt-file`): amplihack builds `codex exec -`
+/// itself. The passthrough form, `amplihack codex -- exec <text>`, is
+/// covered by `codex_passthrough_exec_moves_the_task_to_stdin`.
 #[test]
-fn codex_exec_reads_stdin() {
+fn auto_mode_codex_turn_reads_stdin() {
     let f = Fixture::new();
     let task = task_file(&f);
     let out = f.run(&mut f.cmd(&[
@@ -720,6 +725,125 @@ fn codex_exec_reads_stdin() {
     assert!(argv.iter().any(|a| a == "exec"), "{argv:?}");
     assert_eq!(argv.last().map(String::as_str), Some("-"), "{argv:?}");
     assert!(f.stdin(1).contains(SENTINEL));
+}
+
+// ---------------------------------------------------------------------------
+// Passthrough: amplihack codex -- exec <text>, amplihack copilot -- -p <text>
+// ---------------------------------------------------------------------------
+
+impl Fixture {
+    /// The stub's own `/proc/$$/cmdline`, the bytes `pkill -f` matches.
+    fn proc_cmdline(&self, n: usize) -> String {
+        let raw = fs::read(self.records.join(format!("cmdline.{n}")))
+            .unwrap_or_else(|e| panic!("cmdline.{n}: {e}"));
+        String::from_utf8_lossy(&raw).replace('\0', " ")
+    }
+}
+
+fn assert_proc_cmdline_clean(f: &Fixture, n: usize) {
+    let cmdline = f.proc_cmdline(n);
+    for needle in CONTRACT_PHRASES
+        .iter()
+        .chain([SENTINEL, SYS_SENTINEL].iter())
+    {
+        assert!(
+            !cmdline.contains(needle),
+            "/proc cmdline has {needle:?}: {cmdline:?}"
+        );
+    }
+}
+
+#[test]
+fn codex_passthrough_exec_moves_the_task_to_stdin() {
+    // What a recipe agent step on Codex, or a user, runs:
+    // amplihack codex -- exec <task>.
+    for form in [
+        vec!["codex", "--subprocess-safe", "--", "exec", SENTINEL],
+        vec![
+            "codex",
+            "--subprocess-safe",
+            "--",
+            "exec",
+            "--json",
+            SENTINEL,
+        ],
+        vec!["codex", "--subprocess-safe", "--", "exec", "--", SENTINEL],
+    ] {
+        let f = Fixture::new();
+        let out = f.run(&mut f.cmd(&form));
+        assert!(out.status.success(), "{form:?}\n{}", describe(&out));
+        let argv = f.argv(1);
+        assert_argv_clean(&argv, &[]);
+        assert_proc_cmdline_clean(&f, 1);
+        assert_eq!(argv.first().map(String::as_str), Some("exec"), "{argv:?}");
+        assert_eq!(
+            argv.last().map(String::as_str),
+            Some("-"),
+            "{form:?}: {argv:?}"
+        );
+        assert_eq!(f.stdin(1), SENTINEL, "{form:?}: the task arrives on stdin");
+    }
+}
+
+#[test]
+fn codex_passthrough_exec_dash_is_unchanged() {
+    let f = Fixture::new();
+    let out = f.run(&mut f.cmd(&["codex", "--subprocess-safe", "--", "exec", "-"]));
+    assert!(out.status.success(), "{}", describe(&out));
+    let argv = f.argv(1);
+    assert_eq!(argv.iter().filter(|a| *a == "-").count(), 1, "{argv:?}");
+    assert_eq!(argv.last().map(String::as_str), Some("-"), "{argv:?}");
+}
+
+#[test]
+fn codex_passthrough_two_prompts_fail_without_echo() {
+    let f = Fixture::new();
+    let out = f.run(&mut f.cmd(&[
+        "codex",
+        "--subprocess-safe",
+        "--",
+        "exec",
+        SENTINEL,
+        "again",
+    ]));
+    assert!(!out.status.success(), "{}", describe(&out));
+    assert_eq!(f.runs(), 0, "nothing is spawned");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(all.contains("more than one positional prompt"), "{all}");
+    assert!(!all.contains(SENTINEL), "{all}");
+}
+
+#[test]
+fn copilot_passthrough_prompt_uses_pointer() {
+    for form in [
+        vec!["copilot", "--subprocess-safe", "--", "-p", SENTINEL],
+        vec!["copilot", "--subprocess-safe", "--", "--prompt", SENTINEL],
+        vec!["copilot", "--subprocess-safe", "--", "-i", SENTINEL],
+    ] {
+        let f = Fixture::new();
+        let out = f.run(&mut f.cmd(&form));
+        assert!(out.status.success(), "{form:?}\n{}", describe(&out));
+        let argv = f.argv(1);
+        assert_argv_clean(&argv, &[]);
+        assert_proc_cmdline_clean(&f, 1);
+        let pointer = f.file(1, "pointer");
+        assert_private(&pointer, true);
+        let add_dir = f.file(1, "--add-dir");
+        assert_eq!(
+            Some(add_dir.path.as_path()),
+            pointer.path.parent(),
+            "{form:?}: --add-dir names only the prompt's private directory"
+        );
+        assert_eq!(f.content(1, "pointer"), SENTINEL, "{form:?}");
+        assert!(
+            !pointer.path.exists(),
+            "{form:?}: the pointer file is removed after exit"
+        );
+    }
 }
 
 #[test]

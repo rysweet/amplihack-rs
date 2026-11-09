@@ -84,6 +84,22 @@ impl Rewritten {
             _dir: None,
         }
     }
+
+    /// Arguments for a non-Claude agent: an optional stdin payload and the
+    /// per-session directory holding any pointer-sentence files.
+    pub(super) fn from_parts(
+        args: Vec<String>,
+        stdin_payload: Option<String>,
+        dir: Option<TempDir>,
+    ) -> Self {
+        Self {
+            args,
+            stdin_payload,
+            user_supplied_append: false,
+            used_file_flags: false,
+            _dir: dir,
+        }
+    }
 }
 
 /// Which prompt-bearing flag a token is, and its inline `=value` if any.
@@ -137,40 +153,52 @@ impl Builder {
 
     /// Write `text` to `<dir>/<name>` (0600, `create_new`) and return the path.
     fn write_private(&mut self, name: &str, flag: &str, text: &str) -> Result<PathBuf> {
-        use std::io::Write;
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-        if self.dir.is_none() {
-            let dir = tempfile::Builder::new()
-                .prefix("amplihack-prompt-")
-                .tempdir()
-                .context("cannot create a private directory for the prompt files")?;
-            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
-                .context("cannot set mode 0700 on the private prompt directory")?;
-            self.dir = Some(dir);
-        }
-        let dir = self.dir.as_ref().expect("created above");
-        let path = dir.path().join(name);
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(&path)
-            .map_err(|error| {
-                // The io::Error carries an errno only, never the prompt text.
-                if error.kind() == std::io::ErrorKind::AlreadyExists {
-                    anyhow::anyhow!("{flag} was given twice; pass it once")
-                } else {
-                    anyhow::Error::new(error)
-                        .context(format!("cannot create a private file for {flag}"))
-                }
-            })?;
-        file.write_all(text.as_bytes())
-            .and_then(|()| file.sync_all())
-            .with_context(|| format!("cannot write the {flag} text to a private file"))?;
-        Ok(path)
+        write_private_file(&mut self.dir, name, flag, text)
     }
+}
+
+/// Write `text` to `<dir>/<name>` (0600, `create_new`, `O_NOFOLLOW`) and
+/// return the path. `dir` is the per-session 0700 `amplihack-prompt-*`
+/// directory, created on first use. Errors name `flag`, never the text.
+pub(super) fn write_private_file(
+    dir: &mut Option<TempDir>,
+    name: &str,
+    flag: &str,
+    text: &str,
+) -> Result<PathBuf> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    if dir.is_none() {
+        let created = tempfile::Builder::new()
+            .prefix("amplihack-prompt-")
+            .tempdir()
+            .context("cannot create a private directory for the prompt files")?;
+        std::fs::set_permissions(created.path(), std::fs::Permissions::from_mode(0o700))
+            .context("cannot set mode 0700 on the private prompt directory")?;
+        *dir = Some(created);
+    }
+    let dir = dir.as_ref().expect("created above");
+    let path = dir.path().join(name);
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&path)
+        .map_err(|error| {
+            // The io::Error carries an errno only, never the prompt text.
+            if error.kind() == std::io::ErrorKind::AlreadyExists {
+                anyhow::anyhow!("{flag} was given twice; pass it once")
+            } else {
+                anyhow::Error::new(error)
+                    .context(format!("cannot create a private file for {flag}"))
+            }
+        })?;
+    file.write_all(text.as_bytes())
+        .and_then(|()| file.sync_all())
+        .with_context(|| format!("cannot write the {flag} text to a private file"))?;
+    Ok(path)
 }
 
 /// Rewrite `amplihack claude` passthrough arguments; see the module docs.

@@ -29,6 +29,7 @@ Issue: [#2030](https://github.com/rysweet/amplihack-rs/issues/2030).
 - [The contract file](#the-contract-file)
 - [The version gate](#the-version-gate)
 - [Passthrough rewrite for `amplihack claude`](#passthrough-rewrite-for-amplihack-claude)
+- [Passthrough rewrite for `amplihack codex` and `amplihack copilot`](#passthrough-rewrite-for-amplihack-codex-and-amplihack-copilot)
 - [Per-session files](#per-session-files)
 - [Automatic prompt delivery never selects argv](#automatic-prompt-delivery-never-selects-argv)
 - [Codex](#codex)
@@ -73,10 +74,11 @@ of `pkill -f`.
 | Auto-mode turn, Codex | argv below 4096 bytes | `codex exec -`, prompt on stdin |
 | Auto-mode turn, Copilot | file reference above 4096 bytes, argv below | pointer sentence at every size, with `--add-dir <private dir>` |
 | Fleet and remote launches | `--prompt-file`, prompt on stdin (#1570) | unchanged; the remote file is created under `umask 077` and the started auto-mode child follows the auto-mode rows above |
-| `amplihack copilot` | argv below 4096 bytes | pointer sentence |
-| `amplihack codex` with `exec` | stdin above 4096 bytes | `exec -`, prompt on stdin |
-| `amplihack codex` interactive, with a first prompt | positional argv | pointer sentence |
-| `amplihack amplifier -- run <prompt>` | argv below 4096 bytes | pointer sentence |
+| `amplihack copilot -- -p <text>` (also `--prompt`, `-i`, `--interactive`) | passed through | the flag and the pointer sentence, with `--add-dir <private dir>` (no `--add-dir` under the external LiteLLM gateway); see [Passthrough rewrite for `amplihack codex` and `amplihack copilot`](#passthrough-rewrite-for-amplihack-codex-and-amplihack-copilot) |
+| `amplihack codex -- exec <text>` (also `exec review`, `exec resume`, `exec fork`) | passed through | `-` in place of `<text>`, prompt on stdin |
+| `amplihack codex -- '<prompt>'` (interactive first prompt) | positional argv | unchanged; documented exception (see [What argv still contains](#what-argv-still-contains)) |
+| Auto-mode turn, Amplifier (`amplifier run`) | argv below 4096 bytes | pointer sentence |
+| `amplihack amplifier -- run <prompt>` | passed through | unchanged; documented exception (see [What argv still contains](#what-argv-still-contains)) |
 | `llm_client` (Claude) | argv below 4096 bytes | stdin |
 | `llm_client` (Copilot) | argv below 4096 bytes | pointer sentence |
 | `llm_client` (unknown launcher) | argv | error: `NoSafeChannel` |
@@ -278,13 +280,67 @@ and never the text.
 `run_launch_core` runs these steps in this order. Nothing is spawned before
 step 3 succeeds.
 
-1. `rewrite_claude_passthrough`
+1. `rewrite_claude_passthrough` (Claude), `rewrite_codex_passthrough` (Codex)
+   or `rewrite_copilot_passthrough` (Copilot)
 2. `should_inject_system_prompt_append` on the rewritten arguments
 3. the version gate, if step 2 is true or the rewrite used a `*-file` flag
 4. `ensure_contract_file`, if step 2 is true
 5. build the command
 6. spawn, with piped stdin only when there is a payload
 7. wait for the child or a forwarded signal, then drop `Rewritten`
+
+## Passthrough rewrite for `amplihack codex` and `amplihack copilot`
+
+`amplihack codex` and `amplihack copilot` rewrite their passthrough arguments
+in the same launch step as `amplihack claude`
+(`crates/amplihack-cli/src/commands/launch/codex_copilot_rewrite.rs`). The
+stdin payload is delivered the same way: a piped stdin written by
+`spawn_stdin_writer`.
+
+Codex (`rewrite_codex_passthrough`):
+
+| Caller passes | Child receives |
+| --- | --- |
+| `exec <text>`, `e <text>`, `exec review <text>` | `-` in place of `<text>`; `<text>` on stdin |
+| `exec resume <session> <text>`, `exec resume --last <text>` | `-` in place of `<text>`; `<text>` on stdin |
+| `exec fork <session> <text>` | `-` in place of `<text>`; `<text>` on stdin |
+| `exec -`, or `exec` with no prompt | unchanged |
+| `exec help ...` | unchanged |
+| interactive `codex <text>`, or any other subcommand | unchanged; documented exception |
+
+Option values are skipped with the launcher's Codex arity tables
+(`LONG_OPTIONS_WITH_VALUE`, `SHORT_OPTIONS_WITH_VALUE`), so the value of
+`--model exec` or `-o last.txt` is never read as a prompt. `--image` takes
+every following non-option token, as clap does. A prompt after `--` is
+rewritten too: `exec -- <text>` becomes `exec -- -`. Codex reads `-` as "read
+the prompt from stdin" for `exec`, `exec review`, `exec resume` and
+`exec fork` (codex-cli 0.166.0). The flags added for recipe agent steps
+(#1985) go directly after `exec`, so `exec <text>` reaches Codex as
+`exec --sandbox workspace-write ... --dangerously-bypass-hook-trust -`.
+
+Interactive Codex is not rewritten. The first positional of a bare `codex` is
+either a prompt or a Codex subcommand, and the subcommand list changes
+between Codex releases, so treating it as a prompt could break a subcommand.
+
+Copilot (`rewrite_copilot_passthrough`):
+
+| Caller passes | Child receives |
+| --- | --- |
+| `-p <text>`, `--prompt <text>`, `--prompt=<text>`, `-p<text>` | the same flag and the pointer sentence |
+| `-i <text>`, `--interactive <text>`, `--interactive=<text>`, `-i<text>` | the same flag and the pointer sentence |
+| a value that already begins with the pointer sentence (as in `quality-loop.yaml`) | unchanged |
+| `--` and everything after it | unchanged |
+
+When a pointer file was written, `--add-dir <per-session directory>` is put in
+front of the arguments, except under the external LiteLLM gateway, whose
+launch policy refuses `--add-dir`.
+
+Errors, which name flags only:
+
+| Input | Error |
+| --- | --- |
+| `codex exec` with two positional prompts | ``codex exec was given more than one positional prompt; pass one, or pass `-` and send the prompt on stdin`` |
+| `copilot -p <text>` given twice (`-p` and `--prompt` count as one flag; so do `-i` and `--interactive`) | `-p was given twice; pass it once` (the flag as written the second time) |
 
 ## Per-session files
 
@@ -546,8 +602,13 @@ panic payload.
   external LiteLLM gateway, whose launch policy forbids `--add-dir`.
 - The external LiteLLM gateway pins Claude Code 2.1.247, below 2.1.319, so a
   routed Claude launch needs `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND=1`.
-- `codex` interactive launches with a first prompt receive the pointer
-  sentence; the 96 KiB interactive limit is gone.
+- Launcher-built interactive `codex` launches with a first prompt receive the
+  pointer sentence; the 96 KiB interactive limit is gone.
+- `amplihack codex -- exec <text>` with stdin piped from the caller used to
+  give Codex both, with stdin appended as a `<stdin>` block; the child now
+  receives only `<text>`.
+- `amplihack copilot -- -p <text>` passes Copilot the pointer sentence and
+  `--add-dir <private dir>` instead of the text.
 
 ## What argv still contains
 
@@ -557,13 +618,15 @@ per-session files, and the fixed pointer sentence that Copilot and interactive
 Codex receive. The pointer sentence is a constant plus a path; the tests check
 that it holds no sentinel phrase and no `tail -f /dev/null`.
 
-Three cases keep text in a process's argv and are documented exceptions:
+Five cases keep text in a process's argv and are documented exceptions:
 
 | Case | Why | Tracking |
 | --- | --- | --- |
 | The `amplihack claude` wrapper started by a recipe agent step | The recipe runner puts the brief in the wrapper's argv. The agent CLI child below it is clean. The runner change gives Claude a bare `-p` with stdin and `--system-prompt-file`; the wrapper is clean once `RECIPE_RUNNER_REV` is updated to include it | Follow-up issue for the wrapper argv and the pin update |
 | A Docker launch, `amplihack claude --docker -p '<text>'` | The host `docker` process receives the arguments before the rewrite, because the per-session files are host paths the container cannot see. The text is already in the caller's own `amplihack` argv | Accepted risk; a fix needs the private file mounted into the container |
 | `amplihack claude -- '<prompt>'` (interactive first prompt) | The text is in the wrapper's own argv, which the caller supplied, and interactive Claude cannot read its first prompt from stdin | Follow-up issue for an interactive `--prompt-file` option |
+| `amplihack codex -- '<prompt>'` (interactive first prompt) | The text is in the wrapper's own argv, which the caller supplied. The first positional of a bare `codex` may be a subcommand, and that list changes between Codex releases, so the rewrite cannot tell a prompt from a subcommand. `amplihack codex -- exec <text>` is rewritten | Same follow-up as the interactive Claude prompt |
+| `amplihack amplifier -- run <prompt>` | The text is in the wrapper's own argv, which the caller supplied. Upstream documents only `amplifier run [OPTIONS] [PROMPT]`, with no option arity table, so the rewrite cannot find the prompt safely. No bundled recipe uses this form; amplihack's own Amplifier launches (auto mode, `platform_cli`) use the pointer sentence | Accepted; use `--auto --prompt-file` |
 
 To start an interactive or auto-mode session without prompt text in any argv,
 use `--prompt-file` with `--auto`; see
@@ -573,10 +636,11 @@ use `--prompt-file` with `--auto`; see
 
 | Test file | What it checks |
 | --- | --- |
-| `crates/amplihack-cli/tests/issue_2030_no_prompt_in_argv.rs` | Each launch path with a stub agent on `PATH`: argv has no sentinel phrase and no `tail -f /dev/null`; each `*-file` path is a regular 0600 file in a 0700 directory and holds the sentinel; stdin payloads arrive on stdin; per-session files are gone after exit 0, exit 1 and SIGTERM; version gate cases 2.1.318, unparseable and missing; contract file repair for 0644, wrong content and a symlink (the symlink target is unchanged); `private/` as a symlink or foreign-owned fails; a home path with a newline is rejected; no error path echoes the sentinel |
+| `crates/amplihack-cli/tests/issue_2030_no_prompt_in_argv.rs` | Each launch path with a stub agent on `PATH`: argv has no sentinel phrase and no `tail -f /dev/null`; each `*-file` path is a regular 0600 file in a 0700 directory and holds the sentinel; stdin payloads arrive on stdin; per-session files are gone after exit 0, exit 1 and SIGTERM; version gate cases 2.1.318, unparseable and missing; contract file repair for 0644, wrong content and a symlink (the symlink target is unchanged); `private/` as a symlink or foreign-owned fails; a home path with a newline is rejected; no error path echoes the sentinel. The passthrough forms run through the real binary: `amplihack codex -- exec <text>` (plain, with `--json`, and after `--`) gives Codex argv ending in `-`, the text on stdin, and a `/proc/<pid>/cmdline` without the text; `exec -` is unchanged; two prompts fail before any spawn; `amplihack copilot -- -p`, `--prompt` and `-i` give the pointer sentence and an `--add-dir` naming only its private directory. `auto_mode_codex_turn_reads_stdin` and `auto_mode_copilot_turn_uses_pointer` cover only the `--auto --prompt-file` path |
 | `crates/amplihack-cli/tests/issue_2030_guards.rs` | Fails CI if any production code calls a `select_mode(` other than `try_select_mode(` (the old selector that answered `Argv` is removed), if any code under `crates/` builds `--append-system-prompt` followed by text, if any bundled recipe passes inline text to `-p` or `exec`, if a bundle file sets `AMPLIHACK_PROMPT_DELIVERY`, or if a `quality-loop.yaml` Copilot call lacks its private directory and `EXIT` trap |
 | `crates/amplihack-cli/src/commands/launch/tests_issue_2030_contract.rs` | A 0644 contract file is repaired to 0600; a symlink is replaced and its target left unchanged; a foreign-owned `private/` is refused; two concurrent first launches both end with one complete file |
 | `crates/amplihack-cli/src/commands/launch/tests_passthrough_rewrite.rs` | Every row of the rewrite table; repeated flags are errors; `format!("{:?}", rewritten)` does not contain the sentinel |
+| `crates/amplihack-cli/src/commands/launch/tests_codex_copilot_rewrite.rs` | Every row of the Codex and Copilot passthrough tables: `exec <text>` and its `review`, `resume`, `fork` and `--` forms put `-` in place of the text and the text in the payload; option values are not prompts; `exec -`, interactive Codex and other subcommands are unchanged; two prompts are an error that names no text; Copilot pointer files are 0600 in a 0700 directory named by `--add-dir`, removed on drop |
 | `crates/amplihack-cli/src/commands/agent/tests_cmdline_issue_2030.rs` | The `/proc` argv parser recognises bare `-p` with `*-file` flags as print mode |
 | `crates/amplihack-utils/tests/prompt_delivery_issue_2030.rs` | `Auto` never returns `Argv` at any size; `AMPLIHACK_PROMPT_DELIVERY=argv` maps to `auto` and the prompt is not in argv; `NoSafeChannel` text is stable |
 | `crates/amplihack-launcher/tests/prompt_delivery_issue_2030.rs` | `codex exec -` gets stdin; interactive Codex, Copilot and Amplifier get the pointer sentence and `--add-dir` for the private directory only. The old 96 KiB and "requires terminal stdin" tests are rewritten as pointer-delivery tests |
@@ -584,7 +648,7 @@ use `--prompt-file` with `--auto`; see
 | `crates/amplihack-remote/src/script/issue_2030_tests.rs` | The remote script passes `--prompt-file` and creates the file under `umask 077` |
 | `crates/amplihack-turn/src/turn.rs` (unit test) | `build_turn_argv` returns argv with no message text: `-p` is followed by the pointer sentence, `--add-dir` names only the per-turn 0700 directory, and the file is gone after the turn. The `no_argv_append_text` guard does not catch `-p <text>`, so this test is the one that covers the Signal chat turn |
 | `crates/amplihack-cli/tests/system_prompt_append_fragment.rs` | Updated. The assertion at line 125 that the contract header contains "process table" or "visible" is replaced, because the new header says neither; it now checks that the header names `--append-system-prompt-file` |
-| `STUB` in `issue_2030_no_prompt_in_argv.rs` | The stub `claude`, `codex` and `copilot`, written into each test's isolated `PATH`. Driven by `STUB_VERSION`, `STUB_EXIT` and `STUB_SLEEP`; logs argv, stdin and `stat` of every path after a `*-file` flag |
+| `STUB` in `issue_2030_no_prompt_in_argv.rs` | The stub `claude`, `codex` and `copilot`, written into each test's isolated `PATH`. Driven by `STUB_VERSION`, `STUB_EXIT` and `STUB_SLEEP`; logs argv, a copy of its own `/proc/$$/cmdline`, stdin, and `stat` of every path after a `*-file` or `--add-dir` flag and in a pointer sentence |
 
 Every test runs under `isolated(..)` and never touches the real `~/.claude`,
 `~/.amplihack` or profile root. The `/proc` argv parsers (`agent/cmdline.rs`,

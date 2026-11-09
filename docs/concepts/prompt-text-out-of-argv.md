@@ -91,6 +91,14 @@ instructions in the file <path>", which holds a path and no task text.
 `codex exec` reads its prompt from stdin. Neither CLI receives amplihack's
 operating contract, as before #2030.
 
+The same holds when a caller passes the prompt through the wrapper:
+`amplihack codex -- exec <text>` becomes `exec -` with the text on stdin, and
+`amplihack copilot -- -p <text>` becomes `-p` and the pointer sentence. Two
+passthrough forms are left alone and listed as exceptions: an interactive
+first prompt (`amplihack claude -- '<text>'`, `amplihack codex -- '<text>'`)
+and `amplihack amplifier -- run <text>`. See
+[What argv still contains](../reference/agent-prompt-channels.md#what-argv-still-contains).
+
 ## Why fail instead of falling back
 
 Before #2030, prompt delivery chose argv for any prompt of 4096 bytes or fewer,

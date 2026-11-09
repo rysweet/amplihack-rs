@@ -7,6 +7,7 @@ mod blarify;
 mod checkout;
 /// Issue #1985 — sandbox and hook-trust flags for Codex agent steps.
 mod codex_agent_step;
+mod codex_copilot_rewrite;
 mod command;
 mod context;
 /// Issue #2030 — the 0600 contract file and the Claude Code version gate.
@@ -23,6 +24,8 @@ mod system_prompt_append;
 mod tests_blarify;
 #[cfg(test)]
 mod tests_codex_agent_step;
+#[cfg(test)]
+mod tests_codex_copilot_rewrite;
 #[cfg(test)]
 mod tests_command;
 #[cfg(test)]
@@ -348,14 +351,18 @@ fn run_launch_core(
     }
 
     // Issue #2030, launch order step 1: rewrite the passthrough arguments of a
-    // Claude launch so no prompt text reaches the agent's argv. After the
-    // Docker hand-off: the amplihack inside the container rewrites its own.
-    // `rewritten` owns the per-session files; it lives until this function
-    // returns, after the child has been waited on.
-    let rewritten = if agent_binary_for_tool(tool) == Some(AgentBinary::Claude) {
-        passthrough_rewrite::rewrite_claude_passthrough(&extra_args)?
-    } else {
-        passthrough_rewrite::Rewritten::unchanged(extra_args.clone())
+    // Claude, Codex or Copilot launch so no prompt text reaches the agent's
+    // argv. After the Docker hand-off: the amplihack inside the container
+    // rewrites its own. `rewritten` owns the per-session files; it lives
+    // until this function returns, after the child has been waited on.
+    let rewritten = match agent_binary_for_tool(tool) {
+        Some(AgentBinary::Claude) => passthrough_rewrite::rewrite_claude_passthrough(&extra_args)?,
+        Some(AgentBinary::Codex) => codex_copilot_rewrite::rewrite_codex_passthrough(&extra_args)?,
+        // The external LiteLLM gateway refuses `--add-dir` for Copilot.
+        Some(AgentBinary::Copilot) => {
+            codex_copilot_rewrite::rewrite_copilot_passthrough(&extra_args, !proxy_enabled)?
+        }
+        _ => passthrough_rewrite::Rewritten::unchanged(extra_args.clone()),
     };
     let extra_args = rewritten.args.clone();
     let opt_out = std::env::var(system_prompt_append::OPT_OUT_ENV).ok();
