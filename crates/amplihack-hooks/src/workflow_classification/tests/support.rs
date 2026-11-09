@@ -43,12 +43,14 @@ pub(super) const CLOSING_LINE: &str = "When in doubt, choose DEV. \
      False positive costs minutes. False negative costs quality.";
 
 /// A temp project root that is also the cwd and HOME, with every
-/// provenance variable cleared. Fields drop in declaration order, so the
+/// provenance variable cleared. `AMPLIHACK_HOME` is removed, so the hook
+/// state root (issue #1963) is `<dir>/.amplihack`. Fields drop in declaration order, so the
 /// cwd and environment are restored before the temp dir is removed and
 /// before the lock is released.
 pub(super) struct Isolated {
     _cwd: CwdGuard,
     _home: EnvVarGuard,
+    _amp_home: EnvVarGuard,
     _root: EnvVarGuard,
     _run: EnvVarGuard,
     _depth: EnvVarGuard,
@@ -74,6 +76,7 @@ impl Isolated {
             _depth: EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH"),
             _run: run,
             _root: EnvVarGuard::unset("AMPLIHACK_ROOT"),
+            _amp_home: EnvVarGuard::unset("AMPLIHACK_HOME"),
             _home: EnvVarGuard::set("HOME", dir.path()),
             _cwd: CwdGuard::set(dir.path()).unwrap(),
             dir,
@@ -81,12 +84,17 @@ impl Isolated {
         }
     }
 
-    pub(super) fn state_dir(&self) -> std::path::PathBuf {
-        self.dir.path().join(".claude/runtime/classification_state")
+    /// `<state root>/runtime/sessions`, with the state root `<dir>/.amplihack`.
+    pub(super) fn sessions_dir(&self) -> std::path::PathBuf {
+        self.dir.path().join(".amplihack/runtime/sessions")
     }
 
+    /// The session's classification state file. `session` must already be a
+    /// valid key (`[A-Za-z0-9_-]+`); the tests use plain ids.
     pub(super) fn state_path(&self, session: &str) -> std::path::PathBuf {
-        self.state_dir().join(format!("{session}.json"))
+        self.sessions_dir()
+            .join(session)
+            .join("classification_state.json")
     }
 
     pub(super) fn read_state(&self, session: &str) -> Option<Value> {
@@ -95,8 +103,9 @@ impl Isolated {
     }
 
     pub(super) fn seed_state(&self, session: &str, body: &str) {
-        fs::create_dir_all(self.state_dir()).unwrap();
-        fs::write(self.state_path(session), body).unwrap();
+        let path = self.state_path(session);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
     }
 
     pub(super) fn seed_classified(&self, session: &str, turn: u64) {
