@@ -5984,7 +5984,9 @@ authorized one. Legacy journals without sufficient expected-account
 evidence refuse conservatively.
 
 The ledger's optional `login_identity` is written only by authorized swap
-completion or confirmed credential-based recovery. Missing-record
+completion or confirmed credential-based recovery. A block that fails the
+load-time rule in [the ledger fields](#account-identity) stops the rotator;
+it is never repaired silently. Missing-record
 backfill and [cycle seeding](#seeding-a-record) require that full provenance;
 backfill also accepts the full outgoing authorization
 in a pending journal. A UUID-only legacy ledger cannot establish an
@@ -6418,13 +6420,24 @@ When the rotate ledger exists but cannot be read, the cycle still refreshes an
 expired live login and reads its identity, then stops:
 
 ```
-ALERT: rotate ledger unreadable; live identity: <readable|cause>; nothing moved, no record written
+ALERT: rotate ledger unreadable[ (<field>)]; live identity: <readable|cause>; nothing moved, no record written
 ```
+
+`(<field>)` appears when the ledger was read and parsed but a field was
+refused. It is one of these fixed texts, and never a value from the file:
+`unknown version`, `invalid profile name`, `invalid account or alert`,
+`invalid overflow field`, `invalid no_room`, `invalid hand-change field` or
+`invalid login_identity`. A ledger that cannot be read, is not a private
+file or is not valid JSON gives the line without it.
 
 The cycle ends as `alerted`, seeds no record, moves no login and leaves the
 ledger file unchanged. With no ledger to hold an ALERT key, the line is written on
 every cycle while the ledger stays unreadable. `--dry-run` prints the same text after `would alert: `,
 and `profile switch` refuses with it.
+
+A ledger whose `login_identity` fails the load-time rule under
+[Account identity](#account-identity) is one case of this stop, written as
+`rotate ledger unreadable (invalid login_identity); live identity: ...`.
 
 #### When recovery reads
 
@@ -7325,7 +7338,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 
 | Path | Contents |
 |------|----------|
-| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`, of a hard ALERT), `advisory_alert` (the same key for an [advisory ALERT](#rotate-advisory-alert); never set together with `alert`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when it started measuring usage, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). `account` is the validated incoming account key after a swap. It is display only for recovery: no recovery decision treats that key alone as identity proof, and a hand-change recovery records its independently verified account. Optionally `hand_suspect`, an open [hand-change suspicion](#two-readings): `profile` (a valid profile name) and `first_seen` (epoch seconds, greater than 0). It holds no account data, is omitted when there is none, and a ledger without it loads as before; one that breaks these rules is `RotateInconsistent`. Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) note, or ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally the legacy `home_unreadable_since` timestamp; retained for format compatibility, never as ownership evidence (see [Stuck `~/.claude.json`](#stuck-claudejson)). Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since`, `hand_suspect`, `swapped_away` and `advisory_alert` are left out so that rotator can read the file. A ledger whose `alert` or `advisory_alert` is not a valid key, or that sets both, is `RotateInconsistent`. |
+| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`, of a hard ALERT), `advisory_alert` (the same key for an [advisory ALERT](#rotate-advisory-alert); never set together with `alert`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when the usage it relied on was read, which for `stayed` is when the live reading was taken (see [Stays and capacity](#rotate-stays-and-capacity)) and for every other rotate outcome is when the cycle started measuring, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). `account` is the validated incoming account key after a swap. It is display only for recovery: no recovery decision treats that key alone as identity proof, and a hand-change recovery records its independently verified account. Optionally `hand_suspect`, an open [hand-change suspicion](#two-readings): `profile` (a valid profile name) and `first_seen` (epoch seconds, greater than 0). It holds no account data, is omitted when there is none, and a ledger without it loads as before; one that breaks these rules is `RotateInconsistent`. Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) note, or ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally the legacy `home_unreadable_since` timestamp; retained for format compatibility, never as ownership evidence (see [Stuck `~/.claude.json`](#stuck-claudejson)). Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since`, `hand_suspect`, `swapped_away` and `advisory_alert` are left out so that rotator can read the file. A ledger whose `alert` or `advisory_alert` is not a valid key, or that sets both, is `RotateInconsistent`. |
 | `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`checking`, `j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at`, `pid`, and optional `identity` containing sanitized full incoming/outgoing accounts authorized before exchange. |
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
 | `gate.json` | Written by `rotate watch` when it starts: `version`, `pid`, and the [overflow](#rotate-overflow) gate it resolved from its flags (`overflow_wait`, `overflow_unknown_reset`, `session_at`, `week_at`). [Auto-switch](#auto-switch-and-overflow-profiles) uses it only while the rotator with that pid runs. If it cannot be written, the log says `overflow: gate not recorded, auto-switch will not use overflow (<error>)` and auto-switch uses no overflow profile. |
@@ -7454,7 +7467,7 @@ run and prints their `reread:` lines; see
 | `ALERT: more than one profile matches the account in ~/.claude; no swap` | Trusted ownership evidence cannot select a unique login-less profile. |
 | `ALERT: trusted login identity unavailable: <cause>` | The live login has no usable identity reading, and the [cause](#identity-read-causes) says why. Nothing moves. |
 | `ALERT: trusted login identity unavailable for profile <name>: <cause>` | A candidate is skipped as `no account`, for that [cause](#identity-read-causes). Written on every cycle it applies to. |
-| `ALERT: rotate ledger unreadable; live identity: <readable\|cause>; nothing moved, no record written` | Written on every cycle it applies to. See [Unreadable-ledger stop](#unreadable-ledger-stop). |
+| `ALERT: rotate ledger unreadable[ (<field>)]; live identity: <readable\|cause>; nothing moved, no record written` | Written on every cycle it applies to. See [Unreadable-ledger stop](#unreadable-ledger-stop). |
 | `ALERT: cannot tell profiles <L>, <M> apart: both claim the account in ~/.claude; no record written, nothing moved` | Written on every cycle it applies to. See [Seeding a record](#seeding-a-record). |
 | `seeded: recorded account for live profile <L>` | A cycle [seeded](#seeding-a-record) the live profile's record. |
 | `note: no record for live profile <L>: <reason>; nothing moved; run: amplihack profile seed-record <L>` | A cycle could not seed. Written once per process. |
@@ -7821,7 +7834,9 @@ When a profile in that entry has a weight other than `1.0`, the line adds
 
 A pending or inconsistent journal adds a line `journal: pending (phase <phase>)`
 or `journal: inconsistent`, and one that cannot be read `journal: damaged`. A
-ledger that cannot be read shows `live: - (ledger unreadable)`.
+ledger that cannot be read shows `live: - (ledger unreadable)`, or
+`live: - (ledger unreadable: <field>)` when a field was refused, with the
+same fixed text as the [unreadable-ledger stop](#unreadable-ledger-stop).
 
 Under a systemd unit that owns rotation, `status` shows the owner and the
 deferral:
@@ -8443,8 +8458,8 @@ The hook reads `<root>/.auto-switch.d/rotate/ledger.json` (see
 [Rotate state directory](#rotate-state-directory)) and uses only `live`,
 `alert` and `last_cycle`. There is capacity when all of these hold:
 
-- `last_cycle.measured_at` is after the time the hook started, so the cycle's
-  usage probes began after the limit hit;
+- `last_cycle.measured_at` is after the time the hook started, so the
+  measurement, or the reading behind it, was taken after the limit hit;
 - `last_cycle.outcome` is `swapped`, `stayed` or `switched` (written by
   [`profile switch`](#sessions-stopped-by-a-limit), with `measured_at` the
   time of the switch);
@@ -9361,7 +9376,21 @@ For session/display callers, an account is read from the `oauthAccount`
 object of a `.claude.json`:
 `accountUuid` (the user), `organizationUuid` (the organization) and
 `emailAddress`. A value that is not a string, is over 320 bytes or contains
-control characters counts as missing. Only these fields are read.
+control characters counts as missing. The e-mail address is lower-cased, and
+it also counts as missing unless the lower-cased form is still at most 320
+bytes and has exactly one `@`, text on both sides of it and no whitespace.
+The profile endpoint's answer (`account.uuid`, `organization.uuid` and
+`account.email`), which rotation and `profile verify` read, follows the same
+rules. Only these fields are read.
+
+Every caller that reads an account through these rules sees the e-mail rule,
+not only rotation: auto-switch's swap, the login checks, the duplicate-login
+check, the `.default` resolution, the limit-wait fingerprint, the direct
+usage read, and the check that stops a swap while Claude rewrites
+`~/.claude.json` (#1702). For each of them, a login with no account UUID
+and a malformed e-mail is no account, and a record keyed by a malformed
+e-mail matches no login. The swap stop treats such a `~/.claude.json` as
+unreadable, so the cycle stops as `home-unreadable` and nothing moves.
 
 | Left | Right | Same account |
 |------|-------|--------------|
@@ -9386,6 +9415,54 @@ full-account ownership or recovery decision. Older ledger readers ignore
 the new field after #1659; the existing compatibility projection omits it
 when a strict older rotator is detected. Older binaries reject new journal fields/phases, so finish
 a pending transaction with the binary that understands its journal.
+
+When the rotator loads the ledger, a present `login_identity` must meet
+the rule below. This is stricter than the session reading above: there, an
+unsafe value counts as missing, whereas in the ledger it stops the rotator.
+The values are the same, though: amplihack writes `login_identity` only from
+an account read under the rules above, so a block it wrote always loads
+again. Only a hand edit or a foreign writer can produce a block that fails.
+
+- it is a JSON object;
+- each of `accountUuid`, `organizationUuid` and `emailAddress`, where
+  present, is a string that is not empty, is at most 320 bytes and contains
+  no control characters (C0, DEL or C1) and no bidirectional override or
+  isolate characters (U+202A to U+202E and U+2066 to U+2069); a key set to
+  `null`, a number or any other non-string fails;
+- `emailAddress`, where present, contains exactly one `@`, has text on both
+  sides of it and contains no whitespace, and is still at most 320 bytes
+  once lower-cased;
+- at least one of `accountUuid` and `emailAddress` is present, so `{}` and a
+  block holding only `organizationUuid` fail.
+
+Other keys inside the object are ignored, and letter case is not checked.
+The rotator rejects a ledger that breaks the rule as `RotateInconsistent`,
+with the message `rotate ledger: invalid login_identity`, without echoing
+the value or naming the key inside the block that failed. An absent
+`login_identity`, or a top-level `"login_identity": null`, still loads. The
+error is reported and the file is never overwritten: the cycle ends with the
+[unreadable-ledger stop](#unreadable-ledger-stop), which reads
+`rotate ledger unreadable (invalid login_identity); ...`, `profile switch`
+refuses with the same line, `--dry-run` prints it after `would alert: `, and
+no login moves. `profile rotate status` shows
+`live: - (ledger unreadable: invalid login_identity)`. The block is never repaired, dropped
+or replaced silently.
+
+Other readers of the rotate ledger treat a refused ledger as absent, as they
+do for any other unreadable ledger: `profile verify` and the profile-kind check name
+no live profile, `profile usage` and `profile overflow` warn and show no
+API-key or spend block, and auto-switch's takeover and overflow checks fall
+back to the choices they make with no ledger. The Claude Code status line
+reads the auto-switch ledger (`<root>/.auto-switch.d/ledger.json`), not this
+one, and is unaffected.
+
+To recover, stop the rotator with `amplihack profile rotate stop`. In
+`<root>/.auto-switch.d/rotate/ledger.json`, remove the `login_identity` key
+or set it to `null`, and keep the file at mode `0600`. Then start the
+rotator again with `amplihack profile rotate start`. The block is written
+again only by authorised swap completion or confirmed credential-based
+recovery. Until then, ownership decisions refuse conservatively, as they do
+for a legacy ledger that holds only a UUID.
 
 ### Recorded account
 

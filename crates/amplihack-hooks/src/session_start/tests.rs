@@ -30,6 +30,8 @@ fn session_start_captures_original_request_context() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
     unsafe { std::env::set_var("AMPLIHACK_BLARIFY_MODE", "skip") };
 
@@ -54,15 +56,16 @@ fn session_start_captures_original_request_context() {
     assert!(context.contains("**Constraints**:"));
     assert!(context.contains("**Success Criteria**:"));
     assert!(
-        dir.path()
-            .join(".claude/runtime/logs/test-session/ORIGINAL_REQUEST.md")
+        home.path()
+            .join(".amplihack/runtime/sessions/test-session/logs/ORIGINAL_REQUEST.md")
             .exists()
     );
     assert!(
-        dir.path()
-            .join(".claude/runtime/logs/test-session/original_request.json")
+        home.path()
+            .join(".amplihack/runtime/sessions/test-session/logs/original_request.json")
             .exists()
     );
+    assert!(!dir.path().join(".claude/runtime/logs").exists());
 }
 
 #[test]
