@@ -252,6 +252,12 @@ fn redact_words(script: &str) -> String {
     redact(&words).join(" ")
 }
 
+/// Free text with secrets replaced word by word, as in a `parent=` value;
+/// used for the reasons the Codex rotation logs (issue #2005).
+pub(in crate::commands::profile::rotate) fn redact_text(text: &str) -> String {
+    redact_words(text)
+}
+
 /// The `parent="..."` value: redacted, sanitised, `"` as `'`, at most 200
 /// characters, or `-` when it could not be read.
 fn parent_text(raw: Option<&[u8]>) -> String {

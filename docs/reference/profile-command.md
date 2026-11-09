@@ -34,12 +34,13 @@ amplihack profile auto-switch install
 amplihack profile auto-switch repair
 amplihack profile overflow add|remove|clear <name>
 amplihack profile overflow list
-amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1]
+amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--codex on|off] [--codex-floor N] [--codex-home-link PATH]
 amplihack profile rotate start|watch [<tuning flags>] [--interval SECS]
 amplihack profile rotate watch [<tuning flags>] [--interval SECS] --supervised[=UNIT]
 amplihack profile rotate stop|status
 amplihack profile rotate autostart [on|off]
 amplihack profile rotate owner [clear]
+amplihack profile codex-resume --session <id> | --events <file> [--from-home <path>] [-- <codex-args>...]
 amplihack profile kind list
 amplihack profile kind set <name> <subscription|api-key|auto>
 amplihack profile verify [--fix]
@@ -61,10 +62,11 @@ amplihack launch|claude --profile <name> [...]
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
 | `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
-| `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails, or, with `--spend`, to read the spend limit of an account with [usage credits on](#usage-credits-on); then shows its weekly and session usage as bars and its spend status as a mark, sorted by the rotator's headroom, followed by a [capacity summary](#capacity-summary). `--table` for the text table, `--utc` for UTC reset times, `--json` or `--summary-json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings and adds to the [usage history](#usage-history). See [Usage command](#usage-command). |
+| `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails, or, with `--spend`, to read the spend limit of an account with [usage credits on](#usage-credits-on); then shows its weekly and session usage as bars and its spend status as a mark, sorted by the rotator's headroom, followed by a [capacity summary](#capacity-summary) and, with no names, a live reading of each [Codex account](#codex-accounts). `--table` for the text table, `--utc` for UTC reset times, `--json` or `--summary-json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings and adds to the [usage history](#usage-history). See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
 | `overflow …` | Mark or unmark a credit-backed profile that the rotator may use when every plan login is exhausted, list the marks, or lift a spend-limit block. See [Overflow commands](#overflow-commands). |
-| `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. See [Rotate](#rotate). |
+| `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. Each cycle also keeps the default Codex home link on the Codex account with the most room. See [Rotate](#rotate) and [Rotate Codex](#rotate-codex). |
+| `codex-resume` | Unix only. Resume a Codex session that stopped on a usage limit with `codex resume`, on another account with room, or after the earliest reset. See [Codex resume command](#codex-resume-command). |
 | `kind list`, `kind set <name> <kind>` | Show whether each profile is a subscription or an [API-key profile](#api-key-profiles), and set or remove an override. See [Kind override](#kind-override). |
 | `verify [--fix]` | Unix only. For `~/.claude` and each profile folder, print the account Anthropic's OAuth profile endpoint reports for the folder's own token, against the account [recorded](#recorded-account) for it. `--fix` moves a profile's login that is another profile's recorded account into that profile's empty folder; do not use it until [#1960](https://github.com/rysweet/amplihack-rs/issues/1960) is closed. See [profile verify](#profile-verify). |
 | `seed-record <name> [--write]` | Unix only. Shows the account a profile with no [record](#recorded-account) would be recorded with, from one fresh reading. `--write` saves it. Moves no login and writes no credentials file. See [profile seed-record](#profile-seed-record). |
@@ -86,14 +88,18 @@ bar view or table, a [capacity summary](#capacity-summary) adds the rows up: wee
 headroom across all logins, how many can take work now, the next session
 reset, how long the weekly capacity lasts at the recent rate, and which
 weekly limits reset in the next 24 hours. With no
-names it covers every profile under the root, as `list` does. Each name must
-pass the [name rules](#name-rules) and must exist. A name given twice is
-probed once.
+names it covers every profile under the root, as `list` does, and then
+reads each [Codex account](#codex-accounts) live and lists it after the
+Claude output, marking the one `codex-pick`'s rule picks from these live
+readings. Each name
+must pass the [name rules](#name-rules) and must exist. A name given twice
+is probed once. Names select Claude profiles only; with names, Codex is not
+read.
 
 | Flag | Effect |
 |------|--------|
-| `--json` | Print a JSON array instead of the bar view. No summary. See [JSON output](#json-output). Conflicts with `--table` and `--utc`. |
-| `--summary-json` | Print one JSON object holding the same array and the summary. Cannot be combined with `--json`, `--raw`, `--table` or `--utc` (exit status 2). See [Summary JSON](#summary-json). |
+| `--json` | Print one JSON object instead of the bar view: `claude` (the profile rows) and `codex` (the Codex accounts). No summary. See [JSON output](#json-output). Conflicts with `--table` and `--utc`. |
+| `--summary-json` | Print one JSON object holding the same Claude rows, the summary and the Codex rows. Cannot be combined with `--json`, `--raw`, `--table` or `--utc` (exit status 2). See [Summary JSON](#summary-json). |
 | `--table` | Print the eight-column text table instead of the bar view. The capacity summary follows it as it follows the bar view. See [Table output](#table-output). Conflicts with `--json`, `--summary-json` and `--utc`. |
 | `--utc` | Show reset times in the bar view in UTC, as `MM-DD HH:MMZ`, instead of local time. See [Reset times](#reset-times). Conflicts with `--json`, `--summary-json` and `--table`. |
 | `--usable-session-pct <n>` | Session percentage below which a login counts as usable now in the summary, `1` to `100`; default `95`. Overrides `AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT`. A value out of range is a usage error (exit status 2). See [Usable now](#usable-now). |
@@ -1892,52 +1898,344 @@ profile that login belonged to is left with no login. `profile usage` prints
 no warning of its own about that; the rotator does, in its log and in
 [`rotate status`](#rotate-status).
 
-#### JSON output
+#### Codex accounts
 
-`--json` prints one JSON array of row objects, in [display order](#ordering).
-stdout holds only the JSON; warnings go to stderr. With no profiles it prints
-`[]`. This is the stable interface for scripts, and the key table below is
-its specification. Keys are only ever added, never renamed or removed, and
-there is no version field.
+When no profile names are given, `profile usage` also reads every Codex
+account and prints one row for each after the Claude output. Each account
+is read live, on every run, by asking Codex itself; nothing is taken from
+session files or any earlier reading. An account that cannot be read shows
+why, never an older value.
+
+```bash
+amplihack profile usage
+```
+
+```
+PROFILE      WEEK             W-RESET      SESSION           S-RESET     STATE
+review       █░░░░░░░░░  10%  11-05 09:00  ░░░░░░░░░░   5%   11-01 14:00 ok
+work (live)  ███░░░░░░░  30%  11-05 09:00  ██░░░░░░░░  20%   11-01 12:00 ok                 * hosts:personal
+times: Europe/London
+order: rotator pick (most room in the worse of session and week, then name)
+
+Codex accounts under /home/ryan/.codex-profiles
+ffarmer   signed in      5h █░░░░░░░░░  12% 11-06 21:40 in 2h 31m  7d ████░░░░░░  41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00
+ggrant    signed in      7d ███░░░░░░░  34% 11-10 14:30 in 91h 21m  plan pro  read 19:09:00  <- next
+hhale     signed in      credits 4200  plan team  read 19:09:00
+jjones    not signed in  read 19:09:00
+kkim      timed out      after 20s  read 19:09:00
+mmoss     error: codex app-server exited (exit status: 1): error: unrecognized subcommand 'app-server'  read 19:09:00
+~/.codex  signed in      5h ████████░░  88% 11-06 20:15 in 1h 6m  7d ███████░░░  70% 11-09 03:00 in 55h 51m  plan plus  read 19:09:00
+```
+
+Codex rows never change the Claude rows, the
+[capacity summary](#capacity-summary), the [usage history](#usage-history),
+the [auto-switch readings](#refreshing-auto-switch-readings) or the
+[exit status](#exit-status-and-refusals). With profile names given
+(`amplihack profile usage work review`), Codex is not read and no Codex
+block is printed; `--json` and `--summary-json` still have the `codex` key,
+as an empty array.
+
+##### Which accounts are read
+
+| Account | Label | When it is read |
+|---------|-------|-----------------|
+| Each subdirectory of the Codex profiles root, in byte order of its name | The directory name | Always. Names starting with `.` are skipped, as `codex-pick`'s `*` glob skips them. A symlink to a directory is followed. |
+| `$HOME/.codex` | `~/.codex` | When it is a directory and its canonical path is neither the root nor any profile directory's canonical path. It is read with the others and shown last, and only when it is signed in: a `not signed in` result drops the row. A `timed out` or `error` result is shown. |
+
+The Codex profiles root is `CODEX_PROFILES_ROOT` when it is set and not
+empty, otherwise `$HOME/.codex-profiles`. A root that is missing, is not a
+directory or has no subdirectories is not an error. The block is then one
+line, and `~/.codex` is still read:
+
+```
+Codex: no accounts under /home/ryan/.codex-profiles
+```
+
+When `~/.codex` is signed in and the root has no accounts, the header line
+is printed with the `~/.codex` row under it.
+
+A root that exists but cannot be listed (for example, permission denied)
+prints one line on stderr. `~/.codex` is then not read either, and the block
+is the single `Codex: no accounts under` line:
+
+```
+warning: cannot list Codex accounts under /home/ryan/.codex-profiles: Permission denied (os error 13)
+```
+
+The exit status does not change, and `codex` in `--json` is an empty array.
+
+##### Live read
+
+On Unix, for each account, amplihack starts one Codex app server with the
+account's directory as its home and asks it for the account's rate limits.
+The program is `CODEX_BIN` when it is set and not empty, otherwise `codex`
+found through `PATH`:
+
+```
+CODEX_HOME=<account directory> codex app-server
+```
+
+and writes three JSON-RPC lines to its stdin:
 
 ```json
-[
-  {
-    "profile": "work",
-    "account": "personal",
-    "default": true,
-    "leased_to": null,
-    "live_in": null,
-    "overflow": false,
-    "overflow_blocked_until": null,
-    "state": "ok",
-    "source": "direct",
-    "spend": "n/a",
-    "session": {
-      "label": "session",
-      "used_percentage": 20.0,
-      "resets_text": "2026-10-17T02:00:00Z",
-      "resets_at": 1792202400
-    },
-    "session_limit": true,
-    "week_all": {
-      "label": "all models",
-      "used_percentage": 30.0,
-      "resets_text": "2026-10-22T09:00:00Z",
-      "resets_at": 1792659600
-    },
-    "week_models": [
-      {
-        "label": "Fable",
-        "used_percentage": 0.0,
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"amplihack","version":"<amplihack version>"}}}
+{"jsonrpc":"2.0","method":"initialized"}
+{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}
+```
+
+No model call is made, so the read uses no quota. Answers are matched by
+`id` only; lines without an `id`, such as the `remoteControl/status/changed`
+notification Codex sends first, are skipped, and a `"jsonrpc"` field is not
+required. An answer to `account/rateLimits/read` reads, for example:
+
+```json
+{
+  "id": 2,
+  "result": {
+    "rateLimits": {
+      "primary": { "usedPercent": 12, "windowDurationMins": 300, "resetsAt": 1794001200 },
+      "secondary": { "usedPercent": 41, "windowDurationMins": 10080, "resetsAt": 1794470400 },
+      "credits": null,
+      "planType": "plus",
+      "rateLimitReachedType": null,
+      "ordinaryUsageAllowed": true
+    }
+  }
+}
+```
+
+| Field | Read from | Rule |
+|-------|-----------|------|
+| Windows | `primary`, `secondary` | Each that is an object. A missing or `null` one is not shown. |
+| Used percentage | `usedPercent` | A JSON number, or a string of digits with an optional decimal point, that is finite and not negative. Anything else counts as absent. Not clamped. |
+| Window length | `windowDurationMins` | A non-negative whole number of minutes. |
+| Reset | `resetsAt` | Unix epoch seconds; see [Codex reset times](#codex-reset-times). |
+| Credits | `credits` | `hasCredits` counts only as the JSON value `true`; `balance` follows the same number rule as the used percentage. |
+| Plan | `planType` | A string, cut to 200 characters. |
+| Limit reached | `rateLimitReachedType` | A string, cut to 200 characters; JSON only. |
+| Ordinary usage allowed | `ordinaryUsageAllowed` | A JSON bool; JSON only. |
+
+The figures may sit in `result.rateLimits`, `result.rate_limits` or in
+`result` itself. Every field is also accepted in snake_case
+(`used_percent`, `window_duration_mins`, `resets_at`, `has_credits`,
+`plan_type`, `rate_limit_reached_type`, `ordinary_usage_allowed`). A
+`result` that is not an object gives `error: unexpected response from codex
+app-server`, so a reply amplihack does not understand never appears as a
+reading.
+
+All accounts are read at once, one thread each, alongside the Claude
+probes, so the whole Codex read normally takes about as long as the slowest
+account. There is no cap on the number read at once.
+
+##### Codex read deadline
+
+Each account has one deadline that covers starting the program, the
+handshake and the answer: 20 seconds, or
+`AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS`, a whole number from `1` to `300`. Any
+other value prints one warning on stderr and uses 20:
+
+```
+warning: AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS="0" is not a whole number from 1 to 300; using 20
+```
+
+When the deadline passes, the row reads `timed out`. On every outcome,
+including success, the app server's whole process group is killed and the
+process is reaped, so no Codex process outlives the command.
+
+The live read needs process groups, so it runs only on Unix. On Windows and
+other non-Unix platforms no Codex program is started: the accounts are still
+listed as described in [Which accounts are read](#which-accounts-are-read),
+and every row reads `error: codex usage read is supported only on Unix`.
+The JSON rows keep the same keys, with `state` set to `error`.
+
+##### Codex states
+
+| Text state | JSON `state` | When |
+|------------|--------------|------|
+| `signed in` | `ok` | `account/rateLimits/read` answered with a `result`. |
+| `not signed in` | `not_signed_in` | It answered with an error whose message contains, ignoring case, `authentication required`, `not logged in`, `not signed in` or `login required`. Codex 0.166.0 answers `codex account authentication required to read rate limits`. |
+| `timed out` | `timeout` | No answer within the [deadline](#codex-read-deadline). |
+| `error: <reason>` | `error` | Anything else; see the reasons below. |
+
+| Reason | Cause |
+|--------|-------|
+| `codex binary not found: <bin>` | The program does not exist. |
+| `cannot start <bin>: <error>` | It exists but could not be started, for example for lack of permission. |
+| `codex app-server exited (<status>): <last stderr line>` | It exited before answering. The stderr line is the last non-empty one, cut to 200 characters. |
+| `codex usage read is supported only on Unix` | The platform is not Unix; see [Codex read deadline](#codex-read-deadline). No program is started. |
+| `unexpected response from codex app-server` | The `result` is not an object, or a line of stdout is longer than 1 MiB. |
+| The server's message | Any other JSON-RPC error, cut to 200 characters. An error answer to `initialize` counts too. |
+
+##### Codex row layout
+
+Each row is the label, padded to the longest label (up to 24 characters; a
+longer label is cut to 23 followed by `…`), then the state padded to 13
+characters, then these fields, separated by two spaces:
+
+| Field | Shown | Form |
+|-------|-------|------|
+| Windows | For each window reported, primary first | `<length> <bar> <pct> <reset> in <time>`; see below. |
+| Credits | When `credits` was reported | `credits <balance>`, or `credits yes` / `credits no` from `hasCredits` when there is no balance. The balance is printed with no trailing zeros, as `4200` or `12.5`. |
+| Plan | When `planType` was reported | `plan <type>` |
+| No figures | A `signed in` row with no window and no credits | `no windows reported` |
+| Detail | `timed out` rows | `after <n>s`, the deadline that applied. |
+| Read time | Always | `read HH:MM:SS`, the time the answer arrived or, for a row with no reading, the time the read was given up. |
+| Marker | The [next choice](#codex-next-choice) only | `<- next` |
+
+The window length is `5h` for 300 minutes and `7d` for 10080. Any other
+length is `<n>d` when it is a whole number of days, `<n>h` when it is a
+whole number of hours, and `<n>m` otherwise. A window with no length is
+labelled `primary` or `secondary`.
+
+The bar and the percentage follow the Claude [bars](#bars): 10 cells and a
+whole-number percentage, rounded down, coloured the same way. With
+`--table`, the bar is left out and the percentage keeps one decimal place
+where there is one, as `12.5%`. A window with no percentage shows `-` in
+place of both.
+
+Rows keep the order in [Which accounts are read](#which-accounts-are-read);
+they are not sorted by room. `--raw`, `--spend` and
+`--usable-session-pct` do not change the Codex block. The block is printed
+after the whole Claude output, including its footer, separated by one empty
+line, and also after the `no profiles` line when there are no Claude
+profiles.
+
+Labels, the root path, plan types and error reasons are
+[cleaned](#table-output) before they are printed, so a directory name or a
+server string cannot send terminal escapes. The layout is for people and
+may change; scripts should use `--json`.
+
+##### Codex reset times
+
+A reset is shown as `MM-DD HH:MM` in the same zone as the Claude reset
+cells, and `MM-DD HH:MMZ` with `--utc`, followed by `in <h>h <m>m` from the
+read time, rounded down to the minute: `in 2h 31m`, `in 132h 51m`. A reset
+at or before the read time shows `due` instead of `in …`. With `--utc` the
+read time is `HH:MM:SSZ`.
+
+`resetsAt` is used as a time only when it is above `0` and no more than
+400 days after the read. Any other value is shown as `reset <value>`, as
+given, with no `in …`, and its `resets_at_rfc3339` in the JSON is `null`. A
+window with no reset shows `-`.
+
+##### Codex next choice
+
+The `<- next` marker goes on the account `codex-pick`'s rule picks from
+these live readings. It is not always the account `codex-pick` itself
+would choose: `codex-pick` reads the rate limits stored in each account's
+session files, which can be days old, while this view reads them live, so
+the two can disagree. The rule:
+
+1. Only `signed in` rows are candidates. A row that timed out, failed or is
+   not signed in is never chosen.
+2. Each candidate's room is `100 - max(used percentage)` over its windows;
+   a row with no window percentage has room `0`.
+3. A candidate with room `0` or less gets `0.5` instead when it reports
+   `hasCredits` true and a balance above the credit floor, 3000, and `-1`
+   otherwise.
+4. The candidates are sorted by room, then by path, both descending. The
+   path is the account directory as built (`<root>/<name>` or
+   `$HOME/.codex`), compared as bytes, not resolved through symlinks.
+5. The first candidate with room above `0` is marked. When there is none,
+   no row is marked.
+
+In the example, `ggrant` (room 66) is chosen over `ffarmer` (59), `hhale`
+(credits only, 0.5) and `~/.codex` (12). Two accounts with the same room
+are taken in descending path order, so `ggrant` would come before
+`ffarmer`. `codex-pick` also counts a signed-in account with no stored
+reading as full; with live reads that case cannot arise, because a
+signed-in account always answers with its figures.
+
+##### What the Codex read does not do
+
+- It never opens `auth.json`, `config.toml` or any other file inside an
+  account directory. Directories are only listed and checked for type.
+  Codex reads its own login.
+- It makes no network request itself; the Codex app server does, as it
+  would for `codex` in that account.
+- `CODEX_HOME` is set only in the child's environment, never in
+  amplihack's own. `OPENAI_API_KEY` and `CODEX_API_KEY` are removed from
+  the child's environment, so an API key cannot replace the account's login
+  in the reading, and `RUST_LOG` is removed, so verbose logging cannot put
+  login detail into an error reason.
+- No shell is used. The account path reaches the child only through
+  `CODEX_HOME`.
+- Readings are not stored anywhere. amplihack writes nothing into an
+  account directory; the Codex app server itself keeps its state files
+  there, as any `codex` run does.
+- It does not stop the Codex app server from refreshing the account's
+  login. The server may refresh that account's tokens and rewrite its login
+  file, as any `codex` run in that directory can. This includes `~/.codex`
+  and any account a live Codex session is using at the time; a session that
+  still holds the old refresh token may then have to sign in again.
+
+#### JSON output
+
+`--json` prints one JSON object with two keys: `claude`, the array of
+Claude profile rows in [display order](#ordering), and `codex`, the array
+of [Codex rows](#codex-json-rows). stdout holds only the JSON; warnings go
+to stderr. With no Claude profiles, `claude` is `[]`; with no Codex
+accounts, or with profile names given, `codex` is `[]`. This is the stable
+interface for scripts, and the key tables below are its specification.
+From #2001 on, keys are only ever added, never renamed or removed, and
+string values that name a state or kind may gain new values. There is no
+version field.
+
+Changed in #2001: this is the one break in that promise. Before #2001,
+`--json` printed the Claude array alone, with no top-level object. Scripts
+that read `.[]` now read `.claude[]`; see
+[the jq examples](#claude-rows-in-scripts). Nothing warns at run time: a
+script still using `.[]` gets the two arrays instead of the rows, and a
+saved file such as the cron example in the how-to now holds the object.
+
+The same Claude rows are named `claude` here and `profiles` in
+[`--summary-json`](#summary-json); the arrays are identical.
+
+With one Claude profile and no Codex accounts:
+
+```json
+{
+  "claude": [
+    {
+      "profile": "work",
+      "account": "personal",
+      "default": true,
+      "leased_to": null,
+      "live_in": null,
+      "overflow": false,
+      "overflow_blocked_until": null,
+      "state": "ok",
+      "source": "direct",
+      "spend": "n/a",
+      "session": {
+        "label": "session",
+        "used_percentage": 20.0,
+        "resets_text": "2026-10-17T02:00:00Z",
+        "resets_at": 1792202400
+      },
+      "session_limit": true,
+      "week_all": {
+        "label": "all models",
+        "used_percentage": 30.0,
         "resets_text": "2026-10-22T09:00:00Z",
         "resets_at": 1792659600
-      }
-    ],
-    "error": null
-  }
-]
+      },
+      "week_models": [
+        {
+          "label": "Fable",
+          "used_percentage": 0.0,
+          "resets_text": "2026-10-22T09:00:00Z",
+          "resets_at": 1792659600
+        }
+      ],
+      "error": null
+    }
+  ],
+  "codex": []
+}
 ```
+
+Each `claude` row has these keys:
 
 | Key | Type | Meaning |
 |-----|------|---------|
@@ -1969,15 +2267,16 @@ it could not be resolved (see [Probe method](#probe-method) and
 [What is read](#what-is-read)). JSON strings are not cleaned; they use JSON
 escaping.
 
-The output stays a single array; there is no top-level object and no
-`on_credits` key. The live login is running on credits exactly when one row
+##### Claude rows in scripts
+
+There is no `on_credits` key. The live login is running on credits exactly when one row
 has `live_in` equal to `"~/.claude"`, `overflow` equal to `true`, and
 either a `state` of `"session_exhausted"` or `"weekly_exhausted"`, or a
 `state` of `"ok"` with `session` or `week_all` at 100%. This is the same
 test the footer uses:
 
 ```bash
-amplihack profile usage --json | jq -r '.[]
+amplihack profile usage --json | jq -r '.claude[]
   | select(.live_in == "~/.claude" and .overflow
            and (.state == "session_exhausted" or .state == "weekly_exhausted"
                 or (.state == "ok"
@@ -2011,11 +2310,116 @@ Its other keys are left out here. To list the profiles with
 [no session limit](#no-session-limit):
 
 ```bash
-amplihack profile usage --json | jq -r '.[] | select(.session_limit == false) | .profile'
+amplihack profile usage --json | jq -r '.claude[] | select(.session_limit == false) | .profile'
 ```
 
 ```
 weekly
+```
+
+##### Codex JSON rows
+
+Each `codex` row is one [Codex account](#codex-accounts), in the same order
+as the text rows. For the `ggrant`, `hhale` and `kkim` rows of the
+[example](#codex-accounts):
+
+```json
+[
+  {
+    "account": "ggrant",
+    "path": "/home/ryan/.codex-profiles/ggrant",
+    "state": "ok",
+    "error": null,
+    "windows": [
+      {
+        "name": "secondary",
+        "used_percent": 34.0,
+        "window_minutes": 10080,
+        "resets_at": 1794321000,
+        "resets_at_rfc3339": "2026-11-10T14:30:00Z"
+      }
+    ],
+    "credits": null,
+    "plan_type": "pro",
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": true,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": true
+  },
+  {
+    "account": "hhale",
+    "path": "/home/ryan/.codex-profiles/hhale",
+    "state": "ok",
+    "error": null,
+    "windows": [],
+    "credits": { "has_credits": true, "balance": 4200.0 },
+    "plan_type": "team",
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": null,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": false
+  },
+  {
+    "account": "kkim",
+    "path": "/home/ryan/.codex-profiles/kkim",
+    "state": "timeout",
+    "error": "timed out after 20s",
+    "windows": [],
+    "credits": null,
+    "plan_type": null,
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": null,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": false
+  }
+]
+```
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `account` | string | The directory name, or `~/.codex`. Not cleaned; JSON escaping only. |
+| `path` | string | The account directory as built (`<root>/<name>` or `$HOME/.codex`), not resolved through symlinks. Not cleaned. |
+| `state` | string | `"ok"`, `"not_signed_in"`, `"timeout"` or `"error"`; see [Codex states](#codex-states). Scripts should treat a value they do not know as `"error"`. |
+| `error` | string or `null` | For `timeout`, `"timed out after <n>s"`; for `error`, the [reason](#codex-states); otherwise `null`. |
+| `windows` | array | The windows reported, primary first. Always `[]` unless `state` is `"ok"`. |
+| `windows[].name` | string | `"primary"` or `"secondary"`, the field it came from. |
+| `windows[].used_percent` | number or `null` | As read, not clamped. |
+| `windows[].window_minutes` | integer or `null` | The window length in minutes: `300` for five hours, `10080` for a week. |
+| `windows[].resets_at` | integer or `null` | The reset as Unix epoch seconds, as received, even when it is out of [range](#codex-reset-times). |
+| `windows[].resets_at_rfc3339` | string or `null` | The same reset as an RFC 3339 UTC time ending in `Z`; `null` when there is no reset or it is out of range. |
+| `credits` | object or `null` | `{"has_credits": bool, "balance": number or null}` when Codex reported credits; otherwise `null`. Always `null` unless `state` is `"ok"`. |
+| `plan_type` | string or `null` | The plan, cut to 200 characters and cleaned. |
+| `rate_limit_reached_type` | string or `null` | Which limit Codex says is reached, cut to 200 characters and cleaned. |
+| `ordinary_usage_allowed` | bool or `null` | As Codex reported it. |
+| `read_at` | string | When the answer arrived, or when the read was given up, as an RFC 3339 UTC time ending in `Z`. Present on every row. |
+| `next_choice` | bool | `true` on the one row with the [`<- next` marker](#codex-next-choice), `false` on the others. |
+
+Every key is present on every row; a value that was not reported is
+`null`. Percentages and balances are JSON numbers with a fractional part,
+such as `34.0`; read them as floats. Server strings (`plan_type`,
+`rate_limit_reached_type` and the server's part of `error`) are cleaned
+before they are stored, so `jq -r` cannot print terminal escapes from
+them.
+
+To print the account `codex-pick`'s rule picks from the live readings:
+
+```bash
+amplihack profile usage --json | jq -r '.codex[] | select(.next_choice) | .account'
+```
+
+```
+ggrant
+```
+
+To list the Codex accounts that could not be read:
+
+```bash
+amplihack profile usage --json | jq -r '.codex[] | select(.state == "timeout" or .state == "error") | "\(.account): \(.error)"'
+```
+
+```
+kkim: timed out after 20s
+mmoss: codex app-server exited (exit status: 1): error: unrecognized subcommand 'app-server'
 ```
 
 #### Capacity summary
@@ -2252,8 +2656,11 @@ too.
 
 `--summary-json` prints one JSON object instead of the bar view and summary.
 stdout holds only the JSON; warnings go to stderr. `profiles` is exactly the
-array [`--json`](#json-output) would print in the same run. For the run
-above, with only the first of the six rows shown:
+`claude` array [`--json`](#json-output) would print in the same run, and
+`codex`, after `summary`, is exactly its `codex` array. The Claude rows are
+named `profiles` here and `claude` in `--json`; the summary JSON kept its
+original key when the Codex rows were added. For the run above, with only
+the first of the six rows shown and no Codex accounts:
 
 ```json
 {
@@ -2298,14 +2705,15 @@ above, with only the first of the six rows shown:
       { "at": "2026-10-31T02:00:00Z", "profile": "night", "restores": 0.85 },
       { "at": "2026-10-31T09:00:00Z", "profile": "work", "restores": 0.3 }
     ]
-  }
+  },
+  "codex": []
 }
 ```
 
 | Key | Type | Meaning |
 |-----|------|---------|
 | `at` | string | When the summary was worked out: after the window readings and before any [spend probe](#spend-probe), so `--spend` never makes it later. |
-| `profiles` | array | The [`--json`](#json-output) rows, unchanged. |
+| `profiles` | array | The `claude` rows of [`--json`](#json-output), unchanged. |
 | `summary` | object or `null` | `null` when there are no profiles or no row is a subscription profile. |
 | `summary.weekly_headroom_login_weeks` | number | Unweighted headroom, two decimal places. `0.0` with no valid reading. |
 | `summary.weekly_headroom_pct` | number or `null` | Unweighted headroom as a percentage of `valid_readings`, one decimal place. `null` with no valid reading. |
@@ -2317,6 +2725,7 @@ above, with only the first of the six rows shown:
 | `summary.rate_login_weeks_per_hour` | number or `null` | Weighted [rate](#rate-and-runway), three decimal places: the net rise of each login's week percentage over the last 6 h, counted from the oldest entry in that window that covers every login valid now (step 1), times its weight, divided by 100 and by the hours covered. `null` when that entry is less than 4.5 h old, when there is none, or when no login has a valid reading at both ends. `0.0` or above. Unweighted when every weight is `1.0`. |
 | `summary.runway_hours` | number or `null` | Hours of weighted headroom at that rate, one decimal place; `null` when the rate is `null` or zero. |
 | `summary.weekly_resets_next_24h` | array | Valid logins whose weekly reset is after now and no more than 24 hours away, and whose weighted `restores` (`weight × week% / 100`, two decimal places) is above `0`, soonest first, then by name. Each is `{"at", "profile", "restores"}`. |
+| `codex` | array | The [Codex JSON rows](#codex-json-rows), unchanged; `[]` with profile names given. Codex rows never count towards `summary`. |
 
 Numbers are rounded half away from zero only when printed; a value that is
 not finite is printed as `null`. Keys are only ever added, as for `--json`.
@@ -2324,7 +2733,7 @@ not finite is printed as `null`. Keys are only ever added, as for `--json`.
 Times differ by place, on purpose: inside `profiles`, `resets_at` keeps its
 `--json` form, Unix epoch seconds, so the array matches `--json` byte for
 byte; `at` and every time in `summary` are ISO 8601 UTC strings ending in
-`Z`. To read the runway in a script:
+`Z`. The times in `codex` are as in `--json`. To read the runway in a script:
 
 ```bash
 amplihack profile usage --summary-json | jq '.summary.runway_hours'
@@ -2334,7 +2743,9 @@ amplihack profile usage --summary-json | jq '.summary.runway_hours'
 9.0
 ```
 
-With no profiles it prints `{"at":"<time>","profiles":[],"summary":null}`.
+With no profiles it prints
+`{"at":"<time>","profiles":[],"summary":null,"codex":[...]}`, with the
+Codex rows read as usual.
 
 #### Usage history
 
@@ -2612,14 +3023,15 @@ recorded or noted.
 
 | Status | When |
 |--------|------|
-| `0` | The probes ran, whatever states they produced, or there are no profiles. Recording failures, [usage history](#usage-history) failures and [weight](#capacity-weights) warnings do not change it. |
+| `0` | The probes ran, whatever states they produced, or there are no profiles. Codex rows never change the status, whatever their states. Recording failures, [usage history](#usage-history) failures and [weight](#capacity-weights) warnings do not change it. |
 | `1` | Setup failed: Docker is active, the profile root is invalid, or a name is invalid or does not exist. Printed as `error:`/`hint:` like other [errors](#errors). Nothing is probed. A `claude` that cannot be found is not a setup failure: only rows that need a fallback read `error` with `claude not found`. |
 | `2` | Command-line usage error, such as `--timeout-secs 0`, `--usable-session-pct 101`, `--summary-json` with `--json`, `--raw`, `--table` or `--utc`, or `--table` with `--json`. |
 
 With no profiles, the bar view and `--table` print
-`` no profiles; create one with `amplihack profile add <name>` ``, the JSON
-form prints `[]`, and the summary JSON form prints
-`{"at":"<time>","profiles":[],"summary":null}`.
+`` no profiles; create one with `amplihack profile add <name>` `` followed by
+the [Codex block](#codex-accounts), the JSON form prints
+`{"claude":[],"codex":[...]}`, and the summary JSON form prints
+`{"at":"<time>","profiles":[],"summary":null,"codex":[...]}`.
 
 `--table` with `--json`, and `--utc` with `--json` or `--table`, are usage
 errors (status 2): the second flag would have no effect.
@@ -2674,6 +3086,11 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
   whole-number percentages, counts and times only. They never use the
   row's `account`, and nothing Claude printed reaches them, even when its
   output includes an e-mail address.
+- The [Codex read](#what-the-codex-read-does-not-do) opens no file inside
+  a Codex account directory, including `auth.json` and `config.toml`, and
+  passes no API key to the Codex app server. Its rows hold directory
+  names, paths, percentages, times, plan types and error reasons cut to
+  200 characters; nothing from them is stored.
 
 
 ## Configuration
@@ -2701,6 +3118,9 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
 | `<root>/.auto-switch.d/rotate/owner` | The [owner marker](#rotate-owner). While it exists, launches do not start a rotator. Removed only by `rotate owner clear`. |
 | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true` or `1` turns the [usage-limit wait](#usage-limit-wait) on, `false` or `0` off. Outranks `recipe.usage_limit_wait` in `config.toml`. See [Usage-limit wait settings](#usage-limit-wait-settings). |
 | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | Upper bound on one usage-limit wait, in seconds; default `21600` (6 hours). It shortens a [reset wait](#reset-time) and sets the length of a [capacity wait](#capacity-wait). Outranks `recipe.usage_limit_max_wait_secs`. See [Usage-limit wait settings](#usage-limit-wait-settings). |
+| `CODEX_PROFILES_ROOT` | Directory whose subdirectories are the Codex accounts `profile usage` reads; default `$HOME/.codex-profiles`. Empty means unset. See [Which accounts are read](#which-accounts-are-read). |
+| `CODEX_BIN` | The Codex program `profile usage` runs as `<bin> app-server`; default `codex`, found through `PATH`. Like `PATH`, it decides which program runs. Empty means unset. See [Live read](#live-read). |
+| `AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS` | Seconds each Codex account's live read may take, `1` to `300`; default `20`. See [Codex read deadline](#codex-read-deadline). |
 
 ### Seeding
 
@@ -4626,14 +5046,16 @@ which swaps logins inside profiled sessions, but shares its toggle, its
 exclusion list and its state lock.
 
 The rotator also runs a [daily session archive](#rotate-daily-session-archive)
-that moves old session logs out of `~/.claude/projects`.
+that moves old session logs out of `~/.claude/projects`, and on Unix keeps
+the default Codex home link on the Codex account with the most room; see
+[Rotate Codex](#rotate-codex).
 
 ### Rotate commands
 
 ```
-amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1]
-amplihack profile rotate start  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--interval SECS]
-amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--interval SECS] [--supervised[=UNIT]]
+amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--codex on|off] [--codex-floor N] [--codex-home-link PATH]
+amplihack profile rotate start  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--codex on|off] [--codex-floor N] [--codex-home-link PATH] [--interval SECS]
+amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--codex on|off] [--codex-floor N] [--codex-home-link PATH] [--interval SECS] [--supervised[=UNIT]]
 amplihack profile rotate stop
 amplihack profile rotate status
 amplihack profile rotate autostart [on|off]
@@ -4787,6 +5209,9 @@ lines on failure. Output holds profile names, times and fixed text only.
 | `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | `0`-`604800` (seconds); see [Rotate overflow](#rotate-overflow) |
 | `--overflow-unknown-reset 0\|1` | `AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET` | `0` | `1` lets a plan reset that no reading reports count as further away than `--overflow-wait`, so it can move work onto an overflow profile and **spend money**; see [Overflow decision](#overflow-decision) |
 | `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | `1`-`86400` (seconds); `start` and `watch` only |
+| `--codex on\|off` | `AMPLIHACK_ROTATE_CODEX` | `on` | `off` turns the [Codex rotation](#rotate-codex) off |
+| `--codex-floor N` | `AMPLIHACK_ROTATE_CODEX_FLOOR` | `3000` | `0` or more (credit balance); see [Codex rotate settings](#codex-rotate-settings) |
+| `--codex-home-link PATH` | `AMPLIHACK_ROTATE_CODEX_HOME_LINK` | `$HOME/.codex` | An absolute path with no `..`; see [Default Codex home link](#default-codex-home-link) |
 
 A flag beats its variable, and the variable beats the default. An empty
 variable counts as unset. Values are unsigned decimal integers: a sign,
@@ -7349,6 +7774,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 | `pin` | The [rotation pin](#rotate-pin): one profile name and a newline. Written by `profile switch <name>`, removed by `profile switch --none`. Not part of the ledger. |
 | `sessions-archive.last` | When the [daily session archive](#rotate-daily-session-archive) last started: epoch seconds and a newline. Written atomically before each run; removed when a run stops early after archiving something, so the next pass carries on. |
 | `owner` | The [owner marker](#rotate-owner): `unit=`, `pid=` and `since=` lines. Written by a supervised `rotate watch`, removed only by `rotate owner clear`. Not part of the ledger. |
+| `codex-state.json` | The [Codex rotation state](#codex-state-file): the Codex swap journal, the time of the last Codex swap and the `codex-resume` records. Not part of the ledger. |
 
 The auto-switch `ledger.json` and `journal.json` one level up are separate
 files and are not changed by rotation.
@@ -7499,6 +7925,7 @@ run and prints their `reread:` lines; see
 | `switch <from>-><to>` | A swap made by [`profile switch`](#rotate-switch). It has no usage readings, because `switch` measures no usage, and it does not start with `swap `, so a search for rotator swaps does not match it. |
 | `skip: <name> is already the live login; nothing moved` | `profile switch` found `<name>` already live. |
 | `would refresh: expired login in ~/.claude` / `would seed: record for live profile <L> from a fresh reading` / `would note: no record for live profile <L>: <reason>; nothing moved; run: amplihack profile seed-record <L>` / `would swap ...` / `would block <name> (spend limit) until <time>` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would stay (held by switch to <name>)` / `would stay (pin unreadable)` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` / `would recover: <recovered line>` / `would_refuse <name>: <reason>` | `--dry-run` only. `would_refuse` is printed in place of `would swap` when the target is an API-key profile that fails its [login check](#api-key-login-check). |
+| `codex cycle ...`, `codex skip reason=...`, `codex swap ...`, `codex refuse reason=...`, `codex recover ...`, `dry-run would-swap ...`, `dry-run would-recover ...`, `codex resume session=...`, `codex resume none ...` | Lines of the [Codex rotation](#rotate-codex) and of [`codex-resume`](#codex-resume-command); see [Codex cycle line](#codex-cycle-line), [Codex refusals](#codex-refusals), [Codex dry run](#codex-dry-run) and [Codex resume lines](#codex-resume-lines). They never change the Claude lines. |
 
 Identity refusals write an ALERT on every affected rotation cycle;
 manual switches report the refusal on every attempt. Other ALERTs are
@@ -7541,7 +7968,7 @@ turned rotation off and when:
 
 | Field | Value |
 |-------|-------|
-| `<setting>` | `rotate-autostart` for `rotate autostart on\|off`; `auto-switch` for any command that changes `enabled` in `<root>/.auto-switch` (`auto-switch on`, `auto-switch off`). |
+| `<setting>` | `rotate-autostart` for `rotate autostart on\|off`; `auto-switch` for any command that changes `enabled` in `<root>/.auto-switch` (`auto-switch on`, `auto-switch off`); `codex_home` for a [Codex swap](#codex-swap), where `<old>` and `<new>` are the account labels. |
 | `<old>` | `on` or `off`; `unset` when there was no setting; `corrupt` when the setting could not be trusted. |
 | `<new>` | `on` or `off`. |
 | `pid`, `ppid` | The process that wrote the setting, and its parent. |
@@ -8600,6 +9027,574 @@ account IDs or tokens. Failing to write it does not change the outcome.
 
 The wait plus one read interval is less than the hook timeout, so the hook
 always decides before Claude Code stops it.
+
+### Rotate Codex
+
+On Unix, each rotate cycle also measures every Codex account and keeps the
+default Codex home on the account with the most room. The default home is a
+symlink, `~/.codex` unless [configured](#codex-rotate-settings), that points
+at one account directory under the Codex profiles root. A swap points the
+symlink at another account. Nothing is copied and no account directory is
+renamed. The rotator opens no file inside an account directory; the
+[narrow exceptions](#what-the-codex-rotation-does-not-do) belong to
+`codex-resume`. The [how-to](../howto/codex-profile-rotation.md) walks
+through setting it up.
+
+The Codex part runs once per cycle, straight after the Claude part:
+
+| Form | When the Codex part runs |
+|------|--------------------------|
+| `rotate watch` (and the process `rotate start` launches) | Once per loop, after the Claude cycle returns. Not while rotation is paused. |
+| `rotate` | Once, after the Claude cycle. |
+| `rotate --dry-run` | Once, read-only; see [Codex dry run](#codex-dry-run). |
+
+It adds no interval, timer or probe of its own. It never changes the Claude
+cycle, its outcome, the rotate ledger or the exit status. An error in the
+Codex part is written to the log as `skip: <error>` (`ALERT: <error>` for a
+refusal error), as for a failed Claude cycle, and `watch` carries on.
+
+The Codex rotation uses the same account list and the same live read as
+[Codex accounts](#codex-accounts) in `profile usage`: one
+`account/rateLimits/read` per signed-in account per cycle, no model call, and
+never the contents of `auth.json`.
+
+#### Codex rotate settings
+
+| Flag | Variable | Default | Range |
+|------|----------|---------|-------|
+| `--codex on\|off` | `AMPLIHACK_ROTATE_CODEX` | `on` | `on` or `off`; `1` and `0` are accepted too. `off` turns the Codex part off: it reads nothing and writes no line. |
+| `--codex-floor N` | `AMPLIHACK_ROTATE_CODEX_FLOOR` | `3000` | `0` or more. The credit balance above which a full account still counts as having room (its room is shown as `0.5`); see [Codex next choice](#codex-next-choice). |
+| `--codex-home-link PATH` | `AMPLIHACK_ROTATE_CODEX_HOME_LINK` | `$HOME/.codex` | An absolute path with no `..` component. The symlink the rotator keeps pointed at the best account. |
+
+The flags go where the other tuning flags go: on the one-shot `rotate`, and
+after `start` or `watch`. A flag beats its variable, and the variable beats
+the default; an empty variable counts as unset. `start` resolves all three
+and passes them to the background process as flags, as it does for the other
+settings. An invalid value is a `RotateConfig` error that names the flag or
+variable:
+
+```
+error: invalid rotate setting --codex-home-link "codex": expected an absolute path with no .. component
+hint: run `amplihack profile rotate --help` for the accepted values
+```
+
+The hold and the margin are shared with Claude: `--hold` and `--margin` apply
+to Codex swaps as described in [Codex decision](#codex-decision). There is no
+separate Codex hold.
+
+The per-account read deadline is `AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS`, as in
+[Codex read deadline](#codex-read-deadline). The rotator neither raises it
+nor retries a read. The Codex program is `CODEX_BIN` or `codex` on `PATH`,
+and the profiles root is `CODEX_PROFILES_ROOT` or `$HOME/.codex-profiles`,
+as for `profile usage`.
+
+#### Default Codex home link
+
+The rotator swaps only a link that meets all of these rules. Each check uses
+`lstat`, `readlink` and `stat`; none opens a file.
+
+| Rule | Refused with |
+|------|--------------|
+| The link path exists and is a symlink, not a real directory or file. | `home-not-link` |
+| Its target exists. | `link-dangling` |
+| Its target, made canonical, is a direct child of the canonical profiles root. Paths are compared by component, so `/home/you/.codex-profiles-evil/a` is not under `/home/you/.codex-profiles`, and a nested target such as `<root>/a/b` is refused too. | `link-outside-root` |
+| The link's parent directory and the profiles root are owned by you and are not group- or world-writable. | `link-outside-root` with `detail=parent-not-private` or `detail=root-not-private` |
+| `<link>.amplihack-swap` does not exist, or is a symlink left by an interrupted swap. | `home-not-link` with `detail=swap-path-not-link` |
+| The Codex program, as found and made canonical, is not under the profiles root, the current account directory or the link. A program that cannot be made canonical is refused too. | `codex-bin-in-home` |
+
+The account the link points at is the *live* Codex account. Its label is the
+name of the directory under the root, so `~/.codex -> ~/.codex-profiles/ggrant`
+makes `ggrant` live.
+
+Codex jobs started with an explicit `CODEX_HOME=<root>/<name>` use that
+directory directly. A swap changes only the link, so their path and the inode
+of their directory stay the same, and they keep their account. Processes
+with any `CODEX_HOME` other than the link path are never examined or
+changed.
+
+#### Adopting an existing `~/.codex`
+
+The rotator never turns a real `~/.codex` directory into a link. While
+`~/.codex` is a real directory, every cycle that would swap writes
+`codex refuse reason=home-not-link` and changes nothing. To adopt it, move it
+into the profiles root yourself, once, with no Codex running:
+
+```bash
+mkdir -p -m 0700 ~/.codex-profiles
+mv ~/.codex ~/.codex-profiles/personal
+ln -s ~/.codex-profiles/personal ~/.codex
+```
+
+If the `codex` you run is installed inside `~/.codex` (for example under
+`~/.codex/packages/`), a swap would also change which program runs, so the
+rotator refuses with `codex-bin-in-home`. Install Codex outside the account
+directories, for example with `npm install -g @openai/codex`, or move the
+installed package out of the profile and put its new location on `PATH`.
+Check with:
+
+```bash
+readlink -f "$(command -v codex)"
+```
+
+The printed path must not start with `~/.codex-profiles/` or `~/.codex/`.
+
+#### Codex cycle
+
+1. With `--codex off`, stop. Nothing is read or written.
+2. List the accounts as in [Which accounts are read](#which-accounts-are-read).
+   If there are none, write `codex skip reason=no-accounts` and stop.
+3. Find the Codex program by `PATH` lookup (or `CODEX_BIN`). If there is
+   none, write `codex skip reason=no-codex-bin` and stop.
+4. Inspect the link. When it points at an account under the root, that
+   account is read once, under its own label, and is marked live. The
+   `~/.codex` entry is then dropped, so no account is read twice. When the
+   link is not a link to an account under the root, `~/.codex` is read as its
+   own account with the label `~/.codex`, as in `profile usage`.
+5. Read every account once, all at the same time, with no lock held and no
+   retry. A warning about `AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS` is written once.
+6. Decide, as in [Codex decision](#codex-decision), and write the
+   [`codex cycle` line](#codex-cycle-line).
+7. When the decision is a swap, run the [Codex swap](#codex-swap), which may
+   instead write a [refusal](#codex-refusals). When the decision is
+   `none(no-live)`, write the refusal for the link's state. When it is
+   `none(recovering)`, run [Codex recovery](#codex-recovery). When
+   `codex-state.json` cannot be loaded, write
+   `codex refuse reason=journal-mismatch detail=state-unreadable:<why>`
+   instead, whatever the decision, and run no swap or recovery. `<why>` is
+   the load error, for example `is_a_symlink`, `unknown_version` or
+   `line_1_column_2`.
+
+A cycle writes one `codex cycle` or `codex skip` line, and after a
+`codex cycle` line at most one of `codex swap`, `codex refuse`,
+`codex recover` or `dry-run would-swap`. A swap also writes one
+[`change:` line](#rotate-change-log).
+
+#### Codex cycle line
+
+```
+codex cycle live=<label|-> <label>:<window>=<p>%@<reset>,...,room=<h> ... unread=<label>(<why>),... read=<time> -> keep|swap <from>-><to>|none(<reason>)
+```
+
+| Part | Value |
+|------|-------|
+| `live=` | The live account's label, or `-` when the link does not point at an account under the root. |
+| `<label>:...` | One entry per account that was read, live first, then in the order of [Which accounts are read](#which-accounts-are-read). |
+| `<window>=<p>%@<reset>` | One per window reported, primary first. `<window>` is the window label from [Codex row layout](#codex-row-layout) (`5h`, `7d`, ...). `<p>` is the used percentage rounded down; `-` when none was reported. `<reset>` is the reset in UTC as `MM-DDTHH:MMZ`, `-` when none was reported, and `?` when `resetsAt` is not a usable time (see [Codex reset times](#codex-reset-times)). |
+| `credits=<c>` | When credits were reported: the balance with no trailing zeros, or `yes` / `no`. |
+| `room=<h>` | The account's room from [Codex next choice](#codex-next-choice), with no trailing zeros: `59`, `12.5`, `0.5` (credits above the floor) or `-1`. |
+| `unread=` | Present when an account could not be read: `<label>(not-signed-in)`, `<label>(timeout)` or `<label>(error:<reason>)`, comma-separated. `error:` covers a reader that exits non-zero and a reply that is not valid JSON. A `~/.codex` account that is not signed in is left out, as in `profile usage`. An account listed here is never chosen. |
+| `read=` | The latest read time of the cycle, RFC 3339 in UTC. |
+| `-> ...` | The [decision](#codex-decision). |
+
+Failed reads go in `unread=`, not in a separate `unmeasured(...)` entry, so
+an account appears once on the line whether or not it was read. Scripts that
+look for accounts that could not be read match `unread=`.
+
+For example:
+
+```
+2026-11-08T19:09:01Z codex cycle live=ffarmer ffarmer:5h=88%@11-08T20:15Z,7d=70%@11-11T03:00Z,room=12 ggrant:7d=34%@11-12T14:30Z,room=66 hhale:credits=4200,room=0.5 unread=jjones(not-signed-in),kkim(timeout) read=2026-11-08T19:09:01Z -> swap ffarmer->ggrant
+2026-11-08T19:09:01Z codex swap ffarmer->ggrant link=/home/ryan/.codex reason=room
+```
+
+Labels, reasons and paths are cleaned before they are written: control and
+bidirectional-override characters are removed, whitespace becomes `_`,
+`(`, `)` and `,` in a label become `_`, secrets are redacted as in the
+[change log](#rotate-change-log), and an error reason is cut to 64
+characters. A value cannot start a second line or forge a field.
+
+#### Codex decision
+
+The rules are tried in order; the first that applies decides.
+
+| Order | Condition | Decision |
+|-------|-----------|----------|
+| 1 | `codex-state.json` holds an open journal | `none(recovering)`, followed by [recovery](#codex-recovery) (in a dry run, `dry-run would-recover`) |
+| 2 | No signed-in account has room above `0` | `none(no-room)` |
+| 3 | The link is not a link to an account under the root | `none(no-live)`, followed by `codex refuse reason=home-not-link`, `link-outside-root` or `link-dangling` |
+| 4 | The [next choice](#codex-next-choice) is the live account | `keep` |
+| 5 | The live account has room above `0`, and the last Codex swap was less than `--hold` seconds ago | `none(held)` |
+| 6 | The live account has room above `0`, and the choice's room exceeds it by less than `--margin` points | `none(damped)` |
+| 7 | Otherwise | `swap <live>-><choice>` |
+
+An open journal comes first, so an interrupted swap is recovered on the next
+cycle even when no account has room or the link is missing. A live account
+that could not be read counts as having no room, so it is never held or
+damped. The time of the last Codex swap is `last_swap_at` in
+[`codex-state.json`](#codex-state-file); Claude swaps do not count.
+
+#### Codex swap
+
+The swap runs under the Codex lock, `<root>/.auto-switch.d/rotate/lock`
+(an exclusive `flock`), never inside the Claude cycle and never while the
+Claude cycle holds its own lock. Recovery and `codex-resume` use the same
+Codex lock.
+
+1. Take the lock without queueing behind its holder. If it is held, refuse
+   with `lock-busy`; the next cycle tries again.
+2. Inspect the link again under the lock. If it no longer points at the
+   account the decision swapped from, refuse with `journal-mismatch`.
+3. Check the [link rules](#default-codex-home-link) again, including the
+   ownership and mode of the link's parent and the root, the leftover temp
+   path and the Codex program's location.
+4. Check that the [default home is not in use](#codex-default-home-in-use).
+5. Write the journal to `codex-state.json` with phase `prepared` and fsync it.
+   The journal records the old and new targets and the inode of each.
+6. Create a symlink at `<link>.amplihack-swap` whose content is the absolute
+   path `<root>/<label>` of the new account. Just before the rename, check
+   once more that the link still points at the journal's old target and
+   that the old and new targets still have the inodes the journal recorded;
+   if not, remove the temp symlink, keep the journal and refuse with
+   `journal-mismatch` and `detail=link-changed`, `detail=old-account-replaced`
+   or `detail=new-account-replaced`. Then `rename()` the temp symlink over the link, which
+   is atomic, and fsync the link's parent directory. A `rename`
+   error (`EISDIR`, `ENOTEMPTY`, `ENOTDIR`, ...) is returned as an error;
+   nothing is deleted to make the rename succeed.
+7. Set the journal phase to `linked`, write the
+   [`change:` line](#rotate-change-log) for `codex_home`, write the
+   `codex swap` line, set `last_swap_at`, and remove the journal.
+
+The account directories keep their inodes across a swap: only the link's
+target changes. That is how the tests check that logins are moved by
+re-pointing, never copied.
+
+A Codex process that starts between step 4 and step 6 and uses the default
+home is not covered. That window is microseconds long, and closing it would
+need Codex itself to take the Codex lock.
+
+#### Codex refusals
+
+A refusal writes one line and changes nothing:
+
+```
+codex refuse reason=<code>[ detail=<word>]
+```
+
+| Code | When |
+|------|------|
+| `home-not-link` | The link path is a real directory or file, or does not exist (`detail=missing`), or cannot be examined, for example because permission is denied (`detail=unreadable`), or `<link>.amplihack-swap` exists and is not a symlink (`detail=swap-path-not-link`). |
+| `link-outside-root` | The link's target is not a direct child of the profiles root, or the link's parent or the root is not private (`detail=parent-not-private`, `detail=root-not-private`). |
+| `link-dangling` | The link's target does not exist. |
+| `journal-mismatch` | An open journal does not match the configured link or the current link, or the link moved between the decision and the swap. Also used when `codex-state.json` cannot be loaded (`detail=state-unreadable:<why>`, where `<why>` is the load error). The journal and the state file are kept for you to inspect. |
+| `default-home-in-use` | A Codex process of yours uses the default home; see [Codex default home in use](#codex-default-home-in-use). |
+| `proc-unreadable` | The process list could not be read, so the rotator cannot tell whether the default home is in use: `/proc` is missing (every platform but Linux), cannot be listed, or is mounted with `hidepid`. The swap is deferred. |
+| `lock-busy` | The Codex lock (`.auto-switch.d/rotate/lock`) was held. |
+| `codex-bin-in-home` | The Codex program is under the profiles root or the link; see [Adopting an existing `~/.codex`](#adopting-an-existing-codex). `codex-resume` refuses with the same code. |
+
+A refusal is tried again on the next cycle. The codes are fixed; scripts may
+match them.
+
+#### Codex default home in use
+
+A `codex` started without `CODEX_HOME`, or with `CODEX_HOME` equal to the
+link path, reaches its login through the link. If the link moved under it, a
+token refresh could write into the other account's directory. So before a
+swap the rotator looks for such a process:
+
+- Only `/proc/<pid>` entries owned by your user are examined. A process is a
+  Codex process when its `comm` is `codex`, the file name of its `exe` starts
+  with `codex`, or its `comm` is `node` and the file name of its first
+  argument is `codex` or `codex.js`.
+- For a Codex process, `environ` is read (at most 256 KiB) and only the
+  `CODEX_HOME` value is kept. Nothing else from it is stored or logged.
+- The process uses the default home when `CODEX_HOME` is absent, or names
+  the link. A relative `CODEX_HOME` is resolved against that process's
+  `/proc/<pid>/cwd`. It names the link when it equals the link once both are
+  made absolute without following the link, or when its parent directory,
+  made canonical, is the link's canonical parent and its last part is the
+  link's name. So `CODEX_HOME=/d0/you/.codex` names `/home/you/.codex` when
+  `/home/you` is a symlink to `/d0/you`. If `CODEX_HOME` is itself a symlink,
+  it is followed, at most 40 times, and each step is checked the same way,
+  so an alias such as `~/codex-alias -> ~/.codex` counts too. The link itself
+  is never followed: a process whose `CODEX_HOME` is the account directory
+  the link points at does not use the link, and a swap does not change what
+  it uses. A `CODEX_HOME` that does not exist names nothing. A symlink loop
+  or any other error counts as in use. Paths are resolved as the rotator
+  sees them, not in the process's own mount namespace.
+- When the link's own parent directory cannot be made canonical, the scan
+  refuses with `proc-unreadable`.
+- A process that exits during the scan is skipped. A Codex process whose
+  `environ` or `cwd` cannot be read (`EACCES`) counts as in use.
+- `/proc/<pid>/environ` and `cmdline` are the only files read, each with a
+  size limit. Process environments are never logged.
+
+The refusal is `codex refuse reason=default-home-in-use detail=pid-<pid>`.
+When `/proc` itself is missing or cannot be listed, the refusal is
+`codex refuse reason=proc-unreadable` and the swap is deferred.
+
+The scan is Linux-only and fails closed. On macOS and other Unix systems
+there is no `/proc`, and on Linux hosts that mount `/proc` with `hidepid`
+other processes cannot be seen, so every Codex swap is refused with
+`proc-unreadable`. The cycle line, the readings and `codex-resume` still
+work there; only the link is never moved. This is on purpose: a swap under a
+running `codex` could send its token refresh to the wrong account.
+Processes are never signalled.
+
+#### Codex recovery
+
+Recovery is the first thing a cycle does. When a cycle finds an open
+journal, it takes the lock and finishes or undoes the swap. Paths in the
+journal are never trusted: `link` must equal the configured link, and the
+old and new targets are each inspected with the same checks as the
+[link rules](#default-codex-home-link) (they must exist, be direct children
+of the canonical profiles root and not be symlinks). A journal that names a
+path outside the root, or fails any check, gives `journal-mismatch`; the
+journal is kept for you to inspect and nothing is changed. The temp path is
+always worked out from the configured link.
+
+| Link points at | Action | Line |
+|----------------|--------|------|
+| The new target, with the inode recorded in the journal | Write the `change:` line if the phase was `prepared`, set `last_swap_at`, remove the journal. | `codex recover <from>-><to> reason=recovered` |
+| The old target | Remove `<link>.amplihack-swap` only if it is a symlink, remove the journal. | `codex recover <from>-><to> reason=rolled-back` |
+| Anything else | Keep the journal. | `codex refuse reason=journal-mismatch` |
+
+A cycle that recovers makes no swap; the next cycle decides again.
+
+A `journal-mismatch` from recovery repeats every cycle and blocks every
+Codex swap until you clear it; see
+[Clearing a journal mismatch](#clearing-a-codex-journal-mismatch).
+
+#### Clearing a Codex journal mismatch
+
+When every cycle writes `codex refuse reason=journal-mismatch` with no
+`detail=` and `codex-state.json` holds a `journal`:
+
+1. Check the link by hand: `readlink ~/.codex` (or your
+   `--codex-home-link`). Make it point at the account you want, an
+   absolute path `<root>/<label>`, with `ln -sfn`. Remove
+   `<link>.amplihack-swap` if it is a leftover symlink.
+2. Delete the journal: remove the `journal` field from
+   `<root>/.auto-switch.d/rotate/codex-state.json`, keeping the file at mode
+   `0600`, or delete the file. Deleting the file also drops `last_swap_at`
+   and the `codex-resume` records, so the hold and the resume cap start
+   again.
+
+The next cycle decides as usual.
+
+#### Codex dry run
+
+`rotate --dry-run` reads the Codex accounts and writes the `codex cycle` line
+to stdout like the other dry-run lines. It takes no lock, writes no state,
+changes no link and runs no recovery; an open journal is reported as
+`dry-run would-recover <from>-><to> phase=<phase>`. For a swap decision it
+runs the link, root, temp-path, Codex program and in-use checks without the
+lock, then prints either the refusal a real cycle would write or:
+
+```
+dry-run would-swap <from>-><to>
+```
+
+#### Codex state file
+
+`<root>/.auto-switch.d/rotate/codex-state.json`, beside the
+[rotate state](#rotate-state-directory). The Claude ledger and journal never
+hold Codex data.
+
+```json
+{
+  "version": 1,
+  "journal": {
+    "from": "ffarmer",
+    "to": "ggrant",
+    "link": "/home/ryan/.codex",
+    "old_target": "/home/ryan/.codex-profiles/ffarmer",
+    "new_target": "/home/ryan/.codex-profiles/ggrant",
+    "from_ino": 1835123,
+    "to_ino": 1835140,
+    "phase": "prepared"
+  },
+  "last_swap_at": 1794164941,
+  "resumes": [
+    { "session": "0199a213-81c0-7800-8aa1-bbab2a035a53", "at": 1794165002, "from": "ggrant", "to": "hhale" }
+  ]
+}
+```
+
+| Field | Contents |
+|-------|----------|
+| `journal` | The swap in progress, absent when there is none. `phase` is `prepared` or `linked`. |
+| `last_swap_at` | Epoch seconds of the last completed Codex swap. |
+| `resumes` | The [codex-resume](#codex-resume-command) records of the last 24 hours. Older records are dropped on each write. |
+
+The file must be a regular file owned by you with mode `0600` or narrower,
+and is written atomically, never through a symlink. A file that is not, that
+does not parse, or that has a `version` other than `1` is never overwritten:
+every cycle writes `codex refuse reason=journal-mismatch detail=state-unreadable:<why>`
+and no swap or recovery runs, and `codex-resume` fails with status 1.
+
+#### What the Codex rotation does not do
+
+- It never opens `auth.json`, `config.toml`, a session rollout or any other
+  file inside an account directory. Account directories and the link are
+  touched only by `read_dir`, `lstat`, `readlink`, `stat`, `symlink`,
+  `rename` and `mkdir`.
+- `codex-resume` has exactly two narrow exceptions. The only file it reads
+  that may sit beside an account is the events file you name with
+  `--events`, under the [events file rules](#session-id). The only thing it
+  writes inside an account directory is one rollout symlink under
+  `<chosen account>/sessions/`, creating any missing directories on that
+  path with `mkdir` (mode `0700`). It never follows a symlinked directory on
+  that path, whether it found or created it, never overwrites an existing
+  entry, and its source must be an entry inside `<from-home>/sessions` that
+  is not a symlink, with a name ending in `-<id>.jsonl` for the validated
+  id, or the symlink an earlier resume made there, which must resolve to a
+  file with such a name inside the `sessions` folder of an account under the
+  profiles root. Any other symlink with a rollout's name is skipped.
+- `codex app-server`, started by the reader, reads its own `auth.json` and
+  may refresh the account's tokens. That is the user's own `codex` acting
+  with the user's authority, as any `codex` run does; amplihack never sees
+  the contents.
+- It never renames, moves or copies an account directory or a login.
+- It never converts a real `~/.codex` into a link.
+- It never changes a process, or a job started with an explicit
+  `CODEX_HOME` other than the link.
+- It adds no timeout, interval, retry or probe.
+
+The trust model is the same user: these rules keep the rotator from reading
+or moving credentials, not from a compromised user account.
+
+#### Codex platform support
+
+The Codex rotation runs only on Unix. On other platforms `rotate` fails with
+`RotateUnsupported` before the Codex part, as it already does.
+
+| Platform | Readings and cycle line | Link swaps | `codex-resume` |
+|----------|-------------------------|------------|----------------|
+| Linux, `/proc` readable | yes | yes | yes |
+| Linux with `hidepid` | yes | no; `proc-unreadable` | yes |
+| macOS and other Unix (no `/proc`) | yes | no; `proc-unreadable` | yes |
+| Windows | no | no | no; `RotateUnsupported` |
+
+### Codex resume command
+
+`profile codex-resume` resumes a Codex session that stopped on a usage limit,
+on an account with room, or on any account once a limit window resets. Codex
+has no hook for a stopped session, so a wrapper around the Codex job calls
+this command when the job ends; the
+[how-to](../howto/codex-profile-rotation.md#resume-a-codex-job-that-hit-its-limit)
+has a wrapper.
+
+```
+amplihack profile codex-resume --session <id> [--from-home <path>] [-- <codex args>...]
+amplihack profile codex-resume --events <file> [--from-home <path>] [-- <codex args>...]
+```
+
+| Option | Meaning |
+|--------|---------|
+| `--session <id>` | The session to resume. Beats `--events` when both are given. |
+| `--events <file>` | A JSONL events file from `codex exec --json`. The session id is the first `thread.started` event's `thread_id` or `session_configured` event's `session_id`. The file must also show a [usage limit](#codex-limit-detection). |
+| `--from-home <path>` | The `CODEX_HOME` the stopped session used. Default: `CODEX_HOME` when set and not empty, otherwise the [default home link](#default-codex-home-link). It must resolve to an account directory under the profiles root. |
+| `-- <codex args>...` | Passed to `codex resume` after the id, for example a prompt. Only their number is logged. |
+
+Neither `--session` nor `--events` is a usage error.
+
+#### Session id
+
+A session id must match `^[A-Za-z0-9][A-Za-z0-9-]{0,63}$`, so it cannot
+start with `-` and be read as a flag, and cannot hold `/` or `..`. The id
+comes only from `--session` or the events file, never from credentials or a
+rollout's contents.
+
+The events file is read under these rules:
+
+- It must be a regular file, checked before it is opened and opened
+  non-blocking, so a FIFO fails at once.
+- A file named `auth.json`, as given or once symlinks are resolved, and any
+  path under the profiles root or under the link's target, is refused.
+- At most 16 MiB and 100,000 lines are read. Line contents are never logged.
+
+#### Codex limit detection
+
+A session counts as stopped on a usage limit when the events file has any of:
+
+- a non-null `rate_limit_reached_type` (or `rateLimitReachedType`) at any
+  depth of an event;
+- the text `You've hit your usage limit`, ignoring ASCII case, with a
+  straight or curly apostrophe;
+- the code `usage_limit_reached`.
+
+An account's live reading counts as limited when its `rateLimitReachedType`
+is not null. The wording Codex uses may change between versions; the match
+lives in one function with fixture tests.
+
+#### Choosing the account
+
+1. Count this session's resume records in the last 24 hours. At 3 or more,
+   stop with `capped`; no account is read. The cap is the Claude hook's
+   `MAX_RESUMES_PER_SESSION`, shared.
+2. With no lock held, read every account live once. Only accounts that are
+   themselves a directory directly under the root are read: an entry that
+   is a symlink to a directory elsewhere, or to another account, is left
+   out. Leave out the account the session used and every account whose
+   reading is limited, then take the [next choice](#codex-next-choice) with
+   the [`--codex-floor`](#codex-rotate-settings) value from
+   `AMPLIHACK_ROTATE_CODEX_FLOOR`.
+3. If no account has room: each signed-in account's reset is the `resetsAt`
+   of its fullest window, and the deadline is the earliest of those, taken
+   from this live reading. With none, stop with `no-reset-known` (status 4).
+   A deadline later than 7 days from now is cut to 7 days from now; a
+   deadline already passed means no sleep. Otherwise sleep once until the
+   deadline, read every account once more, leaving out only limited
+   accounts, so the account the session used can now be chosen. If none has
+   room, stop with `no-room-after-reset`. There is no loop and no retry.
+4. Take the Codex lock without waiting (`lock-busy` if it is held), count
+   the records again and, under 3, add the resume record, then release the
+   lock. Counting and adding happen under one lock, so two wrappers cannot
+   both pass a count of 2. The lock is never held while reading or waiting.
+5. If the chosen account is not the one the session used, link the session's
+   rollout into it: find the file whose name ends in `-<id>.jsonl` under
+   `<from-home>/sessions` by listing directories only. It must not be a
+   symlink, unless it is the symlink an earlier resume made, resolving to a
+   file with such a name in the `sessions` folder of an account under the root;
+   any other symlink, such as `x-<id>.jsonl -> ../../auth.json`, is skipped.
+   Unless a file
+   with such a name already exists under the chosen account's `sessions`,
+   create a symlink at the same relative path there (parents created with
+   mode `0700`). A folder on that path that is a symlink is an error, never
+   followed. The rollout is never opened or copied. No rollout found is
+   an error (status 1) and nothing is started.
+6. Write the resume line, then run
+   `codex resume <id> <codex args>...` with no shell, `CODEX_HOME` set to
+   `<root>/<label>` of the chosen account, and `OPENAI_API_KEY` and
+   `CODEX_API_KEY` removed so the chosen account is the one billed. Stdin,
+   stdout and stderr are inherited; the command waits for it.
+
+The sleep in step 3 is the only wait in the Codex code. It waits for a
+known event time, the window reset Codex itself reported, once; it does not
+wake on an interval or poll. Tests replace the clock, so no test sleeps.
+
+Codex must follow the rollout symlink for a resume on another account to
+work. If a Codex version does not, the resume on another account fails in
+Codex, and only the wait for the same account's reset (step 3) helps.
+
+#### Codex resume lines
+
+Each line is appended to `rotate.log` and printed on stderr:
+
+```
+codex resume session=<id> <from>-><to> reason=room|after-reset args=<n>
+codex resume none reason=capped|no-reset-known|no-room-after-reset|lock-busy|codex-bin-in-home session=<id>
+```
+
+`codex-bin-in-home` is written when the Codex program, as found and made
+canonical, is under the profiles root or the link, or cannot be made
+canonical. It is checked before any account is read, and the command exits
+with status 2 and prints `codex-resume: refused reason=codex-bin-in-home`.
+Nothing is started.
+
+#### Codex resume exit status
+
+| Status | When |
+|--------|------|
+| The child's status | `codex resume` ran. A child killed by a signal gives `1`. |
+| `1` | `lock-busy`, no rollout found, an unreadable `codex-state.json`, or another error. |
+| `2` | A usage or configuration error: no id, an invalid id, a refused events file, an events file with no id or no usage limit, a `--from-home` that is not an account under the root, or `codex-bin-in-home`. |
+| `3` | `capped`: 3 resumes of this session in 24 hours. |
+| `4` | `no-reset-known` or `no-room-after-reset`. |
+
+A child can itself exit with `2`, `3` or `4`; the `codex resume` line on
+stderr tells the cases apart. On non-Unix platforms the command fails with
+`RotateUnsupported` (status 1).
 
 ## Usage-limit wait
 

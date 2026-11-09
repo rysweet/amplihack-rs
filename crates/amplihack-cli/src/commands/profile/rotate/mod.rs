@@ -18,6 +18,8 @@ mod capacity;
 #[cfg(unix)]
 pub(in crate::commands::profile) mod change_log;
 #[cfg(unix)]
+pub(super) mod codex;
+#[cfg(unix)]
 mod control;
 #[cfg(unix)]
 pub(super) mod cred_identity;
@@ -215,15 +217,13 @@ pub(super) use gate_record::effective_at as overflow_gate_at;
 #[cfg(unix)]
 pub(super) use gate_record::{GateSource, effective as overflow_gate, line as overflow_gate_line};
 
-/// The tail of the warning after `profile switch NAME` (#1691) while a rotator
-/// of another amplihack binary, which ignores the switch hold, runs.
+/// The warning's tail while a rotator that ignores the switch hold runs (#1691).
 #[cfg(unix)]
 const FOREIGN_IGNORES_HOLD: &str = "runs another amplihack binary and ignores the switch \
     hold; restart it: amplihack profile rotate stop && amplihack profile rotate start";
 
-/// The switch-hold warning for the rotator of `rs`, judged against
-/// `proc_root` and this process's executable `exe`; `None` when no rotator
-/// runs or it runs this binary.
+/// The switch-hold warning for the rotator of `rs`, judged against `proc_root`
+/// and this executable `exe`; `None` when none runs or it runs this binary.
 #[cfg(unix)]
 fn foreign_note_for(
     rs: &ledger::RotateState,
@@ -235,9 +235,8 @@ fn foreign_note_for(
     })
 }
 
-/// After a successful `profile switch NAME`: one line on stderr when the
-/// running rotator would ignore the hold. The switch itself succeeded, so
-/// this never changes the exit code.
+/// After a successful `profile switch NAME`: one stderr line when the running
+/// rotator would ignore the hold. It never changes the exit code.
 #[cfg(unix)]
 fn warn_switch_hold(root: &std::path::Path) {
     let exe = std::env::current_exe().ok();
@@ -247,8 +246,7 @@ fn warn_switch_hold(root: &std::path::Path) {
     }
 }
 
-/// Starts the rotator from a launch when auto-switch is on; see
-/// `autostart`. Nothing to start off Unix.
+/// Starts the rotator from a launch when auto-switch is on (`autostart`); not off Unix.
 #[cfg(not(unix))]
 pub(crate) fn autostart_on_launch(_docker_flag: bool) {}
 
@@ -260,6 +258,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
         match args.action {
             None => {
                 let s = settings::resolve(&args.tune, None, &env)?;
+                let (home, link) = codex::home_and_link(&args.tune, home)?;
                 let mode = if args.dry_run {
                     cycle::Mode::DryRun
                 } else {
@@ -268,9 +267,9 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                 if mode == cycle::Mode::OneShot {
                     warn_foreign_rotator(Some(store.root()));
                 }
-                let mut ctx = cycle::Ctx::new(store.clone(), home?, s);
+                let mut ctx = cycle::Ctx::new(store.clone(), home, s);
                 ctx.reread = Some(fresh::reread_as_configured);
-                cycle::run_cycle(&mut ctx, mode)?;
+                codex::after_cycle(cycle::run_cycle(&mut ctx, mode), &ctx, &link)?;
             }
             Some(RotateAction::Start(w)) => {
                 if w.supervised.is_some() {
@@ -278,12 +277,13 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                     return Err(super::ProfileError::RotateRefused(why.into()).into());
                 }
                 let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
-                daemon::start(store, &home?, &s)?;
+                daemon::start(store, &codex::start_home(&w.tune, home)?, &s)?;
             }
             Some(RotateAction::Watch(w)) => {
                 owner::check_flag(&w.supervised)?;
                 let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
-                daemon::watch(store, home?, s, w.spawned, w.supervised.clone())?;
+                let (home, link) = codex::home_and_link(&w.tune, home)?;
+                daemon::watch(store, home, s, link, w.spawned, w.supervised.clone())?;
             }
             Some(RotateAction::Stop) => control::stop(store, home.as_deref().ok())?,
             Some(RotateAction::Status) => control::status(store, home.as_deref().ok(), source),

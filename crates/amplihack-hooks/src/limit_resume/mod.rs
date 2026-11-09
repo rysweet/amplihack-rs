@@ -43,8 +43,9 @@ use std::time::Duration;
 pub const RESUME_MSG: &str = "amplihack: the login rotator reports a login with capacity. \
      Continue the task you were working on; if the usage limit is still in place, stop and wait.";
 
-/// Resumes allowed per session in any 24 hours.
-pub const MAX_RESUMES_PER_SESSION: u32 = 3;
+/// Resumes allowed per session in any 24 hours; shared with
+/// `amplihack profile codex-resume` (issue #2005).
+pub use amplihack_utils::limit_resume_cap::MAX_RESUMES_PER_SESSION;
 
 /// Larger hook payloads are ignored.
 pub const MAX_STDIN_BYTES: u64 = 1024 * 1024;

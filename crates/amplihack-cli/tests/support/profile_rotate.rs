@@ -405,6 +405,18 @@ impl Fixture {
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),
             )
             .env("HOME", &self.home)
+            // Issue #2001: `profile usage` never reads a Codex account here.
+            // Outside HOME: the empty-root line names the root.
+            .env(
+                "CODEX_PROFILES_ROOT",
+                self.home.with_file_name("no-codex-profiles"),
+            )
+            .env("CODEX_BIN", self.home.join("no-codex"))
+            // Issue #2005: the Codex part of `profile rotate` is on by
+            // default and writes a `codex skip` line when there are no
+            // accounts. The Claude tests check every rotate line, so it is
+            // off here; `codex_fake::CodexFixture` turns it back on.
+            .env("AMPLIHACK_ROTATE_CODEX", "off")
             .env("AMPLIHACK_PROFILE_USAGE_API_BASE", &self.identity.base)
             .env(
                 "AMPLIHACK_PROFILE_USAGE_TOKEN_URL",
@@ -620,7 +632,8 @@ pub fn assert_text_has_no_secrets(s: &str) {
 
 /// The documented log grammar: one-shot and `watch` lines start with a UTC
 /// time; `--dry-run` lines do not. `switch <from>-><to>` is the line a
-/// `profile switch` swap writes (issue #1691).
+/// `profile switch` swap writes (issue #1691). Issue #2005 adds the
+/// `codex ...` and `dry-run would-...` lines of the Codex rotation.
 pub fn assert_log_grammar(line: &str, timed: bool) {
     let msg = if timed {
         let re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z (.+)$").unwrap();
@@ -632,7 +645,7 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
         line.to_string()
     };
     let kinds = regex::Regex::new(
-        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)|failed|per-token|unknown, still running))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)|failed|unknown, still running) target s=\d+% w=(\d+%|\?) reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|would .+)$",
+        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)|failed|per-token|unknown, still running))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)|failed|unknown, still running) target s=\d+% w=(\d+%|\?) reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|would .+|codex (cycle live=\S+ .* -> (keep|swap \S+->\S+|none\((no-room|no-live|recovering|held|damped)\))|skip reason=(no-accounts|no-codex-bin)|swap \S+->\S+ link=\S+ reason=room|refuse reason=(home-not-link|link-outside-root|link-dangling|journal-mismatch|default-home-in-use|lock-busy|codex-bin-in-home|proc-unreadable)( detail=\S+)?|recover \S+->\S+ reason=(recovered|rolled-back)|resume session=\S+ \S+->\S+ reason=(room|after-reset) args=\d+|resume none reason=(capped|no-reset-known|no-room-after-reset|lock-busy|codex-bin-in-home) session=\S+)|dry-run would-(swap \S+->\S+|recover \S+->\S+ phase=(prepared|linked)))$",
     )
     .unwrap();
     assert!(kinds.is_match(&msg), "line outside the grammar: {line:?}");
@@ -664,7 +677,7 @@ fn remove_marker(marker: &Path) {
     }
 }
 
-fn unix_now() -> i64 {
+pub fn unix_now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let d = SystemTime::now()
         .duration_since(UNIX_EPOCH)

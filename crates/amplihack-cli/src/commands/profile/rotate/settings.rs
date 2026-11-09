@@ -25,6 +25,11 @@ pub struct Settings {
     /// nothing moves onto an overflow profile, because that move costs
     /// money and the plan login may come back in minutes.
     pub overflow_unknown_reset: bool,
+    /// Issue #2005: whether each cycle also rotates the default Codex home.
+    pub codex: bool,
+    /// Issue #2005: the credit balance above which a full Codex account
+    /// still counts as having room.
+    pub codex_floor: u32,
 }
 
 /// One setting: its flag, its variable, its default and its range.
@@ -85,6 +90,15 @@ const OVERFLOW_UNKNOWN_RESET: Spec = Spec {
     min: 0,
     max: Some(1),
 };
+const CODEX_FLOOR: Spec = Spec {
+    flag: "--codex-floor",
+    var: "AMPLIHACK_ROTATE_CODEX_FLOOR",
+    default: 3000,
+    min: 0,
+    max: Some(u32::MAX as u64),
+};
+const CODEX_FLAG: &str = "--codex";
+const CODEX_VAR: &str = "AMPLIHACK_ROTATE_CODEX";
 const INTERVAL: Spec = Spec {
     flag: "--interval",
     var: "AMPLIHACK_ROTATE_INTERVAL",
@@ -140,6 +154,29 @@ impl Spec {
     }
 }
 
+/// `--codex` / `AMPLIHACK_ROTATE_CODEX`: `on` or `1`, `off` or `0`; the
+/// flag beats the variable, an empty variable is unset, default on.
+fn resolve_codex_on(
+    flag: Option<&str>,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<bool, ProfileError> {
+    let (name, raw) = match flag {
+        Some(raw) => (CODEX_FLAG, raw.to_string()),
+        None => match env(CODEX_VAR).filter(|v| !v.is_empty()) {
+            Some(v) => (CODEX_VAR, v.to_string_lossy().into_owned()),
+            None => return Ok(true),
+        },
+    };
+    match raw.as_str() {
+        "on" | "1" => Ok(true),
+        "off" | "0" => Ok(false),
+        _ => Err(ProfileError::RotateConfig(format!(
+            "invalid rotate setting {name} {}: expected on, off, 1 or 0",
+            shown(&raw)
+        ))),
+    }
+}
+
 /// The settings for this run. `interval` is the `--interval` flag of `start`
 /// and `watch`; the one-shot form has none and gets the default.
 pub fn resolve(
@@ -161,6 +198,9 @@ pub fn resolve(
         overflow_unknown_reset: OVERFLOW_UNKNOWN_RESET
             .resolve(tune.overflow_unknown_reset.as_deref(), env)?
             == 1,
+        codex: resolve_codex_on(tune.codex.as_deref(), env)?,
+        // At most u32::MAX by the spec's range.
+        codex_floor: CODEX_FLOOR.resolve(tune.codex_floor.as_deref(), env)? as u32,
     })
 }
 
@@ -207,6 +247,10 @@ impl Settings {
             args.push(flag.to_string());
             args.push(v.to_string());
         }
+        args.push(CODEX_FLAG.to_string());
+        args.push(if self.codex { "on" } else { "off" }.to_string());
+        args.push(CODEX_FLOOR.flag.to_string());
+        args.push(self.codex_floor.to_string());
         if with_interval {
             args.push(INTERVAL.flag.to_string());
             args.push(self.interval.to_string());

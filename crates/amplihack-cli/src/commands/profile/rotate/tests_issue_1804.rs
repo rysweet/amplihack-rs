@@ -52,6 +52,8 @@ fn settings(session_at: u8) -> Settings {
         interval: 120,
         overflow_wait: 1800,
         overflow_unknown_reset: false,
+        codex: true,
+        codex_floor: 3000,
     }
 }
 

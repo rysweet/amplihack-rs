@@ -266,9 +266,9 @@ fn assert_no_sentinel_leaks(s: &Setup, out: &std::process::Output) {
 
 fn json_rows(out: &std::process::Output) -> Vec<serde_json::Value> {
     serde_json::from_slice::<serde_json::Value>(&out.stdout)
-        .unwrap_or_else(|e| panic!("not JSON ({e}): {}", text(&out.stdout)))
+        .unwrap_or_else(|e| panic!("not JSON ({e}): {}", text(&out.stdout)))["claude"]
         .as_array()
-        .unwrap()
+        .expect("a `claude` array (#2001)")
         .clone()
 }
 

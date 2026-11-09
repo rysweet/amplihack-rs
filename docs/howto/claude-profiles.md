@@ -637,6 +637,10 @@ root: /home/you/.claude-profiles (source: config)
 */30 * * * * amplihack profile usage --json > /tmp/claude-usage.json
 ```
 
+Changed in #2001: the saved file is now an object, `{"claude": [...],
+"codex": [...]}`, not the Claude array alone. A script that reads it with
+`jq '.[]'` must read `jq '.claude[]'` instead.
+
 ```bash
 tmux new-session -d -s work 'amplihack claude --profile work'
 ```
@@ -859,7 +863,7 @@ without `--raw` that line is not printed.
 To see how each row was read, use the `source` key of `--json`:
 
 ```bash
-amplihack profile usage --json | jq -r '.[] | "\(.profile) \(.source)"'
+amplihack profile usage --json | jq -r '.claude[] | "\(.profile) \(.source)"'
 ```
 
 ```
@@ -873,7 +877,7 @@ scratch fallback
 For scripts, use `--json`. This picks the profile with the most capacity:
 
 ```bash
-amplihack profile usage --json | jq -r '[.[] | select(.state == "ok")][0].profile'
+amplihack profile usage --json | jq -r '[.claude[] | select(.state == "ok")][0].profile'
 ```
 
 ```
@@ -907,6 +911,41 @@ logins, how many can take work now, the next session reset and how long the
 weekly capacity lasts at the recent rate; see
 [See how much capacity is left](claude-profile-rotation.md#see-how-much-capacity-is-left).
 `--summary-json` prints the rows and that summary as one JSON object.
+
+### See your Codex accounts in the same view
+
+With no profile names, `profile usage` also asks each Codex account under
+`~/.codex-profiles` (or `CODEX_PROFILES_ROOT`) for its rate limits, live,
+and lists it after the Claude output. `~/.codex` is included when it is
+signed in. Each row shows the five-hour and weekly use with their resets,
+any credit balance, the plan and the time of the reading, and `<- next`
+marks the account `codex-pick`'s rule picks from these live readings
+(`codex-pick` itself reads session files, which can be older, so the two
+can disagree):
+
+```
+Codex accounts under /home/ryan/.codex-profiles
+ffarmer  signed in      5h █░░░░░░░░░  12% 11-06 21:40 in 2h 31m  7d ████░░░░░░  41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00
+ggrant   signed in      7d ███░░░░░░░  34% 11-10 14:30 in 91h 21m  plan pro  read 19:09:00  <- next
+jjones   not signed in  read 19:09:00
+```
+
+The accounts are read at once, each with a 20-second limit
+(`AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS`); one that does not answer shows
+`timed out`, never an older figure. amplihack does not open `auth.json`;
+Codex reads its own login. In `--json`, the Claude rows are under `claude`
+and the Codex rows under `codex`:
+
+```bash
+amplihack profile usage --json | jq -r '.codex[] | select(.next_choice) | .account'
+```
+
+```
+ggrant
+```
+
+See [Codex accounts](../reference/profile-command.md#codex-accounts) for
+the states, the choice rule and every JSON key.
 
 The command exits with status 0 whenever the probes ran, whatever their
 states. Like `profile run`, it is refused under Docker.
@@ -967,7 +1006,7 @@ never 100%, and it is not recorded for auto-switch. Check which profiles
 timed out:
 
 ```bash
-amplihack profile usage --json | jq -r '.[] | select(.state == "timeout") | .profile'
+amplihack profile usage --json | jq -r '.claude[] | select(.state == "timeout") | .profile'
 ```
 
 ```
@@ -1020,7 +1059,7 @@ send decimals, so this rounds both to whole numbers before comparing:
 
 ```bash
 q='def whole: if type == "number" then round else . end;
-  .[] | {profile, state, session: (.session.used_percentage | whole), week: (.week_all.used_percentage | whole)}'
+  .claude[] | {profile, state, session: (.session.used_percentage | whole), week: (.week_all.used_percentage | whole)}'
 AMPLIHACK_PROFILE_USAGE_PROBE=text amplihack profile usage --json | jq -c "$q" | sort > ~/usage-text.jsonl
 AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS=0 amplihack profile usage --json | jq -c "$q" | sort > ~/usage-direct.jsonl
 diff ~/usage-text.jsonl ~/usage-direct.jsonl && echo same
@@ -1077,7 +1116,7 @@ The numbers on that row are the account's real usage, and the row is not
 other row has `null`:
 
 ```bash
-amplihack profile usage --json | jq -r '.[] | select(.live_in != null) | .profile'
+amplihack profile usage --json | jq -r '.claude[] | select(.live_in != null) | .profile'
 ```
 
 ```
@@ -2168,6 +2207,27 @@ and the variables in
   auto-switch on). If `~/.amplihack` is not owned by you or others can
   write it, the step writes `skipped reason=not_supervised` and runs once.
 - **Claude Code and Unix only.**
+
+## Codex accounts
+
+Codex logins are not amplihack profiles. Each Codex account is a directory
+under `~/.codex-profiles` (or `CODEX_PROFILES_ROOT`) that you sign in to with
+`CODEX_HOME=<dir> codex login`. amplihack works with them in three places:
+
+- `amplihack profile usage` lists every Codex account after the Claude rows,
+  read live; see
+  [See your Codex accounts in the same view](#see-your-codex-accounts-in-the-same-view).
+- `amplihack profile rotate` keeps the `~/.codex` symlink pointed at the
+  Codex account with the most room, the way it keeps `~/.claude` on the best
+  Claude login. A job started with an explicit `CODEX_HOME` keeps its
+  account.
+- `amplihack profile codex-resume` resumes a Codex session that stopped on a
+  usage limit, on another account or after the limit resets.
+
+To set them up, see
+[How to Rotate Codex Accounts Automatically](codex-profile-rotation.md). The
+flags, log lines and exit statuses are in the
+[Rotate Codex reference](../reference/profile-command.md#rotate-codex).
 
 ## Limits
 

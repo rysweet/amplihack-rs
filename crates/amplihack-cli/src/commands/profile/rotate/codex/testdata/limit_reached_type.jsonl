@@ -1,0 +1,2 @@
+{"id":"0","msg":{"type":"session_configured","session_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}}
+{"id":"1","msg":{"type":"token_count","info":null,"rate_limits":{"primary":{"used_percent":100.0,"window_minutes":300,"resets_at":1794193200},"secondary":{"used_percent":61.0,"window_minutes":10080,"resets_at":1794600000},"rate_limit_reached_type":"primary"}}}

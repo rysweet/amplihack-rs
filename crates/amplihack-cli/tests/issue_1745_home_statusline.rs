@@ -152,6 +152,12 @@ impl Fixture {
             .current_dir(&self.work)
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
             .env("HOME", &self.home)
+            // Issue #2001: `profile usage` never reads a Codex account here.
+            .env(
+                "CODEX_PROFILES_ROOT",
+                self.home.with_file_name("no-codex-profiles"),
+            )
+            .env("CODEX_BIN", self.home.join("no-codex"))
             .env("TZ", "UTC")
             .env("AMPLIHACK_NONINTERACTIVE", "1")
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
@@ -963,7 +969,7 @@ fn profile_usage_never_reports_a_home_reading_as_passive() {
     let stdout = text(&out.stdout);
     let rows: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("{e}: {stdout}\n{}", text(&out.stderr)));
-    let x = rows
+    let x = rows["claude"]
         .as_array()
         .unwrap()
         .iter()

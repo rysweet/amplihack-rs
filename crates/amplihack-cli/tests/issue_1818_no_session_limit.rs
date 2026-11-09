@@ -209,7 +209,10 @@ fn usage_rows(f: &Fixture, profiles: &[&str]) -> Vec<serde_json::Value> {
     let out = f.ok(&args);
     let v: serde_json::Value = serde_json::from_slice(&out.stdout)
         .unwrap_or_else(|e| panic!("not JSON ({e}): {}", text(&out.stdout)));
-    v.as_array().unwrap().clone()
+    v["claude"]
+        .as_array()
+        .expect("a `claude` array (#2001)")
+        .clone()
 }
 
 fn by_profile<'a>(rows: &'a [serde_json::Value], name: &str) -> &'a serde_json::Value {

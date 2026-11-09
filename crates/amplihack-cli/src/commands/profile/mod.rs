@@ -41,6 +41,7 @@ mod shared_dirs;
 mod store;
 mod supervise_gate;
 mod usage_cmd;
+mod usage_codex;
 #[cfg(unix)]
 mod usage_direct;
 mod usage_history;
@@ -99,6 +100,8 @@ mod tests_shared_dirs;
 mod tests_store;
 #[cfg(test)]
 mod tests_usage_cmd;
+#[cfg(test)]
+mod tests_usage_codex;
 #[cfg(all(test, unix))]
 mod tests_usage_direct;
 #[cfg(all(test, unix))]
@@ -436,7 +439,8 @@ pub enum ProfileCommands {
         args: Vec<String>,
     },
     /// Show each profile's weekly and session usage as a bar view, in the
-    /// order the rotator ranks headroom
+    /// order the rotator ranks headroom, then each Codex account's live
+    /// rate limits
     ///
     /// Rate: the capacity summary's rate covers the last 6 h. It starts at
     /// the oldest history entry in that window written by `profile usage`
@@ -449,9 +453,9 @@ pub enum ProfileCommands {
     /// smaller fall adds nothing and the rate is never negative. Each
     /// login's use is weighted by its capacity weight.
     Usage {
-        /// Profiles to probe (default: all)
+        /// Profiles to probe (default: all, and the Codex accounts)
         names: Vec<String>,
-        /// Print a JSON array instead of the bar view
+        /// Print one JSON object: `claude` (the profile rows) and `codex` (the Codex accounts)
         #[arg(long)]
         json: bool,
         /// Print the previous 7-column table instead of the bar view
@@ -460,7 +464,8 @@ pub enum ProfileCommands {
         /// Show reset times in UTC instead of local time (bar view only)
         #[arg(long, conflicts_with_all = ["json", "table", "summary_json"])]
         utc: bool,
-        /// Print one JSON object: the --json rows and the capacity summary.
+        /// Print one JSON object: the --json Claude rows, the capacity summary
+        /// and the Codex rows.
         /// Its rate covers the last 6 h, starts at the oldest entry in that
         /// window from `profile usage` or from a rotator cycle holding every
         /// login read now, needs that entry to be at least 4.5 h old, and is
@@ -489,6 +494,8 @@ pub enum ProfileCommands {
     Root { dir: Option<String> },
     /// Keep the login in ~/.claude on the profile with the most capacity left
     Rotate(Box<rotate::RotateArgs>),
+    /// Resume a Codex session that stopped on a usage limit, on an account with room
+    CodexResume(rotate_args::CodexResumeArgs),
     /// Mark profiles as credit-backed overflow for the rotator (costs real money)
     Overflow {
         #[command(subcommand)]
@@ -668,6 +675,15 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         }
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
         ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
+        #[cfg(unix)]
+        ProfileCommands::CodexResume(args) => {
+            let code = rotate::codex::resume_command(store.root(), args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        #[cfg(not(unix))]
+        ProfileCommands::CodexResume(_) => return Err(ProfileError::RotateUnsupported.into()),
         ProfileCommands::Overflow { command } => overflow::run(&store, command)?,
         #[cfg(unix)]
         ProfileCommands::SeedRecord { name, write } => seed_cmd::run(&store, &name, write)?,

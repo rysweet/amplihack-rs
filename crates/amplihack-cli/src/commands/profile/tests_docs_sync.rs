@@ -868,3 +868,284 @@ fn docs_describe_credential_identity_and_display_only_claude_json() {
     assert!(ROTATE_HOWTO.contains("#### No profile answers the same"));
     assert!(ROTATE_HOWTO.contains("```bash\namplihack profile rotate\n```"));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #2001: the Codex block of `profile usage`
+// ---------------------------------------------------------------------------
+
+const ENV_VARS: &str = include_str!("../../../../../docs/reference/amplihack-env-vars.md");
+
+#[test]
+fn every_codex_json_key_is_in_the_reference_key_table() {
+    use super::usage_codex::{json_rows, view};
+    use amplihack_utils::codex_capacity::{AccountResult, Outcome, Reading, Window, WindowName};
+    let mut r = Reading::default();
+    r.windows = vec![Window {
+        name: WindowName::Primary,
+        used_percent: Some(1.0),
+        window_minutes: Some(300),
+        resets_at: Some(1_794_001_200),
+    }];
+    let v = view(
+        std::path::PathBuf::from("/r"),
+        vec![AccountResult::new(
+            "a",
+            std::path::PathBuf::from("/r/a"),
+            Outcome::Ok(r),
+            1_793_992_140,
+        )],
+        20,
+    );
+    let row = serde_json::to_value(json_rows(&v)).unwrap()[0].clone();
+    let mut keys: Vec<String> = row.as_object().unwrap().keys().cloned().collect();
+    keys.extend(
+        row["windows"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| format!("windows[].{k}")),
+    );
+    for k in keys {
+        assert!(
+            REFERENCE.contains(&format!("| `{k}` |")),
+            "reference has no key-table row for Codex `{k}`"
+        );
+    }
+}
+
+#[test]
+fn the_codex_settings_are_documented_in_both_references() {
+    use amplihack_utils::codex_capacity::{BIN_ENV, ROOT_ENV, TIMEOUT_ENV};
+    for var in [ROOT_ENV, BIN_ENV, TIMEOUT_ENV] {
+        assert!(REFERENCE.contains(&format!("`{var}`")), "reference: {var}");
+        assert!(ENV_VARS.contains(&format!("`{var}`")), "env-vars: {var}");
+    }
+}
+
+#[test]
+fn the_docs_use_the_claude_key_in_jq_examples() {
+    for (name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
+        for l in doc
+            .lines()
+            .filter(|l| l.contains("profile usage --json | jq"))
+        {
+            // A filter kept in `$q` is checked where `q=` is set.
+            let via_q = l.contains("jq -c \"$q\"") && doc.contains("  .claude[] | {profile");
+            assert!(
+                l.contains(".claude[]") || l.contains(".codex[]") || via_q,
+                "{name}: a jq example still reads the old top-level array: {l}"
+            );
+        }
+    }
+    assert!(REFERENCE.contains("Changed in #2001"));
+    assert!(!REFERENCE.contains("The output stays a single array"));
+}
+
+/// Crusty round 1 on #2001: the stability promise must name #2001 as its
+/// one break, the how-to's saved-file cron example must say the file changed
+/// shape, and neither doc may claim the `<- next` marker is `codex-pick`'s
+/// own choice (it reads session files; this view reads live).
+#[test]
+fn the_docs_name_the_2001_json_break_and_the_live_next_rule() {
+    let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (reference, howto) = (flat(REFERENCE), flat(HOWTO));
+    assert!(reference.contains("From #2001 on, keys are only ever added"));
+    assert!(reference.contains("this is the one break in that promise"));
+    assert!(!reference.contains(". Keys are only ever added, never renamed or removed"));
+    assert!(reference.contains("named `claude` here and `profiles` in"));
+    let cron = howto
+        .find("profile usage --json > /tmp/claude-usage.json")
+        .expect("howto cron example");
+    assert!(howto[cron..].contains("Changed in #2001: the saved file is now an object"));
+    for (name, doc) in [("reference", &reference), ("howto", &howto)] {
+        assert!(!doc.contains("`codex-pick` would choose"), "{name}");
+    }
+    assert!(reference.contains("refreshing the account's login"));
+}
+
+#[test]
+fn the_reference_quotes_the_codex_texts_the_code_prints() {
+    for text in [
+        "Codex accounts under ",
+        "Codex: no accounts under ",
+        "codex binary not found: ",
+        "unexpected response from codex app-server",
+        "codex usage read is supported only on Unix",
+        "codex account authentication required to read rate limits",
+        "<- next",
+        "no windows reported",
+        "warning: AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS=\"0\" is not a whole number from 1 to 300; using 20",
+    ] {
+        assert!(
+            REFERENCE.contains(text),
+            "reference does not quote {text:?}"
+        );
+    }
+}
+
+// ---- Issue #2005: Codex rotation and `codex-resume` ----
+
+/// The refusal codes, word for word as `rotate::codex::swap::DOCUMENTED`
+/// (checked against that array in `rotate/codex/tests.rs`).
+const CODEX_REFUSALS: [&str; 8] = [
+    "home-not-link",
+    "link-outside-root",
+    "link-dangling",
+    "journal-mismatch",
+    "default-home-in-use",
+    "lock-busy",
+    "codex-bin-in-home",
+    "proc-unreadable",
+];
+
+#[test]
+fn the_reference_tables_every_codex_refusal_code() {
+    for code in CODEX_REFUSALS {
+        assert!(
+            REFERENCE.contains(&format!("| `{code}` |")),
+            "reference refusal table is missing `{code}`"
+        );
+    }
+    for detail in [
+        "detail=missing",
+        "detail=swap-path-not-link",
+        "detail=parent-not-private",
+        "detail=root-not-private",
+        "detail=state-unreadable:<why>",
+        "detail=unreadable",
+        "detail=pid-<pid>",
+    ] {
+        assert!(REFERENCE.contains(detail), "reference is missing {detail}");
+    }
+}
+
+#[test]
+fn the_reference_quotes_the_codex_line_formats() {
+    for text in [
+        "codex cycle live=<label|-> <label>:<window>=<p>%@<reset>,...,room=<h> ... unread=<label>(<why>),... read=<time> -> keep|swap <from>-><to>|none(<reason>)",
+        "codex skip reason=no-accounts",
+        "codex skip reason=no-codex-bin",
+        "codex refuse reason=<code>[ detail=<word>]",
+        "codex recover <from>-><to> reason=recovered",
+        "codex recover <from>-><to> reason=rolled-back",
+        "dry-run would-swap <from>-><to>",
+        "dry-run would-recover <from>-><to> phase=<phase>",
+        "codex resume session=<id> <from>-><to> reason=room|after-reset args=<n>",
+        "codex resume none reason=capped|no-reset-known|no-room-after-reset|lock-busy|codex-bin-in-home session=<id>",
+        "codex-resume: refused reason=codex-bin-in-home",
+        "none(no-room)",
+        "none(no-live)",
+        "none(recovering)",
+        "none(held)",
+        "none(damped)",
+        "<link>.amplihack-swap",
+        "codex-state.json",
+    ] {
+        assert!(
+            REFERENCE.contains(text),
+            "reference does not quote {text:?}"
+        );
+    }
+}
+
+#[test]
+fn the_reference_lists_the_codex_resume_exit_statuses() {
+    for status in ["| `1` |", "| `2` |", "| `3` |", "| `4` |"] {
+        assert!(REFERENCE.contains(status), "reference is missing {status}");
+    }
+    assert!(REFERENCE.contains("`capped`: 3 resumes of this session in 24 hours"));
+    assert!(REFERENCE.contains("^[A-Za-z0-9][A-Za-z0-9-]{0,63}$"));
+    assert!(REFERENCE.contains("amplihack profile codex-resume --session <id>"));
+}
+
+#[test]
+fn the_codex_rotate_variables_are_documented_in_both_references() {
+    for var in [
+        "AMPLIHACK_ROTATE_CODEX",
+        "AMPLIHACK_ROTATE_CODEX_FLOOR",
+        "AMPLIHACK_ROTATE_CODEX_HOME_LINK",
+    ] {
+        assert!(REFERENCE.contains(&format!("`{var}`")), "reference: {var}");
+        assert!(
+            ENV_VARS.contains(&format!("| `{var}` |")),
+            "env-vars: {var}"
+        );
+    }
+    for flag in [
+        "--codex on|off",
+        "--codex-floor N",
+        "--codex-home-link PATH",
+    ] {
+        assert!(REFERENCE.contains(flag), "reference synopsis: {flag}");
+    }
+}
+
+#[test]
+fn the_codex_rotation_howto_is_linked_and_in_the_nav() {
+    let link = "codex-profile-rotation.md";
+    assert!(
+        REFERENCE.contains(link),
+        "reference does not link the how-to"
+    );
+    assert!(
+        MKDOCS.contains("howto/codex-profile-rotation.md"),
+        "mkdocs nav"
+    );
+    let index = include_str!("../../../../../docs/index.md");
+    assert!(
+        index.contains("howto/codex-profile-rotation.md"),
+        "docs/index.md"
+    );
+    let howto = include_str!("../../../../../docs/howto/codex-profile-rotation.md");
+    assert!(
+        howto.contains("amplihack profile codex-resume"),
+        "how-to shows codex-resume"
+    );
+}
+
+#[test]
+fn an_unreadable_process_list_is_its_own_refusal_not_a_detail() {
+    assert!(
+        REFERENCE.contains("codex refuse reason=proc-unreadable"),
+        "reference must quote the proc-unreadable refusal line"
+    );
+    assert!(
+        !REFERENCE.contains("detail=proc-unreadable"),
+        "proc-unreadable is a reason, not a detail of default-home-in-use"
+    );
+}
+
+#[test]
+fn the_profiles_howto_has_a_codex_accounts_section_linking_the_rotation_howto() {
+    let start = HOWTO
+        .lines()
+        .position(|l| l == "## Codex accounts")
+        .expect("docs/howto/claude-profiles.md needs a `## Codex accounts` section (AC11)");
+    let section: Vec<&str> = HOWTO
+        .lines()
+        .skip(start + 1)
+        .take_while(|l| !l.starts_with("## "))
+        .collect();
+    let section = section.join("\n");
+    assert!(
+        section.contains("codex-profile-rotation.md"),
+        "the Codex accounts section must link codex-profile-rotation.md"
+    );
+    assert!(
+        section.contains("CODEX_PROFILES_ROOT"),
+        "the Codex accounts section names the profiles root variable"
+    );
+}
+
+#[test]
+fn the_reference_states_the_narrow_account_directory_rule() {
+    // FS-6: codex-resume may mkdir under <account>/sessions/ (0700), never
+    // follows a symlinked folder there and never overwrites an entry.
+    for text in ["symlinked directory", "`0700`", "sessions/"] {
+        assert!(REFERENCE.contains(text), "reference is missing {text:?}");
+    }
+    assert!(
+        !REFERENCE.contains("never opens a file in an account directory"),
+        "the old, too-broad rule must be replaced by the FS-6 rule"
+    );
+}

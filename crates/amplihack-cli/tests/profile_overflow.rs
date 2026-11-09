@@ -481,7 +481,7 @@ fn profile_usage_json_marks_overflow_rows() {
     mark(&f, "extra");
     let out = f.ok(&["profile", "usage", "--json"]);
     let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
-    let rows = v.as_array().expect("still a top-level array");
+    let rows = v["claude"].as_array().expect("a `claude` array (#2001)");
     assert!(!rows.is_empty());
     for row in rows {
         let name = row["profile"].as_str().unwrap();

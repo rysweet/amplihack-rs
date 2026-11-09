@@ -70,6 +70,15 @@ pub struct TuneFlags {
     /// 1: a plan reset no reading reports counts as far away, so an unknown reset can move onto an overflow profile and spend money; 0: it never does (default 0)
     #[arg(long, value_name = "0|1")]
     pub overflow_unknown_reset: Option<String>,
+    /// on|off: also keep the default Codex home on the Codex account with the most room (default on)
+    #[arg(long, value_name = "on|off")]
+    pub codex: Option<String>,
+    /// Credit balance above which a full Codex account still counts as having room (default 3000)
+    #[arg(long, value_name = "N", allow_hyphen_values = true)]
+    pub codex_floor: Option<String>,
+    /// The symlink kept pointed at the best Codex account (default $HOME/.codex)
+    #[arg(long, value_name = "PATH")]
+    pub codex_home_link: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, clap::Args)]
@@ -86,4 +95,22 @@ pub struct WatchFlags {
     /// run by the service manager unit UNIT (found from the cgroup when omitted)
     #[arg(long, value_name = "UNIT", num_args = 0..=1, require_equals = true)]
     pub supervised: Option<Option<String>>,
+}
+
+/// `profile codex-resume` (issue #2005): resume a Codex session that stopped
+/// on a usage limit.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct CodexResumeArgs {
+    /// The session to resume; beats --events
+    #[arg(long, value_name = "ID", allow_hyphen_values = true)]
+    pub session: Option<String>,
+    /// A JSONL events file from `codex exec --json` naming the session and showing the limit
+    #[arg(long, value_name = "FILE")]
+    pub events: Option<std::path::PathBuf>,
+    /// The CODEX_HOME the stopped session used (default: CODEX_HOME, else the default home link)
+    #[arg(long, value_name = "PATH")]
+    pub from_home: Option<std::path::PathBuf>,
+    /// Passed to `codex resume` after the id
+    #[arg(last = true, value_name = "CODEX_ARGS")]
+    pub extra: Vec<std::ffi::OsString>,
 }

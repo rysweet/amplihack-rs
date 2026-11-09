@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"0199a213-81c0-7800-8aa1-bbab2a035a53"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Done. I checked the usage limit docs."}}
+{"id":"1","msg":{"type":"token_count","rate_limits":{"primary":{"used_percent":42.0},"rate_limit_reached_type":null}}}
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}
+{"type":"error","message":"stream disconnected before completion"}

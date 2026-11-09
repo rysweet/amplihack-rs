@@ -295,6 +295,24 @@ mod issue_1973_wait_helpers;
 mod issue_1979_crusty_minor_followups;
 #[path = "issue_1985_codex_agent_step_flags.rs"]
 mod issue_1985_codex_agent_step_flags;
+#[path = "issue_2001_codex_usage.rs"]
+mod issue_2001_codex_usage;
+#[path = "issue_2005_auth_never_read.rs"]
+mod issue_2005_auth_never_read;
+#[path = "issue_2005_cycle.rs"]
+mod issue_2005_cycle;
+#[path = "issue_2005_hardening.rs"]
+mod issue_2005_hardening;
+#[path = "issue_2005_inuse.rs"]
+mod issue_2005_inuse;
+#[path = "issue_2005_recover.rs"]
+mod issue_2005_recover;
+#[path = "issue_2005_refuse.rs"]
+mod issue_2005_refuse;
+#[path = "issue_2005_resume.rs"]
+mod issue_2005_resume;
+#[path = "issue_2005_swap.rs"]
+mod issue_2005_swap;
 #[path = "issue_2010_codex_exec_notice.rs"]
 mod issue_2010_codex_exec_notice;
 #[path = "issue_439_no_per_step_timeout.rs"]
