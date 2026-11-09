@@ -148,6 +148,12 @@ Best-effort reclamation of orphaned worktrees.
 amplifier-bundle/tools/workflow_worktree_sweep.sh sweep "$REPO_PATH"
 ```
 
+The sweep holds a non-blocking lock on
+`<common git dir>/amplihack-worktree-sweep.lock` while it runs. If another
+sweep of the same repository holds it, the sweep logs
+`INFO: sweep skipped: lock held: <abs path>` and exits `0` without doing
+anything else. See [the sweep lock (#2061)](issue-2061-sweep-local-archive.md#sweep-lock).
+
 Algorithm:
 
 1. `git -C "<repo_path>" worktree prune` — clear stale `.git/worktrees/`
@@ -188,20 +194,19 @@ amplifier-bundle/tools/workflow_worktree_sweep.sh cleanup_on_failure "$REPO_PATH
 Algorithm:
 
 1. If `<branch>` has unique commits (`<BASE_REF>..<branch> > 0`) whose changes
-   are not already in `<BASE_REF>`, archive them first to
-   `refs/amplihack-archive/<branch>`, and push them to the configured remote when
-   available: to `refs/heads/<branch>` only while the remote still has that
-   branch (a merged PR's deleted branch is never recreated), otherwise to the
-   archive ref. **No destructive operation runs until the archive succeeds.**
+   are not already in `<BASE_REF>`, archive them first to the local ref
+   `refs/amplihack-archive/<branch>`. Nothing is pushed (#2061). If the ref
+   already holds the branch tip, nothing is written.
+   **No destructive operation runs until the archive succeeds.**
 2. Prune that run's worktree directory and branch — unless the worktree has
    uncommitted or untracked files (#1560), in which case both are kept.
-3. If meaningful unmerged work cannot be archived/pushed, **skip the prune** and
+3. If meaningful unmerged work cannot be archived, **skip the prune** and
    log a `WARN:` — the branch/worktree is preserved so no work is lost.
 
 ### Safety invariant (data-loss gate)
 
 > A worktree or branch with **unmerged meaningful commits is never destroyed.**
-> The archive/push must succeed first; only then may a prune proceed.
+> The local archive must succeed first; only then may a prune proceed.
 > A worktree with **uncommitted or untracked files is never destroyed** (#1560):
 > no commit records that work, so no archive can save it.
 
@@ -214,8 +219,11 @@ The helper emits stable, greppable prefixes to **stderr** only:
 
 | Prefix | Meaning |
 | --- | --- |
-| `INFO: workflow_worktree_sweep: …` | Normal action taken (e.g., orphan pruned) |
-| `WARN: workflow_worktree_sweep: …` | Best-effort step skipped or per-orphan failure |
+| `INFO: …` | Normal action taken (e.g., orphan pruned, archive written, sweep skipped because the lock is held) |
+| `WARN: …` | Best-effort step skipped, per-orphan failure, or sweep running without a lock |
+
+The full list of archive and lock messages is in
+[#2061 log messages](issue-2061-sweep-local-archive.md#log-messages).
 
 Logs contain only branch and path names — never diff contents, tokens, or
 environment values.
@@ -332,14 +340,16 @@ the same job.
 - Deletions are realpath-scoped strictly to `${REPO_PATH}/worktrees/*`
   registered directories; symlink and `..` escapes are blocked.
 - The staleness mtime gate prevents removing a live concurrent worktree.
-- Archive/push relies on the configured remote auth; tokens are never echoed,
-  and logs emit only branch/path names — never diff contents or environment
-  values.
+- The sweep never contacts a remote (#2061): it uses no credentials, never runs
+  the `pre-push` hook, and archive refs stay in the local clone. Logs emit only
+  branch/path names, never diff contents, remote URLs or environment values.
+- The sweep lock is opened in append mode and a symlinked lock path is refused.
 
 ---
 
 ## Related Documentation
 
+- [Local Worktree Archives and the Sweep Lock (#2061)](issue-2061-sweep-local-archive.md) — Local-only archive refs, the per-repository sweep lock, and how to remove old remote archive refs
 - [step-04 Re-Prune After Orphan Cleanup](step-04-worktree-reattach-prune.md) — Three-state idempotency guard and stale-registration prune
 - [Resilient Worktree Cleanup (#647)](issue-647-resilient-worktree-cleanup.md) — Late-stage resilient `cd` fallbacks
 - [Recipe Resilience](../concepts/recipe-resilience.md) — Branch sanitization, worktree bases, late-stage resilience
