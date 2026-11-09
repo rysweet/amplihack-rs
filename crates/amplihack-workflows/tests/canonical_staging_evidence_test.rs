@@ -8,6 +8,7 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use support::*;
 
@@ -392,7 +393,6 @@ fn complete_scope_history(repository: &Path, base: &str) -> Vec<u8> {
 }
 
 #[test]
-#[ignore = "requires task-private evidence and temporary directories; no external tools beyond Git"]
 fn scope_history_retains_replaced_transient_commits_and_refuses_grafts() {
     let f = Fixture::checkpoint_clean("scope-history-replacement");
     let base = String::from_utf8(f.git(&f.task, &["rev-parse", "HEAD"])).unwrap();
@@ -425,7 +425,6 @@ fn scope_history_retains_replaced_transient_commits_and_refuses_grafts() {
 }
 
 #[test]
-#[ignore = "requires task-private evidence and temporary directories; no external tools beyond Git"]
 fn scope_history_refuses_a_shallow_tip_even_when_the_base_object_is_present() {
     let f = Fixture::checkpoint_clean("scope-history-shallow");
     let base = String::from_utf8(f.git(&f.task, &["rev-parse", "HEAD"])).unwrap();
@@ -509,7 +508,6 @@ fn assert_approved_test_dependency_change_at(repository: &Path, base: &str, path
 }
 
 #[test]
-#[ignore = "requires task-private evidence and temporary directories; no external tools beyond Git"]
 fn dependency_baseline_ignores_replacements_and_refuses_forged_bytes() {
     let f = Fixture::checkpoint_clean("dependency-baseline-replacement");
     let manifest_path = "crates/amplihack-workflows/Cargo.toml";
@@ -1103,5 +1101,55 @@ fn final_candidate_delivery_requires_separate_complete_receipts() {
     assert_eq!(
         issue_audit["references"],
         serde_json::json!(["Refs #1554", "Refs #1914"])
+    );
+}
+
+/// R28/SR4: an evidence directory created without
+/// CANONICAL_STAGING_EVIDENCE_DIR is private to the test, is kept when the
+/// test panics inside its scope, and is removed when the test passes.
+#[test]
+fn evidence_dir_is_kept_after_a_panic_and_removed_after_success() {
+    let kept = std::sync::Mutex::new(None::<std::path::PathBuf>);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let dir = EvidenceDir::new("panicking-control", None);
+        assert_eq!(
+            fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        fs::write(dir.path().join("evidence.txt"), b"kept").unwrap();
+        *kept.lock().unwrap() = Some(dir.path().to_path_buf());
+        panic!("a control failed inside its evidence scope");
+    }));
+    assert!(result.is_err());
+    let kept = kept
+        .into_inner()
+        .unwrap()
+        .expect("the directory was created");
+    assert!(
+        kept.join("evidence.txt").is_file(),
+        "evidence removed after a panic: {}",
+        kept.display()
+    );
+    fs::remove_dir_all(&kept).unwrap();
+
+    let passed = {
+        let dir = EvidenceDir::new("passing-control", None);
+        dir.path().to_path_buf()
+    };
+    assert!(
+        !passed.exists(),
+        "evidence kept after success: {}",
+        passed.display()
+    );
+
+    let assigned = tempfile::tempdir().unwrap();
+    let under = {
+        let dir = EvidenceDir::new("assigned-control", Some(assigned.path().to_path_buf()));
+        assert!(dir.path().starts_with(assigned.path()));
+        dir.path().to_path_buf()
+    };
+    assert!(
+        under.is_dir(),
+        "a directory under the assigned root is always kept"
     );
 }

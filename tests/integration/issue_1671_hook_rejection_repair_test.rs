@@ -357,7 +357,9 @@ fn hook_rejection_repair_shell_contract_passes() {
             .collect()
     };
     let before = names(fixture.path());
-    let out = Command::new("bash")
+    let (bash, bash_version) = gnu_bash();
+    eprintln!("#1671 bridge runs {} ({bash_version})", bash.display());
+    let out = Command::new(&bash)
         .arg(&script)
         .current_dir(fixture.path().join("cwd"))
         // Keep all real user configuration and harness overrides out. Then
@@ -389,9 +391,52 @@ fn hook_rejection_repair_shell_contract_passes() {
     }
     assert!(
         out.status.success(),
-        "test-issue-1671-hook-rejection-repair.sh failed ({:?})\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        "test-issue-1671-hook-rejection-repair.sh failed under {} ({bash_version}) ({:?})\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        bash.display(),
         out.status.code(),
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
+}
+
+/// GNU bash 4 or later for the #1671 shell contract, with the first line of
+/// its `--version`. macOS's `/bin/bash` is Apple Bash 3.2, so a bare `bash`
+/// from PATH is never used: `AMPLIHACK_GNU_BASH` is tried first, then the
+/// usual install locations. No match fails the test rather than skipping it.
+fn gnu_bash() -> (PathBuf, String) {
+    let mut candidates: Vec<PathBuf> = std::env::var_os("AMPLIHACK_GNU_BASH")
+        .map(PathBuf::from)
+        .into_iter()
+        .collect();
+    candidates.extend(
+        [
+            "/opt/homebrew/bin/bash",
+            "/usr/local/bin/bash",
+            "/usr/bin/bash",
+            "/bin/bash",
+        ]
+        .map(PathBuf::from),
+    );
+    for candidate in &candidates {
+        let Ok(out) = Command::new(candidate)
+            .arg("--version")
+            .env_clear()
+            .output()
+        else {
+            continue;
+        };
+        let first = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_owned();
+        let major = first
+            .strip_prefix("GNU bash, version ")
+            .and_then(|rest| rest.split('.').next())
+            .and_then(|m| m.parse::<u32>().ok());
+        if out.status.success() && major.is_some_and(|m| m >= 4) {
+            return (candidate.clone(), first);
+        }
+    }
+    panic!("no GNU bash 4 or later among {candidates:?}; set AMPLIHACK_GNU_BASH");
 }

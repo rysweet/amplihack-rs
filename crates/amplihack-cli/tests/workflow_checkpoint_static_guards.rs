@@ -764,6 +764,60 @@ fn the_validator_reads_the_pinned_copy_and_never_a_host_path() {
     );
 }
 
+// C-m: reinstated from the PR #2020 work list with the change that makes it pass.
+/// The five portable Git-only controls run in ordinary CI.
+#[test]
+fn the_five_portable_controls_carry_no_ignore() {
+    let pairs = [
+        (
+            "crates/amplihack-workflows/tests/canonical_staging_checkpoint_test.rs",
+            [
+                "actual_destination_evidence_detects_an_omitted_push",
+                "publication_controls_retain_deleted_content_modes_and_unreachable_commits",
+            ]
+            .as_slice(),
+        ),
+        (
+            "crates/amplihack-workflows/tests/canonical_staging_evidence_test.rs",
+            [].as_slice(),
+        ),
+    ];
+    for (rel, names) in pairs {
+        let src = read(rel);
+        let lines: Vec<&str> = src.lines().collect();
+        for name in names {
+            let at = lines
+                .iter()
+                .position(|l| l.contains(&format!("fn {name}(")))
+                .unwrap_or_else(|| panic!("{rel}: {name} not found"));
+            let attrs = &lines[at.saturating_sub(3)..at];
+            assert!(
+                !attrs.iter().any(|a| a.trim_start().starts_with("#[ignore")),
+                "{rel}: {name} is still #[ignore]"
+            );
+        }
+        if rel.ends_with("evidence_test.rs") {
+            // The three evidence controls named by line in R28.
+            let src_ignored_reason = "requires task-private evidence and temporary directories; no external tools beyond Git";
+            assert!(
+                !src.contains(src_ignored_reason),
+                "{rel}: a Git-only evidence control is still ignored"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_1671_bridge_chooses_gnu_bash_and_records_it() {
+    let src = read("tests/integration/issue_1671_hook_rejection_repair_test.rs");
+    assert!(src.contains("fn gnu_bash("), "gnu_bash() helper");
+    assert!(src.contains("--version"), "records the bash version");
+    assert!(
+        !src.contains("Command::new(\"bash\")"),
+        "bare `bash` from PATH may be Apple Bash 3.2"
+    );
+}
+
 #[test]
 fn the_five_controls_are_no_longer_ignored_and_every_ignore_has_a_reason() {
     let ck = read("crates/amplihack-workflows/tests/canonical_staging_checkpoint_test.rs");

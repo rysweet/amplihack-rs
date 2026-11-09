@@ -109,6 +109,64 @@ pub fn executable_digest(path: &Path) -> Option<String> {
         .then(|| sha256(&resolved))
 }
 
+/// One test's private evidence directory.
+///
+/// With `CANONICAL_STAGING_EVIDENCE_DIR` set, it is a new subdirectory of
+/// that task-owned report directory and is always kept. Unset, it is a new
+/// private (0700) temporary directory for this test alone: removed when the
+/// test passes, kept (and its path printed) when the test panics, so a
+/// failing control leaves its evidence behind.
+pub struct EvidenceDir {
+    path: PathBuf,
+    remove_on_success: bool,
+}
+
+impl EvidenceDir {
+    /// The evidence directory for test `name`, from the environment.
+    pub fn for_test(name: &str) -> Self {
+        Self::new(
+            name,
+            std::env::var_os("CANONICAL_STAGING_EVIDENCE_DIR").map(PathBuf::from),
+        )
+    }
+
+    /// The evidence directory for test `name` under `assigned`, or a private
+    /// temporary one when `assigned` is `None`.
+    pub fn new(name: &str, assigned: Option<PathBuf>) -> Self {
+        let (parent, remove_on_success) = match assigned {
+            Some(root) => (root, false),
+            None => (std::env::temp_dir(), true),
+        };
+        fs::create_dir_all(&parent).unwrap();
+        let path = tempfile::Builder::new()
+            .prefix(&format!("canonical-staging-evidence-{name}-"))
+            .tempdir_in(&parent)
+            .unwrap()
+            .keep();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        Self {
+            path,
+            remove_on_success,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for EvidenceDir {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            eprintln!("evidence kept at {}", self.path.display());
+            return;
+        }
+        if self.remove_on_success {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
 pub struct Fixture {
     pub temp: TempDir,
     pub home: PathBuf,
@@ -117,6 +175,8 @@ pub struct Fixture {
     pub task: PathBuf,
     pub evidence: PathBuf,
     pub launcher: PathBuf,
+    /// Owns `evidence`; dropped with the fixture.
+    pub evidence_dir: EvidenceDir,
 }
 
 impl Fixture {
@@ -133,16 +193,8 @@ impl Fixture {
     }
 
     fn build(label: &str, edges: bool, tracked_runtime: bool, partial_task: bool) -> Self {
-        let evidence_root = PathBuf::from(
-            std::env::var_os("CANONICAL_STAGING_EVIDENCE_DIR")
-                .expect("set CANONICAL_STAGING_EVIDENCE_DIR to the assigned report directory"),
-        );
-        fs::create_dir_all(&evidence_root).unwrap();
-        let evidence = tempfile::Builder::new()
-            .prefix(&format!("{label}-"))
-            .tempdir_in(evidence_root)
-            .unwrap()
-            .keep();
+        let evidence_dir = EvidenceDir::for_test(label);
+        let evidence = evidence_dir.path().to_path_buf();
         let temp = tempfile::Builder::new()
             .prefix("canonical-staging-")
             .tempdir()
@@ -166,6 +218,7 @@ impl Fixture {
             task,
             evidence,
             launcher,
+            evidence_dir,
         };
         for repo in [&f.caller, &f.review] {
             fs::create_dir(repo).unwrap();

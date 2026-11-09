@@ -572,6 +572,87 @@ fn a_parent_bash_env_that_sets_git_dir_has_no_effect_on_the_wrapper_route() {
     );
 }
 
+const HOSTILE_INNER: &str = "AMPLIHACK_P1_HOSTILE_BASH_ENV_INNER";
+const HOSTILE_TEST: &str = "workflow_checkpoint_p1_selectors::a_hostile_bash_env_in_the_test_process_never_creates_its_sentinel";
+
+/// R30: BASH_ENV and ENV set in the test process's own environment (as a
+/// pre-push hook or a user shell would leave them) never reach a shell the
+/// checkpoint tests start. The rc file creates a sentinel and retargets
+/// GIT_DIR; the outer half shows it does both when bash is given it, then
+/// re-runs this test binary with BASH_ENV and ENV pointing at it, and checks
+/// that the inner run passed and the sentinel was never created.
+#[test]
+fn a_hostile_bash_env_in_the_test_process_never_creates_its_sentinel() {
+    if std::env::var_os(HOSTILE_INNER).is_some() {
+        // Inner half: BASH_ENV and ENV are set in this process.
+        assert!(std::env::var_os("BASH_ENV").is_some() && std::env::var_os("ENV").is_some());
+        let sb = Sandbox::new();
+        let a = quiet_repo(&sb, "A");
+        fs::write(a.join("e.txt"), "e\n").unwrap();
+        let list = nul_list(&sb, "list", &["e.txt"]);
+        let out = wrapper(&sb, &a, &list, &[]);
+        assert_eq!(status(&out), 0, "stderr: {}", stderr(&out));
+        assert!(staged(&sb, &a, None).contains("\te.txt\n"));
+        return;
+    }
+    let sb = Sandbox::new();
+    let bogus = quiet_repo(&sb, "bogus");
+    let sentinel = sb.path().join("bash-env-ran");
+    let rc = sb.path().join("hostile-rc.sh");
+    fs::write(
+        &rc,
+        format!(
+            ": > '{}'\nexport GIT_DIR='{}'\n",
+            sentinel.display(),
+            bogus.join(".git").display()
+        ),
+    )
+    .unwrap();
+    // Control: the rc file really runs when bash is given it.
+    let control = sb
+        .command("bash")
+        .env("BASH_ENV", &rc)
+        .args(["-c", "printf %s \"$GIT_DIR\""])
+        .output()
+        .unwrap();
+    assert_eq!(
+        control.stdout,
+        bogus.join(".git").as_os_str().as_encoded_bytes()
+    );
+    assert!(
+        sentinel.exists(),
+        "control: the rc file must create the sentinel"
+    );
+    fs::remove_file(&sentinel).unwrap();
+
+    let bogus_before = snapshot(&bogus);
+    let mut inner = Command::new(std::env::current_exe().unwrap());
+    amplihack_git::scrub(&mut inner);
+    let inner = inner
+        .args(["--exact", HOSTILE_TEST, "--test-threads=1", "--nocapture"])
+        .env(HOSTILE_INNER, "1")
+        .env("BASH_ENV", &rc)
+        .env("ENV", &rc)
+        .output()
+        .unwrap();
+    let report = String::from_utf8_lossy(&inner.stdout);
+    assert!(
+        inner.status.success() && report.contains("1 passed"),
+        "inner run failed: {report}{}",
+        String::from_utf8_lossy(&inner.stderr)
+    );
+    assert!(
+        !sentinel.exists(),
+        "BASH_ENV/ENV from the test process reached a shell: {} exists",
+        sentinel.display()
+    );
+    assert_eq!(
+        bogus_before,
+        snapshot(&bogus),
+        "the BASH_ENV repository was written"
+    );
+}
+
 // ------------------------------------------- 17.126-stage-strict-79 (R2c)
 
 /// A `git` placed first on PATH for the binary under test only. When the
