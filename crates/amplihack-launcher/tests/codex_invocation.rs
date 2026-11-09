@@ -2,7 +2,7 @@
 //! Exec is selected by native `exec` passthrough, never by changing interactive stdin.
 use amplihack_launcher::flag_matrix::AgentBinary;
 use amplihack_launcher::prompt_delivery::build_tool_command_with_prompt_delivery;
-use amplihack_utils::prompt_delivery::{DeliveryMode, PromptDelivery};
+use amplihack_utils::prompt_delivery::{DeliveryMode, FILE_REFERENCE_PREFIX, PromptDelivery};
 use std::path::Path;
 
 fn build(
@@ -23,21 +23,36 @@ fn argv(d: &amplihack_launcher::prompt_delivery::DeliveredCommand) -> Vec<String
         .map(|a| a.to_str().unwrap().to_owned())
         .collect()
 }
+/// Issue #2030: interactive Codex receives its prompt as the pointer sentence.
+/// Asserts the last argument is the pointer and its file holds `prompt`, and
+/// returns argv without that last argument.
+fn assert_pointer(
+    d: &amplihack_launcher::prompt_delivery::DeliveredCommand,
+    prompt: &str,
+) -> Vec<String> {
+    let mut args = argv(d);
+    let last = args.pop().expect("pointer argument");
+    assert!(last.starts_with(FILE_REFERENCE_PREFIX), "{last:?}");
+    assert!(!last.contains(prompt), "prompt text in argv");
+    assert_eq!(d.selected_mode, DeliveryMode::FileReference);
+    let path = d.delivery_handle.tempfile_path().expect("pointer file");
+    assert_eq!(std::fs::read_to_string(path).unwrap(), prompt);
+    args
+}
 #[test]
 fn interactive_positional_prompt_preserves_profile_model_and_terminal_input() {
     let prompt = "--literal $HOME `echo no`\n日本語";
     let d = build(&["-p", "review", "--model", "caller-choice"], prompt).unwrap();
     assert_eq!(
-        argv(&d),
-        ["-p", "review", "--model", "caller-choice", "--", prompt]
+        assert_pointer(&d, prompt),
+        ["-p", "review", "--model", "caller-choice", "--"]
     );
-    assert_eq!(d.selected_mode, DeliveryMode::Argv);
     assert!(d.stdin_payload.is_none());
 }
 #[test]
 fn interactive_resume_uses_native_subcommand() {
     let d = build(&["resume", "--last"], "continue").unwrap();
-    assert_eq!(argv(&d), ["resume", "--last", "--", "continue"]);
+    assert_eq!(assert_pointer(&d, "continue"), ["resume", "--last", "--"]);
     assert!(d.stdin_payload.is_none());
 }
 #[test]
@@ -101,8 +116,11 @@ fn invalid_prompt_and_conflicting_mode_options_fail_before_spawn() {
     }
 }
 #[test]
-fn unproven_oversized_interactive_transport_fails_instead_of_truncating() {
-    assert!(build(&[], &"x".repeat(2 * 1024 * 1024)).is_err());
+fn oversized_interactive_prompt_uses_the_pointer_instead_of_truncating() {
+    // Issue #2030: the pointer has no argv size limit.
+    let prompt = "x".repeat(2 * 1024 * 1024);
+    let d = build(&[], &prompt).unwrap();
+    assert_pointer(&d, &prompt);
 }
 #[test]
 fn copilot_retains_prompt_flag_and_raw_bytes() {
@@ -114,7 +132,7 @@ fn copilot_retains_prompt_flag_and_raw_bytes() {
         PromptDelivery::Auto,
     )
     .unwrap();
-    assert_eq!(argv(&d), ["-p", "hi\nλ"]);
+    assert_eq!(assert_pointer(&d, "hi\nλ"), ["-p"]);
     assert!(d.stdin_payload.is_none());
 }
 
@@ -153,9 +171,8 @@ fn supported_resume_and_command_like_values_retain_terminal_transport() {
     ] {
         let d = build(&args, "continue λ").unwrap();
         let mut expected: Vec<String> = args.iter().map(|s| (*s).into()).collect();
-        expected.extend(["--".into(), "continue λ".into()]);
-        assert_eq!(argv(&d), expected);
-        assert_eq!(d.selected_mode, DeliveryMode::Argv);
+        expected.push("--".into());
+        assert_eq!(assert_pointer(&d, "continue λ"), expected);
         assert!(
             d.stdin_payload.is_none(),
             "terminal stdin must remain inherited"

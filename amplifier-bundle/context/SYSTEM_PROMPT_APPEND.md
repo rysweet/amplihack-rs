@@ -1,8 +1,8 @@
-<!-- Compiled into the binary at build time and passed via --append-system-prompt;
-     the copy under ~/.amplihack is inert, so edit this file in the repo and rebuild.
-     These bytes appear in the process table and are visible to every user on this
-     host. Never place credentials, tokens, paths to secrets, or private context in
-     this file. -->
+<!-- Compiled into the binary and written at launch to a 0600 file passed with
+     --append-system-prompt-file; copies under ~/.amplihack are inert or replaced,
+     so edit this file in the repo and rebuild. Every session on every install
+     gets these bytes. Never place credentials, tokens, paths to secrets, or
+     private context in this file. -->
 
 # Amplihack operating contract
 

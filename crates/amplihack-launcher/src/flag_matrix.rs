@@ -43,14 +43,15 @@ impl std::fmt::Display for AgentBinary {
 pub struct FlagSet {
     /// Binary type this flag set is for.
     pub binary: AgentBinary,
-    /// Supports `--append-system-prompt <prompt>`.
+    /// Accepts the operating contract through `--append-system-prompt-file
+    /// <path>`, which needs Claude Code 2.1.319 or later.
     ///
-    /// The argument is prompt TEXT, not a path. That is why the launch path in
-    /// `amplihack-cli` — the argv every user gets — emits the fragment's
-    /// contents rather than its path. `ClaudeLauncher::append_system_prompt` is
-    /// a `PathBuf`, so it emits the path-shaped `--append-system-prompt-file`
-    /// instead; that spelling is accepted but absent from `--help`, which is
-    /// why it stays on that opt-in path and out of the default argv.
+    /// amplihack never emits the text form (`--append-system-prompt <text>`):
+    /// text in argv is visible in `/proc/<pid>/cmdline`, and one
+    /// `pkill -f` matching a phrase in it ended 34 sessions (issue #2030).
+    /// The launch path in `amplihack-cli` writes the contract to a 0600 file
+    /// under the amplihack home and passes its path; an older CLI fails the
+    /// launch with the required version instead of falling back to argv.
     pub supports_append_prompt: bool,
     /// Supports `--add-dir <path>`.
     pub supports_add_dir: bool,
@@ -138,8 +139,10 @@ pub fn flags_for(binary: AgentBinary) -> FlagSet {
             supports_remote: false,
             supports_prompt_argv: true,
             supports_prompt_tempfile: false,
-            supports_prompt_stdin: false,
-            supports_prompt_file_reference: false,
+            // `codex exec -` reads the prompt from stdin; interactive Codex
+            // clears stdin at the call site and takes the pointer (#2030).
+            supports_prompt_stdin: true,
+            supports_prompt_file_reference: true,
             prompt_tempfile_flag: None,
             agent_binary_env: "AMPLIHACK_AGENT_BINARY",
         },
@@ -194,6 +197,10 @@ pub struct PromptDeliveryReportEntry {
 }
 
 /// Build deterministic prompt-delivery diagnostics for doctor output.
+///
+/// This is the only non-test caller of the reporting-only
+/// [`amplihack_utils::prompt_delivery::select_mode`]; spawn sites use
+/// `deliver` or `try_select_mode`.
 pub fn prompt_delivery_report_for(
     requested: amplihack_utils::prompt_delivery::PromptDelivery,
     prompt_size: usize,
@@ -228,8 +235,8 @@ fn warning_for(
 ) -> String {
     use amplihack_utils::prompt_delivery::PromptDelivery;
     let unsupported = match requested {
-        PromptDelivery::Auto => false,
-        PromptDelivery::Argv => !caps.supports_argv,
+        // #2030 R1.2: an `Argv` request is treated as `Auto`, not degraded.
+        PromptDelivery::Auto | PromptDelivery::Argv => false,
         PromptDelivery::Tempfile => !caps.supports_tempfile,
         PromptDelivery::Stdin => !caps.supports_stdin,
     };
@@ -246,17 +253,17 @@ fn warning_for(
 fn note_for(binary: AgentBinary) -> String {
     match binary {
         AgentBinary::Claude => {
-            "large task prompts go to `claude -p` on stdin; no task-prompt file flag".to_string()
+            "task prompts go to `claude -p` on stdin; the contract goes through --append-system-prompt-file (2.1.319+)".to_string()
         }
         AgentBinary::Copilot => {
-            "no prompt-file or stdin contract; large task prompts are passed as a file reference"
+            "no prompt-file or stdin contract; task prompts are passed as a file reference"
                 .to_string()
         }
         AgentBinary::Codex => {
-            "interactive: positional argv and terminal stdin; exec: complete stdin via -, resume subcommand".to_string()
+            "interactive: file reference, terminal stdin; exec: complete stdin via -, resume subcommand".to_string()
         }
         AgentBinary::Amplifier => {
-            "Amplifier has no prompt-file or stdin contract; large task prompts are passed as a positional file reference".to_string()
+            "Amplifier has no prompt-file or stdin contract; task prompts are passed as a positional file reference".to_string()
         }
     }
 }
@@ -377,8 +384,8 @@ mod tests {
                 DeliveryCaps {
                     supports_argv: true,
                     supports_tempfile: false,
-                    supports_stdin: false,
-                    supports_file_reference: false,
+                    supports_stdin: true,
+                    supports_file_reference: true,
                     tempfile_flag: None,
                 },
             ),

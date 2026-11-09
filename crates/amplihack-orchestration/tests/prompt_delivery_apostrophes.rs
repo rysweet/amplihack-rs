@@ -80,31 +80,62 @@ fn run(mut cmd: Command, prompt: &str, mode: DeliveryMode) -> String {
     String::from_utf8(out.stdout).expect("harness stdout should be utf-8")
 }
 
+// Issue #2030 R1.2: an explicit `Argv` request is treated as `Auto`. These
+// were argv round-trips; they now check that the request never reaches argv
+// and that the same bytes arrive by stdin instead.
+
 #[test]
-fn argv_roundtrip_small_payload() {
+fn argv_request_on_argv_only_caps_is_refused_without_touching_argv() {
     let prompt = "a'b\"c\\d\ne";
-    let caps = DeliveryCaps::argv_only();
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg("printf '%s' \"$1\"").arg("sh");
-    let _handle = deliver(&mut cmd, prompt, PromptDelivery::Argv, &caps)
-        .expect("argv delivery should succeed");
-    let got = run(cmd, prompt, DeliveryMode::Argv);
-    assert_eq!(got, prompt, "argv round-trip must be byte-exact");
+    let err = deliver(
+        &mut cmd,
+        prompt,
+        PromptDelivery::Argv,
+        &DeliveryCaps::argv_only(),
+    )
+    .expect_err("argv is never a delivery channel");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(args, vec!["-c", "printf '%s' \"$1\"", "sh"]);
 }
 
 #[test]
-fn argv_roundtrip_at_4kb_boundary() {
+fn argv_request_roundtrips_small_payload_by_stdin() {
+    let prompt = "a'b\"c\\d\ne";
+    let caps = DeliveryCaps::argv_only().with_stdin();
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg("cat");
+    let handle =
+        deliver(&mut cmd, prompt, PromptDelivery::Argv, &caps).expect("stdin is available");
+    assert_eq!(handle.mode(), DeliveryMode::Stdin);
+    let got = run(cmd, prompt, DeliveryMode::Stdin);
+    assert_eq!(got, prompt, "stdin round-trip must be byte-exact");
+}
+
+#[test]
+fn argv_request_roundtrips_4kb_payload_by_stdin() {
     let unit = "a'b\\\"c\n";
     let repeats = 4096 / unit.len() + 1;
     let prompt: String = unit.repeat(repeats).chars().take(4096).collect();
     assert_eq!(prompt.len(), 4096, "prompt sized to exactly 4 KiB");
-    let caps = DeliveryCaps::argv_only();
+    let caps = DeliveryCaps::argv_only().with_stdin();
     let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg("printf '%s' \"$1\"").arg("sh");
-    let _handle = deliver(&mut cmd, &prompt, PromptDelivery::Argv, &caps)
-        .expect("argv delivery should succeed at 4 KiB");
-    let got = run(cmd, &prompt, DeliveryMode::Argv);
-    assert_eq!(got, prompt, "4 KiB argv round-trip must be byte-exact");
+    cmd.arg("-c").arg("cat");
+    let handle =
+        deliver(&mut cmd, &prompt, PromptDelivery::Argv, &caps).expect("stdin is available");
+    assert_eq!(handle.mode(), DeliveryMode::Stdin);
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(args, vec!["-c", "cat"], "nothing appended to argv");
+    let got = run(cmd, &prompt, DeliveryMode::Stdin);
+    assert_eq!(got, prompt, "4 KiB stdin round-trip must be byte-exact");
 }
 
 #[test]

@@ -127,6 +127,8 @@ tmux new-session -d -s {session} \
 }
 
 #[cfg(test)]
+mod issue_2030_tests;
+#[cfg(test)]
 mod prompt_file_tests;
 
 #[cfg(test)]

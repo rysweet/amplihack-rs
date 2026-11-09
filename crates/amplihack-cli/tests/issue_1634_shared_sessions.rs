@@ -31,7 +31,7 @@ const SHARED: [&str; 3] = ["projects", "file-history", "session-env"];
 /// - prints `done as <profile>`.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 d="${CLAUDE_CONFIG_DIR-}"
 p=$(basename "${d:-unset}")

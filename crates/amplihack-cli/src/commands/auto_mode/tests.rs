@@ -192,17 +192,13 @@ fn build_tool_passthrough_args_matches_codex_and_copilot_contracts() {
     let codex = build_tool_passthrough_args(AutoModeTool::Codex, &[], "refactor module");
     assert_eq!(
         codex,
-        vec![
-            "--dangerously-bypass-approvals-and-sandbox",
-            "exec",
-            "refactor module"
-        ]
+        vec!["--dangerously-bypass-approvals-and-sandbox", "exec", "-"]
     );
 
     let copilot = build_tool_passthrough_args(AutoModeTool::Copilot, &[], "add logging");
     assert_eq!(
         copilot,
-        vec!["--allow-all", "--add-dir", "/", "-p", "add logging"]
+        vec!["--allow-all", "-p", "add logging", "--add-dir", "/"]
     );
 }
 

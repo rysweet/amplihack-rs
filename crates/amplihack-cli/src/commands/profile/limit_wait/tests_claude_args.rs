@@ -188,3 +188,40 @@ fn the_tables_cover_claude_help() {
         "options missing from claude_args: {missing:?}"
     );
 }
+
+/// Issue #2030: after the passthrough rewrite a Claude child gets a bare
+/// `-p`/`--print` (prompt on stdin) and `*-file` flags with path values. The
+/// paths are option values, never a positional prompt.
+#[test]
+fn bare_print_and_prompt_file_flags_after_the_issue_2030_rewrite() {
+    for print in ["-p", "--print"] {
+        assert_eq!(
+            p(&[
+                "--dangerously-skip-permissions",
+                print,
+                "--system-prompt-file",
+                "/tmp/amplihack-prompt-x/system-prompt.md",
+                "--append-system-prompt-file",
+                "/home/a/.amplihack/private/system-prompt-append.md",
+                "--model",
+                "opus",
+            ]),
+            PRINT_ONLY,
+            "{print}"
+        );
+    }
+    for flag in ["system-prompt-file", "append-system-prompt-file"] {
+        assert!(REQUIRED.contains(&flag), "{flag} takes one value");
+    }
+}
+
+#[test]
+fn option_end_skips_file_flag_values_for_the_rewrite() {
+    use super::claude_args::option_end;
+    let args = ["--system-prompt-file", "/x.md", "hello"];
+    assert_eq!(option_end(&args, 0), 2);
+    let args = ["--verbose", "hello"];
+    assert_eq!(option_end(&args, 0), 1);
+    let args = ["--model=opus", "hello"];
+    assert_eq!(option_end(&args, 0), 1);
+}

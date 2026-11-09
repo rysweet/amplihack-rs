@@ -144,8 +144,13 @@ pub(super) fn essential_destinations(layout: SourceLayout) -> &'static [&'static
 /// The fragment is now `include_str!`d into the binary
 /// (`launch::system_prompt_append::FRAGMENT`), so the feature reaches every
 /// install with no restage at all and this list keeps its pre-existing
-/// contents. Before adding an entry here, check that the file being added is
-/// not also *read* as an instruction to the agent.
+/// contents. Since issue #2030 the launch writes those compiled-in bytes to
+/// `<amplihack home>/private/system-prompt-append.md` (0600) and passes the
+/// path with `--append-system-prompt-file`, so the text never reaches argv.
+/// That file is generated at launch from the binary, never read back as a
+/// source of content, and deliberately not listed here or in the bundle
+/// staging tree. Before adding an entry here, check that the file being added
+/// is not also *read* as an instruction to the agent.
 pub(super) fn essential_files(layout: SourceLayout) -> &'static [&'static str] {
     match layout {
         SourceLayout::Bundle => &["tools/statusline.sh"],

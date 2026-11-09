@@ -49,10 +49,14 @@ fn ac1_a_step_limited_once_waits_then_retries_with_identical_inputs() {
     ] {
         assert_eq!(first[key], second[key], "{key} differs between attempts");
     }
+    // Issue #2030 (D7): `-p <text>` is rewritten to a bare `-p` with the
+    // text on the child's stdin, so the child receives the prompt text, not
+    // the caller's piped stdin; both attempts receive it byte-exact.
+    let _ = &input;
     assert_eq!(
         first["STDIN"],
-        sha256_hex(&input),
-        "the full stdin, byte-exact"
+        sha256_hex(b"step"),
+        "the rewritten prompt, byte-exact"
     );
     assert_eq!(first["PROFILE"], "<unset>", "no profile override");
     assert_eq!(

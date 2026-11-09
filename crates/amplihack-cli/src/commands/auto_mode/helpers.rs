@@ -171,18 +171,47 @@ pub fn build_auto_command_with_prompt_delivery(
         OsString::from("--subprocess-safe"),
         OsString::from("--"),
     ];
+    let routed_copilot =
+        options.tool == AutoModeTool::Copilot && amplihack_utils::litellm_proxy::proxy_requested();
     args.extend(build_tool_passthrough_prefix_args(
         options.tool,
         &options.passthrough_args,
-        options.tool == AutoModeTool::Copilot && amplihack_utils::litellm_proxy::proxy_requested(),
     ));
+    // Issue #2030: never argv. Codex already has `exec -` in its prefix, so
+    // stdin is its only channel; Claude reads stdin behind a bare `-p`;
+    // Copilot and Amplifier get the pointer sentence.
+    let caps = match options.tool {
+        AutoModeTool::Codex => {
+            amplihack_utils::prompt_delivery::DeliveryCaps::default().with_stdin()
+        }
+        _ => prompt_delivery_caps_for(agent_binary),
+    };
     let mut delivered = build_command_with_prompt_delivery(
         current_exe.as_os_str(),
         args.iter(),
         &options.prompt,
         options.requested_delivery,
-        prompt_delivery_caps_for(agent_binary),
+        caps,
     )?;
+    if options.tool == AutoModeTool::Copilot {
+        // Grant Copilot the pointer file's private 0700 directory, and only
+        // that directory, before the default grant. The routed gateway policy
+        // forbids `--add-dir`, so a routed launch gets neither.
+        if !routed_copilot
+            && delivered.selected_mode
+                == amplihack_utils::prompt_delivery::DeliveryMode::FileReference
+            && let Some(dir) = delivered
+                .delivery_handle
+                .tempfile_path()
+                .and_then(Path::parent)
+        {
+            delivered.command.arg("--add-dir").arg(dir);
+        }
+        delivered.command.args(copilot_default_add_dir(
+            &options.passthrough_args,
+            routed_copilot,
+        ));
+    }
     delivered.command.current_dir(&options.execution_dir);
     let env_builder = EnvBuilder::new()
         .with_amplihack_session_id()
@@ -319,18 +348,32 @@ pub(super) fn build_tool_passthrough_args(
     passthrough_args: &[String],
     prompt: &str,
 ) -> Vec<String> {
-    let mut args = build_tool_passthrough_prefix_args(tool, passthrough_args, false)
+    let mut args = build_tool_passthrough_prefix_args(tool, passthrough_args)
         .into_iter()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    args.push(prompt.to_string());
+    if tool != AutoModeTool::Codex {
+        args.push(prompt.to_string());
+    }
+    if tool == AutoModeTool::Copilot {
+        args.extend(copilot_default_add_dir(passthrough_args, false));
+    }
     args
+}
+
+/// Copilot's default `--add-dir /` for an unrouted auto-mode turn, unless the
+/// caller passed their own `--add-dir`. Appended after the prompt arguments,
+/// so the per-prompt private directory (issue #2030) is granted first.
+fn copilot_default_add_dir(passthrough_args: &[String], routed_copilot: bool) -> Vec<String> {
+    if routed_copilot || passthrough_args.iter().any(|arg| arg == "--add-dir") {
+        return Vec::new();
+    }
+    vec!["--add-dir".to_string(), "/".to_string()]
 }
 
 fn build_tool_passthrough_prefix_args(
     tool: AutoModeTool,
     passthrough_args: &[String],
-    routed_copilot: bool,
 ) -> Vec<OsString> {
     if tool == AutoModeTool::Amplifier {
         let mut args = Vec::with_capacity(passthrough_args.len() + 1);
@@ -362,10 +405,8 @@ fn build_tool_passthrough_prefix_args(
             if !has_allow_all && !has_allow_all_tools {
                 args.push("--allow-all".to_string());
             }
-            if !routed_copilot && !args.iter().any(|arg| arg == "--add-dir") {
-                args.push("--add-dir".to_string());
-                args.push("/".to_string());
-            }
+            // The default `--add-dir /` follows the prompt; see
+            // `copilot_default_add_dir`.
             args.push("-p".to_string());
         }
         AutoModeTool::Codex => {
@@ -375,7 +416,9 @@ fn build_tool_passthrough_prefix_args(
             {
                 args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
             }
+            // Issue #2030: `codex exec -` reads the prompt from stdin.
             args.push("exec".to_string());
+            args.push("-".to_string());
         }
         AutoModeTool::Amplifier => {}
     }

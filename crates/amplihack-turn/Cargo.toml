@@ -24,6 +24,8 @@ thiserror = { workspace = true }
 # Lightweight logging facade only (no net, negligible transitive cost). Used to
 # emit failed-turn full output at debug level and warn on bad env config.
 tracing = { workspace = true }
+# Issue #2030: the turn prompt goes to a private 0600 file, never argv.
+tempfile = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time"] }

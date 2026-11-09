@@ -9,9 +9,14 @@ mod checkout;
 mod codex_agent_step;
 mod command;
 mod context;
+/// Issue #2030 — the 0600 contract file and the Claude Code version gate.
+mod contract_file;
+/// Issue #2030 — `amplihack claude` passthrough arguments never carry prompt
+/// text to the agent's argv.
+mod passthrough_rewrite;
 mod power_steering;
-/// Issue #1265 Option 3 — `--append-system-prompt` delivery of amplihack's
-/// routing contract.
+/// Issue #1265 Option 3 — delivery of amplihack's routing contract through
+/// `--append-system-prompt-file` (issue #2030: a file, never argv text).
 mod system_prompt_append;
 
 #[cfg(test)]
@@ -23,9 +28,13 @@ mod tests_command;
 #[cfg(test)]
 mod tests_env;
 #[cfg(test)]
+mod tests_issue_2030_contract;
+#[cfg(test)]
 mod tests_launch;
 #[cfg(test)]
 mod tests_model;
+#[cfg(test)]
+mod tests_passthrough_rewrite;
 #[cfg(test)]
 mod tests_profile;
 #[cfg(test)]
@@ -338,6 +347,19 @@ fn run_launch_core(
         return child_status(exit_code);
     }
 
+    // Issue #2030, launch order step 1: rewrite the passthrough arguments of a
+    // Claude launch so no prompt text reaches the agent's argv. After the
+    // Docker hand-off: the amplihack inside the container rewrites its own.
+    // `rewritten` owns the per-session files; it lives until this function
+    // returns, after the child has been waited on.
+    let rewritten = if agent_binary_for_tool(tool) == Some(AgentBinary::Claude) {
+        passthrough_rewrite::rewrite_claude_passthrough(&extra_args)?
+    } else {
+        passthrough_rewrite::Rewritten::unchanged(extra_args.clone())
+    };
+    let extra_args = rewritten.args.clone();
+    let opt_out = std::env::var(system_prompt_append::OPT_OUT_ENV).ok();
+
     // Issue #1482: decide now, after the Docker hand-off (the container launch
     // decides for itself), so a root host outside a sandbox fails here with a
     // message naming IS_SANDBOX=1 instead of inside claude.
@@ -391,14 +413,23 @@ fn run_launch_core(
     // Find binary
     let (binary, preflight_identity) = match prevalidated_binary {
         Some(preflight) => (preflight.binary, Some(preflight.identity)),
-        None => (
-            match codex_binary {
-                Some(binary) => Ok(binary),
-                None => bootstrap::ensure_tool_available(tool, override_origin),
-            }
-            .with_context(|| missing_binary_context(tool))?,
-            None,
-        ),
+        None => match codex_binary {
+            Some(binary) => (binary, None),
+            None => match bootstrap::ensure_tool_available(tool, override_origin) {
+                Ok(binary) => (binary, None),
+                Err(error) => {
+                    if let Some(gate) = version_gate_error_for_unresolved(
+                        tool,
+                        override_origin,
+                        &rewritten,
+                        opt_out.as_deref(),
+                    ) {
+                        return Err(gate);
+                    }
+                    return Err(error.context(missing_binary_context(tool)));
+                }
+            },
+        },
     };
 
     if let Some(proxy_target) = proxy_target {
@@ -407,6 +438,40 @@ fn run_launch_core(
             validate_proxy_binary_capability(proxy_target, &binary)?;
         }
     }
+
+    // Issue #2030, launch order steps 2-4: decide injection on the rewritten
+    // arguments, run the version gate, then write the contract file. All of
+    // it happens before anything is spawned.
+    let inject_contract = system_prompt_append::contract_injection_applies(
+        &binary.name,
+        &binary.path,
+        &extra_args,
+        opt_out.as_deref(),
+    );
+    if inject_contract || rewritten.used_file_flags {
+        let version = binary
+            .version
+            .clone()
+            .or_else(|| system_prompt_append::probe_claude_version(&binary.path));
+        if inject_contract {
+            system_prompt_append::require_append_prompt_file_capability(
+                &binary.path,
+                version.as_deref(),
+            )?;
+        } else {
+            system_prompt_append::require_prompt_file_flag_capability(
+                &binary.path,
+                version.as_deref(),
+            )?;
+        }
+    }
+    let contract_file = if inject_contract {
+        Some(system_prompt_append::ensure_contract_file(
+            &system_prompt_append::contract_home()?,
+        )?)
+    } else {
+        None
+    };
 
     tracing::info!(
         binary = %binary.path.display(),
@@ -485,8 +550,14 @@ fn run_launch_core(
             Some(&execution_dir),
             subprocess_safe,
             claude_config_dir.as_deref(),
-        );
+            contract_file.as_deref(),
+        )?;
         cmd.current_dir(&execution_dir);
+        // Issue #2030, step 6: a rewritten `-p <text>` reaches the child on a
+        // piped stdin. Without a payload the child inherits amplihack's stdin.
+        if rewritten.stdin_payload.is_some() {
+            cmd.stdin(std::process::Stdio::piped());
+        }
         let routed_copilot = proxy_config.is_some()
             && proxy_target == Some(amplihack_utils::litellm_proxy::CliTarget::CopilotCli);
         validate_routed_copilot_workspace(&execution_dir, routed_copilot)?;
@@ -538,8 +609,23 @@ fn run_launch_core(
             }
         };
 
+        let stdin_writer = match (rewritten.stdin_payload.as_ref(), child.take_stdin()) {
+            (Some(payload), Some(stdin)) => {
+                Some(amplihack_utils::payload_delivery::spawn_stdin_writer(
+                    stdin,
+                    payload.clone().into_bytes(),
+                ))
+            }
+            _ => None,
+        };
+
         // Wait for child or signal
         let exit_code = wait_for_child_or_signal(&mut child, &shutdown);
+        if let Some(writer) = stdin_writer
+            && let Err(error) = writer.finish()
+        {
+            tracing::warn!(%error, "writing the prompt to the agent's stdin failed");
+        }
         // Issue #1569: hand back logins the session borrowed, on success and
         // on error, before this process exits.
         if let Some(dir) = claude_config_dir.as_deref() {
@@ -554,6 +640,39 @@ fn run_launch_core(
         let _ = tracker.crash_session(&session_id);
     }
     child_status(result?)
+}
+
+/// Issue #2030: when the binary resolver refused every `claude` candidate
+/// because `--version` printed no usable version, and the launch would need
+/// the version gate, report the gate's error (naming 2.1.319 and the opt-out)
+/// instead of a bare "not found".
+fn version_gate_error_for_unresolved(
+    tool: &str,
+    override_origin: OverrideOrigin,
+    rewritten: &passthrough_rewrite::Rewritten,
+    opt_out: Option<&str>,
+) -> Option<anyhow::Error> {
+    if agent_binary_for_tool(tool) != Some(AgentBinary::Claude) {
+        return None;
+    }
+    let inject =
+        system_prompt_append::should_inject_system_prompt_append(tool, &rewritten.args, opt_out);
+    if !inject && !rewritten.used_file_flags {
+        return None;
+    }
+    let resolution = amplihack_utils::launch_target::resolve(tool, override_origin);
+    let (path, _) = resolution.rejected.iter().find(|(_, rejection)| {
+        matches!(
+            rejection,
+            amplihack_utils::launch_target::Rejection::UnparseableVersion
+        )
+    })?;
+    let result = if inject {
+        system_prompt_append::require_append_prompt_file_capability(path, None)
+    } else {
+        system_prompt_append::require_prompt_file_flag_capability(path, None)
+    };
+    result.err()
 }
 
 /// A child's non-zero exit status as a [`crate::command_error::CliExitError`],

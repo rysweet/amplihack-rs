@@ -14,6 +14,8 @@ tracing = { workspace = true }
 walkdir = "2"
 globset = "0.4"
 chrono = { workspace = true }
+# Issue #2030: private 0600 prompt files for the pointer sentence.
+tempfile = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

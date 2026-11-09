@@ -120,11 +120,12 @@ pub fn completion(prompt: &str) -> Result<String, LlmClientError> {
 
 /// Run `binary --print -p` with the prompt delivered through
 /// [`crate::prompt_delivery`] (issue #1570). The binary's file name decides:
-/// `claude` reads a large prompt on stdin; `copilot` gets a file reference
+/// `claude` reads the prompt on stdin; `copilot` gets a file reference
 /// plus `--add-dir` for the prompt file's directory, so it may read it. That
 /// directory is private to this call and holds only the prompt file, so the
-/// grant never covers the shared temp root; any
-/// other launcher keeps argv, since it may ignore a file reference.
+/// grant never covers the shared temp root. Any other launcher gets
+/// [`DeliveryCaps::default`], which has no channel, so the call fails with
+/// `NoSafeChannel` instead of putting the prompt in argv (issue #2030).
 fn run_launcher(binary: &str, prompt: &str) -> std::io::Result<std::process::Output> {
     use crate::prompt_delivery::{DeliveryCaps, DeliveryMode, deliver, from_env};
 
@@ -134,7 +135,7 @@ fn run_launcher(binary: &str, prompt: &str) -> std::io::Result<std::process::Out
     {
         Some("claude") => DeliveryCaps::argv_only().with_stdin(),
         Some("copilot") => DeliveryCaps::argv_only().with_file_reference(),
-        _ => DeliveryCaps::argv_only(),
+        _ => DeliveryCaps::default(),
     };
     let mut cmd = Command::new(binary);
     cmd.args(["--print", "-p"]);

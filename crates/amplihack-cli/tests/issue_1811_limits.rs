@@ -28,7 +28,7 @@ const WEEKLY_TEXT: &str = "You've hit your weekly limit · resets Oct 8, 12am (A
 /// prints `$LIMIT_MESSAGE` on stderr and exits 1, otherwise exits 0.
 const LIMITED_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 n=$(( $(cat "$RECORD_DIR/count" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$RECORD_DIR/count"

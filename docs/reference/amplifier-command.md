@@ -109,15 +109,16 @@ is passed as a `std::process::Command` argument, so apostrophes, quotes,
 semicolons, dollar signs, and newlines are not interpreted by a shell.
 
 Amplifier does not currently have a documented task-prompt file or stdin
-contract. Prompts above 4096 bytes are therefore delivered by file reference:
-the prompt is written to a 0600 temporary file, and `PROMPT` is a short fixed
-sentence naming that file. This keeps a large prompt within Linux's
-131,072-byte limit on a single argument.
+contract. Every prompt is therefore delivered by file reference: the prompt is
+written to a 0600 temporary file, and `PROMPT` is a short fixed sentence naming
+that file. This keeps the prompt out of `/proc/<pid>/cmdline` and within
+Linux's 131,072-byte limit on a single argument. See
+[Agent Prompt Channels Reference](./agent-prompt-channels.md).
 
 | Delivery mode | Amplifier support | Behavior |
 | --- | --- | --- |
-| `argv` | Supported | The prompt is passed as one structured argv value. Used for prompts of 4096 bytes or fewer. |
-| `file-reference` | Supported | Used automatically for prompts above 4096 bytes. `PROMPT` reads `Read and follow the complete instructions in the file <path>. Its contents are the task prompt.` The file is deleted when Amplifier exits. |
+| `argv` | Reported only | `amplihack doctor` lists it as a capability. It is never used to deliver a prompt. |
+| `file-reference` | Supported | Used automatically for every prompt. `PROMPT` reads `Read and follow the complete instructions in the file <path>. Its contents are the task prompt.` The file is deleted when Amplifier exits. |
 | `tempfile` | Unsupported | Explicit requests fail before spawning `amplifier`. No prompt tempfile is created. |
 | `stdin` | Unsupported | Explicit requests fail before spawning `amplifier`. No prompt bytes are written to stdin. |
 
@@ -129,20 +130,16 @@ narrow:
 
 | Setting | Amplifier result |
 | --- | --- |
-| unset, empty, or `auto` | Structured argv up to 4096 bytes; file reference above. |
-| `argv` | Structured argv up to 4096 bytes; file reference above. |
+| unset, empty, or `auto` | File reference. |
+| `argv` or any other value | Treated as `auto`, with a warning naming the value. File reference. |
 | `tempfile` | Fail before launching Amplifier. |
 | `stdin` | Fail before launching Amplifier. |
 
 Examples:
 
 ```bash
-# Default: a short prompt is one positional argv value.
+# Default: the prompt goes to a 0600 file; PROMPT is the pointer sentence.
 amplihack amplifier -- run "Summarize this repository"
-
-# Explicit compatibility mode: same argv delivery, useful in diagnostics.
-AMPLIHACK_PROMPT_DELIVERY=argv \
-  amplihack amplifier -- run "Summarize this repository"
 
 # Invalid for Amplifier: fails before spawning the child process.
 AMPLIHACK_PROMPT_DELIVERY=tempfile \
@@ -240,7 +237,7 @@ amplihack amplifier --auto --max-turns 25 "Refactor the entire API layer"
 ### Long Prompts
 
 Amplifier has no supported long-form file or stdin task-prompt channel, so each
-auto-mode turn prompt above 4096 bytes is delivered by file reference.
+auto-mode turn prompt, at any size, is delivered by file reference.
 
 To start auto mode from a long prompt without placing it in `amplihack`'s own
 argv, use `--prompt-file`, which goes before any `--` and requires `--auto`:
@@ -290,7 +287,7 @@ Continue? [y/N] y
 
 | Variable | Description |
 | --- | --- |
-| `AMPLIHACK_PROMPT_DELIVERY` | Requested prompt delivery mode: `auto`, `argv`, `tempfile`, or `stdin`. Amplifier supports `argv` only; explicit `tempfile` and `stdin` requests fail before launch. |
+| `AMPLIHACK_PROMPT_DELIVERY` | Requested prompt delivery mode: `auto`, `tempfile`, or `stdin`; other values are treated as `auto`. Amplifier uses a file reference; explicit `tempfile` and `stdin` requests fail before launch. |
 | `AMPLIHACK_DEBUG` | Set to `true` for debug output. Do not rely on debug output for prompt privacy. |
 | `ANTHROPIC_API_KEY` | API key for Anthropic models. |
 | `OPENAI_API_KEY` | API key for OpenAI models. |
@@ -360,7 +357,7 @@ export OPENAI_API_KEY="your-key"
 
 **Solution**: This is expected. Amplifier documents positional prompt delivery
 with `amplifier run [PROMPT]` and does not document a prompt-file or stdin
-task-prompt contract. Use unset, `auto`, or `argv` delivery for Amplifier, or run
+task-prompt contract. Leave the variable unset or set it to `auto` for Amplifier, or run
 doctor to inspect the capability policy:
 
 ```bash

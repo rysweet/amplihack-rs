@@ -3049,8 +3049,8 @@ amplihack claude --auto --max-turns 20 -- -p "task"
 # Force staging (UVX mode)
 amplihack claude --force-staging
 
-# With system prompt
-amplihack claude --append-system-prompt ./prompt.md
+# With your own appended system prompt (replaces amplihack's contract)
+amplihack claude -- --append-system-prompt-file ./prompt.md
 
 # Forward args to Claude
 amplihack claude -- --model claude-sonnet-4-5-20250929

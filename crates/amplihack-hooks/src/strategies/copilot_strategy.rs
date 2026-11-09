@@ -16,6 +16,8 @@ use tracing::{debug, info, warn};
 pub struct CopilotStrategy {
     /// Project root (used to resolve runtime and .github paths).
     project_root: PathBuf,
+    /// The `gh` program to run for power-steering (tests point it at a stub).
+    gh_program: std::ffi::OsString,
 }
 
 /// Include directive injected into AGENTS.md.
@@ -26,6 +28,7 @@ impl CopilotStrategy {
     pub fn new(project_root: impl Into<PathBuf>) -> Self {
         Self {
             project_root: project_root.into(),
+            gh_program: "gh".into(),
         }
     }
 
@@ -99,15 +102,31 @@ impl HookStrategy for CopilotStrategy {
     fn power_steer(&self, prompt: &str, session_id: &str) -> Result<bool> {
         info!(session_id, "power-steering via gh copilot");
 
-        let output = std::process::Command::new("gh")
+        // Issue #2030: the prompt never goes in argv. `--prompt` gets the
+        // pointer sentence to a 0600 file in a private 0700 directory, and
+        // `--add-dir` grants that directory only. `handle` owns the file and
+        // is held until `output()` has returned.
+        let mut command = std::process::Command::new(&self.gh_program);
+        command
             .arg("copilot")
             .arg("--session")
             .arg(session_id)
-            .arg("--prompt")
-            .arg(prompt)
+            .arg("--prompt");
+        let handle = amplihack_utils::prompt_delivery::deliver(
+            &mut command,
+            prompt,
+            amplihack_utils::prompt_delivery::PromptDelivery::Auto,
+            &amplihack_utils::prompt_delivery::DeliveryCaps::default().with_file_reference(),
+        )
+        .context("failed to deliver the power-steering prompt to gh copilot")?;
+        if let Some(dir) = handle.tempfile_path().and_then(std::path::Path::parent) {
+            command.arg("--add-dir").arg(dir);
+        }
+        let output = command
             .current_dir(&self.project_root)
             .output()
             .context("failed to launch gh copilot")?;
+        drop(handle);
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -127,6 +146,50 @@ impl HookStrategy for CopilotStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #2030: `gh copilot --prompt` receives the pointer sentence and
+    /// `--add-dir <private dir>`, and the prompt file outlives `output()`.
+    #[cfg(unix)]
+    #[test]
+    fn power_steer_passes_pointer_and_add_dir_not_prompt_text() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let log = dir.path().join("log");
+        let gh = bin.join("gh");
+        fs::write(
+            &gh,
+            format!(
+                "#!/bin/sh\nprev=\nfor a in \"$@\"; do printf 'ARG %s\\n' \"$a\" >> '{log}'; case \"$prev\" in --add-dir) ls \"$a\" | sed 's/^/FILE /' >> '{log}'; cat \"$a\"/* >> '{log}'; echo >> '{log}';; esac; prev=$a; done\n",
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+        let mut strategy = CopilotStrategy::new(dir.path());
+        strategy.gh_program = gh.clone().into_os_string();
+        let result = strategy.power_steer("SENTINEL-2030-power-steer", "s1");
+        assert!(result.unwrap());
+        let logged = fs::read_to_string(&log).unwrap();
+        let args: Vec<&str> = logged
+            .lines()
+            .filter_map(|l| l.strip_prefix("ARG "))
+            .collect();
+        assert!(
+            !args.iter().any(|a| a.contains("SENTINEL-2030-power-steer")),
+            "{args:?}"
+        );
+        assert!(
+            args.iter()
+                .any(|a| a.starts_with(amplihack_utils::prompt_delivery::FILE_REFERENCE_PREFIX))
+        );
+        assert!(args.contains(&"--add-dir"));
+        assert!(
+            logged.contains("SENTINEL-2030-power-steer"),
+            "the file was readable while gh ran: {logged}"
+        );
+    }
 
     fn setup() -> (tempfile::TempDir, CopilotStrategy) {
         let dir = tempfile::tempdir().unwrap();

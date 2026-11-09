@@ -303,7 +303,9 @@ mod turn {
 
     #[test]
     fn argv_pins_session_id_silent_and_no_color() {
-        let argv = build_turn_argv(SID, "hello world", &ToolAllowlist::read_only_default());
+        let turn = build_turn_argv(SID, "hello world", &ToolAllowlist::read_only_default())
+            .expect("turn argv builds");
+        let argv = &turn.argv;
 
         // --session-id is immediately followed by the pinned uuid.
         let sid_pos = argv
@@ -327,27 +329,35 @@ mod turn {
     }
 
     #[test]
-    fn prompt_is_a_single_argv_element_never_a_shell_string() {
-        // IV-2 injection contract: the prompt (attacker-influenced) is passed as
-        // ONE argv element, verbatim, and is never concatenated into a shell
-        // command line. Metacharacters must survive unchanged and unsplit.
+    fn prompt_never_reaches_argv_or_a_shell_string() {
+        // IV-2 injection contract, and issue #2030: the prompt
+        // (attacker-influenced) is never in argv nor a shell string. It is
+        // written verbatim to a private file, and `-p` carries only the fixed
+        // pointer sentence naming that file.
         let evil = "; rm -rf / # $(whoami) `id`";
-        let argv = build_turn_argv(SID, evil, &ToolAllowlist::read_only_default());
+        let turn = build_turn_argv(SID, evil, &ToolAllowlist::read_only_default())
+            .expect("turn argv builds");
+        let argv = &turn.argv;
 
         let p_pos = argv
             .iter()
             .position(|a| a == "-p" || a == "--prompt")
             .expect("argv must carry a prompt flag");
-        assert_eq!(
-            argv.get(p_pos + 1).map(String::as_str),
-            Some(evil),
-            "prompt must be exactly one argv element, unmodified"
+        let pointer = argv.get(p_pos + 1).expect("pointer sentence");
+        assert!(
+            pointer.starts_with("Read and follow the complete instructions in the file "),
+            "{pointer:?}"
         );
+        assert!(!argv.iter().any(|a| a.contains(evil)), "{argv:?}");
+        let file = turn.prompt_dir().join("prompt.md");
+        assert_eq!(std::fs::read_to_string(file).unwrap(), evil);
     }
 
     #[test]
     fn read_only_argv_never_grants_allow_all() {
-        let argv = build_turn_argv(SID, "topic", &ToolAllowlist::read_only_default());
+        let turn = build_turn_argv(SID, "topic", &ToolAllowlist::read_only_default())
+            .expect("turn argv builds");
+        let argv = &turn.argv;
         assert!(
             !argv
                 .iter()
@@ -588,8 +598,13 @@ mod turn {
 
     // A runner that only records the argv of every turn and returns immediately,
     // so a sequence of turns can be replayed and inspected deterministically.
+    // Issue #2030: it also records the pointed-to prompt file's contents,
+    // read while the turn runs (the file is removed when the turn ends).
+    /// One recorded turn: its argv and the prompt file's contents.
+    type SeenTurn = (Vec<String>, String);
+
     struct RecordingRunner {
-        seen: Arc<Mutex<Vec<Vec<String>>>>,
+        seen: Arc<Mutex<Vec<SeenTurn>>>,
     }
 
     impl TurnRunner for RecordingRunner {
@@ -599,7 +614,16 @@ mod turn {
         ) -> Pin<Box<dyn Future<Output = std::io::Result<String>> + Send>> {
             let seen = self.seen.clone();
             Box::pin(async move {
-                seen.lock().unwrap().push(argv);
+                let content = argv
+                    .iter()
+                    .position(|a| a == "--add-dir")
+                    .and_then(|i| argv.get(i + 1))
+                    .map(|dir| {
+                        std::fs::read_to_string(std::path::Path::new(dir).join("prompt.md"))
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default();
+                seen.lock().unwrap().push((argv, content));
                 Ok(String::from("ok"))
             })
         }
@@ -641,7 +665,7 @@ mod turn {
             "every turn must reach the runner"
         );
 
-        for (argv, expected_prompt) in calls.iter().zip(prompts.iter()) {
+        for ((argv, content), expected_prompt) in calls.iter().zip(prompts.iter()) {
             // Resume continuity: the pinned session id is reused every turn.
             let sid_pos = argv
                 .iter()
@@ -667,11 +691,19 @@ mod turn {
                 .iter()
                 .position(|a| a == "-p" || a == "--prompt")
                 .expect("argv must carry a prompt flag");
-            assert_eq!(
-                argv.get(p_pos + 1).map(String::as_str),
-                Some(*expected_prompt),
-                "prompt must be exactly one argv element, unmodified: {argv:?}"
+            // Issue #2030: argv holds the pointer sentence; the prompt is in
+            // the pointed-to file, byte-for-byte.
+            assert!(
+                argv.get(p_pos + 1).is_some_and(
+                    |a| a.starts_with("Read and follow the complete instructions in the file ")
+                ),
+                "-p carries the pointer sentence: {argv:?}"
             );
+            assert!(
+                !argv.iter().any(|a| a == expected_prompt),
+                "the prompt is never an argv element: {argv:?}"
+            );
+            assert_eq!(content, expected_prompt, "the prompt file is unmodified");
         }
 
         assert_eq!(

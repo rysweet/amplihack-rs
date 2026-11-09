@@ -21,7 +21,7 @@ use std::process::Output;
 
 const LOGIN_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 cj="$CLAUDE_CONFIG_DIR/.claude.json"
 printf '{"oauthAccount":%s,"numStartups":9}' "$LOGIN_ACCOUNT" > "$cj.tmp" && chmod 600 "$cj.tmp" && mv "$cj.tmp" "$cj"
@@ -31,7 +31,7 @@ exit "${LOGIN_EXIT:-0}"
 
 const LAUNCH_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 {
   printf 'CLAUDE_CONFIG_DIR=%s\n' "${CLAUDE_CONFIG_DIR-<unset>}"

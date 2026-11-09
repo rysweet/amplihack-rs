@@ -134,6 +134,8 @@ No new configuration. Existing delivery configuration is unchanged:
 
 - `AMPLIHACK_PROMPT_DELIVERY` ∈ `{auto, argv, tempfile, stdin}` (case-insensitive)
   still selects the delivery mode. NUL sanitization is applied for all modes.
+  Since #2030, `argv` is no longer a valid value: it is treated as `auto` with
+  a warning. See [Agent Prompt Channels Reference](../reference/agent-prompt-channels.md).
 - `NODE_OPTIONS=--max-old-space-size=32768` and other environment settings are
   unaffected.
 

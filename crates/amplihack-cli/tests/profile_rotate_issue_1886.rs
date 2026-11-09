@@ -47,7 +47,7 @@ const RECORDING_CLAUDE: &str = r#"#!/bin/sh
 n="$RECORD_DIR/claude-run.$$"
 { printf 'ARGV:'; for a in "$@"; do printf ' %s' "$a"; done; printf '\n'; env; } > "$n"
 case "$1" in
-  --version) echo '2.1.316 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 exit 1
 "#;

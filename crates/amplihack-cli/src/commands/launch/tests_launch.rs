@@ -574,6 +574,10 @@ fn supported_claude_launch_receives_only_the_scrubbed_gateway_environment() {
         ("AMPLIHACK_CLAUDE_BINARY_PATH", binary_text.as_str()),
         ("AMPLIHACK_NONINTERACTIVE", "1"),
         ("ANTHROPIC_API_KEY", "direct-provider-secret"),
+        // Issue #2030: the gateway pins Claude Code 2.1.247, which predates
+        // --append-system-prompt-file, so a routed launch opts out of the
+        // contract instead of failing the 2.1.319 gate.
+        ("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND", "1"),
     ]);
 
     run_launch(

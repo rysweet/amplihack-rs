@@ -17,7 +17,7 @@ fn doctor_reports_requested_mode_capabilities_effective_modes_and_warnings() {
 
     assert!(output.contains("Prompt delivery"));
     assert!(output.contains("requested: tempfile"));
-    assert!(output.contains("auto threshold: 4096 bytes"));
+    assert!(output.contains("auto: stdin, then file-reference, then tempfile; never argv"));
 
     for binary in ["claude", "copilot", "codex", "amplifier"] {
         assert!(
@@ -28,13 +28,17 @@ fn doctor_reports_requested_mode_capabilities_effective_modes_and_warnings() {
             output.contains("capabilities: argv"),
             "current verified contracts must be reported as argv-only; output:\n{output}"
         );
-        assert!(
-            output.contains("effective for long prompt: argv"),
-            "unsupported tempfile requests must degrade to argv; output:\n{output}"
-        );
     }
 
-    assert!(output.contains("requested tempfile is unsupported; degrading to argv"));
+    // Issue #2030: an unsupported tempfile request degrades only to channels
+    // that keep the prompt out of argv.
+    assert!(
+        !output.contains("effective for long prompt: argv"),
+        "no binary degrades to argv; output:\n{output}"
+    );
+    assert!(output.contains("effective for long prompt: stdin"));
+    assert!(output.contains("effective for long prompt: file-reference"));
+    assert!(output.contains("requested tempfile is unsupported; degrading to stdin"));
 }
 
 #[test]
@@ -64,7 +68,13 @@ fn doctor_help_lists_prompt_delivery_environment_override() {
 
     assert!(help.contains("AMPLIHACK_PROMPT_DELIVERY"));
     assert!(help.contains("auto"));
-    assert!(help.contains("argv"));
     assert!(help.contains("tempfile"));
     assert!(help.contains("stdin"));
+    // Issue #2030 R1.2: `argv` is no longer an accepted value; the help must
+    // not offer it.
+    assert!(
+        help.contains("AMPLIHACK_PROMPT_DELIVERY=auto|tempfile|stdin"),
+        "{help}"
+    );
+    assert!(!help.contains("auto|argv"), "{help}");
 }

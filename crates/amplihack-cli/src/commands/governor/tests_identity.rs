@@ -244,3 +244,34 @@ fn recipe_task_text_cannot_claim_coordination() {
         Class::Coordination
     );
 }
+
+/// Issue #2030: the governor reads the wrapper's own `-p <task>` (before the
+/// passthrough rewrite moves it to stdin), and a bare `-p`/`--print` followed
+/// by a `*-file` flag is still read as print mode without inventing a
+/// coordination task.
+#[test]
+fn bare_print_with_prompt_file_flags_is_not_a_coordination_task() {
+    use super::{AdmitRequest, GovernorArgs};
+    let args = GovernorArgs::default();
+    for print in ["-p", "--print"] {
+        let claude_args: Vec<String> = [
+            print,
+            "--system-prompt-file",
+            "/tmp/amplihack-prompt-x/system-prompt.md",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let launch = AdmitRequest::launch(&args, &claude_args);
+        assert_eq!(
+            class(
+                None,
+                &env(&[]),
+                launch.recipe.as_deref(),
+                launch.task.as_deref()
+            ),
+            Class::Ordinary,
+            "{print}"
+        );
+    }
+}

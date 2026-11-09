@@ -46,7 +46,7 @@ pub const WEEKLY_TEXT: &str =
 /// - otherwise exits 0.
 const STUB_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 step="${STEP:-0}"
 n=$(( $(cat "$RECORD_DIR/count.$step" 2>/dev/null || echo 0) + 1 ))

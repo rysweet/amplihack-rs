@@ -205,6 +205,24 @@ pub(crate) fn parse<S: AsRef<str>>(args: &[S]) -> ClaudeArgs {
     out
 }
 
+/// Issue #2030: the index after the option `args[i]` and the values it takes,
+/// by the same Commander rules as [`parse`]. Used by the passthrough rewrite
+/// so an option's value is never mistaken for a positional prompt.
+pub(crate) fn option_end<S: AsRef<str>>(args: &[S], i: usize) -> usize {
+    let arg = args[i].as_ref();
+    let kind = if let Some(long) = arg.strip_prefix("--") {
+        match long.split_once('=') {
+            Some(_) => Kind::Flag,
+            None => long_kind(long),
+        }
+    } else if let Some(shorts) = arg.strip_prefix('-').filter(|s| !s.is_empty()) {
+        short_cluster(shorts, &mut ClaudeArgs::default())
+    } else {
+        Kind::Flag
+    };
+    skip_values(args, i + 1, kind)
+}
+
 /// A cluster such as `-p`, `-pc` or `-nNAME`: sets `print` for `p`, and
 /// returns what the last option still needs from the following arguments.
 fn short_cluster(shorts: &str, out: &mut ClaudeArgs) -> Kind {

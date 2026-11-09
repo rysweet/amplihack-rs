@@ -1,10 +1,13 @@
 # System Prompt Append
 
-**Issue:** [#1265](https://github.com/rysweet/amplihack-rs/issues/1265) (Option 3)
+**Issue:** [#1265](https://github.com/rysweet/amplihack-rs/issues/1265) (Option 3); delivery by file: [#2030](https://github.com/rysweet/amplihack-rs/issues/2030)
 **Status:** Implemented. The fragment's source of truth is
 `amplifier-bundle/context/SYSTEM_PROMPT_APPEND.md`; it is `include_str!`d into
-the binary at compile time and injected by `build_command_for_dir`. Nothing is
-read from disk at runtime — see [Why it is compiled in](#why-it-is-compiled-in-and-not-read-from-disk).
+the binary at compile time. At launch, amplihack writes those bytes to a 0600
+file and `build_command_for_dir` passes `--append-system-prompt-file <path>`.
+The text is never in argv, and the file is never read back as a source of
+content — see [Why it is compiled in](#why-it-is-compiled-in-and-not-read-from-disk)
+and [A file, not the text](#a-file-not-the-text).
 The fragment text quoted below is a copy; the shipped file is the source of truth.
 **Scope:** `crates/amplihack-cli` — `commands/launch` · `crates/amplihack-launcher` — `launcher_core`, `flag_matrix` · `amplifier-bundle/context/`
 
@@ -26,7 +29,8 @@ happening.
 **This is a delivery-channel problem, not a wording problem.** No amount of
 rewriting the hook output or `CLAUDE.md` changes their rank. The only fix is to
 deliver the routing contract on a channel at the same privilege level as the
-instruction it has to overcome. `--append-system-prompt` is that channel.
+instruction it has to overcome. The appended system prompt is that channel;
+amplihack fills it with `--append-system-prompt-file`.
 
 That is why #1265 Option 3 was implemented and Options 4 and 5 were not. Options
 4 and 5 stay on outranked channels; they can only make the losing argument
@@ -38,7 +42,9 @@ louder.
 | --- | --- |
 | Source of truth | `amplifier-bundle/context/SYSTEM_PROMPT_APPEND.md` |
 | Delivered by | `include_str!` at compile time — the bytes live in the binary |
-| Read at runtime from | nothing |
+| Written at launch to | `<amplihack home>/private/system-prompt-append.md` (0600, in a 0700 directory) |
+| Passed to `claude` as | `--append-system-prompt-file <that path>` |
+| Read at runtime from | nothing; the written file is only compared with the compiled-in bytes |
 | Registered in `essential_files` | **no, deliberately** |
 
 `amplihack install` still stages the bundle copy to
@@ -62,7 +68,7 @@ to decide whether an install needs restaging. That one listing armed a chain:
    that passes a *shape* check — not a provenance or integrity check.
 3. The restage copies `context/`, `agents/`, `skills/` and `tools/amplihack/*.sh`
    out of that root into `$HOME/.amplihack/.claude/`.
-4. The launch path reads the result and passes it to `--append-system-prompt`.
+4. The launch path read the result and passed it to `--append-system-prompt`.
 
 So `git clone <fork> && cd <fork> && amplihack claude` wrote fork-authored bytes
 into `$HOME` and injected them at system-prompt privilege — permanently, for
@@ -95,22 +101,30 @@ feature](#there-is-no-install-side-gap-for-this-feature).
 
 ## When the flag is injected
 
-`build_command_for_dir` injects `--append-system-prompt <contents>` immediately
-before the user's own arguments, so user arguments remain last.
+`build_command_for_dir` injects `--append-system-prompt-file <path>`
+immediately before the user's own arguments, so user arguments remain last.
+The path comes from `ensure_contract_file(home)`, which the launch calls after
+the version gate and before the command is built; see
+[Agent Prompt Channels Reference](reference/agent-prompt-channels.md#the-contract-file).
 
 Injection happens only when **all** of the following hold:
 
 1. The binary name maps to an `AgentBinary` whose flag matrix entry has
    `supports_append_prompt == true`.
 2. `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND` is not set to `1`.
-3. The fragment is present and readable.
-4. The user did not pass `--append-system-prompt` themselves, in any form.
+3. The user did not pass `--append-system-prompt` or
+   `--append-system-prompt-file` themselves, in any form. A user's
+   `--append-system-prompt <text>` is rewritten to the `-file` form and still
+   counts as user-supplied.
+
+When the gate is true, the launch also needs Claude Code 2.1.319 or later; see
+[Version gate](#version-gate).
 
 | Binary | Injected? |
 | --- | --- |
 | `claude` | ✅ |
-| `rusty` | ✅ |
-| `rustyclawd` | ✅ |
+| `rusty` | ❌ (see below) |
+| `rustyclawd` | ❌ (see below) |
 | `copilot` | ❌ |
 | `codex` | ❌ |
 | `amplifier` | ❌ |
@@ -148,6 +162,13 @@ delegates to `run_launch("claude", "claude", ...)`
 (`crates/amplihack-cli/src/commands/rustyclawd.rs`) — so mapping them onto
 `AgentBinary::Claude` is what lets the flag matrix answer for them at all.
 Without this mapping the table above is simply false for those two rows.
+
+**`rusty` and `rustyclawd` get no contract.** Whether RustyClawd accepts
+`--append-system-prompt-file` could not be confirmed, and the text form is never
+used, so the launch site (`contract_injection_applies`) skips injection for a
+binary named `rusty` or `rustyclawd`, including a `claude` launch whose resolved
+executable has either name. The pure gate `should_inject_system_prompt_append`
+is unchanged and still maps those names to `AgentBinary::Claude`.
 
 An unrecognised name returns `None` and injects nothing: that is the
 `anything else ❌` row. `None` is the safe default — an unknown binary must never
@@ -199,18 +220,59 @@ The opt-out triggers on the exact value `"1"`, following the
 `AMPLIHACK_COPILOT_NO_ALLOW_ALL` precedent. `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND=0`
 and an unset variable both mean "inject".
 
-### Contents, not a path
+### A file, not the text
 
-amplihack emits the fragment's **text**, not its path:
+amplihack passes the fragment's **path**, never its text:
 
 ```
-claude --model opus[1m] --append-system-prompt '<fragment text>' <user args...>
+claude --model opus[1m] --append-system-prompt-file /home/alice/.amplihack/private/system-prompt-append.md <user args...>
 ```
 
-`claude`'s `--append-system-prompt` takes a prompt string.
-`--append-system-prompt-file` exists but is hidden from `--help`, which means
-emitting it would hard-fail launches against CLI versions that predate it —
-unacceptable for a feature whose contract is that it never fails a launch.
+Until issue #2030 the fragment was passed as text, with
+`--append-system-prompt '<fragment text>'`. That put the whole contract in
+`/proc/<pid>/cmdline` of every session. On 7 November one
+`pkill -f 'tail -f /dev/null'` matched the contract's own warning about that
+command in 63 of 79 amplihack-launched `claude` processes and ended 34
+sessions. See [Why Prompt Text Stays Out of argv](concepts/prompt-text-out-of-argv.md).
+
+The file is written by `ensure_contract_file(home)`:
+
+| | |
+| --- | --- |
+| Path | `<amplihack home>/private/system-prompt-append.md` |
+| Directory | `private/`, mode 0700, owned by the current user; a symlink or a foreign owner fails the launch |
+| File | regular file, mode 0600, owned by the current user |
+| When written | at a launch that injects, if the file is missing, has the wrong mode, owner or type, or its bytes differ from the fragment |
+| How written | a `create_new` + `O_NOFOLLOW` temporary file in `private/`, then `rename` over the target |
+| Read back | only for a byte comparison with the fragment, skipped when the length differs |
+| Removed | never; one file per install, shared by every session |
+
+The bytes still come from the binary. Editing the file changes nothing: the
+next launch sees that it differs and replaces it.
+
+### Version gate
+
+`--append-system-prompt-file` needs Claude Code **2.1.319** or later
+(`MIN_APPEND_PROMPT_FILE_VERSION`). Before injecting, the launch takes the
+version from `BinaryInfo.version` or from one `--version` probe of the binary
+the launcher resolved (not `claude` looked up again on `PATH`). The 2.1.319
+comparison is for Claude Code; `rustyclawd` numbers its versions differently,
+so its handling waits on the step-3 check above. A lower
+version, or output with no version in it, ends the launch before anything is
+spawned:
+
+```text
+error: amplihack passes its operating contract with --append-system-prompt-file, which needs Claude Code 2.1.319 or later; found 2.1.318.
+Upgrade Claude Code, or set AMPLIHACK_NO_SYSTEM_PROMPT_APPEND=1 to launch without the contract.
+```
+
+A rewritten `--system-prompt <text>` becomes `--system-prompt-file`, which is
+also gated at 2.1.319: that release lists both `-file` flags in `claude --help`.
+See [the version gate reference](reference/agent-prompt-channels.md#the-version-gate).
+
+There is no fallback to passing the text. The gate does not run when the
+contract is not being injected, and does not run for Docker launches, where the
+amplihack inside the container runs its own.
 
 #### The launcher's path-shaped sibling, and the bug it had
 
@@ -234,30 +296,37 @@ nothing. This feature corrects it to the flag that actually takes a path:
 cmd.args(["--append-system-prompt-file", &pf.to_string_lossy()]);
 ```
 
-**Why the hard-fail risk is acceptable there and not here.** The two call sites
-have opposite contracts:
+Since #2030 the automatic injection uses the same flag, behind the
+[version gate](#version-gate), so both call sites fail visibly on a CLI that
+lacks it:
 
 | | This feature's injection | `LauncherConfig::append_system_prompt` |
 | --- | --- | --- |
 | Origin | automatic, on every launch | opt-in — the user configured a file |
-| Obligation | must never fail a launch | must honour what the user configured |
-| Against an older CLI | would break launches nobody asked for | surfaces an error to the one user who asked |
+| Flag | `--append-system-prompt-file <contract file>` | `--append-system-prompt-file <user's file>` |
+| Against a CLI older than 2.1.319 | the launch fails before spawn and names the opt-out | the CLI rejects the flag |
 
-A user who sets `append_system_prompt` has asked for that file to be delivered.
-On a CLI too old to accept `--append-system-prompt-file`, a visible failure tells
-them so — where the previous behaviour handed their agent a pathname and reported
-success. Silent wrongness is the worse outcome for an opt-in setting. For the
-automatic injection it is the reverse: no user asked for it on any given launch,
-so it emits contents and cannot fail.
+## When a launch fails
 
-## Graceful degradation
+Compiling the fragment in removed the ways the fragment itself could fail: it
+cannot be missing, unreadable, empty, oversized, non-UTF-8, or a FIFO. The gate
+still declines to inject for a binary that does not support the flag, when the
+user supplied their own, or when the opt-out is set, and the launch proceeds
+unchanged.
 
-There is no failure mode in which this feature prevents a launch, and compiling
-the fragment in removed most of the ways there could have been one: it cannot be
-missing, unreadable, empty, oversized, non-UTF-8, or a FIFO. The remaining
-degradation is by choice rather than by accident — the gate declines to inject
-for a binary that does not support the flag, or when the user supplied their own,
-or when the opt-out is set, and the launch proceeds unchanged.
+When the gate does inject, the launch fails closed, before anything is spawned,
+if:
+
+- the Claude Code version is below 2.1.319 or cannot be read;
+- `<amplihack home>/private` is a symlink, not a directory, or owned by another
+  user;
+- the amplihack home path contains a newline or NUL;
+- the contract file cannot be written.
+
+Each error names the problem and the opt-out `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND=1`.
+None of them falls back to passing the contract as text. An earlier version of
+this page promised that the feature never prevents a launch; that promise
+depended on argv delivery and was dropped with it.
 
 ### There is no install-side gap for this feature
 
@@ -330,23 +399,30 @@ To suppress for a single launch:
 AMPLIHACK_NO_SYSTEM_PROMPT_APPEND=1 amplihack claude
 ```
 
-To supply your own fragment instead of amplihack's, pass the flag yourself —
-amplihack will not add a second one:
+To supply your own fragment instead of amplihack's, pass the file flag
+yourself — amplihack will not add a second one:
 
 ```sh
-amplihack claude --append-system-prompt "$(cat ./my-fragment.md)"
+amplihack claude -- --append-system-prompt-file ./my-fragment.md
 ```
 
 The fragment is compiled into the binary, so it cannot be changed per install.
 Editing `~/.amplihack/.claude/context/SYSTEM_PROMPT_APPEND.md` has no effect —
-that copy is staged for readability and is never read.
+that copy is staged for readability and is never read. Editing
+`~/.amplihack/private/system-prompt-append.md` has no lasting effect either:
+the next launch replaces it with the compiled-in bytes.
 
-To change it for a single session, supply the flag yourself; amplihack detects
-that and does not inject its own:
+To change it for a single session with inline text, supply the text flag;
+amplihack writes the text to a 0600 per-session file, passes
+`--append-system-prompt-file` to `claude`, removes the file when the session
+ends, and does not inject its own:
 
 ```sh
 amplihack claude -- --append-system-prompt "your own contract"
 ```
+
+The text is still in the `amplihack` process's own argv, because the caller put
+it there. Use the `-file` form above to keep it out of both.
 
 To turn it off entirely:
 
@@ -364,11 +440,11 @@ The shipped fragment is capped at 25 lines, asserted by test. It is injected
 into every session, so every line costs context on every launch.
 
 ```markdown
-<!-- Compiled into the binary at build time and passed via --append-system-prompt;
-     the copy under ~/.amplihack is inert, so edit this file in the repo and rebuild.
-     These bytes appear in the process table and are visible to every user on this
-     host. Never place credentials, tokens, paths to secrets, or private context in
-     this file. -->
+<!-- Compiled into the binary and written at launch to a 0600 file passed with
+     --append-system-prompt-file; copies under ~/.amplihack are inert or replaced,
+     so edit this file in the repo and rebuild. Every session on every install
+     gets these bytes. Never place credentials, tokens, paths to secrets, or
+     private context in this file. -->
 
 # Amplihack operating contract
 
@@ -444,7 +520,7 @@ cloned repository can write `$HOME`.
 Compiling the fragment in closes both halves at once, because it removes the
 registration that armed the restage and the read that trusted its output. The
 `fragment_never_sourced_from_cwd` test is kept — it plants a hostile file in the
-working directory and asserts the planted text never reaches argv — and it now
+working directory and asserts the planted text never reaches argv or the contract file — and it now
 passes for a structural reason rather than a precedence one.
 
 #### What this does not close
@@ -465,33 +541,41 @@ longer adds system-prompt privilege to what it delivers.
 
 ### Never put secrets in the fragment
 
-The fragment's contents are passed on the command line, which means they are
-**visible in the process table to every user on the host**. Never place
-credentials, tokens, paths to secrets, or private context in it.
+The fragment is no longer in the process table: it reaches `claude` through a
+0600 file in a 0700 directory, and `/proc/<pid>/cmdline` holds only that file's
+path. It is still shipped in the binary and in the public repository, staged in
+readable form under `~/.amplihack/.claude/context/`, and given to every session
+on every install. Never place credentials, tokens, paths to secrets, or private
+context in it. The warning is repeated in the fragment's own header comment.
 
-The rule needs stating precisely because the file looks like a config file, and
-config files are where such things normally go. The warning is repeated in the
-fragment's own header comment for anyone who edits the installed copy without
-reading this page.
+### The contract file
+
+The contract file is protected against other users, not against processes
+running as the same user, which can read it by design. `ensure_contract_file`
+uses `lstat` and never follows a symlink; it writes a new file with
+`create_new` and `O_NOFOLLOW` and renames it into place, so a planted symlink is
+replaced rather than written through. A same-user process could still swap the
+file between amplihack's check and `claude`'s read. That window is accepted:
+an attacker with the same uid can already change the binary, the settings and
+the hooks. See the [threat model](concepts/prompt-text-out-of-argv.md#the-threat-model).
 
 ### Size
 
-The 25-line limit is a test against the shipped file, and it is now the only
+The 25-line limit is a test against the shipped file, and it is the only
 bound that exists — the bytes are fixed at build time, so "how large is the
 fragment" is answered once, at compile time, instead of on every launch.
 
 The disk implementation needed a runtime cap (32 KiB, enforced by
 `.take(MAX_FRAGMENT_BYTES + 1)` on the read rather than by a preceding
 `metadata().len()`, since `stat`-then-read measures one file and reads another).
-That machinery is gone with the read. It existed because an oversized fragment
-goes whole into argv and past `ARG_MAX` the spawn fails outright — a
-self-inflicted denial of the very launches graceful degradation exists to
-protect. A compiled-in constant cannot be corrupted, tampered with, or
-accidentally appended to on a user's disk, so the failure it guarded against no
-longer has a way to occur. `the_compiled_in_fragment_is_not_empty_and_is_argv_sized`
-keeps the assertion, at build time.
+That machinery is gone with the read. The fragment is no longer in argv at
+all, so `ARG_MAX` no longer bounds it either. `the_compiled_in_fragment_is_not_empty`
+keeps the remaining assertion, at build time.
 
 ## Related documentation
+
+- [Agent Prompt Channels Reference](reference/agent-prompt-channels.md) — the contract file, the version gate and every launch path's channel
+- [Why Prompt Text Stays Out of argv](concepts/prompt-text-out-of-argv.md) — the incident behind delivery by file
 
 - [Launch Target Resolution](LAUNCH_TARGET_RESOLUTION.md) — the other half of the launch path: which binary gets executed and why
 - [`amplihack copilot` — Subprocess-Safe Defaults](COPILOT_SUBPROCESS_SAFE.md) — the flag-injection pattern this feature follows

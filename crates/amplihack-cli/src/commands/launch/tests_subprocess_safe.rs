@@ -255,7 +255,7 @@ fn resolve_no_reflection_default_returns_false() {
 //       extra_args: &[String],
 //       add_dir_override: Option<&Path>,
 //       subprocess_safe: bool,        // ← NEW
-//   ) -> Command;
+//, Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH))   ).unwrap() -> Command;
 
 /// #15: Copilot + subprocess_safe=true MUST inject BOTH --allow-all-tools and --allow-all-paths.
 #[test]
@@ -276,7 +276,9 @@ fn copilot_subprocess_safe_injects_allow_all_tools_and_paths() {
         None,
         true, // subprocess_safe
         None,
-    );
+        Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+    )
+    .unwrap();
     let args = arg_strings(&cmd);
     assert!(
         args.iter().any(|a| a == "--allow-all-tools"),
@@ -306,7 +308,9 @@ fn copilot_subprocess_safe_skips_injection_when_user_supplied_allow_all_tools() 
         None,
         true, // subprocess_safe
         None,
-    );
+        Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+    )
+    .unwrap();
     let args = arg_strings(&cmd);
     let tools_count = args
         .iter()
@@ -336,7 +340,9 @@ fn copilot_subprocess_safe_skips_injection_when_user_supplied_allow_all_paths() 
         None,
         true,
         None,
-    );
+        Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+    )
+    .unwrap();
     let args = arg_strings(&cmd);
     let paths_count = args
         .iter()
@@ -368,7 +374,9 @@ fn copilot_subprocess_safe_skips_both_granular_when_allow_all_present() {
         None,
         true,
         None,
-    );
+        Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+    )
+    .unwrap();
     let args = arg_strings(&cmd);
     assert!(
         !args.iter().any(|a| a == "--allow-all-tools"),
@@ -403,7 +411,9 @@ fn copilot_subprocess_safe_with_no_allow_all_env_skips_all_three_permission_flag
         None,
         true, // subprocess_safe
         None,
-    );
+        Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+    )
+    .unwrap();
     let args = arg_strings(&cmd);
 
     unsafe {
@@ -448,7 +458,9 @@ fn copilot_interactive_does_not_inject_subprocess_safe_granular_flags() {
         None,
         false, // subprocess_safe = false
         None,
-    );
+        Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+    )
+    .unwrap();
     let args = arg_strings(&cmd);
 
     unsafe {
@@ -481,7 +493,9 @@ fn non_copilot_binaries_never_get_subprocess_safe_granular_flags() {
         None,
         true, // subprocess_safe is true but this is a claude binary
         None,
-    );
+        Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+    )
+    .unwrap();
     let args = arg_strings(&cmd);
     assert!(
         !args.iter().any(|a| a == "--allow-all-tools"),
@@ -503,7 +517,18 @@ fn codex_does_not_get_subprocess_safe_granular_flags() {
         path: PathBuf::from("/usr/bin/codex"),
         version: None,
     };
-    let cmd = build_command_for_dir(&codex, false, false, false, &[], None, true, None);
+    let cmd = build_command_for_dir(
+        &codex,
+        false,
+        false,
+        false,
+        &[],
+        None,
+        true,
+        None,
+        Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+    )
+    .unwrap();
     let args = arg_strings(&cmd);
     assert!(
         !args.iter().any(|a| a == "--allow-all-tools"),
@@ -540,7 +565,9 @@ fn copilot_subprocess_safe_flags_appear_before_user_trailing_args() {
         None,
         true,
         None,
-    );
+        Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+    )
+    .unwrap();
     let args = arg_strings(&cmd);
 
     let tools_pos = args

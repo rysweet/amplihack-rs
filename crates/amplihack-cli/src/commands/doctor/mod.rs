@@ -24,7 +24,7 @@ mod checks;
 use amplihack_launcher::flag_matrix::{
     delivery_mode_name, prompt_delivery_name, prompt_delivery_report_for,
 };
-use amplihack_utils::prompt_delivery::{AUTO_TEMPFILE_THRESHOLD_BYTES, PromptDelivery, from_env};
+use amplihack_utils::prompt_delivery::{PromptDelivery, from_env};
 use anyhow::{Result, bail};
 use std::path::PathBuf;
 
@@ -116,10 +116,8 @@ pub fn render_prompt_delivery_diagnostics(options: PromptDeliveryDoctorOptions) 
         "  requested: {}\n",
         prompt_delivery_name(report.requested)
     ));
-    output.push_str(&format!(
-        "  auto threshold: {} bytes\n",
-        AUTO_TEMPFILE_THRESHOLD_BYTES
-    ));
+    // Issue #2030: auto never selects argv, whatever the prompt size.
+    output.push_str("  auto: stdin, then file-reference, then tempfile; never argv\n");
     output.push('\n');
     for entry in report.entries {
         output.push_str(&format!("  {}\n", entry.binary));
@@ -165,7 +163,7 @@ pub fn render_doctor_help() -> String {
 Usage:\n  amplihack doctor\n  amplihack doctor node [--ensure]\n  amplihack doctor copilot [--ensure-node]\n\n\
 Commands:\n  node       Diagnose Node.js >=24.0.0 for Copilot CLI\n  copilot    Diagnose Copilot CLI prerequisites\n\n\
 Options:\n  --ensure        Print remediation and use safe auto-remediation only when available\n  --ensure-node   Run the Node.js ensure flow before Copilot checks\n\n\
-Prompt delivery:\n  AMPLIHACK_PROMPT_DELIVERY=auto|argv|tempfile|stdin selects the requested subprocess prompt delivery mode.\n"
+Prompt delivery:\n  AMPLIHACK_PROMPT_DELIVERY=auto|tempfile|stdin selects the requested subprocess prompt delivery mode.\n"
         .to_string()
 }
 
