@@ -150,7 +150,7 @@ amplihack copilot
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
 - [Artifact Guard](artifact-guard.md) - Guard for broad staging, pre-commit, and workflow publication artifacts
 - [Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Keep generated workflow runtime output outside commit worktrees
-- [Clean Up After Recipe Runs](howto/clean-up-after-recipe-runs.md) - Where runs write, end-of-run cleanup, and `amplihack cleanup` for worktrees, targets, temporary folders and old logs
+- [Clean Up After Recipe Runs](howto/clean-up-after-recipe-runs.md) - Where runs write, end-of-run cleanup, when a checkout's build target is removed, linked targets, and `amplihack cleanup` for worktrees, targets, temporary folders and old logs
 - [Memory Configuration Consent](features/memory-consent-prompt.md) - Intelligent memory settings with timeout protection
 - [Verify .claude/ Staging](howto/verify-claude-staging.md) - Check that framework files are properly staged
 - [Verify Runtime Asset Resolution](howto/verify-runtime-asset-resolution.md) - Check helper, session, hooks, and multitask asset parity

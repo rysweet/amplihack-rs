@@ -228,6 +228,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_STEP_TIMEOUT` | user preference | `recipe.step_timeout` | Per-step timeout ceiling exported to the recipe runner. |
 | `AMPLIHACK_STUB` | test-only |  | Stub binary marker in recipe and remote tests. |
 | `AMPLIHACK_SUPPLIED` | internal |  | Not an env var: suffix of the `OVERRIDE_IS_AMPLIHACK_SUPPLIED` constant. |
+| `AMPLIHACK_TARGET_LINK_ROOTS` | user preference |  | Colon-separated absolute folders where linked pre-commit targets may point; `amplihack cleanup` removes a linked target (destination and link) only inside these or the managed roots, or, for a link in the host cargo wrapper's layout (`<folder>-<target name>-<12 hex>`), inside the folder holding it. Unset by default; not needed for wrapper links. Read only by `amplihack cleanup`, never by the hook. See [Linked targets](../howto/clean-up-after-recipe-runs.md#linked-targets). |
 | `AMPLIHACK_TASK_DESCRIPTION` | user preference |  | Default `task_description` context for `recipe run`. |
 | `AMPLIHACK_TEARDOWN_GRACE_SECS` | user preference |  | Grace period between SIGTERM and SIGKILL when tearing down the runner. |
 | `AMPLIHACK_TESTTOOL_BINARY_PATH` | test-only |  | `binary_finder` unit-test instance of `AMPLIHACK_<TOOL>_BINARY_PATH`. |

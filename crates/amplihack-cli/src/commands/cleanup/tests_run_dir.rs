@@ -132,3 +132,140 @@ fn owned_paths_are_capped_at_10000_lines() {
     }
     assert_eq!(parse_owned_paths(&text).len(), 10_000);
 }
+
+// ----- issue #2039: five-field target lines (D2) -------------------------------
+//
+// Contract:
+// - `pub(crate) enum TargetOrigin { Created, Reused }` with
+//   `as_str()` -> "created" / "reused";
+// - `pub(crate) struct TargetRecord { pub origin: TargetOrigin,
+//   pub checkout: PathBuf }`;
+// - `OwnedPath` gains `pub target: Option<TargetRecord>`. `Some` only when
+//   `kind == Target` and `branch == None`;
+// - `parse_owned_paths` accepts 2 or 3 fields (legacy, `target: None`) and
+//   exactly 5 fields `target<TAB><abs path><TAB><TAB><origin><TAB><abs checkout>`.
+//   Every other shape is dropped, never repaired;
+// - `format_owned_line` writes a parsed line back byte for byte.
+
+fn one(line: &[u8]) -> Vec<OwnedPath> {
+    parse_owned_paths(line)
+}
+
+#[test]
+fn five_field_target_lines_parse_with_origin_and_checkout() {
+    let text = b"target\t/w/targets/amplihack-precommit-target-0123456789ab\t\tcreated\t/w/worktrees/r-1/feat/x\n\
+                 target\t/c/amplihack/amplihack-precommit-target-abcdef012345\t\treused\t/src/repo\n";
+    let parsed = parse_owned_paths(text);
+    assert_eq!(parsed.len(), 2, "{parsed:?}");
+
+    assert_eq!(parsed[0].kind, OwnedKind::Target);
+    assert_eq!(parsed[0].branch, None);
+    let rec = parsed[0].target.as_ref().expect("record");
+    assert_eq!(rec.origin, TargetOrigin::Created);
+    assert_eq!(rec.checkout, PathBuf::from("/w/worktrees/r-1/feat/x"));
+
+    let rec = parsed[1].target.as_ref().expect("record");
+    assert_eq!(rec.origin, TargetOrigin::Reused);
+    assert_eq!(rec.checkout, PathBuf::from("/src/repo"));
+    assert_eq!(TargetOrigin::Created.as_str(), "created");
+    assert_eq!(TargetOrigin::Reused.as_str(), "reused");
+}
+
+#[test]
+fn legacy_lines_have_no_target_record() {
+    let parsed = parse_owned_paths(
+        b"target\t/w/targets/t1\t\ntarget\t/w/targets/t2\nworktree\t/w/wt/a\tfeat/a\n",
+    );
+    assert_eq!(parsed.len(), 3);
+    assert!(parsed.iter().all(|o| o.target.is_none()), "{parsed:?}");
+}
+
+#[test]
+fn every_accepted_shape_round_trips_byte_for_byte() {
+    for line in [
+        &b"target\t/w/targets/t1\t\n"[..],
+        b"worktree\t/w/wt/a\tfeat/a\n",
+        b"worktree\t/w/wt/b\t\n",
+        b"target\t/w/targets/amplihack-precommit-target-0123456789ab\t\tcreated\t/w/wt/a\n",
+        b"target\t/w/targets/amplihack-precommit-target-0123456789ab\t\treused\t/src/repo\n",
+        "target\t/w/targets/t\u{e9}\t\treused\t/src/r\u{e9}po with space\n".as_bytes(),
+    ] {
+        let parsed = one(line);
+        assert_eq!(parsed.len(), 1, "{:?}", String::from_utf8_lossy(line));
+        assert_eq!(
+            format_owned_line(&parsed[0]),
+            line,
+            "{:?}",
+            String::from_utf8_lossy(line)
+        );
+    }
+}
+
+#[test]
+fn two_field_legacy_line_is_kept_by_format() {
+    // A 2-field line is written back as the equivalent 3-field form, which
+    // the parser reads the same way.
+    let parsed = one(b"target\t/w/targets/t2\n");
+    let again = parse_owned_paths(&format_owned_line(&parsed[0]));
+    assert_eq!(again, parsed);
+}
+
+#[test]
+fn malformed_five_field_shapes_are_dropped() {
+    for bad in [
+        // 4 fields
+        &b"target\t/w/targets/t\t\tcreated\n"[..],
+        // 6 fields
+        b"target\t/w/targets/t\t\tcreated\t/w/wt/a\textra\n",
+        // unknown or empty origin
+        b"target\t/w/targets/t\t\tadopted\t/w/wt/a\n",
+        b"target\t/w/targets/t\t\tCreated\t/w/wt/a\n",
+        b"target\t/w/targets/t\t\t\t/w/wt/a\n",
+        // relative or empty checkout
+        b"target\t/w/targets/t\t\tcreated\trelative/checkout\n",
+        b"target\t/w/targets/t\t\tcreated\t\n",
+        // relative target path
+        b"target\trel/t\t\tcreated\t/w/wt/a\n",
+        // worktree with five fields
+        b"worktree\t/w/wt/a\t\tcreated\t/w/wt/a\n",
+        // target with a branch and five fields
+        b"target\t/w/targets/t\tfeat/x\tcreated\t/w/wt/a\n",
+        // control characters in the checkout
+        b"target\t/w/targets/t\t\tcreated\t/w/wt/a\x07b\n",
+        b"target\t/w/targets/t\t\tcreated\t/w/wt/a\rb\n",
+        // invalid UTF-8 in the origin
+        b"target\t/w/targets/t\t\t\xff\t/w/wt/a\n",
+    ] {
+        assert!(
+            one(bad).is_empty(),
+            "must be dropped: {:?}",
+            String::from_utf8_lossy(bad)
+        );
+    }
+}
+
+#[test]
+fn a_dropped_line_does_not_hide_its_neighbours() {
+    let text = b"target\t/w/targets/a\t\tcreated\n\
+                 target\t/w/targets/b\t\tcreated\t/w/wt/b\n\
+                 target\t/w/targets/c\t\n";
+    let parsed = parse_owned_paths(text);
+    let paths: Vec<_> = parsed.iter().map(|o| o.path.clone()).collect();
+    assert_eq!(
+        paths,
+        vec![PathBuf::from("/w/targets/b"), PathBuf::from("/w/targets/c")]
+    );
+}
+
+#[test]
+fn five_field_lines_count_toward_the_10000_line_cap() {
+    let mut text = Vec::new();
+    for i in 0..10_050 {
+        text.extend_from_slice(
+            format!("target\t/w/targets/t{i}\t\treused\t/w/wt/{i}\n").as_bytes(),
+        );
+    }
+    let parsed = parse_owned_paths(&text);
+    assert_eq!(parsed.len(), 10_000);
+    assert!(parsed.iter().all(|o| o.target.is_some()));
+}
