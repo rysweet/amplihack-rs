@@ -64,8 +64,8 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         out.emit(0, "would refresh: expired login in ~/.claude");
     }
     // Issue #1962: as a real cycle stops, after what its refresh would do.
-    if ctx.rs.load_ledger().is_err() {
-        out.emit(0, &format!("would alert: {}", ledger_stop(ctx)));
+    if let Err(e) = ctx.rs.load_ledger() {
+        out.emit(0, &format!("would alert: {}", ledger_stop(ctx, &e)));
         return Ok(CycleOutcome::Alerted);
     }
     // Issues #1693, #1886: what hand-change recovery would do, from the same

@@ -100,8 +100,8 @@ pub fn locked_prelude(
     // before anything reads the live login's identity, which never refreshes.
     live_refresh::refresh_expired_live(ctx, &mut out);
     // Issue #1962: only after the refresh, so the stop names a fresh reading.
-    if ctx.rs.load_ledger().is_err() {
-        let line = ledger_stop(ctx);
+    if let Err(e) = ctx.rs.load_ledger() {
+        let line = ledger_stop(ctx, &e);
         return Ok((out, Prelude::LedgerUnreadable { line }));
     }
     // Issue #1693: after swap recovery, so the ledger it reads is settled,
@@ -132,13 +132,15 @@ pub fn locked_prelude(
 }
 
 /// The stop for an unreadable rotate ledger, with a fresh reading of
-/// `~/.claude`. Shared with `--dry-run`, which runs it without a refresh.
-pub(super) fn ledger_stop(ctx: &Ctx) -> String {
+/// `~/.claude` and, when the load refused a field, which one (issue #1947).
+/// Shared with `--dry-run`, which runs it without a refresh.
+pub(super) fn ledger_stop(ctx: &Ctx, load: &ProfileError) -> String {
     let read = ctx.identity_reader().oauth(&ctx.home.join(".claude"));
-    ledger_unreadable(match read {
+    let cause = match read {
         Ok(_) => LIVE_READABLE,
         Err(cause) => cause,
-    })
+    };
+    ledger_unreadable(super::ledger::refused_field(load), cause)
 }
 
 /// The live-identity part of [`ledger_stop`] when `~/.claude` could be read.

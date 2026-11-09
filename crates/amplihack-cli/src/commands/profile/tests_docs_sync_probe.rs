@@ -553,10 +553,13 @@ fn the_rate_window_and_weighting_are_in_help_and_docs() {
     for want in ["6 h", "4.5 h", "weighted"] {
         assert!(help.contains(want), "help lacks {want:?}: {help}");
     }
+    // The option's own entry: `--json`'s help names `--summary-json` too
+    // (issue #2001: the Codex rows are only there), so the first mention
+    // is not this option.
     let summary_json = help
-        .split("--summary-json")
+        .split("--summary-json Print")
         .nth(1)
-        .expect("--summary-json in the help");
+        .expect("the --summary-json entry in the help");
     assert!(
         summary_json.contains("6 h") && summary_json.contains("4.5 h"),
         "--summary-json does not state the window: {summary_json}"

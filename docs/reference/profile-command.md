@@ -61,7 +61,7 @@ amplihack launch|claude --profile <name> [...]
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
 | `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
-| `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails, or, with `--spend`, to read the spend limit of an account with [usage credits on](#usage-credits-on); then shows its weekly and session usage as bars and its spend status as a mark, sorted by the rotator's headroom, followed by a [capacity summary](#capacity-summary). `--table` for the text table, `--utc` for UTC reset times, `--json` or `--summary-json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings and adds to the [usage history](#usage-history). See [Usage command](#usage-command). |
+| `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails, or, with `--spend`, to read the spend limit of an account with [usage credits on](#usage-credits-on); then shows its weekly and session usage as bars and its spend status as a mark, sorted by the rotator's headroom, followed by a [capacity summary](#capacity-summary) and, with no names, a live reading of each [Codex account](#codex-accounts). `--table` for the text table, `--utc` for UTC reset times, `--json` or `--summary-json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings and adds to the [usage history](#usage-history). See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
 | `overflow …` | Mark or unmark a credit-backed profile that the rotator may use when every plan login is exhausted, list the marks, or lift a spend-limit block. See [Overflow commands](#overflow-commands). |
 | `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. See [Rotate](#rotate). |
@@ -86,14 +86,18 @@ bar view or table, a [capacity summary](#capacity-summary) adds the rows up: wee
 headroom across all logins, how many can take work now, the next session
 reset, how long the weekly capacity lasts at the recent rate, and which
 weekly limits reset in the next 24 hours. With no
-names it covers every profile under the root, as `list` does. Each name must
-pass the [name rules](#name-rules) and must exist. A name given twice is
-probed once.
+names it covers every profile under the root, as `list` does, and then
+reads each [Codex account](#codex-accounts) live and lists it after the
+Claude output, marking the one `codex-pick`'s rule picks from these live
+readings. Each name
+must pass the [name rules](#name-rules) and must exist. A name given twice
+is probed once. Names select Claude profiles only; with names, Codex is not
+read.
 
 | Flag | Effect |
 |------|--------|
-| `--json` | Print a JSON array instead of the bar view. No summary. See [JSON output](#json-output). Conflicts with `--table` and `--utc`. |
-| `--summary-json` | Print one JSON object holding the same array and the summary. Cannot be combined with `--json`, `--raw`, `--table` or `--utc` (exit status 2). See [Summary JSON](#summary-json). |
+| `--json` | Print the profile rows as one JSON array instead of the bar view. Claude rows only: Codex is not read, and the Codex rows are in `--summary-json`. No summary. See [JSON output](#json-output). Conflicts with `--table` and `--utc`. |
+| `--summary-json` | Print one JSON object holding the same Claude rows, the summary and the Codex rows. Cannot be combined with `--json`, `--raw`, `--table` or `--utc` (exit status 2). See [Summary JSON](#summary-json). |
 | `--table` | Print the eight-column text table instead of the bar view. The capacity summary follows it as it follows the bar view. See [Table output](#table-output). Conflicts with `--json`, `--summary-json` and `--utc`. |
 | `--utc` | Show reset times in the bar view in UTC, as `MM-DD HH:MMZ`, instead of local time. See [Reset times](#reset-times). Conflicts with `--json`, `--summary-json` and `--table`. |
 | `--usable-session-pct <n>` | Session percentage below which a login counts as usable now in the summary, `1` to `100`; default `95`. Overrides `AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT`. A value out of range is a usage error (exit status 2). See [Usable now](#usable-now). |
@@ -1892,13 +1896,322 @@ profile that login belonged to is left with no login. `profile usage` prints
 no warning of its own about that; the rotator does, in its log and in
 [`rotate status`](#rotate-status).
 
+#### Codex accounts
+
+When no profile names are given, `profile usage` also reads every Codex
+account and prints one row for each after the Claude output. Each account
+is read live, on every run, by asking Codex itself; nothing is taken from
+session files or any earlier reading. An account that cannot be read shows
+why, never an older value.
+
+```bash
+amplihack profile usage
+```
+
+```
+PROFILE      WEEK             W-RESET      SESSION           S-RESET     STATE
+review       █░░░░░░░░░  10%  11-05 09:00  ░░░░░░░░░░   5%   11-01 14:00 ok
+work (live)  ███░░░░░░░  30%  11-05 09:00  ██░░░░░░░░  20%   11-01 12:00 ok                 * hosts:personal
+times: Europe/London
+order: rotator pick (most room in the worse of session and week, then name)
+
+Codex accounts under /home/ryan/.codex-profiles
+ffarmer   signed in      5h █░░░░░░░░░  12% 11-06 21:40 in 2h 31m  7d ████░░░░░░  41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00
+ggrant    signed in      7d ███░░░░░░░  34% 11-10 14:30 in 91h 21m  plan pro  read 19:09:00  <- next
+hhale     signed in      credits 4200  plan team  read 19:09:00
+jjones    not signed in  read 19:09:00
+kkim      timed out      after 20s  read 19:09:00
+mmoss     error: codex app-server exited (exit status: 1): error: unrecognized subcommand 'app-server'  read 19:09:00
+~/.codex  signed in      5h ████████░░  88% 11-06 20:15 in 1h 6m  7d ███████░░░  70% 11-09 03:00 in 55h 51m  plan plus  read 19:09:00
+```
+
+Codex rows never change the Claude rows, the
+[capacity summary](#capacity-summary), the [usage history](#usage-history),
+the [auto-switch readings](#refreshing-auto-switch-readings) or the
+[exit status](#exit-status-and-refusals). With profile names given
+(`amplihack profile usage work review`), Codex is not read and no Codex
+block is printed; `--summary-json` still has the `codex` key, as an empty
+array. [`--json`](#json-output) never reads Codex and has no Codex rows.
+
+##### Which accounts are read
+
+| Account | Label | When it is read |
+|---------|-------|-----------------|
+| Each subdirectory of the Codex profiles root, in byte order of its name | The directory name | Always. Names starting with `.` are skipped, as `codex-pick`'s `*` glob skips them. A symlink to a directory is followed. |
+| `$HOME/.codex` | `~/.codex` | When it is a directory and its canonical path is neither the root nor any profile directory's canonical path. It is read with the others and shown last, and only when it is signed in: a `not signed in` result drops the row. A `timed out` or `error` result is shown. |
+
+The Codex profiles root is `CODEX_PROFILES_ROOT` when it is set and not
+empty, otherwise `$HOME/.codex-profiles`. A root that is missing, is not a
+directory or has no subdirectories is not an error. The block is then one
+line, and `~/.codex` is still read:
+
+```
+Codex: no accounts under /home/ryan/.codex-profiles
+```
+
+When `~/.codex` is signed in and the root has no accounts, the header line
+is printed with the `~/.codex` row under it.
+
+A root that exists but cannot be listed (for example, permission denied)
+prints one line on stderr. `~/.codex` is then not read either, and the block
+is the single `Codex: no accounts under` line:
+
+```
+warning: cannot list Codex accounts under /home/ryan/.codex-profiles: Permission denied (os error 13)
+```
+
+The exit status does not change, and `codex` in `--summary-json` is an
+empty array.
+
+##### Live read
+
+On Unix, for each account, amplihack starts one Codex app server with the
+account's directory as its home and asks it for the account's rate limits.
+The program is `CODEX_BIN` when it is set and not empty, otherwise `codex`
+found through `PATH`:
+
+```
+CODEX_HOME=<account directory> codex app-server
+```
+
+and writes three JSON-RPC lines to its stdin:
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"amplihack","version":"<amplihack version>"}}}
+{"jsonrpc":"2.0","method":"initialized"}
+{"jsonrpc":"2.0","id":2,"method":"account/rateLimits/read","params":{}}
+```
+
+No model call is made, so the read uses no quota. Answers are matched by
+`id` only; lines without an `id`, such as the `remoteControl/status/changed`
+notification Codex sends first, are skipped, and a `"jsonrpc"` field is not
+required. An answer to `account/rateLimits/read` reads, for example:
+
+```json
+{
+  "id": 2,
+  "result": {
+    "rateLimits": {
+      "primary": { "usedPercent": 12, "windowDurationMins": 300, "resetsAt": 1794001200 },
+      "secondary": { "usedPercent": 41, "windowDurationMins": 10080, "resetsAt": 1794470400 },
+      "credits": null,
+      "planType": "plus",
+      "rateLimitReachedType": null,
+      "ordinaryUsageAllowed": true
+    }
+  }
+}
+```
+
+| Field | Read from | Rule |
+|-------|-----------|------|
+| Windows | `primary`, `secondary` | Each that is an object. A missing or `null` one is not shown. |
+| Used percentage | `usedPercent` | A JSON number, or a string of digits with an optional decimal point, that is finite and not negative. Anything else counts as absent. Not clamped. |
+| Window length | `windowDurationMins` | A non-negative whole number of minutes. |
+| Reset | `resetsAt` | Unix epoch seconds; see [Codex reset times](#codex-reset-times). |
+| Credits | `credits` | `hasCredits` counts only as the JSON value `true`; `balance` follows the same number rule as the used percentage. |
+| Plan | `planType` | A string, cut to 200 characters. |
+| Limit reached | `rateLimitReachedType` | A string, cut to 200 characters; JSON only. |
+| Ordinary usage allowed | `ordinaryUsageAllowed` | A JSON bool; JSON only. |
+
+The figures may sit in `result.rateLimits`, `result.rate_limits` or in
+`result` itself. Every field is also accepted in snake_case
+(`used_percent`, `window_duration_mins`, `resets_at`, `has_credits`,
+`plan_type`, `rate_limit_reached_type`, `ordinary_usage_allowed`). A
+`result` that is not an object gives `error: unexpected response from codex
+app-server`, so a reply amplihack does not understand never appears as a
+reading.
+
+All accounts are read at once, one thread each, alongside the Claude
+probes, so the whole Codex read normally takes about as long as the slowest
+account. There is no cap on the number read at once.
+
+##### Codex read deadline
+
+Each account has one deadline that covers starting the program, the
+handshake and the answer: 20 seconds, or
+`AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS`, a whole number from `1` to `300`. Any
+other value prints one warning on stderr and uses 20:
+
+```
+warning: AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS="0" is not a whole number from 1 to 300; using 20
+```
+
+The last 3 seconds of the deadline (or the last quarter, for a deadline
+under 12 seconds) are kept for stopping the app server. The answer must
+arrive before that part starts; if it does not, the row reads `timed out`.
+
+The app server may be renewing the account's login when the read ends. A
+renewal stopped after the old refresh token is retired but before the new
+one is written leaves the account signed out. So on every outcome,
+including success and `timed out`, the app server is stopped in this order:
+
+1. Its stdin is closed. The app server exits on its own when its stdin
+   ends (`codex` 0.166.0 exits with status 0 about half a second later),
+   so a renewal under way can finish and be written.
+2. If it has not exited by the middle of the stop time, its process group
+   gets `SIGTERM`.
+3. If it has still not exited when the deadline passes, the group gets
+   `SIGKILL`.
+
+Each step waits for the exit itself (a blocking `waitid` reported on a
+channel), not on a polling loop. After the exit the whole process group is
+killed and the process is reaped, so no Codex process outlives the command.
+A read that got its answer early waits at most the 3-second stop time for
+the exit, not the rest of the deadline.
+
+Only an app server that ignores both the end of its stdin and `SIGTERM`
+until the deadline is killed outright. If that one was renewing the login
+at that moment, the account may have to sign in again; run `codex login`
+with `CODEX_HOME` set to that account directory.
+
+The live read needs process groups, so it runs only on Unix. On Windows and
+other non-Unix platforms no Codex program is started: the accounts are still
+listed as described in [Which accounts are read](#which-accounts-are-read),
+and every row reads `error: codex usage read is supported only on Unix`.
+The JSON rows keep the same keys, with `state` set to `error`.
+
+##### Codex states
+
+| Text state | JSON `state` | When |
+|------------|--------------|------|
+| `signed in` | `ok` | `account/rateLimits/read` answered with a `result`. |
+| `not signed in` | `not_signed_in` | It answered with an error whose message contains, ignoring case, `authentication required`, `not logged in`, `not signed in` or `login required`. Codex 0.166.0 answers `codex account authentication required to read rate limits`. |
+| `timed out` | `timeout` | No answer before the stop time at the end of the [deadline](#codex-read-deadline). |
+| `error: <reason>` | `error` | Anything else; see the reasons below. |
+
+| Reason | Cause |
+|--------|-------|
+| `codex binary not found: <bin>` | The program does not exist. |
+| `cannot start <bin>: <error>` | It exists but could not be started, for example for lack of permission. |
+| `codex app-server exited (<status>): <last stderr line>` | It exited before answering. The stderr line is the last non-empty one, cut to 200 characters. |
+| `codex usage read is supported only on Unix` | The platform is not Unix; see [Codex read deadline](#codex-read-deadline). No program is started. |
+| `unexpected response from codex app-server` | The `result` is not an object, or a line of stdout is longer than 1 MiB. |
+| The server's message | Any other JSON-RPC error, cut to 200 characters. An error answer to `initialize` counts too. |
+
+##### Codex row layout
+
+Each row is the label, padded to the longest label (up to 24 characters; a
+longer label is cut to 23 followed by `…`), then the state padded to 13
+characters, then these fields, separated by two spaces:
+
+| Field | Shown | Form |
+|-------|-------|------|
+| Windows | For each window reported, primary first | `<length> <bar> <pct> <reset> in <time>`; see below. |
+| Credits | When `credits` was reported | `credits <balance>`, or `credits yes` / `credits no` from `hasCredits` when there is no balance. The balance is printed with no trailing zeros, as `4200` or `12.5`. |
+| Plan | When `planType` was reported | `plan <type>` |
+| No figures | A `signed in` row with no window and no credits | `no windows reported` |
+| Detail | `timed out` rows | `after <n>s`, the deadline that applied. |
+| Read time | Always | `read HH:MM:SS`, the time the answer arrived or, for a row with no reading, the time the read was given up. |
+| Marker | The [next choice](#codex-next-choice) only | `<- next` |
+
+The window length is `5h` for 300 minutes and `7d` for 10080. Any other
+length is `<n>d` when it is a whole number of days, `<n>h` when it is a
+whole number of hours, and `<n>m` otherwise. A window with no length is
+labelled `primary` or `secondary`.
+
+The bar and the percentage follow the Claude [bars](#bars): 10 cells and a
+whole-number percentage, rounded down, coloured the same way. With
+`--table`, the bar is left out and the percentage keeps one decimal place
+where there is one, as `12.5%`. A window with no percentage shows `-` in
+place of both.
+
+Rows keep the order in [Which accounts are read](#which-accounts-are-read);
+they are not sorted by room. `--raw`, `--spend` and
+`--usable-session-pct` do not change the Codex block. The block is printed
+after the whole Claude output, including its footer, separated by one empty
+line, and also after the `no profiles` line when there are no Claude
+profiles.
+
+Labels, the root path, plan types and error reasons are
+[cleaned](#table-output) before they are printed, so a directory name or a
+server string cannot send terminal escapes. The layout is for people and
+may change; scripts should use `--json`.
+
+##### Codex reset times
+
+A reset is shown as `MM-DD HH:MM` in the same zone as the Claude reset
+cells, and `MM-DD HH:MMZ` with `--utc`, followed by `in <h>h <m>m` from the
+read time, rounded down to the minute: `in 2h 31m`, `in 132h 51m`. A reset
+at or before the read time shows `due` instead of `in …`. With `--utc` the
+read time is `HH:MM:SSZ`.
+
+`resetsAt` is used as a time only when it is above `0` and no more than
+400 days after the read. Any other value is shown as `reset <value>`, as
+given, with no `in …`, and its `resets_at_rfc3339` in the JSON is `null`. A
+window with no reset shows `-`.
+
+##### Codex next choice
+
+The `<- next` marker goes on the account `codex-pick`'s rule picks from
+these live readings. It is not always the account `codex-pick` itself
+would choose: `codex-pick` reads the rate limits stored in each account's
+session files, which can be days old, while this view reads them live, so
+the two can disagree. The rule:
+
+1. Only `signed in` rows are candidates. A row that timed out, failed or is
+   not signed in is never chosen.
+2. Each candidate's room is `100 - max(used percentage)` over its windows;
+   a row with no window percentage has room `0`.
+3. A candidate with room `0` or less gets `0.5` instead when it reports
+   `hasCredits` true and a balance above the credit floor, 3000, and `-1`
+   otherwise.
+4. The candidates are sorted by room, then by path, both descending. The
+   path is the account directory as built (`<root>/<name>` or
+   `$HOME/.codex`), compared as bytes, not resolved through symlinks.
+5. The first candidate with room above `0` is marked. When there is none,
+   no row is marked.
+
+In the example, `ggrant` (room 66) is chosen over `ffarmer` (59), `hhale`
+(credits only, 0.5) and `~/.codex` (12). Two accounts with the same room
+are taken in descending path order, so `ggrant` would come before
+`ffarmer`. `codex-pick` also counts a signed-in account with no stored
+reading as full; with live reads that case cannot arise, because a
+signed-in account always answers with its figures.
+
+##### What the Codex read does not do
+
+- It never opens `auth.json`, `config.toml` or any other file inside an
+  account directory. Directories are only listed and checked for type.
+  Codex reads its own login.
+- It makes no network request itself; the Codex app server does, as it
+  would for `codex` in that account.
+- `CODEX_HOME` is set only in the child's environment, never in
+  amplihack's own. `OPENAI_API_KEY` and `CODEX_API_KEY` are removed from
+  the child's environment, so an API key cannot replace the account's login
+  in the reading, and `RUST_LOG` is removed, so verbose logging cannot put
+  login detail into an error reason.
+- No shell is used. The account path reaches the child only through
+  `CODEX_HOME`.
+- Readings are not stored anywhere. amplihack writes nothing into an
+  account directory; the Codex app server itself keeps its state files
+  there, as any `codex` run does.
+- It does not stop the Codex app server from refreshing the account's
+  login. The server may refresh that account's tokens and rewrite its login
+  file, as any `codex` run in that directory can. This includes `~/.codex`
+  and any account a live Codex session is using at the time; a session that
+  still holds the old refresh token may then have to sign in again. How the
+  read stops the app server so that a renewal under way can finish is in
+  [Codex read deadline](#codex-read-deadline).
+
 #### JSON output
 
-`--json` prints one JSON array of row objects, in [display order](#ordering).
-stdout holds only the JSON; warnings go to stderr. With no profiles it prints
-`[]`. This is the stable interface for scripts, and the key table below is
-its specification. Keys are only ever added, never renamed or removed, and
-there is no version field.
+`--json` prints one JSON array of Claude profile rows, in
+[display order](#ordering). stdout holds only the JSON; warnings go to
+stderr. With no profiles it prints `[]`. This is the stable interface for
+scripts, and the key table below is its specification. Keys are only ever
+added, never renamed or removed, and string values that name a state or kind
+may gain new values. There is no version field.
+
+`--json` has no Codex rows, and does not read Codex at all. #2001 left it
+the bare array it was before, because scripts read it with `.[]` and `.[0]`,
+often with stderr sent to `/dev/null`: a top-level object would make `jq`
+fail in those scripts and leave them reporting an empty result with no
+message. The [Codex rows](#codex-json-rows) are in
+[`--summary-json`](#summary-json), under `codex`. The same Claude rows are
+named `profiles` there; the arrays are identical.
+
+With one profile:
 
 ```json
 [
@@ -1939,6 +2252,8 @@ there is no version field.
 ]
 ```
 
+Each row has these keys:
+
 | Key | Type | Meaning |
 |-----|------|---------|
 | `profile` | string | Profile name. |
@@ -1969,8 +2284,9 @@ it could not be resolved (see [Probe method](#probe-method) and
 [What is read](#what-is-read)). JSON strings are not cleaned; they use JSON
 escaping.
 
-The output stays a single array; there is no top-level object and no
-`on_credits` key. The live login is running on credits exactly when one row
+##### Claude rows in scripts
+
+There is no `on_credits` key. The live login is running on credits exactly when one row
 has `live_in` equal to `"~/.claude"`, `overflow` equal to `true`, and
 either a `state` of `"session_exhausted"` or `"weekly_exhausted"`, or a
 `state` of `"ok"` with `session` or `week_all` at 100%. This is the same
@@ -2016,6 +2332,112 @@ amplihack profile usage --json | jq -r '.[] | select(.session_limit == false) | 
 
 ```
 weekly
+```
+
+##### Codex JSON rows
+
+Each row of `codex` in [`--summary-json`](#summary-json) is one
+[Codex account](#codex-accounts), in the same order as the text rows.
+[`--json`](#json-output) has no Codex rows. For the `ggrant`, `hhale` and `kkim` rows of the
+[example](#codex-accounts):
+
+```json
+[
+  {
+    "account": "ggrant",
+    "path": "/home/ryan/.codex-profiles/ggrant",
+    "state": "ok",
+    "error": null,
+    "windows": [
+      {
+        "name": "secondary",
+        "used_percent": 34.0,
+        "window_minutes": 10080,
+        "resets_at": 1794321000,
+        "resets_at_rfc3339": "2026-11-10T14:30:00Z"
+      }
+    ],
+    "credits": null,
+    "plan_type": "pro",
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": true,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": true
+  },
+  {
+    "account": "hhale",
+    "path": "/home/ryan/.codex-profiles/hhale",
+    "state": "ok",
+    "error": null,
+    "windows": [],
+    "credits": { "has_credits": true, "balance": 4200.0 },
+    "plan_type": "team",
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": null,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": false
+  },
+  {
+    "account": "kkim",
+    "path": "/home/ryan/.codex-profiles/kkim",
+    "state": "timeout",
+    "error": "timed out after 20s",
+    "windows": [],
+    "credits": null,
+    "plan_type": null,
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": null,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": false
+  }
+]
+```
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `account` | string | The directory name, or `~/.codex`. Not cleaned; JSON escaping only. |
+| `path` | string | The account directory as built (`<root>/<name>` or `$HOME/.codex`), not resolved through symlinks. Not cleaned. |
+| `state` | string | `"ok"`, `"not_signed_in"`, `"timeout"` or `"error"`; see [Codex states](#codex-states). Scripts should treat a value they do not know as `"error"`. |
+| `error` | string or `null` | For `timeout`, `"timed out after <n>s"`; for `error`, the [reason](#codex-states); otherwise `null`. |
+| `windows` | array | The windows reported, primary first. Always `[]` unless `state` is `"ok"`. |
+| `windows[].name` | string | `"primary"` or `"secondary"`, the field it came from. |
+| `windows[].used_percent` | number or `null` | As read, not clamped. |
+| `windows[].window_minutes` | integer or `null` | The window length in minutes: `300` for five hours, `10080` for a week. |
+| `windows[].resets_at` | integer or `null` | The reset as Unix epoch seconds, as received, even when it is out of [range](#codex-reset-times). |
+| `windows[].resets_at_rfc3339` | string or `null` | The same reset as an RFC 3339 UTC time ending in `Z`; `null` when there is no reset or it is out of range. |
+| `credits` | object or `null` | `{"has_credits": bool, "balance": number or null}` when Codex reported credits; otherwise `null`. Always `null` unless `state` is `"ok"`. |
+| `plan_type` | string or `null` | The plan, cut to 200 characters and cleaned. |
+| `rate_limit_reached_type` | string or `null` | Which limit Codex says is reached, cut to 200 characters and cleaned. |
+| `ordinary_usage_allowed` | bool or `null` | As Codex reported it. |
+| `read_at` | string | When the answer arrived, or when the read was given up, as an RFC 3339 UTC time ending in `Z`. Present on every row. |
+| `next_choice` | bool | `true` on the one row with the [`<- next` marker](#codex-next-choice), `false` on the others. |
+
+Every key is present on every row; a value that was not reported is
+`null`. Percentages and balances are JSON numbers with a fractional part,
+such as `34.0`; read them as floats. Server strings (`plan_type`,
+`rate_limit_reached_type` and the server's part of `error`) are cleaned
+before they are stored, so `jq -r` cannot print terminal escapes from
+them.
+
+To print the account `codex-pick`'s rule picks from the live readings:
+
+```bash
+amplihack profile usage --summary-json | jq -r '.codex[] | select(.next_choice) | .account'
+```
+
+```
+ggrant
+```
+
+To list the Codex accounts that could not be read:
+
+```bash
+amplihack profile usage --summary-json | jq -r '.codex[] | select(.state == "timeout" or .state == "error") | "\(.account): \(.error)"'
+```
+
+```
+kkim: timed out after 20s
+mmoss: codex app-server exited (exit status: 1): error: unrecognized subcommand 'app-server'
 ```
 
 #### Capacity summary
@@ -2252,8 +2674,10 @@ too.
 
 `--summary-json` prints one JSON object instead of the bar view and summary.
 stdout holds only the JSON; warnings go to stderr. `profiles` is exactly the
-array [`--json`](#json-output) would print in the same run. For the run
-above, with only the first of the six rows shown:
+array [`--json`](#json-output) would print in the same run. `codex`, after
+`summary`, holds the [Codex rows](#codex-json-rows); this is the only JSON
+form that has them. For the run above, with only the first of the six rows
+shown and no Codex accounts:
 
 ```json
 {
@@ -2298,14 +2722,15 @@ above, with only the first of the six rows shown:
       { "at": "2026-10-31T02:00:00Z", "profile": "night", "restores": 0.85 },
       { "at": "2026-10-31T09:00:00Z", "profile": "work", "restores": 0.3 }
     ]
-  }
+  },
+  "codex": []
 }
 ```
 
 | Key | Type | Meaning |
 |-----|------|---------|
 | `at` | string | When the summary was worked out: after the window readings and before any [spend probe](#spend-probe), so `--spend` never makes it later. |
-| `profiles` | array | The [`--json`](#json-output) rows, unchanged. |
+| `profiles` | array | The array of [`--json`](#json-output), unchanged. |
 | `summary` | object or `null` | `null` when there are no profiles or no row is a subscription profile. |
 | `summary.weekly_headroom_login_weeks` | number | Unweighted headroom, two decimal places. `0.0` with no valid reading. |
 | `summary.weekly_headroom_pct` | number or `null` | Unweighted headroom as a percentage of `valid_readings`, one decimal place. `null` with no valid reading. |
@@ -2317,6 +2742,7 @@ above, with only the first of the six rows shown:
 | `summary.rate_login_weeks_per_hour` | number or `null` | Weighted [rate](#rate-and-runway), three decimal places: the net rise of each login's week percentage over the last 6 h, counted from the oldest entry in that window that covers every login valid now (step 1), times its weight, divided by 100 and by the hours covered. `null` when that entry is less than 4.5 h old, when there is none, or when no login has a valid reading at both ends. `0.0` or above. Unweighted when every weight is `1.0`. |
 | `summary.runway_hours` | number or `null` | Hours of weighted headroom at that rate, one decimal place; `null` when the rate is `null` or zero. |
 | `summary.weekly_resets_next_24h` | array | Valid logins whose weekly reset is after now and no more than 24 hours away, and whose weighted `restores` (`weight × week% / 100`, two decimal places) is above `0`, soonest first, then by name. Each is `{"at", "profile", "restores"}`. |
+| `codex` | array | The [Codex JSON rows](#codex-json-rows), unchanged; `[]` with profile names given. Codex rows never count towards `summary`. |
 
 Numbers are rounded half away from zero only when printed; a value that is
 not finite is printed as `null`. Keys are only ever added, as for `--json`.
@@ -2324,7 +2750,8 @@ not finite is printed as `null`. Keys are only ever added, as for `--json`.
 Times differ by place, on purpose: inside `profiles`, `resets_at` keeps its
 `--json` form, Unix epoch seconds, so the array matches `--json` byte for
 byte; `at` and every time in `summary` are ISO 8601 UTC strings ending in
-`Z`. To read the runway in a script:
+`Z`. The times in `codex` are as described under
+[Codex JSON rows](#codex-json-rows). To read the runway in a script:
 
 ```bash
 amplihack profile usage --summary-json | jq '.summary.runway_hours'
@@ -2334,7 +2761,9 @@ amplihack profile usage --summary-json | jq '.summary.runway_hours'
 9.0
 ```
 
-With no profiles it prints `{"at":"<time>","profiles":[],"summary":null}`.
+With no profiles it prints
+`{"at":"<time>","profiles":[],"summary":null,"codex":[...]}`, with the
+Codex rows read as usual.
 
 #### Usage history
 
@@ -2612,14 +3041,15 @@ recorded or noted.
 
 | Status | When |
 |--------|------|
-| `0` | The probes ran, whatever states they produced, or there are no profiles. Recording failures, [usage history](#usage-history) failures and [weight](#capacity-weights) warnings do not change it. |
+| `0` | The probes ran, whatever states they produced, or there are no profiles. Codex rows never change the status, whatever their states. Recording failures, [usage history](#usage-history) failures and [weight](#capacity-weights) warnings do not change it. |
 | `1` | Setup failed: Docker is active, the profile root is invalid, or a name is invalid or does not exist. Printed as `error:`/`hint:` like other [errors](#errors). Nothing is probed. A `claude` that cannot be found is not a setup failure: only rows that need a fallback read `error` with `claude not found`. |
 | `2` | Command-line usage error, such as `--timeout-secs 0`, `--usable-session-pct 101`, `--summary-json` with `--json`, `--raw`, `--table` or `--utc`, or `--table` with `--json`. |
 
 With no profiles, the bar view and `--table` print
-`` no profiles; create one with `amplihack profile add <name>` ``, the JSON
-form prints `[]`, and the summary JSON form prints
-`{"at":"<time>","profiles":[],"summary":null}`.
+`` no profiles; create one with `amplihack profile add <name>` `` followed by
+the [Codex block](#codex-accounts), the JSON form prints `[]`, and the
+summary JSON form prints
+`{"at":"<time>","profiles":[],"summary":null,"codex":[...]}`.
 
 `--table` with `--json`, and `--utc` with `--json` or `--table`, are usage
 errors (status 2): the second flag would have no effect.
@@ -2674,6 +3104,11 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
   whole-number percentages, counts and times only. They never use the
   row's `account`, and nothing Claude printed reaches them, even when its
   output includes an e-mail address.
+- The [Codex read](#what-the-codex-read-does-not-do) opens no file inside
+  a Codex account directory, including `auth.json` and `config.toml`, and
+  passes no API key to the Codex app server. Its rows hold directory
+  names, paths, percentages, times, plan types and error reasons cut to
+  200 characters; nothing from them is stored.
 
 
 ## Configuration
@@ -2701,6 +3136,9 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
 | `<root>/.auto-switch.d/rotate/owner` | The [owner marker](#rotate-owner). While it exists, launches do not start a rotator. Removed only by `rotate owner clear`. |
 | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true` or `1` turns the [usage-limit wait](#usage-limit-wait) on, `false` or `0` off. Outranks `recipe.usage_limit_wait` in `config.toml`. See [Usage-limit wait settings](#usage-limit-wait-settings). |
 | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | Upper bound on one usage-limit wait, in seconds; default `21600` (6 hours). It shortens a [reset wait](#reset-time) and sets the length of a [capacity wait](#capacity-wait). Outranks `recipe.usage_limit_max_wait_secs`. See [Usage-limit wait settings](#usage-limit-wait-settings). |
+| `CODEX_PROFILES_ROOT` | Directory whose subdirectories are the Codex accounts `profile usage` reads; default `$HOME/.codex-profiles`. Empty means unset. See [Which accounts are read](#which-accounts-are-read). |
+| `CODEX_BIN` | The Codex program `profile usage` runs as `<bin> app-server`; default `codex`, found through `PATH`. Like `PATH`, it decides which program runs. Empty means unset. See [Live read](#live-read). |
+| `AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS` | Seconds each Codex account's live read may take, `1` to `300`; default `20`. See [Codex read deadline](#codex-read-deadline). |
 
 ### Seeding
 
@@ -6223,7 +6661,9 @@ authorized one. Legacy journals without sufficient expected-account
 evidence refuse conservatively.
 
 The ledger's optional `login_identity` is written only by authorized swap
-completion or confirmed credential-based recovery. Missing-record
+completion or confirmed credential-based recovery. A block that fails the
+load-time rule in [the ledger fields](#account-identity) stops the rotator;
+it is never repaired silently. Missing-record
 backfill and [cycle seeding](#seeding-a-record) require that full provenance;
 backfill also accepts the full outgoing authorization
 in a pending journal. A UUID-only legacy ledger cannot establish an
@@ -6657,13 +7097,24 @@ When the rotate ledger exists but cannot be read, the cycle still refreshes an
 expired live login and reads its identity, then stops:
 
 ```
-ALERT: rotate ledger unreadable; live identity: <readable|cause>; nothing moved, no record written
+ALERT: rotate ledger unreadable[ (<field>)]; live identity: <readable|cause>; nothing moved, no record written
 ```
+
+`(<field>)` appears when the ledger was read and parsed but a field was
+refused. It is one of these fixed texts, and never a value from the file:
+`unknown version`, `invalid profile name`, `invalid account or alert`,
+`invalid overflow field`, `invalid no_room`, `invalid hand-change field` or
+`invalid login_identity`. A ledger that cannot be read, is not a private
+file or is not valid JSON gives the line without it.
 
 The cycle ends as `alerted`, seeds no record, moves no login and leaves the
 ledger file unchanged. With no ledger to hold an ALERT key, the line is written on
 every cycle while the ledger stays unreadable. `--dry-run` prints the same text after `would alert: `,
 and `profile switch` refuses with it.
+
+A ledger whose `login_identity` fails the load-time rule under
+[Account identity](#account-identity) is one case of this stop, written as
+`rotate ledger unreadable (invalid login_identity); live identity: ...`.
 
 #### When recovery reads
 
@@ -7765,7 +8216,7 @@ run and prints their `reread:` lines; see
 | `ALERT: more than one profile matches the account in ~/.claude; no swap` | Trusted ownership evidence cannot select a unique login-less profile. |
 | `ALERT: trusted login identity unavailable: <cause>` | The live login has no usable identity reading, and the [cause](#identity-read-causes) says why. Nothing moves. |
 | `ALERT: trusted login identity unavailable for profile <name>: <cause>` | A candidate is skipped as `no account`, for that [cause](#identity-read-causes). Written on every cycle it applies to. |
-| `ALERT: rotate ledger unreadable; live identity: <readable\|cause>; nothing moved, no record written` | Written on every cycle it applies to. See [Unreadable-ledger stop](#unreadable-ledger-stop). |
+| `ALERT: rotate ledger unreadable[ (<field>)]; live identity: <readable\|cause>; nothing moved, no record written` | Written on every cycle it applies to. See [Unreadable-ledger stop](#unreadable-ledger-stop). |
 | `ALERT: cannot tell profiles <L>, <M> apart: both claim the account in ~/.claude; no record written, nothing moved` | Written on every cycle it applies to. See [Seeding a record](#seeding-a-record). |
 | `seeded: recorded account for live profile <L>` | A cycle [seeded](#seeding-a-record) the live profile's record. |
 | `note: no record for live profile <L>: <reason>; nothing moved; run: amplihack profile seed-record <L>` | A cycle could not seed. Written once per process. |
@@ -8134,7 +8585,9 @@ When a profile in that entry has a weight other than `1.0`, the line adds
 
 A pending or inconsistent journal adds a line `journal: pending (phase <phase>)`
 or `journal: inconsistent`, and one that cannot be read `journal: damaged`. A
-ledger that cannot be read shows `live: - (ledger unreadable)`.
+ledger that cannot be read shows `live: - (ledger unreadable)`, or
+`live: - (ledger unreadable: <field>)` when a field was refused, with the
+same fixed text as the [unreadable-ledger stop](#unreadable-ledger-stop).
 
 Under a systemd unit that owns rotation, `status` shows the owner and the
 deferral:
@@ -9675,7 +10128,21 @@ For session/display callers, an account is read from the `oauthAccount`
 object of a `.claude.json`:
 `accountUuid` (the user), `organizationUuid` (the organization) and
 `emailAddress`. A value that is not a string, is over 320 bytes or contains
-control characters counts as missing. Only these fields are read.
+control characters counts as missing. The e-mail address is lower-cased, and
+it also counts as missing unless the lower-cased form is still at most 320
+bytes and has exactly one `@`, text on both sides of it and no whitespace.
+The profile endpoint's answer (`account.uuid`, `organization.uuid` and
+`account.email`), which rotation and `profile verify` read, follows the same
+rules. Only these fields are read.
+
+Every caller that reads an account through these rules sees the e-mail rule,
+not only rotation: auto-switch's swap, the login checks, the duplicate-login
+check, the `.default` resolution, the limit-wait fingerprint, the direct
+usage read, and the check that stops a swap while Claude rewrites
+`~/.claude.json` (#1702). For each of them, a login with no account UUID
+and a malformed e-mail is no account, and a record keyed by a malformed
+e-mail matches no login. The swap stop treats such a `~/.claude.json` as
+unreadable, so the cycle stops as `home-unreadable` and nothing moves.
 
 | Left | Right | Same account |
 |------|-------|--------------|
@@ -9700,6 +10167,54 @@ full-account ownership or recovery decision. Older ledger readers ignore
 the new field after #1659; the existing compatibility projection omits it
 when a strict older rotator is detected. Older binaries reject new journal fields/phases, so finish
 a pending transaction with the binary that understands its journal.
+
+When the rotator loads the ledger, a present `login_identity` must meet
+the rule below. This is stricter than the session reading above: there, an
+unsafe value counts as missing, whereas in the ledger it stops the rotator.
+The values are the same, though: amplihack writes `login_identity` only from
+an account read under the rules above, so a block it wrote always loads
+again. Only a hand edit or a foreign writer can produce a block that fails.
+
+- it is a JSON object;
+- each of `accountUuid`, `organizationUuid` and `emailAddress`, where
+  present, is a string that is not empty, is at most 320 bytes and contains
+  no control characters (C0, DEL or C1) and no bidirectional override or
+  isolate characters (U+202A to U+202E and U+2066 to U+2069); a key set to
+  `null`, a number or any other non-string fails;
+- `emailAddress`, where present, contains exactly one `@`, has text on both
+  sides of it and contains no whitespace, and is still at most 320 bytes
+  once lower-cased;
+- at least one of `accountUuid` and `emailAddress` is present, so `{}` and a
+  block holding only `organizationUuid` fail.
+
+Other keys inside the object are ignored, and letter case is not checked.
+The rotator rejects a ledger that breaks the rule as `RotateInconsistent`,
+with the message `rotate ledger: invalid login_identity`, without echoing
+the value or naming the key inside the block that failed. An absent
+`login_identity`, or a top-level `"login_identity": null`, still loads. The
+error is reported and the file is never overwritten: the cycle ends with the
+[unreadable-ledger stop](#unreadable-ledger-stop), which reads
+`rotate ledger unreadable (invalid login_identity); ...`, `profile switch`
+refuses with the same line, `--dry-run` prints it after `would alert: `, and
+no login moves. `profile rotate status` shows
+`live: - (ledger unreadable: invalid login_identity)`. The block is never repaired, dropped
+or replaced silently.
+
+Other readers of the rotate ledger treat a refused ledger as absent, as they
+do for any other unreadable ledger: `profile verify` and the profile-kind check name
+no live profile, `profile usage` and `profile overflow` warn and show no
+API-key or spend block, and auto-switch's takeover and overflow checks fall
+back to the choices they make with no ledger. The Claude Code status line
+reads the auto-switch ledger (`<root>/.auto-switch.d/ledger.json`), not this
+one, and is unaffected.
+
+To recover, stop the rotator with `amplihack profile rotate stop`. In
+`<root>/.auto-switch.d/rotate/ledger.json`, remove the `login_identity` key
+or set it to `null`, and keep the file at mode `0600`. Then start the
+rotator again with `amplihack profile rotate start`. The block is written
+again only by authorised swap completion or confirmed credential-based
+recovery. Until then, ownership decisions refuse conservatively, as they do
+for a legacy ledger that holds only a UUID.
 
 ### Recorded account
 

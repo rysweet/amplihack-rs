@@ -7,10 +7,11 @@
 //! It also describes the injection as one stderr line for issue #2010, which
 //! the caller prints; the module itself still does no I/O.
 //!
-//! The value-taking option tables are shared with the launcher's parser in
-//! `amplihack-launcher/src/prompt_delivery/codex_args.rs`.
+//! Whether an option takes a value comes from the per-scope Codex option
+//! tables in `amplihack-launcher/src/prompt_delivery/codex_options.rs`, the
+//! same tables the prompt rewrite (`codex_exec_args.rs`) reads.
 
-use amplihack_launcher::prompt_delivery::{LONG_OPTIONS_WITH_VALUE, SHORT_OPTIONS_WITH_VALUE};
+use amplihack_launcher::prompt_delivery::codex_options;
 
 const SANDBOX: [&str; 2] = ["--sandbox", "workspace-write"];
 const NETWORK: [&str; 2] = ["-c", "sandbox_workspace_write.network_access=true"];
@@ -66,8 +67,7 @@ fn items(args: &[String]) -> Vec<Item<'_>> {
                 attached: false,
             });
         } else if arg.starts_with("--") || arg.len() == 2 {
-            let takes_value =
-                LONG_OPTIONS_WITH_VALUE.contains(&arg) || SHORT_OPTIONS_WITH_VALUE.contains(&arg);
+            let takes_value = codex_options::takes_value(arg);
             let value = if takes_value {
                 args.get(i + 1).map(String::as_str)
             } else {
@@ -81,9 +81,8 @@ fn items(args: &[String]) -> Vec<Item<'_>> {
             });
         } else if let Some((name, rest)) = arg.get(..2).zip(arg.get(2..)) {
             // Like clap, drop one `=` between a short option and its value.
-            let value = SHORT_OPTIONS_WITH_VALUE
-                .contains(&name)
-                .then(|| rest.strip_prefix('=').unwrap_or(rest));
+            let value =
+                codex_options::takes_value(name).then(|| rest.strip_prefix('=').unwrap_or(rest));
             out.push(Item::Opt {
                 name,
                 value,

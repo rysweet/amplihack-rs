@@ -32,6 +32,8 @@ mod issue_1753_expired_live;
 mod issue_1753_login_identity;
 #[path = "issue_1753_refusal_named_once.rs"]
 mod issue_1753_refusal_named_once;
+#[path = "issue_1947_login_identity.rs"]
+mod issue_1947_login_identity;
 #[path = "issue_1962_candide_cause.rs"]
 mod issue_1962_candide_cause;
 #[path = "issue_1962_causes.rs"]
@@ -50,6 +52,10 @@ mod issue_1962_seed_cmd;
 mod issue_1962_seed_output;
 #[path = "issue_1962_seed_scan.rs"]
 mod issue_1962_seed_scan;
+#[path = "issue_2030_guards.rs"]
+mod issue_2030_guards;
+#[path = "issue_2030_no_prompt_in_argv.rs"]
+mod issue_2030_no_prompt_in_argv;
 
 #[path = "active_agent_binary_default_test.rs"]
 mod active_agent_binary_default;
@@ -293,6 +299,8 @@ mod issue_1973_wait_helpers;
 mod issue_1979_crusty_minor_followups;
 #[path = "issue_1985_codex_agent_step_flags.rs"]
 mod issue_1985_codex_agent_step_flags;
+#[path = "issue_2001_codex_usage.rs"]
+mod issue_2001_codex_usage;
 #[path = "issue_2010_codex_exec_notice.rs"]
 mod issue_2010_codex_exec_notice;
 #[path = "issue_439_no_per_step_timeout.rs"]
