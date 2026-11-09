@@ -318,7 +318,10 @@ kernel sends the runner SIGTERM (`PR_SET_PDEATHSIG`). Each headless agent step
 is bound to the runner in the same way, so its launcher and agent stop when the
 runner exits, and each running step leaves a record that `amplihack recipe
 steps` lists. Processes the agents started themselves can still outlive the
-run; use `amplihack recipe stop <run_id>` to end them. See
+run; use `amplihack recipe stop <run_id>` to end them (#2074 tracks ending
+them automatically). Once its runner has exited, `recipe run` removes the
+`stale` records its steps left behind, for example after an agent-step
+timeout, in which the runner kills the step's launcher with SIGKILL. See
 [Recipe Step Records and Lifetime](./recipe-step-records.md).
 
 ### Detached runs
@@ -409,7 +412,10 @@ amplihack recipe steps --orphans
 amplihack recipe steps --orphans --format json
 ```
 
-It only reads: it never signals a process or removes a file. It exits 0 when
+It only reads: it never signals a process or removes a file. Stale records
+are removed by `recipe run` (see
+[Who removes stale records](./recipe-step-records.md#who-removes-stale-records)).
+It exits 0 when
 the listing completes, whether or not orphans were found, and 1 when `HOME` is
 unset or `~/.amplihack/runtime/recipe-steps` is a symlink, not a directory or
 owned by another user. See

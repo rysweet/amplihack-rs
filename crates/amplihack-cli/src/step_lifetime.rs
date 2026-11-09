@@ -8,6 +8,13 @@
 //! and the launcher then ends its agent. The agent's own binding is set in
 //! `ManagedChild::spawn_bound_to_parent`.
 //!
+//! The expected parent is read by [`note_startup_parent`], the first
+//! statement of the binary's `main`, before the update notice, self-heal or
+//! asset repair can take any time. The binding later compares the parent
+//! after `prctl` with that early reading, so a runner that died while the
+//! launcher was starting up is detected even though the launcher has
+//! already been reparented (prctl(2) describes this race).
+//!
 //! The decision and the binding are made once per process, on the main
 //! thread, and cached: the dispatch arms call [`bind_launcher_if_headless`]
 //! before the usage-limit supervisor runs, and `run_launch_core` calls it
@@ -26,8 +33,9 @@ const SIGTERM: i32 = 15;
 pub struct Binding {
     /// This launch is a headless recipe step.
     pub headless: bool,
-    /// `getppid()` as first read, before any binding. 0 when the parent is
-    /// outside this process's PID namespace.
+    /// The expected parent: `getppid()` as read by [`note_startup_parent`]
+    /// at the start of `main`, or at the binding when nothing read it
+    /// earlier. 0 when the parent is outside this process's PID namespace.
     pub parent_pid: i32,
     /// The parent's start time, read at the same moment. `None` off Linux,
     /// for an interactive launch, or when it could not be read.
@@ -50,6 +58,42 @@ pub fn headless_signal_exit_code(first: Option<i32>) -> i32 {
     }
 }
 
+static STARTUP_PARENT: OnceLock<i32> = OnceLock::new();
+
+/// Records `getppid()` as this process's expected parent. The binary calls
+/// it as the first statement of `main`; later calls change nothing. An
+/// entry point that never calls it reads the parent at the binding instead,
+/// which leaves the window between its start and the binding unchecked.
+pub fn note_startup_parent() {
+    // SAFETY: getppid has no preconditions and cannot fail.
+    STARTUP_PARENT.get_or_init(|| unsafe { libc::getppid() });
+}
+
+/// The parent [`note_startup_parent`] recorded, if it ran.
+fn startup_parent() -> Option<i32> {
+    STARTUP_PARENT.get().copied()
+}
+
+/// Debug builds only: when `AMPLIHACK_TEST_STARTUP_GATE` names a FIFO, wait
+/// here until a writer opens it and closes it again. The binary calls this
+/// between the self-heal and dispatch, so a test can hold a launcher inside
+/// the startup window and end its runner there. Release builds hold neither
+/// the name nor the wait.
+#[cfg(debug_assertions)]
+pub fn startup_test_gate() {
+    const GATE_ENV: &str = "AMPLIHACK_TEST_STARTUP_GATE";
+    let Some(path) = std::env::var_os(GATE_ENV).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    if let Ok(mut gate) = std::fs::File::open(&path) {
+        let _ = std::io::Read::read_to_end(&mut gate, &mut Vec::new());
+    }
+}
+
+/// Release builds: nothing.
+#[cfg(not(debug_assertions))]
+pub fn startup_test_gate() {}
+
 /// Decides whether this launch is a headless step and, if it is, binds the
 /// launcher to its parent. Idempotent: the first call decides and binds,
 /// later calls return the same answer.
@@ -68,7 +112,7 @@ pub fn bind_launcher_if_headless() -> Binding {
 
 fn decide_and_bind() -> Binding {
     // SAFETY: getppid has no preconditions and cannot fail.
-    let parent_pid = unsafe { libc::getppid() };
+    let parent_pid = startup_parent().unwrap_or_else(|| unsafe { libc::getppid() });
     let interactive = Binding {
         headless: false,
         parent_pid,
@@ -119,7 +163,7 @@ fn parent_start_ticks(_parent_pid: i32) -> Option<u64> {
 }
 
 /// Sets SIGTERM as this process's parent-death signal, then checks that the
-/// parent read before is still the parent. A refusal by the kernel is a
+/// parent read at startup is still the parent. A refusal by the kernel is a
 /// warning; a parent that has gone ends this process with status 1.
 #[cfg(target_os = "linux")]
 fn bind_to_parent(parent_pid: i32) {

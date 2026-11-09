@@ -12,7 +12,7 @@
 
 #![cfg(target_os = "linux")]
 
-use crate::support::proc_watch::{alive, assert_gone, ppid};
+use crate::support::proc_watch::{alive, assert_gone, ppid, wait_gone_or_fs};
 use crate::support::step_2018::{Fx, SUPERVISED, UNSUPERVISED, sigkill, signal, text};
 use serde_json::{Value, json};
 use std::fs;
@@ -46,6 +46,61 @@ fn a_killed_runner_takes_its_headless_step_with_it() {
          directory; left {:?}; launcher log:\n{}",
         fx.entries(RUN_ID),
         fx.log()
+    );
+}
+
+/// The runner dies while the launcher is still starting up (update notice,
+/// self-heal, asset repair), before dispatch binds it. The launcher has then
+/// been reparented, so a parent read at the binding would be the reaper and
+/// would pass the "parent already gone" check. The launcher must compare
+/// against the parent it read at the start of `main`: it starts no agent,
+/// writes no record and exits with status 1.
+///
+/// The debug-only `AMPLIHACK_TEST_STARTUP_GATE` holds the launcher between
+/// self-heal and dispatch. The launcher opens the FIFO for reading; this
+/// test's open for writing returns once the launcher is at the gate, and the
+/// launcher goes on when the write end is closed.
+#[cfg(debug_assertions)]
+#[test]
+fn a_runner_that_dies_while_the_launcher_starts_up_starts_no_agent() {
+    let fx = Fx::new();
+    let gate = fx.fifo("startup-gate");
+    let mut cmd = fx.runner_cmd(RUN_ID, UNSUPERVISED);
+    cmd.env("AMPLIHACK_TEST_STARTUP_GATE", &gate);
+    let mut runner = cmd.spawn().expect("start the stand-in runner");
+    let runner_pid = fx.pid("runner.pid");
+    let launcher = fx.pid("launcher.pid");
+
+    let held = fs::OpenOptions::new()
+        .write(true)
+        .open(&gate)
+        .expect("open the startup gate");
+    assert_eq!(ppid(launcher), Some(runner_pid), "held inside startup");
+    sigkill(runner_pid);
+    runner.wait().unwrap();
+    assert_ne!(
+        ppid(launcher),
+        Some(runner_pid),
+        "the launcher has been reparented"
+    );
+    drop(held);
+
+    // Ends on whichever comes first: the launcher exiting, or an agent
+    // starting (its pid file is renamed into place). A launcher that wrongly
+    // starts the agent then fails below instead of hanging.
+    let agent_pid = fx.records.join("agent.pid");
+    wait_gone_or_fs(launcher, &fx.records, || agent_pid.exists());
+    let log = fx.log();
+    assert!(
+        log.contains("amplihack: headless step parent exited before launch; not starting"),
+        "the launcher must refuse to start; log:\n{log}"
+    );
+    assert!(!agent_pid.exists(), "no agent may start; log:\n{log}");
+    assert_gone(&[launcher]);
+    assert!(
+        !fx.run_dir(RUN_ID).exists(),
+        "no record may be written; left {:?}",
+        fx.entries(RUN_ID)
     );
 }
 

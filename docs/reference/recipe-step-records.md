@@ -21,6 +21,7 @@ lists those records and reports steps that have lost their parent.
     - [The parent field](#the-parent-field)
   - [JSON Schema](#json-schema)
   - [When records are written and removed](#when-records-are-written-and-removed)
+  - [Who removes stale records](#who-removes-stale-records)
   - [Diagnostics](#diagnostics)
   - [Rules for readers](#rules-for-readers)
 - [Classification](#classification)
@@ -93,11 +94,14 @@ binding, the agent spawn and the record all use that one answer.
 On Linux, a headless step is bound in two places, both with SIGTERM as the
 parent-death signal (`PR_SET_PDEATHSIG`):
 
-1. **The launcher is bound to its parent.** This happens at the start of the
-   launch subcommand, before the
-   [usage-limit supervisor](./profile-command.md#usage-limit-wait) runs. The
-   launcher reads its parent pid, sets the parent-death signal, then reads its
-   parent pid again (see [Parent already gone](#parent-already-gone)). The
+1. **The launcher is bound to its parent.** The launcher reads its parent
+   pid as the first thing `amplihack` does, before the update notice,
+   self-heal or asset repair, any of which can take seconds. The binding
+   itself happens later, at the start of the launch subcommand and before the
+   [usage-limit supervisor](./profile-command.md#usage-limit-wait) runs: the
+   launcher sets the parent-death signal, then reads its parent pid again and
+   compares it with the first reading (see
+   [Parent already gone](#parent-already-gone)). The
    parent is the recipe runner or, when the supervisor is active, the
    supervising `amplihack` process. The supervisor's attempt child is itself
    a launch and binds to the supervisor in the same way.
@@ -118,7 +122,7 @@ Interactive launches are not bound and start the agent exactly as before.
 |---|---|
 | The runner exits for any reason, including SIGKILL | The kernel sends the launcher SIGTERM. The launcher sends the agent SIGTERM, waits up to 3 s, sends SIGKILL if the agent is still running, removes its step record and exits with 143. |
 | The launcher receives SIGTERM, SIGINT or SIGHUP | The launcher ends the agent in the same way, removes its record and exits with `128 + N` (see [Exit status](#exit-status-of-a-headless-launch)). |
-| The launcher is killed with SIGKILL | The kernel sends the agent SIGTERM. The record stays on disk and `recipe steps` reports the step as `orphan` until the agent has exited, then `stale`. |
+| The launcher is killed with SIGKILL | The kernel sends the agent SIGTERM. The record stays on disk and `recipe steps` reports the step as `orphan` until the agent has exited, then `stale`. The current recipe runner does this to an agent step whenever the step times out. `recipe run` removes the stale record once its runner has exited (see [Who removes stale records](#who-removes-stale-records)). |
 | The agent exits on its own | The launcher removes its record and exits with the agent's status. |
 
 The table shows a launcher with no usage-limit supervisor. When a supervisor
@@ -129,9 +133,15 @@ The time from the runner's exit to the agent's exit is usually under a
 second, and at most about 3 s after the launcher receives SIGTERM.
 
 The signal reaches the agent process only. Processes that the agent started
-itself are the agent's responsibility. Any that survive still carry
+itself, such as a test run started from a tool call, are not signalled. The
+agent stays in the launcher's process group, which is also the runner's, so
+the launcher has no group it could signal without also signalling the
+runner. Whether such a process stops depends on whether the agent ends its
+own children when it receives SIGTERM. Any that survive still carry
 `AMPLIHACK_RECIPE_RUN_ID` and are ended by
-[`amplihack recipe stop <run_id>`](./recipe-command.md#recipe-stop).
+[`amplihack recipe stop <run_id>`](./recipe-command.md#recipe-stop). Ending
+the agent's process tree automatically is tracked in
+[#2074](https://github.com/rysweet/amplihack-rs/issues/2074).
 
 `recipe run` is covered separately: if it is killed with SIGKILL, the kernel
 sends the runner SIGTERM (see [recipe run](./recipe-command.md#recipe-run)).
@@ -155,15 +165,30 @@ An interactive launch that stops on a signal still exits with 0, as before.
 
 ### Parent already gone
 
-If the launcher's parent exits before the binding takes effect, the second
-read of the parent pid no longer matches the first. The launcher then starts
-nothing, writes no record, prints one line on stderr and exits with status 1:
+The first read of the parent pid is taken when `amplihack` starts, before
+any startup work. If the parent exits at any point between then and the
+binding, the launcher has already been reparented, to init or to a
+subreaper such as `systemd --user`. The second read then returns that new
+parent and no longer matches the first. The launcher starts nothing, writes
+no record, prints one line on stderr and exits with status 1:
 
 ```text
 amplihack: headless step parent exited before launch; not starting
 ```
 
 This line is fixed text.
+
+Reading the parent only at the binding would miss this case. The new parent
+would pass the check, the agent would run bound to a process that never
+exits, and the record would name that process as `parent`, so the step
+would be reported as `live` indefinitely. An integration test holds a
+launcher between self-heal and dispatch, kills its runner there, and checks
+that no agent starts and no record is written.
+
+One window remains: if the parent exits after it forks the launcher but
+before `amplihack` reaches its first instruction, the first read already
+returns the new parent. That window covers only `exec` and the process
+start-up, and nothing in it waits on a lock or the network.
 
 The agent makes the same check against the launcher. If the launcher has
 gone by the time the agent's binding is set, the spawn fails with `ESRCH`
@@ -275,7 +300,7 @@ written to logs. A serialised record larger than 64 KiB is not written.
 #### The parent field
 
 `parent.pid` is the value `getppid()` returned on the launcher's first read,
-at the start of the launch and before any binding (see
+when `amplihack` started and before any binding (see
 [Binding order](#binding-order)). The same read is used on every target and
 whether or not the kernel accepted the binding.
 
@@ -339,12 +364,47 @@ may add fields, and readers ignore fields they do not recognise.
   the run-id directory only if it is empty. It never removes `recipe-steps`
   itself, never removes anything recursively, and never reports a removal
   failure.
-- **SIGKILL.** A launcher killed with SIGKILL cannot remove its record. The
-  record stays until it is [removed by hand](#handling-orphans-and-stale-records).
-  Records are never removed automatically.
+- **SIGKILL.** A launcher killed with SIGKILL cannot remove its record. This
+  is routine, not rare: the current recipe runner kills an agent step's
+  launcher with SIGKILL whenever the step times out. `recipe run` removes
+  such records (see [Who removes stale records](#who-removes-stale-records)).
 - **Launches with no record.** Interactive launches write no record. Neither
   do processes started outside the launcher's own agent spawn, such as
   `--auto` launches and blarify helpers (see [Limitations](#limitations)).
+
+### Who removes stale records
+
+`amplihack recipe run` owns the records its runner's steps leave behind. It
+removes them in two passes:
+
+1. **After each runner attempt.** Once the runner process has exited, every
+   `stale` record under that attempt's run id is removed, and then the
+   run-id directory if it is empty. `live` and `orphan` records are kept, so
+   an orphan stays visible to `recipe steps`. A launcher that is still
+   exiting after its parent-death signal removes its own record.
+2. **At the end of the run.** A run-id directory from any earlier run is
+   removed when every entry in it is a `stale` record and each record file
+   was last modified longer ago than the cleanup keep window
+   (`AMPLIHACK_CLEANUP_KEEP_HOURS`, 24 hours by default). This pass
+   collects the records of a `recipe run` that was itself killed with
+   SIGKILL. It runs under the same conditions as the
+   [end-of-run sweep](../howto/clean-up-after-recipe-runs.md): not for
+   `--dry-run`, and not when `AMPLIHACK_CLEANUP_ON_EXIT=0`.
+
+Neither pass sends a signal. Each record is classified with the same
+start-time check `recipe steps` and `recipe stop` use (see
+[Classification](#classification)). It is removed only when all of these
+hold:
+
+- it is `stale`: no process it names is alive with its recorded start time;
+- read a second time just before the removal, it is unchanged and still
+  `stale`;
+- `recipe-steps` and its run-id directory are real directories, owned by
+  the current user and not writable by group or others.
+
+A run-id directory that holds an `unreadable` entry is left whole, and so
+is any file whose name is not a record name. Nothing is removed
+recursively, and a failed removal is not reported.
 
 ### Diagnostics
 
@@ -397,7 +457,9 @@ rules:
   `unreadable`.
 - Never signal a process or delete a file on the strength of a record alone.
   Any tool that acts on records needs its own fresh check of the process's
-  owner, start time and ancestry, and its own review.
+  owner, start time and ancestry, and its own review. amplihack's own
+  removal of stale records is described under
+  [Who removes stale records](#who-removes-stale-records).
 
 ## Classification
 
@@ -423,7 +485,7 @@ targets existence is tested with `kill(pid, 0)`: `ESRCH` means gone, and
 |---|---|
 | `live` | The step is running under the process that started it. |
 | `orphan` | The step, or its agent, is still running but the process that should end it has gone. |
-| `stale` | Nothing recorded is running. The record was left by a launcher killed with SIGKILL. |
+| `stale` | Nothing recorded is running. The record was left by a launcher killed with SIGKILL, most often by the recipe runner when the step timed out. `recipe run` removes it once its runner has exited (see [Who removes stale records](#who-removes-stale-records)). |
 | `unreadable` | The entry could not be read or parsed. The reason is given (see [Which entries are listed](#which-entries-are-listed)). It is never treated as a process. |
 
 A pid that has been reused by an unrelated process has a different start
@@ -605,8 +667,14 @@ amplihack recipe steps --orphans --format json \
   it signals anything (see [recipe stop](./recipe-command.md#recipe-stop)).
   Then run `amplihack recipe steps` again: the entry is gone, or is now
   `stale`.
-- **A `stale` record:** delete the file shown in the `RECORD` column. Remove
-  the run-id directory too if it is then empty.
+- **A `stale` record:** nothing to do in most cases. `recipe run` removes
+  the stale records of its own run when its runner exits, and those of
+  earlier runs after the cleanup keep window (see
+  [Who removes stale records](#who-removes-stale-records)). A stale record
+  can stay for longer when its run was started with
+  `AMPLIHACK_CLEANUP_ON_EXIT=0`, or when its run-id directory also holds an
+  `unreadable` entry. Such a record can be deleted by hand: delete the file
+  shown in the `RECORD` column, then the run-id directory if it is empty.
 
 ```bash
 rm ~/.amplihack/runtime/recipe-steps/9c1d2e44-0a5b-4c3e-9f61-2d7a8b6c0e13/38240.json
@@ -649,16 +717,23 @@ is `null`.
   is still bound to its parent, but the processes it starts are not bound and
   have no record. Recipe agent steps do not use auto mode.
   `amplihack recipe stop <run_id>` ends them.
-- **Grandchildren.** Processes started by the agent are not bound (see
-  [What each kill ends](#what-each-kill-ends)).
+- **Grandchildren.** Processes started by the agent are not bound and are
+  not signalled by the launcher (see [What each kill ends](#what-each-kill-ends)).
+  In the incident that led to #2018, these were the processes doing the
+  damage. This page therefore does not claim to close #2018 in full. Ending
+  the agent's process tree is tracked in
+  [#2074](https://github.com/rysweet/amplihack-rs/issues/2074).
 - **Non-Linux targets.** There is no lifetime guarantee, and with
   `start_ticks` of `null` a reused pid can make a dead process look alive.
   See [Non-Linux targets](#non-linux-targets).
 - **Window before the record.** A running agent has no record between its
   spawn and the write.
 - **Killed launcher.** A launcher killed with SIGKILL leaves its record
-  behind, reported as `orphan` and then `stale`. Removing it is left to the
-  operator.
+  behind, reported as `orphan` and then `stale`. The recipe runner does this
+  on every agent-step timeout. `recipe run` removes the record (see
+  [Who removes stale records](#who-removes-stale-records)). A record that is
+  still `orphan` when the runner exits is kept until a later end-of-run pass
+  finds it `stale` and older than the keep window.
 - **32-bit pids.** Pids are stored and read as signed 32-bit integers. A
   record with a larger pid is listed as `unreadable` with reason
   `invalid JSON`, not counted as gone.
@@ -672,9 +747,10 @@ is `null`.
   sanitised.
 - **Unknown states.** A consumer of the JSON output should treat a `state` it
   does not recognise as `unreadable`.
-- **Nothing acts on records.** No part of amplihack sends a signal or removes
-  a file on the basis of a record's contents. The launcher removes only its
-  own record, and `recipe steps` only reads.
+- **No signal is sent on the basis of a record.** No part of amplihack
+  signals a process because a record names it. The launcher removes only its
+  own record, `recipe steps` only reads, and `recipe run` removes only
+  records that it has checked twice to be `stale`.
 
 ## Related
 

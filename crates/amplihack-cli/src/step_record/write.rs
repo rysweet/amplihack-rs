@@ -112,7 +112,7 @@ fn ensure_private_dir(dir: &Path, uid: u32) -> Result<()> {
 
 /// Refuses a symlink, a non-directory, a directory owned by another uid, or
 /// one writable by group or others. The mode is never changed.
-fn check_private_dir(dir: &Path, meta: &fs::Metadata, uid: u32) -> Result<()> {
+pub(super) fn check_private_dir(dir: &Path, meta: &fs::Metadata, uid: u32) -> Result<()> {
     let safe = meta.file_type().is_dir() && meta.uid() == uid && meta.mode() & 0o022 == 0;
     if safe {
         Ok(())

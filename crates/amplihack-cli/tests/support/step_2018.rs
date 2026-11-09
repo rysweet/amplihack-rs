@@ -101,9 +101,7 @@ impl Fx {
         }
         fs::set_permissions(&fx.profiles, fs::Permissions::from_mode(0o700)).unwrap();
         for fifo in [fx.release_fifo(), fx.records.join("hold")] {
-            let path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
-            // SAFETY: a valid NUL-terminated path inside this fixture's temp directory.
-            assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+            mkfifo(&fifo);
         }
         crate::support::exec_stub::write_executable(&fx.tools.join("claude"), STUB_AGENT, 0o755);
         crate::support::exec_stub::write_executable(&fx.tools.join("runner"), STUB_RUNNER, 0o755);
@@ -165,13 +163,27 @@ impl Fx {
     /// The stand-in runner, starting one headless step with `step_args`
     /// under `run_id`.
     pub fn runner(&self, run_id: &str, step_args: &str) -> Child {
+        self.runner_cmd(run_id, step_args)
+            .spawn()
+            .expect("start the stand-in runner")
+    }
+
+    /// [`Self::runner`], configured but not yet started.
+    pub fn runner_cmd(&self, run_id: &str, step_args: &str) -> Command {
         let mut c = crate::isolated_amplihack::isolated(self.tools.join("runner"));
         self.configure(&mut c);
         c.env("AMPLIHACK_RECIPE_RUN_ID", run_id)
             .env("STEP_ARGS", step_args)
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        c.spawn().expect("start the stand-in runner")
+        c
+    }
+
+    /// A new FIFO named `name` in the record directory.
+    pub fn fifo(&self, name: &str) -> PathBuf {
+        let path = self.records.join(name);
+        mkfifo(&path);
+        path
     }
 
     /// `amplihack recipe steps <args>`, run to completion.
@@ -289,6 +301,12 @@ impl Drop for Fx {
             }
         }
     }
+}
+
+fn mkfifo(path: &std::path::Path) {
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: a valid NUL-terminated path inside a fixture's temp directory.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
 }
 
 pub fn text(bytes: &[u8]) -> String {

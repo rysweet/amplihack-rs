@@ -159,3 +159,69 @@ pub fn read_pid_file(path: &Path) -> i32 {
     assert!(pid > 1, "{} holds pid {pid}", path.display());
     pid
 }
+
+/// Blocks until `pid` has exited or `done()` holds, whichever comes first.
+/// `done()` is re-evaluated each time an entry in the existing directory
+/// `dir` is created, renamed into place or closed after writing; the exit
+/// is seen through a pidfd, so the process need not be a child of this one.
+pub fn wait_gone_or_fs(pid: i32, dir: &Path, mut done: impl FnMut() -> bool) {
+    assert!(pid > 1, "refusing to watch pid {pid}");
+    // SAFETY: inotify_init1 takes only flags and returns a new descriptor.
+    let raw = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
+    assert!(raw >= 0, "inotify_init1: {}", io::Error::last_os_error());
+    // SAFETY: `raw` is a descriptor this call just received and owns.
+    let inotify = unsafe { OwnedFd::from_raw_fd(raw) };
+    let c_dir = CString::new(dir.as_os_str().as_bytes()).expect("no NUL in a path");
+    let mask = libc::IN_CREATE | libc::IN_MOVED_TO | libc::IN_CLOSE_WRITE;
+    // SAFETY: a valid descriptor and NUL-terminated path.
+    let watch = unsafe { libc::inotify_add_watch(inotify.as_raw_fd(), c_dir.as_ptr(), mask) };
+    assert!(
+        watch >= 0,
+        "inotify_add_watch({}): {}",
+        dir.display(),
+        io::Error::last_os_error()
+    );
+    // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor.
+    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if raw < 0 {
+        let err = io::Error::last_os_error();
+        assert_eq!(
+            err.raw_os_error(),
+            Some(libc::ESRCH),
+            "pidfd_open({pid}): {err}"
+        );
+        return;
+    }
+    // SAFETY: `raw` is a descriptor this call just received and owns.
+    let pidfd = unsafe { OwnedFd::from_raw_fd(raw as i32) };
+    let mut buf = [0u8; 4096];
+    loop {
+        if done() {
+            return;
+        }
+        let mut fds = [
+            libc::pollfd {
+                fd: pidfd.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: inotify.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // SAFETY: two valid pollfds; a negative timeout blocks until one is ready.
+        if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } < 0 {
+            let err = io::Error::last_os_error();
+            assert_eq!(err.kind(), io::ErrorKind::Interrupted, "poll: {err}");
+            continue;
+        }
+        if fds[0].revents != 0 {
+            return;
+        }
+        // Drain the queued events; the read does not block.
+        // SAFETY: `buf` is valid for `buf.len()` bytes.
+        let _ = unsafe { libc::read(inotify.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+    }
+}

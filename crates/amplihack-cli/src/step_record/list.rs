@@ -80,7 +80,12 @@ pub fn list_as(root: &Path, uid: u32) -> Vec<Listed> {
 
 /// Adds the records in one run-id directory to `found`, or one entry for
 /// the directory itself when it is not descended.
-fn list_run_dir(dir: &Path, run_id: &str, uid: u32, found: &mut Vec<(String, i64, Listed)>) {
+pub(super) fn list_run_dir(
+    dir: &Path,
+    run_id: &str,
+    uid: u32,
+    found: &mut Vec<(String, i64, Listed)>,
+) {
     let mut directory_entry = |listed: Listed| found.push((run_id.to_string(), -1, listed));
     let meta = match fs::symlink_metadata(dir) {
         Ok(meta) => meta,
@@ -121,7 +126,7 @@ fn list_run_dir(dir: &Path, run_id: &str, uid: u32, found: &mut Vec<(String, i64
 }
 
 /// One record file, read and checked against its path.
-fn read_record(path: &Path, run_id: &str, pid: i32) -> Listed {
+pub(super) fn read_record(path: &Path, run_id: &str, pid: i32) -> Listed {
     match read_capped(path).and_then(|bytes| parse_record(&bytes, run_id, pid)) {
         Ok(record) => Listed::Record {
             path: path.to_path_buf(),

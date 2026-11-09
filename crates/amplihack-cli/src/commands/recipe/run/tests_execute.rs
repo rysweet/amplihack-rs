@@ -3732,3 +3732,115 @@ mod issue_1570_nested_environment {
         assert!(inherited_env_bytes_from(env(&list)) >= before + 1000);
     }
 }
+
+// -------------------------------------------------------------------------
+// Issue #2018: `recipe run` collects the stale step records its runner's
+// steps leave behind (docs/reference/recipe-step-records.md, "Who removes
+// stale records").
+// -------------------------------------------------------------------------
+
+/// The stand-in runner plants two records under its own run id, as a step
+/// killed with SIGKILL and a step still running would leave them, then
+/// reports success. Once it has exited, the stale record is gone and the
+/// live one, and a recent stale record of another run, are untouched.
+#[test]
+#[cfg(unix)]
+fn test_execute_recipe_via_rust_collects_stale_step_records_of_its_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
+    let _cleanup_env = crate::test_support::EnvGuard::capture(&[
+        "AMPLIHACK_CLEANUP_ON_EXIT",
+        "AMPLIHACK_CLEANUP_KEEP_HOURS",
+    ]);
+    let temp = tempfile::tempdir().expect("failed to create temp dir");
+    let home = temp.path().join("home");
+    let amplihack_home = temp.path().join("amplihack-home");
+    std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
+    let root = crate::step_record::root(&home);
+    let other_run = root.join("an-earlier-run");
+    std::fs::create_dir_all(&other_run).expect("create another run's directory");
+    for dir in [&root, &other_run] {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let other_record = other_run.join("4000001.json");
+    std::fs::write(
+        &other_record,
+        r#"{"format":1,"run_id":"an-earlier-run","workspace_run_id":null,"run_dir":null,"tool":"claude","cwd":"/","created_at":"2026-11-08T00:00:00Z","launcher":{"pid":4000001,"start_ticks":1},"agent":{"pid":4000002,"start_ticks":1},"parent":null}"#,
+    )
+    .expect("plant another run's record");
+
+    let runner = temp.path().join("recipe-runner-rs");
+    std::fs::write(
+        &runner,
+        r#"#!/bin/sh
+dir="$STEP_RECORD_ROOT/$AMPLIHACK_RECIPE_RUN_ID"
+mkdir -p "$dir" && chmod 700 "$dir"
+rec() {
+  printf '{"format":1,"run_id":"%s","workspace_run_id":null,"run_dir":null,"tool":"claude","cwd":"/","created_at":"2026-11-08T00:00:00Z","launcher":{"pid":%s,"start_ticks":%s},"agent":{"pid":%s,"start_ticks":%s},"parent":%s}' \
+    "$AMPLIHACK_RECIPE_RUN_ID" "$1" "$2" "$3" "$4" "$5" > "$dir/$1.json"
+}
+rec 4000001 1 4000002 1 '{"pid":4000000,"start_ticks":1}'
+rec "$PPID" null "$PPID" null null
+cat <<EOF
+{"recipe_name":"step-record-probe","success":true,"step_results":[],"context":{"env_run_id":"$AMPLIHACK_RECIPE_RUN_ID","live_pid":"$PPID"}}
+EOF
+"#,
+    )
+    .expect("failed to write runner stub");
+    make_executable(&runner);
+
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: step-record-probe\nsteps: []\n")
+        .expect("failed to write recipe");
+
+    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_root = std::env::var_os("STEP_RECORD_ROOT");
+    unsafe {
+        std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+        std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+        std::env::set_var("HOME", &home);
+        std::env::set_var("STEP_RECORD_ROOT", &root);
+        std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0");
+    }
+
+    let result = execute::execute_recipe_via_rust(
+        &recipe,
+        &BTreeMap::new(),
+        false,
+        false,
+        temp.path(),
+        &[],
+        None,
+    );
+
+    restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
+    restore_env_var("STEP_RECORD_ROOT", prev_root);
+    let result = result.expect("recipe run must succeed");
+
+    let context = |key: &str| {
+        result
+            .context
+            .get(key)
+            .and_then(JsonValue::as_str)
+            .unwrap_or_else(|| panic!("the runner stub reports {key}"))
+            .to_string()
+    };
+    let run_dir = root.join(context("env_run_id"));
+    assert!(
+        !run_dir.join("4000001.json").exists(),
+        "the stale record of this run must be removed"
+    );
+    assert!(
+        run_dir
+            .join(format!("{}.json", context("live_pid")))
+            .exists(),
+        "a live record of this run must be kept"
+    );
+    assert!(
+        other_record.exists(),
+        "another run's recent record is not this run's to remove"
+    );
+}

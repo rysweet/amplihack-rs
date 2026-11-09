@@ -766,6 +766,8 @@ pub(super) fn execute_recipe_via_rust(
                 Err(error) => return AttemptOutcome::Final(Err(error)),
             };
             let mut stderr_tail = String::new();
+            #[cfg(unix)]
+            let attempt_run_id = correlation.run_id().to_string();
             let attempt_result = spawn_with_streaming_stderr(
                 command,
                 correlation,
@@ -773,6 +775,11 @@ pub(super) fn execute_recipe_via_rust(
                 timeout,
                 &mut stderr_tail,
             );
+            // Issue #2018: the runner has exited. A step it ended with
+            // SIGKILL (its agent-step timeout does this) left a stale record
+            // that its launcher could not remove; this run owns it.
+            #[cfg(unix)]
+            crate::step_record::collect_after_attempt(&attempt_run_id);
 
             // Issue #964: restore on ANY terminal failure, not just a spawn/parse `Err`.
             // A runner that completes and emits a structured result reporting failure
@@ -910,6 +917,17 @@ fn finish_workspace(
         Err(_) => (Outcome::Failure, Vec::new(), None),
     };
     workspace.finish(outcome, steps, log_path, !dry_run);
+    // Issue #2018: collect the step records of earlier runs that ended
+    // without collecting their own (a `recipe run` killed with SIGKILL),
+    // under the same switch and keep window as the end-of-run sweep.
+    #[cfg(unix)]
+    if !dry_run && crate::commands::cleanup::cleanup_on_exit_enabled() {
+        let keep_hours = crate::commands::cleanup::keep_hours_from_env()
+            .unwrap_or(crate::commands::cleanup::DEFAULT_KEEP_HOURS);
+        crate::step_record::collect_abandoned_in_home(std::time::Duration::from_secs(
+            keep_hours.saturating_mul(3600),
+        ));
+    }
 }
 
 /// The `action` recorded on the classification attached to a terminal result.

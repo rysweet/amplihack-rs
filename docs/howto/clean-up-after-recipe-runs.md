@@ -291,6 +291,13 @@ panicked, the runner:
    run-owned items that are now eligible (the categories `run-tmp`,
    `run-worktree` and `run-target`), and removes them. This includes items
    from earlier runs, and from the current run if it is already eligible.
+4. Under the same condition, removes the step records of earlier runs in
+   `~/.amplihack/runtime/recipe-steps` that are all `stale` and older than
+   `AMPLIHACK_CLEANUP_KEEP_HOURS`. Separately, and after every runner
+   attempt even with `AMPLIHACK_CLEANUP_ON_EXIT=0`, the run removes the
+   `stale` records of its own steps, such as those left by an agent-step
+   timeout. These records are not reported in `cleanup-record.json`. See
+   [Who removes stale records](../reference/recipe-step-records.md#who-removes-stale-records).
 
 The sweep is best effort. If another cleanup holds the lock, the sweep is
 skipped. It stops after 120 seconds. Any problem is printed as a warning and

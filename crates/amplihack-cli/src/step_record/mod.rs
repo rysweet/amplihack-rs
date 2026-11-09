@@ -12,26 +12,38 @@
 //!   drop.
 //! - `probe.rs`: [`Probe`], [`SystemProbe`] and [`classify`].
 //! - `list.rs`: [`list`], which reads every record under the root.
+//! - `collect.rs`: [`collect_run`] and [`collect_abandoned`], which remove
+//!   records classified `stale`, for `recipe run` (see that module).
 //!
-//! Fixed invariant: nothing here sends a signal or removes a file on the
-//! strength of a record's contents. The writer removes only the path it
-//! wrote itself, and the reader only reads. Any future code that acts on a
-//! record needs its own fresh check of the process's owner, start time and
-//! ancestry, and its own review. See `docs/reference/recipe-step-records.md`.
+//! Fixed invariant: nothing here sends a signal on the strength of a
+//! record's contents. The writer removes only the path it wrote itself, the
+//! reader only reads, and the collector removes only a record that, read a
+//! second time just before the removal, is unchanged and still names no
+//! running process by pid and start time. Any future code that signals a
+//! process named by a record needs its own fresh check of the process's
+//! owner, start time and ancestry, and its own review. See
+//! `docs/reference/recipe-step-records.md`.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+mod collect;
 mod list;
 mod probe;
 mod write;
 
+pub use collect::{
+    collect_abandoned, collect_abandoned_as, collect_abandoned_in_home, collect_after_attempt,
+    collect_run, collect_run_as,
+};
 pub use list::{Listed, list, list_as};
 pub use probe::{Probe, StepState, SystemProbe, classify, proc_id_of};
 pub use write::StepRecordGuard;
 
 #[cfg(test)]
 mod tests_classify;
+#[cfg(test)]
+mod tests_collect;
 #[cfg(test)]
 mod tests_list;
 #[cfg(test)]
