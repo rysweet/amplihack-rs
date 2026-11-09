@@ -17,7 +17,9 @@ recursion:
   max_depth: 6
   max_total_steps: 100
 
-context: {}
+context:
+  # Issue #1966: optional descriptive text for prompts; never selects a route.
+  criticality: ""
 
 steps:
   - id: "step1-debate-round1-architect"

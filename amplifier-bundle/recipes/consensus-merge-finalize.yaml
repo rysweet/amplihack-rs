@@ -18,7 +18,9 @@ recursion:
   max_depth: 6
   max_total_steps: 100
 
-context: {}
+context:
+  # Issue #1966: required caller input (true|false), checked by consensus-tdd-impl.
+  is_critical_code: ""
 
 steps:
   - id: "step14-check-ci"
@@ -282,7 +284,7 @@ steps:
         --arg criticality "$CRITICALITY" \
         --arg gate1 "$FINAL_REQUIREMENTS_CONSENSUS_MECHANISM_USED" \
         --arg gate2 "$DESIGN_CONSENSUS_CONSENSUS_ACHIEVED" \
-        --arg gate3 "$IS_CRITICAL_CODE" \
+        --arg gate3 "${RECIPE_VAR_is_critical_code:-}" \
         --arg gate4 "$REFACTORING_CONSENSUS_UNANIMOUS_APPROVAL" \
         --arg gate5 "$PR_REVIEW_CONSENSUS_UNANIMOUS_APPROVAL" \
         --arg gate6 "$PHILOSOPHY_CONSENSUS_UNANIMOUS_PHILOSOPHY_APPROVAL" \
