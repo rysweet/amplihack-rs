@@ -147,11 +147,15 @@ exec amplihack recipe run "$RECIPE" --context-file "$CONTEXT_JSON" --verbose
     ))
 }
 
-pub(super) fn recipe_run_script(ws: &Workstream, delegate: &str) -> Result<String> {
-    let profile_exports = profile_exports(
-        env_var_os,
-        crate::commands::profile::substitute_inherited_profile,
-    )?;
+/// The profile variables are read through `get`, and the inherited profile
+/// name may be replaced by `substitute`; see [`profile_exports`].
+pub(super) fn recipe_run_script(
+    ws: &Workstream,
+    delegate: &str,
+    get: impl Fn(&str) -> Option<OsString>,
+    substitute: impl Fn(&str) -> Option<String>,
+) -> Result<String> {
+    let profile_exports = profile_exports(get, substitute)?;
     let (tree_id, depth, max_depth, max_sessions) = session_tree_env(ws);
     Ok(format!(
         r#"#!/bin/bash
@@ -193,11 +197,15 @@ pub(super) fn classic_task_markdown(ws: &Workstream) -> String {
     )
 }
 
-pub(super) fn classic_run_script(ws: &Workstream, delegate: &str) -> Result<String> {
-    let profile_exports = profile_exports(
-        env_var_os,
-        crate::commands::profile::substitute_inherited_profile,
-    )?;
+/// The profile variables are read through `get`, and the inherited profile
+/// name may be replaced by `substitute`; see [`profile_exports`].
+pub(super) fn classic_run_script(
+    ws: &Workstream,
+    delegate: &str,
+    get: impl Fn(&str) -> Option<OsString>,
+    substitute: impl Fn(&str) -> Option<String>,
+) -> Result<String> {
+    let profile_exports = profile_exports(get, substitute)?;
     let (tree_id, depth, max_depth, max_sessions) = session_tree_env(ws);
     Ok(format!(
         r#"#!/bin/bash
@@ -221,7 +229,9 @@ export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
     ))
 }
 
-fn env_var_os(key: &str) -> Option<OsString> {
+/// The production getter for [`profile_exports`]: reads `key` from the
+/// process environment at call time.
+pub(super) fn env_var_os(key: &str) -> Option<OsString> {
     std::env::var_os(key)
 }
 
