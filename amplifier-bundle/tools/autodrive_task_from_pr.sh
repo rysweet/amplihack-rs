@@ -40,6 +40,9 @@ autodrive_task_from_pr() {
     echo "ERROR: auto-drive: no output file for the task of PR #${pr}; pass task_description" >&2
     return 1
   fi
+  # The work below may cd into <repo-dir>, so a relative <out-file> (and the
+  # work directory made beside it) is made absolute first.
+  case "$out" in /*) ;; *) out="${PWD%/}/${out}" ;; esac
   t="$(umask 077; mktemp -d "$(dirname -- "$out")/.task-from-pr.XXXXXX")" || {
     echo "ERROR: auto-drive: cannot create a private work directory beside the task file for PR #${pr}; pass task_description" >&2
     return 1

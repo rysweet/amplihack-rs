@@ -1447,3 +1447,43 @@ fn loop_steps_choose_the_task_through_autodrive_resolve_task() {
         );
     }
 }
+
+/// Outside-in finding (step 16b): a relative <out-file> must still work after
+/// the helper enters <repo-dir>; the task lands beside the caller, not in the repo.
+#[test]
+fn unit_relative_out_file_is_written_relative_to_the_caller() {
+    if !jq_available() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    for d in ["out", "repo", "tmp"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    let gh = Gh::new(
+        &root,
+        &pr_json(PR_TITLE, PR_BODY),
+        &issue_json(ISSUE_TITLE, ISSUE_BODY),
+    );
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c")
+        .arg(". \"$1\" || exit 97; autodrive_task_from_pr 1570 out/task.txt repo")
+        .arg("bash")
+        .arg(tools_src().join("autodrive_task_from_pr.sh"))
+        .env_clear();
+    gh.apply(&mut cmd);
+    cmd.env("HOME", &root)
+        .env("TMPDIR", root.join("tmp"))
+        .current_dir(&root);
+    let out = cmd.output().expect("spawn bash");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stderr:\n{stderr}");
+    let task = std::fs::read_to_string(root.join("out/task.txt")).expect("task written");
+    assert_eq!(task.trim_end_matches('\n'), expected_with_issue());
+    assert_eq!(dir_names(&root.join("out")), vec!["task.txt".to_string()]);
+    assert!(
+        dir_names(&root.join("repo")).is_empty(),
+        "{:?}",
+        dir_names(&root.join("repo"))
+    );
+}
