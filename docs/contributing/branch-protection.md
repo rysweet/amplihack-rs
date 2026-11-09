@@ -31,7 +31,9 @@ Two older pages were written when strict was on:
 [Merge Flow Reference](../reference/merge-flow.md) and
 [Branch Protection Guard Reference](../reference/branch-protection-guard.md).
 Both now carry a note pointing here; where they disagree with this page, this
-page wins.
+page wins. The required-checks section of the
+[CI Pipeline Reference](../reference/ci-pipeline.md#required-checks-and-merge-governance)
+lists the same 7 checks.
 
 The guard workflow, `.github/workflows/branch-protection-guard.yml`, still
 fails when strict is off once `BRANCH_PROTECTION_READ_TOKEN` is set. Today
@@ -45,7 +47,7 @@ the guard is tracked in
 | --- | --- |
 | `GitGuardian Security Checks` | An outside service, not CI. |
 | `build`, `deploy` | `docs.yml` runs them only for some paths. |
-| `Recipe runner pin ancestry` | It does not run on every pull request. |
+| `Recipe runner pin ancestry` | It runs on every pull request to `main` (`.github/workflows/recipe-runner-pin.yml` has no path filter), but nobody has added it to branch protection. An administrator can add it by hand. |
 | `Release`, `Prune sccache caches` | Skipped by design on pull requests. |
 
 ## Rule for CI changes

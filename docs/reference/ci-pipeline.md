@@ -470,14 +470,17 @@ replacement; this check prevents the equivalent change reaching `main`.
 
 ## Required checks and merge governance
 
-Branch protection on `main` requires **Lint & Format** (`check`), **Test**
-(`test`), and **Build x86_64-unknown-linux-gnu** (the Linux x86_64
-`cross-compile` leg). The three remaining `cross-compile` legs
-(`aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`)
-still run on every PR for signal but are not required-to-merge, so scarce
-macOS/cross-arch runners cannot block a merge by sitting queued. That coverage
-is **relocated, not dropped**: it must pass in the merge queue and on tagged
-release builds before any artifact publishes.
+> **Updated 9 Nov 2026:** this section used to say only 3 checks were
+> required and that the other build legs ran in a merge queue. Both were
+> wrong. [Branch protection on main](../contributing/branch-protection.md) is
+> the record; where this section disagrees with it, that page wins.
+
+Branch protection on `main` requires these 7 checks, all from `ci.yml`:
+**Lint & Format** (`check`), **Test** (`test`), **Install Smoke Test**, and all
+four `cross-compile` legs: **Build x86_64-unknown-linux-gnu**,
+**Build aarch64-unknown-linux-gnu**, **Build x86_64-apple-darwin** and
+**Build aarch64-apple-darwin**. The "require branches to be up to date"
+(strict) setting is off.
 
 **Recipe runner pin ancestry**, described
 [above](#recipe-runner-pin-ancestry), becomes a required check only when an
@@ -486,8 +489,9 @@ the job name `Recipe runner pin ancestry`, not the job ID `recipe-runner-pin`,
 so the job's `name:` in `.github/workflows/recipe-runner-pin.yml` must stay
 exactly as written.
 
-A GitHub **merge queue** (`merge_group:` trigger) batches approved PRs and runs
-the required checks once per batch instead of once per serialized merge.
+`ci.yml` also triggers on `merge_group:`, but no merge queue is in use: GitHub
+does not offer one on a user-owned repository. See
+[Why not a GitHub merge queue?](merge-flow.md#why-not-a-github-merge-queue).
 
 > Configuring branch protection, required checks, and the merge queue needs
 > repository-admin rights and is applied through repository settings, not this
