@@ -214,6 +214,21 @@ sanitize_provider_stderr() {
 # or a single argv element. Nothing here evaluates its input. Every sed runs
 # with LC_ALL=C, so input that is not valid UTF-8 cannot abort it.
 
+# stdin -> stdout: removes the UTF-8 encodings of invisible and direction
+# controls that tr cannot see byte by byte: C1 controls (U+0080-009F), the
+# Arabic letter mark (U+061C), zero-width and direction marks (U+200B-200F),
+# bidi embeddings and overrides (U+202A-202E), word joiners and bidi isolates
+# (U+2060-206F) and the BOM (U+FEFF). A Trojan Source title would otherwise
+# reach the PR title and the squash commit subject.
+strip_invisible_chars() {
+  LC_ALL=C sed \
+    -e $'s/\302[\200-\237]//g' \
+    -e $'s/\330\234//g' \
+    -e $'s/\342\200[\213-\217\252-\256]//g' \
+    -e $'s/\342\201[\240-\257]//g' \
+    -e $'s/\357\273\277//g'
+}
+
 # normalise_pr_title_text <text>: one line, no control characters, credentials
 # redacted, single spaces, trimmed, no trailing full stops (so "..." is no
 # title at all). Order: bound the input to 8 KiB, strip control characters (so
@@ -224,6 +239,7 @@ normalise_pr_title_text() {
   head -c 8192 <<<"${1:-}" \
     | LC_ALL=C tr '\r\n\t' '   ' \
     | LC_ALL=C tr -d '\000-\037\177' \
+    | strip_invisible_chars \
     | redact_credentials \
     | LC_ALL=C sed -E 's/  +/ /g; s/^ //; s/[. ]+$//'
 }

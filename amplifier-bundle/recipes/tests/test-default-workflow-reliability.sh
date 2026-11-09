@@ -1611,7 +1611,7 @@ assert_publish_1968_helpers() {
         . "${PUBLISH_HELPER}"
 
         local fn missing=""
-        for fn in redact_credentials normalise_pr_title_text conventional_pr_title \
+        for fn in redact_credentials strip_invisible_chars normalise_pr_title_text conventional_pr_title \
             defuse_issue_refs defuse_mentions cap_pr_title format_changed_files_body \
             first_task_line lookup_issue_title; do
             declare -F "${fn}" >/dev/null || missing="${missing} ${fn}"
@@ -1739,6 +1739,15 @@ ROWS
         case "$(normalise_pr_title_text "$(rep 'x ' 506)ghp_ABCDEFGHIJKLMNOPQRSTUV")" in
             *ghp_*) fail "issue #1968 helper: normalise left a token fragment past byte 1012" ;;
         esac
+        # Invisible and direction controls: RLO, LRI/PDI, ZWSP, ZWJ, BOM, C1
+        # NEL and the Arabic letter mark are removed; NBSP and accents stay.
+        eq "normalise: bidi and zero-width controls removed" "abcdefgh" \
+            "$(normalise_pr_title_text "a$(printf '\342\200\256')b$(printf '\342\201\246')c$(printf '\342\201\251')d$(printf '\342\200\213')e$(printf '\342\200\215')f$(printf '\357\273\277')g$(printf '\302\205\330\234')h")"
+        eq "normalise: NBSP and accents survive the invisible-character strip" \
+            "a$(printf '\302\240')caf$(printf '\303\251')" \
+            "$(normalise_pr_title_text "a$(printf '\302\240')caf$(printf '\303\251')")"
+        eq "normalise: a zero-width space cannot split a token past redaction" "REDACTED_TOKEN" \
+            "$(normalise_pr_title_text "ghp_ABCDEFGH$(printf '\342\200\213')IJKLMNOPQRSTUVWX")"
         normalise_pr_title_text "ab$(printf '\377')cd" >/dev/null \
             || fail "issue #1968 helper: normalise must not fail on bytes that are not valid UTF-8"
 
@@ -2006,7 +2015,38 @@ assert_pr_title_from_issue_on_moved_base() {
     if grep -q '^issue view' "${WORK}/publish-1968-${tag}.gh"; then publish_1968_fail "${tag}" "issue #1968 case 7b: gh issue view ran without a repository identity"; fi
     if grep -q '^pr create' "${WORK}/publish-1968-${tag}.gh"; then publish_1968_fail "${tag}" "issue #1968 case 7b: gh pr create ran without a repository identity"; fi
 
-    echo "  PASS[1968]: merge-base diff, true count, issue/task/template title order, hostile-title defusal and identity guard"
+    # Case 8: no merge base (unrelated history, as in a shallow clone). The
+    # publish still succeeds, warns once, and lists the two-dot range.
+    tag="nomergebase"; repo="${WORK}/publish-1968-${tag}"
+    setup_publish_1968_repo "${repo}" 3
+    git -C "${repo}" checkout -q --orphan feat/issue-1968-orphan
+    git -C "${repo}" rm -rq --cached . >/dev/null
+    printf 'orphan\n' > "${repo}/orphan-1968.txt"
+    git -C "${repo}" add orphan-1968.txt
+    git -C "${repo}" commit -qm "orphan branch" >/dev/null
+    git -C "${repo}" clean -fdq >/dev/null
+    ! git -C "${repo}" merge-base origin/main HEAD >/dev/null 2>&1 \
+        || fail "1968 fixture: the orphan branch must have no merge base with origin/main"
+    expected="$(git -C "${repo}" diff --name-only origin/main..HEAD | sed '/^$/d' | wc -l | tr -d ' ')"
+    rc=0; run_publish_1968_case "${repo}" "${tag}" answer "" || rc=$?
+    [ "${rc}" -eq 0 ] || publish_1968_fail "${tag}" "issue #1968 case 8: no merge base must not fail the publish (exit ${rc})"
+    grep -qF 'WARNING: no merge base between origin/main and HEAD' "${WORK}/publish-1968-${tag}.err" \
+        || publish_1968_fail "${tag}" "issue #1968 case 8: the two-dot fallback must be reported on stderr"
+    [ "$(publish_1968_changed_files_section "${WORK}/publish-1968-${tag}.body" | head -n1)" = "${expected} files changed" ] \
+        || publish_1968_fail "${tag}" "issue #1968 case 8: Changed files must count the two-dot range (${expected})"
+
+    # Static guard: the changed-file list and diff stat are computed once,
+    # from DIFF_RANGE, for both providers. A two-dot literal reintroduced on
+    # either path (the AzDO path has no moved-base case above) fails here.
+    # shellcheck disable=SC2016 # the patterns match literal shell text
+    if grep -nE 'git diff --(name-only|stat) "\$\{BASE_REF\}\.\.HEAD"' "${PUBLISH_HELPER}"; then
+        fail "issue #1968: workflow_publish_pr.sh lists or stats changed files with a two-dot range; use \"\$DIFF_RANGE\""
+    fi
+    # shellcheck disable=SC2016 # the pattern matches literal shell text
+    [ "$(grep -cE 'git diff --(name-only|stat) "\$DIFF_RANGE"' "${PUBLISH_HELPER}")" -eq 2 ] \
+        || fail "issue #1968: expected exactly one --name-only and one --stat computation from \"\$DIFF_RANGE\", shared by both providers"
+
+    echo "  PASS[1968]: merge-base diff, true count, issue/task/template title order, hostile-title defusal, identity guard and no-merge-base fallback"
 }
 
 setup_nomerge_probe_repo() {

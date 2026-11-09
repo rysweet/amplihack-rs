@@ -81,9 +81,11 @@ the title text. Every title ends with ` (#<issue>)`.
   scope, the `## Risk` section and the `Closes`/`Refs` choice. Only the body's
   display list stops at 40, followed by `- ... and <N-40> more`.
 - **Normalisation.** Keep the first 8 KiB, turn CR, LF and TAB into spaces,
-  delete other C0 bytes and DEL, redact credentials, collapse spaces, drop
-  trailing full stops. A title of only full stops is therefore no title, and the
-  next source is tried. Control bytes go before redaction so they cannot split a token. All `sed` and `tr`
+  delete other C0 bytes and DEL, delete the UTF-8 encodings of invisible and
+  direction controls (C1, U+061C, U+200B-200F, U+202A-202E, U+2060-206F and
+  U+FEFF), redact credentials, collapse spaces, drop trailing full stops. A
+  title of only full stops is therefore no title, and the next source is tried.
+  Control bytes go before redaction so they cannot split a token. All `sed` and `tr`
   calls run with `LC_ALL=C` so bytes that are not valid UTF-8 cannot stop BSD
   `sed`.
 - **Redaction.** One function, `redact_credentials`, shared with provider
@@ -166,6 +168,8 @@ bare origin and a clone; the branch commits N files, then a second clone pushes
 | 6 | Hostile issue title | Exit 0; no `(#999)`; no closing keyword before `#7` or `#999`; no `#<digits>` before the suffix; no ESC; shell text literal; `` `@someone` `` in the body; no `PWNED` file |
 | 7a | `lookup_issue_title 1968 ""` | No output, status 0, no `gh` call |
 | 7b | Origin rejected by `parse_github_repo_identity` | `FAILED_PR_IDENTITY`; no `issue view` and no `pr create` |
+| 8 | Orphan branch, no merge base with `origin/main` | Exit 0; the no-merge-base warning on stderr; the count is that of the two-dot range |
+| Static | Script text | No `git diff --name-only` or `--stat` with a two-dot `${BASE_REF}..HEAD`; exactly one of each from `"$DIFF_RANGE"`, shared by both providers |
 
 Run it with:
 
@@ -191,8 +195,9 @@ env -u RECIPE_VAR_task_description bash amplifier-bundle/recipes/tests/test-defa
 - **Mentions in odd code spans.** The body's mention rule tracks single
   backticks; a mention inside an unbalanced or multi-backtick span may be
   wrapped incorrectly.
-- **Unicode controls.** Bidirectional controls and UTF-8-encoded C1 characters
-  survive, because `tr` in the C locale works on single bytes.
+- **Other invisible characters.** Only the listed controls are removed. Other
+  format characters, such as tag characters (U+E0000 block) and variation
+  selectors, survive.
 - **Markup.** HTML and Markdown in titles are left to GitHub's sanitisation.
 - **Unredacted gate output.** `RECIPE_VAR_local_testing_gate` and
   `RECIPE_VAR_precommit_results` still reach the body without redaction, as
