@@ -11,6 +11,7 @@
 
 #![cfg(target_os = "linux")]
 
+use crate::support::fake_proc::{FAKE_PID_BASE, FakeProc};
 use crate::support::profile_rotate::*;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -74,7 +75,11 @@ impl Drop for Watch {
     }
 }
 
-fn spawn_watch(f: &Fixture, extra: &[&str], env: &[(&str, &str)]) -> Watch {
+/// Starts a `watch` reading `fake` as `/proc`, points every later fixture
+/// command at `fake`, and links the watch's pid into it (issue #2042), so
+/// the rotator readers see this test's own watch and no host process.
+fn spawn_watch(f: &Fixture, fake: &FakeProc, extra: &[&str], env: &[(&str, &str)]) -> Watch {
+    f.with_proc(fake);
     let mut args = vec!["profile", "rotate", "watch", "--interval", "3600"];
     args.extend_from_slice(extra);
     let mut cmd = f.cmd(&args);
@@ -87,6 +92,9 @@ fn spawn_watch(f: &Fixture, extra: &[&str], env: &[(&str, &str)]) -> Watch {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    // The child stays unreaped until the Watch is stopped or dropped, so
+    // its pid cannot be reused behind the link.
+    fake.link_own(child.id());
     Watch(Some(child))
 }
 
@@ -263,7 +271,8 @@ fn status_shows_the_exhausted_alert() {
 fn a_paused_watch_logs_the_exhausted_alert() {
     let f = Fixture::new();
     exhausted_while_off(&f);
-    let w = spawn_watch(&f, &[], &[]);
+    let fake = FakeProc::new();
+    let w = spawn_watch(&f, &fake, &[], &[]);
     let want = "ALERT: auto-switch is off while the live login is exhausted (work: 100% used, threshold 90%)";
     wait_for("the ALERT line", Duration::from_secs(20), || {
         f.log().contains(want)
@@ -366,7 +375,8 @@ fn owner_clear_removes_an_unreadable_marker() {
 #[test]
 fn a_supervised_watch_writes_the_marker_and_leaves_it_on_exit() {
     let f = paused_fixture();
-    let w = spawn_watch(&f, &["--supervised=test.service"], &[]);
+    let fake = FakeProc::new();
+    let w = spawn_watch(&f, &fake, &["--supervised=test.service"], &[]);
     let pid = w.pid();
     let want = format!("unit=test.service\npid={pid}\nsince=");
     wait_for("the owner marker", Duration::from_secs(20), || {
@@ -380,41 +390,43 @@ fn a_supervised_watch_writes_the_marker_and_leaves_it_on_exit() {
     );
     let m = fs::metadata(owner_file(&f)).unwrap().permissions().mode() & 0o777;
     assert_eq!(m, 0o600);
+    w.stop();
+    assert!(owner_file(&f).exists(), "a watch never removes the marker");
+    // `rotate owner` names a live owner as running. The owner check refuses
+    // a `<pid>` entry that is a symlink (`tests_owner`), so the watch's own
+    // link cannot stand in (issue #2042); a static rotator entry, named in
+    // the marker in place of the watch, does.
+    let bin = amplihack_bin();
+    fake.process(FAKE_PID_BASE)
+        .cmdline(&[bin.to_str().unwrap(), "profile", "rotate", "watch"])
+        .status('S');
+    fs::write(
+        owner_file(&f),
+        format!("unit=test.service\npid={FAKE_PID_BASE}\nsince=1\n"),
+    )
+    .unwrap();
     let status = text(&f.ok(&["profile", "rotate", "owner"]).stdout);
     assert_eq!(
         status,
-        format!("owner: test.service pid {pid} (running); autostart defers to it\n")
+        format!("owner: test.service pid {FAKE_PID_BASE} (running); autostart defers to it\n")
     );
-    w.stop();
-    assert!(owner_file(&f).exists(), "a watch never removes the marker");
 }
 
-/// A synthetic `/proc` holding only `self/cgroup`, passed to the child as
-/// `AMPLIHACK_TEST_PROC_ROOT` so the result does not depend on the cgroup
-/// the test itself runs in.
-fn fake_cgroup(f: &Fixture, cgroup: &str) -> String {
-    let proc_root = f.tmp.path().join("fake-proc");
-    fs::create_dir_all(proc_root.join("self")).unwrap();
-    fs::set_permissions(&proc_root, fs::Permissions::from_mode(0o700)).unwrap();
-    fs::write(proc_root.join("self/cgroup"), cgroup).unwrap();
-    proc_root.to_str().unwrap().to_string()
+/// A fake process table holding `self/cgroup`, so the result does not
+/// depend on the cgroup the test itself runs in.
+fn fake_cgroup(cgroup: &str) -> FakeProc {
+    let fake = FakeProc::new();
+    fake.self_cgroup(cgroup);
+    fake
 }
 
 #[test]
 fn invocation_id_in_a_service_makes_a_watch_supervised() {
     let f = paused_fixture();
-    let proc_root = fake_cgroup(
-        &f,
+    let fake = fake_cgroup(
         "0::/user.slice/user-1000.slice/user@1000.service/app.slice/amplihack-rotator.service\n",
     );
-    let w = spawn_watch(
-        &f,
-        &[],
-        &[
-            ("INVOCATION_ID", "abc123"),
-            ("AMPLIHACK_TEST_PROC_ROOT", &proc_root),
-        ],
-    );
+    let w = spawn_watch(&f, &fake, &[], &[("INVOCATION_ID", "abc123")]);
     let want = format!("pid={}\n", w.pid());
     wait_for("the owner marker", Duration::from_secs(20), || {
         fs::read_to_string(owner_file(&f)).is_ok_and(|b| b.contains(&want))
@@ -429,18 +441,10 @@ fn invocation_id_in_a_service_makes_a_watch_supervised() {
 #[test]
 fn an_inherited_invocation_id_in_a_scope_writes_no_marker() {
     let f = paused_fixture();
-    let proc_root = fake_cgroup(
-        &f,
+    let fake = fake_cgroup(
         "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-8b86.scope\n",
     );
-    let w = spawn_watch(
-        &f,
-        &[],
-        &[
-            ("INVOCATION_ID", "abc123"),
-            ("AMPLIHACK_TEST_PROC_ROOT", &proc_root),
-        ],
-    );
+    let w = spawn_watch(&f, &fake, &[], &[("INVOCATION_ID", "abc123")]);
     wait_for("the idle line", Duration::from_secs(20), || {
         f.log().contains("idle: auto-switch is off")
     });
@@ -454,7 +458,8 @@ fn an_inherited_invocation_id_in_a_scope_writes_no_marker() {
 #[test]
 fn a_spawned_watch_never_writes_the_marker() {
     let f = paused_fixture();
-    let w = spawn_watch(&f, &["--spawned"], &[("INVOCATION_ID", "x")]);
+    let fake = FakeProc::new();
+    let w = spawn_watch(&f, &fake, &["--spawned"], &[("INVOCATION_ID", "x")]);
     wait_for("the idle line", Duration::from_secs(20), || {
         f.log().contains("idle: auto-switch is off")
     });
@@ -467,7 +472,8 @@ fn an_unsupervised_watch_leaves_an_existing_marker_and_notes_it() {
     let f = paused_fixture();
     let body = "unit=test.service\npid=4300200\nsince=1\n";
     write_marker(&f, body);
-    let w = spawn_watch(&f, &[], &[]);
+    let fake = FakeProc::new();
+    let w = spawn_watch(&f, &fake, &[], &[]);
     wait_for("the idle line", Duration::from_secs(20), || {
         f.log().contains("idle: auto-switch is off")
     });
@@ -485,7 +491,8 @@ fn an_unsupervised_watch_leaves_an_existing_marker_and_notes_it() {
 #[test]
 fn a_supervised_watch_refuses_beside_a_running_rotator() {
     let f = paused_fixture();
-    let first = spawn_watch(&f, &[], &[]);
+    let fake = FakeProc::new();
+    let first = spawn_watch(&f, &fake, &[], &[]);
     let pid_file = f.rotate_dir().join("rotate.pid");
     let want = format!("{}\n", first.pid());
     wait_for(

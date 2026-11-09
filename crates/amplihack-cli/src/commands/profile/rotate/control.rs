@@ -2,7 +2,7 @@
 //! signal only a verified rotator. Also the ledger side of `profile
 //! overflow list` and `clear` (issue #1606).
 
-use super::daemon::{DaemonState, current_state, daemon_err, exe_name};
+use super::daemon::{DaemonState, current_state, daemon_err, exe_name, proc_root};
 use super::exhausted;
 use super::history;
 use super::identify::{self, LiveId};
@@ -103,7 +103,7 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     let auto = super::autostart_line(store.root());
     // Issue #1803: read only under a private root; never echoes the marker.
     let exe = exe_name();
-    let owner = super::owner::describe(store.root(), Path::new("/proc"), exe.as_deref());
+    let owner = super::owner::describe(store.root(), &proc_root(), exe.as_deref());
     println!("rotate: {word}\n{auto}\n{owner}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
     // Issue #1797: from the usage history only; no probe and no `claude`.
     let (capacity, warnings) = history::capacity(store.root(), now());

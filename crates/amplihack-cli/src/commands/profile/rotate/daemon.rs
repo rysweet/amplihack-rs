@@ -11,6 +11,8 @@ use super::log::{Sink, msg, open_or_warn};
 use super::owner;
 use super::settings::Settings;
 use super::swap::{self, RecoverOutcome};
+/// The process table root (issue #2042), for the rotate readers.
+pub(super) use crate::commands::agent::procfs::proc_root;
 use crate::commands::profile::auto_switch::kit::{
     State, check_root_private, now, read_bounded_nofollow, recover_auto_switch,
     write_private_atomic,
@@ -46,7 +48,7 @@ pub(super) fn exe_name() -> Option<std::ffi::OsString> {
 
 pub(super) fn current_state(rs: &RotateState) -> DaemonState {
     match exe_name() {
-        Some(name) => state_at(rs, Path::new("/proc"), &name),
+        Some(name) => state_at(rs, &proc_root(), &name),
         None => DaemonState::Unverifiable,
     }
 }

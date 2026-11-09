@@ -50,7 +50,7 @@ impl Probe for SystemProbe {
             // SAFETY: getuid has no preconditions.
             let uid = unsafe { libc::getuid() };
             crate::commands::profile::claude_config_dirs(
-                Path::new("/proc"),
+                &crate::commands::agent::procfs::proc_root(),
                 std::process::id(),
                 uid,
             )
@@ -114,7 +114,7 @@ pub type LiveError = (PathBuf, Why);
 pub fn process_dirs(probe: &dyn Probe) -> Result<Vec<PathBuf>, LiveError> {
     let dirs = probe
         .config_dirs()
-        .map_err(|e| (PathBuf::from("/proc"), e.kind().into()))?;
+        .map_err(|e| (crate::commands::agent::procfs::proc_root(), e.kind().into()))?;
     Ok(dirs.into_iter().map(|d| d.join("sessions")).collect())
 }
 

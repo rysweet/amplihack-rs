@@ -8,6 +8,8 @@
 #![cfg(unix)]
 
 use crate::issue_1753_login_identity::{Endpoint, LIVE_REFRESH, direct_cycle, fixture};
+#[cfg(target_os = "linux")]
+use crate::support::fake_proc::{FAKE_PID_BASE, FakeProc};
 use crate::support::profile_rotate::{Fixture, ino, private_file, text};
 use std::sync::atomic::Ordering;
 
@@ -159,14 +161,14 @@ fn lease_barred_live_login_is_still_refreshed_and_the_cycle_goes_on() {
     );
     // A running session in `work` keeps auto-switch recovery from handing
     // the hosted login back, so the lease is still in force at the refresh.
-    let mut session = std::process::Command::new("sleep")
-        .arg("600")
-        .env("CLAUDE_CONFIG_DIR", f.root.join("work"))
-        .spawn()
-        .expect("spawn sleep");
+    // The session is a static entry in a fake process table (#2042).
+    let fake = FakeProc::new();
+    fake.process(FAKE_PID_BASE)
+        .cmdline(&["sleep", "600"])
+        .status('S')
+        .environ(&[("CLAUDE_CONFIG_DIR", f.root.join("work").to_str().unwrap())]);
+    f.with_proc(&fake);
     let out = direct_cycle(&f, &ep);
-    let _ = session.kill();
-    let _ = session.wait();
     assert!(ep.refreshes.load(Ordering::Relaxed) > 0, "refresh sent");
     let log = f.log();
     assert!(

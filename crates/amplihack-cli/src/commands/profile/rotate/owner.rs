@@ -334,7 +334,14 @@ pub fn cli(store: &ProfileStore, clear_it: bool) -> Result<(), ProfileError> {
     let root = store.root();
     if !clear_it {
         let exe = daemon::exe_name();
-        println!("{}", describe(root, Path::new("/proc"), exe.as_deref()));
+        println!(
+            "{}",
+            describe(
+                root,
+                &crate::commands::agent::procfs::proc_root(),
+                exe.as_deref()
+            )
+        );
         return Ok(());
     }
     match clear_checked(root)? {

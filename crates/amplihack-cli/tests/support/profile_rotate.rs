@@ -167,6 +167,9 @@ pub struct Fixture {
     pub live_ino: u64,
     pub spare_ino: u64,
     pub extra_ino: u64,
+    /// The fake process table every command reads (issue #2042): the shared
+    /// empty tree unless [`Self::with_proc`] names a test's own.
+    proc_root: std::sync::Mutex<Option<PathBuf>>,
 }
 
 impl Fixture {
@@ -197,6 +200,7 @@ impl Fixture {
             live_ino: 0,
             spare_ino: 0,
             extra_ino: 0,
+            proc_root: std::sync::Mutex::new(None),
         };
         for p in PROFILES {
             f.ok(&["profile", "add", p]);
@@ -399,6 +403,7 @@ impl Fixture {
             .current_dir(&self.work_dir)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env(crate::isolated_amplihack::PROC_ROOT_ENV, self.proc_root())
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
@@ -427,6 +432,26 @@ impl Fixture {
         c.env(IDENTITY_BUDGET_ENV, &ceiling)
             .env(IDENTITY_READ_TIMEOUT_ENV, &ceiling);
         c
+    }
+
+    /// Points every later command at `fake` instead of the shared empty tree
+    /// (issue #2042). Keep `fake` alive while commands run: the seam reads
+    /// the real `/proc` for a tree that is gone, so [`Self::base`] panics
+    /// when the tree has been removed.
+    #[cfg(target_os = "linux")]
+    pub fn with_proc(&self, fake: &super::fake_proc::FakeProc) -> &Self {
+        *self.proc_root.lock().unwrap() = Some(fake.path().to_path_buf());
+        self
+    }
+
+    fn proc_root(&self) -> PathBuf {
+        match &*self.proc_root.lock().unwrap() {
+            Some(tree) => {
+                assert!(tree.is_dir(), "the fake proc tree {tree:?} was removed");
+                tree.clone()
+            }
+            None => crate::isolated_amplihack::shared_empty_proc_root().to_path_buf(),
+        }
     }
 
     /// The loopback identity endpoint, `http://127.0.0.1:<port>`.

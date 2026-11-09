@@ -19,8 +19,9 @@ const ENVIRON_LIMIT: u64 = 16 * 1024 * 1024;
 /// `status`; one page holds a whole `stat`, `status` or typical `cmdline`.
 const FIRST_READ: usize = 4096;
 
-/// `/proc`, or the synthetic root a test names in `AMPLIHACK_TEST_PROC_ROOT`
-/// when every condition of [`proc_root_from`] holds.
+/// `/proc`, or the test root in `AMPLIHACK_TEST_PROC_ROOT` when [`proc_root_from`] allows it,
+/// even in release builds; the one resolver of it (#2042). Left on the real `/proc` on purpose:
+/// `/proc/loadavg`, `util.rs` tree termination, `rotator_down` (see the keep-tests-off guide).
 pub fn proc_root() -> PathBuf {
     proc_root_from(
         std::env::var_os("AMPLIHACK_TEST_PROC_ROOT").as_deref(),

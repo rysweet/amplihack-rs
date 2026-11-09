@@ -49,6 +49,10 @@ fn help(args: &[&str]) -> String {
         .arg("--help")
         .env_clear()
         .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+        .env(
+            crate::isolated_amplihack::PROC_ROOT_ENV,
+            crate::isolated_amplihack::shared_empty_proc_root(),
+        )
         .env("TMPDIR", std::env::temp_dir())
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", tmp.path())
