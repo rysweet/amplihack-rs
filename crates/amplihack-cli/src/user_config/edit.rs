@@ -12,10 +12,10 @@
 //! The decision: the launch-path consent save goes through
 //! [`set_value_nosync`], which writes the same way (temporary file in the same
 //! directory, mode 0600 before any byte, rename) but skips `sync_all`. Its
-//! only caller is `user_config::set_user_value`, which is limited to
-//! `node.heap_consent`. `config set`, `config unset` and the legacy migration
-//! still sync, because they are explicit user actions or one-off rewrites
-//! whose loss the user would not expect. `config edit` does not use this
+//! only caller is `user_config::save_heap_consent_nosync`, which takes no key
+//! and always writes `node.heap_consent`. `config set`, `config unset` and
+//! the legacy migration still sync, because they are explicit user actions
+//! or one-off rewrites whose loss the user would not expect. `config edit` does not use this
 //! module: it hands the file to the user's editor, which decides whether to
 //! sync. Deferring the write until after claude has started was rejected,
 //! because it would spread consent handling across the launch code.

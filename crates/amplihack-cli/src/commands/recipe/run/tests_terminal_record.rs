@@ -172,16 +172,15 @@ fn a_runner_that_times_out_still_names_the_run() {
 }
 
 /// The caller holds the shared environment lock through restoration.
-fn fixture_environment() -> crate::test_support::EnvGuard {
-    let saved = crate::test_support::EnvGuard::capture(&[
-        "AMPLIHACK_AGENT_BINARY",
-        "AMPLIHACK_CLEANUP_ON_EXIT",
-        "HOME",
-    ]);
+///
+/// Each run gets a private work root and no end-of-run sweep (issue #2067;
+/// see `test_support::IsolatedWorkRoot`).
+fn fixture_environment() -> (
+    crate::test_support::EnvGuard,
+    crate::test_support::IsolatedWorkRoot,
+) {
+    let saved = crate::test_support::EnvGuard::capture(&["AMPLIHACK_AGENT_BINARY", "HOME"]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
-    // The end-of-run sweep of the inherited work root is not under test and
-    // can take tens of seconds on a busy host; see tests_execute.rs.
-    unsafe { std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0") };
-    saved
+    (saved, crate::test_support::IsolatedWorkRoot::new())
 }

@@ -266,10 +266,7 @@ fn load_user_preference() -> Option<SavedPreference> {
 
 fn save_user_preference(consent: bool) {
     // Not synced to disk: see user_config::edit (issue #1992).
-    if let Err(error) = crate::user_config::set_user_value(
-        "node.heap_consent",
-        &crate::user_config::Value::Bool(consent),
-    ) {
+    if let Err(error) = crate::user_config::save_heap_consent_nosync(consent) {
         tracing::warn!("failed to save the NODE_OPTIONS consent: {error}");
     }
 }
@@ -422,22 +419,6 @@ mod tests {
 
         drop(restore);
         assert_eq!(fs::read(dir.join("config.toml")).unwrap(), b"\0\0\0\0");
-    }
-
-    // The no-sync path is reserved for the recoverable consent key.
-    #[cfg(debug_assertions)]
-    #[test]
-    #[should_panic(expected = "node.heap_consent")]
-    fn set_user_value_rejects_keys_other_than_heap_consent() {
-        let _guard = home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let home = tempfile::tempdir().unwrap();
-        let _restore = HomeRestore(set_home(home.path()));
-        let _ = crate::user_config::set_user_value(
-            "recipe.verbose",
-            &crate::user_config::Value::Bool(true),
-        );
     }
 
     #[test]

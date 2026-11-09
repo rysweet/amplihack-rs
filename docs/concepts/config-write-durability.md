@@ -34,7 +34,7 @@ later launches report it:
 ```
 
 The save goes through `memory_config::save_user_preference`, then
-`user_config::set_user_value`, then the atomic writer in `user_config::edit`.
+`user_config::save_heap_consent_nosync`, then the atomic writer in `user_config::edit`.
 
 ## What the sync cost
 
@@ -139,10 +139,10 @@ amplihack config get node.heap_consent --show-origin
 - `set_value` keeps its signature and calls `set_value_with(.., true)`.
 - `set_value_nosync` is `pub(crate)` and calls `set_value_with(.., false)`.
   Its doc comment says it is only for recoverable launch-path preferences.
-- `user_config::set_user_value` is the only caller of `set_value_nosync`, and
-  `save_user_preference` is its only caller. A `debug_assert_eq!` limits it to
-  `node.heap_consent`, so a test build fails if another key is routed through
-  it.
+- `user_config::save_heap_consent_nosync(consent)` is the only caller of
+  `set_value_nosync`, and `save_user_preference` is its only caller. It takes
+  no key: it always writes `node.heap_consent`, so no other key can reach the
+  unsynced write in any build.
 - A `#[cfg(test)]` thread-local counter records each successful `sync_all`.
   Tests assert that `set_value` raises it by one and that `set_value_nosync`
   and `save_user_preference` leave it unchanged. Release builds contain no
