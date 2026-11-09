@@ -307,7 +307,10 @@ jobs:
         shell: bash
         env:
           TMPDIR: ${{ runner.temp }}
-        run: bash amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh
+        # amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh reaches the
+        # Rust PhaseProjection through PROJECTION_SHIM, which the bridge test writes,
+        # so the script runs through that test and never directly (#1554).
+        run: cargo test -p amplihack --test integration --locked -- --exact issue_1671_hook_rejection_repair::hook_rejection_repair_shell_contract_passes
       - name: Recipes — evidence gate resolves via full ladder + no-discard (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-implementation-evidence-fallback.sh

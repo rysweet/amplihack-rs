@@ -327,7 +327,21 @@ fn shell_test_is_wired_into_ci() {
     let ci = read(&workspace_root().join(".github/workflows/ci.yml"));
     assert!(
         ci.contains("amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh"),
-        "ci.yml must run the #1671 shell contract like the other recipe shell tests"
+        "ci.yml must name the #1671 shell contract like the other recipe shell tests"
+    );
+    // The script needs PROJECTION_SHIM, which only the bridge test writes, so
+    // CI runs it through that test, selected exactly.
+    let want = "run: cargo test -p amplihack --test integration --locked -- --exact \
+                issue_1671_hook_rejection_repair::hook_rejection_repair_shell_contract_passes";
+    assert_eq!(
+        ci.lines().filter(|line| line.trim() == want).count(),
+        1,
+        "ci.yml must run the #1671 bridge test exactly once with `{want}`"
+    );
+    assert!(
+        !ci.lines().any(|line| line.trim()
+            == "run: bash amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh"),
+        "the #1671 script cannot run directly: it has no projection shim"
     );
 }
 

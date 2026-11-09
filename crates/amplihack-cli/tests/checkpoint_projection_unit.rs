@@ -1156,3 +1156,83 @@ fn step20b_tests_keep_a_test_owned_tmpdir() {
     let src = read("tests/integration/issue_1714_finalization_handoff/step20b_remote.rs");
     assert!(src.contains(".env(\"TMPDIR\", self.tmpdir())"));
 }
+
+// ------------------------------------------------- #1671 driver and bridge
+
+const DRIVER_1671: &str = "amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh";
+const BRIDGE_1671: &str = "tests/integration/issue_1671_hook_rejection_repair_test.rs";
+
+#[test]
+fn issue_1671_driver_runs_no_python() {
+    let src = read(DRIVER_1671);
+    for line in src.lines() {
+        let code = line.split_once(" #").map_or(line, |(code, _)| code);
+        if code.trim_start().starts_with('#') {
+            continue;
+        }
+        assert!(
+            !code.contains("python3 ") && !code.contains(" python3"),
+            "{DRIVER_1671} still runs python3: {line}"
+        );
+    }
+    assert!(src.contains("for tool in git jq; do"));
+}
+
+#[test]
+fn issue_1671_driver_reaches_the_rust_projection_through_the_shim_only() {
+    let src = read(DRIVER_1671);
+    for banned in [
+        "publish-projection",
+        "importlib",
+        "test-checkpoint-scope",
+        "PY_PROJECTION",
+    ] {
+        assert!(
+            !src.contains(banned),
+            "{DRIVER_1671} still contains {banned:?}"
+        );
+    }
+    assert!(
+        src.contains("step_command=(env -u BASH_ENV -u ENV \"${PROJECTION_SHIM:?"),
+        "step-15 must run through PROJECTION_SHIM without BASH_ENV or ENV"
+    );
+    assert!(
+        src.contains("\" \"${REPO_ROOT}\" \"${dir}\")"),
+        "the shim takes REPO_ROOT and the case directory"
+    );
+    // An unset shim is a refusal, never a fallback.
+    assert!(
+        src.contains("${PROJECTION_SHIM:?"),
+        "the driver must refuse to run without PROJECTION_SHIM"
+    );
+}
+
+#[test]
+fn issue_1671_bridge_test_sets_the_shim_records_gnu_bash_and_clears_startup_files() {
+    let src = read(BRIDGE_1671);
+    for want in [
+        "PROJECTION_SHIM",
+        "phase_projection_reentry",
+        "AMPLIHACK_PROJECTION_REQUEST",
+        "current_exe",
+        "--version",
+        "env_remove(\"BASH_ENV\")",
+        "env_remove(\"ENV\")",
+    ] {
+        assert!(src.contains(want), "{BRIDGE_1671} lacks {want:?}");
+    }
+}
+
+#[test]
+fn issue_1671_reentry_test_is_a_no_op_without_its_variable() {
+    let src = read(BRIDGE_1671);
+    let body = src
+        .split_once("fn phase_projection_reentry()")
+        .expect("phase_projection_reentry test")
+        .1;
+    let head: String = body.chars().take(600).collect();
+    assert!(
+        head.contains("AMPLIHACK_PROJECTION_REQUEST") && head.contains("return"),
+        "the re-entry test must return early when its variable is unset"
+    );
+}

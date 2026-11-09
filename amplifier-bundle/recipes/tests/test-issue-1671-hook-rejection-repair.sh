@@ -65,7 +65,7 @@ TDD_RECIPE="${RECIPES}/workflow-tdd.yaml"
 REFACTOR_RECIPE="${RECIPES}/workflow-refactor-review.yaml"
 PUBLISH_RECIPE="${RECIPES}/workflow-publish.yaml"
 
-for tool in git python3 jq; do
+for tool in git jq; do
     command -v "${tool}" >/dev/null 2>&1 || { echo "HARNESS-ERROR: ${tool} is required" >&2; exit 2; }
 done
 # The checkpoint engine is the real `amplihack internal workflow-checkpoint`
@@ -207,28 +207,19 @@ case "$NAME" in
     echo "$ACTION" >> "$S/actions.done"
     case "$ACTION" in
       fix)
-        python3 -I - "$WT" "${STUB_FIX_REPLACEMENT:-push_ok}" <<'PY'
-import os
-import subprocess
-import sys
-
-os.chdir(sys.argv[1])
-replacement = os.fsencode(sys.argv[2])
-paths = subprocess.check_output(["git", "ls-files", "-co", "--exclude-standard", "-z"])
-for path in paths.split(b"\0"):
-    if not path:
-        continue
-    try:
-        with open(path, "rb") as source:
-            before = source.read()
-    except (FileNotFoundError, IsADirectoryError):
-        # Deleted tracked files and submodule directories were skipped by grep.
-        continue
-    after = before.replace(b"FORMAT_ME", b"formatted").replace(b"PUSH_BAD", replacement)
-    if after != before:
-        with open(path, "wb") as target:
-            target.write(after)
-PY
+        # Replace FORMAT_ME, then PUSH_BAD, in every tracked or untracked
+        # file, byte for byte (NUL, CR and invalid UTF-8 kept), rewriting
+        # only files that change. Deleted tracked files and submodule
+        # directories are skipped.
+        rep_esc=$(printf '%s' "${STUB_FIX_REPLACEMENT:-push_ok}" | sed 's/[&/\]/\\&/g')
+        ( cd "$WT" || exit 1
+          git ls-files -co --exclude-standard -z | while IFS= read -r -d '' path; do
+            [ -f "$path" ] || continue
+            fixed="$(mktemp "${TMPDIR:-/tmp}/stub-fix.XXXXXX")" || exit 1
+            LC_ALL=C sed -e 's/FORMAT_ME/formatted/g' -e "s/PUSH_BAD/${rep_esc}/g" -- "$path" > "$fixed" || { rm -f -- "$fixed"; exit 1; }
+            cmp -s -- "$path" "$fixed" || cat -- "$fixed" > "$path"
+            rm -f -- "$fixed"
+          done ) || exit 1
         ;;
       noop) ;;
       edit-pre-commit-config) printf '# agent edit\n' >> "$WT/.pre-commit-config.yaml" ;;
@@ -404,12 +395,12 @@ run_driver() {
 rc_of() { cat "$1/rc" 2>/dev/null || echo missing; }
 var_of() { awk -v k="$2=" 'index($0, k) == 1 { print substr($0, length(k) + 1); exit }' "$1/vars" 2>/dev/null || true; }
 result_line() { awk '/^\{"hook_repair_result":/ { l = $0 } END { if (l != "") print l }' "$1/stderr" 2>/dev/null || true; }
-# result_field <case-dir> <python expression over r>
+# result_field <case-dir> <jq filter over the hook_repair_result object>.
+# A list prints comma-joined. `pytype` names a value's JSON type as the
+# reference did: an integer literal is "int", a decimal literal "float".
 result_field() {
-    result_line "$1" | python3 -I -c 'import json,sys
-r=json.loads(sys.stdin.read())["hook_repair_result"]
-v=eval(sys.argv[1])
-print(",".join(v) if isinstance(v,list) else v)' "$2" 2>/dev/null || echo "__invalid__"
+    result_line "$1" | jq -er 'def pytype: if type == "number" then (if (tojson | test("^-?[0-9]+$")) then "int" else "float" end) elif type == "array" then "list" elif type == "string" then "str" elif type == "object" then "dict" elif type == "boolean" then "bool" else "NoneType" end;
+.hook_repair_result | ('"$2"') | if type == "array" then join(",") elif type == "string" then . else tojson end' 2>/dev/null || echo "__invalid__"
 }
 
 # Assertions every driver case shares: no stdout, no trap or hook-env change.
@@ -849,14 +840,14 @@ section_d() {
     expect_file_lacks "D2: evaluator argv holds no history" "${s}/loop-health-evaluator.1.argv" "output_sha256="
     [[ "$(cat "${s}/loop-health-evaluator.1.cwd" 2>/dev/null)" != "${dir}/repo" ]] && pass \
         || fail "D2: the evaluator must not start in the worktree (#1528)"
-    expect_eq "D2: result status" "$(result_field "${dir}" 'r["status"]')" "stuck"
-    expect_eq "D2: result version" "$(result_field "${dir}" 'r["version"]')" "1"
-    expect_eq "D2: result operation" "$(result_field "${dir}" 'r["operation"]')" "commit"
-    expect_eq "D2: result step" "$(result_field "${dir}" 'r["step"]')" "checkpoint-after-implementation"
-    expect_eq "D2: result hook_ids" "$(result_field "${dir}" 'r["hook_ids"]')" "cargo-fmt"
-    expect_eq "D2: result loop_verdict" "$(result_field "${dir}" 'r["loop_verdict"]')" "STUCK"
-    expect_eq "D2: result rounds" "$(result_field "${dir}" 'r["rounds"]')" "1"
-    expect_eq "D2: result evidence_dir" "$(result_field "${dir}" 'r["evidence_dir"]')" "${hr}"
+    expect_eq "D2: result status" "$(result_field "${dir}" '.status')" "stuck"
+    expect_eq "D2: result version" "$(result_field "${dir}" '.version')" "1"
+    expect_eq "D2: result operation" "$(result_field "${dir}" '.operation')" "commit"
+    expect_eq "D2: result step" "$(result_field "${dir}" '.step')" "checkpoint-after-implementation"
+    expect_eq "D2: result hook_ids" "$(result_field "${dir}" '.hook_ids')" "cargo-fmt"
+    expect_eq "D2: result loop_verdict" "$(result_field "${dir}" '.loop_verdict')" "STUCK"
+    expect_eq "D2: result rounds" "$(result_field "${dir}" '.rounds')" "1"
+    expect_eq "D2: result evidence_dir" "$(result_field "${dir}" '.evidence_dir')" "${hr}"
     expect_file_contains "D2: hook output printed on stderr" "${dir}/stderr" "cargo fmt"
     expect_file_lacks "D2: agent summary never in stderr result" "${dir}/stderr" "AGENT_SUMMARY_SENTINEL"
     expect_driver_hygiene D2 "${dir}"
@@ -891,7 +882,7 @@ section_d() {
     expect_eq "D5: status evaluator_done_unresolved" "$(var_of "${dir}" STATUS)" "evaluator_done_unresolved"
     [[ "$(var_of "${dir}" REASON)" == *"evaluator ended the loop while the hook still rejects"* ]] && pass \
         || fail "D5: reason must say the evaluator ended the loop while the hook still rejects (got '$(var_of "${dir}" REASON)')"
-    expect_eq "D5: result loop_verdict" "$(result_field "${dir}" 'r["loop_verdict"]')" "DONE"
+    expect_eq "D5: result loop_verdict" "$(result_field "${dir}" '.loop_verdict')" "DONE"
 
     # D6 no usable verdict counts as STUCK.
     local v
@@ -928,7 +919,7 @@ section_d() {
     expect_eq "D8: evaluator not called" "$(stub_calls "${dir}/stub" loop-health-evaluator)" "0"
     expect_eq "D8: one round" "$(var_of "${dir}" ROUNDS)" "1"
     [[ "$(var_of "${dir}" REASON)" == "no progress: "* ]] && pass || fail "D8: reason must start 'no progress: ' (got '$(var_of "${dir}" REASON)')"
-    expect_eq "D8: result loop_verdict empty" "$(result_field "${dir}" 'r["loop_verdict"]')" ""
+    expect_eq "D8: result loop_verdict empty" "$(result_field "${dir}" '.loop_verdict')" ""
     expect_file_contains "D8: history records the round" "$(var_of "${dir}" EVIDENCE_DIR)/history" "output_changed=no agent=not_fixable_in_code diff=no diff"
 
     # D8b not_fixable_in_code whose hook output changes still goes to the evaluator.
@@ -939,7 +930,7 @@ section_d() {
         STUB_AGENT_STATUS=not_fixable_in_code STUB_AGENT_ACTION=noop STUB_VERDICTS=STUCK run_driver "${dir}" "${COMMIT_ARGS[@]}"
     expect_eq "D8b: changed output reaches the evaluator" \
         "$(stub_arg "${dir}/stub" loop-health-evaluator 1 loop_round_verdict)" "not_fixable_in_code"
-    expect_eq "D8b: status stuck from the evaluator" "$(result_field "${dir}" 'r["loop_verdict"]')" "STUCK"
+    expect_eq "D8b: status stuck from the evaluator" "$(result_field "${dir}" '.loop_verdict')" "STUCK"
 
     # D8c not_fixable_in_code with a staged change still goes to the evaluator.
     dir="${WORK}/d8c-env-tree-changes"
@@ -1028,8 +1019,8 @@ section_e() {
         || fail "E1: reason must be hook-config-modified naming .pre-commit-config.yaml (got '$(var_of "${dir}" REASON)')"
     expect_eq "E1: never retried" "$(hook_calls "${dir}/hook.log" pre-commit)" "1"
     expect_eq "E1: evaluator not called" "$(stub_calls "${dir}/stub" loop-health-evaluator)" "0"
-    expect_eq "E1: result status" "$(result_field "${dir}" 'r["status"]')" "refused"
-    expect_eq "E1: result loop_verdict empty" "$(result_field "${dir}" 'r["loop_verdict"]')" ""
+    expect_eq "E1: result status" "$(result_field "${dir}" '.status')" "refused"
+    expect_eq "E1: result loop_verdict empty" "$(result_field "${dir}" '.loop_verdict')" ""
     [[ -n "$(var_of "${dir}" EVIDENCE_DIR)" ]] && pass || fail "E1: evidence kept on refused"
 
     dir="${WORK}/e2-move-head"
@@ -1200,7 +1191,7 @@ section_e() {
         "dot-rustfmt|.rustfmt.toml|printf 'x = 1\n' > .rustfmt.toml"
         "cargo-config|.cargo/config.toml|mkdir -p .cargo && printf '[build]\nrustflags = [\"-Awarnings\"]\n' > .cargo/config.toml"
         "cargo-config-legacy|.cargo/config|mkdir -p .cargo && printf '[build]\n' > .cargo/config"
-        "cargo-lints|Cargo.toml[lints]|python3 -I -c 'from pathlib import Path; p = Path(\"Cargo.toml\"); p.write_bytes(p.read_bytes().replace(b\"all = \\\"deny\\\"\", b\"all = \\\"allow\\\"\"))'"
+        "cargo-lints|Cargo.toml[lints]|sed 's/all = \"deny\"/all = \"allow\"/g' Cargo.toml > Cargo.toml.new && cat Cargo.toml.new > Cargo.toml && rm Cargo.toml.new"
         "cargo-workspace-lints|crates/y/Cargo.toml[lints]|printf '[workspace.lints.rust]\nwarnings = \"allow\"\n' >> crates/y/Cargo.toml"
     )
     for spec in "${lint_specs[@]}"; do
@@ -1226,7 +1217,7 @@ section_e() {
     git -C "${dir}/repo" add Cargo.toml
     git -C "${dir}/repo" commit -qm "cargo manifest"
     git -C "${dir}/repo" add src.txt
-    STUB_AGENT_ACTION=fix STUB_AGENT_BODY="python3 -I -c 'from pathlib import Path; p = Path(\"Cargo.toml\"); p.write_bytes(p.read_bytes().replace(b\"[dependencies]\\n\", b\"[dependencies]\\nserde = \\\"1\\\"\\n\"))'" \
+    STUB_AGENT_ACTION=fix STUB_AGENT_BODY="awk '{ print } \$0 == \"[dependencies]\" { print \"serde = \\\"1\\\"\" }' Cargo.toml > Cargo.toml.new && cat Cargo.toml.new > Cargo.toml && rm Cargo.toml.new" \
         run_driver "${dir}" "${COMMIT_ARGS[@]}"
     expect_eq "E9 dependency: not refused" "$(var_of "${dir}" STATUS)" "ok"
     expect_eq "E9 dependency: the edit was committed" "$(git -C "${dir}/repo" show HEAD:Cargo.toml | grep -c '^serde = "1"$' || true)" "1"
@@ -1351,21 +1342,21 @@ section_f() {
         run_driver "${dir}" "${COMMIT_ARGS[@]}"
     local line
     line="$(result_line "${dir}")"
-    if [[ -n "${line}" ]] && printf '%s' "${line}" | python3 -I -c 'import json,sys; json.loads(sys.stdin.read())' 2>/dev/null; then
+    if [[ -n "${line}" ]] && printf '%s' "${line}" | jq -se 'length == 1' >/dev/null 2>&1; then
         pass
     else
         fail "F2: the result line must be valid JSON with hostile reasoning (got '${line}')"
     fi
     expect_eq "F2: exactly one result line" "$(grep -cE '^\{"hook_repair_result":' "${dir}/stderr" || true)" "1"
-    expect_eq "F2: result rounds is a number" "$(result_field "${dir}" 'type(r["rounds"]).__name__')" "int"
-    expect_eq "F2: version is a number" "$(result_field "${dir}" 'type(r["version"]).__name__')" "int"
-    expect_eq "F2: hook_ids is a list" "$(result_field "${dir}" 'type(r["hook_ids"]).__name__')" "list"
-    [[ "$(result_field "${dir}" 'r["reasoning"]')" != *'"'* ]] && pass || fail "F2: quotes stripped from reasoning"
+    expect_eq "F2: result rounds is a number" "$(result_field "${dir}" '.rounds | pytype')" "int"
+    expect_eq "F2: version is a number" "$(result_field "${dir}" '.version | pytype')" "int"
+    expect_eq "F2: hook_ids is a list" "$(result_field "${dir}" '.hook_ids | pytype')" "list"
+    [[ "$(result_field "${dir}" '.reasoning')" != *'"'* ]] && pass || fail "F2: quotes stripped from reasoning"
 
     dir="${WORK}/f3-unknown"
     commit_case "${dir}"
     HOOK_OWN_ID="" STUB_AGENT_ACTION=noop STUB_VERDICTS=STUCK run_driver "${dir}" "${COMMIT_ARGS[@]}"
-    expect_eq "F3: hook_ids is [\"unknown\"] when none parsed" "$(result_field "${dir}" 'r["hook_ids"]')" "unknown"
+    expect_eq "F3: hook_ids is [\"unknown\"] when none parsed" "$(result_field "${dir}" '.hook_ids')" "unknown"
 }
 
 # =============================================================================
@@ -1412,7 +1403,7 @@ section_g() {
     expect_eq "G2: rounds 2" "$(var_of "${dir}" ROUNDS)" "2"
     expect_eq "G2: HEAD unchanged (no empty fix commit)" "$(git -C "${dir}/repo" rev-parse HEAD)" "${feat}"
     expect_eq "G2: push attempted three times" "$(hook_calls "${dir}/hook.log" pre-push)" "3"
-    expect_eq "G2: result operation push" "$(result_field "${dir}" 'r["operation"]')" "push"
+    expect_eq "G2: result operation push" "$(result_field "${dir}" '.operation')" "push"
     expect_eq "G2: loop_name" "$(stub_arg "${dir}/stub" loop-health-evaluator 1 loop_name)" "hook-repair:step-15-commit-push:push"
 
     # G3 the fix commit is itself rejected: repaired one level deep; the inner
@@ -1561,42 +1552,9 @@ extract_step_command "${PUBLISH_RECIPE}" "step-15-commit-push" "${STEP_15}"
 
 # This synthetic owner grants src.txt before any section-H source mutation.
 # Projection substitutes only finite scope judgement, not the checkpoint body,
-# hooks, repair loop, runtime staging or native runner acceptance.
-cat > "${WORK}/publish-projection.py" <<'PY_PROJECTION'
-import importlib.util, json, os, pathlib, subprocess, sys, unittest
-root, directory = map(pathlib.Path, sys.argv[1:])
-spec = importlib.util.spec_from_file_location('checkpoint_scope', root / 'amplifier-bundle/recipes/tests/test-checkpoint-scope.py')
-contract = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(contract)
-class Fixture:
-    case = unittest.TestCase()
-    allowed = {b'src.txt'}
-    def __init__(self):
-        self.task = (directory / 'repo').resolve()
-        self.env = dict(os.environ)
-        self.branch = self.git(self.task, 'branch', '--show-current').decode().strip()
-        self.owner = os.environ.get('TASK_DESCRIPTION', 'add the widget')
-        self.context = {'task_description': self.owner, 'final_requirements': self.owner,
-                        'repo_path': str((directory / 'main').resolve()),
-                        'worktree_setup': {'worktree_path': str(self.task), 'branch_name': self.branch,
-                                           'local_branch': self.branch, 'base_ref': 'refs/remotes/origin/main'},
-                        'version_bump': json.loads(os.environ.get('RECIPE_VAR_version_bump', '{}'))}
-        self.sync_context()
-    def sync_context(self):
-        for key, value in self.context.items():
-            self.env['RECIPE_VAR_' + key] = json.dumps(value) if isinstance(value, (dict, list, bool)) else str(value)
-    def git(self, repo, *args):
-        result = subprocess.run(['git', '-C', str(repo), *args], env=self.env, capture_output=True)
-        self.case.assertEqual(result.returncode, 0, result.stderr)
-        return result.stdout
-    def shell(self, body):
-        return subprocess.run(['bash', '-c', body], cwd=self.task, env=self.env, capture_output=True)
-fixture = Fixture()
-result = contract.PhaseProjection(fixture, contract.PHASES[0]).run()
-sys.stdout.buffer.write(result.stdout)
-sys.stderr.buffer.write(result.stderr)
-sys.exit(result.returncode)
-PY_PROJECTION
+# hooks, repair loop, runtime staging or native runner acceptance. The Rust
+# projection (tests/integration/checkpoint_projection.rs) is reached through
+# PROJECTION_SHIM, written by the #1671 bridge test; there is no Python path.
 
 section_h_static() {
     local label file id
@@ -1652,7 +1610,9 @@ run_step() {
     local dir="$1" step="$2"
     local -a step_command=(bash "${step}")
     if [[ "${step}" == "${STEP_15}" ]]; then
-        step_command=(python3 -I -B "${WORK}/publish-projection.py" "${REPO_ROOT}" "${dir}")
+        # The shim is bash: start it without BASH_ENV or ENV so no startup
+        # file runs in the shim, the test binary or the projected blocks.
+        step_command=(env -u BASH_ENV -u ENV "${PROJECTION_SHIM:?PROJECTION_SHIM must name the Rust projection shim; there is no Python fallback}" "${REPO_ROOT}" "${dir}")
     fi
     shift 2
     mkdir -p "${dir}/home"
@@ -2064,8 +2024,8 @@ section_j() {
     STUB_AGENT_ACTION=noop STUB_VERDICTS=LIMITED run_driver "${dir}" "${COMMIT_ARGS[@]}"
     expect_eq "J1: rc 1" "$(rc_of "${dir}")" "1"
     expect_eq "J1: status usage_limit" "$(var_of "${dir}" STATUS)" "usage_limit"
-    expect_eq "J1: result status" "$(result_field "${dir}" 'r["status"]')" "usage_limit"
-    expect_eq "J1: result loop_verdict empty" "$(result_field "${dir}" 'r["loop_verdict"]')" ""
+    expect_eq "J1: result status" "$(result_field "${dir}" '.status')" "usage_limit"
+    expect_eq "J1: result loop_verdict empty" "$(result_field "${dir}" '.loop_verdict')" ""
     expect_eq "J1: no second round" "$(stub_calls "${dir}/stub" hook-rejection-repair)" "1"
     expect_driver_hygiene "J1" "${dir}"
 
@@ -2079,56 +2039,44 @@ section_j() {
     done
 }
 
+# canary_error <message>: a broken fixing stub is a harness error.
+canary_error() {
+    echo "HARNESS-ERROR: mutation canary: $1" >&2
+    exit 2
+}
+# canary_bytes <file> <printf format>: the file holds exactly those bytes.
+canary_bytes() {
+    cmp -s -- "$1" <(printf "$2") || canary_error "${1##*/} does not hold the expected bytes"
+}
 # Check the actual fixing stub before any evaluator can repeat CONTINUE.
 # A broken edit must be a harness error, not an unbounded driver test.
 mutation_canary() {
     local dir="${WORK}/mutation-canary"
     mkdir -p "${dir}/repo"
     git init -q "${dir}/repo"
-    python3 -I - "${dir}/repo" <<'PY'
-from pathlib import Path
-import sys
-
-repo = Path(sys.argv[1])
-(repo / ".gitignore").write_bytes(b"ignored.txt\n")
-(repo / "tracked.txt").write_bytes(b"FORMAT_ME PUSH_BAD FORMAT_ME PUSH_BAD\r\n")
-(repo / "deleted.txt").write_bytes(b"FORMAT_ME\n")
-PY
-    git -C "${dir}/repo" add .
-    rm "${dir}/repo/deleted.txt"
-    python3 -I - "${dir}/repo" <<'PY'
-from pathlib import Path
-import sys
-
-repo = Path(sys.argv[1])
-(repo / "untracked space\nname.txt").write_bytes(b"\0FORMAT_ME PUSH_BAD\xff")
-(repo / "ignored.txt").write_bytes(b"FORMAT_ME PUSH_BAD\n")
-(repo / "unchanged.txt").write_bytes(b"unchanged\r\n\xff")
-PY
+    local repo="${dir}/repo" odd
+    odd="${repo}/untracked space"$'\n'"name.txt"
+    printf 'ignored.txt\n' > "${repo}/.gitignore"
+    printf 'FORMAT_ME PUSH_BAD FORMAT_ME PUSH_BAD\r\n' > "${repo}/tracked.txt"
+    printf 'FORMAT_ME\n' > "${repo}/deleted.txt"
+    git -C "${repo}" add .
+    rm "${repo}/deleted.txt"
+    printf '\000FORMAT_ME PUSH_BAD\377' > "${odd}"
+    printf 'FORMAT_ME PUSH_BAD\n' > "${repo}/ignored.txt"
+    printf 'unchanged\r\n\377' > "${repo}/unchanged.txt"
     STUB_STATE="${dir}/stub" STUB_AGENT_ACTION=fix "${STUB_BIN}/amplihack" \
-        recipe run hook-rejection-repair -c "hook_repair_worktree=${dir}/repo" > "${dir}/out"
-    python3 -I - "${dir}/repo" <<'PY'
-from pathlib import Path
-import sys
-
-repo = Path(sys.argv[1])
-assert (repo / "tracked.txt").read_bytes() == b"formatted push_ok formatted push_ok\r\n"
-assert (repo / "untracked space\nname.txt").read_bytes() == b"\0formatted push_ok\xff"
-assert (repo / "ignored.txt").read_bytes() == b"FORMAT_ME PUSH_BAD\n"
-assert (repo / "unchanged.txt").read_bytes() == b"unchanged\r\n\xff"
-assert not (repo / "deleted.txt").exists()
-(repo / "tracked.txt").write_bytes(b"FORMAT_ME PUSH_BAD\n")
-PY
+        recipe run hook-rejection-repair -c "hook_repair_worktree=${repo}" > "${dir}/out"
+    canary_bytes "${repo}/tracked.txt" 'formatted push_ok formatted push_ok\r\n'
+    canary_bytes "${odd}" '\000formatted push_ok\377'
+    canary_bytes "${repo}/ignored.txt" 'FORMAT_ME PUSH_BAD\n'
+    canary_bytes "${repo}/unchanged.txt" 'unchanged\r\n\377'
+    [[ ! -e "${repo}/deleted.txt" ]] || canary_error "deleted.txt was recreated"
+    printf 'FORMAT_ME PUSH_BAD\n' > "${repo}/tracked.txt"
     STUB_STATE="${dir}/stub" STUB_AGENT_ACTION=fix STUB_FIX_REPLACEMENT=FORMAT_ME \
         "${STUB_BIN}/amplihack" recipe run hook-rejection-repair \
-        -c "hook_repair_worktree=${dir}/repo" >> "${dir}/out"
-    python3 -I - "${dir}/repo/tracked.txt" <<'PY'
-from pathlib import Path
-import sys
-
-# Preserve the substitution order used by the nested commit repair cases.
-assert Path(sys.argv[1]).read_bytes() == b"formatted FORMAT_ME\n"
-PY
+        -c "hook_repair_worktree=${repo}" >> "${dir}/out"
+    # Preserve the substitution order used by the nested commit repair cases.
+    canary_bytes "${repo}/tracked.txt" 'formatted FORMAT_ME\n'
 }
 
 # =============================================================================
