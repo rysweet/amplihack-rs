@@ -293,6 +293,11 @@ jobs:
       - name: Recipes — cleanup never deletes other runs' or uncommitted worktrees (issues #1494, #1560)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1494-1560-worktree-safety.sh
+      - name: Recipes — worktree sweep archives locally, never pushes, locks per repository (issue #2061)
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-2061-sweep-no-push.sh
       - name: Recipes — re-run never destroys an existing worktree's work (issue #1565)
         shell: bash
         env:
@@ -360,10 +365,12 @@ jobs:
         shell: bash
         run: |
           if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh
+            shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh \
+              amplifier-bundle/recipes/tests/test-issue-2061-sweep-no-push.sh
           else
             sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
-            shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh
+            shellcheck -S warning amplifier-bundle/tools/workflow_worktree_sweep.sh \
+              amplifier-bundle/recipes/tests/test-issue-2061-sweep-no-push.sh
           fi
       - name: Recipes — shellcheck worktree deconflict helper (concurrency)
         shell: bash
