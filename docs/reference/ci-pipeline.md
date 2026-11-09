@@ -17,8 +17,8 @@ For the broader resource contract (concurrency, timeouts, matrix boundaries) see
 push / pull_request / merge_group
    ├─ check (Lint & Format) ───── required
    ├─ test (Test) ─────────────── required
-   ├─ install-smoke (Install Smoke Test)
-   └─ cross-compile (Build <target>) × 4
+   ├─ install-smoke (Install Smoke Test) ── required
+   └─ cross-compile (Build <target>) × 4 ── required (all 4 legs)
 
 release ── (tag push only) needs: [test, cross-compile]
 ```
