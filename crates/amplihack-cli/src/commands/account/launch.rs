@@ -18,7 +18,7 @@ use super::pick::{self, Pick, PickEnv, PickOpts};
 use super::reading;
 use amplihack_utils::codex_capacity;
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 /// Looks up one environment variable.
@@ -37,10 +37,6 @@ impl LeaseHandle {
     pub fn new(path: PathBuf) -> Self {
         Self(path)
     }
-
-    pub fn path(&self) -> &Path {
-        &self.0
-    }
 }
 
 impl Drop for LeaseHandle {
@@ -58,6 +54,26 @@ fn non_empty(read: Reader<'_>, key: &str) -> Option<OsString> {
     read(key).filter(|v| !v.is_empty())
 }
 
+/// The alias `key` when it is a non-empty absolute path. An alias can come
+/// from a recipe's context, so a relative value, which would resolve under
+/// the step's working directory, is ignored.
+fn absolute_alias(read: Reader<'_>, key: &str) -> Option<PathBuf> {
+    non_empty(read, key)
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+}
+
+/// [`absolute_alias`], with a warning when a non-empty value is ignored.
+fn absolute_alias_warned(read: Reader<'_>, key: &str) -> Option<PathBuf> {
+    let alias = absolute_alias(read, key);
+    if alias.is_none()
+        && let Some(v) = non_empty(read, key)
+    {
+        eprintln!("warning: {key}={v:?} is not an absolute path; ignored");
+    }
+    alias
+}
+
 /// The Codex home a launch is pinned to: `CODEX_HOME` when set and not
 /// empty (the user's own choice, passed through as it is), else
 /// `AMPLIHACK_CODEX_HOME` when it is an absolute path.
@@ -65,15 +81,15 @@ pub fn codex_pin(read: Reader<'_>) -> Option<PathBuf> {
     if let Some(v) = non_empty(read, CODEX_HOME_ENV) {
         return Some(PathBuf::from(v));
     }
-    non_empty(read, CODEX_HOME_ALIAS)
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
+    absolute_alias_warned(read, CODEX_HOME_ALIAS)
 }
 
-/// Whether a Claude launch is pinned to a raw config directory.
+/// Whether a Claude launch is pinned to a raw config directory:
+/// `CLAUDE_CONFIG_DIR` when set and not empty, else
+/// `AMPLIHACK_CLAUDE_CONFIG_DIR` when it is an absolute path.
 pub fn claude_config_pinned(read: Reader<'_>) -> bool {
     non_empty(read, CLAUDE_CONFIG_DIR_ENV).is_some()
-        || non_empty(read, CLAUDE_CONFIG_DIR_ALIAS).is_some()
+        || absolute_alias(read, CLAUDE_CONFIG_DIR_ALIAS).is_some()
 }
 
 /// What `amplihack recipe run` sets on the runner's process so a pinned home
@@ -92,12 +108,13 @@ pub fn recipe_aliases(read: Reader<'_>) -> Vec<(&'static str, OsString)> {
 }
 
 /// The raw Claude config directory a launch restores from the alias: the
-/// alias when `CLAUDE_CONFIG_DIR` itself is unset or empty.
+/// alias when `CLAUDE_CONFIG_DIR` itself is unset or empty and the alias is
+/// an absolute path.
 pub fn claude_config_from_alias(read: Reader<'_>) -> Option<PathBuf> {
     if non_empty(read, CLAUDE_CONFIG_DIR_ENV).is_some() {
         return None;
     }
-    non_empty(read, CLAUDE_CONFIG_DIR_ALIAS).map(PathBuf::from)
+    absolute_alias_warned(read, CLAUDE_CONFIG_DIR_ALIAS)
 }
 
 fn env_var(k: &str) -> Option<OsString> {
@@ -174,13 +191,21 @@ pub fn codex_home_for_launch(docker: bool, auto: bool) -> (Option<PathBuf>, Opti
     match picked {
         Ok(p) => {
             let handle = p.lease.map(LeaseHandle::new);
+            // Not reached: once a lease is written, `pick()` returns either a
+            // chosen account or `Err(NoUsable)`. It warns rather than panics
+            // because a launch must go ahead whatever the picker does (D20).
             let Some(home) = p.chosen.map(|i| p.ranked[i].candidate.home.clone()) else {
                 eprintln!("warning: account pick failed: nothing was chosen; using default home");
                 return (None, None);
             };
             // A picked home did not come from the user's own setup, so it
-            // gets the approval policy bootstrap gives `~/.codex`.
-            if let Err(e) = amplihack_launcher::codex_config::configure(&home, true) {
+            // gets the approval policy bootstrap gives `~/.codex`. On
+            // interactive launches bootstrap configures it through
+            // `prepare_codex_launcher(.., Some(home))`; recipe steps take the
+            // non-interactive path, where bootstrap does nothing.
+            if crate::util::is_noninteractive()
+                && let Err(e) = amplihack_launcher::codex_config::configure(&home, true)
+            {
                 eprintln!(
                     "warning: could not configure Codex in {}: {e:#}",
                     home.display()

@@ -465,3 +465,84 @@ fn reads_happen_before_the_lock_is_taken() {
     rx.recv().unwrap();
     assert_eq!(chosen_name(&p), "a");
 }
+
+/// Leases naming a real directory that is not a candidate add no
+/// candidate and are never the choice, whether the pick writes a lease or
+/// only lists.
+#[test]
+fn lease_home_never_chosen() {
+    let w = World::with(vec![("a".into(), Some(30.0), true)]);
+    let foreign = w._tmp.path().join("foreign-home");
+    fs::create_dir_all(&foreign).unwrap();
+    let foreign = foreign.canonicalize().unwrap();
+    let readings = w.readings();
+    let read = move |_: Cli| readings.clone();
+    let alive = |_: u32| true;
+    {
+        let dir = super::lease::LeaseDir::open(&w.lease_root, Cli::Codex).unwrap();
+        let g = dir.lock().unwrap();
+        for _ in 0..3 {
+            g.write(&super::lease::Lease::new(
+                Cli::Codex,
+                foreign.clone(),
+                None,
+                NOW,
+            ))
+            .unwrap();
+        }
+    }
+    let e = env(&w, &read, &alive, None);
+    for opts in [LIST, WRITE] {
+        let p = pick::pick(&e, Cli::Codex, opts).unwrap();
+        assert_eq!(p.ranked.len(), 1, "a lease home became a candidate");
+        let i = p.chosen.expect("a is chosen");
+        assert_eq!(p.ranked[i].candidate.home, w.homes.home("a"));
+        assert_eq!(p.ranked[i].active_leases, 0);
+        assert!(p.ranked.iter().all(|r| r.candidate.home != foreign));
+    }
+    let homes = w.lease_homes();
+    assert_eq!(homes.get("a"), Some(&1), "{homes:?}");
+}
+
+/// A profile that is a symlink to a directory whose name holds a newline
+/// passes the reader's check under its own name, but is unusable once
+/// canonicalised.
+#[test]
+fn a_symlink_to_a_control_character_target_is_unusable() {
+    let w = World::new();
+    let target = w._tmp.path().join("evil\nhome");
+    fs::create_dir_all(&target).unwrap();
+    let link = w._tmp.path().join("plain-link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let mut readings = w.readings();
+    readings.candidates[0].home = link;
+    let read = move |_: Cli| readings.clone();
+    let alive = |_: u32| true;
+    let p = pick::pick(&env(&w, &read, &alive, None), Cli::Codex, LIST).unwrap();
+    let a = p
+        .ranked
+        .iter()
+        .find(|r| r.candidate.account == "a")
+        .unwrap();
+    assert!(!a.candidate.usable);
+    assert_eq!(a.candidate.note, "unsafe path");
+    assert_eq!(chosen_name(&p), "b");
+}
+
+#[test]
+fn a_home_that_does_not_exist_is_unresolvable() {
+    let w = World::new();
+    let mut readings = w.readings();
+    readings.candidates[0].home = w._tmp.path().join("gone");
+    let read = move |_: Cli| readings.clone();
+    let alive = |_: u32| true;
+    let p = pick::pick(&env(&w, &read, &alive, None), Cli::Codex, LIST).unwrap();
+    let a = p
+        .ranked
+        .iter()
+        .find(|r| r.candidate.account == "a")
+        .unwrap();
+    assert!(!a.candidate.usable);
+    assert_eq!(a.candidate.note, "unresolvable path");
+    assert_eq!(chosen_name(&p), "b");
+}

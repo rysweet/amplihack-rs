@@ -124,8 +124,16 @@ fn candidate_json(r: &Ranked) -> Value {
     })
 }
 
-fn pick_json(cli: Cli, cost: f64, pick: &Pick) -> Value {
-    let chosen = pick.chosen.map(|i| &pick.ranked[i]);
+/// The `--json` object: the chosen account's fields (all null when none was
+/// chosen), the ranked candidates and the error, if any.
+fn report_json(
+    cli: Cli,
+    cost: f64,
+    chosen: Option<&Ranked>,
+    ranked: &[Ranked],
+    read_at: Option<i64>,
+    error: Option<String>,
+) -> Value {
     json!({
         "cli": cli.as_str(),
         "account": chosen.map(|r| r.candidate.account.clone()),
@@ -135,35 +143,25 @@ fn pick_json(cli: Cli, cost: f64, pick: &Pick) -> Value {
         "active_leases": chosen.map(|r| r.active_leases),
         "effective_headroom": chosen.and_then(|r| r.effective_headroom),
         "job_cost_pct": cost,
-        "read_at": pick.read_at,
-        "error": Value::Null,
-        "candidates": pick.ranked.iter().map(candidate_json).collect::<Vec<_>>(),
+        "read_at": read_at,
+        "error": error,
+        "candidates": ranked.iter().map(candidate_json).collect::<Vec<_>>(),
     })
 }
 
+fn pick_json(cli: Cli, cost: f64, pick: &Pick) -> Value {
+    let chosen = pick.chosen.map(|i| &pick.ranked[i]);
+    report_json(cli, cost, chosen, &pick.ranked, Some(pick.read_at), None)
+}
+
 fn error_json(cli: Cli, cost: f64, err: &PickError) -> Value {
-    let (read_at, candidates) = match err {
+    let (ranked, read_at): (&[Ranked], _) = match err {
         PickError::NoUsable {
             ranked, read_at, ..
-        } => (
-            json!(read_at),
-            ranked.iter().map(candidate_json).collect::<Vec<_>>(),
-        ),
-        PickError::Io { .. } => (Value::Null, Vec::new()),
+        } => (ranked, Some(*read_at)),
+        PickError::Io { .. } => (&[], None),
     };
-    json!({
-        "cli": cli.as_str(),
-        "account": Value::Null,
-        "home": Value::Null,
-        "live_headroom": Value::Null,
-        "running_jobs": Value::Null,
-        "active_leases": Value::Null,
-        "effective_headroom": Value::Null,
-        "job_cost_pct": cost,
-        "read_at": read_at,
-        "error": err.to_string(),
-        "candidates": candidates,
-    })
+    report_json(cli, cost, None, ranked, read_at, Some(err.to_string()))
 }
 
 fn run_pick(args: PickArgs) -> Result<()> {

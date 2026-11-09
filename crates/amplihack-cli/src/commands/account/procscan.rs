@@ -93,7 +93,14 @@ fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
 
 /// The processes of real uid `uid` under `proc_root`, except `self_pid`
 /// and zombies, each with the value of `key` if it sets one.
+/// Empty when `proc_root` cannot be listed.
 pub fn walk(proc_root: &Path, key: &str, self_pid: u32, uid: u32) -> Vec<ProcEntry> {
+    scan(proc_root, key, self_pid, uid).unwrap_or_default()
+}
+
+/// As [`walk`], but an error when `proc_root` itself cannot be listed. A
+/// process that exits during the scan is skipped, not an error.
+fn scan(proc_root: &Path, key: &str, self_pid: u32, uid: u32) -> std::io::Result<Vec<ProcEntry>> {
     #[cfg(target_os = "linux")]
     {
         walk_linux(proc_root, key, self_pid, uid)
@@ -101,15 +108,18 @@ pub fn walk(proc_root: &Path, key: &str, self_pid: u32, uid: u32) -> Vec<ProcEnt
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (proc_root, key, self_pid, uid);
-        Vec::new()
+        Ok(Vec::new())
     }
 }
 
 #[cfg(target_os = "linux")]
-fn walk_linux(proc_root: &Path, key: &str, self_pid: u32, uid: u32) -> Vec<ProcEntry> {
-    let Ok(rd) = std::fs::read_dir(proc_root) else {
-        return Vec::new();
-    };
+fn walk_linux(
+    proc_root: &Path,
+    key: &str,
+    self_pid: u32,
+    uid: u32,
+) -> std::io::Result<Vec<ProcEntry>> {
+    let rd = std::fs::read_dir(proc_root)?;
     let mut prefix = key.as_bytes().to_vec();
     prefix.push(b'=');
     let mut out = Vec::new();
@@ -141,7 +151,7 @@ fn walk_linux(proc_root: &Path, key: &str, self_pid: u32, uid: u32) -> Vec<ProcE
         out.push(ProcEntry { pid, ppid, matched });
     }
     out.sort_by_key(|e| e.pid);
-    out
+    Ok(out)
 }
 
 /// The real uid and whether the process is a zombie, from `status`.
@@ -183,15 +193,26 @@ fn find_value(environ: &[u8], prefix: &[u8]) -> Option<OsString> {
         .map(|v| std::ffi::OsStr::from_bytes(v).to_os_string())
 }
 
-/// The jobs on each of `homes` (canonical paths) under `proc_root`.
+/// The jobs on each of `homes` (canonical paths) under `proc_root`, and
+/// the warnings to print. When `proc_root` cannot be listed there are no
+/// jobs and one warning, so the pick goes ahead on leases alone.
 pub fn count_jobs(
     proc_root: &Path,
     key: &str,
     homes: &[PathBuf],
     self_pid: u32,
     uid: u32,
-) -> JobCounts {
-    let entries = walk(proc_root, key, self_pid, uid);
+) -> (JobCounts, Vec<String>) {
+    let entries = match scan(proc_root, key, self_pid, uid) {
+        Ok(entries) => entries,
+        Err(e) => {
+            let warning = format!(
+                "warning: account pick: job counting unavailable: could not list {}: {e}",
+                proc_root.display()
+            );
+            return (JobCounts::default(), vec![warning]);
+        }
+    };
     let mut canon: HashMap<OsString, Option<PathBuf>> = HashMap::new();
     let mut home_of: HashMap<u32, PathBuf> = HashMap::new();
     let mut ppid_of: HashMap<u32, u32> = HashMap::new();
@@ -220,7 +241,7 @@ pub fn count_jobs(
             ancestors: ancestors(e.pid, &ppid_of),
         });
     }
-    JobCounts { jobs }
+    (JobCounts { jobs }, Vec::new())
 }
 
 /// The candidate home `value` names, if any: it must be non-empty,

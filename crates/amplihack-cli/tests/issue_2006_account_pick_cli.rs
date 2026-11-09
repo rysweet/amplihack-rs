@@ -348,3 +348,51 @@ fn output_never_contains_credential_sentinels() {
     }
     fx.assert_credentials_untouched();
 }
+
+/// A running process on account `a` holds a secret under another key in
+/// its environment. The scan sees the process (one job on `a`), but the
+/// secret reaches no output, warning or lease.
+#[cfg(target_os = "linux")]
+#[test]
+fn environ_secret_not_echoed() {
+    use std::io::Write;
+    const ENV_SECRET: &str = "SENTINEL-ENVIRON-2006";
+    let fx = Fx::with_80_50_20();
+    // `cat` waits on its stdin until the test closes it, so the job runs
+    // for exactly as long as the test needs it.
+    let mut job = std::process::Command::new(fx.tools.join("cat"))
+        .env_clear()
+        .env("CODEX_HOME", fx.account("a"))
+        .env("OTHER_SECRET_KEY", ENV_SECRET)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut outputs = Vec::new();
+    for extra in [&[][..], &["--json"], &["--list"]] {
+        let out = pick(&fx, extra);
+        assert_eq!(out.status.code(), Some(0), "{extra:?}\n{}", text(&out));
+        outputs.push(out);
+    }
+    let mut stdin = job.stdin.take().unwrap();
+    let _ = stdin.flush();
+    drop(stdin);
+    job.wait().unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(stdout(&outputs[1]).trim_end()).unwrap();
+    let a = json["candidates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["account"] == "a")
+        .expect("account a in --json");
+    assert_eq!(a["running_jobs"], 1, "the scan did not see the job: {json}");
+    for out in &outputs {
+        let all = text(out);
+        assert!(!all.contains(ENV_SECRET), "{all}");
+    }
+    for p in fx.lease_files() {
+        let raw = std::fs::read_to_string(&p).unwrap();
+        assert!(!raw.contains(ENV_SECRET), "{}: {raw}", p.display());
+    }
+}

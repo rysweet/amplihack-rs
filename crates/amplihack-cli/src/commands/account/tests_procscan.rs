@@ -9,7 +9,7 @@
 //!   only the value of `key` (`CODEX_HOME` or `CLAUDE_CONFIG_DIR`). The real
 //!   uid comes from `status` and is checked before `environ` is opened. The
 //!   parent comes from `stat`, after the last `)`.
-//! - `procscan::count_jobs(proc_root, key, homes, self_pid, uid) -> JobCounts`
+//! - `procscan::count_jobs(proc_root, key, homes, self_pid, uid) -> (JobCounts, Vec<String>)`
 //!   with `homes` canonical. `JobCounts::count(&Path) -> usize` and
 //!   `JobCounts::jobs: Vec<Job { pid, home, ancestors: Vec<u32> }>`, where
 //!   `ancestors` is the parent chain of the job, nearest first.
@@ -25,7 +25,7 @@ use std::path::PathBuf;
 const KEY: &str = "CODEX_HOME";
 
 fn count(p: &FakeProc, homes: &Homes) -> JobCounts {
-    procscan::count_jobs(&p.root, KEY, &homes.all(), SELF_PID, UID)
+    procscan::count_jobs(&p.root, KEY, &homes.all(), SELF_PID, UID).0
 }
 
 #[test]
@@ -156,7 +156,7 @@ fn only_the_requested_key_matches() {
     p.process(100, 1, UID, 'S', &[&kv("CLAUDE_CONFIG_DIR", &h.home("a"))]);
     p.process(101, 1, UID, 'S', &[&kv("XCODEX_HOME", &h.home("a"))]);
     assert_eq!(count(&p, &h).count(&h.home("a")), 0);
-    let claude = procscan::count_jobs(&p.root, "CLAUDE_CONFIG_DIR", &h.all(), SELF_PID, UID);
+    let claude = procscan::count_jobs(&p.root, "CLAUDE_CONFIG_DIR", &h.all(), SELF_PID, UID).0;
     assert_eq!(claude.count(&h.home("a")), 1);
 }
 
@@ -227,9 +227,9 @@ fn walk_keeps_only_the_requested_value() {
 }
 
 #[test]
-fn a_missing_proc_root_counts_nothing() {
+fn a_missing_proc_root_counts_nothing_and_warns() {
     let h = Homes::new();
-    let c = procscan::count_jobs(
+    let (c, warnings) = procscan::count_jobs(
         &PathBuf::from("/nonexistent/proc"),
         KEY,
         &h.all(),
@@ -237,6 +237,21 @@ fn a_missing_proc_root_counts_nothing() {
         UID,
     );
     assert!(c.jobs.is_empty());
+    assert_eq!(c.count(&h.home("a")), 0);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("job counting unavailable")
+            && warnings[0].contains("/nonexistent/proc"),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn a_readable_proc_root_gives_no_warning() {
+    let (p, h) = (FakeProc::new(), Homes::new());
+    p.process(100, 1, UID, 'S', &[&kv(KEY, &h.home("a"))]);
+    let (_, warnings) = procscan::count_jobs(&p.root, KEY, &h.all(), SELF_PID, UID);
+    assert!(warnings.is_empty(), "{warnings:?}");
 }
 
 #[test]
@@ -254,7 +269,9 @@ fn adding_jobs_moves_the_choice_to_the_next_account() {
                 Scored::new(home, Some(l), true, n, 0, 15.0)
             })
             .collect();
-        rows[rank::choose(&rows).unwrap()].home.clone()
+        rows[rank::choose(&rows, &rank::order(&rows)).unwrap()]
+            .home
+            .clone()
     };
     assert_eq!(choose(&count(&p, &h)), h.home("a"));
     // Three jobs on a: 80 - 45 = 35 < 50.

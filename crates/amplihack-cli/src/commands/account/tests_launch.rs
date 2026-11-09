@@ -10,8 +10,12 @@
 //! - `launch::codex_pin(read) -> Option<PathBuf>`: `CODEX_HOME` when set and
 //!   non-empty, else `AMPLIHACK_CODEX_HOME` when it is a non-empty absolute
 //!   path, else `None`.
-//! - `launch::claude_config_pinned(read) -> bool`: `CLAUDE_CONFIG_DIR` or
-//!   `AMPLIHACK_CLAUDE_CONFIG_DIR` is set and non-empty.
+//! - `launch::claude_config_pinned(read) -> bool`: `CLAUDE_CONFIG_DIR` is
+//!   set and non-empty, or `AMPLIHACK_CLAUDE_CONFIG_DIR` is a non-empty
+//!   absolute path.
+//! - `launch::claude_config_from_alias(read) -> Option<PathBuf>`:
+//!   `AMPLIHACK_CLAUDE_CONFIG_DIR` when `CLAUDE_CONFIG_DIR` is unset or
+//!   empty and the alias is a non-empty absolute path, else `None`.
 //! - `launch::recipe_aliases(read) -> Vec<(&'static str, OsString)>`: what
 //!   `amplihack recipe run` sets on the runner's process:
 //!   `AMPLIHACK_CODEX_HOME` from `CODEX_HOME` and
@@ -139,4 +143,26 @@ fn dropping_a_lease_handle_removes_exactly_its_file() {
     assert!(other.exists());
     // Already gone: dropping again must not panic.
     drop(LeaseHandle::new(mine));
+}
+
+#[test]
+fn a_relative_claude_alias_is_ignored() {
+    let r = reader(&[("AMPLIHACK_CLAUDE_CONFIG_DIR", "rel/dir")]);
+    assert_eq!(launch::claude_config_from_alias(&r), None);
+    assert!(!launch::claude_config_pinned(&r));
+}
+
+#[test]
+fn an_absolute_claude_alias_is_restored() {
+    let r = reader(&[("AMPLIHACK_CLAUDE_CONFIG_DIR", "/abs/dir")]);
+    assert_eq!(
+        launch::claude_config_from_alias(&r),
+        Some(PathBuf::from("/abs/dir"))
+    );
+    assert!(launch::claude_config_pinned(&r));
+    let r = reader(&[
+        ("CLAUDE_CONFIG_DIR", "/raw"),
+        ("AMPLIHACK_CLAUDE_CONFIG_DIR", "/abs/dir"),
+    ]);
+    assert_eq!(launch::claude_config_from_alias(&r), None);
 }

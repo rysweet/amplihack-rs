@@ -5,7 +5,7 @@
 //! is never printed raw. An empty value counts as unset and gives no warning.
 
 use super::Cli;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
 pub const JOB_COST_ENV: &str = "AMPLIHACK_ACCOUNT_JOB_COST_PCT";
@@ -70,69 +70,51 @@ impl PickConfig {
         let mut warnings = Vec::new();
         let get = |k: &str| read(k).filter(|v| !v.is_empty());
 
-        let job_cost_pct = match get(JOB_COST_ENV) {
-            None => DEFAULT_JOB_COST_PCT,
-            Some(raw) => match parse_cost(&raw) {
-                Some(v) => v,
-                None => {
-                    warnings.push(format!(
-                        "warning: {JOB_COST_ENV}={:?} is not a number above 0 and at most 100; using {DEFAULT_JOB_COST_PCT}",
-                        raw.to_string_lossy()
-                    ));
-                    DEFAULT_JOB_COST_PCT
-                }
-            },
-        };
-
-        let lease_ttl_secs = match get(LEASE_TTL_ENV) {
-            None => DEFAULT_LEASE_TTL_SECS,
-            Some(raw) => match parse_ttl(&raw) {
-                Some(v) => v,
-                None => {
-                    warnings.push(format!(
-                        "warning: {LEASE_TTL_ENV}={:?} is not a whole number from 1 to {MAX_LEASE_TTL_SECS}; using {DEFAULT_LEASE_TTL_SECS}",
-                        raw.to_string_lossy()
-                    ));
-                    DEFAULT_LEASE_TTL_SECS
-                }
-            },
-        };
-
+        let job_cost_pct = setting(
+            get(JOB_COST_ENV),
+            parse_cost,
+            DEFAULT_JOB_COST_PCT,
+            JOB_COST_ENV,
+            "a number above 0 and at most 100",
+            &DEFAULT_JOB_COST_PCT.to_string(),
+            &mut warnings,
+        );
+        let lease_ttl_secs = setting(
+            get(LEASE_TTL_ENV),
+            parse_ttl,
+            DEFAULT_LEASE_TTL_SECS,
+            LEASE_TTL_ENV,
+            &format!("a whole number from 1 to {MAX_LEASE_TTL_SECS}"),
+            &DEFAULT_LEASE_TTL_SECS.to_string(),
+            &mut warnings,
+        );
         let default_dir = home
             .map(|h| h.join(DEFAULT_LEASE_SUBDIR))
             .unwrap_or_else(|| std::env::temp_dir().join("amplihack-account-leases"));
-        let lease_dir = match get(LEASE_DIR_ENV) {
-            None => default_dir,
-            Some(raw) => {
-                let p = PathBuf::from(&raw);
-                if p.is_absolute() {
-                    p
-                } else {
-                    warnings.push(format!(
-                        "warning: {LEASE_DIR_ENV}={:?} is not an absolute path; using {}",
-                        raw.to_string_lossy(),
-                        default_dir.display()
-                    ));
-                    default_dir
-                }
-            }
-        };
-
-        let switch = match get(SWITCH_ENV) {
-            None => Switch::On,
-            Some(raw) => match raw.to_string_lossy().to_ascii_lowercase().as_str() {
-                "on" => Switch::On,
-                "off" => Switch::Off,
-                "codex" => Switch::Codex,
-                _ => {
-                    warnings.push(format!(
-                        "warning: {SWITCH_ENV}={:?} is not one of on, off or codex; using on",
-                        raw.to_string_lossy()
-                    ));
-                    Switch::On
-                }
+        let shown_dir = default_dir.display().to_string();
+        let lease_dir = setting(
+            get(LEASE_DIR_ENV),
+            |raw| Some(PathBuf::from(raw)).filter(|p| p.is_absolute()),
+            default_dir,
+            LEASE_DIR_ENV,
+            "an absolute path",
+            &shown_dir,
+            &mut warnings,
+        );
+        let switch = setting(
+            get(SWITCH_ENV),
+            |raw| match raw.to_string_lossy().to_ascii_lowercase().as_str() {
+                "on" => Some(Switch::On),
+                "off" => Some(Switch::Off),
+                "codex" => Some(Switch::Codex),
+                _ => None,
             },
-        };
+            Switch::On,
+            SWITCH_ENV,
+            "one of on, off or codex",
+            "on",
+            &mut warnings,
+        );
 
         (
             Self {
@@ -146,8 +128,29 @@ impl PickConfig {
     }
 }
 
+/// `raw` parsed by `parse`, or `default` when it is unset; an invalid value
+/// also gives `default`, with a warning that quotes it.
+fn setting<T>(
+    raw: Option<OsString>,
+    parse: impl Fn(&OsStr) -> Option<T>,
+    default: T,
+    key: &str,
+    expected: &str,
+    shown_default: &str,
+    warnings: &mut Vec<String>,
+) -> T {
+    let Some(raw) = raw else { return default };
+    parse(&raw).unwrap_or_else(|| {
+        warnings.push(format!(
+            "warning: {key}={:?} is not {expected}; using {shown_default}",
+            raw.to_string_lossy()
+        ));
+        default
+    })
+}
+
 /// A finite number above 0 and at most 100, written without spaces.
-fn parse_cost(raw: &std::ffi::OsStr) -> Option<f64> {
+fn parse_cost(raw: &OsStr) -> Option<f64> {
     let s = raw.to_str()?;
     if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
         return None;
@@ -158,7 +161,7 @@ fn parse_cost(raw: &std::ffi::OsStr) -> Option<f64> {
 }
 
 /// A whole number from 1 to 86400.
-fn parse_ttl(raw: &std::ffi::OsStr) -> Option<u64> {
+fn parse_ttl(raw: &OsStr) -> Option<u64> {
     let s = raw.to_str()?;
     if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
         return None;

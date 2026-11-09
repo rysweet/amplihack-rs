@@ -157,13 +157,15 @@ pub fn dispatch(command: Commands) -> Result<()> {
             if run_supervised(profile.as_deref(), docker, auto, &claude_args)? {
                 return Ok(());
             }
-            let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
             profile::autostart_on_launch(docker);
             profile::capacity_launch_warning(&claude_args);
             // Issue #1811: after supervision, whose rerun child is the process
             // that asks; held until the launch returns.
             let _slot = governor::admit(AdmitRequest::launch(&governor, &claude_args))
                 .map_err(Denied::report)?;
+            // Issue #2006: after admission, so a pick's lease does not expire
+            // while the launch waits for a slot.
+            let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
             if auto {
                 validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
@@ -228,14 +230,16 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 if run_supervised(profile.as_deref(), docker, auto, &claude_args)? {
                     return Ok(());
                 }
-                let claude_config_dir =
-                    profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
                 profile::autostart_on_launch(docker);
                 profile::capacity_launch_warning(&claude_args);
                 // Issue #1811: after supervision, whose rerun child is the
                 // process that asks; held until the launch returns.
                 let _slot = governor::admit(AdmitRequest::launch(&governor, &claude_args))
                     .map_err(Denied::report)?;
+                // Issue #2006: after admission, so a pick's lease does not
+                // expire while the launch waits for a slot.
+                let claude_config_dir =
+                    profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
                 if auto {
                     validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                     let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;

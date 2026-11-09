@@ -81,14 +81,12 @@ pub fn order(rows: &[Scored]) -> Vec<usize> {
 
 /// Whether a ranked row may be chosen: usable, with effective headroom
 /// above 0.
-pub fn qualifies(row: &Scored) -> bool {
+fn qualifies(row: &Scored) -> bool {
     row.usable && row.effective.is_some_and(|e| e > 0.0)
 }
 
-/// The index of the chosen candidate, if any qualifies.
-pub fn choose(rows: &[Scored]) -> Option<usize> {
-    order(rows)
-        .first()
-        .copied()
-        .filter(|&i| qualifies(&rows[i]))
+/// The index into `rows` of the chosen candidate, given `order`, the
+/// result of [`order`] for `rows`: its first entry, when that qualifies.
+pub fn choose(rows: &[Scored], order: &[usize]) -> Option<usize> {
+    order.first().copied().filter(|&i| qualifies(&rows[i]))
 }

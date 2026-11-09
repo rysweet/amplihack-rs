@@ -273,7 +273,10 @@ impl LeaseLock<'_> {
     }
 
     /// Writes `lease` by a private temporary file and a rename, and returns
-    /// its path.
+    /// its path. The file is synced before the rename, so a crash cannot
+    /// leave an empty lease that every later pick would warn about. The
+    /// directory is not synced: a rename lost in a crash loses a lease that
+    /// no longer means anything once its processes are gone.
     pub fn write(&self, lease: &Lease) -> Result<PathBuf, PickError> {
         let body = serde_json::to_vec(lease).map_err(|e| {
             io_err(
@@ -306,8 +309,7 @@ impl LeaseLock<'_> {
                 .open(&tmp)?;
             f.write_all(&body)?;
             f.sync_all()?;
-            fs::rename(&tmp, &path)?;
-            fs::File::open(&self.dir.dir)?.sync_all()
+            fs::rename(&tmp, &path)
         })();
         if let Err(e) = result {
             if let Err(rm) = remove(&tmp) {

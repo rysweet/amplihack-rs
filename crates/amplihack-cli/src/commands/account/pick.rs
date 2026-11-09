@@ -8,7 +8,7 @@ use super::Cli;
 use super::lease::{Lease, LeaseDir};
 use super::procscan;
 use super::rank::{self, Scored};
-use super::reading::Candidate;
+use super::reading::{Candidate, checked};
 use std::path::PathBuf;
 
 /// Every candidate as read, and the time of the earliest read.
@@ -123,19 +123,29 @@ pub fn pick(env: &PickEnv<'_>, cli: Cli, opts: PickOpts) -> Result<Pick, PickErr
         .candidates
         .into_iter()
         .map(|mut c| {
-            if let Ok(canon) = std::fs::canonicalize(&c.home) {
-                c.home = canon;
+            // Canonicalised before the path check, so a symlink cannot
+            // pass the check and then resolve to an unsafe target.
+            match std::fs::canonicalize(&c.home) {
+                Ok(canon) => {
+                    c.home = canon;
+                    checked(c)
+                }
+                Err(_) => {
+                    c.usable = false;
+                    c.note = "unresolvable path".to_string();
+                    c
+                }
             }
-            c
         })
         .collect();
     let homes: Vec<PathBuf> = candidates.iter().map(|c| c.home.clone()).collect();
 
     let dir = LeaseDir::open(&env.lease_root, cli)?;
     let guard = dir.lock()?;
-    let jobs = procscan::count_jobs(&env.proc_root, cli.env_key(), &homes, env.self_pid, env.uid);
-    let (stored, warnings) = guard.load();
-    for w in warnings {
+    let (jobs, job_warnings) =
+        procscan::count_jobs(&env.proc_root, cli.env_key(), &homes, env.self_pid, env.uid);
+    let (stored, lease_warnings) = guard.load();
+    for w in job_warnings.into_iter().chain(lease_warnings) {
         eprintln!("{w}");
     }
     let leases = guard.sweep(stored, &jobs, env.now, env.ttl_secs, env.alive);
@@ -155,7 +165,6 @@ pub fn pick(env: &PickEnv<'_>, cli: Cli, opts: PickOpts) -> Result<Pick, PickErr
         })
         .collect();
     let order = rank::order(&scored);
-    let chosen_row = rank::choose(&scored);
     let ranked: Vec<Ranked> = order
         .iter()
         .map(|&i| Ranked {
@@ -165,7 +174,8 @@ pub fn pick(env: &PickEnv<'_>, cli: Cli, opts: PickOpts) -> Result<Pick, PickErr
             effective_headroom: scored[i].effective,
         })
         .collect();
-    let chosen = chosen_row.and_then(|row| order.iter().position(|&i| i == row));
+    // `order[0]` is `ranked[0]`, so the chosen row is always 0.
+    let chosen = rank::choose(&scored, &order).map(|_| 0);
 
     if !opts.write_lease {
         return Ok(Pick {

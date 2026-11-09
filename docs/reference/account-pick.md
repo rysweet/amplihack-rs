@@ -160,6 +160,11 @@ The subdirectories of `CODEX_PROFILES_ROOT` (default `~/.codex-profiles`),
 plus `~/.codex` when it is signed in. This is the list
 [`amplihack profile usage`](profile-command.md#codex-accounts) reads.
 
+A picked profile with no `approval_policy` is given
+`approval_policy = "never"` (see
+[A picked Codex home](#a-picked-codex-home-and-amplihacks-hooks)). Setting
+the value in that profile's `config.toml` prevents this.
+
 ### Claude
 
 The login profiles of Claude kind in the
@@ -169,8 +174,11 @@ candidate; it stays the fallback when the picker chooses nothing.
 
 ### Unsafe homes
 
-A home whose path contains a byte below `0x20` is marked unusable with the
-note `unsafe path` and is never printed raw.
+A home is canonicalised before it is checked. A home whose canonical path
+contains a byte below `0x20` is marked unusable with the note `unsafe path`
+and is never printed raw. A home that cannot be canonicalised, for example
+because it no longer exists, is marked unusable with the note
+`unresolvable path`.
 
 ## Live headroom
 
@@ -247,6 +255,20 @@ A job started without the key set (for example plain `codex`, which uses
 `~/.codex` by default) is not counted. On platforms other than Linux the count
 is always 0.
 
+A shell or tmux server that has `CODEX_HOME` or `CLAUDE_CONFIG_DIR` in its
+environment counts as one job for as long as it runs, even when idle, because
+its parent does not match. The same applies to a shell into which the output
+of a standalone pick was exported by hand.
+
+If `/proc` cannot be read, the pick prints
+
+```
+warning: account pick: job counting unavailable: could not list /proc: <error>
+```
+
+on stderr, counts no jobs and goes ahead; the spread then depends on leases
+alone.
+
 ## Leases
 
 A lease records a pick that has not yet become a running job. Without leases,
@@ -312,7 +334,9 @@ The picker creates missing directories with mode `0700`. An existing lease
 directory, `<cli>` directory or `.lock` must not be a symlink, must be owned
 by the effective user, and must not be group- or world-writable. Otherwise the
 pick fails with exit 1 and a launch falls back to its default home. The
-picker never changes permissions or ownership.
+picker never changes permissions or ownership. It checks only those two
+directories, so none of the directories above `AMPLIHACK_ACCOUNT_LEASE_DIR`
+may be writable by other users.
 
 ## Launch integration
 
@@ -343,11 +367,14 @@ profiles in these modes.
 
 ### A picked Codex home and amplihack's hooks
 
-When a launch picks a Codex home, it writes `approval_policy` to that home's
-`config.toml`, as bootstrap does for `~/.codex`, and touches nothing else
-there. This happens in non-interactive launches too, because a picked home
-was not set up for this launch by the user. A pinned home is left as it is. Hooks and plugins are whatever that home was set
-up with; install them into each Codex profile you want picked.
+When a launch picks a Codex home, `approval_policy` is written to that home's
+`config.toml`, as bootstrap does for `~/.codex`, and nothing else there is
+touched. On interactive launches bootstrap writes it; on non-interactive
+launches, such as recipe steps, the launcher writes it, because a picked home
+was not set up for this launch by the user. The picker itself does not change
+a pinned home. On interactive launches, bootstrap still configures
+`$CODEX_HOME` as it did before. Hooks and plugins are whatever that home was
+set up with; install them into each Codex profile you want picked.
 
 ## Pins
 
@@ -357,7 +384,11 @@ written.
 | CLI | Pins, in order |
 |-----|----------------|
 | Codex | `CODEX_HOME`, then `AMPLIHACK_CODEX_HOME` (must be an absolute, non-empty path) |
-| Claude | `--profile`, `AMPLIHACK_CLAUDE_PROFILE`, the default profile pointer (`amplihack profile switch <name>`), `CLAUDE_CONFIG_DIR`, `AMPLIHACK_CLAUDE_CONFIG_DIR` |
+| Claude | `--profile`, `AMPLIHACK_CLAUDE_PROFILE`, the default profile pointer (`amplihack profile switch <name>`), `CLAUDE_CONFIG_DIR`, `AMPLIHACK_CLAUDE_CONFIG_DIR` (must be an absolute, non-empty path) |
+
+A relative alias is ignored with one warning on stderr, because a recipe
+context can set it and it would otherwise resolve under the step's working
+directory.
 
 `amplihack codex` with only `AMPLIHACK_CODEX_HOME` set restores `CODEX_HOME`
 from it in the child. A Claude launch with only `AMPLIHACK_CLAUDE_CONFIG_DIR`
@@ -434,9 +465,9 @@ installed in `~/.local/bin`; copy or link it there yourself.
 | `AMPLIHACK_ACCOUNT_PICK` | `on` | `on`, `codex` or `off`; see [The off switch](#the-off-switch-and-the-rotator). |
 | `AMPLIHACK_ACCOUNT_JOB_COST_PCT` | `15` | Headroom points subtracted per running job or lease. Finite, above 0, at most 100. |
 | `AMPLIHACK_ACCOUNT_LEASE_TTL_SECS` | `120` | Age at which a lease expires, `1` to `86400`. |
-| `AMPLIHACK_ACCOUNT_LEASE_DIR` | `~/.amplihack/state/account-leases` | Lease and lock directory. Must be an absolute path. |
+| `AMPLIHACK_ACCOUNT_LEASE_DIR` | `~/.amplihack/state/account-leases` | Lease and lock directory. Must be an absolute path, and none of the directories above it may be writable by other users. |
 | `AMPLIHACK_CODEX_HOME` | unset | Codex home carried to nested launches. Set by amplihack; see [Pins](#pins). |
-| `AMPLIHACK_CLAUDE_CONFIG_DIR` | unset | Raw Claude configuration directory carried to nested launches. Set by `amplihack recipe run`. |
+| `AMPLIHACK_CLAUDE_CONFIG_DIR` | unset | Raw Claude configuration directory carried to nested launches. Set by `amplihack recipe run`. Must be an absolute path; a relative value is ignored. |
 | `AMPLIHACK_ACCOUNT_PICK_CALLER` | unset | Set by `scripts/codex-pick`. Do not set by hand. |
 
 An invalid value falls back to its default and prints one warning on stderr
@@ -470,7 +501,7 @@ with the value quoted. The picker also reads `CODEX_PROFILES_ROOT`,
 - A Claude pick reads every candidate profile before launch, which can take up
   to `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS`. `AMPLIHACK_ACCOUNT_PICK=codex`
   avoids it.
-- Job counting needs Linux `/proc`. Elsewhere only leases spread launches.
+- Job counting needs a readable Linux `/proc`. Elsewhere only leases spread launches.
 
 ## Related
 
