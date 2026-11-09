@@ -46,7 +46,8 @@ worktree with unmerged commits, and by `cleanup_on_failure` before it prunes.
 |---|---|---|
 | `<sha>` is not 40 or 64 lowercase hex characters | Nothing written; `WARN: Refusing to archive ...` logged | `1` |
 | `refs/amplihack-archive/<branch>` already holds `<sha>` | Nothing written, so the reflog is unchanged; `INFO ... already current` logged | `0` |
-| The ref is absent or holds another SHA | `git update-ref -m "amplihack worktree archive" <ref> <sha> <old>`, a compare-and-swap against the value just read | `0` |
+| The ref holds a commit that `<sha>` does not contain (the branch was rewritten or its name reused) | Nothing written; `WARN: Keeping <ref> at <old>: ...` logged, so the archived commits stay reachable | `1` |
+| The ref is absent or holds an ancestor of `<sha>` | `git update-ref -m "amplihack worktree archive" <ref> <sha> <old>`, a compare-and-swap against the value just read | `0` |
 | The compare-and-swap fails, but a re-read shows `<sha>` | Treated as success (another process wrote the same value) | `0` |
 | The update fails for any other reason, for example a ref-name conflict with an existing `refs/amplihack-archive/feat` | `WARN Could not archive ...` logged | `1` |
 
@@ -85,8 +86,9 @@ worktree of a repository share one lock file.
 | The common git dir cannot be resolved | `WARN`; the sweep runs without a lock |
 | The lock path is a symbolic link | `WARN`; the sweep runs without a lock and does not write to the link target |
 | The lock file cannot be opened (for example, the path is a directory or read-only) | `WARN`; the sweep runs without a lock |
+| `flock` fails for a reason other than contention (for example `ENOLCK` on a filesystem without lock support) | `WARN`; the sweep runs without a lock |
 
-The lock is opened in append mode, so an existing file is never truncated.
+`flock` runs with `-E 75`, so only exit code `75` (contention) causes a skip. The lock is opened in append mode, so an existing file is never truncated.
 There is no wait, timeout or retry: a sweep that finds the lock held does
 nothing and lets the setup step continue. Sourcing the script opens no file
 descriptor; the lock exists only in the `sweep` subcommand.
@@ -106,11 +108,13 @@ All messages go to stderr.
 | `WARN: Refusing to archive '<branch>': '<sha>' is not a full object name.` | The SHA argument failed the format check; nothing written, the worktree is kept |
 | `INFO: Archived '<branch>' (<sha>) to refs/amplihack-archive/<branch>.` | Archive ref created or moved |
 | `INFO: archive refs/amplihack-archive/<branch> already current at <sha>` | Archive ref already held the SHA; nothing written |
+| `WARN: Keeping refs/amplihack-archive/<branch> at <old>: '<branch>' (<sha>) does not contain it; not archived.` | The archive would move backwards or sideways; nothing written, the worktree is kept |
 | `WARN: Could not archive '<branch>' to refs/amplihack-archive/<branch> locally. git: <error>` | `update-ref` failed; the git error follows `git:` and the worktree is kept |
 | `INFO: sweep skipped: lock held: <abs path>` | Another sweep of this repository holds the lock |
 | `WARN: flock not found; running sweep without a lock.` | util-linux `flock` is missing |
 | `WARN: cannot open lock <abs path>; running sweep without a lock.` | The lock file could not be opened |
 | `WARN: lock path <abs path> is a symlink; running sweep without a lock.` | Symlinked lock path refused |
+| `WARN: cannot lock <abs path> (flock exit <n>); running sweep without a lock.` | `flock` failed for a reason other than contention |
 | `WARN: could not resolve the common git dir of '<repo>'; running sweep without a lock.` | `git rev-parse --git-common-dir` failed |
 
 ## Inspecting and restoring archives
@@ -209,6 +213,8 @@ scenario.
 | G | With no `flock` on `PATH`, the sweep warns and archives (prints `SKIP G` if the shim cannot be built) |
 | H | `cleanup_on_failure` on an unmerged branch archives it and pushes nothing |
 | I | A ref-name conflict makes the archive fail; the sweep keeps the worktree, and `cleanup_on_failure` refuses to prune |
+| J | After the branch is rewritten, the archive keeps the old commit, the worktree is kept and `cleanup_on_failure` refuses to prune |
+| K | With a `flock` that fails for a reason other than contention, the sweep warns, archives and does not log a skip |
 | Symlink | With the lock path a symlink, the sweep warns, runs unlocked and leaves the target unchanged |
 
 CI runs it after the #1494/#1560 sweep test, and both the script and the test

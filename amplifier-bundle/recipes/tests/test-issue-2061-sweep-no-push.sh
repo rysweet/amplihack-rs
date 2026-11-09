@@ -395,6 +395,41 @@ check I7 "the worktree survives cleanup" registered "$R" "$WT"
 check I8 "the branch survives cleanup at its SHA" eq "$(ref_sha "$R" refs/heads/feat/a)" "$isha"
 check I9 "the pre-push hook never ran" file_empty "$LOG"
 
+echo "== J: an archive is never moved to a commit that does not contain it =="
+make_fixture j
+old_sha="$(ref_sha "$R" refs/heads/feat/a)"
+rc="$(run_sweep "$R" "$SCRATCH/j1.err")"
+check J1 "first sweep archives the branch" eq "$(ref_sha "$R" "$ARCHIVE")" "$old_sha"
+# Rewrite the branch: the archived commit is no longer on it.
+git -C "$WT" reset -q --hard main
+echo "rewritten" >"$WT/rewritten.txt"
+git -C "$WT" add rewritten.txt
+git -C "$WT" commit -q -m "feat: rewritten"
+rc="$(run_sweep "$R" "$SCRATCH/j2.err")"
+check J2 "sweep exits 0" eq "$rc" 0
+check J3 "the archive still holds the old commit" eq "$(ref_sha "$R" "$ARCHIVE")" "$old_sha"
+check J4 "the refusal is logged" file_has "$SCRATCH/j2.err" "WARN: Keeping ${ARCHIVE} at ${old_sha}"
+check J5 "the rewritten worktree is kept" registered "$R" "$WT"
+rc="$(run_cleanup "$R" feat/a "$SCRATCH/j3.err")"
+check J6 "cleanup_on_failure refuses to prune" file_has "$SCRATCH/j3.err" "refusing to prune (data-loss guard)"
+check J7 "the rewritten branch survives cleanup" branch_exists "$R" feat/a
+check J8 "the pre-push hook never ran" file_empty "$LOG"
+
+echo "== K: a flock error other than contention falls back to running unlocked =="
+make_fixture k
+KSHIM="$SCRATCH/k/shim"
+mkdir -p "$KSHIM"
+printf '#!/bin/sh\necho "flock: simulated ENOLCK" >&2\nexit 69\n' >"$KSHIM/flock"
+chmod +x "$KSHIM/flock"
+k_rc=0
+PATH="$KSHIM:$PATH" bash "$SWEEP" sweep "$R" 2>"$SCRATCH/k1.err" 9>&- || k_rc=$?
+check K1 "sweep exits 0" eq "$k_rc" 0
+check K2 "the lock error is logged as a fallback, not a skip" \
+    file_has "$SCRATCH/k1.err" "WARN: cannot lock ${LOCK} (flock exit 69); running sweep without a lock."
+check K3 "no skip message" file_lacks "$SCRATCH/k1.err" "sweep skipped"
+check K4 "the archive is still created" eq "$(ref_sha "$R" "$ARCHIVE")" "$(ref_sha "$R" refs/heads/feat/a)"
+check K5 "the pre-push hook never ran" file_empty "$LOG"
+
 echo
 echo "Result: ${PASS_COUNT} passed, ${FAIL_COUNT} failed, ${SKIP_COUNT} skipped"
 if [[ "$FAIL_COUNT" -gt 0 ]]; then

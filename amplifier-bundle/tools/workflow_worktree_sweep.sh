@@ -167,8 +167,8 @@ content_merged() {
 # the reflog does not grow on every sweep. The update is a compare-and-swap
 # against the value just read, because cleanup_on_failure runs unlocked and may
 # overlap a sweep. Returns 0 when the archive was created or is already
-# current, and 1 when <sha> is malformed or the local update fails; callers
-# keep the worktree on 1.
+# current, and 1 when <sha> is malformed, the existing archive is not an
+# ancestor of <sha>, or the local update fails; callers keep the worktree on 1.
 archive_branch() {
     local repo="$1" branch="$2" sha="$3"
     local ref="${ARCHIVE_NS}/${branch}" current now err
@@ -180,6 +180,13 @@ archive_branch() {
     if [ "$current" = "$sha" ]; then
         log_info "archive ${ref} already current at ${sha}"
         return 0
+    fi
+    # Only move an archive forward. Moving it to a commit that does not contain
+    # the archived one (a reused or rewritten branch name) would leave the old
+    # work unreachable, and since #2061 there is no remote copy.
+    if [ -n "$current" ] && ! git -C "$repo" merge-base --is-ancestor "$current" "$sha" 2>/dev/null; then
+        log_warn "Keeping ${ref} at ${current}: '${branch}' (${sha}) does not contain it; not archived."
+        return 1
     fi
     if err="$(git -C "$repo" update-ref -m "amplihack worktree archive" "$ref" "$sha" "${current:-}" 2>&1)"; then
         log_info "Archived '${branch}' (${sha}) to ${ref}."
@@ -490,10 +497,20 @@ sweep_locked() {
         # Append mode never truncates an existing file.
         elif ! { exec {fd}>>"$lock"; } 2>/dev/null; then
             reason="cannot open lock ${lock}"
-        elif ! flock -n "$fd"; then
-            exec {fd}>&-
-            log_info "sweep skipped: lock held: ${lock}"
-            return 0
+        else
+            # Exit 75 means another process holds the lock; any other failure
+            # (for example ENOLCK on a filesystem without flock support) means
+            # the lock cannot be used, which falls back to running unlocked.
+            local rc=0
+            flock -n -E 75 "$fd" 2>/dev/null || rc=$?
+            if [ "$rc" -eq 75 ]; then
+                exec {fd}>&-
+                log_info "sweep skipped: lock held: ${lock}"
+                return 0
+            elif [ "$rc" -ne 0 ]; then
+                exec {fd}>&-
+                reason="cannot lock ${lock} (flock exit ${rc})"
+            fi
         fi
     fi
     [ -n "$reason" ] && log_warn "${reason}; running sweep without a lock."
