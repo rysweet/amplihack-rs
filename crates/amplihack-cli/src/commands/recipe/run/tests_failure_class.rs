@@ -656,7 +656,7 @@ fn the_verdict_tells_the_operator_when_to_come_back() {
     let verdict = classify_error(&anyhow::anyhow!("{OBSERVED_SESSION_LIMIT}"));
     let reasoning = verdict.reasoning();
     assert!(
-        reasoning.contains("9:20am"),
+        reasoning.contains("9:20am (UTC)"),
         "the reset time is stated in the message and must survive into the \
          verdict, so the operator does not have to re-read the raw log. \
          Got: {reasoning}"
@@ -665,6 +665,58 @@ fn the_verdict_tells_the_operator_when_to_come_back() {
         reasoning.contains("usage_limit"),
         "the verdict must name the class. Got: {reasoning}"
     );
+}
+
+#[test]
+fn issue_1390_reset_hint_and_serialized_verdict_preserve_the_contract() {
+    assert_eq!(
+        usage_limit_reset_hint(OBSERVED_SESSION_LIMIT).as_deref(),
+        Some("9:20am (UTC)")
+    );
+    let result = RecipeRunResult {
+        success: false,
+        step_results: vec![
+            step("design", "success"),
+            failed_step_with_stdout("implement", "agent exited 1", &[OBSERVED_SESSION_LIMIT]),
+        ],
+        ..RecipeRunResult::default()
+    };
+    let verdict = classify_run_failure(&result, "");
+    let payload = verdict.to_json(1, "terminal");
+    assert_eq!(payload["class"], "usage_limit");
+    assert_eq!(payload["signal"], "session limit");
+    assert_eq!(payload["retryable"], false);
+    assert_eq!(payload["failed_steps"], serde_json::json!(["implement"]));
+    assert_eq!(payload["completed_steps"], serde_json::json!(["design"]));
+    assert!(
+        payload["reasoning"]
+            .as_str()
+            .unwrap()
+            .contains("9:20am (UTC)")
+    );
+    assert!(
+        payload["evidence"]
+            .as_str()
+            .unwrap()
+            .contains(OBSERVED_SESSION_LIMIT)
+    );
+}
+
+#[test]
+fn issue_1390_session_limit_preserves_classification_precedence() {
+    for (prefix, expected) in [
+        ("API Error: 429 too many requests", FailureClass::UsageLimit),
+        ("API Error: 401", FailureClass::Environmental),
+        (
+            "test result: FAILED. 1 failed\nAPI Error: 401",
+            FailureClass::Work,
+        ),
+        ("BLOCKED_TERMINAL: policy refusal", FailureClass::Work),
+    ] {
+        let (class, _) = classify_failure_text(&format!("{prefix}\n{OBSERVED_SESSION_LIMIT}"));
+        assert_eq!(class, expected, "{prefix}");
+        assert!(!class.is_mechanically_retryable(), "{prefix}");
+    }
 }
 
 #[test]

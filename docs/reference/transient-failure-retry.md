@@ -1,3 +1,8 @@
+---
+title: Transient Failure Classification and Retry
+description: Recipe failure classes, retry bounds, reset hints, and recovery ownership.
+---
+
 # Transient Failure Classification and Retry — Reference
 
 _Issue [#1267](https://github.com/rysweet/amplihack-rs/issues/1267)._
@@ -110,6 +115,44 @@ its table there.
   `API Error: 429` and `429 Too Many Requests` stay `transient_transport`.
 - **`credit balance is too low`** is also on the marker list, but the
   environmental check runs first, so that message classifies `environmental`.
+
+### Session-limit verdict and recovery ownership
+
+For this reported failure:
+
+```text
+Agent terminated early due to an API error: You've hit your session limit · resets 9:20am (UTC)
+```
+
+the classification is `usage_limit`, the deciding signal is `session limit`,
+and the verdict's `reasoning` retains the complete supplied reset hint,
+`9:20am (UTC)`. The hint is quoted from the failure evidence; it is not a
+calculated reset time or a scheduling instruction. A recognized usage limit
+without a reset hint still receives `usage_limit`.
+
+The structured run result's `failure_classification` object and the
+`amplihack.recipe.failure_class` stderr marker report `class: "usage_limit"`,
+`retryable: false`, and `action: "terminal"`. The recipe command reports
+failure. Usage limits do not enter the mechanical transport retry loop, even
+when wrapped in an HTTP 429 error. The transport retry settings below do not
+enable retries for this class. Work and environmental failures retain their
+higher precedence; bare HTTP 429 errors retain their transport classification.
+
+Classification identifies the failure and preserves its supplied reset hint.
+It does not automatically pause or resume a session, retain its transcript, or
+supervise its children. The separate [usage-limit wait](./profile-command.md#usage-limit-wait)
+can act before a failure reaches this classifier; its behavior is not a
+guarantee of recovery for Claude Code's internal subagents.
+
+Claude Code owns termination, transcript preservation, and child recovery for
+its internal subagents. Amplihack's launcher and fork policy do not provide a
+control point for that failure path. The upstream runtime requirement is to
+preserve reasoning context across involuntary faults, including flushing the
+transcript before termination, and deliberately reap or record in-flight
+children when terminating a session. Durable worktree changes alone do not
+preserve the reasoning behind them. Any future amplihack session supervisor
+must preserve that context too; this classification path implements no such
+supervisor.
 
 ## Retry bounds
 
