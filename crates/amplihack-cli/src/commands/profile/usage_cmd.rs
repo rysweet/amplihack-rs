@@ -80,6 +80,10 @@ pub(super) enum ErrorReason {
     Direct(&'static str),
     /// Issue #1844: a row needed `claude` and none was found.
     NoClaude,
+    /// Issue #2271: the direct read found no usable login (no credentials
+    /// file, no token, or an expired token with no refresh token), so no
+    /// `claude` was started. Holds a fixed reason only.
+    NotSignedIn(&'static str),
 }
 
 impl ErrorReason {
@@ -91,6 +95,7 @@ impl ErrorReason {
             Self::WaitFailed => "could not wait for claude".into(),
             Self::NoClaude => "claude not found".into(),
             Self::Direct(why) => format!("direct read: {why}").into(),
+            Self::NotSignedIn(why) => format!("not signed in ({why})").into(),
         }
     }
 }
@@ -168,6 +173,16 @@ impl Probe {
     /// A direct read that failed in a mode that starts no `claude`.
     pub(super) fn direct_error(why: &'static str) -> Self {
         let mut p = Self::failed(ErrorReason::Direct(why), None);
+        p.source = Some(Source::Direct);
+        p.direct_failure = Some(why);
+        p
+    }
+
+    /// Issue #2271: a login the direct read found signed out. The row is
+    /// final: `not_logged_in`, from the direct read, with no `claude`.
+    pub(super) fn not_signed_in(why: &'static str) -> Self {
+        let mut p = Self::failed(ErrorReason::NotSignedIn(why), None);
+        p.report = UsageReport::empty(UsageState::NotLoggedIn);
         p.source = Some(Source::Direct);
         p.direct_failure = Some(why);
         p
@@ -266,8 +281,7 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     // read.
     let codex = (names.is_empty() && output != Output::Json).then(CodexRead::start);
     if profiles.is_empty() {
-        let codex = codex.map(CodexRead::finish);
-        print_empty(output, &time, codex.as_ref());
+        print_empty(output, &time, codex);
         return Ok(());
     }
     let home = home_dir();
@@ -358,7 +372,14 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         .as_ref()
         .filter(|_| !raw && output != Output::Json)
         .map(|c| capacity_of(store, c, usable_session_pct, at));
-    let codex = codex.map(CodexRead::finish);
+    // Issue #2271: only `--summary-json` waits for Codex before printing,
+    // because its one document holds both. The text outputs print the
+    // Claude block first and the Codex block last, below.
+    let mut codex = codex;
+    let summary_codex = match output {
+        Output::SummaryJson => codex.take().map(CodexRead::finish),
+        Output::Bars | Output::Table | Output::Json => None,
+    };
     print_output(
         &rows,
         output,
@@ -366,7 +387,7 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         summary.as_ref(),
         at,
         swapped.as_ref(),
-        codex.as_ref(),
+        &codex_json(summary_codex.as_ref()),
     );
     // SR-10: in every mode, with or without `--raw`.
     for warning in not_saved_warnings(&rows) {
@@ -392,6 +413,8 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     if let Some(c) = current.as_ref().filter(|_| !raw && names.is_empty()) {
         record_history(store, c, at);
     }
+    // Issue #2271: the Claude output is complete; only now wait for Codex.
+    print_codex_last(output, codex, &time);
     Ok(())
 }
 
@@ -571,17 +594,41 @@ fn codex_json(codex: Option<&CodexView>) -> Vec<CodexJsonRow> {
     codex.map(usage_codex::json_rows).unwrap_or_default()
 }
 
-fn print_empty(output: Output, time: &TimeView, codex: Option<&CodexView>) {
-    let rows = codex_json(codex);
+fn print_empty(output: Output, time: &TimeView, codex: Option<CodexRead>) {
     match output {
         Output::Json => println!("{}", render_json(&[])),
         Output::SummaryJson => {
+            let codex = codex.map(CodexRead::finish);
+            let rows = codex_json(codex.as_ref());
             println!("{}", render_summary_json(now_secs(), &[], None, &rows))
         }
         Output::Bars | Output::Table => {
             println!("no profiles; create one with `amplihack profile add <name>`");
-            print_codex_text(output, codex, time);
+            flush_stdout();
+            print_codex_last(output, codex, time);
         }
+    }
+}
+
+/// Issue #2271: waits for the Codex read, when one was started, and prints
+/// its block after everything else. Used by the text outputs only; the
+/// Claude output is already on stdout by then.
+fn print_codex_last(output: Output, codex: Option<CodexRead>, time: &TimeView) {
+    let Some(read) = codex else {
+        return;
+    };
+    let view = read.finish();
+    print_codex_text(output, Some(&view), time);
+    flush_stdout();
+}
+
+/// Flushes stdout so that its lines are out before anything that follows
+/// on stderr or blocks. A failure (a closed pipe) is logged; the next
+/// write reports it the usual way.
+fn flush_stdout() {
+    use std::io::Write;
+    if let Err(e) = std::io::stdout().flush() {
+        tracing::debug!("profile usage: stdout flush failed: {e}");
     }
 }
 
@@ -831,8 +878,10 @@ fn build_rows(
 }
 
 /// The bar view or table (each with the capacity summary) or JSON on
-/// stdout, then the warnings on stderr. Colour is decided once, for the
-/// bar view only (no-color.org).
+/// stdout, flushed, then the warnings on stderr. `codex_rows` is used by
+/// `--summary-json` only: the text outputs print the Codex block last
+/// ([`print_codex_last`]). Colour is decided once, for the bar view only
+/// (no-color.org).
 fn print_output(
     rows: &[Row],
     output: Output,
@@ -840,9 +889,8 @@ fn print_output(
     summary: Option<&Summary>,
     at: i64,
     swapped: Option<&ProfileName>,
-    codex: Option<&CodexView>,
+    codex_rows: &[CodexJsonRow],
 ) {
-    let codex_rows = codex_json(codex);
     match output {
         Output::Bars => {
             use std::io::IsTerminal;
@@ -854,20 +902,19 @@ fn print_output(
             if let Some(s) = summary {
                 print!("{}", summary_block(s));
             }
-            print_codex_text(output, codex, time);
         }
         Output::Table => {
             print!("{}", render_table(rows));
             if let Some(s) = summary {
                 print!("{}", summary_block(s));
             }
-            print_codex_text(output, codex, time);
         }
         Output::Json => println!("{}", render_json(rows)),
         Output::SummaryJson => {
-            println!("{}", render_summary_json(at, rows, summary, &codex_rows))
+            println!("{}", render_summary_json(at, rows, summary, codex_rows))
         }
     }
+    flush_stdout();
     for w in error_warnings(rows) {
         eprintln!("{w}");
     }
@@ -1079,6 +1126,7 @@ impl RowReader {
         if self.keep_raw
             && p.raw.is_none()
             && matches!(p.source, Some(Source::Passive | Source::Direct))
+            && !matches!(p.error, Some(ErrorReason::NotSignedIn(_)))
         {
             p.raw = Some(Raw {
                 stdout: String::new(),
@@ -1674,9 +1722,14 @@ fn back_at(r: &UsageReport) -> Option<i64> {
 }
 
 /// `*` for the default, `leased→<dir>`, `hosts:<account>`, `live in
-/// ~/.claude`, `overflow[, blocked until <time>]`; `-` for none.
+/// ~/.claude`, `overflow[, blocked until <time>]`, then, last, `not signed
+/// in (<reason>)` (issue #2271); `-` for none. The bar view shows that text
+/// in place of the bars, so [`marks_parts`] leaves it out.
 pub(super) fn marks(row: &Row) -> String {
-    let parts = marks_parts(row, true);
+    let mut parts = marks_parts(row, true);
+    if let Some(e @ ErrorReason::NotSignedIn(_)) = row.error {
+        parts.push(e.to_string());
+    }
     if parts.is_empty() {
         "-".to_string()
     } else {

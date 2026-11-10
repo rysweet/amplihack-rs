@@ -266,6 +266,7 @@ fn reference_lists_every_direct_failure_reason() {
         reason::REFRESH_REFUSED,
         reason::REFRESH_FAILED,
         reason::REFRESH_NOT_SAVED,
+        reason::NO_REFRESH_TOKEN,
     ] {
         assert!(
             REFERENCE.contains(&format!("`{r}`")),
@@ -285,6 +286,12 @@ fn reference_quotes_the_fixed_row_texts() {
         "unknown, still running".to_string(),
         "note: profile \"spare\": direct read gave http 5xx; using claude".to_string(),
         super::usage_cmd::not_saved_warning("spare"),
+        // Issue #2271: the row and warning of a login with no token.
+        ErrorReason::NotSignedIn("no oauth token").to_string(),
+        format!(
+            "warning: profile \"scratch\": {}",
+            ErrorReason::NotSignedIn("no credentials file")
+        ),
     ] {
         assert!(
             REFERENCE.contains(&text),

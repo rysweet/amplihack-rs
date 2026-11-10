@@ -50,6 +50,9 @@ if [ -n "${OPENAI_API_KEY+x}" ] || [ -n "${CODEX_API_KEY+x}" ]; then
   exit 70
 fi
 [ -z "${RUST_LOG+x}" ] || { echo "RUST_LOG reached the app server" >&2; exit 71; }
+# Issue #2271: `gated` answers nothing until the test closes its end of
+# the FIFO at $CODEX_GATE.
+if [ "$name" = gated ]; then cat "$CODEX_GATE" >/dev/null; fi
 IFS= read -r init || exit 65
 case "$init" in *'"method":"initialize"'*) ;; *) echo "first line: $init" >&2; exit 65;; esac
 printf '%s\n' '{"method":"remoteControl/status/changed","params":{"status":"idle"}}'
@@ -71,6 +74,8 @@ case "$name" in
     sleep 600 >/dev/null 2>&1 &
     echo $! > "$CODEX_PID_DIR/$!"
     sleep 600 ;;
+  gated)
+    printf '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":7,"windowDurationMins":300,"resetsAt":%s}},"planType":"plus"}}\n' $((now + 3600)) ;;
   mmoss)
     echo "error: unrecognized subcommand 'app-server'" >&2
     exit 1 ;;
@@ -740,4 +745,246 @@ fn labels_and_server_strings_cannot_send_terminal_escapes() {
         !plan.contains('\u{1b}') && !plan.contains('\u{202e}'),
         "cleaned before it is stored: {plan:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2271: the Claude output never waits for Codex
+//
+// The `gated` account's app server answers only once the test closes its
+// end of a FIFO. In the bar and table views the whole Claude block, up to
+// the last line of the capacity summary, must reach stdout while it is
+// still held; only then is the gate opened and the Codex block read.
+// `--summary-json` stays one document that includes the Codex rows, and
+// `--json` starts no Codex at all (`json_stays_an_array_of_claude_rows_and_
+// reads_no_codex`). Order is shown by events (lines read while the gate is
+// closed), never by time; DEADLINE only reports a hang.
+// ---------------------------------------------------------------------------
+
+/// The FIFO the `gated` fake reads. Opening it for writing returns once the
+/// fake has opened it for reading; closing it lets the fake answer.
+struct Gate {
+    path: PathBuf,
+    writer: Option<fs::File>,
+}
+
+impl Gate {
+    fn new(dir: &Path) -> Self {
+        let path = dir.join("codex-gate");
+        mkfifo(&path);
+        Gate { path, writer: None }
+    }
+
+    /// Takes the write end, which opens once the fake is waiting on the
+    /// FIFO. Not opening within DEADLINE is a hang.
+    fn hold(&mut self) {
+        if self.writer.is_some() {
+            return;
+        }
+        let path = self.path.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(fs::OpenOptions::new().write(true).open(&path));
+        });
+        match rx.recv_timeout(DEADLINE) {
+            Ok(w) => self.writer = Some(w.expect("open the gate")),
+            Err(_) => panic!("the gated Codex account never waited on its gate"),
+        }
+    }
+
+    /// Opens the gate: holds the write end and closes it, so the fake
+    /// reads end-of-file and answers.
+    fn open(&mut self) {
+        self.hold();
+        self.writer = None;
+    }
+
+    /// Never blocks: lets a waiting fake go, if there is one.
+    fn release_if_waiting(&mut self) {
+        use std::os::unix::fs::OpenOptionsExt;
+        self.writer = None;
+        if let Ok(w) = fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&self.path)
+        {
+            drop(w);
+        }
+    }
+}
+
+/// A started `profile usage` whose stdout is read line by line on its own
+/// thread. On drop it lets a held fake go and kills and reaps the command,
+/// so a failed test leaves nothing running.
+struct Running {
+    child: std::process::Child,
+    lines: mpsc::Receiver<String>,
+    gate: Gate,
+    stderr: Option<std::thread::JoinHandle<Vec<u8>>>,
+}
+
+impl Running {
+    fn spawn(mut cmd: Command, gate: Gate) -> Self {
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().expect("start amplihack");
+        let out = child.stdout.take().unwrap();
+        let mut err = child.stderr.take().unwrap();
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for l in std::io::BufReader::new(out).lines() {
+                let Ok(l) = l else { break };
+                if tx.send(l).is_err() {
+                    break;
+                }
+            }
+        });
+        let stderr = std::thread::spawn(move || {
+            let mut b = Vec::new();
+            let _ = err.read_to_end(&mut b);
+            b
+        });
+        Running {
+            child,
+            lines,
+            gate,
+            stderr: Some(stderr),
+        }
+    }
+
+    /// The next stdout line; `None` at the end of stdout. A line that does
+    /// not come within DEADLINE is a hang and fails the test.
+    fn next(&self, waiting_for: &str) -> Option<String> {
+        match self.lines.recv_timeout(DEADLINE) {
+            Ok(l) => Some(l),
+            Err(mpsc::RecvTimeoutError::Disconnected) => None,
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+                "no stdout line within {DEADLINE:?} while waiting for {waiting_for}: \
+                 the Claude output is held back until Codex answers"
+            ),
+        }
+    }
+
+    /// Reads stdout up to and including the first line `last` accepts.
+    fn read_until(&self, what: &str, last: impl Fn(&str) -> bool) -> Vec<String> {
+        let mut seen = Vec::new();
+        loop {
+            let l = self
+                .next(what)
+                .unwrap_or_else(|| panic!("stdout ended before {what}:\n{}", seen.join("\n")));
+            let done = last(&l);
+            seen.push(l);
+            if done {
+                return seen;
+            }
+        }
+    }
+
+    /// Opens the gate, reads the rest of stdout and waits for the exit.
+    fn finish(mut self) -> (Vec<String>, std::process::ExitStatus, String) {
+        self.gate.open();
+        let mut rest = Vec::new();
+        while let Some(l) = self.next("the end of stdout") {
+            rest.push(l);
+        }
+        let status = self.child.wait().expect("reap amplihack");
+        let err = self.stderr.take().unwrap().join().unwrap();
+        (rest, status, text(&err))
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        self.gate.release_if_waiting();
+        if let Ok(None) = self.child.try_wait() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+/// `gated` as the only Codex account, with a Codex deadline long enough
+/// that only the gate decides when it answers.
+fn gated(args: &[&str]) -> (Codex, Running) {
+    let c = Codex::with(&["gated"]);
+    let gate = Gate::new(c.f.home.parent().unwrap());
+    let mut cmd = c.cmd(args);
+    cmd.env("CODEX_GATE", &gate.path)
+        .env("AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS", "300");
+    let r = Running::spawn(cmd, gate);
+    (c, r)
+}
+
+fn is_codex_header(l: &str) -> bool {
+    l.starts_with("Codex accounts under ") || l.starts_with("Codex: ")
+}
+
+/// The capacity summary's last line (issue #1797).
+fn is_summary_end(l: &str) -> bool {
+    l.starts_with("unknown ")
+}
+
+fn assert_claude_block_before_codex(args: &[&str]) {
+    let (c, r) = gated(args);
+    let before = r.read_until("the end of the capacity summary", is_summary_end);
+    assert!(
+        !before.iter().any(|l| is_codex_header(l)),
+        "Codex printed before it answered:\n{}",
+        before.join("\n")
+    );
+    let shown = before.join("\n");
+    for p in PROFILES {
+        assert!(shown.contains(p), "every Claude row first: {shown}");
+    }
+    assert!(
+        before.iter().any(|l| l.starts_with("order: ")),
+        "the Claude footer first: {shown}"
+    );
+    let (rest, status, stderr) = r.finish();
+    assert!(status.success(), "exit {:?}: {stderr}", status.code());
+    let header = rest
+        .iter()
+        .position(|l| is_codex_header(l))
+        .unwrap_or_else(|| panic!("no Codex block after the gate:\n{}", rest.join("\n")));
+    assert!(
+        rest[..header].iter().all(|l| l.is_empty()),
+        "only the empty line before the Codex block: {rest:?}"
+    );
+    let block = rest[header..].join("\n");
+    assert!(block.contains("gated"), "{block}");
+    assert!(!block.contains("timed out"), "it answered: {block}");
+    assert_eq!(c.runs(), ["gated"]);
+}
+
+#[test]
+fn the_bar_view_prints_the_claude_block_before_codex_answers() {
+    assert_claude_block_before_codex(&[]);
+}
+
+#[test]
+fn the_table_prints_the_claude_block_before_codex_answers() {
+    assert_claude_block_before_codex(&["--table"]);
+}
+
+#[test]
+fn summary_json_is_one_document_with_codex_after_the_gate() {
+    let (c, mut r) = gated(&["--summary-json"]);
+    // The write end opens only once the fake is waiting on the FIFO: Codex
+    // has not answered yet, so nothing may be on stdout.
+    r.gate.hold();
+    assert!(
+        r.lines.try_recv().is_err(),
+        "--summary-json printed before Codex answered"
+    );
+    let (rest, status, stderr) = r.finish();
+    assert!(status.success(), "exit {:?}: {stderr}", status.code());
+    let s = rest.join("\n");
+    let v: serde_json::Value =
+        serde_json::from_str(&s).unwrap_or_else(|e| panic!("one JSON document ({e}): {s}"));
+    assert!(v["profiles"].is_array(), "{v}");
+    let rows = codex_rows(&v);
+    assert_eq!(field(&rows, "account"), ["gated"]);
+    assert_eq!(field(&rows, "state"), ["ok"]);
+    assert_eq!(c.runs(), ["gated"]);
 }

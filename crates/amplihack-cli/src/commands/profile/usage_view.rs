@@ -10,8 +10,8 @@
 //! written are the fixed colour codes in [`bar_cell`].
 
 use super::usage_cmd::{
-    API_KEY_CELL, NO_SESSION_LIMIT_CELL, ORDER_LINE, Row, footers, marks_parts, no_session_limit,
-    raw_lines, sanitize_display, state_label,
+    API_KEY_CELL, ErrorReason, NO_SESSION_LIMIT_CELL, ORDER_LINE, Row, footers, marks_parts,
+    no_session_limit, raw_lines, sanitize_display, state_label,
 };
 use super::usage_parse::{UsageState, UsageWindow};
 use super::usage_source::Spend;
@@ -224,6 +224,11 @@ enum Middle {
 fn middle(row: &Row, time: &TimeView, colour: bool) -> Middle {
     if row.api_key {
         return Middle::Span(API_KEY_CELL.to_string());
+    }
+    // Issue #2271: a login the direct read found signed out says so in
+    // place of the bars; `bar_marks` leaves the text out.
+    if let Some(e @ ErrorReason::NotSignedIn(_)) = row.error {
+        return Middle::Span(e.to_string());
     }
     let r = &row.report;
     match r.state {

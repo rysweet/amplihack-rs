@@ -87,6 +87,9 @@ pub(super) mod reason {
     pub const REFRESH_REFUSED: &str = "refresh refused";
     pub const REFRESH_FAILED: &str = "refresh failed";
     pub const REFRESH_NOT_SAVED: &str = "refresh not saved";
+    /// Issue #2271: the login has no usable refresh token, so nothing can
+    /// renew it; no request was sent.
+    pub const NO_REFRESH_TOKEN: &str = "no refresh token";
     pub const HTTP_401: &str = "http 401";
     pub const HTTP_403: &str = "http 403";
     pub const HTTP_429: &str = "http 429";
@@ -833,7 +836,7 @@ fn refresh(
         return Ok(current.access);
     }
     let Some(old_refresh) = current.refresh.as_ref() else {
-        return Err(reason::REFRESH_FAILED);
+        return Err(reason::NO_REFRESH_TOKEN);
     };
     // SR-10: a refresh can retire the old refresh token, so it is sent only
     // when the result can be saved.

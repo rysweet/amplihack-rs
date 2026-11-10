@@ -11,6 +11,11 @@
 //! | unset | passive, direct, fallback | `auto`; `text` when credits are on and no window is read |
 //! | `direct` | passive, direct; a failure is an error row | - |
 //!
+//! Issue #2271: in `unset` and `direct`, a direct read that finds no login
+//! is final ([`final_reason`]): the row is `not_logged_in`, `not signed in
+//! (<reason>)`, and no `claude` is looked up or started. `claude` would find
+//! the same empty login.
+//!
 //! Issue #1856: a direct read with usage credits on and a readable window
 //! is a `direct` row with the direct windows, the redacted `extra_usage`
 //! shape and spend [`Spend::NotProbed`]. `profile usage --spend` then runs
@@ -203,6 +208,7 @@ pub(super) fn read(
     }
     match read_without_claude(env, plan, root, now) {
         Ok(p) => p,
+        Err(why) if final_reason(why, plan) => Probe::not_signed_in(why),
         Err(why) if direct_only => Probe::direct_error(why),
         Err(why) => {
             let mode = if credits_on(why) {
@@ -224,6 +230,34 @@ pub(super) fn not_saved(why: &str) -> bool {
 
 #[cfg(not(unix))]
 pub(super) fn not_saved(_why: &str) -> bool {
+    false
+}
+
+/// Issue #2271: a direct-read failure that `claude` could not do better
+/// on, because there is no login to use: no token, no refresh token, or no
+/// credentials file in a directory that really exists (not a symlink, and
+/// not the stand-in path for a missing `$HOME`, and never on macOS, where the
+/// keychain may hold it). Only the fixed reasons are
+/// matched; everything else falls back as before. The one check on disk
+/// reads the directory's own metadata, never the credentials file.
+#[cfg(unix)]
+fn final_reason(why: &'static str, plan: &Plan) -> bool {
+    use usage_direct::reason;
+    match why {
+        reason::NO_TOKEN | reason::NO_REFRESH_TOKEN => true,
+        // On macOS the login may be in the keychain, so a missing file is
+        // not final there.
+        reason::NO_FILE => {
+            !cfg!(target_os = "macos")
+                && std::fs::symlink_metadata(&plan.creds_dir).is_ok_and(|m| m.is_dir())
+        }
+        _ => false,
+    }
+}
+
+/// Off Unix a keychain may hold the login, so no reason is final.
+#[cfg(not(unix))]
+fn final_reason(_why: &'static str, _plan: &Plan) -> bool {
     false
 }
 

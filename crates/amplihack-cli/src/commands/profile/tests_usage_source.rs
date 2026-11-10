@@ -330,8 +330,32 @@ fn ordered_falls_back_to_text_when_credits_are_on_and_no_window_is_read() {
     assert_eq!(p.direct_failure, Some("usage credits on"));
 }
 
+/// Issue #2271: a profile directory with no login file is final. `claude`
+/// would find the same empty directory, so none is started.
+#[cfg(not(target_os = "macos"))]
 #[test]
-fn ordered_falls_back_when_there_is_no_login_file() {
+fn ordered_gives_not_signed_in_when_there_is_no_login_file() {
+    let s = setup();
+    fs::remove_file(s.dir().join(".credentials.json")).unwrap();
+    let fake = ok_server();
+    let fb = Fallback::new();
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &s.plan(),
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert!(fb.calls().is_empty(), "no claude: {:?}", fb.calls());
+    assert_not_signed_in(&p, "no credentials file");
+    assert!(fake.seen().is_empty());
+}
+
+/// Issue #2271: on macOS the login may be in the keychain, so a profile
+/// directory with no login file still falls back to `claude`.
+#[cfg(target_os = "macos")]
+#[test]
+fn ordered_falls_back_when_there_is_no_login_file_on_macos() {
     let s = setup();
     fs::remove_file(s.dir().join(".credentials.json")).unwrap();
     let fake = ok_server();
@@ -344,8 +368,8 @@ fn ordered_falls_back_when_there_is_no_login_file() {
         |m| fb.run(m),
     );
     assert_eq!(fb.calls(), [ProbeMode::Auto]);
+    assert_eq!(p.source, Some(Source::Fallback));
     assert_eq!(p.direct_failure, Some("no credentials file"));
-    assert!(fake.seen().is_empty());
 }
 
 #[test]
@@ -874,6 +898,17 @@ fn two_logins(ages: [i64; 2]) -> Setup {
     for p in ["a", "b"] {
         fs::create_dir_all(root.join(p)).unwrap();
         fs::set_permissions(root.join(p), fs::Permissions::from_mode(0o700)).unwrap();
+        // A login, so that a stale reading reaches the direct read and its
+        // failure falls back (issue #2271: no login file reads "not signed
+        // in" and starts no probe).
+        let creds = root.join(p).join(".credentials.json");
+        let doc = json!({"claudeAiOauth": {
+            "accessToken": ACCESS,
+            "refreshToken": "FAKE-REFRESH-1974-src",
+            "expiresAt": chrono::Utc::now().timestamp_millis() + 3_600_000
+        }});
+        fs::write(&creds, doc.to_string()).unwrap();
+        fs::set_permissions(&creds, fs::Permissions::from_mode(0o600)).unwrap();
     }
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let root = root.canonicalize().unwrap();
@@ -948,4 +983,463 @@ fn one_stale_reading_starts_one_fallback_for_that_login_only() {
         assert_eq!(p.source, Some(want), "{name}");
     }
     assert_eq!(calls, [("b", ProbeMode::Auto)]);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2271: direct-read results that are final
+//
+// Contract:
+// - In `Ordered` and `Direct`, a direct read that fails with `no oauth
+//   token`, `no refresh token`, or `no credentials file` in a creds_dir
+//   that is a real directory (not a symlink, and not the `.no-home` stand-in
+//   for a missing `$HOME`) gives `Probe::not_signed_in(why)`, and the
+//   fallback closure is never called:
+//   - `report.state` `NotLoggedIn`, no windows;
+//   - `error` `Some(ErrorReason::NotSignedIn(why))`, shown as
+//     `not signed in (<why>)`;
+//   - `source` `Direct`, `direct_failure` `Some(why)`, spend `Unknown`, no
+//     shape, no raw.
+// - Every other reason behaves as before: a fallback in `Ordered`, an
+//   error row in `Direct`.
+// - `Auto` and `Text` do no direct read and are unchanged.
+// ---------------------------------------------------------------------------
+
+use super::usage_direct::reason;
+
+fn assert_not_signed_in(p: &Probe, why: &'static str) {
+    assert_eq!(p.report.state, UsageState::NotLoggedIn, "{p:?}");
+    assert!(p.report.session.is_none() && p.report.week_all.is_none());
+    assert_eq!(p.error, Some(ErrorReason::NotSignedIn(why)), "{p:?}");
+    assert_eq!(
+        p.error.map(|e| e.to_string()).as_deref(),
+        Some(format!("not signed in ({why})").as_str())
+    );
+    assert_eq!(p.source, Some(Source::Direct));
+    assert_eq!(p.direct_failure, Some(why));
+    assert_eq!(p.spend, Spend::Unknown);
+    assert!(p.extra_shape.is_none());
+    assert!(p.raw.is_none());
+}
+
+/// Rewrites the profile's login file with `doc`, kept private.
+fn write_creds(s: &Setup, doc: &str) {
+    let creds = s.dir().join(".credentials.json");
+    fs::write(&creds, doc).unwrap();
+    fs::set_permissions(&creds, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+fn expired_without_refresh_token() -> String {
+    json!({"claudeAiOauth": {
+        "accessToken": ACCESS,
+        "expiresAt": chrono::Utc::now().timestamp_millis() - 1000
+    }})
+    .to_string()
+}
+
+/// A server that answers everything, so a fallback can only come from the
+/// reason the direct read gave.
+fn token_server() -> FakeHttp {
+    FakeHttp::start(|s, _| {
+        if s.path == "/v1/oauth/token" {
+            Reply::json(
+                200,
+                &json!({"access_token": "FAKE-NEW-2271", "expires_in": 3600}),
+            )
+        } else {
+            Reply::json(401, &json!({}))
+        }
+    })
+}
+
+#[test]
+fn not_signed_in_has_the_documented_text_and_fields() {
+    for why in [reason::NO_TOKEN, reason::NO_FILE, reason::NO_REFRESH_TOKEN] {
+        let p = Probe::not_signed_in(why);
+        assert_not_signed_in(&p, why);
+    }
+    assert_eq!(
+        ErrorReason::NotSignedIn(reason::NO_TOKEN).to_string(),
+        "not signed in (no oauth token)"
+    );
+}
+
+#[test]
+fn a_file_with_no_usable_token_is_final_in_ordered() {
+    for doc in [
+        "not json at all",
+        r#"{"claudeAiOauth": {}}"#,
+        r#"{"claudeAiOauth": {"accessToken": ""}}"#,
+        r#"{"claudeAiOauth": {"refreshToken": "sk-ant-oat01-TEST-2271-CANARY"}}"#,
+        r#"{"other": true}"#,
+    ] {
+        let s = setup();
+        write_creds(&s, doc);
+        let fake = ok_server();
+        let fb = Fallback::new();
+        let p = read(
+            &env_for(&fake, ProbeMode::Ordered),
+            &s.plan(),
+            &s.root,
+            now(),
+            |m| fb.run(m),
+        );
+        assert!(fb.calls().is_empty(), "{doc}: {:?}", fb.calls());
+        assert_not_signed_in(&p, reason::NO_TOKEN);
+        assert!(fake.seen().is_empty(), "{doc}");
+    }
+}
+
+#[test]
+fn an_expired_login_with_no_refresh_token_is_final_and_never_posts() {
+    let _serial = crate::test_support::refresh_count_lock();
+    let s = setup();
+    write_creds(&s, &expired_without_refresh_token());
+    let before = fs::read(s.dir().join(".credentials.json")).unwrap();
+    let fake = token_server();
+    let fb = Fallback::new();
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &s.plan(),
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert!(fb.calls().is_empty(), "{:?}", fb.calls());
+    assert_not_signed_in(&p, reason::NO_REFRESH_TOKEN);
+    assert!(fake.seen().is_empty(), "{:?}", fake.seen());
+    assert_eq!(fs::read(s.dir().join(".credentials.json")).unwrap(), before);
+}
+
+#[test]
+fn direct_mode_gives_not_signed_in_not_a_direct_error() {
+    for (doc, why) in [
+        #[cfg(not(target_os = "macos"))]
+        (None, reason::NO_FILE),
+        (Some("{}".to_string()), reason::NO_TOKEN),
+        (
+            Some(expired_without_refresh_token()),
+            reason::NO_REFRESH_TOKEN,
+        ),
+    ] {
+        let _serial = crate::test_support::refresh_count_lock();
+        let s = setup();
+        match &doc {
+            None => fs::remove_file(s.dir().join(".credentials.json")).unwrap(),
+            Some(d) => write_creds(&s, d),
+        }
+        let fake = token_server();
+        let fb = Fallback::new();
+        let p = read(
+            &env_for(&fake, ProbeMode::Direct),
+            &s.plan(),
+            &s.root,
+            now(),
+            |m| fb.run(m),
+        );
+        assert!(fb.calls().is_empty());
+        assert_not_signed_in(&p, why);
+        assert_ne!(p.report.state, UsageState::Error, "{why}");
+    }
+}
+
+/// D2: with no `$HOME`, the live login's directory is a `.no-home` path
+/// that does not exist. That is an environment problem, not a sign that
+/// the user is logged out, so it still falls back.
+#[test]
+fn no_file_in_a_directory_that_does_not_exist_still_falls_back() {
+    let s = setup();
+    let fake = ok_server();
+    let fb = Fallback::new();
+    let mut plan = s.plan();
+    plan.creds_dir = s.dir().join(".no-home");
+    plan.passive = Some(ProfileName::parse("spare").unwrap());
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &plan,
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert_eq!(fb.calls(), [ProbeMode::Auto]);
+    assert_eq!(p.source, Some(Source::Fallback));
+    assert_eq!(p.direct_failure, Some(reason::NO_FILE));
+    assert!(p.error.is_none());
+}
+
+/// In `Direct` the same missing directory is the old error row, not
+/// `not signed in`.
+#[test]
+fn direct_mode_keeps_the_error_for_a_directory_that_does_not_exist() {
+    let s = setup();
+    let fake = ok_server();
+    let fb = Fallback::new();
+    let mut plan = s.plan();
+    plan.creds_dir = s.dir().join(".no-home");
+    let p = read(
+        &env_for(&fake, ProbeMode::Direct),
+        &plan,
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert!(fb.calls().is_empty());
+    assert_eq!(p.error, Some(ErrorReason::Direct(reason::NO_FILE)));
+    assert_eq!(p.report.state, UsageState::Error);
+}
+
+/// A symlinked directory is not followed to decide the row: it may point
+/// at a login `claude` can use.
+#[test]
+fn no_file_in_a_symlinked_directory_still_falls_back() {
+    let s = setup();
+    fs::remove_file(s.dir().join(".credentials.json")).unwrap();
+    let link = s.root.join("linked");
+    std::os::unix::fs::symlink(s.dir(), &link).unwrap();
+    let fake = ok_server();
+    let fb = Fallback::new();
+    let mut plan = s.plan();
+    plan.creds_dir = link;
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &plan,
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert_eq!(fb.calls(), [ProbeMode::Auto]);
+    assert_eq!(p.source, Some(Source::Fallback));
+    assert!(p.error.is_none(), "not a not-signed-in row: {:?}", p.error);
+}
+
+/// A `.no-home` path that exists as a directory is a real directory: the
+/// rule looks only at what is on disk.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn a_real_no_home_directory_with_no_file_is_final() {
+    let s = setup();
+    let dir = s.dir().join(".no-home");
+    fs::create_dir(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let fake = ok_server();
+    let fb = Fallback::new();
+    let mut plan = s.plan();
+    plan.creds_dir = dir;
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &plan,
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert!(fb.calls().is_empty());
+    assert_not_signed_in(&p, reason::NO_FILE);
+}
+
+/// A token-less row never looks up `claude`.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn a_not_signed_in_row_never_resolves_the_binary() {
+    let n = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&n);
+    let lazy = LazyBinary::new(move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Some(fake_binary())
+    });
+    let s = setup();
+    fs::remove_file(s.dir().join(".credentials.json")).unwrap();
+    let fake = ok_server();
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &s.plan(),
+        &s.root,
+        now(),
+        |m| fallback_with(&lazy, |_bin| Fallback::new().run(m)),
+    );
+    assert_not_signed_in(&p, reason::NO_FILE);
+    assert_eq!(n.load(Ordering::SeqCst), 0);
+}
+
+/// A fresh passive reading still wins: the direct read is never reached.
+#[test]
+fn a_fresh_passive_reading_comes_before_the_login_check() {
+    let s = setup();
+    fs::remove_file(s.dir().join(".credentials.json")).unwrap();
+    s.seed_passive();
+    let fake = ok_server();
+    let fb = Fallback::new();
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &s.plan(),
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert_eq!(p.source, Some(Source::Passive));
+    assert!(p.error.is_none());
+}
+
+/// `auto` and `text` do no direct read: a token-less profile still goes to
+/// `claude`.
+#[test]
+fn auto_and_text_still_start_claude_for_a_token_less_profile() {
+    for mode in [ProbeMode::Auto, ProbeMode::Text] {
+        let s = setup();
+        fs::remove_file(s.dir().join(".credentials.json")).unwrap();
+        let fake = ok_server();
+        let fb = Fallback::new();
+        let p = read(&env_for(&fake, mode), &s.plan(), &s.root, now(), |m| {
+            fb.run(m)
+        });
+        assert_eq!(fb.calls(), [mode]);
+        assert_eq!(p.source, Some(Source::Fallback));
+    }
+}
+
+/// An overflow profile is read with `/usage` only, whatever its login.
+#[test]
+fn an_overflow_profile_with_no_login_file_still_gets_the_text_probe() {
+    let s = setup();
+    fs::remove_file(s.dir().join(".credentials.json")).unwrap();
+    let fake = ok_server();
+    let fb = Fallback::new();
+    let mut plan = s.plan();
+    plan.overflow = true;
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &plan,
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert_eq!(fb.calls(), [ProbeMode::Text]);
+    assert_eq!(p.source, Some(Source::Fallback));
+}
+
+// Regression: every other reason still falls back exactly once.
+
+fn assert_falls_back_once(p: &Probe, fb: &Fallback, why: &'static str) {
+    assert_eq!(fb.calls(), [ProbeMode::Auto], "{why}");
+    assert_eq!(p.source, Some(Source::Fallback), "{why}");
+    assert_eq!(p.direct_failure, Some(why));
+    assert!(p.error.is_none(), "{why}: {:?}", p.error);
+}
+
+#[test]
+fn a_5xx_still_falls_back() {
+    let s = setup();
+    let fake = failing_server();
+    let fb = Fallback::new();
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &s.plan(),
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert_falls_back_once(&p, &fb, reason::HTTP_5XX);
+}
+
+/// A deadline with nothing left gives `timeout` before any request starts,
+/// so nothing here waits.
+#[test]
+fn a_timeout_still_falls_back() {
+    let s = setup();
+    let fake = ok_server();
+    let mut env = env_for(&fake, ProbeMode::Ordered);
+    env.timeout = Duration::ZERO;
+    let fb = Fallback::new();
+    let p = read(&env, &s.plan(), &s.root, now(), |m| fb.run(m));
+    assert_falls_back_once(&p, &fb, reason::TIMEOUT);
+}
+
+#[test]
+fn a_swap_journal_refresh_busy_still_falls_back() {
+    let s = setup();
+    write_creds(
+        &s,
+        &json!({"claudeAiOauth": {
+            "accessToken": ACCESS,
+            "refreshToken": "FAKE-REFRESH-2271",
+            "expiresAt": chrono::Utc::now().timestamp_millis() - 1000
+        }})
+        .to_string(),
+    );
+    let state = s.root.join(".auto-switch.d");
+    fs::create_dir_all(&state).unwrap();
+    fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(state.join("journal.json"), "{}").unwrap();
+    let fake = token_server();
+    let fb = Fallback::new();
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &s.plan(),
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert_falls_back_once(&p, &fb, reason::REFRESH_BUSY);
+    assert_eq!(fake.count("POST", "/v1/oauth/token"), 0);
+}
+
+#[test]
+fn a_directory_others_can_write_refresh_refused_still_falls_back() {
+    let s = setup();
+    write_creds(
+        &s,
+        &json!({"claudeAiOauth": {
+            "accessToken": ACCESS,
+            "refreshToken": "FAKE-REFRESH-2271",
+            "expiresAt": chrono::Utc::now().timestamp_millis() - 1000
+        }})
+        .to_string(),
+    );
+    fs::set_permissions(s.dir(), fs::Permissions::from_mode(0o777)).unwrap();
+    let fake = token_server();
+    let fb = Fallback::new();
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &s.plan(),
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    fs::set_permissions(s.dir(), fs::Permissions::from_mode(0o700)).unwrap();
+    assert_falls_back_once(&p, &fb, reason::REFRESH_REFUSED);
+}
+
+#[test]
+fn token_expired_without_permission_to_refresh_still_falls_back() {
+    let s = setup();
+    write_creds(&s, &expired_without_refresh_token());
+    let fake = token_server();
+    let fb = Fallback::new();
+    let mut plan = s.plan();
+    plan.allow_refresh = false;
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &plan,
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert_falls_back_once(&p, &fb, reason::EXPIRED);
+    assert!(fake.seen().is_empty());
+}
+
+#[test]
+fn a_refused_login_file_still_falls_back() {
+    let s = setup();
+    let creds = s.dir().join(".credentials.json");
+    // Group-writable: refused before it is read, so a login may be there.
+    fs::set_permissions(&creds, fs::Permissions::from_mode(0o664)).unwrap();
+    let fake = ok_server();
+    let fb = Fallback::new();
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &s.plan(),
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert_falls_back_once(&p, &fb, reason::REFUSED);
 }

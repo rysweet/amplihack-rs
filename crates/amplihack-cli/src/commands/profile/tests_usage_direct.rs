@@ -507,6 +507,9 @@ fn reasons_are_the_documented_texts() {
     assert_eq!(reason::REFRESH_REFUSED, "refresh refused");
     assert_eq!(reason::REFRESH_FAILED, "refresh failed");
     assert_eq!(reason::REFRESH_NOT_SAVED, "refresh not saved");
+    // Issue #2271: its own reason, so `usage_source` can tell a login with
+    // nothing to refresh with from a refresh the server turned away.
+    assert_eq!(reason::NO_REFRESH_TOKEN, "no refresh token");
 }
 
 // ---------------------------------------------------------------------------
@@ -1478,4 +1481,134 @@ fn an_unusable_endpoint_fails_without_connecting() {
     );
     assert!(start.elapsed() < Duration::from_millis(500));
     assert_eq!(l.entries(), [CREDS]);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2271: a login with nothing to refresh it with
+//
+// Contract:
+// - `reason::NO_REFRESH_TOKEN` = `no refresh token`.
+// - `refresh()` returns it when the file under the lock has no usable
+//   `claudeAiOauth.refreshToken` (missing, empty, over 4096 bytes or not
+//   printable ASCII). It is returned before any temp file is made and
+//   before any POST: the token endpoint is never contacted, the file is
+//   left as it was, and the lock and the refresh counter are released.
+// - A refresh the token server turns away (3xx/4xx, DNS, refused
+//   connection) keeps `refresh failed`.
+// ---------------------------------------------------------------------------
+
+/// A private login whose token expires in `ms` and whose `refreshToken` is
+/// `refresh` (`None`: the key is absent).
+fn login_with_refresh(ms: i64, refresh: Option<Value>) -> Login {
+    let l = login_expiring_in(ms);
+    let mut doc = l.doc();
+    let oauth = doc["claudeAiOauth"].as_object_mut().unwrap();
+    match refresh {
+        Some(v) => {
+            oauth.insert("refreshToken".into(), v);
+        }
+        None => {
+            oauth.remove("refreshToken");
+        }
+    }
+    fs::write(l.path(), serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+    fs::set_permissions(l.path(), fs::Permissions::from_mode(0o600)).unwrap();
+    l
+}
+
+/// The fake server that answers every request: a POST would be a defect.
+fn answering_everything() -> FakeHttp {
+    FakeHttp::start(|s, _| {
+        if s.path == TOKEN_PATH {
+            Reply::json(200, &token_answer())
+        } else {
+            Reply::json(401, &json!({"error": "expired"}))
+        }
+    })
+}
+
+#[test]
+fn an_expired_login_with_no_refresh_token_is_no_refresh_token_and_sends_nothing() {
+    let _serial = crate::test_support::refresh_count_lock();
+    let fake = answering_everything();
+    let l = login_with_refresh(-1000, None);
+    let before = fs::read(l.path()).unwrap();
+    assert_eq!(run(&fake, &l, true), Err(reason::NO_REFRESH_TOKEN));
+    assert!(fake.seen().is_empty(), "nothing sent: {:?}", fake.seen());
+    assert_eq!(fs::read(l.path()).unwrap(), before, "the file is untouched");
+    assert_eq!(l.entries(), [CREDS], "no lock or temp file is left");
+    assert_eq!(refreshes_in_progress(), 0, "the counter is released");
+}
+
+#[test]
+fn a_token_due_within_the_margin_with_no_refresh_token_is_no_refresh_token() {
+    let _serial = crate::test_support::refresh_count_lock();
+    let fake = answering_everything();
+    let l = login_with_refresh(30_000, None);
+    assert_eq!(run(&fake, &l, true), Err(reason::NO_REFRESH_TOKEN));
+    assert!(fake.seen().is_empty(), "{:?}", fake.seen());
+    assert_eq!(l.entries(), [CREDS]);
+}
+
+#[test]
+fn a_401_with_no_refresh_token_is_no_refresh_token_after_one_get() {
+    let _serial = crate::test_support::refresh_count_lock();
+    let fake = answering_everything();
+    let l = login_with_refresh(3_600_000, None);
+    assert_eq!(run(&fake, &l, true), Err(reason::NO_REFRESH_TOKEN));
+    assert_eq!(gets(&fake).len(), 1, "the one GET that gave the 401");
+    assert_eq!(posts(&fake), 0);
+    assert_eq!(l.entries(), [CREDS]);
+}
+
+#[test]
+fn an_unusable_refresh_token_is_no_refresh_token() {
+    let _serial = crate::test_support::refresh_count_lock();
+    for bad in [
+        json!(""),
+        json!("has space"),
+        json!("x".repeat(MAX_TOKEN + 1)),
+        json!(42),
+        Value::Null,
+    ] {
+        let fake = answering_everything();
+        let l = login_with_refresh(-1000, Some(bad.clone()));
+        assert_eq!(
+            run(&fake, &l, true),
+            Err(reason::NO_REFRESH_TOKEN),
+            "refreshToken {bad}"
+        );
+        assert!(fake.seen().is_empty(), "refreshToken {bad}");
+        assert_eq!(l.entries(), [CREDS]);
+    }
+}
+
+/// Without permission to refresh, the reason is unchanged: the token is
+/// expired, and no lock is taken to look for a refresh token.
+#[test]
+fn no_refresh_allowed_keeps_token_expired_even_with_no_refresh_token() {
+    let fake = answering_everything();
+    let l = login_with_refresh(-1000, None);
+    assert_eq!(run(&fake, &l, false), Err(reason::EXPIRED));
+    assert!(fake.seen().is_empty());
+    assert_eq!(l.entries(), [CREDS]);
+}
+
+/// The server turning a refresh away is still `refresh failed`, not the new
+/// reason: only a missing refresh token is `no refresh token`.
+#[test]
+fn a_refused_refresh_with_a_refresh_token_stays_refresh_failed() {
+    let fake = refreshing(Reply::json(400, &json!({"error": "invalid_grant"})));
+    let l = login_expiring_in(-1000);
+    assert_eq!(run(&fake, &l, true), Err(reason::REFRESH_FAILED));
+    assert_eq!(posts(&fake), 1);
+}
+
+#[test]
+fn the_no_refresh_token_reason_never_holds_a_token() {
+    let _serial = crate::test_support::refresh_count_lock();
+    let fake = answering_everything();
+    let l = login_with_refresh(-1000, None);
+    let why = run(&fake, &l, true).unwrap_err();
+    assert!(!why.contains(ACCESS) && !why.contains("FAKE"), "{why}");
 }
