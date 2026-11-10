@@ -102,8 +102,9 @@ pub fn write_launcher_context(
 ///   "ignoring an unusable launcher_context.json", and
 ///   [`read_launcher_context`] returns `None` with a warning.
 ///
-/// In every case resolution falls through to the next layer or the default,
-/// and the next launch rewrites the file. Errors that only `fsync(2)` would
+/// When the file is missing or unusable, `agent_binary` searches parent
+/// directories for another `launcher_context.json` and then uses the
+/// default. In every case the next launch rewrites the file. Errors that only `fsync(2)` would
 /// report (EIO, ENOSPC, EDQUOT, NFS writeback) are no longer reported for
 /// this file; errors from `write` and the rename still are.
 ///
