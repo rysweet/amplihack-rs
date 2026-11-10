@@ -211,6 +211,28 @@ exec "$REAL_TOOL" "$@"
         result
     }
 
+    /// Exercise a real retry without a wall-clock wait or provider access.
+    pub fn long_transient_create_failure(&self) {
+        let gh = fs::read_to_string(self.bin.join("gh")).unwrap();
+        let marker = "    if [ \"${CREATE_STATUS:-0}\" != 0 ]; then";
+        assert!(gh.contains(marker));
+        let first = format!(
+            r#"
+    if [ ! -e "$CASE_ROOT/first-create" ]; then
+      : > "$CASE_ROOT/first-create"
+      printf '%s\n' 'HTTP 503 temporary network error {} ghp_ABCDEFGHIJKLMNOPQRSTUVWX' >&2
+      exit 1
+    fi
+"#,
+            "x".repeat(2048)
+        );
+        executable(
+            &self.bin.join("gh"),
+            &gh.replace(marker, &format!("{first}{marker}")),
+        );
+        self.shim("sleep", "exit 0\n");
+    }
+
     pub fn inject_scope_failure(&self) {
         self.shim(
             "cut",
