@@ -747,6 +747,33 @@ fn unusable_cache_location_still_prints_total() {
     );
 }
 
+// When neither `stat` form gives an inode and size, the function prints 0
+// instead of counting without the cache, and writes nothing.
+#[test]
+fn unusable_stat_prints_zero_and_writes_nothing() {
+    let env = Env::new();
+    let t = env.transcript();
+    fs::write(&t, lines(6, 61)).unwrap();
+    assert!(oracle(&fs::read(&t).unwrap()) > 0, "fixture must count");
+
+    let out = run_raw(
+        &env,
+        &[t.to_str().unwrap()],
+        Xdg::Default,
+        "stat() { return 1; }",
+        "",
+    );
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        out.stderr.is_empty(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.stdout, b"0\n");
+    assert!(visible_entries(&env.cache_dir()).is_empty());
+    assert!(hidden_entries(&env.cache_dir()).is_empty());
+}
+
 // A cache directory that is a symlink is not used, and nothing is written
 // through it.
 #[test]

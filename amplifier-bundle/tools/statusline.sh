@@ -115,7 +115,7 @@ calculate_tokens() {
     local t="$1"
     local st="" ino="" size="" key="" dir="" entry="" tmp=""
     local a="" b="" c="" d="" off=0 total=0 len=0 out="" add="" bytes="" new=""
-    local use_cache=0 have_entry=0
+    local use_cache=0
 
     # Accept 0 or a decimal integer of at most 18 digits with no leading
     # zero. Glob checks only: these values are never evaluated before this.
@@ -135,27 +135,26 @@ calculate_tokens() {
     st=$(stat -L -c '%i %s' -- "$t" || stat -L -f '%i %z' -- "$t")
     ino=${st%% *}
     size=${st#* }
-    if _ct_num "$ino" && _ct_num "$size"; then
-        if [ "$size" -eq 0 ]; then
-            echo "0"
-            return 0
-        fi
-        key=$(printf '%s' "$t" | sha256sum | awk '{print $1}')
-        [ -n "$key" ] || key=$(printf '%s' "$t" | shasum -a 256 | awk '{print $1}')
-        [ -n "$key" ] || key=$(printf '%s' "$t" | cksum | awk '{print $1 "-" $2}')
-        case "$key" in
-            '' | *[!0-9a-f-]*) key="" ;;
-        esac
-        dir="${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/statusline-tokens"
-        if [ -n "$key" ] && (umask 077; mkdir -p -- "$dir") \
-            && [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ]; then
-            use_cache=1
-            entry="$dir/$key"
-            tmp="$dir/.$key.$$"
-        fi
-    else
-        ino=""
-        size=""
+    if ! _ct_num "$ino" || ! _ct_num "$size" || [ "$size" -eq 0 ]; then
+        echo "0"
+        return 0
+    fi
+
+    # Keep only the digest field.
+    key=$(printf '%s' "$t" | sha256sum)
+    [ -n "$key" ] || key=$(printf '%s' "$t" | shasum -a 256)
+    key=${key%% *}
+    [ -n "$key" ] || key=$(printf '%s' "$t" | cksum | awk '{print $1 "-" $2}')
+    case "$key" in
+        '' | *[!0-9a-f-]*) key="" ;;
+    esac
+    dir="${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/statusline-tokens"
+    # mkdir runs only on first use; the checks below still apply every call.
+    if [ -n "$key" ] && { [ -d "$dir" ] || (umask 077; mkdir -p -- "$dir"); } \
+        && [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ]; then
+        use_cache=1
+        entry="$dir/$key"
+        tmp="$dir/.$key.$$"
     fi
 
     if [ "$use_cache" -eq 1 ] && [ -f "$entry" ] && [ ! -L "$entry" ] && [ -O "$entry" ]; then
@@ -164,27 +163,21 @@ calculate_tokens() {
             && [ "$a" = "$ino" ] && [ "$b" -le "$size" ]; then
             off=$b
             total=$c
-            have_entry=1
         fi
     fi
 
-    if [ -n "$size" ]; then
-        len=$((size - off))
-        if [ "$len" -eq 0 ] && [ "$have_entry" -eq 1 ]; then
-            echo "$total"
-            return 0
-        fi
+    # size > 0, so nothing left to read means a valid entry covers the file.
+    len=$((size - off))
+    if [ "$len" -eq 0 ]; then
+        echo "$total"
+        return 0
     fi
 
     # One pass over the new bytes. The sentinel X ends the stream so that the
     # last record is always the unterminated remainder, which is not counted.
     out=$(
         {
-            if [ -n "$size" ]; then
-                tail -c +"$((off + 1))" -- "$t" | head -c "$len"
-            else
-                cat -- "$t"
-            fi
+            tail -c +"$((off + 1))" -- "$t" | head -c "$len"
             printf 'X'
         } | LC_ALL=C awk '
             function tally(r,    m) {
@@ -221,8 +214,8 @@ calculate_tokens() {
     off=$((off + bytes))
 
     if [ "$use_cache" -eq 1 ]; then
-        # set -C opens the temporary file exclusively, so a planted file or
-        # symlink makes the write fail instead of being followed.
+        # set -C refuses an existing regular file (or a symlink to one), so a
+        # planted file is not overwritten.
         if (
             umask 077
             set -C

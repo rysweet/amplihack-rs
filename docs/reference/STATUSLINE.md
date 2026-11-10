@@ -197,15 +197,16 @@ reading the transcript.
 
 The new entry is written to `"$dir/.$key.$$"` inside a subshell with
 `umask 077` and `set -C`, then moved over `"$dir/$key"` with `mv -f`. `set -C`
-opens the temporary file with `O_EXCL`, so a planted symlink makes the write
-fail instead of being followed. If two panes refresh the same transcript at
+refuses to open an existing regular file or a symlink to one, so a planted
+file of that kind makes the write fail. It does not refuse a symlink to a FIFO
+or a device; see [Limits](#limits). If two panes refresh the same transcript at
 once, the last `mv` wins, and each entry stays self-consistent.
 
 The cache is used only when the directory is a directory, not a symlink, and
 owned by the current user, and an entry is read only when it is a regular,
 user-owned file that is not a symlink. At most 128 bytes of an entry are
-read. If any check fails, or `stat` gives no usable inode and size, the
-function counts the whole file in one pass and writes nothing.
+read. If any check fails, the function counts the whole file in one pass and
+writes nothing. If `stat` gives no usable inode and size, it prints `0`.
 
 If the write or the `mv` fails, the function removes any temporary file that
 this call created, prints the correct total and shows no error. A temporary
@@ -244,6 +245,12 @@ No `jq`, `python` or `dd` is needed.
   does not support `[[:space:]]` as a character class. On such a host the
   compact form `"input_tokens":123` does not match and the total shows as
   `0`. This is an accepted risk.
+- The cache directory's ownership and symlink status are checked, but its
+  mode is not. A directory created by the function has mode 0700. If the user
+  has made an existing directory group- or world-writable, another local user
+  could plant `.$key.$$` as a link to a FIFO, which would block the status
+  line, or to a device the user can write to. This is an accepted risk,
+  tracked in [#2283](https://github.com/rysweet/amplihack-rs/issues/2283).
 - The Rust status-line path and `docs/claude/tools/statusline.sh` do not use
   this cache.
 
