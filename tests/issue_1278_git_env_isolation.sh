@@ -416,7 +416,8 @@ assert_eq "the run-identity clear leaves git names alone" "/decoy" \
 assert_eq "the git clear leaves run-identity names alone" "outer" \
     "$(env -i PATH="$PATH" AMPLIHACK_TREE_ID=outer bash -c '. "$0"; amplihack_clear_git_repo_env; echo "$AMPLIHACK_TREE_ID"' "$REPO_ENV" 2>&1)"
 
-# 6.5 The helper is bash 3.2 safe: no arrays, local, mapfile or declare -g.
+# 6.5 The helper is bash 3.2 safe: no arrays, no local, no declare -g, and
+# none of the bash 4 array readers.
 if grep -nE '^[^#]*(\blocal\b|\bmapfile\b|\breadarray\b|declare -g|=\(|\[@\])' "$REPO_ENV" >/dev/null 2>&1; then
     record_fail "git-repo-env.sh is bash 3.2 safe" "$(grep -nE '^[^#]*(\blocal\b|\bmapfile\b|\breadarray\b|declare -g|=\(|\[@\])' "$REPO_ENV")"
 else

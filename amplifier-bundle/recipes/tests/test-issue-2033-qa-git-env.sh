@@ -110,21 +110,23 @@ SCRATCH_SUITE='t="$(mktemp -d "$TMPDIR/scratch.XXXXXX")" && cd "$t" && git init 
 COMMIT_SUITE='echo changed >> README && git add -A && git commit --allow-empty -q -m x'
 SUITE="$SCRATCH_SUITE"
 
-# git_env_at <repo>: the 12 repository-selecting names, all pointing at <repo>.
+# git_env_at <repo>: set GIT_ENV to the 12 repository-selecting names, all
+# pointing at <repo>. Callers copy GIT_ENV into their own array.
 git_env_at() {
-    printf '%s\n' \
-        "GIT_ALTERNATE_OBJECT_DIRECTORIES=$1/.git/objects" \
-        "GIT_CEILING_DIRECTORIES=$WORK" \
-        "GIT_COMMON_DIR=$1/.git" \
-        "GIT_DIR=$1/.git" \
-        "GIT_DISCOVERY_ACROSS_FILESYSTEM=1" \
-        "GIT_INDEX_FILE=$1/.git/index" \
-        "GIT_INDEX_VERSION=4" \
-        "GIT_NAMESPACE=leak" \
-        "GIT_OBJECT_DIRECTORY=$1/.git/objects" \
-        "GIT_PREFIX=sub/" \
-        "GIT_QUARANTINE_PATH=$1/.git/objects/incoming-leak" \
+    GIT_ENV=(
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES=$1/.git/objects"
+        "GIT_CEILING_DIRECTORIES=$WORK"
+        "GIT_COMMON_DIR=$1/.git"
+        "GIT_DIR=$1/.git"
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM=1"
+        "GIT_INDEX_FILE=$1/.git/index"
+        "GIT_INDEX_VERSION=4"
+        "GIT_NAMESPACE=leak"
+        "GIT_OBJECT_DIRECTORY=$1/.git/objects"
+        "GIT_PREFIX=sub/"
+        "GIT_QUARANTINE_PATH=$1/.git/objects/incoming-leak"
         "GIT_WORK_TREE=$1"
+    )
 }
 RUN_ENV=(
     "AMPLIHACK_RECIPE_RUN_ID=outer-recipe-run"
@@ -160,7 +162,7 @@ echo "== #2033: auto-drive QA runs repository tests with the git env cleared =="
 ok=1
 CONTROL="$WORK/control"
 make_repo "$CONTROL"
-mapfile -t CONTROL_ENV < <(git_env_at "$CONTROL")
+git_env_at "$CONTROL"; CONTROL_ENV=("${GIT_ENV[@]}")
 control_before="$(snapshot "$CONTROL" objects)"
 mkdir -p "$WORK/control-tmp"
 ( cd "$CALLER" && env "${CONTROL_ENV[@]}" "${ID_ENV[@]}" TMPDIR="$WORK/control-tmp" bash -c "$SCRATCH_SUITE" ) >/dev/null 2>&1 \
@@ -186,7 +188,7 @@ done
 
 # --- Case 2: every git name at the decoy, every run name set ---------------
 ok=1
-mapfile -t DECOY_ENV < <(git_env_at "$DECOY")
+git_env_at "$DECOY"; DECOY_ENV=("${GIT_ENV[@]}")
 decoy_before="$(snapshot "$DECOY" objects)"
 caller_before="$(snapshot "$CALLER" objects)"
 caller_head="$(git -C "$CALLER" rev-parse HEAD)"
@@ -207,7 +209,7 @@ got="$(printf '%s' "$OUT" | field_of run_env_cleared 2>/dev/null || echo '<inval
 
 # --- Case 3: every git name at REPO_PATH itself (Product-Management #742) ---
 ok=1
-mapfile -t SELF_ENV < <(git_env_at "$CALLER")
+git_env_at "$CALLER"; SELF_ENV=("${GIT_ENV[@]}")
 caller_before="$(snapshot "$CALLER" objects)"
 run_tool "$TOOL" "$WORK/ev3.json" "${SELF_ENV[@]}" "${RUN_ENV[@]}"
 status="$(printf '%s' "$OUT" | field_of qa_status 2>/dev/null || echo '<invalid>')"
