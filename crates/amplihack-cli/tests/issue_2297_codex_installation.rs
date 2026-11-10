@@ -1,10 +1,7 @@
 //! Build `cargo build -p amplihack --bin amplihack` first, or set AMPLIHACK_TEST_BINARY.
 //! Recipe agents enter through `amplihack codex -- exec`; rejection must precede work.
 #![cfg(unix)]
-use std::{
-    fs,
-    process::{Command, Stdio},
-};
+use std::{fs, process::Stdio};
 
 #[test]
 fn recipe_codex_startup_rejects_missing_helper_before_agent_work() {
@@ -42,8 +39,7 @@ fn startup_rejection(explicit_override: bool) {
                 .unwrap()
                 .join("amplihack")
         });
-    let mut command = Command::new(cli);
-    command.env_clear();
+    let mut command = crate::isolated_amplihack::isolated(cli);
     if explicit_override {
         command.env("AMPLIHACK_CODEX_BINARY_PATH", &codex);
     }
@@ -121,8 +117,7 @@ fn failed_recovery(installer_fails: bool) {
                 .unwrap()
                 .join("amplihack")
         });
-    let output = Command::new(cli)
-        .env_clear()
+    let output = crate::isolated_amplihack::isolated(cli)
         .env("HOME", home.path())
         .env("CODEX_HOME", home.path().join(".codex"))
         .env("PATH", &tools)
