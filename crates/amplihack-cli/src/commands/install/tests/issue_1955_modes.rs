@@ -14,16 +14,22 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 
+/// The mode of `path`, through a symlink: since issue #1954 the published
+/// `~/.amplihack/amplifier-bundle` is a link into its release, and a link's
+/// own mode is meaningless.
 fn mode_of(path: &Path) -> u32 {
-    fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
+    fs::metadata(path).unwrap().permissions().mode() & 0o7777
 }
 
 fn chmod(path: &Path, mode: u32) {
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
 }
 
-/// Every entry under and including `root`, symlinks not followed.
+/// Every entry under and including `root`, symlinks not followed below the
+/// root (a linked root, issue #1954, is resolved to its release first).
 fn all_entries(root: &Path) -> Vec<PathBuf> {
+    let root = fs::canonicalize(root).unwrap();
+    let root = root.as_path();
     let mut found = vec![root.to_path_buf()];
     let mut queue = vec![root.to_path_buf()];
     while let Some(dir) = queue.pop() {

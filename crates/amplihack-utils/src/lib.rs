@@ -47,6 +47,7 @@ pub mod codex_capacity;
 pub mod defensive;
 pub mod docker_detector;
 pub mod docker_manager;
+pub mod file_event;
 pub mod hook_merge;
 /// Idle/liveness watchdog for supervising long-running child processes.
 /// See issue #867.

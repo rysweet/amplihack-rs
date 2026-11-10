@@ -4,6 +4,7 @@ use super::claude_commands::{claude_commands_dir, claude_commands_scratch_dir};
 use super::hooks::ensure_object;
 use super::manifest::{manifest_path, read_manifest};
 use super::paths::{global_settings_path, staging_amplifier_bundle_dir, staging_claude_dir};
+use super::release_layout;
 use super::settings::read_settings_json;
 use crate::claude_plugin::CommandRemoval;
 use crate::commands::profile::is_amplihack_statusline;
@@ -22,6 +23,8 @@ fn remove_claude_slash_commands() -> Result<(CommandRemoval, PathBuf)> {
 }
 
 pub fn run_uninstall() -> Result<()> {
+    // Issue #1954 D14: uninstall changes the same paths an install does.
+    let _install_lock = crate::install_lock::acquire()?;
     super::codex_plugin::uninstall()?;
     let claude_dir = staging_claude_dir()?;
     let manifest_path = manifest_path()?;
@@ -113,9 +116,9 @@ pub fn run_uninstall() -> Result<()> {
     }
 
     if let Ok(bundle) = staging_amplifier_bundle_dir()
-        && bundle.exists()
+        && bundle.symlink_metadata().is_ok()
     {
-        match fs::remove_dir_all(&bundle) {
+        match remove_published_bundle(&bundle) {
             Ok(()) => {
                 removed_any = true;
                 removed_dirs += 1;
@@ -123,9 +126,8 @@ pub fn run_uninstall() -> Result<()> {
             }
             Err(error) => {
                 println!(
-                    "  ⚠️  Could not remove amplifier-bundle at {}: {}",
+                    "  ⚠️  Could not remove amplifier-bundle at {}: {error:#}",
                     bundle.display(),
-                    error
                 );
             }
         }
@@ -133,7 +135,13 @@ pub fn run_uninstall() -> Result<()> {
 
     for binary_path in &manifest.binaries {
         let p = PathBuf::from(binary_path);
-        if p.is_file() {
+        // A link into a release (issue #1954) is removed as a link, even when
+        // its release is already gone; a legacy regular file is unlinked,
+        // which a process still running it does not notice.
+        let is_link = p
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink());
+        if is_link || p.is_file() {
             match fs::remove_file(&p) {
                 Ok(()) => {
                     removed_any = true;
@@ -170,6 +178,15 @@ pub fn run_uninstall() -> Result<()> {
 
     let _ = fs::remove_file(&manifest_path);
 
+    // Issue #1954: with every link gone, every release and retired tree is
+    // removed unless a running process still uses it.
+    if let Some(amplihack_dir) = claude_dir.parent() {
+        match remove_unused_releases(amplihack_dir) {
+            Ok(removed) => removed_any |= removed,
+            Err(error) => println!("  ⚠️  Could not clean up amplihack releases: {error:#}"),
+        }
+    }
+
     if removed_any {
         println!("✅ Uninstalled amplihack from {}", claude_dir.display());
         if removed_files > 0 {
@@ -183,6 +200,70 @@ pub fn run_uninstall() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Issue #1954 S18: the published bundle is removed only when it is a link.
+/// A real directory there (a pre-#1954 install) is retired, not deleted, so
+/// a run working inside it keeps its files until cleanup finds it unused.
+fn remove_published_bundle(bundle: &Path) -> Result<()> {
+    let meta = bundle
+        .symlink_metadata()
+        .with_context(|| format!("failed to inspect {}", bundle.display()))?;
+    if meta.file_type().is_symlink() {
+        return fs::remove_file(bundle)
+            .with_context(|| format!("failed to remove link {}", bundle.display()));
+    }
+    let amplihack_dir = bundle
+        .parent()
+        .with_context(|| format!("{} has no parent directory", bundle.display()))?;
+    match release_layout::retire(amplihack_dir, bundle, "amplifier-bundle")? {
+        release_layout::Retired::Moved(_) => Ok(()),
+        release_layout::Retired::LeftInPlace(at) => anyhow::bail!(
+            "{} is on another filesystem than the releases directory; left in place",
+            at.display()
+        ),
+    }
+}
+
+/// Runs release cleanup with nothing kept but what processes use, prints the
+/// releases kept, and removes `releases/` once it is empty. Returns whether
+/// anything was removed.
+fn remove_unused_releases(amplihack_dir: &Path) -> Result<bool> {
+    let releases = release_layout::releases_dir(amplihack_dir);
+    if releases.symlink_metadata().is_err() {
+        return Ok(false);
+    }
+    let report = release_layout::cleanup_unused(amplihack_dir, &[])?;
+    for path in &report.removed {
+        println!("  🗑️  Removed {}", path.display());
+    }
+    for (path, reason) in &report.failed {
+        println!("  ⚠️  Could not remove {}: {reason}", path.display());
+    }
+    if report.unknown {
+        println!("  {}", release_layout::unknown_scan_notice());
+    }
+    if report.unsupported {
+        println!("  {}", release_layout::unsupported_scan_notice());
+    }
+    if let Ok(home) = super::paths::home_dir()
+        && let Some(kept) = release_layout::format_kept_in_use(&home, &report.kept_in_use)
+    {
+        println!("{kept}");
+    }
+    // Only empty directories go; anything kept stays with its parents.
+    for dir in [releases.join(release_layout::RETIRED_DIR), releases] {
+        match fs::remove_dir(&dir) {
+            Ok(()) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                ) => {}
+            Err(error) => println!("  ⚠️  Could not remove {}: {error}", dir.display()),
+        }
+    }
+    Ok(!report.removed.is_empty())
 }
 
 /// Removes `statusLine` from `settings_path` when it is amplihack's (issue

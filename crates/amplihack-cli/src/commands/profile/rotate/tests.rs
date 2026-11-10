@@ -45,3 +45,5 @@ mod tests_platform_block;
 mod tests_platform_identify;
 #[path = "tests_settings.rs"]
 mod tests_settings;
+#[path = "tests_swap_record.rs"]
+mod tests_swap_record;

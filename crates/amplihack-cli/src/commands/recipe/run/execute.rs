@@ -697,10 +697,27 @@ pub(super) fn execute_recipe_via_rust(
         // login shell's profile, so a merge outside autodrive_merge_gate.sh
         // is refused in every step. Fails closed, before the runner starts, when
         // the shim is missing.
+        //
+        // Issue #1954 D5: the guard comes from the bundle pinned once here, at
+        // run start. A link into a release is resolved now and never again, so
+        // an install that switches the link mid-run cannot make the guard's
+        // PATH entry, BASH_ENV and their de-duplication straddle two releases.
         let env_builder = if merge_guard {
             let guard_dir =
                 super::merge_guard::guard_dir_for_home(env_builder.var("AMPLIHACK_HOME"))?;
-            super::merge_guard::apply_guard(env_builder.prepend_path(&guard_dir), &guard_dir)
+            let pinned_bundle = guard_dir
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf);
+            let env_builder =
+                super::merge_guard::apply_guard(env_builder.prepend_path(&guard_dir), &guard_dir);
+            match pinned_bundle {
+                Some(bundle) => env_builder.set(
+                    super::merge_guard::BUNDLE_DIR_ENV,
+                    bundle.to_string_lossy().into_owned(),
+                ),
+                None => env_builder,
+            }
         } else {
             env_builder
         };
