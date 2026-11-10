@@ -52,6 +52,12 @@ mod issue_1962_seed_cmd;
 mod issue_1962_seed_output;
 #[path = "issue_1962_seed_scan.rs"]
 mod issue_1962_seed_scan;
+#[path = "issue_1976_orphaned_nested_run.rs"]
+mod issue_1976_orphaned_nested_run;
+#[path = "issue_1976_real_runner_nested_run.rs"]
+mod issue_1976_real_runner_nested_run;
+#[path = "issue_1976_removed_should_publish.rs"]
+mod issue_1976_removed_should_publish;
 #[path = "issue_2030_guards.rs"]
 mod issue_2030_guards;
 #[path = "issue_2030_no_prompt_in_argv.rs"]

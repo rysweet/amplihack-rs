@@ -51,6 +51,7 @@ context:
   reflection_final: ""
   summary: ""
   session_complete_status: ""
+  create_issue: "false" # -c create_issue=true opts in to a GitHub tracking issue (issue #1881)
   force_single_workstream: "false" # set to "true" to prevent parallel decomposition
   adaptive_recipe: "" # set by detect-execution-gap when routing fails
   infra_error_details: "" # diagnostic info for infrastructure failures

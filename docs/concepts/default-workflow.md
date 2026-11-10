@@ -76,7 +76,7 @@ review, and finalize. It returns these outputs:
 | `terminal_state` | Stable status such as `MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`, `SUPERSEDED`, `FAILED_MEANINGFUL_DIFF`, `FAILED_IMPLEMENTATION`, `FAILED_REPORTING`, or `BLOCKED_CI`. |
 | `terminal_reason` | Human-readable evidence for the decision. |
 | `publish_status` | Publish-facing status using the same vocabulary as the terminal state. |
-| `should_publish` | `true` only when meaningful unmerged work should continue through a publish path. |
+| `terminal_state.should_publish` | Internal output, not a caller option. `true` only when meaningful unmerged work should continue through a publish path. The caller context key `should_publish` was removed by #1976; see [Removed context keys](../reference/recipe-cli-reference.md#removed-context-keys). |
 | `should_finalize` | `true` when the workflow should route to finalize so it can emit the non-mutating final decision. |
 | `should_run_ci_wait` | `true` only when CI should be waited on for an active publish path. |
 | `should_merge` | `true` only when merge remains valid for green, active work. |
@@ -218,7 +218,7 @@ When creating todos during workflow execution, reference the workflow steps dire
 Step 0: Workflow Preparation - Read workflow, create todos for ALL steps (0-21)
 Step 1: Prepare the Workspace - Check git status and fetch
 Step 2: Rewrite and Clarify Requirements - Use prompt-writer agent to clarify task
-Step 3: Create GitHub Issue - Define requirements and constraints using gh issue create
+Step 3: Select Tracking Issue - Reuse a referenced issue; local tracking unless create_issue=true
 Step 4: Setup Worktree and Branch - Create feat/issue-XXX branch in worktrees/
 Step 5: Research and Design - Use architect agent for solution design
 ...
@@ -300,14 +300,15 @@ Agents that skip workflow steps (especially mandatory review steps 10, 16-17) cr
 - [ ] Document acceptance criteria
 - [ ] **CRITICAL: Pass explicit requirements to ALL subsequent agents**
 
-### Step 3: Create GitHub Issue
+### Step 3: Select Tracking Issue
 
-- [ ] **Use** GitHub issue creation tool via agent
-- [ ] Create issue using `gh issue create`
-- [ ] Include clear problem description
-- [ ] Define requirements and constraints
-- [ ] Add success criteria
-- [ ] Assign appropriate labels
+- [ ] Reuse an explicit `issue_number`, or an open issue the task references
+- [ ] Otherwise use local tracking; no GitHub issue is created by default
+- [ ] Create a GitHub issue only when the run passes `-c create_issue=true`
+      (also `1` or `yes`); text in the task description does not opt in
+- [ ] When opted in, reuse an open issue with exactly the same title in the
+      same repository before creating one
+- [ ] See `docs/reference/workflow-tracking-issue-selection.md`
 
 ### Step 4: Setup Worktree and Branch
 
@@ -519,7 +520,8 @@ spec as an empty optional section and does not fail under `set -u`.
 When the terminal-state gate returns `MERGED`, `CLOSED_OBSOLETE`, or
 `NO_DIFF_SUCCESS`, `workflow-publish` treats the publish step as complete and
 does not run version bump, stage, commit, push, PR create/update, CI wait, or
-merge commands. When it returns `should_publish=true`, publish keeps the normal
+merge commands. When it returns `terminal_state.should_publish=true` (an
+internal output, never set by the caller), publish keeps the normal
 behavior: meaningful diffs are committed and pushed, an existing PR is updated
 or a follow-up PR is created, and the status is reported as `FOLLOWUP_CREATED`
 when that PR represents the remaining work.

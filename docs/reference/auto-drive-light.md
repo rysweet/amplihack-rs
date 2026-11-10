@@ -30,6 +30,7 @@ The recipe is `amplifier-bundle/recipes/auto-drive-light.yaml`. It was added for
 - [Minor findings and follow-up issues](#minor-findings-and-follow-up-issues)
 - [Merge criteria](#merge-criteria)
 - [State files](#state-files)
+- [Orphaned rounds](#orphaned-rounds)
 - [Recursion limits](#recursion-limits)
 - [Security limits](#security-limits)
 - [Limitations](#limitations)
@@ -312,12 +313,27 @@ All files live in the autodrive state directory. They are written under `umask 0
 | --- | --- | --- |
 | `light-eligibility.json` | `light-eligibility` | The tool's JSON line: decision, reason, base, head, measurements, limits. |
 | `escalation.json` | `light-eligibility` | Reason, measurements, `base_sha`, `head_sha`. Present only after an escalation, and never removed by the recipe. |
+| `orphaned.json` | a nested `amplihack recipe run` | Written when a round's parent run exited. See [Orphaned rounds](#orphaned-rounds). |
 
 The follow-up files (`<record>.minor`, `<record>.severity`, `followups.jsonl`, `followups.tsv`, `followups.error` and `followups.parent`) are those of [auto-drive-to-merge's state files](auto-drive-to-merge.md#state-files). `light-report` reads `followups.tsv` and no other follow-up file.
 
 Files left by an earlier version in a reused state directory (`light-mode`, `follow-up-issue`, `follow-up-linked`, `follow-up-posted-ids`, `follow-up-failed`, `<record>.concerns.tsv` and `<record>.light.json`) are ignored. Nothing reads them and nothing migrates them.
 
 Logs written by the light steps contain only fixed tokens, SHAs and digits. `gh` stderr goes through `gh_sanitize_stderr`.
+
+## Orphaned rounds
+
+The light recipe's crusty and merge rounds run through `autodrive_loop.sh`,
+so they follow the same rule as `auto-drive-to-merge`. When the parent
+`amplihack recipe run` of a round exits, the round prints
+`orphaned: parent recipe run <pid> exited; stopping`, writes `orphaned.json`
+in the state directory, tears down its runner and exits `75`. Its final
+correlation record has `status: "orphaned"`, and the loop stops as
+`ORPHANED` with exit `75`. A `--detach` pane root is never watched. See [Orphaned rounds](auto-drive-to-merge.md#orphaned-rounds) for the
+file format and the checks made before it is written.
+
+An escalated run counts the same way: the nested `auto-drive-to-merge` run's
+own rounds watch that run, not the light run above it.
 
 ## Recursion limits
 

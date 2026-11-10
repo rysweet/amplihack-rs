@@ -1000,8 +1000,10 @@ fn workflow_prep_step_03_reuses_existing_issue_number_before_provider_commands()
     let issue_number_pos = command
         .find("RECIPE_VAR_issue_number")
         .expect("step-03 must read existing ISSUE_NUMBER context before creating/searching issues");
+    // #1881: GitHub issue logic lives in sourced helpers; the first GitHub
+    // provider call in the step is the selection helper.
     let first_gh_issue_pos = command
-        .find("gh issue")
+        .find("select_github_tracking_issue")
         .expect("step-03 must retain GitHub issue logic for GitHub hosts");
     let first_az_boards_pos = command
         .find("az boards")
@@ -1025,22 +1027,30 @@ fn workflow_prep_step_03_reuses_existing_issue_number_before_provider_commands()
 fn workflow_prep_step_03_has_github_path_inside_host_conditional() {
     let command = step_command("workflow-prep", "step-03-create-issue");
 
-    // gh issue commands must still exist (for GitHub remotes)
+    // #1881: the GitHub create moved into workflow_issue_create.sh, which
+    // step-03 calls through create_github_issue_bounded.
+    let helper_path = recipes_dir()
+        .parent()
+        .expect("amplifier-bundle dir")
+        .join("tools")
+        .join("workflow_issue_create.sh");
+    let helper = fs::read_to_string(&helper_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", helper_path.display()));
     assert!(
-        command.contains("gh issue"),
-        "step-03 must retain 'gh issue' commands for GitHub remotes"
+        helper.contains("gh issue create"),
+        "workflow_issue_create.sh must retain 'gh issue create' for GitHub remotes"
     );
 
-    // gh issue must NOT appear before HOST_TYPE is set from REMOTE_HOST_TYPE
+    // The create must NOT appear before HOST_TYPE is set from REMOTE_HOST_TYPE
     let host_type_pos = command
         .find("HOST_TYPE")
         .expect("HOST_TYPE must exist in step-03");
-    let first_gh_issue_pos = command
-        .find("gh issue")
-        .expect("'gh issue' must exist in step-03");
+    let create_pos = command
+        .rfind("create_github_issue_bounded")
+        .expect("step-03 must call create_github_issue_bounded");
     assert!(
-        first_gh_issue_pos > host_type_pos,
-        "step-03 must not invoke 'gh issue' before consuming the remote host type"
+        create_pos > host_type_pos,
+        "step-03 must not create a GitHub issue before consuming the remote host type"
     );
 }
 
