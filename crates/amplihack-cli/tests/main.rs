@@ -52,6 +52,8 @@ mod issue_1962_seed_cmd;
 mod issue_1962_seed_output;
 #[path = "issue_1962_seed_scan.rs"]
 mod issue_1962_seed_scan;
+#[path = "issue_2013_rotate_outside_in.rs"]
+mod issue_2013_rotate_outside_in;
 
 #[path = "active_agent_binary_default_test.rs"]
 mod active_agent_binary_default;
