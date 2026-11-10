@@ -131,7 +131,14 @@ impl Fixture {
             .env("HOME", &self.home)
             .env("RECORD_DIR", &self.records)
             .env("FILE_REFERENCE_PREFIX", FILE_REFERENCE_PREFIX)
-            .env("STUB_VERSION", "2.1.319 (Claude Code)")
+            .env(
+                "STUB_VERSION",
+                if args.first() == Some(&"codex") {
+                    "codex-cli 0.166.0"
+                } else {
+                    "2.1.319 (Claude Code)"
+                },
+            )
             .env("AMPLIHACK_CLAUDE_BINARY_PATH", self.tools.join("claude"))
             .env("AMPLIHACK_COPILOT_BINARY_PATH", self.tools.join("copilot"))
             .env("AMPLIHACK_CODEX_BINARY_PATH", self.tools.join("codex"))

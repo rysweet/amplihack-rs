@@ -372,7 +372,7 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
             // number.
             log_rejected_candidates(tool, &resolution);
             if tool == "codex" && resolution.rejected.iter().any(|(_, rejection)| {
-                matches!(rejection, launch_target::Rejection::CodexInstallation(error) if !error.repairable)
+                matches!(rejection, launch_target::Rejection::InstallationHealth(error) if !error.repairable)
             }) {
                 bail!("Codex installation validation is inconclusive; automatic repair was not attempted.\n{}", resolution.rejection_report(tool, package.unwrap_or(tool)));
             }

@@ -49,6 +49,10 @@ use crate::binary_finder::{
     PROBE_CAPTURE_LIMIT, run_capped_output_with_timeout, strip_ansi, truncate_chars_with_notice,
 };
 use crate::claude_native::has_placeholder_shape;
+use crate::codex_installation::{
+    InstallationError as InstallationHealthError, requires_fresh_installation_validation,
+    validate_tool_installation,
+};
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -101,7 +105,7 @@ pub enum TargetSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rejection {
     /// Codex executable or required helper validation failed.
-    CodexInstallation(crate::codex_installation::InstallationError),
+    InstallationHealth(InstallationHealthError),
     /// A relative path, which no candidate may ever be.
     ///
     /// [`cheap_reject`] stats it against the *process* current directory while
@@ -189,7 +193,7 @@ impl Rejection {
     /// and the child's own stderr in the sentence.
     pub fn explain(&self) -> String {
         match self {
-            Self::CodexInstallation(error) => error.to_string(),
+            Self::InstallationHealth(error) => error.to_string(),
             Self::NotAbsolute => "not an absolute path — name the binary by full path".to_string(),
             Self::Missing => "not found (no such file, or a broken symlink)".to_string(),
             Self::NotAFile => "not a regular file".to_string(),
@@ -256,7 +260,7 @@ impl Rejection {
     /// whether a working binary is there, so it must not spend an install
     /// deciding that it is not.
     pub fn is_about_the_machine(&self) -> bool {
-        if let Self::CodexInstallation(error) = self {
+        if let Self::InstallationHealth(error) = self {
             return !error.repairable;
         }
         matches!(
@@ -681,10 +685,8 @@ pub fn resolve_from_candidates(tool: &str, candidates: &[(PathBuf, TargetSource)
                     _ => first,
                 };
                 let attempt = attempt.and_then(|version| {
-                    if tool == "codex" {
-                        crate::codex_installation::validate_codex_installation(path, &version)
-                            .map_err(Rejection::CodexInstallation)?;
-                    }
+                    validate_tool_installation(tool, path, &version)
+                        .map_err(Rejection::InstallationHealth)?;
                     Ok(version)
                 });
                 match attempt {
@@ -1450,7 +1452,7 @@ pub fn resolve(tool: &str, override_origin: OverrideOrigin) -> Resolution {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((memoized_candidates, resolution)) = memo.get(tool)
         && *memoized_candidates == candidates
-        && tool != "codex"
+        && !requires_fresh_installation_validation(tool)
     {
         return resolution.clone();
     }

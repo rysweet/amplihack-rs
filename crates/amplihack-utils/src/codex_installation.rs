@@ -322,3 +322,20 @@ pub fn validate_codex_installation(
         native_path: native,
     })
 }
+
+/// Adapter keeping tool-specific health knowledge out of the generic resolver.
+pub(crate) fn validate_tool_installation(
+    tool: &str,
+    candidate: &Path,
+    version: &str,
+) -> Result<(), InstallationError> {
+    if tool == "codex" {
+        validate_codex_installation(candidate, version)?;
+    }
+    Ok(())
+}
+
+/// Codex helper availability must never be inferred from a cached version.
+pub(crate) fn requires_fresh_installation_validation(tool: &str) -> bool {
+    tool == "codex"
+}
