@@ -42,8 +42,9 @@
 //! (EIO, ENOSPC, EDQUOT, NFS writeback) are not reported on the no-sync path;
 //! errors from the write and the rename still are.
 //!
-//! Out of scope: the syncs in `persist_launcher_context` and in
-//! `user_config::migrate`, and syncing the parent directory.
+//! Out of scope: the syncs in `user_config::migrate` and syncing the parent
+//! directory. The launcher-context sync was removed in #2068; see
+//! `launcher_context::replace_file`.
 
 use std::fs;
 use std::io::Write;
