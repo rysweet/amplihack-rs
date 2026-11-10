@@ -77,6 +77,12 @@ fn startup_rejection(explicit_override: bool) {
         "{diagnostic}"
     );
     assert!(diagnostic.contains("codex-code-mode-host"), "{diagnostic}");
+    if explicit_override {
+        assert!(
+            diagnostic.contains("unset AMPLIHACK_CODEX_BINARY_PATH CODEX_BINARY_PATH"),
+            "{diagnostic}"
+        );
+    }
 }
 
 #[test]

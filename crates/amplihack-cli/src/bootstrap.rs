@@ -415,6 +415,11 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
                 .as_deref()
                 .map(launch_target::display_untrusted_path)
                 .unwrap_or_default();
+            let additional_guidance = if tool == "codex" {
+                "\nAlso check the higher-priority AMPLIHACK_CODEX_BINARY_PATH override. To resume discovery, unset both:\n  unset AMPLIHACK_CODEX_BINARY_PATH CODEX_BINARY_PATH"
+            } else {
+                ""
+            };
             bail!(
                 "'{tool}' was resolved from {tool_upper}_BINARY_PATH, and that binary \
                  is not usable:\n\n{report}\n\
@@ -422,7 +427,7 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
                  {named} — it is not a file amplihack writes.\n\
                  Point {tool_upper}_BINARY_PATH at a working '{tool}', or unset it to \
                  let amplihack resolve one:\n  \
-                 unset {tool_upper}_BINARY_PATH",
+                 unset {tool_upper}_BINARY_PATH{additional_guidance}",
                 report = resolution.rejection_report(tool, package.unwrap_or(tool)),
                 prefix = amplihack_bin
                     .as_deref()
