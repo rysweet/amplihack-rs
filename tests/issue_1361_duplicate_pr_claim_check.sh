@@ -490,7 +490,7 @@ fi
 # position collapses to "" and the ordering assertion silently becomes vacuous
 # (issue #1434).
 claim_pos=$(awk 'index($0, "workflow_issue_claim_check.sh") { n = FNR } END { if (n) print n }' "$PUBLISH_TOOL")
-create_pos=$(awk 'n == 0 && index($0, "PR_URL_RESULT=\"$(gh_pr_create_with_retry)\"") { n = FNR } END { if (n) print n }' "$PUBLISH_TOOL")
+create_pos=$(awk 'n == 0 && index($0, "gh_start_owned gh_pr_create_with_retry") { n = FNR } END { if (n) print n }' "$PUBLISH_TOOL")
 if [ -n "$claim_pos" ] && [ -n "$create_pos" ] && [ "$claim_pos" -lt "$create_pos" ]; then
   pass "workflow_publish_pr.sh consults the claim check before it creates a PR"
 else
