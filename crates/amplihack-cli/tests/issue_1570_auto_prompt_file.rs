@@ -154,18 +154,8 @@ impl Fixture {
         }
         for name in ["claude", "copilot", "codex", "amplifier"] {
             let path = tools.join(name);
-            let script = if name == "codex" {
-                FAKE_AGENT.replace("2.1.319 (Claude Code)", "codex-cli 0.166.0")
-            } else {
-                FAKE_AGENT.to_owned()
-            };
-            crate::support::exec_stub::write_executable(&path, &script, 0o755);
+            crate::support::exec_stub::write_executable(&path, FAKE_AGENT, 0o755);
         }
-        crate::support::exec_stub::write_executable(
-            &tools.join("codex-code-mode-host"),
-            "#!/bin/sh\nexit 0\n",
-            0o755,
-        );
         Self {
             tmp,
             home,
