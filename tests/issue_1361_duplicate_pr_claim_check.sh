@@ -99,7 +99,25 @@ if [ "\${1:-}" = "repo" ]; then printf '%s\n' "\${FAKE_DEFAULT_BRANCH-main}"; ex
 # recently-merged claim is in the window. FAKE_ISSUE_STATE carries the reply
 # (including a malformed one); FAKE_ISSUE_RC makes the lookup fail. Neither
 # may be read by the helper as a source of the state itself.
-if [ "\${1:-}" = "issue" ]; then printf '%s\n' "\${FAKE_ISSUE_STATE-OPEN}"; exit "\${FAKE_ISSUE_RC-0}"; fi
+#
+# FAKE_ISSUE_BYTES asks for a single line of that many bytes instead, built
+# here rather than carried in. A 300 KiB reply cannot travel through the
+# environment: Linux caps any ONE argv or environment string at 128 KiB
+# (MAX_ARG_STRLEN), so setting FAKE_ISSUE_STATE to 300 KiB fails the exec
+# with E2BIG, while macOS has no such per-string cap and only a total. This
+# is also the truer shape, since the real reply reaches the helper down a
+# pipe from gh and never through its environment.
+#
+# Note for anyone editing this fake: it is written by an UNQUOTED heredoc, so
+# a backtick in a comment here is a command substitution at generation time.
+if [ "\${1:-}" = "issue" ]; then
+  if [ -n "\${FAKE_ISSUE_BYTES:-}" ]; then
+    awk -v n="\$FAKE_ISSUE_BYTES" 'BEGIN { s = "PAYLOAD2238"; while (length(s) < n) s = s s; print substr(s, 1, n) }'
+  else
+    printf '%s\n' "\${FAKE_ISSUE_STATE-OPEN}"
+  fi
+  exit "\${FAKE_ISSUE_RC-0}"
+fi
 # A token-shaped string is present in every error path so redaction is exercised.
 case "\${FAKE_GH:-none}" in
   none)        printf '[]\n' ;;
@@ -418,9 +436,8 @@ grep -q 'ghp_FAKEFAKEFAKEFAKEFAKEFAKE0002' <<<"$OUT" \
 # either side of the limit below is more than a factor of ten, and a source
 # assertion would only add coupling to how the bound is spelled (#1707 family,
 # #2238 review).
-HUGE="$(awk 'BEGIN { s = "PAYLOAD2238"; while (length(s) < 300000) s = s s; print substr(s, 1, 300000) }')"
 HUGE_T0=$SECONDS
-run "$WORK/gh" FAKE_GH=merged_new FAKE_ISSUE_STATE="$HUGE"
+run "$WORK/gh" FAKE_GH=merged_new FAKE_ISSUE_BYTES=300000
 HUGE_ELAPSED=$((SECONDS - HUGE_T0))
 claimed "a merged claim whose issue state is a 300 KiB single line" 1132
 [ "$HUGE_ELAPSED" -lt 30 ] \
