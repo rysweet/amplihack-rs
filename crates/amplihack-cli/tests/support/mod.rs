@@ -2,6 +2,7 @@
 
 pub mod amplihack_bin;
 pub mod auto_drive_light;
+pub mod events;
 pub mod exec_stub;
 pub mod fake_proc;
 pub mod proc_root_scan;
