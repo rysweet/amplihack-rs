@@ -8,17 +8,17 @@ The statusline shows progress, costs, context usage, and active features for you
 
 ## Indicators Reference
 
-| Indicator             | Shows                     | Format                                      | Notes                                                   |
-| --------------------- | ------------------------- | ------------------------------------------- | ------------------------------------------------------- |
-| **Directory**         | Current working directory | `~/path`                                    | `~` = home directory                                    |
-| **Git Branch**        | Branch name and status    | `(branch → remote)` or `(branch* → remote)` | `*` = uncommitted changes, Cyan = clean, Yellow = dirty |
-| **Repository URI**    | Git remote repository URL | `[github.com/user/repo]`                    | Shortened format (cyan), only if remote exists          |
-| **Model**             | Active Claude model       | `Opus`, `Sonnet`, `Haiku`                   | Red=Opus, Green=Sonnet, Blue=Haiku                      |
-| **Tokens** 🎫         | Total token usage         | `234K`, `1.2M`, or raw number               | M=millions, K=thousands                                 |
-| **Cost** 💰           | Total session cost        | `$1.23`                                     | USD                                                     |
-| **Duration** ⏱        | Session elapsed time      | `15m`, `1h`, `30s`                          | s/m/h format                                            |
-| **Power-Steering** 🚦 | Redirect count            | `🚦×3`                                      | Only when active (purple)                               |
-| **Lock Mode** 🔒      | Lock invocation count     | `🔒×5`                                      | Only when active (yellow)                               |
+| Indicator             | Shows                     | Format                                      | Notes                                                    |
+| --------------------- | ------------------------- | ------------------------------------------- | -------------------------------------------------------- |
+| **Directory**         | Current working directory | `~/path`                                    | `~` = home directory                                     |
+| **Git Branch**        | Branch name and status    | `(branch → remote)` or `(branch* → remote)` | `*` = uncommitted changes, Cyan = clean, Yellow = dirty  |
+| **Repository URI**    | Git remote repository URL | `[github.com/user/repo]`                    | Shortened format (cyan), only if remote exists           |
+| **Model**             | Active Claude model       | `Opus`, `Sonnet`, `Haiku`                   | Red=Opus, Green=Sonnet, Blue=Haiku                       |
+| **Tokens** 🎫         | Total token usage         | `234K`, `1.2M`, or raw number               | M=millions, K=thousands; see [Token count](#token-count) |
+| **Cost** 💰           | Total session cost        | `$1.23`                                     | USD                                                      |
+| **Duration** ⏱        | Session elapsed time      | `15m`, `1h`, `30s`                          | s/m/h format                                             |
+| **Power-Steering** 🚦 | Redirect count            | `🚦×3`                                      | Only when active (purple)                                |
+| **Lock Mode** 🔒      | Lock invocation count     | `🔒×5`                                      | Only when active (yellow)                                |
 
 ## Color Coding
 
@@ -94,6 +94,197 @@ That one command prints the session line from
 [login capacity line](#login-capacity-line). See
 [Install wiring](#install-wiring) for when the entry is written, updated or
 kept.
+
+## Token count
+
+The `🎫` segment shows the sum of four usage fields over the session
+transcript that Claude Code passes in `transcript_path`. The function
+`calculate_tokens()` in `amplifier-bundle/tools/statusline.sh` computes it.
+It reads each transcript incrementally: on every refresh it reads only the
+bytes appended since the previous refresh, and keeps a running total in a
+small per-transcript cache file.
+
+### What is counted
+
+For each of these keys, every match of
+`"KEY"[[:space:]]*:[[:space:]]*[0-9]*` adds its trailing digit run to the
+total. An empty digit run counts as 0.
+
+| Key                           | Meaning                       |
+| ----------------------------- | ----------------------------- |
+| `input_tokens`                | Uncached input tokens         |
+| `output_tokens`               | Output tokens                 |
+| `cache_read_input_tokens`     | Input tokens read from cache  |
+| `cache_creation_input_tokens` | Input tokens written to cache |
+
+The leading quote in each pattern stops `"input_tokens"` from matching inside
+the two `cache_*_input_tokens` keys. All four keys are matched in one `awk`
+pass under `LC_ALL=C`.
+
+Only complete lines are counted. A last line with no trailing newline is left
+out until Claude Code finishes writing it, and is then counted once. The file
+size is read once with `stat` at the start of each call, so bytes written
+while a call is running are left for the next call.
+
+### Function contract
+
+```bash
+calculate_tokens "$transcript_path"
+```
+
+- Prints a single decimal integer and a newline. The output is always digits
+  only, because `format_tokens` places the value inside an `awk` program.
+- Writes nothing to stderr and always returns status 0.
+- Prints `0` and writes no cache entry when the path is unset, empty, not a
+  regular file, or a file of size 0.
+- Totals above 2^32 are printed exactly. `awk` prints the token sum of the
+  new bytes as `ADD BYTES`, and the shell adds `ADD` to the cached total with
+  `$(( ))`, which is 64-bit in bash.
+
+`format_tokens` and the rest of the status line are unchanged: `1234567`
+still displays as `🎫 1.2M` and `234000` as `🎫 234K`.
+
+### Cache location and format
+
+| Item           | Value                                                          |
+| -------------- | -------------------------------------------------------------- |
+| Directory      | `${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/statusline-tokens/` |
+| Directory mode | `0700`, created on first use                                   |
+| Entry name     | Hex SHA-256 of the transcript path string                      |
+| Entry mode     | `0600`                                                         |
+| Entry content  | One line: `INODE OFFSET TOTAL`                                 |
+
+The entry name comes from `sha256sum`, then `shasum -a 256` if that is
+missing. On a host with neither, `cksum` is used and the name has the form
+`digits-digits`. The path is passed to the hash on stdin, and neither the
+path nor any transcript text is written to the cache.
+
+`INODE OFFSET TOTAL` are three decimal integers separated by single spaces:
+
+- `INODE` is the transcript's inode number, from `stat -L`.
+- `OFFSET` is the byte offset just after the last complete line counted.
+- `TOTAL` is the running token total up to `OFFSET`.
+
+Example, where `$t` is the transcript path, for a transcript of 482113 bytes
+whose complete lines sum to 1234567 tokens:
+
+```console
+$ key=$(printf '%s' "$t" | sha256sum | cut -d' ' -f1)
+$ cat "${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/statusline-tokens/$key"
+2753091 482113 1234567
+```
+
+Each number must be `0` or a digit run with no leading zero, of at most 18
+digits. Values are checked against a `case` pattern before any arithmetic or
+comparison, so a cache field such as `a[$(cmd)]` is never evaluated.
+
+### When the count starts again from zero
+
+The function discards the cached offset and total, and counts the transcript
+from byte 0, in these cases:
+
+| Condition                                                                         | Cause                                |
+| --------------------------------------------------------------------------------- | ------------------------------------ |
+| No cache entry exists                                                             | First refresh for this transcript    |
+| The entry is unreadable, has other than three fields, or a field fails validation | Corrupt or hand-edited entry         |
+| The inode differs from `INODE`                                                    | File replaced, for example by rename |
+| The file size is below `OFFSET`                                                   | File truncated or rewritten in place |
+
+When the file size equals `OFFSET`, the cached total is printed without
+reading the transcript.
+
+### Writes and failure handling
+
+The new entry is written to `"$dir/.$key.$$"` inside a subshell with
+`umask 077` and `set -C`, then moved over `"$dir/$key"` with `mv -f`. `set -C`
+opens the temporary file with `O_EXCL`, so a planted symlink makes the write
+fail instead of being followed. If two panes refresh the same transcript at
+once, the last `mv` wins, and each entry stays self-consistent.
+
+The cache is used only when the directory is a directory, not a symlink, and
+owned by the current user, and an entry is read only when it is a regular,
+user-owned file that is not a symlink. At most 128 bytes of an entry are
+read. If any check fails, or `stat` gives no usable inode and size, the
+function counts the whole file in one pass and writes nothing.
+
+If the write or the `mv` fails, the function removes any temporary file that
+this call created, prints the correct total and shows no error. A temporary
+file that the call did not create is left in place: for example a stale or
+planted `.$key.$$` that makes the `set -C` write fail, or one left by a
+refresh that was killed part-way through.
+
+If `mkdir` fails, no temporary file is created. The function counts the whole
+file in one pass, prints the total and writes nothing.
+
+### Platform support
+
+| Need           | Used                                                                |
+| -------------- | ------------------------------------------------------------------- |
+| Inode and size | `stat -L -c '%i %s'`, else `stat -L -f '%i %z'` (BSD, macOS)        |
+| Byte slice     | `tail -c +N \| head -c M`                                           |
+| Counting       | POSIX `awk` with `[[:space:]]` (gawk, mawk 1.3.4, BSD awk, busybox) |
+| Hash           | `sha256sum`, `shasum -a 256` or `cksum`                             |
+
+No `jq`, `python` or `dd` is needed.
+
+### Limits
+
+- The first refresh of a transcript still reads the whole file, once, in a
+  single pass.
+- An inode reused by a new file that has already grown past the cached
+  offset is not detected. The only effect is a wrong figure in the display.
+- Cache entries are about 40 bytes each and are not removed. Deleting the
+  directory is safe; the next refresh recounts each transcript from zero:
+
+  ```bash
+  rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/statusline-tokens"
+  ```
+
+- mawk 1.3.3, the default `awk` on some older Debian and Ubuntu releases,
+  does not support `[[:space:]]` as a character class. On such a host the
+  compact form `"input_tokens":123` does not match and the total shows as
+  `0`. This is an accepted risk.
+- The Rust status-line path and `docs/claude/tools/statusline.sh` do not use
+  this cache.
+
+### Checking the count by hand
+
+The total for a transcript can be checked against a full recount over its
+complete lines. The newest transcript is usually still being written, so the
+example copies it first and runs the installed function with a temporary
+cache directory. Running the function with the default cache directory
+writes a real cache entry for the path it is given.
+
+```bash
+# Copy of the most recently written transcript, and a temporary cache
+work=$(mktemp -d)
+cp -- "$(ls -t ~/.claude/projects/*/*.jsonl | head -n 1)" "$work/session.jsonl"
+t=$work/session.jsonl
+
+# Bytes up to and including the last newline
+size=$(stat -L -c %s -- "$t" 2>/dev/null || stat -L -f %z -- "$t")
+if [ "$(tail -c 1 -- "$t" | wc -l)" -eq 0 ]; then
+  size=$((size - $(tail -n 1 -- "$t" | wc -c)))
+fi
+
+# Full recount over complete lines
+LC_ALL=C head -c "$size" -- "$t" \
+  | grep -oE '"(input_tokens|output_tokens|cache_read_input_tokens|cache_creation_input_tokens)"[[:space:]]*:[[:space:]]*[0-9]*' \
+  | grep -oE '[0-9]*$' | awk '{s+=$1} END {printf "%.0f\n", s}'
+
+# Incremental count from the installed script
+XDG_CACHE_HOME=$work/cache bash -c "$(sed -n '/^calculate_tokens()/,/^}/p' ~/.amplihack/.claude/tools/statusline.sh)
+calculate_tokens \"\$1\"" _ "$t"
+
+rm -rf -- "$work"
+```
+
+The two commands print the same number. Run against the live transcript
+instead of a copy, the figures can differ, because the file can grow between
+the two commands. The tests in
+`crates/amplihack-cli/tests/issue_1921_statusline_tokens.rs` extract the
+function from the shipped script in the same way and compare it with a Rust
+oracle, using temporary `HOME` and `XDG_CACHE_HOME` directories only.
 
 ## Login capacity line
 
@@ -888,6 +1079,7 @@ The counter (`N` in `🔒×N`) tracks blocked stops **per session only**:
 
 - [Power-Steering](#power-steering) - AI-powered session guidance
 - [Lock Mode](#lock-mode) - Continuous work mode
+- [Token count](#token-count) - How the `🎫` total is counted and cached
 - [Login capacity line](#login-capacity-line) - Live login and capacity in `~/.claude`
 - [Profile command](./profile-command.md#status-line-wrapper) - Per-profile status-line wrapper and readings
 - [Configuration Guide](../howto/configure-hooks.md) - Session hooks and settings

@@ -106,25 +106,135 @@ if git rev-parse --is-inside-work-tree &>/dev/null; then
     fi
 fi
 
-# Calculate tokens from transcript
+# Calculate tokens from transcript.
+# Counts incrementally: a per-transcript cache entry "INODE OFFSET TOTAL"
+# under ${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/statusline-tokens/ records
+# how far the transcript has been read, so each refresh reads only the new,
+# complete lines. Prints digits only; all stderr is discarded.
 calculate_tokens() {
-    local transcript="$1"
+    local t="$1"
+    local st="" ino="" size="" key="" dir="" entry="" tmp=""
+    local a="" b="" c="" d="" off=0 total=0 len=0 out="" add="" bytes="" new=""
+    local use_cache=0 have_entry=0
 
-    # Return 0 if transcript doesn't exist or is empty
-    if [ -z "$transcript" ] || [ ! -f "$transcript" ]; then
+    # Accept 0 or a decimal integer of at most 18 digits with no leading
+    # zero. Glob checks only: these values are never evaluated before this.
+    _ct_num() {
+        case "$1" in
+            0) return 0 ;;
+            '' | 0* | *[!0-9]*) return 1 ;;
+        esac
+        [ "${#1}" -le 18 ]
+    }
+
+    if [ -z "$t" ] || [ ! -f "$t" ]; then
         echo "0"
-        return
+        return 0
     fi
 
-    # Extract all token values from transcript using grep/awk
-    local input_tokens=$(grep -o '"input_tokens"[[:space:]]*:[[:space:]]*[0-9]*' "$transcript" 2>/dev/null | grep -o '[0-9]*$' | awk '{s+=$1} END {print s+0}')
-    local output_tokens=$(grep -o '"output_tokens"[[:space:]]*:[[:space:]]*[0-9]*' "$transcript" 2>/dev/null | grep -o '[0-9]*$' | awk '{s+=$1} END {print s+0}')
-    local cache_read=$(grep -o '"cache_read_input_tokens"[[:space:]]*:[[:space:]]*[0-9]*' "$transcript" 2>/dev/null | grep -o '[0-9]*$' | awk '{s+=$1} END {print s+0}')
-    local cache_write=$(grep -o '"cache_creation_input_tokens"[[:space:]]*:[[:space:]]*[0-9]*' "$transcript" 2>/dev/null | grep -o '[0-9]*$' | awk '{s+=$1} END {print s+0}')
+    st=$(stat -L -c '%i %s' -- "$t" || stat -L -f '%i %z' -- "$t")
+    ino=${st%% *}
+    size=${st#* }
+    if _ct_num "$ino" && _ct_num "$size"; then
+        if [ "$size" -eq 0 ]; then
+            echo "0"
+            return 0
+        fi
+        key=$(printf '%s' "$t" | sha256sum | awk '{print $1}')
+        [ -n "$key" ] || key=$(printf '%s' "$t" | shasum -a 256 | awk '{print $1}')
+        [ -n "$key" ] || key=$(printf '%s' "$t" | cksum | awk '{print $1 "-" $2}')
+        case "$key" in
+            '' | *[!0-9a-f-]*) key="" ;;
+        esac
+        dir="${XDG_CACHE_HOME:-$HOME/.cache}/amplihack/statusline-tokens"
+        if [ -n "$key" ] && (umask 077; mkdir -p -- "$dir") \
+            && [ -d "$dir" ] && [ ! -L "$dir" ] && [ -O "$dir" ]; then
+            use_cache=1
+            entry="$dir/$key"
+            tmp="$dir/.$key.$$"
+        fi
+    else
+        ino=""
+        size=""
+    fi
 
-    # Sum all token types
-    echo $((input_tokens + output_tokens + cache_read + cache_write))
-}
+    if [ "$use_cache" -eq 1 ] && [ -f "$entry" ] && [ ! -L "$entry" ] && [ -O "$entry" ]; then
+        IFS=' ' read -r -n 128 a b c d < "$entry"
+        if [ -z "$d" ] && _ct_num "$a" && _ct_num "$b" && _ct_num "$c" \
+            && [ "$a" = "$ino" ] && [ "$b" -le "$size" ]; then
+            off=$b
+            total=$c
+            have_entry=1
+        fi
+    fi
+
+    if [ -n "$size" ]; then
+        len=$((size - off))
+        if [ "$len" -eq 0 ] && [ "$have_entry" -eq 1 ]; then
+            echo "$total"
+            return 0
+        fi
+    fi
+
+    # One pass over the new bytes. The sentinel X ends the stream so that the
+    # last record is always the unterminated remainder, which is not counted.
+    out=$(
+        {
+            if [ -n "$size" ]; then
+                tail -c +"$((off + 1))" -- "$t" | head -c "$len"
+            else
+                cat -- "$t"
+            fi
+            printf 'X'
+        } | LC_ALL=C awk '
+            function tally(r,    m) {
+                bytes += length(r) + 1
+                while (match(r, re)) {
+                    m = substr(r, RSTART, RLENGTH)
+                    r = substr(r, RSTART + RLENGTH)
+                    sub(/^[^:]*:[[:space:]]*/, "", m)
+                    add += m + 0
+                }
+            }
+            BEGIN {
+                re = "\"(input_tokens|output_tokens|cache_read_input_tokens|cache_creation_input_tokens)\"[[:space:]]*:[[:space:]]*[0-9]*"
+                add = 0
+                bytes = 0
+            }
+            NR > 1 { tally(prev) }
+            { prev = $0 }
+            END { printf "%.0f %.0f\n", add, bytes }
+        '
+    )
+    add=${out%% *}
+    bytes=${out#* }
+    if ! _ct_num "$add" || ! _ct_num "$bytes"; then
+        echo "$total"
+        return 0
+    fi
+    new=$((total + add))
+    if ! _ct_num "$new"; then
+        echo "$total"
+        return 0
+    fi
+    total=$new
+    off=$((off + bytes))
+
+    if [ "$use_cache" -eq 1 ]; then
+        # set -C opens the temporary file exclusively, so a planted file or
+        # symlink makes the write fail instead of being followed.
+        if (
+            umask 077
+            set -C
+            exec 3> "$tmp" || exit 1
+            printf '%s %s %s\n' "$ino" "$off" "$total" >&3 || { rm -f -- "$tmp"; exit 1; }
+        ); then
+            mv -f -- "$tmp" "$entry" || rm -f -- "$tmp"
+        fi
+    fi
+
+    echo "$total"
+} 2>/dev/null
 
 # Format tokens for display
 format_tokens() {

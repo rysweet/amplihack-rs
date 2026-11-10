@@ -32,6 +32,8 @@ mod issue_1753_expired_live;
 mod issue_1753_login_identity;
 #[path = "issue_1753_refusal_named_once.rs"]
 mod issue_1753_refusal_named_once;
+#[path = "issue_1921_statusline_tokens.rs"]
+mod issue_1921_statusline_tokens;
 #[path = "issue_1947_login_identity.rs"]
 mod issue_1947_login_identity;
 #[path = "issue_1962_candide_cause.rs"]
