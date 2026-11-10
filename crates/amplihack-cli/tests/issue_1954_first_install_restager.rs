@@ -25,7 +25,7 @@
 //! binary. That listing must equal the one the test takes before it starts
 //! the stub: the old binary's part of the hand-off writes nothing there.
 
-// Linux only: the test reads /proc through proc_link.
+// `proc_link` and this file's only test read /proc, so the file builds on Linux only (#2286).
 #![cfg(target_os = "linux")]
 
 use crate::issue_1954_install_leaves_live_runs_alone::{
