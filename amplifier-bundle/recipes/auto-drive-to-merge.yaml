@@ -67,6 +67,7 @@ recursion:
   max_total_steps: 120
 
 context:
+  merge_method: ""  # Optional: merge, squash, or rebase; empty selects repository policy.
   # What to build. Passed straight through to default-workflow.
   task_description: ""
   requirements: ""
@@ -246,6 +247,7 @@ steps:
     type: "recipe"
     recipe: "autodrive-merge-loop"
     context:
+      merge_method: "{{merge_method}}"
       repo_path: "{{repo_path}}"
       pr_number: "{{build_result.pr}}"
       autodrive_pr_input: "{{autodrive_pr_input}}"

@@ -26,6 +26,9 @@
 mod isolated_amplihack;
 mod support;
 
+#[path = "issue_1888_merge_method_selection.rs"]
+mod issue_1888_merge_method_selection;
+
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
 #[path = "issue_1753_login_identity.rs"]

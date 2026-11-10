@@ -47,6 +47,15 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
+    /// Select an allowed repository merge method.
+    SelectMergeMethod {
+        #[arg(long)]
+        repository: String,
+        #[arg(long)]
+        repo_root: PathBuf,
+        #[arg(long, default_value = "")]
+        merge_method: String,
+    },
     /// Read stdin, print the first complete JSON object found in it.
     ///
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
@@ -494,6 +503,23 @@ fn read_bounded_stdin() -> String {
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
+        OrchHelperCommands::SelectMergeMethod {
+            repository,
+            repo_root,
+            merge_method,
+        } => {
+            let selection =
+                match super::merge_method::select(&repository, &repo_root, &merge_method) {
+                    Ok(selection) => selection,
+                    Err(error) if error.is::<super::merge_method::PolicyRefusal>() => {
+                        eprintln!("{error}");
+                        std::process::exit(79);
+                    }
+                    Err(error) => return Err(error),
+                };
+            println!("{}", serde_json::to_string(&selection)?);
+            Ok(())
+        }
         OrchHelperCommands::ExtractJson { require_field } => {
             let input = read_stdin()?;
             let found = match require_field.as_deref() {

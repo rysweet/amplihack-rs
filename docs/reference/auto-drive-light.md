@@ -1,7 +1,7 @@
 ---
 title: Auto-Drive-Light Recipe
 description: The smaller drive-to-merge recipe for small pull requests, its eligibility rules, escalation to auto-drive-to-merge, the task id its follow-up issues name, and how it shares auto-drive-to-merge's per-finding follow-up model.
-last_updated: 2026-11-08
+last_updated: 2026-11-10
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -44,6 +44,13 @@ Use `auto-drive-light` for a change that should be reviewed and merged without s
 smart-orchestrator does not select this recipe. Run it by name. See [Choosing a drive recipe](../recipes/README.md#choosing-between-quick-change-auto-drive-light-and-auto-drive-to-merge) for a comparison with `quick-change` and `auto-drive-to-merge`.
 
 ## Running it
+
+Optional `-c merge_method=merge|squash|rebase` selects the merge method; pass
+one value, for example `-c merge_method=merge`. The value is preserved when
+this recipe escalates to `auto-drive-to-merge`. Omitted or empty context uses
+`.github/amplihack.yml`, then the first allowed method in squash, merge,
+rebase order. See [Merge method selection](auto-drive-to-merge.md#merge-method-selection)
+for configuration validation, GitHub permissions, failure behavior, and evidence.
 
 A new change for an existing issue. The issue number is the task id that any follow-up issue names:
 
@@ -94,6 +101,7 @@ AUTODRIVE_LIGHT_ELIGIBILITY=light reason=within-limits
 | --- | --- | --- |
 | `task_description` | `""` | The change to make. Required unless `pr_number` or `existing_branch` is set. |
 | `repo_path` | `"."` | Repository to work in. |
+| `merge_method` | `""` | Optional. Exactly `merge`, `squash`, or `rebase`; empty uses the repository preference, then the first allowed method. Preserved through escalation. See [Merge method selection](auto-drive-to-merge.md#merge-method-selection). |
 | `issue_number` | `""` | Optional. 1 to 10 digits. The PR body gets `Refs #N` and the branch name uses it. When `plan_task_id` is empty, `#N` is the task id for follow-up issues. See [The task id](#the-task-id). |
 | `plan_task_id` | `""` | Optional. The plan task that follow-up issues name: `N`, `#N`, or 1 to 64 characters from `A-Za-z0-9._:/-`. Checked by `light-task-id`, which exits 2 on any other value. |
 | `existing_branch` | `""` | A branch whose PR already exists. Validated with `git check-ref-format` and refused if it begins with `-`. A branch without an open PR is refused with `light-existing-branch-no-pr`. |

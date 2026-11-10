@@ -49,6 +49,7 @@ recursion:
   max_total_steps: 200
 
 context:
+  merge_method: ""  # Optional: merge, squash, or rebase; empty selects repository policy.
   task_description: ""
   repo_path: "."
   issue_number: ""
@@ -500,6 +501,7 @@ steps:
     condition: "light_eligibility.decision == 'escalate'"
     recipe: "auto-drive-to-merge"
     context:
+      merge_method: "{{merge_method}}"
       task_description: "{{task_description}}"
       repo_path: "{{repo_path}}"
       pr_number: "{{build_result.pr}}"
@@ -557,6 +559,7 @@ steps:
     condition: "light_eligibility.decision == 'light'"
     recipe: "autodrive-merge-loop"
     context:
+      merge_method: "{{merge_method}}"
       repo_path: "{{repo_path}}"
       pr_number: "{{build_result.pr}}"
       autodrive_pr_input: "{{autodrive_pr_input}}"

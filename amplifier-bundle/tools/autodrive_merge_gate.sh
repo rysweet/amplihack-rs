@@ -22,10 +22,12 @@ set -uo pipefail
 builtin unset -f gh git jq
 
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
+MERGE_METHOD=""
 PR=""; REPO="."; ROUND_RECORD=""; QA_EVIDENCE=""; STATE_DIR=""; DRY_RUN="false"
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --merge-method) [ "$#" -ge 2 ] || { echo "ERROR: --merge-method requires a value" >&2; exit 2; }; MERGE_METHOD="${2:-}"; shift 2 ;;
     --pr)            PR="${2:-}"; shift 2 ;;
     --repo)          REPO="${2:-}"; shift 2 ;;
     --round-record)  ROUND_RECORD="${2:-}"; shift 2 ;;
@@ -338,6 +340,36 @@ else
   fi
 fi
 
+# --- 7b. Select repository-permitted merge policy through the Rust helper. ---
+MERGE_FLAG=""
+SELECTION_POLICY_REFUSAL=false
+IDENTITY="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)"
+IDENTITY_RC=$?
+if [ "$IDENTITY_RC" -eq 79 ]; then SELECTION_POLICY_REFUSAL=true; fi
+if [ "$IDENTITY_RC" -ne 0 ] || [ -z "$IDENTITY" ]; then
+  block "cannot resolve target repository identity for merge-method selection"
+else
+  SELECTION="$("$AMPLIHACK_BIN" orch helper select-merge-method --repository "$IDENTITY" --repo-root "$PWD" --merge-method "$MERGE_METHOD")"
+  SELECTION_RC=$?
+  if [ "$SELECTION_RC" -eq 79 ]; then SELECTION_POLICY_REFUSAL=true; fi
+  if [ "$SELECTION_RC" -ne 0 ]; then
+    block "merge-method selection failed; check repository configuration and GitHub merge permissions"
+  elif ! printf '%s' "$SELECTION" | jq -e -s 'length == 1 and (.[0] | type == "object" and (.method == "merge" or .method == "squash" or .method == "rebase") and (.source == "explicit" or .source == "repository" or .source == "default") and (.rationale | type == "string" and length > 0))' >/dev/null 2>&1; then
+    block "merge-method helper returned malformed or incompatible output"
+  else
+    SELECTED_METHOD="$(printf '%s' "$SELECTION" | jq -r .method)"
+    case "$SELECTED_METHOD" in
+      merge) MERGE_FLAG=--merge ;;
+      squash) MERGE_FLAG=--squash ;;
+      rebase) MERGE_FLAG=--rebase ;;
+    esac
+    note "merge_method=${SELECTED_METHOD}"
+    note "merge_method_source=$(printf '%s' "$SELECTION" | jq -r .source)"
+    # JSON string encoding keeps even incompatible helper text on one evidence line.
+    note "merge_method_rationale=$(printf '%s' "$SELECTION" | jq -c .rationale)"
+  fi
+fi
+
 # --- 8. Record the evidence bundle BEFORE any merge ------------------------
 BUNDLE="${STATE_DIR}/merge-evidence-${PR}-${HEAD_SHA:0:12}.txt"
 ( umask 077; rm -f -- "$BUNDLE"
@@ -353,6 +385,7 @@ if [ "${#BLOCKERS[@]}" -ne 0 ]; then
   echo "AUTO_DRIVE_MERGE: NOT_MERGED — ${#BLOCKERS[@]} blocker(s) for PR #${PR}. Nothing was merged." >&2
   printf '{"merge_result":"NOT_MERGED","pr":"%s","head_sha":"%s","blocker_count":%s,"evidence_bundle":"%s"}\n' \
     "$PR" "$HEAD_SHA" "${#BLOCKERS[@]}" "$BUNDLE"
+  [ "$SELECTION_POLICY_REFUSAL" = true ] && exit 79
   exit 1
 fi
 
@@ -360,8 +393,8 @@ fi
 # --match-head-commit makes GitHub itself refuse the merge if the head moved
 # after the evidence above was captured. That closes the check-then-merge gap
 # without a cooperative lease, and it is why every criterion binds to HEAD_SHA.
-MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA")
-EXPECTED_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA")
+MERGE_ARGV=(pr merge "$PR" "$MERGE_FLAG" --delete-branch --match-head-commit "$HEAD_SHA")
+EXPECTED_ARGV=(pr merge "$PR" "$MERGE_FLAG" --delete-branch --match-head-commit "$HEAD_SHA")
 if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]; then
   echo "ERROR: merge argv was modified; refusing. Expected: gh ${EXPECTED_ARGV[*]}" >&2
   exit 1

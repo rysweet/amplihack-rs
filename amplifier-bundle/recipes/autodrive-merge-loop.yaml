@@ -41,6 +41,7 @@ recursion:
   max_total_steps: 30
 
 context:
+  merge_method: ""  # Optional: merge, squash, or rebase; empty selects repository policy.
   repo_path: "."
   pr_number: ""
   pr_url: ""
@@ -317,7 +318,7 @@ steps:
       case "$DIR" in
         ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-03]" >&2; exit 1 ;;
       esac
-      ARGS=(--pr "$PR" --repo "${REPO_PATH:-.}" --state-dir "$DIR" \
+      ARGS=(--merge-method "${RECIPE_VAR_merge_method:-}" --pr "$PR" --repo "${REPO_PATH:-.}" --state-dir "$DIR" \
             --round-record "${DIR}/merge-ready-latest.json" \
             --qa-evidence "${DIR}/qa-evidence.json")
       [ "${AUTODRIVE_DRY_RUN:-false}" = "true" ] && ARGS+=(--dry-run)

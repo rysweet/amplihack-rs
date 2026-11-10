@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-11-05
+last_updated: 2026-11-10
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -38,6 +38,7 @@ PR to this recipe when the change exceeds its eligibility rules.
 - [Reading the loop-health line](#reading-the-loop-health-line)
 - [Two absolute prohibitions](#two-absolute-prohibitions)
 - [No silent merge](#no-silent-merge)
+- [Merge method selection](#merge-method-selection)
 - [Merges outside the gate are refused (#1551)](#merges-outside-the-gate-are-refused-1551)
 - [Exit code 79 is terminal](#exit-code-79-is-terminal)
 - [Orphaned rounds](#orphaned-rounds)
@@ -2976,6 +2977,132 @@ They are enforced three ways, not just documented:
   scans every recipe `command:` body, every `autodrive_*.sh` tool, and the
   skill, and fails if either flag appears anywhere but a line that explicitly
   marks it as prohibited.
+
+## Merge method selection
+
+`auto-drive-to-merge`, `auto-drive-light`, and `autodrive-merge-loop` accept
+optional recipe context `merge_method`. The trusted merge gate selects a
+method before executing any merge command. Only these exact values are valid:
+
+| Value | GitHub permission field | Gate flag |
+| --- | --- | --- |
+| `merge` | `allow_merge_commit` | `--merge` |
+| `squash` | `allow_squash_merge` | `--squash` |
+| `rebase` | `allow_rebase_merge` | `--rebase` |
+
+### Selection precedence
+
+The gate selects the first applicable source:
+
+1. Explicit recipe context: `-c merge_method=merge`, `squash`, or `rebase`.
+2. The top-level `merge_method` in the target repository's
+   `.github/amplihack.yml`.
+3. The first allowed method in the order **squash, merge, rebase**.
+
+Omitted or exactly empty context means no explicit selection. Whitespace,
+case variants, and other values are errors. Recipes forward the context
+unchanged through nested calls and light-recipe escalation; they do not insert
+a squash default.
+
+For an existing PR in the current repository, pass its number and original
+task description along with the explicit merge-commit selection. For example,
+to resume PR 1850 whose original task was the description below:
+
+```bash
+amplihack recipe run auto-drive-to-merge \
+  -c pr_number=1850 \
+  -c task_description="Return an error instead of panicking when the round record is empty in autodrive_last_round.sh" \
+  -c repo_path=. \
+  -c merge_method=merge
+```
+
+The gate uses `--merge` if GitHub allows merge commits and every other gate
+passes. Omitting `-c merge_method=merge` lets repository configuration or the
+default order select the method. This command drives a real PR through review
+and merge; it is not a read-only permission check.
+
+### Repository configuration
+
+To prefer merge commits by default, set this in `.github/amplihack.yml` at
+the target repository root:
+
+```yaml
+merge_method: merge
+```
+
+The file contains one top-level YAML mapping. Unrelated keys are permitted.
+A missing file or absent `merge_method` key means no repository preference.
+A present value must be exactly `merge`, `squash`, or `rebase`. Null, empty
+values, other types, duplicate `merge_method` keys, malformed YAML, multiple
+documents, and unreadable configuration are errors.
+
+The repository root is canonicalized before configuration is read. Symlinks
+are permitted only when the configuration resolves inside that root. A
+symlink escape or dangling configuration symlink is an error.
+
+Explicit context overrides a valid repository preference, but does not hide
+invalid configuration. For example, repository `merge_method: rebase` with
+explicit `merge_method=merge` selects merge commits when allowed, even if
+rebase is disabled. Repository `merge_method: null` fails even with an allowed
+explicit selection. Merge policy belongs in `.github/amplihack.yml`; it does
+not use the [QA configuration](#choosing-the-qa-command).
+
+### GitHub permissions and rejection
+
+The selector reads the target repository's settings with
+`gh api repos/{owner}/{repo}`, using its validated owner/repository identity
+separately from the local configuration root. All three permission fields in
+the table must be present booleans. API failures, malformed responses, missing
+or nonboolean fields, and no allowed methods stop the merge.
+
+An explicit or repository-selected method must be allowed. A disallowed
+effective selection fails clearly instead of falling back. With no preference,
+merge-only repositories use merge commits, squash-only repositories use
+squash, and rebase-only repositories use rebase. If squash is disabled and
+both merge and rebase are enabled, the default is merge.
+
+| Inputs | Result |
+| --- | --- |
+| No preference; all methods allowed | `squash`, source `default` |
+| No preference; merge and rebase allowed | `merge`, source `default` |
+| Repository prefers merge; merge allowed | `merge`, source `repository` |
+| Repository prefers rebase; explicit merge; only merge allowed | `merge`, source `explicit` |
+| Repository prefers merge; only squash allowed | Blocked; no merge command |
+| Explicit rebase; only merge allowed | Blocked; no merge command |
+| Invalid repository YAML; explicit merge allowed | Blocked; no merge command |
+
+Correct invalid context or configuration, or select a method already allowed
+by the repository, before resuming. Selection does not change repository
+permissions or branch protection. If GitHub rejects a merge after preflight,
+the gate reports the failure; it does not retry another method.
+
+### Selector output and merge evidence
+
+Selection and configuration validation run in Rust. The orchestration helper
+accepts separate repository identity, repository root, and explicit-context
+arguments. Success returns exactly one JSON object with these fields:
+
+| Field | Contract |
+| --- | --- |
+| `method` | `merge`, `squash`, or `rebase` |
+| `source` | `explicit`, `repository`, or `default` |
+| `rationale` | A readable string explaining the selection and allowed-method validation |
+
+Failure returns nonzero with an actionable stderr diagnostic and no success
+object. The trusted shell gate rejects missing helpers, malformed or trailing
+output, invalid method or source values, and a nonstring rationale through its
+blocker path before any merge command executes.
+
+The existing head-bound `merge-evidence-<PR>-<head-prefix>.txt` bundle records
+`merge_method`, `merge_method_source`, and `merge_method_rationale` before merging. The rationale
+is generated from validated values; it does not copy arbitrary configuration
+or API output. Rejected selections appear as blockers.
+
+The shell gate maps the validated method to exactly one literal flag from the
+table. Actual and expected merge arguments use that same flag. Exact-head
+evidence, `--match-head-commit`, private-state checks, QA and review gates,
+branch protection, the prohibition on admin merges, terminal exit `79`, and
+post-merge `MERGED` confirmation all remain required.
 
 ## No silent merge
 

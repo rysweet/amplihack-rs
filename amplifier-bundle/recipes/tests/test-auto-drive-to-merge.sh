@@ -138,6 +138,7 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t
 # PR #1347). A binary without that flag would silently exercise a different,
 # fail-open pipeline, so it is part of what "supports the helper" means.
 supports_helper() {
+  "$1" orch helper select-merge-method --help >/dev/null 2>&1 && \
   printf '{"a":"b"}' | "$1" orch helper extract-field --field a --default X >/dev/null 2>&1 \
     && printf '{"a":"b"}' | "$1" orch helper extract-json --require-field a >/dev/null 2>&1
 }
@@ -1222,7 +1223,7 @@ else
 fi
 
 # The merge argv is a fixed literal list with no caller-supplied flags.
-if grep -qF 'MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA")' "${GATE}" \
+if grep -qF 'MERGE_ARGV=(pr merge "$PR" "$MERGE_FLAG" --delete-branch --match-head-commit "$HEAD_SHA")' "${GATE}" \
    && grep -qF 'if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]' "${GATE}"; then
   pass "FORBIDDEN-fixed-argv" "the merge argv is a fixed literal list, asserted before execution"
 else
@@ -1245,6 +1246,16 @@ pv() {
     "${GH_HEAD:-abc123def4567890abc123def4567890abc12345}" "${GH_HEAD_REF:-}" "${GH_BASE-main}")"
   if [ -n "$JQ" ]; then printf '%s' "$j" | jq -r "$JQ"; else printf '%s\n' "$j"; fi
 }
+# #1888: identity and allowed methods are separate from review-thread APIs.
+if [ "${1:-} ${2:-}" = "repo view" ]; then
+  if [ -n "$JQ" ]; then printf '{"nameWithOwner":"owner/project"}' | jq -r "$JQ"
+  else printf '{"nameWithOwner":"owner/project"}\n'; fi
+  exit 0
+fi
+if [ "${1:-} ${2:-}" = "api repos/owner/project" ]; then
+  printf '%s\n' "${GH_METHODS_JSON-{\"allow_merge_commit\":true,\"allow_squash_merge\":true,\"allow_rebase_merge\":true}}"
+  exit "${GH_METHODS_RC:-0}"
+fi
 case "${GH_MODE:-}" in
   merged)
     [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && { echo '{"state":"MERGED","mergedAt":"2026-08-01T00:00:00Z"}'; exit 0; }
@@ -1627,7 +1638,7 @@ gate_run() { # gate_run <mode> <extra-args...>
   [ -z "${GATE_EXTRA_ENV:-}" ] || gate_cmd=(env "${GATE_EXTRA_ENV}" "${gate_cmd[@]}")
   GH_MODE="$mode" GH_CALLS="${GATE_DIR}/gh-calls" GH_HEAD="${GH_HEAD:-${GATE_HEAD}}" GH_BASE="${GH_BASE-main}" \
     PATH="${GATE_PATH_PREFIX:+${GATE_PATH_PREFIX}:}${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" \
-    GH_MERGE_RC="${GH_MERGE_RC:-3}" AMPLIHACK_BIN="${REAL_AMPLIHACK}" TMPDIR="${gate_tmp}" \
+    GH_MERGE_RC="${GH_MERGE_RC:-3}" AMPLIHACK_BIN="${GATE_HELPER:-${REAL_AMPLIHACK}}" TMPDIR="${gate_tmp}" \
     SWAP_FROM="${SWAP_FROM:-}" SWAP_TO="${GATE_DIR}/merge-ready-latest.json" \
     "${gate_cmd[@]}" --pr 42 --repo "${FX}" ${sd[@]+"${sd[@]}"} ${args[@]+"${args[@]}"} \
     >"${GATE_DIR}/out" 2>"${GATE_DIR}/err"
@@ -1800,6 +1811,9 @@ if [ "$rc" -ne 0 ] && grep -qF 'review-thread state is unreadable' "${GATE_DIR}/
 else
   fail "GATE-threads-no-reader" "rc=${rc}: $(grep BLOCKER "${GATE_DIR}/err" | tr '\n' ' ')"
 fi
+
+# #1888 runs with all existing evidence fixtures and the actual trusted gate.
+source "${REPO_ROOT}/amplifier-bundle/recipes/tests/test-merge-method-cases.sh"
 
 # 5i. When `gh pr merge` fails, the gate reports the REAL exit code. `$?` read
 # inside the `then` of an `if ! gh ...` is the negation's status — always 0 —
