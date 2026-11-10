@@ -348,6 +348,20 @@ fn assert_no_secrets(out: &Output) {
     }
 }
 
+/// The `note:` lines on stderr, less the probe-sandbox fallback note
+/// (issue #1974). That note depends on whether the host has a usable
+/// `bwrap`, so it is printed in every output mode; these tests check only
+/// that no other note reaches `--json` output.
+fn notes_other_than_sandbox(stderr: &str) -> Vec<&str> {
+    stderr
+        .lines()
+        .filter(|l| l.contains("note:"))
+        .filter(|l| {
+            !l.starts_with("note: usage probes run claude with --no-session-persistence only: ")
+        })
+        .collect()
+}
+
 fn warning_lines(stderr: &str) -> Vec<&str> {
     stderr
         .lines()
@@ -457,7 +471,10 @@ fn json_has_the_documented_shape_and_order() {
         assert!(r.get("raw").is_none(), "no raw key without --raw: {r}");
         assert_eq!(r["error"], serde_json::Value::Null);
     }
-    assert!(!stderr.contains("note:"), "--json prints no note: {stderr}");
+    assert!(
+        notes_other_than_sandbox(&stderr).is_empty(),
+        "--json prints no note: {stderr}"
+    );
 
     let (rows, _) = f.json(&["profile", "usage", "--json", "--raw"]);
     assert!(rows[1]["raw"]["stdout"].as_str().unwrap().contains(BANNER));
@@ -535,7 +552,7 @@ fn not_set_up_records_nothing_and_says_so_only_in_table_mode() {
     );
     assert!(!f.state().exists(), "no auto-switch state created");
     let (_, stderr) = f.json(&["profile", "usage", "--json"]);
-    assert!(!stderr.contains("note:"), "{stderr}");
+    assert!(notes_other_than_sandbox(&stderr).is_empty(), "{stderr}");
     assert!(!f.state().exists());
 }
 
