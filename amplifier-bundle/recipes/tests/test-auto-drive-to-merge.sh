@@ -1660,6 +1660,14 @@ gate_run() { # gate_run <mode> <extra-args...>
     symlink-verdict)
       mv "${GATE_DIR}/crusty-latest.json" "${GATE_DIR}.planted-latest.json"
       ln -s "${GATE_DIR}.planted-latest.json" "${GATE_DIR}/crusty-latest.json" ;;
+    # #2056: the squash message file's name is deterministic — PR and head SHA
+    # prefix — so anything already at that path was planted, not left by this
+    # run. The victim is outside the state dir, as a real one would be.
+    body-symlink)
+      printf 'VICTIM\n' > "${GATE_DIR}.planted-victim.txt"
+      ln -s "${GATE_DIR}.planted-victim.txt" "${GATE_DIR}/merge-message-42-$(printf '%s' "${GH_HEAD:-${GATE_HEAD}}" | cut -c1-12).txt" ;;
+    body-clobber)
+      printf 'A STALE MESSAGE FROM AN EARLIER ROUND\n' > "${GATE_DIR}/merge-message-42-$(printf '%s' "${GH_HEAD:-${GATE_HEAD}}" | cut -c1-12).txt" ;;
   esac
   local gate_file="${GATE_SCRIPT:-${GATE}}"
   local -a gate_cmd=(bash "${gate_file}")
@@ -2308,6 +2316,7 @@ fi
 # and the body file — so none of them needs a real merge to be decided.
 MSG_TITLE='fix(#2056): bind the squash message to the pull request'
 MSG_BODY='The pull request body.'
+MSG_HELPER="${TOOLS}/autodrive_merge_message.sh"
 msg_path() { # msg_path [sha]: the deterministic body-file path for this case
   printf '%s/merge-message-42-%s.txt' "${GATE_DIR}" "$(printf '%s' "${1:-${GATE_HEAD}}" | cut -c1-12)"
 }
@@ -2551,27 +2560,29 @@ fi
 # helper. field() resolves to `extract-json --require-field`, whose last-wins
 # selector a pull request's own body can influence (5m-14). jq is already a
 # hard requirement of the gate, so this costs no new dependency. `jq -j`, not
-# `jq -r`, for the body: -r appends a newline the body does not have.
+# `jq -r`, for the body: -r appends a newline the body does not have. The
+# reads live in the helper now, so both files are checked.
 MSG_BAD=""
-grep -qF 'field "$STATE_JSON" title' "${GATE}" && MSG_BAD="${MSG_BAD} reads the title with field()"
-grep -qF 'field "$STATE_JSON" body' "${GATE}" && MSG_BAD="${MSG_BAD} reads the body with field()"
-grep -qF 'jq -j' "${GATE}" || MSG_BAD="${MSG_BAD} does not use jq -j for the body"
+grep -qF 'field "$STATE_JSON" title' "${GATE}" && MSG_BAD="${MSG_BAD} the gate reads the title with field()"
+grep -qF 'field "$STATE_JSON" body' "${GATE}" && MSG_BAD="${MSG_BAD} the gate reads the body with field()"
+grep -qE '^[^#]*[^a-z_]field ' "${MSG_HELPER}" && MSG_BAD="${MSG_BAD} the helper calls field()"
+grep -qF 'jq -j' "${MSG_HELPER}" || MSG_BAD="${MSG_BAD} the helper does not use jq -j for the body"
 if [ -z "${MSG_BAD}" ]; then
   pass "MSG-jq-not-field" "the squash message is read with jq -j, never through the last-object-wins field() helper"
 else
-  fail "MSG-jq-not-field" "the gate${MSG_BAD}"
+  fail "MSG-jq-not-field" "${MSG_BAD}"
 fi
 
 # 5m-19. One `gh pr view` before the merge, carrying every criterion including
 # the message, so the message is bound to the same head SHA as everything else.
 # The gate's other `gh pr view` is section 10's post-merge confirmation; the
 # count that matters is of the read that carries headRefOid.
-MSG_READS="$(grep -c 'gh pr view "\$PR" --json [^ ]*headRefOid' "${GATE}" 2>/dev/null || echo 0)"
-if [ "${MSG_READS}" = "1" ] && grep -qE 'gh pr view "\$PR" --json [^ ]*\btitle\b' "${GATE}" \
+MSG_READS="$(grep -c 'gh pr view "\$PR" --json [^ ]*headRefOid' "${GATE}" 2>/dev/null || true)"
+if [ "${MSG_READS:-0}" = "1" ] && grep -qE 'gh pr view "\$PR" --json [^ ]*\btitle\b' "${GATE}" \
    && grep -qE 'gh pr view "\$PR" --json [^ ]*\bbody\b' "${GATE}"; then
   pass "MSG-one-read" "the title and body come from the single pre-merge pr view that binds every criterion to one head SHA"
 else
-  fail "MSG-one-read" "${MSG_READS} pre-merge read(s) carrying headRefOid, and the field list does not add title,body"
+  fail "MSG-one-read" "${MSG_READS:-0} pre-merge read(s) carrying headRefOid, and the field list does not add title,body"
 fi
 
 # 5m-20. --body-file, never an inline --body: the body stays out of argv, out
@@ -2589,7 +2600,6 @@ fi
 # (every_helper_the_gate_sources_is_a_gate_file) builds the cli_integration
 # binary, which cannot compile on macOS until #2210 lands; this is the same
 # assertion, readable from bash.
-MSG_HELPER="${TOOLS}/autodrive_merge_message.sh"
 MSG_GUARD="${REPO_ROOT}/crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs"
 if [ -f "${MSG_HELPER}" ] && grep -qF 'autodrive_merge_message.sh' "${GATE}" \
    && grep -qF '"autodrive_merge_message.sh"' "${MSG_GUARD}"; then
@@ -2602,6 +2612,96 @@ if [ "$(wc -l < "${GATE}" | tr -d '[:space:]')" -le 400 ]; then
 else
   fail "MSG-gate-brick-budget" "the gate is $(wc -l < "${GATE}" | tr -d '[:space:]') lines, over the 400-line brick budget"
 fi
+# 5m-22. The message file is written with `umask 077; set -C; rm -f`, and no
+# case above would notice if any of the three were dropped. A symlink planted
+# at the deterministic `merge-message-<pr>-<sha12>.txt` name must be REMOVED,
+# not followed: the gate runs as the user whose files the link would point at,
+# so following one would write a pull request body over an arbitrary file of
+# theirs. The gate already holds every other state file to this standard
+# (GATE-crusty-symlinked-marker, GATE-qa-chain-symlink-qa).
+GATE_MUTATE=body-symlink gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+MSG_VICTIM="${GATE_DIR}.planted-victim.txt"
+if [ "$(cat "${MSG_VICTIM}" 2>/dev/null)" != "VICTIM" ]; then
+  fail "MSG-body-file-symlink" "the gate followed the symlink and wrote the pull request body over ${MSG_VICTIM}"
+elif [ "${MSG_RC}" -eq 0 ] && [ ! -L "${MSG_FILE}" ] && [ -f "${MSG_FILE}" ] \
+     && [ "$(cat "${MSG_FILE}")" = "${MSG_BODY}" ]; then
+  pass "MSG-body-file-symlink" "a symlink at the message file's path is removed, not followed, and this run's body lands in a regular file"
+else
+  fail "MSG-body-file-symlink" "rc=${MSG_RC}: $( [ -L "${MSG_FILE}" ] && echo 'still a symlink' || { [ -f "${MSG_FILE}" ] && echo "holds $(head -c 80 "${MSG_FILE}")" || echo 'no message file'; } )"
+fi
+
+# 5m-23. The same name with a regular file already at it. A "the file is
+# already there, skip the write" optimisation would pass every case above
+# while merging an earlier round's message, so the replacement is pinned.
+GATE_MUTATE=body-clobber gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+if [ "${MSG_RC}" -eq 0 ] && [ -f "${MSG_FILE}" ] && [ "$(cat "${MSG_FILE}")" = "${MSG_BODY}" ]; then
+  pass "MSG-body-file-clobber" "a message file left at the path is replaced with this run's body, never reused"
+else
+  fail "MSG-body-file-clobber" "rc=${MSG_RC}: $( [ -f "${MSG_FILE}" ] && head -c 120 "${MSG_FILE}" || echo 'no message file' )"
+fi
+
+# 5m-24. The body is bounded for the reason the title is: 65,536 bytes is
+# GitHub's own limit on a pull request body, so anything past it is a read
+# gone wrong. The gate must not depend on a platform cap it does not enforce.
+MSG_HUGE="$(head -c 65537 < /dev/zero | tr '\0' 'b')"
+GH_BODY="${MSG_HUGE}" gate_run green --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+msg_blocked "MSG-long-body" "a body over 65536 bytes never merges"
+# ...and one byte under it still does, so the bound is not off by one and the
+# case above is not passing for some unrelated reason.
+GH_BODY="$(head -c 65536 < /dev/zero | tr '\0' 'b')" \
+  gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+if [ "${MSG_RC}" -eq 0 ] && [ -f "${MSG_FILE}" ] && [ "$(msg_bytes "${MSG_FILE}")" = "65536" ]; then
+  pass "MSG-body-at-bound" "a body of exactly 65536 bytes merges, with every byte in the message file"
+else
+  fail "MSG-body-at-bound" "rc=${MSG_RC}: $( [ -f "${MSG_FILE}" ] && echo "$(msg_bytes "${MSG_FILE}") bytes" || echo 'no message file' )"
+fi
+
+# 5m-25. A body ending in a newline keeps it, byte for byte. `jq -r` would add
+# a second; a `$(...)` capture anywhere in the write path would eat the first.
+# $'...' rather than "$(printf ...)" for exactly that reason: the capture the
+# helper must not perform is one this line would otherwise perform for it.
+GH_BODY=$'ends with a newline\n' \
+  gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+if [ "${MSG_RC}" -eq 0 ] && [ -f "${MSG_FILE}" ] && [ "$(msg_bytes "${MSG_FILE}")" = "20" ]; then
+  pass "MSG-body-trailing-newline" "a trailing newline in the body is preserved exactly once"
+else
+  fail "MSG-body-trailing-newline" "want 20 bytes, got $( [ -f "${MSG_FILE}" ] && msg_bytes "${MSG_FILE}" || echo 'no message file' )"
+fi
+
+# 5m-26. The two failures the message write can suffer are reported apart: an
+# unreadable body points at the platform, a message file that could not be
+# written points at the filesystem under the state dir. `2>/dev/null` has
+# already discarded jq's own diagnostic, so the blocker is all an operator gets.
+gate_run unreadable-body --round-record "$REC" --qa-evidence "$QA" >/dev/null 2>&1; MSG_RC=$?
+if grep -qF 'the body of pull request #42 is unreadable' "${GATE_DIR}/err" \
+   && ! grep -qF 'could not be written' "${GATE_DIR}/err"; then
+  pass "MSG-blocker-read-vs-write" "an unreadable body is reported as a read failure, not as a failed write"
+else
+  fail "MSG-blocker-read-vs-write" "$(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+fi
+
+# 5m-27. Composing and writing the message belong to the helper; the gate
+# keeps the decision. A write pipeline that drifts back into the gate puts the
+# gate over its brick budget again and splits the contract in two.
+if ! grep -qF 'autodrive_merge_body_file' "${GATE}"; then
+  fail "MSG-write-lives-in-helper" "the gate does not call autodrive_merge_body_file"
+elif grep -qE 'jq -j.*body|body.*jq -j' "${GATE}"; then
+  fail "MSG-write-lives-in-helper" "the gate still extracts the body itself instead of calling the helper"
+elif grep -qF 'autodrive_merge_body_file()' "${MSG_HELPER}" && grep -qF 'set -C' "${MSG_HELPER}"; then
+  pass "MSG-write-lives-in-helper" "the message write lives in autodrive_merge_message.sh, and the gate only decides"
+else
+  fail "MSG-write-lives-in-helper" "autodrive_merge_body_file is not defined in the helper, or does not use set -C"
+fi
+if [ "$(wc -l < "${MSG_HELPER}" | tr -d '[:space:]')" -le 400 ]; then
+  pass "MSG-helper-brick-budget" "the message helper fits the 400-line brick budget"
+else
+  fail "MSG-helper-brick-budget" "the helper is $(wc -l < "${MSG_HELPER}" | tr -d '[:space:]') lines, over the 400-line brick budget"
+fi
+
 
 # ---------------------------------------------------------------------------
 # 6. Verdict extraction — the fail-safe direction, on the REAL step bodies.

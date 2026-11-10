@@ -3120,11 +3120,27 @@ arrangement — `autodrive_followups_check.sh` is sourced by
 file is sourced by the gate itself. The file defines functions and has no
 top-level side effect, so sourcing it twice is safe.
 
-What stays in the gate is what has to: the argv, its self-check, and the
-blocker calls. Sourcing adds no process boundary, so the `gh` shim still sees
-the gate itself as the parent of the merge it permits, and neither the shim
-nor the pre-tool-use hook changes
+The split follows responsibility, not only line count: composing and writing
+the message — subject, SHA prefix and body alike — is the module's whole
+contract, and what stays in the gate is the decision. `autodrive_merge_body_file`
+is the one function there with a side effect, writing the message file to the
+path the gate hands it. It chooses no path and emits no blocker; the gate owns
+where state lives and what a refusal means. That is also why its `GATE_FILES`
+entry matters rather than being a formality: a helper the gate *sources* runs
+with the gate's own authority, and this one touches the state directory the
+merge decision is read from. Sourcing adds no process boundary, so the `gh`
+shim still sees the gate itself as the parent of the merge it permits, and
+neither the shim nor the pre-tool-use hook changes
 ([#1551](#merges-outside-the-gate-are-refused-1551)).
+
+`autodrive_merge_body_file` returns a distinct code for each failure — `1` the
+body is unreadable, `2` the file was not written — because the two send an
+operator to different places: the first is a platform read that came back
+malformed, the second is the filesystem under the state directory. The gate
+suppresses `jq`'s own diagnostic so that its blocker is the single
+operator-facing message, which leaves the exit code as the only thing that can
+tell them apart. Readability is settled before anything is written, so every
+failure after that point is a write failure and nothing is misattributed.
 
 #### What blocks
 
@@ -3135,6 +3151,8 @@ nor the pre-tool-use hook changes
 | `.title` empty or whitespace-only | blocker: every pull request has a title, so an empty one means the read is wrong |
 | `.title` longer than 1024 characters, as `${#title}` counts them | blocker: a sanity bound, well above GitHub's own 256-character title limit |
 | `.body` key absent from the object | blocker: a malformed read, not an empty body |
+| `.body` present but neither a string nor `null` | blocker |
+| `.body` longer than 65,536 bytes | blocker: GitHub's own limit on a pull request body, the same kind of sanity bound as the 1024 characters on the title |
 | `.body` JSON `null` | normalised to the empty string; not a blocker |
 | `.body` `""` | an empty message file; not a blocker |
 | no `--state-dir`, or a state directory that is not private to this user | blocker |
@@ -3145,6 +3163,17 @@ A criterion the gate cannot read never merges, and the message is held to the
 same rule: `pull request #N title is unreadable; a criterion we cannot read
 never merges`.
 
+Before the merge runs, section 9 checks the message once more: a non-empty
+subject, and a message file that is still a regular file `autodrive_private`
+accepts. The state directory is shared with agent-written files
+(#1517 D5), and roughly two hundred lines of
+helpers run between the write and the merge, so the file that decides the
+commit message is held to the same standard as every other file that decides
+this merge. That refusal is defence in depth — section 5b has already blocked
+every way of reaching it — and its message names all three classes it covers:
+an argv that is not the fixed eleven-element list, an empty subject, and a
+message file that is no longer private.
+
 #### The message file
 
 The body is written to `<state-dir>/merge-message-<pr>-<sha12>.txt`. It takes
@@ -3154,7 +3183,8 @@ does not use. Together those mean `gh` reads a file this run created, and a
 symlink planted at that path is removed rather than followed. The name embeds
 the head SHA's first 12 characters, so a message file left behind by an
 earlier round cannot be reused for a different head. `<pr>` is already
-validated as digits at section 1 and the SHA fragment as lowercase hex, so
+validated as digits during argument parsing, before section 0, and the SHA
+fragment as lowercase hex, so
 the path can neither escape the state directory nor become `-`, which `gh`
 would read as stdin.
 

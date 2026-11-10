@@ -22,7 +22,7 @@ builtin unset -f gh git jq
 
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 PR=""; REPO="."; ROUND_RECORD=""; QA_EVIDENCE=""; STATE_DIR=""; DRY_RUN="false"
-MERGE_SUBJECT=""; MERGE_BODY_FILE=""; SHA12=""   # the squash message (#2056), set in section 5b
+MERGE_SUBJECT=""; MERGE_BODY_FILE=""; SHA12=""; BODY_RC=0   # the squash message (#2056), set in section 5b
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -142,23 +142,21 @@ fi
 # `gh pr merge --squash` with no message flags leaves GitHub to concatenate the
 # BRANCH'S commits, so a stale trailer or a `Fixes #N` from a branch this one is
 # stacked on lands in the base. Subject and body come from the same STATE_JSON that
-# bound every other criterion to this head SHA, read with jq, never with field()
-# (last-object-wins). Unreadable blocks. The body goes to a private file, not argv.
+# bound every other criterion to this head SHA, read with jq, never with field().
+# Composing and writing are autodrive_merge_message.sh's; the decision is here.
 if [ "$STATE_DIR_GIVEN" != "true" ] || [ -z "$GATE_HOME" ] || [ ! -f "${GATE_HOME}/autodrive_merge_message.sh" ] \
    || ! . "${GATE_HOME}/autodrive_merge_message.sh" || ! . "${GATE_HOME}/autodrive_state.sh" \
    || ! autodrive_private "$STATE_DIR" || ! SHA12="$(autodrive_merge_sha12 "$HEAD_SHA")"; then
-  block "the squash commit message for #${PR} cannot be composed and written privately (no explicit --state-dir, a state dir that is not private to this user, an unreadable head SHA, or autodrive_merge_message.sh missing beside the merge gate); the message is never left for the platform to compose from the branch's commits"
+  block "the squash commit message for #${PR} cannot be composed and written privately (no explicit --state-dir, an empty GATE_HOME, autodrive_merge_message.sh missing beside the merge gate, autodrive_state.sh missing or unloadable, a state dir that is not private to this user, or a head SHA whose first 12 characters are not lowercase hex); the message is never left for the platform to compose from the branch's commits"
 elif ! MERGE_SUBJECT="$(autodrive_merge_subject "$STATE_JSON" "$PR")"; then
-  block "pull request #${PR} title is unreadable (absent, null, blank, or over 1024 characters); a criterion we cannot read never merges"
+  block "pull request #${PR} title is unreadable (absent, null, not a string, blank, or over 1024 characters); a criterion we cannot read never merges"
 else
-  MERGE_BODY_FILE="${STATE_DIR}/merge-message-${PR}-${SHA12}.txt"
-  if ! ( umask 077; set -C; rm -f -- "$MERGE_BODY_FILE"
-         printf '%s' "$STATE_JSON" | jq -j 'if has("body") then (.body // "") else error end' | tr -d '\000' > "$MERGE_BODY_FILE" ) 2>/dev/null; then
-    MERGE_BODY_FILE=""
-    block "the body of pull request #${PR} is unreadable, or its message file could not be written; a message we cannot read never merges"
-  else
-    note "squash_message merge_subject=\"${MERGE_SUBJECT}\" body_file=${MERGE_BODY_FILE} body_bytes=$(wc -c < "$MERGE_BODY_FILE" | tr -d '[:space:]')"
-  fi
+  MERGE_BODY_FILE="${STATE_DIR}/merge-message-${PR}-${SHA12}.txt"; autodrive_merge_body_file "$STATE_JSON" "$MERGE_BODY_FILE"; BODY_RC=$?
+  case "$BODY_RC" in
+    0) note "squash_message merge_subject=\"${MERGE_SUBJECT}\" body_file=${MERGE_BODY_FILE} body_bytes=$(wc -c < "$MERGE_BODY_FILE" | tr -d '[:space:]')" ;;
+    1) MERGE_BODY_FILE=""; block "the body of pull request #${PR} is unreadable (no body key, not a string or null, or over 65536 bytes); a criterion we cannot read never merges" ;;
+    *) MERGE_BODY_FILE=""; block "the squash message file for #${PR} could not be written under ${STATE_DIR} (the directory is unwritable, or something at merge-message-${PR}-${SHA12}.txt could not be replaced); the message is never left for the platform to compose from the branch's commits" ;;
+  esac
 fi
 
 # --- 6. qa-team scenario evidence ------------------------------------------
@@ -359,12 +357,14 @@ fi
 # the evidence above was captured, which is why every criterion binds to HEAD_SHA.
 # The self-check is POSITIONAL: with a subject that may hold spaces, comparing two
 # IFS-joined arrays asserts nothing. #1551: `pr` and `merge` stay at elements 0 and 1.
+# The message file is re-checked for privacy HERE too: the state dir is shared with
+# agent-written files (#1517 D5). The refusal names all three classes it covers.
 MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file "$MERGE_BODY_FILE")
 if [ "${#MERGE_ARGV[@]}" -ne 11 ] || [ "${MERGE_ARGV[0]}" != "pr" ] || [ "${MERGE_ARGV[1]}" != "merge" ] || [ "${MERGE_ARGV[2]}" != "$PR" ] \
    || [ "${MERGE_ARGV[3]}" != "--squash" ] || [ "${MERGE_ARGV[4]}" != "--delete-branch" ] || [ "${MERGE_ARGV[5]}" != "--match-head-commit" ] \
    || [ "${MERGE_ARGV[6]}" != "$HEAD_SHA" ] || [ "${MERGE_ARGV[7]}" != "--subject" ] || [ "${MERGE_ARGV[8]}" != "$MERGE_SUBJECT" ] \
-   || [ "${MERGE_ARGV[9]}" != "--body-file" ] || [ "${MERGE_ARGV[10]}" != "$MERGE_BODY_FILE" ] || [ -z "$MERGE_SUBJECT" ] || [ ! -f "$MERGE_BODY_FILE" ]; then
-  echo "ERROR: the merge argv is not the fixed 11-element list; refusing. Expected: gh pr merge <pr> --squash --delete-branch --match-head-commit <sha> --subject <subject> --body-file <file>" >&2
+   || [ "${MERGE_ARGV[9]}" != "--body-file" ] || [ "${MERGE_ARGV[10]}" != "$MERGE_BODY_FILE" ] || [ -z "$MERGE_SUBJECT" ] || [ ! -f "$MERGE_BODY_FILE" ] || ! autodrive_private "$MERGE_BODY_FILE"; then
+  echo "ERROR: refusing to merge #${PR}. Either the merge argv is not the fixed 11-element list (gh pr merge <pr> --squash --delete-branch --match-head-commit <sha> --subject <subject> --body-file <file>), or the squash subject is empty, or the message file is no longer a regular file private to this user." >&2
   exit 1
 fi
 if [ "$DRY_RUN" = "true" ]; then

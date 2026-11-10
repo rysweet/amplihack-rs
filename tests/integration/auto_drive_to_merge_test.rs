@@ -801,9 +801,54 @@ fn the_merge_gate_composes_the_squash_message_from_the_pull_request() {
     }
     // `jq -r` appends a newline the body does not contain; every squash commit
     // would gain a spurious blank line and an empty body would not be empty.
+    // Composing and writing the message belong to the helper, so that is where
+    // the extraction is pinned; what is pinned in the gate is that it has not
+    // drifted back to doing the read itself.
+    let helper = read(&tool_path("autodrive_merge_message.sh"));
     assert!(
-        gate.contains("jq -j"),
+        helper.contains("jq -j"),
         "the body must be extracted with `jq -j`, not `jq -r`"
+    );
+    assert!(
+        helper.contains("autodrive_merge_body_file()"),
+        "the message helper must own the body-file write, not only the subject"
+    );
+    assert!(
+        gate.contains("autodrive_merge_body_file "),
+        "the gate must call the helper to write the message file"
+    );
+    assert!(
+        !gate.contains("jq -j"),
+        "the gate must not extract the body itself; that is the helper's contract"
+    );
+
+    // The write is `umask 077; set -C; rm -f`: 0600 whatever the umask, O_EXCL
+    // so a symlink or a file that appeared at the path is refused rather than
+    // followed, and the rm so a message left at this deterministic name is
+    // replaced rather than reused.
+    for needle in ["umask 077", "set -C", r#"rm -f -- "$path""#] {
+        assert!(
+            helper.contains(needle),
+            "the message file write must keep `{needle}`"
+        );
+    }
+
+    // The two failure classes stay apart: 1 is an unreadable body (a platform
+    // read that came back malformed), 2 is a message file that was not written
+    // (the filesystem under the state dir). The gate suppresses jq's own
+    // diagnostic, so the exit code is all that can tell them apart.
+    assert!(
+        helper.contains("return 1") && helper.contains("return 2"),
+        "autodrive_merge_body_file must report an unreadable body and a failed write separately"
+    );
+
+    // The message file is re-checked for privacy immediately before the merge,
+    // not only where it was written: the state dir is shared with
+    // agent-written files (#1517 D5), and every other file that decides this
+    // merge is held to autodrive_private.
+    assert!(
+        gate.contains(r#"autodrive_private "$MERGE_BODY_FILE""#),
+        "the message file must pass autodrive_private at the merge, as every other input does"
     );
 
     // --body-file, never an inline --body: the body stays out of argv, out of
