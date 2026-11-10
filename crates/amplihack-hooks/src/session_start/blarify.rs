@@ -492,20 +492,32 @@ mod tests {
         fs::write(src_dir.join("app.py"), "print('hi')\n").unwrap();
         let artifact_dir = dir.path().join(".amplihack");
         fs::create_dir_all(&artifact_dir).unwrap();
-        std::thread::sleep(Duration::from_secs(1));
         fs::write(artifact_dir.join("blarify.json"), "{}\n").unwrap();
+        // Issue #1973: the JSON must be newer than the source. Explicit
+        // mtimes say so without depending on how long a sleep took.
+        let now = std::time::SystemTime::now();
+        fs::File::options()
+            .write(true)
+            .open(src_dir.join("app.py"))
+            .unwrap()
+            .set_modified(now - Duration::from_secs(60))
+            .unwrap();
+        fs::File::options()
+            .write(true)
+            .open(artifact_dir.join("blarify.json"))
+            .unwrap()
+            .set_modified(now)
+            .unwrap();
 
         let stub_log = dir.path().join("amplihack.log");
         let stub = dir.path().join("amplihack");
-        fs::write(
+        crate::test_support::write_executable(
             &stub,
-            format!(
+            &format!(
                 "#!/usr/bin/env bash\nif [ \"$1\" = \"--version\" ]; then echo amplihack-test; exit 0; fi\nprintf '%s\\n' \"$@\" > \"{}\"\n",
                 stub_log.display()
             ),
-        )
-        .unwrap();
-        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         unsafe {
             std::env::set_var("AMPLIHACK_AMPLIHACK_BINARY_PATH", &stub);
             std::env::set_var("AMPLIHACK_BLARIFY_MODE", "background");
@@ -519,7 +531,9 @@ mod tests {
         // flushed. Polling for mere existence races the write under CI load, so
         // we poll the *content* and keep waiting as long as the log is still
         // growing, giving up only after a bounded idle interval.
-        let (_found, logged) = poll_file_for_content(
+        // Issue #1973: the idle bound is the wait ceiling, so a loaded host
+        // that is slow to start the subprocess does not end the poll early.
+        let (found, logged) = poll_file_for_content(
             &stub_log,
             &[
                 "index-code",
@@ -527,7 +541,7 @@ mod tests {
                 ".amplihack/graph_db",
             ],
             Duration::from_millis(25),
-            Duration::from_secs(2),
+            Duration::from_secs(600),
         );
         unsafe {
             std::env::remove_var("AMPLIHACK_AMPLIHACK_BINARY_PATH");
@@ -543,6 +557,10 @@ mod tests {
                 .status_context
                 .as_deref()
                 .is_some_and(|context| context.contains("Started background code-graph setup"))
+        );
+        assert!(
+            found,
+            "the background import never logged its arguments: {logged:?}"
         );
         assert!(logged.contains("index-code"));
         assert!(logged.contains(".amplihack/blarify.json"));

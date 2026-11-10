@@ -30,7 +30,7 @@ use std::process::{Command, Output};
 
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 echo "S $(date +%s%N)" >> "$RECORD_DIR/marks"
 printf '%s\n' "$@" > "$RECORD_DIR/args.$$"
@@ -88,6 +88,7 @@ pub fn now() -> i64 {
 }
 
 pub struct Fixture {
+    identity: Option<crate::support::profile_default::LoginIdentities>,
     pub tmp: tempfile::TempDir,
     pub home: PathBuf,
     pub root: PathBuf,
@@ -110,7 +111,8 @@ impl Fixture {
         fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
         write_executable(&tools.join("claude"), FAKE_CLAUDE, 0o755);
         write_executable(&tools.join("recipe-runner-rs"), STUB_RUNNER, 0o755);
-        let f = Self {
+        let mut f = Self {
+            identity: None,
             root: home.join("profiles"),
             tmp,
             home,
@@ -122,7 +124,7 @@ impl Fixture {
             let out = f.cmd(&["profile", "add", p]).output().unwrap();
             assert!(out.status.success(), "profile add {p}: {}", describe(&out));
         }
-        give_logins(&f.home, &f.root, "alpha", &["beta"]);
+        f.identity = Some(give_logins(&f.home, &f.root, "alpha", &["beta"]));
         set_default(&f.root, "alpha");
         f.governor_config("");
         f
@@ -230,6 +232,8 @@ impl Fixture {
             .env("AMPLIHACK_USAGE_LIMIT_WAIT", "0")
             .env("AMPLIHACK_GOVERNOR_WAIT", "0")
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
+        crate::isolated_amplihack::reapply_proc_root(&mut c);
+        self.identity.iter().for_each(|i| i.configure(&mut c));
         c
     }
 

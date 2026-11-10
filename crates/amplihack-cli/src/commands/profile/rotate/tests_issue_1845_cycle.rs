@@ -97,6 +97,9 @@ fn fx() -> Fx {
     rs.save_ledger(&RotateLedger {
         live: Some("work".into()),
         account: Some("u-work".into()),
+        login_identity: Some(super::login_identity::Identity::new(
+            &(super::cred_identity::DEFAULT_READ)(&home.join(".claude")).unwrap(),
+        )),
         since: Some(now() - 7200),
         swapped_at: Some(now() - 7200),
         ..RotateLedger::default()
@@ -140,6 +143,7 @@ fn work_out_spare_free(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     };
     let spare = Probed {
         reading: Reading::Measured {
@@ -152,6 +156,7 @@ fn work_out_spare_free(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     };
     decide_measured(ctx, snap, work, vec![(n("spare"), spare)], now())
 }
@@ -238,7 +243,7 @@ fn a_mismatched_record_alerts_once_over_two_watch_cycles() {
     }
     let log = f.logged();
     let alerts: Vec<&String> = log.iter().filter(|l| l.starts_with("ALERT:")).collect();
-    assert_eq!(alerts, vec![ALERT], "{log:?}");
+    assert_eq!(alerts, vec![ALERT, ALERT], "{log:?}");
     assert!(!log.iter().any(|l| l.starts_with("swap ")), "{log:?}");
     assert_no_account(&log);
     let l = f.rs.load_ledger().unwrap().unwrap();

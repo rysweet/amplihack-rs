@@ -166,3 +166,21 @@ fn socket_paths() {
     assert_eq!(socket_from_env(""), None);
     assert_eq!(socket_from_env(",4242,0"), None);
 }
+
+/// Issue #1973: the child timeout stays 10 s; only a debug build reads the
+/// test knob, and its name is outside `AMPLIHACK_ROTATE*`. The environment
+/// of this process is shared by every unit test, so it is read, not set.
+#[test]
+fn the_child_timeout_is_ten_seconds_unless_a_debug_build_raises_it() {
+    use std::time::Duration;
+    assert_eq!(CHILD_TIMEOUT, Duration::from_secs(10));
+    #[cfg(debug_assertions)]
+    {
+        assert_eq!(CHILD_TIMEOUT_ENV, "AMPLIHACK_TEST_AGENT_CHILD_TIMEOUT_SECS");
+        let knob = std::env::var(CHILD_TIMEOUT_ENV).ok();
+        let want = crate::debug_knob::secs_or(knob.as_deref(), CHILD_TIMEOUT);
+        assert_eq!(child_timeout(), want);
+    }
+    #[cfg(not(debug_assertions))]
+    assert_eq!(child_timeout(), CHILD_TIMEOUT);
+}

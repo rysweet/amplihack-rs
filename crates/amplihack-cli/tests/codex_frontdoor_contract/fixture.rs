@@ -145,12 +145,16 @@ esac
         let (mut master, mut slave) = (-1, -1);
         assert_eq!(
             unsafe {
+                // `termp` and `winp` are `*const` on Linux and `*mut` on
+                // macOS. A typed null `*mut` is the one spelling that
+                // compiles on both, because `*mut T` coerces to `*const T`
+                // (#2210).
                 libc::openpty(
                     &mut master,
                     &mut slave,
                     std::ptr::null_mut(),
-                    std::ptr::null(),
-                    std::ptr::null(),
+                    std::ptr::null_mut::<libc::termios>(),
+                    std::ptr::null_mut::<libc::winsize>(),
                 )
             },
             0
@@ -229,7 +233,18 @@ esac
             String::from_utf8_lossy(&out.stderr)
         );
         let argv = fs::read_to_string(home.path().join("launch-argv")).unwrap();
-        assert!(argv.contains("exec\n--model\nfixture-model\n-\n"), "{argv}");
+        // Issue #1985: an agent step gets the sandbox, network and hook-trust
+        // flags right after `exec`, ahead of the caller's own arguments.
+        assert!(
+            argv.contains(
+                "exec\n--sandbox\nworkspace-write\n-c\nsandbox_workspace_write.network_access=true\n--dangerously-bypass-hook-trust\n--model\nfixture-model\n-\n"
+            ),
+            "{argv}"
+        );
+        assert!(
+            !argv.contains("--dangerously-bypass-approvals-and-sandbox"),
+            "{argv}"
+        );
         assert!(
             home.path()
                 .join(".amplihack/codex/ownership.json")

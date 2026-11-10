@@ -48,11 +48,14 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 21] = [
+const AUTODRIVE_TOOLS: [&str; 25] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
     "autodrive_escalate.sh",
+    "autodrive_finding_rules.sh",
+    "autodrive_followups.sh",
+    "autodrive_followups_check.sh",
     "autodrive_last_round.sh",
     "autodrive_loop.sh",
     "autodrive_merge_gate.sh",
@@ -60,6 +63,7 @@ const AUTODRIVE_TOOLS: [&str; 21] = [
     "autodrive_platform_facts.sh",
     "autodrive_pr_head.sh",
     "autodrive_progress.sh",
+    "autodrive_qa_docs.sh",
     "autodrive_qa_evidence.sh",
     "autodrive_qa_scope.sh",
     "autodrive_qa_sources.sh",
@@ -3094,6 +3098,14 @@ const ROUND_SUBCOMMANDS: [(&str, &str); 8] = [
     ("round-record", "round_record"),
 ];
 
+/// Functions in autodrive_round_evidence.sh that no subcommand dispatches to
+/// but that subcommand bodies call (#2219): measured_downgrade and
+/// measured_held_by read every measurement through `_measured_read`, and the
+/// criterion 6 stop line reads its facts through `_approval_detail`. Without
+/// following them, the reads those bodies make would be invisible to the
+/// step checks below.
+const ROUND_PRIVATE_HELPERS: [&str; 3] = ["_measured_read", "_approval_detail", "measured_held_by"];
+
 /// The bash a merge-round step runs: its own command and, for each
 /// `bash "$T" <subcommand>` of autodrive_round_evidence.sh it calls, the body
 /// of the function that subcommand dispatches to, and of every subcommand
@@ -3136,12 +3148,20 @@ fn round_step_bash(recipe: &Value, id: &str) -> String {
         }
         seen.push(func);
         let body = body_of(func);
-        for (_, callee) in ROUND_SUBCOMMANDS {
+        let callees = ROUND_SUBCOMMANDS
+            .iter()
+            .map(|(_, f)| *f)
+            .chain(ROUND_PRIVATE_HELPERS);
+        for callee in callees {
             let called = body
                 .lines()
                 .skip(1)
                 .filter(|l| !l.trim_start().starts_with('#'))
-                .any(|l| l.contains(&format!("{callee} ")) || l.contains(&format!("{callee})")));
+                .any(|l| {
+                    l.trim() == callee
+                        || l.contains(&format!("{callee} "))
+                        || l.contains(&format!("{callee})"))
+                });
             if called && !seen.contains(&callee) {
                 pending.push(callee);
             }
@@ -4356,7 +4376,7 @@ fn state_dir_guards_name_their_recipe_and_step() {
     const GUARD: &str = "ERROR: no state_dir (empty or unsafe: refusing to touch it)";
     for (recipe, want, pattern) in [
         ("autodrive-crusty-loop", 2, r#"''|/|-*|*$'\n'*)"#),
-        ("autodrive-merge-loop", 3, r#"''|/|-*|*$'\n'*)"#),
+        ("autodrive-merge-loop", 4, r#"''|/|-*|*$'\n'*)"#),
         ("autodrive-build", 1, r#"/|-*|*$'\n'*)"#),
     ] {
         let mut found = 0;

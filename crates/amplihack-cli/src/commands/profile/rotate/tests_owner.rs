@@ -479,18 +479,22 @@ fn an_oversized_cmdline_is_not_alive() {
 
 #[test]
 fn a_proc_entry_owned_by_another_user_is_not_alive() {
-    // A fake `/proc` cannot hold a directory of another user without root,
-    // so this uses the real `/proc/1`, which belongs to root.
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    if unsafe { libc::geteuid() } == 0 {
-        return;
-    }
-    let meta = fs::symlink_metadata("/proc/1").unwrap();
-    assert!(!amplihack_utils::secure_files::owned_by_euid(&meta));
-    assert!(!owner::alive(
-        &marker("t.service", 1),
-        Path::new("/proc"),
-        OsStr::new(EXE)
+    use std::os::unix::fs::MetadataExt;
+    let f = fx();
+    let argv = rotator_argv();
+    let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+    f.proc_entry(OWNER_PID, &argv);
+    let meta = fs::symlink_metadata(f.proc_root.join(OWNER_PID.to_string())).unwrap();
+    let m = marker("t.service", OWNER_PID);
+    assert!(amplihack_utils::secure_files::owned_by_euid(&meta));
+    assert!(owner::alive(&m, &f.proc_root, OsStr::new(EXE)));
+    // Only the expected owner changes. The existing entry and valid command
+    // line remain identical, so rejection exercises the UID check under any UID.
+    assert!(!owner::alive_for_uid(
+        &m,
+        &f.proc_root,
+        OsStr::new(EXE),
+        meta.uid().wrapping_add(1)
     ));
 }
 

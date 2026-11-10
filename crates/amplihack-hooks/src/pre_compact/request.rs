@@ -1,23 +1,27 @@
 //! Original request extraction and prompt parsing from conversation/transcript data.
 
 use crate::original_request::capture_original_request;
-use amplihack_types::ProjectDirs;
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
 
+/// Find the original user prompt and save it under `<session_dir>/logs/`.
+///
+/// Returns `true` only when a substantial prompt was found and both files
+/// were written. Write failures are logged by `capture_original_request`.
 pub(crate) fn preserve_original_request(
-    dirs: &ProjectDirs,
+    session_dir: &Path,
     session_id: &str,
     transcript_path: Option<&Path>,
     extra: &Value,
-) -> anyhow::Result<bool> {
+) -> bool {
     let prompt = extract_original_request_prompt(extra)
         .or_else(|| transcript_path.and_then(extract_original_request_prompt_from_transcript));
     let Some(prompt) = prompt else {
-        return Ok(false);
+        return false;
     };
-    Ok(capture_original_request(dirs, Some(session_id), &prompt)?.is_some())
+    capture_original_request(Some(session_dir), Some(session_id), &prompt)
+        .is_some_and(|captured| captured.persisted)
 }
 
 fn extract_original_request_prompt(extra: &Value) -> Option<String> {

@@ -238,6 +238,7 @@ fn a_switch_logs_a_switch_line_not_a_swap_line() {
 #[test]
 fn a_switch_adopts_a_login_no_profile_owns() {
     let e = env();
+    fs::remove_file(&e.rs.ledger).unwrap();
     fs::remove_file(e.root.join("work/.claude.json")).unwrap();
     assert_eq!(
         switch(&e, "spare").unwrap(),
@@ -387,6 +388,7 @@ fn no_login_in_home_is_refused() {
 #[test]
 fn an_ambiguous_login_is_refused() {
     let e = env();
+    fs::remove_file(&e.rs.ledger).unwrap();
     // A second login-less profile with work's account: two profiles match.
     e.store.add(&n("twin")).unwrap();
     fs::copy(
@@ -394,6 +396,14 @@ fn an_ambiguous_login_is_refused() {
         e.root.join("twin/.claude.json"),
     )
     .unwrap();
+    let state = State::new(&e.root).unwrap();
+    let a = super::tests::tests_fixture_identity::read(&e.home.join(".claude")).unwrap();
+    for name in ["work", "twin"] {
+        if !e.root.join(name).exists() {
+            e.store.add(&n(name)).unwrap();
+        }
+        crate::commands::profile::expected::record(&state, &n(name), &a).unwrap();
+    }
     assert_refused(&e, "spare", "more than one profile matches");
 }
 

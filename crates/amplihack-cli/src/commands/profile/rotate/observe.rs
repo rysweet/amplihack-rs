@@ -11,11 +11,10 @@ use super::measure::{self, Live};
 use super::overflow::{OverflowInput, Tag, decide_overflow};
 use super::pin::{self, PinState};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::CREDS;
-use crate::commands::profile::auto_switch::kit::{Liveness, State, effective, now};
+use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::kind;
 use crate::commands::profile::name::ProfileName;
-use crate::commands::profile::overflow::{OverflowEntry, PLATFORM_TIER, tiers_detail};
+use crate::commands::profile::overflow::{OverflowEntry, PLATFORM_TIER};
 
 /// Who is live, who may receive the login, and the rotation pin: compared
 /// again under the lock before a swap, so a `profile switch` during the
@@ -25,6 +24,14 @@ pub struct Snap {
     pub live: LiveId,
     pub proto: Option<&'static str>,
     pub account: Option<String>,
+    /// Full credential identity, compared with Account::same under the lock.
+    pub trusted_live: Option<Account>,
+    /// A fixed, redacted authorization refusal, naming only the profile.
+    pub identity_refusal: Option<String>,
+    /// Why `trusted_live` is empty: one of "Identity read causes".
+    pub identity_cause: Option<&'static str>,
+    /// Why each candidate skipped as `no account` had no trusted reading.
+    pub candidate_refusals: Vec<(ProfileName, &'static str)>,
     pub candidates: Vec<ProfileName>,
     pub skips: Vec<(ProfileName, Skip)>,
     pub sees_sessions: bool,
@@ -82,13 +89,8 @@ impl Snap {
         self.adopted_platform().or(self.platform())
     }
 
-    /// Plan logins not measured this cycle, each of which may have room:
-    /// those skipped as busy (a session running, leased, hosting or
-    /// parked), and `no account` profiles, whose `.claude.json` has no
-    /// usable `oauthAccount` but which are still plan profiles. The usage
-    /// history lists them all as unknown. Excluded, login-less and
-    /// non-OAuth profiles are not plan logins that could be used, and
-    /// overflow and API-key profiles never were (issue #1804).
+    /// Busy or identity-unreadable plan logins remain unknown capacity.
+    /// Excluded, login-less, non-OAuth and overflow profiles are not plan room.
     pub fn unmeasured_plan(&self) -> Vec<ProfileName> {
         self.skips
             .iter()
@@ -140,63 +142,9 @@ impl Snap {
     }
 }
 
-pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
-    let root = ctx.store.root();
-    let (live, proto) = identify::live(&ctx.store, &ctx.rs, &ctx.home)?;
-    let liveness = (ctx.scan)(root);
-    let sees_sessions = matches!(liveness, Liveness::Known(_));
-    let live_name = match &live {
-        LiveId::Known(n) => Some(n.clone()),
-        _ => None,
-    };
-    let config = effective(root).config;
-    let (overflow, ignored) = tiers_detail(&ctx.store, Some(&ctx.home));
-    let input = CandidateInput {
-        live: live_name.as_ref(),
-        exclude: config.exclude,
-        liveness,
-        auto_switch: state.load_ledger()?,
-    };
-    let (mut candidates, skips) = identify::candidates(&ctx.store, &input)?;
-    // Only the marked API-key profile the tier uses is ever a target: the
-    // others share its credential, and an unmarked one has no consent to
-    // per-token billing (issue #1804). None of them is probed or treated as
-    // a plan login, so a synthetic 0/0 never counts as plan room.
-    let kinds = kind::Ctx::load(&ctx.store, Some(&ctx.home));
-    let platforms = kinds.platform_profiles(&ctx.store);
-    let marked = overflow
-        .iter()
-        .find(|e| e.tier == PLATFORM_TIER)
-        .map(|e| &e.name);
-    let home_no_oauth =
-        identify::login_kind(&ctx.home.join(".claude").join(CREDS)) == LoginKind::NoOAuth;
-    // On an API-key profile, no other one is a target: they share one
-    // credential, so such a move would change nothing but the name.
-    let on_key = home_no_oauth && live_name.as_ref().is_some_and(|n| platforms.contains(n));
-    candidates.retain(|c| !platforms.contains(c) || (marked == Some(c) && !on_key));
-    let unmarked: Vec<ProfileName> = platforms
-        .into_iter()
-        .filter(|p| marked != Some(p) && !ignored.contains(p))
-        .collect();
-    let detected_mark = marked
-        .filter(|n| kinds.resolve_kind(&ctx.store, n).source != kind::KindSource::Override)
-        .cloned();
-    Ok(Snap {
-        account: Account::of_dir(&ctx.home).map(|a| a.key().to_string()),
-        candidate_accounts: super::revalidate::accounts(&ctx.store, &candidates),
-        live,
-        proto,
-        candidates,
-        skips,
-        sees_sessions,
-        overflow,
-        pin: pin::read(&ctx.rs),
-        ignored,
-        unmarked,
-        detected_mark,
-        home_no_oauth,
-    })
-}
+#[path = "observe_snapshot.rs"]
+mod take;
+pub use take::snapshot;
 
 pub fn live_name(id: &LiveId) -> Option<&ProfileName> {
     match id {
@@ -207,6 +155,21 @@ pub fn live_name(id: &LiveId) -> Option<&ProfileName> {
 
 /// The ALERT for a live login that cannot be used, if any.
 pub fn live_alert(snap: &Snap) -> Option<(&'static str, String)> {
+    if let Some(reason) = &snap.identity_refusal {
+        let kind = if reason.starts_with(super::swap_expect::ACCOUNT_MISMATCH) {
+            "account_mismatch"
+        } else {
+            "trusted-identity"
+        };
+        return Some((kind, format!("ALERT: swap refused: {reason}")));
+    }
+    if !snap.home_no_oauth && snap.trusted_live.is_none() && !matches!(snap.live, LiveId::NoLogin) {
+        let text = snap.identity_cause.map_or_else(
+            || super::login_identity::UNAVAILABLE.to_string(),
+            super::login_identity::unavailable_line,
+        );
+        return Some(("trusted-identity", format!("ALERT: {text}")));
+    }
     live_alert_for(&snap.live, snap.home_no_oauth)
 }
 
@@ -274,7 +237,16 @@ pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profile
         .filter(|c| Some(*c) != platform)
         .cloned()
         .collect();
-    let (probe, mut probes) = measure::measure_ordered(ctx, live, &to_probe, measured_at);
+    // Keep the existing usage reader's refresh opportunity for otherwise
+    // eligible OAuth logins. Their readings cannot enter this decision:
+    // a later cycle must first bind identity to the refreshed credentials.
+    let unbound: Vec<ProfileName> = snap
+        .skips
+        .iter()
+        .filter(|(_, reason)| matches!(reason, Skip::NoAccount))
+        .map(|(name, _)| name.clone())
+        .collect();
+    let (probe, mut probes) = measure::measure_ordered(ctx, live, &to_probe, &unbound, measured_at);
     if let Some(p) = platform.filter(|p| snap.candidates.contains(p)) {
         probes.push((p.clone(), Probed::platform()));
     }
@@ -351,6 +323,8 @@ pub(super) fn decide_measured(
         (_, tag) => tag,
     };
     let others = probes.iter().map(|(n, p)| (n.clone(), p.reading)).collect();
+    // `probed` is always `Some` here: `Room::of` treats `None` (test stubs
+    // only) as clean.
     Ok(Measurement {
         live: probe.reading,
         others,

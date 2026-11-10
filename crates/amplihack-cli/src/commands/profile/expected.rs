@@ -3,11 +3,13 @@
 //! `{"account": <key>, "org": <organization uuid or null>}`.
 //!
 //! The record is written only after an accepted `profile login`, an adopted
-//! login that no other profile holds or has recorded, or a swap that moved a
+//! login that no other profile holds or has recorded, a swap that moved a
 //! profile's own login back that no other profile holds or has recorded
-//! (see `rotate/swap_expect.rs`). Every `.claude.json` is compared against it,
-//! never the other way round, with [`Account::matches_record`]: one user in
-//! two organizations is two accounts. The file is read and written through
+//! (see `rotate/swap_expect.rs`), or a seed from one fresh reading (issue
+//! #1962, `rotate/seed.rs`), which never replaces a file. Every `.claude.json`
+//! is compared against it, never the other way round, with
+//! [`Account::matches_record`]: one user in two organizations is two accounts.
+//! The file is read and written through
 //! the state helpers, so it is atomic, private and never followed through a
 //! symlink. Anything doubtful about it, including a record without an
 //! `org` entry, reads as no record; only the swap guard says so, in one
@@ -48,6 +50,36 @@ pub fn record(state: &State, name: &ProfileName, account: &Account) -> Result<()
     }
     let body = serde_json::json!({ "account": key, "org": account.org() });
     state.write_sub_json(SUB, name.as_str(), &body)
+}
+
+/// What [`seed`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seeded {
+    /// The record was created.
+    Written,
+    /// A usable record was already there, and is unchanged.
+    Existing,
+}
+
+/// Issue #1962: records `account` for `name` only if the name is free, for a
+/// seed. Needs a uuid and an organization that are safe to store. A name taken
+/// meanwhile is read again: a usable record is [`Seeded::Existing`], and one
+/// that cannot be used is an error and stays for its owner to repair.
+pub fn seed(state: &State, name: &ProfileName, account: &Account) -> Result<Seeded, ProfileError> {
+    let cannot = |why: &str| ProfileError::AutoSwitchInvariant(format!("profile {name} {why}"));
+    let key = account.key();
+    let safe = account.has_uuid_and_org() && safe_account(key);
+    let Some(org) = account.org().filter(|o| safe && safe_account(o)) else {
+        return Err(cannot("has no account uuid and organization to record"));
+    };
+    let body = serde_json::json!({ "account": key, "org": org });
+    if state.create_sub_json(SUB, name.as_str(), &body)? {
+        return Ok(Seeded::Written);
+    }
+    match lookup(state, name) {
+        Ok(Some(_)) => Ok(Seeded::Existing),
+        _ => Err(cannot("has an unusable record")),
+    }
 }
 
 /// The account key recorded for `name`, or `None` when there is no usable

@@ -10,7 +10,8 @@
 //! opens a login file. Reads never refresh (so never write a login), start
 //! no process, and use no passive reading. An account read here is held in
 //! memory for the cycle only: `Account` has a redacted `Debug`, and nothing
-//! here writes or prints it.
+//! here writes or prints it. The one refresh of an expired live login is in
+//! `live_refresh`, apart from these reads.
 
 use super::identify::{Account, LoginKind, login_kind};
 use crate::commands::profile::auto_switch::kit::{CREDS, State};
@@ -27,24 +28,60 @@ pub const IDENTITY_READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// already started may run its full [`IDENTITY_READ_TIMEOUT`] past it.
 pub const IDENTITY_BUDGET: Duration = Duration::from_secs(30);
 
+/// Debug builds only: raises [`IDENTITY_BUDGET`] for tests on a loaded host
+/// (issue #1973; see `crate::debug_knob`). The name is outside
+/// `AMPLIHACK_ROTATE*`, which the daemon removes from its own environment.
+#[cfg(debug_assertions)]
+pub(crate) const BUDGET_ENV: &str = "AMPLIHACK_TEST_IDENTITY_BUDGET_SECS";
+/// Debug builds only: raises [`IDENTITY_READ_TIMEOUT`] for tests.
+#[cfg(debug_assertions)]
+pub(crate) const READ_TIMEOUT_ENV: &str = "AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS";
+
+/// The identity budget of a cycle: [`IDENTITY_BUDGET`], unless a debug
+/// build has the test knob set.
+#[cfg(debug_assertions)]
+pub fn identity_budget() -> Duration {
+    crate::debug_knob::secs(BUDGET_ENV, IDENTITY_BUDGET)
+}
+
+/// The time limit of one identity read: [`IDENTITY_READ_TIMEOUT`], unless a
+/// debug build has the test knob set.
+#[cfg(debug_assertions)]
+pub fn identity_read_timeout() -> Duration {
+    crate::debug_knob::secs(READ_TIMEOUT_ENV, IDENTITY_READ_TIMEOUT)
+}
+
+/// Release builds: always [`IDENTITY_BUDGET`].
+#[cfg(not(debug_assertions))]
+pub fn identity_budget() -> Duration {
+    IDENTITY_BUDGET
+}
+
+/// Release builds: always [`IDENTITY_READ_TIMEOUT`].
+#[cfg(not(debug_assertions))]
+pub fn identity_read_timeout() -> Duration {
+    IDENTITY_READ_TIMEOUT
+}
+
 /// Reads the account of the login in a directory (`<home>/.claude` or
 /// `<root>/<name>`); the error is one of `usage_direct::reason`.
 pub type ReadFn = fn(&Path) -> Result<Account, &'static str>;
 
 /// One identity read of the login in `creds_dir` against `ep`: one
-/// `GET /api/oauth/profile`, no refresh, at most [`IDENTITY_READ_TIMEOUT`].
+/// `GET /api/oauth/profile`, no refresh, at most [`identity_read_timeout`]
+/// ([`IDENTITY_READ_TIMEOUT`] unless a debug build sets the test knob).
 pub fn read_with(ep: &Endpoints, creds_dir: &Path) -> Result<Account, &'static str> {
     let now_ms = chrono::Utc::now().timestamp_millis();
-    usage_direct::account(ep, creds_dir, IDENTITY_READ_TIMEOUT, now_ms)
+    usage_direct::account(ep, creds_dir, identity_read_timeout(), now_ms)
 }
 
 /// The reader a new `Ctx` starts with: [`read_direct`], except in unit
-/// tests, where a cycle that a test did not give its own reader must never
-/// send a fixture's token anywhere; there it reads nothing and fails.
+/// tests, where only explicitly tagged task-owned fake identities are
+/// accepted by a local fixture reader and no token is sent anywhere.
 #[cfg(not(test))]
 pub const DEFAULT_READ: ReadFn = read_direct;
 #[cfg(test)]
-pub const DEFAULT_READ: ReadFn = |_| Err(usage_direct::reason::TRANSPORT);
+pub const DEFAULT_READ: ReadFn = super::tests::tests_fixture_identity::read;
 
 /// [`read_with`] against the endpoints the environment sets. Their
 /// warnings are dropped here: the cycle's measurement resolves the same
@@ -64,12 +101,13 @@ pub fn record_of(store: &ProfileStore, name: &ProfileName) -> Option<Record> {
 /// Why recovery cannot tell; profile lists are sorted by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Why {
-    /// `~/.claude` could not be read.
-    HomeFailed,
+    /// The read of `~/.claude` failed, for this cause.
+    Home(&'static str),
     /// `~/.claude` holds the same account as several profiles' own logins.
     Many(Vec<ProfileName>),
-    /// These profiles could not be read (empty: the profile list itself).
-    Unread(Vec<ProfileName>),
+    /// These profiles' reads failed, each for its cause (empty: the profile
+    /// list itself).
+    Unread(Vec<(ProfileName, &'static str)>),
     /// The cycle's read budget ran out.
     OutOfTime,
     /// The ledger's `swapped_at` is more than `SWAP_GRACE` in the future.
@@ -135,8 +173,9 @@ pub fn assess(
     budget: Duration,
 ) -> Finding {
     let start = Instant::now();
-    let Ok(here) = read(&home.join(".claude")) else {
-        return Finding::Unsure(Why::HomeFailed);
+    let here = match read(&home.join(".claude")) {
+        Ok(here) => here,
+        Err(cause) => return Finding::Unsure(Why::Home(cause)),
     };
     let live_record = record_of(store, live);
     if live_record.as_ref().is_some_and(|r| r.names(&here)) {
@@ -155,7 +194,7 @@ pub fn assess(
         match read(&dir) {
             Ok(a) if a.same(&here) => same.push(name),
             Ok(_) => {}
-            Err(_) => unread.push(name),
+            Err(cause) => unread.push((name, cause)),
         }
     }
     match same.as_slice() {

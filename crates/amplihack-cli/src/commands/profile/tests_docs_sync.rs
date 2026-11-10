@@ -783,9 +783,9 @@ const ISSUE_1886_LINES: &[&str] = &[
 
 /// The `<why>` texts of the cannot-tell note.
 const ISSUE_1886_WHY: &[&str] = &[
-    "~/.claude could not be read",
+    "~/.claude identity read failed: <cause>",
     "it holds the same account as more than one profile (<M1>, <M2>)",
-    "profile <P1>, <P2> could not be read",
+    "profile <P1> not read (<cause>), <P2> not read (<cause>)",
     "the reads ran out of time",
     "the last swap time is later than now",
     "it holds the same account as profile <M>, which is not the account recorded for <M>; run amplihack profile verify",
@@ -867,4 +867,123 @@ fn docs_describe_credential_identity_and_display_only_claude_json() {
     assert!(ROTATE_HOWTO.contains("### Hand-change notes and alerts"));
     assert!(ROTATE_HOWTO.contains("#### No profile answers the same"));
     assert!(ROTATE_HOWTO.contains("```bash\namplihack profile rotate\n```"));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2001: the Codex block of `profile usage`
+// ---------------------------------------------------------------------------
+
+const ENV_VARS: &str = include_str!("../../../../../docs/reference/amplihack-env-vars.md");
+
+#[test]
+fn every_codex_json_key_is_in_the_reference_key_table() {
+    use super::usage_codex::{json_rows, view};
+    use amplihack_utils::codex_capacity::{AccountResult, Outcome, Reading, Window, WindowName};
+    let mut r = Reading::default();
+    r.windows = vec![Window {
+        name: WindowName::Primary,
+        used_percent: Some(1.0),
+        window_minutes: Some(300),
+        resets_at: Some(1_794_001_200),
+    }];
+    let v = view(
+        std::path::PathBuf::from("/r"),
+        vec![AccountResult::new(
+            "a",
+            std::path::PathBuf::from("/r/a"),
+            Outcome::Ok(r),
+            1_793_992_140,
+        )],
+        20,
+    );
+    let row = serde_json::to_value(json_rows(&v)).unwrap()[0].clone();
+    let mut keys: Vec<String> = row.as_object().unwrap().keys().cloned().collect();
+    keys.extend(
+        row["windows"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| format!("windows[].{k}")),
+    );
+    for k in keys {
+        assert!(
+            REFERENCE.contains(&format!("| `{k}` |")),
+            "reference has no key-table row for Codex `{k}`"
+        );
+    }
+}
+
+#[test]
+fn the_codex_settings_are_documented_in_both_references() {
+    use amplihack_utils::codex_capacity::{BIN_ENV, ROOT_ENV, TIMEOUT_ENV};
+    for var in [ROOT_ENV, BIN_ENV, TIMEOUT_ENV] {
+        assert!(REFERENCE.contains(&format!("`{var}`")), "reference: {var}");
+        assert!(ENV_VARS.contains(&format!("`{var}`")), "env-vars: {var}");
+    }
+}
+
+/// Crusty round 3 on #2001: `--json` stays the bare array, because host
+/// scripts read it with `.[]` and `.[0]` and drop stderr. Every `--json | jq`
+/// example reads the array, and every Codex example reads `--summary-json`.
+#[test]
+fn the_docs_read_json_as_an_array_and_codex_from_summary_json() {
+    for (name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
+        for l in doc.lines() {
+            if l.contains("profile usage --json | jq") {
+                assert!(
+                    !l.contains(".claude[]") && !l.contains(".codex"),
+                    "{name}: a jq example reads `--json` as an object: {l}"
+                );
+            }
+            if l.contains(".codex[]") {
+                assert!(
+                    l.contains("profile usage --summary-json | jq"),
+                    "{name}: a Codex example does not read `--summary-json`: {l}"
+                );
+            }
+        }
+        assert!(!doc.contains(".claude[]"), "{name}");
+        assert!(!doc.contains("one break in that promise"), "{name}");
+    }
+}
+
+/// Crusty rounds 1 and 3 on #2001: the reference says `--json` has no Codex
+/// rows and why, the how-to's saved-file cron example says the file is the
+/// Claude array, and neither doc claims the `<- next` marker is
+/// `codex-pick`'s own choice (it reads session files; this view reads live).
+#[test]
+fn the_docs_keep_json_an_array_and_name_the_live_next_rule() {
+    let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (reference, howto) = (flat(REFERENCE), flat(HOWTO));
+    assert!(reference.contains("`--json` prints one JSON array of Claude profile rows"));
+    assert!(reference.contains("`--json` has no Codex rows, and does not read Codex at all."));
+    assert!(reference.contains("Keys are only ever added, never renamed or removed"));
+    let cron = howto
+        .find("profile usage --json > /tmp/claude-usage.json")
+        .expect("howto cron example");
+    assert!(howto[cron..].contains("The saved file is the array of Claude rows"));
+    for (name, doc) in [("reference", &reference), ("howto", &howto)] {
+        assert!(!doc.contains("`codex-pick` would choose"), "{name}");
+    }
+    assert!(reference.contains("refreshing the account's login"));
+}
+
+#[test]
+fn the_reference_quotes_the_codex_texts_the_code_prints() {
+    for text in [
+        "Codex accounts under ",
+        "Codex: no accounts under ",
+        "codex binary not found: ",
+        "unexpected response from codex app-server",
+        "codex usage read is supported only on Unix",
+        "codex account authentication required to read rate limits",
+        "<- next",
+        "no windows reported",
+        "warning: AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS=\"0\" is not a whole number from 1 to 300; using 20",
+    ] {
+        assert!(
+            REFERENCE.contains(text),
+            "reference does not quote {text:?}"
+        );
+    }
 }

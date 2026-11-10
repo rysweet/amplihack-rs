@@ -1,3 +1,10 @@
+---
+title: How to Rotate Claude Logins Automatically
+description: Rotate and switch Claude logins with credential-bound ownership checks.
+doc_type: howto
+review_schedule: as-needed
+---
+
 # How to Rotate Claude Logins Automatically
 
 `amplihack profile rotate` keeps the default Claude login in `~/.claude` on
@@ -13,6 +20,13 @@ profiles. [Auto-switch](claude-profiles.md#switch-accounts-automatically) is
 the separate feature that swaps logins inside sessions started with
 `amplihack claude --profile`. Both use the same on/off toggle and the same
 state lock, so they never move logins at the same time.
+
+Rotation and manual switching identify each login from trusted evidence
+bound to that login. Running sessions can rewrite `~/.claude.json`; its
+`oauthAccount` is display state and cannot establish ownership. A stale
+session account does not block an otherwise authorized swap or trigger
+recovery, even after the recovery grace period ends. See
+[Rotation login identity](../reference/profile-command.md#rotation-login-identity).
 
 The exact flags, files, exit codes and log lines are in the
 [`profile rotate` reference](../reference/profile-command.md#rotate).
@@ -94,9 +108,9 @@ would swap work->spare live s=88% w=41% target s=0% w=12% reason=threshold
 ```
 
 A dry run probes every profile and prints what it would do. It takes no lock,
-writes no rotate state, moves nothing and logs nothing. A direct read may
-still refresh a login's OAuth token that is close to expiry, which Claude
-saves under its own lock. It also does not finish an
+writes no rotate state, moves nothing and logs nothing. It never refreshes a
+token or starts `claude`, so an expired login shows as unmeasured with its
+cause, and the target can differ from a real run's. It also does not finish an
 interrupted swap: if one is pending it prints
 `would recover an interrupted swap (phase <phase>)` and leaves it for the next
 real run. Run a dry run first, and again whenever you change a threshold.
@@ -150,9 +164,10 @@ Rotation held on spare until `amplihack profile switch --none`.
 `switch` makes the same swap the rotator makes, under the same lock, and
 writes the same ledger entry, so `profile usage` and `rotate status` show
 `spare` as live afterwards. The move works whether or not a rotator is
-running (waking stopped sessions does not; see below), and it measures
-nothing, so it starts no `claude` process and works with no `claude` on
-`PATH`. It moves the login even when `spare` has no capacity
+running (waking stopped sessions does not; see below), and it does not
+measure usage, so it starts no `claude` process and works with no `claude` on
+`PATH`. It does make the bounded identity reads needed to authorize the
+swap. It moves the login even when `spare` has no capacity
 left: you asked for `spare`, so the usage checks that stop a rotate swap do
 not apply.
 
@@ -172,21 +187,13 @@ It also does three more things:
 
   `amplihack profile rotate` prints the same line and exits 0, and
   `rotate status` shows `hold: spare`.
-- **Wakes sessions stopped by a usage limit.** `switch` records the swap in
-  the rotator's ledger as a cycle with capacity, measured at the moment of
-  the switch. The
-  [limit-resume hook](#resume-sessions-stopped-by-a-usage-limit) resumes
-  sessions that stopped on a limit before the switch on its next ledger
-  read (every 15 seconds in the first hour of a session's wait, every 5
-  minutes after), as it does after a rotator swap. The held cycles that
-  follow keep that record, so the hold does not undo it.
-
-  The hook needs a running rotator. With none running, it exits
-  `rotator-down` when the limit hits and never reads the ledger, so a later
-  `switch` wakes nothing; resume those sessions by hand. To have switches
-  wake them, keep a rotator running with
-  [`amplihack profile rotate start`](#run-rotation-in-the-background)
-  before the limit hits.
+- **Does not wake sessions stopped by a usage limit.** `switch` writes no
+  [swap record](#the-swap-record), so the
+  [limit-resume hook](#resume-sessions-stopped-by-a-usage-limit) keeps
+  waiting. Continue those sessions yourself (Esc, Ctrl+U, `continue`,
+  Enter). A recipe step waiting in the
+  [usage-limit wait](../reference/profile-command.md#usage-limit-wait) still
+  counts the switch as capacity and reruns.
 
 If no profile owned the login in `~/.claude`, `switch` first keeps it as
 `default-original` (or the next free name), as the rotator does, and the
@@ -214,12 +221,11 @@ swap, by the usual [rules](#when-a-swap-happens). Run
 
 ### What the hold changes
 
-- **A limit hit after the switch waits.** A session that stops on a limit
-  on the login you switched to is not resumed by that switch, because the
-  switch is older than the limit, and the held cycles measure nothing. It is
-  resumed by your next `switch`, by a `switch --none` followed by a rotator
-  cycle that finds capacity, or when its limit resets. To resume it yourself,
-  type `continue` in the session.
+- **Limit-stopped sessions wait.** The held cycles swap nothing, so they
+  write no swap record and the limit-resume hook resumes nothing while the
+  hold is in force. After `switch --none`, the next rotator swap to a login
+  with room resumes them. To resume a session yourself, press Esc, clear the
+  input box with Ctrl+U, type `continue` and press Enter.
 - **The hold beats every rule that picks a target.** The cycle checks the
   hold before it measures or chooses a profile. The hold is its own file, so
   `.default` can stay unset for features that ask for that; `switch --none`
@@ -283,7 +289,7 @@ then refuses. Without a pending recovery, a refusal changes nothing but
 | `profile spare is not a rotate candidate (session running): ...` | A running session uses `spare` (`CLAUDE_CONFIG_DIR` set to its directory). Moving its login would log that session out. End it, then switch; `spare` is already the default for new launches. If the message says running sessions cannot be seen, `/proc` cannot be scanned here (every system but Linux, including macOS), so no login can be moved; the rotator cannot swap there either. `switch` there only sets the default for new launches and exits 1. |
 | `profile spare is not a rotate candidate (leased): ...`, `(hosting)`, `(parked)` | Auto-switch has lent `spare`'s login to another session, or `spare`'s directory holds another account's login. Wait for that session to end; auto-switch then returns the logins. |
 | `profile spare is not a rotate candidate (excluded): ...` | `spare` is in the auto-switch exclude list, which keeps it out of rotation; a switch is a rotation done by hand. Set the list without it with `amplihack profile auto-switch exclude`, then switch. |
-| `profile spare is not a rotate candidate (no account): ...` | `spare/.claude.json` has no `oauthAccount`, so `~/.claude.json` could not be updated. Run `amplihack profile login spare`. |
+| `profile spare is not a rotate candidate (no account): ...` | The login has no usable trusted account evidence. Resolve the identity-read failure; editing `oauthAccount` cannot authorize the switch. |
 | `profile spare is not a rotate candidate (directory refused): ...` | The `spare` directory is a symlink, not yours, or open to group or other users. Run `chmod 700` on it, or recreate it if it is not yours. While it is refused, the rotator does not move onto overflow profiles; see [When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured). |
 | `profile spare is not a rotate candidate (no login): ...` | `spare`'s `.credentials.json` is a symlink, not yours, readable by others or hard-linked. See [Swap refused](#swap-refused). |
 | Any reason in the [Swap refused](#swap-refused) table | As described there. |
@@ -924,9 +930,12 @@ line shows the figures as usual. To see why a login fell back, run
 
 The direct read may refresh a candidate's expired token, under Claude's own
 refresh lock, and write the new token back to that profile's
-`.credentials.json`. It never refreshes the login in `~/.claude` or a login
-lent to or from another directory; `claude` does that itself. The details
-are in the [reference](../reference/profile-command.md#token-refresh).
+`.credentials.json`. It never refreshes a login lent to or from another
+directory; `claude` does that itself. The login in `~/.claude` is refreshed
+once per cycle only when its token has already expired, so that its
+[identity can be read](../reference/profile-command.md#an-expired-live-login).
+The details are in the
+[reference](../reference/profile-command.md#token-refresh).
 
 ### Readings that take longer than a cycle
 
@@ -1042,7 +1051,8 @@ The same ALERT is written to the log once. It is written again only after
 something changes: a swap succeeds, a cycle needs no swap, or the reason
 changes. The one-shot `rotate` still prints it on every run. The ALERTs for a
 [manual `/login` in `~/.claude`](#after-a-manual-login-in-claude), their `fix`
-lines, the `has no login anywhere` line and the
+lines, refusals caused by missing or conflicting trusted identity, the
+`has no login anywhere` line and the
 [exhausted-while-off](#see-who-turned-rotation-off) ALERT are the exception:
 they are written on every cycle until the problem is resolved. The log
 holds profile names, percentages, fixed text and, in `recovered:` and `fix`
@@ -1054,11 +1064,11 @@ account IDs, e-mail addresses, tokens or Claude's output.
 
 These lines come from the check for a
 [manual `/login` in `~/.claude`](#after-a-manual-login-in-claude). The
-rotator reads the usage endpoint with the login in `~/.claude` and with each
-profile's own login, and compares the times at which their windows reset.
-It never uses `~/.claude.json` for this; that file is shown for display
-only. The check does not run, and writes nothing, for 10 minutes after a
-swap (`SWAP_GRACE`, 600 seconds).
+rotator reads the OAuth profile endpoint with the login in `~/.claude` and
+with each profile's own login, and compares their account identities.
+Session JSON and usage reset times cannot establish ownership. Hand-change
+recovery does not run for 10 minutes after a swap (`SWAP_GRACE`, 600
+seconds); swap authorization still checks trusted identity during that time.
 
 To see only these lines:
 
@@ -1069,18 +1079,18 @@ grep -E ' (note: |recovered: |ALERT: (the account in ~/.claude |~/.claude holds 
 | Line | What it means | What to do |
 |------|---------------|------------|
 | `note: ~/.claude holds the same account as profile <M> (ledger names <L>); nothing moved, the next cycle reads again` | First of two readings. The cycle does not swap. | Nothing. The next cycle reads again. |
-| `note: cannot tell whose login is in ~/.claude (live=<L>): <why>; nothing moved` | A failed read, more than one match, or an account that is not the recorded one. The cycle carries on as usual. | Nothing, unless it persists; then see the `<why>`. |
+| `note: cannot tell whose login is in ~/.claude (live=<L>): <why>; nothing moved` | A failed read, more than one match, or an account that is not the recorded one. Required uncertain evidence blocks login movement and ledger relabeling. | Nothing, unless it persists; then see the `<why>`. |
 | `recovered: ~/.claude and <M> held the same account; kept ~/.claude, moved <M>'s copy to <path>; recorded <M> as live` | Two readings matched and `<L>` keeps its own login, so `<M>`'s copy was moved to a backup. | Nothing. |
 | `ALERT: ~/.claude holds the same account as profile <M> on two readings (ledger names <L>), but <L> has no login of its own, so recording <M> would leave <L> with no login anywhere; nothing moved, no swap` | The only-login rule refused. Both logins stay. | Follow `fix 1` or `fix 2`. |
 | `ALERT: the account in ~/.claude is not the one the ledger names (live=<L>); profile <M> holds the same account and has its own login; recovery refused: <reason>; no swap` | Two readings matched, but a check before the move failed. | Follow its `fix 1` line. |
-| `ALERT: the account in ~/.claude is not the one the ledger names (live=<L>); no swap` | A suspicion is open, so the cycle does not swap. Written once. | Nothing; it follows a note or ALERT above. |
+| `ALERT: the account in ~/.claude is not the one the ledger names (live=<L>); no swap` | A suspicion is open, so the cycle does not swap. The identity refusal remains visible on each affected cycle. | Nothing; it follows a note or ALERT above. |
 
 The `<why>` of a cannot-tell note is one of:
 
 | `<why>` | Usual cause |
 |---------|-------------|
-| `~/.claude could not be read` | An expired token (the check never refreshes one), a rate limit, or no network. It clears after the next refresh or swap. |
-| `profile <P1>, <P2> could not be read` | Those profiles' tokens have expired or were rate-limited. |
+| `~/.claude identity read failed: <cause>` | The lookup failed, and `<cause>` says why: for example `http 429` (wait), `http 401` (log in again), `token expired` (the refresh failed; see its `refresh:` line) or `directory not private` (see the [directory rule](../reference/profile-command.md#login-directory-rule)). All causes are in [Identity read causes](../reference/profile-command.md#identity-read-causes). |
+| `profile <P1> not read (<cause>), <P2> not read (<cause>)` | Those profiles' lookups failed, each for the cause shown. |
 | `it holds the same account as more than one profile (<M1>, <M2>)` | Those profiles hold the same account; keep it in one of them. |
 | `it holds the same account as profile <M>, which is not the account recorded for <M>; run amplihack profile verify` | `<M>`'s folder holds another profile's login. See [Check which account each folder holds](#check-which-account-each-folder-holds). |
 | `it holds an account other than the one recorded for <L>; run amplihack profile verify` | `~/.claude` holds an account no profile's own login holds, and not `<L>`'s. Usually a `/login` to a new account. See [Check which account each folder holds](#check-which-account-each-folder-holds). |
@@ -1088,18 +1098,22 @@ The `<why>` of a cannot-tell note is one of:
 | `the last swap time is later than now` | The clock went back. Recovery stays off until 10 minutes after the last swap time. |
 
 A note is written once and not again until its text changes, so a lasting
-cause writes one line, not one per cycle. ALERT and `fix` lines are written
-on every cycle while they hold. None of these lines holds a token, an
+cause writes one note, not one per cycle. When uncertainty blocks a
+required ownership check, its identity-refusal ALERT still repeats on
+every affected cycle. ALERT and `fix` lines are written on every cycle
+while they hold. None of these lines holds a token, an
 account ID or an e-mail address. The full rules are in
 [Rotate hand-change recovery](../reference/profile-command.md#rotate-hand-change-recovery).
 
 ## Resume sessions stopped by a usage limit
 
 A swap only helps a session that sends another request. A session that has
-already stopped with `You've hit your session limit` sits idle until someone
-types into it. amplihack's `limit-resume` hook restarts it: when a turn ends
-on a usage limit, the hook waits for the rotator to finish a cycle that leaves
-a login with capacity in `~/.claude`, then tells the session to continue.
+already stopped with `You've hit your session limit`, or sits in Claude
+Code's timed wait (`Usage limit reached · Continuing automatically at
+12:30am`), stays idle until someone types into it. amplihack's
+`limit-resume` hook restarts it: when a turn ends on a usage limit, the hook
+waits for the rotator to swap `~/.claude` to a login with room, then tells
+the session to continue on that login.
 
 You need:
 
@@ -1110,13 +1124,21 @@ You need:
   launch of Claude Code removes it, and an automatic re-stage after an
   upgrade warns and names `amplihack install`. Launches of copilot or codex
   do not check the `claude` version and leave the file as it is.
+- Linux. On any other system the hook cannot watch for the swap and ends as
+  `watch-lost` without resuming.
 - `amplihack install` run with this version of amplihack, which registers the
   hook in `~/.claude/settings.json`.
-- Auto-switch on and the rotator running:
+- Auto-switch on, and a rotator from this version running. A rotator started
+  before the upgrade never writes the swap record the hook waits for; restart
+  it:
   ```bash
   amplihack profile auto-switch on
+  amplihack profile rotate stop
   amplihack profile rotate start
   ```
+- For sessions in Claude Code's timed wait: the session runs inside tmux.
+  The hook types into the session's own pane; without tmux it can only use
+  the wake described below, which is not known to end the timed wait.
 
 Check that the hook is registered:
 
@@ -1145,33 +1167,159 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
 1. The turn ends with a usage-limit error, and Claude Code runs the hook in
    the background.
 2. If no rotator is running, the hook exits at once (`rotator-down`).
-   Otherwise it reads the rotator's ledger every 15 seconds. It waits for a
-   cycle that started measuring after the limit hit and ended `swapped` or
-   `stayed` with no ALERT, or for a
-   [`profile switch`](#switch-to-a-login-by-hand) made after the limit hit. After the first hour it reads the ledger
-   every 5 minutes instead. It stops waiting if you turn auto-switch off
-   (`disabled`), if you send a prompt in that session during the wait, for
-   example `continue` (`moved-on`), or if the session exits
-   (`session-gone`). Background task reports and `/usage` are not prompts
-   and do not stop it.
-3. When it sees one, the hook exits `2`, and the session gets this message
-   and starts a new turn:
-   ```
-   amplihack: the login rotator reports a login with capacity. Continue the task you were working on; if the usage limit is still in place, stop and wait.
-   ```
-4. If no such cycle comes within 7 days, the longest any usage limit lasts,
-   the hook exits quietly and the session stays stopped. So a session that
-   stops while every login is spent resumes when the first login resets,
-   even a weekly limit days away.
+3. The hook notes the session's tmux pane, if it has one. It takes the pane
+   from `$TMUX_PANE`, and only if `$TMUX` is also set and the pane's
+   terminal is the one Claude Code reads from, with Claude Code in the
+   foreground. The pane id stays in the hook's memory; it is never written
+   to disk.
+4. The hook notes the current swap record,
+   `<root>/.auto-switch.d/rotate/swap.json`, or that there is none. It
+   starts watching that directory, its own `resume/prompted/` directory and
+   the Claude Code process, then reads the swap record once more, so a swap
+   made while it was setting up is not missed.
+5. It waits. Nothing is read on a timer: the hook sleeps until one of these
+   happens:
+   - **The rotator writes a new swap record.** The hook reads it and
+     resumes the session if the record is newer than the stop and the new
+     login has room (see [The swap record](#the-swap-record)). Otherwise it
+     logs `swap-stale` or `swap-no-room` and keeps waiting.
+   - **You send a prompt in that session**, for example `continue`. The hook
+     ends as `moved-on`. Background task reports and `/usage` are not
+     prompts and do not wake it.
+   - **The session exits.** The hook ends as `session-gone`.
+   - **The watched directory goes away**, for example `rotate/` is deleted.
+     The hook ends as `watch-lost` and never resumes.
+   - **7 days pass**, the longest any usage limit lasts. The hook ends as
+     `no-capacity-timeout` and the session stays stopped.
+6. Before it resumes, the hook checks again that auto-switch is on
+   (otherwise `disabled`), that you have not sent a prompt (`moved-on`), and
+   that the pane still belongs to the session. It records the resume on disk
+   under its lock. Then it takes exactly one of two paths:
+   - **The session has a pane:** it types into it, as a person would, and
+     exits `0`. Outcome `resumed-keys`.
+   - **No pane** (not in tmux, or the pane check failed): it exits `2`, and
+     the session gets this message and starts a new turn. Outcome `resumed`.
+     ```
+     amplihack: the login rotator reports a login with capacity. Continue the task you were working on; if the usage limit is still in place, stop and wait.
+     ```
 
-Steps 1 and 3 depend on Claude Code running `StopFailure` instead of `Stop`
-for a limit stop and starting a turn when an `asyncRewake` hook exits `2`.
-Verified on Claude Code 2.1.307: a weekly-limit stop runs `StopFailure` with
-`error: "rate_limit"` and the limit text in `last_assistant_message`, and an
-`asyncRewake` exit `2` closes the limit menu and starts a new turn.
+The hook never does both. A session that got keys never also gets the exit
+`2` message, so it is never told to continue twice.
 
-The hook trusts the rotator's verdict. It never applies the thresholds itself
-and never reads a login.
+The hook trusts the rotator's reading. It never applies the thresholds
+itself and never reads a login, a credentials file or the transcript.
+
+### The swap record
+
+After each successful swap, and only then, the rotator writes
+`<root>/.auto-switch.d/rotate/swap.json` while it still holds its lock:
+
+```json
+{
+  "seq": 42,
+  "live_login": "spare",
+  "from_login": "work",
+  "swapped_at": 1762654215,
+  "reading": { "session": 12, "week": 31, "measured_at": 1762654190 }
+}
+```
+
+`reading` is the new login's usage as the rotator measured it in that cycle,
+rounded up to whole percent. The file holds only login names, numbers and
+times. A stay, an ALERT, a refused or failed swap, a
+[`profile switch`](#switch-to-a-login-by-hand) and an in-session auto-switch
+swap write nothing. A swap whose target reading was not a measured reading,
+or whose session or weekly figure is not a finite number, writes nothing
+either, so a missing figure is never recorded as 0%. The rotator logs
+`swap record not written: …` and the swap itself stands.
+
+A waiting hook resumes on a record only when all of these hold:
+
+- it differs from the record the hook noted when it started, or that noted
+  record is itself a swap made in those same two seconds;
+- `swapped_at` is after the stop, or in the hook's start second or the second
+  before it (times are whole seconds, and the hook starts a moment after the
+  stop);
+- `reading.session` and `reading.week` are both below 100.
+
+`reading.measured_at` may be before the stop. The rotator measures before it
+swaps, so a session that stops between the two stopped on the login being
+swapped away from, and the swap resumes it.
+
+A record written before the stop never resumes a session. So a session that
+stops on the login the rotator has just swapped to waits for the **next**
+swap: the login it stopped on is the one out of room.
+
+### The keys it sends
+
+For a session in a tmux pane the hook runs four separate commands, each
+waited on before the next:
+
+```bash
+tmux send-keys -t %17 Escape
+tmux send-keys -t %17 C-u
+tmux send-keys -t %17 -l continue
+tmux send-keys -t %17 Enter
+```
+
+- **Esc** leaves the timed wait or closes the limit menu. Claude Code
+  2.1.319's own text for the wait ends `· Esc to cancel`.
+- **Ctrl+U** clears the input box. Text shown dimmed there is Claude Code's
+  predicted next prompt, and Enter would send it.
+- **`continue`** is typed as literal text, then **Enter** sends it.
+
+Nothing else is ever sent. The hook never presses a digit, so it never picks
+a numbered menu option, and never types `/usage-credits` or
+`/rate-limit-options`, so it never buys extra usage or re-arms the wait.
+The keys go only to the pane the hook noted for this session, never to a
+pane found by name or pattern.
+
+Each key is a separate command so that tmux cannot read Esc and Ctrl+U as
+one Meta key. If a command fails, or the session exits part way through, the
+remaining keys are not sent and the hook logs `resume-keys-failed` with the
+number already sent. It does not fall back to the exit `2` wake. Finish by
+hand as in [Continue a session yourself](#continue-a-session-yourself).
+
+Typing `continue` is a prompt, so any other hook waiting for the same
+session ends as `moved-on`.
+
+### Why keys and not only the wake
+
+The exit `2` wake was verified on Claude Code 2.1.307 for the
+`What do you want to do?` limit menu: it closes the menu and starts a turn.
+It is not known to end the timed wait. The installed Claude Code 2.1.319
+binary shows the wait behind a feature flag, with these texts:
+
+```
+Usage limit reached · continuing automatically {when} · esc to cancel
+Continuing automatically {when} · Esc to cancel
+Usage limit reached again · …
+/usage-credits to continue now
+/rate-limit-options to re-arm
+```
+
+Esc is the way out the wait itself offers. Nothing in the binary shows that
+`StopFailure` runs when the wait starts, or that an `asyncRewake` exit `2`
+ends it. On 8–9 November 2026 five sessions sat in that wait for about an
+hour after a swap until a person pressed Esc and typed `continue`
+([#2085](https://github.com/rysweet/amplihack-rs/issues/2085)). So the hook
+types the keys whenever it has a pane, and uses the exit `2` wake only when
+it does not.
+
+### Check it on your host
+
+After upgrading, confirm both paths once:
+
+1. In tmux, let a session hit its limit and reach the timed wait. After the
+   rotator's next swap to a login with room, the session continues and
+   `resume.log` shows `outcome=resumed-keys keys_sent=4`.
+2. Outside tmux, the same sequence shows `outcome=resumed`, and the session
+   starts a new turn with the message above.
+
+If the timed wait does not end in step 1, report it on
+[#1932](https://github.com/rysweet/amplihack-rs/issues/1932) with the
+`resume.log` line and your `claude --version`, and continue the session by
+hand.
 
 ### See what it did
 
@@ -1182,58 +1330,103 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 ```
 
 ```
-2026-10-21T14:12:46Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed live=spare cycle=swapped
-2026-10-21T16:40:02Z resume session=3f9a1c2b7e04 event=a0c55e1f9d38 outcome=no-capacity-timeout live=work cycle=alerted
+2026-11-09T00:41:07Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=swap-no-room live=work cycle=stayed swap_seq=41 swap_live=third
+2026-11-09T00:43:12Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed-keys live=work cycle=stayed swap_seq=42 swap_live=spare pane=5b0e19c4a7d2 keys_sent=4
+2026-11-09T00:43:12Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=resumed live=work cycle=stayed swap_seq=42 swap_live=spare
 ```
 
-`no-capacity-timeout` usually means every login was at capacity, so the
-rotator wrote `ALERT: no profile has capacity`. `rotator-down` means the
-rotator was not running when the limit hit; start it with
-`amplihack profile rotate start`.
-`moved-on` means you sent a prompt in that session during the wait. The other outcomes are listed in the
+`rotator-down` means the rotator was not running when the limit hit; start
+it with `amplihack profile rotate start`. `no-capacity-timeout` means no
+swap to a login with room came within 7 days. `moved-on` means you sent a
+prompt in that session during the wait. `watch-lost` means the hook could
+not watch for swaps; the `detail` field names the reason. `pane` is a hash
+of the pane id, not the id. The other outcomes are listed in the
 [resume log reference](../reference/profile-command.md#resume-log).
 
 ### Why it cannot loop
 
-- **One resume per limit event.** A second hook run for the same session, the
-  same error text and the same live login logs `duplicate`. A limit after the
-  rotator swapped to another login is a new event.
+- **One record per swap.** Only a swap writes `swap.json`. Stays, ALERTs
+  and the passing of time never do, and the hook acts only when the file
+  changes.
+- **Newer than the stop.** The record must differ from the one the hook
+  noted at the stop and be measured after it, so an old record, or one
+  rewritten unchanged, resumes nothing.
+- **Room by a fresh reading.** A swap onto a login at 100% on either window
+  logs `swap-no-room` and resumes nothing.
+- **Recorded before acting.** The resume is on disk under the lock before
+  the first key or the exit `2`, so a resume cut short is never repeated.
+- **One resume per limit event.** A second hook run for the same session,
+  the same error text and the same live login logs `duplicate`. A limit
+  after the rotator swapped to another login is a new event.
 - **One wake per wait.** When two hooks wait for the same session, only the
-  first to see capacity wakes it; the other logs `duplicate`.
-- **A fresh cycle every time.** Each resume needs a rotator cycle recorded
-  after the limit hit, so one session resumes at most once per `--interval`.
-- **No resume without capacity.** When every login is at its limit the
-  rotator records an ALERT, and the hook does nothing.
+  first to act resumes it; the other logs `duplicate` or `moved-on`.
 - **At most 3 resumes per session in 24 hours.** After that it logs `cap`.
 
-If anything it needs cannot be read or written safely, it does not resume.
+If anything it needs cannot be read, watched or written safely, it does not
+resume.
+
+### Limits during a wait and after a resume
+
+The hook acts only when Claude Code runs it, on a `StopFailure` event with
+`error: "rate_limit"`. Every run it gets writes at least one line to
+`resume.log`, including `duplicate`. A limit stop with no line in
+`resume.log` is one for which Claude Code did not run the hook.
+
+- **A limit while a hook for the same session is waiting.** Claude Code
+  starts a second hook. Its event differs in the error text or the live
+  login, so it waits as well. The first to act resumes the session; the
+  other logs `duplicate` or `moved-on`.
+- **A limit just after a resume.** The same text on the same live login is
+  the same event: the hook logs `duplicate` and does not resume the session
+  again. A limit after the rotator swapped to another login is a new event,
+  and the hook waits for the next swap.
+- **A stop on one login, then a swap to another.** The swap's record wakes
+  the session once, and the log line reads `swap_live=<second login>`.
+
+### Continue a session yourself
+
+If the hook did not resume a session (no rotator, no swap, `watch-lost`,
+`resume-keys-failed`), continue it by hand:
+
+1. Press Esc.
+2. Check that the input box is empty. Text drawn dimmed is Claude Code's
+   predicted next prompt, not yours; clear it with Ctrl+U.
+3. Type `continue` and press Enter.
+
+Never pick a numbered option in the limit menu unless you mean it: some of
+them buy usage credits.
 
 ### Stop using the tmux nudger
 
 The hook replaces the tmux stopgap that watched panes and typed "please
 continue" into them (`~/.claude-profiles/.backups/limit-nudger.sh`). Once the
 hook is registered, stop the nudger so a session is not told to continue
-twice:
+twice. List the processes running the script:
 
 ```bash
-pkill -f limit-nudger.sh
+pgrep -af 'bash .*limit-nudger.sh'
 ```
 
-Newer Claude Code versions show a `What do you want to do?` menu at a limit.
-Whether the hook's wake gets past that menu has not been tested yet. If a
-session stays on the menu after `resume.log` shows `resumed`, press Esc and
-type `continue` yourself, or keep the nudger for that case. If you pick the
-menu's own "Wait here, then continue automatically" option, both it and this
-hook may continue the session: at most one extra short turn, bounded by the
-per-session cap.
+Each line is a pid followed by its command line. Check that the command line
+runs the script under `bash`, and is not an editor or `tail` that has the file
+open, then stop that pid only:
+
+```bash
+kill <pid>
+```
+
+If you pick the limit menu's own "Wait here, then continue automatically"
+option, both it and this hook may continue the session: at most one extra
+short turn, bounded by the per-session cap.
 
 ### Turn it off
 
 `amplihack profile auto-switch off` turns the hook off together with
-background rotation and auto-switch. With auto-switch off the hook exits at
-once, prints nothing, and reads only the saved root and the toggle. To keep rotation but not
-the resume, delete the `StopFailure` entry from `~/.claude/settings.json`.
-`amplihack install` adds it again.
+background rotation and auto-switch. A new limit then exits at once, prints
+nothing, and reads only the saved root and the toggle. A hook already
+waiting notices at the next swap record and ends as `disabled` without
+resuming. To keep rotation but not the resume, delete the `StopFailure`
+entry from `~/.claude/settings.json`. `amplihack install` adds it again.
 
 ## See how much capacity is left
 
@@ -1258,9 +1451,12 @@ full. The rows above the summary show which they are.
 The runway needs about six hours of history. Each rotator cycle and each
 `profile usage` run without profile names adds a line to
 `<root>/.auto-switch.d/usage-history.jsonl`. Until there is enough it reads
-`unknown`. The rate is per hour, worked out from between four and a half and
-six hours of history, and it starts from a line that read every login: a
-`profile usage` line, or a rotator line from a cycle that skipped none. A
+`unknown`. The rate is per hour and uses between four and a half and six
+hours of history. It is each login's net rise in weekly use, weighted by
+its [capacity weight](../reference/profile-command.md#capacity-weights).
+A dip of 10 points or less, such as a stale status-line figure, adds
+nothing. It starts from a `profile usage` line, or from a rotator line
+from a cycle that skipped none of the logins read now. A
 rotator cycle does not probe logins that are running a session, so while
 some are busy, run `amplihack profile usage` now and then (every few hours)
 to give the runway a starting point.
@@ -1269,7 +1465,7 @@ to give the runway a starting point.
 `capacity:` line from the rotator's last cycle, without probing anything.
 That cycle may have measured only some logins, so its `of N` can be smaller
 than in `profile usage`; the logins it skipped as busy, and any whose
-`.claude.json` has no usable `oauthAccount`, are counted in its `unknown`.
+login has no usable trusted identity, are counted in its `unknown`.
 When that cycle left logins out, the line does not use it for the runway:
 it shows the runway of the newest line that read every login, with that
 line's time (`runway ~14 h from the <time> entry (this cycle left out 2
@@ -1294,6 +1490,14 @@ When the `ALERT: no profile has capacity` line is written, the rotator has
 nowhere to move the login, so it stays put. With an
 [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted)
 marked, it moves there instead when the next plan reset is far enough away.
+
+If the live login still reads below 100% on both windows, the ALERT is
+advisory: the ledger keeps it in `advisory_alert`, `alert` stays `null`,
+and the cycle records `stayed`, so sessions stopped by a limit resume on
+that login. Once the live login reaches 100% or a spend limit, or its probe
+fails, is carried or is unknown in that cycle, the ALERT moves to `alert`
+and the cycle records `alerted`. See
+[Advisory alert](../reference/profile-command.md#rotate-advisory-alert).
 
 When some candidates could not be measured, the ALERT ends with a count,
 for example:
@@ -1632,9 +1836,11 @@ default: ryan-mistt-org (overflow; launches use it directly)
 `~/.claude` and its own probe in that run shows the session or all-models
 weekly limit reached, ends with `running on overflow: ryan-mistt-org`. A live overflow
 login that still has plan capacity is not on credits and gets no footer. While the
-rotator is on credits it reports capacity, so the no-capacity warning clears
-and the [limit-resume hook](#resume-sessions-stopped-by-a-usage-limit)
-resumes sessions stopped by a limit. Those sessions then run on credits.
+rotator is on credits it reports capacity, so the no-capacity warning clears.
+The [limit-resume hook](#resume-sessions-stopped-by-a-usage-limit) does not
+resume sessions onto it: the swap record shows the plan windows at 100%, so
+the hook logs `swap-no-room` and keeps waiting for a plan login with room.
+Recipe steps in the usage-limit wait do rerun, and then run on credits.
 
 ### When the credits run out
 
@@ -1800,21 +2006,18 @@ and believes whichever was updated more recently.
 
 ## Where a login with no profile goes
 
-If the login in `~/.claude` belongs to no profile and there is no ledger, the
-first swap keeps it by creating a profile for it called `default-original`
-(or `default-original-2`, and so on, if that name is taken) and moving the
-outgoing login there. Only the `oauthAccount` block from `~/.claude.json` is
-copied into the new profile's `.claude.json`. A dry run prints
+When trusted evidence establishes that no profile owns the login in
+`~/.claude` and no ledger assigns it, the first swap creates
+`default-original` (or the next free numbered name) and returns the
+outgoing login there. Its display account and any ownership record come
+from the trusted outgoing identity. A dry run prints
 `would adopt ~/.claude as default-original`.
 
-If the rotator is stopped after creating `default-original` but before
-copying the account into it, the profile is left empty and nothing has moved.
-The next swap does not recognise it and adopts the login again as
-`default-original-2`. Remove the empty one:
-
-```bash
-amplihack profile remove default-original --yes
-```
+Adoption requires a complete ownership check. An unreadable login or
+ownership record cannot prove that the login is unclaimed. If the check
+is incomplete, the command alerts and leaves logins and ledger identity
+unchanged. Session JSON cannot authorize adoption or let an empty profile
+claim the live login. See [Rotate live profile](../reference/profile-command.md#rotate-live-profile).
 
 ## Swap refused
 
@@ -1857,6 +2060,27 @@ Three situations write an ALERT instead of refusing:
 
 ### The live login is not the profile's account
 
+Both automatic rotation and `profile switch` check the outgoing login,
+incoming login, expected ownership records and duplicate claims before
+moving a login. They use credential-bound account evidence, including the
+organization, and recheck the evidence under the swap locks. A login that
+changes during a read must be read again successfully; a normal token
+refresh is accepted only after fresh evidence confirms the same account.
+
+If a required identity read fails, times out, lacks the fields needed for
+the ownership check, or conflicts with a record, the command reports an
+identity refusal and moves nothing. It also keeps the existing ledger identity. An unreadable
+duplicate candidate is uncertainty, not proof that no duplicate exists.
+Identity refusals remain visible on every affected attempt or cycle.
+
+For example, if `work`'s login is live while a running session writes
+`personal` into `~/.claude.json`, a switch to `spare` still succeeds when
+the trusted evidence and records authorize it. `spare` becomes live,
+`work`'s login returns to `work`, and the ledger identifies `spare`'s
+trusted account. Neither login is moved to rejection storage. A later
+session rewrite to `work` does not change that result, including after
+10 minutes have passed.
+
 amplihack records the account each profile is meant to hold when you run
 `amplihack profile login <name>` and the login is accepted. A swap that
 adopts a login into `default-original` records that profile too, and a
@@ -1876,10 +2100,9 @@ refused and nothing moves:
 2026-11-01T09:40:05Z ALERT: swap refused: the login in ~/.claude is not the account recorded for profile work
 ```
 
-The ALERT is written to the log once for `work`, not on every cycle, but
-every cycle refuses to swap until it is fixed. It names the profile and
-never the account. `amplihack profile switch` reports the same refusal and
-exits 1.
+The ALERT is written on every affected cycle until the conflict is fixed.
+It names the profile and a redacted reason, never the account or token. `amplihack profile switch` reports the same
+refusal and exits 1.
 
 This usually follows a `/login` in `~/.claude` to the wrong account, or a
 browser that signed Claude in to whichever account it already had. To fix
@@ -1897,64 +2120,61 @@ it, put the right login back in `~/.claude`:
    `<root>/work/.claude.json`, which still named the account before the
    `/login`, so the next swap back into `work` puts the right account in
    `~/.claude.json`. While the login is still wrong, the one-shot command
-   prints the refusal and exits 1. `--dry-run` does not run this check, so
-   it cannot confirm the fix.
+   prints the refusal and exits 1. A preview does not reserve the evidence
+   or authorize a later swap: the actual attempt validates it again.
 
 `amplihack profile login work` does not help here: `work` is the live
 profile, so `login` refuses it before Claude starts.
 
-If `work` is now meant to hold the other account, the record is out of date.
-Delete it, and the next cycle swaps as before. With the default profile
-root:
+If `work` is meant to hold a different account, reconcile the ownership
+record with that intended account before retrying. Use the supported
+[profile login](../reference/profile-command.md#login-check) flow when the
+profile is no longer live. Removing a record alone cannot prove ownership
+or authorize the next swap.
 
-```bash
-rm ~/.amplihack/claude-profiles/.auto-switch.d/expected/work.json
-```
+A missing record may be adopted or backfilled only when trusted evidence
+establishes ownership and no other profile claims the account. A record
+that exists but cannot be read or trusted blocks the affected operation;
+it is not treated as a missing record. Resolve the record's permissions or
+contents before retrying. Do not delete a record merely to bypass a conflict.
 
-If you saved another root, the file is under that root instead;
-`amplihack profile root` prints it.
-
-Profiles with no record are not checked. A profile created before this
-check existed has no record until one of two things happens: its next
-accepted `profile login`, or a swap away from it while the ledger shows the
-outgoing login came from that profile and no other profile holds that
-account.
-
-A record that exists but cannot be read (not valid JSON, no usable
-`account` or `org`, or not a private file) is also treated as no record, so the swap
-is not checked. The rotator then prints one line to stderr, which a
-background rotator appends to `rotate.err`:
-
-```
-warning: the recorded account for profile 'work' could not be read; the swap was not checked against it
-```
-
-Delete the file, as above, to stop the warning; the next accepted
-`profile login work` records the account again.
-
-The comparison is exact. A record written from a login that had an account
-UUID holds that UUID. If `~/.claude.json` later shows the same account by
-email only, with no UUID, the swap is still refused, even though the account
-is the right one. Run plain `claude` and `/login` to that account again, as
-in the steps above, so that `~/.claude.json` names the UUID once more. If
-that is not possible, delete the record instead.
+Supported legacy email-keyed records continue to match under the existing
+[record compatibility rules](../reference/profile-command.md#recorded-account).
+A UUID is not newly required for every legacy account. A UUID-keyed record
+still needs evidence sufficient to match that UUID and organization;
+a session's email-only `oauthAccount` neither satisfies nor invalidates it.
 
 ## Recovery
 
 A swap is two renames and an update to `~/.claude.json`, recorded in a
 journal before the first rename. If the rotator is killed part-way, the next
-`rotate`, `start` or cycle finishes the swap or undoes it before doing
-anything else. It decides by where the outgoing and incoming logins actually
-are, found by inode number, not by the step the journal last recorded. It
-only renames logins; it never deletes or overwrites one. It also removes the
-refresh locks it took, and only those, even when it then marks the journal
-`inconsistent`. A run with a different `HOME` (under `sudo` or `cron`) leaves
-the journal alone for the run with the right `HOME`. After that it checks for
-a [manual `/login` in `~/.claude`](#after-a-manual-login-in-claude) and
+`rotate`, `start` or cycle attempts recovery before doing anything else.
+The recorded inode placement determines whether to finish or undo the
+swap; the last recorded step is only a hint. Before further login movement
+or ledger settlement, recovery reconstructs fresh trusted login identity
+and applicable ownership-record evidence. It only renames logins; it never
+deletes or overwrites one.
+
+If required trusted evidence is unavailable, insufficient, changed or
+conflicting, recovery retains the unresolved journal, leaves login
+placement and ledger identity unchanged, and reports the identity refusal
+on each affected attempt. A retry requires fresh authorization; session
+JSON cannot supply it.
+
+Recovery safely releases only the refresh locks whose inodes match those
+it recorded, including when identity is uncertain or it marks a valid
+journal `inconsistent`. A lock with another inode, or one acquired but
+never recorded, is left alone. A run with a different `HOME` (under `sudo`
+or `cron`) leaves the journal and locks untouched for the correct `HOME`;
+an invalid journal cannot authorize cleanup either. See the
+[recovery reference](../reference/profile-command.md#rotate-recovery).
+After recovery completes, the cycle checks for a
+[manual `/login` in `~/.claude`](#after-a-manual-login-in-claude) and
 recovers from it where that is safe.
 
-When it cannot tell which way is safe, it marks the journal `inconsistent`,
-writes an ALERT, and stops swapping until you resolve it:
+When login placement is inconsistent or a directory fails its safety
+check, recovery marks the journal `inconsistent`, writes an ALERT, and
+stops swapping until you resolve it:
 
 ```
 error: rotate state is inconsistent: the login files are not where the journal expects
@@ -2023,8 +2243,9 @@ profile `ryan-mistt-org`, which also has its own login.
 
 #### Right after a swap
 
-For 10 minutes after a swap the rotator makes no identity read and writes
-nothing about it, whatever `~/.claude.json` says. In
+For 10 minutes after a swap the rotator skips hand-change recovery,
+whatever `~/.claude.json` says. Normal swap authorization still requires
+trusted identity evidence. In
 [#1886](https://github.com/rysweet/amplihack-rs/issues/1886) the rotator
 swapped from `rssourcelabs` to `hharkness`, and two minutes later a running
 session still had `rssourcelabs` in `~/.claude.json`. An earlier release took
@@ -2131,62 +2352,62 @@ Refusals, with the fix line written for each (`<dir>` is
 
 #### No profile answers the same
 
-When the login in `~/.claude` reads differently from every profile's own
-login, the rotator writes nothing and the ledger keeps naming
-`ryan-ryansweet`. This includes a `/login` to an account no profile has, and
-a `/login` as the account of a profile whose folder is empty: the credential
-gives no account data, so the rotator cannot tell either from
-`ryan-ryansweet`'s own login.
+A complete trusted scan that finds no duplicate does not by itself prove
+which profile owns the live login. The rotator retains the ledger's live
+profile and applies the expected-record and ownership checks before any
+swap. A credential-bound conflict alerts and moves nothing, even when
+`~/.claude.json` still names the expected account.
 
-The next swap then saves the login in `~/.claude` under `ryan-ryansweet`.
-It is refused only by the recorded-account check: when `ryan-ryansweet` has
-a [recorded account](../reference/profile-command.md#recorded-account) and
-`~/.claude.json` names a different account, the cycle writes
-`ALERT: swap refused: the login in ~/.claude is not the account recorded for profile ryan-ryansweet`
-and does not swap. When `ryan-ryansweet` has no record, or `~/.claude.json`
-still names its account, the swap goes ahead and files the other account's
-login under `ryan-ryansweet` with no line. Earlier releases wrote
-`no profile has that account; no swap` here; that line is gone. The other
-signal is the
-[duplicate-login warning](../reference/profile-command.md#duplicate-login-warning)
-from `profile usage`, which appears once two logins show the same account.
+If the live profile has no ownership record, only the existing adoption
+or backfill rules can establish ownership, using trusted login evidence.
+Session JSON cannot supply the missing proof. A cycle can also seed the
+live profile's record, and when it cannot it names the command to run; see
+[Record a profile that shows `no record`](#record-a-profile-that-shows-no-record)
+and [Recorded account](../reference/profile-command.md#recorded-account).
 
-If you ran `/login` in `~/.claude` as another account, set it right before
-the next swap. Close every `claude` session that uses `~/.claude`, then
-remove the ledger and log the replaced profile in again:
-
-```bash
-rm /home/you/.claude-profiles/.auto-switch.d/rotate/ledger.json
-amplihack profile login ryan-ryansweet
-```
-
-`profile login` can run at once, without a rotate cycle first. If it is
-refused because `ryan-ryansweet` is the live profile, `~/.claude.json` still
-names that profile's account: run plain `claude` without `/login`, quit it,
-remove the ledger again if a cycle has rewritten it, and repeat
-`profile login`. With no ledger, the next cycle finds the live profile as it
-does on a first run. If the account in `~/.claude` belongs to a profile with
-an empty folder, that cycle records it as live.
+A legacy ledger containing only the user UUID cannot prove which
+organization owns an unrecorded outgoing login. The existing ledger now
+retains sanitized full identity after an authorized swap or confirmed
+credential recovery; ordinary observations do not upgrade legacy keys.
+An interrupted swap retains both authorized identities in its journal,
+so recovery cannot substitute a different unrecorded incoming account or
+lose outgoing ownership after the ledger has advanced. Missing legacy
+evidence refuses conservatively. New journals also retain preflight lock
+ownership before final requests; recovery of `checking` moves no login.
 
 #### When the rotator cannot tell
 
-A failed read, a login with only a weekly window, a reading that reports
-other windows than a profile's, or a match with more than one profile gives
-a note and changes nothing; the cycle measures and swaps as usual:
+An unavailable identity endpoint, expired token, incomplete response,
+conflicting record, changed login, unreadable duplicate candidate or
+exhausted identity-read budget leaves the required evidence uncertain.
+The affected operation writes an actionable ALERT on each attempt and
+moves no login or ledger identity. The ALERT names the
+[cause](../reference/profile-command.md#identity-read-causes):
 
 ```
-2026-10-27T03:17:05Z note: cannot tell whose login is in ~/.claude (live=ryan-ryansweet): ~/.claude could not be read; nothing moved
+2026-11-05T09:27:02Z ALERT: trusted login identity unavailable: http 429
 ```
 
-The same note is not written again until it changes, so an expired token in
-`~/.claude` writes one line, not one per cycle. The other causes are listed
-under [Hand-change notes and alerts](#hand-change-notes-and-alerts).
+Follow the reported cause: wait for
+network or refresh failures to clear, and resolve genuine ownership
+conflicts before retrying. Editing session JSON does not resolve them.
 
-A cannot-tell finding also clears an open suspicion. If one cycle found
-`~/.claude` answering as `ryan-mistt-org` and the next gets a 429 or a
-timeout, the suspicion is dropped, the hand-change ALERT stops, and the
-two-readings count starts again: the next "same account" reading is a first
-reading, and a move needs a second one at least one interval later.
+An expired login in `~/.claude` is refreshed before any identity read, even
+when the ledger is unreadable or the lease view bars the live profile. The
+refresh proves nothing about the account: only the fresh reading after it can
+let a login move. With an unreadable ledger the cycle then stops, with no move
+and no record; see
+[Unreadable-ledger stop](../reference/profile-command.md#unreadable-ledger-stop).
+
+An otherwise eligible stored OAuth login still receives the usual usage
+read, which can refresh expired credentials. A reading started without
+trusted identity cannot select that login. A later cycle must validate
+the refreshed credentials and take a new usage reading before a swap.
+
+Recovery still requires two consistent readings on separate cycles.
+An uncertain intervening reading cannot count as confirmation: a later
+match starts the confirmation sequence again. The 600-second grace and
+the protection against moving a profile's only login remain in force.
 
 #### Check which account each folder holds
 
@@ -2206,48 +2427,105 @@ nnorth -> mmorrison@mistt.com: MISMATCH, recorded for mmorrison
 ```
 
 Here `nnorth`'s folder holds `mmorrison`'s login, as the 3 November misfire
-left it. To move each such login into the folder recorded for it:
-
-```bash
-amplihack profile verify --fix
-```
-
-```
-...
-backup: the moves and how to undo them are in /home/you/.claude-profiles/.rejected-logins/verify-20261103T120000Z/moves
-moved nnorth's login to mmorrison
-```
-
-`--fix` only moves a login into a folder that holds no login, never into the
-live profile's folder, and never moves `~/.claude`. Anything else it prints
-as `<profile>: not moved: <why>` and leaves for you. The `moves` file lists
-the `mv -n` command that undoes each move. Run `amplihack profile verify`
-again afterwards; it exits 0 once every folder holds its recorded account.
-The full rules are in
+left it. To correct a folder, run `amplihack profile login <name>` with the
+browser signed out of claude.ai or in a private window. Do not use the `--fix`
+flag until [#1960](https://github.com/rysweet/amplihack-rs/issues/1960) is
+closed. Run `amplihack profile verify` again afterwards; it exits 0 once every
+folder holds its recorded account. The full rules are in
 [profile verify](../reference/profile-command.md#profile-verify).
+
+#### Record a profile that shows `no record`
+
+Plain `verify` shows `no record` for a profile the rotator has no recorded
+account for. The rotator cannot swap away from a live profile until it has
+ownership evidence, and on a ledger written before login identities were kept
+it logs:
+
+```
+note: no record for live profile ryan-mistt-personal: the ledger has no login identity; nothing moved; run: amplihack profile seed-record ryan-mistt-personal
+```
+
+Do this once, in this order:
+
+1. Install the fixed build and restart the rotator. An older rotator running
+   beside a new record has not been tested.
+2. Read the dry run. It must name the live login and report no identity alert:
+
+   ```bash
+   amplihack profile rotate --dry-run
+   ```
+
+   If it reports `token expired`, wait for the rotator's next cycle, which
+   refreshes the live login, and run the dry run again. If it reports `http 429`,
+   wait a few minutes and run it again. Other causes are in
+   [Identity read causes](../reference/profile-command.md#identity-read-causes).
+
+3. Preview the record. This writes nothing:
+
+   ```bash
+   amplihack profile seed-record ryan-mistt-personal
+   ```
+
+   ```
+   ryan-mistt-personal -> you@example.com, organization 00000000-0000-0000-0000-000000000000: no record; nothing written; run with --write to record it
+   ```
+
+4. Check that this is the right account and organization. Then write it:
+
+   ```bash
+   amplihack profile seed-record ryan-mistt-personal --write
+   ```
+
+If step 3 refuses with
+`the ledger's older key is an e-mail, which cannot prove ownership`, this login
+cannot be seeded while the ledger names it. Stop the rotator, run
+`rm <root>/.auto-switch.d/rotate/ledger.json` and start it again. With no ledger,
+the next swap keeps this login under a new `default-original` profile, as
+[Rotate live profile](../reference/profile-command.md#rotate-live-profile)
+describes. Then run `amplihack profile login <name>` to give `<name>` a login of
+its own.
+
+The command moves no login and never overwrites a usable record. Two profiles
+that share an e-mail, such as `ryan-mistt-personal` and `ryan-mistt-org`, are
+told apart by account uuid and organization. If they cannot be, the command
+refuses, and a rotate cycle's alert names both.
+
+Step 4 matters most for a profile that isn't live: its folder name is the only
+link to its login, so a misfiled login could be recorded as correct. To remove a
+wrong record, run `rm <root>/.auto-switch.d/expected/<name>.json`. The full rules
+are in
+[profile seed-record](../reference/profile-command.md#profile-seed-record).
 
 #### Stuck `~/.claude.json`
 
-A `~/.claude.json` with no readable account still stops swaps, because a swap
-rewrites that file. For the first 5 minutes the cycle writes:
+A missing or stale `oauthAccount` cannot establish ownership or trigger
+recovery. The swap constructs display account details from trusted
+identity, preserving unrelated JSON fields and the existing file mode.
+If the display file cannot be safely read or updated, such as when it is
+not a JSON object or its permissions are unsafe, the swap can still
+refuse on that file-safety check before moving a login.
 
-```
-2026-10-27T03:17:05Z ALERT: the account in ~/.claude.json cannot be read (live=ryan-ryansweet); no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace ryan-ryansweet's login
-```
-
-From 5 minutes on it writes the stuck-file ALERT and two fixes:
-
-```
-2026-10-27T03:22:05Z ALERT: ~/.claude.json has had no account that can be read for 5 minutes or more (live=ryan-ryansweet): it has no oauthAccount block; no swap until it is fixed; do not /login in ~/.claude before the login there is set aside, it would replace ryan-ryansweet's login
-2026-10-27T03:22:05Z fix 1: run claude with no CLAUDE_CONFIG_DIR and without /login, then quit it; if /home/you/.claude.json then holds an account, the next cycle goes on
-2026-10-27T03:22:05Z fix 2: or give ryan-ryansweet its login back and start over: close every claude session that uses ~/.claude, then run: test ! -e /home/you/.claude-profiles/ryan-ryansweet/.credentials.json && mv -n /home/you/.claude/.credentials.json /home/you/.claude-profiles/ryan-ryansweet/ && rm /home/you/.claude-profiles/.auto-switch.d/rotate/ledger.json; then run claude with no CLAUDE_CONFIG_DIR and /login
-```
-
-Try `fix 1` first. `fix 2` puts the login back in the profile it belongs to
-before you log in to `~/.claude` again. The other things the file can be:
-missing, not valid JSON, not a JSON object, or an `oauthAccount` with no
-usable account id or e-mail. The reference lists each wording under
+Repair the reported file or permission problem and retry. Do not run
+`/login` or move a credential solely to repair a display account. See
 [Stuck `~/.claude.json`](../reference/profile-command.md#stuck-claudejson).
+
+
+Some recovery diagnostics retain their earlier display-file wording. These
+messages describe file safety or older retained guidance; they never make
+session account values proof of login ownership. A stale or missing
+`oauthAccount` alone does not trigger recovery. Resolve the actual reported
+file problem and trusted-identity refusal before following recovery guidance.
+The retained message grammar is:
+
+```text
+ALERT: the account in ~/.claude.json cannot be read (live=<L>); no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace <L>'s login
+ALERT: ~/.claude.json has had no account that can be read for 5 minutes or more (live=<L>): <problem>; no swap until it is fixed; do not /login in ~/.claude before the login there is set aside, it would replace <L>'s login
+fix 1: run claude with no CLAUDE_CONFIG_DIR and without /login, then quit it; if <home>/.claude.json then holds an account, the next cycle goes on
+fix 2: or give <L> its login back and start over: close every claude session that uses ~/.claude, then run: test ! -e <root>/<L>/.credentials.json && mv -n <home>/.claude/.credentials.json <root>/<L>/ && rm <ledger>; then run claude with no CLAUDE_CONFIG_DIR and /login
+```
+
+Older guidance can include `it has no oauthAccount block`. That display
+condition cannot establish which account the moving credential belongs to.
 
 #### See the current state
 
@@ -2299,7 +2577,7 @@ An amplihack older than
 `last_cycle.measured_at` field this version writes to `ledger.json`. Its
 rotator does not rewrite a ledger it cannot read, so it logs a failed cycle
 every interval and never swaps again, and the limit-resume hook waits its
-full 7 days for a cycle that does not come. Before you run the older binary,
+full 7 days for a swap record that does not come. Before you run the older binary,
 or launch anything with it while [autostart](#start-the-rotator-automatically)
 is on:
 
@@ -2637,15 +2915,26 @@ full rule is in
   remains between the check and the signal.
 - **Sessions keep their login until they reread it.** A running `claude` may
   keep using the outgoing account until it next reads its credentials.
-- **Resume needs the rotator and a fresh cycle.** Without a running rotator,
-  or when every login is at capacity, a session stopped by a limit is never
-  resumed. The resume waits for at most 7 days; a shorter `--interval`
-  resumes sooner. If you send a prompt in the session during the wait, the
-  hook stops without waking it (`moved-on`). A rotator started after the
+- **Resume needs a swap.** Without a running rotator from this version, or
+  when no login has room, a session stopped by a limit is never resumed: only
+  a swap record wakes the hook. A stay on a login that has room again, for
+  example after its session window reset, does not resume a session. The
+  hook waits for at most 7 days; a shorter `--interval` swaps, and so
+  resumes, sooner. If you send a prompt in the session during the wait, the
+  hook stops without resuming it (`moved-on`). A rotator started after the
   limit does not help that session: its hook already ended as
   `rotator-down`. A session is treated as exited when the hook's parent
-  process changes; if Claude Code runs the hook under a shell that outlives
+  process exits; if Claude Code runs the hook under a shell that outlives
   it, the hook waits out the 7 days.
+- **Keys need tmux; the wake may not end the timed wait.** The hook types
+  into a session's pane only inside tmux, and only when the pane's terminal
+  is the one Claude Code reads from with Claude Code in the foreground.
+  Without such a pane it falls back to the exit `2` wake, which is not known
+  to end Claude Code's timed wait. If the session exits in the instant
+  between two keys, at most one key reaches whatever then reads that pane.
+- **Resume is Linux only.** The hook watches for the swap record with
+  inotify and for the session's exit with a pidfd (kernel 5.3 or later).
+  Elsewhere, or when either cannot be set up, it ends as `watch-lost`.
 - **The ledger records the user, not the organization.** The rotate ledger
   is unchanged and names the account in `~/.claude` by user (or e-mail).
   If someone runs `/login` in `~/.claude` and signs in to the same user in
@@ -2681,7 +2970,8 @@ full rule is in
   rotator after upgrading: `amplihack profile rotate stop`, then
   `amplihack profile rotate start`.
 - **No early resume during a hold.** The limit-resume hook does not resume
-  sessions while a `switch` hold is in force, and the usage-limit wait reruns
+  sessions while a `switch` hold is in force, because held cycles write no
+  swap record, and the usage-limit wait reruns
   a step only when its limit resets; see
   [What the hold changes](#what-the-hold-changes).
 - **Each cycle starts `claude` once or twice per profile.** Each probe

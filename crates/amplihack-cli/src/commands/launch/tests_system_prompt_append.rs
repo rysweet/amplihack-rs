@@ -252,34 +252,41 @@ fn with_clean_home<T>(f: impl FnOnce(&Path) -> T) -> T {
 
 fn argv_for(extra: &[String]) -> Vec<String> {
     let binary = claude_binary();
-    build_command_for_dir(&binary, false, false, false, extra, None, false, None)
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect()
+    build_command_for_dir(
+        &binary,
+        false,
+        false,
+        false,
+        extra,
+        None,
+        false,
+        None,
+        Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+    )
+    .unwrap()
+    .get_args()
+    .map(|a| a.to_string_lossy().into_owned())
+    .collect()
 }
 
 #[test]
-fn emits_the_fragment_contents_not_its_path() {
-    // `claude --append-system-prompt` takes a PROMPT STRING.
-    // `--append-system-prompt-file` exists but is hidden from `--help`, so
-    // emitting it would hard-fail launches against CLI versions that predate
-    // it — unacceptable for a feature whose contract is that it never fails a
-    // launch. (`LauncherConfig::append_system_prompt` is the path-shaped
-    // sibling and correspondingly emits the -file form.)
+fn emits_the_contract_file_path_not_its_contents() {
+    // Issue #2030: the contract text in argv let one `pkill -f` end 34
+    // sessions. Only the path of the 0600 contract file is passed.
     let args = with_clean_home(|_| argv_for(&[]));
 
     let idx = args
         .iter()
-        .position(|a| a == "--append-system-prompt")
+        .position(|a| a == "--append-system-prompt-file")
         .unwrap_or_else(|| panic!("flag must be injected, got: {args:?}"));
-    let value = &args[idx + 1];
-    assert_eq!(
-        value, FRAGMENT,
-        "the flag value must be the compiled-in text"
+    assert_eq!(args[idx + 1], super::command::TEST_CONTRACT_PATH);
+    assert!(
+        !args.iter().any(|a| a == "--append-system-prompt"),
+        "the text flag is never emitted: {args:?}"
     );
     assert!(
-        !value.contains("SYSTEM_PROMPT_APPEND.md"),
-        "must not pass a path, got: {value:?}"
+        !args.iter().any(|a| a.contains(FRAGMENT.trim())),
+        "no contract text in argv: {args:?}"
     );
 }
 
@@ -291,7 +298,7 @@ fn the_flag_is_injected_before_the_users_own_arguments() {
 
     let flag = argv
         .iter()
-        .position(|a| a == "--append-system-prompt")
+        .position(|a| a == "--append-system-prompt-file")
         .expect("flag must be injected");
     let user = argv
         .iter()
@@ -314,9 +321,9 @@ fn an_empty_home_still_gets_the_fragment() {
     let argv = with_clean_home(|_| argv_for(&args(&["--verbose"])));
     let idx = argv
         .iter()
-        .position(|a| a == "--append-system-prompt")
+        .position(|a| a == "--append-system-prompt-file")
         .unwrap_or_else(|| panic!("the compiled-in fragment is always available: {argv:?}"));
-    assert_eq!(&argv[idx + 1], FRAGMENT);
+    assert_eq!(argv[idx + 1], super::command::TEST_CONTRACT_PATH);
     assert!(
         argv.iter().any(|a| a == "--verbose"),
         "the launch proceeds unchanged: {argv:?}"
@@ -324,16 +331,15 @@ fn an_empty_home_still_gets_the_fragment() {
 }
 
 #[test]
-fn the_compiled_in_fragment_is_not_empty_and_is_argv_sized() {
-    // Replaces the runtime size cap. The bytes are fixed at build time, so the
-    // question "could this fragment break a spawn with E2BIG?" is answerable
-    // once, here, instead of on every launch. 32 KiB was the old runtime cap
-    // and is far below any real ARG_MAX; the shipped file is ~1 KiB.
+fn the_compiled_in_fragment_is_usable_and_bounded() {
+    // The bytes are fixed at build time and written to the 0600 contract file
+    // at launch (issue #2030), never to argv. 32 KiB keeps the per-launch
+    // comparison and rewrite cheap; the shipped file is a few KiB.
     let fragment = installed_fragment().expect("the compiled-in fragment must be usable");
     assert!(!fragment.trim().is_empty());
     assert!(
         fragment.len() < 32 * 1024,
-        "the fragment goes into argv verbatim; got {} bytes",
+        "the contract file stays small; got {} bytes",
         fragment.len()
     );
     assert!(
@@ -350,10 +356,21 @@ fn copilot_launches_are_untouched_by_this_feature() {
             path: std::path::PathBuf::from("/usr/bin/copilot"),
             version: Some("1.0.0".to_string()),
         };
-        build_command_for_dir(&binary, false, false, false, &[], None, false, None)
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
+        build_command_for_dir(
+            &binary,
+            false,
+            false,
+            false,
+            &[],
+            None,
+            false,
+            None,
+            Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        )
+        .unwrap()
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
     });
     assert!(
         !argv.iter().any(|a| a.starts_with("--append-system-prompt")),

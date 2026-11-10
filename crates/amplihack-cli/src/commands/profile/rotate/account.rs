@@ -1,9 +1,9 @@
 //! An account: as `.claude.json` files name it (moved from `identify`, which
 //! re-exports it), or as the OAuth profile endpoint reports it for a token
 //! ([`Account::from_profile`]). Issue #1886: hand-change recovery and
-//! `profile verify` decide whose login a folder holds only from the server's
-//! answer, never from `.claude.json`; the swap, duplicate and login checks,
-//! the adopt rules and display still read `.claude.json`.
+//! `profile verify` and rotation decide whose login a folder holds from the
+//! server answer. Rotation display repair uses that trusted identity.
+//! Standalone login and display callers retain their existing semantics.
 
 use super::ledger::safe_account;
 use crate::commands::profile::auto_switch::kit::read_claude_json;
@@ -38,8 +38,8 @@ impl Account {
 
     /// From an `oauthAccount` block itself (as saved by auto-switch). A
     /// value over 320 bytes, with control characters, empty or not a string
-    /// counts as missing; a block with neither a uuid nor an e-mail is no
-    /// account.
+    /// counts as missing, and so does an e-mail that fails [`email_value`];
+    /// a block with neither a uuid nor an e-mail is no account.
     pub fn from_block(block: &serde_json::Value) -> Option<Self> {
         let field = |k: &str| {
             block
@@ -51,14 +51,43 @@ impl Account {
         let a = Self {
             uuid: field("accountUuid"),
             org: field("organizationUuid"),
-            email: field("emailAddress").map(|e| e.to_lowercase()),
+            email: field("emailAddress").and_then(|e| email_value(&e)),
         };
         (a.uuid.is_some() || a.email.is_some()).then_some(a)
     }
 
+    /// Issue #1947: whether a stored block is a well-formed identity. The block
+    /// is a JSON object; each of `accountUuid`, `organizationUuid` and
+    /// `emailAddress` is absent or a string that passes [`safe_account`]; an
+    /// e-mail has exactly one `@` with text on both sides and no whitespace;
+    /// and an account ID or an e-mail is present. Other keys are ignored.
+    ///
+    /// The e-mail rule is [`email_value`], the same one the readers apply, so
+    /// every [`Account`] they produce yields a [`Self::block`] that passes
+    /// here: amplihack never writes a `login_identity` its loader refuses.
+    pub fn block_is_valid(block: &serde_json::Value) -> bool {
+        let Some(block) = block.as_object() else {
+            return false;
+        };
+        let field = |key: &str| match block.get(key) {
+            None => Some(None),
+            Some(serde_json::Value::String(v)) if safe_account(v) => Some(Some(v.as_str())),
+            Some(_) => None,
+        };
+        let (Some(uuid), Some(_), Some(email)) = (
+            field("accountUuid"),
+            field("organizationUuid"),
+            field("emailAddress"),
+        ) else {
+            return false;
+        };
+        email.is_none_or(|e| email_value(e).is_some()) && (uuid.is_some() || email.is_some())
+    }
+
     /// From an answer of the OAuth profile endpoint (issue #1886):
     /// `account.uuid`, `account.email` and `organization.uuid`, with the
-    /// same limits as [`Self::from_block`]. The server reports these for the
+    /// same limits as [`Self::from_block`], so a malformed e-mail from the
+    /// server counts as missing. The server reports these for the
     /// token it was sent, so unlike `.claude.json` they say whose login a
     /// credential file holds.
     pub fn from_profile(v: &serde_json::Value) -> Option<Self> {
@@ -72,7 +101,7 @@ impl Account {
         let a = Self {
             uuid: field("account", "uuid"),
             org: field("organization", "uuid"),
-            email: field("account", "email").map(|e| e.to_lowercase()),
+            email: field("account", "email").and_then(|e| email_value(&e)),
         };
         (a.uuid.is_some() || a.email.is_some()).then_some(a)
     }
@@ -81,6 +110,17 @@ impl Account {
     /// uuid. Never logged by the rotator.
     pub fn shown(&self) -> &str {
         self.email.as_deref().or(self.uuid.as_deref()).unwrap_or("")
+    }
+
+    /// Whether this names one account in one organization: only such an
+    /// account can be seeded as a record (issue #1962).
+    pub fn has_uuid_and_org(&self) -> bool {
+        self.uuid.is_some() && self.org.is_some()
+    }
+
+    /// The e-mail, when the server sent one that is safe to print.
+    pub fn email(&self) -> Option<&str> {
+        self.email.as_deref()
     }
 
     /// The account in `dir/.claude.json`.
@@ -100,6 +140,21 @@ impl Account {
             (None, None) => matches!((&self.email, &other.email), (Some(a), Some(b)) if a == b),
             _ => false,
         }
+    }
+
+    /// A display block derived only from trusted identity.
+    pub fn block(&self) -> serde_json::Value {
+        let mut b = serde_json::Map::new();
+        for (k, v) in [
+            ("accountUuid", &self.uuid),
+            ("organizationUuid", &self.org),
+            ("emailAddress", &self.email),
+        ] {
+            if let Some(v) = v {
+                b.insert(k.into(), v.clone().into());
+            }
+        }
+        b.into()
     }
 
     /// The value stored in the ledger: the uuid, else the e-mail.
@@ -145,4 +200,24 @@ impl Account {
 /// login is in `~/.claude` (#1886).
 pub fn home_readable(home: &Path) -> bool {
     Account::of_dir(home).is_some()
+}
+
+/// Issue #1947: the one e-mail rule, applied by [`Account::from_block`],
+/// [`Account::from_profile`] and [`Account::block_is_valid`]. The value is
+/// lower-cased, and both the original and the lower-cased form must pass
+/// [`safe_account`]: lower-casing can lengthen a string (`İ` is 2 bytes and
+/// becomes the 3-byte `i̇`), so a value at the 320-byte limit could otherwise
+/// be stored over it. The lower-cased form must also pass [`email_shape`].
+/// `None` means the e-mail is treated as missing.
+fn email_value(raw: &str) -> Option<String> {
+    let lower = raw.to_lowercase();
+    (safe_account(raw) && safe_account(&lower) && email_shape(&lower)).then_some(lower)
+}
+
+/// Exactly one `@` with text on both sides, and no whitespace.
+fn email_shape(v: &str) -> bool {
+    !v.chars().any(char::is_whitespace)
+        && v.split_once('@').is_some_and(|(local, domain)| {
+            !local.is_empty() && !domain.is_empty() && !domain.contains('@')
+        })
 }

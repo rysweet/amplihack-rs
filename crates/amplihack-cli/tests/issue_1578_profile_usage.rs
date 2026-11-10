@@ -63,7 +63,7 @@ fn reset_text(t: i64) -> String {
 /// `/usage` path appends `S <p>` and `E <p>` around a 0.5 s sleep.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 p=$(basename "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
 case " $* " in
@@ -223,12 +223,24 @@ impl Fixture {
             .current_dir(&self.work)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env(
+                crate::isolated_amplihack::PROC_ROOT_ENV,
+                crate::isolated_amplihack::shared_empty_proc_root(),
+            )
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),
             )
             .env("HOME", &self.home)
+            // Issue #2001: never read a Codex account here.
+            // Outside HOME: the empty-root line names the root, and the
+            // output must not name HOME.
+            .env(
+                "CODEX_PROFILES_ROOT",
+                self.home.with_file_name("no-codex-profiles"),
+            )
+            .env("CODEX_BIN", self.home.join("no-codex"))
             .env("AMPLIHACK_CLAUDE_BINARY_PATH", self.tools.join("claude"))
             .env("RECORD_DIR", &self.records)
             .env("CANNED", &self.canned)
@@ -307,6 +319,8 @@ fn table_rows(stdout: &str) -> Vec<&str> {
     // The capacity summary (issue #1797) follows the table.
     lines
         .take_while(|l| !l.starts_with("weekly headroom "))
+        // The Codex block (issue #2001) is printed last.
+        .take_while(|l| !l.starts_with("Codex: ") && !l.starts_with("Codex accounts under "))
         .filter(|l| !l.starts_with(' ') && !l.is_empty())
         .filter(|l| !l.starts_with("times: ") && !l.starts_with("order: "))
         .collect()
@@ -763,11 +777,16 @@ fn setup_failures_exit_non_zero_before_probing() {
 fn no_profiles_prints_the_list_message_or_an_empty_array() {
     let f = Fixture::empty();
     let out = f.ok(&["profile", "usage"]);
+    let stdout = text(&out.stdout);
+    let first = stdout.lines().next().unwrap_or_default();
     assert_eq!(
-        text(&out.stdout).trim(),
-        "no profiles; create one with `amplihack profile add <name>`"
+        first, "no profiles; create one with `amplihack profile add <name>`",
+        "{stdout}"
     );
+    // Issue #2001: the Codex block follows, after one empty line.
+    assert!(stdout.contains("\n\nCodex: no accounts under "), "{stdout}");
     let out = f.ok(&["profile", "usage", "--json"]);
+    // Issue #2001 keeps `--json` the bare array, with no Codex rows.
     assert_eq!(text(&out.stdout).trim(), "[]");
 }
 

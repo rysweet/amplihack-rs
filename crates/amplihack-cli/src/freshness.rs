@@ -508,17 +508,7 @@ fn keep_installed(
 //
 // Framework assets are now bundled in the amplihack-rs source tree and
 // delivered via binary updates.  The upstream freshness check against
-// `rysweet/amplihack` is no longer performed.  The public functions below
-// are kept as no-ops so that callers in `commands::install` continue to
-// compile without changes during the transition period.
-
-/// No-op.  Upstream SHA tracking is no longer used (issue #254).
-pub fn record_framework_installed_sha(_sha: &str) {}
-
-/// Always returns `None`.  Upstream SHA fetching is no longer used (#254).
-pub fn current_framework_remote_sha() -> Option<String> {
-    None
-}
+// `rysweet/amplihack` is no longer performed.
 
 /// Always returns `false`.  Framework freshness is now tied to the
 /// amplihack-rs binary version, not legacy upstream commits.

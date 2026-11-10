@@ -9,8 +9,8 @@
 
 #![cfg(unix)]
 
-use crate::issue_1618_fixture::{Fixture, claude_stdout, describe, events};
-use std::time::{Duration, Instant};
+use crate::issue_1618_fixture::{Fixture, WAIT_PREFIX, claude_stdout, describe, events};
+use std::fs;
 
 #[test]
 fn ac4_a_zero_maximum_waits_zero_seconds_and_retries_once() {
@@ -104,12 +104,26 @@ fn a_zero_step_timeout_does_not_bound_the_wait() {
 fn ac5_a_login_moved_into_place_during_the_wait_ends_it() {
     let f = Fixture::new();
     let mut c = f.step();
-    // 100x: a 30 s virtual poll is 0.3 s real, the 1920 s wait 19.2 s real.
-    // The credentials file appears 1 s (real) after the first attempt.
-    c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "100")
-        .env("CHANGE_LOGIN_AFTER", "1");
-    let started = Instant::now();
-    let out = f.run(&mut c);
+    // Issue #1973: the test moves the login into place itself, once the
+    // wait's first `progress` line shows two polls have agreed on the old
+    // state, rather than a fixed second after the first attempt. 3x: a 30 s
+    // virtual poll is 10 s real, and the 1920 s wait 640 s real, so on a
+    // loaded host the wait cannot reach the reset before the change. The
+    // `end reason=login changed` event proves it ended at the change, not
+    // the reset (an elapsed-time check was removed). If the change never
+    // ends the wait, `run_watching` kills the step at the shared 10-minute
+    // ceiling; the scale does not bound a failing run.
+    c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "3");
+    let creds = f.config.join(".credentials.json");
+    let progress = format!("{WAIT_PREFIX}progress ");
+    let mut moved = false;
+    let out = f.run_watching(&mut c, |line| {
+        if !moved && line.starts_with(&progress) {
+            fs::write(&creds, "").expect("move a login into place");
+            moved = true;
+        }
+    });
+    assert!(moved, "the wait wrote no progress line: {}", describe(&out));
     assert!(out.status.success(), "{}", describe(&out));
     let ev = events(&out);
     assert_eq!(
@@ -118,10 +132,6 @@ fn ac5_a_login_moved_into_place_during_the_wait_ends_it() {
         "{ev:?}"
     );
     assert_eq!(f.count("0"), 2);
-    assert!(
-        started.elapsed() < Duration::from_secs(15),
-        "the wait should end at the login change, not the reset"
-    );
 }
 
 /// Issue #1743: a finished wait appends its real length to the ledger that

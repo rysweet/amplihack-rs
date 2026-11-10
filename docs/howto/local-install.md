@@ -9,7 +9,8 @@ Use `amplihack install --local <PATH>` when you want to install from a local che
 | Air-gapped machine | `amplihack install --local /mnt/usb/amplihack` (pre-install `recipe-runner-rs`, see below) |
 | Testing a dev branch | `amplihack install --local ~/src/amplihack-dev` |
 | CI pipeline (pre-cloned) | `amplihack install --local $GITHUB_WORKSPACE` |
-| Normal first install | `amplihack install` (no flag, uses bundled assets) |
+| Normal first install | `amplihack install` (no flag; uses a same-version local source or fetches the release tag) |
+| Staging a tree whose version differs from the binary | `amplihack install --local ~/src/amplihack-rs` |
 
 ## Steps
 
@@ -57,7 +58,18 @@ That local-checkout path is also the way to use the wrapper on platforms without
 published release archives yet, because the fallback build needs the Rust
 workspace and a local Rust toolchain.
 
-The `--local` flag explicitly specifies the framework source directory. Since issue #254, `amplihack install` (without `--local`) uses bundled framework assets from the amplihack-rs source tree instead of downloading from GitHub. The `--local` flag is still useful for testing a development branch or using a custom framework checkout. All other phases (binary deployment, asset staging, hook wiring) run identically.
+The `--local` flag explicitly specifies the framework source directory. Without `--local`, `amplihack install` uses `AMPLIHACK_HOME` or the current checkout only when its version equals the binary's, refuses when it differs, and otherwise fetches the tag of the binary's release. See [Framework source selection](../reference/framework-source-selection.md). All other phases (binary deployment, asset staging, hook wiring) run identically.
+
+### Staging a tree with a different version
+
+`--local` is the only way to stage a tree whose version differs from the binary's, older or newer. Install prints both versions and a warning, then stages the tree:
+
+```text
+📦 Using framework source /home/alice/src/amplihack-old (v1.2.90, from --local)
+⚠️  This source is v1.2.90 but this binary is v1.2.99. Staging it because --local was given.
+```
+
+The stamp then records the binary's version, so self-heal leaves your choice in place. `--local` doesn't skip the [compatibility check](../reference/framework-bundle-compatibility.md).
 
 ### 3. Verify
 
@@ -101,3 +113,4 @@ cargo build --release
 
 - [Install amplihack for the First Time](./first-install.md) — standard network install
 - [amplihack install reference](../reference/install-command.md) — all flags
+- [Framework source selection](../reference/framework-source-selection.md) — how install chooses a source without `--local`

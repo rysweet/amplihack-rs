@@ -112,7 +112,15 @@ if __name__ == "__main__":
 
 ## Data Storage
 
-The hook system creates and manages several directories:
+The native `amplihack-hooks` binary does not write its metrics, transcripts or
+session state into the project. It uses the hook state root,
+`${AMPLIHACK_HOME:-~/.amplihack}/runtime/`, with one directory per session; for
+example, PostToolUse metrics go to
+`runtime/sessions/<session_key>/metrics/post_tool_use_metrics.jsonl`. See the
+[Hook State Root Reference](../../../../reference/hook-state-root.md).
+
+The legacy Python hook system described on this page creates and manages these
+directories:
 
 ```
 .claude/runtime/

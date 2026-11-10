@@ -51,7 +51,7 @@ set -uo pipefail
 
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 
-LOOP_NAME=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; VERDICT_FIELD=""
+LOOP_NAME=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; ALSO_CLEAN=""; VERDICT_FIELD=""
 REPO="."; REVIEW_DIR=""; STATE_DIR=""; TASK_FILE_IN=""; ROUND_CTX=(); BEFORE_ROUND=""; CTX_REFUSED=""; BUDGET_CTX=(); BEFORE_CTX=(); AD_PR=""
 
 # shellcheck disable=SC2034 # AD_PR is read by the sourced autodrive_escalate.sh
@@ -60,6 +60,7 @@ while [ $# -gt 0 ]; do
     --loop-name)     LOOP_NAME="${2:-}"; shift 2 ;;
     --round-recipe)  ROUND_RECIPE="${2:-}"; shift 2 ;;
     --clean-token)   CLEAN_TOKEN="${2:-}"; shift 2 ;;
+    --also-clean-token) ALSO_CLEAN="${2:-}"; shift 2 ;; # crusty loops pass MINOR_ONLY (#1979)
     --verdict-field) VERDICT_FIELD="${2:-}"; shift 2 ;;
     --repo)          REPO="${2:-}"; shift 2 ;;
     --review-dir)    REVIEW_DIR="${2:-}"; shift 2 ;;
@@ -230,14 +231,14 @@ while :; do
 
   echo "=== auto-drive loop '${LOOP_NAME}': ${ROUND_LABEL} ===" >&2
   T0=$SECONDS # the log is created under umask 077; the round runs with the caller's umask
-  ( umask "$CALLER_UMASK" && AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger round)" exec "$AMPLIHACK_BIN" recipe run "$ROUND_RECIPE_PATH" \
+  ( umask "$CALLER_UMASK" && AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger round)" AMPLIHACK_AUTODRIVE_STATE_DIR="$STATE_DIR" exec "$AMPLIHACK_BIN" recipe run "$ROUND_RECIPE_PATH" \
       --working-dir "$REPO" \
       -c "autodrive_round_record=${RECORD}" \
       -c "autodrive_round_label=${ROUND_LABEL}" \
       -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" \
       "${ROUND_CTX[@]}" -c "review_dir=${REVIEW_REAL}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
   ROUND_RC=$?; usage_add round "$T0"
-  tail -n 200 "$LOG" >&2 || true
+  tail -n 200 "$LOG" >&2 || true; orphan_stop "$ROUND_RC" "round ${ROUND_LABEL}" # exit 75 (#1976)
 
   if terminal_refusal "$ROUND_RC" "$LOG"; then
     echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from '${ROUND_RECIPE}' (#1327/#1332). Final: the guard is never retried into." >&2
@@ -253,24 +254,25 @@ while :; do
   [ -f "$RECORD" ] && RAW="$(cat "$RECORD")"
   ROUND_VERDICT="$(field "$RAW" "$VERDICT_FIELD" "MISSING")"
   case "$ROUND_VERDICT" in
-    "$CLEAN_TOKEN") ROUND_CLEAN="true" ;;
+    "$CLEAN_TOKEN"|"${ALSO_CLEAN:-$CLEAN_TOKEN}") ROUND_CLEAN="true" ;;
     MISSING) ROUND_CLEAN="false"
       echo "WARNING: ${ROUND_LABEL} produced no parseable '${VERDICT_FIELD}'; treated as NOT clean." >&2 ;;
     *) ROUND_CLEAN="false" ;;
   esac
   # Only A-Za-z0-9_ of the verdict reaches the evaluator, history and #1597 messages; a non-clean one that sanitises to the token ('CLEAN!') is tagged _NONCANONICAL so none of them reads it as clean.
   VERDICT_SAFE="$(printf '%s' "$ROUND_VERDICT" | LC_ALL=C tr -cd 'A-Za-z0-9_')"; [ "$ROUND_CLEAN" = "true" ] || [ "$VERDICT_SAFE" != "$TOKEN_SAFE" ] || VERDICT_SAFE="${VERDICT_SAFE}_NONCANONICAL"
+  # #1979: MINOR_ONLY stays MINOR_ONLY in the history and messages. Only the
+  # evaluator's loop_round_verdict, which its DONE rule compares with the clean token, reads it as clean.
+  EVAL_VERDICT="$VERDICT_SAFE"; [ "$ROUND_CLEAN" != "true" ] || EVAL_VERDICT="$TOKEN_SAFE"
   FINDINGS=""
   [ -f "${RECORD}.findings" ] && FINDINGS="$(cat "${RECORD}.findings")"
   # Stable path to the latest round record, so a later gate binds evidence to the round that made it.
   copy_private "$RECORD" "${STATE_DIR}/${LOOP_NAME}-latest.json"
   copy_private "${RECORD}.findings" "${STATE_DIR}/${LOOP_NAME}-latest.json.findings"
-  # Manifest of the round records THIS loop wrote (#1517): one row per round in
-  # <loop>-records.tsv (label, record name, git blob hash), written before any later
-  # agent runs, so no agent gets a row for a record it wrote. autodrive_crusty_final
-  # (autodrive_state.sh) and autodrive_qa_trusted (autodrive_trust.sh) trust a record
-  # only when the last row names it and the hash matches; git runs from the state dir,
-  # GIT_DIR/GIT_WORK_TREE unset, as autodrive_blob_hash does. A failed check: WARNING, no row.
+  # #1517: <loop>-records.tsv gets one row per round THIS loop wrote (label, record, git blob hash)
+  # before any later agent runs. autodrive_crusty_final and autodrive_qa_trusted trust a record only
+  # when the last row names it and the hash matches (git from the state dir, GIT_DIR/GIT_WORK_TREE
+  # unset, as autodrive_blob_hash). A failed check: WARNING, no row.
   if [ -f "$RECORD" ]; then
     MANIFEST_FILE="${RECORD##*/}"; MANIFEST_HASH=""
     case "$MANIFEST_FILE" in
@@ -321,10 +323,10 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
       -c "loop_test_signal_previous=${PREV_TEST}" \
       -c "loop_ci_signal=${CI_SIGNAL}" \
       -c "loop_ci_signal_previous=${PREV_CI}" \
-      -c "loop_clean_token=${TOKEN_SAFE}" -c "loop_round_verdict=${VERDICT_SAFE}" ) \
+      -c "loop_clean_token=${TOKEN_SAFE}" -c "loop_round_verdict=${EVAL_VERDICT}" ) \
       >"$HEALTH_LOG" 2>&1
   HEALTH_RC=$?; usage_add evaluator "$T0"
-  tail -n 120 "$HEALTH_LOG" >&2 || true
+  tail -n 120 "$HEALTH_LOG" >&2 || true; orphan_stop "$HEALTH_RC" "the loop-health evaluator for ${ROUND_LABEL}"
 
   if terminal_refusal "$HEALTH_RC" "$HEALTH_LOG"; then
     echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from loop-health-evaluator. Final; not retried." >&2
@@ -334,15 +336,13 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
   usage_limit_stop "$HEALTH_RC" "$HEALTH_LOG" "the loop-health evaluator failed on a Claude usage limit that no login lifted"
   check_review_dir loop-health-evaluator
 
-  # The evaluator's step-04 (its last step) prints one LOOP_HEALTH: marker and
-  # exits non-zero on STUCK. The runner's formatter (issue #1512) prints
-  #   `  ✓ step-04-enforce-loop-verdict[ (<name>)]: completed[ [<details>]]`
-  # then `    Output: LOOP_HEALTH: <verdict>`. Only the line straight after the
-  # LAST completed step-04 status line, with no status line after it, is
-  # trusted; its prefix is exactly `    Output: ` or none. Anything else is
-  # STUCK (docs/reference/auto-drive-to-merge.md#reading-the-loop-health-line). BSD awk and
-  # mawk safe. format_recipe_run_table (crates/amplihack-cli/src/commands/recipe/run/format.rs)
-  # owns the format; tests_autodrive_health_log.rs runs this awk over its output.
+  # The evaluator's last step prints one LOOP_HEALTH: marker, exiting non-zero on STUCK. The runner
+  # (#1512) prints `  ✓ step-04-enforce-loop-verdict[ (<name>)]: completed[ [<details>]]`, then
+  # `    Output: LOOP_HEALTH: <verdict>`. Only the line straight after the LAST completed step-04 status
+  # line, with no status line after it and prefix exactly `    Output: ` or none, is trusted; anything
+  # else is STUCK (docs/reference/auto-drive-to-merge.md#reading-the-loop-health-line). BSD awk and mawk
+  # safe. format_recipe_run_table (crates/amplihack-cli/src/commands/recipe/run/format.rs) owns the
+  # format; tests_autodrive_health_log.rs runs this awk over its output.
   LOOP_VERDICT="STUCK"
   if [ "$HEALTH_RC" -eq 0 ]; then
     HEALTH_READ="$(LC_ALL=C awk '

@@ -33,6 +33,7 @@
 
 use crate::support::profile_rotate::*;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -507,11 +508,13 @@ fn profile_usage_table_marks_overflow_and_running_on_overflow() {
 fn a_damaged_ledger_never_moves_onto_overflow() {
     let f = Fixture::new();
     all_plan_logins_out(&f);
-    f.ok(&["profile", "rotate", "--dry-run"]); // creates the state directory
+    f.ok(&["profile", "rotate", "--dry-run"]); // creates the parent state directory
     fs::create_dir_all(f.rotate_dir()).unwrap();
+    fs::set_permissions(f.rotate_dir(), fs::Permissions::from_mode(0o700)).unwrap();
+    // Version 0 is unsupported; unknown fields are accepted (#1659).
     private_file(
         &f.rotate_dir().join("ledger.json"),
-        "{\"version\":1,\"surprise\":1}",
+        "{\"version\":0,\"surprise\":1}",
     );
     let _ = f.run(&["profile", "rotate"]);
     assert_eq!(
@@ -520,6 +523,31 @@ fn a_damaged_ledger_never_moves_onto_overflow() {
         "fail closed on spend"
     );
     f.assert_each_login_once();
+}
+
+#[test]
+fn an_unknown_ledger_field_does_not_block_overflow() {
+    let f = Fixture::new();
+    all_plan_logins_out(&f);
+    f.ok(&["profile", "rotate", "--dry-run"]);
+    fs::create_dir_all(f.rotate_dir()).unwrap();
+    fs::set_permissions(f.rotate_dir(), fs::Permissions::from_mode(0o700)).unwrap();
+    private_file(
+        &f.rotate_dir().join("ledger.json"),
+        "{\"version\":1,\"surprise\":1}",
+    );
+    let out = f.ok(&["profile", "rotate"]);
+    let s = stdout(&out);
+    assert!(
+        s.contains("swap work->extra") && s.contains("reason=overflow-in"),
+        "{s}"
+    );
+    assert_eq!(ino(&f.home_login()), Some(f.extra_ino));
+    f.assert_each_login_once();
+    let ledger = f.ledger().unwrap();
+    assert_eq!(ledger["live"], "extra");
+    assert_eq!(ledger["last_cycle"]["outcome"], "swapped");
+    assert_eq!(ledger["last_cycle"]["overflow"], "in");
 }
 
 #[test]

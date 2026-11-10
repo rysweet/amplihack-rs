@@ -14,7 +14,6 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
 
 const SCHEMA_ORDER: &[&str] = &[
     "agent.binary",
@@ -210,24 +209,10 @@ fn write_secure(path: &Path, body: &str) {
 }
 
 /// Run with a hard 60 s bound so a FIFO or a prompt cannot hang the suite.
+/// Runs amplihack to completion under the shared 10-minute ceiling
+/// (issue #1973); a hang still fails, naming the command.
 fn run_bounded(mut c: Command) -> Output {
-    c.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = c.spawn().expect("failed to spawn amplihack");
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        if child.try_wait().unwrap().is_some() {
-            return child.wait_with_output().unwrap();
-        }
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let out = child.wait_with_output().unwrap();
-            panic!(
-                "amplihack did not exit within 60 s\nstderr:\n{}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    crate::support::wait::output_within("amplihack to exit", &mut c)
 }
 
 fn stdout(o: &Output) -> String {

@@ -2,7 +2,7 @@
 //! signal only a verified rotator. Also the ledger side of `profile
 //! overflow list` and `clear` (issue #1606).
 
-use super::daemon::{DaemonState, current_state, daemon_err, exe_name};
+use super::daemon::{DaemonState, current_state, daemon_err, exe_name, proc_root, running_on_host};
 use super::exhausted;
 use super::history;
 use super::identify::{self, LiveId};
@@ -79,7 +79,7 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
             .as_ref()
             .and_then(|l| l.live.clone())
             .unwrap_or_else(|| "-".into()),
-        Err(_) => "- (ledger unreadable)".into(),
+        Err(e) => super::handfix_msg::status_live_unreadable(super::ledger::refused_field(e)),
     };
     let ledger = ledger.ok().flatten();
     let last = match ledger.as_ref().and_then(|l| l.last_cycle.as_ref()) {
@@ -103,7 +103,7 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     let auto = super::autostart_line(store.root());
     // Issue #1803: read only under a private root; never echoes the marker.
     let exe = exe_name();
-    let owner = super::owner::describe(store.root(), Path::new("/proc"), exe.as_deref());
+    let owner = super::owner::describe(store.root(), &proc_root(), exe.as_deref());
     println!("rotate: {word}\n{auto}\n{owner}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
     // Issue #1797: from the usage history only; no probe and no `claude`.
     let (capacity, warnings) = history::capacity(store.root(), now());
@@ -211,8 +211,9 @@ pub fn stop(store: &ProfileStore, home: Option<&Path>) -> Result<(), ProfileErro
     Ok(())
 }
 
-/// Sends SIGTERM to `pid`, verified again after a pidfd pins it on Linux.
+/// SIGTERM to `pid`, verified on the real `/proc` (#2042) after a pidfd pins it on Linux.
 fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
+    let verified = || exe_name().is_some_and(|n| running_on_host(&rs.pid, pid, &n));
     let gone = || {
         daemon_err(format!(
             "the rotator (pid {pid}) changed before it was signalled"
@@ -220,16 +221,15 @@ fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
     };
     #[cfg(target_os = "linux")]
     {
-        use std::os::fd::{FromRawFd, OwnedFd};
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
         // SAFETY: pidfd_open takes a pid and flags and touches no memory.
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
         if fd >= 0 {
             // SAFETY: `fd` is a new descriptor owned by nothing else.
             let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
-            if current_state(rs) != DaemonState::Running(pid) {
+            if !verified() {
                 return Err(gone());
             }
-            use std::os::fd::AsRawFd;
             // SAFETY: a valid pidfd, a signal number, no siginfo and no flags.
             let rc = unsafe {
                 libc::syscall(
@@ -247,7 +247,7 @@ fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
             };
         }
     }
-    if current_state(rs) != DaemonState::Running(pid) {
+    if !verified() {
         return Err(gone());
     }
     let pid = libc::pid_t::try_from(pid).map_err(|_| gone())?;

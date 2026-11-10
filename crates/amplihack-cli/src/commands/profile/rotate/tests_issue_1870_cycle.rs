@@ -90,7 +90,9 @@ fn a_regression_an_old_reading_is_read_again_and_the_full_login_is_not_chosen() 
     let mut c = ctx(&e, measure_a, Some(reread_a));
     let got = run_cycle(&mut c, Mode::Watch).unwrap();
     let log = log_of(&e);
-    assert_eq!(got, CycleOutcome::Alerted, "{log}");
+    // Issue #1907: `work` reads 0/97, below 100%, so the no-capacity ALERT
+    // is advisory and the cycle is a stay with capacity.
+    assert_eq!(got, CycleOutcome::Stayed, "{log}");
     assert_eq!(ino_at(&e.live()), Some(e.l), "work's login stays live");
     assert_eq!(ino_at(&e.slot("spare")), Some(e.t), "spare untouched");
     assert_eq!(swaps(&log), 0, "{log}");
@@ -228,7 +230,9 @@ fn d_a_failed_reread_is_unknown_and_never_recorded_as_without_room() {
     let mut c = ctx(&e, measure_d, Some(reread_d));
     let got = run_cycle(&mut c, Mode::Watch).unwrap();
     let log = log_of(&e);
-    assert_eq!(got, CycleOutcome::Alerted, "{log}");
+    // Issue #1907: `work` reads 0/97, below 100%, so the no-capacity ALERT
+    // is advisory and the cycle is a stay with capacity.
+    assert_eq!(got, CycleOutcome::Stayed, "{log}");
     assert_eq!(ino_at(&e.live()), Some(e.l), "no swap");
     assert!(
         log.contains("reread: spare failed; treated as unknown"),

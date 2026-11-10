@@ -11,6 +11,7 @@
 
 use crate::support::amplihack_bin::amplihack_bin;
 use crate::support::socket_dir::{SUN_PATH_MAX, tmux_socket_dir, tmux_socket_fits};
+use crate::support::wait::{CEILING, output_within, wait_child, wait_until};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::PermissionsExt;
@@ -108,6 +109,10 @@ impl Fx {
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
             .env("AMPLIHACK_SKIP_REFLECTION", "1")
             .env("AMPLIHACK_AGENT_BINARY", "claude")
+            // Issue #1973: the pane gets the wait ceiling to start the run on
+            // a loaded host. Set before the per-call slice, so a test that
+            // sets its own value (the start-timeout test) still wins.
+            .env("AMPLIHACK_TEST_DETACH_START_SECS", "600")
             .stdin(Stdio::null());
         for (k, v) in env {
             c.env(k, v);
@@ -116,14 +121,7 @@ impl Fx {
     }
 
     fn run(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
-        let mut child = self
-            .cmd(args, env)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        wait_bounded(&mut child, Duration::from_secs(60));
-        child.wait_with_output().unwrap()
+        output_within("amplihack to exit", &mut self.cmd(args, env))
     }
 
     fn recipe_run_args(&self) -> Vec<String> {
@@ -167,7 +165,7 @@ impl Fx {
 
     fn pid(&self, name: &str) -> i32 {
         let path = self.records.join(name);
-        wait_for(Duration::from_secs(60), || path.is_file(), name);
+        wait_for(|| path.is_file(), name);
         fs::read_to_string(path).unwrap().trim().parse().unwrap()
     }
 
@@ -243,26 +241,44 @@ fn tmux_available() -> bool {
     found
 }
 
-fn wait_for(limit: Duration, mut done: impl FnMut() -> bool, what: &str) {
-    let start = Instant::now();
-    while !done() {
-        assert!(start.elapsed() < limit, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(50));
-    }
+/// Waits for `done` under the shared ceiling (issue #1973).
+fn wait_for(done: impl FnMut() -> bool, what: &str) {
+    wait_until(what, done);
 }
 
-fn wait_bounded(child: &mut Child, limit: Duration) -> std::process::ExitStatus {
-    let start = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            return status;
-        }
-        if start.elapsed() > limit {
-            let _ = child.kill();
-            panic!("amplihack did not exit within {limit:?}");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+/// Waits for amplihack to exit under the shared ceiling (issue #1973).
+fn wait_bounded(child: &mut Child) -> std::process::ExitStatus {
+    wait_child("amplihack to exit", child)
+}
+
+/// The delay of a `Retrying in {delay:?}.` line: `Duration`'s debug form,
+/// a decimal number then `ns`, `µs`, `ms` or `s`. Panics with the line if
+/// it cannot be read, so the check that uses it never passes vacuously.
+fn retry_delay(line: &str) -> Duration {
+    let rest = line
+        .split("Retrying in ")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no `Retrying in` in {line:?}"));
+    let text = rest
+        .split(|c: char| c.is_whitespace())
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('.');
+    let split = text
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or_else(|| panic!("no unit in the retry delay of {line:?}"));
+    let (number, unit) = text.split_at(split);
+    let number: f64 = number
+        .parse()
+        .unwrap_or_else(|e| panic!("cannot read the retry delay of {line:?}: {e}"));
+    let secs = match unit {
+        "s" => number,
+        "ms" => number / 1e3,
+        "µs" | "us" => number / 1e6,
+        "ns" => number / 1e9,
+        _ => panic!("unknown unit {unit:?} in the retry delay of {line:?}"),
+    };
+    Duration::from_secs_f64(secs)
 }
 
 /// Alive and not a zombie.
@@ -276,7 +292,6 @@ fn alive(pid: i32) -> bool {
 
 fn assert_gone(pids: &[i32]) {
     wait_for(
-        Duration::from_secs(30),
         || pids.iter().all(|pid| !alive(*pid)),
         &format!("processes {pids:?} to exit"),
     );
@@ -303,7 +318,7 @@ fn sighup_to_recipe_run_ends_the_runner_and_its_children() {
     let child = fx.pid("child.pid");
     // SAFETY: signalling a child this test started.
     unsafe { libc::kill(amp.id() as i32, libc::SIGHUP) };
-    let status = wait_bounded(&mut amp, Duration::from_secs(60));
+    let status = wait_bounded(&mut amp);
     assert_eq!(status.code(), Some(129), "exit status {status:?}");
     assert_gone(&[runner, child]);
 }
@@ -363,11 +378,7 @@ fn configured_detach_starts_a_tmux_run_that_stop_ends() {
 
     let runner = fx.pid("runner.pid");
     let child = fx.pid("child.pid");
-    wait_for(
-        Duration::from_secs(30),
-        || fx.records.join("env.txt").is_file(),
-        "runner env",
-    );
+    wait_for(|| fx.records.join("env.txt").is_file(), "runner env");
     // The configured CLI crossed into tmux, tagged, without the marker.
     assert_eq!(
         fx.runner_env("AMPLIHACK_AGENT_BINARY").as_deref(),
@@ -401,7 +412,6 @@ fn configured_detach_starts_a_tmux_run_that_stop_ends() {
         .collect();
     assert!(leftovers.is_empty(), "the run spec must be deleted");
     wait_for(
-        Duration::from_secs(30),
         || fs::read_to_string(&log).is_ok_and(|l| l.contains("amplihack.recipe.log_pointer")),
         "the log to receive the run's output",
     );
@@ -440,16 +450,14 @@ fn stop_by_run_id_ends_a_foreground_run() {
             }
         }
     });
-    let run_id = rx
-        .recv_timeout(Duration::from_secs(60))
-        .expect("early pointer");
+    let run_id = rx.recv_timeout(CEILING).expect("early pointer");
     let runner = fx.pid("runner.pid");
     let child = fx.pid("child.pid");
 
     let stop = fx.run(&["recipe", "stop", &run_id], &[]);
     assert!(stop.status.success(), "{}", text(&stop.stderr));
     assert_gone(&[runner, child]);
-    let status = wait_bounded(&mut amp, Duration::from_secs(60));
+    let status = wait_bounded(&mut amp);
     assert!(!status.success(), "a stopped run must not report success");
 }
 
@@ -491,20 +499,26 @@ fn a_signal_during_retry_backoff_stops_the_run_without_another_attempt() {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            if line.contains("Retrying in") {
-                let _ = tx.send(());
+            // The receiver is gone once the test has its line.
+            if line.contains("Retrying in") && tx.send(line).is_err() {
+                return;
             }
         }
     });
-    rx.recv_timeout(Duration::from_secs(60))
+    let line = rx
+        .recv_timeout(CEILING)
         .expect("the first attempt was not retried");
+    let delay = retry_delay(&line);
     let started = Instant::now();
     // SAFETY: signalling a child this test started.
     unsafe { libc::kill(amp.id() as i32, libc::SIGINT) };
-    let status = wait_bounded(&mut amp, Duration::from_secs(60));
+    let status = wait_bounded(&mut amp);
+    // Issue #1973: measured against the backoff the run announced, not a
+    // fixed 5 s. A run that slept out its backoff before acting on the
+    // signal takes at least `delay`.
     assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "took {:?} to stop",
+        started.elapsed() < delay,
+        "took {:?} to stop, not less than the {delay:?} backoff",
         started.elapsed()
     );
     assert_eq!(status.code(), Some(130), "{status:?}");
@@ -687,7 +701,7 @@ fn a_stop_also_ends_a_descendant_that_left_the_group() {
     let child = fx.pid("child.pid");
     // SAFETY: signalling a child this test started.
     unsafe { libc::kill(amp.id() as i32, libc::SIGHUP) };
-    let status = wait_bounded(&mut amp, Duration::from_secs(60));
+    let status = wait_bounded(&mut amp);
     assert_eq!(status.code(), Some(129), "{status:?}");
     let result = std::panic::catch_unwind(|| assert_gone(&[runner, child, escaped]));
     if alive(escaped) {

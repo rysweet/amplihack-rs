@@ -1,7 +1,7 @@
 //! Which profile's login is in `~/.claude` (D11, D13). Which profiles
 //! may receive it (D16) is in `candidates`, re-exported here. With a
 //! rotate ledger naming a live profile, the ledger decides (issue #1886);
-//! without one, `adopt` matches `.claude.json` accounts, never logged.
+//! without one, `adopt` matches trusted login identities, never logged.
 //!
 //! Issue #1700: this is also the one module that looks inside login and
 //! settings files for a profile's kind ([`login_kind`],
@@ -152,12 +152,45 @@ fn platform_live(
 }
 
 /// The live profile, and the reason the prototype ledger was ignored, if it
-/// was. Reads `$HOME/.claude.json`, the ledgers, each profile's
-/// `.claude.json`, and which top-level keys the login files have.
+/// was. Passive routing preserves a known ledger location; active swaps
+/// use `live_with` and require fresh trusted login evidence.
 pub fn live(
     store: &ProfileStore,
     rs: &RotateState,
     home: &Path,
+) -> Result<(LiveId, Option<&'static str>), ProfileError> {
+    // Passive routing reports the ledger's location (#1886). Requiring a
+    // network read here would hide a valid held login during an endpoint
+    // outage. Active rotation always uses live_with and trusted evidence.
+    if login_kind(&home.join(".claude").join(CREDS)) == LoginKind::OAuth
+        && let Some(l) = rs.load_ledger()?
+        && let Some(live) = l.live.as_deref()
+    {
+        let name = ProfileName::parse(live)?;
+        let id = if l.hand_suspect.is_some() {
+            LiveId::HandChanged(name)
+        } else if !home_readable(home) {
+            LiveId::HomeUnreadable(name)
+        } else {
+            LiveId::Known(name)
+        };
+        return Ok((id, None));
+    }
+    let budget = super::login_identity::Budget::new();
+    let read = super::login_identity::default_read();
+    let reader = super::login_identity::Reader {
+        read: &read,
+        budget: &budget,
+    };
+    let account = reader.oauth(&home.join(".claude")).ok();
+    live_with(store, rs, home, account.as_ref())
+}
+
+pub(super) fn live_with(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+    account: Option<&Account>,
 ) -> Result<(LiveId, Option<&'static str>), ProfileError> {
     let creds = home.join(".claude").join(CREDS);
     if !std::fs::symlink_metadata(&creds).is_ok_and(|m| m.is_file()) {
@@ -180,12 +213,12 @@ pub fn live(
         if l.hand_suspect.is_some() {
             return Ok((LiveId::HandChanged(name), None));
         }
-        if !home_readable(home) {
+        if account.is_none() || !home_readable(home) {
             return Ok((LiveId::HomeUnreadable(name), None));
         }
         return Ok((LiveId::Known(name), None));
     }
-    adopt::find(store, home)
+    adopt::find_with(store, account)
 }
 
 /// Why `~/.claude.json` has no usable account, in words for the escalated

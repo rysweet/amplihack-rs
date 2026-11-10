@@ -6,9 +6,7 @@
 use super::identify::{LoginKind, login_kind};
 use super::swap::{DOT_CLAUDE_NOT_PRIVATE, HOME_NOT_OWNED};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{
-    CREDS, euid, exists, read_claude_json, writable_by_others,
-};
+use crate::commands::profile::auto_switch::kit::{CREDS, euid, exists, writable_by_others};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use std::fs;
@@ -34,15 +32,6 @@ pub(super) fn check_home(home: &Path) -> Result<PathBuf, ProfileError> {
         return Err(refused(DOT_CLAUDE_NOT_PRIVATE));
     }
     Ok(dot)
-}
-
-/// The `oauthAccount` block of `dir/.claude.json`, if it is an object.
-pub(super) fn account_block(dir: &Path) -> Option<serde_json::Value> {
-    read_claude_json(dir)?
-        .0
-        .get("oauthAccount")
-        .filter(|b| b.is_object())
-        .cloned()
 }
 
 /// Issue #1700: the end of the refusal for a login without OAuth that would

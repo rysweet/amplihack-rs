@@ -5,8 +5,8 @@
 
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    check_root_private, ensure_private_dir, euid, fsync_dir, now, read_bounded_nofollow,
-    writable_by_others, write_private_atomic,
+    check_root_private, ensure_private_dir, euid, fsync_dir, now, parse_position as position,
+    read_bounded_nofollow, writable_by_others, write_private_atomic,
 };
 use crate::commands::profile::name::ProfileName;
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+use super::alert::valid_alerts;
 pub use super::hand_fields::{HandSuspect, MAX_GUIDANCE_LINE, MAX_GUIDANCE_LINES, unprintable};
 use super::hand_fields::{valid_guidance, valid_hand_suspect, valid_lost_login, valid_name};
 pub use super::older_readers::for_older_readers;
@@ -39,9 +40,13 @@ pub const SWITCHED: &str = "switched";
 pub struct LastCycle {
     /// When the cycle was recorded, at its end.
     pub at: i64,
-    /// When the cycle started measuring usage (issue #1659): a waiting
+    /// When the usage the cycle relied on was read (issue #1659): a waiting
     /// limit-resume hook trusts only a measurement taken after its limit.
-    /// Absent for a cycle that measured nothing.
+    /// A `stayed` cycle records when the live reading was taken: a passive
+    /// reading's `observed_at`, but never later than when the cycle started
+    /// measuring (see `capacity::recorded_at`). Every other rotate outcome
+    /// records when the cycle started measuring. [`SWITCHED`] records the
+    /// time of the switch. Absent for a cycle that measured nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measured_at: Option<i64>,
     pub outcome: String,
@@ -108,6 +113,9 @@ pub struct RotateLedger {
     /// That login's account (`accountUuid`, else `emailAddress`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// Full credential-bound identity; a legacy key alone cannot prove ownership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_identity: Option<super::login_identity::Identity>,
     /// When `live` last changed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<i64>,
@@ -119,6 +127,10 @@ pub struct RotateLedger {
     /// The ALERT de-duplication key, `<kind>:<live or ->`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alert: Option<String>,
+    /// Issue #1907: a no-capacity ALERT's key while the live login still
+    /// read below 100%, so it does not block a resume; never with `alert`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisory_alert: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_cycle: Option<LastCycle>,
     /// Overflow profiles blocked by a spend limit, by profile name.
@@ -162,10 +174,12 @@ impl Default for RotateLedger {
             version: VERSION,
             live: None,
             account: None,
+            login_identity: None,
             since: None,
             swapped_at: None,
             previous: None,
             alert: None,
+            advisory_alert: None,
             last_cycle: None,
             overflow_blocked: BTreeMap::new(),
             guidance: None,
@@ -180,52 +194,9 @@ impl Default for RotateLedger {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Phase {
-    J0,
-    S1,
-    S2,
-    S3,
-    S4,
-    Inconsistent,
-}
-
-impl Phase {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::J0 => "j0",
-            Self::S1 => "s1",
-            Self::S2 => "s2",
-            Self::S3 => "s3",
-            Self::S4 => "s4",
-            Self::Inconsistent => "inconsistent",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RotateJournal {
-    pub version: u32,
-    pub from: String,
-    pub to: String,
-    /// `from` was created by adopting the login in `~/.claude`.
-    pub adopt: bool,
-    pub phase: Phase,
-    /// `$HOME` when the swap started. Only ever compared, never a path.
-    pub home: String,
-    /// Inode of the outgoing login (`~/.claude/.credentials.json`).
-    pub live_ino: u64,
-    /// Inode of the incoming login (`<root>/<to>/.credentials.json`).
-    pub target_ino: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub home_lock_ino: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub to_lock_ino: Option<u64>,
-    pub started_at: i64,
-    pub pid: u32,
-}
+#[path = "swap_journal.rs"]
+mod journal;
+pub use journal::{Phase, RotateJournal};
 
 /// Paths of the rotate state.
 #[derive(Debug, Clone)]
@@ -254,10 +225,40 @@ fn inconsistent(msg: impl Into<String>) -> ProfileError {
     ProfileError::RotateInconsistent(msg.into())
 }
 
+/// Issue #1947: the reasons [`RotateState::load_ledger`] gives for a ledger
+/// it parsed but whose fields it refuses. Each names a field in fixed text,
+/// never a stored value, so the unreadable-ledger stop and `status` show it.
+const FIELD_REFUSALS: [&str; 7] = [
+    "unknown version",
+    "invalid profile name",
+    "invalid account or alert",
+    "invalid overflow field",
+    "invalid no_room",
+    "invalid hand-change field",
+    "invalid login_identity",
+];
+
+/// The load error for a refused field; `reason` is one of [`FIELD_REFUSALS`].
+fn refuse(reason: &'static str) -> ProfileError {
+    debug_assert!(FIELD_REFUSALS.contains(&reason), "{reason}");
+    inconsistent(format!("rotate ledger: {reason}"))
+}
+
+/// The fixed reason a failed ledger load gave when it refused a field. `None`
+/// for every other failure, such as a read or parse error, whose text may
+/// hold a path or a position and is not shown.
+pub fn refused_field(e: &ProfileError) -> Option<&'static str> {
+    let ProfileError::RotateInconsistent(m) = e else {
+        return None;
+    };
+    let reason = m.strip_prefix("rotate ledger: ")?;
+    FIELD_REFUSALS.iter().copied().find(|r| *r == reason)
+}
+
 /// An account value amplihack may store: non-empty, at most 320 bytes, no
-/// control characters.
+/// control or bidirectional-override characters ([`unprintable`]).
 pub fn safe_account(v: &str) -> bool {
-    !v.is_empty() && v.len() <= MAX_ACCOUNT && !v.chars().any(char::is_control)
+    !v.is_empty() && v.len() <= MAX_ACCOUNT && !v.chars().any(unprintable)
 }
 
 impl RotateState {
@@ -312,27 +313,28 @@ impl RotateState {
         let mut l: RotateLedger = serde_json::from_slice(&raw)
             .map_err(|e| inconsistent(format!("{WHAT}: {}", position(&e))))?;
         if l.version != VERSION {
-            return Err(inconsistent(format!("{WHAT}: unknown version")));
+            return Err(refuse("unknown version"));
         }
         if !valid_name(l.live.as_deref()) || !valid_name(l.previous.as_deref()) {
-            return Err(inconsistent(format!("{WHAT}: invalid profile name")));
+            return Err(refuse("invalid profile name"));
         }
-        if l.account.as_deref().is_some_and(|a| !safe_account(a))
-            || l.alert.as_deref().is_some_and(|a| !safe_account(a))
-        {
-            return Err(inconsistent(format!("{WHAT}: invalid account or alert")));
+        if l.account.as_deref().is_some_and(|a| !safe_account(a)) || !valid_alerts(&l) {
+            return Err(refuse("invalid account or alert"));
         }
         if !valid_overflow(&l) {
-            return Err(inconsistent(format!("{WHAT}: invalid overflow field")));
+            return Err(refuse("invalid overflow field"));
         }
         if !no_room::valid(l.no_room.as_ref()) {
-            return Err(inconsistent(format!("{WHAT}: invalid no_room")));
+            return Err(refuse("invalid no_room"));
         }
         if !valid_guidance(l.guidance.as_deref())
             || !valid_lost_login(&l.lost_login)
             || !valid_hand_suspect(l.hand_suspect.as_ref())
         {
-            return Err(inconsistent(format!("{WHAT}: invalid hand-change field")));
+            return Err(refuse("invalid hand-change field"));
+        }
+        if l.login_identity.as_ref().is_some_and(|i| !i.valid()) {
+            return Err(refuse("invalid login_identity"));
         }
         l.swapped_away = super::swap_back::valid(std::mem::take(&mut l.swapped_away), now());
         Ok(Some(l))
@@ -351,7 +353,10 @@ impl RotateState {
     /// The pid of a running `profile rotate watch` whose executable is not
     /// this process's, for example one started before an upgrade.
     pub fn foreign_rotator(&self) -> Option<u32> {
-        self.foreign_rotator_at(Path::new("/proc"), std::env::current_exe().ok().as_deref())
+        self.foreign_rotator_at(
+            &super::daemon::proc_root(),
+            std::env::current_exe().ok().as_deref(),
+        )
     }
 
     /// [`Self::foreign_rotator`] against another `/proc` and executable.
@@ -387,9 +392,4 @@ impl RotateState {
             Err(e) => Err(e.into()),
         }
     }
-}
-
-/// Line and column only: a serde message can quote input.
-fn position(e: &serde_json::Error) -> String {
-    format!("invalid JSON at line {} column {}", e.line(), e.column())
 }

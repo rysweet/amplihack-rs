@@ -24,7 +24,7 @@ fn executable(path: &Path, body: &str) {
 /// starts a nested launch; the nested one (second run) only records.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.0 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 record() {
   {
@@ -43,6 +43,7 @@ record nested
 "#;
 
 struct Fixture {
+    identity: Option<crate::support::profile_default::LoginIdentities>,
     _tmp: tempfile::TempDir,
     home: PathBuf,
     root: PathBuf,
@@ -63,7 +64,8 @@ impl Fixture {
             fs::create_dir_all(d).unwrap();
         }
         executable(&tools.join("claude"), FAKE_CLAUDE);
-        let f = Self {
+        let mut f = Self {
+            identity: None,
             _tmp: tmp,
             home,
             root,
@@ -77,7 +79,7 @@ impl Fixture {
         // Since #1691 the fake `claude`'s `profile switch` moves a login into
         // `~/.claude`, so there must be one to move: W's is live, and X, Y
         // and Z each have one stored.
-        give_logins(&f.home, &f.root, "W", &["X", "Y", "Z"]);
+        f.identity = Some(give_logins(&f.home, &f.root, "W", &["X", "Y", "Z"]));
         f
     }
 
@@ -90,6 +92,10 @@ impl Fixture {
             .current_dir(&self.work)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env(
+                crate::isolated_amplihack::PROC_ROOT_ENV,
+                crate::isolated_amplihack::shared_empty_proc_root(),
+            )
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
@@ -126,6 +132,9 @@ impl Fixture {
         }
         // Set after the removal above, which would otherwise drop it.
         c.env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
+        if let Some(identity) = &self.identity {
+            identity.configure(&mut c);
+        }
         c
     }
 
