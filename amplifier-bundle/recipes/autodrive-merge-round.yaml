@@ -221,10 +221,10 @@ steps:
       - **Criterion 6:** met when `approval_status` is `MET`, whatever `review_decision` and
         `required_approvals` say (either may be empty). Otherwise report `approval_blocker` verbatim and cite
         `approval_source`: the tool maps one to the other, so never derive a blocker from the raw GitHub fields
-        yourself. For `PENDING` report `approval-pending-other-blockers` (the count is unknown while checks, a
+        yourself. `PENDING` always maps to `approval-pending-other-blockers` (the count is unknown while checks, a
         conflict, a BEHIND branch or unresolved review threads, outdated ones included, keep `merge_state` from
-        saying whether a review is missing), and `approval-facts-unreadable` when the measurement itself failed
-        this round. Neither is a person's job: the next round reads the approval again.
+        saying whether a review is missing); `approval-facts-unreadable` belongs to `UNREADABLE`, and means the
+        measurement itself failed this round. Neither is a person's job: the next round reads the approval again.
       - **Criterion 8:** GitHub applies protection and rulesets to `merge_state`;
         `CLEAN`, `HAS_HOOKS` or `UNSTABLE` means none blocks the merge. A 404
         from the protection API is a token without admin rights, not a blocker.

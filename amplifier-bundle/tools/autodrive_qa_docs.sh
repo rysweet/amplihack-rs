@@ -24,8 +24,19 @@
 # changed-path list is KNOWN and NON-EMPTY and every path is inert
 # documentation — prose that no agent and no build reads as input.
 #
-# Qualifying, compared BYTE-EXACT: a path ending `.md`, `.markdown`, `.rst` or
-# `.txt`, or a root `LICENSE`, `NOTICE` or `COPYING`.
+# Qualifying, compared BYTE-EXACT: a path ending `.md`, `.markdown` or `.rst`,
+# or a root `LICENSE`, `NOTICE` or `COPYING`.
+#
+# `.txt` qualifies only under a `docs/` component at any depth, or as a root
+# `README.txt`, `CHANGELOG.txt`, `CHANGES.txt`, `LICENSE.txt`, `NOTICE.txt`,
+# `COPYING.txt`, `AUTHORS.txt`, `CONTRIBUTING.txt` or `INSTALL.txt`. The
+# extension is generic — a golden fixture, a page template, a fuzz corpus seed
+# and a dependency pin all wear it — so qualifying it everywhere exempted
+# `tests/fixtures/expected.txt`, `src/templates/welcome.txt`,
+# `fuzz/corpus/seed.txt`, `requirements-dev.txt` and `Makefile.txt` from the
+# gadugi requirement. Naming the places prose lives closes the class; the three
+# basename disqualifiers below stay, because `docs/requirements.txt` is a
+# Sphinx pin sitting in exactly the directory this rule trusts.
 #
 # Disqualifying whatever else matches, compared CASE-INSENSITIVELY:
 #   - anything under a DOT-DIRECTORY at any depth — `.github/`, `.claude/`,
@@ -40,10 +51,11 @@
 #     A pull request editing only `merge-ready/SKILL.md` edits the rules that
 #     decide what may merge, so it does not buy its way out of them.
 #   - a basename of `requirements.txt`, `constraints.txt` or `CMakeLists.txt`.
-#     They end `.txt` and so pass the qualifier above, but a build reads them,
-#     not a person: the first two pin the dependencies a suite installs — and
-#     `docs/requirements.txt` is the ordinary Sphinx pin, which is why the
-#     rule is not anchored at the root — and the third is a build script.
+#     A build reads them, not a person: the first two pin the dependencies a
+#     suite installs and the third is a build script. The narrowed `.txt`
+#     qualifier already stops all three at the root, so what this rule still
+#     catches is the copy under `docs/` — `docs/requirements.txt` is the
+#     ordinary Sphinx pin, which is why the rule is not anchored at the root.
 #     `requirements.txt` and `CMakeLists.txt` are also in
 #     AUTODRIVE_ROOT_PROJECT_FILES (autodrive_trust.sh), where this same
 #     repository already calls them project files. That array is NOT read
@@ -59,10 +71,10 @@
 # both directions. `Agents.md`, `.GitHub/notes.md` and `docs/Requirements.txt`
 # are disqualified on a case-insensitive match; `README.MD` simply costs the
 # exemption rather than winning it, since it never qualifies in the first
-# place. The `docs/` DIRECTORY qualifies nothing on its own, so `docs/conf.py`
-# and `docs/release.js` are code that happens to live under docs/, and
-# `docs/build.SH` is not documentation because `.SH` is not `.txt`, `.md`,
-# `.markdown` or `.rst`.
+# place. The `docs/` DIRECTORY qualifies no EXTENSION on its own — it only
+# widens where a `.txt` may sit — so `docs/conf.py` and `docs/release.js` are
+# code that happens to live under docs/, and `docs/build.SH` is not
+# documentation because `.SH` is not `.txt`, `.md`, `.markdown` or `.rst`.
 #
 # The other arms fail closed too. A diff that changed nothing changed no
 # documentation either, so it is `false`, not `true`. A list that could not be
@@ -97,7 +109,14 @@ autodrive_qa_docs_only() {
   # of the two sees a path first cannot change the answer.
   for p in "${_AD_PATHS[@]}"; do
     case "$p" in
-      *.md | *.markdown | *.rst | *.txt | LICENSE | NOTICE | COPYING) ;;
+      *.md | *.markdown | *.rst | LICENSE | NOTICE | COPYING) ;;
+      # `.txt` only where prose lives. `*` spans `/` in a case pattern, so the
+      # first arm is any depth under a `docs/` component, at the root or below
+      # one; the second is the root documentation names, byte-exact like
+      # LICENSE above. Everything else ending `.txt` falls through to `false`.
+      docs/*.txt | */docs/*.txt) ;;
+      README.txt | CHANGELOG.txt | CHANGES.txt | LICENSE.txt | NOTICE.txt \
+        | COPYING.txt | AUTHORS.txt | CONTRIBUTING.txt | INSTALL.txt) ;;
       *) printf 'false\n'; return 0 ;;
     esac
   done

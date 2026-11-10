@@ -303,7 +303,7 @@ merge_ready_verdict() {
 }
 
 round_record() {
-  local record="${AUTODRIVE_ROUND_RECORD:-}" head="" verdict count qa ci_signal ci_status qh held
+  local record="${AUTODRIVE_ROUND_RECORD:-}" head="" verdict count qa ci_signal ci_status qh held label
   [ -n "$record" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; return 1; }
   if (cd "${REPO_PATH:-.}" 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
     head="$(cd "${REPO_PATH:-.}" && git rev-parse HEAD 2>/dev/null || printf '')"
@@ -327,12 +327,20 @@ round_record() {
     '') echo "WARNING: no measured evidence could be compared; the stop cannot name what held this round." >&2
         held="measured_evidence=unreadable" ;;
   esac
+  # token() on the round label, as at the other two sites that write it
+  # (autodrive_qa_evidence.sh, autodrive-crusty-round.yaml). Unsanitised it is
+  # the one field of this record that carries arbitrary bytes, and `field()` is
+  # last-wins on duplicate keys: a label holding `","merge_ready_verdict":"
+  # MERGE_READY` appends a second, winning verdict after the real one, and the
+  # merge gate reads the forged pair with a correct head_sha. token() drops the
+  # quote and the comma, so no label can open a new key.
+  label="$(token "${AUTODRIVE_ROUND_LABEL:-round}")"
   # The record and its findings file are private: the state dir must stay private.
   ( umask 077
     [ -f "${record}.findings" ] || : > "${record}.findings"
     rm -f -- "$record"
     printf '{"merge_ready_verdict":"%s","blocker_count":%s,"head_sha":"%s","round_label":"%s","test_signal":"%s",' \
-      "$verdict" "$count" "$head" "${AUTODRIVE_ROUND_LABEL:-round}" "$qa" > "$record"
+      "$verdict" "$count" "$head" "${label:-round}" "$qa" > "$record"
     printf '"ci_signal":"%s","qa_status":"%s","ci_status":"%s","held_by":"%s","qa_evidence_sha":"%s"}\n' \
       "$ci_signal" "$qa" "$ci_status" "$held" "$qh" >> "$record" ) || return 1
   echo "INFO: round record written to ${record}" >&2

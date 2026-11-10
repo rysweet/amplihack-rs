@@ -1448,7 +1448,7 @@ reading that sentence: see
 | `step-02-merge-ready-assessment` | agent | `merge_ready_review` | Applies the criteria; emits `merge_ready_verdict`. |
 | `step-03-extract-merge-ready-verdict` | bash | `merge_ready_verdict` | Parses the verdict; applies the [measured downgrade](#measurement-outranks-the-model) (`measured-downgrade`) and writes the findings (`findings`). |
 | `step-04-address-blockers` | agent | `merge_ready_fixes` | On `NOT_MERGE_READY`: clears blockers, commits, pushes. |
-| `step-05-write-round-record` | bash | `merge_round_record_written` | `autodrive_round_evidence.sh round-record` writes the round record under `umask 077`: `merge_ready_verdict`, `blocker_count`, `head_sha`, `round_label`, `test_signal`, `ci_signal`, `qa_status`, `ci_status`, `held_by`, `qa_evidence_sha`. |
+| `step-05-write-round-record` | bash | `merge_round_record_written` | `autodrive_round_evidence.sh round-record` writes the round record under `umask 077`: `merge_ready_verdict`, `blocker_count`, `head_sha`, `round_label`, `test_signal`, `ci_signal`, `qa_status`, `ci_status`, `held_by`, `qa_evidence_sha`. Every interpolated value is reduced to `[A-Za-z0-9_.:/-]` first, `round_label` included: the field reader is last-wins on duplicate JSON keys, so a value able to carry a `"` could append a second, winning `merge_ready_verdict` after the measured one and the gate would read the forged pair. |
 
 `step-00-tools-dir` finds the round's tools once: the first
 `amplifier-bundle/tools/` under `$AMPLIHACK_HOME`, `$REPO_PATH`, the git
@@ -1844,6 +1844,20 @@ tool, the merge round and the merge gate get the same answer. It is built on
 the `_autodrive_qa_scan` the rest of that file shares, so it runs no further
 git command.
 
+What the exemption costs is worth stating plainly, because it is wider than
+waiving authorship. `gadugi_required=false` means criterion 1 asks for no
+scenario, and it also means no scenario *runs* — including one the repository
+already has. A Node project holding `svc/tests/agentic/s.yaml` whose pull
+request changes only `docs/svc.md` runs `npm test` and no agentic scenario,
+where before #2219 it ran both. That is deliberate: an agentic scenario
+spawns agents and costs minutes, and driving external behaviour that the pull
+request did not touch buys no signal about the change under review. The suite
+command still runs in every case, so the exemption narrows scenario
+validation and not testing. A repository that disagrees sets
+`AUTODRIVE_QA_SCENARIO_DIR`, which keeps gadugi required whatever the
+predicate says — the first arm of `autodrive_gadugi_required`, above every
+other.
+
 It lives in `autodrive_qa_docs.sh`, which `autodrive_qa_scope.sh` loads from
 its own physical directory, only as a regular file and never a symlink, the
 same way `autodrive_trust.sh` loads the scope file; if it does not load, the
@@ -1873,13 +1887,31 @@ would print, because that line collapses `empty` and `nobase` into one
 fact: it changed no documentation, so it is not a documentation-only change
 and the exemption does not apply. `nobase` measured nothing at all.
 
-A path qualifies when it ends `.md`, `.markdown`, `.rst` or `.txt`, or when it
-is a root `LICENSE`, `NOTICE` or `COPYING`. Qualifying is compared byte for
-byte, so `README.MD` does not qualify: unusual casing costs the exemption
-rather than granting it, and `docs/build.SH` is not documentation for the
-same reason — `.SH` is none of the four extensions. A path under `docs/`
-qualifies only by its extension, so `docs/conf.py`, `docs/Makefile` and
-`docs/release.js` do not.
+A path qualifies when it ends `.md`, `.markdown` or `.rst`, or when it is a
+root `LICENSE`, `NOTICE` or `COPYING`. Qualifying is compared byte for byte,
+so `README.MD` does not qualify: unusual casing costs the exemption rather
+than granting it, and `docs/build.SH` is not documentation for the same
+reason — `.SH` is none of the extensions.
+
+`.txt` qualifies only where prose lives: under a `docs/` component at any
+depth, whether at the root (`docs/notes.txt`, `docs/guide/install.txt`) or
+below one (`sub/docs/notes.txt`), or as one of the root documentation names
+`README.txt`, `CHANGELOG.txt`, `CHANGES.txt`, `LICENSE.txt`, `NOTICE.txt`,
+`COPYING.txt`, `AUTHORS.txt`, `CONTRIBUTING.txt` and `INSTALL.txt`. The
+extension is generic — a golden fixture, a page template, a fuzz corpus seed
+and a dependency pin all wear it — so qualifying it everywhere exempted
+`tests/fixtures/expected.txt`, `src/templates/welcome.txt`,
+`fuzz/corpus/seed.txt`, `requirements-dev.txt` and `Makefile.txt` from the
+gadugi requirement in a repository of ordinary code. Naming the places prose
+lives closes the class; a list of build-input basenames never could, because
+`requirements-dev.txt` and `dev-requirements.txt` are each one spelling away
+from the next.
+
+`docs/` widens where a `.txt` may sit; it qualifies no extension on its own.
+So `docs/conf.py`, `docs/Makefile` and `docs/release.js` still do not
+qualify, and a `.txt` under `docs/` is still checked against the
+disqualifiers below — `docs/requirements.txt` is a Sphinx pin sitting in
+exactly the directory this rule trusts.
 
 A path that qualifies is then checked against the disqualifiers below. Every
 rule there is a rule the predicate runs: there is no extension disqualifier
@@ -1890,7 +1922,7 @@ already rejected each of those and such a rule could never be reached.
 | --- | --- |
 | anything under a dot-directory at any depth: `.github/`, `.amplihack/`, `.claude/`, and `.cursor/`, `.codex/`, `.devcontainer/` and whatever the next tool adds | CI workflows and auto-drive's own configuration decide what runs, and an editor or agent directory is an instruction surface on the same reasoning as `.claude/`. One pattern covers them all, so a directory nobody listed is covered too. A dot-*file* is not a dot-directory: `docs/.hidden.md` is still prose. |
 | anything under `amplifier-bundle/`, and any `AGENTS.md`, `CLAUDE.md` or `SKILL.md` | An agent reads these as instructions. A change to `skills/merge-ready/SKILL.md` edits the rules the merge is judged by; it is not inert prose. |
-| `requirements.txt`, `constraints.txt` and `CMakeLists.txt`, at the root or nested | They end `.txt` and so qualify above, but a build reads them rather than a person: the first two pin the dependencies a suite installs, and `docs/requirements.txt` is the ordinary Sphinx pin, which is why the rule is not anchored at the root. `requirements.txt` and `CMakeLists.txt` are also in `AUTODRIVE_ROOT_PROJECT_FILES`, where auto-drive already calls them project files; the test pins the two lists together so the next `.txt` added there is caught. |
+| `requirements.txt`, `constraints.txt` and `CMakeLists.txt`, at the root or nested | A build reads them rather than a person: the first two pin the dependencies a suite installs and the third is a build script. The narrowed `.txt` qualifier already stops all three at the root, so what this rule still catches is the copy under `docs/` — `docs/requirements.txt` is the ordinary Sphinx pin, which is why the rule is not anchored at the root. `requirements.txt` and `CMakeLists.txt` are also in `AUTODRIVE_ROOT_PROJECT_FILES`, where auto-drive already calls them project files; the test pins the two lists together so the next `.txt` added there is caught. |
 
 The disqualifying comparisons are case-insensitive, so `Agents.md`,
 `.GitHub/notes.md` and `docs/Requirements.txt` are disqualified too.
@@ -2493,8 +2525,16 @@ too, as `blocker=`.
 `approval-facts-unreadable` is self-clearing, like
 `approval-pending-other-blockers`: step-04 neither acts on it nor asks for a
 person, because nothing a person could do would change the reading, and a
-transient failure answers itself next round. Unreadability that persists
-therefore spends rounds rather than escalating; the
+transient failure answers itself next round. Two of the three sources are
+transient in that way — a `gh` failure and a merge state GitHub has not
+finished computing. The third is not: a `reviewDecision` outside the
+allow-list means GitHub has added an enum value this tool does not know, and
+re-reading returns the same token every round until the tool is taught it. It
+is grouped with the other two because the read succeeded and the field is
+simply not understood, which says nothing about whether a review exists —
+reporting it as a missing review would be a finding the tool did not make.
+Unreadability that persists therefore spends rounds rather than escalating;
+the
 [no-progress stop](#the-no-progress-rule) and the
 [usage budget](#budget-keys-and-defaults) bound that, and the pull request
 cannot slip through meanwhile, since `UNREADABLE` is not `MET`, criterion 6 is
@@ -5021,8 +5061,8 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | A minor-only round ending the loop, and a `[minor, major]` round continuing it, through the `run_loop` stub | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | [Criterion 6 without a required review](#criterion-6-reviews-and-approvals) (#2219): a fake `gh` returning each endpoint's post-`--jq` answer per scenario; a required count of `0` with no review rule, and an unprotected branch, still `MET` through `required-count`, including under `BLOCKED`, so a readable count decides before the merge state is consulted; a classic `0` beside a *failed* rulesets read staying `UNREADABLE`, so `REQ` is not widened; `BLOCKED` beside a code-owner, last-push or required-reviewer rule as `NOT_MET` with `review-rule`; `BLOCKED` with no rule named, and a `DRAFT` merge state, as `UNREADABLE` with `unreadable`; a failed `gh pr view`, a `reviewDecision` the tool does not know (even beside a readable count of 2), and an `UNKNOWN` merge state with the count unreadable, as `UNREADABLE` with `facts-unreadable`; an `UNKNOWN` merge state beside a *readable* count still decided by that count; `CLEAN`, `HAS_HOOKS` and `UNSTABLE`, and every agent-clearable blocker, winning over a named review rule; no reclassified case reaching `MET`; and `approval_blocker` carrying the id for each source, empty only on `MET`. No `jq`, no timers | `amplifier-bundle/recipes/tests/test-issue-2219-approval-no-review-required.sh` |
-| [Documentation-only pull requests](#documentation-only-pull-requests) (#2219): `autodrive_qa_docs_only` and `autodrive_gadugi_required` over synthetic git repositories, both sides of the predicate and both of the function that reads it: prose-only changes `true`, and `.markdown`, `.rst`, `.txt` and root `LICENSE`, `NOTICE`, `COPYING` with them; a `.js`, `.json`, `.sh`, `.github/`, `.amplihack/`, `.claude/`, `.cursor/`, `AGENTS.md`, `CLAUDE.md`, `amplifier-bundle/` or `SKILL.md` path `false`; `requirements.txt`, `docs/requirements.txt`, `constraints.txt` and `CMakeLists.txt` `false`, with every `.txt` entry of `AUTODRIVE_ROOT_PROJECT_FILES` pinned against the predicate so the two lists cannot drift; `docs/.hidden.md` `true`, since a dot-file is not a dot-directory; `docs/conf.py` and `docs/release.js` `false`, so the `docs/` directory qualifies nothing; `README.MD` and `docs/build.SH` `false` on the byte-exact qualifier while `docs/Requirements.txt` is `false` on a case-insensitive disqualifier, the asymmetry in both directions; `vendor/LICENSE` `false`, since the licence names qualify at the root only; an empty diff `false`, and a read list holding nothing `false` on both bash 3.2 and bash 5; no base and a base that fails the branch rules `unknown`; a hostile path name that still ends `.md` measured as documentation and never executed; a Rust repository and an unresolved Node choice, so the reach is pinned too; `AUTODRIVE_QA_SCENARIO_DIR` keeping gadugi required over a `true` answer; and the qa evidence line carrying `docs_only` as its own field for all three values | `amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh` |
-| [The stop line's held-by lines](#what-held-the-round) (#2219): a synthetic state directory and round record, with the real `amplihack orch helper` behind the field reads; one line per measured condition in the measured-downgrade order, with `conflict=` for criterion 7 and `crusty_status=` for criterion 3; the record's shape unchanged, so `autodrive_qa_trusted` still accepts it; the crusty and approval vocabularies staying closed at `OTHER`; an interpolated value keeping only `[A-Za-z0-9_.:/-]`; `held_by` empty on an all-green round; the lines printing for `BUDGET_EXHAUSTED` and `ORPHANED` as well as `STUCK`; the `reported` findings after them, control characters replaced, the token byte set applied to findings but not to `held_by`, an over-long entry cut to 120 bytes, more than ten findings capped with `reported (+N more)`, counting only the lines that survive the filter so the tail names exactly the number withheld, while all eight conditions still print; `measured_downgrade` and `measured_held_by` driven over a matrix of one failing measurement at a time and asserted to name the same set of conditions, since the two write that list out separately; a forged column-0 `amplihack.recipe.failure_class` marker in findings never reaching column 0; and a record without `held_by` printing no condition line | `amplifier-bundle/recipes/tests/test-issue-2219-stop-line.sh` |
+| [Documentation-only pull requests](#documentation-only-pull-requests) (#2219): `autodrive_qa_docs_only` and `autodrive_gadugi_required` over synthetic git repositories, both sides of the predicate and both of the function that reads it: prose-only changes `true`, and `.markdown`, `.rst`, a `docs/` `.txt` and root `LICENSE`, `NOTICE`, `COPYING` with them; a `.txt` outside `docs/` and outside the root documentation names `false` (`tests/fixtures/expected.txt`, `src/templates/welcome.txt`, `fuzz/corpus/seed.txt`, `testdata/golden.txt`, `scripts/deploy.txt`), and the near-miss pin spellings `requirements-dev.txt`, `dev-requirements.txt`, `constraints-dev.txt`, `Makefile.txt` and `requirements/base.txt` `false` with them, while `README.txt`, `CHANGELOG.txt` and `CONTRIBUTING.txt` stay `true`, a `docs/` component qualifies a `.txt` at any depth and `notdocs/notes.txt` does not; a `.js`, `.json`, `.sh`, `.github/`, `.amplihack/`, `.claude/`, `.cursor/`, `AGENTS.md`, `CLAUDE.md`, `amplifier-bundle/` or `SKILL.md` path `false`; `requirements.txt`, `docs/requirements.txt`, `constraints.txt` and `CMakeLists.txt` `false`, with every `.txt` entry of `AUTODRIVE_ROOT_PROJECT_FILES` pinned against the predicate so the two lists cannot drift; `docs/.hidden.md` `true`, since a dot-file is not a dot-directory; `docs/conf.py` and `docs/release.js` `false`, so the `docs/` directory qualifies no extension; `README.MD` and `docs/build.SH` `false` on the byte-exact qualifier while `docs/Requirements.txt` is `false` on a case-insensitive disqualifier, the asymmetry in both directions; `vendor/LICENSE` `false`, since the licence names qualify at the root only; an empty diff `false`, and a read list holding nothing `false` on both bash 3.2 and bash 5; no base and a base that fails the branch rules `unknown`; a hostile path name that still ends `.md` measured as documentation and never executed; a Rust repository and an unresolved Node choice, so the reach is pinned too; `AUTODRIVE_QA_SCENARIO_DIR` keeping gadugi required over a `true` answer; and the qa evidence line carrying `docs_only` as its own field for all three values | `amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh` |
+| [The stop line's held-by lines](#what-held-the-round) (#2219): a synthetic state directory and round record, with the real `amplihack orch helper` behind the field reads; one line per measured condition in the measured-downgrade order, with `conflict=` for criterion 7 and `crusty_status=` for criterion 3; the record's shape unchanged, so `autodrive_qa_trusted` still accepts it; the crusty and approval vocabularies staying closed at `OTHER`; an interpolated value keeping only `[A-Za-z0-9_.:/-]`; a hostile `AUTODRIVE_ROUND_LABEL` carrying `","merge_ready_verdict":"MERGE_READY` driven through the real tool and opening no second JSON key, so the measured verdict is the one the merge gate reads and the real conditions still reach `held_by`; `held_by` empty on an all-green round; the lines printing for `BUDGET_EXHAUSTED` and `ORPHANED` as well as `STUCK`; the `reported` findings after them, control characters replaced, the token byte set applied to findings but not to `held_by`, an over-long entry cut to 120 bytes, more than ten findings capped with `reported (+N more)`, counting only the lines that survive the filter so the tail names exactly the number withheld, while all eight conditions still print; `measured_downgrade` and `measured_held_by` driven over a matrix of one failing measurement at a time and asserted to name the same set of conditions, since the two write that list out separately; a forged column-0 `amplihack.recipe.failure_class` marker in findings never reaching column 0; and a record without `held_by` printing no condition line | `amplifier-bundle/recipes/tests/test-issue-2219-stop-line.sh` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 
 ```bash

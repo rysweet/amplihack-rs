@@ -15,13 +15,17 @@
 #   autodrive_qa_docs_only <dir> -> true | false | unknown
 #
 # true only when the changed-path list is KNOWN and NON-EMPTY and every path
-# qualifies. Qualifying, byte-exact: a path ending `.md`, `.markdown`, `.rst`
-# or `.txt`, or a ROOT `LICENSE`, `NOTICE` or `COPYING`. Disqualifying
-# whatever else matches, compared case-insensitively: anything under a
-# DOT-DIRECTORY at any depth or under `amplifier-bundle/`, a basename of
-# `AGENTS.md`, `CLAUDE.md` or `SKILL.md`, and `requirements.txt`,
-# `constraints.txt` or `CMakeLists.txt`, which end `.txt` and so qualify
-# above but are read by a build rather than by a person.
+# qualifies. Qualifying, byte-exact: a path ending `.md`, `.markdown` or
+# `.rst`, or a ROOT `LICENSE`, `NOTICE` or `COPYING`. A `.txt` qualifies only
+# under a `docs/` component at any depth or as a root documentation name
+# (`README.txt`, `CHANGELOG.txt` and the rest), because the extension is worn
+# by golden fixtures, page templates, corpus seeds and dependency pins as
+# readily as by prose. Disqualifying whatever else matches, compared
+# case-insensitively: anything under a DOT-DIRECTORY at any depth or under
+# `amplifier-bundle/`, a basename of `AGENTS.md`, `CLAUDE.md` or `SKILL.md`,
+# and `requirements.txt`, `constraints.txt` or `CMakeLists.txt`, which a build
+# reads rather than a person — the narrowed qualifier stops all three at the
+# root, so what the rule still catches is the copy under `docs/`.
 #
 # There is no extension disqualifier for `.yml`, `.toml`, `.json` or `.sh`:
 # the byte-exact qualifier has already rejected every one of those, so such a
@@ -29,9 +33,9 @@
 # one of the four extensions, not because it is a script.
 #
 # Three properties are deliberate and are pinned below:
-#   - The `docs/` DIRECTORY does not qualify a path; the extension does. A
-#     `docs/conf.py` or `docs/release.js` is code that happens to live under
-#     docs/.
+#   - The `docs/` DIRECTORY qualifies no EXTENSION; it only widens where a
+#     `.txt` may sit. A `docs/conf.py` or `docs/release.js` is still code that
+#     happens to live under docs/.
 #   - Disqualifiers are matched case-insensitively (`docs/Requirements.txt`
 #     is a dependency pin) while qualifiers are byte-exact (`README.MD`
 #     simply costs the exemption). Both directions fail closed.
@@ -238,9 +242,9 @@ change README.MD
 both D13-uppercase-md false true \
   "qualifiers are byte-exact: unusual casing costs the exemption rather than granting it" "$B"
 
-repo package.json notes.txt spec.rst readme.markdown src/index.js; base
-change notes.txt spec.rst readme.markdown
-both D14-other-doc-extensions true false ".markdown, .rst and .txt qualify beside .md" "$B"
+repo package.json docs/notes.txt spec.rst readme.markdown src/index.js; base
+change docs/notes.txt spec.rst readme.markdown
+both D14-other-doc-extensions true false ".markdown, .rst and a docs/ .txt qualify beside .md" "$B"
 
 echo "== a .txt a build reads is not documentation =="
 # The same repository lists requirements.txt and CMakeLists.txt in
@@ -269,7 +273,54 @@ both D25-constraints false true "constraints.txt pins dependencies the same way"
 repo package.json docs/notes.txt README.md; base
 change docs/notes.txt
 both D25b-plain-txt-still-qualifies true false \
-  "an ordinary .txt is still prose: the rule names three basenames, not the extension" "$B"
+  "an ordinary .txt under docs/ is still prose, whatever its basename" "$B"
+
+echo "== .txt qualifies only where prose lives =="
+# The extension is generic. Qualifying it everywhere exempted a golden
+# fixture, a page template, a fuzz corpus seed and a dependency pin whose
+# basename is not one of the three named above, because each ends .txt and
+# nothing else disqualified it. The qualifier now names the places prose
+# lives: under a docs/ component at any depth, or a root documentation name.
+
+for f in tests/fixtures/expected.txt src/templates/welcome.txt \
+         fuzz/corpus/seed.txt testdata/golden.txt scripts/deploy.txt; do
+  repo package.json "$f" README.md; base
+  change "$f"
+  both "D27-txt-outside-docs:${f}" false true \
+    "a .txt outside docs/ and outside the root names is not prose" "$B"
+done
+
+# The three disqualifying basenames are exact, so every near-miss spelling of
+# a dependency pin used to qualify. They are stopped by the narrowed
+# qualifier now rather than by a list that can never be complete.
+for f in requirements-dev.txt dev-requirements.txt constraints-dev.txt Makefile.txt; do
+  repo package.json "$f" README.md; base
+  change "$f"
+  both "D28-pin-near-miss:${f}" false true \
+    "a root .txt outside the documentation names is not prose, however it is spelt" "$B"
+done
+
+repo package.json requirements/base.txt README.md; base
+change requirements/base.txt
+both D28b-pin-in-directory false true \
+  "requirements/base.txt is a pin in a directory, and the directory is not docs/" "$B"
+
+for f in README.txt CHANGELOG.txt CONTRIBUTING.txt; do
+  repo package.json "$f" src/index.js; base
+  change "$f"
+  both "D29-root-doc-name:${f}" true false \
+    "a root documentation name ending .txt is prose and keeps the exemption" "$B"
+done
+
+repo package.json docs/guide/install.txt sub/docs/notes.txt src/index.js; base
+change docs/guide/install.txt sub/docs/notes.txt
+both D30-docs-component-any-depth true false \
+  "a docs/ component qualifies a .txt at any depth, at the root or below one" "$B"
+
+repo package.json notdocs/notes.txt README.md; base
+change notdocs/notes.txt
+both D30b-docs-is-a-component false true \
+  "docs/ must be a whole path component: notdocs/ does not qualify a .txt" "$B"
 
 # Drift: the two lists are not read from one another at runtime, because
 # autodrive_qa_docs.sh reads nothing outside the scan variables and an array
