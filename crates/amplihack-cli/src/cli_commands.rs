@@ -380,7 +380,10 @@ MODEL SELECTION (issues #1421, #1527)
     /// prefix for a command started with `tmux new-session`. tmux gives a new
     /// session the server's global environment, not this shell's, and that
     /// holds the session markers of whatever started the server; the prefix
-    /// removes them, so only this shell's answer arrives. `setsid` and `nohup`
+    /// removes them, so only this shell's answer arrives. It also removes
+    /// AMPLIHACK_PARENT_RECIPE_PID, AMPLIHACK_PARENT_RECIPE_STARTTIME and
+    /// AMPLIHACK_AUTODRIVE_STATE_DIR, which a server started from a recipe
+    /// step would otherwise hand to every session. `setsid` and `nohup`
     /// keep this shell's environment and need no prefix. A default guess stays
     /// tagged as one. Keep the tmux command in double quotes: in single quotes
     /// this runs in the new session and reads the server's markers.

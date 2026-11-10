@@ -75,6 +75,8 @@ context:
   # Outputs populated during execution (propagated through phase sub-recipes)
   clarified_requirements: ""
   issue_number: ""
+  # Issue #1881: "true" opts in to creating a GitHub tracking issue; the default is local tracking.
+  create_issue: "false"
   branch_name: ""
   worktree_path: ""
   # Issue #425: nested-recipe context propagation for the worktree-setup
@@ -121,7 +123,6 @@ context:
   terminal_state: ""
   terminal_reason: ""
   publish_status: ""
-  should_publish: "true"
   should_finalize: "true"
   should_run_ci_wait: "true"
   should_merge: "true"

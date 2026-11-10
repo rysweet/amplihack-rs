@@ -559,6 +559,9 @@ pub(super) fn execute_recipe_via_rust(
     // Issue #1606: from here on a SIGHUP/SIGINT/SIGTERM stops the run, at any
     // point: setup, a running attempt, or retry backoff.
     super::stop_signal::arm();
+    // Issue #1976: a nested run stops when its parent `recipe run` exits. A
+    // parent already gone sets the stop here, before the runner is spawned.
+    super::parent_watch::start();
 
     let binary = super::binary::find_recipe_runner_binary()?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
@@ -727,6 +730,30 @@ pub(super) fn execute_recipe_via_rust(
         command.env(MAX_DEPTH_ENV, guard.max_depth.to_string());
         command.env("AMPLIHACK_RECIPE_RUN_ID", run_id);
         command.envs(workspace.borrow().env());
+        // Issue #1976: name this `recipe run` as the parent of any nested run
+        // a step starts, on the child only (never set_var). Without a start
+        // time the pair is omitted: a pid alone could be reused.
+        match super::parent_watch::own_starttime() {
+            Some(starttime) => {
+                command.env(
+                    super::parent_watch::PARENT_PID_ENV,
+                    std::process::id().to_string(),
+                );
+                command.env(
+                    super::parent_watch::PARENT_STARTTIME_ENV,
+                    starttime.to_string(),
+                );
+            }
+            None => {
+                command.env_remove(super::parent_watch::PARENT_PID_ENV);
+                command.env_remove(super::parent_watch::PARENT_STARTTIME_ENV);
+            }
+        }
+        // Issue #1976: only the round's own `recipe run` may write the drive's
+        // orphaned.json; nested runs below it must not overwrite it. This
+        // level reads the variable from its own environment, so removing it
+        // on the child does not affect this run.
+        command.env_remove(super::orphan_record::AUTODRIVE_STATE_DIR_ENV);
 
         Ok(command)
     };
@@ -747,6 +774,22 @@ pub(super) fn execute_recipe_via_rust(
             // Issue #1606: never start an attempt after a stop signal, e.g.
             // one that arrived during retry backoff.
             if let Some(signal) = super::stop_signal::pending() {
+                // Issue #1976: an orphan stop before any runner started still
+                // leaves its final record and orphaned.json.
+                // The captured value alone decides the status (C-S6).
+                if signal == super::stop_signal::ORPHANED as i32 {
+                    let correlation = RecipeRunCorrelation::new(
+                        recipe_name.clone(),
+                        working_dir,
+                        context,
+                        binary.as_path(),
+                    )
+                    .with_settings(run_settings.clone());
+                    // The pointer contract is one `early` then one `final`
+                    // per run_id, even when no runner is spawned.
+                    correlation.emit_early();
+                    record_orphan(&correlation, None, &guard.tree_id);
+                }
                 return AttemptOutcome::Final(Err(anyhow::Error::new(
                     super::stop_signal::StoppedBySignal(signal),
                 )));
@@ -771,6 +814,7 @@ pub(super) fn execute_recipe_via_rust(
                 correlation,
                 recipe_path,
                 timeout,
+                &guard.tree_id,
                 &mut stderr_tail,
             );
 
@@ -929,6 +973,7 @@ fn spawn_with_streaming_stderr(
     correlation: RecipeRunCorrelation,
     recipe_path: &Path,
     timeout: Duration,
+    tree_id: &str,
     stderr_sink: &mut String,
 ) -> Result<RecipeRunResult> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -1046,12 +1091,19 @@ fn spawn_with_streaming_stderr(
                 reap_recipe_runner_group(child.id(), recipe_runner_teardown_grace());
                 crate::commands::recipe::stop::terminate(&tree);
                 crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
-                correlation.emit_final(
-                    RecipeRunFinalStatus::Failure,
-                    child_pid,
-                    status.code(),
-                    known_log_paths(None),
-                );
+                // Issue #1976: the captured signal value alone decides the
+                // status; a signal stored after an orphan request replaces it
+                // and is a Failure.
+                if signal == super::stop_signal::ORPHANED as i32 {
+                    record_orphan(&correlation, child_pid, tree_id);
+                } else {
+                    correlation.emit_final(
+                        RecipeRunFinalStatus::Failure,
+                        child_pid,
+                        status.code(),
+                        known_log_paths(None),
+                    );
+                }
                 return Err(anyhow::Error::new(super::stop_signal::StoppedBySignal(
                     signal,
                 )));
@@ -1067,12 +1119,18 @@ fn spawn_with_streaming_stderr(
                 crate::commands::recipe::stop::snapshot_tree(&std::collections::BTreeSet::from([
                     child.id() as i32,
                 ]));
-            let summary = correlation.emit_final(
-                RecipeRunFinalStatus::Failure,
-                child_pid,
-                None,
-                known_log_paths(None),
-            );
+            // Issue #1976: the flag value alone decides the status; a signal
+            // stored after an orphan request replaces it and is a Failure.
+            let summary = if signal == super::stop_signal::ORPHANED as i32 {
+                record_orphan(&correlation, child_pid, tree_id)
+            } else {
+                correlation.emit_final(
+                    RecipeRunFinalStatus::Failure,
+                    child_pid,
+                    None,
+                    known_log_paths(None),
+                )
+            };
             let detail = super::format::format_log_pointer_summary(&summary);
             // The sweep runs whatever the group teardown reports: a runner
             // that could not be reaped must not leave its descendants behind.
@@ -1371,6 +1429,29 @@ fn fail_with_final_record(
     let summary = correlation.emit_final(status, child_pid, exit_code, known_log_paths(None));
     let detail = super::format::format_log_pointer_summary(&summary);
     error.context(format!("recipe run {} ended: {detail}", summary.run_id))
+}
+
+/// Issue #1976: the final record and `orphaned.json` of an orphan stop. The
+/// existing teardown runs unchanged around it.
+fn record_orphan(
+    correlation: &RecipeRunCorrelation,
+    child_pid: Option<u32>,
+    tree_id: &str,
+) -> crate::commands::recipe::RecipeLogPointerSummary {
+    let parent_pid = super::stop_signal::orphan_info().map_or(0, |info| info.parent_pid);
+    let summary = correlation.emit_orphaned(
+        child_pid,
+        super::correlation::OrphanFields {
+            parent_pid,
+            tree_id,
+        },
+    );
+    super::orphan_record::write_to_state_dir(&super::orphan_record::OrphanRecord {
+        parent_pid,
+        tree_id: tree_id.to_string(),
+        run_id: correlation.run_id().to_string(),
+    });
+    summary
 }
 
 fn exit_status_label(status: &std::process::ExitStatus) -> String {

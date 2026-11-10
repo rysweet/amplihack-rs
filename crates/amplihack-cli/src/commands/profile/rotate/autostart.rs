@@ -382,7 +382,7 @@ pub fn autostart_on_launch(docker_flag: bool) {
             env: &env,
             auto_switch_on: &auto_switch_on,
             docker_env: &docker_env,
-            proc_root: Path::new("/proc"),
+            proc_root: &super::daemon::proc_root(),
             exe_name: &exe_name,
             spawn,
             home: &home,

@@ -52,6 +52,12 @@ mod issue_1962_seed_cmd;
 mod issue_1962_seed_output;
 #[path = "issue_1962_seed_scan.rs"]
 mod issue_1962_seed_scan;
+#[path = "issue_1976_orphaned_nested_run.rs"]
+mod issue_1976_orphaned_nested_run;
+#[path = "issue_1976_real_runner_nested_run.rs"]
+mod issue_1976_real_runner_nested_run;
+#[path = "issue_1976_removed_should_publish.rs"]
+mod issue_1976_removed_should_publish;
 #[path = "issue_2030_guards.rs"]
 mod issue_2030_guards;
 #[path = "issue_2030_no_prompt_in_argv.rs"]
@@ -303,6 +309,14 @@ mod issue_1985_codex_agent_step_flags;
 mod issue_2001_codex_usage;
 #[path = "issue_2010_codex_exec_notice.rs"]
 mod issue_2010_codex_exec_notice;
+#[path = "issue_2042_fake_proc_seam.rs"]
+mod issue_2042_fake_proc_seam;
+#[path = "issue_2042_host_proc_strace.rs"]
+mod issue_2042_host_proc_strace;
+#[path = "issue_2042_proc_root_guard.rs"]
+mod issue_2042_proc_root_guard;
+#[path = "issue_2042_seam_dry_run_and_refusal.rs"]
+mod issue_2042_seam_dry_run_and_refusal;
 #[path = "issue_2187_pr_only_task.rs"]
 mod issue_2187_pr_only_task;
 #[path = "issue_439_no_per_step_timeout.rs"]

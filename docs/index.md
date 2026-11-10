@@ -150,7 +150,7 @@ amplihack copilot
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
 - [Artifact Guard](artifact-guard.md) - Guard for broad staging, pre-commit, and workflow publication artifacts
 - [Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Keep generated workflow runtime output outside commit worktrees
-- [Clean Up After Recipe Runs](howto/clean-up-after-recipe-runs.md) - Where runs write, end-of-run cleanup, and `amplihack cleanup` for worktrees, targets, temporary folders and old logs
+- [Clean Up After Recipe Runs](howto/clean-up-after-recipe-runs.md) - Where runs write, end-of-run cleanup, when a checkout's build target is removed, linked targets, and `amplihack cleanup` for worktrees, targets, temporary folders and old logs
 - [Memory Configuration Consent](features/memory-consent-prompt.md) - Intelligent memory settings with timeout protection
 - [Verify .claude/ Staging](howto/verify-claude-staging.md) - Check that framework files are properly staged
 - [Verify Runtime Asset Resolution](howto/verify-runtime-asset-resolution.md) - Check helper, session, hooks, and multitask asset parity
@@ -165,6 +165,7 @@ amplihack copilot
 - [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account with the most capacity with `amplihack profile rotate`, and resume sessions stopped by a usage limit
 - [Bring Agent Sessions Back After a Terminal Loss](howto/supervise-agent-sessions.md) - Register long-lived Claude sessions with `amplihack agent` and let a supervisor service resume them from their saved conversation
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
+- [Keep Tests off the Host Process Table](howto/keep-tests-off-the-host-process-table.md) - How `amplihack profile` tests read a fake `/proc` through `AMPLIHACK_TEST_PROC_ROOT`, the `FakeProc` builder, and the guard that fails a test reading host processes
 - [Keep Tests out of the Real Profile Root](howto/keep-tests-out-of-the-real-profile-root.md) - How tests avoid writing real profiles' `settings.json`, and the guard that fails the run when one changes
 - [Give Test Logins a Fake Account Identity](howto/give-test-logins-a-fake-account-identity.md) - How profile tests give fake logins a server identity, seed logins in rotate unit tests, re-issue a credential when its account changes, and test the no-record case
 - [Keep Tests from Changing PATH and HOME](howto/keep-tests-from-changing-path-and-home.md) - How tests give a child process its `PATH` and `HOME` without changing the test process, and how to test a timeout so that host load cannot fail it
@@ -364,7 +365,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [How to Coordinate Concurrent PR Sessions with the Ownership Lease](howto/coordinate-concurrent-pr-sessions.md) - Acquire before force-push/rebase/merge, stand down when contended, auto-expire on crash, release on merge/close/session end
 - [PR-Ownership Lease Reference](reference/pr-ownership-lease.md) - `PrLease`, `LeaseStore`, `Clock`, `LeaseError`, on-disk format, configuration, and the behavior contract locked by `pr_lease_behavior.rs`
 - [Step 03 Host-Aware Tracking Idempotency](reference/recipe-step-03-idempotency.md) - GitHub issue, Azure Boards work-item, and local tracking reuse/create behavior
-- [Tracking Issue Selection Reference](reference/workflow-tracking-issue-selection.md) - How step 03 honours `issue_number` on GitHub and reuses only open issues referenced in the task text (#1595)
+- [Tracking Issue Selection Reference](reference/workflow-tracking-issue-selection.md) - How step 03 honours `issue_number` on GitHub, reuses only open issues referenced in the task text (#1595), defaults to local tracking unless `create_issue=true`, reuses exact-title matches, and bounds rate-limit retries with jittered backoff (#1881)
 - [Workflow Issue Extraction Reference](reference/workflow-issue-extraction.md) - Three-tier issue-number resolution (direct URL → PR closing-refs → `#N` verify) in step 03b
 - [Multi-Provider Workflow Reference](reference/multi-provider-workflow.md) - Provider-neutral helper routing for GitHub, Azure DevOps, local, and unsupported repositories
 - [How to Use the Workflow with Azure DevOps](howto/use-workflow-with-azure-devops.md) - Run default-workflow against an AzDO repository
@@ -803,6 +804,7 @@ Testing strategies, quality assurance, and validation patterns.
 - [Testing Plan](testing/TEST_PLAN.md) - Testing strategy and execution checklist
 - [Skill Frontmatter Type Guard](testing/SKILL_FRONTMATTER_TYPE_GUARD.md) - Regression test catching Copilot CLI frontmatter string-scalar TYPE bugs
 - [Load-Independent Deadline Tests for the Direct Usage Read](bugfixes/bugfix-1962-usage-direct-deadline-tests.md) - How the `tests_usage_direct` deadline tests derive their delays from `REFRESH_BUDGET` and `MAX_STEP` so that a loaded host cannot change their outcome
+- [Multitask Launcher Tests and the Profile Root Variable](bugfixes/bugfix-2014-multitask-launcher-env-race.md) - How the multitask launcher tests pass `AMPLIHACK_CLAUDE_PROFILE_ROOT` as an argument so that another test's non-UTF-8 value cannot fail them, and the regression test that races them against a mutator thread
 - [Merge-Base Diffs and Issue-Derived PR Titles in the Publish Step](bugfixes/bugfix-1968-publish-pr-merge-base-title.md) - How `workflow_publish_pr.sh` lists and counts changed files against the merge base and titles the PR from the issue, with the `Update <scope>` template as the last resort
 - [Honest PR Titles and Honoured No-Merge Directives](bugfixes/bugfix-929-pr-title-and-no-merge.md) - Lockfile-free scope selection for the template title and detection of no-merge directives in the task
 - [Keep the Pre-commit Hooks Portable to macOS](howto/keep-pre-commit-hooks-portable-to-macos.md) - POSIX sed, bash 3.2, Linux-only clippy allows, and libc type aliases

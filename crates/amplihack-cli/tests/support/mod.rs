@@ -3,6 +3,8 @@
 pub mod amplihack_bin;
 pub mod auto_drive_light;
 pub mod exec_stub;
+pub mod fake_proc;
+pub mod proc_root_scan;
 pub mod profile_1962;
 pub mod profile_default;
 pub mod profile_rotate;

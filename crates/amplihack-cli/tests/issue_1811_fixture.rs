@@ -232,6 +232,7 @@ impl Fixture {
             .env("AMPLIHACK_USAGE_LIMIT_WAIT", "0")
             .env("AMPLIHACK_GOVERNOR_WAIT", "0")
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
+        crate::isolated_amplihack::reapply_proc_root(&mut c);
         self.identity.iter().for_each(|i| i.configure(&mut c));
         c
     }

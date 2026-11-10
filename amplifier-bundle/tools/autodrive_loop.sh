@@ -231,14 +231,14 @@ while :; do
 
   echo "=== auto-drive loop '${LOOP_NAME}': ${ROUND_LABEL} ===" >&2
   T0=$SECONDS # the log is created under umask 077; the round runs with the caller's umask
-  ( umask "$CALLER_UMASK" && AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger round)" exec "$AMPLIHACK_BIN" recipe run "$ROUND_RECIPE_PATH" \
+  ( umask "$CALLER_UMASK" && AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger round)" AMPLIHACK_AUTODRIVE_STATE_DIR="$STATE_DIR" exec "$AMPLIHACK_BIN" recipe run "$ROUND_RECIPE_PATH" \
       --working-dir "$REPO" \
       -c "autodrive_round_record=${RECORD}" \
       -c "autodrive_round_label=${ROUND_LABEL}" \
       -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" \
       "${ROUND_CTX[@]}" -c "review_dir=${REVIEW_REAL}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
   ROUND_RC=$?; usage_add round "$T0"
-  tail -n 200 "$LOG" >&2 || true
+  tail -n 200 "$LOG" >&2 || true; orphan_stop "$ROUND_RC" "round ${ROUND_LABEL}" # exit 75 (#1976)
 
   if terminal_refusal "$ROUND_RC" "$LOG"; then
     echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from '${ROUND_RECIPE}' (#1327/#1332). Final: the guard is never retried into." >&2
@@ -326,7 +326,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
       -c "loop_clean_token=${TOKEN_SAFE}" -c "loop_round_verdict=${EVAL_VERDICT}" ) \
       >"$HEALTH_LOG" 2>&1
   HEALTH_RC=$?; usage_add evaluator "$T0"
-  tail -n 120 "$HEALTH_LOG" >&2 || true
+  tail -n 120 "$HEALTH_LOG" >&2 || true; orphan_stop "$HEALTH_RC" "the loop-health evaluator for ${ROUND_LABEL}"
 
   if terminal_refusal "$HEALTH_RC" "$HEALTH_LOG"; then
     echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from loop-health-evaluator. Final; not retried." >&2
