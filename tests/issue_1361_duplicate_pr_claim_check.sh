@@ -94,6 +94,12 @@ for a in "\$@"; do [ "\$prev" = "--state" ] && state="\$a"; prev="\$a"; done
 # The default-branch lookup. FAKE_DEFAULT_BRANCH may be set empty, or to a
 # reply that is not a branch name, to exercise the fallback.
 if [ "\${1:-}" = "repo" ]; then printf '%s\n' "\${FAKE_DEFAULT_BRANCH-main}"; exit 0; fi
+# The issue's own state (#2238). A merged pull request claims the issue only
+# while the issue is not open, so the helper reads this once, and only when a
+# recently-merged claim is in the window. FAKE_ISSUE_STATE carries the reply
+# (including a malformed one); FAKE_ISSUE_RC makes the lookup fail. Neither
+# may be read by the helper as a source of the state itself.
+if [ "\${1:-}" = "issue" ]; then printf '%s\n' "\${FAKE_ISSUE_STATE-OPEN}"; exit "\${FAKE_ISSUE_RC-0}"; fi
 # A token-shaped string is present in every error path so redaction is exercised.
 case "\${FAKE_GH:-none}" in
   none)        printf '[]\n' ;;
@@ -104,6 +110,14 @@ case "\${FAKE_GH:-none}" in
   mention)     [ "\$state" = "open" ] && printf '%s\n' '[{"number":903,"url":"https://github.com/o/r/pull/903","title":"Update something similar to #1084 elsewhere","state":"OPEN","mergedAt":null,"headRefName":"fix/timeouts","closingIssuesReferences":[{"number":77}]}]' || printf '[]\n' ;;
   merged_new)  [ "\$state" = "merged" ] && printf '%s\n' '[{"number":1132,"url":"https://github.com/o/r/pull/1132","title":"Update crates (#1084)","state":"MERGED","mergedAt":"$NOW","headRefName":"fix/1084-winner","closingIssuesReferences":[{"number":1084}]}]' || printf '[]\n' ;;
   merged_old)  [ "\$state" = "merged" ] && printf '%s\n' '[{"number":40,"url":"https://github.com/o/r/pull/40","title":"Update crates (#1084)","state":"MERGED","mergedAt":"$OLD","headRefName":"fix/1084-ancient","closingIssuesReferences":[{"number":1084}]}]' || printf '[]\n' ;;
+  # #2238: two shapes of merged pull request that leave the issue OPEN. The
+  # first was linked to the issue but only referenced it, so merging it closed
+  # nothing; the second closed a sibling issue and used a keyword GitHub could
+  # not link (non-default base). In both the follow-up work is still to do, and
+  # the recorded incidents were refused for hours with no bypass but
+  # allow_existing_pr=true.
+  merged_linked_open) [ "\$state" = "merged" ] && printf '%s\n' '[{"number":1140,"url":"https://github.com/o/r/pull/1140","title":"Update crates (#1084)","state":"MERGED","mergedAt":"$NOW","headRefName":"fix/1084-partial","closingIssuesReferences":[{"number":1084}],"body":"BODYTEXT-1140 Refs #1084, which stays open until the follow-up lands"}]' || printf '[]\n' ;;
+  merged_fixes_open)  [ "\$state" = "merged" ] && printf '%s\n' '[{"number":1141,"url":"https://github.com/o/r/pull/1141","title":"Tidy something","state":"MERGED","mergedAt":"$NOW","headRefName":"fix/1084-sibling","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1141\\n\\nFixes #1084"}]' || printf '[]\n' ;;
   # #1707: a bare number in another tool's branch is not a claim; a body
   # closing keyword is. Every PR body carries a BODYTEXT marker so the tests
   # can prove body text never reaches the output.
@@ -176,6 +190,10 @@ for b in main trunk; do
   git -C "$WORK/originhead_$b" update-ref "refs/remotes/origin/$b" HEAD
   git -C "$WORK/originhead_$b" symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$b"
 done
+# A working directory standing on the head branch of the pull request that
+# merged (#1448 + #2238): reviewing or following up on one's own merged work.
+mkrepo "$WORK/ownmerged" "https://github.com/o/r.git"
+git -C "$WORK/ownmerged" checkout -q -b fix/1084-winner
 mkdir -p "$WORK/notagit"
 
 # run <repo> [env...] -- [extra helper args] ; sets OUT / RC
@@ -205,9 +223,26 @@ claimed() { # claimed <label> <expected-pr-number>
   fi
 }
 run "$WORK/gh" FAKE_GH=closing_ref; claimed "an open PR whose body closes the issue" 1128
+grep -q 'open pull request #1128 is already working on issue #1084.' <<<"$OUT" \
+  && pass "an open claim's headline says the pull request is open" \
+  || fail "the headline does not name an open PR #1128: ${OUT:0:400}"
+grep -q 'issue state:' <<<"$OUT" \
+  && fail "an issue state was reported although no merged claim was in the window" \
+  || pass "no issue state is reported when the lookup did not run"
 run "$WORK/gh" FAKE_GH=title_paren; claimed "an open PR whose title carries (#N)" 900
 run "$WORK/gh" FAKE_GH=branch_name; claimed "an open PR on an issue-N branch" 901
-run "$WORK/gh" FAKE_GH=merged_new;  claimed "a PR merged inside the recent window" 1132
+# A merged pull request claims the issue only while the issue is not open
+# (#2238). This scenario has always meant the closed-by-that-PR race of
+# #1123/#1126/#1128, so the issue state is now declared explicitly. Without
+# this line the #1361 merged-window guard would no longer be covered at all.
+run "$WORK/gh" FAKE_GH=merged_new FAKE_ISSUE_STATE=CLOSED
+claimed "a PR merged inside the recent window, the issue closed" 1132
+grep -q 'recently-merged pull request #1132 is already working on issue #1084.' <<<"$OUT" \
+  && pass "the refusal headline says which kind of pull request claims the issue" \
+  || fail "the refusal headline does not name a recently-merged PR #1132: ${OUT:0:400}"
+grep -q 'issue state: CLOSED' <<<"$OUT" \
+  && pass "the refusal reports the issue state it read" \
+  || fail "the refusal does not report the issue state: ${OUT:0:400}"
 
 # #1707: the branch signal is the workflow's own `<prefix>/issue-<N>` shape, and
 # a closing keyword in the body is a claim even when GitHub left
@@ -344,6 +379,46 @@ run "$WORK/gh" FAKE_GH=merged_old
 [ "$RC" -eq 0 ] \
   && pass "a PR merged long ago does not block later work on a reopened issue" \
   || fail "an ancient merge blocked the run: rc=$RC out=${OUT:0:300}"
+
+# --- #2238: a merged pull request claims the issue only while it is closed ---
+# Two Product-Management lanes were refused for hours on this. In each, a pull
+# request had merged inside the window and left the issue open: the follow-up
+# work the issue asked for was exactly what the refused run was for. The
+# discriminator is the issue's own state, read once and only when a
+# recently-merged claim is in the window.
+unclaimed merged_linked_open "a merged PR that only referenced an issue still open"
+grep -q '#1140' <<<"$OUT" && grep -q '#1084' <<<"$OUT" && grep -q '2238' <<<"$OUT" \
+  && pass "the allowance says which merged pull request it set aside, and why" \
+  || fail "the allowance does not name the dropped PR, the issue and #2238: ${OUT:0:400}"
+unclaimed merged_fixes_open "a merged PR closing a sibling issue, this one still open"
+
+# Fail-safe direction. The issue state can only ever DROP a claim, so every way
+# of not getting a usable answer must leave the merged pull request counting;
+# otherwise an API hiccup silently disables the #1361 guard. The reply is still
+# the one that would allow the run; only the exit status differs.
+run "$WORK/gh" FAKE_GH=merged_new FAKE_ISSUE_RC=1
+claimed "a merged claim whose issue state could not be read" 1132
+grep -q 'issue state: (unreadable)' <<<"$OUT" \
+  && pass "an unreadable issue state is reported as unreadable" \
+  || fail "an unreadable issue state was not reported as such: ${OUT:0:400}"
+
+run "$WORK/gh" FAKE_GH=merged_new FAKE_ISSUE_STATE='ghp_FAKEFAKEFAKEFAKEFAKEFAKE0002'
+claimed "a merged claim whose issue state is malformed" 1132
+grep -q 'ghp_FAKEFAKEFAKEFAKEFAKEFAKE0002' <<<"$OUT" \
+  && fail "a malformed issue state reached the output" \
+  || pass "a malformed issue state never reaches the output"
+
+# The #1448 allowance and the #2238 filter meet on a working directory standing
+# on the merged pull request's own head branch. Both outcomes are exit 0; which
+# token stdout carries says which rule allowed the run.
+run "$WORK/ownmerged" FAKE_GH=merged_new FAKE_ISSUE_STATE=CLOSED
+[ "$RC" -eq 0 ] && grep -q '^issue_claim_check: ok-own-pr issue=1084' <<<"$OUT" \
+  && pass "a merged claim on our own head branch is this run continuing it (#1448)" \
+  || fail "own-head merged claim mishandled: rc=$RC out=${OUT:0:400}"
+run "$WORK/ownmerged" FAKE_GH=merged_new
+[ "$RC" -eq 0 ] && grep -q '^issue_claim_check: ok issue=1084' <<<"$OUT" \
+  && pass "a merged claim on our own head branch with the issue open is no claim at all" \
+  || fail "own-head merged claim with an open issue mishandled: rc=$RC out=${OUT:0:400}"
 run "$WORK/gh" FAKE_GH=none
 [ "$RC" -eq 0 ] && grep -q 'issue_claim_check: ok' <<<"$OUT" \
   && pass "an unclaimed issue passes" \

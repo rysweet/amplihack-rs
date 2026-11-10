@@ -123,6 +123,69 @@
 # unclaimed, and it is not evidence that it is claimed either. Only a PR we
 # actually saw stops a run.
 #
+# A MERGED PULL REQUEST CLAIMS THE ISSUE ONLY WHILE THE ISSUE IS NOT OPEN
+# (issue #2238)
+#
+# A pull request whose body says `Closes #N` closes the issue when it merges,
+# so "merged claim, closed issue" is the ordinary pair, and the #1123 race
+# above is that pair seen inside the window. The pair that is NOT a race is a
+# merged pull request that left the issue open: one that only referenced the
+# issue ("Refs #N, which stays open until this lands"), or that closed a
+# sibling issue while linking this one. Follow-up work on such an issue met a
+# refusal naming a pull request that had already shipped, with no remedy short
+# of a bypass. #2238 records two of them, from Product-Management lanes on
+# another repository; the issue and pull request numbers there are that
+# repository's, and every other number in this header is this one's.
+#
+# So when any claim in the window is merged, the issue's own state is read
+# once, `gh issue view N --json state`, and if it reads OPEN every merged
+# claim is dropped from both halves of the result. Open claims are untouched:
+# an open pull request claims the issue whatever state the issue is in.
+#
+# A merged claim on our own head branch is dropped with the rest, since the
+# rule is about the pull request having merged, not about whose it is. That
+# changes what such a run prints. With no claim of ours left to report, a
+# review or resume run standing on a merged pull request's head branch now
+# takes the plain `issue_claim_check: ok issue=.. repo=..` line instead of
+# `issue_claim_check: ok-own-pr issue=.. repo=.. pr=.. head=..`, and the #1448
+# INFO line below is not emitted. The outcome and the exit code are the same
+# either way; only the stdout token and the explanation differ.
+#
+# The issue's state is the whole discriminator. closedByPullRequestsReferences
+# is deliberately not requested, although it looks like the direct answer:
+# GitHub populates it with pull requests LINKED to close the issue, not with
+# the one that did. In the case recorded in #2238 the issue was still open and
+# that field already listed the merged pull request, so consulting it would
+# re-refuse the exact case this rule exists to admit.
+#
+# The state is read at most once per run, after the claim list exists and only
+# when a merged claim is in it, never in a loop and never with a retry. No
+# grace period is applied to it. A pull request merged seconds ago may briefly
+# leave the issue reading OPEN and have its claim dropped; covering that would
+# mean a wall-clock window, and the recorded races were 29 and 63 minutes
+# apart, both of them visible through the open half instead.
+#
+# Every way the read can fail leaves the merged claims counting, which is the
+# behaviour from before #2238: a non-zero exit, a timeout, an empty answer, or
+# an answer that is not a plain state word. An unreadable state is not evidence
+# that an issue is open, and promoting it to "cannot check" would disable the
+# #1361 guard on any API hiccup. There is no new outcome and no new exit code;
+# the three outcomes above are unchanged.
+#
+# What this means in practice: an issue left open by a merged pull request is
+# free for follow-up work, with no `allow_existing_pr=true` and no
+# `AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK=1`. When a refusal does happen it says
+# which kind of claim it stands on in its first line — "open pull request #N
+# is already working on issue #M", or "recently-merged pull request #N ..." —
+# and whenever a merged claim was in the window the block also reports
+# the issue state that was read, on an `issue state:` line beside the
+# repository and branch. A refusal on a merged pull request is therefore
+# legible as one without reading the claim list, and reopening the issue is
+# the remedy when such a refusal is wrong. The verdict thus depends on
+# open/closed state, which anyone with triage permission can change; the
+# influence runs one way only, since it can drop a claim and never create one,
+# and it is weaker than the two bypasses the helper already honours.
+#
 # WORKING ON THE PULL REQUEST IS NOT RACING IT (issue #1448)
 #
 # The claim is on the ISSUE, so every follow-up run against an issue that has a
@@ -227,6 +290,13 @@ case "$TIMEOUT_S" in ''|*[!0-9]*) TIMEOUT_S=45 ;; esac
 case "$WINDOW_H" in ''|*[!0-9]*) WINDOW_H=24 ;; esac
 case "$OPEN_LIMIT" in ''|*[!0-9]*) OPEN_LIMIT=100 ;; esac
 case "$MERGED_LIMIT" in ''|*[!0-9]*) MERGED_LIMIT=60 ;; esac
+
+# The issue's own state (#2238), read at most once and only when a merged claim
+# is in the window. Both are initialised here and expanded as ${VAR:-} at every
+# use: under `set -u` an unbound expansion would exit 1 before any verdict
+# reached stdout, and both callers read a bare exit 1 as FAILED_DUPLICATE_CLAIM.
+ISSUE_STATE=""
+ISSUE_STATE_READ=""
 
 note() { printf '%s\n' "$*" >&2; }
 
@@ -501,6 +571,69 @@ if [ -z "${CLAIMS//[[:space:]]/}" ]; then
   unknown "claim-filter-unreadable"
 fi
 
+# ---------------------------------------------------------------------------
+# 3b. A merged pull request claims the issue only while the issue is not open
+#     (issue #2238).
+# ---------------------------------------------------------------------------
+#
+# Reached only when a merged claim survived section 3, so the ordinary run —
+# no claims, or open ones only — makes no additional API call and behaves
+# exactly as it did before. The call is made once here, never per claim and
+# never in a loop, and it is not retried.
+
+MERGED_CLAIMS="$(printf '%s' "$CLAIMS" | jq '
+  [(.ours // []), (.others // [])] | add
+  | map(select(.claim_source == "recently-merged")) | length' 2>/dev/null || echo "")"
+case "$MERGED_CLAIMS" in ''|*[!0-9]*) MERGED_CLAIMS=0 ;; esac
+
+if [ "$MERGED_CLAIMS" -gt 0 ]; then
+  ISSUE_STATE_READ="true"
+  # stderr to /dev/null, not to $ERRFILE: routing provider text from this call
+  # into the shared error file would let it surface through the unrecognised-
+  # api-error message, which is an outcome this filter must never reach.
+  if command -v timeout >/dev/null 2>&1; then
+    ISSUE_STATE="$(timeout "$TIMEOUT_S" gh issue view "$ISSUE" --repo "$REPO_SLUG" --json state --jq '.state' 2>/dev/null)" || ISSUE_STATE=""
+  else
+    ISSUE_STATE="$(gh issue view "$ISSUE" --repo "$REPO_SLUG" --json state --jq '.state' 2>/dev/null)" || ISSUE_STATE=""
+  fi
+  # First line, then bounded, then stripped, then allow-listed — by parameter
+  # expansion only, because a pipeline ending in an early-exit stage is the
+  # shape the #1434 guard bans. The bound comes before the substitution so that
+  # an HTML or proxy page served in place of a state word cannot drive a
+  # quadratic substitution over its whole body (#1707). The allow-list is what
+  # makes this value printable: it admits a bare word and nothing else, so no
+  # token shape, URL, escape sequence or control character can reach a log.
+  ISSUE_STATE="${ISSUE_STATE%%$'\n'*}"
+  ISSUE_STATE="${ISSUE_STATE:0:64}"
+  ISSUE_STATE="${ISSUE_STATE//[[:space:]]/}"
+  [[ "$ISSUE_STATE" =~ ^[A-Za-z_]+$ ]] || ISSUE_STATE=""
+
+  if [ "$(printf '%s' "$ISSUE_STATE" | tr '[:upper:]' '[:lower:]')" = "open" ]; then
+    # The re-filter is validated structurally rather than for non-emptiness: a
+    # jq program that succeeded but emitted null or a scalar would replace
+    # CLAIMS with something `.others | length` cannot read, and the guard would
+    # fail open through claim-filter-unreadable. This program emits nothing at
+    # all unless its input is the two-array object section 3 builds.
+    FILTERED="$(printf '%s' "$CLAIMS" | jq -c '
+      if (type == "object") and ((.ours | type) == "array") and ((.others | type) == "array")
+      then {ours:   (.ours   | map(select(.claim_source != "recently-merged"))),
+            others: (.others | map(select(.claim_source != "recently-merged")))}
+      else empty end' 2>/dev/null)" || FILTERED=""
+    if [[ "$FILTERED" =~ [^[:space:]] ]]; then
+      # Numbers only. Titles and bodies are attacker-controlled free text and
+      # are never printed; `numbers` discards anything that is not one.
+      DROPPED="$(printf '%s' "$CLAIMS" | jq -r '
+        [(.ours // []), (.others // [])] | add
+        | map(select(.claim_source == "recently-merged") | .number)
+        | map(numbers | tostring) | join(", #")' 2>/dev/null || echo "")"
+      CLAIMS="$FILTERED"
+      if [ -n "$DROPPED" ]; then
+        note "INFO: issue claim check: pull request #${DROPPED} merged recently, but issue #${ISSUE} is still open, so it is not a claim on the work that remains — a merged pull request claims an issue only while that issue is closed (issue #2238)."
+      fi
+    fi
+  fi
+fi
+
 COUNT="$(printf '%s' "$CLAIMS" | jq '.others | length' 2>/dev/null || echo "")"
 case "$COUNT" in ''|*[!0-9]*) unknown "claim-filter-unreadable" ;; esac
 OWN_COUNT="$(printf '%s' "$CLAIMS" | jq '.ours | length' 2>/dev/null || echo "")"
@@ -528,12 +661,28 @@ fi
 FIRST_URL="$(printf '%s' "$CLAIMS" | jq -r '.others[0].url // ""')"
 FIRST_HEAD="$(printf '%s' "$CLAIMS" | jq -r '.others[0].headRefName // ""')"
 FIRST_NUM="$(printf '%s' "$CLAIMS" | jq -r '(.others[0].number // "") | tostring')"
+# "open" or "recently-merged", generated in section 3 and never provider text.
+FIRST_SOURCE="$(printf '%s' "$CLAIMS" | jq -r '.others[0].claim_source // ""')"
+
+# Saying which kind of pull request the refusal stands on makes a merged claim
+# legible as one from the first line, which is what the reports in #2238 were
+# missing. Either part being unavailable falls back to the wording that was
+# here before; the `already working on issue #N` clause is unchanged in both.
+HEADLINE="ERROR: issue claim check failed — a pull request is already working on issue #${ISSUE}."
+if [ -n "$FIRST_NUM" ] && [ -n "$FIRST_SOURCE" ]; then
+  HEADLINE="ERROR: issue claim check failed — ${FIRST_SOURCE} pull request #${FIRST_NUM} is already working on issue #${ISSUE}."
+fi
 
 {
-  echo "ERROR: issue claim check failed — a pull request is already working on issue #${ISSUE}."
+  echo "$HEADLINE"
   echo ""
   echo "  repository : ${REPO_SLUG}"
   echo "  issue      : #${ISSUE}"
+  # Only when the lookup actually ran, so its absence means no merged claim was
+  # in the window rather than a state that could not be read.
+  if [ -n "${ISSUE_STATE_READ:-}" ]; then
+    echo "  issue state: ${ISSUE_STATE:-(unreadable)}"
+  fi
   echo "  branch here: ${CWD_HEAD:-(detached HEAD)}"
   echo "  claimed by :"
   printf '%s' "$CLAIMS" | jq -r '.others[] | "    #\(.number)  \(.claim_source)  via=\(.claim_via | join(","))  head=\(.headRefName // "?")  \(.url)"'
