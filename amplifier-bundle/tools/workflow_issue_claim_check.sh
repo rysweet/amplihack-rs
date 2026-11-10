@@ -167,8 +167,8 @@
 #
 # Every way the read can fail leaves the merged claims counting, which is the
 # behaviour from before #2238: a non-zero exit, a timeout, an empty answer, or
-# an answer that is not a plain state word. An unreadable state is not evidence
-# that an issue is open, and promoting it to "cannot check" would disable the
+# a state the API does not define. An unreadable state is not evidence that an
+# issue is open, and promoting it to "cannot check" would disable the
 # #1361 guard on any API hiccup. There is no new outcome and no new exit code;
 # the three outcomes above are unchanged.
 #
@@ -297,6 +297,7 @@ case "$MERGED_LIMIT" in ''|*[!0-9]*) MERGED_LIMIT=60 ;; esac
 # reached stdout, and both callers read a bare exit 1 as FAILED_DUPLICATE_CLAIM.
 ISSUE_STATE=""
 ISSUE_STATE_READ=""
+ISSUE_STATE_LC=""
 
 note() { printf '%s\n' "$*" >&2; }
 
@@ -596,9 +597,9 @@ if [ "$MERGED_CLAIMS" -gt 0 ]; then
   else
     ISSUE_STATE="$(gh issue view "$ISSUE" --repo "$REPO_SLUG" --json state --jq '.state' 2>/dev/null)" || ISSUE_STATE=""
   fi
-  # Bounded first, then first line, then stripped, then allow-listed — by
-  # parameter expansion only, because a pipeline ending in an early-exit stage
-  # is the shape the #1434 guard bans.
+  # Bounded first, then first line, then stripped, then allow-listed. The
+  # three normalising steps are parameter expansions, because a pipeline
+  # ending in an early-exit stage is the shape the #1434 guard bans.
   #
   # The bound is first because EVERY pattern-matching expansion below it is
   # quadratic in bash, `%%` included, and a reply served in place of a state
@@ -612,15 +613,27 @@ if [ "$MERGED_CLAIMS" -gt 0 ]; then
   # allow-list to be rejected. This is the #1707 family of defect, found by
   # measurement in the #2238 security review rather than by reading.
   #
-  # The allow-list is what makes this value printable: it admits a bare word
-  # and nothing else, so no token shape, URL, escape sequence or control
-  # character can reach a log.
+  # The allow-list is what makes this value printable, so it is an exact match
+  # against the two states the API defines rather than a shape test: a pattern
+  # as wide as `^[A-Za-z_]+$` would admit `ghp_ABCDEF` and up to 64 characters
+  # of any other provider text, and this is the one provider-derived value in
+  # the file that reaches a log without passing redact() (#2238 security
+  # review). Anything else, well-formed or not, is reported as (unreadable);
+  # an unrecognised state is not evidence that an issue is open, so it lands
+  # in the same fail-safe direction as an unreadable one.
   ISSUE_STATE="${ISSUE_STATE:0:64}"
   ISSUE_STATE="${ISSUE_STATE%%$'\n'*}"
   ISSUE_STATE="${ISSUE_STATE//[[:space:]]/}"
-  [[ "$ISSUE_STATE" =~ ^[A-Za-z_]+$ ]] || ISSUE_STATE=""
+  ISSUE_STATE_LC="$(printf '%s' "$ISSUE_STATE" | tr '[:upper:]' '[:lower:]')"
+  case "$ISSUE_STATE_LC" in
+    open | closed) ;;
+    *)
+      ISSUE_STATE=""
+      ISSUE_STATE_LC=""
+      ;;
+  esac
 
-  if [ "$(printf '%s' "$ISSUE_STATE" | tr '[:upper:]' '[:lower:]')" = "open" ]; then
+  if [ "${ISSUE_STATE_LC:-}" = "open" ]; then
     # The re-filter is validated structurally rather than for non-emptiness: a
     # jq program that succeeded but emitted null or a scalar would replace
     # CLAIMS with something `.others | length` cannot read, and the guard would

@@ -426,6 +426,21 @@ grep -q 'ghp_FAKEFAKEFAKEFAKEFAKEFAKE0002' <<<"$OUT" \
   && fail "a malformed issue state reached the output" \
   || pass "a malformed issue state never reaches the output"
 
+# The printed state is an exact match against what the API defines, not a test
+# of its shape: a letters-and-underscore pattern admits a credential shape and
+# up to 64 characters of any other provider text, and this is the only
+# provider-derived value in the helper that reaches a log without passing
+# redact() (#2238 security review). The case above carries digits and so would
+# be rejected by either rule; this one would not.
+run "$WORK/gh" FAKE_GH=merged_new FAKE_ISSUE_STATE='ghp_FAKEFAKEFAKEFAKEFAKEFAKE'
+claimed "a merged claim whose issue state is an all-letter token shape" 1132
+grep -q 'ghp_' <<<"$OUT" \
+  && fail "an all-letter token shape reached the output" \
+  || pass "a state the API does not define never reaches the output"
+grep -q 'issue state: (unreadable)' <<<"$OUT" \
+  && pass "a state the API does not define is reported as unreadable" \
+  || fail "an undefined issue state was not reported as such: ${OUT:0:400}"
+
 # A reply served in place of a state word is not length-bounded, and every
 # pattern-matching parameter expansion in bash is quadratic in its subject.
 # The helper therefore cuts the reply to 64 bytes BEFORE it takes the first
