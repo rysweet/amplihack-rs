@@ -93,6 +93,15 @@ pub struct PreflightRequest {
 }
 
 pub(super) fn output(at: &Path, program: &str, args: &[&str]) -> Result<Vec<u8>> {
+    output_expected(at, program, args, None)
+}
+
+fn output_expected(
+    at: &Path,
+    program: &str,
+    args: &[&str],
+    expected: Option<(&str, &str)>,
+) -> Result<Vec<u8>> {
     let mut command = if program == "git" {
         amplihack_git::command_in(at)
     } else {
@@ -105,7 +114,7 @@ pub(super) fn output(at: &Path, program: &str, args: &[&str]) -> Result<Vec<u8>>
                 .iter()
                 .find(|arg| arg.starts_with("https://github.com/"))
                 .context("destination-policy: missing canonical source destination")?;
-            Some(transport::configure(&mut command, at, url)?)
+            Some(transport::configure(&mut command, at, url, expected)?)
         } else {
             None
         };
@@ -509,7 +518,12 @@ fn evaluate(r: &PreflightRequest, cwd: &Path) -> Result<Value> {
                 bail!("source branch changed before push");
             }
             stage = "push";
-            git(at, &["push", &url, &format!("{local}:{source_ref}")])?;
+            output_expected(
+                at,
+                "git",
+                &["push", &url, &format!("{local}:{source_ref}")],
+                Some((&source_ref, remote)),
+            )?;
             stage = "remote-verification";
             let verified = git(at, &["ls-remote", "--heads", &url, &source_ref])?;
             if verified.split_whitespace().next() != Some(local.as_str()) {

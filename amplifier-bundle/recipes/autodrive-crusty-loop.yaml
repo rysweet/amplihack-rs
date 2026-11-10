@@ -126,11 +126,15 @@ steps:
       REPO="${REPO_PATH:-.}"
       if [ "$RUN" = "true" ] && [ -n "$PR_GIVEN" ]; then
         [ "$REPO_CD_OK" = 1 ] || { echo "ERROR: cannot cd to REPO_PATH='${REPO_PATH:-.}'" >&2; exit 1; }
-        RES="$(amplihack orch helper autodrive-preflight --pr "$PR" --repo . --branch "${EXISTING_BRANCH:-}" --state-dir "$DIR")"
-        PRC=$?
-        if [ "$PRC" -ne 0 ]; then
-          printf '%s\n' "$RES"
-          exit "$PRC"
+        # The runner owns the only preflight and its named terminal event.
+        # Consume its ready decision rather than running a second inspection.
+        RES="${AMPLIHACK_AUTODRIVE_READY:-}"
+        if [ -z "$RES" ]; then
+          # Embedded recipe engines do not enter the CLI's loop runner. Keep
+          # their existing standalone helper path when no handoff was supplied.
+          RES="$(amplihack orch helper autodrive-preflight --pr "$PR" --repo . --branch "${EXISTING_BRANCH:-}" --state-dir "$DIR")"
+          PRC=$?
+          if [ "$PRC" -ne 0 ]; then printf '%s\n' "$RES"; exit "$PRC"; fi
         fi
         REPO="$(printf '%s' "$RES" | amplihack orch helper extract-field --field worktree)"
         HEAD_SHA="$(printf '%s' "$RES" | amplihack orch helper extract-field --field head_sha)"

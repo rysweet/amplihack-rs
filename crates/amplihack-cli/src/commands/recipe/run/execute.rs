@@ -819,12 +819,16 @@ pub(super) fn execute_recipe_via_rust(
             )
             .with_settings(run_settings.clone());
             workspace.borrow_mut().record_attempt(correlation.run_id());
+            let mut preflight_ready = String::new();
             if !dry_run {
                 match crate::commands::orch::autodrive_runner::inspect(
                     &recipe_name,
                     context,
                     working_dir,
                 ) {
+                    Ok(Some(envelope)) if envelope["terminal_refusal"] != true => {
+                        preflight_ready = envelope.to_string();
+                    }
                     Ok(Some(envelope)) => {
                         let outcome = serde_json::from_value(envelope["outcome"].clone())
                             .expect("runner preflight returns a known refusal");
@@ -847,12 +851,13 @@ pub(super) fn execute_recipe_via_rust(
                     Err(error) => return AttemptOutcome::Final(Err(error)),
                 }
             }
-            let command = match build_command(correlation.run_id()) {
+            let mut command = match build_command(correlation.run_id()) {
                 Ok(built) => built,
                 // Failing to BUILD the invocation (temp file, project graph db)
                 // has nothing transport-level about it. Terminal.
                 Err(error) => return AttemptOutcome::Final(Err(error)),
             };
+            command.env("AMPLIHACK_AUTODRIVE_READY", preflight_ready);
             let mut stderr_tail = String::new();
             let attempt_result = spawn_with_streaming_stderr(
                 command,

@@ -484,8 +484,33 @@ esac
             .unwrap(),
         )
         .unwrap();
+        // Model the runner's single decision before invoking the shell consumer.
+        let platform = self
+            .command("gh")
+            .args(["pr", "view", "7", "--json", "state,mergedAt"])
+            .output()
+            .unwrap();
+        let merged = serde_json::from_slice::<Value>(&platform.stdout)
+            .ok()
+            .is_some_and(|v| v["state"] == "MERGED");
+        let completed = name == "crusty"
+            && fs::read_to_string(self.tmp.path().join("state/phases.tsv"))
+                .is_ok_and(|s| s.starts_with("crusty-loop\t"));
+        let ready = if merged || completed {
+            Vec::new()
+        } else {
+            let decision = self.run();
+            if !decision.status.success() {
+                return decision;
+            }
+            decision.stdout
+        };
         self.command("bash")
             .args(["-c", yaml["steps"][0]["command"].as_str().unwrap()])
+            .env(
+                "AMPLIHACK_AUTODRIVE_READY",
+                String::from_utf8(ready).unwrap(),
+            )
             .env("PR_NUMBER", "7")
             .env("REPO_PATH", &self.repo)
             .env("AUTODRIVE_STATE_DIR", self.tmp.path().join("state"))
@@ -1060,4 +1085,96 @@ exec '"#;
     // a later write cannot redirect even the first network operation.
     f.envelope(1, "pr-worktree-comparison-failed");
     assert!(!f.tmp.path().join("executed-helper").exists());
+}
+
+#[test]
+fn ancestor_remote_change_before_advertisement_refuses() {
+    let f = Fixture::new();
+    let middle = f.commit(&f.base, "middle");
+    let next = f.commit(&middle, "ahead");
+    f.git(&["update-ref", "HEAD", &next]);
+    f.git(&["push", "origin", &format!("{middle}:refs/heads/feature")]);
+    let metadata_path = f.tmp.path().join("metadata");
+    let mut metadata: Value = serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
+    metadata["headRefOid"] = json!(middle);
+    fs::write(metadata_path, metadata.to_string()).unwrap();
+    let wrapper = f.tmp.path().join("bin/git");
+    let script = fs::read_to_string(&wrapper).unwrap();
+    let real = script
+        .split("exec '")
+        .nth(1)
+        .unwrap()
+        .split('\'')
+        .next()
+        .unwrap();
+    let injection = format!(
+        r#"
+if [ "$isolated" = 1 ]; then
+  for arg in "$@"; do
+    if [ "$arg" = push ]; then
+      '{}' --git-dir "$FIXTURE/source.git" update-ref refs/heads/feature '{}'
+    fi
+  done
+fi
+"#,
+        real, f.base
+    );
+    fs::write(wrapper, script.replace("exec '", &(injection + "exec '"))).unwrap();
+    f.refusal("pr-worktree-push-failed");
+    assert_eq!(
+        f.git(&[
+            "--git-dir",
+            f.remote.to_str().unwrap(),
+            "rev-parse",
+            "refs/heads/feature"
+        ]),
+        f.base
+    );
+    assert_eq!(f.git(&["rev-parse", "HEAD"]), next);
+}
+
+#[test]
+fn authentication_snapshot_is_private_and_absent_from_argv() {
+    let f = Fixture::new();
+    let secret = "AUTHORIZATION: basic dummy-2188-credential";
+    f.git(&["config", "http.https://github.com/.extraheader", secret]);
+    let next = f.commit(&f.base, "ahead");
+    f.git(&["update-ref", "HEAD", &next]);
+    let wrapper = f.tmp.path().join("bin/git");
+    let script = fs::read_to_string(&wrapper).unwrap();
+    let injection = r#"
+if [ "$isolated" = 1 ]; then
+  printf '%s\n' "$@" >> "$FIXTURE/network-argv"
+  for arg in "$@"; do
+    case "$arg" in --git-dir=*)
+      cp -p "${arg#--git-dir=}/config" "$FIXTURE/frozen-config";;
+    esac
+  done
+fi
+"#;
+    fs::write(
+        wrapper,
+        script.replace("exec '", &(injection.to_owned() + "exec '")),
+    )
+    .unwrap();
+    let o = f.run();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let args = fs::read_to_string(f.tmp.path().join("network-argv")).unwrap();
+    assert!(!args.contains(secret));
+    assert!(!args.contains("dummy-2188-credential"));
+    let config = f.tmp.path().join("frozen-config");
+    assert_eq!(
+        fs::metadata(&config).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        f.git(&[
+            "config",
+            "--file",
+            config.to_str().unwrap(),
+            "--get",
+            "http.https://github.com/.extraheader"
+        ]),
+        secret
+    );
 }

@@ -313,7 +313,10 @@ runner-owned result can terminate retries. Child-written files, inherited
 channel variables, stdout and claimed helper exit codes carry no authority.
 A refusal is persisted and included in the runner's final correlation event
 and workspace report before any child starts. Unrelated child failures retain
-ordinary transport retry behavior.
+ordinary transport retry behavior. The runner hands its ready envelope to the
+recipe in `AMPLIHACK_AUTODRIVE_READY`, replacing any inherited value. The
+recipe consumes that decision without a second child-owned preflight. Embedded
+recipe engines without a CLI handoff retain the standalone helper path.
 
 Every fetch, push and remote verification resolves both effective fetch and
 push destinations, including Git URL rewrites and all configured destinations.
@@ -322,7 +325,11 @@ and executable transports produce a named comparison refusal before network
 access. Execution uses an isolated, frozen Git configuration with deny-by-default
 protocols, HTTPS enabled, HTTP redirects disabled, shared objects and the original
 push hooks. URL rewrites, includes and remote configuration are excluded from
-that execution configuration; authentication settings are copied.
+that execution configuration; authentication settings are copied into the
+owner-only temporary repository config, never into subprocess arguments.
+The pre-push wrapper checks the remote OID from the actual negotiation against
+the captured source OID before forwarding the unchanged ref list to the original
+hook. Git then binds the ordinary update to that negotiated OID.
 
 Existing state directories must be owned by the current user with no group or
 other permission bits (normally `0700`). Insecure directories are refused without

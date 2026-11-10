@@ -100,5 +100,5 @@ pub(crate) fn inspect(
         },
         &cwd,
     )?;
-    Ok((result["terminal_refusal"] == true).then_some(result))
+    Ok(Some(result))
 }

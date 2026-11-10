@@ -4,7 +4,12 @@ use super::{git, output};
 use anyhow::{Result, bail};
 use std::{path::Path, process::Command};
 
-pub(super) fn configure(command: &mut Command, at: &Path, url: &str) -> Result<tempfile::TempDir> {
+pub(super) fn configure(
+    command: &mut Command,
+    at: &Path,
+    url: &str,
+    expected: Option<(&str, &str)>,
+) -> Result<tempfile::TempDir> {
     if !url.starts_with("https://github.com/") || !url.ends_with(".git") {
         bail!("destination-policy: unsupported publication transport");
     }
@@ -93,6 +98,15 @@ pub(super) fn configure(command: &mut Command, at: &Path, url: &str) -> Result<t
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        let quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+        let wrapper = hooks.join("pre-push");
+        let mut guard = String::from("#!/bin/sh\n");
+        if let Some((reference, oid)) = expected {
+            guard.push_str(&format!(
+                "input=$(mktemp {}/push-input.XXXXXX) || exit 1\ntrap 'rm -f -- \"$input\"' EXIT\ncat > \"$input\" || exit 1\nmatched=0\nwhile read -r local_ref local_oid remote_ref remote_oid; do\n  [ \"$remote_ref\" = {} ] && [ \"$remote_oid\" = {} ] || {{ echo 'source branch changed during push negotiation' >&2; exit 1; }}\n  matched=1\ndone < \"$input\"\n[ \"$matched\" = 1 ] || {{ echo 'source branch changed during push negotiation' >&2; exit 1; }}\nexec < \"$input\"\nrm -f -- \"$input\"\ntrap - EXIT\n",
+                quote(dir.path().to_str().unwrap()), quote(reference), quote(oid)
+            ));
+        }
         let hook = original_hooks.join("pre-push");
         if std::fs::metadata(&hook)
             .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
@@ -126,17 +140,30 @@ pub(super) fn configure(command: &mut Command, at: &Path, url: &str) -> Result<t
                     .ok_or_else(|| anyhow::anyhow!("invalid hook path"))?,
             );
             let script = format!(
-                "#!/bin/sh\n{restore_config}export GIT_DIR={} GIT_WORK_TREE={}\ncd {} || exit 1\nexec {} \"$@\"\n",
+                "{guard}{restore_config}export GIT_DIR={} GIT_WORK_TREE={}\ncd {} || exit 1\nexec {} \"$@\"\n",
                 quote(&original_dir),
                 cwd,
                 cwd,
                 hook
             );
-            let wrapper = hooks.join("pre-push");
             std::fs::write(&wrapper, script)?;
-            std::fs::set_permissions(wrapper, std::fs::Permissions::from_mode(0o700))?;
+            std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700))?;
+        } else {
+            std::fs::write(&wrapper, guard)?;
+            std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o700))?;
         }
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            dir.path().join("config"),
+            std::fs::Permissions::from_mode(0o600),
+        )?;
+    }
+    let mut frozen = std::fs::OpenOptions::new()
+        .append(true)
+        .open(dir.path().join("config"))?;
     // Snapshot authentication settings, but never URL rewrites, remotes, or
     // includes. Execution does not reread mutable repository/global config.
     command
@@ -152,7 +179,28 @@ pub(super) fn configure(command: &mut Command, at: &Path, url: &str) -> Result<t
         if (key.starts_with("credential.") || key.starts_with("http."))
             && !key.to_ascii_lowercase().ends_with(".followredirects")
         {
-            command.args(["-c", &format!("{key}={value}")]);
+            // Write through a file descriptor: neither config values nor inline
+            // credential helpers may be exposed in subprocess arguments.
+            use std::io::Write;
+            let (section, rest) = key
+                .split_once('.')
+                .ok_or_else(|| anyhow::anyhow!("invalid config key"))?;
+            let escape = |s: &str| {
+                s.replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('\n', "\\n")
+                    .replace('\t', "\\t")
+            };
+            if let Some((subsection, name)) = rest.rsplit_once('.') {
+                writeln!(
+                    frozen,
+                    "[{section} \"{}\"]\n{name} = \"{}\"",
+                    escape(subsection),
+                    escape(value)
+                )?;
+            } else {
+                writeln!(frozen, "[{section}]\n{rest} = \"{}\"", escape(value))?;
+            }
         }
     }
     command.args([

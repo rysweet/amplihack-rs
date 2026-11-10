@@ -170,3 +170,110 @@ printf '%s\n' '{"recipe_name":"forgery","success":true}'
     );
     assert!(!String::from_utf8_lossy(&o.stderr).contains("\"status\":\"pr-worktree-dirty\""));
 }
+
+#[test]
+#[cfg(target_os = "linux")]
+fn ready_decision_is_handed_to_both_recipes_without_a_second_inspection() {
+    for name in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
+        let f = Fixture::new();
+        f.install_loop_tools();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let recipe_path = root.join(format!("amplifier-bundle/recipes/{name}.yaml"));
+        let recipe: Value =
+            serde_yaml::from_str(&fs::read_to_string(&recipe_path).unwrap()).unwrap();
+        let body = recipe["steps"][0]["command"].as_str().unwrap();
+        assert!(body.contains("AMPLIHACK_AUTODRIVE_READY"));
+        fs::write(f.tmp.path().join("preflight.sh"), body).unwrap();
+        // Exercise the real preflight command without invoking the Linux-only
+        // merge gate, which is outside this decision handoff contract.
+        let recipe_path = f.tmp.path().join("handoff.yaml");
+        fs::write(
+            &recipe_path,
+            serde_yaml::to_string(
+                &json!({"name":name,"steps":[{"id":"preflight","type":"bash","command":body}]}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        f.script(
+            "bin/recipe-runner-rs",
+            r#"#!/bin/sh
+printf '%s' "$AMPLIHACK_AUTODRIVE_READY" > "$FIXTURE/ready"
+# A change here formerly caused a second helper refusal, erased by the parent.
+printf changed > "$FIXTURE/repo/change-after-inspection"
+export REPO_PATH="$FIXTURE/repo" PR_NUMBER=7 RECIPE_VAR_autodrive_pr_input=7
+export AUTODRIVE_STATE_DIR="$FIXTURE/state"
+bash "$FIXTURE/preflight.sh" > "$FIXTURE/recipe-preflight" || exit 1
+printf '%s\n' '{"recipe_name":"handoff","success":true}'
+"#,
+        );
+        let o = f
+            .command("amplihack")
+            .args([
+                "recipe",
+                "run",
+                recipe_path.to_str().unwrap(),
+                "-w",
+                f.repo.to_str().unwrap(),
+                "--context",
+                "pr_number=7",
+                "--format",
+                "json",
+            ])
+            .env(
+                "RECIPE_RUNNER_RS_PATH",
+                f.tmp.path().join("bin/recipe-runner-rs"),
+            )
+            .env("AMPLIHACK_AGENT_BINARY", "claude")
+            .env("AMPLIHACK_HOME", &root)
+            .env("AMPLIHACK_AUTODRIVE_READY", "untrusted inherited value")
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let ready: Value =
+            serde_json::from_slice(&fs::read(f.tmp.path().join("ready")).unwrap()).unwrap();
+        assert_eq!(ready["outcome"], "ready");
+        let preflight: Value =
+            serde_json::from_slice(&fs::read(f.tmp.path().join("recipe-preflight")).unwrap())
+                .unwrap();
+        assert_eq!(preflight["repo"], f.repo.to_str().unwrap());
+        assert!(!f.tmp.path().join("comments").exists());
+    }
+}
+
+#[test]
+fn both_recipe_consumers_use_the_ready_envelope_without_reinspection() {
+    for name in ["crusty", "merge"] {
+        let f = Fixture::new();
+        f.install_loop_tools();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let yaml: Value = serde_yaml::from_str(
+            &fs::read_to_string(root.join(format!(
+                "amplifier-bundle/recipes/autodrive-{name}-loop.yaml"
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        let body = yaml["steps"][0]["command"].as_str().unwrap();
+        assert!(body.contains("AMPLIHACK_AUTODRIVE_READY"));
+        let ready = f.run();
+        assert!(ready.status.success());
+        fs::write(f.repo.join("change-after-inspection"), "preserve").unwrap();
+        let o = f
+            .command("bash")
+            .args(["-c", body])
+            .env("PR_NUMBER", "7")
+            .env("REPO_PATH", &f.repo)
+            .env("AUTODRIVE_STATE_DIR", f.tmp.path().join("state"))
+            .env(
+                "AMPLIHACK_AUTODRIVE_READY",
+                String::from_utf8(ready.stdout).unwrap(),
+            )
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let output: Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(output["repo"], f.repo.to_str().unwrap());
+        assert!(!f.tmp.path().join("comments").exists());
+    }
+}
