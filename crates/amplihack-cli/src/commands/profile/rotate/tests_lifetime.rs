@@ -4,7 +4,7 @@
 //!
 //! Registered from the bottom of `lifetime.rs` as
 //! `#[cfg(test)] #[path = "tests_lifetime.rs"] mod tests;`, so `super` is the
-//! `lifetime` module. `rotate/mod.rs` is already at the 400-line budget.
+//! `lifetime` module.
 //!
 //! The contract these tests fix:
 //!

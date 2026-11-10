@@ -10,21 +10,18 @@
 //! `RECIPE='<name>'`; a name containing a single quote is rejected. The
 //! launcher ends with
 //! `exec amplihack recipe run "$RECIPE" --context-file "$CONTEXT_JSON" --verbose`
-//! and `write_recipe_launcher` writes `context.json` with mode 0600.
+//! and `write_recipe_launcher_with` (and so `write_recipe_launcher`) writes
+//! `context.json` with mode 0600.
 
 use super::command_builder::recipe_launcher_script;
-use super::command_builder_tests::{with_profile_env, workstream};
-use super::launcher::write_recipe_launcher;
+use super::command_builder_tests::{keep, no_env, workstream};
+use super::launcher::write_recipe_launcher_with;
 use crate::util::run_output_with_timeout;
 use std::process::Command;
 use std::time::Duration;
 
 const EXEC_LINE: &str =
     r#"exec amplihack recipe run "$RECIPE" --context-file "$CONTEXT_JSON" --verbose"#;
-
-fn without_profile<T>(f: impl FnOnce() -> T) -> T {
-    with_profile_env(None, None, f)
-}
 
 #[test]
 fn launcher_execs_recipe_run_with_context_file() {
@@ -73,7 +70,7 @@ fn write_recipe_launcher_refuses_quoted_recipe_name_and_writes_no_launcher() {
     let mut ws = workstream(tmp.path());
     ws.recipe = "evil'; touch pwned; '".to_string();
     std::fs::create_dir_all(&ws.work_dir).unwrap();
-    let result = without_profile(|| write_recipe_launcher(&ws, "amplihack claude"));
+    let result = write_recipe_launcher_with(&ws, "amplihack claude", no_env, keep);
     assert!(result.is_err(), "hostile recipe name must be refused");
     assert!(!ws.work_dir.join("launcher.sh").exists());
 }
@@ -85,7 +82,7 @@ fn context_json_is_written_with_mode_0600() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = workstream(tmp.path());
     std::fs::create_dir_all(&ws.work_dir).unwrap();
-    without_profile(|| write_recipe_launcher(&ws, "amplihack claude")).unwrap();
+    write_recipe_launcher_with(&ws, "amplihack claude", no_env, keep).unwrap();
     let mode = std::fs::metadata(ws.work_dir.join("context.json"))
         .unwrap()
         .permissions()
@@ -108,7 +105,7 @@ fn launcher_end_to_end_keeps_200_kib_context_out_of_argv() {
     }
     ws.task = task.clone();
     std::fs::create_dir_all(&ws.work_dir).unwrap();
-    without_profile(|| write_recipe_launcher(&ws, "amplihack claude")).unwrap();
+    write_recipe_launcher_with(&ws, "amplihack claude", no_env, keep).unwrap();
 
     let bin = tmp.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();

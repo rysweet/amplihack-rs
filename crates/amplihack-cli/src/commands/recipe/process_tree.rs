@@ -3,6 +3,11 @@
 //!
 //! Linux only. Only processes owned by the effective uid are listed, since
 //! they are the only ones that could be signalled anyway.
+//!
+//! Always the real `/proc`, never `procfs::proc_root()` (issue #2042):
+//! every pid found here may be signalled, so a fake tree must not choose it.
+//! The cost is that tests of `recipe stop` read the `environ` of this user's
+//! processes on the host; issue #2175 tracks removing that scan.
 
 use std::collections::BTreeSet;
 use std::fs;

@@ -106,7 +106,11 @@ markers: tmux gives it the server's global environment, which holds the
 markers of whatever started the server. `setsid` and `nohup` keep the
 caller's environment, so they need no hand-off.
 `$(amplihack agent-binary --shell)` prints an inline `env` prefix that removes
-every session marker and sets both variables (#1525). It belongs inside the
+every session marker and sets both variables (#1525). It also removes
+`AMPLIHACK_PARENT_RECIPE_PID`, `AMPLIHACK_PARENT_RECIPE_STARTTIME` and
+`AMPLIHACK_AUTODRIVE_STATE_DIR` (#1976): a tmux server first started from a
+recipe step keeps the step's values, and a run in a later session would watch
+a parent that has gone and stop at once with exit `75`. It belongs inside the
 double-quoted tmux command; in single quotes it expands in the new session and
 reads the server's markers. An answer read from a marker the tmux server holds
 is tagged `AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker variable>`. That
@@ -242,6 +246,8 @@ AMPLIHACK_HOME=/opt/amplihack amplihack claude --print-env 2>&1 | grep AMPLIHACK
 ```
 
 **Security note:** The resolved path is validated to be absolute and must not contain `..` path components. Paths that fail validation are silently dropped; a warning is emitted to the trace log. A `paths.home` from the config must also still name an existing directory you own; otherwise it is skipped with a warning in the trace log and the next source answers.
+
+**Hook state:** `amplihack-hooks` writes its session and project state under `$AMPLIHACK_HOME/runtime/` when the variable is an absolute path with no `..` component, and under `$HOME/.amplihack/runtime/` otherwise. The hooks read the variable directly and do not apply the resolution order above. See [Hook State Root Reference](./hook-state-root.md).
 
 **Install source:** `amplihack install` also tries `AMPLIHACK_HOME` as its first framework source. Plain `install` refuses it when its version differs from the binary's. The post-update install of `amplihack update` uses a same-version tree without network access, and fetches the release tag only when the version differs. Install always stages into `$HOME/.amplihack`, so this variable never moves the install. See [Framework source selection](./framework-source-selection.md).
 

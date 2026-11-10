@@ -37,10 +37,6 @@ pub fn eligibility_tool() -> PathBuf {
     tools_dir().join("autodrive_light_eligibility.sh")
 }
 
-pub fn round_tool() -> PathBuf {
-    tools_dir().join("autodrive_light_round.sh")
-}
-
 pub fn read(rel: &str) -> String {
     let p = repo_root().join(rel);
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()))

@@ -64,6 +64,8 @@ pub(super) mod key_check;
 #[cfg(unix)]
 pub(super) mod ledger;
 #[cfg(unix)]
+mod lifetime;
+#[cfg(unix)]
 mod log;
 #[cfg(unix)]
 mod login_identity;
@@ -164,8 +166,6 @@ mod tests_issue_1886_cycle;
 #[cfg(all(test, unix))]
 mod tests_key_check;
 #[cfg(all(test, unix))]
-mod tests_log;
-#[cfg(all(test, unix))]
 mod tests_measure;
 #[cfg(all(test, unix))]
 mod tests_pin;
@@ -242,7 +242,7 @@ fn foreign_note_for(
 fn warn_switch_hold(root: &std::path::Path) {
     let exe = std::env::current_exe().ok();
     let rs = ledger::RotateState::new(root);
-    if let Some(note) = foreign_note_for(&rs, std::path::Path::new("/proc"), exe.as_deref()) {
+    if let Some(note) = foreign_note_for(&rs, &daemon::proc_root(), exe.as_deref()) {
         eprintln!("{note}");
     }
 }

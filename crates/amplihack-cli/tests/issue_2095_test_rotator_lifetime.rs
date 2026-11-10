@@ -317,15 +317,6 @@ fn helper_unarmed() {
 
 // ---------------------------------------------------------------- tests
 
-/// The fixture's copy of the variable name must match the one `lifetime.rs`
-/// reads. `tests_source_scan::the_lifetime_variable_survives_spawn` fixes
-/// that side to the same literal, so a rename of either copy fails here or
-/// there by name rather than as a rotator that never arms in D7.
-#[test]
-fn the_fixture_names_the_variable_the_watcher_reads() {
-    assert_eq!(LIFETIME_FD_ENV, "AMPLIHACK_TEST_ROTATOR_LIFETIME_FD");
-}
-
 /// D7: SIGKILL the test process that started a rotator from an armed
 /// fixture, and the rotator exits through its normal stop path.
 #[test]
@@ -342,7 +333,10 @@ fn a_killed_test_takes_its_rotator_with_it() {
         cloexec_in(h.watcher, fd),
         Some(true),
         "the rotator armed: it holds the read end and made it close-on-exec, \
-         so its probes do not hold it\nhelper stderr:\n{}",
+         so its probes do not hold it. `Some(false)` means it never armed: \
+         check that {LIFETIME_FD_ENV} still matches `lifetime::LIFETIME_FD_ENV` \
+         and does not start with AMPLIHACK_ROTATE, which `daemon::spawn` \
+         strips\nhelper stderr:\n{}",
         h.err_tail()
     );
     assert!(h.pid_file.exists());

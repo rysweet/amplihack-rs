@@ -10,6 +10,6 @@
 
 pub use amplihack_turn::{
     AgentSession, Channel, ChannelError, ChannelId, ChannelResult, CopilotTurnRunner, NextPrompt,
-    PreemptSlot, SerialTurnDriver, TurnError, TurnOutput, TurnResult, TurnRunner, build_turn_argv,
-    run_session_loop,
+    PreemptSlot, SerialTurnDriver, TurnArgv, TurnError, TurnOutput, TurnResult, TurnRunner,
+    build_turn_argv, run_session_loop,
 };

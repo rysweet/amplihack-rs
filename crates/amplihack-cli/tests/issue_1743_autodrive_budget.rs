@@ -78,6 +78,7 @@ if [ "$name" = "loop-health-evaluator" ]; then
   label=""; prev=""
   for a in "$@"; do [ "$prev" = "-c" ] && case "$a" in loop_round_label=*) label="${a#loop_round_label=}" ;; esac; prev=$a; done
   printf '%s\n' "$label" >> "$S/evaluator-calls"
+  [ -f "$S/eval_rc" ] && { echo "orphaned: parent recipe run 4242 exited; stopping" >&2; exit "$(cat "$S/eval_rc")"; }
   h=$(wc -l < "$S/evaluator-calls")
   if [ "$h" -gt "$(cat "$S/eval_stuck_after" 2>/dev/null || echo 8)" ]; then echo "LOOP_HEALTH: STUCK"; exit 1; fi
   v=CONTINUE; [ "$(cat "$S/eval" 2>/dev/null)" = "done" ] && v=DONE
@@ -349,19 +350,32 @@ impl Fixture {
     }
 
     /// No stub log or state file names the real `~/.claude` or `~/.amplihack`.
+    ///
+    /// The fixture's own paths are removed from the text first. A caller whose
+    /// temp directory sits under `~/.amplihack` (a recipe step's per-run
+    /// `TMPDIR`) would otherwise match on every fixture path, though none of
+    /// them is the real home (PR #1885).
     fn assert_no_real_home(&self) {
         let Some(home) = std::env::var_os("HOME") else {
             return;
         };
         let home = PathBuf::from(home);
         let forbidden = [home.join(".claude"), home.join(".amplihack")];
+        let fixture_roots: Vec<String> = [self.tmp.path().to_path_buf()]
+            .into_iter()
+            .chain(self.tmp.path().canonicalize().ok())
+            .map(|p| p.display().to_string())
+            .collect();
         for dir in [&self.log, &self.state, &self.stub] {
             for e in std::fs::read_dir(dir).unwrap() {
                 let p = e.unwrap().path();
                 if !p.is_file() {
                     continue;
                 }
-                let text = String::from_utf8_lossy(&std::fs::read(&p).unwrap()).into_owned();
+                let mut text = String::from_utf8_lossy(&std::fs::read(&p).unwrap()).into_owned();
+                for root in &fixture_roots {
+                    text = text.replace(root.as_str(), "<fixture>");
+                }
                 for f in &forbidden {
                     let f = f.display().to_string();
                     assert!(!text.contains(&f), "{} names the real {f}", p.display());
@@ -553,31 +567,49 @@ fn a_converged_round_keeps_done_and_records_its_row() {
 }
 
 #[test]
-fn rejected_light_rounds_on_one_head_with_empty_findings_do_not_stop() {
-    let Some(fx) = Fixture::new() else { return };
-    fx.plan(&["CONCERNS|0|0|1|"]);
-    fx.set("eval_stuck_after", "3");
-    let o = fx.run("crusty", &[]);
-    let r = result(&o);
-    assert!(
-        !r["reason"].as_str().unwrap().contains(DECIDED),
-        "{}",
-        show(&o)
-    );
-    assert_eq!(fx.evaluator_calls().len(), 4);
+fn a_leftover_light_json_does_not_exempt_a_round() {
+    // Issue #1982: nothing writes `<record>.light.json` any more, and a file
+    // that an earlier auto-drive-light left beside a record is not read. A
+    // round on an unchanged head with unchanged open items stops as STUCK in
+    // code, whether the leftover file sits beside the current record, the
+    // previous one, or both.
+    for plan in [
+        &["CONCERNS|0|0|1|a,b"][..],
+        &["CONCERNS|0|0|1|", "CONCERNS|0|0|0|"][..],
+        &["CONCERNS|0|0|0|a", "CONCERNS|0|0|1|a"][..],
+    ] {
+        let Some(fx) = Fixture::new() else { return };
+        fx.plan(plan);
+        let o = fx.run("crusty", &[]);
+        assert_eq!(o.status.code(), Some(1), "{plan:?}: {}", show(&o));
+        let r = result(&o);
+        assert_eq!(r["loop_result"], "STUCK", "{plan:?}: {}", show(&o));
+        assert_eq!(r["round_label"], "round-2", "{plan:?}: {}", show(&o));
+        assert!(
+            r["reason"].as_str().unwrap().contains(DECIDED),
+            "{plan:?}: a leftover .light.json must not exempt the round: {}",
+            show(&o)
+        );
+        assert_eq!(
+            fx.evaluator_calls(),
+            ["round-1"],
+            "{plan:?}: round-2 never reaches the evaluator"
+        );
+    }
 }
 
 #[test]
-fn the_round_after_a_light_round_is_exempt_too() {
-    let Some(fx) = Fixture::new() else { return };
-    // Round 1 is a rejected light round; round 2 is a normal non-clean round
-    // with no findings on the same head; round 3 repeats round 2.
-    fx.plan(&["CONCERNS|0|0|1|", "CONCERNS|0|0|0|"]);
-    let o = fx.run("crusty", &[]);
-    let r = result(&o);
-    assert_eq!(r["round_label"], "round-3", "{}", show(&o));
-    assert!(r["reason"].as_str().unwrap().contains(DECIDED));
-    assert_eq!(fx.evaluator_calls(), ["round-1", "round-2"]);
+fn the_progress_rule_reads_no_light_file() {
+    let body =
+        crate::support::auto_drive_light::read("amplifier-bundle/tools/autodrive_progress.sh");
+    assert!(
+        !body.contains(".light.json"),
+        "autodrive_progress.sh must not read <record>.light.json (#1982)"
+    );
+    assert!(
+        !body.contains("#1802"),
+        "the #1802 light exemption and its header clause are removed"
+    );
 }
 
 #[test]
@@ -611,6 +643,73 @@ fn failed_rounds_on_one_head_do_not_stop_and_the_evaluator_decides() {
             );
         }
     }
+}
+
+// ── Orphaned children (#1976, crusty review of #2112) ─────────────────────────
+
+/// A round that exits 75 lost the recipe run above the loop. The loop stops
+/// as ORPHANED with exit 75 before the progress row and the evaluator, which
+/// would inherit the same dead parent and leave the crash reported as STUCK.
+#[test]
+fn a_round_that_exits_75_stops_the_loop_as_orphaned_before_the_evaluator() {
+    let Some(fx) = Fixture::new() else { return };
+    fx.plan(&["-|0|0|0||0|75"]);
+    let o = fx.run("crusty", &[]);
+    assert_eq!(o.status.code(), Some(75), "{}", show(&o));
+    let r = result(&o);
+    assert_eq!(r["loop_result"], "ORPHANED", "{}", show(&o));
+    assert_eq!(r["round_label"], "round-1");
+    assert!(
+        r["reason"]
+            .as_str()
+            .unwrap()
+            .contains("round round-1 exited 75"),
+        "{}",
+        show(&o)
+    );
+    assert_eq!(fx.round_calls(), ["round-1"]);
+    assert!(fx.evaluator_calls().is_empty(), "the evaluator never runs");
+    assert!(
+        fx.state_file("crusty-progress.tsv").is_none(),
+        "no failed progress row is written for an orphaned round"
+    );
+    let saved = fx.state_file("crusty-result.json").expect("result file");
+    assert!(saved.contains("\"loop_result\":\"ORPHANED\""), "{saved}");
+    assert!(stderr(&o).contains("This is a lost driver"), "{}", show(&o));
+}
+
+/// An evaluator that exits 75 stops the loop the same way, not as STUCK.
+#[test]
+fn an_evaluator_that_exits_75_stops_the_loop_as_orphaned_not_stuck() {
+    let Some(fx) = Fixture::new() else { return };
+    fx.plan(&["CONCERNS|1|0|0|a"]);
+    fx.set("eval_rc", "75");
+    let o = fx.run("crusty", &[]);
+    assert_eq!(o.status.code(), Some(75), "{}", show(&o));
+    let r = result(&o);
+    assert_eq!(r["loop_result"], "ORPHANED", "{}", show(&o));
+    assert!(
+        r["reason"]
+            .as_str()
+            .unwrap()
+            .contains("the loop-health evaluator for round-1 exited 75"),
+        "{}",
+        show(&o)
+    );
+    assert_eq!(fx.evaluator_calls(), ["round-1"]);
+    assert_eq!(fx.round_calls(), ["round-1"]);
+}
+
+/// Exit 1 is still an ordinary failed round that reaches the evaluator.
+#[test]
+fn only_exit_75_is_an_orphan_stop() {
+    let Some(fx) = Fixture::new() else { return };
+    fx.plan(&["-|0|0|0||0|1"]);
+    fx.set("eval_stuck_after", "1");
+    let o = fx.run("crusty", &[]);
+    let r = result(&o);
+    assert_ne!(r["loop_result"], "ORPHANED", "{}", show(&o));
+    assert!(!fx.evaluator_calls().is_empty(), "{}", show(&o));
 }
 
 #[test]

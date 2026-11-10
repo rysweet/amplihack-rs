@@ -165,7 +165,7 @@ impl FakeClaudeLaunch {
         std::fs::write(
             &claude,
             "#!/bin/sh\n\
-             if [ \"$1\" = --version ]; then printf '2.1.282\\n'; exit 0; fi\n\
+             if [ \"$1\" = --version ]; then printf '2.1.319\\n'; exit 0; fi\n\
              printf '%s' \"${IS_SANDBOX-unset}\" > \"$HOME/child-env\"\n",
         )
         .unwrap();

@@ -68,6 +68,7 @@ nav:
       - Supervise Agent Sessions: howto/supervise-agent-sessions.md
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
       - How a Test's Rotator Ends with Its Test: concepts/test-rotator-lifetime.md
+      - Keep Tests off the Host Process Table: howto/keep-tests-off-the-host-process-table.md
       - Keep Tests out of the Real Profile Root: howto/keep-tests-out-of-the-real-profile-root.md
       - Give Test Logins a Fake Account Identity: howto/give-test-logins-a-fake-account-identity.md
       - Keep Tests from Changing PATH and HOME: howto/keep-tests-from-changing-path-and-home.md

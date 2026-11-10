@@ -60,8 +60,11 @@ impl Hook for SessionStartHook {
         // the host should be aware of — e.g. code-graph setup failures.
         let mut warnings: Vec<String> = Vec::new();
 
+        // The original request is saved under the amplihack state root, never
+        // the working directory (#1963). The context is injected either way.
+        let session_dir = amplihack_types::session_state_dir(session_id.as_deref());
         if let Some(original_request_context) =
-            maybe_capture_original_request(&dirs, session_id.as_deref(), &extra)?
+            maybe_capture_original_request(session_dir.as_deref(), session_id.as_deref(), &extra)
         {
             context_parts.push(original_request_context);
         }
@@ -187,18 +190,17 @@ impl Hook for SessionStartHook {
     }
 }
 
+/// Capture the original request from the session-start prompt and return the
+/// context block to inject. A failed or skipped save is logged by
+/// `capture_original_request` and does not suppress the context.
 fn maybe_capture_original_request(
-    dirs: &ProjectDirs,
+    session_dir: Option<&std::path::Path>,
     session_id: Option<&str>,
     extra: &Value,
-) -> anyhow::Result<Option<String>> {
-    let Some(prompt) = extra.get("prompt").and_then(Value::as_str).map(str::trim) else {
-        return Ok(None);
-    };
-
-    Ok(capture_original_request(dirs, session_id, prompt)?
-        .as_ref()
-        .map(format_original_request_context))
+) -> Option<String> {
+    let prompt = extra.get("prompt").and_then(Value::as_str).map(str::trim)?;
+    capture_original_request(session_dir, session_id, prompt)
+        .map(|captured| format_original_request_context(&captured.request))
 }
 
 pub(crate) fn codex_protocol_selected() -> bool {

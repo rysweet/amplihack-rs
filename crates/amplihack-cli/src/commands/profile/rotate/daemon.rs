@@ -11,6 +11,8 @@ use super::log::{Sink, msg, open_or_warn};
 use super::owner;
 use super::settings::Settings;
 use super::swap::{self, RecoverOutcome};
+/// The process table root (issue #2042), for the rotate readers.
+pub(super) use crate::commands::agent::procfs::proc_root;
 use crate::commands::profile::auto_switch::kit::{
     State, check_root_private, now, read_bounded_nofollow, recover_auto_switch,
     write_private_atomic,
@@ -24,13 +26,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-#[cfg(unix)]
-#[path = "lifetime.rs"]
-mod lifetime;
-
 const MAX_PID_FILE: usize = 32;
 
 pub use amplihack_utils::rotator_status::DaemonState;
+pub(super) use amplihack_utils::rotator_status::running_on_host;
 
 pub(super) fn daemon_err(msg: impl Into<String>) -> ProfileError {
     ProfileError::RotateDaemon(msg.into())
@@ -50,7 +49,7 @@ pub(super) fn exe_name() -> Option<std::ffi::OsString> {
 
 pub(super) fn current_state(rs: &RotateState) -> DaemonState {
     match exe_name() {
-        Some(name) => state_at(rs, Path::new("/proc"), &name),
+        Some(name) => state_at(rs, &proc_root(), &name),
         None => DaemonState::Unverifiable,
     }
 }
@@ -260,8 +259,7 @@ pub fn watch(
     for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
         signal_hook::flag::register(sig, stop.clone())?;
     }
-    #[cfg(unix)]
-    lifetime::arm(&stop);
+    super::lifetime::arm(&stop);
     if !spawned {
         rs.ensure()?;
         // As in `start`: checked and written under the lock.
@@ -280,7 +278,7 @@ pub fn watch(
             format!("{}\n", std::process::id()).as_bytes(),
         )?;
         let env = |k: &str| std::env::var_os(k);
-        let proc_root = crate::commands::agent::procfs::proc_root();
+        let proc_root = proc_root();
         if owner::supervised(&supervised, &env, &proc_root) {
             let flag = supervised.as_ref().and_then(|f| f.as_deref());
             let m = owner::Marker {

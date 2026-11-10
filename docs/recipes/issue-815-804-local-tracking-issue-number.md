@@ -67,6 +67,52 @@ filter out the legitimate current-work PR. Coercing the non-numeric value to
 empty keeps the tie-breaker inputs clean and avoids passing a value the matcher
 does not interpret as a GitHub issue / AzDO work-item id.
 
+### 3. Step-16 publishes a local reference as "no linked issue" (#1976)
+
+`workflow_publish_pr.sh`, the step-16 PR creation tool, classifies
+`issue_number` once before it builds the PR:
+
+| `issue_number` | Class | What step-16 does |
+| --- | --- | --- |
+| All digits, such as `123` | linked issue | Unchanged: `(#123)` title suffix, the `## Issue` section from `workflow_issue_reference.sh`, the claim check, and `AB#123` on Azure DevOps. |
+| Empty | no linked issue | See below. |
+| `local-` followed by 1 to 128 of `A-Z a-z 0-9 . _ : -`, such as `local-5d904cff4398`, `local-issue-763` or `local-tracking:123` | no linked issue | See below. |
+| Anything else | invalid | Stops with publish status `FAILED_INVALID_INPUT` and exit `1`. No PR is created. |
+
+A local reference matches the anchored pattern `^local-[A-Za-z0-9._:-]+$`,
+with at most 128 characters after `local-`. This is the same character set
+`step-03b-extract-issue-number` accepts in `workflow-prep.yaml`, so every
+reference step-03b passes through is also accepted at step-16. That covers the
+formats `derive_local_tracking_id` in `workflow_issue_tracking.sh` produces
+(`local-<hash>`, `local-issue-<n>`, `local-ab-<n>`), the legacy
+`local-tracking:<n>` form and any other caller-supplied `local-` reference.
+The pattern excludes `#`, whitespace, backticks and control characters, so the
+value is safe to put in the PR body.
+
+With no linked issue, step-16:
+
+- creates the PR with no `(#N)` suffix on the title;
+- writes the `## Issue` section as
+  ``No linked issue (local tracking reference `local-5d904cff4398`).``, or
+  `No linked issue.` when the value is empty;
+- does not call `workflow_issue_reference.sh`;
+- skips the issue claim check;
+- writes no `AB#` reference on Azure DevOps.
+
+The title and body never contain `#local` or `Closes`, so a local reference
+can never close an unrelated issue.
+
+An invalid value is reported through `finish_publish`, which prints the
+publish result and exits `1`:
+
+```json
+{"state":"FAILED_INVALID_INPUT","legacy_state":"invalid-input","terminal_status":"failure","pr_url":"","pr_number":"","branch_diff_status":"","message":"issue_number 'garbage' is neither numeric nor a local tracking id"}
+```
+
+The value in the reason is cut to 64 characters, has control characters
+removed and is JSON-encoded, so a crafted `issue_number` cannot inject text
+into the status record.
+
 ## Behavior summary
 
 | `issue_creation` payload                                   | `issue_number` output |
@@ -85,6 +131,9 @@ does not interpret as a GitHub issue / AzDO work-item id.
   local-tracking cases in `issue_684_host_aware_workflow_test.rs` and
   `default_workflow_decomposition_test.rs` execute the **shipped** recipe bash
   body for every row above.
+- `tests/integration/issue_1976_publish_local_issue.rs` runs step-16 with a
+  fake `gh` and a bare-repo remote for `local-abc123def456`,
+  `local-tracking:123`, `garbage` and `123`.
 - `tests/integration/default_workflow_terminal_state.rs` proves a local
   tracking `issue_number` does not filter out the current-work PR.
 - `tests/gadugi/scenarios/issue-815-804-local-tracking-extract.yaml` exercises

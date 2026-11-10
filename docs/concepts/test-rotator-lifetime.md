@@ -84,7 +84,8 @@ Details of the hand-over:
   exec-error pipe that `std::process::Command` uses are never overwritten.
 - The variable does not start with `AMPLIHACK_ROTATE`, so `daemon::spawn`,
   which removes `AMPLIHACK_ROTATE*` from the watcher's environment, passes it
-  on. A source-scan test asserts this.
+  on. If it did start with that prefix, the watcher would never arm and D7
+  would fail on its close-on-exec check before killing the helper.
 - The `start` CLI process also holds a read end while it runs, and its
   children may inherit one. A read end cannot delay EOF, so this is harmless.
   Do not "fix" it by passing the write end instead.
@@ -119,7 +120,8 @@ would outlive the killed helper and that test would fail.
 
 ## What the watcher does when the pipe closes
 
-`watch()` in `rotate/daemon.rs` calls `lifetime::arm(&stop)` once,
+`watch()` in `rotate/daemon.rs` calls `super::lifetime::arm(&stop)` once
+(`lifetime` is declared in `rotate/mod.rs` beside the other rotate modules),
 directly after it registers its signal handlers. This runs in every mode, so
 a plain `rotate watch` child is covered as well as a `--spawned` one.
 
@@ -211,8 +213,7 @@ because the kernel closes the write end.
 | File | What it checks |
 |------|----------------|
 | `src/commands/profile/rotate/tests_lifetime.rs` | `armed_fd` rejects every bad variable, guard and fd case; a closed fd (`i32::MAX`), a regular file and a pipe with `FD_CLOEXEC` set are all refused; the writer from `std::io::pipe()` has `FD_CLOEXEC` set; data leaves `stop` false and dropping the writer sets it. |
-| `src/commands/profile/rotate/tests_source_scan.rs` | `lifetime.rs` is a planned rotate file; it declares the variable as `AMPLIHACK_TEST_ROTATOR_LIFETIME_FD`, which does not start with `AMPLIHACK_ROTATE`. |
-| `tests/issue_2095_test_rotator_lifetime.rs` | `a_killed_test_takes_its_rotator_with_it`: a helper test starts an armed rotator and is SIGKILLed; the watcher exits and its pid file is removed. `an_unarmed_rotator_outlives_its_starter`: the same with an unarmed fixture; after the helper is reaped, the watcher writes a new `idle: auto-switch is off` log line and is still alive with its pid file present. `the_fixture_names_the_variable_the_watcher_reads`: the fixture's copy of the variable name is the same literal. Linux only. |
+| `tests/issue_2095_test_rotator_lifetime.rs` | `a_killed_test_takes_its_rotator_with_it`: a helper test starts an armed rotator and is SIGKILLed; the watcher exits and its pid file is removed. `an_unarmed_rotator_outlives_its_starter`: the same with an unarmed fixture; after the helper is reaped, the watcher writes a new `idle: auto-switch is off` log line and is still alive with its pid file present. Before the kill, D7 checks that the watcher set `FD_CLOEXEC` on the read end, which it does only once armed; that check fails if the fixture's variable name and the watcher's differ, or if `daemon::spawn` strips the variable. Linux only. |
 
 The integration tests use no sleep or deadline. They wait on the helper's
 stdout line, `wait()`, a pidfd `poll(-1)` and inotify events.

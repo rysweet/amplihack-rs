@@ -34,12 +34,25 @@ usage_limit_failure() {
 # usage_limit_stop <rc> <log> <reason>: escalate USAGE_LIMIT and exit 1 on one.
 usage_limit_stop() { usage_limit_failure "$1" "$2" || return 0; escalate "USAGE_LIMIT" "$3" usage_limit; exit 1; }
 
-escalate() { # escalate <verdict> <why> [usage_limit|budget]
+# orphan_stop <rc> <who>: a child that exited 75 lost the recipe run above the
+# loop (#1976). Stop as ORPHANED with exit 75 before the progress row and the
+# evaluator: the evaluator would inherit the same dead parent, stop at once
+# and leave no LOOP_HEALTH line, so the loop would report a driver crash as
+# STUCK. docs/reference/auto-drive-to-merge.md#how-the-loop-treats-exit-75.
+AUTODRIVE_EXIT_ORPHANED=75 # a nested recipe run whose parent run exited (#1976)
+orphan_stop() {
+  [ "${1:-0}" = "$AUTODRIVE_EXIT_ORPHANED" ] || return 0
+  escalate "ORPHANED" "${2} exited ${AUTODRIVE_EXIT_ORPHANED}: the recipe run above this loop exited, so the nested run stopped itself; see orphaned.json in the state directory" orphaned
+  exit "$AUTODRIVE_EXIT_ORPHANED"
+}
+
+escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned]
   echo "AUTO_DRIVE_LOOP: ${1} — loop '${LOOP_NAME}' stops at round label '${ROUND_LABEL:-?}'." >&2
   echo "  Reason: ${2}" >&2
   echo "  Round record: ${RECORD:-<none>}" >&2
   case "${3:-}" in
     usage_limit) echo "  This is a usage limit, not a judgement about progress. Run again when a login has capacity." >&2 ;;
+    orphaned) echo "  This is a lost driver, not a judgement about progress. Relaunch auto-drive to resume from the recorded round." >&2 ;;
     budget) echo "  This is a usage budget set by the operator, not a judgement about progress. Relaunch with a higher budget to resume from the recorded round." >&2 ;;
     *) echo "  This is a judgement about absence of progress, not an attempt count." >&2 ;;
   esac
