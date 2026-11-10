@@ -1,8 +1,8 @@
 ---
 title: Keep the Pre-commit Hooks Portable to macOS
 type: howto
-updated: 2026-10-18
-related: PR #1530, issue #1423, issue #1569
+updated: 2026-11-10
+related: PR #1530, issue #1423, issue #1569, issue #2286
 ---
 
 # Keep the Pre-commit Hooks Portable to macOS
@@ -16,6 +16,7 @@ hooks on macOS. If a change breaks them there, the first sign is a failed
 
 - [Shell hooks: use POSIX sed and bash 3.2](#shell-hooks-use-posix-sed-and-bash-32)
 - [Clippy: allow Linux-only items on other platforms](#clippy-allow-linux-only-items-on-other-platforms)
+- [Test files: gate a file that imports a Linux-only item](#test-files-gate-a-file-that-imports-a-linux-only-item)
 - [libc FFI: use the libc type aliases](#libc-ffi-use-the-libc-type-aliases)
 - [Check a change from a Linux machine](#check-a-change-from-a-linux-machine)
 
@@ -136,6 +137,99 @@ When a marked helper later gains a caller outside the gated module, remove its
 allow. The compiler does not warn about an allow that no longer suppresses
 anything, so a stale one stays in place until someone deletes it.
 
+## Test files: gate a file that imports a Linux-only item
+
+The allows in the previous section deal with warnings. A `use` of an item that
+is itself gated with `#[cfg(target_os = "linux")]` is a different case: on
+macOS the item does not exist, so the import fails to compile with `E0432`
+(unresolved import). No `allow` attribute can suppress that, and it stops
+`cargo test --workspace --no-run` and the pre-push hook on every Mac.
+
+The integration tests in `crates/amplihack-cli/tests/` are modules of one test
+binary, `cli_integration`, declared in `tests/main.rs`. A module that imports
+a Linux-only helper from a sibling module must be gated the same way as the
+helper.
+
+`issue_1954_install_leaves_live_runs_alone.rs` defines `proc_link`, which reads
+`/proc/<pid>/<entry>`, for Linux only:
+
+```rust
+#[cfg(target_os = "linux")]
+pub(crate) fn proc_link(pid: &str, entry: &str) -> String {
+```
+
+`issue_1954_first_install_restager.rs` imports it, and its only test already
+needs Linux. The whole file is therefore gated with an inner attribute:
+
+```rust
+//! The stub also lists `~/.amplihack` just before it starts the new
+//! binary. That listing must equal the one the test takes before it starts
+//! the stub: the old binary's part of the hand-off writes nothing there.
+
+// Linux only: the test reads /proc through proc_link.
+#![cfg(target_os = "linux")]
+
+use crate::issue_1954_install_leaves_live_runs_alone::{
+    Host, RUN_SCRIPT, plant_legacy_layout, proc_link, published_release, text,
+};
+```
+
+Rules:
+
+- Use the same condition as the item you import. `proc_link` is gated to
+  `target_os = "linux"`, so `#![cfg(unix)]` would still fail on macOS.
+- Place `#![cfg(...)]` after the `//!` doc block and before the first `use`.
+  A plain `//` comment may sit just above it.
+  An inner attribute after an item does not compile (`E0753`).
+  `issue_1570_run_output_stdin.rs` uses the same layout.
+- Gate the file, not the `mod` line in `tests/main.rs`. No `mod` line there
+  has a `cfg`, and a file-level gate keeps the condition next to the code
+  that needs it.
+- Gate the whole file only when every test in it needs Linux. If some tests
+  run on macOS, gate the import and its callers instead, for example by moving
+  the Linux-only tests into a `#[cfg(target_os = "linux")] mod`.
+
+On Linux the condition is true, so the file compiles and its tests run as
+before. On macOS the module is empty and nothing in it is compiled.
+
+To check that no other test file imports `proc_link` outside a Linux scope,
+list every use and confirm that each line is inside a `target_os = "linux"`
+item or file:
+
+```bash
+git grep -n proc_link crates/amplihack-cli/tests
+```
+
+With the restager file gated, the command prints seven lines. The first is the comment above the
+gate:
+
+```text
+crates/amplihack-cli/tests/issue_1954_first_install_restager.rs:28:// Linux only: the test reads /proc through proc_link.
+crates/amplihack-cli/tests/issue_1954_first_install_restager.rs:32:    Host, RUN_SCRIPT, plant_legacy_layout, proc_link, published_release, text,
+crates/amplihack-cli/tests/issue_1954_first_install_restager.rs:166:    let cwd_during = proc_link(&a_pid, "cwd");
+crates/amplihack-cli/tests/issue_1954_install_leaves_live_runs_alone.rs:414:pub(crate) fn proc_link(pid: &str, entry: &str) -> String {
+crates/amplihack-cli/tests/issue_1954_install_leaves_live_runs_alone.rs:520:    let cwd_now = proc_link(&a_pid, "cwd");
+crates/amplihack-cli/tests/issue_1954_install_leaves_live_runs_alone.rs:521:    let fd_now = proc_link(&a_pid, "fd/3");
+crates/amplihack-cli/tests/issue_1954_install_leaves_live_runs_alone.rs:693:    let cwd_now = proc_link(&a_pid, "cwd");
+```
+
+| Line             | Linux gate                                                   |
+| ---------------- | ------------------------------------------------------------ |
+| restager 28, 32, 166 | `#![cfg(target_os = "linux")]` on the whole file             |
+| live-runs 414    | `#[cfg(target_os = "linux")]` on `proc_link` itself          |
+| live-runs 520, 521 | `#[cfg(target_os = "linux")]` on `install_and_self_heal_leave_a_live_run_alone` |
+| live-runs 693    | `#[cfg(target_os = "linux")]` on `migration_from_a_real_bundle_dir_keeps_a_live_run_alive` |
+
+A new line in this list that is not inside one of these gates breaks the
+macOS build again.
+
+To confirm that the gate removed no tests on Linux, compare the test list
+before and after the change. The names and the count must be the same:
+
+```bash
+cargo test -p amplihack-cli --test cli_integration -- --list | grep issue_1954_
+```
+
 ## libc FFI: use the libc type aliases
 
 Some `libc` constants and function arguments have different Rust types on
@@ -235,9 +329,19 @@ rustup target add aarch64-apple-darwin
 cargo clippy --locked --all-targets --target aarch64-apple-darwin -- -D warnings
 ```
 
-This often stops early because a dependency's C build script needs the Apple
-SDK, which Linux hosts don't have. If it does, the macOS result is unknown,
-not a pass. Say so in the PR and ask someone with a Mac to run
+The same check finds unresolved imports in test files. Either Apple target
+will do; this example uses the Intel one:
+
+```bash
+cargo check -p amplihack-cli --tests --target x86_64-apple-darwin --locked
+```
+
+`rustup target list --installed` shows which targets the host already has.
+Name the target you used when you quote the result in a PR.
+
+Both commands often stop early because a dependency's C build script needs
+the Apple SDK, which Linux hosts don't have. If one does, the macOS result is
+unknown, not a pass. Say so in the PR and ask someone with a Mac to run
 `pre-commit run --all-files`.
 
 ## Related
