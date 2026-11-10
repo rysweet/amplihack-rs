@@ -520,6 +520,8 @@ fn issue_1932_malformed_and_oversized_input_log_only_fixed_diagnostics() {
     for (payload, disposition) in [
         (b"{ DO_NOT_LOG_RAW_INPUT".to_vec(), "malformed-input"),
         (vec![b'x'; 1024 * 1024 + 1], "oversized-input"),
+        (b"null".to_vec(), "malformed-input"),
+        (b"[]".to_vec(), "malformed-input"),
     ] {
         let e = env();
         let log = diagnostic_run(&e, "1", &payload);
@@ -561,13 +563,13 @@ fn issue_1932_receipt_excludes_sensitive_fields_and_cannot_inject_records() {
 }
 
 #[test]
-fn issue_1932_multibyte_error_is_bounded_and_explicitly_truncated() {
+fn issue_1932_multibyte_error_is_bounded_and_redacted() {
     let e = env();
     let payload =
         json!({"hook_event_name": "StopFailure", "session_id": "s", "error": "界🦀".repeat(4096)});
     let log = diagnostic_run(&e, "1", payload.to_string().as_bytes());
     let receipt = diagnostic_stage(&log, "receipt");
-    assert!(receipt.contains("truncated=true"), "{receipt}");
+    assert!(receipt.contains("error_kind=redacted"), "{receipt}");
     assert!(
         !receipt.contains('\u{fffd}'),
         "truncation must preserve UTF-8"
@@ -679,4 +681,18 @@ fn usage_text_lists_limit_resume() {
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("limit-resume"));
+}
+
+#[test]
+fn issue_1932_credentials_in_error_are_never_persisted_even_when_disabled() {
+    for toggle in ["0", "1"] {
+        for secret in ["Bearer PRIVATE_ACCESS_TOKEN", "OPAQUE_PRIVATE_CREDENTIAL"] {
+            let e = env();
+            let payload = json!({"hook_event_name": "StopFailure", "error": secret});
+            let log = diagnostic_run(&e, toggle, payload.to_string().as_bytes());
+            assert!(diagnostic_stage(&log, "receipt").contains("error_kind=redacted"));
+            assert!(log.contains("error_sha256="));
+            assert!(!log.contains("PRIVATE"));
+        }
+    }
 }

@@ -586,6 +586,17 @@ pub fn run_with_io<D: Deps + ?Sized>(
                 return None;
             }
         };
+        if !value.is_object() {
+            diagnostic(
+                deps,
+                start,
+                &invocation,
+                &session,
+                Stage::Filtered,
+                "malformed-input",
+            );
+            return None;
+        }
         session = value
             .get("session_id")
             .and_then(serde_json::Value::as_str)

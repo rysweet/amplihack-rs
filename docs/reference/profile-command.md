@@ -9221,27 +9221,26 @@ retained on filtering records, including typed-payload decoding failures.
 
 | Stage | Meaning |
 |-------|---------|
-| Receipt | The hook received input. Records whether `error` is missing, has an invalid type, or is a bounded encoded string value. This is not an eligible-limit decision. |
+| Receipt | The hook received input. Records whether `error` is missing, has an invalid type, is a recognized code, or is an unknown string retained only as a fingerprint. This is not an eligible-limit decision. |
 | Filtered | Processing stopped: disabled auto-switch, missing error, invalid error type, non-limit error, missing or invalid session, malformed input, or oversized input. Dispositions are fixed names, never payload text. |
 | Waiting armed | Event watches are established; the hook can now wait for swap or cancellation events. |
 | Swap judged | The shared judgement accepted capacity or rejected a stale or full target. Acceptance alone does not authorize continuation. |
 | Continuation attempt | Durable event/session guard commit succeeded and authorized the selected keys or wake action. |
 | Continuation result | The action completed or failed. Existing outcomes such as `resumed`, `resumed-keys` and `resume-keys-failed` retain their meaning. |
 
-Only the exact original string `rate_limit` qualifies. Encoding or truncating
-an error for diagnostics never changes matching or event identity. String
-observations preserve a UTF-8-safe prefix of at most 256 bytes. Percent encoding
-reversibly escapes whitespace, delimiters and control characters; truncation is
-explicit. Both fields and serialized records are bounded. Invalid-type
-observations never serialize arbitrary objects or arrays.
+Only the exact original string `rate_limit` qualifies. Diagnostic redaction
+never changes matching or event identity. Receipts preserve the actual values
+`rate_limit`, `authentication_failed` and `overloaded`. Every other string is
+recorded as `error_kind=redacted` with a SHA-256 `error_sha256` fingerprint of
+the complete original value. Unknown raw error values are deliberately withheld:
+actual-value observation is limited to these recognized codes so arbitrary
+credential-bearing strings cannot reach the log. Use the fingerprint to
+correlate repeated unknown errors; it does not identify their meaning.
+Invalid-type observations never serialize arbitrary objects or arrays.
 
-Records allow only bounded diagnostic fields. Raw payloads, `error_details`,
-prompts, assistant messages, transcripts, credentials and environment dumps
-are excluded as dedicated fields. Arbitrary string-valued errors can themselves
-contain secrets: reversible encoding is not redaction or credential scrubbing,
-including before event validation or when auto-switch is disabled. Treat both
-log generations as potentially sensitive and sanitize shared evidence. An
-error-code allowlist would require a separate diagnostic-contract decision.
+Raw payloads, `error_details`, prompts, assistant messages, transcripts,
+credentials and environment dumps are excluded. Fingerprints are correlatable
+and may permit guessing low-entropy values; sanitize shared evidence.
 Session and pane identifiers are hashed; hashes remain
 correlatable and should still be treated as private. Logging retains private
 directory checks, restrictive file permissions, symlink protections and bounded
@@ -9288,7 +9287,7 @@ after `cycle` appear only when they apply:
 
 In these existing decision records, fields hold only `A-Z`, `a-z`, `0-9`,
 `.`, `_`, `:` and `-`; other characters become `-`. Additive receipt records
-use the bounded reversible error encoding described above. The log excludes
+use the recognized-code and unknown-string fingerprint policy described above. The log excludes
 assistant message text, raw pane ids, account IDs and tokens. A log written by an earlier version, without
 the new fields, is still valid. Failing to write it does not change the
 outcome.

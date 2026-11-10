@@ -1170,20 +1170,21 @@ fn the_prompted_dir_prepare_makes_can_be_watched() {
 }
 
 #[test]
-fn issue_1932_error_prefix_uses_reversible_byte_encoding() {
+fn issue_1932_error_observation_retains_only_recognized_codes() {
     use amplihack_hooks::limit_resume::log::ErrorObservation;
-    assert_eq!(
-        ErrorObservation::from_value(Some(&serde_json::json!("a %=\n界"))),
-        ErrorObservation::Value {
-            encoded: "a%20%25%3D%0A%E7%95%8C".to_string(),
-            truncated: false,
-        }
-    );
-    assert_eq!(
-        ErrorObservation::from_value(Some(&serde_json::json!(format!("{}界", "a".repeat(255))))),
-        ErrorObservation::Value {
-            encoded: "a".repeat(255),
-            truncated: true
-        }
-    );
+    for code in ["rate_limit", "authentication_failed", "overloaded"] {
+        assert_eq!(
+            ErrorObservation::from_value(Some(&serde_json::json!(code))),
+            ErrorObservation::Value(code.to_string())
+        );
+    }
+    for value in ["Bearer PRIVATE_TOKEN", "OPAQUE_CREDENTIAL", "a %=\n界"] {
+        let observed = ErrorObservation::from_value(Some(&serde_json::json!(value)));
+        let ErrorObservation::Redacted { sha256 } = observed else {
+            panic!("unrecognized error must be redacted");
+        };
+        assert_eq!(sha256.len(), 64);
+        assert!(sha256.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert!(!sha256.contains(value));
+    }
 }

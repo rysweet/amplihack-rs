@@ -268,3 +268,30 @@ ownership checks still precede delivery, but check/send is not atomic; guard
 retention and no exit-two fallback after partial delivery remain unchanged.
 Eligibility classification was checked against the existing gates; this local
 correlation change needs no new shared classifier or module restructuring.
+
+Step 20c quality audit correction
+Cycle 1: technical and adversarial reads confirmed credential persistence in
+arbitrary error strings and incorrect non-object JSON classification.
+Fixed with exact recognized-code retention (rate_limit, authentication_failed,
+overloaded); unknown strings retain only SHA-256 fingerprints, never prefixes.
+This supersedes the reversible-error caveat above. Unknown actual error values
+remain deliberately unavailable for credential safety; fingerprints support
+correlation only. Non-object JSON is rejected as malformed before receipt.
+Regressions cover recognized codes, opaque and Bearer credentials with the
+auto-switch both enabled and disabled, multibyte unknown errors, null and arrays.
+Cycle 2: reviewed guard ordering, shared judgement, concurrent waiters,
+duplicate suppression, cancellation and delivery failures; no new findings.
+Cycle 3: adversarial review of test isolation, docs, logging failures and stubs;
+no new findings. Self-improvement pass removed reversible unknown-error logging
+rather than relying on a growing credential-pattern denylist.
+Released-host and Linux verification remain outstanding as described above.
+Audit verification: direct rustfmt --edition 2024 on all four changed Rust
+files and git diff --check passed. Fresh targeted tests, binary regressions,
+changed-crate Clippy, and both required pre-commit/pre-push hook stages are
+queued in the detached audit-checks tmux session on the private socket above.
+Runner: /private/tmp/issue-1932-validation/audit-checks.sh
+Logs/status: /private/tmp/issue-1932-validation/audit-{targeted,binary,clippy,precommit,prepush}.{log,status}
+At handoff the targeted run is waiting on the existing Cargo build-directory
+lock. No fresh test or required-hook pass is claimed until terminal receipts
+are inspected. This audit leaves fixes uncommitted for steps 20a/20b to guard
+and push; it does not merge or bypass hooks.

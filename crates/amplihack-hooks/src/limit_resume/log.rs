@@ -15,8 +15,7 @@
 //! Every field is a hash prefix, a fixed outcome name, a checked profile
 //! name, the ledger's cycle outcome, a number or an `io::ErrorKind` name,
 //! and is reduced to `[A-Za-z0-9._:-]`, so no message text reaches the
-//! file. The allowlisted error string instead uses reversible percent encoding
-//! of a UTF-8-safe prefix of at most 256 bytes, with explicit truncation.
+//! file. Only recognized error codes are retained; other strings are hashed.
 //! No other payload text is logged. Past `LOG_MAX_BYTES` the file is moved to `resume.log.1`.
 //! Logging is best effort: a failure never changes the outcome or prints.
 
@@ -24,6 +23,7 @@ use super::Outcome;
 use amplihack_utils::secure_files::{
     check_private_dir, lock_exclusive_timeout, open_private_nofollow,
 };
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -42,34 +42,28 @@ const MAX_FIELD_CHARS: usize = 64;
 pub enum ErrorObservation {
     Missing,
     InvalidType,
-    Value { encoded: String, truncated: bool },
+    /// Unrecognized strings may contain credentials; retain only a fingerprint.
+    Redacted {
+        sha256: String,
+    },
+    Value(String),
 }
 
 impl ErrorObservation {
     pub fn from_value(value: Option<&serde_json::Value>) -> Self {
         match value {
             None => Self::Missing,
-            Some(serde_json::Value::String(value)) => {
-                let mut end = value.len().min(256);
-                while !value.is_char_boundary(end) {
-                    end -= 1;
-                }
-                let mut encoded = String::new();
-                for byte in value[..end].bytes() {
-                    if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':') {
-                        encoded.push(char::from(byte));
-                    } else {
-                        const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                        encoded.push('%');
-                        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-                        encoded.push(char::from(HEX[usize::from(byte & 15)]));
-                    }
-                }
-                Self::Value {
-                    encoded,
-                    truncated: end < value.len(),
+            Some(serde_json::Value::String(value))
+                if !matches!(
+                    value.as_str(),
+                    "rate_limit" | "authentication_failed" | "overloaded"
+                ) =>
+            {
+                Self::Redacted {
+                    sha256: format!("{:x}", Sha256::digest(value.as_bytes())),
                 }
             }
+            Some(serde_json::Value::String(value)) => Self::Value(value.clone()),
             Some(_) => Self::InvalidType,
         }
     }
@@ -125,10 +119,12 @@ pub fn format_diagnostic(now: i64, entry: &Diagnostic) -> String {
     match &entry.error {
         Some(ErrorObservation::Missing) => line.push_str(" error_kind=missing"),
         Some(ErrorObservation::InvalidType) => line.push_str(" error_kind=invalid-type"),
-        Some(ErrorObservation::Value { encoded, truncated }) => {
-            line.push_str(&format!(
-                " error_kind=value error={encoded} truncated={truncated}"
-            ));
+        Some(ErrorObservation::Redacted { sha256 }) => {
+            line.push_str(&format!(" error_kind=redacted error_sha256={sha256}"));
+        }
+
+        Some(ErrorObservation::Value(value)) => {
+            line.push_str(&format!(" error_kind=value error={}", sanitize(value)));
         }
         None => {}
     }
