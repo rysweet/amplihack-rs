@@ -2,6 +2,9 @@
 use super::recovery_test_support::*;
 use super::*;
 
+#[path = "recovery_staleness_tests/diagnostics.rs"]
+mod diagnostics;
+
 #[test]
 fn orphaned_targets_archive_journal_and_finish_reconciliation() {
     for whole_directory in [false, true] {

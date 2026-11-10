@@ -167,7 +167,7 @@ impl Fixture {
         assert!(hooks["hooks"]["SessionStart"].is_array());
         assert!(!self.home.join(".codex").exists());
     }
-    pub fn assert_retained(&self, before: &[u8]) {
+    pub fn assert_retained(&self, before: &[u8]) -> String {
         let config = snapshot(&self.codex.join("config.toml")).unwrap();
         let hooks = snapshot(&self.codex.join("hooks.json")).unwrap();
         let ledger = fs::read(self.root.join("ownership.json")).ok();
@@ -186,6 +186,7 @@ impl Fixture {
         assert_eq!(snapshot(&self.codex.join("hooks.json")).unwrap(), hooks);
         assert_eq!(fs::read(self.root.join("ownership.json")).ok(), ledger);
         assert_eq!(digest(&self.root.join("market/plugin")).unwrap(), package);
+        error
     }
 }
 

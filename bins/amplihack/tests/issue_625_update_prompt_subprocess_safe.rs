@@ -126,6 +126,7 @@ fn cmd_with_clean_env(home: &std::path::Path) -> Command {
         cmd.env("PATH", path);
     }
     cmd.env("HOME", home);
+    cmd.env("CODEX_HOME", home.join("selected-codex"));
     cmd.env("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
     cmd.env("AMPLIHACK_TEST_FAKE_LATEST_VERSION", FAKE_LATEST_VERSION);
     for name in SIGNAL_ENV_VARS {
@@ -455,6 +456,7 @@ mod pty {
             "/usr/bin/env -i \
              PATH={path} \
              HOME={home} \
+             CODEX_HOME={home}/selected-codex \
              AMPLIHACK_TEST_FAKE_LATEST_VERSION={fake} \
              AMPLIHACK_SKIP_AUTO_INSTALL=1 \
              {bin} copilot --append update-check-fixture",

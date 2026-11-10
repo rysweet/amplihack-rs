@@ -254,14 +254,17 @@ metadata boundary; hashing current files alone does not establish ownership.
 Newer modification times or a higher generation alone are insufficient. A
 foreign edit, a mixture of recorded and unfamiliar states, or either target
 still matching an abandoned permitted state cannot establish supersession.
-Missing, incomplete or unsupported completion evidence leaves strict recovery
-in place. Optional versioned `recovery_evidence` in pending journals and completion
+Missing, incomplete or unsupported completion evidence cannot authorize archival.
+If supersession verification fails, recovery retains the journal and reports
+the original cause, including invalid evidence or a failed native probe.
+Optional versioned `recovery_evidence` in pending journals and completion
 fields in ownership records preserve compatibility with journal schema **2** and
 ownership schema **1**. A journal without these extensions can meet the orphan
 rule if its valid snapshots prove it, but cannot establish supersession.
 
-All other journals go through strict recovery. A state that can be recovered
-safely is replayed; a genuine in-flight mismatch retains the existing refusal,
+Journals retained without a verification error go through strict recovery. A
+state that can be recovered safely is replayed; a genuine in-flight mismatch
+retains the existing refusal,
 including `foreign Codex config changed; reconcile manually; recovery record retained`.
 
 ## Journal archival and explicit reset

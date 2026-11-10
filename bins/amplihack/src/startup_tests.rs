@@ -3,13 +3,42 @@ use amplihack_cli::Cli;
 use std::{fs, sync::Mutex};
 
 static ENV: Mutex<()> = Mutex::new(());
-struct Home(Option<OsString>);
-impl Drop for Home {
-    fn drop(&mut self) {
+struct Environment {
+    previous: [Option<OsString>; 2],
+    codex: tempfile::TempDir,
+}
+impl Environment {
+    fn new(home: &std::path::Path) -> Self {
+        // Select native targets outside HOME to verify reset is metadata-only.
+        let codex = tempfile::tempdir().unwrap();
+        fs::write(codex.path().join("config.toml"), b"# native config\n").unwrap();
+        fs::write(codex.path().join("hooks.json"), b"{\"native\":true}\n").unwrap();
+        let previous = [std::env::var_os("HOME"), std::env::var_os("CODEX_HOME")];
         unsafe {
-            match self.0.take() {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
+            std::env::set_var("HOME", home);
+            std::env::set_var("CODEX_HOME", codex.path());
+        }
+        Self { previous, codex }
+    }
+    fn assert_targets_untouched(&self) {
+        assert_eq!(
+            fs::read(self.codex.path().join("config.toml")).unwrap(),
+            b"# native config\n"
+        );
+        assert_eq!(
+            fs::read(self.codex.path().join("hooks.json")).unwrap(),
+            b"{\"native\":true}\n"
+        );
+    }
+}
+impl Drop for Environment {
+    fn drop(&mut self) {
+        for (key, previous) in ["HOME", "CODEX_HOME"].into_iter().zip(&mut self.previous) {
+            unsafe {
+                match previous.take() {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
             }
         }
     }
@@ -18,13 +47,10 @@ impl Drop for Home {
 #[test]
 fn reset_finishes_before_accepted_declined_or_unavailable_startup_update() {
     let _lock = ENV.lock().unwrap();
-    let _restore = Home(std::env::var_os("HOME"));
     for available in [true, false] {
         for accept in [true, false] {
             let home = tempfile::tempdir().unwrap();
-            unsafe {
-                std::env::set_var("HOME", home.path());
-            }
+            let environment = Environment::new(home.path());
             let root = home.path().join(".amplihack/codex");
             fs::create_dir_all(&root).unwrap();
             fs::write(root.join("pending.json"), b"unparsed journal").unwrap();
@@ -73,6 +99,7 @@ fn reset_finishes_before_accepted_declined_or_unavailable_startup_update() {
                 matches!(outcome, update::StartupUpdateOutcome::ExitSuccess),
                 available && accept
             );
+            environment.assert_targets_untouched();
             // Re-execution receives the consumed argv and cannot reset again.
             let replay = Cli::try_parse_from(&args).unwrap();
             assert!(matches!(
@@ -89,11 +116,8 @@ fn reset_finishes_before_accepted_declined_or_unavailable_startup_update() {
 #[test]
 fn reset_failure_stops_before_updater_and_leaves_arguments_unconsumed() {
     let _lock = ENV.lock().unwrap();
-    let _restore = Home(std::env::var_os("HOME"));
     let home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("HOME", home.path());
-    }
+    let environment = Environment::new(home.path());
     let root = home.path().join(".amplihack/codex");
     fs::create_dir_all(root.join("pending.json")).unwrap();
     let mut args = ["amplihack", "codex", "--reset-recovery"]
@@ -107,6 +131,7 @@ fn reset_failure_stops_before_updater_and_leaves_arguments_unconsumed() {
         ))
         .is_err()
     );
+    environment.assert_targets_untouched();
     assert_eq!(args, before);
     assert!(root.join("pending.json").is_dir());
     assert!(matches!(
@@ -121,11 +146,8 @@ fn reset_failure_stops_before_updater_and_leaves_arguments_unconsumed() {
 #[test]
 fn ordinary_startup_keeps_journal_and_arguments_for_updater() {
     let _lock = ENV.lock().unwrap();
-    let _restore = Home(std::env::var_os("HOME"));
     let home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("HOME", home.path());
-    }
+    let environment = Environment::new(home.path());
     let root = home.path().join(".amplihack/codex");
     fs::create_dir_all(&root).unwrap();
     fs::write(root.join("pending.json"), b"current journal").unwrap();
@@ -143,16 +165,14 @@ fn ordinary_startup_keeps_journal_and_arguments_for_updater() {
         update::StartupUpdateOutcome::Continue
     })
     .unwrap();
+    environment.assert_targets_untouched();
 }
 
 #[test]
 fn forwarding_preserves_literal_native_reset_with_or_without_separator() {
     let _lock = ENV.lock().unwrap();
-    let _restore = Home(std::env::var_os("HOME"));
     let home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("HOME", home.path());
-    }
+    let environment = Environment::new(home.path());
     for native in [
         vec!["--", "--reset-recovery", "literal"],
         vec!["exec", "--reset-recovery"],
@@ -182,4 +202,5 @@ fn forwarding_preserves_literal_native_reset_with_or_without_separator() {
             }
         ));
     }
+    environment.assert_targets_untouched();
 }

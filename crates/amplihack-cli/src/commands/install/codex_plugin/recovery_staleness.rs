@@ -35,7 +35,8 @@ fn classify(pending: &Value, root: &Path, home: &Path, binary: &Path) -> Result<
     let Some(value) = regular_json(&root.join("ownership.json"))? else {
         return Ok(Staleness::Retain);
     };
-    // Unsupported or incomplete evidence is uncertainty, never supersession.
+    // Unverified evidence never authorizes supersession. Preserve failures so
+    // callers can diagnose why the journal is retained.
     let verified = (|| -> Result<bool> {
         let owner: Ownership = serde_json::from_value(value)?;
         if !completion_proof::newer(pending, &owner)? {
@@ -44,13 +45,10 @@ fn classify(pending: &Value, root: &Path, home: &Path, binary: &Path) -> Result<
         completion_proof::verify(root, home, binary, &owner)?;
         Ok(true)
     })();
-    match verified {
-        Ok(true) => Ok(Staleness::Superseded),
-        Ok(false) => Ok(Staleness::Retain),
-        Err(error) => {
-            tracing::debug!("Codex journal lacks corroborated supersession: {error:#}");
-            Ok(Staleness::Retain)
-        }
+    if verified.context("cannot verify Codex journal supersession; recovery record retained")? {
+        Ok(Staleness::Superseded)
+    } else {
+        Ok(Staleness::Retain)
     }
 }
 /// Only the initial, locked installer boundary may classify stale journals.
