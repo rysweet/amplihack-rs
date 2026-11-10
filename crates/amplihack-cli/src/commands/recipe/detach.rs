@@ -142,12 +142,14 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
     };
     create_private(&secrets.spec)?.write_all(&serde_json::to_vec(&spec)?)?;
 
-    let started = Command::new("tmux")
-        // Issue #1811: a tmux server started here keeps this environment
-        // for every later session; the governor's parent and recipe markers
-        // must not reach them.
-        .env_remove(crate::commands::governor::GOVERNOR_PARENT_ENV)
-        .env_remove(crate::commands::governor::GOVERNOR_RECIPE_ENV)
+    let mut tmux = Command::new("tmux");
+    // Issue #1811: a tmux server started here keeps this environment for
+    // every later session; the governor's parent and recipe markers must not
+    // reach them. Issue #1976: nor the parent-watch and state-dir variables.
+    for name in PANE_ENV_REMOVED {
+        tmux.env_remove(name);
+    }
+    let started = tmux
         .args(["new-session", "-d", "-s", &session, "--"])
         .arg(&exe)
         .args(["recipe", "detached-child", "--log"])
@@ -319,6 +321,23 @@ fn session_exists(session: &str) -> bool {
         .is_ok_and(|status| status.success())
 }
 
+/// Variables a detached pane never inherits. A pane root is a top-level run
+/// (issue #1976, D8): it must not watch the launching run as its parent, nor
+/// write into another drive's state directory. The governor markers are
+/// issue #1811's.
+pub(crate) const PANE_ENV_REMOVED: [&str; 5] = [
+    crate::commands::governor::GOVERNOR_PARENT_ENV,
+    crate::commands::governor::GOVERNOR_RECIPE_ENV,
+    super::run::parent_watch::PARENT_WATCH_ENV[0],
+    super::run::parent_watch::PARENT_WATCH_ENV[1],
+    super::run::parent_watch::PARENT_WATCH_ENV[2],
+];
+
+/// Whether the pane may inherit `name`.
+pub(crate) fn keeps_in_pane(name: &str) -> bool {
+    !PANE_ENV_REMOVED.contains(&name)
+}
+
 /// The caller's environment for the run: every agent session marker removed,
 /// and the resolved agent binary set with the tag `recipe run` would export.
 /// The capacity governor's parent and recipe markers are removed too (issue
@@ -329,8 +348,7 @@ fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
         .filter(|(k, _)| {
             !SESSION_MARKERS.iter().any(|(marker, _)| marker == k)
                 && !TMUX_VARS.contains(&k.as_str())
-                && k != crate::commands::governor::GOVERNOR_PARENT_ENV
-                && k != crate::commands::governor::GOVERNOR_RECIPE_ENV
+                && keeps_in_pane(k)
         })
         .collect();
     env.insert(BINARY_ENV.to_string(), agent_binary.binary.clone());
@@ -679,5 +697,36 @@ mod tests {
         assert!(read_spec(&path).is_err());
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(read_spec(&path).unwrap(), spec);
+    }
+
+    /// Issue #1976 (D8, C-S12): a detached run is a top-level run. Its pane
+    /// must never watch the launching run as a parent, nor write into another
+    /// drive's state directory. `child_env` and the `tmux new-session`
+    /// command both drop every name in `PANE_ENV_REMOVED`, through the one
+    /// predicate `keeps_in_pane`.
+    #[test]
+    fn the_pane_drops_the_parent_watch_and_state_dir_variables() {
+        for name in [
+            "AMPLIHACK_PARENT_RECIPE_PID",
+            "AMPLIHACK_PARENT_RECIPE_STARTTIME",
+            "AMPLIHACK_AUTODRIVE_STATE_DIR",
+        ] {
+            assert!(PANE_ENV_REMOVED.contains(&name), "{name} missing");
+            assert!(!keeps_in_pane(name), "{name} reaches the pane");
+        }
+        assert!(!keeps_in_pane(
+            crate::commands::governor::GOVERNOR_PARENT_ENV
+        ));
+        assert!(!keeps_in_pane(
+            crate::commands::governor::GOVERNOR_RECIPE_ENV
+        ));
+        for kept in [
+            "PATH",
+            "HOME",
+            "AMPLIHACK_HOME",
+            "AMPLIHACK_PARENT_RECIPE_PIDX",
+        ] {
+            assert!(keeps_in_pane(kept), "{kept} must reach the pane");
+        }
     }
 }

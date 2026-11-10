@@ -532,6 +532,10 @@ fn kill_hard(pids: &[u32]) {
 
 /// One snapshot of the live process tree from `/proc`: parent pid to child
 /// pids. Best effort: an unreadable entry is skipped.
+///
+/// Always the real `/proc`, never `procfs::proc_root()` (issue #2042): the
+/// tree it finds is signalled, so a fake tree would leave real descendants
+/// running or name pids to signal that the binary does not own.
 #[cfg(target_os = "linux")]
 fn proc_children() -> HashMap<u32, Vec<u32>> {
     let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -580,6 +584,7 @@ fn descendants_in(
 }
 
 /// `(ppid, is_live)` from `/proc/<pid>/stat`; a zombie counts as not live.
+/// The real `/proc` on purpose, like [`proc_children`] (issue #2042).
 #[cfg(target_os = "linux")]
 fn proc_stat_ppid(pid: u32) -> Option<(u32, bool)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;

@@ -524,11 +524,15 @@ fn warn_prompt_incomplete(process_id: &str, payload_bytes: usize) {
 /// prompt is given, so a bare `claude` child receives large prompts there
 /// instead of in one argv element. The `amplihack copilot` and
 /// `amplihack amplifier` delegates have no stdin contract and stay on argv.
+/// Issue #2030: the prompt never goes in argv. `claude -p` reads stdin; the
+/// `amplihack copilot`/`amplihack amplifier` delegates get the pointer
+/// sentence to a 0600 file; anything else has no safe channel and fails with
+/// `NoSafeChannel` instead of using argv.
 fn delivery_caps_for_program(program: &str) -> DeliveryCaps {
-    if program == "claude" {
-        DeliveryCaps::argv_only().with_stdin()
-    } else {
-        DeliveryCaps::argv_only()
+    match program {
+        "claude" => DeliveryCaps::argv_only().with_stdin(),
+        "amplihack" => DeliveryCaps::argv_only().with_file_reference(),
+        _ => DeliveryCaps::default(),
     }
 }
 

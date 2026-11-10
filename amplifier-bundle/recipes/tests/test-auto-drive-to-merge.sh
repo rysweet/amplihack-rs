@@ -1032,6 +1032,30 @@ ${UL_WAIT} progress
 ${UL_WAIT} end reason=signal" \
   "issue #2022: unbounded wait lines without the runner's marker are not a usage limit"
 
+# Issue #2022: a default drive has no wall-clock limit. The composer's
+# default for autodrive_budget_wall_seconds is passed to the budget check
+# with a recorded use far above the old 14400 s default; the check must not
+# stop the drive. The control run with an explicit limit must stop it, so the
+# case cannot pass because the check never counts wall seconds.
+WB_DEFAULT="$(sed -n 's/^  autodrive_budget_wall_seconds: "\([^"]*\)"$/\1/p' "${RECIPES}/auto-drive-to-merge.yaml")"
+WB_DIR="${WORK}/2022-wall-budget"; mkdir -p "${WB_DIR}"; chmod 700 "${WB_DIR}"
+bash "${TOOLS}/autodrive_budget.sh" add "${WB_DIR}" crusty round-1 round 1000000 >/dev/null 2>"${WB_DIR}.err"
+bash "${TOOLS}/autodrive_budget.sh" check "${WB_DIR}" crusty post round-1 2107 \
+  "autodrive_budget_wall_seconds=${WB_DEFAULT}" >"${WB_DIR}.out" 2>>"${WB_DIR}.err"; WB_RC=$?
+if [ "${WB_DEFAULT}" = "0" ] && [ "${WB_RC}" -eq 0 ] && [ ! -e "${WB_DIR}/autodrive-budget-summary.md" ]; then
+  pass "2022-default-drive-no-wall-limit" "the composer's default wall limit is 0 and 1,000,000 recorded seconds do not stop the drive"
+else
+  fail "2022-default-drive-no-wall-limit" "default='${WB_DEFAULT}' rc=${WB_RC}: $(tr '\n' '|' < "${WB_DIR}.err")"
+fi
+bash "${TOOLS}/autodrive_budget.sh" check "${WB_DIR}" crusty post round-1 2107 \
+  "autodrive_budget_wall_seconds=14400" >"${WB_DIR}.out" 2>>"${WB_DIR}.err"; WB_RC=$?
+if [ "${WB_RC}" -eq 10 ] && grep -qF -- '-c autodrive_budget_wall_seconds=0' "${WB_DIR}/autodrive-budget-summary.md" \
+   && ! grep -qF -- '-c autodrive_budget_wall_seconds=28800' "${WB_DIR}/autodrive-budget-summary.md"; then
+  pass "2022-explicit-wall-limit-resume-removes-it" "an explicit wall limit still stops, and the resume command sets it to 0 instead of doubling it"
+else
+  fail "2022-explicit-wall-limit-resume-removes-it" "rc=${WB_RC}: $(cat "${WB_DIR}/autodrive-budget-summary.md" 2>/dev/null | tr '\n' '|')"
+fi
+
 # The runner writes the marker with serde_json's default map, so its keys are
 # in alphabetical order (docs/reference/auto-drive-to-merge.md). A class
 # nested in evidence sorts after the top-level one and must not count (V6).

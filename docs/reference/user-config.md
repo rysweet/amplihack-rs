@@ -237,7 +237,7 @@ not the marker, so the tag is `user_config:<binary>` and never
 
 ```console
 $ amplihack agent-binary --shell
-env -u CLAUDECODE -u CLAUDE_CODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PROJECT_DIR -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT -u COPILOT_AGENT AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=user_config:claude
+env -u CLAUDECODE -u CLAUDE_CODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PROJECT_DIR -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT -u COPILOT_AGENT -u AMPLIHACK_PARENT_RECIPE_PID -u AMPLIHACK_PARENT_RECIPE_STARTTIME -u AMPLIHACK_AUTODRIVE_STATE_DIR AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=user_config:claude
 ```
 
 The full resolver is described in [Active Agent Binary](./active-agent-binary.md).
@@ -279,6 +279,10 @@ the user file. The launcher reports the saved choice on every launch:
 - `node.heap_consent = true` applies the limit without asking.
 - `node.heap_consent = false` skips it without asking.
 - Unset, the launcher asks, as before.
+- The launcher saves your answer without an `fsync`, so a crash soon after the
+  first launch can lose it and the launcher asks again. `amplihack config set
+  node.heap_consent` saves it durably. See
+  [How files are written](#how-files-are-written).
 - `node.max_old_space_mb` overrides the limit. Unset, the limit is computed
   from the machine's RAM on every launch, as before. Values outside 8192 to
   32768 are rejected.
@@ -767,6 +771,13 @@ so the user file is the only place the consent lives.
 - Writes are atomic: a temporary file with a random name in the same
   directory, set to mode 0600 before anything is written, synced, then
   renamed over the target. A reader never sees a half-written file.
+- One write is not synced: the launcher's save of `node.heap_consent` on the
+  first launch. It is still atomic and 0600, but skips the `fsync`, which took
+  9.76 s on a host under write load and delayed claude's start. If a crash
+  loses it, the next launch asks again. `config set`, `config unset` and the
+  migration from `~/.amplihack/config` all sync. `config edit` hands the file
+  to your editor, which decides how it is written. See
+  [Config Write Durability](../concepts/config-write-durability.md).
 - The user file is created with mode 0600. A new `~/.amplihack` is created
   with mode 0700; an existing one that you own loses group and other access.
   Your own permission bits are never widened.
@@ -783,3 +794,4 @@ so the user file is the only place the consent lives.
 - [amplihack doctor](./doctor-command.md) — The `Effective config` section
 - [Capacity Governor](./capacity-governor.md): What the `governor.*` keys control
 - [Memory Configuration Consent](../features/memory-consent-prompt.md) — The NODE_OPTIONS prompt whose answer `node.heap_consent` stores
+- [Config Write Durability](../concepts/config-write-durability.md): Why the launcher's consent save skips the `fsync` that other config writes perform

@@ -108,7 +108,7 @@ amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c autodrive_dry_run=
 | `autodrive_dry_run` | `"false"` | Verify everything, merge nothing. Files no follow-up issue, so a drive with minor findings ends `NOT_MERGED` with `followup-missing:<id>`. |
 | `autodrive_budget_loop_rounds` | `12` | Rounds either loop may run in total, across every run on the same state directory. `0` or empty means unlimited. |
 | `autodrive_budget_total_rounds` | `20` | Rounds both loops together may run. `0` or empty means unlimited. |
-| `autodrive_budget_wall_seconds` | `14400` | Seconds that rounds, before-round steps and evaluator runs may take in total. `0` or empty means unlimited. |
+| `autodrive_budget_wall_seconds` | `0` | Seconds that rounds, before-round steps and evaluator runs may take in total. `0` or empty means unlimited, and that is the default: a drive is never stopped by a clock unless the operator sets a limit (#2022). |
 
 ## Why there is no iteration cap
 
@@ -131,9 +131,7 @@ that is not clean:
   CI signal are all the same as in the loop's previous round, and CI is not
   still pending, the loop stops as `STUCK`
   without asking the evaluator. Open items are crusty's findings for the crusty
-  loop and the merge round's blockers for the merge-ready loop. A light round
-  whose record has a `.light.json` side file, or that follows one, is left to
-  the evaluator, because its findings file is emptied.
+  loop and the merge round's blockers for the merge-ready loop.
 - **Usage budget.** Each run has a cost ceiling set by the operator, in rounds
   per loop, total rounds and wall seconds. When a limit is reached the loop
   stops as `BUDGET_EXHAUSTED`, which is never success. The budget is checked
@@ -332,7 +330,7 @@ run to their natural end. A false timeout costs more than a slow run.
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | The evidence gate and the fixed merge argv. |
 | `amplifier-bundle/tools/autodrive_followups.sh` | Classifies minor-only rounds, files the follow-up issues and lists them on the plan task issue. |
 | `amplifier-bundle/tools/autodrive_followups_check.sh` | The `check` and `gate` commands: the merge gate's offline follow-up check. |
-| `amplifier-bundle/tools/autodrive_finding_rules.sh` | The minor-finding rules and text sanitising shared with auto-drive-light. |
+| `amplifier-bundle/tools/autodrive_finding_rules.sh` | The minor-finding rules and text sanitising used by `autodrive_followups.sh`, for auto-drive-to-merge and auto-drive-light alike. |
 | `amplifier-bundle/tools/autodrive_state.sh` | Resumable local state; platform truth for merged-ness. |
 
 Full reference: [Auto Drive To Merge](../../../docs/reference/auto-drive-to-merge.md).

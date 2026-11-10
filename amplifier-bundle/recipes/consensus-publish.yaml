@@ -18,7 +18,9 @@ recursion:
   max_depth: 6
   max_total_steps: 100
 
-context: {}
+context:
+  # Issue #1966: required caller input (true|false), checked by consensus-tdd-impl.
+  is_critical_code: ""
 
 steps:
   - id: "step9-commit"
@@ -45,7 +47,7 @@ steps:
       trap 'rm -f -- "$TASK_FILE" "$REQS_SUMMARY_FILE" "$COMMIT_MSG_FILE"' EXIT
       write_context_value task_description "$TASK_FILE" || exit 1
       write_context_value final_requirements.task_summary "$REQS_SUMMARY_FILE" || { echo "WARN: final_requirements.task_summary is not available; leaving it empty" >&2; : > "$REQS_SUMMARY_FILE"; }
-      _IS_CRITICAL="${IS_CRITICAL_CODE:-}"
+      _IS_CRITICAL="${RECIPE_VAR_is_critical_code:-}"
       _ISSUE_NUM="${ISSUE_NUMBER:-}"
       SHORT_DESC=$(tr '\n\r' ' ' < "$TASK_FILE" | cut -c1-72)
       {
@@ -110,7 +112,7 @@ steps:
       write_context_value task_description "$TASK_FILE" || exit 1
       write_context_value final_requirements.explicit_requirements "$REQS_FILE" || { echo "WARN: final_requirements.explicit_requirements is not available; leaving it empty" >&2; : > "$REQS_FILE"; }
       write_context_value final_requirements.consensus_mechanism_used "$MECH_FILE" || { echo "WARN: final_requirements.consensus_mechanism_used is not available; leaving it empty" >&2; : > "$MECH_FILE"; }
-      _IS_CRITICAL="${IS_CRITICAL_CODE:-}"
+      _IS_CRITICAL="${RECIPE_VAR_is_critical_code:-}"
       _TDD_TOTAL="${TDD_TESTS_TOTAL_TESTS:-}"
       _LOCAL_PASSED="${LOCAL_TESTING_ALL_SCENARIOS_PASSED:-}"
       _ISSUE_NUM="${ISSUE_NUMBER:-}"

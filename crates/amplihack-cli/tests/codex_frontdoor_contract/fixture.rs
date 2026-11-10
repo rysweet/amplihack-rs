@@ -145,12 +145,16 @@ esac
         let (mut master, mut slave) = (-1, -1);
         assert_eq!(
             unsafe {
+                // `termp` and `winp` are `*const` on Linux and `*mut` on
+                // macOS. A typed null `*mut` is the one spelling that
+                // compiles on both, because `*mut T` coerces to `*const T`
+                // (#2210).
                 libc::openpty(
                     &mut master,
                     &mut slave,
                     std::ptr::null_mut(),
-                    std::ptr::null(),
-                    std::ptr::null(),
+                    std::ptr::null_mut::<libc::termios>(),
+                    std::ptr::null_mut::<libc::winsize>(),
                 )
             },
             0

@@ -82,6 +82,12 @@ Update Cargo.lock with 34 changed files (#929)
 Update amplihack CLI with 34 changed files (#929)
 ```
 
+> **Superseded by #1968.** This template is now the last-resort title, used
+> only when neither the issue title nor the task description is available. The
+> count is taken from the full merge-base diff rather than a list cut to 40
+> files. See
+> [Bug Fix #1968](bugfix-1968-publish-pr-merge-base-title.md#title-sources).
+
 ### 2. Explicit no-merge directives are honored
 
 The workflow now detects a no-merge directive from the task description and
@@ -197,6 +203,17 @@ Update amplihack CLI with 3 changed files (#0)
 `Cargo.lock` is still listed in the PR body's **Changed files** section; it
 just no longer dictates the title.
 
+Since #1968 this title appears only when the issue lookup and the task
+description both yield nothing. When the issue title cannot be read, the task
+above now produces:
+
+```text
+feat: Add a --json flag to `amplihack status` (#0)
+```
+
+When the issue title is readable, the prefixed issue title is used instead. See
+[Bug Fix #1968](bugfix-1968-publish-pr-merge-base-title.md).
+
 ### Task that forbids merging
 
 Task:
@@ -298,4 +315,7 @@ cargo check --workspace
 - The deterministic `--locked` `Cargo.lock` sync (issue #915) is *why* a
   refreshed `Cargo.lock` reliably appears in feature diffs; this fix stops that
   sync from dictating PR titles.
+- [Bug Fix #1968](bugfix-1968-publish-pr-merge-base-title.md) moves the
+  changed-file list to the merge-base diff and takes the title from the issue,
+  keeping this template as the last resort.
 - [Default workflow overview](../workflows.md)

@@ -23,6 +23,8 @@ mod tests_gate_record;
 mod tests_identity_limits;
 #[path = "tests_issue_1886_collide.rs"]
 mod tests_issue_1886_collide;
+#[path = "tests_issue_1947.rs"]
+mod tests_issue_1947;
 #[path = "tests_ledger.rs"]
 mod tests_ledger;
 #[path = "tests_live_readers.rs"]
@@ -43,3 +45,5 @@ mod tests_platform_block;
 mod tests_platform_identify;
 #[path = "tests_settings.rs"]
 mod tests_settings;
+#[path = "tests_swap_record.rs"]
+mod tests_swap_record;

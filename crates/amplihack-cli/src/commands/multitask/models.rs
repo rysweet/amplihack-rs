@@ -102,6 +102,10 @@ pub struct WorkstreamConfig {
     pub max_runtime: Option<u64>,
     #[serde(default)]
     pub timeout_policy: Option<String>,
+    /// Issue #1966: copied unchanged into `context.json` for the consensus
+    /// workflow, which validates it. Must be a JSON string when present.
+    #[serde(default)]
+    pub is_critical_code: Option<String>,
 }
 
 impl WorkstreamConfig {
@@ -149,6 +153,8 @@ pub struct Workstream {
     pub resume_checkpoint: String,
     pub workstream_scope: WorkstreamScope,
     pub process_scope: ProcessScope,
+    /// Issue #1966: caller-supplied `is_critical_code`, never normalised.
+    pub is_critical_code: Option<String>,
 }
 
 impl Workstream {
@@ -187,6 +193,7 @@ impl Workstream {
             resume_checkpoint: String::new(),
             workstream_scope: WorkstreamScope::default(),
             process_scope: ProcessScope::default(),
+            is_critical_code: None,
         }
     }
 

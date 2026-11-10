@@ -112,9 +112,11 @@ context:
   # dir and resumable: relaunch with a higher value to continue. 0 or empty is
   # unlimited. Override with -c. Only this composer declares defaults; a loop
   # recipe run on its own is unbudgeted.
+  # #2022: there is no default wall-clock limit. A drive ends on rounds or on
+  # the evaluator, never on a clock; an operator may still set one with -c.
   autodrive_budget_loop_rounds: "12"
   autodrive_budget_total_rounds: "20"
-  autodrive_budget_wall_seconds: "14400"
+  autodrive_budget_wall_seconds: "0"
 
   # Populated as the phases run.
   build_result: ""
