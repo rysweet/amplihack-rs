@@ -272,7 +272,9 @@ including `foreign Codex config changed; reconcile manually; recovery record ret
 Automatic archival and `amplihack codex --reset-recovery` share one guarded
 operation. Recovery metadata is always under `$HOME/.amplihack/codex`, independent
 of `CODEX_HOME`. Reset validates caller `HOME` and metadata paths, takes the package
-lock and resolves incomplete archival intent. It reads raw regular-file bytes
+lock and resolves incomplete archival intent. Reset retries lock contention for up
+to ten seconds, then reports the lock path and asks the caller to retry after the
+other installer finishes; the journal stays protected. It reads raw regular-file bytes
 without parsing journal contents or inspecting Codex targets. This permits explicit
 reset of malformed or unsupported journals while retaining path and ownership
 boundaries. Unsafe metadata paths remain errors.

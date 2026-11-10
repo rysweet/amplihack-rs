@@ -9,7 +9,7 @@ fn assert_mutations_blocked(f: &Fixture) {
     let evidence = f
         .archives()
         .iter()
-        .map(|p| (p.clone(), fs::read(p).ok()))
+        .map(|p| (p.clone(), snapshot(p).unwrap()))
         .collect::<Vec<_>>();
     let pending = snapshot(&f.root.join("pending.json")).unwrap();
     let config = snapshot(&f.codex.join("config.toml")).unwrap();
@@ -33,7 +33,7 @@ fn assert_mutations_blocked(f: &Fixture) {
     assert_eq!(snapshot(&f.codex.join("config.toml")).unwrap(), config);
     assert_eq!(snapshot(&f.codex.join("hooks.json")).unwrap(), hooks);
     for (path, bytes) in evidence {
-        assert_eq!(fs::read(path).ok(), bytes);
+        assert_eq!(snapshot(&path).unwrap(), bytes);
     }
 }
 

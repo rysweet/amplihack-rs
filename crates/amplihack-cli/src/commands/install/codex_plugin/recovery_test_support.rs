@@ -170,7 +170,7 @@ impl Fixture {
     pub fn assert_retained(&self, before: &[u8]) -> String {
         let config = snapshot(&self.codex.join("config.toml")).unwrap();
         let hooks = snapshot(&self.codex.join("hooks.json")).unwrap();
-        let ledger = fs::read(self.root.join("ownership.json")).ok();
+        let ledger = snapshot(&self.root.join("ownership.json")).unwrap();
         let package = digest(&self.root.join("market/plugin")).unwrap();
         let error = format!(
             "{:#}",
@@ -184,7 +184,7 @@ impl Fixture {
         assert!(self.archives().is_empty());
         assert_eq!(snapshot(&self.codex.join("config.toml")).unwrap(), config);
         assert_eq!(snapshot(&self.codex.join("hooks.json")).unwrap(), hooks);
-        assert_eq!(fs::read(self.root.join("ownership.json")).ok(), ledger);
+        assert_eq!(snapshot(&self.root.join("ownership.json")).unwrap(), ledger);
         assert_eq!(digest(&self.root.join("market/plugin")).unwrap(), package);
         error
     }
@@ -199,6 +199,15 @@ pub(super) fn modified(path: &Path, seconds: u64) {
 }
 
 const FAKE_CODEX: &str = r#"#!/bin/sh
+set -e
+config_has() {
+ if [ ! -e "$CODEX_HOME/config.toml" ] && [ ! -L "$CODEX_HOME/config.toml" ]; then return 1; fi
+ if grep -Fq "$1" "$CODEX_HOME/config.toml"; then return 0; else
+  status=$?
+  if [ "$status" -eq 1 ]; then return 1; fi
+  exit "$status"
+ fi
+}
 case "$1 $2 $3" in
  '--version  ') echo 'codex-cli 0.166.0';;
  'plugin list --json')
@@ -206,13 +215,13 @@ case "$1 $2 $3" in
    printf '{"installed":[{"pluginId":"amplihack@amplihack-local","installed":true,"enabled":true,"source":{"path":"%s/.amplihack/codex/market/plugin"}}]}\n' "$HOME"
   else echo '{"installed":[]}'; fi;;
  'plugin marketplace add')
-  if ! grep -Fq '[marketplaces.amplihack-local]' "$CODEX_HOME/config.toml" 2>/dev/null; then
-   [ ! -s "$CODEX_HOME/config.toml" ] || printf '\n' >> "$CODEX_HOME/config.toml"
+  if ! config_has '[marketplaces.amplihack-local]'; then
+   if [ -s "$CODEX_HOME/config.toml" ]; then printf '\n' >> "$CODEX_HOME/config.toml"; fi
    printf '[marketplaces.amplihack-local]\nsource_type = "local"\nsource = "%s"\n' "$4" >> "$CODEX_HOME/config.toml"
   fi
   echo '{}';;
  'plugin add amplihack@amplihack-local')
-  if ! grep -Fq '[plugins."amplihack@amplihack-local"]' "$CODEX_HOME/config.toml" 2>/dev/null; then
+  if ! config_has '[plugins."amplihack@amplihack-local"]'; then
    printf '\n[plugins."amplihack@amplihack-local"]\nenabled = true\n' >> "$CODEX_HOME/config.toml"
   fi
   if [ -f "$HOME/edit-during-add" ]; then printf '\n# concurrent foreign edit\n' >> "$CODEX_HOME/config.toml"; fi

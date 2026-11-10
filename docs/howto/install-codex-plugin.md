@@ -322,6 +322,10 @@ numeric suffix such as `.1`. Automatic archival uses the same preservation and
 reporting rules. If there is nothing to archive or resume, reset reports
 `amplihack: no pending Codex recovery journal` and continues normally.
 
+If another installer holds the package lock, reset waits up to ten seconds before
+reporting the affected lock path. Retry after the other installer finishes; a
+timeout leaves the journal protected.
+
 Place `--reset-recovery` before the explicit `--` separator. Native Codex
 arguments follow the separator:
 

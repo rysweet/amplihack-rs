@@ -205,6 +205,15 @@ pub fn diagnostic(out: &Output) -> String {
 }
 
 const FAKE_CODEX: &str = r#"#!/bin/sh
+set -e
+config_has() {
+ if [ ! -e "$CODEX_HOME/config.toml" ] && [ ! -L "$CODEX_HOME/config.toml" ]; then return 1; fi
+ if grep -Fq "$1" "$CODEX_HOME/config.toml"; then return 0; else
+  status=$?
+  if [ "$status" -eq 1 ]; then return 1; fi
+  exit "$status"
+ fi
+}
 printf '%s\n' "$*" >> "$HOME/client-calls"
 if [ -f "$HOME/.amplihack/codex/pending.json" ]; then echo pending >> "$HOME/probe-order"; else echo clear >> "$HOME/probe-order"; fi
 case "$1 $2 $3" in
@@ -214,13 +223,13 @@ case "$1 $2 $3" in
    printf '{"installed":[{"pluginId":"amplihack@amplihack-local","installed":true,"enabled":true,"source":{"path":"%s/.amplihack/codex/market/plugin"}}]}\n' "$HOME"
   else echo '{"installed":[]}'; fi;;
  'plugin marketplace add')
-  if ! grep -Fq '[marketplaces.amplihack-local]' "$CODEX_HOME/config.toml" 2>/dev/null; then
-   [ ! -s "$CODEX_HOME/config.toml" ] || printf '\n' >> "$CODEX_HOME/config.toml"
+  if ! config_has '[marketplaces.amplihack-local]'; then
+   if [ -s "$CODEX_HOME/config.toml" ]; then printf '\n' >> "$CODEX_HOME/config.toml"; fi
    printf '[marketplaces.amplihack-local]\nsource_type = "local"\nsource = "%s"\n' "$4" >> "$CODEX_HOME/config.toml"
   fi
   echo '{}';;
  'plugin add amplihack@amplihack-local')
-  if ! grep -Fq '[plugins."amplihack@amplihack-local"]' "$CODEX_HOME/config.toml" 2>/dev/null; then
+  if ! config_has '[plugins."amplihack@amplihack-local"]'; then
    printf '\n[plugins."amplihack@amplihack-local"]\nenabled = true\n' >> "$CODEX_HOME/config.toml"
   fi
   : > "$HOME/registered"; echo '{}';;
