@@ -174,6 +174,7 @@ struct Fake {
     logs: Vec<LogEntry>,
     diagnostics: Vec<String>,
     receipt_clock_advance: i64,
+    receipt_barrier: Option<std::sync::Arc<std::sync::Barrier>>,
     refused_log_dir: Option<std::path::PathBuf>,
     panic_on_now: bool,
     rotator_down: bool,
@@ -210,6 +211,7 @@ impl Fake {
             logs: Vec::new(),
             diagnostics: Vec::new(),
             receipt_clock_advance: 0,
+            receipt_barrier: None,
             refused_log_dir: None,
             panic_on_now: false,
             rotator_down: false,
@@ -288,6 +290,9 @@ impl Deps for Fake {
             entry.stage,
             amplihack_hooks::limit_resume::log::Stage::Receipt
         ) {
+            if let Some(barrier) = &self.receipt_barrier {
+                barrier.wait();
+            }
             self.clock += self.receipt_clock_advance;
         }
     }
@@ -1743,4 +1748,64 @@ fn refused_diagnostic_writes_do_not_change_authorization_or_repeat_delivery() {
     assert_eq!(d.last_log().outcome, Outcome::GuardFailed);
     assert_eq!(d.key_attempts, 0, "logging failure cannot authorize keys");
     assert!(stderr.is_empty());
+}
+
+#[test]
+fn concurrent_same_session_receipts_keep_filter_correlation() {
+    assert_interleaved_filter_correlation(["private-session", "private-session"]);
+}
+
+#[test]
+fn concurrent_distinct_session_receipts_keep_filter_correlation() {
+    assert_interleaved_filter_correlation(["private-session-a", "private-session-b"]);
+}
+
+fn assert_interleaved_filter_correlation(sessions: [&str; 2]) {
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let handles: Vec<_> = ["invalid-error-type", "malformed-input"]
+        .into_iter()
+        .zip(sessions.map(str::to_owned))
+        .map(|(reason, session)| {
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                let mut d = Fake::new();
+                d.receipt_barrier = Some(barrier);
+                let error = if reason == "invalid-error-type" {
+                    serde_json::json!(42)
+                } else {
+                    serde_json::json!("rate_limit")
+                };
+                let raw = serde_json::json!({
+                    "hook_event_name": 42,
+                    "session_id": session,
+                    "error": error,
+                    "stop_hook_active": 42,
+                })
+                .to_string();
+                assert_eq!(run_with_io(raw.as_bytes(), &mut Vec::new(), &mut d), 0);
+                assert_eq!(d.diagnostics.len(), 2);
+                (reason, d.diagnostics)
+            })
+        })
+        .collect();
+    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let field = |line: &str, key: &str| {
+        line.split_whitespace()
+            .find(|part| part.starts_with(key))
+            .unwrap()
+            .to_string()
+    };
+    let mut ids = Vec::new();
+    for (reason, lines) in results {
+        assert!(lines[0].contains("stage=receipt "));
+        assert!(lines[1].contains(&format!("disposition={reason} ")));
+        assert_eq!(field(&lines[0], "session="), field(&lines[1], "session="));
+        let id = field(&lines[0], "invocation=");
+        assert_eq!(id, field(&lines[1], "invocation="));
+        assert!(id.len() <= 75, "invocation identifier must be bounded");
+        assert!(!lines.concat().contains("stop_hook_active"));
+        assert!(!lines.concat().contains("private-session"));
+        ids.push(id);
+    }
+    assert_ne!(ids[0], ids[1]);
 }

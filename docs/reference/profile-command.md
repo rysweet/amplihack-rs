@@ -9214,7 +9214,10 @@ Diagnostics distinguish receipt from processing and from observed host behavior.
 The invocation start is captured before logging and remains the timestamp used
 for swap eligibility. Receipt requires neither a readable ledger nor an event
 identity; a rejected invocation can therefore create diagnostic files in a
-safely resolved private root.
+safely resolved private root. Every stage carries a bounded, payload-independent
+`invocation` identifier created once for that call. Use it to join interleaved
+records, including repeated calls for one session. A validated session hash is
+retained on filtering records, including typed-payload decoding failures.
 
 | Stage | Meaning |
 |-------|---------|
@@ -9234,7 +9237,12 @@ observations never serialize arbitrary objects or arrays.
 
 Records allow only bounded diagnostic fields. Raw payloads, `error_details`,
 prompts, assistant messages, transcripts, credentials and environment dumps
-are excluded. Session and pane identifiers are hashed; hashes remain
+are excluded as dedicated fields. Arbitrary string-valued errors can themselves
+contain secrets: reversible encoding is not redaction or credential scrubbing,
+including before event validation or when auto-switch is disabled. Treat both
+log generations as potentially sensitive and sanitize shared evidence. An
+error-code allowlist would require a separate diagnostic-contract decision.
+Session and pane identifiers are hashed; hashes remain
 correlatable and should still be treated as private. Logging retains private
 directory checks, restrictive file permissions, symlink protections and bounded
 rotation. It is silent and best effort, with no retries or fallback paths and

@@ -262,14 +262,39 @@ fn swap(r: &SwapRecord) -> Note<'_> {
 /// Decides one hook invocation.
 pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     let start = deps.now();
-    run_started(input, deps, start)
+    run_started(input, deps, start, &invocation_key())
 }
 
-fn diagnostic<D: Deps + ?Sized>(deps: &mut D, now: i64, stage: Stage, disposition: &'static str) {
+// Independent of payload data; the counter distinguishes calls within one process,
+// and pid/time distinguish separate hook processes and process-id reuse.
+fn invocation_key() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!(
+        "{:x}-{:x}-{:x}",
+        std::process::id(),
+        nanos,
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn diagnostic<D: Deps + ?Sized>(
+    deps: &mut D,
+    now: i64,
+    invocation: &str,
+    session: &Option<String>,
+    stage: Stage,
+    disposition: &'static str,
+) {
     deps.diagnostic(
         now,
         &Diagnostic {
-            session: None,
+            invocation: invocation.to_string(),
+            session: session.clone(),
             event: None,
             stage,
             disposition,
@@ -278,7 +303,12 @@ fn diagnostic<D: Deps + ?Sized>(deps: &mut D, now: i64, stage: Stage, dispositio
     );
 }
 
-fn run_started<D: Deps + ?Sized>(input: &HookInput, deps: &mut D, start: i64) -> Outcome {
+fn run_started<D: Deps + ?Sized>(
+    input: &HookInput,
+    deps: &mut D,
+    start: i64,
+    invocation: &str,
+) -> Outcome {
     let enabled = deps.auto_switch_on();
     let HookInput::StopFailure {
         session_id,
@@ -325,6 +355,7 @@ fn run_started<D: Deps + ?Sized>(input: &HookInput, deps: &mut D, start: i64) ->
         deps.diagnostic(
             now,
             &Diagnostic {
+                invocation: invocation.to_string(),
                 session: Some(session[..LOG_KEY_CHARS].to_string()),
                 event: Some(event[..LOG_KEY_CHARS].to_string()),
                 stage,
@@ -514,33 +545,58 @@ pub fn run_with_io<D: Deps + ?Sized>(
     let decided = catch_unwind(AssertUnwindSafe(|| {
         // Capture before any diagnostics: log latency must not shift the stop.
         let start = deps.now();
+        let invocation = invocation_key();
+        let mut session = None;
         let raw = match read_bounded(stdin, MAX_STDIN_BYTES) {
             Ok(raw) => raw,
             Err(_) => {
-                diagnostic(deps, start, Stage::Filtered, "input-read-failed");
+                diagnostic(
+                    deps,
+                    start,
+                    &invocation,
+                    &session,
+                    Stage::Filtered,
+                    "input-read-failed",
+                );
                 return None;
             }
         };
         if raw.len() as u64 > MAX_STDIN_BYTES {
-            diagnostic(deps, start, Stage::Filtered, "oversized-input");
+            diagnostic(
+                deps,
+                start,
+                &invocation,
+                &session,
+                Stage::Filtered,
+                "oversized-input",
+            );
             return None;
         }
         let value: serde_json::Value = match serde_json::from_slice(&raw) {
             Ok(value) => value,
             Err(_) => {
-                diagnostic(deps, start, Stage::Filtered, "malformed-input");
+                diagnostic(
+                    deps,
+                    start,
+                    &invocation,
+                    &session,
+                    Stage::Filtered,
+                    "malformed-input",
+                );
                 return None;
             }
         };
+        session = value
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| session_id_ok(Some(id)))
+            .map(|id| session_key(id)[..LOG_KEY_CHARS].to_string());
         let observation = ErrorObservation::from_value(value.get("error"));
         deps.diagnostic(
             start,
             &Diagnostic {
-                session: value
-                    .get("session_id")
-                    .and_then(serde_json::Value::as_str)
-                    .filter(|id| session_id_ok(Some(id)))
-                    .map(|id| session_key(id)[..LOG_KEY_CHARS].to_string()),
+                invocation: invocation.clone(),
+                session: session.clone(),
                 event: None,
                 stage: Stage::Receipt,
                 disposition: "received",
@@ -564,21 +620,42 @@ pub fn run_with_io<D: Deps + ?Sized>(
             }
         };
         if let Some(disposition) = disposition {
-            diagnostic(deps, start, Stage::Filtered, disposition);
+            diagnostic(
+                deps,
+                start,
+                &invocation,
+                &session,
+                Stage::Filtered,
+                disposition,
+            );
             return None;
         }
         let input: HookInput = match serde_json::from_value(value) {
             Ok(input) => input,
             Err(_) => {
-                diagnostic(deps, start, Stage::Filtered, "malformed-input");
+                diagnostic(
+                    deps,
+                    start,
+                    &invocation,
+                    &session,
+                    Stage::Filtered,
+                    "malformed-input",
+                );
                 return None;
             }
         };
         if !matches!(input, HookInput::StopFailure { .. }) {
-            diagnostic(deps, start, Stage::Filtered, "not-stop-failure");
+            diagnostic(
+                deps,
+                start,
+                &invocation,
+                &session,
+                Stage::Filtered,
+                "not-stop-failure",
+            );
             return None;
         }
-        Some(run_started(&input, deps, start))
+        Some(run_started(&input, deps, start, &invocation))
     }));
     match decided {
         Ok(Some(Outcome::Resumed)) => {

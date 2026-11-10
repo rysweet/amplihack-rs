@@ -100,6 +100,8 @@ impl Stage {
 
 /// Bounded diagnostic fields. Dispositions are fixed strings at call sites.
 pub struct Diagnostic {
+    /// Bounded, payload-independent identifier shared by this invocation’s stages.
+    pub invocation: String,
     pub session: Option<String>,
     pub event: Option<String>,
     pub stage: Stage,
@@ -109,10 +111,11 @@ pub struct Diagnostic {
 
 pub fn format_diagnostic(now: i64, entry: &Diagnostic) -> String {
     let mut line = format!(
-        "{} resume stage={} disposition={}",
+        "{} resume stage={} disposition={} invocation={}",
         utc_timestamp(now),
         entry.stage.as_str(),
-        sanitize(entry.disposition)
+        sanitize(entry.disposition),
+        sanitize(&entry.invocation)
     );
     for (key, value) in [("session", &entry.session), ("event", &entry.event)] {
         if let Some(value) = value {

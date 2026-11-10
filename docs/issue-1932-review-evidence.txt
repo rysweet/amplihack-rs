@@ -197,3 +197,74 @@ them as outstanding validation blockers, and rerun required hooks on Linux
 with candide's host work. The prior exit-101 run remains unsuccessful.
 No released-host swap, live continuation, timed-wait behavior, or manual
 procedure was verified here. Those checks remain the candide handoff above.
+
+Step 18b correlation feedback correction (2026-11-10)
+Base revision: 6c72a7f2a576cb786797f3a764662cc9cf4d1c2d plus the
+uncommitted correlation changes in this worktree. Prior results above describe
+older source and do not establish validation of this correction.
+
+Every diagnostic stage now carries one bounded, payload-independent invocation
+identifier (process id, wall-clock nanoseconds, process-local atomic counter).
+Filtering retains the validated session hash from receipt, including failure
+to deserialize typed hook fields. Session hashing, payload exclusions, exact
+rate_limit matching, guard authorization and best-effort persistence remain.
+The identifier is a diagnostic join key, not an authorization token.
+
+Two barrier-based threaded regressions force both receipts before either
+filtering disposition. They cover distinct sessions and repeated invocations
+of one session, invalid error types and malformed typed event fields. Each
+filter must have its receipt's invocation id and session hash; the invocations
+must differ. They use neither sleeps nor timestamp ordering, and check that
+raw session ids and payload fields are absent from the diagnostic records.
+Initial regression attempts failed because the fixture first encoded invalid
+JSON, then used a StopFailure field deliberately decoded loosely. Corrected
+fixtures use a malformed typed hook_event_name. A new collapsible-if Clippy
+warning in the test fake was also corrected. Those failed/interrupted runs
+are not passes.
+
+Fresh final local commands, using the validation environment documented above:
+cargo test --locked -p amplihack-hooks --test limit_resume_decide --test limit_resume_fs --test limit_resume_keys --test limit_resume_source_scan --test limit_resume_docs_sync --test limit_resume_verification
+Result: exit 0; 159 passed (85 decide, 4 docs_sync, 47 fs, 16 keys,
+5 source_scan, 2 verification). Fresh Rust compilation occurred.
+Log: /private/tmp/issue-1932-validation/correlation-targeted.log
+scripts/git-hook-cargo.sh cargo clippy --locked -p amplihack-hooks --all-targets -- -D warnings
+Result: exit 0. Log: /private/tmp/issue-1932-validation/correlation-clippy.log
+cargo fmt --all --check
+Result: exit 0. git diff --check also passed.
+
+The Linux-only proc_link import now has the same target_os guard as its
+usage and definition. Independent confirmation command launched detached:
+cargo test --locked -p amplihack-cli --tests --no-run
+Log/status: /private/tmp/issue-1932-validation/correlation-cli-compile.{log,status}
+The required workspace commands were relaunched detached, sequentially:
+pre-commit run --all-files --hook-stage pre-commit
+pre-commit run --all-files --hook-stage pre-push
+Logs/status: /private/tmp/issue-1932-validation/correlation-precommit.{log,status}
+and correlation-prepush.{log,status}. These workspace gates remain OPEN until
+terminal results on this source are inspected; prior CLI macOS test lints
+have not been suppressed or represented as resolved by the targeted pass.
+Runner: /private/tmp/issue-1932-validation/correlation-run.sh
+Private tmux socket: /private/tmp/issue-1932-validation/tmux.sock
+Session: correlation-final; independent compile: correlation-cli-compile.
+Interrupted earlier runs and old status files are not final evidence.
+
+Linux /proc, pidfd, inotify, FIFO and binary behavior: UNVERIFIED here.
+This execution environment is Darwin. A Docker daemon availability probe did
+not produce a usable Linux environment; no Linux tests are claimed run.
+Run the exact Linux commands in the candide handoff above on a Linux host.
+Released-host swap/new-turn, timed-wait invocation/error, exit-two, accepted
+input and independently observed continuation: UNVERIFIED. No released Claude
+state/version or manual continuation procedure was exercised in this step.
+Candide's host/workspace validation remains required before reassessment.
+No external message was sent and no merge readiness is claimed.
+
+Diagnostic-contract caveats are explicit in reference/profile-command.md:
+reversible string-error encoding is not redaction; arbitrary errors may retain
+secrets even before event validation or with auto-switch disabled. Both log
+generations must be treated as sensitive and shared evidence sanitized.
+An error allowlist/unknown hash is deferred pending an explicit contract
+choice. Missing records cannot prove an invocation never happened. Per-key
+ownership checks still precede delivery, but check/send is not atomic; guard
+retention and no exit-two fallback after partial delivery remain unchanged.
+Eligibility classification was checked against the existing gates; this local
+correlation change needs no new shared classifier or module restructuring.
