@@ -21,6 +21,8 @@ struct Ownership {
     schema_version: u32,
     #[serde(default)]
     transaction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    completion: Option<completion_proof::Completion>,
     #[serde(default, skip_serializing_if = "is_false")]
     uninstall_pending: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -54,9 +56,14 @@ mod storage;
 use storage::*;
 mod backup_cleanup;
 mod cleanup_guard;
+mod completion_proof;
 mod config;
 mod package_cleanup;
 mod recovery;
+mod recovery_archive;
+mod recovery_archive_intent;
+mod recovery_archive_storage;
+mod recovery_staleness;
 mod rollback;
 mod rollback_durability;
 use recovery::*;
@@ -77,6 +84,9 @@ pub(super) fn install(source: &Path, hooks_binary: &Path) -> Result<bool> {
 pub(super) fn uninstall() -> Result<()> {
     uninstall::uninstall()
 }
+pub(super) fn reset_recovery() -> Result<()> {
+    recovery_archive::reset()
+}
 #[cfg(test)]
 mod backup_cleanup_tests;
 #[cfg(all(test, unix))]
@@ -85,6 +95,8 @@ mod capability_tests;
 mod classify_tests;
 #[cfg(test)]
 mod cleanup_performance_tests;
+#[cfg(all(test, unix))]
+mod completion_proof_tests;
 #[cfg(test)]
 mod digest_tests;
 #[cfg(test)]
@@ -99,6 +111,14 @@ mod probe_install_tests;
 mod probe_tests;
 #[cfg(all(test, unix))]
 mod recovery_alias_tests;
+#[cfg(all(test, unix))]
+mod recovery_archive_retry_tests;
+#[cfg(all(test, unix))]
+mod recovery_archive_tests;
+#[cfg(all(test, unix))]
+mod recovery_staleness_tests;
+#[cfg(all(test, unix))]
+mod recovery_test_support;
 #[cfg(test)]
 mod recovery_tests;
 #[cfg(all(test, unix))]

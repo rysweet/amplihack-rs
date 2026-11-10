@@ -28,7 +28,7 @@ fn recover_scoped(root: &Path, binary: &Path, home: &Path) -> Result<()> {
     rollback::restore(&pending, root, binary, home)
 }
 
-fn validate_journal(pending: &Value, home: &Path) -> Result<()> {
+pub(super) fn validate_journal(pending: &Value, home: &Path) -> Result<()> {
     ensure!(
         pending["transaction"]
             .as_str()
@@ -46,6 +46,12 @@ fn validate_journal(pending: &Value, home: &Path) -> Result<()> {
     ensure!(
         pending.get("config").is_some_and(bytes),
         "invalid recovery config snapshot"
+    );
+    ensure!(
+        pending.get("config_states").is_none_or(|states| states
+            .as_array()
+            .is_some_and(|states| states.iter().all(bytes))),
+        "invalid recovery intermediate config snapshots; record retained"
     );
     if let Some(snapshots) = pending.get("snapshots") {
         ensure!(

@@ -1,8 +1,8 @@
 ---
 title: Native Codex installation ownership
-description: Understand native package ownership, rollback and recovery barriers.
+description: Understand native package ownership, rollback, stale journals and recovery barriers.
 type: explanation
-updated: 2026-10-08
+updated: 2026-11-10
 ---
 
 # Native Codex installation ownership
@@ -18,6 +18,8 @@ failure boundaries explicit while one lock protects the entire update.
 - [Trusted home boundaries](#trusted-home-boundaries)
 - [Durability barriers](#durability-barriers)
 - [Recovery and foreign state](#recovery-and-foreign-state)
+- [Automatic stale-journal recovery](#automatic-stale-journal-recovery)
+- [Journal archival and explicit reset](#journal-archival-and-explicit-reset)
 - [Launch reconciliation](#launch-reconciliation)
 
 ## Responsibility boundaries
@@ -28,7 +30,7 @@ failure boundaries explicit while one lock protects the entire update.
 | Hook ownership | Plan reconciliation against prior ownership, preserve foreign definitions and reject collisions; never grant hook trust. |
 | Native registration | Use the resolved Codex executable and selected `CODEX_HOME`; verify native inventory and exact package identity, propagating failures. |
 | Transaction | Coordinate preparation, live application, verification and ownership commit under the held lock. |
-| Recovery | Validate and replay the pending journal, restore state and retain evidence when recovery fails. |
+| Recovery | Classify prior journals at installer startup, archive proven stale evidence, and otherwise validate and replay strict recovery. |
 
 These are private installer modules, with at most 300 lines per source module
 including colocated tests. Install orchestration delegates stages instead of
@@ -41,7 +43,15 @@ The lock covers recovery, ownership/inventory validation, staging, planning,
 application and commit. Preparation snapshots original configuration bytes and
 file absence, and writes a durable journal before changing live state. Application
 registers the package and reconciles hooks. Verification checks native inventory
-and actual hooks before publishing the ownership ledger last.
+and actual hooks before publishing the ownership ledger last. Supported completion
+evidence binds transaction identity and a checked generation to SHA-256 snapshots
+of validated configuration, hooks and marketplace bytes, the package digest, and
+ownership declarations and native registrations. Absence is distinct from an
+empty file. Before ownership publication, the exact completed ledger bytes are
+durably recorded in the pending journal's `expected.ledger` snapshot. Completion
+proof therefore describes transaction-validated state rather than unfamiliar
+bytes found after an interruption. Unchanged-install fast paths do not manufacture
+a new completion generation.
 
 Before that commit, rollback restores the original package and nonconfiguration
 snapshots, then re-registers the original installed identity. Native registration
@@ -173,17 +183,21 @@ Crash consequences inferred from that ordering are not empirical power-loss proo
 ## Recovery and foreign state
 
 Before replacement, installation rejects foreign identity collisions, unsafe paths
-and conflicting hook ownership. Recovery validates journal version, transaction
+and conflicting hook ownership. Automatic archival does not adopt those resources.
+Recovery validates journal version, transaction
 identity and home/root scope before acting. Raw optional-byte snapshots preserve
 comments, formatting and original file absence during rollback. Interrupted
 updates with valid pending-journal schema **2** can be replayed under the same lock
 on the next install or uninstall. The ownership ledger uses schema **1**; it is a
 separate record, not a recovery-journal version.
 
-With no pending journal, recovery returns without native calls or synchronization.
+With neither a pending journal nor an incomplete archival intent, recovery
+returns without native calls or synchronization.
 
-Unsupported journal schemas, including older journals, are rejected before
-recovery mutates live state. There is no automatic historical JSON restoration.
+Unsupported journal schemas, including older journals, are rejected by automatic
+classification and strict recovery before either mutates live state. Explicit
+metadata reset can preserve such a journal without parsing it. There is no
+automatic historical JSON restoration.
 The pending record and available previous package remain as evidence for manual
 reconciliation. Current schema 2 snapshots preserve exact configuration bytes and
 original file absence. An intact schema 2 backup can acquire a cleanup inventory.
@@ -199,13 +213,106 @@ unsafe deletion. Manual reconciliation requires comparing the retained journal,
 available previous package, ledger, native registration and current configuration in the
 selected `CODEX_HOME`. Preserve those records before making changes; a historical
 snapshot must not overwrite later foreign edits. Do not delete the journal merely
-to bypass validation or change its schema number to force replay.
+to bypass validation or change its schema number to force replay. Explicit
+reset preserves the journal when abandoning recovery is intentional; subsequent
+reconciliation still enforces ownership.
 Uninstall removes only the owned identity and package, preserving
 foreign plugins, shared marketplaces, authentication and user configuration.
 
+## Automatic stale-journal recovery
+
+The installer examines a pre-existing `pending.json` under the package lock before
+normal reconciliation. It first resolves any incomplete archival intent, then
+validates journal structure, supported version, selected scope and path safety.
+Only this initial gate classifies stale journals. Rollback, commit-failure
+recovery and committed cleanup for the current attempt retain their strict
+checks. Uninstall recovery does not use stale-journal classification.
+
+There are two reasons to archive automatically:
+
+| Classification | Required evidence |
+| --- | --- |
+| Orphaned | Both recorded Codex targets, `config.toml` and `hooks.json`, are absent, and at least one was present in every permitted original, expected and intermediate state. |
+| Superseded | Existing ownership and transaction evidence independently proves a coherent later completed reconciliation, and both current targets differ from every permitted state of the abandoned transaction. |
+
+The orphan rule allows recovery after deletion of a Codex configuration tree.
+Absence already permitted by the journal does not prove abandonment. If each
+missing target has a permitted absent state, recovery retains protection. A single
+missing target with surviving transaction state also retains protection.
+Dangling symlinks, directories, unreadable files and unsafe ancestors are errors,
+not absence. Missing marketplace or ownership files alone never prove orphaning.
+
+Supersession requires consistent base evidence in the abandoned journal and a
+supported, independently verified completion proof for a later generation. The
+current transaction must differ from both the abandoned transaction and its
+recorded base transaction. Exact snapshots, selected home, package digest,
+ownership declarations and native installation registrations must agree with
+that completed reconciliation. Conflicting backups, uninstall state or cleanup
+transitions prevent supersession. SHA-256 equality binds bytes within the trusted
+metadata boundary; hashing current files alone does not establish ownership.
+
+Newer modification times or a higher generation alone are insufficient. A
+foreign edit, a mixture of recorded and unfamiliar states, or either target
+still matching an abandoned permitted state cannot establish supersession.
+Missing, incomplete or unsupported completion evidence leaves strict recovery
+in place. Optional versioned `recovery_evidence` in pending journals and completion
+fields in ownership records preserve compatibility with journal schema **2** and
+ownership schema **1**. A journal without these extensions can meet the orphan
+rule if its valid snapshots prove it, but cannot establish supersession.
+
+All other journals go through strict recovery. A state that can be recovered
+safely is replayed; a genuine in-flight mismatch retains the existing refusal,
+including `foreign Codex config changed; reconcile manually; recovery record retained`.
+
+## Journal archival and explicit reset
+
+Automatic archival and `amplihack codex --reset-recovery` share one guarded
+operation. Recovery metadata is always under `$HOME/.amplihack/codex`, independent
+of `CODEX_HOME`. Reset validates caller `HOME` and metadata paths, takes the package
+lock and resolves incomplete archival intent. It reads raw regular-file bytes
+without parsing journal contents or inspecting Codex targets. This permits explicit
+reset of malformed or unsupported journals while retaining path and ownership
+boundaries. Unsafe metadata paths remain errors.
+
+Archival renames `pending.json` to `pending.json.stale-<UTC stamp>` in the same
+directory, preserving exact bytes and restrictive permissions. The timestamp is
+captured once in `YYYYMMDDTHHMMSSZ` form; a collision adds `.1`, `.2` and so on.
+Every existing destination entry, including a dangling symlink or directory,
+counts as occupied. A no-replace rename prevents overwriting an archive, without
+waiting for the clock to advance. Recovery never overwrites or deletes archives.
+
+Before movement, a durable archival intent records the validated source identity,
+content hash and destination basename. Its destination must stay inside the
+captured metadata directory. The operation rechecks source identity and bytes,
+publishes without replacement and synchronizes storage before reporting success.
+A retry resumes only when retained evidence matches the intent. Missing,
+changed or conflicting evidence stops reconciliation. If rename or a later
+durability barrier fails, the intent and available journal or archive keep
+recovery protection; absence of `pending.json` alone cannot bypass it. Failure
+identifies the affected path, filesystem cause and corrective action.
+Filesystems without the required no-replace rename or synchronization support
+cannot complete archival; reconciliation remains blocked.
+
+After durable completion, exactly one concise recovery status line names the
+preserved destination, with control characters in paths sanitized. Both automatic
+and explicit archival use `amplihack: preserved Codex recovery journal: ` followed
+by that path. With nothing to archive or resume, reset reports
+`amplihack: no pending Codex recovery journal` and continues normal launch.
+
+Reset is consumed immediately after successful CLI parsing, before client
+resolution, startup self-healing or reconciliation. It precedes native, auto-mode
+and Docker argument construction; Codex never receives the consumed option. The
+explicit `--` separator still starts native arguments. The reset operation moves
+metadata only: configuration, packages, profiles and ownership records remain
+subject to normal reconciliation afterward. Archiving grants no ownership of the
+former targets and cannot authorize replacement of foreign packages, hooks,
+marketplace entries or leftover backups. Usage is in
+[Recover an interrupted installation](../howto/install-codex-plugin.md#recover-an-interrupted-installation).
+
 ## Launch reconciliation
 
-Codex tool availability is resolved before framework preparation. The same selected
+When requested, metadata reset runs first. Codex tool availability is then resolved
+before framework preparation. The same selected
 executable handles native registration and launch. Existing framework staging does
 not skip reconciliation when the client arrives later. Auto-install opt-out and
 noninteractive/subprocess restrictions remain effective. Claude/Copilot retain

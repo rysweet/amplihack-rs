@@ -1246,3 +1246,7 @@ fn local_install_scoped(
 pub(crate) fn with_codex_binary<T>(binary: &Path, action: impl FnOnce() -> T) -> T {
     codex_plugin::with_binary(binary, action)
 }
+
+pub(crate) fn reset_codex_recovery() -> Result<()> {
+    codex_plugin::reset_recovery()
+}

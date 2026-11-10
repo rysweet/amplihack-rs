@@ -135,6 +135,7 @@ amplihack copilot
 **Codex**
 
 - [Use Amplihack with Codex](howto/install-codex-plugin.md) - Install native skills and hooks, launch sessions, and run recipes
+- [Recover an interrupted Codex installation](howto/install-codex-plugin.md#recover-an-interrupted-installation) - Retry safely or preserve a pending journal with `--reset-recovery`
 - [Runner validation reference](reference/recipe-runner-validation.md) - Capability schema, provider compatibility, managed provenance, installer downgrade guard, and diagnostics
 - [Workflow context transport](reference/workflow-context-transport.md) - File-first authority, structured verifier objects, legacy compatibility, and consumer verdict policies
 - [Native plugin probe](reference/codex-native-plugin-probe.md) - Probe time limits, failure classification and error messages

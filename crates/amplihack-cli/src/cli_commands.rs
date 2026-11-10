@@ -215,6 +215,9 @@ MODEL SELECTION (issues #1421, #1527)
     },
     /// Launch OpenAI Codex CLI
     Codex {
+        /// Preserve the pending recovery journal as pending.json.stale-<UTC stamp>, then launch. Resets metadata only.
+        #[arg(long = "reset-recovery")]
+        reset_recovery: bool,
         /// Disable post-session reflection analysis.
         #[arg(long = "no-reflection")]
         no_reflection: bool,
