@@ -117,7 +117,16 @@ impl Fixture {
         let canned = tmp.path().join("canned");
         let work = tmp.path().join("work");
         let tools = tmp.path().join("tools");
-        for d in [&home, &records, &canned, &work, &tools] {
+        // Issue #1974: with the shared folder present, `profile add` links
+        // each profile's `projects` to it, as on a real host, so on a host
+        // with a usable `bwrap` every probe here runs through the sandbox.
+        for d in [
+            &home.join(".claude/projects"),
+            &records,
+            &canned,
+            &work,
+            &tools,
+        ] {
             fs::create_dir_all(d).unwrap();
         }
         executable(&tools.join("claude"), FAKE_CLAUDE);
@@ -348,16 +357,21 @@ fn assert_no_secrets(out: &Output) {
     }
 }
 
-/// The `note:` lines on stderr, less the probe-sandbox fallback note
-/// (issue #1974). That note depends on whether the host has a usable
-/// `bwrap`, so it is printed in every output mode; these tests check only
-/// that no other note reaches `--json` output.
+/// The `note:` lines on stderr, less the probe-sandbox note for a host
+/// without a usable `bwrap` (issue #1974), which is printed in every output
+/// mode. The profiles here have a resolvable `projects` link, so the note
+/// for an unresolved folder is never allowed: it would mean the sandbox was
+/// skipped for a reason other than the host.
 fn notes_other_than_sandbox(stderr: &str) -> Vec<&str> {
+    const PREFIX: &str = "note: usage probes run claude with --no-session-persistence only: ";
     stderr
         .lines()
         .filter(|l| l.contains("note:"))
         .filter(|l| {
-            !l.starts_with("note: usage probes run claude with --no-session-persistence only: ")
+            !matches!(
+                l.strip_prefix(PREFIX),
+                Some("bwrap not found" | "bwrap refused")
+            )
         })
         .collect()
 }
@@ -419,6 +433,25 @@ fn table_orders_by_capacity_marks_default_and_leases_and_hides_raw_text() {
             format!("CLAUDE_CONFIG_DIR={}\n", f.root.join(p).display())
         );
     }
+    // Issue #1974: each profile's `projects` resolves, so the only allowed
+    // fallback is a host without a usable `bwrap`; with one, the probes ran
+    // through it and nothing is noted.
+    let stderr = text(&out.stderr);
+    assert!(notes_other_than_sandbox(&stderr).is_empty(), "{stderr}");
+    if bwrap_usable() {
+        assert!(!stderr.contains("note: usage probes"), "{stderr}");
+    }
+}
+
+/// Whether `bwrap --dev-bind / / true` succeeds here, as the probe checks.
+fn bwrap_usable() -> bool {
+    Command::new("bwrap")
+        .args(["--dev-bind", "/", "/", "--", "true"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 #[test]

@@ -690,9 +690,18 @@ Without the [probe sandbox](#probe-sandbox), the `/usage` attempt makes
 `projects` directory. With large transcripts that is over half a minute of
 CPU time for one probe: one probe was measured at 71.5 seconds on a 72-CPU
 host at a load average of 194, and another opened 10,371 session logs in
-47.5 seconds. With the shared folder hidden, the same `/usage` probe took
-3.5 seconds. The usage request does not appear to make that scan, though it
-still pays for `claude` starting up. This cost is why the
+47.5 seconds. On 10 November 2026, on the same host at a load average of
+about 60, with Claude Code 2.1.322 and 9,084 transcripts in the shared
+folder, `claude -p /usage --no-session-persistence` run directly opened
+8,918 `.jsonl` files and took 68 seconds. Through `amplihack profile usage`
+with the sandbox, the same probe opened 3 `.jsonl` files, none of them under
+`projects`, and took 4.5 seconds. In the default mode, where that login's answer to
+the usage request was not used and the probe went on to `/usage`, both
+attempts together took 7.5 seconds. Neither run created a file in the shared folder, while the same
+probe from a build without this change wrote one session log there. The
+usage request opened 5 paths under `projects` with or without the sandbox,
+so it does not make that scan, though it still pays for `claude` starting
+up. This cost is why the
 [direct read](#direct-read) comes first. The deadline and the `claude`
 bound are still sized for the `/usage` attempt on a loaded host, because it
 remains the fallback and the only method that can read overflow profiles.
