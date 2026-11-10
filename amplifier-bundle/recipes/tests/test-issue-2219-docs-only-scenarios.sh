@@ -305,6 +305,24 @@ change requirements/base.txt
 both D28b-pin-in-directory false true \
   "requirements/base.txt is a pin in a directory, and the directory is not docs/" "$B"
 
+# The narrowed qualifier stops the pins at the root, but docs/ is exactly
+# where a Sphinx pin sits, and an exact basename there is one spelling away
+# from the next. The pin disqualifiers match a substring of the path, so
+# every spelling of the pin under docs/ is caught rather than the one that
+# happened to be named.
+for f in docs/requirements-dev.txt docs/dev-requirements.txt \
+         docs/requirements/base.txt docs/constraints-dev.txt; do
+  repo package.json "$f" README.md; base
+  change "$f"
+  both "D28c-pin-under-docs:${f}" false true \
+    "a dependency pin under docs/ is a build input however it is spelt" "$B"
+done
+
+repo package.json docs/guide.txt docs/notes.txt README.md; base
+change docs/guide.txt docs/notes.txt
+both D28d-pin-rule-leaves-prose-alone true false \
+  "the substring pin rule disqualifies pins, not every .txt under docs/" "$B"
+
 for f in README.txt CHANGELOG.txt CONTRIBUTING.txt; do
   repo package.json "$f" src/index.js; base
   change "$f"

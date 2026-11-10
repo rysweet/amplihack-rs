@@ -34,9 +34,9 @@
 # and a dependency pin all wear it — so qualifying it everywhere exempted
 # `tests/fixtures/expected.txt`, `src/templates/welcome.txt`,
 # `fuzz/corpus/seed.txt`, `requirements-dev.txt` and `Makefile.txt` from the
-# gadugi requirement. Naming the places prose lives closes the class; the three
-# basename disqualifiers below stay, because `docs/requirements.txt` is a
-# Sphinx pin sitting in exactly the directory this rule trusts.
+# gadugi requirement. Naming the places prose lives closes the class; the pin
+# disqualifiers below stay, because `docs/requirements.txt` is a Sphinx pin
+# sitting in exactly the directory this rule trusts.
 #
 # Disqualifying whatever else matches, compared CASE-INSENSITIVELY:
 #   - anything under a DOT-DIRECTORY at any depth — `.github/`, `.claude/`,
@@ -50,12 +50,19 @@
 #   - a basename of `AGENTS.md`, `CLAUDE.md` or `SKILL.md`, wherever it sits.
 #     A pull request editing only `merge-ready/SKILL.md` edits the rules that
 #     decide what may merge, so it does not buy its way out of them.
-#   - a basename of `requirements.txt`, `constraints.txt` or `CMakeLists.txt`.
-#     A build reads them, not a person: the first two pin the dependencies a
-#     suite installs and the third is a build script. The narrowed `.txt`
-#     qualifier already stops all three at the root, so what this rule still
-#     catches is the copy under `docs/` — `docs/requirements.txt` is the
-#     ordinary Sphinx pin, which is why the rule is not anchored at the root.
+#   - a `.txt` whose path holds `requirements` or `constraints`, and a
+#     basename of `CMakeLists.txt`. A build reads them, not a person: the
+#     first two pin the dependencies a suite installs and the third is a
+#     build script. The narrowed `.txt` qualifier already stops every pin at
+#     the root, so what this rule still catches is the copy under `docs/` —
+#     `docs/requirements.txt` is the ordinary Sphinx pin, which is why the
+#     rule is not anchored at the root. The two pin patterns match a
+#     SUBSTRING rather than a basename, because an exact name is one spelling
+#     away from the next: `docs/requirements-dev.txt`,
+#     `docs/dev-requirements.txt` and `docs/requirements/base.txt` are all the
+#     same build input. The cost is that a prose file named for requirements
+#     loses the exemption and its pull request runs the scenarios it would
+#     otherwise have skipped, which is the direction this predicate fails in.
 #     `requirements.txt` and `CMakeLists.txt` are also in
 #     AUTODRIVE_ROOT_PROJECT_FILES (autodrive_trust.sh), where this same
 #     repository already calls them project files. That array is NOT read
@@ -132,7 +139,7 @@ autodrive_qa_docs_only() {
     case "/$l" in
       */.*/* | */amplifier-bundle/* \
         | */agents.md | */claude.md | */skill.md \
-        | */requirements.txt | */constraints.txt | */cmakelists.txt) printf 'false\n'; return 0 ;;
+        | *requirements*.txt | *constraints*.txt | */cmakelists.txt) printf 'false\n'; return 0 ;;
     esac
   done <<< "$(printf '%s\n' "${_AD_PATHS[@]}" | tr 'A-Z' 'a-z')"
   printf 'true\n'
