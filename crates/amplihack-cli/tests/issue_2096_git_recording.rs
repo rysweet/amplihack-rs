@@ -2,19 +2,46 @@
 //! Real shell/agent/hook descendants still require pinned-runner integration tests.
 use super::*;
 
-fn command_logs(dir: &Path, found: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return;
-    };
+fn command_logs(dir: &Path, found: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    let at_path = |error| std::io::Error::other(format!("{}: {error}", dir.display()));
+    // This is required storage: even absence is an error, not an empty log.
+    let entries = fs::read_dir(dir).map_err(at_path)?;
     for entry in entries {
-        let entry = entry.unwrap();
-        let kind = entry.file_type().unwrap();
+        let entry = entry.map_err(at_path)?;
+        let kind = entry.file_type().map_err(|error| {
+            std::io::Error::other(format!("{}: {error}", entry.path().display()))
+        })?;
         if kind.is_dir() {
-            command_logs(&entry.path(), found);
+            command_logs(&entry.path(), found)?;
         } else if entry.file_name() == "commands.jsonl" {
             found.push(entry.path());
         }
     }
+    Ok(())
+}
+
+#[test]
+fn required_command_storage_errors_include_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let missing = temp.path().join("missing");
+    let occupied = temp.path().join("occupied");
+    fs::write(&occupied, "not a directory").unwrap();
+    for path in [missing, occupied] {
+        let error = command_logs(&path, &mut Vec::new()).unwrap_err();
+        assert!(error.to_string().contains(&path.display().to_string()));
+    }
+}
+
+#[test]
+fn command_storage_traversal_retains_nested_records() {
+    let temp = tempfile::tempdir().unwrap();
+    let nested = temp.path().join("run/diagnostics/git");
+    fs::create_dir_all(&nested).unwrap();
+    let log = nested.join("commands.jsonl");
+    fs::write(&log, "{}\n").unwrap();
+    let mut found = Vec::new();
+    command_logs(temp.path(), &mut found).unwrap();
+    assert_eq!(found, vec![log]);
 }
 
 #[test]
@@ -27,7 +54,7 @@ fn absolute_git_add_has_durable_attributed_command_record() {
             .unwrap(),
     );
     let mut logs = Vec::new();
-    command_logs(&f.root.join("work/runs"), &mut logs);
+    command_logs(&f.root.join("work/runs"), &mut logs).expect("read required command records");
     assert!(
         !logs.is_empty(),
         "required command recording was silently omitted"

@@ -36,14 +36,22 @@ fn main() {
         ),
     ] {
         let result = Command::new(env::var_os("ISSUE_2096_GIT").unwrap())
-            .args(args)
+            .args(&args)
             .output()
             .unwrap();
+        assert!(
+            result.status.success() || (name == "branch" && result.status.code() == Some(1)),
+            "Git observation {name} {args:?} failed with {}: {}",
+            result.status,
+            String::from_utf8_lossy(&result.stderr)
+        );
         fs::write(out.join(name), result.stdout).unwrap();
     }
     for name in ["tracked", "untracked input", "binary"] {
-        if let Ok(bytes) = fs::read(name) {
-            fs::write(out.join(name), bytes).unwrap();
+        match fs::read(name) {
+            Ok(bytes) => fs::write(out.join(name), bytes).unwrap(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && name != "tracked" => {}
+            Err(error) => panic!("read fixture input {name}: {error}"),
         }
     }
     for name in [
