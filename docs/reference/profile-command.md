@@ -3253,6 +3253,10 @@ kept. A file larger than 1 MiB is kept without being read.
    `last-prompt` and `cost-state`. Any other type keeps the file:
    `assistant`, and the `mode`, `permission-mode` and
    `file-history-snapshot` entries that `/login` and typed sessions write.
+   A `queue-operation` or `last-prompt` entry can hold a queued or last
+   typed prompt, so it counts as probe-only only when its text field
+   (`content` or `lastPrompt`) is missing or is the string `/usage`, after
+   trimming whitespace. Any other value keeps the file.
 3. Exactly one `user` entry is the `/usage` command: its `message.content`
    is a string made of `<command-name>/usage</command-name>`, then
    optionally `<command-message>usage</command-message>`, then optionally

@@ -1021,7 +1021,9 @@ run outside the sandbox. Remove them once, after upgrading:
 
 Only logs that hold the `/usage` command and nothing else are removed;
 anything with a prompt, a reply, another command or a line that cannot be
-read is kept. To clean another folder, pass `--dir`:
+read is kept. Claude names the project folder after the directory the
+rotator was started in, so if you started it outside `$HOME`, the logs are
+in that directory's folder. To clean another folder, pass `--dir`:
 
 ```bash
 amplihack profile prune-probe-logs --dir ~/.claude/projects/-home-ryan-src --dry-run

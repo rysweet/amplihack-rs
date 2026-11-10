@@ -7,7 +7,9 @@
 //!   docs/reference/profile-command.md, "Prune probe logs"):
 //!   1. every non-empty line is a JSON object with a string `type`;
 //!   2. every `type` is `user` or one of `session-owner`, `queue-operation`,
-//!      `attachment`, `system`, `last-prompt`, `cost-state`;
+//!      `attachment`, `system`, `last-prompt`, `cost-state`; a
+//!      `queue-operation` `content` or `last-prompt` `lastPrompt` field, when
+//!      present, must be the string `/usage` (trimmed);
 //!   3. exactly one `user` entry is the `/usage` command: string content
 //!      `<command-name>/usage</command-name>`, then optionally
 //!      `<command-message>usage</command-message>`, then optionally an empty
@@ -119,6 +121,30 @@ fn a_typed_prompt_is_kept() {
         Verdict::Keep
     );
     assert_eq!(classify(&user("hello there")), Verdict::Keep);
+}
+
+#[test]
+fn a_queued_or_last_prompt_holding_typed_text_is_kept() {
+    let queued = r#"{"type":"queue-operation","operation":"enqueue","content":"fix the build"}"#;
+    assert_eq!(classify(&lines(&[COMMAND, queued])), Verdict::Keep);
+    let last = r#"{"type":"last-prompt","lastPrompt":"fix the build"}"#;
+    assert_eq!(classify(&lines(&[COMMAND, last])), Verdict::Keep);
+    for odd in [
+        r#"{"type":"queue-operation","content":["/usage"]}"#,
+        r#"{"type":"last-prompt","lastPrompt":null}"#,
+    ] {
+        assert_eq!(classify(&lines(&[COMMAND, odd])), Verdict::Keep, "{odd}");
+    }
+}
+
+#[test]
+fn a_queued_or_last_prompt_holding_only_usage_is_probe_only() {
+    let queued = r#"{"type":"queue-operation","operation":"enqueue","content":"/usage"}"#;
+    let last = r#"{"type":"last-prompt","lastPrompt":" /usage\n"}"#;
+    assert_eq!(
+        classify(&lines(&[queued, COMMAND, last])),
+        Verdict::ProbeOnly
+    );
 }
 
 #[test]

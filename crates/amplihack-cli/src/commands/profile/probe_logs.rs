@@ -64,7 +64,8 @@ impl Classifier {
         let entry = entry.as_object()?;
         let kind = entry.get("type")?.as_str()?;
         if kind != "user" {
-            return IGNORED_TYPES.contains(&kind).then_some(());
+            let ignored = IGNORED_TYPES.contains(&kind) && holds_no_prompt(kind, entry);
+            return ignored.then_some(());
         }
         let content = entry.get("message")?.get("content")?.as_str()?;
         if is_usage_command(content) {
@@ -98,6 +99,21 @@ pub(super) fn classify(text: &str) -> Verdict {
         }
     }
     c.verdict()
+}
+
+/// `queue-operation` (`content`) and `last-prompt` (`lastPrompt`) entries
+/// can hold text the user typed: they are ignored only when that field is
+/// missing or is `/usage`. Any other value keeps the file.
+fn holds_no_prompt(kind: &str, entry: &serde_json::Map<String, Value>) -> bool {
+    let field = match kind {
+        "queue-operation" => "content",
+        "last-prompt" => "lastPrompt",
+        _ => return true,
+    };
+    match entry.get(field) {
+        None => true,
+        Some(v) => v.as_str().is_some_and(|s| s.trim() == "/usage"),
+    }
 }
 
 /// `<command-name>/usage</command-name>`, then optionally the message, then
@@ -203,8 +219,10 @@ fn prune_with(
         if !entry.file_name().as_encoded_bytes().ends_with(b".jsonl") {
             continue;
         }
+        // `DirEntry::file_type` does not follow links and, on most file
+        // systems, comes from the directory listing without another call.
+        let regular = entry.file_type().is_ok_and(|t| t.is_file());
         let path = entry.path();
-        let regular = fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file());
         if regular && classify_file(&path) == Verdict::ProbeOnly {
             pruned.matched.push(path);
         } else {

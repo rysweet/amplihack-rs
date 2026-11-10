@@ -221,18 +221,17 @@ fn config_dir(cmd: &Command, home: &Path) -> PathBuf {
 }
 
 /// `<config>/projects` with every link resolved, when it is an existing
-/// absolute directory other than `/`, `home` or the config dir itself.
+/// absolute directory other than `/` or any folder containing `home` or the
+/// config dir (hiding those would hide the credentials, not just the logs).
 fn hidden_folder(cmd: &Command, home: &Path) -> Option<PathBuf> {
     let config = config_dir(cmd, home);
     if !config.is_absolute() {
         return None;
     }
     let canon = std::fs::canonicalize(config.join("projects")).ok()?;
-    let same = |p: &Path| canon == p || std::fs::canonicalize(p).is_ok_and(|c| c == canon);
-    let refused = !canon.is_absolute()
-        || !canon.is_dir()
-        || canon == Path::new("/")
-        || same(home)
-        || same(&config);
+    // `starts_with` also holds for equal paths. `canonicalize` always
+    // returns an absolute path.
+    let inside = |p: &Path| std::fs::canonicalize(p).is_ok_and(|c| c.starts_with(&canon));
+    let refused = !canon.is_dir() || canon == Path::new("/") || inside(home) || inside(&config);
     (!refused).then_some(canon)
 }

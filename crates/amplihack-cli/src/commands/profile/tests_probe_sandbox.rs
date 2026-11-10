@@ -44,7 +44,7 @@ use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const NOW: i64 = 1_760_000_000;
 const NOTE: &str = "note: usage probes run claude with --no-session-persistence only: ";
@@ -106,21 +106,10 @@ fn script(base: &Path, name: &str, body: &str) -> PathBuf {
     fs::create_dir_all(&dir).unwrap();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
     let path = dir.join(name);
-    fs::write(&path, body).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-    settle(&path);
+    // Written through a short-lived child, so no fork of this test process
+    // holds a write handle to it at exec (ETXTBSY, #1973).
+    crate::test_support::write_executable(&path, body);
     path
-}
-
-/// Another test thread's fork can hold the script's write descriptor until
-/// its exec (ETXTBSY); run it with no arguments until it starts. A fake
-/// with no arguments exits at once.
-fn settle(path: &Path) {
-    let start = Instant::now();
-    while Command::new(path).status().is_err() {
-        assert!(start.elapsed() < Duration::from_secs(5), "fake never ran");
-        std::thread::sleep(Duration::from_millis(20));
-    }
 }
 
 /// A fake `bwrap`: records its argv (one per line) in `<dir>/bwrap-argv`,
@@ -411,13 +400,15 @@ fn a_projects_folder_that_does_not_resolve_is_not_wrapped() {
 }
 
 #[test]
-fn a_projects_folder_resolving_to_root_home_or_the_config_dir_is_not_wrapped() {
-    for target in ["root", "home", "self"] {
+fn a_projects_folder_resolving_to_root_home_the_config_dir_or_a_parent_is_not_wrapped() {
+    for target in ["root", "home", "self", "config-parent", "home-parent"] {
         let h = Host::new();
         fs::remove_file(h.profile.join("projects")).unwrap();
         let to = match target {
             "root" => PathBuf::from("/"),
             "home" => h.home.clone(),
+            "config-parent" => h.profile.parent().unwrap().to_path_buf(),
+            "home-parent" => h.home.parent().unwrap().to_path_buf(),
             _ => h.profile.clone(),
         };
         std::os::unix::fs::symlink(&to, h.profile.join("projects")).unwrap();
