@@ -43,7 +43,7 @@ pub(crate) fn inspect(
     }
     let slug = autodrive_preflight::git(&cwd, &["remote", "get-url", "origin"])
         .unwrap_or_else(|_| "local".into());
-    let key: String = format!("{}/{pr}", slug.trim_end_matches(".git"))
+    let key: String = format!("{}/{pr}", slug.strip_suffix(".git").unwrap_or(&slug))
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || "._-".contains(c) {

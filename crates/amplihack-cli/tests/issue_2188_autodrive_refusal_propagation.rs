@@ -277,3 +277,105 @@ fn both_recipe_consumers_use_the_ready_envelope_without_reinspection() {
         assert!(!f.tmp.path().join("comments").exists());
     }
 }
+
+#[test]
+fn relative_repo_path_uses_resolved_repository_for_default_state_key() {
+    for name in ["crusty", "merge"] {
+        let f = Fixture::new();
+        f.install_loop_tools();
+        f.git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/source/project.git.git",
+        ]);
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let yaml: Value = serde_yaml::from_str(
+            &fs::read_to_string(root.join(format!(
+                "amplifier-bundle/recipes/autodrive-{name}-loop.yaml"
+            )))
+            .unwrap(),
+        )
+        .unwrap();
+        let ready = f.run();
+        assert!(ready.status.success());
+        let o = f
+            .command("bash")
+            .current_dir(f.tmp.path())
+            .args(["-c", yaml["steps"][0]["command"].as_str().unwrap()])
+            .env("PR_NUMBER", "7")
+            .env("REPO_PATH", "repo")
+            .env(
+                "AMPLIHACK_AUTODRIVE_READY",
+                String::from_utf8(ready.stdout).unwrap(),
+            )
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let output: Value = serde_json::from_slice(&o.stdout).unwrap();
+        let slug = f.git(&["remote", "get-url", "origin"]);
+        let key: String = format!("{}/7", slug.strip_suffix(".git").unwrap_or(&slug))
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || "._-".contains(c) {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        assert_eq!(
+            output["state_dir"],
+            f.tmp
+                .path()
+                .join("AMPLIHACK_STATE_DIR/auto-drive")
+                .join(key)
+                .to_str()
+                .unwrap()
+        );
+    }
+}
+
+#[test]
+fn runner_default_state_key_removes_only_one_git_suffix() {
+    for name in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
+        let f = Fixture::new();
+        f.install_loop_tools();
+        f.git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/source/project.git.git",
+        ]);
+        fs::write(f.repo.join("dirty"), "preserve").unwrap();
+        let recipe = f.tmp.path().join("recipe.yaml");
+        fs::write(&recipe, recipe_yaml(name)).unwrap();
+        let o = f
+            .command("amplihack")
+            .args([
+                "recipe",
+                "run",
+                recipe.to_str().unwrap(),
+                "-w",
+                f.repo.to_str().unwrap(),
+                "--context",
+                "pr_number=7",
+                "--format",
+                "json",
+            ])
+            .env("AMPLIHACK_AGENT_BINARY", "claude")
+            .output()
+            .unwrap();
+        assert!(!o.status.success());
+        let state = f.tmp.path().join("AMPLIHACK_STATE_DIR/auto-drive/https___github.com_source_project.git_7/preflight-result.json");
+        let envelope: Value = serde_json::from_slice(&fs::read(&state).unwrap_or_else(|e| {
+            panic!(
+                "{}: {e}; {}",
+                state.display(),
+                String::from_utf8_lossy(&o.stderr)
+            )
+        }))
+        .unwrap();
+        assert_eq!(envelope["outcome"], "pr-worktree-dirty");
+    }
+}
