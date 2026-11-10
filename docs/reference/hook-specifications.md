@@ -1011,7 +1011,9 @@ Full rules: [Rotate session resume](profile-command.md#rotate-session-resume).
 a rotator is running, the hook waits up to 7 days for the rotator to write a
 [swap record](profile-command.md#swap-record),
 `<root>/.auto-switch.d/rotate/swap.json`, that differs from the one present
-at the stop, was swapped after the stop, and shows the new
+at the stop, was swapped after the stop (a swap in the hook's start second
+or the second before it counts, and so does the record present at the stop
+when it was written then), and shows the new
 login below 100% on both windows. Only a swap writes that file; a stay, an
 ALERT and `profile switch` do not. It does not wait at all when no rotator is
 running.
@@ -1056,6 +1058,11 @@ exactly one path:
   (Ctrl-Z) gets no more keys. A failure stops the remaining keys and ends as
   `resume-keys-failed`, still exit `0`. If the session exits or is suspended
   in the instant before a key, at most that one key is at risk.
+  `C-u` clears the whole input line, so text the user typed in the stopped
+  session and did not submit is deleted. Only a submitted prompt counts as
+  moving on (hook 6 records it); an unsent draft does not stop the resume.
+  The keys are not yet confirmed against a real Claude Code timed wait; see
+  [#2215](https://github.com/rysweet/amplihack-rs/issues/2215).
 - **Wake, exit `2`, outcome `resumed`.** Without such a pane, it exits `2`
   with a one-line continue message on stderr, which wakes the session.
 

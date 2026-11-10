@@ -12,7 +12,7 @@
 //!   `0 < t <= now + MAX_SKEW_SECS` (300 s, the ledger's rule).
 //! - `read_swap(root, now)`: no symlink, owned by the euid, not writable by
 //!   group or others, at most 4096 bytes; anything else is `None`.
-//! - `judge(snapshot, record, start) -> Judgement`, pure, in the order
+//! - `judge(snapshot, record, start, resumed_at) -> Judgement`, pure, in the order
 //!   Same, Stale, NoRoom, Resume. `seq` is never compared for order.
 //!
 //! Every test uses a temporary root; nothing reads the real profile root.
@@ -20,8 +20,8 @@
 #![cfg(unix)]
 
 use amplihack_utils::rotator_status::swap_record::{
-    Judgement, MAX_SWAP_BYTES, SWAP_FILE, SwapReading, SwapRecord, judge, parse_swap, read_swap,
-    rotate_dir, swap_path,
+    Judgement, MAX_SWAP_BYTES, STOP_SLACK_SECS, SWAP_FILE, SwapReading, SwapRecord, judge,
+    parse_swap, read_swap, rotate_dir, swap_path,
 };
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -294,14 +294,23 @@ fn read_swap_refuses_a_directory_in_place_of_the_file() {
 
 #[test]
 fn a_new_fresh_record_with_room_resumes() {
-    assert_eq!(judge(None, &fresh(1), START), Judgement::Resume);
-    assert_eq!(judge(Some(&fresh(1)), &fresh(2), START), Judgement::Resume);
+    assert_eq!(judge(None, &fresh(1), START, None), Judgement::Resume);
+    assert_eq!(
+        judge(Some(&fresh(1)), &fresh(2), START, None),
+        Judgement::Resume
+    );
 }
 
 #[test]
 fn an_identical_rewrite_is_same() {
     // An inotify event for a rewrite with the same content is not a swap.
-    assert_eq!(judge(Some(&fresh(5)), &fresh(5), START), Judgement::Same);
+    let noted = record(5, START - 60, START - 90, 12, 40);
+    assert_eq!(judge(Some(&noted), &noted, START, None), Judgement::Same);
+    // Nor is a noted record dated after the hook's start (a clock ahead).
+    assert_eq!(
+        judge(Some(&fresh(5)), &fresh(5), START, None),
+        Judgement::Same
+    );
 }
 
 #[test]
@@ -309,30 +318,73 @@ fn a_reset_seq_with_fresh_times_resumes() {
     // D4: seq is not trusted to only go up; a record that differs from the
     // snapshot and is newer than the stop is a new swap.
     let snapshot = record(41, START - 100, START - 120, 10, 10);
-    assert_eq!(judge(Some(&snapshot), &fresh(1), START), Judgement::Resume);
+    assert_eq!(
+        judge(Some(&snapshot), &fresh(1), START, None),
+        Judgement::Resume
+    );
 }
 
 #[test]
 fn a_replayed_older_record_is_stale() {
     let old = record(3, START - 100, START - 120, 10, 10);
-    assert_eq!(judge(Some(&fresh(9)), &old, START), Judgement::Stale);
+    assert_eq!(judge(Some(&fresh(9)), &old, START, None), Judgement::Stale);
 }
 
 #[test]
-fn a_record_swapped_at_or_before_the_stop_is_stale() {
-    // D5: a record from before the stop never resumes.
+fn a_record_swapped_before_the_stop_is_stale() {
+    // D5: a swap that finished before the stop never resumes. The last
+    // second that is surely before the stop is START - STOP_SLACK_SECS - 1.
+    let before = START - STOP_SLACK_SECS - 1;
     for (swapped_at, measured_at) in [
-        (START, START + 30),
-        (START - 1, START + 30),
-        (START, START - 30),
+        (before, START + 30),
+        (before - 60, START + 30),
+        (before, START - 30),
     ] {
         let r = record(2, swapped_at, measured_at, 5, 5);
         assert_eq!(
-            judge(None, &r, START),
+            judge(None, &r, START, None),
             Judgement::Stale,
             "swapped_at={swapped_at} measured_at={measured_at}"
         );
     }
+}
+
+#[test]
+fn a_swap_in_the_seconds_of_the_stop_resumes() {
+    // Crusty round 1 on #2141: times are whole seconds and the stop comes
+    // a moment before the hook starts. A swap that finished in the hook's
+    // start second, or in the second before it, may have finished after the
+    // stop; judging it stale would leave the session waiting for a swap that
+    // may never come.
+    assert_eq!(STOP_SLACK_SECS, 1);
+    for swapped_at in [START, START - STOP_SLACK_SECS] {
+        let r = record(2, swapped_at, swapped_at - 30, 5, 5);
+        assert_eq!(
+            judge(None, &r, START, None),
+            Judgement::Resume,
+            "swapped_at={swapped_at}"
+        );
+    }
+}
+
+#[test]
+fn a_snapshot_swapped_between_the_stop_and_the_hook_start_resumes() {
+    // Crusty round 1 on #2141: a swap that lands between the stop and the
+    // hook's start is the record the hook notes. It is not `Same`: the
+    // session stopped on the login swapped away from.
+    for swapped_at in [START, START - STOP_SLACK_SECS] {
+        let snap = record(4, swapped_at, swapped_at - 30, 5, 5);
+        assert_eq!(
+            judge(Some(&snap), &snap, START, None),
+            Judgement::Resume,
+            "swapped_at={swapped_at}"
+        );
+        let full = record(4, swapped_at, swapped_at - 30, 100, 5);
+        assert_eq!(judge(Some(&full), &full, START, None), Judgement::NoRoom);
+    }
+    // A snapshot from before the stop is still `Same`.
+    let old = record(4, START - STOP_SLACK_SECS - 1, START - 60, 5, 5);
+    assert_eq!(judge(Some(&old), &old, START, None), Judgement::Same);
 }
 
 #[test]
@@ -343,7 +395,7 @@ fn a_stop_between_measurement_and_swap_resumes() {
     for measured_at in [START, START - 1, START - 40] {
         let r = record(2, START + 1, measured_at, 5, 5);
         assert_eq!(
-            judge(None, &r, START),
+            judge(None, &r, START, None),
             Judgement::Resume,
             "measured_at={measured_at}"
         );
@@ -351,23 +403,43 @@ fn a_stop_between_measurement_and_swap_resumes() {
 }
 
 #[test]
+fn a_swap_the_session_was_resumed_on_never_resumes_it_again() {
+    // A resumed session that hits a limit again within a second of the
+    // swap must not be woken on that swap a second time: it ran again after
+    // the resume, so it stopped after the swap.
+    let r = record(3, START, START - 30, 5, 5);
+    assert_eq!(judge(Some(&r), &r, START, Some(START)), Judgement::Same);
+    assert_eq!(judge(None, &r, START, Some(START)), Judgement::Stale);
+    // A swap after that resume still resumes it.
+    let next = record(4, START + 1, START - 10, 5, 5);
+    assert_eq!(
+        judge(Some(&r), &next, START, Some(START)),
+        Judgement::Resume
+    );
+}
+
+#[test]
 fn a_full_window_is_no_room() {
     for (s, w) in [(100, 10), (10, 100), (100, 100), (255, 0)] {
         let r = record(2, START + 60, START + 30, s, w);
-        assert_eq!(judge(None, &r, START), Judgement::NoRoom, "s={s} w={w}");
+        assert_eq!(
+            judge(None, &r, START, None),
+            Judgement::NoRoom,
+            "s={s} w={w}"
+        );
     }
     let r = record(2, START + 60, START + 30, 99, 99);
-    assert_eq!(judge(None, &r, START), Judgement::Resume);
+    assert_eq!(judge(None, &r, START, None), Judgement::Resume);
 }
 
 #[test]
 fn judge_checks_same_then_stale_then_no_room() {
     // Same wins over Stale and NoRoom.
-    let stale_full = record(2, START - 1, START - 1, 100, 100);
+    let stale_full = record(2, START - 2, START - 2, 100, 100);
     assert_eq!(
-        judge(Some(&stale_full), &stale_full, START),
+        judge(Some(&stale_full), &stale_full, START, None),
         Judgement::Same
     );
     // Stale wins over NoRoom.
-    assert_eq!(judge(None, &stale_full, START), Judgement::Stale);
+    assert_eq!(judge(None, &stale_full, START, None), Judgement::Stale);
 }

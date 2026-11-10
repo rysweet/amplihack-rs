@@ -3,7 +3,10 @@
 //!
 //! Only four keys exist, [`RESUME_KEYS`]: Escape (closes the limit menu or
 //! timed wait), C-u (clears the input line), `continue` (sent literally) and
-//! Enter. Each is one `tmux send-keys` run with a fixed argv, no shell and
+//! Enter. C-u deletes any text the user typed and did not submit: only a
+//! submitted prompt counts as moving on, so an unsent draft does not stop
+//! the resume (D8). Whether these keys end a real Claude Code timed wait,
+//! and whether Escape alone clears the line, is checked in #2215. Each is one `tmux send-keys` run with a fixed argv, no shell and
 //! null stdio, ended by its exit status. No digit and no slash command can
 //! be expressed.
 //!
@@ -24,7 +27,7 @@ use std::process::{Command, Stdio};
 pub enum Key {
     /// `Escape`: leaves the limit menu or the timed wait.
     Escape,
-    /// `C-u`: clears whatever is on the input line.
+    /// `C-u`: clears whatever is on the input line, an unsent draft included.
     ClearLine,
     /// `continue`, sent with `-l` so tmux types it as text.
     LiteralContinue,

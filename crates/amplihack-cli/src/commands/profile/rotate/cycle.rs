@@ -215,6 +215,11 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         ctx.rs.save_ledger(&l)?;
     }
     let mut swapped = None;
+    // Issue #2085: the swap record's time is when the swap finished, not the
+    // cycle's `t`, which is taken before revalidation and the swap. A session
+    // that stops on the outgoing login in between must read as stopped
+    // before the swap, or the limit-resume hook judges the record stale.
+    let mut swapped_at = t;
     let outcome = match decision {
         Decision::Swap { to, reason } => 'swap: {
             // Issue #1804: a refusal moves nothing and writes no journal.
@@ -262,6 +267,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 }
                 Err(e) => return Err(e),
             };
+            swapped_at = now();
             swapped = Some([to.clone(), from.clone()]);
             let target = shown_of(&others_shown, &to);
             let seen = (next_plan_reset, unknown_plan.len());
@@ -326,7 +332,15 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     save(ctx, &mut l, outcome, now(), Some(at), tag)?;
     // Issue #2085: the record the limit-resume hook waits for, under the lock.
     if let Some([to, from]) = &swapped {
-        swap_record::after_swap(&ctx.rs, &mut out, from, to, &others, measured_at, t);
+        swap_record::after_swap(
+            &ctx.rs,
+            &mut out,
+            from,
+            to,
+            &others,
+            measured_at,
+            swapped_at,
+        );
     }
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.

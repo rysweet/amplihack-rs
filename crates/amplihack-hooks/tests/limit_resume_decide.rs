@@ -86,6 +86,16 @@ impl GuardStore for MemGuard {
         }))
     }
 
+    fn last_resume(&mut self, session: &str) -> io::Result<Option<i64>> {
+        if self.fail_resumes {
+            return Err(io::Error::other("injected"));
+        }
+        Ok(self
+            .sessions
+            .get(session)
+            .and_then(|v| v.iter().copied().max()))
+    }
+
     fn prepare(&mut self, _now: i64) -> io::Result<()> {
         self.prepared += 1;
         if self.fail_prepare {
@@ -701,6 +711,28 @@ fn a_record_written_between_the_snapshot_and_the_wait_resumes_without_an_event()
 }
 
 #[test]
+fn a_swap_between_the_stop_and_the_hook_start_resumes_at_once() {
+    // Crusty round 1 on #2141: the rotator finishes a swap after the
+    // session stopped but before the hook took its snapshot, in the same
+    // second. The snapshot is that swap, and the session stopped on the
+    // login swapped away from, so the hook resumes without waiting.
+    let mut d = Fake::new();
+    d.swap = Some(record_at(6, 0, 12, 40));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::Resumed);
+    assert!(d.waits.is_empty(), "no wait: {:?}", d.waits);
+}
+
+#[test]
+fn a_snapshot_from_before_the_stop_waits_for_the_next_swap() {
+    let mut d = Fake::new();
+    d.swap = Some(record_at(6, -2, 12, 40));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::NoCapacityTimeout);
+    assert_eq!(d.waits, [DEADLINE]);
+}
+
+#[test]
 fn a_a_reset_seq_with_fresh_times_resumes() {
     // D4: seq is not trusted to only go up.
     let mut d = Fake::new().then(Act::Swap(fresh(1)));
@@ -1212,6 +1244,23 @@ fn loop_one_swap_record_resumes_at_most_once() {
         let out = run_with(&limit_input("s", &format!("limit again {i}")), &mut d);
         assert_eq!(out, Outcome::NoCapacityTimeout, "invocation {i}");
     }
+    assert_eq!(d.guard.events.len(), 1);
+}
+
+#[test]
+fn loop_a_limit_again_within_a_second_of_the_swap_does_not_resume_twice() {
+    // The swap is written in the second the hook resumes the session, and
+    // the session hits a limit again in the next second. That swap is within
+    // the stop allowance, but the session was resumed on it, so it waits.
+    let mut d = Fake::new().then(Act::Swap(record_at(1, STEP, 12, 40)));
+    assert_eq!(
+        run_with(&limit_input("s", "first limit"), &mut d),
+        Outcome::Resumed
+    );
+    assert_eq!(d.clock, START + STEP, "resumed in the swap's second");
+    d.restart_at(d.clock + 1);
+    let out = run_with(&limit_input("s", "limit again"), &mut d);
+    assert_eq!(out, Outcome::NoCapacityTimeout);
     assert_eq!(d.guard.events.len(), 1);
 }
 

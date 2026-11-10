@@ -81,6 +81,7 @@ pub(super) fn record_swap(
 /// After a cycle's swap is saved, under the rotate lock: writes the record
 /// when the ledger on disk shows `to` live. Any reason it is not written is
 /// one log line; the swap stands and the cycle outcome is unchanged.
+/// `swapped_at` is when `swap_with` returned, never the cycle's start time.
 pub(super) fn after_swap(
     rs: &RotateState,
     out: &mut Sink,
@@ -88,7 +89,7 @@ pub(super) fn after_swap(
     to: &ProfileName,
     others: &[(ProfileName, Reading)],
     measured_at: i64,
-    t: i64,
+    swapped_at: i64,
 ) {
     let live = match rs.load_ledger() {
         Ok(Some(l)) => l.live,
@@ -109,7 +110,7 @@ pub(super) fn after_swap(
         out.emit(now(), &format!("{NOT_WRITTEN}: no reading of {to}"));
         return;
     };
-    match record_swap(rs, out, from, to, reading, measured_at, t) {
+    match record_swap(rs, out, from, to, reading, measured_at, swapped_at) {
         Ok(true) => {}
         Ok(false) => out.emit(
             now(),

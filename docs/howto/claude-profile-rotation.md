@@ -1235,8 +1235,11 @@ either, so a missing figure is never recorded as 0%. The rotator logs
 
 A waiting hook resumes on a record only when all of these hold:
 
-- it differs from the record the hook noted when it started;
-- `swapped_at` is after the stop;
+- it differs from the record the hook noted when it started, or that noted
+  record is itself a swap made in those same two seconds;
+- `swapped_at` is after the stop, or in the hook's start second or the second
+  before it (times are whole seconds, and the hook starts a moment after the
+  stop);
 - `reading.session` and `reading.week` are both below 100.
 
 `reading.measured_at` may be before the stop. The rotator measures before it

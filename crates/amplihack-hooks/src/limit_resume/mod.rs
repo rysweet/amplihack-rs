@@ -326,6 +326,12 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         Ok(n) => facts.capped = n >= MAX_RESUMES_PER_SESSION,
         Err(_) => return finish(deps, start, Outcome::GuardFailed),
     }
+    // A swap at or before this session's last resume is never after its
+    // stop, however close the times (see `after_stop`).
+    let resumed_at = match deps.guard().last_resume(&session) {
+        Ok(t) => t,
+        Err(_) => return finish(deps, start, Outcome::GuardFailed),
+    };
     match gate(&facts) {
         Gate::Duplicate => return finish(deps, start, Outcome::Duplicate),
         Gate::Cap => return finish(deps, start, Outcome::Cap),
@@ -348,8 +354,9 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
             .map(|t| t.is_some_and(|t| t > start))
     };
 
-    // D4: the record seen at the stop never resumes; only a different one,
-    // newer than the stop, does.
+    // D4: the record seen at the stop resumes only when it may itself be
+    // after the stop (a swap between the stop and this read); otherwise only
+    // a different one, newer than the stop, does. See `judge`.
     let snapshot = deps.read_swap(start);
     if let Err(e) = deps.arm() {
         let n = Note {
@@ -370,7 +377,7 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         match woke {
             Event::Swap => {
                 if let Some(r) = deps.read_swap(now) {
-                    let skipped = match judge(snapshot.as_ref(), &r, start) {
+                    let skipped = match judge(snapshot.as_ref(), &r, start, resumed_at) {
                         Judgement::Resume => break (now, r),
                         Judgement::Same => None,
                         Judgement::Stale => Some(Outcome::SwapStale),

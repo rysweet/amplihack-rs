@@ -53,11 +53,12 @@ pub struct SwapRecord {
 /// What a record means for a session stopped at `start`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Judgement {
-    /// The record is the one seen when the hook started: no new swap.
+    /// The record is the one seen when the hook started, and it was swapped
+    /// before the stop: no new swap.
     Same,
-    /// The swap is not later than the stop (D5). The measurement may be:
-    /// the rotator measures before it swaps, and a session that stops in
-    /// between stopped on the login swapped away from.
+    /// The swap finished before the stop (D5). The measurement may be
+    /// earlier still: the rotator measures before it swaps, and a session
+    /// that stops in between stopped on the login swapped away from.
     Stale,
     /// The login swapped to has a window at or above 100%.
     NoRoom,
@@ -109,15 +110,62 @@ pub fn read_swap(_root: &Path, _now: i64) -> Option<SwapRecord> {
     None
 }
 
+/// How many whole seconds before the hook's start a swap may have finished
+/// and still be after the stop.
+///
+/// The hook does not know when the session stopped, only when it started
+/// (`start`), a moment later. Both `start` and `swapped_at` are whole epoch
+/// seconds, truncated, and the rotator takes `swapped_at` after the swap
+/// has finished. A swap that finished after the stop therefore has
+/// `swapped_at >= floor(stop) >= start - 1` whenever the hook started less
+/// than a second after the stop: the stop and the swap can share a second
+/// with `start`, or fall in the second before it. So a record counts as
+/// before the stop only when `swapped_at < start - STOP_SLACK_SECS`.
+///
+/// The error this allows goes the cheap way. A swap that finished in that
+/// second but just before the stop is read as after it, and the session is
+/// sent one `continue` it may not need. Reading a swap after the stop as
+/// before it would leave the session waiting for the next swap, up to the
+/// hook's 7-day limit, with nothing to show why.
+pub const STOP_SLACK_SECS: i64 = 1;
+
+/// Whether a swap at `swapped_at` may have finished after a stop whose hook
+/// started at `start`, in a session last resumed at `resumed_at`.
+///
+/// A swap at or before the session's last resume is always before the
+/// stop: the session ran again after that resume, so it stopped later. This
+/// is what keeps the [`STOP_SLACK_SECS`] allowance from waking a session
+/// twice on one swap when, once resumed, it hits a limit again within a
+/// second. Otherwise see [`STOP_SLACK_SECS`].
+pub fn after_stop(swapped_at: i64, start: i64, resumed_at: Option<i64>) -> bool {
+    swapped_at >= start.saturating_sub(STOP_SLACK_SECS) && resumed_at.is_none_or(|r| swapped_at > r)
+}
+
 /// Whether `record` resumes a session stopped at `start` whose hook saw
-/// `snapshot` when it started. Checked in the order Same, Stale, NoRoom,
-/// then Resume. `seq` is never compared for order: a record that differs
-/// from the snapshot and is newer than the stop is a new swap, so a reset
-/// `seq` still resumes and a replayed old record is stale.
-pub fn judge(snapshot: Option<&SwapRecord>, record: &SwapRecord, start: i64) -> Judgement {
-    if snapshot == Some(record) {
+/// `snapshot` when it started, for a session last resumed at `resumed_at`
+/// (from the hook's guard; `None` when it was never resumed). Checked in
+/// the order Same, Stale, NoRoom, then Resume. `seq` is never compared for
+/// order: a record that differs from the snapshot and is newer than the
+/// stop is a new swap, so a reset `seq` still resumes and a replayed old
+/// record is stale.
+///
+/// A snapshot that may itself be after the stop ([`after_stop`]) and is not
+/// later than `start` is not `Same`: a swap can finish between the stop and
+/// the hook's start, and the hook then notes it at once. That record is
+/// judged on room like any other, so the session stopped on the outgoing
+/// login still resumes. A snapshot dated after `start` cannot be such a
+/// swap (it was already on disk when the hook started), so a clock that
+/// runs ahead never makes a noted record resume.
+pub fn judge(
+    snapshot: Option<&SwapRecord>,
+    record: &SwapRecord,
+    start: i64,
+    resumed_at: Option<i64>,
+) -> Judgement {
+    let after = after_stop(record.swapped_at, start, resumed_at);
+    if snapshot == Some(record) && !(after && record.swapped_at <= start) {
         Judgement::Same
-    } else if record.swapped_at <= start {
+    } else if !after {
         Judgement::Stale
     } else if record.reading.session >= 100 || record.reading.week >= 100 {
         Judgement::NoRoom

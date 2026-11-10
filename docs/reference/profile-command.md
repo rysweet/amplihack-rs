@@ -8471,10 +8471,26 @@ record it reads afterwards is judged in this order:
 
 | Order | Check | Result when it holds |
 |-------|-------|----------------------|
-| 1 | The file is missing or unreadable, or the record equals the noted one in every field. | Nothing logged; keep waiting. |
-| 2 | `swapped_at` is at or before the hook's start. `reading.measured_at` is not checked: the rotator measures before it swaps, so a session that stops between the two stopped on the login being swapped away from. | Log `swap-stale`; keep waiting. |
+| 1 | The file is missing or unreadable, or the record equals the noted one in every field and is stale by the rule in order 2. | Nothing logged; keep waiting. |
+| 2 | `swapped_at` is more than 1 second before the hook's start (`swapped_at < start - 1`), or at or before the session's last resume. `reading.measured_at` is not checked: the rotator measures before it swaps, so a session that stops between the two stopped on the login being swapped away from. | Log `swap-stale`; keep waiting. |
 | 3 | `reading.session` or `reading.week` is 100 or more. | Log `swap-no-room`; keep waiting. |
 | 4 | — | Resume (step 9 of [Resume decision](#resume-decision)). |
+
+The hook does not know when the session stopped, only when it started, a
+moment later; both times are whole seconds. The rotator takes `swapped_at`
+when the swap has finished. So a swap in the hook's start second, or in the
+second before it, may have finished after the stop and is not stale. That
+holds for the noted record too: a swap that lands between the stop and the
+hook's start is the record the hook notes, and it resumes the session at
+once when the new login has room. The cost of this one-second allowance is
+that a swap made just before the stop can send the session one `continue`
+it did not need; without it, a session stopped on the outgoing login would
+wait for the next swap, up to 7 days.
+
+A swap at or before the session's last recorded resume is never treated as
+after the stop, whatever the times: the session ran again after that resume,
+so it stopped later. A resumed session that hits a limit again within a
+second is therefore not woken twice on one swap; it waits for the next one.
 
 `seq` is never compared for order. A record that differs from the noted one
 in any field and passes the time checks counts, so a rotator whose `seq`
@@ -8512,7 +8528,7 @@ rename, so a reader never sees a partial file.
 | `seq` | The previous record's `seq` plus 1, or 1 when there is no previous record or it cannot be read. |
 | `live_login` | The profile now live in `~/.claude`. |
 | `from_login` | The profile swapped out. |
-| `swapped_at` | Epoch seconds of the swap. |
+| `swapped_at` | Epoch seconds when the swap finished, taken after the login was moved, not when the cycle started. |
 | `reading.session`, `reading.week` | The new login's session and weekly use from this cycle's measured reading, rounded up to a whole percent and clamped to 0–255. |
 | `reading.measured_at` | Epoch seconds when that reading was taken. |
 

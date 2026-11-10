@@ -360,7 +360,20 @@ fn a_swap_writes_a_record_the_hook_resumes_on() {
     // The hook's view: the record is newer than the stop, with room.
     let seen = read_swap(&e.root, now() + 1).expect("the hook reads it");
     assert_eq!(seen, r);
-    assert_eq!(judge(None, &seen, limit_hit), Judgement::Resume);
+    assert_eq!(judge(None, &seen, limit_hit, None), Judgement::Resume);
+}
+
+#[test]
+fn the_record_time_is_not_before_the_swap_moved_the_login() {
+    // Crusty round 1 on #2141: `swapped_at` is taken when the swap has
+    // finished, not at the cycle's start. Renaming the incoming login into
+    // `~/.claude` sets its ctime, so the record may not be older than that.
+    use std::os::unix::fs::MetadataExt;
+    let e = env();
+    assert_eq!(run(&e, measure_swap).unwrap(), CycleOutcome::Swapped);
+    let moved_at = fs::symlink_metadata(e.live()).unwrap().ctime();
+    let r = on_disk(&e.rs);
+    assert!(r.swapped_at >= moved_at, "{r:?} moved_at={moved_at}");
 }
 
 #[test]
@@ -390,7 +403,7 @@ fn each_swap_writes_the_next_seq() {
     assert_eq!((second.reading.session, second.reading.week), (5, 7));
     assert_ne!(first, second);
     assert_eq!(
-        judge(Some(&first), &second, first.swapped_at - 1),
+        judge(Some(&first), &second, first.swapped_at - 1, None),
         Judgement::Resume
     );
     let tmp: Vec<_> = fs::read_dir(&e.rs.dir)
