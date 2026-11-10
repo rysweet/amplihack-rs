@@ -28,8 +28,9 @@ fn unix_now() -> i64 {
 }
 
 /// A fixture with a rotate ledger in which `spare` was swapped away from
-/// 200 s from now, and `spare` 10/20 and `extra` 50/50 as candidates for
-/// the live `work` at 90/40.
+/// 200 s from now, and `spare` 10/20 and `extra` 50/30 as candidates for
+/// the live `work` at 90/40. `extra`'s week is below `work`'s, so it ranks
+/// ahead of it (issue #2013, 7 November addendum).
 fn damped_spare() -> Fixture {
     let f = Fixture::new();
     // A first cycle with no room anywhere writes the ledger and swaps
@@ -45,7 +46,7 @@ fn damped_spare() -> Fixture {
     ledger["swapped_away"] = serde_json::json!({"spare": unix_now() + 200});
     fs::write(&path, ledger.to_string()).unwrap();
     f.usage("spare", 10, 20);
-    f.usage("extra", 50, 50);
+    f.usage("extra", 50, 30);
     f
 }
 

@@ -280,6 +280,9 @@ fn clear_while_the_state_lock_is_held_fails_busy() {
 fn an_overflow_profile_is_not_chosen_while_a_plan_login_has_capacity() {
     let f = Fixture::new();
     mark(&f, "spare"); // 10/20: the best reading, but credit-backed
+    // Issue #2013 (7 November addendum): `work` (90/40) is past
+    // --session-at only, so it moves only to a login with less week use.
+    f.usage("extra", 50, 30);
     let out = f.ok(&["profile", "rotate"]);
     assert!(
         stdout(&out).contains("swap work->extra") && stdout(&out).contains("reason=threshold"),
