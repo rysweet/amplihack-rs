@@ -1,20 +1,36 @@
 //! XPIA security integration for pre-tool-use hook.
 
-use amplihack_security::{ContentType, RiskLevel, XpiaConfig, XpiaDefender};
+use amplihack_security::{
+    ContentType, EnabledValue, RiskLevel, XpiaDefender, classify_enabled, enabled_raw_from_os,
+    unrecognised_enabled_message,
+};
 use serde_json::Value;
 use tracing::warn;
 
 /// Run XPIA validation on a tool call. Returns `Some(block_json)` if blocked.
 ///
-/// XPIA is off unless `XPIA_ENABLED` opts in. When off this returns `None`
-/// after reading only `XPIA_ENABLED`, so the default path neither reads the
-/// other `XPIA_*` settings and domain-list files nor compiles the detection
-/// regexes on every tool call.
+/// XPIA is off unless `XPIA_ENABLED` opts in (`1`, `true` or `yes`). When off
+/// this returns `None` after reading only `XPIA_ENABLED`, so the default path
+/// neither reads the other `XPIA_*` settings and domain-list files nor
+/// compiles the detection regexes on every tool call. An unrecognised value
+/// (for example `on`) leaves XPIA off and prints one warning to stderr;
+/// stdout and the exit code do not change (#1737).
 pub(super) fn check_xpia(tool_name: &str, tool_input: &Value) -> Option<Value> {
-    if !XpiaConfig::enabled_in_env() {
-        return None;
+    let raw = enabled_raw_from_os(std::env::var_os("XPIA_ENABLED").as_deref());
+    let state = classify_enabled(raw.as_deref());
+    match state {
+        EnabledValue::Recognised(true) => {
+            check_xpia_with(&XpiaDefender::from_env(), tool_name, tool_input)
+        }
+        EnabledValue::Recognised(false) => None,
+        EnabledValue::Unrecognised(value) => {
+            eprintln!(
+                "amplihack: warning: {}",
+                unrecognised_enabled_message(&value)
+            );
+            None
+        }
     }
-    check_xpia_with(&XpiaDefender::from_env(), tool_name, tool_input)
 }
 
 /// Run XPIA validation with the given defender. Returns `Some(block_json)` if blocked.
@@ -107,6 +123,7 @@ fn block_response(summary: &str, risk: RiskLevel) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use amplihack_security::XpiaConfig;
     use serde_json::json;
 
     /// Build a defender from an `XPIA_ENABLED` value without touching the

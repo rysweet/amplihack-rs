@@ -51,12 +51,12 @@ All hooks are implemented as subcommands of the compiled `amplihack-hooks` binar
 | Subcommand | Event | Purpose |
 |---|---|---|
 | `session-start` | SessionStart | Session initialization and context setup |
-| `pre-tool-use` | PreToolUse | Pre-tool analysis (registered when XPIA assets present) |
+| `pre-tool-use` | PreToolUse | Pre-tool guards; XPIA scan only with `XPIA_ENABLED=true` (registered when XPIA assets present) |
 | `post-tool-use` | PostToolUse | Post-tool analysis and workflow enforcement |
 | `stop` | Stop | Session cleanup and metrics flush |
 | `pre-compact` | PreCompact | Context preservation before compaction |
 
-**XPIA security behavior:** When the `tools/xpia` directory is present in the staged framework assets, the `pre-tool-use` subcommand is registered. It is the only subcommand that calls the XPIA defense logic (implemented in `amplihack-security::XpiaDefender`); `session-start` and `post-tool-use` do not. No extra hook entries are added — the same `amplihack-hooks pre-tool-use` invocation handles both framework and security duties.
+**XPIA security behavior:** When the `tools/xpia` directory is present in the staged framework assets, the shared `amplihack-hooks` subcommands (`session-start`, `pre-tool-use` and `post-tool-use`) are registered. `pre-tool-use` is the only one that calls the XPIA defense logic (implemented in `amplihack-security::XpiaDefender`); `session-start` and `post-tool-use` do not. No extra hook entries are added — the same `amplihack-hooks` invocations handle both framework and security duties.
 
 Registering the hook does not turn XPIA scanning on. XPIA is off by default and runs only when the agent CLI is started with `XPIA_ENABLED=true` (`1` and `yes` also work, in any case). With XPIA off, the registered `pre-tool-use` hook still runs the tmux, tail-follow, CWD deletion, CWD rename, commit-on-main and `--no-verify` guards, but on Claude Code and Copilot only the tmux and tail-follow guards' answers stop the call; both give an enforced deny. See the [XPIA Configuration Reference](../reference/xpia-configuration.md).
 
@@ -146,7 +146,7 @@ amplihack install  # This will reconfigure hooks automatically
 
 - This is normal if your framework bundle does not include XPIA assets
 - XPIA security is an optional feature — the info message is not an error
-- When XPIA assets are present, the installer automatically registers the XPIA hook subcommands via the `amplihack-hooks` binary. XPIA scanning still stays off until you set `XPIA_ENABLED=true`
+- When XPIA assets are present, the installer registers the shared `amplihack-hooks` subcommands (`session-start`, `pre-tool-use` and `post-tool-use`). They are the same entries as the normal amplihack hooks, so no duplicate is written, and XPIA scanning stays off (opt-in) until you set `XPIA_ENABLED=true`. The installer never writes `XPIA_ENABLED` into `settings.json`
 
 ## Advanced: Path Expansion
 
@@ -165,7 +165,7 @@ The `amplihack-hooks` binary is typically deployed to `~/.local/bin/amplihack-ho
 Hook specifications are defined in `crates/amplihack-cli/src/commands/install/types.rs`:
 
 - `AMPLIHACK_HOOK_SPECS` — required amplihack hook subcommands
-- `XPIA_HOOK_SPECS` — optional XPIA security hook subcommands
+- `XPIA_HOOK_SPECS` — the shared `amplihack-hooks` subcommands registered when XPIA assets are present; they do not turn XPIA on
 
 Both use `HookCommandKind::BinarySubcmd` to generate `"amplihack-hooks <subcmd>"` command strings. The installer calls `validate_hook_command_string()` on each generated command before writing to settings.json.
 

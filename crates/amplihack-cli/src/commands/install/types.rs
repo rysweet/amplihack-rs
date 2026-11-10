@@ -424,6 +424,13 @@ pub(super) const AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[
     },
 ];
 
+/// Hooks registered when the XPIA assets directory is present.
+///
+/// These are the shared `amplihack-hooks` subcommands (`session-start`,
+/// `pre-tool-use`, `post-tool-use`), not separate XPIA scanners:
+/// `wrapper_matches` drops the entries they duplicate, and the binary checks
+/// `XPIA_ENABLED` before scanning. Nothing registered here scans by default;
+/// XPIA runs only when the user opts in with `XPIA_ENABLED=true` (#1878).
 pub(super) const XPIA_HOOK_SPECS: &[HookSpec] = &[
     HookSpec {
         event: "SessionStart",

@@ -401,3 +401,7 @@ mod signal_validator_parity;
 mod spec_conformance;
 #[path = "system_prompt_append_fragment.rs"]
 mod system_prompt_append_fragment;
+#[path = "xpia_install_default_off.rs"]
+mod xpia_install_default_off;
+#[path = "xpia_surfaces_default_off.rs"]
+mod xpia_surfaces_default_off;

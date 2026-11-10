@@ -1084,4 +1084,65 @@ mod tests {
             result.err()
         );
     }
+
+    /// Issue #1878 item 1: nothing the Copilot plugin stages turns XPIA on,
+    /// points at an XPIA shell hook, or sets environment for the hooks.
+    #[test]
+    fn xpia_copilot_staged_plugin_does_not_enable_xpia() {
+        let td = TempDir::new().unwrap();
+        let copilot_home = fake_copilot_home(&td);
+        let repo = fake_repo(&td, true);
+        let hooks_bin = td.path().join("amplihack-hooks");
+        fs::write(&hooks_bin, b"#!/bin/sh\nexit 0\n").unwrap();
+        assert!(run_with_copilot_home(&copilot_home, &repo, &hooks_bin));
+
+        let plugin_dir = copilot_home
+            .join("installed-plugins")
+            .join("amplihack@local");
+        let mut stack = vec![copilot_home.clone()];
+        let mut seen = 0;
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                seen += 1;
+                let body = String::from_utf8_lossy(&fs::read(&path).unwrap()).into_owned();
+                assert!(
+                    !body.contains("XPIA_ENABLED"),
+                    "{} must not set XPIA_ENABLED",
+                    path.display()
+                );
+                assert!(
+                    !body.contains("tools/xpia"),
+                    "{} must not register an XPIA shell hook",
+                    path.display()
+                );
+            }
+        }
+        assert!(
+            seen >= 2,
+            "expected hooks.json and plugin.json to be staged"
+        );
+
+        let hooks: Value =
+            serde_json::from_str(&fs::read_to_string(plugin_dir.join("hooks.json")).unwrap())
+                .unwrap();
+        let mut stack = vec![&hooks];
+        while let Some(value) = stack.pop() {
+            match value {
+                Value::Object(map) => {
+                    assert!(
+                        !map.contains_key("env"),
+                        "hooks.json must not set environment for hooks: {hooks}"
+                    );
+                    stack.extend(map.values());
+                }
+                Value::Array(items) => stack.extend(items),
+                _ => {}
+            }
+        }
+    }
 }

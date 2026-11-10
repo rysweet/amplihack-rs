@@ -180,6 +180,10 @@ Successful install prints a phase-by-phase progress summary:
 ✅ Amplihack installation completed successfully!
 ```
 
+`XPIA hooks directory found` means the `pre-tool-use` hook is registered. It
+does not mean XPIA is scanning: XPIA is off by default and runs only when the
+agent CLI starts with `XPIA_ENABLED=true`.
+
 After the success banner, two best-effort post-install steps run (each prints
 one status line and never fails the install): Copilot-home staging and
 [Mermaid CLI provisioning](../features/mermaid-cli-best-effort-install.md). For
@@ -396,7 +400,7 @@ Located in `crates/amplihack-cli/src/commands/install/paths.rs`.
 
 ### `ensure_settings_json(staging_dir: &Path, timestamp: u64, hooks_bin: &Path) -> Result<(bool, Vec<String>)>`
 
-Reads or creates `~/.claude/settings.json`. Creates a timestamped backup and backup metadata JSON (both with `0o600` permissions). Calls `validate_hook_command_string()` on each command before writing. Calls `update_hook_paths()` for amplihack hooks and, when the XPIA tools directory exists, for XPIA hooks (using `XPIA_HOOK_SPECS` which route through the `amplihack-hooks` binary). Returns `(settings_existed, registered_event_names)`.
+Reads or creates `~/.claude/settings.json`. Creates a timestamped backup and backup metadata JSON (both with `0o600` permissions). Calls `validate_hook_command_string()` on each command before writing. Calls `update_hook_paths()` for amplihack hooks and, when the XPIA tools directory exists, for XPIA hooks (using `XPIA_HOOK_SPECS` which route through the `amplihack-hooks` binary). Returns `(settings_existed, registered_event_names)`. XPIA specs resolve to the same `amplihack-hooks` subcommands as the amplihack hooks, so `wrapper_matches` drops the duplicates. Nothing written to `settings.json` sets `XPIA_ENABLED` or points at a `tools/xpia/` script, so XPIA stays off (opt-in) after `install` and `update`; see [Nothing amplihack installs turns XPIA on](./xpia-configuration.md#nothing-amplihack-installs-turns-xpia-on).
 
 ### `validate_hook_command_string(cmd: &str) -> Result<()>`
 

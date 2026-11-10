@@ -855,7 +855,7 @@ Reflection system uses `security.py` to sanitize all content before GitHub issue
 
 ### XPIA Defense
 
-`xpia_defense.py` provides Cross-Process Injection Attack protection.
+`xpia_defense.py` provides Cross-Process Injection Attack protection. It is off by default and runs only when `XPIA_ENABLED=true` (`1` and `yes` also work, in any case). See the [XPIA Configuration Reference](../../reference/xpia-configuration.md).
 
 ### Permissions
 

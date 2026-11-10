@@ -305,6 +305,7 @@ dependencies = [
  "amplihack-types",
  "amplihack-utils",
  "anyhow",
+ "libc",
  "serde_json",
  "tempfile",
  "tracing",
