@@ -350,3 +350,42 @@ fn unsupported_wrapper_dependency_selection_is_inconclusive() {
     assert!(!error.repairable);
     assert!(error.to_string().contains("dependency selection"));
 }
+
+#[test]
+fn platform_install_uses_the_installed_wrappers_exact_version() {
+    use amplihack_utils::codex_installation::pinned_npm_platform_package;
+    for version in ["0.98.0", "0.147.0", "0.166.0"] {
+        let temp = tempfile::tempdir().unwrap();
+        let (wrapper, _) = npm_tree(temp.path(), version, false);
+        let metadata_path = wrapper
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("package.json");
+        let actual = pinned_npm_platform_package(&metadata_path).unwrap();
+        let mut metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
+        if version == "0.98.0" {
+            assert_eq!(actual, None);
+        } else {
+            let (name, dependency) = metadata["optionalDependencies"]
+                .as_object()
+                .unwrap()
+                .iter()
+                .next()
+                .unwrap();
+            assert_eq!(
+                actual,
+                Some(format!("{name}@{}", dependency.as_str().unwrap()))
+            );
+        }
+        metadata["version"] = serde_json::json!("0.167.0");
+        fs::write(&metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+        assert!(
+            !pinned_npm_platform_package(&metadata_path)
+                .unwrap_err()
+                .repairable
+        );
+    }
+}

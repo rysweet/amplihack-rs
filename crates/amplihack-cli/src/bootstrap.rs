@@ -656,6 +656,33 @@ fn install_npm_package(tool: &str, package: &str) -> Result<()> {
         }
     }
 
+    if package == "@openai/codex" {
+        let node_modules = if cfg!(windows) {
+            prefix.join("node_modules")
+        } else {
+            prefix.join("lib").join("node_modules")
+        };
+        let package_json = node_modules.join("@openai/codex/package.json");
+        let replacement = bin_dir.join(format!("codex{}", std::env::consts::EXE_SUFFIX));
+        let platform =
+            amplihack_utils::codex_installation::pinned_npm_platform_package(&package_json)
+                .with_context(|| {
+                    format!(
+                        "cannot complete Codex replacement {}",
+                        launch_target::display_untrusted_path(&replacement)
+                    )
+                })?;
+        if let Some(platform) = platform {
+            println!("📦 Installing Codex native platform package {platform}...");
+            run_npm_install(&npm, &prefix, &platform).with_context(|| {
+                format!(
+                    "failed native component for Codex replacement {}",
+                    launch_target::display_untrusted_path(&replacement)
+                )
+            })?;
+        }
+    }
+
     // Issue #585: After installing @github/copilot with --omit=optional,
     // install the platform-specific native binary package separately.
     // This avoids the npm reify hang caused by cross-platform optional deps
@@ -938,16 +965,12 @@ fn claude_binary_is_materialized(path: &Path) -> bool {
 fn run_npm_install(npm: &Path, prefix: &Path, package: &str) -> Result<()> {
     let mut npm_cmd = Command::new(npm);
     amplihack_utils::litellm_proxy::scrub_inference_environment(&mut npm_cmd);
-    npm_cmd.arg("install").arg("-g").arg("--prefix").arg(prefix);
-    // Codex ships its native executable and helpers in an optional platform
-    // package. Omitting optional dependencies creates another broken install.
-    let optional_flag = if package == "@openai/codex" {
-        "--include=optional"
-    } else {
-        "--omit=optional"
-    };
     npm_cmd
-        .arg(optional_flag)
+        .arg("install")
+        .arg("-g")
+        .arg("--prefix")
+        .arg(prefix)
+        .arg("--omit=optional")
         .arg(package)
         .arg("--ignore-scripts");
     let status = run_with_timeout(npm_cmd, INSTALL_TIMEOUT).with_context(|| {
@@ -955,7 +978,7 @@ fn run_npm_install(npm: &Path, prefix: &Path, package: &str) -> Result<()> {
             "npm install timed out for package '{package}' after {}s.\n\
              This is often caused by npm hanging on cross-platform optional deps.\n\
              Try running manually:\n  \
-             npm install -g --prefix {} {optional_flag} --ignore-scripts {package}",
+             npm install -g --prefix {} --omit=optional --ignore-scripts {package}",
             INSTALL_TIMEOUT.as_secs(),
             prefix.display(),
         )
@@ -965,7 +988,7 @@ fn run_npm_install(npm: &Path, prefix: &Path, package: &str) -> Result<()> {
         bail!(
             "npm install failed for package '{package}' (exit code: {code}).\n\
              Try running manually:\n  \
-             npm install -g --prefix {prefix} {optional_flag} --ignore-scripts {package}\n\
+             npm install -g --prefix {prefix} --omit=optional --ignore-scripts {package}\n\
              If the problem persists, check npm logs:\n  \
              npm cache clean --force && npm install -g --prefix {prefix} {package}",
             package = package,

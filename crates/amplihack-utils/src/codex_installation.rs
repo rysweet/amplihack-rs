@@ -237,6 +237,57 @@ fn native_path(resolved: &Path, modern: bool, version: &str) -> Result<PathBuf, 
         .join(name))
 }
 
+// Upstream 97576b179487 removes the fallback between 0.146.0 and 0.147.0.
+// Future releases may change helper requirements or npm package selection.
+fn needs_code_mode_host(version: &semver::Version) -> Option<bool> {
+    if !version.pre.is_empty() {
+        None
+    } else if version.major == 0 && version.minor <= 98 {
+        Some(false)
+    } else if *version >= semver::Version::new(0, 147, 0)
+        && *version <= semver::Version::new(0, 166, 0)
+    {
+        Some(true)
+    } else {
+        None
+    }
+}
+
+/// Identify the exact native npm alias required by an installed wrapper.
+/// This only reads bounded package metadata; installation policy stays with callers.
+/// Legacy bundled releases need no separately installed platform dependency.
+pub fn pinned_npm_platform_package(
+    package_json: &Path,
+) -> Result<Option<String>, InstallationError> {
+    let metadata = package(package_json)?;
+    if metadata.name != "@openai/codex" {
+        return Err(failure(
+            package_json,
+            "incorrect Codex package identity",
+            false,
+        ));
+    }
+    let version = semver::Version::parse(&metadata.version)
+        .map_err(|_| failure(package_json, "invalid installed Codex version", false))?;
+    match needs_code_mode_host(&version) {
+        Some(false) => Ok(None),
+        Some(true) => {
+            let (_, name) = platform()
+                .ok_or_else(|| failure(package_json, "unsupported npm platform", false))?;
+            Ok(Some(format!(
+                "@openai/{name}@npm:@openai/codex@{}-{}",
+                metadata.version,
+                name.trim_start_matches("codex-")
+            )))
+        }
+        None => Err(failure(
+            package_json,
+            "unverified npm layout for this version; usability is inconclusive",
+            false,
+        )),
+    }
+}
+
 /// Prove native executable and version-specific helper availability without
 /// starting a session, reading configuration, or contacting a service.
 /// Unknown versions fail closed; help/version output cannot prove capability.
@@ -261,20 +312,13 @@ pub fn validate_codex_installation(
             false,
         )
     })?;
-    // Upstream 97576b179487 removes the in-process fallback; 0.146.0
-    // predates that change, and 0.147.0 includes it. Pin the upper boundary
-    // too: future versions may add helpers or change package selection.
-    let legacy = parsed.major == 0 && parsed.minor <= 98 && parsed.pre.is_empty();
-    let modern = parsed >= semver::Version::new(0, 147, 0)
-        && parsed <= semver::Version::new(0, 166, 0)
-        && parsed.pre.is_empty();
-    if !legacy && !modern {
-        return Err(failure(
+    let modern = needs_code_mode_host(&parsed).ok_or_else(|| {
+        failure(
             candidate,
             "unverified helper requirements for this version; usability is inconclusive",
             false,
-        ));
-    }
+        )
+    })?;
     let native = native_path(&resolved, modern, version)?;
     executable(&native)?;
     let native = fs::canonicalize(&native).map_err(|e| {

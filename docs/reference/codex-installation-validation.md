@@ -112,14 +112,18 @@ Version caching does not replace fresh installation validation after repair.
 | Inconclusive validation or resource failure | Stop with the diagnostic; do not assume reinstalling will help. |
 
 CLI recovery installs `@openai/codex` through the existing managed npm prefix,
-including optional platform dependencies containing its executable and helpers.
+explicitly installing the one native platform alias pinned to the installed
+wrapper version. Both npm invocations retain `--omit=optional` and
+`--ignore-scripts`; no lifecycle scripts or other platforms are enabled.
 `AMPLIHACK_SKIP_AUTO_INSTALL` refuses automatic Codex recovery. Noninteractive
 startup retains the existing automatic installation behavior without prompting.
 The legacy launcher honors its explicit `auto_install` argument.
 External overrides are rejected with guidance to repair, change, or unset them.
 No new consent prompt or installation switch is introduced.
 
-There is at most one installation attempt per startup recovery. After that
+There is at most one recovery procedure per startup: the wrapper package and,
+when required, its one pinned native platform alias are each installed once.
+Neither failed package step is retried. After that
 attempt, discovery runs uncached and validates the replacement. Installer
 success alone does not authorize launch. An unusable replacement returns a
 nonzero result identifying its executable, failure, and repair guidance. If the
