@@ -316,7 +316,7 @@ Estimated iterations remaining: 1
 
 - **Mergeable**: YES
 - **Conflicts**: NONE
-- **Reviews**: 0 of 1 required
+- **Reviews**: 1 of 1 required
 
 ### Important
 
