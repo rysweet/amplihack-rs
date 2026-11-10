@@ -4,6 +4,24 @@ Reference for live recipe progress, heartbeat events, bounded subprocess output
 snippets, run correlation pointers, and additive JSON fields emitted by
 `amplihack recipe run`.
 
+## Durable Git command evidence [PLANNED]
+
+> **Implementation pending.** This section describes intended behavior and
+> planned artifact paths; these guarantees are not yet implemented or validated.
+
+Git-backed runs record index-writing commands across shell steps, agent
+descendants and hooks, including absolute executable invocations. These records
+are separate from progress lines and bounded output snippets. They include run
+identity, timestamp, command and executable evidence, effective cwd, resolved
+index path and Git routing environment. Required recorder initialization,
+collection or finalization failure prevents run success.
+
+Records live at `<work root>/runs/<run-id>/diagnostics/git/commands.jsonl`, with
+restricted raw evidence, capability reports and finalization state alongside
+them. The run ownership record supplies the diagnostics pointer. Runtime-folder
+cleanup does not remove this evidence. See [command records](recipe-checkout-isolation.md#command-records)
+for the storage contract, redaction rules and demonstrated-coverage limits.
+
 ## Contents
 
 - [Output contract](#output-contract)

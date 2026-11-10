@@ -3,6 +3,26 @@
 Why the recipe runner is an external binary, how amplihack locates and invokes
 it, and how recipe execution stays predictable.
 
+## Checkout preparation boundary [PLANNED]
+
+> **Implementation pending.** This section describes intended behavior and
+> planned artifact paths; these guarantees are not yet implemented or validated.
+
+Before launching the external runner's first executable step, amplihack captures
+the caller's resolved HEAD and local inputs in a unique detached execution
+checkout. The caller remains read-only. Typed repository paths and step cwd
+overrides map into that checkout; inherited Git routing is sanitized. Nested
+runs get separate checkouts, while same-run retries can retain their own.
+Confirmed non-Git invocations keep their existing behavior and record isolation
+as inapplicable.
+
+Required command recording is ready before execution and finalized before
+success. Shell, agent and hook boundaries preserve its configuration. Checkout
+ownership, partial failures and durable diagnostics participate in the existing
+run lifecycle. The runner cannot fall back to the caller cwd when preparation,
+path validation or recording fails. See the [checkout isolation reference](../reference/recipe-checkout-isolation.md)
+for the complete contract, shared Git metadata limits and review generations.
+
 ## Contents
 
 - [Why external](#why-external)

@@ -3,6 +3,26 @@
 How to use `amplihack recipe run` to execute a YAML recipe through the Rust CLI
 — from finding the right recipe to inspecting results.
 
+## Account for the private checkout [PLANNED]
+
+> **Implementation pending.** This section describes intended behavior and
+> planned artifact paths; these guarantees are not yet implemented or validated.
+
+Launch from the repository and pass repository-local inputs as usual. Before
+the first shell or agent step, the run gets a private checkout at your resolved
+HEAD, with staged edits, unstaged edits and untracked inputs reproduced. Your
+files, index and HEAD stay unchanged. Paths such as `repo_path=.` and local cwd
+overrides map into the private checkout. A nested run gets another checkout.
+
+Inspect the run's ownership record to locate its checkout and durable
+`diagnostics/git/commands.jsonl` evidence. Changes made by the run remain there
+for recovery until eligible for cleanup; they do not appear automatically in
+your launch checkout. Fix input-capture or recording errors before relaunching;
+there is no fallback to running in your checkout. Outside Git, existing recipe
+execution is preserved and isolation is recorded as inapplicable. See
+[checkout isolation](../reference/recipe-checkout-isolation.md) for supported
+inputs, path restrictions, record locations and lifecycle behavior.
+
 ## Before you start
 
 - `amplihack` is installed (run `amplihack --version` to confirm)

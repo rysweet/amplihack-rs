@@ -9,6 +9,24 @@ whose pull request was merged or closed more than a day ago. The
 `amplihack cleanup` command does the same on demand, and also archives old
 logs and removes temporary folders left by killed runs.
 
+## Preserve isolated execution and review work [PLANNED]
+
+> **Implementation pending.** This section describes intended behavior and
+> planned artifact paths; these guarantees are not yet implemented or validated.
+
+Each Git-backed recipe owns a unique execution checkout; each drive owns its
+private detached review generations. These are registered before execution and
+use the existing cleanup eligibility checks. A matching branch or PR does not
+make another run's checkout disposable. Dirty files, live descendants and
+unpublished commits keep recovery work; detached commits must be reachable
+from retained published refs before removal. Unreadable ownership metadata
+also keeps the checkout.
+
+Command evidence under `runs/<run-id>/diagnostics/git/` survives removal of
+`runtime`, short temporary folders and eligible checkouts. Keep restricted raw
+evidence private when sharing a sanitized report. See [checkout ownership and
+lifecycle](../reference/recipe-checkout-isolation.md#ownership-and-lifecycle).
+
 ## Contents
 
 - [Quick start](#quick-start)

@@ -17,6 +17,14 @@ A bash step measures the PR after it is opened. If the change exceeds any eligib
 
 The recipe is `amplifier-bundle/recipes/auto-drive-light.yaml`. It was added for issue #1802. Issue #1982 moved its minor findings to the follow-up model of #1979.
 
+**[PLANNED - Implementation Pending]** The following isolation behavior is
+unimplemented and awaits validation. The build will run in a unique private
+execution checkout from its first step.
+Its judging agents use private detached review generations at the recorded PR
+head SHA, with trusted launch-side instructions and the existing mutation
+guard. See [checkout isolation](recipe-checkout-isolation.md) for boundaries,
+command records and recovery behavior.
+
 ## Contents
 
 - [When to use it](#when-to-use-it)
