@@ -67,6 +67,9 @@ fn is_real_dir(p: &Path) -> bool {
 }
 
 /// No credential-named file anywhere below the three shared dirs of `canon`.
+///
+/// Only the Linux-only tests below call it (#2210).
+#[cfg(target_os = "linux")]
 fn assert_no_credentials_under(canon: &Path) {
     fn walk(p: &Path) {
         let Ok(rd) = fs::read_dir(p) else { return };
@@ -277,6 +280,8 @@ impl Fixture {
         }
     }
 
+    /// Only the Linux-only tests below call it (#2210).
+    #[cfg(target_os = "linux")]
     fn backups(&self, p: &str, name: &str) -> Vec<PathBuf> {
         let prefix = format!("{name}.pre-share-");
         fs::read_dir(self.dir(p))

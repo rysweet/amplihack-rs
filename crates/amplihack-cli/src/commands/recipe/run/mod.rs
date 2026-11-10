@@ -455,6 +455,8 @@ mod tests_limit_patterns;
 mod tests_limit_reset;
 #[cfg(test)]
 mod tests_merge_guard;
+#[cfg(all(test, unix))]
+mod tests_merge_guard_pin;
 #[cfg(test)]
 mod tests_parent_watch;
 #[cfg(test)]

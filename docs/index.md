@@ -179,6 +179,7 @@ amplihack copilot
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
 - [Framework Source Selection](reference/framework-source-selection.md) - Which source install, update and self-heal stage the bundle from, the release tag fetch, the manifest check and file modes
+- [Versioned Install Layout](concepts/versioned-install-layout.md) - Releases under `~/.amplihack/releases`, atomic link switch, in-use cleanup and why an install leaves running recipe runs alone
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
 - [External LiteLLM Gateway](features/README.md#external-litellm-gateway) - Route supported local agents through an operator-managed gateway
 - [External LiteLLM Gateway Tutorial](tutorials/external-litellm-gateway.md) - Configure a protected route to an existing gateway

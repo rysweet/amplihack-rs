@@ -201,6 +201,10 @@ on demand, mode `0o600`) for the duration of the decision-and-install window.
   then re-reads the stamp on the other side. Because the first process
   wrote the new stamp before releasing, the second process sees a match and
   proceeds without re-installing.
+- Explicit `amplihack install`, `amplihack update` and `amplihack uninstall`
+  take the same lock, so self-heal never re-stages while another install
+  runs. The re-stage creates a new release and switches links like any
+  install; see [Versioned Install Layout](../concepts/versioned-install-layout.md).
 - The lock is advisory (`fs2::FileExt::lock_exclusive`); processes that do
   not honour it (e.g. a manual `rm -rf ~/.amplihack`) can still race, but
   no normal `amplihack` invocation will.
