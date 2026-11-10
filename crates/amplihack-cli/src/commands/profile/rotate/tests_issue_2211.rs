@@ -17,9 +17,9 @@
 //!   `last + rate * interval >= session_at`; with none,
 //!   `last >= session_at - margin`.
 //! - `map_reason(decision, Basis, &Settings, &real_reading) -> Decision`:
-//!   relabels only `Swap{Threshold}`: always for `Basis::Substituted`, and
-//!   for `Basis::Projected` only when the real reading alone needs no swap.
-//!   `Basis::Real` changes nothing.
+//!   relabels only `Swap{Threshold}`, and only when the real reading alone
+//!   needs no swap; under `Basis::Substituted` a failed real reading counts
+//!   as needing none. `Basis::Real` changes nothing.
 //!
 //! No test reads a file, a login or the clock.
 
@@ -233,11 +233,17 @@ fn a_projection_when_the_real_reading_already_needs_a_swap_stays_threshold() {
 }
 
 #[test]
-fn a_substituted_reading_always_gives_projected() {
+fn a_substituted_failed_or_below_threshold_reading_gives_projected() {
     for real in [Reading::Failed, m(66.0, 41.0)] {
         let got = map_reason(threshold(), Basis::Substituted, &s(), &real);
         assert_eq!(got, projected_swap(), "{real:?}");
     }
+}
+
+#[test]
+fn a_substituted_reading_already_at_the_threshold_stays_threshold() {
+    let got = map_reason(threshold(), Basis::Substituted, &s(), &m(95.0, 41.0));
+    assert_eq!(got, threshold(), "a stale 95% needs a swap on its own");
 }
 
 #[test]

@@ -57,7 +57,7 @@ macro_rules! lane {
             use crate::commands::profile::ProfileError;
             use crate::commands::profile::name::ProfileName;
             use std::sync::Mutex;
-            use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+            use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
             use std::time::Duration;
 
             pub static CLOCK: AtomicI64 = AtomicI64::new(0);
@@ -66,6 +66,8 @@ macro_rules! lane {
             pub static OTHERS: Mutex<Vec<(&'static str, Probed)>> = Mutex::new(Vec::new());
             pub static REREAD: Mutex<Vec<Probed>> = Mutex::new(Vec::new());
             pub static CALLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+            /// Whether the context was read-only during the last re-read.
+            pub static READ_ONLY: AtomicBool = AtomicBool::new(false);
 
             pub fn clock() -> i64 {
                 CLOCK.load(Ordering::SeqCst)
@@ -94,7 +96,8 @@ macro_rules! lane {
                 decide_measured(ctx, snap, live, probes, at)
             }
 
-            pub fn reread(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+            pub fn reread(ctx: &Ctx, name: &ProfileName, _: Duration) -> Probed {
+                READ_ONLY.store(ctx.read_only, Ordering::SeqCst);
                 let mut calls = CALLS.lock().unwrap();
                 calls.push(name.to_string());
                 let nth = calls.len() - 1;
@@ -152,6 +155,7 @@ fn swaps(log: &str) -> usize {
 }
 
 const STALE: &str = "stale live reading; re-read";
+const FAILED: &str = "reread: work failed; treated as unknown";
 
 fn stale_lines(log: &str) -> usize {
     log.lines().filter(|l| l.ends_with(STALE)).count()
@@ -443,6 +447,114 @@ fn e2_an_old_reading_near_the_threshold_whose_reread_fails_swaps() {
     assert_eq!(le2::live_calls(), 1, "{log}");
     assert_eq!(got, CycleOutcome::Swapped, "never a stay: {log}");
     assert!(log.contains("reason=projected"), "{log}");
+    let (stale, failed) = (log.find(STALE), log.find(FAILED));
+    assert!(failed.is_some() && stale < failed, "failure logged:\n{log}");
+}
+
+// --- A substituted figure is never lower than the last known one ----------
+
+lane!(lsf);
+
+#[test]
+fn e2b_a_stale_95_percent_whose_reread_fails_still_swaps_to_a_70_percent_candidate() {
+    let e = env();
+    seed(&lsf::CLOCK);
+    let at1 = lsf::clock();
+    set(&lsf::LIVE, &[Live::Direct(66.0, 41.0)]);
+    set(
+        &lsf::OTHERS,
+        &[
+            ("spare", rd(70.0, 40.0, None)),
+            ("work", rd(0.0, 40.0, None)),
+        ],
+    );
+    let mut c = ctx(&e, lsf::clock, lsf::measure, Some(lsf::reread));
+    assert_eq!(step(&mut c, &lsf::CLOCK), CycleOutcome::Stayed);
+    // Cycle 2 sees a stale 95%, and its re-read fails.
+    lsf::CLOCK.store(at1 + 2 * INTERVAL, std::sync::atomic::Ordering::SeqCst);
+    set(&lsf::LIVE, &[Live::Passive(95.0, 41.0, 2 * INTERVAL)]);
+    lsf::STEP.store(0, std::sync::atomic::Ordering::SeqCst);
+    let got = step(&mut c, &lsf::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(lsf::live_calls(), 1, "{log}");
+    assert_eq!(got, CycleOutcome::Swapped, "decided on 95, not 70: {log}");
+    assert!(log.contains("reason=threshold"), "95% needs a swap: {log}");
+    assert!(!log.contains("ALERT: no profile has capacity"), "{log}");
+}
+
+lane!(lsg);
+
+#[test]
+fn e2c_a_failed_probe_after_90_percent_is_decided_on_90_not_the_threshold() {
+    let e = env();
+    seed(&lsg::CLOCK);
+    set(&lsg::LIVE, &[Live::Direct(90.0, 41.0)]);
+    set(&lsg::OTHERS, &spare_full());
+    let mut c = ctx(&e, lsg::clock, lsg::measure, Some(lsg::reread));
+    assert_ne!(step(&mut c, &lsg::CLOCK), CycleOutcome::Swapped);
+    // `spare` at 75%: 15 more headroom than 90%, none more than 70%.
+    set(&lsg::LIVE, &[Live::Failed]);
+    set(
+        &lsg::OTHERS,
+        &[
+            ("spare", rd(75.0, 40.0, None)),
+            ("work", rd(0.0, 40.0, None)),
+        ],
+    );
+    lsg::STEP.store(0, std::sync::atomic::Ordering::SeqCst);
+    let got = step(&mut c, &lsg::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(got, CycleOutcome::Swapped, "not an ALERT: {log}");
+    assert!(log.contains("swap work->spare "), "{log}");
+    assert!(log.contains("reason=projected"), "{log}");
+}
+
+// --- A live re-read is timed at the cycle's clock ---------------------------
+
+lane!(lst);
+
+#[test]
+fn e2d_a_live_reread_is_timed_at_the_cycle_clock() {
+    let e = env();
+    seed(&lst::CLOCK);
+    let t2 = lst::clock() + INTERVAL;
+    set(
+        &lst::LIVE,
+        &[
+            Live::Direct(50.0, 41.0),
+            Live::Passive(50.0, 41.0, INTERVAL + 1),
+        ],
+    );
+    set(&lst::OTHERS, &spare_room());
+    // Stamped 100 s back, 58% would rise 8 points in 20 s and project to
+    // 100; timed at the clock it rises 8 in 120 s and projects to 66.
+    set(&lst::REREAD, &[rd(58.0, 41.0, Some(t2 - 100))]);
+    let mut c = ctx(&e, lst::clock, lst::measure, Some(lst::reread));
+    assert_eq!(step(&mut c, &lst::CLOCK), CycleOutcome::Stayed);
+    let got = step(&mut c, &lst::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(lst::live_calls(), 1, "{log}");
+    assert_eq!(got, CycleOutcome::Stayed, "58 + 8 = 66 < 70: {log}");
+    assert_eq!(swaps(&log), 0, "{log}");
+}
+
+// --- A live reading from the future is read again ---------------------------
+
+lane!(lfu);
+
+#[test]
+fn e2e_a_live_reading_stamped_after_the_clock_is_read_again() {
+    let e = env();
+    seed(&lfu::CLOCK);
+    set(&lfu::LIVE, &[Live::Passive(40.0, 20.0, -60)]);
+    set(&lfu::OTHERS, &spare_room());
+    set(&lfu::REREAD, &[rd(80.0, 20.0, None)]);
+    let mut c = ctx(&e, lfu::clock, lfu::measure, Some(lfu::reread));
+    let got = step(&mut c, &lfu::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(lfu::live_calls(), 1, "observed_at = t + 60: {log}");
+    assert_eq!(stale_lines(&log), 1, "{log}");
+    assert_eq!(got, CycleOutcome::Swapped, "decided on s=80%: {log}");
 }
 
 lane!(le3);
@@ -575,6 +687,10 @@ fn a_dry_run_rereads_an_old_live_reading_and_writes_nothing() {
         ldr::calls(),
         ["work"],
         "the dry run re-reads the live login"
+    );
+    assert!(
+        ldr::READ_ONLY.load(std::sync::atomic::Ordering::SeqCst),
+        "the re-read ran on a read-only context"
     );
     assert_eq!(
         got,

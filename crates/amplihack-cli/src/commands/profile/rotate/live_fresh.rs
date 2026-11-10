@@ -12,8 +12,9 @@
 //! - projects the session use one interval ahead from a short in-memory
 //!   [`Series`], and decides on the projection when it reaches
 //!   `--session-at` (R2);
-//! - decides a failed or still-stale live reading as though the session had
-//!   reached `--session-at` when the last known point was near it (R2b).
+//! - decides a failed or still-stale live reading on the larger of
+//!   `--session-at` and the last known session use when the last known
+//!   point was near the threshold (R2b), so the figure never falls.
 //!
 //! The figures only change the decision, through [`Outlook`] on the cycle's
 //! context, which `decide_measured` reads; the ledger, the history and the
@@ -84,7 +85,7 @@ impl Series {
             }
         }
         self.points.push_back(Point { at, session });
-        while self.len() > MAX_POINTS {
+        while self.points.len() > MAX_POINTS {
             self.points.pop_front();
         }
     }
@@ -93,19 +94,13 @@ impl Series {
         *self = Self::default();
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.points.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.points.is_empty()
-    }
-
     /// Session points per second from the first point to the last.
     pub fn rate(&self) -> Option<f64> {
-        if self.is_empty() {
-            return None;
-        }
         let (first, last) = (self.points.front()?, self.points.back()?);
         let dt = last.at.checked_sub(first.at)?;
         if dt <= 0 {
@@ -117,9 +112,8 @@ impl Series {
 
     /// The last point, when the series belongs to `name`.
     fn last_for(&self, name: &ProfileName) -> Option<Point> {
-        (self.name.as_ref() == Some(name))
-            .then(|| self.points.back().copied())
-            .flatten()
+        let last = self.points.back().copied();
+        last.filter(|_| self.name.as_ref() == Some(name))
     }
 
     /// Records this cycle's figures for `name` and returns how many cycles
@@ -165,7 +159,8 @@ pub enum Basis {
     Real,
     /// The session use projected one interval ahead.
     Projected,
-    /// `--session-at`, standing in for a failed or stale reading near it.
+    /// The larger of `--session-at` and the last known session use,
+    /// standing in for a failed or stale reading near the threshold.
     Substituted,
 }
 
@@ -194,27 +189,24 @@ pub fn decision_input(probe: &Probed, outlook: Option<&Outlook>) -> (Probed, Bas
     (p, o.basis)
 }
 
-/// Relabels a threshold swap made on an outlook as `projected`: always on a
-/// substituted reading, and on a projection only when the `real` reading
-/// alone needs no swap. Never creates, removes or retargets a swap.
+/// Relabels a threshold swap made on an outlook as `projected` only when
+/// the `real` reading would not itself have needed a swap; a failed real
+/// reading under a substitution counts as not needing one. Never creates,
+/// removes or retargets a swap.
 pub fn map_reason(d: Decision, basis: Basis, s: &Settings, real: &Reading) -> Decision {
+    let relabel = match basis {
+        Basis::Real => false,
+        Basis::Substituted if *real == Reading::Failed => true,
+        _ => !needs_swap(s, real),
+    };
     match d {
         Decision::Swap {
             to,
             reason: Reason::Threshold,
-        } => {
-            let projected = match basis {
-                Basis::Real => false,
-                Basis::Substituted => true,
-                Basis::Projected => !needs_swap(s, real),
-            };
-            let reason = if projected {
-                Reason::Projected
-            } else {
-                Reason::Threshold
-            };
-            Decision::Swap { to, reason }
-        }
+        } if relabel => Decision::Swap {
+            to,
+            reason: Reason::Projected,
+        },
         d => d,
     }
 }
@@ -247,7 +239,7 @@ pub(in crate::commands::profile::rotate) fn step(
     if let Reading::Measured { session, week } = probe.reading {
         let unchanged = ctx.live_series.seen(&name, session, week);
         let frozen = session > 0.0 && unchanged >= FROZEN_CYCLES;
-        let old = read_at(&probe, m.measured_at).is_none_or(|a| a < t.saturating_sub(interval));
+        let old = read_at(&probe, m.measured_at).is_none_or(|a| stale_at(a, t, interval));
         if frozen || old {
             match reread_live(ctx, &name, t, interval, &mut m.fresh_lines) {
                 Some(p) => {
@@ -280,15 +272,20 @@ pub(in crate::commands::profile::rotate) fn step(
                 .map(|p| (p, week, Basis::Projected))
         }
         Reading::Exhausted { .. } => None,
-        // A failed probe, or a reading still stale after the step.
-        _ => {
+        // A failed probe, or a reading still stale after the step: never
+        // decided on less than the last known session use.
+        other => {
+            let stale = match other {
+                Reading::Measured { session, .. } => session,
+                _ => at,
+            };
             let week = ctx.live_series.prev.map(|(_, w)| w);
             let rate = ctx.live_series.rate();
             ctx.live_series
                 .last_for(&name)
                 .filter(|last| near(last.session, rate, s))
-                .and(week)
-                .map(|w| (at, w, Basis::Substituted))
+                .zip(week.filter(|w| w.is_finite()))
+                .map(|(last, w)| (at.max(last.session).max(stale), w, Basis::Substituted))
         }
     };
     ctx.live_outlook = basis.map(|(session, week, basis)| Outlook {
@@ -309,10 +306,15 @@ pub(in crate::commands::profile::rotate) fn step(
     Ok(again)
 }
 
+/// Whether a reading taken at `a` is too old, or later than the clock `t`.
+fn stale_at(a: i64, t: i64, interval: i64) -> bool {
+    a < t.saturating_sub(interval) || a > t
+}
+
 /// One direct re-read of the live login `name`, after the
-/// [`fresh_msg::STALE_LIVE`] line. `None` when no read may be made (no
-/// hook, or `rotate stop`), or the read failed or is still more than one
-/// interval old at `t`.
+/// [`fresh_msg::STALE_LIVE`] line, timed at `t`. `None` when no read may be
+/// made (no hook, or `rotate stop`), or, after a [`fresh_msg::failed`] line,
+/// when the read failed or is still stale at `t`.
 fn reread_live(
     ctx: &Ctx,
     name: &ProfileName,
@@ -326,15 +328,13 @@ fn reread_live(
     }
     lines.push(fresh_msg::STALE_LIVE.to_string());
     let mut p = reread(ctx, name, measure::timeout_quiet());
-    if p.reading == Reading::Failed || p.unknown || p.still_running {
-        return None;
-    }
-    if p.observed_at
-        .is_some_and(|a| a < t.saturating_sub(interval))
-    {
+    let failed = p.reading == Reading::Failed || p.unknown || p.still_running;
+    if failed || p.observed_at.is_some_and(|a| stale_at(a, t, interval)) {
+        lines.push(fresh_msg::failed(name));
         return None;
     }
     // A re-read is a direct read made in this cycle.
+    p.observed_at = Some(t);
     p.carried = false;
     p.passive = false;
     Some(p)

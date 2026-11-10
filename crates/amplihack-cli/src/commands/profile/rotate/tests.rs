@@ -1,4 +1,5 @@
-//! Test modules for `rotate` that no other test module uses, gathered here so that `rotate/mod.rs` stays within its line budget
+//! Test modules for `rotate` that no other test module uses, gathered here
+//! so that `rotate/mod.rs` stays within its line budget
 //! (`rotate_files_stay_within_the_line_budget`). Each file still sits beside
 //! `mod.rs`; the glob import below keeps their `super::` paths pointing at
 //! the `rotate` items they test.
