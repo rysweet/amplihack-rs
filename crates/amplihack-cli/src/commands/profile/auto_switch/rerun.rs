@@ -62,6 +62,8 @@ pub fn nested_candidate(
     current: &str,
     skip: &[String],
 ) -> Option<Pick> {
+    let source_host = current;
+    let current = ledger.account_in(source_host);
     let now = fsx::now();
     let overflow = OverflowInputs::load(&state.root, cfg, now);
     let pool = Pool {
@@ -78,7 +80,63 @@ pub fn nested_candidate(
             && ledger.leased_to(n).is_none()
             && login_ready(state, &overflow, c)
     };
-    let picked = candidate::select_with_overflow(&pool, &overflow.pool(), current, eligible);
+    let paid_allowed = candidate::select_with_overflow(&pool, &overflow.pool(), current, eligible)
+        .is_some_and(|p| overflow.order.contains(p));
+    let affinity_eligible =
+        |p: &ProfileName| eligible(p) && (paid_allowed || !overflow.order.contains(p));
+    let necessary = if overflow.order.iter().any(|p| p.as_str() == current) {
+        !candidate::overflow_usable(current, &overflow.blocked)
+    } else {
+        candidate::is_exhausted(readings.get(current), cfg.threshold, now)
+    };
+    let allowed = match super::super::organisation::allowed(
+        state,
+        ledger,
+        profiles,
+        &overflow.order,
+        readings,
+        source_host,
+        current,
+        now,
+        necessary,
+        |p| {
+            affinity_eligible(p)
+                && !cfg.exclude.contains(p)
+                && candidate::overflow_usable(p.as_str(), &overflow.blocked)
+        },
+    ) {
+        Ok(allowed) => allowed,
+        Err(e) => {
+            eprintln!("auto-switch: organisation metadata unreadable: {e}");
+            return None;
+        }
+    };
+    let restricted = |p: &ProfileName| eligible(p) && allowed.contains(p);
+    let same = match super::super::organisation::allowed(
+        state,
+        ledger,
+        profiles,
+        &overflow.order,
+        readings,
+        source_host,
+        current,
+        now,
+        false,
+        |p| {
+            affinity_eligible(p)
+                && !cfg.exclude.contains(p)
+                && candidate::overflow_usable(p.as_str(), &overflow.blocked)
+        },
+    ) {
+        Ok(same) => same,
+        Err(e) => {
+            eprintln!("auto-switch: organisation metadata unreadable: {e}");
+            return None;
+        }
+    };
+    let picked = candidate::select_restricted(&pool, &overflow.pool(), current, restricted, |p| {
+        same.contains(p)
+    });
     if picked.is_none_or(|p| overflow.platform.as_ref() != Some(p)) {
         let held = per_token::key_held(&pool, &overflow, current, eligible);
         per_token::record_key_held(state, &held);
@@ -196,13 +254,20 @@ pub fn substitute(
     };
     let profiles = profile_names(store);
     let skip = vec![inherited.to_string()];
-    nested_candidate(state, &ledger, &profiles, &readings, cfg, &account, &skip).map(|c| {
-        Substitute {
-            profile: c.profile,
-            reason,
-            inherited_reset,
-            per_token: c.per_token,
-        }
+    nested_candidate(
+        state,
+        &ledger,
+        &profiles,
+        &readings,
+        cfg,
+        inherited.as_str(),
+        &skip,
+    )
+    .map(|c| Substitute {
+        profile: c.profile,
+        reason,
+        inherited_reset,
+        per_token: c.per_token,
     })
 }
 
@@ -571,7 +636,7 @@ fn next_profile(
                 &profile_names(store),
                 &readings,
                 cfg,
-                &account,
+                profile.as_str(),
                 tried,
             )
         }

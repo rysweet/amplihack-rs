@@ -180,6 +180,7 @@ impl Env {
 
     pub(super) fn journal(&self, phase: Phase) -> RotateJournal {
         RotateJournal {
+            warning_transaction: None,
             version: 1,
             from: "work".into(),
             to: "spare".into(),

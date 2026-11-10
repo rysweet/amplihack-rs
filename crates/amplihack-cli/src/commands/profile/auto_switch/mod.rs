@@ -718,3 +718,6 @@ pub fn record_usage(root: &Path, observed: &[Observation]) -> Result<RecordOutco
         Ok(RecordOutcome::NotSetUp)
     }
 }
+
+#[cfg(test)]
+mod tests_issue_2136;

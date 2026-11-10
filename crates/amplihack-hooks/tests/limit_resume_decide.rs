@@ -144,6 +144,7 @@ impl GuardStore for MemGuard {
 enum Act {
     /// The rotator writes this record: `Event::Swap`.
     Swap(SwapRecord),
+    PublishWarningThenSwap(SwapRecord),
     /// `swap.json` changes nothing (a rewrite, or an overflow): `Event::Swap`.
     Touch,
     /// The user prompts in `session` now: `Event::Prompted`.
@@ -158,6 +159,7 @@ enum Act {
 }
 
 struct Fake {
+    warning_root: Option<std::path::PathBuf>,
     on: bool,
     clock: i64,
     /// What the ledger shows (for the event key's live login).
@@ -194,6 +196,7 @@ struct Fake {
 impl Fake {
     fn new() -> Self {
         Self {
+            warning_root: None,
             on: true,
             clock: START,
             cycle: Some(ledger("work")),
@@ -301,6 +304,20 @@ impl Deps for Fake {
                 self.swap = Some(r);
                 Event::Swap
             }
+            Act::PublishWarningThenSwap(r) => {
+                use amplihack_utils::swap_warning_history::{Completion, WarningHistory};
+                let mut history =
+                    WarningHistory::open(self.warning_root.as_ref().unwrap()).unwrap();
+                let intent = history
+                    .prepare(&json!({"version":1,"transaction_id":"during-wait",
+                    "producer":"rotator","reason":"threshold","host":"home",
+                    "from_login":"work","to_login":"spare","from_org":"org-a",
+                    "to_org":"org-b","affinity":"crossing"}))
+                    .unwrap();
+                history.complete(&intent, Completion::Committed).unwrap();
+                self.swap = Some(r);
+                Event::Swap
+            }
             Act::Touch => Event::Swap,
             Act::Prompt(session) => {
                 self.guard.prompted.insert(session_key(session), self.clock);
@@ -347,6 +364,22 @@ impl Deps for Fake {
     fn session_alive_now(&mut self) -> bool {
         self.gone_after_keys.is_none_or(|n| self.keys.len() < n)
     }
+    fn warning_session(
+        &mut self,
+        session: &str,
+    ) -> io::Result<
+        Option<(
+            amplihack_utils::swap_warning_history::WarningHistory,
+            amplihack_utils::swap_warning_history::Session,
+        )>,
+    > {
+        let Some(root) = &self.warning_root else {
+            return Ok(None);
+        };
+        let mut history = amplihack_utils::swap_warning_history::WarningHistory::open(root)?;
+        let session = history.register_current_process(session, "home")?;
+        Ok(Some((history, session)))
+    }
 }
 
 fn ledger(live: &str) -> CycleStatus {
@@ -364,6 +397,9 @@ fn ledger(live: &str) -> CycleStatus {
 /// A swap record `after` seconds past `START`, measured 30 s earlier.
 fn record_at(seq: u64, after: i64, session: u8, week: u8) -> SwapRecord {
     SwapRecord {
+        from_org: None,
+        to_org: None,
+        affinity: None,
         seq,
         live_login: "spare".into(),
         from_login: "work".into(),
@@ -1570,3 +1606,6 @@ fn two_waiters_for_one_session_with_distinct_events_resume_once() {
     assert!(outs.contains(&Outcome::Duplicate), "{outs:?}");
     assert_eq!(d.guard.sessions[&session_key("s")].len(), 1);
 }
+
+#[path = "support/issue_2136_delivery.rs"]
+mod issue_2136_delivery;

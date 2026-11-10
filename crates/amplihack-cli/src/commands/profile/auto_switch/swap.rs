@@ -152,6 +152,16 @@ fn finish(state: &State, ledger: &mut Ledger, j: &Journal) -> Result<(), Profile
     }
     state.save_ledger(ledger)?;
     patch_oauth_account(state, &j.dir, &j.to);
+    if let Some(transaction) = &j.warning_transaction {
+        super::super::swap_warning::complete(
+            &state.root,
+            transaction,
+            "auto-switch",
+            &format!("profile:{}", j.dir),
+            &j.from,
+            &j.to,
+        )?;
+    }
     Ok(())
 }
 
@@ -374,6 +384,7 @@ fn return_dir(
         return Ok(());
     }
     let j = Journal {
+        warning_transaction: None,
         version: 1,
         op: Op::Return,
         dir: dir.to_string(),
@@ -505,6 +516,11 @@ pub fn swap_check(
     let readings = state.load_usage().accounts;
     let overflow = OverflowInputs::load(&state.root, cfg, now);
     let leaving_overflow = overflow.order.iter().any(|o| o.as_str() == current);
+    let necessary = if leaving_overflow {
+        !candidate::overflow_usable(&current, &overflow.blocked)
+    } else {
+        exhausted
+    };
     if !exhausted && !leaving_overflow {
         return Ok(()); // the account changed since the first check
     }
@@ -526,9 +542,50 @@ pub fn swap_check(
             && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))
             && (ledger.hosts.contains_key(n) || n == owner.as_str() || !live.is_live(c))
     };
-    let Some(target) =
-        candidate::select_with_overflow(&pool, &overflow.pool(), &current, eligible).cloned()
-    else {
+    let paid_allowed = candidate::select_with_overflow(&pool, &overflow.pool(), &current, eligible)
+        .is_some_and(|p| overflow.order.contains(p));
+    let affinity_eligible =
+        |p: &ProfileName| eligible(p) && (paid_allowed || !overflow.order.contains(p));
+    let allowed = super::super::organisation::allowed(
+        state,
+        &ledger,
+        profiles,
+        &overflow.order,
+        &readings,
+        owner.as_str(),
+        &current,
+        now,
+        necessary,
+        |p| {
+            affinity_eligible(p)
+                && !cfg.exclude.contains(p)
+                && candidate::overflow_usable(p.as_str(), &overflow.blocked)
+        },
+    )?;
+    let same = super::super::organisation::allowed(
+        state,
+        &ledger,
+        profiles,
+        &overflow.order,
+        &readings,
+        owner.as_str(),
+        &current,
+        now,
+        false,
+        |p| {
+            affinity_eligible(p)
+                && !cfg.exclude.contains(p)
+                && candidate::overflow_usable(p.as_str(), &overflow.blocked)
+        },
+    )?;
+    let Some(target) = candidate::select_restricted(
+        &pool,
+        &overflow.pool(),
+        &current,
+        |p| eligible(p) && allowed.contains(p),
+        |p| same.contains(p),
+    )
+    .cloned() else {
         return Ok(());
     };
     if !ledger.hosts.contains_key(target.as_str()) {
@@ -537,6 +594,8 @@ pub fn swap_check(
     if current == owner.as_str() {
         snapshot_account(state, owner.as_str());
     }
+    let source_org = super::super::organisation::resolve(state, &ledger, owner.as_str())?;
+    let target_org = super::super::organisation::resolve_login(state, target.as_str())?;
     let Some(ino) = take_refresh_lock(state, owner.as_str()) else {
         return Ok(());
     };
@@ -550,7 +609,8 @@ pub fn swap_check(
         CheckNote::NoSpendBlock,
     );
     per_token::record(&state.root, reason.as_deref());
-    let j = Journal {
+    let mut j = Journal {
+        warning_transaction: None,
         version: 1,
         op: Op::Swap,
         dir: owner.to_string(),
@@ -563,9 +623,64 @@ pub fn swap_check(
         fingerprint: Some(usage::fingerprint(rl)),
         refresh_lock_ino: Some(ino),
     };
-    let result = transfer(state, &mut ledger, j);
+    let transaction =
+        super::super::swap_warning::auto_key(j.pid, j.started_at, &j.dir, &j.from, &j.to);
+    j.warning_transaction = Some(transaction.clone());
+    let prepared = (|| {
+        let refreshed = super::super::organisation::allowed(
+            state,
+            &ledger,
+            profiles,
+            &overflow.order,
+            &readings,
+            owner.as_str(),
+            &current,
+            now,
+            necessary,
+            |p| {
+                affinity_eligible(p)
+                    && !cfg.exclude.contains(p)
+                    && candidate::overflow_usable(p.as_str(), &overflow.blocked)
+            },
+        )?;
+        if !refreshed.contains(&target)
+            || super::super::organisation::resolve(state, &ledger, owner.as_str())? != source_org
+            || super::super::organisation::resolve_login(state, target.as_str())? != target_org
+        {
+            return Err(invariant("organisation affinity changed before swap"));
+        }
+        super::super::swap_warning::prepare(
+            &state.root,
+            &transaction,
+            "auto-switch",
+            if necessary {
+                if leaving_overflow {
+                    "overflow-out"
+                } else {
+                    "threshold"
+                }
+            } else {
+                "upgrade"
+            },
+            &format!("profile:{}", j.dir),
+            &j.from,
+            &j.to,
+            source_org.as_deref(),
+            target_org.as_deref(),
+        )?;
+        Ok(())
+    })();
+    let result = prepared.and_then(|()| transfer(state, &mut ledger, j));
     release_refresh_lock(state, owner.as_str(), Some(ino));
     result?;
+    if let Some(warning) = amplihack_utils::organisation_affinity::Affinity::between(
+        source_org.as_deref(),
+        target_org.as_deref(),
+    )
+    .warning()
+    {
+        eprintln!("auto-switch: {warning}");
+    }
     let why = if !leaving_overflow {
         "reached the auto-switch threshold"
     } else if !candidate::overflow_usable(&current, &overflow.blocked) {

@@ -67,6 +67,7 @@ pub mod litellm_callbacks;
 pub mod litellm_proxy;
 pub mod llm_client;
 pub mod observability;
+pub mod organisation_affinity;
 /// Stdin writer and UTF-8-safe truncation for large child payloads (issue #1570).
 pub mod payload_delivery;
 pub mod plugin_cli;
@@ -90,11 +91,17 @@ pub mod runtime_assets;
 /// Secure file and directory creation with restrictive permissions.
 pub mod secure_files;
 pub mod send_input_allowlist;
+#[cfg(unix)]
+mod session_warning_identity;
+#[cfg(unix)]
+pub mod session_warning_state;
 pub mod settings_generator;
 pub(crate) mod settings_helpers;
 pub mod simple_tui;
 pub(crate) mod simple_tui_runner;
 pub mod slugify;
+#[cfg(unix)]
+pub mod swap_warning_history;
 pub mod terminal_launcher;
 pub mod trace_logger;
 pub mod uvx_manager;

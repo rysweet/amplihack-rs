@@ -197,7 +197,17 @@ fn active(blocks: &BTreeMap<String, OverflowBlock>, name: &ProfileName, now: i64
     blocks.get(name.as_str()).is_some_and(|b| now < b.until)
 }
 
+#[cfg(test)]
 pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
+    decide_restricted(i, None)
+}
+
+pub fn decide_restricted(
+    i: &OverflowInput<'_>,
+    permitted: Option<(&[ProfileName], &[ProfileName])>,
+) -> Verdict {
+    let allowed = |name: &ProfileName| permitted.is_none_or(|(names, _)| names.contains(name));
+    let same = |name: &ProfileName| permitted.is_none_or(|(_, names)| names.contains(name));
     let s = i.settings;
     let gate = gate(s);
     // Tried by tier; a stable sort keeps the given order within a tier.
@@ -245,6 +255,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
             .copied()
             .filter(|o| !(credit_only && Some(*o) == platform))
             .filter(|o| Some(*o) != i.live_name && !blocked(o))
+            .filter(|o| allowed(o))
             .find_map(|o| {
                 i.candidates
                     .iter()
@@ -258,6 +269,8 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         .filter(|c| !is_overflow(&c.name))
         .cloned()
         .collect();
+    let targets: Vec<Measured> = plan.iter().filter(|c| allowed(&c.name)).cloned().collect();
+    let same_targets: Vec<Measured> = targets.iter().filter(|c| same(&c.name)).cloned().collect();
     let unknown_plan: Vec<ProfileName> = i
         .unmeasured_plan
         .iter()
@@ -294,7 +307,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
     let swap = |to: ProfileName, reason| Decision::Swap { to, reason };
 
     if !live_over {
-        let d = decide(s, &i.live.reading, &plan, i.swapped_at, i.now);
+        let d = decide(s, &i.live.reading, &targets, i.swapped_at, i.now);
         // Everything below replaces only a move off a live login at a
         // threshold (an ALERT, or a threshold swap onto a plan login that is
         // itself without capacity), and never for a login whose state is
@@ -314,7 +327,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         }
         // The plan login with the most room costs nothing.
         let live_measured = i.live_name.map(|n| Measured::new(n.clone(), i.live));
-        let choice = plan_room::choose(s, live_measured.as_ref(), &plan);
+        let choice = plan_room::choose(s, live_measured.as_ref(), &same_targets);
         if let Some(to) = choice {
             let same = matches!(&d, Decision::Swap { to: t, .. } if *t == to);
             let d = if same { d } else { swap(to, Reason::PlanRoom) };
@@ -349,6 +362,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
     // On overflow: leave as soon as a plan login has capacity.
     let with_capacity: Vec<Measured> = plan
         .iter()
+        .filter(|c| allowed(&c.name))
         .filter(|c| plan_usable(s, &c.reading))
         .cloned()
         .collect();
@@ -356,7 +370,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         return verdict(swap(to.clone(), Reason::OverflowOut), Some(Tag::Out), None);
     }
     // A plan login below 100% costs nothing (issue #1804).
-    if let Some(to) = plan_room::choose(s, None, &plan) {
+    if let Some(to) = plan_room::choose(s, None, &targets) {
         return verdict(swap(to, Reason::OverflowOut), Some(Tag::Out), None);
     }
     let earliest = earliest_plan_reset(s, plan.iter().map(|c| (&c.reading, &c.windows)));
@@ -368,7 +382,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
             return verdict(swap(to, Reason::OverflowOut), Some(Tag::Out), None);
         }
         if platform_blocked {
-            if let Some((to, _)) = best(&plan) {
+            if let Some((to, _)) = best(&targets) {
                 return verdict(swap(to.clone(), Reason::OverflowOut), Some(Tag::Out), None);
             }
             return verdict(Decision::Alert, Some(Tag::On), None);
@@ -384,7 +398,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         {
             return verdict(swap(to, Reason::OverflowIn), Some(Tag::In), earliest);
         }
-        if let Some((to, _)) = best(&plan) {
+        if let Some((to, _)) = best(&targets) {
             return verdict(swap(to.clone(), Reason::OverflowOut), Some(Tag::Out), None);
         }
         return no_move(Decision::Alert, earliest);
@@ -392,7 +406,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
     // A failed live probe: the failed-probe rules with plan candidates as
     // the only targets (`damp` then applies); otherwise stay on overflow.
     if i.live.reading == Reading::Failed
-        && let d @ Decision::Swap { .. } = decide(s, &i.live.reading, &plan, i.swapped_at, i.now)
+        && let d @ Decision::Swap { .. } = decide(s, &i.live.reading, &targets, i.swapped_at, i.now)
     {
         return verdict(d, Some(Tag::Out), None);
     }

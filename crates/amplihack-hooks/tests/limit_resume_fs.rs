@@ -682,6 +682,9 @@ fn write_swap(root: &Path, seq: u64, at: i64, mode: u32) {
         private_dir(&dir);
     }
     let r = SwapRecord {
+        from_org: None,
+        to_org: None,
+        affinity: None,
         seq,
         live_login: "spare".into(),
         from_login: "work".into(),

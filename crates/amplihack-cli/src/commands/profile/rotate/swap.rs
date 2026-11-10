@@ -119,6 +119,21 @@ pub(super) fn swap_with(
     reader: Reader<'_>,
     basis: Option<&super::observe::Snap>,
 ) -> Result<ProfileName, ProfileError> {
+    swap_with_warning(store, rs, home, from, to, now, reader, basis, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn swap_with_warning(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+    from: Source,
+    to: &ProfileName,
+    now: i64,
+    reader: Reader<'_>,
+    basis: Option<&super::observe::Snap>,
+    warning_transaction: Option<&str>,
+) -> Result<ProfileName, ProfileError> {
     check_root_private(store.root()).map_err(|e| refused(format!("profile root {e}")))?;
     let dot = check_home(home)?;
     if exists(&rs.journal) {
@@ -212,6 +227,7 @@ pub(super) fn swap_with(
             Source::Adopt => (adopt(store, auth.outgoing.account())?, true),
         };
         let j = RotateJournal {
+            warning_transaction: warning_transaction.map(str::to_owned),
             from: from.to_string(),
             to: to.to_string(),
             adopt,

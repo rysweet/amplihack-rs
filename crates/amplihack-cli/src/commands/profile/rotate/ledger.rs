@@ -374,6 +374,12 @@ impl RotateState {
         if j.version != VERSION {
             return Err(inconsistent(format!("{WHAT}: unknown version")));
         }
+        if j.warning_transaction
+            .as_deref()
+            .is_some_and(|id| !amplihack_utils::organisation_affinity::valid_id(id))
+        {
+            return Err(inconsistent(format!("{WHAT}: invalid warning transaction")));
+        }
         if ProfileName::parse(&j.from).is_err() || ProfileName::parse(&j.to).is_err() {
             return Err(inconsistent(format!("{WHAT}: invalid profile name")));
         }

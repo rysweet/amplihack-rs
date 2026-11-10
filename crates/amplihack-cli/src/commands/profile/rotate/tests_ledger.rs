@@ -60,6 +60,7 @@ fn ledger() -> RotateLedger {
 
 fn journal() -> RotateJournal {
     RotateJournal {
+        warning_transaction: None,
         version: 1,
         from: "work".into(),
         to: "spare".into(),

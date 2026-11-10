@@ -184,6 +184,19 @@ pub trait Deps {
     /// Whether the session still runs and is in its terminal's foreground,
     /// checked without blocking.
     fn session_alive_now(&mut self) -> bool;
+    /// An optional durable journal for this trusted lifecycle. Environments
+    /// without persistent profile state use the latest-record compatibility route.
+    fn warning_session(
+        &mut self,
+        _session: &str,
+    ) -> io::Result<
+        Option<(
+            amplihack_utils::swap_warning_history::WarningHistory,
+            amplihack_utils::swap_warning_history::Session,
+        )>,
+    > {
+        Ok(None)
+    }
 }
 
 /// Why [`send_resume`] stopped.
@@ -212,7 +225,26 @@ impl SendFailed {
 /// session still runs and is not suspended (S4). Stops at the first failure
 /// (D8); nothing is retried and there is no other way to wake the session.
 pub fn send_resume<D: Deps + ?Sized>(deps: &mut D, pane: &Pane) -> Result<(), SendFailed> {
+    send_resume_affinity(deps, pane, &[])
+}
+
+fn send_resume_affinity<D: Deps + ?Sized>(
+    deps: &mut D,
+    pane: &Pane,
+    affinity: &[amplihack_utils::organisation_affinity::Affinity],
+) -> Result<(), SendFailed> {
     for (sent, key) in (0u8..).zip(RESUME_KEYS) {
+        use amplihack_utils::organisation_affinity::Affinity;
+        let key = match (
+            key,
+            affinity.contains(&Affinity::Crossing),
+            affinity.contains(&Affinity::Unresolved),
+        ) {
+            (Key::LiteralContinue, true, true) => Key::LiteralMixed,
+            (Key::LiteralContinue, true, false) => Key::LiteralCrossing,
+            (Key::LiteralContinue, false, true) => Key::LiteralUnresolved,
+            _ => key,
+        };
         if !deps.session_alive_now() {
             return Err(SendFailed {
                 sent,
@@ -251,6 +283,19 @@ fn swap(r: &SwapRecord) -> Note<'_> {
 
 /// Decides one hook invocation.
 pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
+    run_with_warning(input, deps, &mut Vec::new(), &mut None, &mut Vec::new())
+}
+
+fn run_with_warning<D: Deps + ?Sized>(
+    input: &HookInput,
+    deps: &mut D,
+    warning: &mut Vec<amplihack_utils::organisation_affinity::Affinity>,
+    history_session: &mut Option<(
+        amplihack_utils::swap_warning_history::WarningHistory,
+        amplihack_utils::swap_warning_history::Session,
+    )>,
+    pending: &mut Vec<amplihack_utils::swap_warning_history::Warning>,
+) -> Outcome {
     let enabled = deps.auto_switch_on();
     let HookInput::StopFailure {
         session_id,
@@ -414,6 +459,31 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     // D7: the path is chosen before the commit, so a session never gets
     // both keys and an exit-2 wake.
     let pane = deps.pane();
+    // Swaps may have completed during the event wait. Snapshot the exact
+    // warning prefix delivered now; later publications remain unacknowledged.
+    if let Some((history, session)) = history_session {
+        match history.pending(session) {
+            Ok(events) => {
+                for event in &events {
+                    if !warning.contains(&event.affinity) {
+                        warning.push(event.affinity);
+                    }
+                }
+                *pending = events;
+            }
+            Err(error) => {
+                return note(
+                    deps,
+                    now,
+                    Outcome::GuardFailed,
+                    Note {
+                        detail: Some(format!("warning history: {error}")),
+                        ..Note::default()
+                    },
+                );
+            }
+        }
+    }
     match deps.guard().commit(&event, &session, start, now) {
         Ok(()) => {}
         Err(e) => {
@@ -425,10 +495,16 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
             return note(deps, now, outcome, swap(&record));
         }
     }
+    if history_session.is_none()
+        && let Some(affinity) = record.affinity
+        && !warning.contains(&affinity)
+    {
+        warning.push(affinity);
+    }
     let Some(pane) = pane else {
         return note(deps, now, Outcome::Resumed, swap(&record));
     };
-    let (outcome, keys_sent, detail) = match send_resume(deps, &pane) {
+    let (outcome, keys_sent, detail) = match send_resume_affinity(deps, &pane, warning) {
         Ok(()) => (Outcome::ResumedKeys, RESUME_KEYS.len() as u8, None),
         Err(f) => (Outcome::ResumeKeysFailed, f.sent, Some(f.detail())),
     };
@@ -451,25 +527,86 @@ pub fn run_with_io<D: Deps + ?Sized>(
     stderr: &mut dyn Write,
     deps: &mut D,
 ) -> i32 {
+    let mut warning = Vec::new();
+    let mut history_session = None;
+    let mut pending = Vec::new();
     let decided = catch_unwind(AssertUnwindSafe(|| {
         let raw = read_bounded(stdin, MAX_STDIN_BYTES).ok()?;
         if raw.len() as u64 > MAX_STDIN_BYTES {
             return None;
         }
         let input: HookInput = serde_json::from_slice(&raw).ok()?;
-        Some(run_with(&input, deps))
+        if let HookInput::StopFailure {
+            session_id: Some(id),
+            error,
+            ..
+        } = &input
+            && is_limit(error.as_deref())
+        {
+            match deps.warning_session(id) {
+                Ok(Some((history, session))) => match history.pending(&session) {
+                    Ok(events) => {
+                        for event in &events {
+                            if !warning.contains(&event.affinity) {
+                                warning.push(event.affinity);
+                            }
+                        }
+                        pending = events;
+                        history_session = Some((history, session));
+                    }
+                    Err(e) => {
+                        let _ = writeln!(stderr, "Swap warning history unreadable: {e}");
+                        return None;
+                    }
+                },
+                Ok(None) => {}
+                Err(e) => {
+                    let _ = writeln!(stderr, "Swap warning registration failed: {e}");
+                    return None;
+                }
+            }
+        }
+        Some(run_with_warning(
+            &input,
+            deps,
+            &mut warning,
+            &mut history_session,
+            &mut pending,
+        ))
     }));
-    match decided {
+    let mut delivered = false;
+    let code = match decided {
         Ok(Some(Outcome::Resumed)) => {
+            for text in warning.iter().filter_map(|a| a.warning()) {
+                if writeln!(stderr, "{text}").is_err() {
+                    return 0;
+                }
+            }
             // The resume is already recorded; exit 2 alone wakes the
             // session, so a failed write still exits 2.
-            let _ = writeln!(stderr, "{RESUME_MSG}");
-            let _ = stderr.flush();
+            delivered = writeln!(stderr, "{RESUME_MSG}")
+                .and_then(|_| stderr.flush())
+                .is_ok();
             Outcome::Resumed.exit_code()
         }
-        Ok(Some(outcome)) => outcome.exit_code(),
+        Ok(Some(outcome)) => {
+            delivered = outcome == Outcome::ResumedKeys;
+            outcome.exit_code()
+        }
         Ok(None) | Err(_) => 0,
+    };
+    if delivered && let Some((mut history, session)) = history_session {
+        for event in pending {
+            if let Err(e) = history.acknowledge(&session, event.id) {
+                let _ = writeln!(
+                    stderr,
+                    "Swap warning acknowledgement failed; delivery may repeat: {e}"
+                );
+                break;
+            }
+        }
     }
+    code
 }
 
 /// Whether `dir` may be watched (S2): a real directory, not a symlink,
@@ -512,6 +649,17 @@ struct SystemDeps {
 }
 
 impl Deps for SystemDeps {
+    fn warning_session(
+        &mut self,
+        session: &str,
+    ) -> io::Result<
+        Option<(
+            amplihack_utils::swap_warning_history::WarningHistory,
+            amplihack_utils::swap_warning_history::Session,
+        )>,
+    > {
+        amplihack_utils::session_warning_state::register(&self.root, session).map(Some)
+    }
     fn auto_switch_on(&mut self) -> bool {
         rotator_status::auto_switch_on(&self.root)
     }

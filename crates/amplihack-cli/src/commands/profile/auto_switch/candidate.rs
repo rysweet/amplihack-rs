@@ -310,6 +310,18 @@ pub fn select_with_overflow<'a>(
     current: &str,
     eligible: impl Fn(&ProfileName) -> bool,
 ) -> Option<&'a ProfileName> {
+    select_restricted(pool, ov, current, &eligible, &eligible)
+}
+
+/// The final plan-room fallback has its own affinity restriction, so a
+/// necessary threshold cycle cannot turn into a cross-organisation preference.
+pub fn select_restricted<'a>(
+    pool: &Pool<'a>,
+    ov: &OverflowPool<'a>,
+    current: &str,
+    eligible: impl Fn(&ProfileName) -> bool,
+    preference: impl Fn(&ProfileName) -> bool,
+) -> Option<&'a ProfileName> {
     if ov.kinds_unknown {
         return None;
     }
@@ -352,7 +364,9 @@ pub fn select_with_overflow<'a>(
     }
     let with_room = || {
         let roomy = |r: Option<&Reading>| r.is_some_and(|r| has_room(r, pool.now));
-        own(select_by(&plan_pool, current, roomy, &eligible))
+        own(select_by(&plan_pool, current, roomy, |p| {
+            eligible(p) && preference(p)
+        }))
     };
     if on_overflow && let Some(p) = with_room() {
         return Some(p);

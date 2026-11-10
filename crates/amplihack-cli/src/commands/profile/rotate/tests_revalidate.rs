@@ -223,6 +223,7 @@ fn journal_appears(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> 
     let ino = |p: &Path| ino_at(p).unwrap();
     ctx.rs
         .save_journal(&RotateJournal {
+            warning_transaction: None,
             version: 1,
             from: "work".into(),
             to: "spare".into(),

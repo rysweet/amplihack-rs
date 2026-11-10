@@ -25,6 +25,7 @@ fn root() -> Root {
 
 fn journal() -> Journal {
     Journal {
+        warning_transaction: None,
         version: 1,
         op: Op::Swap,
         dir: "X".into(),

@@ -41,6 +41,16 @@ pub(super) fn finish(
     super::alert::clear_alert(&mut l);
     rs.save_ledger(&l)?;
     step(rs, &mut j, Phase::S4)?;
+    if let Some(transaction) = &j.warning_transaction {
+        super::super::swap_warning::complete(
+            &rs.root,
+            transaction,
+            "rotator",
+            "home",
+            &j.from,
+            &j.to,
+        )?;
+    }
     Ok(())
 }
 

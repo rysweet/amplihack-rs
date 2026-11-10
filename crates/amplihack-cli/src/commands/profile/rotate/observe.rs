@@ -8,7 +8,7 @@ use super::identify::{self, Account, CandidateInput, LiveId, LoginKind, Skip};
 use super::key_check;
 use super::log::msg;
 use super::measure::{self, Live};
-use super::overflow::{OverflowInput, Tag, decide_overflow};
+use super::overflow::{OverflowInput, Tag, decide_restricted};
 use super::pin::{self, PinState};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::now;
@@ -267,10 +267,56 @@ pub(super) fn decide_measured(
         .iter()
         .map(|(name, p)| Measured::new(name.clone(), p))
         .collect();
+    // Restrict the pool before headroom ranking. Affinity never makes an
+    // ineligible login eligible and unknown identities never match.
+    use amplihack_utils::organisation_affinity::{Affinity, Candidate, Purpose, allowed_indices};
+    let source_org = snap.trusted_live.as_ref().and_then(Account::org);
+    let orgs: Vec<_> = measured
+        .iter()
+        .map(|c| {
+            snap.candidate_accounts
+                .iter()
+                .find(|(n, _)| *n == c.name)
+                .and_then(|(_, a)| a.as_ref())
+                .and_then(Account::org)
+        })
+        .collect();
+    let ledger = ctx.rs.load_ledger()?;
+    let t = now();
+    let blocked = |n: &ProfileName| {
+        ledger.as_ref().is_some_and(|l| {
+            l.overflow_blocked
+                .get(n.as_str())
+                .is_some_and(|b| t < b.until)
+                || (snap.platform() == Some(n)
+                    && l.platform_block.as_ref().is_some_and(|b| t < b.until))
+        })
+    };
+    let on_overflow =
+        live_name(&snap.live).is_some_and(|n| snap.overflow.iter().any(|e| &e.name == n));
+    let necessary = if on_overflow {
+        probe.spend_limit
+            || live_name(&snap.live).is_some_and(blocked)
+            || probe.reading == Reading::Failed
+    } else {
+        super::decide::needs_swap(&ctx.settings, &probe.reading)
+    };
+    let mut candidates: Vec<_> = measured
+        .iter()
+        .zip(&orgs)
+        .map(|(c, org)| Candidate {
+            org: *org,
+            eligible: !c.spend_limit && !blocked(&c.name),
+            capacity: if snap.overflow.iter().any(|e| e.name == c.name) {
+                c.reading != Reading::Failed
+            } else {
+                matches!(c.reading, Reading::Measured { session, week } if session.is_finite() && week.is_finite() && session < 100.0 && week < 100.0)
+            },
+        })
+        .collect();
     // A ledger that cannot be read ends the cycle here, before any move onto
     // credits: its spend blocks are unknown. Only a missing ledger means no
     // blocks.
-    let ledger = ctx.rs.load_ledger()?;
     let swapped_at = ledger.as_ref().and_then(|l| l.swapped_at);
     let platform_block = ledger.as_ref().and_then(|l| l.platform_block.clone());
     let blocks = ledger.map(|l| l.overflow_blocked).unwrap_or_default();
@@ -278,22 +324,62 @@ pub(super) fn decide_measured(
         LiveId::Known(n) => Some(n),
         _ => None,
     };
-    let t = now();
     let overflow = snap.decision_overflow();
     let unmeasured_plan = snap.unmeasured_plan();
-    let verdict = decide_overflow(&OverflowInput {
+    let refused = snap.refused_plan();
+    let input = OverflowInput {
         settings: &ctx.settings,
         live_name,
         live: &probe,
         candidates: &measured,
         unmeasured_plan: &unmeasured_plan,
-        refused: &snap.refused_plan(),
+        refused: &refused,
         overflow: &overflow,
         blocks: &blocks,
         platform_block: platform_block.as_ref(),
         swapped_at,
         now: t,
-    });
+    };
+    // Overflow must pass the existing gate before it can count as a
+    // same-organisation alternative. In particular, plan room excludes it.
+    let unrestricted = decide_restricted(&input, None);
+    let paid_allowed = matches!(&unrestricted.decision, Decision::Swap { to, .. } if overflow.iter().any(|e| &e.name == to));
+    for (candidate, measured) in candidates.iter_mut().zip(&measured) {
+        if !paid_allowed && overflow.iter().any(|e| e.name == measured.name) {
+            candidate.eligible = false;
+        }
+    }
+    let purpose = if necessary {
+        Purpose::CapacityRelief
+    } else {
+        Purpose::Upgrade
+    };
+    let allowed: Vec<_> = allowed_indices(source_org, purpose, necessary, &candidates)
+        .into_iter()
+        .map(|i| measured[i].name.clone())
+        .collect();
+    let same: Vec<_> = allowed_indices(source_org, Purpose::PlanRoom, false, &candidates)
+        .into_iter()
+        .map(|i| measured[i].name.clone())
+        .collect();
+    let mut verdict = decide_restricted(&input, Some((&allowed, &same)));
+    // Fallbacks use their final purpose: a threshold cycle can end in a
+    // preference-only plan-room move, which still requires known affinity.
+    if let Decision::Swap {
+        to,
+        reason: super::decide::Reason::PlanRoom | super::decide::Reason::Upgrade,
+    } = &verdict.decision
+    {
+        let target_org = snap
+            .candidate_accounts
+            .iter()
+            .find(|(n, _)| n == to)
+            .and_then(|(_, a)| a.as_ref())
+            .and_then(Account::org);
+        if Affinity::between(source_org, target_org) != Affinity::Same {
+            verdict.decision = Decision::Stay;
+        }
+    }
     // A spend limit on a live overflow profile is handled by its block, so
     // it does not count towards the failed live probes.
     let live_over = live_name.is_some_and(|n| overflow.iter().any(|e| &e.name == n));

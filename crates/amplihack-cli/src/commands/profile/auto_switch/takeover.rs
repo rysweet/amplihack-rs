@@ -166,14 +166,13 @@ pub(crate) fn capacity_candidate(
                 .is_some_and(|r| is_fresh(r.observed_at, start, now))
         })
         .collect();
-    let account = ledger.account_in(inherited.as_str());
     nested_candidate(
         state,
         &ledger,
         &profiles,
         &readings,
         &eff.config,
-        account,
+        inherited.as_str(),
         &stale,
     )
     .filter(|p| p.profile != *inherited)
