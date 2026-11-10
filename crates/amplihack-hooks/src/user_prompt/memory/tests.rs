@@ -1,6 +1,5 @@
 //! Unit tests of the memory module, split by area.
 
-use super::language::*;
 use super::scoring::*;
 use super::text::*;
 use super::*;

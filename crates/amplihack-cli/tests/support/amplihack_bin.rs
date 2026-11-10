@@ -15,23 +15,62 @@ pub fn amplihack_bin() -> PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
         if let Some(p) = std::env::var_os("AMPLIHACK_TEST_BINARY") {
-            return PathBuf::from(p);
+            panic!(
+                "AMPLIHACK_TEST_BINARY={} is unverified; use the protected test-support build",
+                PathBuf::from(p).display()
+            );
         }
         let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
         let status = Command::new(cargo)
-            .args(["build", "--quiet", "-p", "amplihack", "--bin", "amplihack"])
+            .args([
+                "build",
+                "--quiet",
+                "-p",
+                "amplihack",
+                "--bin",
+                "amplihack",
+                "--features",
+                "amplihack-cli/test-support",
+                "--target-dir",
+            ])
+            .arg(protected_target())
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .status()
             .expect("failed to run cargo build for the amplihack binary");
         assert!(status.success(), "cargo build -p amplihack failed");
-        let bin = std::env::current_exe()
-            .unwrap()
-            .parent() // deps
-            .and_then(Path::parent) // debug
-            .unwrap()
-            .join("amplihack");
+        let bin = protected_target().join("debug/amplihack");
         assert!(bin.is_file(), "no amplihack binary at {}", bin.display());
         bin
     })
     .clone()
+}
+
+fn protected_target() -> &'static Path {
+    static TARGET: OnceLock<tempfile::TempDir> = OnceLock::new();
+    TARGET
+        .get_or_init(|| {
+            let dir = tempfile::Builder::new()
+                .prefix("amplihack-protected-build-")
+                .tempdir()
+                .expect("create isolated Cargo output");
+            extern "C" fn cleanup() {
+                if let Some(dir) = TARGET.get()
+                    && let Err(error) = std::fs::remove_dir_all(dir.path())
+                {
+                    eprintln!(
+                        "remove protected test build {}: {error}",
+                        dir.path().display()
+                    );
+                }
+            }
+            // Static TempDirs are never dropped. Keep artifacts through child
+            // completion, then release the dedicated build output at exit.
+            assert_eq!(
+                unsafe { libc::atexit(cleanup) },
+                0,
+                "register protected build cleanup"
+            );
+            dir
+        })
+        .path()
 }

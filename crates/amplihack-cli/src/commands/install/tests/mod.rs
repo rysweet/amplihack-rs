@@ -64,3 +64,6 @@ mod codex_plugin_tests;
 mod codex_runner_delivery;
 #[cfg(unix)]
 mod native_registration_fixture;
+
+#[cfg(unix)]
+mod issue_2182_binary_isolation;
