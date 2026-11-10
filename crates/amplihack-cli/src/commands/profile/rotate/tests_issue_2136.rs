@@ -192,3 +192,24 @@ fn same_org_swap_records_explicit_affinity_without_a_thinking_loss_warning() {
     assert_eq!(v["affinity"], "same");
     assert!(!log_of(&e).contains("earlier thinking"));
 }
+
+fn threshold_boundary(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let probes = probes_for(
+        snap,
+        &[("spare", ok(95.0, 95.0)), ("third", ok(10.0, 10.0))],
+    );
+    decide_measured(ctx, snap, ok(100.0, 100.0), probes, AT)
+}
+
+#[test]
+fn issue_2136_same_org_room_above_threshold_does_not_hide_relief() {
+    let e = fixture(json!("org-a"), json!("org-a"), json!("org-b"));
+    let wanted = ino_at(&e.root.join("third").join(CREDS));
+    run(&e, threshold_boundary);
+    assert_eq!(
+        ino_at(&e.home.join(".claude").join(CREDS)),
+        wanted,
+        "{}",
+        log_of(&e)
+    );
+}

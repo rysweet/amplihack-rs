@@ -14,6 +14,15 @@ fn n(s: &str) -> ProfileName {
 }
 
 fn pick(same_reading: Option<f64>, exclude_same: bool, hosted: bool) -> Option<String> {
+    pick_with_threshold(same_reading, exclude_same, hosted, 90)
+}
+
+fn pick_with_threshold(
+    same_reading: Option<f64>,
+    exclude_same: bool,
+    hosted: bool,
+    threshold: u8,
+) -> Option<String> {
     let _lock = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -88,7 +97,7 @@ fn pick(same_reading: Option<f64>, exclude_same: bool, hosted: bool) -> Option<S
     }
     let cfg = Config {
         enabled: true,
-        threshold: 90,
+        threshold,
         exclude: if exclude_same {
             vec![n("same")]
         } else {
@@ -142,4 +151,26 @@ fn affinity_never_reenables_an_excluded_candidate() {
 #[test]
 fn hosting_metadata_defines_source_org_instead_of_directory_name() {
     assert_eq!(pick(Some(40.0), false, true).as_deref(), Some("other"));
+}
+
+#[test]
+fn issue_2136_same_org_room_above_threshold_does_not_hide_relief() {
+    assert_eq!(pick(Some(95.0), false, false).as_deref(), Some("other"));
+}
+
+#[test]
+fn configured_threshold_is_exclusive_for_same_org_relief() {
+    for threshold in [50, 80, 90, 99] {
+        assert_eq!(
+            pick_with_threshold(Some(f64::from(threshold)), false, false, threshold).as_deref(),
+            Some("other"),
+            "at threshold {threshold}"
+        );
+        assert_eq!(
+            pick_with_threshold(Some(f64::from(threshold) - 0.1), false, false, threshold)
+                .as_deref(),
+            Some("same"),
+            "below threshold {threshold}"
+        );
+    }
 }

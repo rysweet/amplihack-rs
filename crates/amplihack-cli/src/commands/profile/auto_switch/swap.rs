@@ -550,12 +550,19 @@ pub fn swap_check(
         state,
         &ledger,
         profiles,
-        &overflow.order,
-        &readings,
         owner.as_str(),
         &current,
-        now,
         necessary,
+        |p| {
+            candidate::select_restricted(
+                &pool,
+                &overflow.pool(),
+                &current,
+                |q| q == p && affinity_eligible(q),
+                |_| false,
+            )
+            .is_some()
+        },
         |p| {
             affinity_eligible(p)
                 && !cfg.exclude.contains(p)
@@ -566,12 +573,10 @@ pub fn swap_check(
         state,
         &ledger,
         profiles,
-        &overflow.order,
-        &readings,
         owner.as_str(),
         &current,
-        now,
         false,
+        |_| true,
         |p| {
             affinity_eligible(p)
                 && !cfg.exclude.contains(p)
@@ -631,12 +636,19 @@ pub fn swap_check(
             state,
             &ledger,
             profiles,
-            &overflow.order,
-            &readings,
             owner.as_str(),
             &current,
-            now,
             necessary,
+            |p| {
+                candidate::select_restricted(
+                    &pool,
+                    &overflow.pool(),
+                    &current,
+                    |q| q == p && affinity_eligible(q),
+                    |_| false,
+                )
+                .is_some()
+            },
             |p| {
                 affinity_eligible(p)
                     && !cfg.exclude.contains(p)

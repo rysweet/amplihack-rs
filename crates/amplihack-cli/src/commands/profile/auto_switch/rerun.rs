@@ -93,12 +93,19 @@ pub fn nested_candidate(
         state,
         ledger,
         profiles,
-        &overflow.order,
-        readings,
         source_host,
         current,
-        now,
         necessary,
+        |p| {
+            candidate::select_restricted(
+                &pool,
+                &overflow.pool(),
+                current,
+                |q| q == p && affinity_eligible(q),
+                |_| false,
+            )
+            .is_some()
+        },
         |p| {
             affinity_eligible(p)
                 && !cfg.exclude.contains(p)
@@ -116,12 +123,10 @@ pub fn nested_candidate(
         state,
         ledger,
         profiles,
-        &overflow.order,
-        readings,
         source_host,
         current,
-        now,
         false,
+        |_| true,
         |p| {
             affinity_eligible(p)
                 && !cfg.exclude.contains(p)

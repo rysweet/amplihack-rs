@@ -307,11 +307,7 @@ pub(super) fn decide_measured(
         .map(|(c, org)| Candidate {
             org: *org,
             eligible: !c.spend_limit && !blocked(&c.name),
-            capacity: if snap.overflow.iter().any(|e| e.name == c.name) {
-                c.reading != Reading::Failed
-            } else {
-                matches!(c.reading, Reading::Measured { session, week } if session.is_finite() && week.is_finite() && session < 100.0 && week < 100.0)
-            },
+            capacity: false, // Filled by the authoritative selector below.
         })
         .collect();
     // A ledger that cannot be read ends the cycle here, before any move onto
@@ -349,6 +345,15 @@ pub(super) fn decide_measured(
             candidate.eligible = false;
         }
     }
+    // Ask the authoritative selector whether each target can provide relief.
+    // Disable plan-room fallback here; its Same-only pool is separate below.
+    for (candidate, measured) in candidates.iter_mut().zip(&measured) {
+        let permitted = [measured.name.clone()];
+        candidate.capacity = matches!(
+            decide_restricted(&input, Some((&permitted, &[]))).decision,
+            Decision::Swap { ref to, .. } if to == &measured.name
+        );
+    }
     let purpose = if necessary {
         Purpose::CapacityRelief
     } else {
@@ -358,7 +363,16 @@ pub(super) fn decide_measured(
         .into_iter()
         .map(|i| measured[i].name.clone())
         .collect();
-    let same: Vec<_> = allowed_indices(source_org, Purpose::PlanRoom, false, &candidates)
+    // The downstream plan-room selector checks actual room.
+    let room_candidates: Vec<_> = candidates
+        .iter()
+        .map(|c| Candidate {
+            org: c.org,
+            eligible: c.eligible,
+            capacity: true,
+        })
+        .collect();
+    let same: Vec<_> = allowed_indices(source_org, Purpose::PlanRoom, false, &room_candidates)
         .into_iter()
         .map(|i| measured[i].name.clone())
         .collect();

@@ -264,3 +264,65 @@ and ccache directories. Detached retries use writable directories under
 references a missing Python environment; a fallback invocation also failed
 because its dependencies require a newer Python interpreter. Full hook
 validation remains outstanding. Linux-specific checks are deferred to CI.
+
+### Blocking-review follow-up
+
+The capacity-versus-room blocker is addressed by asking the existing restricted
+selectors whether each target provides relief, with plan-room fallback disabled
+for that query. Affinity no longer defines its own percentage limit. A separate
+Same-only pool remains available to the authoritative plan-room selector.
+Auto-switch, nested reruns, pre-swap revalidation, and rotation use this rule.
+Threshold-boundary regressions cover a Same target at 95% and a Crossing target
+with capacity. The rotation regression remains Linux-gated with its fixture.
+
+Static correctness, security, and philosophy re-review confirmed that the fix
+keeps capacity policy in the selectors and preserves the separate fallback and
+warning authorization boundaries. No additional security blocker was found;
+stale-session retention remains a non-blocking hardening item.
+
+Validation remains a blocker: the new full CLI test attempt encountered the
+existing macOS integration-test import failure for
+`issue_1954_install_leaves_live_runs_alone::proc_link`. A library-only retry and
+hook retry run detached on private tmux socket `/private/tmp/2136-blocking.sock`;
+logs and exit-status files use `/private/tmp/2136-blocking-*`. These pending
+runs are not passing evidence. The newer Python launcher itself references a
+missing temporary virtual environment, so hook completion remains unverified.
+`git diff --check` and the git-command sanitization check passed after the fix.
+Linux runtime checks and final hook/Clippy results are still required before
+approval.
+
+### Step 18b evidence update
+
+The current patch additionally checks nested-rerun selection exactly at and
+just below configured thresholds 50, 80, 90, and 99, with the overflow gate
+absent. These assertions are pending execution; they are not passing evidence.
+
+The tested base is `0c27385d99f16dcc8a23637a81a8ff6389183390` plus the
+uncommitted patch. The detached validation script
+`/private/tmp/2136-review-final.sh` records the base, patch SHA-256 and macOS
+platform in `/private/tmp/2136-review-revision.txt`. It runs:
+
+- `cargo test --locked -p amplihack-cli --lib issue_2136`
+- `python -m pre_commit run --all-files`
+- `python -m pre_commit run --all-files --hook-stage pre-push`
+
+The Python environment `/private/tmp/cx2188-hook-venv` successfully reports
+pre-commit 4.7.0, repairing the missing-launcher issue for this attempt.
+The private tmux socket is `/private/tmp/2136-review-final.sock`; logs and
+exit files are `/private/tmp/2136-review-{regressions,hooks,push}.{log,exit}`.
+No hooks are bypassed. Completion remains pending. Earlier retention and
+resume test commands in `/private/tmp/2136-final-validation.sh` exited zero;
+they predate this final regression addition and do not establish Linux or
+live-delivery behavior. `git diff --check` passed on this revision.
+
+P2 remains open until hook, CLI, Linux process/FIFO, live warning delivery,
+and final CI results are available for the final revision. Differing gate
+threshold and direct auto-switch regression coverage still require successful
+verification. No reassessment approval is claimed.
+
+Non-blocking follow-up: define lifecycle-aware retirement of dead session
+registrations with deterministic tests. Preserve active and recoverable pending
+warnings, recovery references, and idempotence evidence; elapsed age alone is
+not sufficient authorization to discard them. This follow-up is separate from
+consumed-event compaction. The optional request-type refactor is deferred to
+avoid expanding the selection fix.

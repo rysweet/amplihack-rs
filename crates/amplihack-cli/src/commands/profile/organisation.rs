@@ -58,12 +58,10 @@ pub fn allowed(
     state: &State,
     ledger: &Ledger,
     profiles: &[super::name::ProfileName],
-    overflow: &[super::name::ProfileName],
-    readings: &std::collections::BTreeMap<String, super::auto_switch::kit::Reading>,
     source_host: &str,
     current: &str,
-    now: i64,
     necessary: bool,
+    capacity: impl Fn(&super::name::ProfileName) -> bool,
     eligible: impl Fn(&super::name::ProfileName) -> bool,
 ) -> Result<Vec<super::name::ProfileName>, ProfileError> {
     use amplihack_utils::organisation_affinity::{Candidate, Purpose, allowed_indices};
@@ -90,10 +88,7 @@ pub fn allowed(
         .map(|((p, org), allowed)| Candidate {
             org: org.as_deref(),
             eligible: *allowed,
-            capacity: overflow.contains(p)
-                || readings
-                    .get(p.as_str())
-                    .is_none_or(|r| super::auto_switch::kit::has_room(r, now)),
+            capacity: capacity(p),
         })
         .collect::<Vec<_>>();
     Ok(allowed_indices(
