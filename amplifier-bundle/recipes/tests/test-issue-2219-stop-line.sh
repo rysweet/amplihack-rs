@@ -376,6 +376,19 @@ es_expect_lines ES13-findings-capped \
   '  held by: reported b07' '  held by: reported b08' '  held by: reported b09' \
   '  held by: reported b10' '  held by: reported (+3 more)'
 
+# The two unprintable lines sit AFTER the cap, so the printed lines are the
+# same either way and only the tail moves: counting before the filter would
+# print ten lines and claim four were withheld when two were.
+es_setup ''
+es_findings b01 b02 b03 b04 b05 b06 b07 b08 b09 b10 '###' '   ' b11 b12
+es_run STUCK "no progress"
+es_expect_lines ES15-overflow-counts-what-printed \
+  "a line that sanitises to nothing is neither printed nor counted, so (+N more) names exactly the lines withheld" \
+  '  held by: reported b01' '  held by: reported b02' '  held by: reported b03' \
+  '  held by: reported b04' '  held by: reported b05' '  held by: reported b06' \
+  '  held by: reported b07' '  held by: reported b08' '  held by: reported b09' \
+  '  held by: reported b10' '  held by: reported (+2 more)'
+
 es_setup 'criterion 1: qa_status=FAIL|criterion 3: crusty_status=NOT_CLEAN|criterion 4: ci_status=RED|criterion 6: approval_status=NOT_MET|criterion 7: conflict=true|criterion 10: unresolved_threads=2|qa_evidence=modified|measured_evidence=unreadable'
 es_run STUCK "no progress"
 if [ "$(held_lines | grep -c .)" = 8 ]; then
@@ -383,6 +396,91 @@ if [ "$(held_lines | grep -c .)" = 8 ]; then
 else
   fail ES14-all-conditions "printed $(held_lines | grep -c .) of 8 condition lines"
 fi
+
+echo "== measured_downgrade and the held-by lines name the same conditions =="
+# _measured_read unified the VALUES the two functions read, not the set of
+# conditions: each still writes its own comparison per measurement. A
+# criterion added to one and not the other would give a stop line that
+# contradicts the verdict printed beside it, and nothing in the code prevents
+# it. So drive both over one failing measurement at a time and require the
+# two to name the same set of `field=value` conditions.
+#
+# measured-downgrade is a subcommand; measured_held_by has none, so it is read
+# back from the round record's held_by, which is what round_record writes from
+# it. The two renderings differ — `field=value ` tokens against
+# `criterion N: field=value` entries — so the criterion prefix is stripped
+# before the sets are compared.
+md_run() { # md_run <RECIPE_VAR_...=value>...: measured-downgrade, same env as rr_run
+  env -i HOME="${TEST_HOME}" TMPDIR="${WORK}" PATH="${BIN}:${SYSPATH}" \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+    REAL_AMPLIHACK="${REAL_AMPLIHACK}" REPO_PATH="${FX}" \
+    AUTODRIVE_ROUND_LABEL=round-1 AUTODRIVE_QA_EVIDENCE="${QA_FILE}" "$@" \
+    bash "${ROUND}" measured-downgrade 2>/dev/null
+}
+# The record's held_by, as a sorted set of field=value with the criterion
+# prefix removed; `none`/empty becomes nothing.
+held_set() {
+  sed -n 's/.*"held_by":"\([^"]*\)".*/\1/p' "${RR_REC}" 2>/dev/null \
+    | tr '|' '\n' | sed 's/^criterion [0-9]*: //' | grep -v '^$' | LC_ALL=C sort
+}
+# measured-downgrade's line, as the same sorted set.
+down_set() { printf '%s\n' "$1" | tr ' ' '\n' | grep -v '^$' | grep -v '^none$' | LC_ALL=C sort; }
+agree() { # agree <id> <why> <RECIPE_VAR_...=value>...
+  local id="$1" why="$2" down h d
+  shift 2
+  rr_run "$@"
+  down="$(md_run "$@")"
+  h="$(held_set)"; d="$(down_set "${down}")"
+  if [ "${h}" = "${d}" ]; then pass "${id}" "${why}"
+  else fail "${id}" "${why}: held_by $(printf '%q' "${h}") vs downgrade $(printf '%q' "${d}")"; fi
+}
+
+# One row per condition, each with every other measurement agreeing, so a
+# condition present in one function and absent from the other cannot hide
+# behind another condition; then the all-failing and all-agreeing rows.
+AG_GREEN=(RECIPE_VAR_qa_evidence='{"qa_status":"PASS"}'
+          RECIPE_VAR_ci_evidence='{"ci_status":"GREEN","ci_signal":"green"}'
+          RECIPE_VAR_merge_sync='{"conflict":"false"}'
+          RECIPE_VAR_platform_facts='{"unresolved_threads":"0","approval_status":"MET"}'
+          RECIPE_VAR_crusty_evidence='{"crusty_status":"DONE_CLEAN"}'
+          RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"NOT_MERGE_READY","blocker_count":1}')
+ag_with() { # ag_with <RECIPE_VAR_x=...>: the all-green row with one key replaced
+  local k="${1%%=*}" e out=()
+  for e in "${AG_GREEN[@]}"; do [ "${e%%=*}" = "$k" ] || out+=("$e"); done
+  out+=("$1")
+  printf '%s\n' "${out[@]}"
+}
+ag_row() { # ag_row <id> <why> <RECIPE_VAR_x=...>
+  local id="$1" why="$2" row=() line
+  shift 2
+  while IFS= read -r line; do row+=("$line"); done < <(ag_with "$1")
+  # The hash agrees too, so qa_evidence=modified is not in every row.
+  row+=("RECIPE_VAR_qa_evidence_hash={\"qa_evidence_sha\":\"${QA_SHA}\"}")
+  agree "${id}" "${why}" "${row[@]}"
+}
+
+ag_row AG1-qa "criterion 1 alone agrees between the two" \
+  'RECIPE_VAR_qa_evidence={"qa_status":"FAIL"}'
+ag_row AG2-ci "criterion 4 alone agrees between the two" \
+  'RECIPE_VAR_ci_evidence={"ci_status":"RED","ci_signal":"red"}'
+ag_row AG3-conflict "criterion 7 alone agrees between the two" \
+  'RECIPE_VAR_merge_sync={"conflict":"true"}'
+ag_row AG4-threads "criterion 10 alone agrees between the two" \
+  'RECIPE_VAR_platform_facts={"unresolved_threads":"2","approval_status":"MET"}'
+ag_row AG5-crusty "criterion 3 alone agrees between the two" \
+  'RECIPE_VAR_crusty_evidence={"crusty_status":"NOT_CLEAN"}'
+ag_row AG6-approval "criterion 6 alone agrees between the two" \
+  'RECIPE_VAR_platform_facts={"unresolved_threads":"0","approval_status":"NOT_MET"}'
+agree AG7-qa-evidence-hash "the unnumbered qa-evidence condition agrees too" "${AG_GREEN[@]}"
+agree AG8-every-condition "every condition at once agrees, in both renderings" \
+  RECIPE_VAR_qa_evidence='{"qa_status":"FAIL"}' \
+  RECIPE_VAR_ci_evidence='{"ci_status":"RED","ci_signal":"red"}' \
+  RECIPE_VAR_merge_sync='{"conflict":"unknown"}' \
+  RECIPE_VAR_platform_facts='{"unresolved_threads":"unreadable","approval_status":"NOT_MET"}' \
+  RECIPE_VAR_crusty_evidence='{"crusty_status":"NOT_CLEAN"}' \
+  RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"NOT_MERGE_READY","blocker_count":4}'
+ag_row AG9-all-green "a round where every measurement agrees is held by nothing in both" \
+  'RECIPE_VAR_qa_evidence={"qa_status":"PASS"}'
 
 echo ""
 echo "passed: ${PASS_COUNT}  failed: ${FAIL_COUNT}"

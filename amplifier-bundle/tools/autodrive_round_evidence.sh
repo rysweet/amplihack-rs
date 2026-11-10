@@ -188,8 +188,14 @@ crusty_evidence() {
 
 # _measured_read: read the six measurements measured_downgrade compares and
 # the two qa-evidence hashes, into MD_QA, MD_CI, MD_CONFLICT, MD_THREADS,
-# MD_CRUSTY, MD_APPROVAL, MD_QH and MD_QNOW. One source of truth, so
-# measured_downgrade and held_by can never name different values (#2219).
+# MD_CRUSTY, MD_APPROVAL, MD_QH and MD_QNOW. One source of truth for the
+# VALUES, so measured_downgrade and measured_held_by can never name the same
+# condition with different values (#2219). It does NOT unify the set of
+# conditions: each of those two functions still writes its own comparison per
+# measurement, and a criterion added to one and not the other would give a
+# stop line that contradicts the verdict beside it. Nothing in the code
+# prevents that, so test-issue-2219-stop-line.sh drives both over a matrix,
+# one condition at a time, and asserts they agree on which held the round.
 # Every value passes token(), and the crusty and approval vocabularies stay
 # closed, so nothing an agent wrote reaches a caller as prose.
 MD_QA=""; MD_CI=""; MD_CONFLICT=""; MD_THREADS=""; MD_CRUSTY=""; MD_APPROVAL=""; MD_QH=""; MD_QNOW=""

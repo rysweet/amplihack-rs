@@ -65,7 +65,11 @@ orphan_stop() {
 #             survives, then the entry is cut to 120 bytes. At most ten
 #             print, then `(+N more)` — the same cap as _autodrive_qa_list.
 #             The cap is a findings cap; every condition the record names is
-#             printed.
+#             printed. The count is of lines that SURVIVE the filter, so a
+#             line that sanitises to nothing is neither printed nor counted
+#             and `(+N more)` names exactly the lines withheld. That costs
+#             the filter's two forks on a line past the cap, which is at
+#             most the tail of one small file, once per stop.
 # The two-space prefix is unconditional, so no attacker-influenced byte ever
 # begins a line at column 0 — the column usage_limit_failure greps.
 #
@@ -92,10 +96,10 @@ held_by_lines() {
   fi
   [ -n "$rec" ] && [ -f "${rec}.findings" ] && [ ! -L "${rec}.findings" ] || return 0
   while IFS= read -r e; do
-    n=$((n + 1))
-    [ "$n" -le 10 ] || continue
     e="$(printf '%s' "$e" | tr '\001-\037\177' ' ' | tr -cd 'A-Za-z0-9_.:/-')"
     [ -n "$e" ] || continue
+    n=$((n + 1))
+    [ "$n" -le 10 ] || continue
     printf '  held by: reported %s\n' "${e:0:120}"
   done < "${rec}.findings"
   [ "$n" -le 10 ] || printf '  held by: reported (+%s more)\n' "$((n - 10))"

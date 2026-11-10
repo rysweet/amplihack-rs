@@ -17,22 +17,31 @@
 # true only when the changed-path list is KNOWN and NON-EMPTY and every path
 # qualifies. Qualifying, byte-exact: a path ending `.md`, `.markdown`, `.rst`
 # or `.txt`, or a ROOT `LICENSE`, `NOTICE` or `COPYING`. Disqualifying
-# whatever else matches, compared case-insensitively: anything under
-# `.github/`, `.amplihack/`, `.claude/` or `amplifier-bundle/`, a basename of
-# `AGENTS.md`, `CLAUDE.md` or `SKILL.md`, and any `.yml`, `.yaml`, `.toml`,
-# `.json` or `.sh`.
+# whatever else matches, compared case-insensitively: anything under a
+# DOT-DIRECTORY at any depth or under `amplifier-bundle/`, a basename of
+# `AGENTS.md`, `CLAUDE.md` or `SKILL.md`, and `requirements.txt`,
+# `constraints.txt` or `CMakeLists.txt`, which end `.txt` and so qualify
+# above but are read by a build rather than by a person.
 #
-# Two asymmetries are deliberate and are pinned below:
+# There is no extension disqualifier for `.yml`, `.toml`, `.json` or `.sh`:
+# the byte-exact qualifier has already rejected every one of those, so such a
+# rule could never run. `docs/build.SH` is `false` below because `.SH` is not
+# one of the four extensions, not because it is a script.
+#
+# Three properties are deliberate and are pinned below:
 #   - The `docs/` DIRECTORY does not qualify a path; the extension does. A
 #     `docs/conf.py` or `docs/release.js` is code that happens to live under
 #     docs/.
-#   - Disqualifiers are matched case-insensitively (`docs/build.SH` is a
-#     script) while qualifiers are byte-exact (`README.MD` simply costs the
-#     exemption). Both directions fail closed.
+#   - Disqualifiers are matched case-insensitively (`docs/Requirements.txt`
+#     is a dependency pin) while qualifiers are byte-exact (`README.MD`
+#     simply costs the exemption). Both directions fail closed.
 #   - Files consumed as AGENT INSTRUCTIONS are not inert documentation. A
 #     pull request editing only `merge-ready/SKILL.md` edits the rules that
 #     decide what may merge, so it does not buy its way out of the scenario
-#     requirement.
+#     requirement. The dot-directory rule is one pattern, `*/.*/*`, so
+#     `.cursor/` and `.codex/` are covered alongside `.claude/` without
+#     being named; a dot-FILE is not a dot-directory, and `docs/.hidden.md`
+#     is still prose.
 #
 # Precedence, all fail-closed: an operator-set AUTODRIVE_QA_SCENARIO_DIR still
 # forces gadugi_required=true; a scope helper that did not load still forces
@@ -181,10 +190,15 @@ repo package.json docs/release.js; base
 change docs/release.js
 both D4b-docs-dir-js false true "docs/release.js is code that happens to live under docs/" "$B"
 
+repo package.json docs/Requirements.txt; base
+change docs/Requirements.txt
+both D5-case-insensitive-disqualifier false true \
+  "disqualifiers are matched case-insensitively: docs/Requirements.txt is a dependency pin" "$B"
+
 repo package.json docs/build.SH; base
 change docs/build.SH
-both D5-uppercase-sh false true \
-  "disqualifiers are matched case-insensitively: docs/build.SH is a script" "$B"
+both D5b-uppercase-sh false true \
+  "docs/build.SH never qualifies: .SH is not one of the four documentation extensions" "$B"
 
 repo package.json .github/workflows/ci.yml README.md; base
 change .github/workflows/ci.yml
@@ -228,6 +242,70 @@ repo package.json notes.txt spec.rst readme.markdown src/index.js; base
 change notes.txt spec.rst readme.markdown
 both D14-other-doc-extensions true false ".markdown, .rst and .txt qualify beside .md" "$B"
 
+echo "== a .txt a build reads is not documentation =="
+# The same repository lists requirements.txt and CMakeLists.txt in
+# AUTODRIVE_ROOT_PROJECT_FILES, as files the QA target cannot run. Without
+# these rules a dependency bump would pass criterion 1 with no scenario and
+# no blocker, because the round reads docs_only as a measured field.
+
+repo package.json requirements.txt README.md; base
+change requirements.txt
+both D22-root-requirements false true \
+  "requirements.txt ends .txt but pins what the suite installs; it is a build input" "$B"
+
+repo package.json docs/requirements.txt README.md; base
+change docs/requirements.txt
+both D23-docs-requirements false true \
+  "the rule is not anchored at the root: docs/requirements.txt is the ordinary Sphinx pin" "$B"
+
+repo package.json CMakeLists.txt README.md; base
+change CMakeLists.txt
+both D24-cmakelists false true "CMakeLists.txt ends .txt and is a build script" "$B"
+
+repo package.json constraints.txt README.md; base
+change constraints.txt
+both D25-constraints false true "constraints.txt pins dependencies the same way" "$B"
+
+repo package.json docs/notes.txt README.md; base
+change docs/notes.txt
+both D25b-plain-txt-still-qualifies true false \
+  "an ordinary .txt is still prose: the rule names three basenames, not the extension" "$B"
+
+# Drift: the two lists are not read from one another at runtime, because
+# autodrive_qa_docs.sh reads nothing outside the scan variables and an array
+# that may be undefined in some load order would fail open. They are pinned
+# together here instead, so a .txt added to AUTODRIVE_ROOT_PROJECT_FILES
+# without a disqualifier fails this test rather than exempting a build input.
+TXT_PROJECT_FILES="$(env -i HOME="${TEST_HOME}" PATH="${SYSPATH}" bash -c '
+  . "$1" >/dev/null 2>&1 || exit 1
+  printf "%s\n" "${AUTODRIVE_ROOT_PROJECT_FILES[@]}"' _ "${TRUST}" 2>/dev/null \
+  | grep -i '\.txt$' || true)"
+if [ -z "${TXT_PROJECT_FILES}" ]; then
+  fail D26-project-file-drift "AUTODRIVE_ROOT_PROJECT_FILES could not be read, or holds no .txt entry; this check would pass vacuously"
+else
+  for f in ${TXT_PROJECT_FILES}; do
+    repo package.json "$f" README.md; base
+    change "$f"
+    expect_helper "D26-project-file-drift:${f}" autodrive_qa_docs_only false "$B"
+  done
+fi
+
+echo "== a dot-directory is an instruction surface; a dot-file is not =="
+
+repo package.json .cursor/notes.md README.md; base
+change .cursor/notes.md
+both D27-cursor-dir false true \
+  "one pattern covers every dot-directory, so .cursor/ is disqualified without being named" "$B"
+
+repo package.json .codex/plan.md README.md; base
+change .codex/plan.md
+both D27b-codex-dir false true "the same pattern covers .codex/" "$B"
+
+repo package.json docs/.hidden.md README.md; base
+change docs/.hidden.md
+both D28-dot-file-is-prose true false \
+  "the pattern needs a / after the dotted name: a dot-FILE under docs/ is still documentation" "$B"
+
 echo "== fail-closed: nothing measured is not 'documentation only' =="
 
 repo package.json src/index.js README.md; base
@@ -244,6 +322,43 @@ both D17-bad-base unknown true \
 both D18-scenario-dir-wins true true \
   "an operator who set AUTODRIVE_QA_SCENARIO_DIR gets the scenarios run in any repository" \
   "$B" AUTODRIVE_QA_SCENARIO_DIR="${WORK}/scenarios"
+
+echo "== a missing gate file is loud, not silent =="
+# autodrive_qa_docs.sh is a gate file. If it is deleted or made unreadable the
+# predicate degrades to `unknown`, which is safe but otherwise invisible: the
+# only symptom would be gadugi staying required for every documentation-only
+# pull request, indefinitely, with nothing to read. The load failure says so
+# on stderr, the same way round_record reports a measurement it could not make.
+NODOCS="${WORK}/tools-no-docs"; mkdir -p "${NODOCS}"; chmod 0700 "${NODOCS}"
+cp "${TOOLS}"/*.sh "${NODOCS}/" 2>/dev/null || harness_error "could not copy the tools to ${NODOCS}"
+rm -f "${NODOCS}/autodrive_qa_docs.sh"
+repo package.json src/index.js README.md; base
+change README.md
+ND_ERR="${WORK}/r${N}/nodocs.err"
+nd() { # nd <fn>: <fn> against $REPO with the gate file absent
+  env -i HOME="${TEST_HOME}" TMPDIR="${WORK}" PATH="${SYSPATH}" \
+    GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null AUTODRIVE_QA_BASE=main \
+    bash -c '. "$1" >/dev/null || exit 1
+             "$3" "$2"' _ "${NODOCS}/autodrive_trust.sh" "${REPO}" "$1" 2>>"${ND_ERR}"
+}
+: > "${ND_ERR}"
+got="$(nd autodrive_qa_docs_only)"
+if [ "${got}" = "unknown" ]; then
+  pass D29-missing-gate-file-unknown "a deleted autodrive_qa_docs.sh degrades the predicate to unknown, not to true"
+else
+  fail D29-missing-gate-file-unknown "printed $(printf '%q' "${got}"), want unknown"
+fi
+got="$(nd autodrive_gadugi_required)"
+if [ "${got}" = "true" ]; then
+  pass D29b-missing-gate-file-blocks "gadugi stays required while the predicate cannot be measured"
+else
+  fail D29b-missing-gate-file-blocks "autodrive_gadugi_required printed $(printf '%q' "${got}"), want true"
+fi
+if grep -q '^WARNING: autodrive_qa_docs\.sh did not load' "${ND_ERR}" 2>/dev/null; then
+  pass D29c-missing-gate-file-warns "the load failure names the file on stderr instead of degrading in silence"
+else
+  fail D29c-missing-gate-file-warns "no WARNING naming autodrive_qa_docs.sh: $(tr '\n' '|' < "${ND_ERR}" 2>/dev/null)"
+fi
 
 echo "== reach: only where gadugi was required in the first place =="
 

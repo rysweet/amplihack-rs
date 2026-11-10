@@ -28,25 +28,48 @@
 # `.txt`, or a root `LICENSE`, `NOTICE` or `COPYING`.
 #
 # Disqualifying whatever else matches, compared CASE-INSENSITIVELY:
-#   - anything under `.github/`, `.amplihack/`, `.claude/` or
-#     `amplifier-bundle/`, at the root or nested: agent instructions, and the
-#     declared build and QA sources, decide what runs and what may merge.
+#   - anything under a DOT-DIRECTORY at any depth — `.github/`, `.claude/`,
+#     `.amplihack/`, and `.cursor/`, `.codex/`, `.devcontainer/` and whatever
+#     the next tool invents — or under `amplifier-bundle/`: agent
+#     instructions, and the declared build and QA sources, decide what runs
+#     and what may merge. One pattern, `*/.*/*`, the same one
+#     _autodrive_manifest_dirs uses, so a dot-directory nobody thought to
+#     list is covered too. A dot-FILE is not a dot-directory: the pattern
+#     needs a `/` after the dotted name, so `docs/.hidden.md` is still prose.
 #   - a basename of `AGENTS.md`, `CLAUDE.md` or `SKILL.md`, wherever it sits.
 #     A pull request editing only `merge-ready/SKILL.md` edits the rules that
 #     decide what may merge, so it does not buy its way out of them.
-#   - any `.yml`, `.yaml`, `.toml`, `.json` or `.sh`.
+#   - a basename of `requirements.txt`, `constraints.txt` or `CMakeLists.txt`.
+#     They end `.txt` and so pass the qualifier above, but a build reads them,
+#     not a person: the first two pin the dependencies a suite installs — and
+#     `docs/requirements.txt` is the ordinary Sphinx pin, which is why the
+#     rule is not anchored at the root — and the third is a build script.
+#     `requirements.txt` and `CMakeLists.txt` are also in
+#     AUTODRIVE_ROOT_PROJECT_FILES (autodrive_trust.sh), where this same
+#     repository already calls them project files. That array is NOT read
+#     here: it may be undefined in some load order, and a disqualifier that
+#     silently disappears is the failure being fixed. The test pins the two
+#     lists together instead, so the next `.txt` added there is caught.
 #
-# The two asymmetries are deliberate and both fail closed: `docs/build.SH` is
-# a script, while `README.MD` simply costs the exemption rather than winning
-# it. The `docs/` DIRECTORY qualifies nothing on its own, so `docs/conf.py`
-# and `docs/release.js` are code that happens to live under docs/.
+# Every rule listed is a rule the code runs. There is no extension
+# disqualifier: the byte-exact qualifier above already rejects every `.yml`,
+# `.yaml`, `.toml`, `.json` and `.sh`, so one here could never be reached.
 #
-# The other arms fail closed too. An empty diff changed no documentation, so
-# it is `false`, not `true`. A list that could not be read — no base given, a
-# base that fails the branch rules, a git failure — is `unknown`, and
-# `unknown` is not `true`: autodrive_gadugi_required keeps gadugi required on
-# it. That function is the only intended caller, so the merge round and the
-# merge gate cannot disagree about the answer.
+# The asymmetry between the two comparisons is deliberate and fails closed in
+# both directions. `Agents.md`, `.GitHub/notes.md` and `docs/Requirements.txt`
+# are disqualified on a case-insensitive match; `README.MD` simply costs the
+# exemption rather than winning it, since it never qualifies in the first
+# place. The `docs/` DIRECTORY qualifies nothing on its own, so `docs/conf.py`
+# and `docs/release.js` are code that happens to live under docs/, and
+# `docs/build.SH` is not documentation because `.SH` is not `.txt`, `.md`,
+# `.markdown` or `.rst`.
+#
+# The other arms fail closed too. A diff that changed nothing changed no
+# documentation either, so it is `false`, not `true`. A list that could not be
+# read — no base given, a base that fails the branch rules, a git failure — is
+# `unknown`, and `unknown` is not `true`: autodrive_gadugi_required keeps
+# gadugi required on it. That function is the only intended caller, so the
+# merge round and the merge gate cannot disagree about the answer.
 #
 # The paths come from _AD_PATHS, not from the line autodrive_qa_changed_paths
 # prints: that line is rendered for people, capped at ten entries with a
@@ -58,8 +81,14 @@ autodrive_qa_docs_only() {
   local -x LC_ALL=C
   local p="" l=""
   _autodrive_qa_scan "${1:-.}"
+  # A `known` list holding nothing is the `empty` answer, not the `unknown`
+  # one: the list was read and it named no documentation. _autodrive_qa_scan
+  # makes `known` imply non-empty today, so the guard is unreachable; it is
+  # here because its absence does not fail the same way twice — bash 5 walks
+  # out of the loop and exempts the whole pull request, bash 3.2 stops on an
+  # unbound variable — and the production shell is the one that fails open.
   case "$_AD_PATHS_STATE" in
-    known) ;;
+    known) [ -n "${_AD_PATHS[0]+x}" ] || { printf 'false\n'; return 0; } ;;
     empty) printf 'false\n'; return 0 ;;
     *) printf 'unknown\n'; return 0 ;;
   esac
@@ -82,9 +111,9 @@ autodrive_qa_docs_only() {
   # `return` below returns from this function.
   while IFS= read -r l; do
     case "/$l" in
-      */.github/* | */.amplihack/* | */.claude/* | */amplifier-bundle/* \
+      */.*/* | */amplifier-bundle/* \
         | */agents.md | */claude.md | */skill.md \
-        | *.yml | *.yaml | *.toml | *.json | *.sh) printf 'false\n'; return 0 ;;
+        | */requirements.txt | */constraints.txt | */cmakelists.txt) printf 'false\n'; return 0 ;;
     esac
   done <<< "$(printf '%s\n' "${_AD_PATHS[@]}" | tr 'A-Z' 'a-z')"
   printf 'true\n'

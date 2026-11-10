@@ -130,15 +130,15 @@ autodrive_qa_changed_paths() {
   esac
 }
 
-# autodrive_qa_docs_only lives in autodrive_qa_docs.sh beside this file,
-# which is at its brick budget. Loaded only from this file's physical
-# directory, only as a regular file and not a symlink; without it the
-# predicate says `unknown`, which keeps gadugi required (#2219).
+# autodrive_qa_docs_only lives in autodrive_qa_docs.sh beside this file, which
+# is at its brick budget. Loaded from this file's physical directory only, only
+# as a regular file and not a symlink; without it the predicate says `unknown`,
+# which keeps gadugi required — and says so, since nothing else would (#2219).
 _ad_docs="$(unset CDPATH; cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || _ad_docs=""
 _ad_docs="${_ad_docs:+${_ad_docs}/autodrive_qa_docs.sh}"
 # shellcheck source=autodrive_qa_docs.sh
 { [ -n "$_ad_docs" ] && [ -f "$_ad_docs" ] && [ ! -L "$_ad_docs" ] && . "$_ad_docs"; } \
-  || autodrive_qa_docs_only() { printf 'unknown\n'; }
+  || { echo "WARNING: autodrive_qa_docs.sh did not load beside autodrive_qa_scope.sh; docs_only is 'unknown', so gadugi stays required for every pull request." >&2; autodrive_qa_docs_only() { printf 'unknown\n'; }; }
 unset _ad_docs
 
 # _autodrive_manifest_dirs <dir> -> a `<dir><TAB><cargo|python|node>` line per
