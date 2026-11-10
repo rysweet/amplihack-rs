@@ -197,6 +197,10 @@ cmd_resolve() {
 
     cd -P -- "$repo" || refuse "--repo is not an accessible directory"
     git rev-parse --is-inside-work-tree >/dev/null || refuse "--repo is not inside a git work tree"
+    if [ -n "${RECIPE_VAR_repository:-}" ]; then
+        . "$(dirname -- "${BASH_SOURCE[0]}")/autodrive_repository.sh" || exit 1
+        autodrive_bind_repository "$RECIPE_VAR_repository" "$PWD" || exit 1
+    fi
     local common
     common="$(common_dir_of .)" || refuse "cannot read the repository's common git dir"
 

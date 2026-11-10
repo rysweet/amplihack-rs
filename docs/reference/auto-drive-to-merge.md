@@ -4943,3 +4943,21 @@ tests here run and pass without #1347.
 - [Usage-limit wait](profile-command.md#usage-limit-wait): the reset and
   capacity waits every agent step runs before a usage limit reaches the
   loop.
+
+### Repository identity through merge preflight
+
+The explicit `repository=OWNER/REPO` target is checked against the checkout's
+GitHub `origin` before recipe PR lookups. An empty, malformed or mismatched
+target fails before preflight can skip an already-merged PR. HTTPS and SSH
+GitHub origins are supported. Nested merge and crusty rounds carry the same
+identity; their shell steps replace inherited `GH_REPO`, including after the
+worktree resolver clears ambient selectors. Agent review prompts also require
+explicit `--repo` on PR operations. The final gate keeps its explicit target
+and exact-head checks.
+
+Run `python3 amplifier-bundle/recipes/tests/test-issue-1888-repository-binding.py`
+for the isolated recipe preflight regression. It covers conflicting `GH_REPO`,
+OPEN and MERGED states, PR-head resolution and rejection before GitHub access.
+Its fake CLI implements JSON extraction only; it does not validate full CLI
+integration or merge safeguards. On macOS, its chmod adapter handles the
+existing state helper's GNU-style trailing `--`.

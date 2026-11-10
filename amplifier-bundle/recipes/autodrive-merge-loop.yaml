@@ -41,6 +41,7 @@ recursion:
   max_total_steps: 30
 
 context:
+  repository: ""  # Explicit target propagated by the composer.
   repository: ""  # Required canonical OWNER/REPO target; never inferred.
   merge_method: ""  # Optional: merge, squash, or rebase; empty selects repository policy.
   repo_path: "."
@@ -70,6 +71,9 @@ steps:
     type: "bash"
     parse_json: true
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       REPO_CD_OK=0; cd "${REPO_PATH:-.}" 2>/dev/null && REPO_CD_OK=1
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
@@ -174,6 +178,9 @@ steps:
     condition: "merge_loop_preflight.should_run == 'true'"
     type: "bash"
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       LOOP_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_loop.sh"
@@ -242,6 +249,7 @@ steps:
         --repo "$PR_WORKTREE" \
         --review-dir "$REVIEW_DIR" \
         --state-dir "$DIR" \
+        --context "repository=${RECIPE_VAR_repository:-}" \
         --context "repo_path=$PR_WORKTREE" \
         --context "pr_number=${PR}" \
         --context "pr_url=${PR_URL:-}" \
@@ -265,6 +273,9 @@ steps:
     condition: "merge_loop_preflight.should_run == 'true'"
     type: "bash"
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       [ -n "${AMPLIHACK_HOME:-}" ] || { echo "ERROR: AMPLIHACK_HOME is not set; follow-up issues are filed only by the installed bundle" >&2; exit 1; }
@@ -303,6 +314,9 @@ steps:
     type: "bash"
     parse_json: true
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       # Only the installed gate: the gh guard trusts the gate beside it under
@@ -342,6 +356,9 @@ steps:
     condition: "merge_loop_preflight.should_run == 'true'"
     type: "bash"
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+      autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       STATE_HELPER="${AMPLIHACK_HOME:+${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_state.sh}"

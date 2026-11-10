@@ -28,6 +28,7 @@ recursion:
   max_total_steps: 30
 
 context:
+  repository: ""  # Explicit target propagated by the composer.
   repo_path: "."
   pr_number: ""
   autodrive_qa_evidence: ""
@@ -38,6 +39,11 @@ steps:
     type: "bash"
     parse_json: true
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      if [ -n "${RECIPE_VAR_repository:-}" ]; then
+        . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+        autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
+      fi
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
@@ -84,6 +90,11 @@ steps:
     type: "bash"
     parse_json: true
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      if [ -n "${RECIPE_VAR_repository:-}" ]; then
+        . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+        autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
+      fi
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
       TOP=""; T=""; SEARCHED=""
@@ -116,6 +127,11 @@ steps:
     type: "bash"
     parse_json: true
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      if [ -n "${RECIPE_VAR_repository:-}" ]; then
+        . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+        autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
+      fi
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       export GH_PAGER=cat PAGER=cat LESS=FRX

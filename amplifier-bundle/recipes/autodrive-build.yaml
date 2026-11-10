@@ -29,6 +29,7 @@ recursion:
   max_total_steps: 80
 
 context:
+  repository: ""  # Explicit target propagated by the composer.
   task_description: ""
   requirements: ""
   repo_path: "."
@@ -54,6 +55,11 @@ steps:
     type: "bash"
     parse_json: true
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      if [ -n "${RECIPE_VAR_repository:-}" ]; then
+        . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+        autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
+      fi
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
@@ -104,6 +110,11 @@ steps:
     type: "bash"
     parse_json: true
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      if [ -n "${RECIPE_VAR_repository:-}" ]; then
+        . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+        autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
+      fi
       set -uo pipefail
       # Issue #1551: tell phase 1's agents not to merge. Advice only: the gh
       # merge guard on PATH is the control. Values come from the environment
@@ -122,6 +133,7 @@ steps:
           *) printf '%s\n\n%s' "$1" "$DIRECTIVE" ;;
         esac
       }
+      [ -z "${RECIPE_VAR_repository:-}" ] || DIRECTIVE="${DIRECTIVE} Target repository: ${RECIPE_VAR_repository}; use --repo ${RECIPE_VAR_repository} for every gh PR operation."
       # jq is a hard dependency: both branches emit their output through it.
       TD="$(with_directive "${RECIPE_VAR_task_description:-}"; printf x)"
       RQ="$(with_directive "${RECIPE_VAR_requirements:-}"; printf x)"
@@ -147,6 +159,7 @@ steps:
     type: "recipe"
     recipe: "default-workflow"
     context:
+      repository: "{{repository}}"
       # Issue #1551: the copies that carry the no-merge directive.
       task_description: "{{no_merge_directive.task_description}}"
       requirements: "{{no_merge_directive.requirements}}"
@@ -164,6 +177,11 @@ steps:
     type: "bash"
     parse_json: true
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      if [ -n "${RECIPE_VAR_repository:-}" ]; then
+        . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+        autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
+      fi
       set -uo pipefail
       cd "${REPO_PATH:-.}" || { echo "ERROR: #1551: cannot enter REPO_PATH; refusing to check PR state in the wrong repo [autodrive-build/step-03]" >&2; exit 1; }
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX

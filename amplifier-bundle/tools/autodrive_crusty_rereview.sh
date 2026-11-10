@@ -82,6 +82,7 @@ while [ $# -gt 0 ]; do
     --state-dir) DIR="${2:-}"; shift 2 ;;
     -c)
       case "${2:-}" in
+        repository=*) export RECIPE_VAR_repository="${2#*=}" ;;
         pr_number=*) PR="${2#*=}" ;;
         pr_url=*) PR_URL_V="${2#*=}" ;;
         autodrive_budget_loop_rounds=*|autodrive_budget_total_rounds=*|autodrive_budget_wall_seconds=*)
@@ -143,6 +144,7 @@ OUT="$(bash "$HERE/autodrive_loop.sh" \
   --review-dir "$REVIEW_DIR" \
   --state-dir "$DIR" \
   --task-file "$TASK_FILE" \
+  --context "repository=${RECIPE_VAR_repository:-}" \
   --context "repo_path=${REPO}" \
   --context "pr_number=${PR}" \
   --context "pr_url=${PR_URL_V}" \

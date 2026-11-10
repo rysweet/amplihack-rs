@@ -26,6 +26,7 @@ recursion:
   max_total_steps: 30
 
 context:
+  repository: ""  # Explicit target propagated by the composer.
   repo_path: "."
   # Set by autodrive_loop.sh, never defaulted (#1528): judging agents' start dir, launch-side tools.
   review_dir: ""
@@ -50,6 +51,11 @@ steps:
   - id: "step-00-review-dir-guard"
     type: "bash"
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      if [ -n "${RECIPE_VAR_repository:-}" ]; then
+        . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+        autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
+      fi
       # AUTODRIVE_LAUNCH_TOOLS (#1543): the leading "/" keeps an empty or relative value from resolving against the cwd;
       # the guard itself checks the value (autodrive_worktree_guard.sh, "AUTODRIVE_LAUNCH_TOOLS").
       bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused or not found under AUTODRIVE_LAUNCH_TOOLS (#1528) [autodrive-crusty-round/step-00]" >&2; exit 1; }
@@ -59,6 +65,11 @@ steps:
     type: "bash"
     parse_json: true
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      if [ -n "${RECIPE_VAR_repository:-}" ]; then
+        . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+        autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
+      fi
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
@@ -104,6 +115,9 @@ steps:
     agent: "amplihack:core:reviewer"
     working_dir: "{{review_dir}}"
     prompt: |
+      Target repository: `{{repository}}`. When set, pass `--repo "{{repository}}"`
+      to every gh PR operation; never use ambient GH_REPO to choose the target.
+
       # Crusty review — the maintainer's proxy on PR #{{crusty_round_context.pr}}
 
       **Invoke the skill:** activate `Skill(skill="crusty-old-engineer")` and
@@ -179,12 +193,22 @@ steps:
   - id: "step-02b-review-dir-unchanged"
     type: "bash"
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      if [ -n "${RECIPE_VAR_repository:-}" ]; then
+        . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+        autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
+      fi
       bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh" round-index-check "${REVIEW_DIR:-}" "${RECIPE_VAR_review_index:-}" step-02-crusty-review || exit 1
 
   - id: "step-03-extract-crusty-verdict"
     type: "bash"
     parse_json: true
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      if [ -n "${RECIPE_VAR_repository:-}" ]; then
+        . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+        autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
+      fi
       set -uo pipefail
       # Canonical pipeline (docs/reference/structured-verdict-parsing.md): agent output is untrusted DATA
       # on stdin, never interpolated into a command position, never eval'd, never branched on as raw prose.
@@ -252,6 +276,9 @@ steps:
     agent: "amplihack:builder"
     working_dir: "{{repo_path}}"
     prompt: |
+      Target repository: `{{repository}}`. When set, pass `--repo "{{repository}}"`
+      to every gh PR operation; never use ambient GH_REPO to choose the target.
+
       # Address every concern crusty raised
 
       **Round:** {{autodrive_round_label}} — **PR #{{crusty_round_context.pr}}**
@@ -286,6 +313,7 @@ steps:
       ```bash
       cd "{{repo_path}}" || { echo "STOP: cannot enter the PR worktree (#1528)" >&2; exit 1; }
       unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO
+      [ -z "{{repository}}" ] || export GH_REPO="{{repository}}"
       bash "{{autodrive_launch_tools}}/autodrive_worktree_guard.sh" commit-dir {{pr_number}} || { echo "STOP: not the PR's linked worktree on its head branch; never stage or commit in the main checkout or another checkout (#1528)" >&2; exit 1; }
       # Commit as the workflow's identity, not as whatever git is configured
       # with in this worktree (issue #1394). The helper only exports into the
@@ -319,6 +347,11 @@ steps:
     type: "bash"
     parse_json: true
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      if [ -n "${RECIPE_VAR_repository:-}" ]; then
+        . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+        autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
+      fi
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
@@ -348,6 +381,11 @@ steps:
   - id: "step-06-write-round-record"
     type: "bash"
     command: |
+      # Bind before PR operations; load only launch-side installed tools.
+      if [ -n "${RECIPE_VAR_repository:-}" ]; then
+        . "${AMPLIHACK_HOME:?AMPLIHACK_HOME is required}/amplifier-bundle/tools/autodrive_repository.sh" || exit 1
+        autodrive_bind_repository "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_repo_path:-${REPO_PATH:-.}}" || exit 1
+      fi
       set -uo pipefail
       RECORD="${AUTODRIVE_ROUND_RECORD:-}"
       [ -n "$RECORD" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; exit 1; }
