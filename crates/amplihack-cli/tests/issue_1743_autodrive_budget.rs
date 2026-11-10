@@ -350,19 +350,32 @@ impl Fixture {
     }
 
     /// No stub log or state file names the real `~/.claude` or `~/.amplihack`.
+    ///
+    /// The fixture's own paths are removed from the text first. A caller whose
+    /// temp directory sits under `~/.amplihack` (a recipe step's per-run
+    /// `TMPDIR`) would otherwise match on every fixture path, though none of
+    /// them is the real home (PR #1885).
     fn assert_no_real_home(&self) {
         let Some(home) = std::env::var_os("HOME") else {
             return;
         };
         let home = PathBuf::from(home);
         let forbidden = [home.join(".claude"), home.join(".amplihack")];
+        let fixture_roots: Vec<String> = [self.tmp.path().to_path_buf()]
+            .into_iter()
+            .chain(self.tmp.path().canonicalize().ok())
+            .map(|p| p.display().to_string())
+            .collect();
         for dir in [&self.log, &self.state, &self.stub] {
             for e in std::fs::read_dir(dir).unwrap() {
                 let p = e.unwrap().path();
                 if !p.is_file() {
                     continue;
                 }
-                let text = String::from_utf8_lossy(&std::fs::read(&p).unwrap()).into_owned();
+                let mut text = String::from_utf8_lossy(&std::fs::read(&p).unwrap()).into_owned();
+                for root in &fixture_roots {
+                    text = text.replace(root.as_str(), "<fixture>");
+                }
                 for f in &forbidden {
                     let f = f.display().to_string();
                     assert!(!text.contains(&f), "{} names the real {f}", p.display());
