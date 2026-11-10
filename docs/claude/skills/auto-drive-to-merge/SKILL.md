@@ -103,12 +103,58 @@ amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c autodrive_dry_run=
 | `plan_task_id` | `""` | The plan task each follow-up issue is linked to, such as `1979`, `#1979` or `plan/17.104`. When empty, the first `Closes #N`, `Fixes #N` or `Resolves #N` in the PR body is used, then the same in `task_description`. Needed only when minor findings are filed. |
 | `requirements` | `""` | Extra requirements, passed through. |
 | `repo_path` | `.` | Repository to work in. |
-| `existing_branch` / `pr_number` | `""` | Point the workflow at work that already exists. Whether the PR came from `pr_number` or from phase 1, every evidence step runs in the worktree that has the PR branch checked out, and the run refuses if no worktree, or more than one, has it checked out, or that worktree is not at the PR head (see [PR head and worktree resolution](../../../docs/reference/auto-drive-to-merge.md#pr-head-and-worktree-resolution)). |
+| `existing_branch` / `pr_number` | `""` | Point the workflow at work that already exists. Whether the PR came from `pr_number` or from phase 1, every evidence step runs in the worktree that has the PR branch checked out, and the run refuses if no worktree, or more than one, has it checked out, or its preflight refuses; a clean strict descendant is pushed with hooks and verified before continuing (see [PR head and worktree resolution](../../../docs/reference/auto-drive-to-merge.md#pr-head-and-worktree-resolution)). |
 | `autodrive_state_dir` | derived | Durable state root for resumability. |
 | `autodrive_dry_run` | `"false"` | Verify everything, merge nothing. Files no follow-up issue, so a drive with minor findings ends `NOT_MERGED` with `followup-missing:<id>`. |
 | `autodrive_budget_loop_rounds` | `12` | Rounds either loop may run in total, across every run on the same state directory. `0` or empty means unlimited. |
 | `autodrive_budget_total_rounds` | `20` | Rounds both loops together may run. `0` or empty means unlimited. |
 | `autodrive_budget_wall_seconds` | `14400` | Seconds that rounds, before-round steps and evaluator runs may take in total. `0` or empty means unlimited. |
+
+## Preflight refusals and worker recovery
+
+Both auto-drive loops use the same Rust preflight before starting a round.
+A clean synchronized worktree continues. A clean worktree strictly ahead of
+the fetched PR head is pushed once, with all hooks enabled, to the PR's
+actual source repository and branch, including fork branches. Continuation
+requires confirmation that the remote head equals the captured local commit
+and that the local continuation state is still safe. Preflight never force-pushes
+or reconciles history. A failed push or verification stops the drive.
+
+Read the named outcome and evidence in the final event or protected drive
+state record (`preflight-result.json`). Run workspaces also retain the
+named outcome in `run.json` and evidence in `preflight-refusal.json`.
+The drive immediately attempts one informational PR
+comment. Comment or persistence failures appear as additional diagnostics;
+they never replace the primary refusal. A comment is not execution authority.
+
+| Outcome | Worker action before relaunch |
+| --- | --- |
+| `pr-worktree-interrupted` | Inspect the reported rebase, merge, cherry-pick metadata and unmerged paths. Deliberately complete or abandon the operation using Git's recovery commands after reviewing the work. Preflight never aborts, resets or resolves it. This refusal also applies when metadata exists but no unmerged paths remain; the evidence explicitly says no unmerged paths were found. |
+| `pr-worktree-dirty` | Review the reported paths, including both endpoints of renames. Commit, deliberately stash, or otherwise preserve and clear the changes. |
+| `pr-worktree-behind` | Fetch the PR source branch, inspect its commits, and deliberately fast-forward the clean worktree to that branch. |
+| `pr-worktree-diverged` | Review both histories and reconcile them deliberately under the repository's policy. Preserve local work; do not force-push to clear the refusal. |
+| `pr-worktree-comparison-failed` | Restore authenticated repository access and complete object/history availability. Check fetch diagnostics and shallow boundaries. Missing comparison data establishes neither behind nor diverged history. |
+| `pr-worktree-push-failed` | Inspect the failure stage: push or subsequent verification. Fix hook, authentication, transport or rejection errors. If the remote moved, inspect the new history; do not retry mechanically. A push can have succeeded even when verification failed. |
+| `pr-worktree-not-found` | Check repository identity and establish the intended PR branch worktree deliberately. No other checkout is selected as a fallback. |
+| `pr-worktree-ambiguous` | Inspect the candidate paths, including detached rebase candidates. Leave one uniquely identifiable worktree for the PR branch; preserve recovery state in every candidate. |
+| `pr-worktree-branch-mismatch` | Correct `existing_branch` to the PR source branch or omit it. Never switch a different worktree to satisfy the drive. |
+
+Inspect the chosen worktree before recovery:
+
+```bash
+git -C worktrees/feat/issue-2188-auto-drive-dies-silently status
+git -C worktrees/feat/issue-2188-auto-drive-dies-silently diff --name-only --diff-filter=U
+```
+
+`status` reports pending operations and changes; the second command lists
+unmerged paths and prints nothing when none exist. An empty list does not
+mean an interrupted operation is complete. After deliberate recovery,
+relaunch the drive with the same PR and state directory. Completed phases
+retain their existing resumability rules; a refusal never completes a review
+phase or writes a successful loop result.
+
+See the [preflight reference](../../../reference/auto-drive-to-merge.md#a-worktree-that-is-not-at-the-pr-head)
+for ordering, publication and helper contracts.
 
 ## Why there is no iteration cap
 

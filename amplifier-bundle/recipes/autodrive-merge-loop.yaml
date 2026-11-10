@@ -99,10 +99,10 @@ steps:
       fi
       IDENT="${PR:-$BRANCH}"
       DIR="${AUTODRIVE_STATE_DIR:-}"
-      [ -n "$DIR" ] || DIR="$(autodrive_state_dir "${REPO_PATH:-.}" "$IDENT")" || exit 1
+      [ -n "$DIR" ] || DIR="$(autodrive_state_root)/$(autodrive_state_key "${REPO_PATH:-.}" "$IDENT")"
       # Private whatever the caller's umask: the merge gate refuses state
       # that anyone else could have written (autodrive_state.sh).
-      autodrive_private_dir "$DIR" || exit 1
+      STATE_PRIVATE=1; autodrive_private_dir "$DIR" || STATE_PRIVATE=0
       STATE="$(autodrive_pr_state "$PR")"
       RUN="true"; WHY="merge-ready loop not yet completed for this PR"
       if [ "$STATE" = "MERGED" ]; then
@@ -120,45 +120,18 @@ steps:
       json_esc() { case "$1" in *[[:cntrl:]]*) return 1 ;; esac; local s="${1//\\/\\\\}"; printf '%s' "${s//\"/\\\"}"; }
       REPO="${REPO_PATH:-.}"
       if [ "$RUN" = "true" ] && [ -n "$PR_GIVEN" ]; then
-        PR_HEAD="${STATE_HELPER%/autodrive_state.sh}/autodrive_pr_head.sh"
-        [ -f "$PR_HEAD" ] || { echo "ERROR: merge loop: autodrive_pr_head.sh not found next to $STATE_HELPER; refusing to enter the merge loop (#1543)" >&2; exit 1; }
-        # The preflight already changed into REPO_PATH, so the resolver gets
-        # $PWD: passing REPO_PATH again would look a relative path up twice
-        # (sub/sub). A REPO_PATH it could not enter is refused, never
-        # replaced by the launch directory.
-        [ "$REPO_CD_OK" = 1 ] || { echo "ERROR: cannot cd to REPO_PATH='${REPO_PATH:-.}'; refusing to enter the merge loop (#1543)" >&2; exit 1; }
-        RES="$(bash "$PR_HEAD" --pr "$PR" --branch "${EXISTING_BRANCH:-}" --repo "$PWD")"
+        [ "$REPO_CD_OK" = 1 ] || { echo "ERROR: cannot cd to REPO_PATH='${REPO_PATH:-.}'" >&2; exit 1; }
+        RES="$(amplihack orch helper autodrive-preflight --pr "$PR" --repo . --branch "${EXISTING_BRANCH:-}" --state-dir "$DIR")"
         PRC=$?
-        if [ "$PRC" -eq 3 ]; then
-          echo "ERROR: PR #${PR} head branch '${EXISTING_BRANCH:-<headRefName>}' has no single worktree (searched REPO_PATH=${REPO_PATH:-.} and git worktree list); refusing to enter the merge loop (#1543)" >&2
-          exit 1
-        elif [ "$PRC" -ne 0 ]; then
-          echo "ERROR: PR #${PR} head resolution refused (autodrive_pr_head exit ${PRC}; reason on the line above); refusing to enter the merge loop (#1543)" >&2
-          exit 1
+        if [ "$PRC" -ne 0 ]; then
+          printf '%s\n' "$RES"
+          exit "$PRC"
         fi
-        REPO="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field worktree | amplihack orch helper extract-field --field worktree --default '')"
-        HEAD_SHA="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field head_sha | amplihack orch helper extract-field --field head_sha --default '')"
-        if [ -z "$REPO" ] || [ ! -d "$REPO" ] || ! [[ "$HEAD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
-          echo "ERROR: autodrive_pr_head returned no usable worktree/head_sha for PR #${PR}; refusing to enter the merge loop (#1543)" >&2
-          exit 1
-        fi
-        # The resolver reports a stale worktree (head_matches=false) and leaves
-        # the decision here. Entering the loop on it cannot succeed: the merge
-        # gate would refuse every round's evidence, and the loop would end
-        # STUCK after paying for evaluator calls.
-        MATCH="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field head_matches | amplihack orch helper extract-field --field head_matches --default '')"
-        if [ "$MATCH" != "true" ]; then
-          WT_HEAD="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field worktree_head | amplihack orch helper extract-field --field worktree_head --default '')"
-          REL="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field worktree_relation | amplihack orch helper extract-field --field worktree_relation --default '')"
-          FIX="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field remedy | amplihack orch helper extract-field --field remedy --default '')"
-          # The remedy depends on the direction: `pull --ff-only` for a
-          # worktree behind the PR head, `push` for one ahead of it (a round
-          # whose push failed left its commits here), a merge for diverged.
-          echo "ERROR: pr-worktree-stale: worktree ${REPO} is at ${WT_HEAD:-<unreadable>}, PR #${PR} head is ${HEAD_SHA} (worktree ${REL:-not at the PR head}); run: ${FIX:-git -C ${REPO} status, and bring it to the PR head}, then re-run. Refusing to enter the merge loop: the merge gate would refuse every round's evidence (#1543)" >&2
-          exit 1
-        fi
+        REPO="$(printf '%s' "$RES" | amplihack orch helper extract-field --field worktree)"
+        HEAD_SHA="$(printf '%s' "$RES" | amplihack orch helper extract-field --field head_sha)"
         echo "INFO: PR #${PR} head ${HEAD_SHA} resolved to worktree ${REPO}" >&2
       fi
+      [ "$STATE_PRIVATE" = 1 ] || { echo "ERROR: state directory is unavailable" >&2; exit 1; }
       E_DIR="$(json_esc "$DIR")" && E_REPO="$(json_esc "$REPO")" \
         || { echo "ERROR: state_dir or repo contains control characters; refusing to enter the merge loop" >&2; exit 1; }
       echo "INFO: merge-loop preflight: pr=${PR:-<none>} pr_state=${STATE} run=${RUN} (${WHY}) state_dir=${DIR}" >&2

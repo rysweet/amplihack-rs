@@ -36,8 +36,8 @@
 # as NOT_MERGED after a real merge, was fixed by #1511 (PR #1563, cf1f3e71);
 # this change does not touch it. T21 checks it end to end.
 #
-# The stub gh refuses everything but `pr view`; every case asserts that no
-# merge was ever attempted. Tests never touch the real checkout.
+# The stub gh permits fixture metadata reads and informational comments;
+# every case asserts that no merge was attempted. Tests never touch the real checkout.
 #
 # Usage: bash amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
@@ -141,11 +141,13 @@ done < <(compgen -e)
 unset _inherited
 
 # --- stubs -------------------------------------------------------------------
-# gh: answers only `pr view` from STUB_* env, honouring --json/--jq; logs every
-# call; refuses (97) anything else, so an attempted merge cannot succeed.
+# gh: answers fixture identity/PR reads and comments, honouring --json/--jq;
+# logs every call and refuses other writes, so a merge cannot succeed.
 cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${GH_LOG:-/dev/null}"
+if [ "$1 $2" = "repo view" ]; then echo fixture/project; exit 0; fi
+if [ "$1 $2" = "pr comment" ]; then exit 0; fi
 if [ "${1:-}" != "pr" ] || { [ "${2:-}" != "view" ] && [ "${2:-}" != "list" ]; }; then
   echo "stub gh: refusing '$*'" >&2; exit 97
 fi
@@ -157,7 +159,7 @@ while [ $# -gt 0 ]; do
 done
 OBJ="$(jq -cn --arg oid "${STUB_HEAD_OID:-}" --arg ref "${STUB_HEAD_REF:-}" \
   --arg state "${STUB_STATE:-OPEN}" --arg num "${STUB_PR:-7}" \
-  '{number:($num|tonumber),state:$state,mergedAt:null,headRefOid:$oid,headRefName:$ref,isCrossRepository:false,baseRefName:"main",url:("https://example.invalid/pull/"+$num)}')"
+  '{number:($num|tonumber),state:$state,mergedAt:null,headRefOid:$oid,headRefName:$ref,isCrossRepository:false,baseRefName:"main",headRepository:{nameWithOwner:"fixture/project"},url:("https://example.invalid/pull/"+$num)}')"
 # `pr list`: the PR exists only once STUB_PR_EXISTS names an existing file
 # (the stand-in default-workflow creates it), as after a fresh build.
 if [ "$SUB" = list ]; then
@@ -249,6 +251,7 @@ make_fixture() {
   git init -q --bare "$base/origin.git" || harness_error "git init --bare failed"
   git -C "$MAIN" remote add origin "$base/origin.git" \
     && git -C "$MAIN" push -q origin main feat/x || harness_error "push to fixture origin failed"
+  git -C "$MAIN" config url."$base/origin.git".insteadOf https://github.com/fixture/project.git || harness_error "URL rewrite failed"
   WT="$(cd "$WT" && pwd -P)"
   export STUB_HEAD_OID="$SHA_B" STUB_HEAD_REF="feat/x" STUB_STATE=OPEN STUB_PR=7 STUB_GH_FAIL=0
 }
@@ -395,6 +398,11 @@ echo "== T11b: tools from ~/.amplihack, PR worktree ships its own tools — AMPL
 # must not become the rounds' tool root.
 install_fake_tools "$HOME/.amplihack/amplifier-bundle/tools"
 install_fake_tools "$WT/amplifier-bundle/tools"
+# PR-authored tools belong to the committed PR tree. Leaving them untracked
+# would correctly trigger the shared preflight's dirty-worktree refusal.
+git -C "$WT" add amplifier-bundle && git -C "$WT" commit -q -m "fixture PR-authored tools" \
+  && git -C "$WT" push -q origin feat/x || harness_error "PR-authored tools publication failed"
+SHA_B="$(git -C "$WT" rev-parse HEAD)"; export STUB_HEAD_OID="$SHA_B"
 for loop in merge crusty; do
   preflight "$loop"
   PF="$OUT"
@@ -408,7 +416,7 @@ for loop in merge crusty; do
     "$(real "$HOME/.amplihack")/amplifier-bundle/recipes/$(round_of "$loop").yaml" \
     "$(awk 'p{print; exit} $0=="--round-recipe"{p=1}' "$WORK/argv")"
 done
-rm -rf "$HOME/.amplihack" "$WT/amplifier-bundle"
+rm -rf "$HOME/.amplihack"
 
 echo "== T1-RO: resolution is read-only =="
 snap() { { git -C "$MAIN" for-each-ref; git -C "$MAIN" worktree list --porcelain; git -C "$MAIN" status --porcelain; git -C "$WT" status --porcelain; } 2>&1; }
@@ -428,11 +436,8 @@ done
 echo "== T7: an option-looking existing_branch is compared literally and refused =="
 preflight merge EXISTING_BRANCH=--force
 check_eq T7-rc "a --force branch that is not headRefName refuses" 1 "$RC"
-check_eq T7-out "nothing on stdout for step-02 to act on" "" "$OUT"
-case "$ERR" in
-  *"branch-mismatch: --branch '--force'"*) pass T7-msg "stderr names the literal branch" ;;
-  *) fail T7-msg "expected a branch-mismatch line naming '--force'; got: $ERR" ;;
-esac
+check_eq T7-out "named refusal envelope" pr-worktree-branch-mismatch "$(field "$OUT" outcome)"
+check_eq T7-msg "literal branch in evidence" --force "$(printf %s "$OUT" | jq -r .evidence.expected)"
 check_eq T7-ro "no worktree was created or changed" "$BEFORE" "$(snap)"
 
 echo "== T16: existing_branch differs from headRefName — refuse, never pick its worktree =="
@@ -462,7 +467,7 @@ for loop in merge crusty; do
   check_eq "T17-$loop-pr" "$loop preflight pr is AUTODRIVE_PR_INPUT" 7 "$(field "$OUT" pr)"
   check_eq "T17-$loop-repo" "$loop preflight repo is the PR worktree" "$WT" "$(real "$(field "$OUT" repo)")"
 done
-if grep -q -- '--json number' "$GH_LOG"; then
+if grep -Fq -- '--json number --jq .number' "$GH_LOG"; then
   fail T17-gh "the launch checkout's PR was guessed although pr_number was supplied"
 else
   pass T17-gh "no gh pr view guess from the launch checkout"
@@ -516,11 +521,7 @@ git -C "$MAIN" worktree remove --force "$WT" || harness_error "worktree remove f
 for loop in merge crusty; do
   preflight "$loop"
   if [[ "$RC" -ne 0 ]]; then pass "T2-$loop-rc" "$loop preflight exits non-zero (rc=$RC)"; else fail "T2-$loop-rc" "$loop preflight succeeded without a PR worktree"; fi
-  if [[ "$ERR" == *"feat/x"* && "$ERR" == *refusing* ]]; then
-    pass "T2-$loop-msg" "stderr names the branch and says it is refusing"
-  else
-    fail "T2-$loop-msg" "stderr must name feat/x and say 'refusing'; got: ${ERR:0:400}"
-  fi
+  check_eq "T2-$loop-msg" "missing worktree is named" pr-worktree-not-found "$(field "$OUT" outcome)"
   if [[ "$(field "$OUT" should_run)" == true ]]; then fail "T2-$loop-run" "should_run is true"; else pass "T2-$loop-run" "should_run is not true"; fi
 done
 
@@ -573,22 +574,12 @@ else
   fail T13-warn "expected a WARNING with both SHAs on stderr; got: $(head -c 400 "$WORK/tool.err")"
 fi
 
-echo "== T13b: worktree behind the PR head — both preflights refuse as pr-worktree-stale =="
-# PR #1588 review round 4: entering the loop on a stale tree cannot succeed
-# (every crusty round refuses with crusty-local-head-not-pr-head; the merge
-# gate refuses every round's evidence), so the preflight refuses by name.
+echo "== T13b: unavailable comparison data is a named refusal, never guessed behind =="
 for loop in merge crusty; do
   preflight "$loop" STUB_HEAD_OID="$NEWER"
-  check_eq "T13b-$loop-rc" "$loop preflight refuses a stale worktree" 1 "$RC"
-  check_eq "T13b-$loop-out" "$loop preflight prints nothing for step-02 to act on" "" "$OUT"
-  case "$ERR" in
-    *"pr-worktree-stale: worktree $WT is at $SHA_B, PR #7 head is $NEWER (worktree unfetched); run: git -C $WT pull --ff-only"*)
-      pass "T13b-$loop-msg" "stderr names the reason, both SHAs and the recovery command" ;;
-    *) fail "T13b-$loop-msg" "unexpected stderr: ${ERR:0:400}" ;;
-  esac
+  check_eq "T13b-$loop-rc" "comparison failure refuses" 1 "$RC"
+  check_eq "T13b-$loop-out" "named comparison failure" pr-worktree-comparison-failed "$(field "$OUT" outcome)"
 done
-preflight merge STUB_HEAD_OID="$NEWER" RECIPE_VAR_autodrive_pr_input=
-check_eq T13b-build-pr "the build phase's PR on a stale worktree is refused too" 1 "$RC"
 
 echo "== T13c: the stale-worktree remedy follows the direction (behind, ahead, diverged) =="
 # PR #1588 review round 8: a round whose `git push` failed leaves its fix
@@ -599,7 +590,7 @@ make_fixture t13c
 # A PR head one commit past the worktree, present in the object store but
 # not checked out: the worktree is behind.
 SHA_D="$(git -C "$WT" commit-tree "${SHA_B}^{tree}" -p "$SHA_B" -m D)" || harness_error "commit-tree D failed"
-# stale_case <id> <relation> <remedy-prefix> — tool and both preflights.
+# The read-only tool retains its relation contract; shared Rust preflight pushes ahead.
 stale_case() {
   local id="$1" rel="$2" remedy="$3" loop
   TOOL_OUT="$(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" 2>"$WORK/tool.err")"; TRC=$?
@@ -610,14 +601,16 @@ stale_case() {
     *) fail "$id-tool-remedy" "remedy must start with '$remedy'; got: $(field "$TOOL_OUT" remedy)" ;;
   esac
   for loop in merge crusty; do
+    git -C "$WT" push -q origin "$STUB_HEAD_OID:refs/heads/fixture-$id" || harness_error "comparison object publication failed"
+    git --git-dir "$WORK/t13c/origin.git" update-ref refs/heads/feat/x "$STUB_HEAD_OID" || harness_error "source ref update failed"
     preflight "$loop"
-    check_eq "$id-$loop-rc" "$loop preflight refuses" 1 "$RC"
-    check_eq "$id-$loop-out" "$loop preflight prints nothing for step-02 to act on" "" "$OUT"
-    case "$ERR" in
-      *"pr-worktree-stale: worktree $WT is at "*" (worktree $rel); run: $remedy"*)
-        pass "$id-$loop-msg" "stderr names the direction and its remedy" ;;
-      *) fail "$id-$loop-msg" "want '(worktree $rel); run: $remedy'; got: ${ERR:0:500}" ;;
-    esac
+    if [ "$rel" = ahead ]; then
+      check_eq "$id-$loop-rc" "clean ahead pushes and continues" 0 "$RC"
+      check_eq "$id-$loop-run" "loop proceeds" true "$(field "$OUT" should_run)"
+    else
+      check_eq "$id-$loop-rc" "unsafe history refuses" 1 "$RC"
+      check_eq "$id-$loop-out" "named history refusal" "pr-worktree-$rel" "$(field "$OUT" outcome)"
+    fi
   done
 }
 export STUB_HEAD_OID="$SHA_D"
@@ -655,11 +648,10 @@ TOOL_OUT="$(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" 2>"
 check_eq T13d-behind-rel "worktree_relation" behind "$(field "$TOOL_OUT" worktree_relation)"
 check_eq T13d-behind-argv "the behind remedy parses to git -C <path> pull --ff-only" \
   "$(printf '%s\n' git -C "$WT" pull --ff-only)" "$(remedy_argv "$(field "$TOOL_OUT" remedy)")"
+git -C "$WT" push -q origin "$SHA_E:refs/heads/feat/x" || harness_error "quoted-path source publication failed"
 preflight merge
-case "$ERR" in
-  *"run: $(field "$TOOL_OUT" remedy)"*) pass T13d-preflight "the preflight prints the quoted remedy" ;;
-  *) fail T13d-preflight "the preflight must print the tool's remedy; got: ${ERR:0:500}" ;;
-esac
+check_eq T13d-preflight "the preflight retains the named refusal" pr-worktree-behind "$(field "$OUT" outcome)"
+check_eq T13d-worktree "structured evidence preserves the path with spaces" "$WT" "$(printf '%s' "$OUT" | jq -r .evidence.worktree)"
 printf 'c\n' > "$WT/file"
 git -C "$WT" commit -q -am C || harness_error "commit C failed"
 export STUB_HEAD_OID="$SHA_B"

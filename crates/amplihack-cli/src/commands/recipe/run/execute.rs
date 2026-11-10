@@ -857,6 +857,14 @@ pub(super) fn execute_recipe_via_rust(
             if !failed {
                 return AttemptOutcome::Final(attempt_result);
             }
+            // A current helper refusal is terminal even when its diagnostic
+            // mentions a transport error. Preserve the recovery state.
+            if let Ok(result) = &attempt_result
+                && result.extra.contains_key("autodrive_preflight_refusal")
+            {
+                *last_verdict.borrow_mut() = None;
+                return AttemptOutcome::Final(attempt_result);
+            }
             // Issue #1267: repair before a retry too — a second attempt must not
             // run against a checkout the first attempt corrupted.
             caller_git.restore_on_failure();
@@ -941,10 +949,29 @@ fn finish_workspace(
     dry_run: bool,
 ) {
     use crate::commands::cleanup::run_dir::{Outcome, StepStatus};
+    if let Ok(run_result) = result
+        && let Some(envelope) = run_result.extra.get("autodrive_preflight_refusal")
+        && let Err(error) = workspace.record_preflight_refusal(envelope)
+    {
+        eprintln!("ERROR: could not preserve preflight evidence in run workspace: {error:#}");
+    }
     let (outcome, steps, log_path) = match result {
         Ok(run_result) => (
             if run_result.success {
                 Outcome::Success
+            } else if let Some(envelope) = run_result.extra.get("autodrive_preflight_refusal") {
+                match serde_json::from_value::<
+                    crate::commands::orch::autodrive_preflight::RefusalOutcome,
+                >(envelope["outcome"].clone())
+                {
+                    Ok(outcome) => Outcome::Refused(outcome.as_str()),
+                    Err(error) => {
+                        eprintln!(
+                            "ERROR: invalid preflight outcome during workspace finalization: {error}"
+                        );
+                        Outcome::Failure
+                    }
+                }
             } else {
                 Outcome::Failure
             },
@@ -993,6 +1020,8 @@ fn spawn_with_streaming_stderr(
     tree_id: &str,
     stderr_sink: &mut String,
 ) -> Result<RecipeRunResult> {
+    let preflight_channel =
+        crate::commands::orch::autodrive_provenance::ChannelOwner::attach(&mut command)?;
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
     {
@@ -1233,6 +1262,31 @@ fn spawn_with_streaming_stderr(
     // Issue #1267: hand the tail back to the caller so a failure can be
     // classified from everything the runner said, not just its JSON.
     stderr_sink.clone_from(&stderr_joined);
+    if let Some(envelope) = preflight_channel.read().map_err(|error| {
+        fail_with_final_record(
+            &correlation,
+            RecipeRunFinalStatus::ParseFailure,
+            child_pid,
+            status.code(),
+            error,
+        )
+    })? {
+        let outcome: crate::commands::orch::autodrive_preflight::RefusalOutcome =
+            serde_json::from_value(envelope["outcome"].clone())?;
+        let summary = correlation
+            .with_preflight_refusal(envelope.clone())
+            .emit_final(
+                RecipeRunFinalStatus::PreflightRefusal(outcome),
+                child_pid,
+                status.code(),
+                known_log_paths(None),
+            );
+        return Ok(serde_json::from_value(serde_json::json!({
+            "recipe_name": recipe_name_for_correlation(recipe_path),
+            "success": false, "status": outcome.as_str(), "run_id": summary.run_id,
+            "log_pointer": summary, "autodrive_preflight_refusal": envelope,
+        }))?);
+    }
     match parse_recipe_output_with_stderr_drops(
         &stdout_buf,
         &stderr_joined,
@@ -1240,6 +1294,15 @@ fn spawn_with_streaming_stderr(
         dropped,
     ) {
         Ok(mut result) => {
+            // This reserved field is created only by the private channel
+            // above. A child JSON result cannot assert helper provenance.
+            result.extra.remove("autodrive_preflight_refusal");
+            if crate::commands::orch::autodrive_provenance::known(
+                result.status.as_deref().unwrap_or(""),
+            ) {
+                result.status = Some("failure".into());
+                result.success = false;
+            }
             let final_status = if status.success() && result.success {
                 RecipeRunFinalStatus::Success
             } else {

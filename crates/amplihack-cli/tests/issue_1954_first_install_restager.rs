@@ -25,6 +25,8 @@
 //! binary. That listing must equal the one the test takes before it starts
 //! the stub: the old binary's part of the hand-off writes nothing there.
 
+#![cfg(target_os = "linux")]
+
 use crate::issue_1954_install_leaves_live_runs_alone::{
     Host, RUN_SCRIPT, plant_legacy_layout, proc_link, published_release, text,
 };

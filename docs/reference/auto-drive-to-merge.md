@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-11-05
+last_updated: 2026-11-10
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -111,7 +111,10 @@ Only when the loop was handed no PR number at all, which happens when a loop
 recipe is run on its own without `pr_number`, does the preflight fall back to
 `gh pr view` in `${REPO_PATH:-.}`. That number is a guess from the launch
 checkout, so it never turns resolution on: the loop uses `${REPO_PATH:-.}`,
-calls no `gh` head lookup, and never refuses on these grounds.
+calls no `gh` head lookup, and intentionally bypasses shared Rust PR-worktree
+preflight. This compatibility path does not verify the inferred PR's
+worktree. Supply `pr_number` to opt into that verification when running a
+loop on its own.
 
 The operator's value travels separately as `autodrive_pr_input` because the
 recipe runner copies a sub-recipe's whole context back into the parent when
@@ -171,9 +174,10 @@ compared, not passed to `git` as an option.
 On success the tool prints exactly one JSON line on stdout and exits `0`.
 On failure, stdout is **empty**. The tool writes one line to stderr in the form
 `autodrive_pr_head: <reason>: <detail>`, sometimes followed by more lines, and
-exits non-zero. The preflight acts on the exit code alone. It never parses a
-failure from stdout, so there is no failure JSON for the resolver and the
-preflight to disagree about.
+exits non-zero. Standalone read-only callers of this shell resolver use its
+exit code to detect failure; there is no failure JSON to parse. This is the
+legacy shell interface, not the shared Rust preflight envelope consumed by
+the loop recipe adapter.
 
 | Field | Meaning |
 | --- | --- |
@@ -182,7 +186,7 @@ preflight to disagree about.
 | `worktree` | Absolute, symlink-resolved path of the chosen worktree. |
 | `worktree_head` | `git rev-parse HEAD` in that worktree. |
 | `head_matches` | `"true"` when `worktree_head` equals `head_sha`, else `"false"`. |
-| `worktree_relation` | `same`, `behind`, `ahead`, `diverged` or `unfetched`; see [A worktree that is not at the PR head](#a-worktree-that-is-not-at-the-pr-head). |
+| `worktree_relation` | `same`, `behind`, `ahead`, `diverged` or `unfetched`; see [Standalone resolver relations and remedies](#standalone-resolver-relations-and-remedies). |
 | `remedy` | The command that brings the worktree to the PR head for that relation, with the worktree path and branch shell-quoted (`printf %q`) so it can be pasted as printed even when the path contains a space. Empty when `head_matches` is `"true"`. |
 
 | Exit | `reason` | Cause |
@@ -194,137 +198,148 @@ preflight to disagree about.
 | `4` | `pr-lookup-failed` (on stderr) | `gh pr view` failed, or returned an empty `headRefName` or a `headRefOid` that is not 40 or 64 hex characters. A `gh` failure is summarised as `gh pr view failed (rc=N)`. `gh`'s own output is never echoed, so auth errors and tokens do not reach the log. |
 | `5` | `branch-mismatch` (on stderr) | `--branch` is not the PR's `headRefName`. |
 
+### Standalone resolver relations and remedies
+
+These fields describe the read-only shell resolver's comparison against the
+advertised PR head using locally available objects. They are advisory output
+for standalone callers, not the shared Rust preflight's validated decisions
+or worker recovery instructions. The resolver never runs a remedy.
+
+| `worktree_relation` | Meaning | `remedy` output |
+| --- | --- | --- |
+| `same` | Local HEAD equals the advertised PR head. | Empty. |
+| `behind` | Local HEAD is an ancestor of the PR head. | `git -C <quoted-worktree> pull --ff-only` |
+| `ahead` | The PR head is an ancestor of local HEAD. | Push to `origin` with the quoted head branch; explains that pulling changes nothing. |
+| `diverged` | Neither ancestry check succeeds with the PR head available locally. | Pull with `--no-rebase`, then push to `origin` with the quoted head branch; explains that resetting would discard local commits. |
+| `unfetched` | The PR head commit is unavailable locally. | Pull with `--ff-only`, with guidance to merge and push if the histories have diverged. |
+
+The resolver shell-quotes worktree paths and branch names with `printf %q`.
+Its `origin` and upstream assumptions and its ancestry classification do not
+provide the source-repository validation, comparison-failure detection or
+verified push guarantees of shared preflight. For loop refusals, use
+[worker recovery](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md#preflight-refusals-and-worker-recovery).
+
 ### Refusal
 
-When resolution fails, the preflight exits non-zero before it emits
-`should_run`. Neither the round steps nor the merge gate run. There is no
-fallback to the current directory. Each message names the loop that refused:
-`merge loop` from `autodrive-merge-loop.yaml`, `crusty loop` from
-`autodrive-crusty-loop.yaml`. The crusty loop runs first, so on a fresh run you
-normally see the crusty-loop wording.
+When given an explicit PR number and scheduled to run, both loop recipes use
+the shared Rust `autodrive-preflight` decision path. Standalone loops without
+an explicit PR number retain the compatibility bypass described in
+[When resolution runs](#when-resolution-runs).
+The read-only `autodrive_pr_head.sh` interface above remains available to
+other callers; its relation and remedy fields do not control loop recovery.
 
-The resolver's own stderr line comes first, then the preflight's `ERROR`.
+Preflight validates authenticated PR identity, its actual source repository
+and branch, and any explicit branch constraint. It enumerates canonical
+worktrees belonging to the same common repository. Candidates include the
+checked-out source branch and detached HEAD worktrees whose rebase metadata
+names that exact branch. Zero or multiple candidates cause an explicit
+refusal; preflight never chooses another checkout or creates a worktree.
 
-**No worktree** (resolver exit `3`, `no-pr-worktree`):
+In the unique worktree, operation metadata for rebase, merge and cherry-pick,
+and unmerged index entries, are checked **before** cleanliness or ancestry.
+An interrupted operation refuses even with no unmerged paths. Evidence
+contains available operation metadata and relevant paths and explicitly
+reports when no unmerged paths were found. Nothing aborts, resets or resolves
+the operation. Status parsing preserves unusual filenames and both rename
+endpoints. Non-UTF-8 paths use tagged base64 bytes in structured evidence.
 
-```
-autodrive_pr_head: no-pr-worktree: PR #1543 head branch 'feat/x' has no worktree (searched --repo '<repo>' and git worktree list)
-ERROR: PR #1543 head branch 'feat/x' has no single worktree (searched REPO_PATH=<repo> and git worktree list); refusing to enter the crusty loop (#1543)
-```
-
-To recover, check the branch out in a worktree and re-run. Local state is
-kept, so finished phases are not redone:
-
-```bash
-git worktree add worktrees/feat/x feat/x
-amplihack recipe run auto-drive-to-merge -c pr_number=1543 -c existing_branch=feat/x -c repo_path=.
-```
-
-**Ambiguous worktree** (resolver exit `3`, `ambiguous-pr-worktree`). Each
-matching path is listed:
-
-```
-autodrive_pr_head: ambiguous-pr-worktree: PR #1543 branch 'feat/x' is checked out in 2 worktrees; check another branch out in all but one, or remove the extras
-  <repo>/worktrees/feat/x
-  <repo>/worktrees/feat/x-copy
-ERROR: PR #1543 head branch 'feat/x' has no single worktree (searched REPO_PATH=<repo> and git worktree list); refusing to enter the crusty loop (#1543)
-```
-
-To recover, check another branch out in all but one of the listed worktrees,
-or remove the extras with `git worktree remove <path>`, then re-run.
-
-**Branch mismatch** (resolver exit `5`, `branch-mismatch`). `existing_branch`
-names a branch other than the PR's head branch:
-
-```
-autodrive_pr_head: branch-mismatch: --branch 'feat/x-2' is not PR #1543's head branch 'feat/x'; pass existing_branch=feat/x or leave it empty
-ERROR: PR #1543 head resolution refused (autodrive_pr_head exit 5; reason on the line above); refusing to enter the crusty loop (#1543)
-```
-
-To recover, re-run with `existing_branch` set to the PR's head branch, or
-without it.
-
-**Any other resolver failure** (fail closed, exits non-zero with the reason):
-
-- the resolver is missing from the tools directory the state helper was found in;
-- it exits non-zero for any other reason, including `2` (usage) and `4`
-  (`pr-lookup-failed`, reported as `gh pr view failed (rc=N)` with no `gh` or
-  auth output);
-- it exits `0` but stdout is not one parseable JSON line, `worktree` is empty,
-  or `head_sha` is not 40 or 64 hex characters.
-
-```
-autodrive_pr_head: pr-lookup-failed: gh pr view failed (rc=1) for PR #1543
-ERROR: PR #1543 head resolution refused (autodrive_pr_head exit 4; reason on the line above); refusing to enter the crusty loop (#1543)
-```
+The nine stable outcomes are `pr-worktree-interrupted`, `pr-worktree-dirty`,
+`pr-worktree-behind`, `pr-worktree-diverged`,
+`pr-worktree-comparison-failed`, `pr-worktree-push-failed`,
+`pr-worktree-not-found`, `pr-worktree-ambiguous`, and
+`pr-worktree-branch-mismatch`. Their meanings and deliberate worker actions
+are listed in [Preflight refusals and worker recovery](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md#preflight-refusals-and-worker-recovery).
+The outcome spelling is identical in the final event, state record and PR
+comment.
 
 ### A worktree that is not at the PR head
 
-If the worktree's HEAD is not `headRefOid`, the resolver does not refuse. It
-sets `head_matches` to `"false"`, works out which way the worktree differs
-from the PR head with read-only commands (`git cat-file -e` and
-`git merge-base --is-ancestor`), and prints both SHAs, the relation and the
-remedy for that relation on stderr. The decision belongs to its caller, and
-both loop preflights refuse by name before the loop starts:
+Preflight fetches the PR source branch without checking it out or changing
+recovery state. It validates fetched and advertised heads, required objects,
+ancestry command results and history completeness before deciding:
 
-```
-WARNING: worktree <repo>/worktrees/feat/x is at <worktree_head>, PR #1543 head is <head_sha> (worktree behind); run: git -C <repo>/worktrees/feat/x pull --ff-only
-ERROR: pr-worktree-stale: worktree <repo>/worktrees/feat/x is at <worktree_head>, PR #1543 head is <head_sha> (worktree behind); run: git -C <repo>/worktrees/feat/x pull --ff-only, then re-run. Refusing to enter the crusty loop: every crusty round would refuse with crusty-local-head-not-pr-head (#1543)
-```
+| Worktree state | Behavior |
+| --- | --- |
+| Clean and synchronized | Continue with the existing successful loop output shape. |
+| Clean strict descendant of the fetched source head | Recheck local invariants, push the captured commit once to the explicit PR source ref with hooks enabled, then verify the exact remote head and safe local continuation state. Continue only after both checks succeed. |
+| Strict ancestor | Refuse as `pr-worktree-behind`. |
+| Complete histories with commits on both sides | Refuse as `pr-worktree-diverged`. |
+| Missing objects, incomplete history, failed fetch, unavailable remote information or failed ancestry commands | Refuse as `pr-worktree-comparison-failed`; do not guess a relation. |
 
-The remedy depends on `worktree_relation`:
+The destination is the PR's source repository, including forks, rather than
+an assumed `origin`. Only supported GitHub destinations and validated refs
+are accepted; executable remote helpers and unsupported transports are
+rejected. A rejected push, hook failure or transport failure produces
+`pr-worktree-push-failed`. Failed remote verification, a concurrent remote
+update or changed local continuation state also refuses explicitly, with the
+failure stage recorded. There are no timed probes, polling or retries in
+preflight. It never force-pushes, merges, rebases or discards local commits.
 
-| `worktree_relation` | Meaning | Remedy printed |
-| --- | --- | --- |
-| `behind` | The worktree's HEAD is an ancestor of the PR head. | `git -C <wt> pull --ff-only` |
-| `ahead` | The PR head is an ancestor of the worktree's HEAD: the worktree holds commits the PR does not have. | `git -C <wt> push origin <head_ref>` |
-| `diverged` | Each side has commits the other lacks. | `git -C <wt> pull --no-rebase`, then `git -C <wt> push origin <head_ref>` |
-| `unfetched` | The PR head is not in the local object store, so the worktree cannot be ahead of it; it is behind or diverged. | `git -C <wt> pull --ff-only`; if git refuses, follow the `diverged` remedy |
+Each `gh` invocation has a 60-second deadline. Git invocations have a one-hour
+deadline to allow ordinary push hooks to run builds and tests. On Unix, a
+deadline terminates the isolated subprocess group, including transports and
+hooks. A timeout is a failure, with no retry: publication may already have
+completed remotely. Inspect the remote head or PR comments before restarting.
+A comment timeout preserves the primary refusal and records a publication error.
 
-`ahead` is the usual result of a previous run whose `git push` failed. The
-round treats a failed push as a warning (see below), and a push that fails on
-authentication or the network has the same effect: the round's fix commits
-stay in the worktree only. For that case `pull --ff-only` prints
-"Already up to date" and changes nothing, so the preflight tells the operator
-to push instead.
+### Final events and durable refusal records
 
-The loop is not entered because it cannot succeed on that tree. Every crusty
-round refuses with `crusty-local-head-not-pr-head`, and the merge gate refuses
-every merge round's evidence, so the loop would end in an opaque `STUCK`
-after paying for a `loop-health-evaluator` call per round. The rest of this
-section explains why nothing in the run would close the gap if the preflight
-let it in.
+The shared Rust `autodrive-preflight` helper emits exactly one
+schema-version-1 JSON envelope on stdout;
+subprocess output is captured. Exit `0` means ready, `1` means refusal, and
+`2` means invalid invocation. Evaluation and refusal finalization are
+separate: a refusal carries its named outcome and structured evidence;
+finalization adds persistence and comment-publication diagnostics.
+`--repo` accepts `OWNER/REPO` or `.` to resolve the launch repository through
+authenticated `gh`; failed resolution is a named comparison failure.
 
-Evidence records the worktree's real `git rev-parse HEAD`, never `headRefOid`.
+Before attempting publication, finalization writes a sweep-readable refusal
+result in `preflight-result.json` in the drive's state directory using the
+existing result conventions. The run workspace's `run.json` also retains
+the named refusal as its outcome.
+Writes use protected permissions, an exclusive temporary file in the same
+directory and atomic replacement. Directory ownership, type, permissions
+and symlink protections are checked for each persistence operation. After
+one immediate informational PR comment attempt, finalization atomically
+replaces the record with publication diagnostics. If replacement fails, the
+final event reports whether the earlier record was written. If any
+persistence or publication step fails, the primary named refusal remains in
+the emitted envelope. External service failure cannot guarantee a comment.
 
-Nothing in the run closes the gap. The round's base-sync step fetches and
-merges only the **base** branch and then runs `git push`. It never pulls the PR
-branch. On a stale worktree that push fails as a non-fast-forward, which is
-only a warning. Base-merge commits and crusty-fix commits then land on the
-stale head, so the worktree diverges further from the PR.
+Comments sanitize control characters and redact credentials and sensitive
+path prefixes. Necessary detailed evidence stays in protected local state.
+PR comments never control execution or mark phases complete.
 
-The merge gate also refuses evidence whose `head_sha` is not the PR head it
-is about to merge (see [No silent merge](#no-silent-merge)). It is the last
-line, not the first: the preflight refusal comes before any round runs. Run
-the printed remedy and re-run. For a worktree behind the PR head:
+The runner accepts a refusal only from its current helper execution with
+validated provenance, a supported envelope, a known outcome and a refusal
+exit status. Stale files and arbitrary child output cannot assert a refusal.
+Valid refusals are terminal: no round or merge gate starts, no retry runs,
+and no successful loop result or completed review marker is written. The
+same outcome and evidence survive output parsing failures, workspace
+finalization and enclosing recipes in the caller-visible final event;
+these refusals never finish merely as `indeterminate`.
 
-```bash
-git -C worktrees/feat/x pull --ff-only
-amplihack recipe run auto-drive-to-merge -c pr_number=1543 -c existing_branch=feat/x -c repo_path=.
-```
-
-The remedies never discard local commits. Resetting the worktree onto
-`origin/feat/x` also clears the refusal, but it throws away every commit the
-worktree has that the PR does not, including unpushed crusty-fix commits. Use
-it only when those commits are not wanted.
+Already-merged and completed-phase skips retain their existing behavior.
+No additional preflight configuration is required: both loops use the PR,
+repository, optional `existing_branch` and drive state directory already
+provided by the recipe.
 
 ### What uses the resolved worktree
 
-The preflight adds `repo` (the worktree) to its JSON. It does not emit
-`head_sha`: nothing downstream would read it, because each round takes its own
-`git rev-parse HEAD` in `repo`. What binds `repo` to the PR head is the
-`pr-worktree-stale` refusal above. Every path string in that JSON is escaped, so a worktree path containing `"` cannot forge
-`should_run` or any other field.
+On a ready result, the recipe adapter translates the validated Rust helper
+envelope into the existing successful step-output JSON, including `repo`
+(the resolved worktree), `should_run`, `pr` and `state_dir`. The adapter's
+output is what downstream recipe steps consume; it is distinct from both
+the helper's schema-versioned envelope and the standalone shell resolver's
+JSON. A validated refusal propagates as a terminal result rather than a
+successful step output.
+
+The adapter does not add `head_sha` to the successful step output: each
+round takes its own `git rev-parse HEAD` in `repo`. Shared preflight's
+verification binds that worktree to the PR for explicitly supplied PR
+numbers; the standalone compatibility path retains `REPO_PATH`. Every path
+string in the adapter output is JSON-escaped, so a worktree path containing
+`"` cannot forge `should_run` or any other field.
 
 | Step | Uses `repo` for |
 | --- | --- |
@@ -4717,7 +4732,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | Test | Location |
 | --- | --- |
 | Executable contract test: loop, verdicts, forbidden-flag scan, merge-gate refusals, qa evidence against stub `cargo` and `gadugi-test`, crusty records and range; a step output read through `RECIPE_VAR_` only, the [#1511 repro](#reading-step-outputs) (`1511-repro`), the `state_dir` refusals and their silence on a safe value, the static `RECIPE_VAR_` check, the inherited-variable rows (`1561-stale-*`, `1561-empty-tools-dir-fails-closed`, `1561-NO_MERGE-*`, `MERGEREADY-no-round-tool-inherited`), and every row of the [loop-health line table](#reading-the-loop-health-line) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
-| PR head and worktree resolution, refusal, relative `repo_path`, run report, and two runs of the composed recipe through `recipe-runner-rs` (a fresh build whose stand-in default-workflow builds in its own worktree, as the real one does, where both loops must get that worktree and not the launch checkout; skipped build and crusty phases followed by a merge), and the `pr-worktree-stale` refusal (#1543). It needs `recipe-runner-rs` on `PATH` or in `RECIPE_RUNNER_RS_PATH`, and stops with a harness error without it | `amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh` |
+| PR head and worktree resolution, refusal, relative `repo_path`, run report, and two runs of the composed recipe through `recipe-runner-rs` (a fresh build whose stand-in default-workflow builds in its own worktree, as the real one does, where both loops must get that worktree and not the launch checkout; skipped build and crusty phases followed by a merge), and PR-worktree preflight behavior (#1543, #2188). It needs `recipe-runner-rs` on `PATH` or in `RECIPE_RUNNER_RS_PATH`, and stops with a harness error without it | `amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh` |
 | QA command selection (#1516): `AUTODRIVE_QA_DIR` with `AUTODRIVE_QA_COMMAND`, root Cargo, nested and nested-workspace Cargo, pruned `target`/`worktrees`/`node_modules`/`.git` crates, unrelated sibling crates with no base (`QA_UNRESOLVED`) and depth-4 crates, mixed Node/Python roots, the jamestown shape (root `pytest` beside a nested crate), `package.json` beside a nested crate, a root `requirements.txt`, `go.mod` or other unhandled project file beside a nested crate (BLOCKED, never `cargo test` in the crate), the `./<word>` installed check, an `AUTODRIVE_QA_DIR` that does not exist, parity scenarios under the detected workspace directory (including `AUTODRIVE_QA_COMMAND` with `AUTODRIVE_QA_DIR=sub` in a nested-Cargo repository), the space-separated unresolved candidate list, symlinked and unsafely named directories, a `cargo` in the workspace that is off `PATH` and never runs, an in-repository `cargo` on `PATH` that runs (the check is a `PATH` lookup, not a sandbox), a `.venv/bin/pytest` on `PATH` that runs whether detected or set with `AUTODRIVE_QA_COMMAND=pytest`, and a crate in a directory named `-` or an exported `CDPATH` that never moves the suite outside the checkout. Stub `cargo`, `pytest`, `npm` and `gadugi-test` record their directory and arguments | `amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh` |
 | QA command source and path scoping (#1763): the env, `.amplihack/qa.toml`, CI and detected sources and their precedence (an empty env value still wins); malformed, oversized, symlinked and unsafe `qa.toml` files, one per problem token, with injection markers that leave no side effect; `changed-in-pr` for a `qa.toml` or workflow file changed by the pull request; a clean CI step, an ambiguous CI source, and one shaped like this repository's `ci.yml` that falls through to `cargo test` at `.`; `paths-unknown` for `(unknown)` and `(none)` paths; a present `.amplihack` symlink, a `.amplihack` file and a dangling `qa.toml` symlink, and a real `.amplihack` directory without `qa.toml` that falls through to CI; known paths inside one nested project, a move across projects, a nested-only `ws` crate with a pull request that changes only `README.md` (`rust-cli` at `ws`) and `svc/package.json` with `docs/svc.md` (`node` at `svc`), an unknown base with two projects (`QA_UNRESOLVED`), and `QA_UNRESOLVED` with a `package.json` candidate, asserting both that gadugi ran and that `qa_status` stays `QA_UNRESOLVED` when gadugi passes and when it fails, a root workspace with a change in `crates/x`, and the gate given `AUTODRIVE_QA_BASE` in a mixed fixture repository. Merge-base reads: an untracked, an ignored and a differently-cased `qa.toml` give `none`, a modified tracked one gives the merge-base command, a `qa.toml` symlink committed at the merge base gives `symlink`, an untracked workflow file is ignored, a PR-added nested or root `Cargo.toml` in a Node repository keeps gadugi required, an untracked manifest is not a candidate, an unknown or empty base keeps gadugi required, an unset base (a preflight) reads `HEAD`'s committed tree, 50 workflow files are read and 51 are not, and a broken `qa.toml` outranks `no-scenarios`. `shellcheck -x -S warning` runs on the scope file, `autodrive_trust.sh`, the evidence tool and the gate, and is skipped with a message when it is not installed. Fake `cargo`, `npm`, `pytest` and `gadugi-test` record their directory and arguments; children run under `env -i` with `HOME` in the test's own directory and no `AMPLIHACK_CLAUDE_PROFILE_ROOT` | `amplifier-bundle/recipes/tests/test-issue-1763-qa-scope.sh` (the cases above); `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` (the four direct #1763 cases and the `1763-gate-*` gate cases); `amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh` (the #1516 detection cases changed by #1763) |
 | Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step, the PR-head resolver read-only guard, `autodrive_step_outputs_are_read_from_recipe_var_only` (the four [static checks](#the-static-check), with the read counts taken from this page), `autodrive_round_with_inherited_stale_tools_dir_uses_its_own` (#1607), and the contract shell suite run with inherited variables scrubbed, set to a conflicting decoy, and set to the round's own tools | `tests/integration/auto_drive_to_merge_test.rs` |

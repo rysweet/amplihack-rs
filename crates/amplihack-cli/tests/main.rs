@@ -401,3 +401,6 @@ mod signal_validator_parity;
 mod spec_conformance;
 #[path = "system_prompt_append_fragment.rs"]
 mod system_prompt_append_fragment;
+
+#[path = "issue_2188_autodrive_preflight.rs"]
+mod issue_2188_autodrive_preflight;

@@ -21,6 +21,8 @@ use std::path::PathBuf;
 
 use crate::commands::multitask;
 
+pub(crate) mod autodrive_preflight;
+pub(crate) mod autodrive_provenance;
 mod named_branch;
 mod select_workflow;
 mod workflow_log_inventory;
@@ -47,6 +49,8 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
+    /// Check and publish the PR worktree without reconciling history.
+    AutodrivePreflight(autodrive_preflight::PreflightRequest),
     /// Read stdin, print the first complete JSON object found in it.
     ///
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
@@ -494,6 +498,7 @@ fn read_bounded_stdin() -> String {
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
+        OrchHelperCommands::AutodrivePreflight(request) => autodrive_preflight::run(request),
         OrchHelperCommands::ExtractJson { require_field } => {
             let input = read_stdin()?;
             let found = match require_field.as_deref() {
