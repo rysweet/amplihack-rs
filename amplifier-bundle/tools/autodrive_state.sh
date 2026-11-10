@@ -103,6 +103,7 @@ autodrive_private_dir() {
   if [ ! -O "$dir" ]; then
     echo "ERROR: state-dir-not-private: ${dir} is not owned by this user, so others may write in it; choose another AUTODRIVE_STATE_DIR" >&2; return 1
   fi
+  # Put -- before the mode: BSD chmod stops parsing options at the first operand and would read -- as a file.
   if ! chmod -- go-w "$dir" 2>/dev/null; then
     echo "ERROR: state-dir-not-private: could not remove the group and world write bits from ${dir}" >&2; return 1
   fi
