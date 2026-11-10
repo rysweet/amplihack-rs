@@ -1,0 +1,46 @@
+Issue #2096 prerequisite recording experiment; production acceptance: NOT PASSED
+Toolchain: Rust 1.97.0; macOS; /usr/bin/git
+Only fixture-controlled commands and selected events are included.
+Paths under the disposable fixture are replaced with <fixture>.
+
+Observer status:
+/usr/bin/dtruss: exit status: 1
+coverage_verified=false
+dtrace: system integrity protection is on, some features will not be available
+dtrace: failed to initialize dtrace: Operation not permitted
+
+Hook bypass result:
+command_executed=true
+command_recorded=false
+
+Trace2 storage failure:
+Git exit status: 0
+private_index_changed=true
+
+Caller index comparison:
+byte_equal=true
+before_sha256=43d21cf158e44bf47643b4a715e3c74ccfd175b082a9b3eeda3fcdf5f607a5c8
+after_sha256=43d21cf158e44bf47643b4a715e3c74ccfd175b082a9b3eeda3fcdf5f607a5c8
+
+Selected Trace2 events (absolute executable provenance and launch cwd remain unproven):
+{"argv": ["/Applications/Xcode.app/Contents/Developer/usr/bin/git", "-c", "core.hooksPath=<fixture>/hooks", "-c", "user.name=Probe", "-c", "user.email=probe@example.invalid", "commit", "-qm", "private linked checkout commit"], "event": "start"}
+{"argv": ["<fixture>/hooks/pre-commit"], "child_class": "hook", "child_id": 0, "event": "child_start"}
+{"argv": ["/Applications/Xcode.app/Contents/Developer/usr/bin/git", "rev-parse", "--show-toplevel"], "event": "start"}
+{"code": 0, "event": "exit"}
+{"child_id": 0, "code": 0, "event": "child_exit"}
+{"argv": ["git", "maintenance", "run", "--auto", "--quiet", "--detach"], "child_class": "?", "child_id": 1, "event": "child_start"}
+{"argv": ["/Applications/Xcode.app/Contents/Developer/usr/libexec/git-core/git", "maintenance", "run", "--auto", "--quiet", "--detach"], "event": "start"}
+{"code": 0, "event": "exit"}
+{"child_id": 1, "code": 0, "event": "child_exit"}
+{"code": 0, "event": "exit"}
+{"code": 0, "event": "exit"}
+
+Controlled hook commands:
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR
+cd one
+"$PROBE_GIT" rev-parse --show-toplevel > "$PROBE_HOOK_MARKER"
+unset GIT_TRACE2_EVENT
+"$PROBE_GIT" rev-parse --git-dir > "$PROBE_BYPASS_MARKER"
+
+Project hooks, production runner, agent CLIs, and Linux observer coverage: NOT VALIDATED.
+Historical writer attribution: UNPROVEN.

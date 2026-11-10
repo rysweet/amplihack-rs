@@ -12,6 +12,20 @@ directories. It invokes absolute Git, stages private files, exercises relative
 Trace2 destination. It compares caller index bytes before and after. It does not
 run the repository's real hook set; that reproduction remains outstanding.
 
+The review follow-up adds a shell-launched commit in the detached linked
+checkout. Its controlled `pre-commit` hook clears inherited Git routing,
+changes directory, and launches absolute Git twice. The second descendant
+unsets `GIT_TRACE2_EVENT`. Its marker confirms execution, but its argv is absent
+from the trace. A successful parent and a nonempty trace therefore do not prove
+complete collection. This hook is a diagnostic fixture, not the project's hook
+set.
+
+The probe also attempts the platform observer without privilege escalation:
+`dtruss -f /usr/bin/true` on macOS, or a process/cwd `strace` probe on Linux.
+`observer.status` always labels coverage unverified, even if the observer exits
+successfully. Tool presence and successful initialization are insufficient to
+establish recording coverage or failure supervision.
+
 Run it with a fresh destination under a trusted parent:
 
 ```sh
@@ -58,3 +72,40 @@ mechanism. This is an incomplete implementation step. Required regression tests,
 real-hook candidate-1 reproduction, Linux process-observation coverage, and PR
 delivery remain outstanding. Nothing in this experiment establishes which
 command changed the historical caller index.
+
+## Review follow-up validation
+
+The updated example executed successfully using the pinned Rust 1.97.0 toolchain
+and disposable build output. Clearing `RUSTC_WRAPPER` avoids the previous ccache
+failure; setting `SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk`
+avoids SDK discovery blocking compilation on this host. Apple tool wrappers
+still emitted xcrun cache permission warnings. Direct compilation with the
+toolchain's `rustc` and the Command Line Tools clang linker also passed. The
+modified example passed the pinned `rustfmt --check`.
+
+Sanitized retained outcomes, selected events, controlled hook commands, and
+caller-index comparisons are in
+[`evidence/issue-2096-recording-review.txt`](evidence/issue-2096-recording-review.txt).
+Original evidence is retained separately at
+`/private/tmp/issue-2096-review-proof-197`; the report does not rewrite it.
+
+| Required boundary / failure | Observed result | Acceptance |
+| --- | --- | --- |
+| Absolute Git with `-C` | Trace2 argv and repository events | Partial: executable identity and launch cwd unproven |
+| Relative alternate index from changed cwd | Independently queried index paths retained | Partial: not arbitrary descendant attribution |
+| Shell → commit → hook → absolute Git | Controlled commit succeeds and marker identifies private checkout | Partial: project hooks and runner not exercised |
+| Hook disables Trace2 | Git succeeds; descendant command missing from trace | Failed collection guarantee |
+| Trace2 destination is not a directory | Git succeeds and private index changes | Failed failure-supervision guarantee |
+| macOS supplemental observer | DTrace initialization denied: `Operation not permitted` | Unsupported in this sandbox |
+| Linux supplemental observer | Probe code added; not executed here | Unverified |
+| Production runner / agent boundaries | Not exercised | Unverified |
+| Collection, persistence, finalization supervision | No verified mandatory observer | Unimplemented |
+
+The prerequisite remains blocked. No production isolation, trusted review
+provisioning, cleanup ownership enforcement, or mandatory recorder has been
+integrated. These guarantees must not be inferred from this diagnostic's zero
+exit status. Per the required dependency order, dependent implementation stops
+here until a supported observer can establish complete attribution and deliver
+collection failures to the supervisor. No production-path regression test,
+project hook completion, full candidate-1 reproduction, or #2096 completion is
+claimed.

@@ -44,6 +44,47 @@ fn git(root: &Path, cwd: &Path) -> Command {
     command
 }
 
+/// Exercise the OS observer separately. Availability is not a coverage proof:
+/// in particular, macOS may install dtruss while denying DTrace access.
+fn probe_observer(root: &Path) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let observer = Some(("/usr/bin/dtruss", vec!["-f", "/usr/bin/true"]));
+    #[cfg(target_os = "linux")]
+    let observer = Some((
+        "/usr/bin/strace",
+        vec!["-f", "-e", "trace=process,chdir,fchdir", "/usr/bin/true"],
+    ));
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let observer: Option<(&str, Vec<&str>)> = None;
+    let Some((executable, args)) = observer else {
+        fs::write(root.join("observer.status"), "unsupported platform\n")?;
+        return Ok(());
+    };
+    let outcome = Command::new(executable)
+        .args(args)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", root.join("home"))
+        .env("TMPDIR", root)
+        .current_dir(root)
+        .output();
+    match outcome {
+        Ok(output) => {
+            fs::write(root.join("observer.stdout"), output.stdout)?;
+            fs::write(root.join("observer.stderr"), output.stderr)?;
+            fs::write(
+                root.join("observer.status"),
+                format!("{executable}: {}\ncoverage_verified=false\n", output.status),
+            )?;
+        }
+        Err(error) => fs::write(
+            root.join("observer.status"),
+            format!("{executable}: {error}\ncoverage_verified=false\n"),
+        )?,
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let destination = std::env::args_os().nth(1).ok_or("missing evidence DIR")?;
     let destination = Path::new(&destination);
@@ -57,6 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     return Err("probe requires Unix owner-only evidence storage".into());
     let root = fs::canonicalize(destination)?;
     fs::create_dir(root.join("home"))?;
+    probe_observer(&root)?;
     let caller = root.join("caller");
     let checkout = root.join("checkout");
     fs::create_dir(&caller)?;
@@ -154,6 +196,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             expected.stdout,
         )?;
     }
+    // A real Git hook launches a shell descendant, which launches absolute Git
+    // from a changed cwd. This is controlled diagnostic code, NOT the project's
+    // production hook set or a trusted reviewer launch.
+    let hooks = root.join("hooks");
+    fs::create_dir(&hooks)?;
+    let hook = hooks.join("pre-commit");
+    fs::write(
+        &hook,
+        b"#!/bin/sh\nset -eu\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR\ncd one\n\"$PROBE_GIT\" rev-parse --show-toplevel > \"$PROBE_HOOK_MARKER\"\nunset GIT_TRACE2_EVENT\n\"$PROBE_GIT\" rev-parse --git-dir > \"$PROBE_BYPASS_MARKER\"\n",
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o700))?;
+    }
+    let mut shell = Command::new("/bin/sh");
+    shell.current_dir(&checkout).env_clear();
+    for (key, value) in git(&root, &checkout).get_envs() {
+        if let Some(value) = value {
+            shell.env(key, value);
+        }
+    }
+    shell
+        .env("PROBE_GIT", executable)
+        .env("PROBE_HOOK_MARKER", root.join("hook.marker"))
+        .env("PROBE_BYPASS_MARKER", root.join("hook-bypass.marker"))
+        .env("GIT_TRACE2_EVENT", root.join("trace2-hook.jsonl"))
+        .args(["-c", "exec \"$@\"", "probe", executable, "-c"])
+        .arg(format!("core.hooksPath={}", hooks.display()))
+        .args([
+            "-c",
+            "user.name=Probe",
+            "-c",
+            "user.email=probe@example.invalid",
+            "commit",
+            "-qm",
+            "private linked checkout commit",
+        ]);
+    checked(&mut shell, &root)?;
+    if fs::read(root.join("hook.marker"))? != format!("{}\n", checkout.display()).as_bytes() {
+        return Err("hook descendant did not resolve the private checkout".into());
+    }
+    let hook_trace = fs::read_to_string(root.join("trace2-hook.jsonl"))?;
+    let bypass_ran = !fs::read(root.join("hook-bypass.marker"))?.is_empty();
+    let bypass_recorded = hook_trace.contains("\"--git-dir\"");
+    fs::write(
+        root.join("hook-bypass.result"),
+        format!("command_executed={bypass_ran}\ncommand_recorded={bypass_recorded}\n"),
+    )?;
     // Trace2's native initialization policy must not be mistaken for fail-closed
     // recording. Retain the command's real status and warning for inspection.
     let blocked = root.join("not-a-directory");
