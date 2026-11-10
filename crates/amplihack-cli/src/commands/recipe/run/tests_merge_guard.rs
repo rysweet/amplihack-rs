@@ -505,7 +505,7 @@ fn a_proc_parent_check_without_proc_is_refused_at_launch_not_at_the_merge() {
     use super::merge_guard::{ParentCheck, check_guard_host};
     let tmp = tempfile::tempdir().unwrap();
     let no_proc = tmp.path().join("proc/self/stat");
-    let err = check_guard_host(&no_proc, Path::new("/bin/sh"), ParentCheck::Proc)
+    let err = check_guard_host(Path::new("/bin/sh"), ParentCheck::Proc(&no_proc))
         .expect_err("no /proc must stop the run")
         .to_string();
     assert!(err.contains(&no_proc.display().to_string()), "{err}");
@@ -533,8 +533,6 @@ fn a_proc_parent_check_without_proc_is_refused_at_launch_not_at_the_merge() {
 fn a_tools_parent_check_names_a_missing_tool_and_1646() {
     use super::merge_guard::{ParentCheck, check_guard_host};
     let tmp = tempfile::tempdir().unwrap();
-    // Deliberately absent: the Tools arm must never look at it.
-    let no_proc = tmp.path().join("proc/self/stat");
     let present = tool_stub(&tmp.path().join("bin/ps"));
     let missing = tmp.path().join("usr/sbin/lsof");
 
@@ -542,7 +540,7 @@ fn a_tools_parent_check_names_a_missing_tool_and_1646() {
         (vec![missing.as_path(), present.as_path()], &missing),
         (vec![present.as_path(), missing.as_path()], &missing),
     ] {
-        let err = check_guard_host(&no_proc, Path::new("/bin/sh"), ParentCheck::Tools(&tools))
+        let err = check_guard_host(Path::new("/bin/sh"), ParentCheck::Tools(&tools))
             .expect_err("a missing macOS tool must stop the run")
             .to_string();
         assert!(
@@ -564,12 +562,11 @@ fn a_tools_parent_check_names_a_missing_tool_and_1646() {
 fn a_tools_parent_check_refuses_a_non_executable_tool() {
     use super::merge_guard::{ParentCheck, check_guard_host};
     let tmp = tempfile::tempdir().unwrap();
-    let no_proc = tmp.path().join("proc/self/stat");
     let ps = tool_stub(&tmp.path().join("bin/ps"));
     let lsof = tool_stub(&tmp.path().join("usr/sbin/lsof"));
     set_mode(&lsof, 0o644);
     let tools = [ps.as_path(), lsof.as_path()];
-    let err = check_guard_host(&no_proc, Path::new("/bin/sh"), ParentCheck::Tools(&tools))
+    let err = check_guard_host(Path::new("/bin/sh"), ParentCheck::Tools(&tools))
         .expect_err("a non-executable tool must stop the run")
         .to_string();
     assert!(err.contains(&lsof.display().to_string()), "{err}");
@@ -579,7 +576,7 @@ fn a_tools_parent_check_refuses_a_non_executable_tool() {
     fs::remove_file(&lsof).unwrap();
     fs::create_dir_all(&lsof).unwrap();
     assert!(
-        check_guard_host(&no_proc, Path::new("/bin/sh"), ParentCheck::Tools(&tools)).is_err(),
+        check_guard_host(Path::new("/bin/sh"), ParentCheck::Tools(&tools)).is_err(),
         "a directory in place of a tool must stop the run"
     );
 }
@@ -591,11 +588,10 @@ fn a_tools_parent_check_refuses_a_non_executable_tool() {
 fn a_tools_parent_check_passes_without_any_proc() {
     use super::merge_guard::{ParentCheck, check_guard_host};
     let tmp = tempfile::tempdir().unwrap();
-    let no_proc = tmp.path().join("proc/self/stat");
     let ps = tool_stub(&tmp.path().join("bin/ps"));
     let lsof = tool_stub(&tmp.path().join("usr/sbin/lsof"));
     let tools = [ps.as_path(), lsof.as_path()];
-    check_guard_host(&no_proc, Path::new("/bin/sh"), ParentCheck::Tools(&tools))
+    check_guard_host(Path::new("/bin/sh"), ParentCheck::Tools(&tools))
         .expect("ps and lsof present: no /proc is needed");
 }
 
@@ -608,9 +604,7 @@ fn a_tools_parent_check_passes_without_any_proc() {
 #[test]
 fn a_tools_parent_check_refuses_an_empty_tool_list() {
     use super::merge_guard::{ParentCheck, check_guard_host};
-    let tmp = tempfile::tempdir().unwrap();
-    let no_proc = tmp.path().join("proc/self/stat");
-    let err = check_guard_host(&no_proc, Path::new("/bin/sh"), ParentCheck::Tools(&[]))
+    let err = check_guard_host(Path::new("/bin/sh"), ParentCheck::Tools(&[]))
         .expect_err("an empty tool list must not pass vacuously")
         .to_string();
     assert!(err.contains("#1646"), "{err}");
@@ -623,7 +617,6 @@ fn a_tools_parent_check_refuses_an_empty_tool_list() {
     // refused even on a host that has everything else.
     assert!(
         check_guard_host(
-            &no_proc,
             Path::new(super::merge_guard::SHIM_INTERPRETER),
             ParentCheck::Tools(&[])
         )
@@ -659,19 +652,15 @@ fn the_reference_doc_quotes_both_launch_bails_verbatim() {
 
     // Both arms, produced against a path that really is missing, then with
     // that path swapped for the one the doc quotes.
-    let proc_bail = check_guard_host(&absent, Path::new("/bin/sh"), ParentCheck::Proc)
+    let proc_bail = check_guard_host(Path::new("/bin/sh"), ParentCheck::Proc(&absent))
         .expect_err("a missing proc_stat must bail")
         .to_string()
         .replace(&shown, PROC_SELF_STAT);
     let tools = [absent.as_path()];
-    let tools_bail = check_guard_host(
-        Path::new(PROC_SELF_STAT),
-        Path::new("/bin/sh"),
-        ParentCheck::Tools(&tools),
-    )
-    .expect_err("a missing tool must bail")
-    .to_string()
-    .replace(&shown, LSOF_TOOL);
+    let tools_bail = check_guard_host(Path::new("/bin/sh"), ParentCheck::Tools(&tools))
+        .expect_err("a missing tool must bail")
+        .to_string()
+        .replace(&shown, LSOF_TOOL);
 
     for produced in [&proc_bail, &tools_bail] {
         assert!(
@@ -709,8 +698,8 @@ fn a_host_without_the_shim_interpreter_is_refused_at_launch() {
     let tools = [ps.as_path(), lsof.as_path()];
     let no_bash = tmp.path().join("bin/bash");
 
-    for parent in [ParentCheck::Proc, ParentCheck::Tools(&tools)] {
-        let err = check_guard_host(&stat, &no_bash, parent)
+    for parent in [ParentCheck::Proc(&stat), ParentCheck::Tools(&tools)] {
+        let err = check_guard_host(&no_bash, parent)
             .expect_err("no interpreter must stop the run")
             .to_string();
         assert!(err.contains(&no_bash.display().to_string()), "{err}");
@@ -721,12 +710,12 @@ fn a_host_without_the_shim_interpreter_is_refused_at_launch() {
     fs::create_dir_all(no_bash.parent().unwrap()).unwrap();
     fs::write(&no_bash, "").unwrap();
     set_mode(&no_bash, 0o644);
-    assert!(check_guard_host(&stat, &no_bash, ParentCheck::Proc).is_err());
-    assert!(check_guard_host(&stat, &no_bash, ParentCheck::Tools(&tools)).is_err());
+    assert!(check_guard_host(&no_bash, ParentCheck::Proc(&stat)).is_err());
+    assert!(check_guard_host(&no_bash, ParentCheck::Tools(&tools)).is_err());
 
     set_mode(&no_bash, 0o755);
-    check_guard_host(&stat, &no_bash, ParentCheck::Proc).expect("both present: the host is usable");
-    check_guard_host(&stat, &no_bash, ParentCheck::Tools(&tools))
+    check_guard_host(&no_bash, ParentCheck::Proc(&stat)).expect("both present: the host is usable");
+    check_guard_host(&no_bash, ParentCheck::Tools(&tools))
         .expect("both present: the host is usable");
 }
 
@@ -740,9 +729,8 @@ fn locate_guard_dir_checks_the_real_host() {
     assert_eq!(SHIM_INTERPRETER, "/bin/bash");
     if Path::new(SHIM_INTERPRETER).exists() {
         check_guard_host(
-            Path::new(PROC_SELF_STAT),
             Path::new(SHIM_INTERPRETER),
-            ParentCheck::Proc,
+            ParentCheck::Proc(Path::new(PROC_SELF_STAT)),
         )
         .unwrap();
         let (_tmp, home) = bundle_with_shim(Some(0o755));
@@ -752,9 +740,10 @@ fn locate_guard_dir_checks_the_real_host() {
 
 /// #1646, the macOS twin: the real launch path asks for `/bin/ps` and
 /// `/usr/sbin/lsof` — the two tools the shim's Darwin arm resolves through
-/// `sys_tool` — and not for `/proc`, and `locate_guard_dir` passes on this
-/// Darwin host. Before #1646 this failed, because the launch check demanded
-/// `/proc/self/stat` on every Unix host.
+/// `sys_tool` — and `locate_guard_dir` passes on this Darwin host. Before
+/// #1646 this failed, because the launch check demanded `/proc/self/stat` on
+/// every Unix host. That it asks for no `/proc` is no longer assertable here
+/// and does not need to be: [`ParentCheck::Tools`] carries no path to one.
 #[cfg(target_os = "macos")]
 #[test]
 fn locate_guard_dir_checks_the_real_macos_host() {
@@ -763,12 +752,8 @@ fn locate_guard_dir_checks_the_real_macos_host() {
     assert_eq!(LSOF_TOOL, "/usr/sbin/lsof");
     assert_eq!(SHIM_INTERPRETER, "/bin/bash");
     let tools = [Path::new(PS_TOOL), Path::new(LSOF_TOOL)];
-    check_guard_host(
-        Path::new("/nonexistent/proc/self/stat"),
-        Path::new(SHIM_INTERPRETER),
-        ParentCheck::Tools(&tools),
-    )
-    .expect("this macOS host has ps, lsof and /bin/bash");
+    check_guard_host(Path::new(SHIM_INTERPRETER), ParentCheck::Tools(&tools))
+        .expect("this macOS host has ps, lsof and /bin/bash");
 
     let (_tmp, home) = bundle_with_shim(Some(0o755));
     locate_guard_dir(&home).expect("#1646: macOS passes the launch check without /proc");

@@ -14,7 +14,7 @@
 use crate::support::amplihack_bin::amplihack_bin;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 const GUARD_REL: &str = "amplifier-bundle/tools/gh-merge-guard";
 const MARKER_ENV: &str = "AMPLIHACK_MERGE_GUARD";
@@ -665,7 +665,7 @@ fn shipped_bash_env_sources_the_users_bash_env_then_puts_the_guard_first() {
         "export FROM_USER_BASH_ENV=yes\nexport PATH=/elsewhere:$PATH\n",
     )
     .unwrap();
-    let out = Command::new("bash")
+    let out = std::process::Command::new("bash")
         .arg("-c")
         .arg("printf '%s|%s' \"$FROM_USER_BASH_ENV\" \"${PATH%%:*}\"")
         .env_clear()
