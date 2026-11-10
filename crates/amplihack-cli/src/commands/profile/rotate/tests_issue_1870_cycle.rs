@@ -308,11 +308,12 @@ fn reread_f(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     exh(100.0, 22.0)
 }
 
-/// Cycle 1: `work` past --session-at, `spare` with room.
+/// Cycle 1: `work` past --session-at, `spare` with room and less week use,
+/// so it ranks ahead (issue #2013: a move never trades weekly room).
 fn cycle1_f(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     CYCLE1_F.store(at, Ordering::SeqCst);
-    let probes = probes_for(snap, &[("spare", rd(50.0, 30.0, None))]);
+    let probes = probes_for(snap, &[("spare", rd(50.0, 15.0, None))]);
     decide_measured(ctx, snap, rd(86.0, 20.0, None), probes, at)
 }
 
@@ -364,7 +365,7 @@ static CYCLE1_G: AtomicI64 = AtomicI64::new(0);
 fn cycle1_g(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     CYCLE1_G.store(at, Ordering::SeqCst);
-    let probes = probes_for(snap, &[("spare", rd(50.0, 30.0, None))]);
+    let probes = probes_for(snap, &[("spare", rd(50.0, 15.0, None))]);
     decide_measured(ctx, snap, rd(86.0, 20.0, None), probes, at)
 }
 
@@ -460,7 +461,7 @@ fn reread_h(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
 fn cycle1_h(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     CYCLE1_H.store(at, Ordering::SeqCst);
-    let probes = probes_for(snap, &[("spare", rd(50.0, 30.0, None))]);
+    let probes = probes_for(snap, &[("spare", rd(50.0, 15.0, None))]);
     decide_measured(ctx, snap, rd(86.0, 20.0, None), probes, at)
 }
 

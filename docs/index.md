@@ -150,7 +150,7 @@ amplihack copilot
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
 - [Artifact Guard](artifact-guard.md) - Guard for broad staging, pre-commit, and workflow publication artifacts
 - [Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Keep generated workflow runtime output outside commit worktrees
-- [Clean Up After Recipe Runs](howto/clean-up-after-recipe-runs.md) - Where runs write, end-of-run cleanup, and `amplihack cleanup` for worktrees, targets, temporary folders and old logs
+- [Clean Up After Recipe Runs](howto/clean-up-after-recipe-runs.md) - Where runs write, end-of-run cleanup, when a checkout's build target is removed, linked targets, and `amplihack cleanup` for worktrees, targets, temporary folders and old logs
 - [Memory Configuration Consent](features/memory-consent-prompt.md) - Intelligent memory settings with timeout protection
 - [Verify .claude/ Staging](howto/verify-claude-staging.md) - Check that framework files are properly staged
 - [Verify Runtime Asset Resolution](howto/verify-runtime-asset-resolution.md) - Check helper, session, hooks, and multitask asset parity
@@ -165,6 +165,7 @@ amplihack copilot
 - [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account with the most capacity with `amplihack profile rotate`, and resume sessions stopped by a usage limit
 - [Bring Agent Sessions Back After a Terminal Loss](howto/supervise-agent-sessions.md) - Register long-lived Claude sessions with `amplihack agent` and let a supervisor service resume them from their saved conversation
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
+- [Keep Tests off the Host Process Table](howto/keep-tests-off-the-host-process-table.md) - How `amplihack profile` tests read a fake `/proc` through `AMPLIHACK_TEST_PROC_ROOT`, the `FakeProc` builder, and the guard that fails a test reading host processes
 - [Keep Tests out of the Real Profile Root](howto/keep-tests-out-of-the-real-profile-root.md) - How tests avoid writing real profiles' `settings.json`, and the guard that fails the run when one changes
 - [Give Test Logins a Fake Account Identity](howto/give-test-logins-a-fake-account-identity.md) - How profile tests give fake logins a server identity, seed logins in rotate unit tests, re-issue a credential when its account changes, and test the no-record case
 - [Keep Tests from Changing PATH and HOME](howto/keep-tests-from-changing-path-and-home.md) - How tests give a child process its `PATH` and `HOME` without changing the test process, and how to test a timeout so that host load cannot fail it
@@ -178,6 +179,7 @@ amplihack copilot
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
 - [Framework Source Selection](reference/framework-source-selection.md) - Which source install, update and self-heal stage the bundle from, the release tag fetch, the manifest check and file modes
+- [Versioned Install Layout](concepts/versioned-install-layout.md) - Releases under `~/.amplihack/releases`, atomic link switch, in-use cleanup and why an install leaves running recipe runs alone
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
 - [External LiteLLM Gateway](features/README.md#external-litellm-gateway) - Route supported local agents through an operator-managed gateway
 - [External LiteLLM Gateway Tutorial](tutorials/external-litellm-gateway.md) - Configure a protected route to an existing gateway
@@ -218,6 +220,9 @@ Understand the philosophy and architecture behind amplihack.
 - [Documentation Knowledge Graph](documentation_knowledge_graph.md) - How docs connect
 - [amplihack-rs Parity Reference](amplihack-rs-parity.md) - Subprocess prompt delivery capabilities, configuration, diagnostics, and Rust API
 - [Large Payload Delivery to Child Processes](concepts/large-payload-delivery.md) - Why large prompts, recipe context and GitHub bodies stay out of argv and environment values (`E2BIG`, `MAX_ARG_STRLEN`)
+- [Why Prompt Text Stays Out of argv](concepts/prompt-text-out-of-argv.md) - Why no contract, prompt or brief text appears in an agent's `/proc/<pid>/cmdline` (#2030)
+- [Agent Prompt Channels Reference](reference/agent-prompt-channels.md) - Per-launch-path channels, the contract file, the Claude Code 2.1.319 version gate, the `amplihack claude` passthrough rewrite and errors
+- [Check Agent Processes for Prompt Text](howto/check-agent-argv-for-prompt-text.md) - Run the `/proc` check and fix version-gate failures
 - [Large Payload Delivery Reference](reference/large-payload-delivery.md) - `file-reference` mode, sync and async stdin writers, runner value spill, UTF-8 truncation, reasoner bounds, `--prompt-file`, and `workflow_body_file.sh`
 - [`amplihack-turn` Turn Driver Reference](reference/amplihack-turn-api.md) - Agent-generic turn model: `AgentSession` / `Channel` / `NextPrompt`, the `run_session_loop` driver (run-to-completion, no wall-clock cap), and the relocated `SerialTurnDriver` / `CopilotTurnRunner` / `build_turn_argv` / `ToolAllowlist` primitives
 - [`amplihack-supply-chain-audit` Supply Chain Audit Reference](reference/supply-chain-audit-api.md) - Native Rust `supply-chain-audit` skill: the `amplihack-supply-chain-audit` CLI, 12 audit dimensions, finding/report schemas, `run_audit` / `AuditConfig` / `Finding` / `Severity` library API, accepted-risks configuration, and the seven enforced security invariants
@@ -329,8 +334,8 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [CI Resource Discipline Reference](reference/ci-resource-discipline.md) - Concurrency, timeout, matrix, cache, and coverage boundaries for CI
 - [CI Pipeline Reference](reference/ci-pipeline.md) - Pinned toolchain, cargo-nextest test job, disk freeing, caching, recipe runner pin ancestry, and required checks
 - [CI Wall-Clock Parallelization Reference](reference/ci-wallclock-parallelization.md) - Parallel fan-out job graph (no `needs: check`) and tag-conditional release optimization keeping shipped artifacts fully optimized
-- [Merge Flow Reference](reference/merge-flow.md) - How `main` merges: strict up-to-date branch protection with all 7 required checks stays on, why a GitHub merge queue is unavailable on a user-owned repo, and the serial green-and-up-to-date squash-merge flow
-- [Branch Protection Guard Reference](reference/branch-protection-guard.md) - In-repo detection that fails a check within one CI cycle when the strict up-to-date policy on `main` is turned off; the script, workflow, `BRANCH_PROTECTION_READ_TOKEN` setup, and why it is detection (not prevention)
+- [Merge Flow Reference](reference/merge-flow.md) - Why a GitHub merge queue is unavailable on a user-owned repo, and the earlier serial up-to-date squash-merge flow (strict up-to-date merges were turned off on 9 Nov 2026; see [Branch protection on main](contributing/branch-protection.md))
+- [Branch Protection Guard Reference](reference/branch-protection-guard.md) - In-repo check written for the earlier strict up-to-date policy; strict is now off on purpose, and retiring or inverting the guard is tracked in [#2203](https://github.com/rysweet/amplihack-rs/issues/2203)
 - [Validate Recipe Subprocess and Hook Input Contracts](howto/validate-recipe-subprocess-hook-contract.md) - Validate recipe child env handling and hook JSON compatibility
 - [Workflow Execution Guardrails](features/workflow-execution-guardrails.md) - Canonical execution roots, exact GitHub identity checks, and observer-only stall detection
 - [How to Configure Workflow Execution Guardrails](howto/configure-workflow-execution-guardrails.md) - Supply `expected_gh_account`, inspect `execution_root`, and troubleshoot failures
@@ -361,7 +366,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [How to Coordinate Concurrent PR Sessions with the Ownership Lease](howto/coordinate-concurrent-pr-sessions.md) - Acquire before force-push/rebase/merge, stand down when contended, auto-expire on crash, release on merge/close/session end
 - [PR-Ownership Lease Reference](reference/pr-ownership-lease.md) - `PrLease`, `LeaseStore`, `Clock`, `LeaseError`, on-disk format, configuration, and the behavior contract locked by `pr_lease_behavior.rs`
 - [Step 03 Host-Aware Tracking Idempotency](reference/recipe-step-03-idempotency.md) - GitHub issue, Azure Boards work-item, and local tracking reuse/create behavior
-- [Tracking Issue Selection Reference](reference/workflow-tracking-issue-selection.md) - How step 03 honours `issue_number` on GitHub and reuses only open issues referenced in the task text (#1595)
+- [Tracking Issue Selection Reference](reference/workflow-tracking-issue-selection.md) - How step 03 honours `issue_number` on GitHub, reuses only open issues referenced in the task text (#1595), defaults to local tracking unless `create_issue=true`, reuses exact-title matches, and bounds rate-limit retries with jittered backoff (#1881)
 - [Workflow Issue Extraction Reference](reference/workflow-issue-extraction.md) - Three-tier issue-number resolution (direct URL → PR closing-refs → `#N` verify) in step 03b
 - [Multi-Provider Workflow Reference](reference/multi-provider-workflow.md) - Provider-neutral helper routing for GitHub, Azure DevOps, local, and unsupported repositories
 - [How to Use the Workflow with Azure DevOps](howto/use-workflow-with-azure-devops.md) - Run default-workflow against an AzDO repository
@@ -800,6 +805,7 @@ Testing strategies, quality assurance, and validation patterns.
 - [Testing Plan](testing/TEST_PLAN.md) - Testing strategy and execution checklist
 - [Skill Frontmatter Type Guard](testing/SKILL_FRONTMATTER_TYPE_GUARD.md) - Regression test catching Copilot CLI frontmatter string-scalar TYPE bugs
 - [Load-Independent Deadline Tests for the Direct Usage Read](bugfixes/bugfix-1962-usage-direct-deadline-tests.md) - How the `tests_usage_direct` deadline tests derive their delays from `REFRESH_BUDGET` and `MAX_STEP` so that a loaded host cannot change their outcome
+- [Multitask Launcher Tests and the Profile Root Variable](bugfixes/bugfix-2014-multitask-launcher-env-race.md) - How the multitask launcher tests pass `AMPLIHACK_CLAUDE_PROFILE_ROOT` as an argument so that another test's non-UTF-8 value cannot fail them, and the regression test that races them against a mutator thread
 - [Merge-Base Diffs and Issue-Derived PR Titles in the Publish Step](bugfixes/bugfix-1968-publish-pr-merge-base-title.md) - How `workflow_publish_pr.sh` lists and counts changed files against the merge base and titles the PR from the issue, with the `Update <scope>` template as the last resort
 - [Honest PR Titles and Honoured No-Merge Directives](bugfixes/bugfix-929-pr-title-and-no-merge.md) - Lockfile-free scope selection for the template title and detection of no-merge directives in the task
 - [Keep the Pre-commit Hooks Portable to macOS](howto/keep-pre-commit-hooks-portable-to-macos.md) - POSIX sed, bash 3.2, Linux-only clippy allows, and libc type aliases
@@ -900,6 +906,7 @@ Quick references, guides, and additional resources.
 ### Contributing
 
 - [File Organization](contributing/file-organization.md) - Where different file types belong in the repository
+- [Branch Protection on main](contributing/branch-protection.md) - The 7 required CI checks, why strict is off, and the rule for changing CI jobs
 - [Discoveries](discoveries.md) - Patterns and insights discovered during development
 
 ### Investigations

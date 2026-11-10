@@ -20,6 +20,7 @@ mod manifest;
 mod mermaid_cli;
 pub(crate) mod paths;
 mod recipe_runner;
+pub(crate) mod release_layout;
 mod settings;
 mod stale_wrappers;
 pub(crate) mod tag_fetch;
@@ -35,7 +36,7 @@ mod codex_alias_fixture;
 mod tests;
 
 pub(crate) use binary::resolve_running_binary_source;
-use binary::{deploy_binaries, find_hooks_binary, stable_hooks_binary};
+use binary::{deploy_binaries_into, find_hooks_binary, stable_hooks_binary};
 use bundle_compat::validate_framework_bundle_compatibility;
 use clone::{FrameworkRootQuery, find_bundled_framework_root};
 use directories::*;
@@ -56,7 +57,8 @@ pub use uninstall::run_uninstall;
 /// system-prompt fragment is NOT listed — adding it there is what armed a
 /// cwd-sourced restage on every install (see `types::essential_files`), and a
 /// ratchet in the module that consumes the fragment is the one place a future
-/// edit would actually look.
+/// edit would actually look. The per-install contract file written at launch
+/// for `--append-system-prompt-file` (issue #2030) is not listed either.
 #[cfg(test)]
 pub(in crate::commands) fn essential_files_for_test(
     layout: types::SourceLayout,
@@ -314,11 +316,45 @@ pub(super) fn read_layout_marker(claude_dir: &Path) -> Result<Option<SourceLayou
 /// The gaps that are emitted must also each be closable by a restage. Issue
 /// #1266's loop came from listing an asset the restage source could not supply;
 /// the fix was to stop listing it (the system-prompt fragment is `include_str!`d
-/// into the binary now — see `launch::system_prompt_append`), not to special-
-/// case it here. Before adding an entry to `essential_files`, check that a
+/// into the binary now, and written at launch to the 0600 file passed with
+/// `--append-system-prompt-file` — see `launch::system_prompt_append`), not to
+/// special-case it here. Before adding an entry to `essential_files`, check that a
 /// restage can actually satisfy it, or this becomes a loop again.
 fn framework_restage_needed(staging_exists: bool, missing: &[String]) -> bool {
     !staging_exists || !missing.is_empty()
+}
+
+/// Issue #1954 D7: removes releases and retired trees no process uses. Each
+/// published link keeps its current release and the one it named before this
+/// switch. A failure here costs disk space, not the install, so it warns.
+fn cleanup_unused_releases(claude_dir: &Path, switched: &release_layout::SwitchReport) {
+    let Some(amplihack_dir) = claude_dir.parent() else {
+        return;
+    };
+    let mut links = vec![amplihack_dir.join("amplifier-bundle")];
+    match paths::preferred_user_bin_dir() {
+        Ok(local_bin) => {
+            for name in ["amplihack", "amplihack-hooks", "amplihack-asset-resolver"] {
+                links.push(local_bin.join(crate::path_conflicts::binary_filename(name)));
+            }
+        }
+        Err(error) => {
+            eprintln!(
+                "amplihack: warning: skipping release cleanup, the user bin directory is \
+                 unknown: {error:#}"
+            );
+            return;
+        }
+    }
+    let releases = release_layout::releases_dir(amplihack_dir);
+    let keep = release_layout::keep_set(&releases, &links, &switched.previous_targets());
+    match release_layout::cleanup_unused(amplihack_dir, &keep) {
+        Ok(report) => release_layout::report_cleanup(&report),
+        Err(error) => eprintln!(
+            "amplihack: warning: could not clean up unused releases in {}: {error:#}",
+            releases.display()
+        ),
+    }
 }
 
 /// Announce entries a publisher carried across because amplihack could not
@@ -654,6 +690,11 @@ fn local_install_scoped(
     reconcile_codex: bool,
     mode: InstallMode,
 ) -> Result<()> {
+    // Issue #1954 D6: every install holds the install lock for its whole
+    // run, so an explicit install, the post-update install and a self-heal
+    // never stage or switch at the same time. Re-entrant on this thread, so
+    // the self-heal that calls this while holding it does not deadlock.
+    let _install_lock = crate::install_lock::acquire()?;
     let claude_dir = staging_claude_dir()?;
     let timestamp = unix_timestamp();
 
@@ -680,7 +721,18 @@ fn local_install_scoped(
             })
             .unwrap_or_default(),
     };
-    let (deployed_binaries, kept_binaries) = deploy_binaries(mode, stamp.as_deref())?;
+    // Issue #1954: this run's binaries and bundle go into one new release
+    // under ~/.amplihack/releases. Everything that can fail on the source is
+    // staged and checked inside that release first; nothing a running process
+    // reads changes until `commit_release` switches the links. The mapped
+    // `.claude` trees are not part of a release: they are exchanged after the
+    // commit, so a failure while staging the release leaves every published
+    // path on the old version. If an exchange itself fails, the binaries and
+    // bundle are already on the new release and the trees exchanged so far
+    // stay new; running `amplihack install` again completes the rest.
+    let mut release = binary::new_release_txn()?;
+    let (deployed_binaries, kept_binaries) =
+        deploy_binaries_into(&mut release, mode, stamp.as_deref())?;
     let hooks_bin = find_hooks_binary()?;
     for p in deployed_binaries
         .iter()
@@ -688,6 +740,62 @@ fn local_install_scoped(
     {
         println!("  ✅ Deployed {}", p.display());
     }
+
+    ensure_dirs(&claude_dir)?;
+    let pre_dirs = all_rel_dirs(&claude_dir)?;
+
+    let (source_root, layout) = find_source_root(repo_root)?;
+    if layout == SourceLayout::Bundle {
+        validate_framework_bundle_compatibility(&source_root).with_context(|| {
+            format!(
+                "source amplifier-bundle at {} is incompatible",
+                source_root.display()
+            )
+        })?;
+    }
+
+    println!();
+    println!("📦 Staging amplifier-bundle (recipes, modules, tools):");
+    copy_amplifier_bundle_into(repo_root, &claude_dir, &mut release)?;
+
+    println!();
+    println!("🔀 Switching to the new release:");
+    let switched = binary::commit_release(release)?;
+    for switch in &switched.switched {
+        println!(
+            "  ✅ {} -> {}",
+            switch.link.display(),
+            switch.target.display()
+        );
+    }
+    // After the commit: the analysis reads ~/.local/bin/amplihack, which
+    // names the new binary only once the links have switched.
+    binary::print_path_conflict_advisory();
+
+    println!();
+    println!("📁 Copying essential directories:");
+    println!(
+        "   Source layout: {} (from {})",
+        layout.marker_str(),
+        source_root.display()
+    );
+    let copied_dirs = copytree_manifest(&source_root, layout, &claude_dir)?;
+    if copied_dirs.is_empty() {
+        bail!(
+            "no essential directories were copied from {} (layout: {}). \
+             The source repository appears to be missing all framework assets. \
+             Verify the checkout is complete.",
+            source_root.display(),
+            layout.marker_str()
+        );
+    }
+
+    // Write the .layout marker atomically so subsequent presence checks
+    // (missing_framework_paths) know which mapping to consult.
+    write_layout_marker(&claude_dir, layout)?;
+
+    cleanup_unused_releases(&claude_dir, &switched);
+
     let preferred_amplihack =
         paths::preferred_user_bin_dir()?.join(crate::path_conflicts::binary_filename("amplihack"));
     if preferred_amplihack.is_file() {
@@ -737,44 +845,6 @@ fn local_install_scoped(
             );
         }
     }
-
-    ensure_dirs(&claude_dir)?;
-    let pre_dirs = all_rel_dirs(&claude_dir)?;
-
-    println!();
-    println!("📁 Copying essential directories:");
-    let (source_root, layout) = find_source_root(repo_root)?;
-    println!(
-        "   Source layout: {} (from {})",
-        layout.marker_str(),
-        source_root.display()
-    );
-    if layout == SourceLayout::Bundle {
-        validate_framework_bundle_compatibility(&source_root).with_context(|| {
-            format!(
-                "source amplifier-bundle at {} is incompatible",
-                source_root.display()
-            )
-        })?;
-    }
-    let copied_dirs = copytree_manifest(&source_root, layout, &claude_dir)?;
-    if copied_dirs.is_empty() {
-        bail!(
-            "no essential directories were copied from {} (layout: {}). \
-             The source repository appears to be missing all framework assets. \
-             Verify the checkout is complete.",
-            source_root.display(),
-            layout.marker_str()
-        );
-    }
-
-    // Write the .layout marker atomically so subsequent presence checks
-    // (missing_framework_paths) know which mapping to consult.
-    write_layout_marker(&claude_dir, layout)?;
-
-    println!();
-    println!("📦 Staging amplifier-bundle (recipes, modules, tools):");
-    copy_amplifier_bundle(repo_root, &claude_dir)?;
 
     println!();
     println!("📝 Initializing PROJECT.md:");

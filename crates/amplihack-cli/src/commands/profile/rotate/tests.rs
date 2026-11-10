@@ -55,6 +55,8 @@ pub(super) mod tests_issue_2013_common;
 mod tests_issue_2013_eelsworth;
 #[path = "tests_issue_2013_fresh.rs"]
 mod tests_issue_2013_fresh;
+#[path = "tests_issue_2013_nov7.rs"]
+mod tests_issue_2013_nov7;
 #[path = "tests_issue_2013_rank.rs"]
 mod tests_issue_2013_rank;
 #[path = "tests_issue_2013_refusal.rs"]
@@ -65,3 +67,5 @@ mod tests_issue_2013_repair;
 mod tests_issue_2013_repair_refused;
 #[path = "tests_issue_2013_swap.rs"]
 mod tests_issue_2013_swap;
+#[path = "tests_swap_record.rs"]
+mod tests_swap_record;

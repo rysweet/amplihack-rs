@@ -4,8 +4,9 @@
 //!
 //! Contract (`rotate/rank.rs`, pure, no side effects):
 //! - `rank::eligible(&Settings, &Reading) -> bool`: a measured reading with
-//!   `session < session_at` and `week < week_at`. Failed and exhausted
-//!   readings are never eligible. Freshness is applied before the rule, by
+//!   `session < 100` and `week < week_at`. `session_at` is not part of it
+//!   (7 November addendum): it never drops a login with weekly room. Failed
+//!   and exhausted readings are never eligible. Freshness is applied before the rule, by
 //!   the caller (`tests_issue_2013_fresh`).
 //! - `rank::order(&Measured, &Measured) -> Ordering`: week use ascending,
 //!   then session use ascending, then name.
@@ -17,7 +18,9 @@
 //!   weekly headroom 0.
 //! - `decide::best` is removed; `decide::decide` uses `best_eligible`,
 //!   then `best_with_margin`, then `Decision::Alert` when a threshold is
-//!   reached. A threshold swap to an eligible login needs no margin.
+//!   reached. A threshold swap to an eligible login needs no margin. A live
+//!   login past `session_at` only, itself eligible, stays unless the best
+//!   eligible login ranks ahead of it (`rank::ranks_ahead`).
 //! - `plan_room::choose` pass 1 takes eligible logins only; pass 2 ranks the
 //!   logins with room (the live login among them) and moves only on the
 //!   `margin` rule.
@@ -46,13 +49,13 @@ fn swap_to(name: &str, reason: Reason) -> Decision {
 // --- eligible ---------------------------------------------------------------
 
 #[test]
-fn eligible_needs_both_windows_below_their_thresholds() {
+fn eligible_needs_session_room_and_week_below_week_at() {
     let s = settings();
     assert!(eligible(&s, &measured(84.0, 89.0)));
-    assert!(
-        !eligible(&s, &measured(85.0, 10.0)),
-        "session at session_at"
-    );
+    // Issue #2013, 7 November addendum: session_at drops no login.
+    assert!(eligible(&s, &measured(85.0, 10.0)), "session at session_at");
+    assert!(eligible(&s, &measured(99.0, 10.0)), "session below 100");
+    assert!(!eligible(&s, &measured(100.0, 10.0)), "no session room");
     assert!(!eligible(&s, &measured(10.0, 90.0)), "week at week_at");
     assert!(!eligible(&s, &measured(10.0, 97.0)));
 }
@@ -79,7 +82,11 @@ fn eligibility_follows_the_settings_not_fixed_numbers() {
         week_at: 50,
         ..settings()
     };
-    assert!(!eligible(&s, &measured(10.0, 11.0)), "session 10 >= 5");
+    assert!(
+        eligible(&s, &measured(10.0, 11.0)),
+        "session_at drops no login"
+    );
+    assert!(!eligible(&s, &measured(4.0, 50.0)), "week 50 >= 50");
     assert!(eligible(&s, &measured(4.0, 49.0)));
 }
 
@@ -116,7 +123,7 @@ fn best_eligible_takes_the_lowest_week_not_the_most_overall_headroom() {
 #[test]
 fn best_eligible_is_none_when_nothing_is_eligible() {
     let s = settings();
-    let c = [m("full", 10.0, 97.0), m("busy", 90.0, 10.0)];
+    let c = [m("full", 10.0, 97.0), m("spent", 100.0, 10.0)];
     assert!(best_eligible(&s, &c).is_none());
     assert!(best_eligible(&s, &[]).is_none());
 }
@@ -128,7 +135,7 @@ fn best_with_margin_needs_margin_points_of_weekly_headroom_over_the_live_login()
     // Weekly headroom 3 against the live login's 2: a gain of 1 < 5.
     let near = [m("ffarmer", 10.0, 97.0), m("oole", 41.0, 97.0)];
     assert!(best_with_margin(&s, &live, &near).is_none());
-    // Session above session_at, week 11: weekly headroom 89.
+    // Session near 100, week 11: weekly headroom 89.
     let room = [m("ffarmer", 10.0, 97.0), m("eelsworth", 96.0, 11.0)];
     assert_eq!(
         best_with_margin(&s, &live, &room).map(|x| x.name.as_str()),
@@ -194,14 +201,28 @@ fn d16_plan_room_chooses_the_11_percent_login() {
 }
 
 #[test]
-fn d16_with_week_at_50_and_session_at_5_nothing_is_eligible_and_the_margin_rule_applies() {
+fn d16_with_session_at_5_the_11_percent_login_is_still_chosen() {
     let s = Settings {
-        week_at: 50,
         session_at: 5,
         ..settings()
     };
     let (live, c) = d16();
-    assert!(best_eligible(&s, &c).is_none(), "every session is 10 >= 5");
+    // 7 November addendum: every session (10%) is past session_at, which
+    // drops none of them.
+    assert_eq!(
+        decide(&s, &live, &c, None, T),
+        swap_to("eleven", Reason::Threshold)
+    );
+}
+
+#[test]
+fn d16_with_week_at_10_nothing_is_eligible_and_the_margin_rule_applies() {
+    let s = Settings {
+        week_at: 10,
+        ..settings()
+    };
+    let (live, c) = d16();
+    assert!(best_eligible(&s, &c).is_none(), "every week is >= 10");
     // eleven still has room, and 89 points of weekly headroom beat the live
     // login's 2 by more than the margin.
     assert_eq!(
@@ -228,7 +249,7 @@ fn d4_plan_room_stays_rather_than_move_between_logins_at_97_and_98_percent() {
 }
 
 #[test]
-fn plan_room_pass_1_filters_on_week_at_as_well_as_session_at() {
+fn plan_room_pass_1_filters_on_week_at() {
     let s = settings();
     let live = m("live", 90.0, 95.0);
     let c = [m("weekfull", 10.0, 92.0), m("ok", 40.0, 60.0)];
@@ -253,14 +274,47 @@ fn plan_room_pass_2_still_stays_when_the_live_login_ranks_first() {
 #[test]
 fn d17_a_threshold_swap_to_an_eligible_login_needs_no_margin() {
     let s = settings();
-    // Live past session_at with headroom 14; the candidate's headroom is 18,
-    // a gain of 4 < margin, but it is eligible.
-    let live = measured(86.0, 40.0);
-    let c = [m("spare", 10.0, 82.0)];
+    // Live at week_at with weekly headroom 9; the candidate's is 12, a
+    // gain of 3 < margin, but it is eligible.
+    let live = measured(10.0, 91.0);
+    let c = [m("spare", 10.0, 88.0)];
     assert_eq!(
         decide(&s, &live, &c, None, T),
         swap_to("spare", Reason::Threshold)
     );
+    // Live past session_at only: the same holds for a candidate that ranks
+    // ahead of it on week, by any amount.
+    let live = measured(86.0, 40.0);
+    let c = [m("spare", 10.0, 39.0)];
+    assert_eq!(
+        decide(&s, &live, &c, None, T),
+        swap_to("spare", Reason::Threshold)
+    );
+}
+
+/// The 7 November addendum: a live login past session_at only never moves
+/// to a login with less weekly room, whatever that login's session use.
+#[test]
+fn a_live_login_past_session_at_only_never_moves_to_less_weekly_room() {
+    let s = settings();
+    let live = measured(86.0, 40.0);
+    let c = [m("spare", 10.0, 82.0)];
+    assert_eq!(decide(&s, &live, &c, None, T), Decision::Stay);
+    // Equal figures never displace each other either.
+    let c = [m("twin", 86.0, 40.0)];
+    assert_eq!(decide(&s, &live, &c, None, T), Decision::Stay);
+    // With no other login eligible, it is the ALERT, as before.
+    let c = [m("full", 10.0, 95.0)];
+    assert_eq!(decide(&s, &live, &c, None, T), Decision::Alert);
+}
+
+#[test]
+fn the_upgrade_never_trades_weekly_room() {
+    let s = settings();
+    // live headroom 30 (session 70); cand headroom 85 but week 15 > 10.
+    let live = measured(70.0, 10.0);
+    let c = [m("spare", 0.0, 15.0)];
+    assert_eq!(decide(&s, &live, &c, None, T), Decision::Stay);
 }
 
 #[test]

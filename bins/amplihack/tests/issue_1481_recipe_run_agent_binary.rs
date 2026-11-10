@@ -504,7 +504,7 @@ fn auto_mode_hands_an_inherited_guess_on_tagged_and_persists_nothing() {
         bin.join("claude"),
         format!(
             "#!/bin/sh\n\
-             if [ \"$1\" = \"--version\" ]; then echo '2.0.0 (Claude Code)'; exit 0; fi\n\
+             if [ \"$1\" = \"--version\" ]; then echo '2.1.319 (Claude Code)'; exit 0; fi\n\
              printf '%s|%s\\n' \"${{AMPLIHACK_AGENT_BINARY-<unset>}}\" \"${{{SOURCE_ENV}-<unset>}}\" >> '{}'\n\
              exit 0\n",
             probe.display()
@@ -739,6 +739,17 @@ fn without_any_marker() -> String {
         .map(|(key, _)| format!("-u {key}"))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// The `env -u` arguments `agent-binary --shell` prints: every session
+/// marker, then the #1976 parent-watch variables, which a tmux server started
+/// from a recipe step would otherwise hand to every later session.
+fn hand_off_unsets() -> String {
+    format!(
+        "{} -u AMPLIHACK_PARENT_RECIPE_PID -u AMPLIHACK_PARENT_RECIPE_STARTTIME \
+         -u AMPLIHACK_AUTODRIVE_STATE_DIR",
+        without_any_marker()
+    )
 }
 
 /// The documented hand-off's command string. The caller's shell expands it.
@@ -1795,7 +1806,7 @@ fn a_log_filter_does_not_leak_into_the_shell_output() {
         String::from_utf8_lossy(&output.stdout),
         format!(
             "env {} AMPLIHACK_AGENT_BINARY=copilot AMPLIHACK_AGENT_BINARY_SOURCE=default:copilot\n",
-            without_any_marker()
+            hand_off_unsets()
         ),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
@@ -1847,7 +1858,7 @@ fn a_conflicting_export_wins_the_hand_off_and_is_announced() {
         String::from_utf8_lossy(&output.stdout),
         format!(
             "env {} AMPLIHACK_AGENT_BINARY=copilot AMPLIHACK_AGENT_BINARY_SOURCE=\n",
-            without_any_marker()
+            hand_off_unsets()
         )
     );
     let stderr = String::from_utf8_lossy(&output.stderr);

@@ -332,10 +332,14 @@ fn choose_counts_the_live_login_in_pass_1_so_pass_2_is_not_used() {
     // is below it here.
     let s = settings(85);
     // The live login qualifies for pass 1 and wins it; spare, with a lower
-    // week but past --session-at, is only a pass-2 login.
+    // week but at --week-at, is only a pass-2 login.
     let live = m("work", &measured(10.0, 85.0, FAR));
-    let plan = vec![m("spare", &measured(92.0, 20.0, FAR))];
+    let plan = vec![m("spare", &measured(10.0, 90.0, FAR))];
     assert_eq!(choose(&s, Some(&live), &plan), None);
+    // Issue #2013 (7 November addendum): past --session-at is no reason to
+    // leave a login out of pass 1, so spare's lower week wins.
+    let plan = vec![m("spare", &measured(92.0, 20.0, FAR))];
+    assert_eq!(choose(&s, Some(&live), &plan), Some(n("spare")));
 }
 
 // --- decide_overflow: T1 and T2 ------------------------------------------------------
@@ -416,10 +420,12 @@ fn d5_pass_2_swaps_once_and_the_next_cycle_makes_no_further_swap() {
         "{first:?}"
     );
     // The next cycle, over the same readings, from the new live login.
+    // Issue #2013 (7 November addendum): both are eligible, and work does
+    // not rank ahead of spare, so spare stays.
     let second = Case::new("spare", measured(95.0, 60.0, FAR))
         .cand("work", measured(90.0, 80.0, FAR))
         .run();
-    assert_eq!(second.decision, Decision::Alert, "no flap back: {second:?}");
+    assert_eq!(second.decision, Decision::Stay, "no flap back: {second:?}");
     assert_eq!(second.tag, None);
 }
 
@@ -440,18 +446,25 @@ fn d4_the_margin_applies_in_plan_room_pass_2() {
     // week is not enough to move.
     // spare beats the live login by one point of week only: far short of
     // --margin 5, but strictly better on the ranking.
-    let v = Case::new("work", measured(90.0, 61.0, FAR))
-        .cand("spare", measured(95.0, 60.0, FAR))
+    // Both at or above --week-at, so neither is eligible.
+    let v = Case::new("work", measured(10.0, 95.0, FAR))
+        .cand("spare", measured(10.0, 94.0, FAR))
         .run();
     assert_eq!(v.decision, Decision::Alert, "{v:?}");
 }
 
 #[test]
 fn pass_2_keeps_a_live_login_that_has_the_lowest_week() {
+    let v = Case::new("work", measured(10.0, 93.0, FAR))
+        .cand("spare", measured(10.0, 95.0, FAR))
+        .run();
+    assert_eq!(v.decision, Decision::Alert, "{v:?}");
+    // Below --week-at both are eligible; past --session-at only, the live
+    // login keeps its lower week and stays.
     let v = Case::new("work", measured(90.0, 30.0, FAR))
         .cand("spare", measured(95.0, 40.0, FAR))
         .run();
-    assert_eq!(v.decision, Decision::Alert, "{v:?}");
+    assert_eq!(v.decision, Decision::Stay, "{v:?}");
 }
 
 #[test]

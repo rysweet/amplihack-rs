@@ -893,10 +893,18 @@ fn moving_off_overflow_picks_the_best_plan_login_with_capacity() {
     let v = Case::new("cred", exhausted(None, None))
         .cand("spare", measured(60.0, 10.0, None, None))
         .cand("extra", measured(10.0, 10.0, None, None))
-        .cand("over", measured(86.0, 0.0, None, None))
+        .cand("over", measured(86.0, 20.0, None, None))
         .overflow(&["cred"])
         .run();
     assert_eq!(v.decision, swap("extra", Reason::OverflowOut));
+    // Issue #2013 (7 November addendum): past --session-at drops no plan
+    // login, so the one with the most weekly room wins.
+    let v = Case::new("cred", exhausted(None, None))
+        .cand("extra", measured(10.0, 10.0, None, None))
+        .cand("over", measured(86.0, 0.0, None, None))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.decision, swap("over", Reason::OverflowOut));
 }
 
 #[test]

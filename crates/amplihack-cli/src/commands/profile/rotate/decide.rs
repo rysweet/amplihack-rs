@@ -291,12 +291,26 @@ pub(super) fn needs_swap(s: &Settings, live: &Reading) -> bool {
     }
 }
 
-/// The decision rule (issue #2013, D3, D4, D17). At a threshold: the first
-/// eligible candidate in rank order (no margin needed), else the first
-/// candidate with room whose weekly headroom beats the live login's by
-/// `--margin`, else an ALERT. Below the thresholds, and not held: the first
-/// eligible candidate in rank order whose overall headroom beats the live
-/// login's by `--upgrade-margin`.
+/// The decision rule (issue #2013, D3, D4, D17).
+///
+/// At a threshold, a live login that is itself [eligible](rank::eligible)
+/// has crossed `--session-at` only. When an eligible candidate exists, it
+/// moves to the first in rank order only if that candidate ranks ahead of
+/// it ([`rank::ranks_ahead`]: less week use, or the same week and less
+/// session use); otherwise it stays. Session use is a tie-break, so the
+/// rotator never trades weekly room for session room (7 November
+/// addendum to #2013), and two logins past `--session-at` never swap back
+/// and forth.
+///
+/// Otherwise, at a threshold: the first eligible candidate in rank order
+/// (no margin needed), else the first candidate with room whose weekly
+/// headroom beats the live login's by `--margin`, else an ALERT. A live
+/// login that is eligible has more weekly room than any candidate that is
+/// not, so for it this is the ALERT when no other login is eligible.
+///
+/// Below the thresholds, and not held: the first eligible candidate in
+/// rank order with at least the live login's weekly room whose overall
+/// headroom beats the live login's by `--upgrade-margin`.
 pub fn decide(
     s: &Settings,
     live: &Reading,
@@ -309,6 +323,14 @@ pub fn decide(
         reason,
     };
     if needs_swap(s, live) {
+        // A live login past `--session-at` only stays while it ranks first:
+        // moving would trade weekly room for session room.
+        if rank::eligible(s, live)
+            && rank::best_eligible(s, candidates)
+                .is_some_and(|to| !rank::ranks_ahead(&to.reading, live))
+        {
+            return Decision::Stay;
+        }
         return match rank::best_eligible(s, candidates)
             .or_else(|| rank::best_with_margin(s, live, candidates))
         {
@@ -320,9 +342,10 @@ pub fn decide(
         return Decision::Stay;
     }
     let live_h = i32::from(live.headroom().unwrap_or(0));
+    let live_room = rank::weekly_headroom(live);
     let gains = |c: &&Measured| {
         let g = i32::from(c.reading.headroom().unwrap_or(0)) - live_h;
-        g > 0 && g >= i32::from(s.upgrade_margin)
+        g > 0 && g >= i32::from(s.upgrade_margin) && rank::weekly_headroom(&c.reading) >= live_room
     };
     match rank::ranked_eligible(s, candidates).into_iter().find(gains) {
         Some(to) => swap(to, Reason::Upgrade),

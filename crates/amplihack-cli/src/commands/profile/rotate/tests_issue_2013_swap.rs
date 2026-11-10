@@ -12,7 +12,9 @@
 //!
 //! D17: a live login past `session_at` (or `week_at`) on a fresh reading
 //! moves in that cycle to an eligible login, before it is exhausted, with
-//! `reason=threshold`.
+//! `reason=threshold`. Since the 7 November addendum, a live login past
+//! `session_at` only moves to a login that ranks ahead of it on week use;
+//! it never trades weekly room for session room.
 
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::ledger::Phase;
@@ -77,10 +79,38 @@ fn d13_a_swap_stopped_before_s3_ends_with_both_files_naming_the_new_login() {
 
 fn measure_d17(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = (ctx.clock)();
-    // spare's headroom (18) beats work's (14) by less than --margin, but
-    // spare is eligible: below both thresholds.
+    // spare's weekly headroom (62) beats work's (60) by less than
+    // --margin, but spare is eligible and ranks ahead on week.
+    let probes = probes_for(snap, &[("spare", rd(10.0, 38.0, None))]);
+    decide_measured(ctx, snap, rd(86.0, 40.0, None), probes, at)
+}
+
+fn measure_d17_less_week_room(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let at = (ctx.clock)();
     let probes = probes_for(snap, &[("spare", rd(10.0, 82.0, None))]);
     decide_measured(ctx, snap, rd(86.0, 40.0, None), probes, at)
+}
+
+/// The 7 November addendum: spare has session room but 42 fewer points of
+/// weekly room, so `work`, past `session_at` only, stays.
+#[cfg(target_os = "linux")]
+#[test]
+fn d17_a_live_login_past_session_at_never_moves_to_less_weekly_room() {
+    let e = env();
+    let live = ino_at(&e.live());
+    let mut c = ctx_at(&e, measure_d17_less_week_room, settings(), now());
+    assert_eq!(
+        run_cycle(&mut c, Mode::Watch).unwrap(),
+        CycleOutcome::Stayed,
+        "{:?}",
+        lines(&e)
+    );
+    assert_eq!(ino_at(&e.live()), live);
+    assert!(
+        !lines(&e).iter().any(|l| l.starts_with("swap ")),
+        "{:?}",
+        lines(&e)
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -97,7 +127,7 @@ fn d17_a_live_login_past_session_at_moves_before_it_is_exhausted() {
     assert_eq!(ino_at(&e.live()), Some(e.t));
     assert!(
         lines(&e).iter().any(|l| l
-            == "swap work->spare live s=86% w=40% age=0s target s=10% w=82% age=0s reason=threshold"),
+            == "swap work->spare live s=86% w=40% age=0s target s=10% w=38% age=0s reason=threshold"),
         "{:?}",
         lines(&e)
     );

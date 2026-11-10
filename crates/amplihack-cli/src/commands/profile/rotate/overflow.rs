@@ -308,6 +308,10 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         // The plan login with the most room costs nothing.
         let live_measured = i.live_name.map(|n| Measured::new(n.clone(), i.live));
         let choice = plan_room::choose(s, live_measured.as_ref(), &plan);
+        // Issue #2013: at most one move among full logins per `--hold`.
+        if plan_room::held(i, &plan, choice.as_ref()) {
+            return verdict(Decision::Stay, None, None);
+        }
         if let Some(to) = choice {
             let same = matches!(&d, Decision::Swap { to: t, .. } if *t == to);
             let d = if same { d } else { swap(to, Reason::PlanRoom) };

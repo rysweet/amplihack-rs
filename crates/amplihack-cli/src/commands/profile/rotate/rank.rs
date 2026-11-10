@@ -14,15 +14,30 @@ use super::super::settings::Settings;
 use std::cmp::Ordering;
 
 /// Whether a login reading `r` can be chosen: a measured reading with
-/// session use below `--session-at` and week use below `--week-at`. A
+/// room in both windows (below 100%) and week use below `--week-at`. A
 /// failed, exhausted or unreadable (NaN) reading never is.
+///
+/// `--session-at` is not part of this test (issue #2013, 7 November
+/// addendum). It decides when the live login looks for a move
+/// (`decide::needs_swap`) and, through [`order`], breaks ties on week; it
+/// never excludes a login with weekly room, so a login with less weekly
+/// room is never preferred only because its session use is lower.
 pub fn eligible(s: &Settings, r: &Reading) -> bool {
     match r {
         Reading::Measured { session, week } => {
-            *session < f64::from(s.session_at) && *week < f64::from(s.week_at)
+            has_room(r) && !session.is_nan() && *week < f64::from(s.week_at)
         }
         Reading::Exhausted { .. } | Reading::Failed => false,
     }
+}
+
+/// Whether `a` ranks strictly ahead of `b` on their readings alone: less
+/// week use, or the same week use and less session use. Names do not
+/// count, so two logins with the same figures never displace each other.
+pub fn ranks_ahead(a: &Reading, b: &Reading) -> bool {
+    let (aw, as_) = key(a);
+    let (bw, bs) = key(b);
+    aw.total_cmp(&bw).then_with(|| as_.total_cmp(&bs)) == Ordering::Less
 }
 
 /// The ranking key of `r`: week use, then session use. A reading that is

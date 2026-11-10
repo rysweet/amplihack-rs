@@ -12,6 +12,15 @@
 //! reason. The parent environment is never changed: each child gets
 //! `CLAUDE_CONFIG_DIR` on its own `Command`, or, for the profile whose login
 //! is live in `~/.claude` (see `default_live`), has it removed.
+//!
+//! Issue #2001: with no names given, every Codex account is also read live
+//! (`amplihack_utils::codex_capacity`) on a thread started before the Claude
+//! probes, and printed after the Claude output (`usage_codex`). Codex rows
+//! never reach the recording, the history, the summary or the exit status.
+//! `--json` stays the bare array of Claude rows it has always been, and does
+//! not read Codex at all: scripts on the owner's host index it with `.[]` and
+//! `.[0]`. The Codex rows are in `--summary-json`, which was already an
+//! object, under `codex`.
 
 use super::auto_switch::{self, Observation, ObservedWindow, RecordOutcome};
 use super::capacity_summary::{self, Summary};
@@ -20,12 +29,14 @@ use super::name::ProfileName;
 use super::probe_limits::ProbeMode;
 use super::rotate::decide::Reading;
 use super::store::ProfileStore;
+use super::usage_codex::{self, CodexJsonRow, CodexView};
 use super::usage_parse::{UsageReport, UsageState, UsageWindow, parse_usage};
 use super::usage_request::ExtraUsageShape;
 use super::usage_source::{self, ClaudeGate, LazyBinary, Plan, Source, SourceEnv, Spend};
 use super::usage_view::{self, TimeView};
 use super::{ProfileError, default_live, pointer, probe_limits, run, usage_history, usage_request};
 use crate::binary_finder::BinaryInfo;
+use amplihack_utils::codex_capacity;
 use anyhow::Result;
 use serde::Serialize;
 use std::ffi::OsString;
@@ -203,9 +214,9 @@ pub(super) enum Output {
     Bars,
     /// The `--table` text table, then the capacity summary.
     Table,
-    /// The `--json` array, unchanged.
+    /// The `--json` array of Claude rows. It never holds Codex rows (#2001).
     Json,
-    /// One object: the `--json` array and the capacity summary.
+    /// One object: the Claude rows, the capacity summary and the Codex rows.
     SummaryJson,
 }
 
@@ -247,8 +258,14 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         eprintln!("{}", env_credential_warning(var));
     }
     let profiles = selected_profiles(store, names)?;
+    // Issue #2001: names select Claude profiles only; with none, every
+    // Codex account is read alongside the Claude probes. `--json` keeps its
+    // array of Claude rows, so it has no place for Codex rows and skips the
+    // read.
+    let codex = (names.is_empty() && output != Output::Json).then(CodexRead::start);
     if profiles.is_empty() {
-        print_empty(output);
+        let codex = codex.map(CodexRead::finish);
+        print_empty(output, &time, codex.as_ref());
         return Ok(());
     }
     let home = home_dir();
@@ -339,7 +356,16 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         .as_ref()
         .filter(|_| !raw && output != Output::Json)
         .map(|c| capacity_of(store, c, usable_session_pct, at));
-    print_output(&rows, output, &time, summary.as_ref(), at, swapped.as_ref());
+    let codex = codex.map(CodexRead::finish);
+    print_output(
+        &rows,
+        output,
+        &time,
+        summary.as_ref(),
+        at,
+        swapped.as_ref(),
+        codex.as_ref(),
+    );
     // SR-10: in every mode, with or without `--raw`.
     for warning in not_saved_warnings(&rows) {
         eprintln!("{warning}");
@@ -476,13 +502,105 @@ pub(super) fn home_dir() -> Option<std::path::PathBuf> {
         .filter(|h| h.is_absolute())
 }
 
-fn print_empty(output: Output) {
-    match output {
-        Output::Json => println!("[]"),
-        Output::SummaryJson => println!("{}", render_summary_json(now_secs(), &[], None)),
-        Output::Bars | Output::Table => {
-            println!("no profiles; create one with `amplihack profile add <name>`")
+/// The Codex read of one `profile usage` run (issue #2001), running on its
+/// own thread from before the Claude probes until [`CodexRead::finish`].
+struct CodexRead {
+    root: std::path::PathBuf,
+    timeout_secs: u64,
+    handle: std::thread::JoinHandle<std::io::Result<Vec<codex_capacity::AccountResult>>>,
+}
+
+impl CodexRead {
+    /// Prints the deadline warning, if any, and starts reading every Codex
+    /// account under the profiles root, and `~/.codex`.
+    fn start() -> Self {
+        let (timeout_secs, warning) = codex_capacity::timeout_from_env();
+        if let Some(w) = warning {
+            eprintln!("{w}");
         }
+        let home = home_dir();
+        let root = codex_capacity::profiles_root(home.as_deref());
+        let shown = root
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("~/.codex-profiles"));
+        let bin = codex_capacity::codex_bin();
+        let handle = std::thread::spawn(move || {
+            let accounts = match root.as_deref() {
+                Some(r) => codex_capacity::list_accounts(r, home.as_deref())?,
+                None => Vec::new(),
+            };
+            Ok(codex_capacity::read_all(
+                &bin,
+                &accounts,
+                Duration::from_secs(timeout_secs),
+            ))
+        });
+        Self {
+            root: shown,
+            timeout_secs,
+            handle,
+        }
+    }
+
+    /// Waits for the read. A root that could not be listed, or a read
+    /// thread that panicked, gives no rows and one warning.
+    fn finish(self) -> CodexView {
+        let rows = match self.handle.join() {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(e)) => {
+                eprintln!(
+                    "warning: cannot list Codex accounts under {}: {}",
+                    sanitize_display(&self.root.to_string_lossy(), false),
+                    sanitize_display(&e.to_string(), false)
+                );
+                Vec::new()
+            }
+            Err(_) => {
+                eprintln!("warning: the Codex read failed");
+                Vec::new()
+            }
+        };
+        usage_codex::view(self.root, rows, self.timeout_secs)
+    }
+}
+
+/// The `codex` rows of the JSON outputs: none when Codex was not read.
+fn codex_json(codex: Option<&CodexView>) -> Vec<CodexJsonRow> {
+    codex.map(usage_codex::json_rows).unwrap_or_default()
+}
+
+fn print_empty(output: Output, time: &TimeView, codex: Option<&CodexView>) {
+    let rows = codex_json(codex);
+    match output {
+        Output::Json => println!("{}", render_json(&[])),
+        Output::SummaryJson => {
+            println!("{}", render_summary_json(now_secs(), &[], None, &rows))
+        }
+        Output::Bars | Output::Table => {
+            println!("no profiles; create one with `amplihack profile add <name>`");
+            print_codex_text(output, codex, time);
+        }
+    }
+}
+
+/// The Codex block after the Claude text output, in the bar or table form.
+fn print_codex_text(output: Output, codex: Option<&CodexView>, time: &TimeView) {
+    let Some(v) = codex else {
+        return;
+    };
+    // One empty line between the Claude output and the Codex block.
+    println!();
+    match output {
+        Output::Bars => {
+            use std::io::IsTerminal;
+            let colour = usage_view::colour_enabled(
+                std::io::stdout().is_terminal(),
+                std::env::var_os("NO_COLOR").as_deref(),
+            );
+            print!("{}", usage_codex::bars_block(v, time, colour));
+        }
+        Output::Table => print!("{}", usage_codex::table_block(v, time)),
+        Output::Json | Output::SummaryJson => {}
     }
 }
 
@@ -720,7 +838,9 @@ fn print_output(
     summary: Option<&Summary>,
     at: i64,
     swapped: Option<&ProfileName>,
+    codex: Option<&CodexView>,
 ) {
+    let codex_rows = codex_json(codex);
     match output {
         Output::Bars => {
             use std::io::IsTerminal;
@@ -732,15 +852,19 @@ fn print_output(
             if let Some(s) = summary {
                 print!("{}", summary_block(s));
             }
+            print_codex_text(output, codex, time);
         }
         Output::Table => {
             print!("{}", render_table(rows));
             if let Some(s) = summary {
                 print!("{}", summary_block(s));
             }
+            print_codex_text(output, codex, time);
         }
         Output::Json => println!("{}", render_json(rows)),
-        Output::SummaryJson => println!("{}", render_summary_json(at, rows, summary)),
+        Output::SummaryJson => {
+            println!("{}", render_summary_json(at, rows, summary, &codex_rows))
+        }
     }
     for w in error_warnings(rows) {
         eprintln!("{w}");
@@ -1386,7 +1510,8 @@ fn exited(child: &mut std::process::Child) -> std::io::Result<bool> {
 /// another process group.
 #[cfg(unix)]
 fn kill_group(child: &std::process::Child) {
-    let Ok(pid) = i32::try_from(child.id()) else {
+    // Never pid 0 (our own group) or 1 (`kill(-1)` is every process).
+    let Some(pid) = i32::try_from(child.id()).ok().filter(|p| *p > 1) else {
         return;
     };
     // SAFETY: `kill` has no memory-safety preconditions. A negative pid
@@ -1780,8 +1905,12 @@ struct JsonRow<'a> {
     raw: Option<&'a Raw>,
 }
 
-/// The stable interface: a JSON array of rows in display order. Strings use
-/// JSON escaping and are not otherwise cleaned.
+/// The stable interface: one array of Claude rows in display order. Issue
+/// #2001 leaves it an array, with no Codex rows: host scripts read it with
+/// `.[]` and `.[0]`, and send stderr to `/dev/null`, so an object here would
+/// make them report no capacity without a message. Codex rows are in
+/// `--summary-json` only. Strings use JSON escaping and are not otherwise
+/// cleaned.
 pub(super) fn render_json(rows: &[Row]) -> String {
     // Plain structs of strings, numbers and options always serialise.
     serde_json::to_string_pretty(&json_rows(rows)).expect("usage rows serialise to JSON")
@@ -1802,15 +1931,23 @@ struct SummaryOutput<'a> {
     at: String,
     profiles: Vec<JsonRow<'a>>,
     summary: Option<&'a Summary>,
+    codex: &'a [CodexJsonRow],
 }
 
 /// `--summary-json` (issue #1797): `at` as ISO UTC, `profiles` exactly the
-/// `--json` array, and the summary, `null` when there is none.
-pub(super) fn render_summary_json(at: i64, rows: &[Row], summary: Option<&Summary>) -> String {
+/// array of `--json`, the summary, `null` when there is none, and (issue
+/// #2001) `codex`, the Codex rows, which `--json` does not hold.
+pub(super) fn render_summary_json(
+    at: i64,
+    rows: &[Row],
+    summary: Option<&Summary>,
+    codex: &[CodexJsonRow],
+) -> String {
     let out = SummaryOutput {
         at: utc_time(at),
         profiles: json_rows(rows),
         summary,
+        codex,
     };
     serde_json::to_string_pretty(&out).expect("usage summary serialises to JSON")
 }

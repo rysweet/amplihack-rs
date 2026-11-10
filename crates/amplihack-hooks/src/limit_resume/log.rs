@@ -5,9 +5,17 @@
 //! 2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed live=spare cycle=swapped
 //! ```
 //!
+//! Since #2085 a line may end with the swap record it was decided on, the
+//! pane's tag and the keys sent (only the fields that apply):
+//!
+//! ```text
+//! ... outcome=resumed-keys live=- cycle=- swap_seq=7 swap_live=spare pane=0c4e61a8d2f3 keys_sent=4
+//! ```
+//!
 //! Every field is a hash prefix, a fixed outcome name, a checked profile
-//! name or the ledger's cycle outcome, and is reduced to `[A-Za-z0-9._:-]`, so no message text reaches
-//! the file. Past `LOG_MAX_BYTES` the file is moved to `resume.log.1`.
+//! name, the ledger's cycle outcome, a number or an `io::ErrorKind` name,
+//! and is reduced to `[A-Za-z0-9._:-]`, so no message text reaches the
+//! file. Past `LOG_MAX_BYTES` the file is moved to `resume.log.1`.
 //! Logging is best effort: a failure never changes the outcome or prints.
 
 use super::Outcome;
@@ -39,6 +47,16 @@ pub struct LogEntry {
     pub live: Option<String>,
     /// The ledger's cycle outcome (`swapped`, `stayed`, ...), if any.
     pub cycle: Option<String>,
+    /// The `seq` of the swap record decided on (issue #2085).
+    pub swap_seq: Option<u64>,
+    /// The login that swap made live.
+    pub swap_live: Option<String>,
+    /// The pane's log tag ([`super::keys::Pane::log_tag`]), never its id.
+    pub pane: Option<String>,
+    /// How many resume keys were sent.
+    pub keys_sent: Option<u8>,
+    /// Why a step failed: an `io::ErrorKind` name or `session-gone`.
+    pub detail: Option<String>,
 }
 
 /// `s` with every character outside `[A-Za-z0-9._:-]` replaced by `-`, cut
@@ -59,16 +77,32 @@ pub fn sanitize(s: &str) -> String {
 }
 
 /// The log line for `entry` at `now` (epoch seconds), newline included.
+/// The fields added by issue #2085 appear only when set, so older lines
+/// keep their form.
 pub fn format_line(now: i64, entry: &LogEntry) -> String {
-    format!(
-        "{} resume session={} event={} outcome={} live={} cycle={}\n",
+    let mut line = format!(
+        "{} resume session={} event={} outcome={} live={} cycle={}",
         utc_timestamp(now),
         sanitize(&entry.session),
         sanitize(&entry.event),
         sanitize(entry.outcome.as_str()),
         sanitize(entry.live.as_deref().unwrap_or("")),
         sanitize(entry.cycle.as_deref().unwrap_or("")),
-    )
+    );
+    let extra = [
+        ("swap_seq", entry.swap_seq.map(|n| n.to_string())),
+        ("swap_live", entry.swap_live.clone()),
+        ("pane", entry.pane.clone()),
+        ("keys_sent", entry.keys_sent.map(|n| n.to_string())),
+        ("detail", entry.detail.clone()),
+    ];
+    for (key, value) in extra {
+        if let Some(v) = value {
+            line.push_str(&format!(" {key}={}", sanitize(&v)));
+        }
+    }
+    line.push('\n');
+    line
 }
 
 /// `YYYY-MM-DDTHH:MM:SSZ` for epoch seconds (proleptic Gregorian, UTC).

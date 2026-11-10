@@ -30,7 +30,7 @@ use std::process::{Command, Output};
 
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 echo "S $(date +%s%N)" >> "$RECORD_DIR/marks"
 printf '%s\n' "$@" > "$RECORD_DIR/args.$$"
@@ -232,6 +232,7 @@ impl Fixture {
             .env("AMPLIHACK_USAGE_LIMIT_WAIT", "0")
             .env("AMPLIHACK_GOVERNOR_WAIT", "0")
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
+        crate::isolated_amplihack::reapply_proc_root(&mut c);
         self.identity.iter().for_each(|i| i.configure(&mut c));
         c
     }

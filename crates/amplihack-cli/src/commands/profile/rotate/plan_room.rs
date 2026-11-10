@@ -13,6 +13,7 @@
 //! auto-switch both use [`room`].
 
 use super::decide::{Measured, Reading};
+use super::overflow::OverflowInput;
 
 /// The rotator's record of the logins it measured with no room, kept in its
 /// ledger for auto-switch (issue #1804).
@@ -70,4 +71,21 @@ pub fn choose(s: &Settings, live: Option<&Measured>, plan: &[Measured]) -> Optio
         return None;
     }
     Some(winner.name.clone())
+}
+
+/// Whether the plan-room move to `choice` waits for `--hold` (issue #2013,
+/// 7 November addendum): the target is not [eligible](rank::eligible), so
+/// every login involved is at or above `--week-at` (or has no session
+/// room), the live login still has room, and the last swap was less than
+/// `--hold` ago. Such a move gains little weekly room; on 7 November six of
+/// them in seven minutes were the churn. So at most one happens per
+/// `--hold` window, and a live login with no room always moves.
+pub fn held(i: &OverflowInput<'_>, plan: &[Measured], choice: Option<&ProfileName>) -> bool {
+    let s = i.settings;
+    let among_full = choice.is_some_and(|to| {
+        !plan
+            .iter()
+            .any(|c| &c.name == to && rank::eligible(s, &c.reading))
+    });
+    among_full && has_room(&i.live.reading) && super::decide::held(s.hold, i.swapped_at, i.now)
 }

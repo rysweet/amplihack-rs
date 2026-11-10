@@ -447,7 +447,8 @@ fn a_good_reading_between_failures_restarts_the_count() {
 #[test]
 fn a_measured_breach_still_swaps_at_once() {
     let s = settings();
-    let cands = [c("spare", r(0.0, 12.0))];
+    // spare ranks ahead on week, so the breach of session_at moves at once.
+    let cands = [c("spare", r(0.0, 8.0))];
     let mut sim = Sim::new();
     let d = sim.cycle(&s, &r(90.0, 10.0), &cands, NOW);
     assert_eq!(d, swap("spare", Reason::Threshold));

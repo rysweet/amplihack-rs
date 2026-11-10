@@ -10,7 +10,10 @@
 //!
 //! With one ranking (`rank.rs`): a login at `week_at` is never chosen while
 //! an eligible login exists, and any other move needs `margin` points of
-//! weekly headroom over the live login.
+//! weekly headroom over the live login. Since the 7 November addendum,
+//! `session_at` excludes no login with weekly room: `eelsworth` at s=88%
+//! (past the default 85) is still chosen for its 89 points of weekly room.
+//! Only a session at 100% (no room) drops it.
 //!
 //! The cycle tests use the real decision, gate, swap, ledger and log under
 //! a temporary HOME and profile root; probing is the `Ctx.measure` stub and
@@ -45,9 +48,29 @@ fn six(eelsworth_session: f64) -> (Measured, Vec<Measured>) {
 
 // --- Pure: decide and plan_room::choose ------------------------------------------
 
+/// The 7 November addendum to #2013: a login is never passed over for one
+/// with less weekly room only because its session use is past
+/// `session_at`. Before the addendum this test expected `iivanovich`
+/// (w=52%), which was that forbidden outcome.
 #[test]
-fn with_eelsworth_past_session_at_the_cycle_picks_iivanovich_never_a_97_percent_login() {
+fn with_eelsworth_past_session_at_it_is_still_chosen_for_its_weekly_room() {
     let (live, c) = six(88.0);
+    let s = settings();
+    assert_eq!(
+        decide(&s, &live.reading, &c, None, T),
+        Decision::Swap {
+            to: n("eelsworth"),
+            reason: Reason::Threshold
+        }
+    );
+    assert_eq!(choose(&s, Some(&live), &c), Some(n("eelsworth")));
+}
+
+/// Only a session with no room left (100%) drops `eelsworth`; then the
+/// next most weekly room is `iivanovich`, never a login at 97%.
+#[test]
+fn with_eelsworth_at_100_percent_session_the_cycle_picks_iivanovich_never_a_97_percent_login() {
+    let (live, c) = six(100.0);
     let s = settings();
     assert_eq!(
         decide(&s, &live.reading, &c, None, T),
@@ -150,7 +173,7 @@ fn measure_d15(ctx: &super::cycle::Ctx, snap: &Snap) -> Result<Measurement, Prof
 
 #[cfg(target_os = "linux")]
 #[test]
-fn cycle_d15_swaps_to_iivanovich_and_logs_every_reading_with_its_age() {
+fn cycle_d15_swaps_to_eelsworth_and_logs_every_reading_with_its_age() {
     let e = fx();
     let mut c = ctx_at(&e, measure_d15, settings(), now());
     assert_eq!(
@@ -162,9 +185,7 @@ fn cycle_d15_swaps_to_iivanovich_and_logs_every_reading_with_its_age() {
     let log = lines(&e);
     assert_eq!(
         swap_lines(&e),
-        [
-            "swap work->iivanovich live s=17% w=98% age=0s target s=20% w=52% age=0s reason=threshold"
-        ],
+        ["swap work->eelsworth live s=17% w=98% age=0s target s=88% w=11% age=0s reason=threshold"],
         "{log:?}"
     );
     let cycle = log.iter().find(|l| l.starts_with("cycle ")).unwrap();

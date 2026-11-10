@@ -82,11 +82,13 @@ amplihack install [--interactive]
 │
 ├── 0. acquire_framework_source() — --local, a same-version local source, or the release tag; refuse on mismatch
 ├── 1. maybe_run_wizard()         — if --interactive, prompt for tool/scope/update prefs (skipped otherwise)
-├── 2. deploy_binaries()          — copy amplihack + amplihack-hooks (+ asset resolver when present) to ~/.local/bin
+├── 1b. take ~/.amplihack/.install.lock and allocate a new release ~/.amplihack/releases/<release>/
+├── 2. deploy_binaries()          — copy amplihack + amplihack-hooks (+ asset resolver when present) into the release's bin/
 ├── 2b. analyze PATH candidates   — classify Rust binaries, stale wrappers, unknowns, and inaccessible paths
 ├── 2c. neutralize stale wrappers — quarantine only shadowing, positively identified Python/uvx wrappers in safe locations
 ├── 2d. persist PATH precedence   — write/update managed shell profile block so ~/.local/bin resolves first
-├── 3. refresh framework assets   — validate source, copy to staging, compare with source, set modes, validate staged bundle, atomically activate
+├── 3. refresh framework assets   — validate source, stage the bundle into the release, compare with source, set modes, validate; swap mapped dirs into ~/.amplihack/.claude and retire the old trees
+├── 3b. commit the release        — write .complete, then atomically switch each planned link (~/.local/bin binaries, ~/.amplihack/amplifier-bundle); no rollback on a partial switch; clean up unused releases
 ├── 4. verify Rust selection      — confirm selected amplihack is the Rust binary after PATH and bundle repair
 ├── 5. create_runtime_dirs()      — create runtime/ subdirs with 0o755 permissions
 ├── 6. ensure_settings_json()     — backup settings.json, register hooks, set permissions
@@ -98,6 +100,13 @@ amplihack install [--interactive]
 ```
 
 Phase 0 runs first, so a refusal changes nothing and comes before any prompt.
+
+Phases 1b–3b never change or delete a file that a running recipe run may still
+execute or read. Binaries and the bundle go into a new release directory, and
+the links switch to it only after the release is complete. Old releases are
+deleted only when no process uses them, and install never signals a process it
+did not start. A run alive across an install completes. See
+[Versioned Install Layout](../concepts/versioned-install-layout.md).
 
 Phase 1 runs only when `--interactive` is passed **and** stdin is a TTY. If `--interactive` is set but no TTY is available, the wizard is skipped with a warning to stderr. Phase 7 applies wizard results (default tool, update-check preference) to the manifest and writes hooks to the selected settings.json scope.
 
@@ -218,7 +227,7 @@ See [Install/update PATH conflict reference](./install-update-path-conflicts.md)
 
 ## amplihack uninstall
 
-Removes all files, directories, binaries, and hook registrations tracked by the install manifest.
+Removes all files, directories, binaries, and hook registrations tracked by the install manifest. It runs under the install lock and keeps any release a running process still uses; see [uninstall in the versioned layout](../concepts/versioned-install-layout.md#uninstall).
 
 ### Options
 
@@ -246,7 +255,10 @@ amplihack uninstall
 │   └── validates each path is under ~/.amplihack/.claude/
 │
 ├── Phase 3 — Remove manifest binaries
-│   └── validates each path is under ~/.local/bin/
+│   └── validates each path is under ~/.local/bin/; removes a link only if it is a symlink (a regular file is retired)
+│
+├── Phase 3b — Remove ~/.amplihack/amplifier-bundle link and unused releases
+│   └── keeps and lists releases that running processes still use
 │
 └── Phase 4 — Remove hook registrations from ~/.claude/settings.json
     └── retains XPIA and non-amplihack entries
@@ -414,6 +426,7 @@ Best-effort provisioning of the Mermaid CLI (`mmdc`, npm `@mermaid-js/mermaid-cl
 
 ## See Also
 
+- [Versioned Install Layout](../concepts/versioned-install-layout.md) — releases, atomic link switch, in-use cleanup, the install lock and the no-signal rule
 - [Framework Source Selection](./framework-source-selection.md) — which source install stages from, the manifest check and file modes
 - [Best-Effort Mermaid CLI Provisioning](../features/mermaid-cli-best-effort-install.md) — optional `mmdc` install for local mermaid rendering in `pr-guide`
 - [Interactive Install](../howto/interactive-install.md) — guided setup wizard walkthrough

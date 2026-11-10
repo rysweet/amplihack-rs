@@ -347,8 +347,21 @@ fn custom_thresholds_and_margins_apply() {
         margin: 0,
         ..settings()
     };
+    // Session 50 reaches session_at 50, and spare ranks ahead on week.
+    assert_eq!(
+        decide(&s, &r(50.0, 10.0), &[c("spare", r(50.0, 5.0))], None, NOW),
+        swap("spare", Reason::Threshold)
+    );
+    // Issue #2013 (7 November addendum): an equal login does not rank
+    // ahead, so a live login past session_at only stays.
     assert_eq!(
         decide(&s, &r(50.0, 0.0), &[c("spare", r(50.0, 0.0))], None, NOW),
+        Decision::Stay
+    );
+    // Week at week_at and no candidate eligible: the margin rule, where
+    // margin 0 makes equal weekly headroom enough.
+    assert_eq!(
+        decide(&s, &r(10.0, 90.0), &[c("spare", r(10.0, 90.0))], None, NOW),
         swap("spare", Reason::Threshold),
         "margin 0: equal headroom is enough"
     );
@@ -474,15 +487,16 @@ fn a_live_profile_with_no_session_limit_swaps_at_the_week_threshold() {
 /// Crusty round 2 on #1829: main's plan-room swap (#1804) ranks on
 /// `Reading::Measured` through `plan_room::choose`, not through `decide`.
 /// A weekly-only login reads as `Measured { session: 0, week }`, so it is in
-/// pass 1 and wins over a login with a lower week that is past
-/// `--session-at`; exhausted logins are never chosen.
+/// pass 1 and wins over a login with a higher week; exhausted logins are
+/// never chosen. Issue #2013 (7 November addendum): `--session-at` drops
+/// no login, so `c-past` (s=92%) is in pass 1 too and loses on week only.
 #[test]
 fn plan_room_picks_the_no_session_limit_login_in_pass_1() {
     use super::plan_room::choose;
     let s = settings();
     let live = c("live", read(&exhausted_session(20)));
     let past =
-        format!("Current session: 92% used {RESET}\nCurrent week (all models): 10% used {RESET}\n");
+        format!("Current session: 92% used {RESET}\nCurrent week (all models): 60% used {RESET}\n");
     for text in [weekly_only(40), no_reset_session(0, 40)] {
         assert_eq!(read(&text), r(0.0, 40.0), "{text}");
         let plan = [
@@ -493,7 +507,7 @@ fn plan_room_picks_the_no_session_limit_login_in_pass_1() {
         assert_eq!(
             choose(&s, Some(&live), &plan),
             Some(ProfileName::parse("b-free").unwrap()),
-            "pass 1 holds only the no-session-limit login: {text}"
+            "the no-session-limit login ranks first on week: {text}"
         );
     }
     // Live on the no-session-limit login, it ranks first and stays.
@@ -585,8 +599,9 @@ fn an_exhausted_login_with_a_low_figure_is_never_chosen() {
     // Listed first, with a week far lower than the measured login's.
     let spent = from(UsageState::SessionExhausted, Some(100.0), Some(5.0));
     let cands = [c("a-spent", spent), c("b-free", r(10.0, 60.0))];
+    // The live login is at week_at, so b-free (w=60%) is a move up.
     assert_eq!(
-        decide(&settings(), &r(90.0, 0.0), &cands, None, NOW),
+        decide(&settings(), &r(10.0, 95.0), &cands, None, NOW),
         swap("b-free", Reason::Threshold)
     );
     let only = [c("a-spent", exhausted(Some(0.0), Some(0.0)))];

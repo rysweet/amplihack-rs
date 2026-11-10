@@ -138,6 +138,10 @@ mod workflow_publish_pr_metadata;
 #[path = "workflow_publish_resilience.rs"]
 mod workflow_publish_resilience;
 
+// Issue #1976: step-16 publishes a local tracking reference as no linked issue.
+#[path = "issue_1976_publish_local_issue.rs"]
+mod issue_1976_publish_local_issue;
+
 #[path = "issue_978_step15_rebase_base_test.rs"]
 mod issue_978_step15_rebase_base;
 
@@ -375,6 +379,11 @@ mod issue_684_host_aware_workflow;
 // issue_number wins; task-text #N reused only when it is an open issue).
 #[path = "issue_1595_tracking_issue_selection_test.rs"]
 mod issue_1595_tracking_issue_selection;
+
+// Issue #1881: step-03 uses local tracking unless create_issue=true, reuses an
+// open issue with exactly the same title, and bounds creation retries.
+#[path = "issue_1881_local_default_tracking_test.rs"]
+mod issue_1881_local_default_tracking;
 
 // Issues #815/#804: default-workflow local tracking issue-number extraction.
 // step-03b must accept hash-based `local-<hash>` references (propagate them),
