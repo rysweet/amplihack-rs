@@ -408,6 +408,32 @@ grep -q 'ghp_FAKEFAKEFAKEFAKEFAKEFAKE0002' <<<"$OUT" \
   && fail "a malformed issue state reached the output" \
   || pass "a malformed issue state never reaches the output"
 
+# A reply served in place of a state word is not length-bounded, and every
+# pattern-matching parameter expansion in bash is quadratic in its subject.
+# The helper therefore cuts the reply to 64 bytes BEFORE it takes the first
+# line, not after: taking the first line of a 300 KiB single-line reply costs
+# 79s on the review host, inside a guard both callers block on. Two assertions,
+# because each alone is weak — the ordering one is deterministic but can be
+# satisfied by code that reintroduces the cost elsewhere, and the wall-clock
+# one is behavioural but its bound is loose (#1707 family, #2238 review).
+BOUND_POS=$(awk 'index($0, "ISSUE_STATE=\"${ISSUE_STATE:0:") { n = FNR } END { if (n) print n }' "$CLAIM")
+LINE_POS=$(awk 'index($0, "ISSUE_STATE=\"${ISSUE_STATE%%") { n = FNR } END { if (n) print n }' "$CLAIM")
+[ -n "$BOUND_POS" ] && [ -n "$LINE_POS" ] && [ "$BOUND_POS" -lt "$LINE_POS" ] \
+  && pass "the issue-state reply is length-bounded before any pattern match" \
+  || fail "the length bound does not precede the first-line match (bound=$BOUND_POS line=$LINE_POS)"
+
+HUGE="$(awk 'BEGIN { s = "PAYLOAD2238"; while (length(s) < 300000) s = s s; print substr(s, 1, 300000) }')"
+HUGE_T0=$SECONDS
+run "$WORK/gh" FAKE_GH=merged_new FAKE_ISSUE_STATE="$HUGE"
+HUGE_ELAPSED=$((SECONDS - HUGE_T0))
+claimed "a merged claim whose issue state is a 300 KiB single line" 1132
+[ "$HUGE_ELAPSED" -lt 30 ] \
+  && pass "an oversized issue-state reply is normalised in bounded time (${HUGE_ELAPSED}s)" \
+  || fail "an oversized issue-state reply took ${HUGE_ELAPSED}s to normalise"
+grep -q 'PAYLOAD2238' <<<"$OUT" \
+  && fail "an oversized issue-state reply reached the output" \
+  || pass "an oversized issue-state reply never reaches the output"
+
 # The #1448 allowance and the #2238 filter meet on a working directory standing
 # on the merged pull request's own head branch. Both outcomes are exit 0; which
 # token stdout carries says which rule allowed the run.

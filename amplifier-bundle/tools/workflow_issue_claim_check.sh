@@ -596,15 +596,27 @@ if [ "$MERGED_CLAIMS" -gt 0 ]; then
   else
     ISSUE_STATE="$(gh issue view "$ISSUE" --repo "$REPO_SLUG" --json state --jq '.state' 2>/dev/null)" || ISSUE_STATE=""
   fi
-  # First line, then bounded, then stripped, then allow-listed — by parameter
-  # expansion only, because a pipeline ending in an early-exit stage is the
-  # shape the #1434 guard bans. The bound comes before the substitution so that
-  # an HTML or proxy page served in place of a state word cannot drive a
-  # quadratic substitution over its whole body (#1707). The allow-list is what
-  # makes this value printable: it admits a bare word and nothing else, so no
-  # token shape, URL, escape sequence or control character can reach a log.
-  ISSUE_STATE="${ISSUE_STATE%%$'\n'*}"
+  # Bounded first, then first line, then stripped, then allow-listed — by
+  # parameter expansion only, because a pipeline ending in an early-exit stage
+  # is the shape the #1434 guard bans.
+  #
+  # The bound is first because EVERY pattern-matching expansion below it is
+  # quadratic in bash, `%%` included, and a reply served in place of a state
+  # word is not length-bounded. Taking the first line first looks harmless and
+  # is not: `${v%%$'\n'*}` on a single line with no newline in it tries the
+  # pattern at every suffix position, measured here at 0.47s for 64 KiB, 7.2s
+  # for 256 KiB and 79s for 300 KiB, inside a guard that both callers are
+  # blocked on. Cutting to 64 bytes first is O(1) in practice and costs
+  # nothing: a state word is four to six characters, so no well-formed reply
+  # reaches the bound, and a malformed one only has to survive as far as the
+  # allow-list to be rejected. This is the #1707 family of defect, found by
+  # measurement in the #2238 security review rather than by reading.
+  #
+  # The allow-list is what makes this value printable: it admits a bare word
+  # and nothing else, so no token shape, URL, escape sequence or control
+  # character can reach a log.
   ISSUE_STATE="${ISSUE_STATE:0:64}"
+  ISSUE_STATE="${ISSUE_STATE%%$'\n'*}"
   ISSUE_STATE="${ISSUE_STATE//[[:space:]]/}"
   [[ "$ISSUE_STATE" =~ ^[A-Za-z_]+$ ]] || ISSUE_STATE=""
 
