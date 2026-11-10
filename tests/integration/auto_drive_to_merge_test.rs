@@ -3914,13 +3914,23 @@ fn autodrive_trust_is_a_side_effect_free_library() {
             "autodrive_trust.sh must use `{needle}`"
         );
     }
+    // autodrive_trust_git unsets every name of AUTODRIVE_TRUST_GIT_UNSET_VARS
+    // with `env -u` (#2033); tests/issue_1278_git_env_isolation.sh checks that
+    // list against git-repo-env.sh and runs git under it.
+    let unset_list = regex::Regex::new(r#"(?m)^AUTODRIVE_TRUST_GIT_UNSET_VARS="([A-Z_ ]+)"$"#)
+        .unwrap()
+        .captures(&trust)
+        .map(|c| c[1].to_string())
+        .unwrap_or_default();
+    assert!(
+        trust.contains(
+            r#"for v in $AUTODRIVE_TRUST_GIT_UNSET_VARS; do unset_args+=(-u "$v"); done"#
+        ) && trust.contains(r#"env "${unset_args[@]}""#),
+        "autodrive_trust_git must pass every AUTODRIVE_TRUST_GIT_UNSET_VARS name to `env -u`"
+    );
     for var in ["GIT_DIR", "GIT_WORK_TREE"] {
         assert!(
-            trust.contains(&format!("-u {var}"))
-                || trust.contains(&format!("unset {var}"))
-                || regex::Regex::new(&format!(r"unset [A-Z_ ]*\b{var}\b"))
-                    .unwrap()
-                    .is_match(&trust),
+            unset_list.split(' ').any(|v| v == var),
             "autodrive_trust.sh must run git with `{var}` unset"
         );
     }

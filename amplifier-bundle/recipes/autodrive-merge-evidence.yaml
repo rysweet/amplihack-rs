@@ -47,7 +47,8 @@ steps:
       # the tools directory autodrive-merge-round's step-00-tools-dir found once
       # (it requires git-repo-env.sh there); run alone, from AMPLIHACK_HOME. Never
       # through git, which those variables could redirect. Same line as merge-round step-04.
-      TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-${AMPLIHACK_HOME:-}/amplifier-bundle/tools}"
+      TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
+      [ -n "$TOOLS_D" ] || TOOLS_D="${AMPLIHACK_HOME:-}/amplifier-bundle/tools"
       [ ! -L "$TOOLS_D/git-repo-env.sh" ] && . "$TOOLS_D/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }
       echo "INFO: cleared git env: ${AMPLIHACK_GIT_ENV_CLEARED}; run env: ${AMPLIHACK_RUN_ENV_CLEARED} (#2033)" >&2
       cd "${REPO_PATH:-.}" 2>/dev/null || true
@@ -102,7 +103,8 @@ steps:
       # the tools directory autodrive-merge-round's step-00-tools-dir found once
       # (it requires git-repo-env.sh there); run alone, from AMPLIHACK_HOME. Never
       # through git, which those variables could redirect. Same line as merge-round step-04.
-      TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-${AMPLIHACK_HOME:-}/amplifier-bundle/tools}"
+      TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
+      [ -n "$TOOLS_D" ] || TOOLS_D="${AMPLIHACK_HOME:-}/amplifier-bundle/tools"
       [ ! -L "$TOOLS_D/git-repo-env.sh" ] && . "$TOOLS_D/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }
       echo "INFO: cleared git env: ${AMPLIHACK_GIT_ENV_CLEARED}; run env: ${AMPLIHACK_RUN_ENV_CLEARED} (#2033)" >&2
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
