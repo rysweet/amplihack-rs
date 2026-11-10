@@ -406,3 +406,97 @@ exec "$REAL_TOOL" "$@"
     let output = f.publish();
     f.assert_created(&output);
 }
+
+#[test]
+fn filename_evidence_is_sanitized_in_template_title_and_multiline_body() {
+    let f = PublishFixture::new();
+    f.write("issue.json", r#"{"title":""}"#);
+    let path = "aaa-ghp_ABCDEFGHIJKLMNOPQRSTUVWX-Fixes #987.txt";
+    f.git(&["mv", "feature.txt", path]);
+    f.git(&[
+        "commit",
+        "-m",
+        "fix: ghp_ABCDEFGHIJKLMNOPQRSTUVWX Closes #986",
+    ]);
+    let output = f
+        .publish_command()
+        .env("RECIPE_VAR_task_description", "")
+        .env(
+            "RECIPE_VAR_local_testing_gate",
+            "line one\nghp_ABCDEFGHIJKLMNOPQRSTUVWX Fixes #985\nline three",
+        )
+        .output()
+        .unwrap();
+    f.assert_created(&output);
+    let title = f.read("title");
+    assert!(
+        title.starts_with("Update aaa-REDACTED_TOKEN-Fixes issue 987.txt"),
+        "{title}"
+    );
+    assert!(title.ends_with(" (#2306)"));
+    let body = f.read("body.md");
+    for text in [&title, &body] {
+        for forbidden in ["ghp_ABCDEFGHIJKLMNOPQRSTUVWX", "#987", "#986", "#985"] {
+            assert!(!text.contains(forbidden), "{text}");
+        }
+    }
+    assert!(
+        body.contains("line one\nREDACTED_TOKEN Fixes issue 985\nline three"),
+        "{body}"
+    );
+    assert!(body.contains("## Issue\nCloses #2306"), "{body}");
+}
+
+#[test]
+fn metadata_sanitizer_partial_output_never_becomes_a_fallback() {
+    let f = PublishFixture::new();
+    f.write("issue.json", r#"{"title":""}"#);
+    f.shim(
+        "sed",
+        "cat >/dev/null\nprintf 'ghp_PARTIAL_SECRET_ABCDEFGHIJKLMNOP'\nexit 76\n",
+    );
+    let output = f
+        .publish_command()
+        .env("RECIPE_VAR_task_description", "")
+        .output()
+        .unwrap();
+    f.assert_created(&output);
+    for text in [f.read("title"), f.read("body.md"), describe(&output)] {
+        assert!(!text.contains("PARTIAL_SECRET"), "{text}");
+    }
+    assert!(f.read("body.md").contains("Evidence unavailable."));
+}
+
+#[test]
+fn malformed_creation_output_reports_identity_failure_without_recreating() {
+    for url in [
+        "",
+        "99",
+        "https://github.com/owner/repo/pull/99/trailing",
+        "https://github.com/other/repo/pull/99",
+        "https://github.com/owner/repo/pull/99\nwarning",
+    ] {
+        let f = PublishFixture::new();
+        let output = f
+            .publish_command()
+            .env("CREATE_OUTPUT", url)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{}", describe(&output));
+        let result = json(&output);
+        assert_eq!(result["state"], "FAILED_PR_IDENTITY");
+        assert!(
+            result["message"]
+                .as_str()
+                .unwrap()
+                .contains("succeeded but result parsing")
+        );
+        assert_eq!(
+            f.read("gh.log")
+                .lines()
+                .filter(|s| s.starts_with("pr create "))
+                .count(),
+            1
+        );
+    }
+}

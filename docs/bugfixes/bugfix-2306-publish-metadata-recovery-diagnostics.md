@@ -96,6 +96,10 @@ failure when the mandatory creation operation requires it. Without a linked
 numeric issue, recovery skips the issue lookup and produces `Update <branch>`;
 it invents neither a numeric reference nor a suffix for local tracking IDs.
 
+Template titles also pass through normalization, credential redaction and issue-reference
+defusing before capping; their established `Update <scope>` wording remains.
+Template summaries use sanitized scope text.
+
 All accepted titles preserve credential redaction, control removal, reference
 defusing, UTF-8 integrity, and the 200-byte limit including the validated issue
 suffix. Normal issue and task titles retain conventional-prefix behavior.
@@ -120,6 +124,12 @@ independently, retaining successful sections where practical. If richer body
 construction fails, builtin `printf` produces a minimal useful summary and
 `Refs #N` for a validated numeric issue. A fallback never invents validation
 results or earns a closing keyword merely because metadata failed.
+
+Before assembly, multiline body evidence (paths, statistics, commits, validation,
+risk and branch context) passes through control removal, credential redaction,
+reference defusing and mention handling. Newlines remain intact. Failed
+sanitization discards partial output and substitutes fixed safe text. Generated
+issue links and the diff-based closing policy remain outside this boundary.
 
 Empty and local issue inputs retain the no-linked-issue behavior. Rich bodies
 retain the existing diff-based closing-reference policy and mention handling.
@@ -146,6 +156,12 @@ and `message`. Human-readable warnings and diagnostics use stderr.
 | Creation fails; no eligible open PR can be adopted | Nonzero step exit; `FAILED_PR_CREATE`, legacy `create-pr-failed`, and `terminal_status=failure`. |
 | Already open, already merged, closed after merge, or empty branch | Existing classifications and successful terminal behavior remain intact. |
 | Mandatory gate fails or a closed unmerged PR still has a diff | Existing failure behavior remains enforced with an actionable diagnostic. |
+
+Successful creation is followed by explicit result parsing with the builtin
+`gh_pr_number_from_url` helper. No final `awk` invocation is required. The result
+must be a single GitHub PR URL for the expected repository with a numeric PR
+number. Malformed output reports `FAILED_PR_IDENTITY` and a result-parsing
+diagnostic; it never retries creation or reports that creation itself failed.
 
 A terminal command diagnostic contains the stable operation name, original exit
 status, and sanitized stderr. Empty stderr receives an explicit explanation.
@@ -181,7 +197,18 @@ identifier visible. Both title and retry sanitizers now re-scan matches, with
 coverage for title recovery, direct diagnostics, and serialized runner errors.
 
 Temporary capture files are created atomically with private permissions and
-cleaned up on every exit. Shell metacharacters remain literal data in quoted
+cleaned up on normal completion and catchable cancellation. Each owner registers
+cleanup before blocking work, runs that work in an owned process group, and
+waits with Bash's interruptible `wait` builtin. Cancellation terminates and
+reaps owned work before unlinking captures, body files and writer scratch files.
+Cleanup preserves command statuses and conventional cancellation statuses;
+sourced retry helpers restore and honor caller signal traps and preserve
+`GH_RETRY_LAST_CLASS`. The body writer contains its traps in a subshell, and its
+direct entry point forwards cancellation. Publisher cleanup composes with its
+exit diagnostic. SIGKILL cannot run shell cleanup.
+
+The publishing recipe uses `exec bash` for its final helper handoff so Bash 3.2
+also delivers runner cancellation to the owner of the files. Shell metacharacters remain literal data in quoted
 arguments and fixed `printf` formats. Diagnostics do not dump command arguments,
 environment values, title text, raw parser errors, or shell traces.
 
@@ -276,9 +303,11 @@ The source-backed reproducer proves a general compatibility defect; it does
 ### Local validation evidence
 
 - The previous TDD run had 25 failed and 8 passed tests. After implementation,
-  the metadata suite has **34 passed, zero failed or skipped**, including the
-  new Apple directory-precedence case and malformed JSON-stream cases.
-- The six runner tests execute the actual step copied from
+  the metadata suite now has **45 passed, zero failed or skipped**, including
+  persistent `awk` failure through the pinned runner, filename-derived exposure,
+  partial sanitizer failure, malformed creation output, and six synchronized
+  cancellation cases, as well as the Apple directory-precedence and JSON-stream cases.
+- The seven runner tests execute the actual step copied from
   `workflow-publish.yaml` through revision
   `4d5187eaf95836a549e6e68725f8f853d0dc7034`, with Cargo installation provenance
   checked against `claude-plugin/recipe-runner.rev`. Assertions require
@@ -318,7 +347,11 @@ pre-commit run --all-files
 During this step the same source was also executed through an isolated Cargo
 harness to avoid coupling the behavior tests to unrelated workspace builds.
 All fixtures use temporary repositories, fake executables and local refs.
-No test opens a GitHub PR, sleeps, or contacts GitHub.
+No test opens a GitHub PR or contacts GitHub. Cancellation fixtures block on a
+local executable and signal only after a readiness marker confirms private files
+exist and sensitive data has been written; they assert termination, cleanup,
+permissions, statuses and caller trap behavior. This suite passes under both the
+system Bash and the locally built Bash 3.2.0.
 
 ### Historical attribution and subsequent delivery
 

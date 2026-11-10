@@ -305,7 +305,7 @@ case "${1:-} ${2:-}" in
     if [ "${CREATE_STATUS:-0}" != 0 ]; then
       cat "$CASE_ROOT/create.stderr" >&2; exit "$CREATE_STATUS"
     fi
-    printf 'https://github.com/owner/repo/pull/99\n' ;;
+    printf '%s\n' "${CREATE_OUTPUT-https://github.com/owner/repo/pull/99}" ;;
   *) printf 'unexpected fake gh operation\n' >&2; exit 96 ;;
 esac
 "#;

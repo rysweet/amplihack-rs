@@ -37,56 +37,91 @@ write_body_file() (
   umask 077
   raw=
   tmp=
-  trap 'rm -f -- "$raw" "$tmp"' EXIT
+  writer_pid=
+  trap 'if [ -n "$writer_pid" ]; then
+    kill -TERM -- "-$writer_pid" 2>/dev/null || kill -TERM "$writer_pid" 2>/dev/null || :
+    wait "$writer_pid" 2>/dev/null || :
+  fi
+  rm -f -- "$raw" "$tmp"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
   # Positional templates honor the caller's TMPDIR on BSD/macOS as well as GNU.
   # Apple's implicit -t mode may prefer confstr's directory over TMPDIR.
   raw=$(mktemp "${TMPDIR:-/tmp}/workflow-body-raw.XXXXXX") || exit 1
   tmp=$(mktemp "${TMPDIR:-/tmp}/workflow-body-write.XXXXXX") || exit 1
 
-  cat > "$raw" || {
-    printf '%s\n' "write_body_file: failed to read stdin" >&2
-    exit 1
-  }
-  size=$(wc -c < "$raw" | tr -d ' ') || exit 1
+  # Give the complete writer a process group: cancellation can interrupt wait
+  # and terminate/reap blocked input or formatter children before unlinking.
+  set -m
+  (
+    cat > "$raw" || {
+      printf '%s\n' "write_body_file: failed to read stdin" >&2
+      exit 1
+    }
+    size=$(wc -c < "$raw" | tr -d ' ') || exit 1
 
-  if [ "$size" -le "$max" ]; then
-    cat -- "$raw" > "$tmp" || exit 1
-  else
-    keep=$max
-    # The cut at `keep` lies on a character boundary unless the byte at
-    # offset `keep` (the first dropped byte) is a UTF-8 continuation byte
-    # (0x80-0xBF). A character is at most four bytes, so at most three
-    # steps back are needed.
-    steps=0
-    while [ "$keep" -gt 0 ] && [ "$steps" -lt 4 ]; do
-      # head reads the file itself, so no writer in this pipeline can be
-      # killed by SIGPIPE (which pipefail would report as a failure).
-      byte=$(head -c "$((keep + 1))" -- "$raw" | tail -c 1 | od -An -tu1 | tr -d ' \n') || exit 1
-      if [ -z "$byte" ] || [ "$byte" -lt 128 ] || [ "$byte" -ge 192 ]; then
-        break
-      fi
-      keep=$((keep - 1))
-      steps=$((steps + 1))
-    done
-    dropped=$((size - keep))
-    {
-      head -c "$keep" -- "$raw" &&
-        printf '%s' "
+    if [ "$size" -le "$max" ]; then
+      cat -- "$raw" > "$tmp" || exit 1
+    else
+      keep=$max
+      # The cut at `keep` lies on a character boundary unless the byte at
+      # offset `keep` (the first dropped byte) is a UTF-8 continuation byte
+      # (0x80-0xBF). A character is at most four bytes, so at most three
+      # steps back are needed.
+      steps=0
+      while [ "$keep" -gt 0 ] && [ "$steps" -lt 4 ]; do
+        # head reads the file itself, so no writer in this pipeline can be
+        # killed by SIGPIPE (which pipefail would report as a failure).
+        byte=$(head -c "$((keep + 1))" -- "$raw" | tail -c 1 | od -An -tu1 | tr -d ' \n') || exit 1
+        if [ -z "$byte" ] || [ "$byte" -lt 128 ] || [ "$byte" -ge 192 ]; then
+          break
+        fi
+        keep=$((keep - 1))
+        steps=$((steps + 1))
+      done
+      dropped=$((size - keep))
+      {
+        head -c "$keep" -- "$raw" &&
+          printf '%s' "
 
 [... truncated ${dropped} bytes; full text in ${source_name} ...]"
-    } > "$tmp" || exit 1
-  fi
+      } > "$tmp" || exit 1
+    fi
 
-  mv -f -- "$tmp" "$out" || {
-    printf '%s\n' "write_body_file: cannot write $out" >&2
-    exit 1
-  }
-  tmp=
-  exit 0
+    mv -f -- "$tmp" "$out" || {
+      printf '%s\n' "write_body_file: cannot write $out" >&2
+      exit 1
+    }
+    exit 0
+  ) <&0 &
+  writer_pid=$!
+  set +m
+  if wait "$writer_pid"; then status=0; else status=$?; fi
+  writer_pid=
+  exit "$status"
 )
 
 # Run directly: behave like the function.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-  write_body_file "$@"
-  exit $?
+  body_pid=
+  body_file_cancel() {
+    local status=$1
+    trap - INT TERM HUP
+    if [ -n "$body_pid" ]; then
+      kill -TERM -- "-$body_pid" 2>/dev/null || kill -TERM "$body_pid" 2>/dev/null || :
+      wait "$body_pid" 2>/dev/null || :
+    fi
+    exit "$status"
+  }
+  trap 'body_file_cancel 130' INT
+  trap 'body_file_cancel 143' TERM
+  trap 'body_file_cancel 129' HUP
+  set -m
+  (trap 'wait; exit 143' TERM; trap 'wait; exit 130' INT; trap 'wait; exit 129' HUP
+    write_body_file "$@"
+  ) <&0 &
+  body_pid=$!
+  set +m
+  if wait "$body_pid"; then exit 0; else exit $?; fi
 fi

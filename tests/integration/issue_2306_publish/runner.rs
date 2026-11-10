@@ -228,3 +228,23 @@ exec "$REAL_TOOL" "$@"
     );
     assert!(!f.read("gh.log").contains("pr create"));
 }
+
+#[test]
+fn persistent_awk_failure_still_serializes_success_after_exactly_one_creation() {
+    let f = PublishFixture::new();
+    f.shim("awk", "exit 72\n");
+    let result = run_step(&f, &[]);
+    assert_eq!(result["success"], true, "{result}");
+    assert_eq!(result["step_results"][0]["status"], "completed");
+    let published = &result["context"]["pr_publish_result"];
+    assert_eq!(published["pr_number"], "99");
+    assert_eq!(published["pr_url"], "https://github.com/owner/repo/pull/99");
+    assert_eq!(published["terminal_status"], "success");
+    assert_eq!(
+        f.read("gh.log")
+            .lines()
+            .filter(|s| s.starts_with("pr create "))
+            .count(),
+        1
+    );
+}

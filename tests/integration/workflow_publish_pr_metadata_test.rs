@@ -5,6 +5,8 @@ use serde::Deserialize;
 use std::path::PathBuf;
 
 // #2306: exercise executable behavior as well as the recipe's static contract.
+#[path = "issue_2306_publish/cancellation.rs"]
+mod cancellation;
 #[path = "issue_2306_publish/fixture.rs"]
 mod fixture;
 #[path = "issue_2306_publish/recovery.rs"]

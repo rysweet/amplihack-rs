@@ -4,13 +4,24 @@ set -euo pipefail
 # Fixed operation names only: never print BASH_COMMAND (may contain secrets).
 PUBLISH_OPERATION="publishing prerequisites"
 PUBLISH_DIAGNOSED=false
+CREATE_STDERR_FILE=""
+CREATE_STDOUT_FILE=""
+PUBLISH_CHILD=""
 publish_exit_diagnostic() {
   local status=$?
+  if [ -n "$PUBLISH_CHILD" ]; then gh_cancel_owned "$PUBLISH_CHILD"; fi
+  [ -z "$CREATE_STDERR_FILE" ] || gh_remove_capture "$CREATE_STDERR_FILE"
+  [ -z "$CREATE_STDOUT_FILE" ] || gh_remove_capture "$CREATE_STDOUT_FILE"
   if [ "$status" -ne 0 ] && [ "$PUBLISH_DIAGNOSED" != true ]; then
     printf 'ERROR: workflow_publish_pr.sh: %s failed (exit %s)\n' "$PUBLISH_OPERATION" "$status" >&2
   fi
 }
-if [ "${BASH_SOURCE[0]}" = "$0" ]; then trap publish_exit_diagnostic EXIT; fi
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  trap publish_exit_diagnostic EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+fi
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "ERROR: jq is required by workflow_publish_pr.sh." >&2
@@ -186,26 +197,35 @@ gh_pr_view_with_retry() {
   return "$status"
 }
 
-gh_pr_create_with_retry() {
-  local status=0 body_file
+gh_pr_create_with_retry() (
+  local status=0 body_file="" GH_OWNED_PID=""
+  trap 'gh_cancel_owned "$GH_OWNED_PID"; [ -z "$body_file" ] || gh_remove_capture "$body_file"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
   if body_file="$(umask 077; mktemp "${TMPDIR:-/tmp}/workflow-pr-body.XXXXXX" 2>/dev/null)"; then :; else
     status=$?
     printf 'ERROR: gh pr create body temp creation failed (exit %s)\n' "$status" >&2
     return "$status"
   fi
-  if printf '%s' "$PR_BODY" | write_body_file "$body_file" "the workflow publish step log"; then :; else
+  gh_start_owned write_body_file "$body_file" "the workflow publish step log" < <(printf '%s' "$PR_BODY")
+  if wait "$GH_OWNED_PID"; then GH_OWNED_PID=""; else
     status=$?
     gh_remove_capture "$body_file"
+    body_file=""
     printf 'ERROR: gh pr create body-file write failed (exit %s)\n' "$status" >&2
     return "$status"
   fi
   # WRITE path: no REST fallback (never blind-create); rate limits wait for reset.
-  _gh_retry_core "pr create" pr create --draft ${PR_HEAD_ARG:+--head="$PR_HEAD_ARG"} --title "$PR_TITLE" --body-file "$body_file" || status=$?
+  gh_start_owned _gh_retry_core "pr create" pr create --draft ${PR_HEAD_ARG:+--head="$PR_HEAD_ARG"} --title "$PR_TITLE" --body-file "$body_file"
+  wait "$GH_OWNED_PID" || status=$?
+  GH_OWNED_PID=""
   gh_remove_capture "$body_file"
+  body_file=""
   [ "$status" -eq 0 ] && return 0
   echo "ERROR: gh pr create failed (exit $status) — PR may already exist for this branch or GitHub API is unavailable" >&2
   return "$status"
-}
+)
 
 # stdin -> stdout: masks URL userinfo, GitHub tokens, Anthropic and OpenAI
 # keys (sk-, sk-ant-, sk-proj-) and AWS access key IDs. The one copy of these
@@ -267,6 +287,17 @@ normalise_pr_title_text() {
     | redact_credentials \
     | LC_ALL=C sed -E 's/  +/ /g; s/^ //; s/[. ]+$//'
 }
+
+# Preserve newlines and tabs, strip other controls before redacting so controls
+# cannot split credentials. Never expose partial output from a failed pipeline.
+sanitize_body_evidence() (
+  set -o pipefail
+  local text
+  text=$(printf '%s' "$1" | LC_ALL=C tr -d '\000-\010\013-\037\177' |
+    strip_invisible_chars | redact_credentials) || return $?
+  text=$(defuse_issue_refs "$text") || return $?
+  defuse_mentions "$text"
+)
 
 # conventional_pr_title <text>: prefixes "<type>: ". Only the Conventional
 # Commits types in pr_title_types count as an existing prefix, in any case
@@ -889,6 +920,9 @@ derive_pr_title() {
     else
       text="Update ${PR_SCOPE}"
     fi
+    METADATA_OPERATION="template title sanitization"
+    text="$(normalise_pr_title_text "$text")" || return $?
+    text="$(defuse_issue_refs "$text")" || return $?
     METADATA_OPERATION="cap_pr_title (head and UTF-8 boundary)"
     PR_TITLE="$(cap_pr_title "$text" "$ISSUE_NUM")" || return $?
     usable_title "$PR_TITLE" || return 1
@@ -930,7 +964,8 @@ RECENT_COMMITS=$(git log --oneline --no-decorate "${BASE_REF}..HEAD" -6 2>/dev/n
 }
 COMMITS_AHEAD="${COMMITS_AHEAD:-unknown}"
 if [ "$PR_TITLE_SOURCE" = template ]; then
-  PR_SUMMARY="Concise workflow-generated PR for ${PR_SCOPE}."
+  if safe_scope="$(sanitize_body_evidence "$PR_SCOPE" 2>/dev/null)"; then :; else safe_scope="branch changes"; fi
+  PR_SUMMARY="Concise workflow-generated PR for ${safe_scope}."
 else
   PR_SUMMARY="Workflow-generated PR."
 fi
@@ -940,7 +975,7 @@ fi
 if [ "$PR_TITLE_SOURCE" != "template" ]; then
   SUMMARY_TITLE="$PR_TITLE"
   if $HAS_ISSUE_LINK; then SUMMARY_TITLE="${SUMMARY_TITLE%" (#${ISSUE_NUM})"}"; fi
-  if SUMMARY_TITLE="$(defuse_mentions "$SUMMARY_TITLE")"; then :; else
+  if SUMMARY_TITLE="$(sanitize_body_evidence "$SUMMARY_TITLE" 2>/dev/null)"; then :; else
     summary_status=$?
     printf 'WARNING: optional defuse_mentions summary failed (exit %s)\n' "$summary_status" >&2
     SUMMARY_TITLE="Branch changes"
@@ -984,6 +1019,16 @@ else
   fi
   ISSUE_LINK="${ISSUE_KEYWORD:-Refs} #${ISSUE_NUM}"
 fi
+# Treat evidence as untrusted multiline text; generated issue links stay outside
+# this boundary so the diff-based closing policy remains unchanged.
+for body_field in CHANGED_FILES_BODY DIFF_STAT_BODY BEHAVIOR_BODY VALIDATION_BODY RISK_BODY COMMITS_AHEAD BASE_BRANCH; do
+  if safe_evidence=$(sanitize_body_evidence "${!body_field}" 2>/dev/null); then
+    printf -v "$body_field" '%s' "$safe_evidence"
+  else
+    printf 'WARNING: optional %s sanitization failed; using safe text\n' "$body_field" >&2
+    printf -v "$body_field" '%s' 'Evidence unavailable.'
+  fi
+done
 PR_BODY=$(printf '## Summary\n%s\n\n## Issue\n%s\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n\n## Behavior\n%s\n\n## Validation\n%s\n\n## Risk\n%s\n\n## Checklist\n- [x] Branch has %s commit(s) ahead of %s\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$PR_SUMMARY" "$ISSUE_LINK" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY" "$BEHAVIOR_BODY" "$VALIDATION_BODY" "$RISK_BODY" "$COMMITS_AHEAD" "$BASE_BRANCH") || {
   echo 'WARNING: optional rich PR body construction failed; using a minimal summary' >&2
   PR_BODY="$(printf '## Summary\nBranch changes prepared for review.\n\n')"
@@ -998,12 +1043,22 @@ if CREATE_STDERR_FILE="$(umask 077; mktemp "${TMPDIR:-/tmp}/workflow-pr-create.X
   finish_publish "FAILED_PR_CREATE" "create-pr-failed" failure "gh pr create stderr temp creation failed (exit $capture_status)" "$capture_status"
 fi
 PUBLISH_OPERATION="gh pr create"
-if PR_URL_RESULT="$(gh_pr_create_with_retry 2>"$CREATE_STDERR_FILE")"; then
+PUBLISH_OPERATION="gh pr create stdout temp creation"
+CREATE_STDOUT_FILE="$(umask 077; mktemp "${TMPDIR:-/tmp}/workflow-pr-result.XXXXXX")"
+PUBLISH_OPERATION="gh pr create"
+gh_start_owned gh_pr_create_with_retry >"$CREATE_STDOUT_FILE" 2>"$CREATE_STDERR_FILE"
+PUBLISH_CHILD=$GH_OWNED_PID
+if wait "$PUBLISH_CHILD"; then
+  PUBLISH_CHILD=""
+  PR_URL_RESULT=$(<"$CREATE_STDOUT_FILE")
   gh_remove_capture "$CREATE_STDERR_FILE"
+  CREATE_STDERR_FILE=""
 else
   CREATE_STATUS=$?
+  PUBLISH_CHILD=""
   CREATE_DIAGNOSTIC="$(gh_safe_stderr "$CREATE_STDERR_FILE")"
   gh_remove_capture "$CREATE_STDERR_FILE"
+  CREATE_STDERR_FILE=""
   CREATE_MESSAGE="gh pr create failed (exit ${CREATE_STATUS}): ${CREATE_DIAGNOSTIC}"
   # Keep the original create evidence across the independently scoped lookup.
   if RECOVERY_JSON="$(scoped_pr_lookup)"; then
@@ -1017,5 +1072,19 @@ else
   fi
   finish_publish "FAILED_PR_CREATE" "create-pr-failed" "failure" "$CREATE_MESSAGE" "$CREATE_STATUS"
 fi
-PR_NUMBER_RESULT="$(printf '%s\n' "$PR_URL_RESULT" | awk -F/ '/\/pull\/[0-9]+/ {print $NF; exit}')"
+PUBLISH_OPERATION="gh pr create result parsing (PR identity)"
+# Require one URL for the expected repository, without trailing messages,
+# query strings or extra path components. The number helper alone is permissive.
+case "$PR_URL_RESULT" in
+  "https://github.com/${REPO_IDENTITY}/pull/"*) : ;;
+  *) finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing found an invalid PR identity URL" 1 ;;
+esac
+created_number="${PR_URL_RESULT#"https://github.com/${REPO_IDENTITY}/pull/"}"
+case "$created_number" in
+  ''|*[!0-9]*|0)
+    finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing found an invalid PR identity URL" 1 ;;
+esac
+if PR_NUMBER_RESULT="$(gh_pr_number_from_url "$PR_URL_RESULT")"; then :; else
+  finish_publish "FAILED_PR_IDENTITY" "pr-identity-failed" failure "gh pr create succeeded but result parsing could not resolve PR identity" 1
+fi
 finish_publish "$PUBLISH_STATE" "$LEGACY_PUBLISH_STATE" "success" "draft PR created"

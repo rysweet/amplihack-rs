@@ -343,3 +343,25 @@ exec "$REAL_TOOL" "$@"
         );
     }
 }
+
+#[test]
+fn retry_normal_return_preserves_caller_traps_options_and_last_class() {
+    let f = PublishFixture::new();
+    f.write("create.stderr", "authentication failed");
+    let output = retry(
+        &f,
+        r#"
+trap 'exit 97' TERM
+trap 'exit 98' HUP
+trap 'exit 99' INT
+saved_traps=$(trap -p)
+saved_options=$-
+if _gh_retry_core 'pr create' pr create; then exit 96; else status=$?; fi
+[ "$status" = 23 ] && [ "$GH_RETRY_LAST_CLASS" = auth ] || exit 95
+[ "$saved_traps" = "$(trap -p)" ] && [ "$saved_options" = "$-" ] || exit 94
+printf verified > "$CASE_ROOT/restored"
+"#,
+    );
+    assert_eq!(output.status.code(), Some(23), "{}", describe(&output));
+    assert_eq!(f.read("restored"), "verified");
+}
