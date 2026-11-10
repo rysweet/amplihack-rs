@@ -52,6 +52,12 @@ mod issue_1962_seed_cmd;
 mod issue_1962_seed_output;
 #[path = "issue_1962_seed_scan.rs"]
 mod issue_1962_seed_scan;
+#[path = "issue_1976_orphaned_nested_run.rs"]
+mod issue_1976_orphaned_nested_run;
+#[path = "issue_1976_real_runner_nested_run.rs"]
+mod issue_1976_real_runner_nested_run;
+#[path = "issue_1976_removed_should_publish.rs"]
+mod issue_1976_removed_should_publish;
 #[path = "issue_2030_guards.rs"]
 mod issue_2030_guards;
 #[path = "issue_2030_no_prompt_in_argv.rs"]
@@ -289,6 +295,12 @@ mod issue_1818_no_session_limit;
 mod issue_1846_exhausted_reading;
 #[path = "issue_1870_reread_probe_mode.rs"]
 mod issue_1870_reread_probe_mode;
+#[path = "issue_1954_first_install_restager.rs"]
+mod issue_1954_first_install_restager;
+#[path = "issue_1954_install_leaves_live_runs_alone.rs"]
+mod issue_1954_install_leaves_live_runs_alone;
+#[path = "issue_1954_no_foreign_signals.rs"]
+mod issue_1954_no_foreign_signals;
 #[path = "issue_1955_install_cli.rs"]
 mod issue_1955_install_cli;
 #[path = "issue_1973_rotate_fixture.rs"]
@@ -303,6 +315,14 @@ mod issue_1985_codex_agent_step_flags;
 mod issue_2001_codex_usage;
 #[path = "issue_2010_codex_exec_notice.rs"]
 mod issue_2010_codex_exec_notice;
+#[path = "issue_2042_fake_proc_seam.rs"]
+mod issue_2042_fake_proc_seam;
+#[path = "issue_2042_host_proc_strace.rs"]
+mod issue_2042_host_proc_strace;
+#[path = "issue_2042_proc_root_guard.rs"]
+mod issue_2042_proc_root_guard;
+#[path = "issue_2042_seam_dry_run_and_refusal.rs"]
+mod issue_2042_seam_dry_run_and_refusal;
 #[path = "issue_2190_recipe_steps_report_real_exit_status.rs"]
 mod issue_2190_recipe_steps_report_real_exit_status;
 #[path = "issue_439_no_per_step_timeout.rs"]

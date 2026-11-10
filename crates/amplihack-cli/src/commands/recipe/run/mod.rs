@@ -14,6 +14,11 @@ pub(crate) mod limit_patterns;
 mod limit_reset;
 /// Issue #1551 — the `gh` merge guard for auto-drive runs.
 pub(crate) mod merge_guard;
+/// Issue #1976 — a nested run watches its parent `recipe run`.
+pub(crate) mod orphan_record;
+pub(crate) mod parent_watch;
+/// Issue #1976 — context keys that were removed, refused before any work.
+pub(crate) mod removed_keys;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
 /// Issue #1606: SIGHUP/SIGINT/SIGTERM stop the whole recipe tree.
@@ -23,6 +28,7 @@ pub use context_sources::resolve_context_args;
 /// Issue #1569: the auto-switch rerun supervisor uses the same classifier, so
 /// it and the runner never disagree about what a usage limit is.
 pub(crate) use failure_class::{FailureClass, classify_failure_text};
+pub(crate) use removed_keys::reject_removed_context_keys;
 
 use execute::execute_recipe_via_rust;
 use format::format_recipe_run_result;
@@ -198,6 +204,9 @@ pub(crate) fn run_recipe_with(
     preflight: &RootSandboxPreflight,
     preflight_out: &mut dyn Write,
 ) -> Result<()> {
+    // Issue #1976: also checked in the CLI before --detach; this copy covers
+    // the detached pane's child and every caller inside the crate.
+    reject_removed_context_keys(context_args, &mut io::stderr())?;
     let format = OutputFormat::parse(format)?;
     let (context, errors) = parse_context_args(context_args);
     if !errors.is_empty() {
@@ -446,6 +455,10 @@ mod tests_limit_patterns;
 mod tests_limit_reset;
 #[cfg(test)]
 mod tests_merge_guard;
+#[cfg(all(test, unix))]
+mod tests_merge_guard_pin;
+#[cfg(test)]
+mod tests_parent_watch;
 #[cfg(test)]
 mod tests_root_sandbox;
 #[cfg(test)]

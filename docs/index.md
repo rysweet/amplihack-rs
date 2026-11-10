@@ -165,6 +165,7 @@ amplihack copilot
 - [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account with the most capacity with `amplihack profile rotate`, and resume sessions stopped by a usage limit
 - [Bring Agent Sessions Back After a Terminal Loss](howto/supervise-agent-sessions.md) - Register long-lived Claude sessions with `amplihack agent` and let a supervisor service resume them from their saved conversation
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
+- [Keep Tests off the Host Process Table](howto/keep-tests-off-the-host-process-table.md) - How `amplihack profile` tests read a fake `/proc` through `AMPLIHACK_TEST_PROC_ROOT`, the `FakeProc` builder, and the guard that fails a test reading host processes
 - [Keep Tests out of the Real Profile Root](howto/keep-tests-out-of-the-real-profile-root.md) - How tests avoid writing real profiles' `settings.json`, and the guard that fails the run when one changes
 - [Give Test Logins a Fake Account Identity](howto/give-test-logins-a-fake-account-identity.md) - How profile tests give fake logins a server identity, seed logins in rotate unit tests, re-issue a credential when its account changes, and test the no-record case
 - [Keep Tests from Changing PATH and HOME](howto/keep-tests-from-changing-path-and-home.md) - How tests give a child process its `PATH` and `HOME` without changing the test process, and how to test a timeout so that host load cannot fail it
@@ -178,6 +179,7 @@ amplihack copilot
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
 - [Framework Source Selection](reference/framework-source-selection.md) - Which source install, update and self-heal stage the bundle from, the release tag fetch, the manifest check and file modes
+- [Versioned Install Layout](concepts/versioned-install-layout.md) - Releases under `~/.amplihack/releases`, atomic link switch, in-use cleanup and why an install leaves running recipe runs alone
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
 - [External LiteLLM Gateway](features/README.md#external-litellm-gateway) - Route supported local agents through an operator-managed gateway
 - [External LiteLLM Gateway Tutorial](tutorials/external-litellm-gateway.md) - Configure a protected route to an existing gateway
@@ -333,8 +335,8 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [CI Resource Discipline Reference](reference/ci-resource-discipline.md) - Concurrency, timeout, matrix, cache, and coverage boundaries for CI
 - [CI Pipeline Reference](reference/ci-pipeline.md) - Pinned toolchain, cargo-nextest test job, disk freeing, caching, recipe runner pin ancestry, and required checks
 - [CI Wall-Clock Parallelization Reference](reference/ci-wallclock-parallelization.md) - Parallel fan-out job graph (no `needs: check`) and tag-conditional release optimization keeping shipped artifacts fully optimized
-- [Merge Flow Reference](reference/merge-flow.md) - How `main` merges: strict up-to-date branch protection with all 7 required checks stays on, why a GitHub merge queue is unavailable on a user-owned repo, and the serial green-and-up-to-date squash-merge flow
-- [Branch Protection Guard Reference](reference/branch-protection-guard.md) - In-repo detection that fails a check within one CI cycle when the strict up-to-date policy on `main` is turned off; the script, workflow, `BRANCH_PROTECTION_READ_TOKEN` setup, and why it is detection (not prevention)
+- [Merge Flow Reference](reference/merge-flow.md) - Why a GitHub merge queue is unavailable on a user-owned repo, and the earlier serial up-to-date squash-merge flow (strict up-to-date merges were turned off on 9 Nov 2026; see [Branch protection on main](contributing/branch-protection.md))
+- [Branch Protection Guard Reference](reference/branch-protection-guard.md) - In-repo check written for the earlier strict up-to-date policy; strict is now off on purpose, and retiring or inverting the guard is tracked in [#2203](https://github.com/rysweet/amplihack-rs/issues/2203)
 - [Validate Recipe Subprocess and Hook Input Contracts](howto/validate-recipe-subprocess-hook-contract.md) - Validate recipe child env handling and hook JSON compatibility
 - [Workflow Execution Guardrails](features/workflow-execution-guardrails.md) - Canonical execution roots, exact GitHub identity checks, and observer-only stall detection
 - [How to Configure Workflow Execution Guardrails](howto/configure-workflow-execution-guardrails.md) - Supply `expected_gh_account`, inspect `execution_root`, and troubleshoot failures
@@ -365,7 +367,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [How to Coordinate Concurrent PR Sessions with the Ownership Lease](howto/coordinate-concurrent-pr-sessions.md) - Acquire before force-push/rebase/merge, stand down when contended, auto-expire on crash, release on merge/close/session end
 - [PR-Ownership Lease Reference](reference/pr-ownership-lease.md) - `PrLease`, `LeaseStore`, `Clock`, `LeaseError`, on-disk format, configuration, and the behavior contract locked by `pr_lease_behavior.rs`
 - [Step 03 Host-Aware Tracking Idempotency](reference/recipe-step-03-idempotency.md) - GitHub issue, Azure Boards work-item, and local tracking reuse/create behavior
-- [Tracking Issue Selection Reference](reference/workflow-tracking-issue-selection.md) - How step 03 honours `issue_number` on GitHub and reuses only open issues referenced in the task text (#1595)
+- [Tracking Issue Selection Reference](reference/workflow-tracking-issue-selection.md) - How step 03 honours `issue_number` on GitHub, reuses only open issues referenced in the task text (#1595), defaults to local tracking unless `create_issue=true`, reuses exact-title matches, and bounds rate-limit retries with jittered backoff (#1881)
 - [Workflow Issue Extraction Reference](reference/workflow-issue-extraction.md) - Three-tier issue-number resolution (direct URL → PR closing-refs → `#N` verify) in step 03b
 - [Multi-Provider Workflow Reference](reference/multi-provider-workflow.md) - Provider-neutral helper routing for GitHub, Azure DevOps, local, and unsupported repositories
 - [How to Use the Workflow with Azure DevOps](howto/use-workflow-with-azure-devops.md) - Run default-workflow against an AzDO repository
@@ -905,6 +907,7 @@ Quick references, guides, and additional resources.
 ### Contributing
 
 - [File Organization](contributing/file-organization.md) - Where different file types belong in the repository
+- [Branch Protection on main](contributing/branch-protection.md) - The 7 required CI checks, why strict is off, and the rule for changing CI jobs
 - [Discoveries](discoveries.md) - Patterns and insights discovered during development
 
 ### Investigations
