@@ -161,6 +161,8 @@ mod issue_1618_wait_step;
 mod issue_1618_wait_threshold;
 #[path = "issue_1634_shared_sessions.rs"]
 mod issue_1634_shared_sessions;
+#[path = "issue_1646_macos_merge_guard.rs"]
+mod issue_1646_macos_merge_guard;
 #[path = "issue_1650_profile_identity.rs"]
 mod issue_1650_profile_identity;
 #[path = "issue_1659_limit_resume_gate.rs"]

@@ -262,10 +262,22 @@ open. A PR found `MERGED` after phase 1 or phase 2 ends the run with exit `1`.
 Deliberate evasion with the same token (`curl`, a script file, an alias) is a
 non-goal: branch protection is the boundary and the `MERGED` checks the backstop
 ([details](../../../docs/reference/auto-drive-to-merge.md#merges-outside-the-gate-are-refused-1551)).
-The parent check needs Linux `/proc` and a root-owned `/bin/bash`, so
-`amplihack recipe run` stops an auto-drive run at launch on macOS or without
-`/bin/bash`, before any phase runs
-([#1646](https://github.com/rysweet/amplihack-rs/issues/1646)).
+The parent check establishes five facts about the gate process (pid, argv,
+the file it is running, a root-owned `/bin/bash` interpreter, and a clean
+environment) from `/proc` on Linux and from `ps`, `lsof` and `stat` on macOS
+([#1646](https://github.com/rysweet/amplihack-rs/issues/1646)). On macOS, fact
+(e) is observed in the environment the shim inherited plus the parent's mapped
+libraries, rather than in the parent's own environment, because `ps -E`
+withholds the environment of a SIP-protected platform binary, which the
+parent's `/bin/bash` is. What that
+changes, what `-p` and SIP guarantee regardless, and the one window it opens
+are set out under "Fact (e) is observed at a different point on macOS" in
+`docs/reference/auto-drive-to-merge.md`.
+`amplihack recipe run` stops an auto-drive run at launch, before any phase,
+on a host where that check cannot work: a non-Unix host (the shim is a bash
+script), a BSD other than macOS, a macOS without `/bin/ps` or
+`/usr/sbin/lsof`, or any Unix without `/bin/bash`. On macOS a bundle path
+containing a space or a backslash is refused at merge time.
 
 ## Exit code 79 is terminal
 

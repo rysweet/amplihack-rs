@@ -3065,9 +3065,10 @@ hold the real `gh`, so under the marker the launcher puts the guard back at
 
 The run stops before any step when `AMPLIHACK_HOME` is unset or not absolute
 (the error names which), the host is not Unix (the bash shim cannot be the
-`gh` an agent runs there), the host has no `/proc/self/stat` (macOS, the
-BSDs: the shim could never trust the gate, so the run would fail only at the
-final merge; tracked in [#1646](https://github.com/rysweet/amplihack-rs/issues/1646)),
+`gh` an agent runs there), the host cannot give the shim a parent check (on
+Linux: no `/proc/self/stat`; on macOS: no executable `/bin/ps` or
+`/usr/sbin/lsof`; on the BSDs there is no parent check at all, so the run
+would fail only at the final merge),
 the host has no executable `/bin/bash` (NixOS: the shim could not start, so
 every `gh` call would fail), the shim is missing or not a regular executable, or
 anything the shim trusts is group- or other-writable: the shim, its
@@ -3078,6 +3079,39 @@ directory, `tools/` above it, and the gate and the helpers it sources there
 ```text
 amplihack: merge guard not found at /home/ryan/.amplihack/amplifier-bundle/tools/gh-merge-guard; refusing to run auto-drive without it (#1551)
 ```
+
+The host check (`check_guard_host`) asks for the host-specific interface the
+parent check cannot work without. Which facts it needs is the one thing
+the launch check reads from the platform, so it is passed in rather than
+rediscovered: `ParentCheck::Proc` on Linux and the BSDs,
+`ParentCheck::Tools(&[/bin/ps, /usr/sbin/lsof])` on macOS. Both arms are
+exercised by the unit tests on every platform. Everything else the shim
+resolves through `sys_tool` is base-system tooling and is **not** pre-verified
+here — `stat` and `realpath` on both platforms, plus `env` and `uname` on the
+macOS path. A host that has pruned one of those still launches, and the
+missing tool refuses the merge when the check reaches it (so a pruned
+`/usr/bin/stat` is found at the merge, not at launch). A host that fails the
+check says so before step 1, naming the path:
+
+```text
+amplihack: auto-drive needs /proc/self/stat to let autodrive_merge_gate.sh merge, and this host has none (the BSDs have no /proc). The merge guard would refuse the gate's own merge after every phase had run, so auto-drive stops now (#1551). Run auto-drive on Linux or macOS.
+```
+
+```text
+amplihack: auto-drive needs /usr/sbin/lsof to let autodrive_merge_gate.sh merge on macOS, and this host has no executable file there. The merge guard would refuse the gate's own merge after every phase had run, so auto-drive stops now (#1646). Restore it from the base system.
+```
+
+An empty `ParentCheck::Tools(&[])` bails too, naming #1646, rather than
+passing because it has nothing to look for. No caller constructs one (the
+macOS arm passes the two pinned constants, and the unit tests pin those
+constants to the paths the shim uses), so this changes no shipped behaviour.
+It is there because a check whose empty case succeeds vacuously is the shape
+a later refactor turns into a bypass.
+
+Passing this check does not mean a merge will be allowed. It is an
+availability check: it says the run will not spend three phases of work only
+to be refused at the merge. Every merge is still decided by the shim, per
+call, from the facts below.
 
 ### Keeping the shim first after a shell profile
 
@@ -3255,28 +3289,227 @@ entry, skipping its own directory and any file with the marker line
 ### When the gate's own merge is allowed
 
 A merge form is allowed only when the shim's **direct parent** is the trusted
-gate, `gh-merge-guard/../autodrive_merge_gate.sh`. Using `/proc`, all of these
-must hold:
+gate, `gh-merge-guard/../autodrive_merge_gate.sh`. Five facts about that
+parent must hold. They are the same five on every supported host; what differs
+is the kernel interface that establishes them and, for (e), the point at which
+it is observed:
 
-1. `/proc/self/stat` field 4 still equals `$PPID`.
-2. `/proc/$PPID/cmdline` is exactly `[<bash>, -p, <gate>, …]`, `<gate>` being
-   the trusted gate's physical path (no symlink, relative path or `..`).
-3. `/proc/$PPID/fd/255` is the same file as the trusted gate.
-4. `/proc/$PPID/exe` is a `bash` owned by root and writable by no one else.
-5. `/proc/$PPID/environ` has no `BASH_FUNC_*` and no non-empty `BASH_ENV`,
-   `ENV`, `SHELLOPTS`, `BASHOPTS`, `PS4`, `LD_PRELOAD`, `LD_AUDIT` or
-   `LD_LIBRARY_PATH`. Only key names are compared.
+1. **(a) Identity.** The parent pid the kernel reports for this process still
+   equals `$PPID`, read once before the other facts and once after, so a
+   parent that exited mid-check and whose pid was reused cannot be judged by
+   a stranger.
+2. **(b) Argv.** The parent's argv is exactly `[<bash>, -p, <gate>, …]`,
+   `<gate>` being the trusted gate's physical path (no symlink, relative path
+   or `..`). `argv[0]` itself is deliberately **not** trusted: only `-p` and
+   the gate path are checked, on both platforms. macOS adds one constraint
+   that is a property of `ps` rather than of the check: an **empty**
+   `argv[0]` is refused, because `ps` omits it from `args` and the `comm`
+   subtraction then has nothing to remove.
+3. **(c) The file being run.** The parent's fd 255 — the descriptor bash
+   keeps open on the script it is executing — is the same file as the trusted
+   gate, compared by device and inode.
+4. **(d) The interpreter.** The executable the parent is actually running is a
+   `/bin/bash` owned by root and writable by no one else.
+5. **(e) A clean environment.** No `BASH_FUNC_*` and no non-empty `BASH_ENV`,
+   `ENV`, `SHELLOPTS`, `BASHOPTS`, `PS4`, `LD_PRELOAD`, `LD_AUDIT`,
+   `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES` or `DYLD_LIBRARY_PATH`: the
+   names a shell or the loader would use to run attacker code inside the
+   parent. Only key names are compared, never values. macOS also checks the
+   parent's mapped libraries directly, and observes the environment at a
+   [different point](#fact-e-is-observed-at-a-different-point-on-macos).
+   The `DYLD_*` and `LD_*` arms are listed for completeness and kept as
+   defence in depth; on a stock Mac neither is what stops a loader
+   injection. Setting `DYLD_INSERT_LIBRARIES` before the gate starts does
+   not by itself refuse a merge, because dyld has already stripped it for
+   the SIP-restricted `/bin/bash` the gate runs under, and a dylib injected
+   some other way is refused by the mapped-library check rather than by the
+   variable test.
 
-Any check the shim cannot evaluate refuses. A subshell of the gate passes; a
-grandparent, a copy of the gate, `exec -a`, `bash -c` and no `-p` are refused.
+Any check the shim cannot evaluate refuses: a missing tool, empty or
+surprising output, an extra line, a parent that exited. "Could not tell" is
+indistinguishable from "false". A grandparent, a copy of the gate, the
+`exec -a` padding form (`exec -a "/bin/bash -p <gate>" /bin/bash <gate>`),
+`bash -c` and no `-p` are refused on both platforms. A subshell of the gate
+passes on Linux but is **refused on macOS**: the bash 3.2 that macOS ships
+closes fd 255 across a fork, so fact (c) cannot hold for a subshell there.
+Production is unaffected, because the gate's merge call is pinned at the
+gate's top level rather than inside a subshell; the difference is recorded in
+[what this does not stop](#what-this-does-not-stop).
+
+#### How each fact is established
+
+The shim dispatches on the host before it reads anything: `uname -s` exactly
+`Darwin` takes the macOS path, otherwise a readable `/proc/self/stat` takes
+the Linux path, otherwise the merge is refused. Darwin is checked **first**,
+so a forged `/proc` on a Mac cannot preempt the real check. A host that is
+neither has no parent check, so the gate's own merge is refused there too
+([the launch check](#how-the-guard-is-applied) stops such a run before step
+1).
+
+| Fact | Linux | macOS |
+| --- | --- | --- |
+| (a) identity | `/proc/self/stat` field 4 | `ps -p $$ -o ppid=` |
+| (b) argv | `/proc/$PPID/cmdline`, NUL-separated | `ps -p $PPID -o comm= -o args=`: `comm` is subtracted from the front of the space-joined `args`. What is left still begins with the single space that separated `argv[0]` from `argv[1]`; with that one space removed it must be exactly `-p <gate>` or begin `-p <gate> ` |
+| (c) the file being run | `/proc/$PPID/fd/255` | `lsof -n -P -p $PPID -a -d 255,txt -F fn`: exactly one fd-255 `n` name, paired with its `f` record, compared with `-ef` |
+| (d) the interpreter | `/proc/$PPID/exe` | the same `lsof` call's `txt` entries: one must be `-ef /bin/bash`; `stat -L -f '%u %Lp'` must show uid 0 and no group or other write bit |
+| (e) clean environment | `/proc/$PPID/environ` | **(e1)** the shim's own environment, inherited through the gate's `exec`, has none of the names above; **(e2)** every `txt` entry the parent has mapped is `/bin/bash` itself, or is root-owned, not group- or other-writable, and under `/usr/lib/` or `/System/` |
+
+Each tool is run by absolute path (on macOS: `/bin/ps`, `/usr/sbin/lsof`,
+`/usr/bin/stat`, `/usr/bin/env`, `/usr/bin/uname`), never through `PATH`, and
+each is root-owned and not setuid except `/bin/ps`, which is used only to read
+the shim's own parent. The whole check runs as the invoking user, so a parent
+owned by another user is unreadable and therefore refused. `sys_tool` searches
+`/usr/bin`, `/bin`, then `/usr/sbin` — `/usr/sbin` was appended last so that
+no name the shim already resolved resolves anywhere else — and a tool it
+cannot find refuses the merge. `lsof` always runs with `-n -P`: no name
+resolution, so no DNS or service lookup — no network egress from inside a
+security check, and no stall on a slow resolver.
+
+Two details of the macOS argv check are load-bearing and must not be
+"simplified" away. `args` alone is not enough, because `argv[0]` is
+attacker-controlled (`exec -a`) and `args` is a space-joined string: without
+subtracting `comm` from the front, a parent run as
+`exec -a "/bin/bash -p <gate>" /bin/bash <gate>` would read as the gate. And
+every request-derived string sits on the left of the comparison, quoted,
+because `set -f` disables pathname expansion but **not** pattern matching in
+`case`, `[[ == ]]` or `${v#…}` — an unquoted `comm` containing `*` would match
+far more than its literal text. `test-issue-1551-no-merge-outside-gate.sh`
+asserts both statically.
+
+A third simplification is barred for fact (c). The `-F fn` output is parsed as
+**records** — each `f` line and the `n` line that follows it are kept together,
+and the fd-255 names and the `txt` names go into separate sets. A line-oriented
+scan of the same output would mix them: any fd the parent happens to hold on
+the gate file, or any `n` line from a `txt` record, would satisfy fact (c),
+where the fact is specifically about fd 255, the descriptor bash keeps open on
+the script it is executing. The same test asserts the record parsing
+statically, and the shim's own comment says why.
+
+A consequence of reading argv as a joined string: a gate path containing
+whitespace or a backslash cannot be parsed back out of it, so the shim
+refuses it. On macOS an `AMPLIHACK_HOME` with a space in it therefore cannot
+merge, where Linux tolerates one. This costs no security — facts (c) and (d)
+prove the file and the interpreter independently — but it is a real path
+constraint, and the refusal is silent about the cause by design
+([troubleshooting](#troubleshooting)).
+
+#### Fact (e) is observed at a different point on macOS
+
+Linux establishes fact (e) with one read of `/proc/$PPID/environ`, the
+parent's environment as it was at `execve`. macOS establishes it from two
+observations the shim can make instead: its own inherited environment
+(**e1**), snapshotted before the prologue unsets anything, and the parent's
+mapped libraries (**e2**). Three properties do not depend on the observation
+point at all, and they carry most of fact (e)'s weight on macOS:
+
+1. **The shell-injection names cannot run code in the parent.** Fact (b)
+   proves the parent was started as `/bin/bash -p`, and privileged mode makes
+   bash ignore `BASH_ENV`, `ENV`, `SHELLOPTS`, `BASHOPTS` and `BASH_FUNC_*`
+   at startup, importing no exported function. Measured on bash
+   3.2.57(1)-release (arm64-apple-darwin25), the bash macOS ships:
+
+   ```sh
+   env SHELLOPTS=xtrace /bin/bash -p -c 'echo marker'   # prints: marker
+   env SHELLOPTS=xtrace /bin/bash    -c 'echo marker'   # prints: + echo marker
+                                                        #         marker
+   ```
+
+   That measurement is also why the guard's snapshot of its own environment
+   cannot be traced out of it: `xtrace` is not honoured under `-p`, so the
+   prologue runs silently even when something asked for a trace.
+2. **`DYLD_*` cannot load code into the parent.** `/bin/bash` is a
+   SIP-protected platform binary, so dyld treats it as restricted and strips
+   `DYLD_INSERT_LIBRARIES` and `DYLD_LIBRARY_PATH` before it starts, and
+   fact (d) pins the parent's mapped executable to that `/bin/bash` by inode.
+   The shim's `DYLD_*` and `LD_*` arms are defence in depth rather than the
+   operative control: on a stock Mac they are unreachable, because a
+   restricted parent never sees the variables they test.
+3. **(e2) observes the effect rather than the variable.** Every file the
+   parent has mapped must be `/bin/bash` itself, or be root-owned, not group-
+   or other-writable, and under `/usr/lib/` or `/System/`. A library injected
+   by any route, including a variable the shim does not test or a loader
+   feature a later macOS adds, fails that check once it is mapped. It is a
+   property check and not a literal `{bash, dyld}` allowlist, so a future
+   macOS that maps one more system library does not break the feature, while
+   an attacker's dylib under `/tmp` or `$HOME` fails all three clauses.
+
+##### Why the observation point differs
+
+`ps -E` does not print the environment of a process whose executable is a
+SIP-protected platform binary. `/bin/bash` is one, and fact (d) pins the
+parent to that `/bin/bash` by inode, so the one process the shim needs to
+read is exactly the case `ps` withholds. Measured on macOS 26.7.2 (build
+25G332, arm64), with `/bin/sleep` standing in for the parent because it stays
+put long enough to inspect:
+
+```sh
+env MARK=visible /bin/sleep 30 &
+/bin/ps -Ewww -p $! -o command=    # prints "/bin/sleep 30", and no MARK
+```
+
+`/bin/bash` behaves the same way. The restriction follows the executable, not
+`ps`: run the same command against an ordinary binary built locally and the
+full environment, `MARK` included, is printed. Copying a platform binary
+somewhere unprotected does not produce a counter-example either, because
+code-signing enforcement `SIGKILL`s the copy (exit 137) before it can be
+read. The other readers do not help: `launchctl procinfo` needs root, and
+`vmmap` and `sample` need a debugging entitlement.
+
+So the divergence rests on the same System Integrity Protection assumption as
+guarantee 2, set out [below](#what-the-macos-argument-rests-on), rather than
+on a separate one. It is a measurement of one macOS version on one host, not
+a claim about macOS in general. If a later release exposes the read, nothing
+above has to change: an `environ` read would be one more observation, not a
+replacement for either of the two the shim makes.
+
+##### What the macOS argument rests on
+
+Guarantee 2 is a consequence of System Integrity Protection, as is the
+observation point itself: both the stripping of `DYLD_*` and the withholding
+of the parent's environment from `ps -E` follow from `/bin/bash` being a
+SIP-protected platform binary. On a host with SIP disabled, `/bin/bash` may
+no longer be restricted and dyld may no longer strip those variables. What
+remains there is the pair that still holds, (e1) seeing `DYLD_*` in the
+inherited environment and (e2) refusing the mapped dylib, so the result is a
+weaker argument rather than none. (Such a host would likely also let `ps -E`
+read the parent, which would close the residual below rather than open
+anything; the shim does not take that read, because a check that only works
+where SIP is off is not one to depend on.) `SHIM_BASH` in
+the shim is the one place that pins the interpreter and so the anchor for all
+of this: pointing it at a bash outside a SIP-protected root would quietly
+remove guarantee 2 and leave facts (d) and (e2) resting on file permissions
+alone. The same reasoning is why the macOS path does not verify the tools it
+runs. `ps`, `lsof`, `stat`, `env` and `uname` are taken by absolute path and
+trusted, because an adversary who can replace `/bin/ps` can replace the shim.
+The Darwin evidence is only as trustworthy as SIP on the host, which is an
+assumption of the design rather than something it checks.
+
+##### The residual
+
+What moves with the observation point is the window. A variable present at
+the parent's `execve` that the gate script itself `unset`s and `export -n`s
+before invoking `gh` is invisible to (e1), where Linux's
+`/proc/$PPID/environ` snapshot would still show it. A variable still exported
+when the gate invokes `gh` is detected on both platforms, because bash passes
+the whole environment through `exec` to the shim and keeps an injected
+`SHELLOPTS` or `BASHOPTS` exported even after rewriting it, and presence
+rather than value is the test. Reaching the gap needs code running inside the
+trusted gate: either an edit to the gate, the same-user edit #1551 already
+documents as a non-goal, or an injection vector that `-p` neutralises and
+fact (b) proves to be in force. It is recorded on
+[#1646](https://github.com/rysweet/amplihack-rs/issues/1646) and in
+[What this does not stop](#what-this-does-not-stop).
 
 The gate starts with `#!/bin/bash -p` (never `#!/usr/bin/env bash -p`, which
 Linux passes to `env` as one argument) and runs `builtin unset -f gh git jq`.
 Phase 3's `autodrive-merge-loop.yaml` loads the gate and `autodrive_state.sh`
 from `$AMPLIHACK_HOME` only. Step-03 resolves the gate's
-physical path with `pwd -P` and, in a subshell that drops everything check 5
+physical path with `pwd -P` and, in a subshell that drops everything fact (e)
 names, runs `exec env -u LD_… /bin/bash -p "$GATE_PHYS" …`, so a session
 exporting `which` (Fedora), Lmod's `module` or `LD_LIBRARY_PATH` still merges.
+That launch line is identical on macOS and needs no `-u DYLD_…`: dyld has
+already stripped those for a SIP-restricted `/bin/bash` by the time the gate
+runs.
 
 ### What the agents are told
 
@@ -3339,8 +3572,16 @@ the run when the PR is merged outside the gate.
 | A merge during phase 3 | The gate treats an already-`MERGED` PR as success, so it is not reported. |
 | An extension binary run directly from `~/.local/share/gh/extensions` | Not refused, like `gh` by absolute path. Caught by the `MERGED` checks. |
 | A fake `jq`, `git` or `gh` planted in a `PATH` entry ahead of the system one | The gate finds its tools through `PATH`, so it could misread CI. Not prevented; the gate's facts come from GitHub, and branch protection is the boundary. |
-| No `/proc` (macOS, BSDs) | `amplihack recipe run` stops the run at launch, before any step: the shim could never trust the gate's merge. Auto-drive does not run on macOS until [#1646](https://github.com/rysweet/amplihack-rs/issues/1646) adds a parent check that works there. |
+| No parent check on the host (the BSDs: no `/proc`, not Darwin) | `amplihack recipe run` stops the run at launch, before any step: the shim could never trust the gate's merge. macOS is supported since [#1646](https://github.com/rysweet/amplihack-rs/issues/1646); the BSDs are not. |
 | A `/proc` where the parent's `environ` cannot be read, or a `/bin/bash` not owned by root | Fails closed: every merge is refused, the gate's included. |
+| On macOS, a gate script that `unset`s and `export -n`s an injected variable before invoking `gh` | **Not detected.** Fact (e1) observes the environment the shim inherited, not a snapshot of the parent's `execve` environment, because `ps -E` withholds the environment of a SIP-protected platform binary and fact (d) pins the parent to one ([details](#fact-e-is-observed-at-a-different-point-on-macos)). Reaching this needs code running inside the trusted gate: either an edit to the gate (the same-user edit row above, a #1551 non-goal) or an injection vector that `-p` neutralises and fact (b) proves to be in force. |
+| On macOS, `/usr/sbin/lsof` missing, or blocked by SIP or a security product | Fails closed: every merge is refused, the gate's included. The [launch check](#how-the-guard-is-applied) catches a missing `lsof` before step 1; one that exists but cannot read the process table is found only at the merge. Covered by construction rather than by a test: the shim takes its tool paths as absolute constants, and an environment variable that could point them at a test root would itself be an injection vector, so no test removes `/usr/sbin/lsof`. |
+| On macOS, an `lsof` that hangs | The shim hangs rather than refuses. `-n -P` removes the realistic cause (name resolution). No timeout is used: macOS base has no `timeout(1)`, and wrapping the call in another interpreter would add it to the trusted path. |
+| On macOS, an `AMPLIHACK_HOME` whose path contains a space or a backslash | Refused, where Linux would merge: such a path cannot be recovered from the joined argv fact (b) reads. Deliberate; see [troubleshooting](#troubleshooting). It is one of the three behaviour differences a correct setup can hit, with the subshell and empty-`argv[0]` rows below. |
+| On macOS, a merge called from a **subshell** of the gate | Refused, where Linux would merge: the bash 3.2 macOS ships closes fd 255 across a fork, so fact (c) cannot hold for the subshell. The gate's own merge call is pinned at its top level, so no shipped path takes it. Loosening fact (c) to accept any fd on the gate file would be the wrong trade; see [how each fact is established](#how-each-fact-is-established). |
+| On macOS, a gate whose `argv[0]` is the **empty string** | Refused, where Linux would merge: `ps` omits an empty `argv[0]` from `args`, so the `comm` subtraction has nothing to remove and the argv cannot be parsed. Fail-closed, and no form step-03 produces. |
+| On macOS, `DYLD_INSERT_LIBRARIES` or `DYLD_LIBRARY_PATH` set when the gate starts | Inert: dyld strips both for the SIP-restricted `/bin/bash` the gate runs under, and fact (d) pins the parent to that binary by inode. A dylib injected another way fails the (e2) `txt` property check. |
+| On macOS with SIP disabled | The parent check still runs and still refuses an injected library through (e2), but the argument behind fact (e) is weaker: a `/bin/bash` that dyld no longer treats as restricted keeps `DYLD_*`, and the shim's own tools are trusted by path. Not a supported configuration; see [what the macOS argument rests on](#what-the-macos-argument-rests-on). |
 | No `/bin/bash` at all (NixOS) | `amplihack recipe run` stops the run at launch: the shim cannot start, so every `gh` call in the run would fail. |
 | A top-level command a newer `gh` added | Refused as `unknown gh command or extension` until it is added to the [allowlist](#the-built-in-command-allowlist). |
 
@@ -3349,19 +3590,34 @@ the run when the PR is merged outside the gate.
 - **`merge guard not found` before step 1.** Set `AMPLIHACK_HOME` to an
   absolute path, rerun `amplihack install`, and check
   `stat -c %a "$AMPLIHACK_HOME/amplifier-bundle/tools/gh-merge-guard/gh"`
-  prints `755`.
+  prints `755` (on macOS: `stat -f %Lp`, same path, same expected `755`).
 - **The gate ends `NOT_MERGED — gh pr merge failed (exit 3)`.** The shim
-  did not trust the gate. Check that `readlink -f "$(command -v gh)"` and the
-  gate path step-03 resolved come from one bundle tree and that `/bin/bash`
-  is root-owned. Then rerun phase 3.
+  did not trust the gate. The refusal line never says which fact failed —
+  an adversary who can call `gh` repeatedly would otherwise have an oracle —
+  so check them by hand. Everywhere: `command -v gh` resolves to the shim,
+  and the shim and the gate path step-03 resolved come from one bundle tree.
+  On Linux: `/bin/bash` is root-owned. On macOS: `/bin/bash` is root-owned
+  (`stat -f '%u %Lp' /bin/bash` prints `0 555`), `/bin/ps` and
+  `/usr/sbin/lsof` both run, and `$AMPLIHACK_HOME` contains no space or
+  backslash. Then rerun phase 3.
+- **On macOS, every merge is refused and `$AMPLIHACK_HOME` has a space in
+  it.** That is the cause. The shim reads the parent's argv as one joined
+  string and cannot recover a path with whitespace from it, so it refuses.
+  Move the bundle to a path without spaces or backslashes and rerun
+  `amplihack install`.
 - **An agent's non-merge `gh api` call is refused.** It mentions `pull` or
   `merge` with `%`, `.`/`..`, a backslash or whitespace (use the plain
   `repos/<owner>/<repo>/…` path), or it is a `gh` extension.
 - **`unknown gh command or extension` after a `gh` upgrade.** The new command
   is missing from the [allowlist](#the-built-in-command-allowlist). Check that
   it cannot merge, then add it.
-- **`auto-drive needs /proc/self/stat` before step 1.** The host is macOS or
-  a BSD. See [#1646](https://github.com/rysweet/amplihack-rs/issues/1646).
+- **`auto-drive needs /proc/self/stat` before step 1.** The host is a BSD
+  other than macOS. The shim has no parent check there, so the gate's merge
+  could never be trusted. Run auto-drive on Linux or macOS.
+- **`auto-drive needs /bin/ps` or `needs /usr/sbin/lsof` before step 1.** A
+  macOS host missing a tool the parent check reads — an unusual image, or one
+  where `/usr/sbin` has been pruned. Both are part of the base system; restore
+  them.
 - **The run exits `1` with `#1551 merged outside`.** Something merged the PR
   before phase 3; review the merge in the PR's timeline.
 
@@ -4630,9 +4886,10 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step, the PR-head resolver read-only guard, `autodrive_step_outputs_are_read_from_recipe_var_only` (the four [static checks](#the-static-check), with the read counts taken from this page), `autodrive_round_with_inherited_stale_tools_dir_uses_its_own` (#1607), and the contract shell suite run with inherited variables scrubbed, set to a conflicting decoy, and set to the round's own tools | `tests/integration/auto_drive_to_merge_test.rs` |
 | [The bundle guard](#the-bundle-guard) (#1561) | `crates/amplihack-cli/tests/issue_1561_step_outputs_prefer_recipe_var.rs` |
 | Where phases 2 and 3 run (issue #1528): resolver behaviour and refusals (including a local branch or worktree behind, ahead of or diverged from origin), loop `step-02` resolution and forwarding, round `step-04` commit blocks, a forced-add reproduction the guard refuses, and a commit from the pull request worktree that leaves the launch checkout's index clean | `tests/integration/autodrive_pr_worktree_tests.rs` |
-| [Merges outside the gate](#merges-outside-the-gate-are-refused-1551) (#1551): every merge form refused with exit `3` and the PR left open (T1); forged gates, a copied gate and the real gate run without `-p` refused (T2, T3); the real gate run as `/bin/bash -p` still merges (T3); pass-through of non-merge calls (T4); exit `127` cases (T5); `export -f gh`, `BASH_ENV`, a `PPID` mismatch, a non-digit depth and every non-canonical endpoint form, mixed-case `Pulls` and `Merge` included, refused (SEC); the step-01b directive and its fail-closed branches, the phase-1 `MERGED` check and the unreadable-state exit (T6); static checks (S). CI runs it in a Linux job. | `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh` |
-| When the launcher applies the guard, idempotent `PATH` with the guard first, `no_merge` alone not applying it, the inherited marker, the fail-closed error for an unset, empty or relative `AMPLIHACK_HOME` and a missing or non-executable shim, and (Linux only) a phase-1 `autodrive-*` bash step whose `gh pr merge 1` gets exit `3` and `REFUSED` while the stub `gh` logs no merge, a login shell whose profile prepends another `gh` still resolving `gh` to the shim, the shipped `bash-env` sourcing a user `BASH_ENV` first; off Linux, a companion test shows the merge is refused | `crates/amplihack-cli/tests/issue_1551_merge_guard.rs` |
-| `guard_applies` truth table (`0` and `false` still apply it) and `locate_guard_dir` errors, a group- or other-writable shim or directory included | `crates/amplihack-cli/src/commands/recipe/run/tests_merge_guard.rs` |
+| [Merges outside the gate](#merges-outside-the-gate-are-refused-1551) (#1551): every merge form refused with exit `3` and the PR left open (T1); forged gates, a copied gate and the real gate run without `-p` refused (T2, T3); the real gate run as `/bin/bash -p` still merges (T3); pass-through of non-merge calls (T4); exit `127` cases (T5); `export -f gh`, `BASH_ENV`, a `PPID` mismatch, a non-digit depth and every non-canonical endpoint form, mixed-case `Pulls` and `Merge` included, refused (SEC); the step-01b directive and its fail-closed branches, the phase-1 `MERGED` check and the unreadable-state exit (T6); static checks (S), which since #1646 also assert that every function the shim defines appears in its `builtin unset -f` list, that no request-derived string is left unquoted in a pattern position, that `lsof` is read as an `-F fn` record stream and always with `-n -P`, and (`S-1646-darwin-first`) that the dispatcher tries the Darwin arm before the `/proc` arm, so a planted `/proc/self/stat` on a Mac cannot divert the check. CI runs it in a Linux job. | `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh` |
+| When the launcher applies the guard, idempotent `PATH` with the guard first, `no_merge` alone not applying it, the inherited marker, the fail-closed error for an unset, empty or relative `AMPLIHACK_HOME` and a missing or non-executable shim, and (Linux only) a phase-1 `autodrive-*` bash step whose `gh pr merge 1` gets exit `3` and `REFUSED` while the stub `gh` logs no merge, a login shell whose profile prepends another `gh` still resolving `gh` to the shim, the shipped `bash-env` sourcing a user `BASH_ENV` first; on a Unix host that is neither Linux nor macOS, a companion test shows the merge is refused | `crates/amplihack-cli/tests/issue_1551_merge_guard.rs` |
+| [The macOS parent check](#how-each-fact-is-established) (#1646), over the shipped shim with a synthetic gate, a tempdir `AMPLIHACK_HOME` and a stub `gh`, reproducing step-03's launch sequence: the real gate run as `/bin/bash -p <gate>` merges; a grandchild, a copied gate, the gate without `-p`, `bash -c`, the `exec -a` padding form, an `argv[0]` holding `*`, `?` or `[`, a parent holding an extra fd on the gate but no fd 255, a dirty inherited environment (`BASH_FUNC_*`, `BASH_ENV`, `SHELLOPTS`, `PS4`, `LD_*`) an empty `argv[0]`, and a gate path containing a space are each refused with exit `3` and the one fixed line; a subshell of the gate is refused too, because the bash 3.2 macOS ships closes fd 255 across a fork; `DYLD_*` set at launch still merges (dyld strips it) | `crates/amplihack-cli/tests/issue_1646_macos_merge_guard.rs` |
+| `guard_applies` truth table (`0` and `false` still apply it) and `locate_guard_dir` errors, a group- or other-writable shim or directory included, plus both `ParentCheck` arms: `Proc` with a missing `proc_stat` bails naming the path and the BSDs, `Tools` with a missing tool bails naming that tool and #1646, `Tools(&[])` bails rather than passing vacuously, and `Tools(&[/bin/ps, /usr/sbin/lsof])` passes with no `/proc` at all. `locate_guard_dir_checks_the_real_host` runs the host check against the host the test is on, and its macOS twin pins the two paths the `Tools` arm asks for (`/bin/ps`, `/usr/sbin/lsof`) to the constants the shim uses, so a rename on one side cannot silently weaken the launch check | `crates/amplihack-cli/src/commands/recipe/run/tests_merge_guard.rs` |
 | The real gate's `MERGED` path with the guard first on `PATH`, the phase-2 `MERGED` check, and the directive reaching the agent prompts (§5i-1551) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | [Finalization hand-off](#finalization-hand-off-from-phase-1-1714) (#1714): the allow-list and flag exactness, the validator's hand-off on both `BLOCKED_CI` exits and on `FAILED_IMPLEMENTATION` with a confirmed open PR (and its refusal without one), the open-PR check's PR head rule (a fast-forward PR head present locally or fetched without writing refs is the same PR; a diverged, rewritten or unfetchable head is not), the real terminal-state probe followed by the validator on a merge already on the PR before finalization (`EXISTING_OPEN_PR` when green, `FAILED_IMPLEMENTATION` handed off when pending, `BLOCKED_CI` handed off when red; a diverged head, a rewound remote, or a probe without `accept_pr_head_ahead` still `FAILED_INVALID_INPUT` and never handed off), `step-20-sync-pr-head` and step-20b run from the YAML against a remote that is ahead, with an upstream, with only `origin/<branch>` and with neither (the push lands on the PR head), standalone runs and all five other prior-state blockers still failing closed, step-03 run from its YAML against a stub `gh` (hand-off, closed or different PR, a non-digit `pr_number` printed as `<invalid>`, no PR, resume, `BLOCKED_CI` with no `handoff` field, a state outside the vocabulary, a missing brick), and static guards on the flag's only setter and on the merge gate | `tests/integration/issue_1714_finalization_handoff.rs` |
 | [Usage limits are not STUCK](#usage-limits-are-not-stuck) (#1801): `1801-evaluator-retry-verdict` (the evaluator hits a limit once, is retried inside step-02 and returns a verdict the loop records, with no `STUCK`), `1801-evaluator-usage-limit` (the limit is not lifted and the loop reports `USAGE_LIMIT`), a round and a before-round step that fail on a limit, and negative cases where the loop does not stop as `USAGE_LIMIT`: a nested `class`, the marker with exit `0`, an indented or echoed marker, and `usage_limit_wait` lines alone | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |

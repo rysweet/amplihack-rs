@@ -481,46 +481,253 @@ fn keep_guard_first_fails_closed_without_a_guard() {
     assert!(err.to_string().contains("#1551"), "{err}");
 }
 
-/// Crusty round 1 (#1644): a host without /proc (macOS) used to run all three
-/// phases and fail only when the shim refused the gate's own merge. The
-/// launch check stops it before any step instead.
+/// An executable stub file at `path`, for a host-check tool that must exist.
 #[cfg(unix)]
-#[test]
-fn a_host_without_proc_is_refused_at_launch_not_at_the_merge() {
-    use super::merge_guard::check_guard_host;
-    let tmp = tempfile::tempdir().unwrap();
-    let no_proc = tmp.path().join("proc/self/stat");
-    let err = check_guard_host(&no_proc, Path::new("/bin/sh"))
-        .expect_err("no /proc must stop the run")
-        .to_string();
-    assert!(err.contains("macOS"), "{err}");
-    assert!(err.contains(&no_proc.display().to_string()), "{err}");
-    assert!(err.contains("#1551"), "{err}");
+fn tool_stub(path: &Path) -> PathBuf {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, "#!/bin/sh\nexit 0\n").unwrap();
+    set_mode(path, 0o755);
+    path.to_path_buf()
 }
 
-/// No /bin/bash (NixOS): the shim cannot start, so every gh call would fail.
+/// Crusty round 1 (#1644): a host whose shim reads its parent through /proc,
+/// but that has no /proc, used to run all three phases and fail only when the
+/// shim refused the gate's own merge. The launch check stops it before any
+/// step instead.
+///
+/// #1646: this arm now fires only on a Unix host that is neither Linux nor
+/// Darwin, so the remedy it offers names both platforms that do work. Both
+/// `ParentCheck` arms are reachable on every platform, so this runs on Linux
+/// CI and on the Mac.
+#[cfg(unix)]
+#[test]
+fn a_proc_parent_check_without_proc_is_refused_at_launch_not_at_the_merge() {
+    use super::merge_guard::{ParentCheck, check_guard_host};
+    let tmp = tempfile::tempdir().unwrap();
+    let no_proc = tmp.path().join("proc/self/stat");
+    let err = check_guard_host(&no_proc, Path::new("/bin/sh"), ParentCheck::Proc)
+        .expect_err("no /proc must stop the run")
+        .to_string();
+    assert!(err.contains(&no_proc.display().to_string()), "{err}");
+    // F6: the retained "the BSDs" substring is what stops the bail drifting
+    // back to claiming macOS is the host that has no /proc. The remedy
+    // sentence names macOS deliberately; the diagnosis must not.
+    assert!(
+        err.contains("the BSDs have no /proc"),
+        "the bail must name who has no /proc: {err}"
+    );
+    assert!(err.contains("#1551"), "{err}");
+    assert!(
+        err.contains("Run auto-drive on Linux or macOS."),
+        "#1646: macOS no longer needs /proc, so it is now a platform this bail \
+         sends the operator to, not one it blames: {err}"
+    );
+}
+
+/// #1646: the macOS arm needs `ps` and `lsof`, not `/proc`. A missing one is
+/// named, with the issue number, and the bail never mentions `/proc` — a
+/// host-check message that named a path the arm does not use would send an
+/// operator looking in the wrong place.
+#[cfg(unix)]
+#[test]
+fn a_tools_parent_check_names_a_missing_tool_and_1646() {
+    use super::merge_guard::{ParentCheck, check_guard_host};
+    let tmp = tempfile::tempdir().unwrap();
+    // Deliberately absent: the Tools arm must never look at it.
+    let no_proc = tmp.path().join("proc/self/stat");
+    let present = tool_stub(&tmp.path().join("bin/ps"));
+    let missing = tmp.path().join("usr/sbin/lsof");
+
+    for (tools, named) in [
+        (vec![missing.as_path(), present.as_path()], &missing),
+        (vec![present.as_path(), missing.as_path()], &missing),
+    ] {
+        let err = check_guard_host(&no_proc, Path::new("/bin/sh"), ParentCheck::Tools(&tools))
+            .expect_err("a missing macOS tool must stop the run")
+            .to_string();
+        assert!(
+            err.contains(&named.display().to_string()),
+            "the bail must name the missing tool: {err}"
+        );
+        assert!(err.contains("#1646"), "{err}");
+        assert!(
+            !err.contains("/proc"),
+            "the Tools arm must not blame /proc: {err}"
+        );
+    }
+}
+
+/// A tool that exists but is not executable is refused the same way: "could
+/// not tell" must be indistinguishable from "absent" (AZ-1).
+#[cfg(unix)]
+#[test]
+fn a_tools_parent_check_refuses_a_non_executable_tool() {
+    use super::merge_guard::{ParentCheck, check_guard_host};
+    let tmp = tempfile::tempdir().unwrap();
+    let no_proc = tmp.path().join("proc/self/stat");
+    let ps = tool_stub(&tmp.path().join("bin/ps"));
+    let lsof = tool_stub(&tmp.path().join("usr/sbin/lsof"));
+    set_mode(&lsof, 0o644);
+    let tools = [ps.as_path(), lsof.as_path()];
+    let err = check_guard_host(&no_proc, Path::new("/bin/sh"), ParentCheck::Tools(&tools))
+        .expect_err("a non-executable tool must stop the run")
+        .to_string();
+    assert!(err.contains(&lsof.display().to_string()), "{err}");
+    assert!(err.contains("#1646"), "{err}");
+
+    // A directory where a tool should be is refused too.
+    fs::remove_file(&lsof).unwrap();
+    fs::create_dir_all(&lsof).unwrap();
+    assert!(
+        check_guard_host(&no_proc, Path::new("/bin/sh"), ParentCheck::Tools(&tools)).is_err(),
+        "a directory in place of a tool must stop the run"
+    );
+}
+
+/// The point of the enum: with the Tools arm, a host with no `/proc` at all
+/// passes. This is what lets auto-drive start on macOS.
+#[cfg(unix)]
+#[test]
+fn a_tools_parent_check_passes_without_any_proc() {
+    use super::merge_guard::{ParentCheck, check_guard_host};
+    let tmp = tempfile::tempdir().unwrap();
+    let no_proc = tmp.path().join("proc/self/stat");
+    let ps = tool_stub(&tmp.path().join("bin/ps"));
+    let lsof = tool_stub(&tmp.path().join("usr/sbin/lsof"));
+    let tools = [ps.as_path(), lsof.as_path()];
+    check_guard_host(&no_proc, Path::new("/bin/sh"), ParentCheck::Tools(&tools))
+        .expect("ps and lsof present: no /proc is needed");
+}
+
+/// #1646 (SEC-A5): an empty tool list refuses. No caller builds one — the
+/// macOS arm passes the two pinned constants — so this changes no shipped
+/// behaviour. It is here because a check whose empty case succeeds
+/// vacuously is the shape a later refactor turns into a bypass, and this
+/// one sits on the path to a merge.
+#[cfg(unix)]
+#[test]
+fn a_tools_parent_check_refuses_an_empty_tool_list() {
+    use super::merge_guard::{ParentCheck, check_guard_host};
+    let tmp = tempfile::tempdir().unwrap();
+    let no_proc = tmp.path().join("proc/self/stat");
+    let err = check_guard_host(&no_proc, Path::new("/bin/sh"), ParentCheck::Tools(&[]))
+        .expect_err("an empty tool list must not pass vacuously")
+        .to_string();
+    assert!(err.contains("#1646"), "{err}");
+    assert!(
+        !err.contains("/proc"),
+        "the Tools arm must not blame /proc: {err}"
+    );
+
+    // The interpreter is checked after the parent arm, so an empty list is
+    // refused even on a host that has everything else.
+    assert!(
+        check_guard_host(
+            &no_proc,
+            Path::new(super::merge_guard::SHIM_INTERPRETER),
+            ParentCheck::Tools(&[])
+        )
+        .is_err(),
+        "an empty tool list must refuse regardless of the interpreter"
+    );
+}
+
+/// The reference doc quotes both launch-check bails verbatim, in fenced
+/// `text` blocks, as what an operator will see. An operator who greps the
+/// message they got against the doc has to land on the right page, so the
+/// two must not drift apart — and the drift this guards against is real:
+/// the doc said "Run auto-drive on Linux or macOS." while the code still
+/// said "Run auto-drive on Linux." (#1646).
+///
+/// The comparison is verbatim apart from the path, which the test cannot
+/// make missing on the host it runs on: `/proc/self/stat` exists on Linux
+/// CI and `/usr/sbin/lsof` exists on this Mac. Each message is produced
+/// with a temporary path and the path alone is substituted back, so every
+/// other byte — wording, issue number, trailing stop — is compared as
+/// written.
+#[cfg(unix)]
+#[test]
+fn the_reference_doc_quotes_both_launch_bails_verbatim() {
+    use super::merge_guard::{LSOF_TOOL, PROC_SELF_STAT, ParentCheck, check_guard_host};
+    let doc =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/reference/auto-drive-to-merge.md");
+    let text = fs::read_to_string(&doc).expect("the auto-drive reference doc");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let absent = tmp.path().join("absent");
+    let shown = absent.display().to_string();
+
+    // Both arms, produced against a path that really is missing, then with
+    // that path swapped for the one the doc quotes.
+    let proc_bail = check_guard_host(&absent, Path::new("/bin/sh"), ParentCheck::Proc)
+        .expect_err("a missing proc_stat must bail")
+        .to_string()
+        .replace(&shown, PROC_SELF_STAT);
+    let tools = [absent.as_path()];
+    let tools_bail = check_guard_host(
+        Path::new(PROC_SELF_STAT),
+        Path::new("/bin/sh"),
+        ParentCheck::Tools(&tools),
+    )
+    .expect_err("a missing tool must bail")
+    .to_string()
+    .replace(&shown, LSOF_TOOL);
+
+    for produced in [&proc_bail, &tools_bail] {
+        assert!(
+            text.lines().any(|line| line == produced),
+            "the reference doc does not quote this bail verbatim; it must, or an \
+             operator who greps the message they got finds nothing:\n  produced: {produced}"
+        );
+    }
+
+    // And the other way: the doc must not quote a launch bail the code can
+    // no longer produce. A stale quote is worse than a missing one, because
+    // it reads as current.
+    for line in text.lines() {
+        if line.starts_with("amplihack: auto-drive needs ") {
+            assert!(
+                line == proc_bail || line == tools_bail,
+                "the doc quotes a launch bail the code does not produce:\n  doc: {line}"
+            );
+        }
+    }
+}
+
+/// No /bin/bash (NixOS): the shim cannot start, so every gh call would fail,
+/// not only merges. This bail is for every Unix host, so it must fire under
+/// both arms, and it must not be reported as a /proc or a tool problem.
 #[cfg(unix)]
 #[test]
 fn a_host_without_the_shim_interpreter_is_refused_at_launch() {
-    use super::merge_guard::check_guard_host;
+    use super::merge_guard::{ParentCheck, check_guard_host};
     let tmp = tempfile::tempdir().unwrap();
     let stat = tmp.path().join("stat");
     fs::write(&stat, "1 (x) S 0").unwrap();
+    let ps = tool_stub(&tmp.path().join("bin/ps"));
+    let lsof = tool_stub(&tmp.path().join("usr/sbin/lsof"));
+    let tools = [ps.as_path(), lsof.as_path()];
     let no_bash = tmp.path().join("bin/bash");
-    let err = check_guard_host(&stat, &no_bash)
-        .expect_err("no interpreter must stop the run")
-        .to_string();
-    assert!(err.contains(&no_bash.display().to_string()), "{err}");
-    assert!(err.contains("every gh call"), "{err}");
+
+    for parent in [ParentCheck::Proc, ParentCheck::Tools(&tools)] {
+        let err = check_guard_host(&stat, &no_bash, parent)
+            .expect_err("no interpreter must stop the run")
+            .to_string();
+        assert!(err.contains(&no_bash.display().to_string()), "{err}");
+        assert!(err.contains("every gh call"), "{err}");
+    }
 
     // Present but not executable is refused the same way.
     fs::create_dir_all(no_bash.parent().unwrap()).unwrap();
     fs::write(&no_bash, "").unwrap();
     set_mode(&no_bash, 0o644);
-    assert!(check_guard_host(&stat, &no_bash).is_err());
+    assert!(check_guard_host(&stat, &no_bash, ParentCheck::Proc).is_err());
+    assert!(check_guard_host(&stat, &no_bash, ParentCheck::Tools(&tools)).is_err());
 
     set_mode(&no_bash, 0o755);
-    check_guard_host(&stat, &no_bash).expect("both present: the host is usable");
+    check_guard_host(&stat, &no_bash, ParentCheck::Proc).expect("both present: the host is usable");
+    check_guard_host(&stat, &no_bash, ParentCheck::Tools(&tools))
+        .expect("both present: the host is usable");
 }
 
 /// The real launch path runs the host check: on this (Linux) test host the
@@ -528,12 +735,85 @@ fn a_host_without_the_shim_interpreter_is_refused_at_launch() {
 #[cfg(target_os = "linux")]
 #[test]
 fn locate_guard_dir_checks_the_real_host() {
-    use super::merge_guard::{PROC_SELF_STAT, SHIM_INTERPRETER, check_guard_host};
+    use super::merge_guard::{PROC_SELF_STAT, ParentCheck, SHIM_INTERPRETER, check_guard_host};
     assert_eq!(PROC_SELF_STAT, "/proc/self/stat");
     assert_eq!(SHIM_INTERPRETER, "/bin/bash");
     if Path::new(SHIM_INTERPRETER).exists() {
-        check_guard_host(Path::new(PROC_SELF_STAT), Path::new(SHIM_INTERPRETER)).unwrap();
+        check_guard_host(
+            Path::new(PROC_SELF_STAT),
+            Path::new(SHIM_INTERPRETER),
+            ParentCheck::Proc,
+        )
+        .unwrap();
+        let (_tmp, home) = bundle_with_shim(Some(0o755));
+        locate_guard_dir(&home).expect("a Linux host passes the launch check");
     }
+}
+
+/// #1646, the macOS twin: the real launch path asks for `/bin/ps` and
+/// `/usr/sbin/lsof` — the two tools the shim's Darwin arm resolves through
+/// `sys_tool` — and not for `/proc`, and `locate_guard_dir` passes on this
+/// Darwin host. Before #1646 this failed, because the launch check demanded
+/// `/proc/self/stat` on every Unix host.
+#[cfg(target_os = "macos")]
+#[test]
+fn locate_guard_dir_checks_the_real_macos_host() {
+    use super::merge_guard::{LSOF_TOOL, PS_TOOL, ParentCheck, SHIM_INTERPRETER, check_guard_host};
+    assert_eq!(PS_TOOL, "/bin/ps");
+    assert_eq!(LSOF_TOOL, "/usr/sbin/lsof");
+    assert_eq!(SHIM_INTERPRETER, "/bin/bash");
+    let tools = [Path::new(PS_TOOL), Path::new(LSOF_TOOL)];
+    check_guard_host(
+        Path::new("/nonexistent/proc/self/stat"),
+        Path::new(SHIM_INTERPRETER),
+        ParentCheck::Tools(&tools),
+    )
+    .expect("this macOS host has ps, lsof and /bin/bash");
+
+    let (_tmp, home) = bundle_with_shim(Some(0o755));
+    locate_guard_dir(&home).expect("#1646: macOS passes the launch check without /proc");
+}
+
+/// #1646 (SEC-A8): the interpreter is pinned in three places that must agree
+/// — the shim's `#!` line, its `SHIM_BASH` constant, and `SHIM_INTERPRETER`
+/// here. On macOS that one path carries the whole fact (e) argument: both
+/// that dyld strips `DYLD_*` before the parent starts, and that `ps -E`
+/// withholds the parent's environment so the shim reads its own inherited
+/// one instead, hold because `/bin/bash` is a SIP-protected platform binary.
+/// Repointing any of the three at a bash outside a SIP-protected root — a
+/// Homebrew or nix bash — would remove both guarantees without changing a
+/// line of the checks, and no other test would notice. This is that test.
+#[cfg(unix)]
+#[test]
+fn the_shim_and_the_launch_check_pin_the_same_interpreter() {
+    use super::merge_guard::SHIM_INTERPRETER;
+    let shim = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../")
+        .join(GUARD_REL)
+        .join("gh");
+    let text = fs::read_to_string(&shim).expect("the shipped merge-guard shim");
+
+    assert_eq!(SHIM_INTERPRETER, "/bin/bash");
+    let shebang = text.lines().next().expect("the shim is not empty");
+    assert_eq!(
+        shebang, "#!/bin/bash -p",
+        "the shim's shebang must name the pinned interpreter by absolute path, and keep \
+         privileged mode; `#!/usr/bin/env bash -p` would pass `bash -p` to env as one word"
+    );
+    assert_eq!(
+        shebang.trim_start_matches("#!").split(' ').next(),
+        Some(SHIM_INTERPRETER),
+        "the shim runs under a different bash from the one the launch check verifies"
+    );
+    let pinned: Vec<&str> = text
+        .lines()
+        .filter(|l| l.trim_start().starts_with("SHIM_BASH="))
+        .collect();
+    assert_eq!(
+        pinned,
+        vec!["SHIM_BASH='/bin/bash'"],
+        "the shim must pin SHIM_BASH, exactly once, to {SHIM_INTERPRETER}"
+    );
 }
 
 /// Crusty round 8: the BASH_ENV file is part of the guard. Without it a

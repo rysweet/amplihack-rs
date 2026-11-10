@@ -70,9 +70,12 @@ high-quality code.
 ### Prerequisites
 
 - **Platform**: macOS, Linux, or Windows via WSL. Native Windows is
-  [not supported](#windows-support). The `auto-drive-to-merge` workflow
-  needs Linux (its merge guard reads `/proc`) and stops at launch elsewhere
-  ([#1646](https://github.com/rysweet/amplihack-rs/issues/1646)).
+  [not supported](#windows-support). The `auto-drive-to-merge` workflow needs
+  Linux or macOS: its merge guard establishes the same facts about the gate
+  process from `/proc` on Linux and from `ps`, `lsof` and `stat` on macOS
+  ([#1646](https://github.com/rysweet/amplihack-rs/issues/1646)), and stops at
+  launch on any other host. On macOS the bundle path must contain no spaces
+  and no backslashes.
 - **Runtime**: Rust 1.88+ / cargo, Node.js 18+, git. `amplihack install`
   installs a user-local Rust toolchain via rustup (and `build-essential` via
   apt, as root or with passwordless sudo) if cargo or a C linker is missing.

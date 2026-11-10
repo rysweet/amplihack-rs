@@ -96,6 +96,9 @@ impl Fixture {
     }
 
     /// A fixture whose bundle holds the shipped shim itself.
+    /// Not built on macOS: #1646 moved the only macOS caller of this into
+    /// `issue_1646_macos_merge_guard`, which stages its own fixture.
+    #[cfg(not(target_os = "macos"))]
     fn with_shipped_shim() -> Self {
         let f = Self::without_shim();
         f.make_guard_dir();
@@ -493,6 +496,9 @@ fn writable_shim_or_guard_dir_fails_closed_before_the_runner_starts() {
 
 /// A stand-in for the real gh, behind the guard on PATH: logs every argv and
 /// succeeds, so a merge that got through would show in its log.
+///
+/// Not built on macOS: see `Fixture::with_shipped_shim` (#1646).
+#[cfg(not(target_os = "macos"))]
 const REAL_GH_STUB: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$RECORD_DIR/gh.log"
 exit 0
@@ -500,6 +506,9 @@ exit 0
 
 /// Runs a phase-1 recipe whose step calls `gh pr merge` through the PATH the
 /// runner builds, and returns (merge rc, merge stderr, view rc, gh.log).
+///
+/// Not built on macOS: see `Fixture::with_shipped_shim` (#1646).
+#[cfg(not(target_os = "macos"))]
 fn phase1_step_runs_gh_merge(f: &Fixture) -> (String, String, String, String) {
     let real_gh_dir = f.root.join("real-gh");
     fs::create_dir_all(&real_gh_dir).unwrap();
@@ -551,13 +560,18 @@ fn phase1_step_gh_pr_merge_is_refused_end_to_end() {
     );
 }
 
-/// The non-Linux companion: without /proc the gate cannot be identified, so
-/// the shim must still never let a merge through (fail closed). The exact
-/// exit code may differ with the platform's bash, but it is never 0 and the
-/// real gh never sees the merge.
-#[cfg(not(target_os = "linux"))]
+/// The companion for a Unix host with neither /proc nor the macOS arm (the
+/// BSDs): the gate cannot be identified at all, so the shim must still never
+/// let a merge through (fail closed). The exact exit code may differ with the
+/// platform's bash, but it is never 0 and the real gh never sees the merge.
+///
+/// #1646 narrowed this from `not(linux)`: macOS now identifies its parent
+/// through `ps` and `lsof`, and its behaviour — including the stricter
+/// "exit 3 and this exact refusal line" — is asserted in
+/// `issue_1646_macos_merge_guard`, not here.
+#[cfg(all(unix, not(target_os = "linux"), not(target_os = "macos")))]
 #[test]
-fn phase1_step_gh_pr_merge_fails_closed_off_linux() {
+fn phase1_step_gh_pr_merge_fails_closed_off_linux_and_macos() {
     let f = Fixture::with_shipped_shim();
     let (merge_rc, merge_err, _view_rc, log) = phase1_step_runs_gh_merge(&f);
     assert!(

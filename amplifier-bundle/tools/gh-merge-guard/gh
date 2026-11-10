@@ -10,8 +10,15 @@
 # Refused: `gh pr merge`, the REST merge endpoints, GraphQL merge mutations,
 # GraphQL queries the guard cannot read, aliases that merge, and running or
 # installing a gh extension. A merge form
-# is allowed only when this process's immediate parent is the trusted gate,
-# checked through /proc (no /proc: refused).
+# is allowed only when this process's immediate parent is the trusted gate.
+#
+# The same five facts are established about that parent on every supported
+# host; only the kernel interface that establishes them differs. Linux reads
+# /proc. macOS has no /proc, so it reads the kernel's own records through
+# `ps`, one `lsof -n -P` call and `stat -f`, and observes the clean-
+# environment fact in the environment this shim inherited through the gate's
+# `exec`, because macOS exposes no way to read another process's environment
+# (#1646). A host that is neither: refused.
 #
 # Privileged mode (-p): bash neither sources BASH_ENV/ENV nor imports exported
 # functions, so neither can answer the identity checks below. This is a
@@ -19,11 +26,37 @@
 # docs/reference/auto-drive-to-merge.md, "What this does not stop".
 # Exit codes: 3 = refused, 127 = no real gh or the re-entry cap was passed.
 
-# Second layer for anything this script starts (SR-4).
+# Second layer for anything this script starts (SR-4), and the first line of
+# defence for the identity checks below: an exported function would otherwise
+# be able to answer one of them. Every function this shim defines is dropped
+# here, and so is every tool word it runs. A new helper left off this list is
+# an authentication bypass, not a hygiene slip, so
+# recipes/tests/test-issue-1551-no-merge-outside-gate.sh fails when one is
+# missing rather than leaving it a standing risk.
+builtin unset -f ps env uname lsof 2>/dev/null  # the Darwin arm's tools; lsof is only ever run as `lsof -n -P`
 builtin unset -f refuse to_lower classify classify_pr classify_api classify_alias_cmd \
   classify_alias_use classify_extension_cmd is_merge_endpoint is_graphql_endpoint names_merge find_real_gh carries_marker \
-  parent_is_gate parent_pid_matches parent_environ_clean sys_tool realpath \
-  readlink stat test cd pwd 2>/dev/null
+  parent_is_gate parent_is_gate_proc parent_is_gate_darwin parent_pid_matches parent_environ_clean \
+  parent_pid_matches_darwin parent_argv_is_gate_darwin parent_files_are_gate_darwin \
+  gate_physical_darwin host_is_darwin ps_field txt_entry_ok own_environ_clean \
+  sys_tool realpath readlink stat test cd pwd 2>/dev/null
+
+# Fact (e) on a host without /proc is read from the environment this shim
+# INHERITED through the gate's `exec` (#1646), so the snapshot has to be taken
+# before the `builtin unset` below: that unset also removes BASH_ENV and ENV
+# from the environment a child `env` would print, which would hide exactly the
+# two names an injection is most likely to use. Variable NAMES are all that is
+# ever compared, and nothing from this string is printed, logged or exported
+# (DP-1). An `env` that cannot be found or cannot run leaves it empty, which
+# refuses every merge on that host rather than passing the fact by default.
+GUARD_ENV=""
+for _ampl_env in /usr/bin/env /bin/env; do
+  if [[ -x "$_ampl_env" ]]; then
+    GUARD_ENV="$("$_ampl_env" 2>/dev/null)" || GUARD_ENV=""
+    break
+  fi
+done
+builtin unset _ampl_env
 builtin unset BASH_ENV ENV
 set -uf
 
@@ -95,9 +128,11 @@ find_real_gh() {
 }
 
 # sys_tool <name>: a system tool by absolute path, never through PATH.
+# /usr/sbin is appended LAST, for macOS's lsof, so that no name this shim
+# already resolved can start resolving somewhere else.
 sys_tool() {
   local d
-  for d in /usr/bin /bin; do
+  for d in /usr/bin /bin /usr/sbin; do
     [[ -x "$d/$1" ]] && { printf '%s' "$d/$1"; return 0; }
   done
   return 1
@@ -137,11 +172,13 @@ parent_environ_clean() {
   return 0
 }
 
-# parent_is_gate: deny by default (AZ-1). The immediate parent must be a
-# root-owned bash, not writable by this user, whose argv is exactly
-# [bash, -p, <physical path of the gate beside this directory>, ...], whose
-# descriptor 255 is that gate, and whose environment is clean (G6).
-parent_is_gate() {
+# parent_is_gate_proc: the /proc arm, for Linux. Deny by default (AZ-1). The
+# immediate parent must be a root-owned bash, not writable by this user, whose
+# argv is exactly [bash, -p, <physical path of the gate beside this
+# directory>, ...], whose descriptor 255 is that gate, and whose environment
+# is clean (G6). This is the only arm that reads /proc; the Darwin arm below
+# establishes the same five facts from the kernel's own records instead.
+parent_is_gate_proc() {
   local proc="/proc/$PPID" rp st gate gate_real exe meta
   [[ -n "$SELF_DIR" && -d "$proc" ]] || return 1
   parent_pid_matches || return 1
@@ -165,6 +202,289 @@ parent_is_gate() {
   # The parent may have exited while it was being read.
   parent_pid_matches || return 1
   return 0
+}
+
+# --------------------------------------------------------------------------
+# The Darwin arm (#1646). macOS has no /proc, so each of the five facts above
+# is established from a kernel-maintained record read through a root-owned
+# tool at an absolute path: the pid table (ps), the open-file table and the
+# virtual-memory mappings (lsof). Every helper here returns 0 only on
+# positive establishment and 1 on everything else -- a missing tool, empty
+# output, one line too many, a parse surprise, a parent that exited. "Could
+# not tell" must be indistinguishable from "false" (AZ-1).
+#
+# bash 3.2 is the only bash macOS ships, so there is no mapfile, no `read -d`,
+# no associative array and no `${x,,}` below, and `stat` is the BSD one.
+# --------------------------------------------------------------------------
+
+# The bash the gate must be run by on macOS, pinned by path and then by inode
+# through fact (d). Linux compares the basename instead, because distributions
+# put bash in several places.
+#
+# SEC-A8: this is the anchor of the whole fact (e) argument on macOS. Both
+# halves of that argument -- that dyld strips DYLD_* before this process ever
+# starts, and that ps withholds the parent's environment so the shim reads its
+# own inherited one instead -- hold because the parent's executable is a
+# SIP-protected platform binary. Repointing this at a bash outside a
+# SIP-protected root (a Homebrew or nix bash) would remove both without
+# changing a line of the checks below, and nothing here would notice. The
+# shim's #! line, SHIM_INTERPRETER in merge_guard.rs and this constant must
+# therefore agree, and the test that holds the three together --
+# the_shim_and_the_launch_check_pin_the_same_interpreter -- is deliberate.
+SHIM_BASH='/bin/bash'
+GATE_REAL=""
+PS_FIELD=""
+
+# host_is_darwin: `uname -s` is exactly Darwin. Tried BEFORE /proc is looked
+# at (SEC-11), so a forged /proc on a Mac cannot preempt the real check; a
+# missing or unreadable uname answers "not Darwin", which falls through to the
+# /proc arm and is refused there.
+host_is_darwin() {
+  local un out
+  un="$(sys_tool uname)" || return 1
+  out="$("$un" -s 2>/dev/null)" || return 1
+  [[ "$out" == Darwin ]]
+}
+
+# ps_field <pid> <keyword>: sets PS_FIELD from `ps -o <keyword>=`. The keyword
+# is a literal from a fixed set, never interpolated from anything the caller
+# of gh controls. -ww stops ps truncating a wide argv, which would otherwise
+# make the subtraction in fact (b) read a short argv as a complete one.
+# Exactly one non-empty line, or failure.
+ps_field() {
+  local pid="$1" key="$2" ps out line n=0
+  case "$key" in
+    ppid|comm|args) ;;
+    *) return 1 ;;
+  esac
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  ps="$(sys_tool ps)" || return 1
+  out="$("$ps" -ww -p "$pid" -o "$key=" 2>/dev/null)" || return 1
+  PS_FIELD=""
+  while IFS= read -r line; do
+    n=$((n + 1))
+    PS_FIELD="$line"
+  done <<< "$out"
+  (( n == 1 )) || return 1
+  [[ -n "$PS_FIELD" ]] || return 1
+  return 0
+}
+
+# gate_physical_darwin: sets GATE_REAL to the physical path of the gate beside
+# this directory, computed the same way step-03 computes GATE_PHYS -- `cd -P`
+# the directory, then the name -- so macOS's /var -> /private/var symlink
+# cannot make the two disagree. No realpath: the BSD one has no -e.
+#
+# A path holding whitespace or a backslash is refused. ps gives argv as one
+# space-joined string, so such a path cannot be recovered from it, and a guess
+# is not a fact. This costs no security -- facts (c) and (d) prove the file and
+# the interpreter independently -- but it does mean an AMPLIHACK_HOME with a
+# space in it cannot merge on macOS, which the reference doc records.
+gate_physical_darwin() {
+  local dir
+  [[ -n "$SELF_DIR" ]] || return 1
+  dir="$(builtin cd -P -- "$SELF_DIR/.." 2>/dev/null && builtin pwd -P)" || return 1
+  [[ "$dir" == /* ]] || return 1
+  GATE_REAL="$dir/autodrive_merge_gate.sh"
+  [[ -f "$GATE_REAL" ]] || return 1
+  case "$GATE_REAL" in
+    *[[:space:]]*|*\\*) return 1 ;;
+  esac
+  return 0
+}
+
+# Fact (a): the pid the kernel reports as this process's parent is still
+# $PPID, so a shim whose parent exited and whose pid was reused is never
+# judged by a stranger (G12). `ps -o ppid=` pads to the column width.
+parent_pid_matches_darwin() {
+  local v
+  ps_field "$$" ppid || return 1
+  v="$PS_FIELD"
+  v="${v#"${v%%[![:space:]]*}"}"
+  v="${v%"${v##*[![:space:]]}"}"
+  [[ "$v" =~ ^[0-9]+$ && "$v" == "$PPID" ]]
+}
+
+# Fact (b): the parent's argv is [<argv0>, -p, <gate>, ...].
+#
+# `args` alone is NOT enough, and a simplification that dropped the comm
+# subtraction below would reopen a confirmed hole. argv[0] is attacker-set
+# (`exec -a`) and `args` is the argv joined with single spaces, so a parent run
+# as `exec -a "/bin/bash -p <gate>" /bin/bash <gate>` reads, in `args` alone,
+# exactly like the gate: the text the check looks for is sitting inside
+# argv[0]. Subtracting argv[0] from the front leaves `<gate>`, not
+# `-p <gate>`, and the merge is refused.
+#
+# Every request-derived string is used as a LITERAL, quoted, and sits on the
+# left of the comparison. `set -f` turns off pathname expansion but NOT
+# pattern matching in ${v#...}, case or [[ == ]], so an unquoted argv[0]
+# holding `*` would strip a different amount of text than it occupies.
+# argv[0]'s own content is deliberately not trusted, exactly as the /proc arm
+# ignores pargv[0]: only -p and the gate path are facts.
+parent_argv_is_gate_darwin() {
+  local comm args rest
+  ps_field "$PPID" comm || return 1
+  comm="$PS_FIELD"
+  ps_field "$PPID" args || return 1
+  args="$PS_FIELD"
+  [[ "$args" == "$comm"* ]] || return 1
+  rest="${args#"$comm"}"
+  # What is left still begins with the one space that separated argv[0] from
+  # argv[1]. Requiring it also refuses an argv[0] that macOS's ps omits
+  # entirely, which an empty argv[0] makes indistinguishable from
+  # `exec -a "-p" /bin/bash <gate>` -- an attack shape.
+  [[ "$rest" == " "* ]] || return 1
+  rest="${rest# }"
+  [[ "$rest" == "-p $GATE_REAL" || "$rest" == "-p $GATE_REAL "* ]] || return 1
+  return 0
+}
+
+# txt_entry_ok <path>: a file the parent has mapped is either /bin/bash itself
+# or a system library under a SIP-protected root, and in both cases is owned
+# by root, not group- or other-writable, and not writable by this user. This
+# is a property check rather than a literal {bash, dyld} allowlist, so a
+# future macOS that maps one more system library does not break the feature,
+# while an attacker's dylib under /tmp or $HOME fails all of it.
+#
+# COUPLING (SEC-V4): the prefix allowlist below is only sound because the
+# caller, parent_files_are_gate_darwin, has already rejected any name that is
+# relative or that contains a `..` component. /usr/lib/../../tmp/evil.dylib
+# matches `/usr/lib/*` and is stopped by nothing in this function. Neither
+# check may be moved after the other, and neither may be dropped on the
+# grounds that the other one looks sufficient.
+txt_entry_ok() {
+  local st meta
+  if ! [[ "$1" -ef "$SHIM_BASH" ]]; then
+    case "$1" in
+      /usr/lib/*|/System/*) ;;
+      *) return 1 ;;
+    esac
+  fi
+  st="$(sys_tool stat)" || return 1
+  meta="$("$st" -L -f '%u %Lp' -- "$1" 2>/dev/null)" || return 1
+  [[ "$meta" =~ ^0\ ([0-7]{3,4})$ ]] || return 1
+  (( (8#${BASH_REMATCH[1]} & 8#022) == 0 )) || return 1
+  (( EUID == 0 )) || [[ ! -w "$1" ]] || return 1
+  return 0
+}
+
+# Facts (c), (d) and the mapped-library half of (e), from one lsof call.
+#
+# `-F fn` is a RECORD stream: a leading p<pid> line, then an f<fd> line and
+# the n<name> line belonging to it. It must be parsed as records, never
+# scanned line by line. A line-oriented scan would bind an n name from one
+# record to the f255 of another, so ANY descriptor the parent happens to hold
+# on the gate file would satisfy fact (c) -- `exec 7<gate` arranges that in one
+# word -- where the fact is specifically about descriptor 255, the one bash
+# keeps open on the script it is executing.
+parent_files_are_gate_darwin() {
+  local out line fd name pending fd255="" n255=0 ntxt=0 nbash=0
+  # One call, and always with -n and -P: no host or service name resolution,
+  # so no DNS or service lookup -- no network egress from inside a security
+  # check, and no stall on a slow resolver (SEC-DATA-2). A missing lsof leaves
+  # the inner substitution empty, which cannot be executed: refused (AZ-1).
+  out="$("$(sys_tool lsof)" -n -P -p "$PPID" -a -d 255,txt -F fn 2>/dev/null)" || return 1
+  pending=""
+  while IFS= read -r line; do
+    case "$line" in
+      p*) continue ;;
+      f*)
+        [[ -z "$pending" ]] || return 1
+        pending="${line#f}"
+        [[ -n "$pending" ]] || return 1
+        ;;
+      n*)
+        [[ -n "$pending" ]] || return 1
+        fd="$pending"
+        pending=""
+        name="${line#n}"
+        # Must stay ahead of txt_entry_ok's /usr/lib and /System prefix
+        # allowlist: that allowlist accepts /usr/lib/../../tmp/evil.dylib,
+        # and this is the only thing that does not (SEC-V4).
+        [[ "$name" == /* ]] || return 1
+        case "$name" in
+          *'/../'*|*/..) return 1 ;;
+        esac
+        if [[ "$fd" == "255" ]]; then
+          n255=$((n255 + 1))
+          fd255="$name"
+        elif [[ "$fd" == "txt" ]]; then
+          ntxt=$((ntxt + 1))
+          txt_entry_ok "$name" || return 1
+          [[ "$name" -ef "$SHIM_BASH" ]] && nbash=$((nbash + 1))
+        else
+          return 1
+        fi
+        ;;
+      *) return 1 ;;
+    esac
+  done <<< "$out"
+  [[ -z "$pending" ]] || return 1
+  (( n255 == 1 )) || return 1
+  [[ "$fd255" -ef "$GATE_REAL" ]] || return 1
+  (( ntxt >= 1 && nbash >= 1 )) || return 1
+  return 0
+}
+
+# The environment half of fact (e), read from the snapshot this shim took of
+# its own inherited environment before the prologue unset anything. Presence,
+# not value, is the test: bash rewrites an injected SHELLOPTS or BASHOPTS but
+# keeps it exported, so a value comparison would miss it. Each name is
+# anchored at the start of a line, so a value holding a newline can only ADD a
+# forbidden-looking line (refuse) and can never hide a real entry.
+#
+# This is the one fact macOS observes at a different point from Linux: the
+# shim's inherited environment rather than a snapshot of the parent's execve
+# environment. `ps -E` withholds the environment of a process whose executable
+# is a SIP-protected platform binary; /bin/bash is one, and the interpreter
+# check pins the parent to it by inode, so the one process we need to read is
+# exactly the case ps withholds. (An ordinary binary is not withheld, so this
+# follows the executable, not ps.) launchctl procinfo needs root, and
+# vmmap/sample need a debugging entitlement. That makes the divergence rest on
+# SIP, like the DYLD_* argument below: SHIM_BASH is what anchors it, and
+# pointing it at a bash outside a SIP-protected root would quietly remove
+# both. The difference and what it does not stop are recorded on #1646 and in
+# docs/reference/auto-drive-to-merge.md.
+own_environ_clean() {
+  local line
+  [[ -n "$GUARD_ENV" ]] || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      BASH_FUNC_*) return 1 ;;
+      BASH_ENV=?*|ENV=?*|SHELLOPTS=?*|BASHOPTS=?*|PS4=?*) return 1 ;;
+      LD_PRELOAD=?*|LD_AUDIT=?*|LD_LIBRARY_PATH=?*) return 1 ;;
+      DYLD_INSERT_LIBRARIES=?*|DYLD_LIBRARY_PATH=?*) return 1 ;;
+    esac
+  done <<< "$GUARD_ENV"
+  return 0
+}
+
+# parent_is_gate_darwin: the same five conjuncts as the /proc arm, in the same
+# order, with fact (a) read again at the end so a parent that exited while it
+# was being read is not judged by whoever inherited its pid.
+parent_is_gate_darwin() {
+  gate_physical_darwin || return 1
+  parent_pid_matches_darwin || return 1
+  parent_argv_is_gate_darwin || return 1
+  parent_files_are_gate_darwin || return 1
+  own_environ_clean || return 1
+  parent_pid_matches_darwin || return 1
+  return 0
+}
+
+# parent_is_gate: pick the arm the host can actually support. Darwin is tried
+# first (SEC-11): it is free to do, it keeps a forged /proc on a Mac from
+# preempting the real check, and because host_is_darwin requires `uname -s` to
+# be exactly Darwin, no non-Darwin host can reach the arm below it. A host
+# that is neither Darwin nor a readable /proc has no parent check at all, and
+# parent_is_gate_proc refuses there. `amplihack recipe run` stops such a run
+# before its first step (check_guard_host, #1644).
+parent_is_gate() {
+  if host_is_darwin; then
+    parent_is_gate_darwin
+    return $?
+  fi
+  parent_is_gate_proc
 }
 
 # to_lower <text>: sets LOWER. macOS ships /bin/bash 3.2, where `${x,,}` is a

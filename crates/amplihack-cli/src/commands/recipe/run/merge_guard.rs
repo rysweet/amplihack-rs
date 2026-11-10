@@ -106,8 +106,9 @@ pub(crate) fn guard_dir_for_home(home: Option<&str>) -> Result<PathBuf> {
 ///
 /// There is no fallback location: a missing shim, a `home` that is not an
 /// absolute path (which would resolve against the working directory), a
-/// non-Unix host, or a host without `/proc` or `/bin/bash`
-/// ([`check_guard_host`]), stops the run. So does a shim or guard directory that group or others can write
+/// non-Unix host, or a host that cannot give the shim a parent check or has
+/// no `/bin/bash` ([`check_guard_host`]), stops the run. So does a shim or
+/// guard directory that group or others can write
 /// (G11): anyone with that access could replace the guard. The same holds
 /// for the `tools/` directory above it and for each [`GATE_FILES`] entry that
 /// exists there, since the shim lets the gate merge.
@@ -128,15 +129,29 @@ pub(crate) fn locate_guard_dir(home: &Path) -> Result<PathBuf> {
             dir.display()
         );
     }
-    // The shim is an extensionless bash script that reads /proc: off Unix it
-    // is never the `gh` an agent runs, so the guard would be on in name only.
+    // The shim is an extensionless bash script: off Unix it is never the `gh`
+    // an agent runs, so the guard would be on in name only.
     if cfg!(not(unix)) {
         bail!(
             "amplihack: the merge guard needs a Unix host; refusing to run auto-drive on this \
              platform (#1551)"
         );
     }
-    check_guard_host(Path::new(PROC_SELF_STAT), Path::new(SHIM_INTERPRETER))?;
+    // The one thing the launch check reads from the platform: which
+    // host-specific interface the shim's parent check will use. It is passed
+    // in rather than rediscovered inside the check, so both arms stay
+    // reachable from the tests on every platform.
+    let macos_tools = [Path::new(PS_TOOL), Path::new(LSOF_TOOL)];
+    let parent = if cfg!(target_os = "macos") {
+        ParentCheck::Tools(&macos_tools)
+    } else {
+        ParentCheck::Proc
+    };
+    check_guard_host(
+        Path::new(PROC_SELF_STAT),
+        Path::new(SHIM_INTERPRETER),
+        parent,
+    )?;
     if !bash_env.is_file() {
         bail!(
             "amplihack: the merge guard's {} is missing; without it a shell profile that \
@@ -173,31 +188,100 @@ pub(crate) fn locate_guard_dir(home: &Path) -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Read by the shim to trust the gate's own merge (`parent_is_gate`).
+/// Read by the shim's `/proc` arm to trust the gate's own merge
+/// (`parent_is_gate_proc`).
 pub(crate) const PROC_SELF_STAT: &str = "/proc/self/stat";
+
+/// Read by the shim's Darwin arm for facts (a) and (b) about its parent
+/// (`ps_field`). `/usr/bin/ps` does not exist on macOS.
+pub(crate) const PS_TOOL: &str = "/bin/ps";
+
+/// Read by the shim's Darwin arm for facts (c), (d) and (e2)
+/// (`parent_files_are_gate_darwin`). Found through the `/usr/sbin` entry
+/// `sys_tool` appends last.
+pub(crate) const LSOF_TOOL: &str = "/usr/sbin/lsof";
 
 /// The shim's `#!` interpreter, and the bash the gate must be run by.
 pub(crate) const SHIM_INTERPRETER: &str = "/bin/bash";
 
+/// Which host interface the shim's parent check will read. The caller picks
+/// it, so [`check_guard_host`] asks for what this host actually needs and
+/// both arms stay reachable from the tests wherever they run.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ParentCheck<'a> {
+    /// Linux and the BSDs: the shim reads `/proc` (`parent_is_gate_proc`).
+    Proc,
+    /// macOS: the shim reads the kernel's own records through these tools
+    /// instead (`parent_is_gate_darwin`, #1646).
+    Tools(&'a [&'a Path]),
+}
+
 /// Stops the run at launch on a host where the guard cannot work, instead of
 /// after three phases of agent work.
 ///
-/// * No `proc_stat` (macOS, BSD): the shim can never confirm its parent is
-///   the gate, so it refuses the gate's own merge and the run could only
-///   ever fail at the final merge.
+/// * [`ParentCheck::Proc`] with no `proc_stat` (the BSDs): the shim can never
+///   confirm its parent is the gate, so it refuses the gate's own merge and
+///   the run could only ever fail at the final merge.
+/// * [`ParentCheck::Tools`] with one of them missing or not executable
+///   (macOS, #1646): the same, for the same reason. An empty list is
+///   refused as well, so that checking nothing is never reported as a
+///   check that passed (SEC-A5).
 /// * No executable `interpreter` (NixOS has no `/bin/bash`): the shim cannot
 ///   start, so every `gh` call in the run would fail, not only merges.
 ///
+/// This is an availability check, not an authorization one. Passing it does
+/// not mean a merge will be allowed: every merge is still decided by the
+/// shim, per call, from the facts it reads about its parent. Nor does it
+/// pre-verify every tool the shim uses — `stat` and `realpath`, and `env` and
+/// `uname` on the macOS path, are base-system tooling resolved through the
+/// shim's `sys_tool`, and a host that has pruned one of those refuses at the
+/// merge rather than at launch.
+///
 /// The paths are parameters so tests can point them at a missing file.
-pub(crate) fn check_guard_host(proc_stat: &Path, interpreter: &Path) -> Result<()> {
-    if std::fs::metadata(proc_stat).is_err() {
-        bail!(
-            "amplihack: auto-drive needs {} to let autodrive_merge_gate.sh merge, and this host \
-             has none (macOS and the BSDs have no /proc). The merge guard would refuse the \
-             gate's own merge after every phase had run, so auto-drive stops now (#1551). \
-             Run auto-drive on Linux.",
-            proc_stat.display()
-        );
+pub(crate) fn check_guard_host(
+    proc_stat: &Path,
+    interpreter: &Path,
+    parent: ParentCheck<'_>,
+) -> Result<()> {
+    match parent {
+        ParentCheck::Proc => {
+            if std::fs::metadata(proc_stat).is_err() {
+                bail!(
+                    "amplihack: auto-drive needs {} to let autodrive_merge_gate.sh merge, and \
+                     this host has none (the BSDs have no /proc). The merge guard would refuse \
+                     the gate's own merge after every phase had run, so auto-drive stops now \
+                     (#1551). Run auto-drive on Linux or macOS.",
+                    proc_stat.display()
+                );
+            }
+        }
+        ParentCheck::Tools(tools) => {
+            // SEC-A5: refuse an empty set rather than passing vacuously. No
+            // caller builds one — the macOS arm passes the two pinned
+            // constants — so this changes nothing that ships. It is here
+            // because "checked nothing" and "checked everything" must not
+            // have the same outcome in a check that sits on the path to a
+            // merge, which is what a later refactor would otherwise inherit.
+            if tools.is_empty() {
+                bail!(
+                    "amplihack: the macOS parent check was given no tools to look for, so \
+                     nothing about this host was established; refusing to start auto-drive \
+                     rather than treat an empty check as a passed one (#1646). This is a bug \
+                     in amplihack, not a problem with the host."
+                );
+            }
+            for tool in tools {
+                if !is_executable_file(tool) {
+                    bail!(
+                        "amplihack: auto-drive needs {} to let autodrive_merge_gate.sh merge on \
+                         macOS, and this host has no executable file there. The merge guard \
+                         would refuse the gate's own merge after every phase had run, so \
+                         auto-drive stops now (#1646). Restore it from the base system.",
+                        tool.display()
+                    );
+                }
+            }
+        }
     }
     if !is_executable_file(interpreter) {
         bail!(

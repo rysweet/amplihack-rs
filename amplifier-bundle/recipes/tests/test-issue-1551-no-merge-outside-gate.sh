@@ -38,8 +38,19 @@
 #       1; the state helper comes from AMPLIHACK_HOME only, never REPO_PATH
 #   S   static: mode, shebang, marker, no /tmp, no eval, CI wiring; G6 gate
 #       shebang `#!/bin/bash -p`, `unset -f`, step-03's `/bin/bash -p`
+#   S-1646 static properties of the macOS parent check that no behaviour test
+#       reaches: every function the shim defines (and the words ps, lsof, env,
+#       uname) is dropped by `builtin unset -f`; no unquoted request-derived
+#       string in a pattern position (SEC-1); lsof is read as an `-F fn`
+#       record stream with `-n -P` (SEC-2, SEC-DATA-2); the Darwin arm is
+#       dispatched before the /proc arm (SEC-11); no bash-4 or GNU-only
+#       construct in a `*_darwin` helper; and the /proc arm still reads all
+#       five facts
 #
-# Linux only: the gate check reads /proc. Uses $TMPDIR for every file.
+# Linux only: the gate check reads /proc, so the macOS BEHAVIOUR tests live in
+# crates/amplihack-cli/tests/issue_1646_macos_merge_guard.rs and the S-1646
+# section above is all this suite can assert about the Darwin arm.
+# Uses $TMPDIR for every file.
 #
 # Usage: bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
@@ -219,6 +230,132 @@ if [ -f "${SHIM}" ] && grep -qF 'AMPLIHACK_GH_GUARD_DEPTH' "${SHIM}"; then
   pass "S-depth-var" "the shim caps re-entry with AMPLIHACK_GH_GUARD_DEPTH"
 else
   fail "S-depth-var" "the shim has no AMPLIHACK_GH_GUARD_DEPTH re-entry cap"
+fi
+
+# ---------------------------------------------------------------------------
+# S-1646. Static properties of the macOS parent check that no behaviour test
+# can reach. Each one closes a security finding permanently: a future
+# "simplification" that reopens it fails here instead of shipping.
+#
+# This whole suite is Linux-only (it needs /proc), so these are the only
+# assertions about the Darwin arm that run in CI.
+# ---------------------------------------------------------------------------
+echo "--- S-1646: static, macOS parent check ---"
+
+# SEC-R7/R6: an exported function can answer an identity check, so every
+# function the shim defines must be dropped by the prologue's `builtin unset
+# -f`. A new helper left off that list is an authentication bypass, not a
+# hygiene slip, so it must be a test failure rather than a standing risk.
+UNSET_F_LIST="$(sed -n '/^builtin unset -f /,/2>\/dev\/null/p' "${SHIM}" | tr ' \\' '\n\n')"
+MISSING_UNSET=""
+for fn in $(grep -oE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "${SHIM}" | tr -d '()'); do
+  printf '%s\n' "${UNSET_F_LIST}" | grep -qxF "$fn" || MISSING_UNSET="${MISSING_UNSET} ${fn}"
+done
+if [ -n "${UNSET_F_LIST}" ] && [ -z "${MISSING_UNSET}" ]; then
+  pass "S-1646-unset-f-complete" "every function the shim defines is in its builtin unset -f list"
+else
+  fail "S-1646-unset-f-complete" "not in the shim's 'builtin unset -f' list:${MISSING_UNSET:- (the list itself is missing)}"
+fi
+
+# SEC-R7, the other half: the tool words the Darwin arm runs must be dropped
+# as functions too, so an exported `ps` or `lsof` function cannot answer a
+# fact. (`realpath`, `readlink`, `stat`, `test`, `cd` and `pwd` are already
+# there for the /proc arm.)
+MISSING_TOOLS=""
+for word in ps lsof env uname; do
+  printf '%s\n' "${UNSET_F_LIST}" | grep -qxF "$word" || MISSING_TOOLS="${MISSING_TOOLS} ${word}"
+done
+if [ -z "${MISSING_TOOLS}" ]; then
+  pass "S-1646-unset-f-tools" "ps, lsof, env and uname are dropped as functions by the prologue"
+else
+  fail "S-1646-unset-f-tools" "the shim's 'builtin unset -f' list is missing the tool words:${MISSING_TOOLS}"
+fi
+
+# SEC-1: `set -f` turns off PATHNAME expansion only — pattern matching in
+# ${v#…}, ${v%…}, case and [[ == ]] is unaffected. `comm` is argv[0] and is
+# attacker-set through `exec -a`, so every request-derived string used as a
+# PATTERN must be double-quoted, or glob metacharacters in argv[0] strip a
+# different amount of text than they occupy. Measured on macOS: an unquoted
+# shortest-match strip can consume LESS than the pattern's literal text.
+if ! grep -nE '\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?[#%]{1,2}\$' "${SHIM}" >/dev/null; then
+  pass "S-1646-quoted-strip" "no unquoted \${v#\$…} or \${v%\$…} strip in the shim (SEC-1)"
+else
+  fail "S-1646-quoted-strip" "an unquoted \${v#\$…}/\${v%\$…} strip lets argv[0] glob-match: $(grep -nE '\$\{[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?[#%]{1,2}\$' "${SHIM}" | tr '\n' '|')"
+fi
+if [ -n "${SHIM_CODE}" ] && ! printf '%s\n' "${SHIM_CODE}" | grep -nE '\[\[[^]]*[!=]=[[:space:]]+\$[A-Za-z_{]' >/dev/null; then
+  pass "S-1646-quoted-rhs" "no bare \$ on the right of [[ == ]] or [[ != ]] in the shim (SEC-1)"
+else
+  fail "S-1646-quoted-rhs" "an unquoted right-hand side of [[ == ]] is a pattern, not a string: $(printf '%s\n' "${SHIM_CODE}" | grep -nE '\[\[[^]]*[!=]=[[:space:]]+\$[A-Za-z_{]' | tr '\n' '|')"
+fi
+if [ -n "${SHIM_CODE}" ] && ! printf '%s\n' "${SHIM_CODE}" | grep -nE '^[[:space:]]*\$[A-Za-z_{][^)]*\)' >/dev/null; then
+  pass "S-1646-quoted-case" "no bare \$ as a case pattern in the shim (SEC-1)"
+else
+  fail "S-1646-quoted-case" "a bare \$ as a case pattern is a glob: $(printf '%s\n' "${SHIM_CODE}" | grep -nE '^[[:space:]]*\$[A-Za-z_{][^)]*\)' | tr '\n' '|')"
+fi
+
+# SEC-2: `lsof -F fn` is a RECORD stream — a leading p<pid> line, then
+# f<fd>/n<name> pairs. A scan that took any `n` name matching the gate
+# alongside any `f255` from a different record would satisfy fact (c) from ANY
+# descriptor the parent holds on the gate file, which `exec 7<gate` arranges.
+# So the field list must be `fn`, never `n` alone.
+LSOF_CALLS="$( [ -n "${SHIM_CODE}" ] && printf '%s\n' "${SHIM_CODE}" | grep -n 'lsof' || true)"
+if [ -z "${LSOF_CALLS}" ]; then
+  pass "S-1646-lsof-absent" "the shim calls no lsof yet (the macOS arm is not implemented)"
+else
+  if printf '%s\n' "${LSOF_CALLS}" | grep -qE -- '-F[[:space:]]+fn' \
+     && ! printf '%s\n' "${LSOF_CALLS}" | grep -qE -- '-F[[:space:]]+n([^a-z]|$)'; then
+    pass "S-1646-lsof-records" "lsof is read as an -F fn record stream, never -F n alone (SEC-2)"
+  else
+    fail "S-1646-lsof-records" "lsof must be called with '-F fn' and never '-F n': ${LSOF_CALLS}"
+  fi
+  # SEC-DATA-2: without -n -P, lsof does DNS and service lookups — outbound
+  # network egress from inside a security check, and the only realistic stall.
+  if ! printf '%s\n' "${LSOF_CALLS}" | grep -v '^[0-9]*:[[:space:]]*#' | grep 'lsof' \
+       | grep -vE -- '(-n[[:space:]].*-P|-P[[:space:]].*-n|-nP|-Pn)' | grep -q 'lsof'; then
+    pass "S-1646-lsof-no-egress" "every lsof call passes -n and -P: no name resolution, no network egress"
+  else
+    fail "S-1646-lsof-no-egress" "an lsof call without -n -P would do DNS lookups inside the guard: ${LSOF_CALLS}"
+  fi
+fi
+
+# SEC-11: the Darwin branch must be dispatched BEFORE the /proc readability
+# test, so a forged /proc on macOS cannot preempt the real check. Free to do,
+# and it keeps "Linux unchanged by construction" because the Darwin test
+# requires `uname -s` to be exactly Darwin.
+if grep -q 'parent_is_gate_darwin' "${SHIM}"; then
+  DARWIN_AT="$(grep -n 'parent_is_gate_darwin' "${SHIM}" | tail -n 1 | cut -d: -f1)"
+  PROC_AT="$(grep -n 'parent_is_gate_proc' "${SHIM}" | tail -n 1 | cut -d: -f1)"
+  if [ -n "${DARWIN_AT}" ] && [ -n "${PROC_AT}" ] && [ "${DARWIN_AT}" -lt "${PROC_AT}" ]; then
+    pass "S-1646-darwin-first" "the dispatcher tries the Darwin arm before the /proc arm (SEC-11)"
+  else
+    fail "S-1646-darwin-first" "parent_is_gate must call parent_is_gate_darwin (line ${DARWIN_AT:-none}) before parent_is_gate_proc (line ${PROC_AT:-none})"
+  fi
+  # D20/R7: /bin/bash on macOS is 3.2. These constructs are unavailable or
+  # behave differently there, and the Darwin arm is the only code that runs on
+  # it, so they are banned inside every *_darwin helper. The /proc arm may
+  # keep using them: it never runs on macOS.
+  DARWIN_CODE="$(awk '/^[a-zA-Z_][a-zA-Z0-9_]*_darwin\(\) \{/,/^\}/' "${SHIM}" | grep -vE '^[[:space:]]*#')"
+  BAD32="$(printf '%s\n' "${DARWIN_CODE}" | grep -nE '(^|[^[:alnum:]_])(mapfile|readarray)([^[:alnum:]_]|$)|read[[:space:]]+(-[a-zA-Z]*)?-d|declare[[:space:]]+-[a-zA-Z]*A|\$\{[^}]*,,[^}]*\}|stat[^|]*-c[[:space:]]' || true)"
+  if [ -z "${BAD32}" ]; then
+    pass "S-1646-bash32" "no bash-4 or GNU-only construct in the shim's *_darwin helpers"
+  else
+    fail "S-1646-bash32" "macOS ships /bin/bash 3.2 and BSD stat; these lines cannot run there: $(printf '%s' "${BAD32}" | tr '\n' '|')"
+  fi
+else
+  fail "S-1646-darwin-first" "the shim has no parent_is_gate_darwin: the macOS parent check (#1646) is not implemented"
+fi
+
+# R8/D3: the /proc arm must keep reading all five facts from /proc. A
+# refactor that moved the Linux check onto the Darwin helpers would hollow it
+# out silently, and this suite's behaviour tests all run on Linux.
+PROC_FACTS_MISSING=""
+for needle in '/proc/self/stat' '/cmdline' '/fd/255' '/exe' '/environ'; do
+  grep -qF "${needle}" "${SHIM}" || PROC_FACTS_MISSING="${PROC_FACTS_MISSING} ${needle}"
+done
+if [ -z "${PROC_FACTS_MISSING}" ]; then
+  pass "S-1646-proc-arm-intact" "the /proc arm still reads stat, cmdline, fd/255, exe and environ"
+else
+  fail "S-1646-proc-arm-intact" "the Linux /proc arm no longer reads:${PROC_FACTS_MISSING}"
 fi
 
 # G6. The gate itself runs privileged, and drops any gh/git/jq function it
