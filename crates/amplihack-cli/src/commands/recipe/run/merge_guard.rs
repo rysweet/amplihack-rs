@@ -30,8 +30,11 @@ pub(crate) const USER_BASH_ENV: &str = "AMPLIHACK_MERGE_GUARD_USER_BASH_ENV";
 /// `autodrive_trust.sh` loads `autodrive_qa_scope.sh`, #1763).
 /// Replacing any of them is as good as replacing the shim, so they get the
 /// shim's mode check.
-pub(crate) const GATE_FILES: [&str; 5] = [
+pub(crate) const GATE_FILES: [&str; 6] = [
     "autodrive_merge_gate.sh",
+    // Sourced by the gate, so it runs inside the process this shim trusts to
+    // merge; it is mode-checked with the rest (#2056).
+    "autodrive_merge_message.sh",
     "autodrive_qa_scope.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",

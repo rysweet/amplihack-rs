@@ -48,7 +48,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 24] = [
+const AUTODRIVE_TOOLS: [&str; 25] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
@@ -59,6 +59,7 @@ const AUTODRIVE_TOOLS: [&str; 24] = [
     "autodrive_last_round.sh",
     "autodrive_loop.sh",
     "autodrive_merge_gate.sh",
+    "autodrive_merge_message.sh",
     "autodrive_merge_ready_files.sh",
     "autodrive_platform_facts.sh",
     "autodrive_pr_head.sh",
@@ -719,14 +720,176 @@ fn forbidden_flags_never_appear_in_an_executable_position() {
     let gate = read(&tool_path("autodrive_merge_gate.sh"));
     assert!(
         gate.contains(
-            r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA")"#
+            r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file "$MERGE_BODY_FILE")"#
         ),
         "the merge argv must be a fixed literal list that takes no caller flags"
     );
+    // Issue #2056: once one element carries the squash subject, the old
+    // comparison of two IFS-joined arrays cannot tell one element holding
+    // spaces from several, and a twin-array comparison is a tautology however
+    // it is spelled. What still rules out an injected flag is the element
+    // count plus the pinned literal positions.
     assert!(
-        gate.contains(r#"if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]"#),
-        "the merge argv must be asserted unchanged immediately before execution"
+        !gate.contains(r#"if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]"#),
+        "the IFS-joined argv self-check cannot survive a subject containing spaces"
     );
+    for pin in [
+        r#""${#MERGE_ARGV[@]}" -ne 11"#,
+        r#""${MERGE_ARGV[0]}" != "pr""#,
+        r#""${MERGE_ARGV[1]}" != "merge""#,
+        r#""${MERGE_ARGV[3]}" != "--squash""#,
+        r#""${MERGE_ARGV[4]}" != "--delete-branch""#,
+        r#""${MERGE_ARGV[5]}" != "--match-head-commit""#,
+        r#""${MERGE_ARGV[7]}" != "--subject""#,
+        r#""${MERGE_ARGV[9]}" != "--body-file""#,
+    ] {
+        assert!(
+            gate.contains(pin),
+            "the merge argv must be pinned positionally before execution; missing `{pin}`"
+        );
+    }
+}
+
+/// Issue #2056: the squash commit message is READ IN THIS RUN and handed to
+/// `gh`, instead of being left for GitHub to compose from the branch's
+/// commits. Composing from commits puts whatever those commits carry into
+/// main's history: a wrong `Co-Authored-By` trailer, a `Fixes #N` belonging
+/// to a branch this one is stacked on, a recipe's `Task:` line.
+///
+/// Everything asserted here is structural — the shell contract test exercises
+/// the behaviour. The two are the same contract read from opposite ends, and
+/// both must move together.
+#[test]
+fn the_merge_gate_composes_the_squash_message_from_the_pull_request() {
+    let gate = read(&tool_path("autodrive_merge_gate.sh"));
+
+    // One pre-merge read, carrying the message alongside every other
+    // criterion, so the message binds to the same head SHA as the rest. The
+    // gate's other `gh pr view` is section 10's post-merge confirmation, so an
+    // occurrence COUNT would be wrong; what is pinned is the read that
+    // carries headRefOid.
+    let pre_merge: Vec<&str> = gate
+        .lines()
+        .filter(|l| l.contains(r#"gh pr view "$PR" --json"#) && l.contains("headRefOid"))
+        .collect();
+    assert_eq!(
+        pre_merge.len(),
+        1,
+        "exactly one pre-merge `gh pr view` may carry headRefOid; found {pre_merge:?}"
+    );
+    for field in ["title", "body"] {
+        assert!(
+            pre_merge[0].contains(field),
+            "the pre-merge read must fetch `{field}` so the squash message binds to the \
+             verified head SHA: {}",
+            pre_merge[0]
+        );
+    }
+
+    // The message is read with jq, never through field(). field() resolves to
+    // `extract-json --require-field`, whose LAST-object-wins selector (#1337,
+    // PR #1347) a pull request's own body can influence once free text enters
+    // STATE_JSON. Choosing jq here is a security control, not a style.
+    for forbidden in [
+        r#"field "$STATE_JSON" title"#,
+        r#"field "$STATE_JSON" body"#,
+    ] {
+        assert!(
+            !gate.contains(forbidden),
+            "the squash message must not be read with the last-object-wins helper: {forbidden}"
+        );
+    }
+    // `jq -r` appends a newline the body does not contain; every squash commit
+    // would gain a spurious blank line and an empty body would not be empty.
+    assert!(
+        gate.contains("jq -j"),
+        "the body must be extracted with `jq -j`, not `jq -r`"
+    );
+
+    // --body-file, never an inline --body: the body stays out of argv, out of
+    // `ps` and out of the environment (the repository's convention since
+    // #1570), and the dry-run line stays readable rather than dumping up to
+    // 65,536 bytes to stderr.
+    assert!(
+        gate.contains("--body-file"),
+        "the body must reach gh through a file"
+    );
+    assert!(
+        !gate.contains(r#"--body ""#),
+        "the body must never be passed inline"
+    );
+
+    // The body file is deterministic, under the private state dir, and bound
+    // to the head SHA, so a message left by an earlier round cannot be reused.
+    assert!(
+        gate.contains(r#"${STATE_DIR}/merge-message-${PR}-"#),
+        "the body file must live in the private state dir, named for the PR and head SHA"
+    );
+
+    // Still no bypass, and the merge is still gated on the head not moving.
+    for forbidden in ["--admin", "--auto", "--no-verify"] {
+        for line in gate.lines() {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+            assert!(
+                !line.contains(forbidden),
+                "the gate must not use `{forbidden}` in an executable position: {line}"
+            );
+        }
+    }
+}
+
+/// Issue #2056: the gate is at its 400-line brick budget, so the message
+/// derivation is a helper beside it. A helper the gate SOURCES runs inside the
+/// process the #1551 shim trusts to merge, so it must ship and be sourced from
+/// GATE_HOME — never from a path a pull request could populate.
+#[test]
+fn the_squash_message_helper_ships_beside_the_gate() {
+    let helper = tool_path("autodrive_merge_message.sh");
+    assert!(
+        helper.is_file(),
+        "autodrive_merge_message.sh must ship in amplifier-bundle/tools"
+    );
+    let gate = read(&tool_path("autodrive_merge_gate.sh"));
+    assert!(
+        gate.contains(r#". "${GATE_HOME}/autodrive_merge_message.sh""#),
+        "the gate must source the message helper from GATE_HOME, not from the working directory"
+    );
+    let guard =
+        read(&workspace_root().join("crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs"));
+    assert!(
+        guard.contains(r#""autodrive_merge_message.sh""#),
+        "a helper the gate sources must be a GATE_FILES entry, or it escapes the #1551 mode check"
+    );
+    // ...and it joins the tool list, so the brick budget, the forbidden-flag
+    // scan and every other control-path check cover it from then on. This
+    // assertion is what makes extending AUTODRIVE_TOOLS part of the work
+    // rather than an optional tidy-up.
+    assert!(
+        AUTODRIVE_TOOLS.contains(&"autodrive_merge_message.sh"),
+        "the message helper is on the control path and must be listed in AUTODRIVE_TOOLS \
+         so the brick budget and the forbidden-flag scan cover it"
+    );
+}
+
+/// Issue #2056: both copies of the skill describe the argv as implemented.
+/// They are byte-identical and that parity is asserted elsewhere; this pins
+/// the content so a reader is not told the gate does something it does not.
+#[test]
+fn the_skill_documents_the_squash_message_flags() {
+    for rel in [
+        "amplifier-bundle/skills/auto-drive-to-merge/SKILL.md",
+        "docs/claude/skills/auto-drive-to-merge/SKILL.md",
+    ] {
+        let text = read(&workspace_root().join(rel));
+        for needle in ["--subject", "--body-file"] {
+            assert!(
+                text.contains(needle),
+                "{rel} must state the merge argv as implemented, including `{needle}`"
+            );
+        }
+    }
 }
 
 // ── No silent merge ──────────────────────────────────────────────────────────
@@ -1069,8 +1232,10 @@ fn the_forbidden_flag_scanner_catches_every_spelling() {
         r#"git commit -m "clear merge-ready blockers: <what changed>""#,
         "git add -A",
         "git push",
-        r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA")"#,
-        "gh pr view \"$PR\" --json state,mergedAt",
+        r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file "$MERGE_BODY_FILE")"#,
+        r#"gh pr merge "$PR" --squash --subject "$MERGE_SUBJECT""#,
+        r#"gh pr merge "$PR" --squash --body-file "$MERGE_BODY_FILE""#,
+        "gh pr view \"$PR\" --json state,mergedAt,title,body",
         "amplihack hygiene artifact-guard --repo . --mode pre-commit",
     ] {
         assert!(
@@ -4038,6 +4203,9 @@ fn the_reference_documents_the_range_rule_and_the_qa_chain() {
         "autodrive_base_sha",
         "same user",
         "--match-head-commit",
+        "--subject",
+        "--body-file",
+        "merge-message-",
     ]
     .iter()
     .chain(RANGE_TOKENS.iter())

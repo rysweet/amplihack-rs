@@ -69,7 +69,7 @@ flowchart TD
 
     F --> F1{every criterion re-verified<br/>in THIS run, bound to ONE sha?<br/>every minor finding has a follow-up issue?}
     F1 -->|no| STOP3[NOT_MERGED + evidence bundle]
-    F1 -->|yes| G[gh pr merge --squash --delete-branch<br/>--match-head-commit sha]
+    F1 -->|yes| G[gh pr merge --squash --delete-branch<br/>--match-head-commit sha<br/>--subject PR title --body-file PR body]
     G --> H{platform confirms MERGED?}
     H -->|no| STOP3
     H -->|yes| I[MERGED]
@@ -243,6 +243,17 @@ finding has a filed follow-up issue. Everything is bound to **one** head SHA, an
 `--match-head-commit`, so GitHub refuses the merge if the head moved after the
 evidence was captured.
 
+The gate also decides the squash commit message rather than letting GitHub
+concatenate the branch's commits (#2056). From the same `gh pr view` read that
+captured the head SHA, it takes the PR title as the subject (`<title> (#N)`,
+control characters stripped) and the PR body as the message body, written to
+`<state-dir>/merge-message-<pr>-<sha12>.txt` and passed as `--body-file`. So a
+stale trailer, a `Fixes #N` line from a branch this one is stacked on, or any
+other text that lives only in an individual commit does not reach `main`; what
+reviewers approved on the PR is what gets committed. A title that cannot be
+read is a blocker, in the same way an unreadable criterion is. An empty PR body
+gives an empty commit body and is not a blocker.
+
 **An unreadable criterion is a failure, never a pass.** Unreadable CI, zero
 reported checks, unreadable review threads, missing `qa-team` evidence, an
 absent round record — each is a blocker. After the merge, the platform must
@@ -328,6 +339,7 @@ run to their natural end. A false timeout costs more than a slow run.
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | Phase 3 loop + merge gate. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | The uncapped, agentically-terminated loop driver. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | The evidence gate and the fixed merge argv. |
+| `amplifier-bundle/tools/autodrive_merge_message.sh` | Sourced by the gate: composes the squash subject and writes the `--body-file` message file (#2056). |
 | `amplifier-bundle/tools/autodrive_followups.sh` | Classifies minor-only rounds, files the follow-up issues and lists them on the plan task issue. |
 | `amplifier-bundle/tools/autodrive_followups_check.sh` | The `check` and `gate` commands: the merge gate's offline follow-up check. |
 | `amplifier-bundle/tools/autodrive_finding_rules.sh` | The minor-finding rules and text sanitising used by `autodrive_followups.sh`, for auto-drive-to-merge and auto-drive-light alike. |
