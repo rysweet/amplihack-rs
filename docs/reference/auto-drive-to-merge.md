@@ -29,6 +29,7 @@ PR to this recipe when the change exceeds its eligibility rules.
 
 - [The three phases](#the-three-phases)
 - [PR head and worktree resolution](#pr-head-and-worktree-resolution)
+- [The task when only `pr_number` is given (#2187)](#the-task-when-only-pr_number-is-given-2187)
 - [Finalization hand-off from phase 1 (#1714)](#finalization-hand-off-from-phase-1-1714)
 - [Why there is no iteration cap](#why-there-is-no-iteration-cap)
 - [Structured verdicts](#structured-verdicts)
@@ -367,6 +368,194 @@ would judge its own readiness (PR #1588 review). So:
 worktree whose round and evaluator always pass, and checks that neither runs.
 The round steps still run the PR's own code by design (tests, hooks,
 `qa-team`), so drive only PRs whose code you are prepared to run.
+
+## The task when only `pr_number` is given (#2187)
+
+`task_description` is optional when the operator sets `pr_number`. When the
+task is empty, step-02 of both loops takes it from the pull request and the
+issue the pull request links to. An operator-supplied task always wins.
+
+```bash
+# Drive an existing PR to merge. The task comes from PR #2201 and the
+# issue its body fixes (#2187).
+amplihack recipe run auto-drive-to-merge -c pr_number=2201 -c repo_path=.
+```
+
+### When the task is taken from the PR
+
+Step-02 of `autodrive-crusty-loop.yaml` and of `autodrive-merge-loop.yaml`
+takes the task from the pull request only when all of these hold:
+
+- `task_description` is unset or empty. Any non-empty value, even one made
+  only of whitespace, is used byte for byte, and no `gh` call is made to build
+  the task;
+- the operator gave the PR number, and it is numeric. The operator's number
+  is `autodrive_pr_input` whenever that key is set, even to an empty string.
+  `pr_number` is used only when `RECIPE_VAR_autodrive_pr_input` is unset.
+  Both loops declare `autodrive_pr_input` with an empty default, and the
+  runner sets every declared key, so a loop recipe run on its own takes the
+  task from the PR only when it is given `-c autodrive_pr_input=N`;
+- that number equals the preflight's resolved PR, compared as strings.
+
+The composer always passes `autodrive_pr_input` to both loops, empty when the
+operator gave no `pr_number`. So a run given only `existing_branch` does not
+take its task from the PR, even though the loops receive the build phase's PR
+as `pr_number` and that PR equals the preflight's. Only a PR number the
+operator typed supplies a task. A PR found from a branch or guessed from the
+launch checkout never does (the #1543 wrong-PR hazard).
+
+When the task is empty and the PR does not supply one, the result depends
+on whether the `task_description` key was passed at all:
+
+| `task_description` key | Result |
+| --- | --- |
+| passed, empty (the composer always passes it) | exit `2`, no `gh pr view`: `ERROR: --task-file ... is missing or empty; refusing to run without a task` |
+| absent (a loop recipe run on its own without it) | exit `1`: `ERROR: task_description unavailable` |
+
+A `task_description` that was passed but cannot be read (an unreadable
+context file, for example) also fails with exit `1` and `ERROR:
+task_description unavailable`. It is never replaced by the PR text, and no
+`gh` call is made.
+
+The same rule covers a run with no operator PR number, an
+`existing_branch`-only run, and an operator `pr_number` that differs from the
+preflight PR as a string, for example `0042` against `42`. Through the
+composer the key is always passed, so these runs exit `2`.
+
+### What the task holds
+
+Step-02 writes the task once, to the loop's private `--task-file`.
+`autodrive_use_task_file` then copies it to the loop's `0600` state copy.
+Rounds and the crusty re-review read that copy, so edits to the PR or issue
+during a drive do not change the task.
+
+```
+PR #2201: Take the auto-drive task from the PR when only pr_number is set
+
+<PR body>
+
+Linked issue #2187: auto-drive with only pr_number stops at the Crusty loop: 'task-file is missing or empty' (task_description is documented as optional)
+
+<issue body>
+```
+
+The linked-issue section appears only when the PR body links an issue. Titles
+and bodies are copied verbatim, with NUL bytes removed. Nothing is truncated.
+
+The linked issue is the first match, ignoring case, of `Closes`, `Fixes`,
+`Resolves` or `Refs`, then whitespace, then `#N`, where `N` ends at a
+character that is not a letter, digit or underscore, or at the end of the
+line. `Fixes #42.` links #42; `Fixes #42abc` is not a link. Other forms (`Fix #N`,
+`Closes: #N`) are not links. Only issues in the same repository are followed:
+`owner/repo#N`, URLs and `GH-N` are not links.
+
+`Refs` is accepted here because a PR that only refers to its issue still
+describes the work. The follow-up filer's `closing_ref` in
+`autodrive_followups.sh` matches only `Closes`, `Fixes` and `Resolves`, on
+purpose: it looks for the plan task the PR closes, and a `Refs` link closes
+nothing.
+
+Step-02 prints one line to stderr. It holds numbers only, never PR or issue
+text:
+
+```
+INFO: auto-drive: task_description is empty; task taken from PR #2201 and issue #2187
+```
+
+### Trust checks
+
+The text comes from the platform, not the operator, and it drives an agent
+that can push and merge. Before it becomes the task:
+
+- the PR must not come from a fork: `isCrossRepository` must be `false`.
+  `true`, missing or `null` is refused;
+- the linked issue's `author_association` must be `OWNER`, `MEMBER` or
+  `COLLABORATOR`. It is read through REST (`gh api
+  repos/{owner}/{repo}/issues/N`). Any other value, or a failed call, fails the
+  run; the PR text alone is never used instead;
+- PR and issue numbers must be numeric with at most 10 digits before they are
+  passed to `gh`;
+- the text never appears on a child process's argv, on stdout or on stderr.
+  The round receives it only through `--context-from-file
+  task_description=<path>`.
+
+`gh` runs inside the preflight's `repo` directory, with the operator's
+existing login. No `-R` and no new token.
+
+### Failures
+
+Each of these fails step-02 with exit `1`, before any round runs. No partial task
+is used: `autodrive_task_from_pr` leaves its `<out-file>`, step-02's empty
+`--task-file`, unchanged:
+
+| Cause | Error names |
+| --- | --- |
+| `gh pr view` fails | the PR |
+| the PR comes from a fork | the PR |
+| the PR's title and body are both empty, or not strings | the PR |
+| the linked issue's author is not a repository member, or the check fails | the issue |
+| `gh issue view` fails, or the issue's title and body are both empty | the issue |
+
+Each error is one fixed line starting `ERROR: auto-drive:` and ending with
+`pass task_description`:
+
+```
+ERROR: auto-drive: cannot read PR #2201 to take the task from it; pass task_description
+```
+
+Pass `-c task_description="..."` to run in any of these cases.
+
+### `autodrive_resolve_task` and `autodrive_task_from_pr`
+
+Both are defined in `amplifier-bundle/tools/autodrive_task_from_pr.sh`, its
+own file because `autodrive_state.sh` is at the 400-line brick budget and is
+one of the merge gate's trusted files. When `task_description` was read and
+is not empty, step-02 uses it without loading this file. Otherwise step-02 of
+both loops loads it from beside `autodrive_loop.sh` on the launch side and
+calls `autodrive_resolve_task`, which applies the rules above:
+
+```bash
+autodrive_resolve_task "$TD_RC" "$TASK_IN" "$OP_PR" "$PR" "$REPO" || exit 1
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `<td_rc>` | Exit code of `write_context_value task_description`: `0` read, `3` key absent, anything else unreadable. |
+| `<task-file>` | The loop's `--task-file`. |
+| `<operator-pr>` | The operator's PR number (`autodrive_pr_input`, else `pr_number`). |
+| `<preflight-pr>` | The preflight's resolved PR. |
+| `<repo-dir>` | The preflight's `repo`, passed on to `autodrive_task_from_pr`. |
+
+It returns `1` with `ERROR: task_description unavailable` when `<td_rc>` is
+neither `0` nor `3`, before any `gh` call. A non-empty `<task-file>` returns
+`0` with no `gh` call. When the operator's PR equals the preflight PR it
+returns the result of `autodrive_task_from_pr`. Otherwise it returns `1` with
+the same error for `<td_rc>` `3`, and `0` for `<td_rc>` `0`, leaving the loop to
+refuse the empty task with exit `2`.
+
+`autodrive_task_from_pr` builds the task file:
+
+```bash
+. amplifier-bundle/tools/autodrive_task_from_pr.sh
+autodrive_task_from_pr 2201 "$state_dir/task.txt" "$PWD"
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `<pr>` | The PR number; numeric, at most 10 digits. |
+| `<out-file>` | Where the task is written. Written through a `0600` file in a private temporary directory beside it and moved into place with `mv -f`. |
+| `[repo-dir]` | Directory `gh` runs in. The current directory when empty. |
+
+Returns `0` and prints the INFO line on success; returns `1` with one error
+line otherwise. It sets no trap and leaves no temporary file behind.
+
+### Resuming
+
+A resume runs step-02 again, so a resume with only `pr_number` fetches the PR
+and issue text again. Pass `task_description` when the PR body may have
+changed and the original task must be kept. The resume command in the budget
+summary keeps its `-c task_description="<the original task>"` placeholder for
+that reason ([Resume](#resuming-after-budget_exhausted)).
 
 ## Finalization hand-off from phase 1 (#1714)
 
@@ -2491,7 +2680,8 @@ The rule covers **step outputs only**. Context variables (`REPO_PATH`, `PR_*`,
 `AUTODRIVE_*`) and shell locals (`COUNT`, `RC`, `PENDING`, …) are read as
 before. The exceptions are `AUTODRIVE_PR_INPUT`, which the composer's
 `autodrive-pr-input` step produces as a step output (#1543), so each loop
-preflight reads it once as `${RECIPE_VAR_autodrive_pr_input:-}`, and
+preflight reads it once as `${RECIPE_VAR_autodrive_pr_input:-}`, and each loop
+step-02 once more to decide whether the task is taken from the PR (#2187), and
 `build_result`, which the composer's `autodrive-check-unmerged` step reads
 (#1551). `autodrive-build.yaml`'s `no_merge_directive` output (#1551) is read only
 as a template in step-02's sub-recipe `context:`, never in a shell, so it adds
@@ -2511,15 +2701,15 @@ autodrive step, so it is outside the checked output set and adds no row;
 `autodrive-build.yaml` only declares it `""` in `context:`. The #1979 inputs
 `plan_task_id` and `task_description` are recipe context, not step outputs, so
 they add no row; `autodrive-merge-loop.yaml` step-02b's read of
-`merge_loop_preflight` does. There are 36 in all:
+`merge_loop_preflight` does. There are 38 in all:
 
 | Recipe | Step-output reads |
 | --- | --- |
 | `auto-drive-to-merge.yaml` | 5 |
 | `autodrive-build.yaml` | 1 |
-| `autodrive-crusty-loop.yaml` | 7 |
+| `autodrive-crusty-loop.yaml` | 8 |
 | `autodrive-crusty-round.yaml` | 8 |
-| `autodrive-merge-loop.yaml` | 7 |
+| `autodrive-merge-loop.yaml` | 8 |
 | `autodrive-merge-round.yaml` | 8 |
 
 ### Step outputs ignore inherited bare variables
@@ -3969,11 +4159,13 @@ suggested value of twice the current limit. Only numbers derived from
 validated limits are printed.
 
 The command also holds `-c task_description="<the original task>"`. Replace
-the placeholder with the task the run was started with. Both loop steps refuse
-an empty task (`--task-file ... is missing or empty; refusing to run without a
-task`), and the copy of the task in the state directory is removed when a loop
-exits, so nothing else supplies it. The summary prints a placeholder, not the
-task, because the summary is posted to the pull request.
+the placeholder with the task the run was started with. The copy of the task in
+the state directory is removed when a loop exits. The placeholder is optional
+when the operator set `pr_number`: without it, the loop takes the task from the
+PR and its linked issue again ([#2187](#the-task-when-only-pr_number-is-given-2187)).
+Keep it when the run started from an operator task, which outranks the PR
+text, or when the PR body may have changed. The summary prints a placeholder,
+not the task, because the summary is posted to the pull request.
 
 ### Resuming after BUDGET_EXHAUSTED
 
@@ -3986,8 +4178,9 @@ amplihack recipe run auto-drive-to-merge -c pr_number=1743 \
   -c autodrive_budget_loop_rounds=24
 ```
 
-Without `task_description` the resume fails at the loop step: the loop refuses
-an empty task.
+Without `task_description` the loop step takes the task from the PR and its
+linked issue, read again at the resume. If that read fails, the resume fails at
+the loop step with exit `1`.
 
 Finished phases are skipped as usual ([Resumability](#resumability)). The
 stopped loop labels its next round after the last recorded one, and the
@@ -4700,7 +4893,8 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/tools/autodrive_platform_facts.sh` | tool | Platform facts for the merge round, criterion 6 included; the review-thread count for the merge gate too. |
 | `amplifier-bundle/tools/autodrive_qa_evidence.sh` | tool | Criterion 1: the suite commands and, where `autodrive_gadugi_required` says so, the gadugi scenarios, for `autodrive-merge-evidence.yaml` step-02. |
 | `amplifier-bundle/tools/autodrive_round_evidence.sh` | tool | The merge round's deterministic step bodies, and the crusty range the re-review reads: crusty range and evidence, the qa evidence hash, the measured downgrade, the findings and the round record. |
-| `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, `autodrive_crusty_final`, `autodrive_private`; platform truth for merged-ness. |
+| `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, `autodrive_crusty_final`, `autodrive_private`, `autodrive_use_task_file`; platform truth for merged-ness. |
+| `amplifier-bundle/tools/autodrive_task_from_pr.sh` | tool | [`autodrive_task_from_pr`](#autodrive_task_from_pr): the task taken from the PR and its linked issue when only `pr_number` is given (#2187). |
 | `amplifier-bundle/tools/autodrive_trust.sh` | tool | Range check and qa evidence chain; `autodrive_repo_type` and `autodrive_gadugi_required`. Loads `autodrive_qa_scope.sh` from its own directory, with a fail-closed fallback. |
 | `amplifier-bundle/tools/autodrive_qa_scope.sh` | tool | Defines functions only: the changed paths, the candidate search and the project choice (`autodrive_qa_changed_paths`, `autodrive_qa_target`), computed once per shell. Runs nothing it reads. A gate file, so the install mode check covers it. |
 | `amplifier-bundle/tools/autodrive_qa_sources.sh` | tool | Defines functions only: the `.amplihack/qa.toml` parser `autodrive_qa_config`, the CI reader `autodrive_qa_ci` and `autodrive_qa_report`, which gives the evidence tool every answer from one scan. Loaded by the evidence tool only. |
@@ -4732,6 +4926,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | The same retry through the real step supervisor: fake `claude` and a stub `recipe-runner-rs` under an isolated `HOME` | `crates/amplihack-cli/tests/issue_1801_evaluator_retry.rs` |
 | [No-progress stop and usage budget](#no-progress-stop-and-usage-budget) (#1743): `STUCK` in code on an unchanged head and open items, no stop when either changed, when the CI signal changed or says `PENDING`, or when the round is clean, a leftover `<record>.light.json` beside the current or previous round's record exempting nothing, `BUDGET_EXHAUSTED` from each of the three limits at the pre-round, post-round and before-round check points, a relaunch with a higher limit resuming from the recorded round and one with the same limit starting no agent, the nested crusty loop counted once, `tokens` recorded as `unknown`, malformed limits and unknown keys exiting `2`, the symlink and `0600` cases, the sanitised PR comment through a stub `gh`, and the `-c` override reaching both loops. Fixture state directories, stub `amplihack`, `gh` and `git` on `PATH`, under `isolated(..)`; nothing under the real `HOME` is read or written | `crates/amplihack-cli/tests/issue_1743_autodrive_budget.rs` |
 | [Minor findings end the crusty loop](#minor-findings-end-the-crusty-loop-1979) (#1979): `classify` on all-minor, mixed, unknown-severity, missing-severity, empty and non-array input; security keywords in an id or summary kept as `CONCERNS`; severity history (a minor finding recurring as minor still `MINOR_ONLY`, a major one downgraded to minor kept as `CONCERNS`, unknown history read as major, no `.severity` file for unreadable input); crusty-loop step-03 refusing to file without `AMPLIHACK_HOME` even when `REPO_PATH` holds the tool; the loop ending `DONE` on `MINOR_ONLY` with `--also-clean-token` and not without it; one `gh issue create` per finding naming the task id and finding id, with N rows in `followups.tsv`; a rerun making no call; `gh` exiting `1` (error recorded, gate prints `ERROR: followups-unfiled`, no merge) and `79` (passed through after one call); an unresolved task id; the task id taken from `Closes #N` in the PR body; two JSON arrays on stdin, or a `concerns` string holding a minor and a blocking array, kept as `CONCERNS`; a `jq` parse failure logged with its exit code; mentions, `#N` and `GH-N` references neutralised in the body and the title; a title with shell metacharacters reaching `gh` as one argument, with `&`, `|` and backticks kept as plain characters rather than HTML entities; an unparseable PR URL; a `CLEAN` drive filing nothing and passing the check; a dry run filing nothing in either step while the gate reports `followup-missing`; `gate` naming each filed issue in its evidence line and printing the error and blocker on a miss; `collect` reading only the terminal round; `check` refusing a symlinked or group-writable `followups.tsv`, a malformed row and `MINOR_ONLY` with no set; `autodrive_crusty_final` accepting `MINOR_ONLY`; and static checks that both `SKILL.md` copies match, the old loop-end wording is gone from the recipes, skill and reference, the 400-line budgets hold with no per-file exception, and `autodrive_followups.sh` sources the shared rules file while no light round tool exists. Stub `gh` on `PATH`, scratch under `$TMPDIR`, no network | `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs`, with `mod issue_1979_crusty_minor_followups;` in `crates/amplihack-cli/tests/main.rs` |
+| [The task when only `pr_number` is given](#the-task-when-only-pr_number-is-given-2187) (#2187): both loop step-02 bodies run from their YAML with a fake `gh` that records its argv. A PR with a linked issue, with no link, with an `owner/repo#N` link and with the `task_description` key absent; `gh pr view` failing; the issue read failing; empty title and body; a fork PR (`isCrossRepository` `true` or missing); an issue author that is not a member, or a failed `gh api`; no operator PR with a guessed preflight PR, with the `task_description` key passed empty (exit `2`, no `pr view`) and with it absent (exit `1`, `task_description unavailable`); an `existing_branch`-only composer run, with `autodrive_pr_input` empty and `pr_number` set to the build PR (exit `2`, no `pr view`); a step-02 run with `pr_number` and `RECIPE_VAR_autodrive_pr_input` unset (task taken from the PR); `Fix #N` and `Closes: #N` not followed as links; an operator PR that differs from the preflight PR (exit `2`); no PR or issue text on any round argv; an operator task used unchanged with no `gh` call. Direct calls of `autodrive_task_from_pr`: non-numeric and 11-digit PR numbers, `Fixes #--repo` and NUL bytes in a body, a non-string title, an unchanged output on failure, mode `0600` on success, no temporary files left. No sleep, timeout or network | `crates/amplihack-cli/tests/issue_2187_pr_only_task.rs`, with `mod issue_2187_pr_only_task;` in `crates/amplihack-cli/tests/main.rs` |
 | A minor-only round ending the loop, and a `[minor, major]` round continuing it, through the `run_loop` stub | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
@@ -4749,6 +4944,7 @@ cargo test -p amplihack-cli --test cli_integration issue_1561
 cargo test -p amplihack-cli --test cli_integration issue_1801
 cargo test -p amplihack-cli --test cli_integration issue_1743
 cargo test -p amplihack-cli --test cli_integration issue_1979_crusty_minor_followups::
+cargo test -p amplihack-cli --test cli_integration issue_2187_pr_only_task::
 bash amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh
 gadugi-test validate -d tests/gadugi/scenarios
 bash tests/gadugi/run-autodrive-crusty-rereview-scenario.sh   # and the other run-autodrive-*-scenario.sh

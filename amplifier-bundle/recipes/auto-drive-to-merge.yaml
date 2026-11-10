@@ -67,7 +67,13 @@ recursion:
   max_total_steps: 120
 
 context:
-  # What to build. Passed straight through to default-workflow.
+  # What to build. Passed straight through to default-workflow. #2187: the
+  # loops need no task_description when pr_number is set: they then take the
+  # task from the PR title and body, plus the same-repo issue it links with
+  # Closes/Fixes/Resolves/Refs #N. Fork PRs and issues not written by a
+  # repository member are refused; an unreadable PR or issue fails the run.
+  # With neither a task nor a pr_number the run refuses with exit 2.
+  # existing_branch alone never supplies a task. An operator task always wins.
   task_description: ""
   requirements: ""
   repo_path: "."

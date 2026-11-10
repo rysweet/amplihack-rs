@@ -48,7 +48,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 24] = [
+const AUTODRIVE_TOOLS: [&str; 25] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
@@ -70,6 +70,7 @@ const AUTODRIVE_TOOLS: [&str; 24] = [
     "autodrive_round_tail.sh",
     "autodrive_scenario_name.sh",
     "autodrive_state.sh",
+    "autodrive_task_from_pr.sh",
     "autodrive_trust.sh",
     "autodrive_unmerged.sh",
     "autodrive_worktree_guard.sh",
