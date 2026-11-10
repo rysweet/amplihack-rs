@@ -4,6 +4,7 @@
 use super::cycle::Ctx;
 use super::damp::{damp, is_failed_probe_swap, keep_for_home_key, next_failed};
 use super::decide::{Decision, Measured, Probed, Reading};
+use super::fresh::live;
 use super::identify::{self, Account, CandidateInput, LiveId, LoginKind, Skip};
 use super::key_check;
 use super::log::msg;
@@ -11,7 +12,6 @@ use super::measure::{self, Live};
 use super::overflow::{OverflowInput, Tag, decide_overflow};
 use super::pin::{self, PinState};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::kind;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{OverflowEntry, PLATFORM_TIER};
@@ -222,7 +222,7 @@ pub struct Measurement {
 }
 
 pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
-    let measured_at = now();
+    let measured_at = (ctx.now)();
     let platform = snap.platform();
     let live = match &snap.live {
         _ if snap.platform_live() => Live::Platform,
@@ -278,13 +278,20 @@ pub(super) fn decide_measured(
         LiveId::Known(n) => Some(n),
         _ => None,
     };
-    let t = now();
+    let t = (ctx.now)();
+    // Issue #2211: the live figures of this cycle's outlook, for this live
+    // login only; the real reading is kept for everything else.
+    let outlook = ctx
+        .live_outlook
+        .as_ref()
+        .filter(|o| !snap.platform_live() && live_name == Some(&o.name));
+    let (input, basis) = live::decision_input(&probe, outlook);
     let overflow = snap.decision_overflow();
     let unmeasured_plan = snap.unmeasured_plan();
     let verdict = decide_overflow(&OverflowInput {
         settings: &ctx.settings,
         live_name,
-        live: &probe,
+        live: &input,
         candidates: &measured,
         unmeasured_plan: &unmeasured_plan,
         refused: &snap.refused_plan(),
@@ -302,8 +309,9 @@ pub(super) fn decide_measured(
     } else {
         next_failed(ctx.failed_live, &probe.reading)
     };
+    let decision = live::map_reason(verdict.decision, basis, &ctx.settings, &probe.reading);
     let (decision, note) = damp(
-        verdict.decision,
+        decision,
         &probe.reading,
         failed,
         swapped_at,

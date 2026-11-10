@@ -1,7 +1,7 @@
 //! The state of a rotate cycle and of a watch process's retained readings.
 
 use super::super::cred_identity::{DEFAULT_READ, ReadFn};
-use super::super::fresh::RereadFn;
+use super::super::fresh::{RereadFn, live};
 use super::super::identify::Skip;
 use super::super::key_check::{self, KeyCheckFn};
 use super::super::ledger::RotateState;
@@ -54,6 +54,12 @@ pub struct Ctx {
     pub(in crate::commands::profile::rotate) read_only: bool,
     /// The seed note this process last logged; a repeat is not logged.
     pub(in crate::commands::profile::rotate) last_seed_note: Option<String>,
+    /// Issue #2211: the live login's recent readings, kept across cycles.
+    pub(in crate::commands::profile::rotate) live_series: live::Series,
+    /// Issue #2211: this cycle's projected or substituted live figures.
+    pub(in crate::commands::profile::rotate) live_outlook: Option<live::Outlook>,
+    /// The clock of the decision; tests set a synthetic one.
+    pub(in crate::commands::profile::rotate) now: fn() -> i64,
 }
 
 impl Ctx {
@@ -81,6 +87,9 @@ impl Ctx {
             identity_budget: super::super::login_identity::Budget::new(),
             read_only: false,
             last_seed_note: None,
+            live_series: live::Series::default(),
+            live_outlook: None,
+            now: crate::commands::profile::auto_switch::kit::now,
         }
     }
 

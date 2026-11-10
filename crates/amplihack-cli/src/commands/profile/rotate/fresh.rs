@@ -24,6 +24,9 @@ use crate::commands::profile::probe_limits::ProbeMode;
 use crate::commands::profile::usage_source::SourceEnv;
 use std::time::{Duration, Instant};
 
+#[path = "live_fresh.rs"]
+pub(super) mod live;
+
 /// The oldest a target's reading may be. It equals the default passive
 /// age (`DEFAULT_PASSIVE_MAX_AGE_SECS`) and the usage history's limit, so a
 /// passive reading accepted by default is never too old on age alone.
@@ -91,7 +94,8 @@ pub fn gated_target(d: &Decision) -> Option<&ProfileName> {
             | Reason::Upgrade
             | Reason::PlanRoom
             | Reason::FailedProbe
-            | Reason::OverflowOut => Some(to),
+            | Reason::OverflowOut
+            | Reason::Projected => Some(to),
             Reason::OverflowIn => None,
         },
         Decision::Stay | Decision::Alert => None,
@@ -173,7 +177,7 @@ pub(super) fn settle(
             break;
         };
         let damped_at = damped.get(to.as_str()).copied();
-        let t = now();
+        let t = (ctx.now)();
         if !stale(read_at(&probes[i].1, m.measured_at), live_at, damped_at, t) {
             break;
         }
@@ -238,7 +242,7 @@ fn fresh_probe(
         return Probed::failed();
     }
     // The reading time of a re-read is when it finished.
-    p.observed_at = Some(now());
+    p.observed_at = Some((ctx.now)());
     p.carried = false;
     // Issue #1970: a re-read is made with passive readings off, so it is a
     // direct reading and never checked as a stale cached one.
