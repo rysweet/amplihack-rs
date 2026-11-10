@@ -303,6 +303,11 @@ gh_pr_number_from_url() {
 #                           of blocking, logging a WARNING. Leave UNSET for write
 #                           paths so they wait-for-reset with no REST fallback.
 #
+#   GH_RETRY_DIAGNOSTIC_FILE private file owned by the caller (optional):
+#                           overwritten with each failed attempt's sanitized,
+#                           bounded diagnostic; independent of retry warnings.
+#                           Read only after failure; caller removes the file.
+#
 # Sets GH_RETRY_LAST_CLASS to the class of the final failure (or
 # `success`/`rate_limit_rest`) for callers that need to branch on it.
 _gh_retry_core() {
@@ -326,6 +331,15 @@ _gh_retry_core() {
   return "$retry_status"
 }
 
+# Private-state contract: call these helpers only within _gh_retry_core.
+# It owns local stderr_file/stdout_file, GH_OWNED_PID, retry_status,
+# retry_interrupted_status, retry_int/term/hup and retry_shell_pid. Attempts
+# replace captures and child PID; cleanup cancels/reaps the child, unlinks
+# captures and clears those variables. Interrupt sets retry_interrupted_status;
+# restore uses saved traps/PID to preserve the caller's signal disposition.
+# The core cleans up and restores traps on return. GH_RETRY_LAST_CLASS is the
+# caller-visible result; GH_RETRY_DIAGNOSTIC_FILE belongs to the caller, is
+# overwritten only with safe diagnostics, and is never removed by this owner.
 _gh_retry_cleanup() {
   gh_cancel_owned "$GH_OWNED_PID"
   GH_OWNED_PID=""
@@ -393,6 +407,11 @@ _gh_retry_attempts() {
     fi
     GH_OWNED_PID=""
     diagnostic="$(gh_safe_stderr "$stderr_file")"
+    if [ -n "${GH_RETRY_DIAGNOSTIC_FILE:-}" ]; then
+      if printf '%s' "$diagnostic" >"$GH_RETRY_DIAGNOSTIC_FILE"; then :; else
+        printf 'WARNING: gh terminal diagnostic capture failed (exit %s)\n' "$?" >&2
+      fi
+    fi
     class="$(classify_gh_error "$stderr_file")" || class=other
     GH_RETRY_LAST_CLASS="$class"
 

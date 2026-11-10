@@ -157,11 +157,14 @@ and `message`. Human-readable warnings and diagnostics use stderr.
 | Already open, already merged, closed after merge, or empty branch | Existing classifications and successful terminal behavior remain intact. |
 | Mandatory gate fails or a closed unmerged PR still has a diff | Existing failure behavior remains enforced with an actionable diagnostic. |
 
-Successful creation is followed by explicit result parsing with the builtin
-`gh_pr_number_from_url` helper. No final `awk` invocation is required. The result
+Successful creation is followed by explicit URL parsing and PR-number
+extraction with Bash builtins. No final `awk` invocation is required. The result
 must be a single GitHub PR URL for the expected repository with a numeric PR
-number. Malformed output reports `FAILED_PR_IDENTITY` and a result-parsing
-diagnostic; it never retries creation or reports that creation itself failed.
+number. Owner and repository names are compared with ASCII case folding, so
+a mixed-case origin accepts GitHub's canonical URL spelling. URL syntax, the
+repository identity and numeric PR validation remain strict. Malformed output
+reports `FAILED_PR_IDENTITY` and a result-parsing diagnostic; it never retries
+creation or reports that creation itself failed.
 
 A terminal command diagnostic contains the stable operation name, original exit
 status, and sanitized stderr. Empty stderr receives an explicit explanation.
@@ -174,14 +177,27 @@ Creation evidence is captured separately from stdout and retained while the
 scoped collision lookup runs. A failed collision lookup adds context; it cannot
 replace the original creation diagnostic. On `FAILED_PR_CREATE`, creation
 evidence appears in stderr and the structured `message`, and survives into the
-runner's serialized step error. Pre-helper failures also identify the operation
-and status or condition. A final-exit backstop prevents unexplained nonzero
+runner's serialized step error. Provider stderr is redacted before its 500-byte
+bound. The retry helper
+overwrites a separate caller-owned private capture with each failed attempt’s
+sanitized diagnostic. The publisher reads this last-attempt diagnostic
+independently of retry warnings, so earlier warnings cannot displace the final
+rejection in structured messages or runner errors. Pre-attempt failures use
+the ordinary stderr capture. The publisher removes both captures on exit and
+cancellation. Pre-helper failures also identify the operation and status or
+condition. A final-exit backstop prevents unexplained nonzero
 exits without duplicating an existing terminal diagnostic.
 
 The shared retry helper retains retry classification, timing, successful stdout,
 and the original command status. Its terminal paths report diagnostics before
 cleanup. Diagnostic formatting or cleanup failures cannot overwrite that status
-or disturb caller traps. No timers or polling delays are added.
+or disturb caller traps. Private retry helpers share only the dynamically scoped
+capture, child and signal state owned by `_gh_retry_core`. No timers or polling
+delays are added.
+
+If optional template-scope sanitization fails, publishing emits a fixed warning
+with the original status and uses `branch changes`. Neither unsafe scope text
+nor partial sanitizer output appears in that warning or the PR summary.
 
 ### Diagnostic privacy
 
@@ -353,6 +369,28 @@ exist and sensitive data has been written; they assert termination, cleanup,
 permissions, statuses and caller trap behavior. This suite passes under both the
 system Bash and the locally built Bash 3.2.0.
 
+### PR #2313 review follow-up
+
+The three review defects were reproduced against merge commit `bd0df198`:
+five new tests failed, covering repository casing and terminal diagnostics at
+both publisher and pinned-runner boundaries, plus the missing scope warning.
+After the fixes, all 50 metadata tests (the existing 45 plus five regressions)
+passed under Bash 5.3.9 and Bash 3.2.0 in the isolated harness. Strict URL tests
+also cover foreign owner/repository names, extra output, query/fragment/path
+suffixes, HTTP, zero and leading-zero PR numbers.
+
+The ordinary integration binary was rebuilt with build output on the larger
+`/d0` filesystem, resolving the review's disk-quota build limitation. All 50
+metadata tests passed on rerun under current Bash and under Bash 3.2.0. Its first run reported 49
+passes and one process-survival assertion failure in the unchanged direct
+body-writer cancellation test; the full rerun passed without code changes.
+This build used Rust 1.99.1; repository pre-commit checks use pinned Rust 1.97.0.
+The adjacent publishing suites passed 71 tests and body-file transport passed
+10. The reliability shell suite passed repeatedly, including under Bash 3.2.
+Both Bash versions accepted `bash -n`; warning-severity ShellCheck and whitespace
+checks passed. These results establish Linux execution, including real Bash 3.2, and do
+not establish native macOS execution or historical macOS attribution.
+
 ### Historical attribution and subsequent delivery
 
 Original logs identifying the failed command in software-factory #180, #122,
@@ -369,7 +407,8 @@ does not claim that publication, CI, or merge has happened.
 
 Behavior tests use temporary repositories, local base refs, isolated
 configuration, and fake executables on `PATH`. They make no GitHub writes and
-use permanent nonretryable failures without test sleeps.
+use permanent failures or injected transient failures with sleep replaced by a
+no-op, so retry coverage adds no test waits.
 
 | Scenario | Required observable behavior |
 | --- | --- |
@@ -379,6 +418,9 @@ use permanent nonretryable failures without test sleeps.
 | Unavailable, failed, malformed, missing, non-string, empty, or whitespace-only recovery title | Reach the safe branch fallback and create a draft successfully. |
 | Persistent normalizer failure or malicious branch text | Produce a safe bounded title independently; execute no injected shell text. |
 | Optional body formatter failure | Retain available sections or publish a minimal summary with only the appropriate issue reference. |
+| Mixed-case origin and canonical creation URL | Preserve success and parse the PR number, including after metadata recovery and through the pinned runner. |
+| Long transient warning followed by a permanent rejection | Retain the final rejection, original status and credential redaction in structured results and runner errors. |
+| Template-scope sanitization failure | Warn with the status, publish safe summary text and discard partial sanitizer output. |
 | Distinctive or empty creation stderr | Preserve the operation, original status, and sanitized message or empty-stderr explanation through the failed step. |
 | Eligible and unrelated collision PRs | Adopt only the eligible open PR; retain creation evidence on failure, including collision-lookup failure. |
 | Mandatory gate rejection and existing terminal states | Preserve identity, duplicate, no-diff, merged, closed, and provider behavior. |
