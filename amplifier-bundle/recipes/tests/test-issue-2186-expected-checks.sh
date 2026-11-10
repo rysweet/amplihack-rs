@@ -922,9 +922,10 @@ AH="${WORK}/amplihack-home"; mkdir -p "${AH}/amplifier-bundle"
 ln -s "${TOOLS}" "${AH}/amplifier-bundle/tools"
 run_s3() { # run_s3 <fixture> [extra env...] — sets S3_OUT (last line), S3_STATUS, S3_SIGNAL
   local fx="$1"; shift
-  S3_OUT="$(cd "${WORK}" && env GH_CI_FIX="$fx" GH_CI_ROUTE="${ROUTE}" GH_HEAD="$HEAD" GH_BASE=main \
+  (cd "${WORK}" && env GH_CI_FIX="$fx" GH_CI_ROUTE="${ROUTE}" GH_HEAD="$HEAD" GH_BASE=main \
     GH_CALLS="${WORK}/s3-calls" PR_NUMBER=42 REPO_PATH="${WORK}" AMPLIHACK_HOME="${AH}" \
-    PATH="${STUB_BIN}:${PATH}" env "$@" bash -c "$S3" 2>"${WORK}/s3-err" </dev/null | tail -n1)"
+    PATH="${STUB_BIN}:${PATH}" env "$@" bash -c "$S3" >"${WORK}/s3-out" 2>"${WORK}/s3-err" </dev/null)
+  S3_OUT="$(tail -n1 "${WORK}/s3-out")"
   S3_STATUS="$(printf '%s' "$S3_OUT" | jq -r .ci_status 2>/dev/null)"
   S3_SIGNAL="$(printf '%s' "$S3_OUT" | jq -r .ci_signal 2>/dev/null)"
 }
