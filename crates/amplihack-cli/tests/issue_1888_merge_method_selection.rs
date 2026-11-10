@@ -49,6 +49,7 @@ exit "$TEST_API_RC"
             .env("CODEX_HOME", root.join("profiles/codex"))
             .env("AMPLIHACK_HOME", root.join("profiles/amplihack"))
             .env("GH_CONFIG_DIR", root.join("profiles/gh"))
+            .env("GH_REPO", "owner-b/repo-b")
             .env("TMPDIR", root.join("tmp"))
             .env("TEST_CALLS", root.join("calls"))
             .env("TEST_RESPONSE", root.join("response"))
@@ -193,6 +194,7 @@ fn malformed_configuration_is_not_hidden_by_explicit_override() {
         "",
         "null",
         "[]",
+        "[true,false,false]",
         "merge_method: null",
         "merge_method: ''",
         "merge_method: 1",
@@ -222,6 +224,7 @@ fn api_failures_and_schema_errors_fail_closed() {
         "not json",
         "null",
         "[]",
+        "[true,false,false]",
         "{}",
         "{}{}",
         r#"{"allow_merge_commit":true,"allow_squash_merge":true}"#,
@@ -299,6 +302,7 @@ fn recipes_declare_empty_context_and_forward_it_at_nested_boundaries() {
     ] {
         let text = fs::read_to_string(root.join(format!("{name}.yaml"))).unwrap();
         let recipe: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+        assert_eq!(recipe["context"]["repository"].as_str(), Some(""));
         assert_eq!(
             recipe["context"]["merge_method"].as_str(),
             Some(""),
@@ -309,6 +313,10 @@ fn recipes_declare_empty_context_and_forward_it_at_nested_boundaries() {
                 step["recipe"].as_str(),
                 Some("auto-drive-to-merge" | "autodrive-merge-loop")
             ) {
+                assert_eq!(
+                    step["context"]["repository"].as_str(),
+                    Some("{{repository}}")
+                );
                 assert_eq!(
                     step["context"]["merge_method"].as_str(),
                     Some("{{merge_method}}"),
@@ -324,7 +332,11 @@ fn recipes_declare_empty_context_and_forward_it_at_nested_boundaries() {
                 .find(|s| s["id"].as_str() == Some("step-03-merge-gate"))
                 .unwrap();
             assert!(
-                gate["command"].as_str().unwrap().contains("--merge-method"),
+                gate["command"].as_str().unwrap().contains("--merge-method")
+                    && gate["command"]
+                        .as_str()
+                        .unwrap()
+                        .contains("--repository \"${RECIPE_VAR_repository:-}\""),
                 "merge loop must forward context to the trusted gate"
             );
         }

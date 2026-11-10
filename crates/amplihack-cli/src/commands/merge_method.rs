@@ -156,7 +156,13 @@ pub fn select(repository: &str, root: &Path, explicit: &str) -> Result<MergeSele
         "gh api could not read repository merge permissions (status {})",
         output.status
     );
-    let allowed: AllowedMergeMethods = serde_json::from_slice(&output.stdout).context(
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .context("invalid repository merge permissions JSON")?;
+    anyhow::ensure!(
+        response.is_object(),
+        "repository merge permissions must be an object"
+    );
+    let allowed: AllowedMergeMethods = serde_json::from_value(response).context(
         "invalid repository merge permissions: all three allow_* fields must be booleans",
     )?;
     choose(explicit, configured, allowed)

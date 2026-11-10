@@ -23,7 +23,7 @@ mm_case() { # label expected-method source [explicit-method]
   bundle="$(printf '%s' "$GATE_OUT" | jq -r '.evidence_bundle // empty' 2>/dev/null)"
   if [ "$rc" -eq 0 ] && printf '%s' "$GATE_OUT" | grep -qF '"merge_result":"MERGED"' \
      && [ "$(grep -c '^pr merge ' "${GATE_DIR}/gh-calls")" -eq 1 ] \
-     && grep -qxF "pr merge 42 --${method} --delete-branch --match-head-commit ${GATE_HEAD}" "${GATE_DIR}/gh-calls" \
+     && grep -qxF "pr merge 42 --repo owner-a/repo-a --${method} --delete-branch --match-head-commit ${GATE_HEAD}" "${GATE_DIR}/gh-calls" \
      && [ -f "$bundle" ] && grep -qF "head_sha=${GATE_HEAD}" "$bundle" \
      && grep -qF "merge_method=${method}" "$bundle" \
      && grep -qF "merge_method_source=${source}" "$bundle" \
@@ -59,6 +59,8 @@ mm_case invalid-context '' '' auto
 GH_METHODS_RC=79; export GH_METHODS_RC
 mm_case api-failure '' ''
 unset GH_METHODS_RC
+GH_METHODS_JSON='[true,false,false]'; export GH_METHODS_JSON
+mm_case api-positional-array '' ''
 for GH_METHODS_JSON in '{}' 'null' 'bad-json' \
   '{"allow_merge_commit":true,"allow_squash_merge":false}' \
   '{"allow_merge_commit":true,"allow_squash_merge":"true","allow_rebase_merge":false}'; do
@@ -100,3 +102,21 @@ exec "$REAL_AMPLIHACK" "$@"
 MM_MISSING
 chmod 0755 "$MM_HELPER_DIR/missing"
 GATE_HELPER="$MM_HELPER_DIR/missing" mm_case missing-helper '' ''
+
+# Conflicting ambient identity must never influence any gate operation.
+GH_REPO=owner-b/repo-b GATE_EXTRA_ENV=GH_REQUIRE_TARGET=owner-a/repo-a mm_case explicit-repository squash default
+if grep -q '^repo view' "${GATE_DIR}/gh-calls" || [ -f "${GATE_DIR}/gh-calls.wrong-target" ]; then
+  fail "1888-repository-binding" "a PR operation used ambient identity"
+elif grep -q '^api repos/owner-a/repo-a$' "${GATE_DIR}/gh-calls"; then
+  pass "1888-repository-binding" "permission query and every PR operation use explicit target"
+else
+  fail "1888-repository-binding" "permission query missing"
+fi
+for missing_identity in "" owner "/repo" "owner/repo/extra"; do
+  GATE_REPOSITORY="$missing_identity" gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
+  if [ "$rc" -ne 0 ] && [ ! -s "${GATE_DIR}/gh-calls" ]; then
+    pass "1888-invalid-identity" "invalid or missing target fails before gh"
+  else
+    fail "1888-invalid-identity" "invalid identity reached gh"
+  fi
+done

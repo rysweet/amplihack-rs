@@ -23,10 +23,12 @@ builtin unset -f gh git jq
 
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 MERGE_METHOD=""
+IDENTITY=""
 PR=""; REPO="."; ROUND_RECORD=""; QA_EVIDENCE=""; STATE_DIR=""; DRY_RUN="false"
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --repository) [ "$#" -ge 2 ] || exit 2; IDENTITY="${2:-}"; shift 2 ;;
     --merge-method) [ "$#" -ge 2 ] || { echo "ERROR: --merge-method requires a value" >&2; exit 2; }; MERGE_METHOD="${2:-}"; shift 2 ;;
     --pr)            PR="${2:-}"; shift 2 ;;
     --repo)          REPO="${2:-}"; shift 2 ;;
@@ -42,8 +44,12 @@ case "$PR" in ''|*[!0-9]*) echo "ERROR: --pr must be a positive integer (got '${
 # be relative. Every helper the gate sources or runs comes from here, and from
 # nowhere a pull request could populate.
 GATE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
-# gh resolves {owner}/{repo} from the working directory, so every read below
-# must run inside the repository the PR belongs to.
+# The target identity is explicit; the checkout supplies only local evidence.
+OWNER="${IDENTITY%%/*}"; NAME="${IDENTITY#*/}"
+if ! [[ "$IDENTITY" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$ ]] || [[ "${IDENTITY#*/}" == "." || "${IDENTITY#*/}" == ".." || "${IDENTITY%%/*}" == *- || ${#OWNER} -gt 39 || ${#NAME} -gt 100 ]]; then
+  echo "ERROR: --repository requires canonical OWNER/REPO" >&2
+  exit 2
+fi
 cd "$REPO" 2>/dev/null || { echo "ERROR: --repo '${REPO}' is not a directory; refusing to read PR state from an unknown working directory." >&2; exit 2; }
 # Decide whether a state dir was given BEFORE the fallback below: an empty
 # --state-dir must not turn the world-writable TMPDIR into crusty evidence.
@@ -69,7 +75,7 @@ field() { printf '%s' "${1:-}" | "$AMPLIHACK_BIN" orch helper extract-json --req
           | "$AMPLIHACK_BIN" orch helper extract-field --field "$2" --default "$3"; }
 
 # --- 0. Already merged? A resumed run must never redo merged work. ----------
-STATE_JSON="$(gh pr view "$PR" --json state,mergedAt,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,url,baseRefName 2>/dev/null)"
+STATE_JSON="$(gh pr view "$PR" --repo "$IDENTITY" --json state,mergedAt,isDraft,mergeable,mergeStateStatus,reviewDecision,headRefOid,url,baseRefName 2>/dev/null)"
 if [ -z "$STATE_JSON" ]; then
   block "pull request #${PR} metadata is unreadable; an unreadable platform state never merges"
   printf '{"merge_result":"NOT_MERGED","pr":"%s","blockers":["pr metadata unreadable"]}\n' "$PR"
@@ -120,9 +126,11 @@ note "reviewDecision=${REVIEW_DECISION:-<none>}"
 # 0 and pass this gate. Its per-page counts are summed, and a page that is not
 # a number gives `unreadable`. Unreadable, or no reader, is a blocker. An
 # outdated thread counts: GitHub's conversation rule requires it resolved too.
+# gh resolves API placeholders in this reader through GH_REPO. Override any
+# caller default with the same explicit identity used by every gate PR command.
 THREADS=""
 [ -n "$GATE_HOME" ] && [ -f "${GATE_HOME}/autodrive_platform_facts.sh" ] \
-  && THREADS="$(field "$(bash "${GATE_HOME}/autodrive_platform_facts.sh" "$PR" 2>/dev/null)" unresolved_threads "")"
+  && THREADS="$(field "$(GH_REPO="$IDENTITY" bash "${GATE_HOME}/autodrive_platform_facts.sh" "$PR" 2>/dev/null)" unresolved_threads "")"
 case "$THREADS" in
   '' | *[!0-9]*) block "review-thread state is unreadable; an unreadable criterion is a failure, not a pass" ;;
   0) note "review_threads_unresolved=0" ;;
@@ -133,7 +141,7 @@ esac
 # `gh pr checks` exits non-zero when checks are failing or pending, and also
 # when it cannot read them. All three are blockers; only a readable, complete,
 # all-green rollup passes.
-CHECKS_JSON="$(gh pr checks "$PR" --json name,state,bucket,link 2>/dev/null)"
+CHECKS_JSON="$(gh pr checks "$PR" --repo "$IDENTITY" --json name,state,bucket,link 2>/dev/null)"
 if ! command -v jq >/dev/null 2>&1; then
   block "jq is unavailable, so the CI rollup cannot be read; a criterion we cannot read is a failure"
 elif [ -z "$CHECKS_JSON" ]; then
@@ -343,31 +351,24 @@ fi
 # --- 7b. Select repository-permitted merge policy through the Rust helper. ---
 MERGE_FLAG=""
 SELECTION_POLICY_REFUSAL=false
-IDENTITY="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)"
-IDENTITY_RC=$?
-if [ "$IDENTITY_RC" -eq 79 ]; then SELECTION_POLICY_REFUSAL=true; fi
-if [ "$IDENTITY_RC" -ne 0 ] || [ -z "$IDENTITY" ]; then
-  block "cannot resolve target repository identity for merge-method selection"
+SELECTION="$("$AMPLIHACK_BIN" orch helper select-merge-method --repository "$IDENTITY" --repo-root "$PWD" --merge-method "$MERGE_METHOD")"
+SELECTION_RC=$?
+if [ "$SELECTION_RC" -eq 79 ]; then SELECTION_POLICY_REFUSAL=true; fi
+if [ "$SELECTION_RC" -ne 0 ]; then
+  block "merge-method selection failed; check repository configuration and GitHub merge permissions"
+elif ! printf '%s' "$SELECTION" | jq -e -s 'length == 1 and (.[0] | type == "object" and (.method == "merge" or .method == "squash" or .method == "rebase") and (.source == "explicit" or .source == "repository" or .source == "default") and (.rationale | type == "string" and length > 0))' >/dev/null 2>&1; then
+  block "merge-method helper returned malformed or incompatible output"
 else
-  SELECTION="$("$AMPLIHACK_BIN" orch helper select-merge-method --repository "$IDENTITY" --repo-root "$PWD" --merge-method "$MERGE_METHOD")"
-  SELECTION_RC=$?
-  if [ "$SELECTION_RC" -eq 79 ]; then SELECTION_POLICY_REFUSAL=true; fi
-  if [ "$SELECTION_RC" -ne 0 ]; then
-    block "merge-method selection failed; check repository configuration and GitHub merge permissions"
-  elif ! printf '%s' "$SELECTION" | jq -e -s 'length == 1 and (.[0] | type == "object" and (.method == "merge" or .method == "squash" or .method == "rebase") and (.source == "explicit" or .source == "repository" or .source == "default") and (.rationale | type == "string" and length > 0))' >/dev/null 2>&1; then
-    block "merge-method helper returned malformed or incompatible output"
-  else
-    SELECTED_METHOD="$(printf '%s' "$SELECTION" | jq -r .method)"
-    case "$SELECTED_METHOD" in
-      merge) MERGE_FLAG=--merge ;;
-      squash) MERGE_FLAG=--squash ;;
-      rebase) MERGE_FLAG=--rebase ;;
-    esac
-    note "merge_method=${SELECTED_METHOD}"
-    note "merge_method_source=$(printf '%s' "$SELECTION" | jq -r .source)"
-    # JSON string encoding keeps even incompatible helper text on one evidence line.
-    note "merge_method_rationale=$(printf '%s' "$SELECTION" | jq -c .rationale)"
-  fi
+  SELECTED_METHOD="$(printf '%s' "$SELECTION" | jq -r .method)"
+  case "$SELECTED_METHOD" in
+    merge) MERGE_FLAG=--merge ;;
+    squash) MERGE_FLAG=--squash ;;
+    rebase) MERGE_FLAG=--rebase ;;
+  esac
+  note "merge_method=${SELECTED_METHOD}"
+  note "merge_method_source=$(printf '%s' "$SELECTION" | jq -r .source)"
+  # JSON string encoding keeps even incompatible helper text on one evidence line.
+  note "merge_method_rationale=$(printf '%s' "$SELECTION" | jq -c .rationale)"
 fi
 
 # --- 8. Record the evidence bundle BEFORE any merge ------------------------
@@ -393,8 +394,8 @@ fi
 # --match-head-commit makes GitHub itself refuse the merge if the head moved
 # after the evidence above was captured. That closes the check-then-merge gap
 # without a cooperative lease, and it is why every criterion binds to HEAD_SHA.
-MERGE_ARGV=(pr merge "$PR" "$MERGE_FLAG" --delete-branch --match-head-commit "$HEAD_SHA")
-EXPECTED_ARGV=(pr merge "$PR" "$MERGE_FLAG" --delete-branch --match-head-commit "$HEAD_SHA")
+MERGE_ARGV=(pr merge "$PR" --repo "$IDENTITY" "$MERGE_FLAG" --delete-branch --match-head-commit "$HEAD_SHA")
+EXPECTED_ARGV=(pr merge "$PR" --repo "$IDENTITY" "$MERGE_FLAG" --delete-branch --match-head-commit "$HEAD_SHA")
 if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]; then
   echo "ERROR: merge argv was modified; refusing. Expected: gh ${EXPECTED_ARGV[*]}" >&2
   exit 1
@@ -422,7 +423,7 @@ if [ "$MERGE_RC" -ne 0 ]; then
 fi
 
 # --- 10. The platform must confirm it ---------------------------------------
-FINAL="$(gh pr view "$PR" --json state,mergedAt,mergeCommit 2>/dev/null)"
+FINAL="$(gh pr view "$PR" --repo "$IDENTITY" --json state,mergedAt,mergeCommit 2>/dev/null)"
 if [ "$(field "$FINAL" state UNKNOWN)" != "MERGED" ]; then
   echo "AUTO_DRIVE_MERGE: NOT_MERGED — gh reported success but the platform does not confirm MERGED. Treating as not merged." >&2
   printf '{"merge_result":"NOT_MERGED","pr":"%s","head_sha":"%s","blocker_count":1,"evidence_bundle":"%s"}\n' "$PR" "$HEAD_SHA" "$BUNDLE"

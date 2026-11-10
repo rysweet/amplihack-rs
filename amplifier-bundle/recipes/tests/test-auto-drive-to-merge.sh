@@ -163,8 +163,8 @@ fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL[$1]: $2" >&2; }
 
 echo "=== auto-drive-to-merge contract ==="
 
-# mktemp -d uses TMPDIR when it is set and /tmp otherwise.
-WORK="$(mktemp -d)" || { echo "HARNESS-ERROR: mktemp -d failed (TMPDIR=${TMPDIR:-unset})" >&2; exit 2; }
+# Use an explicit template: macOS bare mktemp may ignore TMPDIR.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/autodrive-test.XXXXXX")" || { echo "HARNESS-ERROR: mktemp -d failed (TMPDIR=${TMPDIR:-unset})" >&2; exit 2; }
 trap 'chmod -R u+rwx "${WORK}" 2>/dev/null; rm -rf "${WORK}"' EXIT
 WORK_PHYS="$(cd "${WORK}" && pwd -P)"
 # The resolver cases run from a directory that must not be inside any git work
@@ -1223,7 +1223,7 @@ else
 fi
 
 # The merge argv is a fixed literal list with no caller-supplied flags.
-if grep -qF 'MERGE_ARGV=(pr merge "$PR" "$MERGE_FLAG" --delete-branch --match-head-commit "$HEAD_SHA")' "${GATE}" \
+if grep -qF 'MERGE_ARGV=(pr merge "$PR" --repo "$IDENTITY" "$MERGE_FLAG" --delete-branch --match-head-commit "$HEAD_SHA")' "${GATE}" \
    && grep -qF 'if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]' "${GATE}"; then
   pass "FORBIDDEN-fixed-argv" "the merge argv is a fixed literal list, asserted before execution"
 else
@@ -1237,6 +1237,23 @@ make_gh_stub() { # make_gh_stub <mode>
   cat > "${STUB_BIN}/gh" <<'GH'
 #!/usr/bin/env bash
 echo "$*" >> "${GH_CALLS:-/dev/null}"
+if [ -n "${GH_REQUIRE_TARGET:-}" ]; then
+  target="${GH_REPO:-}"
+  prev=""
+  for arg in "$@"; do
+    [ "$prev" != "--repo" ] || target="$arg"
+    prev="$arg"
+  done
+  case "$1" in
+    pr) [ "$target" = "$GH_REQUIRE_TARGET" ] || { touch "${GH_CALLS}.wrong-target"; exit 91; } ;;
+    api)
+      case "$2" in
+        "repos/$GH_REQUIRE_TARGET") ;;
+        *) [ "$target" = "$GH_REQUIRE_TARGET" ] || { touch "${GH_CALLS}.wrong-target"; exit 91; } ;;
+      esac ;;
+    *) touch "${GH_CALLS}.wrong-target"; exit 91 ;;
+  esac
+fi
 # `pr view` prints the PR fields with the head from GH_HEAD and the base from
 # GH_BASE (set but empty means no baseRefName), through `--jq` when one is given.
 JQ=""; prev=""; for a in "$@"; do [ "$prev" = "--jq" ] && JQ="$a"; prev="$a"; done
@@ -1248,12 +1265,16 @@ pv() {
 }
 # #1888: identity and allowed methods are separate from review-thread APIs.
 if [ "${1:-} ${2:-}" = "repo view" ]; then
-  if [ -n "$JQ" ]; then printf '{"nameWithOwner":"owner/project"}' | jq -r "$JQ"
-  else printf '{"nameWithOwner":"owner/project"}\n'; fi
+  if [ -n "$JQ" ]; then printf '{"nameWithOwner":"owner-b/repo-b"}' | jq -r "$JQ"
+  else printf '{"nameWithOwner":"owner-b/repo-b"}\n'; fi
   exit 0
 fi
-if [ "${1:-} ${2:-}" = "api repos/owner/project" ]; then
-  printf '%s\n' "${GH_METHODS_JSON-{\"allow_merge_commit\":true,\"allow_squash_merge\":true,\"allow_rebase_merge\":true}}"
+if [ "${1:-} ${2:-}" = "api repos/owner-a/repo-a" ]; then
+  if [ "${GH_METHODS_JSON+x}" = x ]; then
+    printf '%s\n' "$GH_METHODS_JSON"
+  else
+    printf '%s\n' '{"allow_merge_commit":true,"allow_squash_merge":true,"allow_rebase_merge":true}'
+  fi
   exit "${GH_METHODS_RC:-0}"
 fi
 case "${GH_MODE:-}" in
@@ -1640,7 +1661,7 @@ gate_run() { # gate_run <mode> <extra-args...>
     PATH="${GATE_PATH_PREFIX:+${GATE_PATH_PREFIX}:}${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" \
     GH_MERGE_RC="${GH_MERGE_RC:-3}" AMPLIHACK_BIN="${GATE_HELPER:-${REAL_AMPLIHACK}}" TMPDIR="${gate_tmp}" \
     SWAP_FROM="${SWAP_FROM:-}" SWAP_TO="${GATE_DIR}/merge-ready-latest.json" \
-    "${gate_cmd[@]}" --pr 42 --repo "${FX}" ${sd[@]+"${sd[@]}"} ${args[@]+"${args[@]}"} \
+    "${gate_cmd[@]}" --repository "${GATE_REPOSITORY-owner-a/repo-a}" --pr 42 --repo "${FX}" ${sd[@]+"${sd[@]}"} ${args[@]+"${args[@]}"} \
     >"${GATE_DIR}/out" 2>"${GATE_DIR}/err"
   local rc=$?
   # Restore owner access so the EXIT trap can remove the directory.
@@ -1757,7 +1778,7 @@ if [ "$rc" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_
 else
   fail "GATE-green-dry-run" "a fully verified PR did not reach the merge step (rc=${rc}): ${GATE_OUT}"
 fi
-if grep -qF "gh pr merge 42 --squash --delete-branch --match-head-commit ${GATE_HEAD}" "${GATE_DIR}/err"; then
+if grep -qF "gh pr merge 42 --repo owner-a/repo-a --squash --delete-branch --match-head-commit ${GATE_HEAD}" "${GATE_DIR}/err"; then
   pass "GATE-argv" "the merge argv is exactly the fixed literal list, bound to the verified SHA"
 else
   fail "GATE-argv" "the merge argv is not the expected fixed list"
@@ -1841,7 +1862,7 @@ GUARD_1551="${TOOLS}/gh-merge-guard"
 if [ -x "${GUARD_1551}/gh" ]; then
   GATE_PRIV=1 GATE_PATH_PREFIX="${GUARD_1551}" gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
   if [ "$rc" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"MERGED"' \
-     && grep -qxF "pr merge 42 --squash --delete-branch --match-head-commit ${GATE_HEAD}" "${GATE_DIR}/gh-calls" \
+     && grep -qxF "pr merge 42 --repo owner-a/repo-a --squash --delete-branch --match-head-commit ${GATE_HEAD}" "${GATE_DIR}/gh-calls" \
      && ! grep -qF 'REFUSED' "${GATE_DIR}/err"; then
     pass "1551-gate-merges-under-guard" "under the merge guard the real gate, run as /bin/bash -p <gate>, merges with its fixed argv"
   else
@@ -5597,7 +5618,7 @@ else
   fail "PRIVATE-E2E-state" "untrusted: $(printf '%s' "${E2E_UNTRUSTED}" | tr '\n' ' ') | $(ls -la "${E2E_DIR}" 2>&1 | tr '\n' ' ')"
 fi
 env -i "${PF_ENV[@]}" AMPLIHACK_BIN="${REAL_AMPLIHACK}" TMPDIR="${E2E}.tmp" GH_CALLS=/dev/null \
-  bash -c 'umask 0002; exec bash "$1" --pr 42 --repo "$2" --state-dir "$3" --round-record "$3/merge-ready-latest.json" --qa-evidence "$3/qa-evidence.json" --dry-run' \
+  bash -c 'umask 0002; exec bash "$1" --repository owner-a/repo-a --pr 42 --repo "$2" --state-dir "$3" --round-record "$3/merge-ready-latest.json" --qa-evidence "$3/qa-evidence.json" --dry-run' \
   _ "${GATE}" "${FX}" "${E2E_DIR}" >"${E2E}.gate.out" 2>"${E2E}.gate.err"
 E2E_GATE_RC=$?
 if [ "${E2E_GATE_RC}" -eq 0 ] && grep -qF '"merge_result":"DRY_RUN"' "${E2E}.gate.out" \

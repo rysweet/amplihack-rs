@@ -67,6 +67,7 @@ recursion:
   max_total_steps: 120
 
 context:
+  repository: ""  # Required canonical OWNER/REPO target; never inferred.
   merge_method: ""  # Optional: merge, squash, or rebase; empty selects repository policy.
   # What to build. Passed straight through to default-workflow.
   task_description: ""
@@ -247,6 +248,7 @@ steps:
     type: "recipe"
     recipe: "autodrive-merge-loop"
     context:
+      repository: "{{repository}}"
       merge_method: "{{merge_method}}"
       repo_path: "{{repo_path}}"
       pr_number: "{{build_result.pr}}"

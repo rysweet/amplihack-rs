@@ -2981,7 +2981,14 @@ They are enforced three ways, not just documented:
 ## Merge method selection
 
 `auto-drive-to-merge`, `auto-drive-light`, and `autodrive-merge-loop` accept
-optional recipe context `merge_method`. The trusted merge gate selects a
+optional recipe context `merge_method` and require an explicit canonical
+`repository=OWNER/REPO` context, forwarded to the gate as `--repository`.
+Missing or malformed targets fail before GitHub reads. Permission selection,
+PR reads, checks, merge, and confirmation use this target even when the
+checkout or GitHub CLI defaults point elsewhere. Permission responses must be
+JSON objects with all three named boolean fields; positional arrays fail.
+
+The trusted merge gate selects a
 method before executing any merge command. Only these exact values are valid:
 
 | Value | GitHub permission field | Gate flag |
@@ -3011,6 +3018,7 @@ to resume PR 1850 whose original task was the description below:
 ```bash
 amplihack recipe run auto-drive-to-merge \
   -c pr_number=1850 \
+  -c repository=rysweet/amplihack-rs \
   -c task_description="Return an error instead of panicking when the round record is empty in autodrive_last_round.sh" \
   -c repo_path=. \
   -c merge_method=merge
