@@ -83,6 +83,11 @@ fn tools_dir(home: &Path) -> PathBuf {
     }
     crate::support::exec_stub::write_executable(&tools.join("codex"), FAKE_CODEX, 0o700);
     crate::support::exec_stub::write_executable(
+        &tools.join("codex-code-mode-host"),
+        "#!/bin/sh\nexit 0\n",
+        0o700,
+    );
+    crate::support::exec_stub::write_executable(
         &tools.join("node"),
         "#!/bin/sh\necho v22.14.0\n",
         0o700,

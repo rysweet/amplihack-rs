@@ -20,6 +20,7 @@ pub(super) fn cold_client_install_registers_hooks_and_launches_with_fresh_or_sta
         let home = tempfile::tempdir().unwrap();
         let tools = home.path().join("tools");
         fs::create_dir(&tools).unwrap();
+        executable(&tools.join("codex-code-mode-host"), "#!/bin/sh\nexit 0\n");
         for tool in [
             "sh",
             "mkdir",

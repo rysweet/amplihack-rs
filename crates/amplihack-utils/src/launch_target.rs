@@ -100,6 +100,8 @@ pub enum TargetSource {
 /// installed".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rejection {
+    /// Codex executable or required helper validation failed.
+    CodexInstallation(crate::codex_installation::InstallationError),
     /// A relative path, which no candidate may ever be.
     ///
     /// [`cheap_reject`] stats it against the *process* current directory while
@@ -187,6 +189,7 @@ impl Rejection {
     /// and the child's own stderr in the sentence.
     pub fn explain(&self) -> String {
         match self {
+            Self::CodexInstallation(error) => error.to_string(),
             Self::NotAbsolute => "not an absolute path — name the binary by full path".to_string(),
             Self::Missing => "not found (no such file, or a broken symlink)".to_string(),
             Self::NotAFile => "not a regular file".to_string(),
@@ -253,6 +256,9 @@ impl Rejection {
     /// whether a working binary is there, so it must not spend an install
     /// deciding that it is not.
     pub fn is_about_the_machine(&self) -> bool {
+        if let Self::CodexInstallation(error) = self {
+            return !error.repairable;
+        }
         matches!(
             self,
             Self::ProbeTimedOut
@@ -674,6 +680,13 @@ pub fn resolve_from_candidates(tool: &str, candidates: &[(PathBuf, TargetSource)
                     }
                     _ => first,
                 };
+                let attempt = attempt.and_then(|version| {
+                    if tool == "codex" {
+                        crate::codex_installation::validate_codex_installation(path, &version)
+                            .map_err(Rejection::CodexInstallation)?;
+                    }
+                    Ok(version)
+                });
                 match attempt {
                     Ok(version) => {
                         tracing::debug!(
@@ -1437,6 +1450,7 @@ pub fn resolve(tool: &str, override_origin: OverrideOrigin) -> Resolution {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((memoized_candidates, resolution)) = memo.get(tool)
         && *memoized_candidates == candidates
+        && tool != "codex"
     {
         return resolution.clone();
     }

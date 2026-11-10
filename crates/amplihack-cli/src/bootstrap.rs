@@ -371,6 +371,11 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
             // the per-candidate one sends the reader looking at the wrong
             // number.
             log_rejected_candidates(tool, &resolution);
+            if tool == "codex" && resolution.rejected.iter().any(|(_, rejection)| {
+                matches!(rejection, launch_target::Rejection::CodexInstallation(error) if !error.repairable)
+            }) {
+                bail!("Codex installation validation is inconclusive; automatic repair was not attempted.\n{}", resolution.rejection_report(tool, package.unwrap_or(tool)));
+            }
             // Issue #1424: `Abstain` has two shapes now, and quoting the probe
             // budgets at a user whose binary was killed by SIGABRT names the
             // wrong number as confidently as the old "no platform package
@@ -436,7 +441,19 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
         }
         InstallDecision::InstallMissing => {
             log_rejected_candidates(tool, &resolution);
-            install_tool(tool)?;
+            if tool == "codex" {
+                let original = resolution.rejection_report(tool, package.unwrap_or(tool));
+                eprintln!("{original}");
+                if std::env::var_os("AMPLIHACK_SKIP_AUTO_INSTALL").is_some_and(|v| !v.is_empty()) {
+                    bail!(
+                        "{original}\nAutomatic Codex installation is disabled. Repair with npm install -g @openai/codex."
+                    );
+                }
+                install_tool(tool)
+                    .map_err(|error| anyhow!("{original}\nInstallation failed: {error:#}"))?;
+            } else {
+                install_tool(tool)?;
+            }
             // Uncached: the install just changed the filesystem, which is the
             // one thing the resolution memo cannot see.
             launch_target::resolve_uncached(tool, override_origin)
@@ -622,6 +639,9 @@ fn install_npm_package(tool: &str, package: &str) -> Result<()> {
     match run_npm_install(&npm, &prefix, package) {
         Ok(()) => {}
         Err(err) => {
+            if tool == "codex" {
+                return Err(err);
+            }
             // Last-ditch: clean again and retry once. npm's own rename can fail
             // if a concurrent install (or even the first part of this one) raced.
             tracing::warn!(%err, "npm install failed; cleaning stale temp dirs and retrying once");
@@ -913,12 +933,16 @@ fn claude_binary_is_materialized(path: &Path) -> bool {
 fn run_npm_install(npm: &Path, prefix: &Path, package: &str) -> Result<()> {
     let mut npm_cmd = Command::new(npm);
     amplihack_utils::litellm_proxy::scrub_inference_environment(&mut npm_cmd);
+    npm_cmd.arg("install").arg("-g").arg("--prefix").arg(prefix);
+    // Codex ships its native executable and helpers in an optional platform
+    // package. Omitting optional dependencies creates another broken install.
+    let optional_flag = if package == "@openai/codex" {
+        "--include=optional"
+    } else {
+        "--omit=optional"
+    };
     npm_cmd
-        .arg("install")
-        .arg("-g")
-        .arg("--prefix")
-        .arg(prefix)
-        .arg("--omit=optional")
+        .arg(optional_flag)
         .arg(package)
         .arg("--ignore-scripts");
     let status = run_with_timeout(npm_cmd, INSTALL_TIMEOUT).with_context(|| {
@@ -926,7 +950,7 @@ fn run_npm_install(npm: &Path, prefix: &Path, package: &str) -> Result<()> {
             "npm install timed out for package '{package}' after {}s.\n\
              This is often caused by npm hanging on cross-platform optional deps.\n\
              Try running manually:\n  \
-             npm install -g --prefix {} --omit=optional --ignore-scripts {package}",
+             npm install -g --prefix {} {optional_flag} --ignore-scripts {package}",
             INSTALL_TIMEOUT.as_secs(),
             prefix.display(),
         )
@@ -936,7 +960,7 @@ fn run_npm_install(npm: &Path, prefix: &Path, package: &str) -> Result<()> {
         bail!(
             "npm install failed for package '{package}' (exit code: {code}).\n\
              Try running manually:\n  \
-             npm install -g --prefix {prefix} --omit=optional --ignore-scripts {package}\n\
+             npm install -g --prefix {prefix} {optional_flag} --ignore-scripts {package}\n\
              If the problem persists, check npm logs:\n  \
              npm cache clean --force && npm install -g --prefix {prefix} {package}",
             package = package,
