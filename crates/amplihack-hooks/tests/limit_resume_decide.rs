@@ -30,7 +30,7 @@ use amplihack_hooks::limit_resume::decide::{
 };
 use amplihack_hooks::limit_resume::guard::{CommitError, GuardStore};
 use amplihack_hooks::limit_resume::keys::{Key, Pane, RESUME_KEYS};
-use amplihack_hooks::limit_resume::log::LogEntry;
+use amplihack_hooks::limit_resume::log::{Diagnostic, LogEntry, format_diagnostic};
 use amplihack_hooks::limit_resume::{
     Deps, Event, MAX_RESUMES_PER_SESSION, Outcome, RESUME_MSG, run_with, run_with_io, send_resume,
 };
@@ -172,6 +172,8 @@ struct Fake {
     guard: MemGuard,
     reads: Vec<i64>,
     logs: Vec<LogEntry>,
+    diagnostics: Vec<String>,
+    receipt_clock_advance: i64,
     panic_on_now: bool,
     rotator_down: bool,
     arm_err: bool,
@@ -204,6 +206,8 @@ impl Fake {
             guard: MemGuard::default(),
             reads: Vec::new(),
             logs: Vec::new(),
+            diagnostics: Vec::new(),
+            receipt_clock_advance: 0,
             panic_on_now: false,
             rotator_down: false,
             arm_err: false,
@@ -268,6 +272,19 @@ impl Deps for Fake {
     fn guard(&mut self) -> &mut dyn GuardStore {
         &mut self.guard
     }
+    fn diagnostic(&mut self, now: i64, entry: &Diagnostic) {
+        self.guard
+            .order
+            .push(format!("diagnostic:{}", entry.disposition));
+        self.diagnostics.push(format_diagnostic(now, entry));
+        if matches!(
+            entry.stage,
+            amplihack_hooks::limit_resume::log::Stage::Receipt
+        ) {
+            self.clock += self.receipt_clock_advance;
+        }
+    }
+
     fn log(&mut self, _now: i64, entry: &LogEntry) {
         self.logs.push(entry.clone());
     }
@@ -1569,4 +1586,85 @@ fn two_waiters_for_one_session_with_distinct_events_resume_once() {
     assert_eq!(outs.iter().filter(|o| **o == Outcome::Resumed).count(), 1);
     assert!(outs.contains(&Outcome::Duplicate), "{outs:?}");
     assert_eq!(d.guard.sessions[&session_key("s")].len(), 1);
+}
+
+#[test]
+fn issue_1932_lifecycle_authorization_precedes_one_attempt_and_result() {
+    for failed in [false, true] {
+        let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+        if failed {
+            d.fail_key = Some(2);
+        }
+        let input = limit_input("private-session", "private-message");
+        let outcome = run_with(&input, &mut d);
+        assert_eq!(
+            outcome,
+            if failed {
+                Outcome::ResumeKeysFailed
+            } else {
+                Outcome::ResumedKeys
+            }
+        );
+        let log = d.diagnostics.concat();
+        for stage in [
+            "waiting-armed",
+            "swap-judged",
+            "continuation-attempt",
+            "continuation-result",
+        ] {
+            assert_eq!(log.matches(&format!("stage={stage} ")).count(), 1, "{log}");
+        }
+        assert!(!log.contains("private-"));
+        assert!(log.contains("session="));
+        assert!(log.contains("event="));
+        let order = &d.guard.order;
+        assert!(
+            order.iter().position(|s| s == "commit").unwrap()
+                < order.iter().position(|s| s == "diagnostic:keys").unwrap()
+        );
+        let attempts = d.key_attempts;
+        assert_eq!(run_with(&input, &mut d), Outcome::Duplicate);
+        assert_eq!(d.key_attempts, attempts);
+        assert_eq!(
+            d.diagnostics
+                .concat()
+                .matches("stage=continuation-attempt ")
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn issue_1932_receipt_latency_does_not_move_the_stop_timestamp() {
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    d.receipt_clock_advance = 10;
+    let mut stderr = Vec::new();
+    assert_eq!(
+        run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d),
+        2
+    );
+    assert_eq!(
+        d.reads,
+        vec![START],
+        "eligibility uses invocation start before logging"
+    );
+    let log = d.diagnostics.concat();
+    assert!(log.find("stage=receipt ").unwrap() < log.find("stage=waiting-armed ").unwrap());
+}
+
+#[test]
+fn issue_1932_failed_guard_commit_never_logs_a_continuation_attempt() {
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+    d.guard.force_commit = Some(CommitError::Io);
+    assert_eq!(
+        run_with(&limit_input("s", "limit"), &mut d),
+        Outcome::GuardFailed
+    );
+    assert!(
+        !d.diagnostics
+            .concat()
+            .contains("stage=continuation-attempt")
+    );
+    assert_eq!(d.key_attempts, 0);
 }

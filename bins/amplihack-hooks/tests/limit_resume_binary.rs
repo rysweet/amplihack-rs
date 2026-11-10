@@ -18,6 +18,7 @@
 
 #![cfg(unix)]
 
+#[cfg(target_os = "linux")]
 use amplihack_hooks::limit_resume::RESUME_MSG;
 #[cfg(target_os = "linux")]
 use amplihack_utils::file_event::{Waiter, Watch, Woke};
@@ -319,7 +320,7 @@ fn toggle_file_turns_it_on_too() {
 }
 
 #[test]
-fn auto_switch_off_is_silent_and_creates_nothing() {
+fn auto_switch_off_is_silent_and_creates_no_authorization() {
     for toggle in [Some("0"), None] {
         let e = env();
         let _rotator = StandInRotator::start(&e.root);
@@ -331,8 +332,8 @@ fn auto_switch_off_is_silent_and_creates_nothing() {
         assert_silent_zero(&out);
         assert!(took < Duration::from_secs(10));
         assert!(
-            !e.root.join(".auto-switch.d/resume").exists(),
-            "FS-5: nothing created when off"
+            !e.root.join(".auto-switch.d/resume/events").exists(),
+            "disabled diagnostics must not authorize a resume"
         );
     }
 }
@@ -386,7 +387,7 @@ fn more_than_one_mib_of_stdin_is_silent() {
     .to_string();
     let (out, _) = run(&e, Some("1"), payload.as_bytes());
     assert_silent_zero(&out);
-    assert!(!e.root.join(".auto-switch.d/resume").exists());
+    assert!(!e.root.join(".auto-switch.d/resume/events").exists());
 }
 
 #[test]
@@ -404,9 +405,197 @@ fn non_limit_errors_are_silent() {
         let (out, _) = run(&e, Some("1"), payload.to_string().as_bytes());
         assert_silent_zero(&out);
     }
-    // A stop that is not a usage limit is decided before anything is
-    // written or logged.
-    assert!(!e.root.join(".auto-switch.d/resume").exists());
+    // Receipt diagnostics are allowed; durable resume authorization is not.
+    assert!(!e.root.join(".auto-switch.d/resume/events").exists());
+}
+
+// Issue #1932: these cases terminate before waiting. No stand-in rotator,
+// timers, polling, real home directories, or host Claude installation.
+// Field names below define the additive text-record contract; existing
+// outcome records retain their meaning.
+fn diagnostic_run(e: &Env, toggle: &str, payload: &[u8]) -> String {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_amplihack-hooks"))
+        .arg("limit-resume")
+        .current_dir(&e.home)
+        .env_clear()
+        .env("HOME", &e.home)
+        .env("AMPLIHACK_HOME", e.home.join(".amplihack"))
+        .env("CODEX_HOME", e.home.join(".codex"))
+        .env("CLAUDE_CONFIG_DIR", e.home.join(".claude"))
+        .env("XDG_CONFIG_HOME", e.home.join(".config"))
+        .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &e.root)
+        .env("AMPLIHACK_CLAUDE_AUTO_SWITCH", toggle)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Oversized input can legitimately close the pipe before all bytes arrive.
+    let _ = child.stdin.take().unwrap().write_all(payload);
+    assert_silent_zero(&child.wait_with_output().unwrap());
+    assert!(!e.root.join(".auto-switch.d/resume/events").exists());
+    assert!(!e.root.join(".auto-switch.d/resume/sessions").exists());
+    resume_log(e)
+}
+
+fn diagnostic_stage<'a>(log: &'a str, stage: &str) -> &'a str {
+    let tag = format!("stage={stage}");
+    let lines: Vec<_> = log
+        .lines()
+        .filter(|line| line.split_ascii_whitespace().any(|field| field == tag))
+        .collect();
+    assert_eq!(lines.len(), 1, "expected one {stage} record: {log:?}");
+    lines[0]
+}
+
+#[test]
+fn issue_1932_receipt_precedes_disabled_filter_without_ledger_or_session() {
+    let e = env();
+    let log = diagnostic_run(
+        &e,
+        "0",
+        br#"{"hook_event_name":"StopFailure","error":"rate_limit"}"#,
+    );
+    let receipt = diagnostic_stage(&log, "receipt");
+    assert!(receipt.contains("rate_limit"), "actual error: {receipt}");
+    let filtered = diagnostic_stage(&log, "filtered");
+    assert!(filtered.contains("disposition=disabled-auto-switch"));
+    assert!(log.find(receipt).unwrap() < log.find(filtered).unwrap());
+    assert!(!e.root.join(".auto-switch.d/rotate").exists());
+}
+
+#[test]
+fn issue_1932_rejected_inputs_have_distinct_fixed_dispositions() {
+    for (fields, disposition) in [
+        (json!({}), "missing-error"),
+        (json!({"error": 429}), "invalid-error-type"),
+        (json!({"error": "overloaded"}), "non-limit-error"),
+        (json!({"error": "rate_limit"}), "missing-session"),
+        (
+            json!({"error": "rate_limit", "session_id": ""}),
+            "invalid-session",
+        ),
+    ] {
+        let e = env();
+        let mut payload = fields;
+        payload["hook_event_name"] = json!("StopFailure");
+        let log = diagnostic_run(&e, "1", payload.to_string().as_bytes());
+        diagnostic_stage(&log, "receipt");
+        assert!(
+            diagnostic_stage(&log, "filtered").contains(&format!("disposition={disposition}")),
+            "{log}"
+        );
+    }
+}
+
+#[test]
+fn issue_1932_error_observation_distinguishes_missing_invalid_and_actual_value() {
+    for (error, expected) in [
+        (None, "error_kind=missing"),
+        (
+            Some(json!({"secret": "DO_NOT_SERIALIZE_OBJECT"})),
+            "error_kind=invalid-type",
+        ),
+        (
+            Some(json!("authentication_failed")),
+            "authentication_failed",
+        ),
+    ] {
+        let e = env();
+        let mut payload = json!({"hook_event_name": "StopFailure", "session_id": "s"});
+        if let Some(error) = error {
+            payload["error"] = error;
+        }
+        let log = diagnostic_run(&e, "1", payload.to_string().as_bytes());
+        assert!(
+            diagnostic_stage(&log, "receipt").contains(expected),
+            "{log}"
+        );
+        assert!(!log.contains("DO_NOT_SERIALIZE_OBJECT"));
+    }
+}
+
+#[test]
+fn issue_1932_malformed_and_oversized_input_log_only_fixed_diagnostics() {
+    for (payload, disposition) in [
+        (b"{ DO_NOT_LOG_RAW_INPUT".to_vec(), "malformed-input"),
+        (vec![b'x'; 1024 * 1024 + 1], "oversized-input"),
+    ] {
+        let e = env();
+        let log = diagnostic_run(&e, "1", &payload);
+        assert!(
+            diagnostic_stage(&log, "filtered").contains(&format!("disposition={disposition}")),
+            "{log}"
+        );
+        assert!(!log.contains("DO_NOT_LOG_RAW_INPUT"));
+        assert!(log.len() < 4096);
+    }
+}
+
+#[test]
+fn issue_1932_receipt_excludes_sensitive_fields_and_cannot_inject_records() {
+    let e = env();
+    let payload = json!({
+        "hook_event_name": "StopFailure",
+        "session_id": "PRIVATE_SESSION_IDENTIFIER",
+        "error": "overloaded\n stage=continuation-result\r\t=\\\"\u{0}",
+        "error_details": "PRIVATE_ERROR_DETAILS",
+        "last_assistant_message": "PRIVATE_ASSISTANT_MESSAGE",
+        "transcript_path": "PRIVATE_TRANSCRIPT_PATH",
+        "prompt": "PRIVATE_PROMPT",
+        "credentials": "PRIVATE_CREDENTIALS"
+    });
+    let log = diagnostic_run(&e, "1", payload.to_string().as_bytes());
+    diagnostic_stage(&log, "receipt");
+    diagnostic_stage(&log, "filtered");
+    assert_eq!(
+        log.lines().count(),
+        2,
+        "payload must not forge records: {log:?}"
+    );
+    assert!(
+        !log.contains("PRIVATE_"),
+        "only allowlisted diagnostic fields: {log}"
+    );
+    assert!(!log.contains(['\r', '\t', '\0']));
+}
+
+#[test]
+fn issue_1932_multibyte_error_is_bounded_and_explicitly_truncated() {
+    let e = env();
+    let payload =
+        json!({"hook_event_name": "StopFailure", "session_id": "s", "error": "界🦀".repeat(4096)});
+    let log = diagnostic_run(&e, "1", payload.to_string().as_bytes());
+    let receipt = diagnostic_stage(&log, "receipt");
+    assert!(receipt.contains("truncated=true"), "{receipt}");
+    assert!(
+        !receipt.contains('\u{fffd}'),
+        "truncation must preserve UTF-8"
+    );
+    assert!(log.len() < 4096, "serialized diagnostics must stay bounded");
+    assert!(diagnostic_stage(&log, "filtered").contains("disposition=non-limit-error"));
+}
+
+#[test]
+fn issue_1932_unsafe_log_path_does_not_write_through_symlink() {
+    use std::os::unix::fs::symlink;
+    let e = env();
+    private_dir(&e.root.join(".auto-switch.d"));
+    let outside = e.home.join("untouched");
+    private_dir(&outside);
+    symlink(&outside, e.root.join(".auto-switch.d/resume")).unwrap();
+    assert!(diagnostic_run(&e, "0", limit_payload("s").as_bytes()).is_empty());
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+}
+
+#[test]
+fn issue_1932_log_write_failure_keeps_rejection_silent_and_uncommitted() {
+    let e = env();
+    private_dir(&e.root.join(".auto-switch.d/resume"));
+    // A directory at the log filename fails deterministically even as root.
+    private_dir(&e.root.join(".auto-switch.d/resume/resume.log"));
+    assert!(diagnostic_run(&e, "0", limit_payload("s").as_bytes()).is_empty());
+    assert!(e.root.join(".auto-switch.d/resume/resume.log").is_dir());
 }
 
 #[test]

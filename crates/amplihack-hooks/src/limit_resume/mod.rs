@@ -44,7 +44,7 @@ use amplihack_utils::secure_files::{euid, read_bounded};
 use decide::{Facts, Gate, event_key, gate, is_limit, session_id_ok, session_key};
 use guard::{CommitError, FsGuard, GuardStore};
 use keys::{Key, Pane, RESUME_KEYS};
-use log::LogEntry;
+use log::{Diagnostic, ErrorObservation, LogEntry, Stage};
 use std::io::{self, Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -104,10 +104,10 @@ pub enum Outcome {
     RotatorDown,
     /// The resume state could not be read or written safely.
     GuardFailed,
-    /// Auto-switch is off. Logged only when it was turned off while
+    /// Auto-switch is off. Outcome records are written when turned off while
     /// waiting.
     Disabled,
-    /// Not a usage-limit stop, or no usable session id. Not logged.
+    /// Not a usage-limit stop, or no usable session id. Receipt/filter records only.
     NotLimit,
 }
 
@@ -166,6 +166,8 @@ pub trait Deps {
     fn guard(&mut self) -> &mut dyn GuardStore;
     /// Records a decision; must never fail or print.
     fn log(&mut self, now: i64, entry: &LogEntry);
+    /// Best-effort lifecycle diagnostics; existing test dependencies may ignore them.
+    fn diagnostic(&mut self, _now: i64, _entry: &Diagnostic) {}
     /// Whether no rotator can record a cycle (see
     /// [`rotator_status::rotator_down`]).
     fn rotator_down(&mut self, now: i64) -> bool;
@@ -251,6 +253,24 @@ fn swap(r: &SwapRecord) -> Note<'_> {
 
 /// Decides one hook invocation.
 pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
+    let start = deps.now();
+    run_started(input, deps, start)
+}
+
+fn diagnostic<D: Deps + ?Sized>(deps: &mut D, now: i64, stage: Stage, disposition: &'static str) {
+    deps.diagnostic(
+        now,
+        &Diagnostic {
+            session: None,
+            event: None,
+            stage,
+            disposition,
+            error: None,
+        },
+    );
+}
+
+fn run_started<D: Deps + ?Sized>(input: &HookInput, deps: &mut D, start: i64) -> Outcome {
     let enabled = deps.auto_switch_on();
     let HookInput::StopFailure {
         session_id,
@@ -287,13 +307,24 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     }
 
     let session_id = session_id.as_deref().unwrap_or_default();
-    let start = deps.now();
     // The live login at the limit is part of the event: the same login
     // limited again is the same event, a limit after a swap is a new one.
     let first = deps.read_cycle(start);
     let live_at_start = first.as_ref().and_then(|s| s.live.as_deref());
     let event = event_key(session_id, error, details, message, live_at_start);
     let session = session_key(session_id);
+    let lifecycle = |deps: &mut D, now: i64, stage: Stage, disposition: &'static str| {
+        deps.diagnostic(
+            now,
+            &Diagnostic {
+                session: Some(session[..LOG_KEY_CHARS].to_string()),
+                event: Some(event[..LOG_KEY_CHARS].to_string()),
+                stage,
+                disposition,
+                error: None,
+            },
+        );
+    };
     let note = |deps: &mut D, now: i64, outcome: Outcome, n: Note<'_>| {
         let entry = LogEntry {
             session: session[..LOG_KEY_CHARS].to_string(),
@@ -365,6 +396,7 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         };
         return note(deps, start, Outcome::WatchLost, n);
     }
+    lifecycle(deps, start, Stage::WaitingArmed, "armed");
     let deadline = start.saturating_add(MAX_WAIT.as_secs() as i64);
     // The last record logged as stale or full, so a rewrite of it is not
     // logged again.
@@ -377,7 +409,19 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         match woke {
             Event::Swap => {
                 if let Some(r) = deps.read_swap(now) {
-                    let skipped = match judge(snapshot.as_ref(), &r, start, resumed_at) {
+                    let judgement = judge(snapshot.as_ref(), &r, start, resumed_at);
+                    lifecycle(
+                        deps,
+                        now,
+                        Stage::SwapJudged,
+                        match judgement {
+                            Judgement::Resume => "eligible",
+                            Judgement::Same => "same",
+                            Judgement::Stale => "stale",
+                            Judgement::NoRoom => "no-room",
+                        },
+                    );
+                    let skipped = match judgement {
                         Judgement::Resume => break (now, r),
                         Judgement::Same => None,
                         Judgement::Stale => Some(Outcome::SwapStale),
@@ -425,7 +469,14 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
             return note(deps, now, outcome, swap(&record));
         }
     }
+    lifecycle(
+        deps,
+        now,
+        Stage::ContinuationAttempt,
+        if pane.is_some() { "keys" } else { "exit-two" },
+    );
     let Some(pane) = pane else {
+        lifecycle(deps, now, Stage::ContinuationResult, "exit-two-selected");
         return note(deps, now, Outcome::Resumed, swap(&record));
     };
     let (outcome, keys_sent, detail) = match send_resume(deps, &pane) {
@@ -439,6 +490,7 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         detail,
     };
     let now = deps.now();
+    lifecycle(deps, now, Stage::ContinuationResult, outcome.as_str());
     note(deps, now, outcome, n)
 }
 
@@ -452,12 +504,73 @@ pub fn run_with_io<D: Deps + ?Sized>(
     deps: &mut D,
 ) -> i32 {
     let decided = catch_unwind(AssertUnwindSafe(|| {
-        let raw = read_bounded(stdin, MAX_STDIN_BYTES).ok()?;
+        // Capture before any diagnostics: log latency must not shift the stop.
+        let start = deps.now();
+        let raw = match read_bounded(stdin, MAX_STDIN_BYTES) {
+            Ok(raw) => raw,
+            Err(_) => {
+                diagnostic(deps, start, Stage::Filtered, "input-read-failed");
+                return None;
+            }
+        };
         if raw.len() as u64 > MAX_STDIN_BYTES {
+            diagnostic(deps, start, Stage::Filtered, "oversized-input");
             return None;
         }
-        let input: HookInput = serde_json::from_slice(&raw).ok()?;
-        Some(run_with(&input, deps))
+        let value: serde_json::Value = match serde_json::from_slice(&raw) {
+            Ok(value) => value,
+            Err(_) => {
+                diagnostic(deps, start, Stage::Filtered, "malformed-input");
+                return None;
+            }
+        };
+        let observation = ErrorObservation::from_value(value.get("error"));
+        deps.diagnostic(
+            start,
+            &Diagnostic {
+                session: value
+                    .get("session_id")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|id| session_id_ok(Some(id)))
+                    .map(|id| session_key(id)[..LOG_KEY_CHARS].to_string()),
+                event: None,
+                stage: Stage::Receipt,
+                disposition: "received",
+                error: Some(observation),
+            },
+        );
+        let disposition = if !deps.auto_switch_on() {
+            Some("disabled-auto-switch")
+        } else {
+            match value.get("error") {
+                None => Some("missing-error"),
+                Some(serde_json::Value::String(error)) if error != "rate_limit" => {
+                    Some("non-limit-error")
+                }
+                Some(serde_json::Value::String(_)) => match value.get("session_id") {
+                    None | Some(serde_json::Value::Null) => Some("missing-session"),
+                    Some(serde_json::Value::String(id)) if session_id_ok(Some(id)) => None,
+                    _ => Some("invalid-session"),
+                },
+                Some(_) => Some("invalid-error-type"),
+            }
+        };
+        if let Some(disposition) = disposition {
+            diagnostic(deps, start, Stage::Filtered, disposition);
+            return None;
+        }
+        let input: HookInput = match serde_json::from_value(value) {
+            Ok(input) => input,
+            Err(_) => {
+                diagnostic(deps, start, Stage::Filtered, "malformed-input");
+                return None;
+            }
+        };
+        if !matches!(input, HookInput::StopFailure { .. }) {
+            diagnostic(deps, start, Stage::Filtered, "not-stop-failure");
+            return None;
+        }
+        Some(run_started(&input, deps, start))
     }));
     match decided {
         Ok(Some(Outcome::Resumed)) => {
@@ -533,6 +646,12 @@ impl Deps for SystemDeps {
         // the outcome is unchanged.
         if let Ok(dir) = self.guard.ensure_resume_dir() {
             log::append(&dir, &log::format_line(now, entry));
+        }
+    }
+
+    fn diagnostic(&mut self, now: i64, entry: &Diagnostic) {
+        if let Ok(dir) = self.guard.ensure_resume_dir() {
+            log::append(&dir, &log::format_diagnostic(now, entry));
         }
     }
 

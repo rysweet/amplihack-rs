@@ -1,5 +1,5 @@
-//! `resume/resume.log`: one line per decision after the gate passed the
-//! auto-switch and limit checks.
+//! `resume/resume.log`: bounded receipt and lifecycle diagnostics plus
+//! backwards-compatible decisions after the auto-switch and limit gates.
 //!
 //! ```text
 //! 2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed live=spare cycle=swapped
@@ -15,7 +15,9 @@
 //! Every field is a hash prefix, a fixed outcome name, a checked profile
 //! name, the ledger's cycle outcome, a number or an `io::ErrorKind` name,
 //! and is reduced to `[A-Za-z0-9._:-]`, so no message text reaches the
-//! file. Past `LOG_MAX_BYTES` the file is moved to `resume.log.1`.
+//! file. The allowlisted error string instead uses reversible percent encoding
+//! of a UTF-8-safe prefix of at most 256 bytes, with explicit truncation.
+//! No other payload text is logged. Past `LOG_MAX_BYTES` the file is moved to `resume.log.1`.
 //! Logging is best effort: a failure never changes the outcome or prints.
 
 use super::Outcome;
@@ -34,6 +36,102 @@ const ROTATED_FILE: &str = "resume.log.1";
 const LOCK_FILE: &str = "lock";
 const LOCK_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_FIELD_CHARS: usize = 64;
+
+/// Allowlisted observation of the error field; never serializes objects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorObservation {
+    Missing,
+    InvalidType,
+    Value { encoded: String, truncated: bool },
+}
+
+impl ErrorObservation {
+    pub fn from_value(value: Option<&serde_json::Value>) -> Self {
+        match value {
+            None => Self::Missing,
+            Some(serde_json::Value::String(value)) => {
+                let mut end = value.len().min(256);
+                while !value.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let mut encoded = String::new();
+                for byte in value[..end].bytes() {
+                    if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':') {
+                        encoded.push(char::from(byte));
+                    } else {
+                        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                        encoded.push('%');
+                        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+                        encoded.push(char::from(HEX[usize::from(byte & 15)]));
+                    }
+                }
+                Self::Value {
+                    encoded,
+                    truncated: end < value.len(),
+                }
+            }
+            Some(_) => Self::InvalidType,
+        }
+    }
+}
+
+/// Fixed lifecycle stages, separate from the backwards-compatible outcomes.
+#[derive(Debug, Clone, Copy)]
+pub enum Stage {
+    Receipt,
+    Filtered,
+    WaitingArmed,
+    SwapJudged,
+    ContinuationAttempt,
+    ContinuationResult,
+}
+impl Stage {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Receipt => "receipt",
+            Self::Filtered => "filtered",
+            Self::WaitingArmed => "waiting-armed",
+            Self::SwapJudged => "swap-judged",
+            Self::ContinuationAttempt => "continuation-attempt",
+            Self::ContinuationResult => "continuation-result",
+        }
+    }
+}
+
+/// Bounded diagnostic fields. Dispositions are fixed strings at call sites.
+pub struct Diagnostic {
+    pub session: Option<String>,
+    pub event: Option<String>,
+    pub stage: Stage,
+    pub disposition: &'static str,
+    pub error: Option<ErrorObservation>,
+}
+
+pub fn format_diagnostic(now: i64, entry: &Diagnostic) -> String {
+    let mut line = format!(
+        "{} resume stage={} disposition={}",
+        utc_timestamp(now),
+        entry.stage.as_str(),
+        sanitize(entry.disposition)
+    );
+    for (key, value) in [("session", &entry.session), ("event", &entry.event)] {
+        if let Some(value) = value {
+            line.push_str(&format!(" {key}={}", sanitize(value)));
+        }
+    }
+    match &entry.error {
+        Some(ErrorObservation::Missing) => line.push_str(" error_kind=missing"),
+        Some(ErrorObservation::InvalidType) => line.push_str(" error_kind=invalid-type"),
+        Some(ErrorObservation::Value { encoded, truncated }) => {
+            line.push_str(&format!(
+                " error_kind=value error={encoded} truncated={truncated}"
+            ));
+        }
+        None => {}
+    }
+    line.push('\n');
+    line
+}
 
 /// One decision.
 #[derive(Debug, Clone, PartialEq, Eq)]

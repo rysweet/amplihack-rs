@@ -8809,11 +8809,14 @@ never writes to stdout and never exits with any other status. A panic exits
 amplihack: the login rotator reports a login with capacity. Continue the task you were working on; if the usage limit is still in place, stop and wait.
 ```
 
-Claude Code shows it to the model as a system reminder and starts a new turn.
+On the historically verified interactive path below, Claude Code shows it
+to the model as a system reminder and starts a new turn. The hook does not
+observe whether a new turn starts on the current host.
 The message does not claim the limit is gone: the rotator's reading can be
 wrong, so the model is told to stop again if it is not.
 
-The hook relies on Claude Code behaviours that a live check against Claude
+The following historical checks cover only the versions and states named,
+not every later release or the timed wait. A live check against Claude
 Code 2.1.306 confirmed. It used a stub `StopFailure` hook with
 `asyncRewake: true`, triggered by an invalid API key (matcher
 `authentication_failed`):
@@ -8855,8 +8858,8 @@ The checks run in this order. The first one that fails decides the outcome.
 
 | Step | Check | When it fails |
 |------|-------|---------------|
-| 1 | The [profile root](#profile-root) resolves (`AMPLIHACK_CLAUDE_PROFILE_ROOT`, then `~/.amplihack/profile-root`, then `~/.amplihack/claude-profiles`) to an absolute path with no `..` component. The pointer file must not be writable by group or others, and auto-switch is on by the same rule as `auto-switch status`. The pointer file is read with no-follow and at most 4 KiB. | Exit `0`. Nothing under the root is created or written, and nothing but the toggle and the pointer file is read. Nothing is logged. |
-| 2 | The stop was a usage limit (see [Limit detection](#limit-detection)), and `session_id` is present and at most 256 bytes. | Exit `0`. Nothing is logged. |
+| 1 | The [profile root](#profile-root) resolves (`AMPLIHACK_CLAUDE_PROFILE_ROOT`, then `~/.amplihack/profile-root`, then `~/.amplihack/claude-profiles`) to an absolute path with no `..` component. The pointer file must not be writable by group or others, and auto-switch is on by the same rule as `auto-switch status`. The pointer file is read with no-follow and at most 4 KiB. | Exit `0`. An unresolved or unsafe root prevents logging. With a safe logging root, receipt and disabled-auto-switch diagnostics may be written; no resume is authorized. |
+| 2 | The stop was a usage limit (see [Limit detection](#limit-detection)), and `session_id` is present and at most 256 bytes. | Exit `0`; record receipt and the filtering disposition when safe logging is available. |
 | 3 | `stop_hook_active` is absent, `null` or `false` (any other non-boolean value counts as `true`). The ledger is read once here, for the `live` profile that goes into the [event key](#resume-state-directory). | Exit `0`, outcome `stop-hook-active`. |
 | 4 | No marker exists for this limit event. | Exit `0`, outcome `duplicate`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe (see [Resume state directory](#resume-state-directory)). |
 | 5 | This session has resumed fewer than 3 times in the last 24 hours. | Exit `0`, outcome `cap`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe. |
@@ -8911,7 +8914,9 @@ limit, whatever `last_assistant_message` or `error_details` say; message text
 is never matched.
 
 Standard input is read up to 1 MiB; a larger payload or one that is not a
-JSON object exits `0` with nothing logged. A known field of an unexpected
+JSON object exits `0`; only a fixed malformed-input or oversized-input
+diagnostic is recorded when safe logging is available. Raw input is never
+logged. A known field of an unexpected
 type (for example `error_details` sent as an object) is read as absent, so it
 neither stops the hook nor reaches the event key; an `error` that is not a
 string is therefore not a limit.
@@ -8947,10 +8952,13 @@ second is therefore not woken twice on one swap; it waits for the next one.
 
 `seq` is never compared for order. A record that differs from the noted one
 in any field and passes the time checks counts, so a rotator whose `seq`
-started again at 1, for example after `swap.json` was deleted, still
-resumes sessions, and a record rewritten unchanged never does.
+started again at 1, for example after `swap.json` was deleted, can still
+authorize continuation. Rewriting an unchanged record does not make it
+fresh, but the initial snapshot can still qualify within the whole-second
+allowance described above.
 
-So a record written before the stop never resumes a session. A session that
+Except for the whole-second allowance described above, a record written
+before the stop never resumes a session. A session that
 stops on the login the rotator has just swapped to waits for the next swap.
 A stay, an ALERT, a [`profile switch`](#rotate-switch) and the passing of
 time never resume a session, because none of them writes a swap record. The
@@ -9062,7 +9070,7 @@ status before the next:
 
 | Order | Command | Purpose |
 |-------|---------|---------|
-| 1 | `tmux send-keys -t %N Escape` | Leave the timed wait, or close the limit menu. |
+| 1 | `tmux send-keys -t %N Escape` | Attempt to leave the timed wait or close the limit menu. The effect depends on the Claude Code version and state and remains pending host verification. |
 | 2 | `tmux send-keys -t %N C-u` | Clear the input box, including a dimmed predicted prompt. |
 | 3 | `tmux send-keys -t %N -l continue` | Type `continue` as literal text. |
 | 4 | `tmux send-keys -t %N Enter` | Send it. |
@@ -9197,8 +9205,54 @@ and epoch seconds. No pane id is stored.
 | `events/<sha256 hex>` | One empty marker per limit event. The name is the SHA-256 of a fixed prefix followed by `session_id`, `error`, `error_details`, `last_assistant_message` and the ledger's `live` profile when the hook started, each written with its length, so no two different payloads share a name. The same login hitting its limit again is the same event; a limit after the rotator swapped to another login is a new one. Markers older than 7 days are removed. |
 | `sessions/<sha256 hex>` | One file per session, named by the SHA-256 of a different fixed prefix and its `session_id`, with one epoch-seconds line per resume in the last 24 hours. A file that cannot be parsed counts as the cap being reached and is left unchanged. |
 | `prompted/<sha256 hex>` | One file per session, named like `sessions/`, holding the epoch seconds of your last prompt in it. Written by the `UserPromptSubmit` hook, replaced atomically. Removed after 7 days and 1 hour (the longest wait plus 1 hour) when a hook starts waiting or commits. A file that cannot be parsed or is not private makes a waiting hook end as `guard-failed`. |
-| `resume.log` | One line per decision from step 3 on, and one per swap record judged stale or without room. |
+| `resume.log` | Best-effort receipt and lifecycle records (filtered, waiting armed, swap judged, continuation attempt and result), plus decisions from step 3 on and swap records judged stale or without room. See [Resume diagnostic stages](#resume-diagnostic-stages) for meanings and logging gaps. |
 | `resume.log.1` | The previous log. `resume.log` is renamed to it when it passes 64 KiB. |
+
+#### Resume diagnostic stages
+
+Diagnostics distinguish receipt from processing and from observed host behavior.
+The invocation start is captured before logging and remains the timestamp used
+for swap eligibility. Receipt requires neither a readable ledger nor an event
+identity; a rejected invocation can therefore create diagnostic files in a
+safely resolved private root.
+
+| Stage | Meaning |
+|-------|---------|
+| Receipt | The hook received input. Records whether `error` is missing, has an invalid type, or is a bounded encoded string value. This is not an eligible-limit decision. |
+| Filtered | Processing stopped: disabled auto-switch, missing error, invalid error type, non-limit error, missing or invalid session, malformed input, or oversized input. Dispositions are fixed names, never payload text. |
+| Waiting armed | Event watches are established; the hook can now wait for swap or cancellation events. |
+| Swap judged | The shared judgement accepted capacity or rejected a stale or full target. Acceptance alone does not authorize continuation. |
+| Continuation attempt | Durable event/session guard commit succeeded and authorized the selected keys or wake action. |
+| Continuation result | The action completed or failed. Existing outcomes such as `resumed`, `resumed-keys` and `resume-keys-failed` retain their meaning. |
+
+Only the exact original string `rate_limit` qualifies. Encoding or truncating
+an error for diagnostics never changes matching or event identity. String
+observations preserve a UTF-8-safe prefix of at most 256 bytes. Percent encoding
+reversibly escapes whitespace, delimiters and control characters; truncation is
+explicit. Both fields and serialized records are bounded. Invalid-type
+observations never serialize arbitrary objects or arrays.
+
+Records allow only bounded diagnostic fields. Raw payloads, `error_details`,
+prompts, assistant messages, transcripts, credentials and environment dumps
+are excluded. Session and pane identifiers are hashed; hashes remain
+correlatable and should still be treated as private. Logging retains private
+directory checks, restrictive file permissions, symlink protections and bounded
+rotation. It is silent and best effort, with no retries or fallback paths and
+no effect on eligibility or processing outcomes.
+
+A missing record can reflect root resolution, parsing, path safety, rotation
+or write failure. Report **no invocation observed** for a stopped session with
+no matching receipt, rather than claiming Claude omitted the hook. A receipt
+can exist without later stages. A committed guard can consume authorization
+before a crash or delivery failure, without starting a turn; it is not retried.
+
+Neither successful tmux command delivery nor selecting exit `2` establishes
+that Claude resumed. A new turn must be independently observed on the exact
+released amplihack and Claude versions. Timed-wait invocation, its `error`,
+exit-two continuation and safe input each require separate host evidence.
+Use the [host verification checklist](../howto/claude-profile-rotation.md#check-it-on-your-host)
+and [manual continuation procedure](../howto/claude-profile-rotation.md#continue-a-session-yourself).
+Binary strings and isolated tests do not verify these behaviors.
 
 #### Resume log
 
@@ -9224,9 +9278,10 @@ after `cycle` appear only when they apply:
 | `keys_sent` | How many of the four keys were sent (0–4). |
 | `detail` | Why a watch or key failed: `session-gone` (the session exited, or was suspended while keys were sent), or the name of the I/O error kind, such as `NotFound` or `PermissionDenied`. |
 
-Every field holds only `A-Z`, `a-z`, `0-9`, `.`, `_`, `:` and `-`; any other
-character is written as `-`. The log never holds message text, error text,
-pane ids, account IDs or tokens. A log written by an earlier version, without
+In these existing decision records, fields hold only `A-Z`, `a-z`, `0-9`,
+`.`, `_`, `:` and `-`; other characters become `-`. Additive receipt records
+use the bounded reversible error encoding described above. The log excludes
+assistant message text, raw pane ids, account IDs and tokens. A log written by an earlier version, without
 the new fields, is still valid. Failing to write it does not change the
 outcome.
 

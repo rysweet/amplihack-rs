@@ -1168,3 +1168,22 @@ fn the_prompted_dir_prepare_makes_can_be_watched() {
     FsGuard::new(r.path()).prepare(NOW).unwrap();
     assert!(check_watch_dir(&resume_dir(r.path()).join("prompted")).is_ok());
 }
+
+#[test]
+fn issue_1932_error_prefix_uses_reversible_byte_encoding() {
+    use amplihack_hooks::limit_resume::log::ErrorObservation;
+    assert_eq!(
+        ErrorObservation::from_value(Some(&serde_json::json!("a %=\n界"))),
+        ErrorObservation::Value {
+            encoded: "a%20%25%3D%0A%E7%95%8C".to_string(),
+            truncated: false,
+        }
+    );
+    assert_eq!(
+        ErrorObservation::from_value(Some(&serde_json::json!(format!("{}界", "a".repeat(255))))),
+        ErrorObservation::Value {
+            encoded: "a".repeat(255),
+            truncated: true
+        }
+    );
+}
