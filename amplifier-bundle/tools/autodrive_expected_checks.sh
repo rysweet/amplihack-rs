@@ -299,7 +299,8 @@ def disp: if .name == "" then .key else .name end;
 def matches($j): . as $n | ($j | disp) as $d |
   if ($d | contains("${{")) then
     ($d | split("${{")[0] | sub("^\\s+"; "") | sub("\\s+$"; "")) as $p | ($p != "" and ($n | startswith($p)))
-  else ($n == $d or ($n | startswith($j.key + " (")) or ($n | startswith($d + " / "))) end;
+  else ($n == $d or ($n | startswith($j.key + " (")) or ($n | startswith($d + " ("))
+        or ($n | startswith($d + " / "))) end;
 def uniq: reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end);
 $req[0] as $req | $wfs[0] as $wfs | $st[0] as $st
 | [ $runs[0] | group_by(.path)[] | sort_by(.id) | .[:-1][] | .suite | select(. != null) ] as $old

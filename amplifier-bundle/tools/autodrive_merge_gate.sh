@@ -185,7 +185,7 @@ else
   # Gadugi need: from this gate's own baseRefName and headRefOid (#1763), never the evidence; failure: required.
   GADUGI_STATUS="$(field "$QA_RAW" gadugi_status MISSING)"
   GADUGI_COUNT="$(field "$QA_RAW" gadugi_scenario_count "")"
-  GADUGI_REQ="$(AUTODRIVE_QA_BASE="$BASE_REF"; AUTODRIVE_QA_HEAD="$HEAD_SHA"
+  GADUGI_REQ="$(AUTODRIVE_QA_BASE="$(field "$STATE_JSON" baseRefName "")"; AUTODRIVE_QA_HEAD="$HEAD_SHA"
     export AUTODRIVE_QA_BASE AUTODRIVE_QA_HEAD
     . "${GATE_HOME:-/nonexistent}/autodrive_trust.sh" 2>/dev/null && autodrive_gadugi_required .)" || GADUGI_REQ="true"
   note "gadugi_required=${GADUGI_REQ} gadugi_status=${GADUGI_STATUS} gadugi_scenario_count=${GADUGI_COUNT:-<none>} gadugi_scenario_dir=$(field "$QA_RAW" gadugi_scenario_dir '')"

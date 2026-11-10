@@ -683,6 +683,15 @@ match_case rule3-matrix-key "rule 3: <key> ( for a matrix job with no name:" '  
     steps:
       - run: echo
 ' "lint (ubuntu)" GREEN
+match_case rule3-matrix-name "rule 3: <name> ( for a matrix job with a literal name:" '  test:
+    name: Test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu]
+    steps:
+      - run: echo
+' "Test (ubuntu)" GREEN
 match_case rule3-not-bare-prefix "rule 3 needs '<key> (' not just the key as prefix" '  lint:
     runs-on: ubuntu-latest
     steps:

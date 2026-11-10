@@ -3142,7 +3142,8 @@ no `name:`. A reported job matches when its name:
 1. equals the expected name; or
 2. starts with the literal text before the first `${{` (trimmed), so
    `Build ${{ matrix.target }}` matches `Build x86_64-unknown-linux-gnu`; or
-3. starts with `<key> (`, for a matrix job with no `name:`; or
+3. starts with `<key> (` or `<name> (`, for a matrix job: GitHub adds the
+   matrix values in brackets when `name:` does not use them; or
 4. starts with `<name> / `, for a reusable workflow.
 
 A job whose name is only an expression has an empty literal prefix and counts
@@ -3329,8 +3330,8 @@ the base branch, which the helper always enforces.
   against the pull request's files.
 - **Name matching.** Defined jobs are matched by literal name or literal
   prefix (see [Matching a defined job](#matching-a-defined-job-to-a-reported-job)).
-  A job named only by an expression counts as missing. Rules 3 (`<key> (` for
-  an unnamed matrix job) and 4 (`<name> / ` for a reusable workflow) are added
+  A job named only by an expression counts as missing. Rules 3 (`<key> (` or
+  `<name> (` for a matrix job) and 4 (`<name> / ` for a reusable workflow) are added
   on top of the literal-prefix rule. They can match a job that a plain prefix
   would not, so each has its own test.
 - **No app pinning.** Required checks match by context name. The
