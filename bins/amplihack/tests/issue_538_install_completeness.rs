@@ -165,6 +165,9 @@ fn amplihack_install_command_with_binary(
         .arg("--local")
         .arg(source)
         .env("HOME", home)
+        // The checkout's launcher context may select Codex. These tests cover
+        // generic asset staging, so native Codex remains an optional provider.
+        .env("AMPLIHACK_AGENT_BINARY", "copilot")
         .env("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", hooks_bin)
         .env("RECIPE_RUNNER_RS_PATH", recipe_runner)
         .env_remove("AMPLIHACK_HOME")
