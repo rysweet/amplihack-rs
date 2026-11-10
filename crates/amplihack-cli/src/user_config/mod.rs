@@ -18,6 +18,7 @@ pub(crate) mod migrate;
 pub(crate) mod safe;
 pub(crate) mod schema;
 pub(crate) mod schema_governor;
+pub(crate) mod schema_rotator;
 
 #[cfg(test)]
 mod tests_load;
@@ -372,11 +373,48 @@ pub(crate) fn sessions_daily_archive(home: &Path) -> Result<bool, String> {
 /// others, or when the test guard forbids `home`. The caller then does not
 /// run.
 pub(crate) fn sessions_key(home: &Path, name: &str) -> Result<Option<Value>, String> {
+    user_keys(home, &[name])
+        .pop()
+        .expect("one name gives one result")
+}
+
+/// Several user-only keys from one load of `<home>/.amplihack/config.toml`,
+/// one result per name and in the same order, failing closed as
+/// [`sessions_key`] does. The process environment plays no part: each
+/// consumer parses its own variables.
+pub(crate) fn user_keys(home: &Path, names: &[&str]) -> Vec<Result<Option<Value>, String>> {
+    user_keys_detail(home, names)
+        .into_iter()
+        .map(|r| r.map_err(|p| p.full))
+        .collect()
+}
+
+/// Why a key read by [`user_keys_detail`] cannot be used.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeyProblem {
+    /// The whole diagnostic, with the file's path when there is one.
+    pub full: String,
+    /// For a problem with the key itself, only the reason (`must be an
+    /// integer from 1 to 100`), so a caller that names the key can quote it
+    /// without the path. For a problem with the whole file, `full`.
+    pub reason: String,
+}
+
+/// [`user_keys`] with the reason kept apart from the path.
+pub(crate) fn user_keys_detail(
+    home: &Path,
+    names: &[&str],
+) -> Vec<Result<Option<Value>, KeyProblem>> {
     if guard_forbids(home) {
-        return Err(format!(
+        let why = format!(
             "{TEST_HOME_GUARD_ENV} is set and HOME ({}) is outside the temp dir",
             display_path(home)
-        ));
+        );
+        let problem = KeyProblem {
+            full: why.clone(),
+            reason: why,
+        };
+        return names.iter().map(|_| Err(problem.clone())).collect();
     }
     let effective = load(&LoadCtx {
         home: Some(home.to_path_buf()),
@@ -386,14 +424,26 @@ pub(crate) fn sessions_key(home: &Path, name: &str) -> Result<Option<Value>, Str
         migrate: false,
     });
     let user = display_path(&files::user_file(home));
-    let problem = effective
-        .diagnostics
+    names
         .iter()
-        .find(|d| d.path == user && d.key.as_deref().is_none_or(|key| key == name));
-    if let Some(d) = problem {
-        return Err(d.to_string());
-    }
-    Ok(effective.file_value(name).cloned())
+        .map(|name| {
+            let problem = effective
+                .diagnostics
+                .iter()
+                .find(|d| d.path == user && d.key.as_deref().is_none_or(|key| key == *name));
+            match problem {
+                Some(d) => Err(KeyProblem {
+                    full: d.to_string(),
+                    reason: if d.key.is_some() {
+                        d.reason.clone()
+                    } else {
+                        d.to_string()
+                    },
+                }),
+                None => Ok(effective.file_value(name).cloned()),
+            }
+        })
+        .collect()
 }
 
 /// Save `consent` as `node.heap_consent` in the user file, without syncing it

@@ -38,7 +38,7 @@ mod fresh;
 #[cfg(unix)]
 mod fresh_msg;
 #[cfg(unix)]
-mod gate_record;
+pub(super) mod gate_record;
 #[cfg(unix)]
 mod guide;
 #[cfg(unix)]
@@ -102,7 +102,7 @@ pub(super) mod seed;
 #[cfg(unix)]
 mod sessions_daily;
 #[cfg(unix)]
-mod settings;
+pub(crate) mod settings;
 #[cfg(unix)]
 mod spend_blocks;
 #[cfg(unix)]
@@ -257,9 +257,18 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
     {
         let env = |k: &str| std::env::var_os(k);
         let home = settings::home_dir();
+        // Issue #2007: the `rotator.*` keys, read once per run. Only the
+        // forms that resolve settings use them; the background rotator gets
+        // every value as a flag, so it never reads the file itself.
+        let resolves = matches!(
+            args.action,
+            None | Some(RotateAction::Start(_)) | Some(RotateAction::Watch(_))
+        );
+        let user = resolves.then(settings::UserConfig::read);
+        let cfg = |k: &str| user.as_ref().map_or(Ok(None), |c| c.get(k));
         match args.action {
             None => {
-                let s = settings::resolve(&args.tune, None, &env)?;
+                let s = settings::resolve(&args.tune, None, &env, &cfg)?;
                 let mode = if args.dry_run {
                     cycle::Mode::DryRun
                 } else {
@@ -277,12 +286,12 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                     let why = "--supervised applies to rotate watch only";
                     return Err(super::ProfileError::RotateRefused(why.into()).into());
                 }
-                let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
+                let s = settings::resolve(&w.tune, w.interval.as_deref(), &env, &cfg)?;
                 daemon::start(store, &home?, &s)?;
             }
             Some(RotateAction::Watch(w)) => {
                 owner::check_flag(&w.supervised)?;
-                let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
+                let s = settings::resolve(&w.tune, w.interval.as_deref(), &env, &cfg)?;
                 daemon::watch(store, home?, s, w.spawned, w.supervised.clone())?;
             }
             Some(RotateAction::Stop) => control::stop(store, home.as_deref().ok())?,

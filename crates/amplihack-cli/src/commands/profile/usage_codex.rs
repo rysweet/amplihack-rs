@@ -7,10 +7,11 @@
 //! reasons) goes through `sanitize_display` before it is printed. JSON keeps
 //! names and paths as they are, with JSON escaping only.
 
+use super::usage_cmd::sanitize_ascii;
 use super::usage_cmd::{format_pct, sanitize_display, utc_time};
 use super::usage_view::{TimeView, bar_cell, reset_cell};
 use amplihack_utils::codex_capacity::{
-    AccountResult, Credits, DEFAULT_FLOOR, Outcome, Reading, Window, WindowName, next_choice,
+    AccountResult, Credits, Outcome, Reading, Window, WindowName, next_choice,
 };
 use chrono::{DateTime, Local, TimeZone};
 use serde::Serialize;
@@ -36,19 +37,35 @@ pub(super) struct CodexView {
     /// `codex-pick` reads session files, which can be older, so the two can
     /// disagree.
     pub(super) next: Option<usize>,
+    /// Why no row was chosen at all: the reason `rotator.codex_floor`
+    /// cannot be used (issue #2007). A floor the operator did not set is
+    /// never chosen with.
+    pub(super) next_withheld: Option<String>,
     /// The Codex profiles root, as named in the header.
     pub(super) root: PathBuf,
     /// The deadline that applied, for `timed out` rows.
     pub(super) timeout_secs: u64,
 }
 
-/// The view of `rows`, with the next choice worked out at
-/// [`DEFAULT_FLOOR`].
-pub(super) fn view(root: PathBuf, rows: Vec<AccountResult>, timeout_secs: u64) -> CodexView {
-    let next = next_choice(&rows, DEFAULT_FLOOR);
+/// The view of `rows`, with the next choice worked out at the configured
+/// floor (`rotator.codex_floor`, `codex-pick`'s 3000 by default). With
+/// `Err(reason)` nothing is chosen and the reason is kept for the
+/// `next: not chosen` line.
+pub(super) fn view(
+    root: PathBuf,
+    rows: Vec<AccountResult>,
+    timeout_secs: u64,
+    floor: Result<u64, String>,
+) -> CodexView {
+    let (next, next_withheld) = match floor {
+        // At most 1 000 000, so exact as f64.
+        Ok(f) => (next_choice(&rows, f as f64), None),
+        Err(why) => (None, Some(why)),
+    };
     CodexView {
         rows,
         next,
+        next_withheld,
         root,
         timeout_secs,
     }
@@ -120,6 +137,12 @@ fn block(v: &CodexView, time: &TimeView, usage: &dyn Fn(&Window) -> String) -> S
         }
         out.push_str(line.trim_end());
         out.push('\n');
+    }
+    if let Some(why) = &v.next_withheld {
+        out.push_str(&format!(
+            "next: not chosen (rotator.codex_floor: {})\n",
+            sanitize_ascii(why)
+        ));
     }
     out
 }

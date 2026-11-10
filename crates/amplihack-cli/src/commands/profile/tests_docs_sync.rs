@@ -895,6 +895,7 @@ fn every_codex_json_key_is_in_the_reference_key_table() {
             1_793_992_140,
         )],
         20,
+        Ok(3000),
     );
     let row = serde_json::to_value(json_rows(&v)).unwrap()[0].clone();
     let mut keys: Vec<String> = row.as_object().unwrap().keys().cloned().collect();

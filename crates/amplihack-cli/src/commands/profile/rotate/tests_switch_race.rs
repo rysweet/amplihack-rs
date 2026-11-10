@@ -23,7 +23,13 @@ use amplihack_utils::rotator_status::parse_cycle;
 use std::fs;
 
 fn watch_ctx(e: &Env, measure: MeasureFn) -> Ctx {
-    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
+    let s = settings::resolve(
+        &super::TuneFlags::default(),
+        None,
+        &|_| None,
+        &crate::commands::profile::rotate::settings::no_config,
+    )
+    .unwrap();
     let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
     ctx.measure = Some(measure);
     ctx

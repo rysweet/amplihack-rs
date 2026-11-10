@@ -52,6 +52,7 @@ mod usage_parse;
 mod usage_passive;
 mod usage_request;
 mod usage_source;
+mod usage_thresholds;
 mod usage_view;
 #[cfg(unix)]
 mod verify_cmd;
@@ -120,6 +121,8 @@ mod tests_usage_request;
 mod tests_usage_shape;
 #[cfg(all(test, unix))]
 mod tests_usage_source;
+#[cfg(test)]
+mod tests_usage_thresholds;
 #[cfg(test)]
 mod tests_usage_view;
 #[cfg(test)]

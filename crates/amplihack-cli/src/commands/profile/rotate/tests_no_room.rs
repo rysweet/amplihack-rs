@@ -170,6 +170,7 @@ impl Fx {
             &crate::commands::profile::rotate::TuneFlags::default(),
             None,
             &|_| None,
+            &settings::no_config,
         )
         .unwrap();
         let mut ctx = Ctx::new(self.store.clone(), self.home.clone(), s);

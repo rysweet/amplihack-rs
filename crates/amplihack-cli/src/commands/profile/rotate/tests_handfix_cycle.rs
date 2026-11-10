@@ -20,7 +20,13 @@ use crate::commands::profile::auto_switch::kit::{Liveness, now};
 use std::collections::BTreeSet;
 
 pub(super) fn ctx(f: &Fx, measure: super::cycle::MeasureFn) -> Ctx {
-    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
+    let s = settings::resolve(
+        &super::TuneFlags::default(),
+        None,
+        &|_| None,
+        &crate::commands::profile::rotate::settings::no_config,
+    )
+    .unwrap();
     let mut ctx = Ctx::new(f.store.clone(), f.home.clone(), s);
     ctx.scan = |_| Liveness::Known(BTreeSet::new());
     ctx.measure = Some(measure);

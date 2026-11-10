@@ -55,7 +55,13 @@ pub(super) fn env3() -> (Env, u64, u64) {
 
 /// A watch or one-shot context whose scan sees no session.
 pub(super) fn ctx_with(e: &Env, measure: MeasureFn) -> Ctx {
-    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
+    let s = settings::resolve(
+        &super::TuneFlags::default(),
+        None,
+        &|_| None,
+        &crate::commands::profile::rotate::settings::no_config,
+    )
+    .unwrap();
     let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
     ctx.scan = |_| Liveness::Known(BTreeSet::new());
     ctx.measure = Some(measure);

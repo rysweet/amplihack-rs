@@ -909,7 +909,12 @@ Below the bars, a six-line summary gives the weekly headroom across all
 logins, how many can take work now, the next session reset and how long the
 weekly capacity lasts at the recent rate; see
 [See how much capacity is left](claude-profile-rotation.md#see-how-much-capacity-is-left).
-`--summary-json` prints the rows and that summary as one JSON object.
+A `thresholds:` line follows: the rotator's session and weekly switch
+points, the review reserve, the interval and the Codex credit floor, each
+with where it came from. To change them permanently, see
+[Set the thresholds permanently](claude-profile-rotation.md#set-the-thresholds-permanently).
+`--summary-json` prints the rows, that summary and the thresholds as one
+JSON object.
 
 ### See your Codex accounts in the same view
 
@@ -942,6 +947,16 @@ amplihack profile usage --summary-json | jq -r '.codex[] | select(.next_choice) 
 ```
 ggrant
 ```
+
+An account whose rate limits are used up is chosen only when its credit
+balance is above the floor, 3000 by default. To change it:
+
+```bash
+amplihack config set rotator.codex_floor 1000
+```
+
+This changes only the `<- next` mark in `profile usage`. The host's
+`~/.local/bin/codex-pick` script keeps its own `--floor` option.
 
 See [Codex accounts](../reference/profile-command.md#codex-accounts) for
 the states, the choice rule and every JSON key.
@@ -1847,7 +1862,8 @@ do not depend on these two behaviours.
 - **Overflow profiles come last and cost money.** A profile marked with
   `amplihack profile overflow add` is chosen only when no plan profile has
   capacity (below the rotator's `--session-at` and `--week-at`, 85% and 90%
-  by default) and the earliest plan reset is more than the overflow wait
+  by default, or the `rotator.session_at` and `rotator.week_at`
+  [config keys](../reference/user-config.md#rotator-keys)) and the earliest plan reset is more than the overflow wait
   away (default 1800 seconds). This is the rule the
   [rotator](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted)
   follows, with the running rotator's own settings. A session or nested

@@ -89,7 +89,8 @@ weekly limits reset in the next 24 hours. With no
 names it covers every profile under the root, as `list` does, and then
 reads each [Codex account](#codex-accounts) live and lists it after the
 Claude output, marking the one `codex-pick`'s rule picks from these live
-readings. Each name
+readings. Before the Codex block, one line gives the
+[thresholds in force](#thresholds-in-force). Each name
 must pass the [name rules](#name-rules) and must exist. A name given twice
 is probed once. Names select Claude profiles only; with names, Codex is not
 read.
@@ -2154,13 +2155,36 @@ the two can disagree. The rule:
 2. Each candidate's room is `100 - max(used percentage)` over its windows;
    a row with no window percentage has room `0`.
 3. A candidate with room `0` or less gets `0.5` instead when it reports
-   `hasCredits` true and a balance above the credit floor, 3000, and `-1`
-   otherwise.
+   `hasCredits` true and a balance above the credit floor, and `-1`
+   otherwise. The floor is `rotator.codex_floor` from the
+   [user config](./user-config.md#rotator-keys), `3000` by default; the
+   [thresholds line](#thresholds-in-force) shows the value in use. With
+   `0`, any positive balance counts.
 4. The candidates are sorted by room, then by path, both descending. The
    path is the account directory as built (`<root>/<name>` or
    `$HOME/.codex`), compared as bytes, not resolved through symlinks.
 5. The first candidate with room above `0` is marked. When there is none,
    no row is marked.
+
+When `rotator.codex_floor` cannot be read (a value out of range, a file that
+cannot be parsed, or a user file that group or others can write), no row is
+marked and the line after the Codex rows says why, instead of choosing with
+a floor the operator did not set:
+
+```
+next: not chosen (rotator.codex_floor: must be an integer from 0 to 1000000)
+```
+
+The brackets hold the key and the bare reason only. The
+`invalid rotate setting` prefix and the fix-it hint are left out, because
+the [thresholds line](#thresholds-in-force) that follows already shows the
+full message for the same key.
+
+Every Codex row's `next_choice` in `--summary-json` is then `false`, and
+`thresholds.codex_floor.error` holds the full message.
+
+The host's `~/.local/bin/codex-pick` script is not part of amplihack and
+does not read `rotator.codex_floor`; it keeps its own `--floor` option.
 
 In the example, `ggrant` (room 66) is chosen over `ffarmer` (59), `hhale`
 (credits only, 0.5) and `~/.codex` (12). Two accounts with the same room
@@ -2670,13 +2694,67 @@ Weights are applied when the summary is worked out. They are never written
 to the history, so a change takes effect on the next run, for past entries
 too.
 
+#### Thresholds in force
+
+In the bar view and with `--table`, but not with `--raw`, one line follows the capacity summary
+(or the table and its footer lines when there is no summary) and comes
+before the Codex block. It gives the thresholds the rotator and the Codex
+choice use, and where each came from. With nothing set:
+
+```
+thresholds: session-at 85% (default), week-at 90% (default, review reserve 10%), interval 600s (default), codex floor 3000 (default)
+```
+
+With `amplihack config set rotator.week_at 80` and
+`AMPLIHACK_ROTATE_INTERVAL=300` in the environment:
+
+```
+thresholds: session-at 85% (default), week-at 80% (config, review reserve 20%), interval 300s (env), codex floor 3000 (default)
+```
+
+| Field | Value | Source |
+|-------|-------|--------|
+| `session-at` | The live login's session use, in percent, at which the rotator swaps. | `rotator.session_at` |
+| `week-at` | The same for weekly use, followed by the review reserve, `100 - week-at`: the share of each weekly allowance held back for review work. | `rotator.week_at` |
+| `interval` | Seconds between rotator cycles. | `rotator.interval` |
+| `codex floor` | The credit balance a Codex account needs once its rate limits are used up; see [Codex next choice](#codex-next-choice). | `rotator.codex_floor` |
+
+Each origin is one of:
+
+| Origin | Meaning |
+|--------|---------|
+| `rotator` | Taken from the running rotator's recorded settings, for `session-at` and `week-at` only. A rotator started with `--session-at 70` shows `session-at 70% (rotator)` whatever the config file says, because that is the value in use. |
+| `env` | The `AMPLIHACK_ROTATE_*` variable in this shell. |
+| `config` | The key in the [user config file](./user-config.md#rotator-keys). |
+| `default` | The built-in default. |
+
+`profile usage` has no threshold flags, so it never shows `flag`. The
+running rotator does not record its interval, so `interval` always comes
+from the environment, the config file or the default, and may differ from
+the interval of a rotator started with `--interval`.
+
+A key that cannot be read is shown with the reason in place of its value,
+and the other fields are unaffected. `profile usage` still exits 0:
+
+```
+thresholds: session-at invalid (invalid rotate setting rotator.session_at: must be an integer from 1 to 100; fix it with `amplihack config set rotator.session_at <value>` or `amplihack config unset rotator.session_at`), week-at 90% (default, review reserve 10%), interval 600s (default), codex floor 3000 (default)
+```
+
+The line is plain ASCII. Values and messages are cleaned as table names
+are: control characters and bidirectional overrides are shown as escapes.
+With no profiles the line follows the `no profiles` line. It is not printed
+with `--raw`, which has no summary either, nor with `--json` or
+`--summary-json`; the
+[summary JSON](#summary-json) has the same values under `thresholds`.
+
 #### Summary JSON
 
 `--summary-json` prints one JSON object instead of the bar view and summary.
 stdout holds only the JSON; warnings go to stderr. `profiles` is exactly the
 array [`--json`](#json-output) would print in the same run. `codex`, after
 `summary`, holds the [Codex rows](#codex-json-rows); this is the only JSON
-form that has them. For the run above, with only the first of the six rows
+form that has them. `thresholds`, last, holds the
+[thresholds in force](#thresholds-in-force). For the run above, with only the first of the six rows
 shown and no Codex accounts:
 
 ```json
@@ -2723,7 +2801,13 @@ shown and no Codex accounts:
       { "at": "2026-10-31T09:00:00Z", "profile": "work", "restores": 0.3 }
     ]
   },
-  "codex": []
+  "codex": [],
+  "thresholds": {
+    "session_at": { "value": 85, "origin": "default" },
+    "week_at": { "value": 90, "origin": "default", "review_reserve": 10 },
+    "interval": { "value": 600, "origin": "default" },
+    "codex_floor": { "value": 3000, "origin": "default" }
+  }
 }
 ```
 
@@ -2743,6 +2827,11 @@ shown and no Codex accounts:
 | `summary.runway_hours` | number or `null` | Hours of weighted headroom at that rate, one decimal place; `null` when the rate is `null` or zero. |
 | `summary.weekly_resets_next_24h` | array | Valid logins whose weekly reset is after now and no more than 24 hours away, and whose weighted `restores` (`weight × week% / 100`, two decimal places) is above `0`, soonest first, then by name. Each is `{"at", "profile", "restores"}`. |
 | `codex` | array | The [Codex JSON rows](#codex-json-rows), unchanged; `[]` with profile names given. Codex rows never count towards `summary`. |
+| `thresholds` | object | The [thresholds in force](#thresholds-in-force): `session_at`, `week_at`, `interval` and `codex_floor`, always all four. |
+| `thresholds.<key>.value` | integer or `null` | The value in use: percent for `session_at` and `week_at`, seconds for `interval`, credits for `codex_floor`. `null` when the key cannot be read. |
+| `thresholds.<key>.origin` | string or `null` | `rotator`, `env`, `config` or `default`, as on the text line. `null` when the key cannot be read. |
+| `thresholds.<key>.error` | string | Present only when the key cannot be read: the message the text line shows, uncleaned (JSON escaping applies). |
+| `thresholds.week_at.review_reserve` | integer or `null` | `100 - value`; `null` when `week_at` cannot be read. |
 
 Numbers are rounded half away from zero only when printed; a value that is
 not finite is printed as `null`. Keys are only ever added, as for `--json`.
@@ -2761,9 +2850,20 @@ amplihack profile usage --summary-json | jq '.summary.runway_hours'
 9.0
 ```
 
+To read the review reserve in a script:
+
+```bash
+amplihack profile usage --summary-json | jq '.thresholds.week_at.review_reserve'
+```
+
+```
+10
+```
+
 With no profiles it prints
-`{"at":"<time>","profiles":[],"summary":null,"codex":[...]}`, with the
-Codex rows read as usual.
+`{"at":"<time>","profiles":[],"summary":null,"codex":[...],"thresholds":{...}}`,
+with the Codex rows read as usual. `--json` is unchanged: it is still the
+bare array of Claude rows and has no thresholds.
 
 #### Usage history
 
@@ -4008,7 +4108,8 @@ When any profile is marked [overflow](#rotate-overflow), the next line is
 
 ```
 overflow gate: wait 7200s, unknown reset waits, plan capacity below 85% session and 90% week (from the rotator, pid 4242)
-overflow gate: wait 1800s, unknown reset waits, plan capacity below 85% session and 90% week (no rotator runs; from AMPLIHACK_ROTATE_* or defaults)
+overflow gate: wait 1800s, unknown reset waits, plan capacity below 85% session and 90% week (no rotator runs; from AMPLIHACK_ROTATE_*, rotator.* config or defaults)
+overflow gate: closed (invalid rotate setting rotator.week_at: must be an integer from 1 to 100; fix it with `amplihack config set rotator.week_at <value>` or `amplihack config unset rotator.week_at`)
 overflow gate: closed (the running rotator (pid 4242) has not recorded its overflow settings; restart it)
 ```
 
@@ -4361,7 +4462,7 @@ same two-hour wait with nothing to keep in step. Where the gate comes from:
 | Runs, and `gate.json` names its pid | The recorded gate. `AMPLIHACK_ROTATE_*` in the session's environment is ignored. |
 | Runs, and `gate.json` is missing, damaged, out of range or names another pid (for example a rotator from an amplihack without this record, which never uses overflow) | None: no overflow profile is chosen. Restart the rotator. |
 | Cannot be verified (no `/proc`) | None. |
-| Not running | `AMPLIHACK_ROTATE_OVERFLOW_WAIT`, `AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET`, `AMPLIHACK_ROTATE_SESSION_AT` and `AMPLIHACK_ROTATE_WEEK_AT` from auto-switch's own environment, with the rotator's defaults (1800 seconds, off, 85, 90). An invalid value of one of these four means no gate; other `AMPLIHACK_ROTATE_*` variables play no part. |
+| Not running | `AMPLIHACK_ROTATE_OVERFLOW_WAIT`, `AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET`, `AMPLIHACK_ROTATE_SESSION_AT` and `AMPLIHACK_ROTATE_WEEK_AT` from auto-switch's own environment; for the last two, `rotator.session_at` and `rotator.week_at` from the [user config file](./user-config.md#rotator-keys) when the variable is unset; then the rotator's defaults (1800 seconds, off, 85, 90). An invalid value of one of these four, or of either config key, means no gate; other `AMPLIHACK_ROTATE_*` variables play no part. |
 
 `auto-switch status` prints the gate and its source on its
 `overflow gate:` line. A rotate ledger that cannot be read (so spend blocks
@@ -5217,17 +5318,37 @@ lines on failure. Output holds profile names, times and fixed text only.
 
 | Flag | Variable | Default | Range |
 |------|----------|---------|-------|
-| `--session-at N` | `AMPLIHACK_ROTATE_SESSION_AT` | `85` | `1`-`100` (%) |
-| `--week-at N` | `AMPLIHACK_ROTATE_WEEK_AT` | `90` | `1`-`100` (%) |
+| `--session-at N` | `AMPLIHACK_ROTATE_SESSION_AT` | `85` (`rotator.session_at`) | `1`-`100` (%) |
+| `--week-at N` | `AMPLIHACK_ROTATE_WEEK_AT` | `90` (`rotator.week_at`) | `1`-`100` (%) |
 | `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | `5` | `0`-`100` (points) |
 | `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | `30` | `0`-`100` (points) |
 | `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | `0` or more (seconds); `0` disables the hold |
 | `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | `0`-`604800` (seconds); see [Rotate overflow](#rotate-overflow) |
 | `--overflow-unknown-reset 0\|1` | `AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET` | `0` | `1` lets a plan reset that no reading reports count as further away than `--overflow-wait`, so it can move work onto an overflow profile and **spend money**; see [Overflow decision](#overflow-decision) |
-| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | `1`-`86400` (seconds); `start` and `watch` only |
+| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` (`rotator.interval`) | `1`-`86400` (seconds); `start` and `watch` only |
 
-A flag beats its variable, and the variable beats the default. An empty
-variable counts as unset. Values are unsigned decimal integers: a sign,
+A flag beats its variable, and the variable beats the default. For
+`--session-at`, `--week-at` and `--interval`, the
+[`rotator.*` keys](./user-config.md#rotator-keys) in the user config file sit
+between the variable and the default:
+
+```
+flag  >  AMPLIHACK_ROTATE_*  >  rotator.* in ~/.amplihack/config.toml  >  default
+```
+
+So `amplihack config set rotator.session_at 70` makes 70 the switch point
+for every later `rotate`, `start`, `watch` and autostart, and
+`--session-at 75` still overrides it for one command. A config value that
+cannot be used stops the command with exit status 1 instead of falling back
+to the default:
+
+```
+error: invalid rotate setting rotator.session_at: must be an integer from 1 to 100; fix it with `amplihack config set rotator.session_at <value>` or `amplihack config unset rotator.session_at`
+```
+
+A bad variable is still an error when the config value is good; the
+variable does not fall through to the file. The other settings have no
+config key. An empty variable counts as unset. Values are unsigned decimal integers: a sign,
 whitespace, a fraction or an overflow is an error. The error names the flag or
 variable and shows the value escaped and cut to 32 characters:
 
@@ -5237,9 +5358,13 @@ hint: run `amplihack profile rotate --help` for the accepted values
 ```
 
 `start` resolves every setting and passes them to the background process as
-explicit flags, so the variables are read once, when `start` runs. A rotator
+explicit flags, so the variables and the config file are read once, when
+`start` runs. The background process never reads the config file; to apply
+a changed `rotator.*` key, run `stop` and then `start`. A rotator
 started by [autostart](#rotate-autostart) takes them from the environment of
-the launch that started it. The
+the launch that started it and from the user config file at that moment.
+[`rotate switch`](#rotate-switch) makes no threshold decision and reads
+neither. The
 background process sets no `AMPLIHACK_ROTATE*` variable in the environment of
 the `claude` processes it starts.
 
@@ -7585,7 +7710,7 @@ changes nothing but `.default`.
     the profile swapped out. Problems there are warnings on stderr only.
 
 `switch` reads none of the `AMPLIHACK_ROTATE_*` [settings](#rotate-settings)
-and never runs `claude`. It makes no usage measurement, but it does make
+or `rotator.*` config keys, because it makes no threshold decision, and never runs `claude`. It makes no usage measurement, but it does make
 the bounded credential identity reads needed by the shared swap guards.
 It does not look for a `claude` binary either, so it works with no `claude`
 on `PATH`. A login with no capacity left is still moved: `switch`
@@ -8383,7 +8508,7 @@ step 4. Nothing is created on disk before step 9.
 | 8 | The [prototype lock](#rotate-prototype-coexistence) is free and the root is private, as `start` requires. | Skipped. |
 | 9 | Creates the state directory if needed and tries `<root>/.auto-switch.d/lock` once, without waiting. | Busy: another process holds it. |
 | 10 | Under the lock, the daemon state is still not `running`. | Already running. |
-| 11 | The `AMPLIHACK_ROTATE_*` [settings](#rotate-settings) in the launch's environment are valid. | Failed; no rotator started. |
+| 11 | The `AMPLIHACK_ROTATE_*` [settings](#rotate-settings) in the launch's environment, and the `rotator.*` keys in the user config file, are valid. | Failed; no rotator started. |
 | 12 | Starts the [daemon](#rotate-daemon), writes `rotate.pid` and the [root record](#rotate-root-record), then releases the lock. | Failed. If the pid file cannot be written, the child is sent `SIGTERM`. |
 
 Steps 9 to 12 run under the state lock, and `start` and other launches check
@@ -9848,7 +9973,7 @@ failures use this format.
 | `AutoSwitchUnsupported`: an `auto-switch` command on a platform without Unix file semantics | `auto-switch needs Linux or another Unix; leave it off` |
 | `AutoSwitchInvariant`: the state files are damaged or a login is not where the state says | `see the Recovery section of docs/howto/claude-profiles.md` |
 | `AutoSwitchInstall`: a profile's `settings.json` is a symlink, owned by someone else, not a JSON object, or cannot be written | `` fix or remove the reported file, then run `amplihack profile auto-switch repair` `` |
-| `RotateConfig`: a rotate flag or `AMPLIHACK_ROTATE_*` value is not a whole number in range | `` run `amplihack profile rotate --help` for the accepted values `` |
+| `RotateConfig`: a rotate flag, `AMPLIHACK_ROTATE_*` value or `rotator.*` config value is not a whole number in range. For a config value the message itself names the `config set` and `config unset` fix. | `` run `amplihack profile rotate --help` for the accepted values `` |
 | `RotatePrototypeRunning`: the external rotator holds `<root>/.rotator/lock` | `stop the external rotator (tmux session claude-rotator) first` |
 | `RotateRefused`: a check before the swap failed, or the atomic exchange failed; nothing was moved. Also every [`profile switch`](#rotate-switch) refusal (no stored login, lock busy, recovery inconsistent, live login unusable) and a `switch --none` that found the lock busy | `nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md` |
 | `profile switch` moved the live login, then could not write the pin or the default pointer. Not a `RotateRefused`: the login did move | The message itself says to run `amplihack profile switch <name>` again; see [Rotate switch](#rotate-switch) |
@@ -9925,12 +10050,13 @@ identity reader when they need account evidence. The status-line wrapper
 runs the original command with `sh -c`, which is what Claude itself does with it; the supervisor for
 reruns starts amplihack directly with no shell.
 
-Autostart reads only the auto-switch setting, its own setting file and
-`/proc`; it never opens a login file. It prints only the pid, and its status
+Autostart reads only the auto-switch setting, its own setting file, the
+`rotator.*` keys of the user config file and `/proc`; it never opens a login
+file. It prints only the pid, and its status
 line only `on`, `off` and the source. It refuses a root writable by others
 and runs nothing as root, so another user cannot use the setting or the pid
 file to start a process for you. The rotator it starts keeps the
-`AMPLIHACK_ROTATE_*` values and the binary of the launch that started it;
+`AMPLIHACK_ROTATE_*` and `rotator.*` values and the binary of the launch that started it;
 `rotate.err` records which binary that was.
 
 The [direct read](#direct-read) reads a profile's `.credentials.json` in

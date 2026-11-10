@@ -7,15 +7,18 @@
 //!
 //! The seam these tests use:
 //!
-//! - `view(root, rows, timeout_secs) -> CodexView`, which also works out
-//!   `next` with `codex_capacity::DEFAULT_FLOOR`;
+//! - `view(root, rows, timeout_secs, floor: Result<u64, String>) -> CodexView`,
+//!   which also works out `next` at that floor (issue #2007:
+//!   `rotator.codex_floor`); with `Err(reason)` no row is chosen and
+//!   `next_withheld` holds the reason;
 //! - `bars_block(&CodexView, &TimeView, colour) -> String` and
 //!   `table_block(&CodexView, &TimeView) -> String`, each the block from its
 //!   header line to its last row, every line ending in `\n`;
 //! - `json_rows(&CodexView) -> Vec<CodexJsonRow>` (`Serialize`);
 //! - `window_label(WindowName, Option<u64>) -> String`;
 //! - `usage_cmd::render_json(&[Row])`, which has no Codex rows, and
-//!   `usage_cmd::render_summary_json(at, &[Row], Option<&Summary>, &[CodexJsonRow])`.
+//!   `usage_cmd::render_summary_json(at, &[Row], Option<&Summary>,
+//!   &[CodexJsonRow], thresholds: &serde_json::Value)`.
 
 use super::usage_codex::{CodexView, bars_block, json_rows, table_block, view, window_label};
 use super::usage_view::TimeView;
@@ -32,6 +35,18 @@ const HOME_CODEX: &str = "/home/ryan/.codex";
 const MIN: i64 = 60;
 const HOUR: i64 = 3600;
 const DAY: i64 = 86_400;
+/// The default `rotator.codex_floor`, `codex-pick`'s own default.
+const FLOOR: u64 = 3000;
+
+/// The `thresholds` object of `--summary-json` with nothing set.
+fn default_thresholds() -> serde_json::Value {
+    use super::rotate::settings::no_config;
+    super::usage_thresholds::json(&super::usage_thresholds::resolve(
+        None,
+        &|_| None,
+        &no_config,
+    ))
+}
 
 fn utc0() -> TimeView {
     TimeView::Fixed(FixedOffset::east_opt(0).unwrap(), "UTC".to_string())
@@ -117,11 +132,11 @@ fn example_rows() -> Vec<AccountResult> {
 }
 
 fn example() -> CodexView {
-    view(PathBuf::from(ROOT), example_rows(), 20)
+    view(PathBuf::from(ROOT), example_rows(), 20, Ok(FLOOR))
 }
 
 fn one(r: AccountResult) -> CodexView {
-    view(PathBuf::from(ROOT), vec![r], 20)
+    view(PathBuf::from(ROOT), vec![r], 20, Ok(FLOOR))
 }
 
 /// The fields of a signed-in row, after its state (which itself contains
@@ -188,6 +203,7 @@ fn no_account_with_room_means_no_marker() {
             at("out", Outcome::NotSignedIn),
         ],
         20,
+        Ok(FLOOR),
     );
     assert_eq!(v.next, None);
     let block = bars_block(&v, &utc0(), false);
@@ -348,7 +364,12 @@ fn a_signed_in_account_with_no_figures_says_so() {
 
 #[test]
 fn the_timeout_detail_is_the_deadline_that_applied() {
-    let v = view(PathBuf::from(ROOT), vec![at("kkim", Outcome::Timeout)], 7);
+    let v = view(
+        PathBuf::from(ROOT),
+        vec![at("kkim", Outcome::Timeout)],
+        7,
+        Ok(FLOOR),
+    );
     let block = bars_block(&v, &utc0(), false);
     assert_eq!(
         line_of(&block, "kkim"),
@@ -367,6 +388,7 @@ fn labels_pad_to_the_longest_and_cut_past_24_characters() {
             at("b", Outcome::NotSignedIn),
         ],
         20,
+        Ok(FLOOR),
     );
     let block = bars_block(&v, &utc0(), false);
     let cut = format!("{}…", "a".repeat(23));
@@ -416,7 +438,7 @@ fn colour_follows_the_claude_bars() {
 
 #[test]
 fn no_accounts_is_one_line_naming_the_root() {
-    let v = view(PathBuf::from(ROOT), vec![], 20);
+    let v = view(PathBuf::from(ROOT), vec![], 20, Ok(FLOOR));
     for block in [bars_block(&v, &utc0(), false), table_block(&v, &utc0())] {
         assert_eq!(
             block.trim_start_matches('\n'),
@@ -437,6 +459,7 @@ fn labels_root_plan_and_reasons_are_cleaned_before_printing() {
             at("bad", Outcome::Error("boom\u{1b}[0m\u{9b}31m".to_string())),
         ],
         20,
+        Ok(FLOOR),
     );
     for block in [bars_block(&v, &utc0(), false), table_block(&v, &utc0())] {
         for c in ['\u{1b}', '\u{7}', '\u{202e}', '\u{9b}'] {
@@ -456,7 +479,7 @@ fn the_table_block_leaves_out_the_bar_and_keeps_one_decimal() {
     if let Outcome::Ok(r) = &mut rows[0].outcome {
         r.windows[0].used_percent = Some(12.5);
     }
-    let v = view(PathBuf::from(ROOT), rows, 20);
+    let v = view(PathBuf::from(ROOT), rows, 20, Ok(FLOOR));
     let block = table_block(&v, &utc0());
     assert!(
         block
@@ -646,6 +669,7 @@ fn json_names_and_paths_are_escaped_not_cleaned() {
             READ,
         )],
         20,
+        Ok(FLOOR),
     );
     let text = serde_json::to_string(&json_rows(&v)).unwrap();
     assert!(!text.contains('\u{1b}'), "JSON escaping: {text:?}");
@@ -672,11 +696,11 @@ fn json_output_stays_a_bare_array_that_old_jq_filters_read() {
 fn summary_json_has_codex_after_summary_and_keeps_profiles() {
     use super::usage_cmd::render_summary_json;
     let codex = json_rows(&example());
-    let text = render_summary_json(READ, &[], None, &codex);
+    let text = render_summary_json(READ, &[], None, &codex, &default_thresholds());
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     let mut k = keys(&v);
     k.sort_unstable();
-    assert_eq!(k, ["at", "codex", "profiles", "summary"]);
+    assert_eq!(k, ["at", "codex", "profiles", "summary", "thresholds"]);
     assert_eq!(v["profiles"], serde_json::json!([]));
     assert!(v["summary"].is_null());
     assert_eq!(v["codex"], serde_json::to_value(&codex).unwrap());
@@ -684,7 +708,110 @@ fn summary_json_has_codex_after_summary_and_keeps_profiles() {
     assert!(
         i("\"at\"") < i("\"profiles\"")
             && i("\"profiles\"") < i("\"summary\"")
-            && i("\"summary\"") < i("\"codex\""),
+            && i("\"summary\"") < i("\"codex\"")
+            && i("\"codex\"") < i("\"thresholds\""),
         "written in the documented order: {text}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The floor comes from `rotator.codex_floor` (issue #2007)
+// ---------------------------------------------------------------------------
+
+/// One account with its rate limits used up and 4000 credits, and one
+/// that is not signed in: only the credits can make the first the choice.
+fn credits_only(balance: f64) -> Vec<AccountResult> {
+    vec![
+        signed_in(
+            "creditor",
+            reading(
+                vec![five(100.0, READ + HOUR), week(100.0, READ + DAY)],
+                Some(Credits {
+                    has_credits: true,
+                    balance: Some(balance),
+                }),
+                Some("plus"),
+            ),
+        ),
+        at("out", Outcome::NotSignedIn),
+    ]
+}
+
+#[test]
+fn an_account_between_the_default_and_a_higher_floor_is_chosen_only_below_it() {
+    let at_default = view(PathBuf::from(ROOT), credits_only(4000.0), 20, Ok(3000));
+    assert_eq!(at_default.next, Some(0));
+    assert_eq!(at_default.next_withheld, None);
+    let raised = view(PathBuf::from(ROOT), credits_only(4000.0), 20, Ok(5000));
+    assert_eq!(raised.next, None);
+    assert_eq!(raised.next_withheld, None);
+    let block = bars_block(&raised, &utc0(), false);
+    assert!(!block.contains("<- next"), "{block}");
+    assert!(!block.contains("not chosen"), "{block}");
+}
+
+#[test]
+fn a_floor_of_zero_lets_any_positive_balance_be_chosen() {
+    let v = view(PathBuf::from(ROOT), credits_only(1.0), 20, Ok(0));
+    assert_eq!(v.next, Some(0));
+    let v = view(PathBuf::from(ROOT), credits_only(1.0), 20, Ok(FLOOR));
+    assert_eq!(v.next, None);
+}
+
+#[test]
+fn an_unreadable_floor_chooses_nothing_and_says_why() {
+    let why = "must be an integer from 0 to 1000000";
+    let v = view(
+        PathBuf::from(ROOT),
+        example_rows(),
+        20,
+        Err(why.to_string()),
+    );
+    assert_eq!(
+        v.next, None,
+        "never chosen with a floor the operator did not set"
+    );
+    assert_eq!(v.next_withheld.as_deref(), Some(why));
+    let want = "next: not chosen (rotator.codex_floor: must be an integer from 0 to 1000000)\n";
+    for block in [bars_block(&v, &utc0(), false), table_block(&v, &utc0())] {
+        assert!(!block.contains("<- next"), "{block}");
+        assert!(block.ends_with(want), "the line follows the rows: {block}");
+        assert_eq!(block.matches("not chosen").count(), 1, "{block}");
+    }
+    for row in json(&v).as_array().unwrap() {
+        assert_eq!(row["next_choice"], false, "{row}");
+    }
+}
+
+#[test]
+fn the_not_chosen_line_is_cleaned() {
+    let v = view(
+        PathBuf::from(ROOT),
+        example_rows(),
+        20,
+        Err("bad\u{1b}[2J\u{202e}value".to_string()),
+    );
+    for block in [bars_block(&v, &utc0(), false), table_block(&v, &utc0())] {
+        let line = block
+            .lines()
+            .find(|l| l.starts_with("next: not chosen (rotator.codex_floor: "))
+            .unwrap_or_else(|| panic!("{block}"));
+        assert!(
+            !line.contains('\u{1b}') && !line.contains('\u{202e}'),
+            "{line:?}"
+        );
+        assert!(line.is_ascii(), "{line:?}");
+    }
+}
+
+#[test]
+fn with_no_accounts_a_bad_floor_adds_no_line() {
+    // Nothing could have been chosen, so there is nothing to explain.
+    let v = view(PathBuf::from(ROOT), vec![], 20, Err("x".to_string()));
+    for block in [bars_block(&v, &utc0(), false), table_block(&v, &utc0())] {
+        assert_eq!(
+            block.trim_start_matches('\n'),
+            "Codex: no accounts under /home/ryan/.codex-profiles\n"
+        );
+    }
 }

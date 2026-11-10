@@ -14,18 +14,18 @@
 //!   which never uses overflow): no gate, so auto-switch spends nothing;
 //! - the rotator's state cannot be verified: no gate;
 //! - no rotator runs: the `AMPLIHACK_ROTATE_OVERFLOW_*`, `..._SESSION_AT`
-//!   and `..._WEEK_AT` variables, or their defaults. An invalid one of
-//!   these four means no gate.
+//!   and `..._WEEK_AT` variables, then (issue #2007) `rotator.session_at`
+//!   and `rotator.week_at` from the user config file, then the defaults.
+//!   An invalid one of these means no gate.
 //!
 //! `auto-switch status` prints which of these applies (`overflow gate:`).
 
 use super::daemon::{DaemonState, current_state};
 use super::ledger::RotateState;
-use super::settings::{Settings, gate_from_env, gate_in_range};
+use super::settings::{Cfg, Env, Settings, UserConfig, gate_from_env, gate_in_range};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::overflow::Gate;
 use serde::{Deserialize, Serialize};
-use std::ffi::OsString;
 use std::path::Path;
 
 const VERSION: u32 = 1;
@@ -95,7 +95,7 @@ pub fn load(rs: &RotateState) -> Result<Option<GateRecord>, ProfileError> {
 pub enum GateSource {
     /// The running rotator's record.
     Rotator(u32),
-    /// No rotator runs: the variables or their defaults.
+    /// No rotator runs: the variables, the config keys or the defaults.
     Environment,
     /// No gate, so no overflow profile is used; the reason.
     Closed(String),
@@ -103,11 +103,34 @@ pub enum GateSource {
 
 /// The overflow [`Gate`] auto-switch uses under `root`, and where it came
 /// from: the running rotator's own settings, or, when no rotator runs, the
-/// `AMPLIHACK_ROTATE_*` variables. `None` means no overflow, so an
-/// unreadable record or a typo never spends money.
+/// `AMPLIHACK_ROTATE_*` variables and the `rotator.*` config keys. `None`
+/// means no overflow, so an unreadable record or a typo never spends money.
 pub fn effective(root: &Path) -> (Option<Gate>, GateSource) {
     let rs = RotateState::new(root);
-    effective_with(&rs, current_state(&rs), &|k| std::env::var_os(k))
+    let state = current_state(&rs);
+    // The config file is read only when no rotator runs: a running
+    // rotator's record is the authority.
+    let cfg = match state {
+        DaemonState::Stopped | DaemonState::Stale => Some(UserConfig::read()),
+        DaemonState::Running(_) | DaemonState::Unverifiable => None,
+    };
+    let lookup = |k: &str| cfg.as_ref().map_or(Ok(None), |c| c.get(k));
+    effective_with(&rs, state, &|k| std::env::var_os(k), &lookup)
+}
+
+/// The running rotator's recorded gate: `None` when no rotator runs, when
+/// it cannot be verified, or when its record is missing, damaged or names
+/// another pid. Reads no variable and no config file (issue #2007:
+/// `profile usage` shows these values as the ones in use).
+pub fn running(root: &Path) -> Option<Gate> {
+    let rs = RotateState::new(root);
+    match current_state(&rs) {
+        DaemonState::Running(pid) => match load(&rs) {
+            Ok(Some(r)) if r.pid == pid => Some(r.gate()),
+            _ => None,
+        },
+        DaemonState::Unverifiable | DaemonState::Stopped | DaemonState::Stale => None,
+    }
 }
 
 /// [`effective`] against another `/proc` and environment, for tests.
@@ -116,17 +139,19 @@ pub fn effective_at(
     root: &Path,
     proc_root: &Path,
     exe_name: &std::ffi::OsStr,
-    env: &dyn Fn(&str) -> Option<OsString>,
+    env: &Env<'_>,
+    cfg: &Cfg<'_>,
 ) -> (Option<Gate>, GateSource) {
     let rs = RotateState::new(root);
     let state = super::daemon::state_at(&rs, proc_root, exe_name);
-    effective_with(&rs, state, env)
+    effective_with(&rs, state, env, cfg)
 }
 
 fn effective_with(
     rs: &RotateState,
     state: DaemonState,
-    env: &dyn Fn(&str) -> Option<OsString>,
+    env: &Env<'_>,
+    cfg: &Cfg<'_>,
 ) -> (Option<Gate>, GateSource) {
     let closed = |why: String| (None, GateSource::Closed(why));
     match state {
@@ -138,7 +163,7 @@ fn effective_with(
             Err(e) => closed(e.to_string()),
         },
         DaemonState::Unverifiable => closed("cannot verify the rotator on this host".into()),
-        DaemonState::Stopped | DaemonState::Stale => match gate_from_env(env) {
+        DaemonState::Stopped | DaemonState::Stale => match gate_from_env(env, cfg) {
             Ok(g) => (Some(g), GateSource::Environment),
             Err(e) => closed(e.to_string()),
         },
@@ -161,7 +186,7 @@ pub fn status_line(gate: Option<Gate>, source: &GateSource) -> String {
             format!("overflow gate: {} (from the rotator, pid {pid})", values(g))
         }
         (Some(g), _) => format!(
-            "overflow gate: {} (no rotator runs; from AMPLIHACK_ROTATE_* or defaults)",
+            "overflow gate: {} (no rotator runs; from AMPLIHACK_ROTATE_*, rotator.* config or defaults)",
             values(g)
         ),
         (None, GateSource::Closed(why)) => format!("overflow gate: closed ({why})"),

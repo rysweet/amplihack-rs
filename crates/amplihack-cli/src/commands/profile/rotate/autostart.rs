@@ -316,7 +316,11 @@ pub fn run(root: &Path, docker_flag: bool, d: Deps<'_>) -> Outcome {
     if let Some(o) = blocked() {
         return o;
     }
-    let s = match settings::resolve(&TuneFlags::default(), None, d.env) {
+    // Issue #2007: the `rotator.*` keys of the user file under this HOME,
+    // so a rotator started here honours them like one started by hand. A
+    // value that cannot be used fails closed, naming the key.
+    let user = settings::UserConfig::at(d.home);
+    let s = match settings::resolve(&TuneFlags::default(), None, d.env, &|k| user.get(k)) {
         Ok(s) => s,
         Err(e) => return failed(&rs, &e),
     };

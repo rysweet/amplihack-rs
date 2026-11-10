@@ -2137,6 +2137,13 @@ mod summary_1797 {
         }))
     }
 
+    /// The `thresholds` object with nothing set (issue #2007).
+    fn default_thresholds() -> serde_json::Value {
+        use super::super::rotate::settings::no_config;
+        use super::super::usage_thresholds::{json, resolve};
+        json(&resolve(None, &|_| None, &no_config))
+    }
+
     fn parse(text: &str) -> serde_json::Value {
         serde_json::from_str(text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
     }
@@ -2149,11 +2156,17 @@ mod summary_1797 {
     fn summary_json_profiles_are_exactly_the_json_array() {
         let rows = golden_rows();
         let s = summary(&rows);
-        let v = parse(&render_summary_json(NOW, &rows, s.as_ref(), &[]));
+        let v = parse(&render_summary_json(
+            NOW,
+            &rows,
+            s.as_ref(),
+            &[],
+            &default_thresholds(),
+        ));
         assert_eq!(v["profiles"], parse(&render_json(&rows)));
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort_unstable();
-        assert_eq!(keys, ["at", "codex", "profiles", "summary"]);
+        assert_eq!(keys, ["at", "codex", "profiles", "summary", "thresholds"]);
         assert_eq!(v["codex"], serde_json::json!([]));
     }
 
@@ -2165,6 +2178,7 @@ mod summary_1797 {
             &rows,
             summary(&rows).as_ref(),
             &[],
+            &default_thresholds(),
         ));
         assert_eq!(v["at"], "2026-10-16T12:00:00Z");
         assert!(v["profiles"][0]["session"]["resets_at"].is_i64());
@@ -2172,14 +2186,26 @@ mod summary_1797 {
 
     #[test]
     fn summary_json_with_no_profiles_has_an_empty_array_and_null_summary() {
-        let v = parse(&render_summary_json(NOW, &[], None, &[]));
+        let v = parse(&render_summary_json(
+            NOW,
+            &[],
+            None,
+            &[],
+            &default_thresholds(),
+        ));
         assert_eq!(
             v,
             serde_json::json!({
                 "at": "2026-10-16T12:00:00Z",
                 "profiles": [],
                 "summary": null,
-                "codex": []
+                "codex": [],
+                "thresholds": {
+                    "session_at": { "value": 85, "origin": "default" },
+                    "week_at": { "value": 90, "origin": "default", "review_reserve": 10 },
+                    "interval": { "value": 600, "origin": "default" },
+                    "codex_floor": { "value": 3000, "origin": "default" }
+                }
             })
         );
     }
@@ -2257,7 +2283,7 @@ mod summary_1797 {
         for out in [&text, &json] {
             assert!(!out.contains("example.com"), "{out}");
         }
-        let whole = render_summary_json(NOW, &[r], Some(&s), &[]);
+        let whole = render_summary_json(NOW, &[r], Some(&s), &[], &default_thresholds());
         assert_eq!(
             whole.matches("someone@example.com").count(),
             2,
@@ -2884,4 +2910,57 @@ fn the_spend_plays_no_part_in_ordering() {
     let mut rows = vec![b, a];
     order(&mut rows, NOW);
     assert_eq!(names(&rows), ["aa", "bb"]);
+}
+
+// ---------------------------------------------------------------------------
+// The thresholds line and object (issue #2007)
+// ---------------------------------------------------------------------------
+
+/// `usage_cmd::shows_thresholds(Output, raw) -> bool`: the line is printed
+/// in the bar view and with `--table`, never with `--raw`, `--json` or
+/// `--summary-json` (docs/reference/profile-command.md, "Thresholds in
+/// force").
+#[test]
+fn the_thresholds_line_is_in_the_bar_and_table_views_only() {
+    use super::usage_cmd::{Output, shows_thresholds};
+    assert!(shows_thresholds(Output::Bars, false));
+    assert!(shows_thresholds(Output::Table, false));
+    assert!(
+        !shows_thresholds(Output::Bars, true),
+        "--raw has no summary"
+    );
+    assert!(
+        !shows_thresholds(Output::Table, true),
+        "--raw has no summary"
+    );
+    assert!(!shows_thresholds(Output::Json, false));
+    assert!(!shows_thresholds(Output::SummaryJson, false));
+}
+
+#[test]
+fn summary_json_carries_overridden_thresholds_and_the_review_reserve() {
+    use super::usage_cmd::render_summary_json;
+    use super::usage_thresholds::{json, resolve};
+    let cfg =
+        |k: &str| -> Result<Option<u64>, String> { Ok((k == "rotator.week_at").then_some(80)) };
+    let env = |k: &str| (k == "AMPLIHACK_ROTATE_INTERVAL").then(|| OsString::from("300"));
+    let t = json(&resolve(None, &env, &cfg));
+    let v: serde_json::Value =
+        serde_json::from_str(&render_summary_json(NOW, &[], None, &[], &t)).unwrap();
+    assert_eq!(
+        v["thresholds"],
+        serde_json::json!({
+            "session_at": { "value": 85, "origin": "default" },
+            "week_at": { "value": 80, "origin": "config", "review_reserve": 20 },
+            "interval": { "value": 300, "origin": "env" },
+            "codex_floor": { "value": 3000, "origin": "default" }
+        })
+    );
+}
+
+#[test]
+fn the_json_array_has_no_thresholds() {
+    // `--json` stays the bare array of Claude rows (D8).
+    let v: serde_json::Value = serde_json::from_str(&render_json(&[])).unwrap();
+    assert_eq!(v, serde_json::json!([]));
 }

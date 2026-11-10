@@ -135,7 +135,13 @@ fn fx() -> Fx {
 
 impl Fx {
     fn ctx(&self, check: super::key_check::KeyCheckFn) -> Ctx {
-        let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
+        let s = settings::resolve(
+            &super::TuneFlags::default(),
+            None,
+            &|_| None,
+            &crate::commands::profile::rotate::settings::no_config,
+        )
+        .unwrap();
         let mut ctx = Ctx::new(self.store.clone(), self.home.clone(), s);
         ctx.scan = |_| Liveness::Known(BTreeSet::new());
         ctx.measure = Some(all_plan_logins_out);
@@ -567,7 +573,13 @@ fn t4_a_failing_login_check_moves_nothing_and_alerts_once() {
 #[test]
 fn the_default_check_is_the_real_one_and_refuses_a_profile_with_no_key() {
     let f = fx();
-    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
+    let s = settings::resolve(
+        &super::TuneFlags::default(),
+        None,
+        &|_| None,
+        &crate::commands::profile::rotate::settings::no_config,
+    )
+    .unwrap();
     let mut c = Ctx::new(f.store.clone(), f.home.clone(), s);
     c.scan = |_| Liveness::Known(BTreeSet::new());
     c.measure = Some(all_plan_logins_out);
@@ -597,7 +609,13 @@ fn the_default_check_refuses_a_key_the_swap_would_not_deliver() {
         &f.root.join(KEY).join(".claude.json"),
         r#"{"primaryApiKey":"SENTINEL-1804-KEY"}"#,
     );
-    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
+    let s = settings::resolve(
+        &super::TuneFlags::default(),
+        None,
+        &|_| None,
+        &crate::commands::profile::rotate::settings::no_config,
+    )
+    .unwrap();
     let mut c = Ctx::new(f.store.clone(), f.home.clone(), s);
     c.scan = |_| Liveness::Known(BTreeSet::new());
     c.measure = Some(all_plan_logins_out);
@@ -621,7 +639,13 @@ fn after_a_swap_onto_an_api_key_the_key_is_where_claude_reads_it() {
         serde_json::from_slice(&fs::read(f.home.join(".claude.json")).unwrap()).unwrap();
     home["primaryApiKey"] = "SENTINEL-1804-KEY".into();
     private(&f.home.join(".claude.json"), &home.to_string());
-    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
+    let s = settings::resolve(
+        &super::TuneFlags::default(),
+        None,
+        &|_| None,
+        &crate::commands::profile::rotate::settings::no_config,
+    )
+    .unwrap();
     let mut c = Ctx::new(f.store.clone(), f.home.clone(), s);
     c.scan = |_| Liveness::Known(BTreeSet::new());
     c.measure = Some(all_plan_logins_out);
@@ -645,7 +669,13 @@ fn the_default_check_passes_a_key_in_home_and_never_logs_the_value() {
         &f.home.join(".claude.json"),
         r#"{"primaryApiKey":"SENTINEL-1804-KEY","oauthAccount":{"accountUuid":"u-work","emailAddress":"work@example.com"}}"#,
     );
-    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
+    let s = settings::resolve(
+        &super::TuneFlags::default(),
+        None,
+        &|_| None,
+        &crate::commands::profile::rotate::settings::no_config,
+    )
+    .unwrap();
     let mut c = Ctx::new(f.store.clone(), f.home.clone(), s);
     c.scan = |_| Liveness::Known(BTreeSet::new());
     c.measure = Some(all_plan_logins_out);
@@ -695,7 +725,13 @@ fn a_failing_check_never_puts_a_key_value_in_the_log_or_ledger() {
         fs::Permissions::from_mode(0o620),
     )
     .unwrap();
-    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
+    let s = settings::resolve(
+        &super::TuneFlags::default(),
+        None,
+        &|_| None,
+        &crate::commands::profile::rotate::settings::no_config,
+    )
+    .unwrap();
     let mut c = Ctx::new(f.store.clone(), f.home.clone(), s);
     c.scan = |_| Liveness::Known(BTreeSet::new());
     c.measure = Some(all_plan_logins_out);

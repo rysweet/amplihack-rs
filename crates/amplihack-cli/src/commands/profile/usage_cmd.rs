@@ -28,11 +28,13 @@ use super::capacity_weight;
 use super::name::ProfileName;
 use super::probe_limits::ProbeMode;
 use super::rotate::decide::Reading;
+use super::rotate::settings::Thresholds;
 use super::store::ProfileStore;
 use super::usage_codex::{self, CodexJsonRow, CodexView};
 use super::usage_parse::{UsageReport, UsageState, UsageWindow, parse_usage};
 use super::usage_request::ExtraUsageShape;
 use super::usage_source::{self, ClaudeGate, LazyBinary, Plan, Source, SourceEnv, Spend};
+use super::usage_thresholds;
 use super::usage_view::{self, TimeView};
 use super::{ProfileError, default_live, pointer, probe_limits, run, usage_history, usage_request};
 use crate::binary_finder::BinaryInfo;
@@ -258,14 +260,21 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         eprintln!("{}", env_credential_warning(var));
     }
     let profiles = selected_profiles(store, names)?;
+    // Issue #2007: the thresholds in force, once per run. A value that
+    // cannot be used is shown, never an error: this is a read-only report.
+    let usage_thresholds::Current {
+        thresholds,
+        codex_floor: floor,
+    } = usage_thresholds::current(store.root());
+    let thresholds = &thresholds;
     // Issue #2001: names select Claude profiles only; with none, every
     // Codex account is read alongside the Claude probes. `--json` keeps its
     // array of Claude rows, so it has no place for Codex rows and skips the
     // read.
     let codex = (names.is_empty() && output != Output::Json).then(CodexRead::start);
     if profiles.is_empty() {
-        let codex = codex.map(CodexRead::finish);
-        print_empty(output, &time, codex.as_ref());
+        let codex = codex.map(|c| c.finish(floor));
+        print_empty(output, &time, codex.as_ref(), thresholds, raw);
         return Ok(());
     }
     let home = home_dir();
@@ -356,7 +365,7 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         .as_ref()
         .filter(|_| !raw && output != Output::Json)
         .map(|c| capacity_of(store, c, usable_session_pct, at));
-    let codex = codex.map(CodexRead::finish);
+    let codex = codex.map(|c| c.finish(floor));
     print_output(
         &rows,
         output,
@@ -365,6 +374,8 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         at,
         swapped.as_ref(),
         codex.as_ref(),
+        thresholds,
+        raw,
     );
     // SR-10: in every mode, with or without `--raw`.
     for warning in not_saved_warnings(&rows) {
@@ -543,8 +554,9 @@ impl CodexRead {
     }
 
     /// Waits for the read. A root that could not be listed, or a read
-    /// thread that panicked, gives no rows and one warning.
-    fn finish(self) -> CodexView {
+    /// thread that panicked, gives no rows and one warning. `floor` is
+    /// `rotator.codex_floor`, or why it cannot be used (issue #2007).
+    fn finish(self, floor: Result<u64, String>) -> CodexView {
         let rows = match self.handle.join() {
             Ok(Ok(rows)) => rows,
             Ok(Err(e)) => {
@@ -560,7 +572,7 @@ impl CodexRead {
                 Vec::new()
             }
         };
-        usage_codex::view(self.root, rows, self.timeout_secs)
+        usage_codex::view(self.root, rows, self.timeout_secs, floor)
     }
 }
 
@@ -569,15 +581,37 @@ fn codex_json(codex: Option<&CodexView>) -> Vec<CodexJsonRow> {
     codex.map(usage_codex::json_rows).unwrap_or_default()
 }
 
-fn print_empty(output: Output, time: &TimeView, codex: Option<&CodexView>) {
+/// Whether the bar view or table prints the thresholds line (issue #2007):
+/// not with `--raw`, which has no summary either, and never in JSON.
+pub(super) fn shows_thresholds(output: Output, raw: bool) -> bool {
+    matches!(output, Output::Bars | Output::Table) && !raw
+}
+
+fn print_empty(
+    output: Output,
+    time: &TimeView,
+    codex: Option<&CodexView>,
+    thresholds: &Thresholds,
+    raw: bool,
+) {
     let rows = codex_json(codex);
     match output {
         Output::Json => println!("{}", render_json(&[])),
-        Output::SummaryJson => {
-            println!("{}", render_summary_json(now_secs(), &[], None, &rows))
-        }
+        Output::SummaryJson => println!(
+            "{}",
+            render_summary_json(
+                now_secs(),
+                &[],
+                None,
+                &rows,
+                &usage_thresholds::json(thresholds)
+            )
+        ),
         Output::Bars | Output::Table => {
             println!("no profiles; create one with `amplihack profile add <name>`");
+            if shows_thresholds(output, raw) {
+                println!("{}", usage_thresholds::text_line(thresholds));
+            }
             print_codex_text(output, codex, time);
         }
     }
@@ -831,6 +865,7 @@ fn build_rows(
 /// The bar view or table (each with the capacity summary) or JSON on
 /// stdout, then the warnings on stderr. Colour is decided once, for the
 /// bar view only (no-color.org).
+#[allow(clippy::too_many_arguments)]
 fn print_output(
     rows: &[Row],
     output: Output,
@@ -839,8 +874,15 @@ fn print_output(
     at: i64,
     swapped: Option<&ProfileName>,
     codex: Option<&CodexView>,
+    thresholds: &Thresholds,
+    raw: bool,
 ) {
     let codex_rows = codex_json(codex);
+    let thresholds_line = || {
+        if shows_thresholds(output, raw) {
+            println!("{}", usage_thresholds::text_line(thresholds));
+        }
+    };
     match output {
         Output::Bars => {
             use std::io::IsTerminal;
@@ -852,6 +894,7 @@ fn print_output(
             if let Some(s) = summary {
                 print!("{}", summary_block(s));
             }
+            thresholds_line();
             print_codex_text(output, codex, time);
         }
         Output::Table => {
@@ -859,11 +902,21 @@ fn print_output(
             if let Some(s) = summary {
                 print!("{}", summary_block(s));
             }
+            thresholds_line();
             print_codex_text(output, codex, time);
         }
         Output::Json => println!("{}", render_json(rows)),
         Output::SummaryJson => {
-            println!("{}", render_summary_json(at, rows, summary, &codex_rows))
+            println!(
+                "{}",
+                render_summary_json(
+                    at,
+                    rows,
+                    summary,
+                    &codex_rows,
+                    &usage_thresholds::json(thresholds)
+                )
+            )
         }
     }
     for w in error_warnings(rows) {
@@ -1704,6 +1757,15 @@ pub(super) fn sanitize_display(s: &str, keep_newlines: bool) -> String {
         .collect()
 }
 
+/// [`sanitize_display`], then every character outside ASCII as `?`, for
+/// the lines whose contract is plain ASCII (issue #2007).
+pub(super) fn sanitize_ascii(s: &str) -> String {
+    sanitize_display(s, false)
+        .chars()
+        .map(|c| if c.is_ascii() { c } else { '?' })
+        .collect()
+}
+
 fn clip(s: &str) -> String {
     let clean = sanitize_display(s, false);
     if clean.chars().count() <= MAX_TEXT {
@@ -1932,22 +1994,26 @@ struct SummaryOutput<'a> {
     profiles: Vec<JsonRow<'a>>,
     summary: Option<&'a Summary>,
     codex: &'a [CodexJsonRow],
+    thresholds: &'a serde_json::Value,
 }
 
 /// `--summary-json` (issue #1797): `at` as ISO UTC, `profiles` exactly the
 /// array of `--json`, the summary, `null` when there is none, and (issue
-/// #2001) `codex`, the Codex rows, which `--json` does not hold.
+/// #2001) `codex`, the Codex rows, which `--json` does not hold, and (issue
+/// #2007) `thresholds`, the object of `usage_thresholds::json`.
 pub(super) fn render_summary_json(
     at: i64,
     rows: &[Row],
     summary: Option<&Summary>,
     codex: &[CodexJsonRow],
+    thresholds: &serde_json::Value,
 ) -> String {
     let out = SummaryOutput {
         at: utc_time(at),
         profiles: json_rows(rows),
         summary,
         codex,
+        thresholds,
     };
     serde_json::to_string_pretty(&out).expect("usage summary serialises to JSON")
 }
