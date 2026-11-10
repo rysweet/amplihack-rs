@@ -99,7 +99,7 @@ dependencies = [
 name = "amplihack-asset-resolver-bin"
 version = "1.2.0"
 dependencies = [
- "amplihack-cli",
+ "amplihack-utils",
  "tracing",
  "tracing-subscriber",
 ]

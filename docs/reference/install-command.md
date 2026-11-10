@@ -45,6 +45,13 @@ On Windows, or any other platform without a published release target, the npm
 wrapper needs the packaged Rust workspace plus a local Rust toolchain so it can
 fall back to a source build.
 
+Each archive contains `amplihack`, `amplihack-hooks` and
+`amplihack-asset-resolver`, all built with the stripped release profile. The
+npm wrapper requires the first two. It copies the resolver when the archive has
+one as a regular file, after the archive checksum has passed, and continues
+without it for older archives. A source build passes
+`--bin amplihack-asset-resolver` and copies the resolver as a required binary.
+
 ### Options
 
 | Flag | Type | Default | Description |
@@ -83,7 +90,7 @@ amplihack install [--interactive]
 ├── 0. acquire_framework_source() — --local, a same-version local source, or the release tag; refuse on mismatch
 ├── 1. maybe_run_wizard()         — if --interactive, prompt for tool/scope/update prefs (skipped otherwise)
 ├── 1b. take ~/.amplihack/.install.lock and allocate a new release ~/.amplihack/releases/<release>/
-├── 2. deploy_binaries()          — copy amplihack + amplihack-hooks (+ asset resolver when present) into the release's bin/
+├── 2. deploy_binaries()          — copy amplihack + amplihack-hooks (+ asset resolver: sibling first, PATH copies from build dirs refused) into the release's bin/
 ├── 2b. analyze PATH candidates   — classify Rust binaries, stale wrappers, unknowns, and inaccessible paths
 ├── 2c. neutralize stale wrappers — quarantine only shadowing, positively identified Python/uvx wrappers in safe locations
 ├── 2d. persist PATH precedence   — write/update managed shell profile block so ~/.local/bin resolves first
@@ -361,10 +368,61 @@ Returns an actionable error if none of the five locations yield an executable.
 ### `deploy_binaries() -> Result<Vec<PathBuf>>`
 
 Copies `amplihack` (current executable) and `amplihack-hooks` (resolved by
-`find_hooks_binary`) to `~/.local/bin` with `0o755` permissions. When a sibling
-`amplihack-asset-resolver` binary is present, it is deployed too so launched
-tools and recipe runs can resolve bundle assets without falling back to Python.
+`find_hooks_binary`) to `~/.local/bin` with `0o755` permissions. It also
+deploys `amplihack-asset-resolver` when it can find one that passes the source
+rule below, so launched tools and recipe runs can resolve bundle assets without
+falling back to `amplihack resolve-bundle-asset`.
 Returns the list of deployed paths for inclusion in the manifest.
+
+#### Asset resolver source rule
+
+The resolver source is chosen by `choose_resolver_source`, a pure function
+that returns a `ResolverSource`:
+
+| Variant | When | Effect |
+| ------- | ---- | ------ |
+| `Sibling(path)` | An executable `amplihack-asset-resolver` sits beside the running `amplihack`. | Copied from that path. PATH is not searched. |
+| `Path(canonical)` | No sibling; PATH lookup is allowed; the PATH copy is not in a build directory. | Copied from the canonical path that was checked. |
+| `RefusedBuildArtifact(path)` | No sibling; the PATH copy, or its canonical path, is under a build directory. | Not copied. A warning names the path. |
+| `None` | No sibling, and either no PATH copy or PATH lookup is not allowed. | Nothing is copied. |
+
+PATH lookup is allowed for an explicit `amplihack install`, and for an
+implicit re-stage only when `~/.local/bin/amplihack-asset-resolver` does not
+exist (issue #1526).
+
+A build directory is any path for which `looks_like_build_artifact` is true:
+a path component that is exactly `target`, `debug` or `release`, or that
+contains `target-` anywhere in its name (so `target-x86_64` and
+`my-target-cache` both match). Such a file is normally a local `cargo build` output and may be unstripped (an
+unstripped debug resolver is about 590 MB; a release one is a few MB). The
+installer does not inspect ELF headers.
+
+The canonical path is what is both checked and copied, so a symlink on PATH
+that points into `target/debug` is refused. If `canonicalize` fails, the raw
+path is used for both.
+
+On refusal the installer prints:
+
+```text
+  ⚠️  Not deploying amplihack-asset-resolver from /home/alice/src/amplihack-rs/target/debug/amplihack-asset-resolver: it is in a build directory
+```
+
+It leaves `~/.local/bin/amplihack-asset-resolver` as it was (present or
+absent) and plans no link for it. Install continues. When the slot stays
+empty, launched tools fall back to `amplihack resolve-bundle-asset`.
+
+The build-directory check applies only to the PATH copy. The sibling is never
+checked, so `./target/debug/amplihack install` deploys the unstripped debug
+`target/debug/amplihack-asset-resolver` beside it. Install from a release
+build to deploy a stripped resolver.
+
+A debug build placed outside a build directory, for example by
+`cargo install --debug` into `~/.cargo/bin`, is not refused either.
+`cargo install` builds in release mode by default.
+
+Release archives from issue #2025 onwards contain a stripped
+`amplihack-asset-resolver` beside `amplihack`, so an install from one of those
+archives always uses `Sibling`. The PATH fallback matters only for source installs.
 
 After deployment, install analyzes ordered `PATH` candidates for `amplihack` and
 `amplihack-hooks`, quarantines eligible stale Python/uvx wrappers that shadow

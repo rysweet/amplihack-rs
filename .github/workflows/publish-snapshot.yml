@@ -98,7 +98,7 @@ jobs:
           AMPLIHACK_RELEASE_VERSION: ${{ steps.snapshot-version.outputs.version }}
         run: >
           cargo build --release --locked --target ${{ matrix.target }}
-          -p amplihack -p amplihack-hooks-bin
+          -p amplihack -p amplihack-hooks-bin -p amplihack-asset-resolver-bin
           --features amplihack-hooks-bin/signal
 
       - name: Build (cross)
@@ -107,7 +107,7 @@ jobs:
           AMPLIHACK_RELEASE_VERSION: ${{ steps.snapshot-version.outputs.version }}
         run: >
           cross build --release --locked --target ${{ matrix.target }}
-          -p amplihack -p amplihack-hooks-bin
+          -p amplihack -p amplihack-hooks-bin -p amplihack-asset-resolver-bin
           --features amplihack-hooks-bin/signal
 
       - name: Package snapshot artifact
@@ -116,7 +116,7 @@ jobs:
           mkdir -p dist
           tar czf "dist/amplihack-${{ matrix.target }}.tar.gz" \
             -C "target/${{ matrix.target }}/release" \
-            amplihack amplihack-hooks
+            amplihack amplihack-hooks amplihack-asset-resolver
 
       - name: Upload packaged artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

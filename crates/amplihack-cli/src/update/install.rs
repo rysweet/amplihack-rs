@@ -1,5 +1,5 @@
 pub(crate) use super::archive::extract_archive;
-pub(super) use super::archive::{binary_filename, find_binary};
+pub(super) use super::archive::{binary_filename, find_binary, find_optional_binary};
 use super::checksum::verify_sha256;
 use super::*;
 use std::process::Command;
@@ -29,16 +29,19 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
 
     let new_amplihack = find_binary(temp_dir.path(), binary_filename("amplihack"))?;
     let new_hooks = find_binary(temp_dir.path(), binary_filename("amplihack-hooks"))?;
+    // Issue #2025: archives from #2025 onwards carry the stripped resolver.
+    // Older archives do not, and the update carries on without it.
+    let new_resolver =
+        find_optional_binary(temp_dir.path(), binary_filename("amplihack-asset-resolver"))?;
     let current_exe =
         std::env::current_exe().context("cannot determine current executable path")?;
     let decision = current_process_install_target_decision(&current_exe)?;
-    let plan = plan_downloaded_binary_install(
-        InstallArchiveLayout {
-            amplihack: new_amplihack.clone(),
-            hooks: new_hooks.clone(),
-        },
-        decision,
-    )?;
+    let layout = InstallArchiveLayout {
+        amplihack: new_amplihack.clone(),
+        hooks: new_hooks.clone(),
+        resolver: new_resolver.clone(),
+    };
+    let plan = plan_downloaded_binary_install(layout.clone(), decision)?;
     let install_dir = plan
         .amplihack_destination
         .parent()
@@ -61,14 +64,7 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
         .filter(|home| !home.as_os_str().is_empty())
         && install_dir == crate::path_conflicts::preferred_user_bin(&home)
     {
-        install_into_release(
-            &home,
-            release,
-            &new_amplihack,
-            &new_hooks,
-            &amplihack_dest,
-            &hooks_dest,
-        )?;
+        install_into_release(&home, release, &layout, &plan)?;
         invalidate_update_cache();
         return Ok(amplihack_dest);
     }
@@ -86,17 +82,33 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
         .len();
     let existing_hooks_size = fs::metadata(&hooks_dest).map(|m| m.len()).unwrap_or(0);
     let existing_amplihack_size = fs::metadata(&amplihack_dest).map(|m| m.len()).unwrap_or(0);
+    let resolver_copy = match (&new_resolver, &plan.resolver_destination) {
+        (Some(src), Some(dst)) => Some((src.clone(), dst.clone())),
+        _ => None,
+    };
+    let resolver_extra = match &resolver_copy {
+        Some((src, dst)) => fs::metadata(src)
+            .with_context(|| format!("stat {}", src.display()))?
+            .len()
+            .saturating_sub(fs::metadata(dst).map(|m| m.len()).unwrap_or(0)),
+        None => 0,
+    };
     // Worst case: both destinations keep their current contents while the
     // `.tmp` files are written, so we need headroom for every new_* byte
     // plus a safety margin. `saturating_sub` keeps us honest if a future
     // build shrinks the binaries below the existing sizes.
     let required_free = new_hooks_size.saturating_sub(existing_hooks_size)
         + new_amplihack_size.saturating_sub(existing_amplihack_size)
+        + resolver_extra
         + 8 * 1024 * 1024;
     check_free_space(install_dir, required_free)?;
 
     install_binary_atomic(&new_hooks, &hooks_dest)?;
     install_binary_atomic(&new_amplihack, &amplihack_dest)?;
+    // The resolver is copied, never executed: it has no `--version` probe.
+    if let Some((src, dst)) = &resolver_copy {
+        install_binary_atomic(src, dst)?;
+    }
 
     report_installed_versions(release, &amplihack_dest, &hooks_dest);
     invalidate_update_cache();
@@ -106,29 +118,35 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
 
 /// Issue #1954: copies the downloaded binaries into a new release, checks
 /// what the copies report, then switches `amplihack-hooks` and `amplihack`
-/// to them. `amplihack-asset-resolver` and `amplifier-bundle` stay on their
-/// earlier release until the post-update install child switches them.
-fn install_into_release(
+/// to them. `amplifier-bundle` stays on its earlier release until the
+/// post-update install child switches it.
+///
+/// Issue #2025: when the archive has `amplihack-asset-resolver`, it is staged
+/// and switched in the same release. A failure to stage it drops the whole
+/// release, so no link moves. Without one, the installed resolver is left
+/// for the post-update install child.
+pub(super) fn install_into_release(
     home: &Path,
     release: &UpdateRelease,
-    new_amplihack: &Path,
-    new_hooks: &Path,
-    amplihack_link: &Path,
-    hooks_link: &Path,
+    layout: &InstallArchiveLayout,
+    plan: &BinaryInstallPlan,
 ) -> Result<()> {
     use crate::commands::install::release_layout::{self, ReleaseTxn};
     let amplihack_dir = home.join(".amplihack");
     let releases = release_layout::releases_dir(&amplihack_dir);
-    let full_size = fs::metadata(new_amplihack)
-        .with_context(|| format!("stat {}", new_amplihack.display()))?
-        .len()
-        + fs::metadata(new_hooks)
-            .with_context(|| format!("stat {}", new_hooks.display()))?
-            .len();
+    let resolver = match (&layout.resolver, &plan.resolver_destination) {
+        (Some(src), Some(link)) => Some((src.as_path(), link.as_path())),
+        _ => None,
+    };
+    let mut full_size = file_size(&layout.amplihack)? + file_size(&layout.hooks)?;
+    if let Some((src, _)) = resolver {
+        full_size += file_size(src)?;
+    }
     let mut txn = ReleaseTxn::allocate(&amplihack_dir, &release.version)
         .with_context(|| format!("cannot create a release for v{}", release.version))?;
-    // Measured on the release, which now exists, for both binaries in full:
-    // nothing already installed is replaced in place.
+    // Measured on the release, which now exists, for every binary in full:
+    // nothing already installed is replaced in place. An error drops `txn`,
+    // which removes the unpublished release.
     check_free_space(&releases, full_size + 8 * 1024 * 1024)?;
 
     let bin_dir = txn.bin_dir();
@@ -136,14 +154,28 @@ fn install_into_release(
         .with_context(|| format!("failed to create {}", bin_dir.display()))?;
     let staged_hooks = bin_dir.join(binary_filename("amplihack-hooks"));
     let staged_amplihack = bin_dir.join(binary_filename("amplihack"));
-    install_binary_atomic(new_hooks, &staged_hooks)?;
-    install_binary_atomic(new_amplihack, &staged_amplihack)?;
+    install_binary_atomic(&layout.hooks, &staged_hooks)?;
+    install_binary_atomic(&layout.amplihack, &staged_amplihack)?;
+    let staged_resolver = match resolver {
+        Some((src, link)) => {
+            let staged = bin_dir.join(binary_filename("amplihack-asset-resolver"));
+            install_binary_atomic(src, &staged).context(
+                "failed to stage amplihack-asset-resolver; the release was not switched",
+            )?;
+            Some((staged, link))
+        }
+        None => None,
+    };
 
     // Checked before the switch (S24), on the copies the links will name.
+    // The resolver is never executed.
     report_installed_versions(release, &staged_amplihack, &staged_hooks);
 
-    txn.plan_link(hooks_link, &staged_hooks)?;
-    txn.plan_link(amplihack_link, &staged_amplihack)?;
+    txn.plan_link(&plan.hooks_destination, &staged_hooks)?;
+    txn.plan_link(&plan.amplihack_destination, &staged_amplihack)?;
+    if let Some((staged, link)) = &staged_resolver {
+        txn.plan_link(link, staged)?;
+    }
     let root = txn.root().to_path_buf();
     let report = txn.commit()?;
     if let Some((link, reason)) = &report.failed {
@@ -162,6 +194,12 @@ fn install_into_release(
         );
     }
     Ok(())
+}
+
+fn file_size(path: &Path) -> Result<u64> {
+    Ok(fs::metadata(path)
+        .with_context(|| format!("stat {}", path.display()))?
+        .len())
 }
 
 /// Execs both new binaries with `--version` and reports the outcome.
@@ -230,12 +268,16 @@ fn invalidate_update_cache() {
 pub(super) struct InstallArchiveLayout {
     pub(super) amplihack: PathBuf,
     pub(super) hooks: PathBuf,
+    /// `amplihack-asset-resolver`, absent in archives from before #2025.
+    pub(super) resolver: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BinaryInstallPlan {
     pub(super) amplihack_destination: PathBuf,
     pub(super) hooks_destination: PathBuf,
+    /// Where the resolver goes, when the archive has one.
+    pub(super) resolver_destination: Option<PathBuf>,
 }
 
 pub(super) fn plan_downloaded_binary_install(
@@ -267,10 +309,17 @@ pub(super) fn plan_downloaded_binary_install(
     fs::metadata(&archive.amplihack)
         .with_context(|| format!("stat {}", archive.amplihack.display()))?;
     fs::metadata(&archive.hooks).with_context(|| format!("stat {}", archive.hooks.display()))?;
+    if let Some(resolver) = &archive.resolver {
+        fs::metadata(resolver).with_context(|| format!("stat {}", resolver.display()))?;
+    }
 
     Ok(BinaryInstallPlan {
         amplihack_destination: install_dir.join(binary_filename("amplihack")),
         hooks_destination: install_dir.join(binary_filename("amplihack-hooks")),
+        resolver_destination: archive
+            .resolver
+            .as_ref()
+            .map(|_| install_dir.join(binary_filename("amplihack-asset-resolver"))),
     })
 }
 

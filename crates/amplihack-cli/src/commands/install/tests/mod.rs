@@ -34,6 +34,7 @@ mod issue_1955_source_gate;
 mod issue_1955_support;
 #[cfg(unix)]
 mod issue_1955_tag_fetch;
+mod issue_2025_resolver_source;
 mod issue_527_tests;
 mod issue_911_durable_hooks_path;
 #[cfg(unix)]

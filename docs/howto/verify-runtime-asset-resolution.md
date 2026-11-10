@@ -1,7 +1,7 @@
 ---
 title: Verify runtime asset resolution
 description: Confirm native amplihack asset resolution for helper, session, hooks, and multitask assets.
-last_updated: 2026-11-05
+last_updated: 2026-11-10
 review_schedule: as-needed
 owner: amplihack-maintainers
 doc_type: howto
@@ -119,6 +119,76 @@ Both forms print the same absolute paths as `amplihack resolve-bundle-asset`.
 The standalone resolver also derives its no-argument usage text from the same
 Rust named-asset table, so usage output and accepted names stay in sync.
 
+## Check the installed resolver is stripped
+
+The resolver links only `amplihack-utils`, not `amplihack-cli`, and release
+builds strip it. An installed copy should be a few megabytes and report
+`stripped`:
+
+```bash
+resolver="$(readlink -f "$HOME/.local/bin/amplihack-asset-resolver")"
+stat -c %s "$resolver"
+file "$resolver"
+```
+
+Expected output shape on Linux x64:
+
+```text
+<size in bytes; a few MB, not hundreds>
+/home/alice/.amplihack/releases/<release>/bin/amplihack-asset-resolver: ELF 64-bit LSB pie executable, x86-64, ..., stripped
+```
+
+The byte count varies by platform and release. A file of several hundred
+megabytes reported as `with debug_info, not stripped` is a local build that
+was installed before issue #2025; about 590 MB is typical. Replace it with
+either of:
+
+```bash
+amplihack update                  # stages the stripped resolver from the release archive
+./target/release/amplihack install  # from a release build in a source checkout
+```
+
+Do not run the installed `amplihack install` for this. The installed
+`amplihack` runs from `~/.amplihack/releases/<release>/bin/`, so its sibling is
+the unstripped file itself, and the install copies it into the new release.
+
+Copies in older directories under `~/.amplihack/releases/` are left in place
+until those releases are cleaned up; the link no longer points at them.
+
+To confirm a source checkout builds a resolver without lbug:
+
+```bash
+cargo tree -p amplihack-asset-resolver-bin -i lbug
+```
+
+Cargo reports that `lbug` did not match any packages.
+
+## Understand the build-directory warning
+
+`amplihack install` falls back to the resolver on `PATH` only when there is
+no resolver beside the running `amplihack`. It refuses a PATH copy that lives
+in a cargo build directory (a path component that is exactly `target`, `debug`
+or `release`, or that contains `target-`), including through a symlink:
+
+```text
+  ⚠️  Not deploying amplihack-asset-resolver from /home/alice/src/amplihack-rs/target/debug/amplihack-asset-resolver: it is in a build directory
+```
+
+The install still succeeds. The existing `~/.local/bin/amplihack-asset-resolver`
+is not changed, and if there is none, launched tools fall back to
+`amplihack resolve-bundle-asset`. To deploy a resolver from a source checkout,
+build it in release mode and install from the same build:
+
+```bash
+cargo build --release -p amplihack -p amplihack-hooks-bin -p amplihack-asset-resolver-bin
+./target/release/amplihack install
+```
+
+The installer uses the sibling `target/release/amplihack-asset-resolver`,
+which is stripped. The sibling is not checked for build directories, so
+`./target/debug/amplihack install` deploys the unstripped debug resolver. See the
+[asset resolver source rule](../reference/install-command.md#asset-resolver-source-rule).
+
 ## Interpret failures
 
 | Symptom | Meaning | Fix |
@@ -126,10 +196,13 @@ Rust named-asset table, so usage output and accepted names stay in sync.
 | `Unknown asset name` | The binary does not know the named asset. | Update `amplihack` and rerun `amplihack install`. |
 | `Bundle asset not found` | The name is registered, but the file or directory is missing from every runtime root. | Set `AMPLIHACK_HOME` to the installed bundle root or reinstall amplihack. |
 | Exit code `2` | The argument is an invalid relative path. | Use one of the named assets above or a safe `amplifier-bundle/...` path. |
+| Resolver is hundreds of MB, `not stripped` | A local debug build was installed before issue #2025. | Run `amplihack update`, or `./target/release/amplihack install` from a release build. |
+| `Not deploying amplihack-asset-resolver from ...` | The only resolver found was on `PATH` in a build directory. | Install from a release build that has the resolver beside `amplihack`. |
 
 ## Related
 
 - [resolve-bundle-asset Command Reference](../reference/resolve-bundle-asset-command.md)
 - [Environment Variables](../reference/environment-variables.md#amplihack_asset_resolver)
+- [Install Command Reference](../reference/install-command.md#asset-resolver-source-rule)
 - [Install Manifest](../reference/install-manifest.md)
 - [Framework Source Selection](../reference/framework-source-selection.md)

@@ -54,6 +54,7 @@ fn downloaded_update_plan_uses_preferred_user_bin_when_system_binary_shadows_cur
         InstallArchiveLayout {
             amplihack: new_amplihack,
             hooks: new_hooks,
+            resolver: None,
         },
         decision,
     )
@@ -64,6 +65,7 @@ fn downloaded_update_plan_uses_preferred_user_bin_when_system_binary_shadows_cur
         BinaryInstallPlan {
             amplihack_destination: user_bin.join("amplihack"),
             hooks_destination: user_bin.join("amplihack-hooks"),
+            resolver_destination: None,
         }
     );
 }
@@ -100,6 +102,7 @@ fn downloaded_update_plan_uses_user_bin_instead_of_copying_into_denied_system_di
         InstallArchiveLayout {
             amplihack: new_amplihack,
             hooks: new_hooks,
+            resolver: None,
         },
         decision,
     )
@@ -110,6 +113,7 @@ fn downloaded_update_plan_uses_user_bin_instead_of_copying_into_denied_system_di
         BinaryInstallPlan {
             amplihack_destination: user_bin.join("amplihack"),
             hooks_destination: user_bin.join("amplihack-hooks"),
+            resolver_destination: None,
         },
         "update must avoid temp-copying into /usr/local/bin and target ~/.local/bin instead"
     );

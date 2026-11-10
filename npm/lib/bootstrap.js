@@ -169,7 +169,13 @@ function hasLocalCargoWorkspace(root) {
   ].every((relativePath) => fs.existsSync(path.join(root, relativePath)));
 }
 
-function findBinary(root, fileName) {
+/**
+ * Breadth-first search for a regular file named `fileName` under `root`.
+ * Returns null only when no such file exists. Symlinks are neither followed
+ * nor returned (Dirent.isFile() is false for them), and a readdir error is
+ * thrown, not treated as absence.
+ */
+function findOptionalBinary(root, fileName) {
   const queue = [root];
   while (queue.length > 0) {
     const current = queue.shift();
@@ -185,7 +191,46 @@ function findBinary(root, fileName) {
       }
     }
   }
-  throw new Error(`Unable to locate ${fileName} under ${root}`);
+  return null;
+}
+
+function findBinary(root, fileName) {
+  const found = findOptionalBinary(root, fileName);
+  if (found === null) {
+    throw new Error(`Unable to locate ${fileName} under ${root}`);
+  }
+  return found;
+}
+
+const REQUIRED_BINARIES = ['amplihack', 'amplihack-hooks'];
+// Issue #2025: archives from #2025 onwards ship the stripped resolver; older
+// archives do not, and the install carries on without it.
+const OPTIONAL_BINARIES = ['amplihack-asset-resolver'];
+
+/**
+ * Copy the binaries from an extracted (and already checksum-verified)
+ * release archive into `binDir`. amplihack and amplihack-hooks are required;
+ * the resolver is copied when the archive has it.
+ */
+async function copyArchiveBinaries(extractDir, binDir) {
+  for (const binary of REQUIRED_BINARIES) {
+    const source = findBinary(extractDir, binaryFilename(binary));
+    await copyFileAtomic(source, path.join(binDir, binaryFilename(binary)));
+  }
+  for (const binary of OPTIONAL_BINARIES) {
+    const source = findOptionalBinary(extractDir, binaryFilename(binary));
+    if (source !== null) {
+      await copyFileAtomic(source, path.join(binDir, binaryFilename(binary)));
+    }
+  }
+}
+
+function sourceBuildCargoArgs() {
+  const args = ['build', '--release', '--locked'];
+  for (const binary of [...REQUIRED_BINARIES, ...OPTIONAL_BINARIES]) {
+    args.push('--bin', binary);
+  }
+  return args;
 }
 
 function parseChecksumHex(text) {
@@ -596,11 +641,7 @@ async function installFromRelease(version, installRoot) {
 
     const binDir = path.join(installRoot, 'bin');
     await fsp.mkdir(binDir, { recursive: true });
-    for (const binary of ['amplihack', 'amplihack-hooks']) {
-      const source = findBinary(extractDir, binaryFilename(binary));
-      const destination = path.join(binDir, binaryFilename(binary));
-      await copyFileAtomic(source, destination);
-    }
+    await copyArchiveBinaries(extractDir, binDir);
   } finally {
     await fsp.rm(tempRoot, { recursive: true, force: true });
   }
@@ -610,7 +651,7 @@ async function buildFromSource(root, installRoot) {
   const targetDir = path.join(installRoot, 'target');
   const build = spawnSync(
     'cargo',
-    ['build', '--release', '--locked', '--bin', 'amplihack', '--bin', 'amplihack-hooks'],
+    sourceBuildCargoArgs(),
     {
       cwd: root,
       stdio: 'inherit',
@@ -631,7 +672,8 @@ async function buildFromSource(root, installRoot) {
   const binDir = path.join(installRoot, 'bin');
   const releaseDir = path.join(targetDir, 'release');
   await fsp.mkdir(binDir, { recursive: true });
-  for (const binary of ['amplihack', 'amplihack-hooks']) {
+  // A source build asks cargo for the resolver too, so it is required here.
+  for (const binary of [...REQUIRED_BINARIES, ...OPTIONAL_BINARIES]) {
     const source = path.join(releaseDir, binaryFilename(binary));
     const destination = path.join(binDir, binaryFilename(binary));
     await copyFileAtomic(source, destination);
@@ -711,11 +753,13 @@ module.exports = {
   binaryFilename,
   cacheRoot,
   cacheStateRoot,
+  copyArchiveBinaries,
   copyFileAtomic,
   download,
   downloadFile,
   ensureNativeBinaries,
   findBinary,
+  findOptionalBinary,
   hasLocalCargoWorkspace,
   installFromRelease,
   latestTagCachePath,
@@ -727,6 +771,7 @@ module.exports = {
   resolveLatestReleaseTag,
   resolveLatestTagFromRedirect,
   runAmplihack,
+  sourceBuildCargoArgs,
   validateDownloadUrl,
   verifyArchiveChecksum,
   writeLatestTagCache,

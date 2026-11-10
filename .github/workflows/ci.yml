@@ -834,7 +834,7 @@ jobs:
         if: "!matrix.cross"
         run: >
           cargo build --release --locked --target ${{ matrix.target }}
-          -p amplihack -p amplihack-hooks-bin
+          -p amplihack -p amplihack-hooks-bin -p amplihack-asset-resolver-bin
           --features amplihack-hooks-bin/signal
 
       # Outside-in: drive the real hooks binary through session-stop and
@@ -849,7 +849,7 @@ jobs:
         if: matrix.cross
         run: >
           cross build --release --locked --target ${{ matrix.target }}
-          -p amplihack -p amplihack-hooks-bin
+          -p amplihack -p amplihack-hooks-bin -p amplihack-asset-resolver-bin
           --features amplihack-hooks-bin/signal
 
       - name: sccache stats
@@ -867,6 +867,7 @@ jobs:
           path: |
             target/${{ matrix.target }}/release/amplihack
             target/${{ matrix.target }}/release/amplihack-hooks
+            target/${{ matrix.target }}/release/amplihack-asset-resolver
           if-no-files-found: error
 
 
@@ -913,9 +914,10 @@ jobs:
           for dir in amplihack-*; do
             target="${dir#amplihack-}"
             mkdir -p "../dist/${dir}"
-            find "$dir" -type f \( -name amplihack -o -name amplihack-hooks \) -exec cp {} "../dist/${dir}/" \;
+            find "$dir" -type f \( -name amplihack -o -name amplihack-hooks -o -name amplihack-asset-resolver \) -exec cp {} "../dist/${dir}/" \;
             test -f "../dist/${dir}/amplihack"
             test -f "../dist/${dir}/amplihack-hooks"
+            test -f "../dist/${dir}/amplihack-asset-resolver"
             tar czf "../${dir}.tar.gz" -C "../dist/${dir}" .
           done
 

@@ -1,11 +1,16 @@
 //! TDD contracts for standalone resolver usage output.
 //!
 //! The binary should not maintain its own named-asset list. Its no-argument
-//! usage text must reflect the CLI library's canonical name helper.
+//! usage text must reflect the canonical name helper in `amplihack-utils`.
+//!
+//! Issue #2025: the binary links `amplihack-utils` directly, not
+//! `amplihack-cli`, so lbug, `amplihack-memory` and `amplihack-hive` stay out
+//! of its link. This file can only import `amplihack_utils` once the manifest
+//! names it, which is how the dependency change is pinned here.
 
 use std::process::Command;
 
-use amplihack_cli::resolve_bundle_asset;
+use amplihack_utils::resolve_bundle_asset;
 
 #[test]
 fn no_argument_usage_lists_canonical_named_assets() {
@@ -20,6 +25,6 @@ fn no_argument_usage_lists_canonical_named_assets() {
 
     assert!(
         stderr.contains(&format!("    - a named asset: {canonical_names}")),
-        "standalone resolver usage must derive supported names from the CLI library; stderr was:\n{stderr}"
+        "standalone resolver usage must derive supported names from amplihack-utils; stderr was:\n{stderr}"
     );
 }

@@ -183,6 +183,51 @@ pub(super) fn deploy_binaries(
     Ok(deployed)
 }
 
+/// Where `amplihack install` takes `amplihack-asset-resolver` from (#2025).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ResolverSource {
+    /// The executable beside the running `amplihack`.
+    Sibling(PathBuf),
+    /// A copy found on PATH, as its canonical path (or the raw path when
+    /// canonicalisation fails). This is the path that is copied.
+    Path(PathBuf),
+    /// A copy found on PATH that sits in a cargo build directory.
+    RefusedBuildArtifact(PathBuf),
+    /// Nothing to install.
+    None,
+}
+
+/// Picks the resolver source: the sibling of `self_src` first, then, only
+/// when `path_lookup_allowed`, the result of `find_on_path`.
+///
+/// A PATH copy is refused when either the entry itself or its canonical path
+/// lies under a build directory ([`looks_like_build_artifact`]). The sibling
+/// is not checked: it is the resolver built alongside the running binary.
+pub(super) fn choose_resolver_source(
+    self_src: &Path,
+    path_lookup_allowed: bool,
+    find_on_path: impl FnOnce() -> Option<PathBuf>,
+) -> ResolverSource {
+    if let Some(sibling) = self_src
+        .parent()
+        .map(|dir| dir.join(RESOLVER_BIN))
+        .filter(|candidate| is_executable(candidate))
+    {
+        return ResolverSource::Sibling(sibling);
+    }
+    if !path_lookup_allowed {
+        return ResolverSource::None;
+    }
+    let Some(found) = find_on_path() else {
+        return ResolverSource::None;
+    };
+    let canonical = fs::canonicalize(&found).unwrap_or_else(|_| found.clone());
+    if looks_like_build_artifact(&found) || looks_like_build_artifact(&canonical) {
+        return ResolverSource::RefusedBuildArtifact(canonical);
+    }
+    ResolverSource::Path(canonical)
+}
+
 /// Copies one binary into the release and plans the link `dst` to it.
 ///
 /// Issue #1954: the installed file at `dst` is never rewritten. The new copy
@@ -291,18 +336,25 @@ pub(super) fn deploy_binaries_into(
         // up next to the freshly-installed binary, not the deleted-marker path.
         // Issue #1526: as for hooks, a PATH copy may only fill an empty slot
         // during an implicit re-stage.
+        // Issue #2025: a PATH copy inside a cargo build directory is refused,
+        // because a debug build there is hundreds of megabytes of debug info.
         let resolver_dst = local_bin.join(RESOLVER_BIN);
         let path_lookup_allowed =
             mode == InstallMode::Explicit || resolver_dst.symlink_metadata().is_err();
-        let resolver_src = self_src
-            .parent()
-            .map(|dir| dir.join(RESOLVER_BIN))
-            .filter(|candidate| is_executable(candidate))
-            .or_else(|| {
-                path_lookup_allowed
-                    .then(|| find_binary(RESOLVER_BIN))
-                    .flatten()
-            });
+        let resolver_src = match choose_resolver_source(&self_src, path_lookup_allowed, || {
+            find_binary(RESOLVER_BIN)
+        }) {
+            ResolverSource::Sibling(path) | ResolverSource::Path(path) => Some(path),
+            ResolverSource::RefusedBuildArtifact(path) => {
+                println!(
+                    "  ⚠️  Not deploying {RESOLVER_BIN} from {}: it is in a build directory",
+                    path.display()
+                );
+                tracing::warn!("amplihack-asset-resolver on PATH refused: it is a build artifact");
+                None
+            }
+            ResolverSource::None => None,
+        };
         if let Some(resolver_src) = resolver_src {
             if !may_deploy(mode, stamp, &resolver_src, &resolver_dst) {
                 kept.push(resolver_dst);

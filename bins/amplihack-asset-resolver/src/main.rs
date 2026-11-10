@@ -1,4 +1,4 @@
-use amplihack_cli::resolve_bundle_asset;
+use amplihack_utils::resolve_bundle_asset;
 
 fn main() {
     tracing_subscriber::fmt()

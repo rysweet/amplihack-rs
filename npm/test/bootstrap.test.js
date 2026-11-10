@@ -523,3 +523,79 @@ test('resolveLatestReleaseTag falls back to package.json only when both fail', w
   assert.match(warned, /AMPLIHACK_NPM_VERSION/u, 'the warning names the pin escape hatch');
   assert.equal(readLatestTagCache(), null, 'a failed resolution is never cached');
 }));
+
+// Issue #2025: release archives now ship amplihack-asset-resolver. The
+// bootstrap copies it when the archive has it and carries on when an older
+// archive does not. Only absence is tolerated; other errors propagate, and a
+// symlink entry is never followed.
+
+const {
+  copyArchiveBinaries,
+  findOptionalBinary,
+  sourceBuildCargoArgs,
+} = require('../lib/bootstrap');
+
+async function makeArchiveTree({ resolver = 'file' } = {}) {
+  const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'amplihack-npm-2025-'));
+  const extractDir = path.join(root, 'extract', 'amplihack-x86_64-unknown-linux-gnu');
+  await fs.promises.mkdir(extractDir, { recursive: true });
+  await fs.promises.writeFile(path.join(extractDir, binaryFilename('amplihack')), 'main');
+  await fs.promises.writeFile(path.join(extractDir, binaryFilename('amplihack-hooks')), 'hooks');
+  const resolverName = binaryFilename('amplihack-asset-resolver');
+  if (resolver === 'file') {
+    await fs.promises.writeFile(path.join(extractDir, resolverName), 'resolver');
+  } else if (resolver === 'symlink') {
+    const outside = path.join(root, 'outside-resolver');
+    await fs.promises.writeFile(outside, 'outside');
+    await fs.promises.symlink(outside, path.join(extractDir, resolverName));
+  }
+  const binDir = path.join(root, 'bin');
+  await fs.promises.mkdir(binDir, { recursive: true });
+  return { root, extractDir: path.join(root, 'extract'), binDir, resolverName };
+}
+
+test('archive with a resolver: the bootstrap copies it beside amplihack', async () => {
+  const { extractDir, binDir, resolverName } = await makeArchiveTree({ resolver: 'file' });
+  await copyArchiveBinaries(extractDir, binDir);
+  assert.equal(fs.readFileSync(path.join(binDir, binaryFilename('amplihack')), 'utf8'), 'main');
+  assert.equal(fs.readFileSync(path.join(binDir, binaryFilename('amplihack-hooks')), 'utf8'), 'hooks');
+  assert.equal(fs.readFileSync(path.join(binDir, resolverName), 'utf8'), 'resolver');
+});
+
+test('archive without a resolver: the install still succeeds', async () => {
+  const { extractDir, binDir, resolverName } = await makeArchiveTree({ resolver: 'none' });
+  await copyArchiveBinaries(extractDir, binDir);
+  assert.ok(fs.existsSync(path.join(binDir, binaryFilename('amplihack'))));
+  assert.ok(fs.existsSync(path.join(binDir, binaryFilename('amplihack-hooks'))));
+  assert.equal(fs.existsSync(path.join(binDir, resolverName)), false);
+});
+
+test('archive with a resolver symlink: the symlink is not followed or copied', async () => {
+  const { extractDir, binDir, resolverName } = await makeArchiveTree({ resolver: 'symlink' });
+  await copyArchiveBinaries(extractDir, binDir);
+  assert.equal(fs.existsSync(path.join(binDir, resolverName)), false);
+});
+
+test('archive without amplihack-hooks still fails: only the resolver is optional', async () => {
+  const { extractDir, binDir } = await makeArchiveTree({ resolver: 'file' });
+  const hooks = path.join(extractDir, 'amplihack-x86_64-unknown-linux-gnu', binaryFilename('amplihack-hooks'));
+  await fs.promises.rm(hooks);
+  await assert.rejects(copyArchiveBinaries(extractDir, binDir), /Unable to locate/u);
+});
+
+test('findOptionalBinary returns null only when the file is absent', async () => {
+  const { root, extractDir, resolverName } = await makeArchiveTree({ resolver: 'none' });
+  assert.equal(findOptionalBinary(extractDir, resolverName), null);
+  const notADir = path.join(root, 'not-a-dir');
+  await fs.promises.writeFile(notADir, 'x');
+  assert.throws(() => findOptionalBinary(notADir, resolverName), (error) => error.code === 'ENOTDIR');
+});
+
+test('source build asks cargo for the resolver without dropping existing flags', () => {
+  const args = sourceBuildCargoArgs();
+  assert.deepEqual(args.slice(0, 3), ['build', '--release', '--locked']);
+  for (const bin of ['amplihack', 'amplihack-hooks', 'amplihack-asset-resolver']) {
+    const index = args.indexOf(bin);
+    assert.ok(index > 0 && args[index - 1] === '--bin', `missing --bin ${bin} in ${args.join(' ')}`);
+  }
+});

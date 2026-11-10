@@ -145,8 +145,9 @@ The install builds the whole release first, then switches the links:
 
 An install plans a link only when it has the file to put behind it. A full
 install plans all four when an `amplihack-asset-resolver` binary is available,
-and three otherwise. `amplihack update` plans only `amplihack` and
-`amplihack-hooks` (see [Self-heal and update](#self-heal-and-update)). A link
+and three otherwise. `amplihack update` plans `amplihack`,
+`amplihack-hooks` and, when its archive has one,
+`amplihack-asset-resolver` (see [Self-heal and update](#self-heal-and-update)). A link
 that is not planned is left alone and keeps pointing at its earlier release, so
 the links can point into different releases. Each one still points into a
 release with `.complete`.
@@ -385,16 +386,20 @@ and switches links like any install.
 
 1. downloads the release and checks its checksum (unchanged);
 2. allocates a release from the validated tag;
-3. copies `amplihack` and `amplihack-hooks` into it (the release archive has
-   no other binary);
-4. runs `--version` on the release binary and checks it matches the tag;
-5. switches only `amplihack-hooks` and `amplihack`;
-   `amplihack-asset-resolver` and `amplifier-bundle` stay on their earlier
-   release;
+3. copies `amplihack` and `amplihack-hooks` into it, and
+   `amplihack-asset-resolver` when the archive contains one (archives from
+   releases before issue #2025 do not);
+4. runs `--version` on the release binary and checks it matches the tag
+   (the resolver is never run);
+5. switches `amplihack-hooks` and `amplihack`, and `amplihack-asset-resolver`
+   when step 3 staged it; `amplifier-bundle`, and the resolver from an older
+   archive, stay on their earlier release;
 6. releases the lock and starts the new binary's install child. The child
    builds a further release with the binaries and the bundle, and switches
-   `amplihack-hooks`, `amplihack` and `amplifier-bundle`, plus
-   `amplihack-asset-resolver` only if it has a resolver binary to deploy. See
+   `amplihack-hooks`, `amplihack` and `amplifier-bundle`. When step 3 staged
+   a resolver, the child deploys that sibling of the new `amplihack`, which
+   is stripped for archives from issue #2025 onwards, and switches
+   `amplihack-asset-resolver` to it. See
    [post-update re-exec](../features/update-reexec-new-binary.md).
 
 If the child fails, the binaries point into the update's release and the

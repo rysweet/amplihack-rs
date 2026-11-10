@@ -8,6 +8,7 @@ pub(super) fn binary_filename(name: &'static str) -> &'static str {
         match name {
             "amplihack" => "amplihack.exe",
             "amplihack-hooks" => "amplihack-hooks.exe",
+            "amplihack-asset-resolver" => "amplihack-asset-resolver.exe",
             _ => name,
         }
     } else {
@@ -24,7 +25,14 @@ pub(crate) fn extract_archive(archive_bytes: &[u8], destination: &Path) -> Resul
     Ok(())
 }
 
-pub(super) fn find_binary(root: &Path, binary_name: &str) -> Result<PathBuf> {
+/// Finds `binary_name` in the extracted archive, or `Ok(None)` when no entry
+/// of that name exists.
+///
+/// Only absence is `Ok(None)`. An entry of that name that is a symlink is an
+/// error, so a link out of the archive is never installed, and any I/O error
+/// while walking the tree is returned. Symlinked directories are not
+/// followed.
+pub(super) fn find_optional_binary(root: &Path, binary_name: &str) -> Result<Option<PathBuf>> {
     fn search(root: &Path, binary_name: &str, depth: usize) -> Result<Option<PathBuf>> {
         if depth > 3 {
             return Ok(None);
@@ -50,10 +58,17 @@ pub(super) fn find_binary(root: &Path, binary_name: &str) -> Result<PathBuf> {
                     path.display()
                 )
             })?;
+            let name_matches = path.file_name() == Some(OsStr::new(binary_name));
             if file_type.is_symlink() {
+                if name_matches {
+                    bail!(
+                        "archive entry {} is a symlink; refusing to install it",
+                        path.display()
+                    );
+                }
                 continue;
             }
-            if file_type.is_file() && path.file_name() == Some(OsStr::new(binary_name)) {
+            if file_type.is_file() && name_matches {
                 return Ok(Some(path));
             }
             if file_type.is_dir()
@@ -65,6 +80,11 @@ pub(super) fn find_binary(root: &Path, binary_name: &str) -> Result<PathBuf> {
         Ok(None)
     }
 
-    search(root, binary_name, 0)?
+    search(root, binary_name, 0)
+}
+
+/// Finds a binary the archive must contain.
+pub(super) fn find_binary(root: &Path, binary_name: &str) -> Result<PathBuf> {
+    find_optional_binary(root, binary_name)?
         .ok_or_else(|| anyhow!("binary '{binary_name}' not found in downloaded archive"))
 }

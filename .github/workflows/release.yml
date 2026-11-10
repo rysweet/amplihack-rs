@@ -249,7 +249,7 @@ jobs:
           AMPLIHACK_RELEASE_VERSION: ${{ needs.version-bump.outputs.version }}
         run: |
           cargo build --release --locked --target ${{ matrix.target }} \
-            -p amplihack -p amplihack-hooks-bin \
+            -p amplihack -p amplihack-hooks-bin -p amplihack-asset-resolver-bin \
             --features amplihack-hooks-bin/signal
 
       - name: Save sccache disk cache
@@ -268,6 +268,9 @@ jobs:
           mkdir -p dist
           cp target/${{ matrix.target }}/release/amplihack dist/ 2>/dev/null || true
           cp target/${{ matrix.target }}/release/amplihack-hooks dist/ 2>/dev/null || true
+          # Issue #2025: no `|| true`, so a resolver missing from the build
+          # fails the job instead of shipping an archive without it.
+          cp target/${{ matrix.target }}/release/amplihack-asset-resolver dist/
           cd dist && tar czf ../amplihack-${{ matrix.target }}.tar.gz *
           cd .. && sha256sum amplihack-${{ matrix.target }}.tar.gz > amplihack-${{ matrix.target }}.tar.gz.sha256
 

@@ -325,12 +325,16 @@ staged destination.
 
 `amplihack update` copies the downloaded binaries into a new release under
 `~/.amplihack/releases/`, checks the release binary's version, then switches
-only the links it planned: `~/.local/bin/amplihack` and `amplihack-hooks`.
-`amplihack-asset-resolver` and `~/.amplihack/amplifier-bundle` stay on their
-earlier release. The post-install child then switches `amplifier-bundle`, and
-`amplihack-asset-resolver` only if it has a resolver binary to deploy. It holds `~/.amplihack/.install.lock` while it does
-this and releases it before it starts the post-install child, which takes the
-lock again. Runs already alive keep their old binary and bundle. See
+only the links it planned: `~/.local/bin/amplihack`, `amplihack-hooks` and,
+when the archive contains it, `amplihack-asset-resolver`. The resolver is
+optional: an archive without one (any release before issue #2025) updates as
+before, and the old resolver link is left alone. `~/.amplihack/amplifier-bundle`
+stays on its earlier release. The post-install child then switches
+`amplifier-bundle`. When update has staged a resolver beside the new
+`amplihack`, the child deploys that sibling, which is stripped for archives
+from issue #2025 onwards, and switches `amplihack-asset-resolver` to it.
+Update holds `~/.amplihack/.install.lock` while it does this and releases it
+before it starts the post-install child, which takes the lock again. Runs already alive keep their old binary and bundle. See
 [Versioned Install Layout](../concepts/versioned-install-layout.md#self-heal-and-update).
 
 ### Startup self-update prompt
