@@ -206,6 +206,15 @@ pub(super) fn stage_binary(txn: &mut ReleaseTxn, src: &Path, dst: &Path) -> Resu
     fs::create_dir_all(&bin_dir)
         .with_context(|| format!("failed to create {}", bin_dir.display()))?;
     let staged = bin_dir.join(name);
+    #[cfg(any(test, feature = "test-support"))]
+    if src.metadata()?.len() > super::test_support::footprint::INDEPENDENT_LIMIT {
+        use super::test_support::artifacts::{ArtifactRegistry, FilesystemLinks};
+        let mut artifacts = ArtifactRegistry::new();
+        artifacts.register(src)?;
+        artifacts.link_with(src, &staged, &bin_dir, &FilesystemLinks)?;
+        txn.plan_link(dst, &staged)?;
+        return Ok(true);
+    }
     fs::copy(src, &staged)
         .with_context(|| format!("failed to copy {} to {}", src.display(), staged.display()))?;
     #[cfg(unix)]
@@ -292,8 +301,12 @@ pub(super) fn deploy_binaries_into(
         // Issue #1526: as for hooks, a PATH copy may only fill an empty slot
         // during an implicit re-stage.
         let resolver_dst = local_bin.join(RESOLVER_BIN);
+        #[cfg(not(any(test, feature = "test-support")))]
         let path_lookup_allowed =
             mode == InstallMode::Explicit || resolver_dst.symlink_metadata().is_err();
+        #[cfg(any(test, feature = "test-support"))]
+        let resolver_src = Some(super::test_support::resolver_stub()?);
+        #[cfg(not(any(test, feature = "test-support")))]
         let resolver_src = self_src
             .parent()
             .map(|dir| dir.join(RESOLVER_BIN))

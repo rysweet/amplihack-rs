@@ -24,6 +24,8 @@ pub(crate) mod release_layout;
 mod settings;
 mod stale_wrappers;
 pub(crate) mod tag_fetch;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 mod types;
 mod uninstall;
 mod verification;

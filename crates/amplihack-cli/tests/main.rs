@@ -401,3 +401,7 @@ mod signal_validator_parity;
 mod spec_conformance;
 #[path = "system_prompt_append_fragment.rs"]
 mod system_prompt_append_fragment;
+
+#[cfg(unix)]
+#[path = "issue_2182_binary_isolation.rs"]
+mod issue_2182_binary_isolation;

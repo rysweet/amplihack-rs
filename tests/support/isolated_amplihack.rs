@@ -196,7 +196,10 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
             command.env(&key, value);
         }
     }
-    command.env_remove(PROFILE_ROOT_ENV);
+    command.env(PROFILE_ROOT_ENV, shared_temp_home().join("profiles"));
+    command.env("AMPLIHACK_HOME", shared_temp_home().join(".amplihack"));
+    command.env("CLAUDE_CONFIG_DIR", shared_temp_home().join(".claude"));
+    command.env("PATH", "/usr/bin:/bin");
     no_git_prompt(&mut command);
     // The toolchain lives under the real HOME unless these say otherwise; a
     // child that runs cargo must still find it after HOME moves.
