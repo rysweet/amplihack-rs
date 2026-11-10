@@ -256,7 +256,7 @@ helper from `$AMPLIHACK_HOME` and lowers `ci_status` to `MISSING`, `PENDING`,
 only noted; a job with a job-level `if:` absent from a completed run is only
 noted; jobs match by literal name or prefix; required checks match by
 name, not app id; the workflow list is read at the head only
-([details](../../../docs/reference/auto-drive-to-merge.md#limits-of-the-expected-set)).
+(details: "Limits of the expected set" in the full reference below).
 
 **An unreadable criterion is a failure, never a pass.** Unreadable CI, a
 missing expected check, zero reported checks, unreadable review threads, missing `qa-team` evidence, an
