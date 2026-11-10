@@ -424,6 +424,30 @@ for c in cancelled timed_out action_required stale startup_failure neutral; do
   expect "EC-R-${c}" "an expected job concluding ${c} gives RED" RED 1 \
     "blocker: expected check 'Recipe runner pin ancestry' is completed/${c} at ${HEAD}"
 done
+# S3: ci.yml cancels a running build when a new one starts for the same ref,
+# so a reopened PR or a re-pushed SHA leaves a cancelled earlier run at the
+# same head. The newer run of the same workflow decides; the older suite is
+# dropped.
+add_cancelled_ci_run() { # add_cancelled_ci_run <dir> <run_id>
+  local n
+  ec_run "$1" "$2" .github/workflows/ci.yml __HEAD__
+  ec_jq "$1/runs.json" '(.workflow_runs[] | select(.id == ($r|tonumber))) |= (.conclusion = "cancelled")' --arg r "$2"
+  for n in "Lint & Format" Test "Install Smoke Test" "Build x86_64-unknown-linux-gnu" "Build aarch64-unknown-linux-gnu"; do
+    ec_job "$1" "$2" "$n" completed cancelled
+  done
+}
+FX="$(new_fx)"; add_cancelled_ci_run "$FX" 999
+run_helper "$FX"
+expect "EC-S3-superseded-cancelled" "a cancelled earlier ci.yml run at the head, superseded by a green one, gives GREEN" GREEN 0
+FX="$(new_fx)"; add_cancelled_ci_run "$FX" 1003
+run_helper "$FX"
+expect "EC-S3-latest-cancelled" "when the latest ci.yml run at the head is the cancelled one, it blocks" RED 1 \
+  "blocker: expected check 'Test' is completed/cancelled at ${HEAD}"
+FX="$(new_fx)"; add_cancelled_ci_run "$FX" 999; ec_set_job "$FX" 1001 Test completed failure
+ec_jq "$FX/check-runs.json" '(.check_runs[] | select(.check_suite.id == 5999 and .name == "Test")) |= (.conclusion = "cancelled")'
+run_helper "$FX"
+expect "EC-S3-latest-failing" "dropping the superseded suite does not hide a failure in the latest run" RED 1 \
+  "blocker: expected check 'Test' is completed/failure at ${HEAD}"
 FX="$(new_fx)"; ec_set_job "$FX" 1001 Test in_progress null
 run_helper "$FX"
 check "EC-P-pending" "an expected check still running gives PENDING, exit 1" verdict_is PENDING 1

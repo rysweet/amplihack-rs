@@ -114,10 +114,11 @@ ec_wf() {
   fi
 }
 
-# ec_run <dir> <run_id> <path> <head_sha> [event]: adds a workflow run.
+# ec_run <dir> <run_id> <path> <head_sha> [event]: adds a workflow run. Its
+# check suite is run_id + 5000, the suite ec_job gives the run's check-runs.
 ec_run() {
   ec_jq "$1/runs.json" \
-    '.workflow_runs += [{id:($id|tonumber), name:$p, path:$p, head_sha:$h, event:$e, status:"completed", conclusion:"success"}] | .total_count = (.workflow_runs|length)' \
+    '.workflow_runs += [{id:($id|tonumber), name:$p, path:$p, head_sha:$h, event:$e, status:"completed", conclusion:"success", check_suite_id:(($id|tonumber) + 5000)}] | .total_count = (.workflow_runs|length)' \
     --arg id "$2" --arg p "$3" --arg h "$4" --arg e "${5:-pull_request}"
 }
 

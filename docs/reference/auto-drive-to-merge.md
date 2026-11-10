@@ -3126,6 +3126,14 @@ The run used for a workflow is the latest one (highest `id`) whose `path`
 matches, from `actions/runs?head_sha=<HEAD_SHA>&event=pull_request`. Its jobs
 come from `actions/runs/<id>/jobs`, latest attempt. Run ids must be all digits.
 
+An earlier run of the same workflow at the same head is superseded. `ci.yml`
+cancels a running build when a new one starts for the same ref, so closing and
+reopening a pull request, or pushing the same SHA again, leaves a cancelled
+earlier run at the head. The check-runs in the check suite of every superseded
+run (`check_suite_id` from `actions/runs`) are dropped before the required
+checks and the other checks at the head are evaluated. The latest run's own
+check-runs always count, so a cancelled or failing latest run still blocks.
+
 ### Matching a defined job to a reported job
 
 The expected display name is the job's literal `name:`, or its key when it has

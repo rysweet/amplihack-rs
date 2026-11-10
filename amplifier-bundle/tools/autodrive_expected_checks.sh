@@ -137,7 +137,7 @@ jq -r --slurpfile w "${T}/active.json" ".[] | select(test(\"${WF_RE}\") and (con
 read_into "${T}/runs.json" 1 "actions/runs?head_sha=${SHA}&event=pull_request&per_page=100" \
   'if all(.[]; type == "object" and (.workflow_runs | type) == "array") then [.[].workflow_runs[]]
      | if all(.[]; ((.id | tostring) | test("^[0-9]+$")) and (.path | type) == "string")
-       then [.[] | select(.head_sha == $sha) | {id: (.id | tonumber), path, status}]
+       then [.[] | select(.head_sha == $sha) | {id: (.id | tonumber), path, status, suite: (.check_suite_id // null)}]
        else error("run id or path") end
    else error("shape") end'
 
@@ -282,6 +282,8 @@ jq -s -c '.' "${T}/wfs.jsonl" > "${T}/wfs.json"
 # S1: check-runs are kept per (name, check suite), latest id; a required name
 # passes only if every kept run of that name passes, and a commit status never
 # overrides a failing check-run. Names are cleaned before they are printed.
+# S3: the check suite of a workflow run that a later run of the same workflow
+# at this head superseded (ci.yml cancels in-progress runs) is dropped first.
 # D8': a defined job missing from its run blocks as MISSING, except a job with
 # a job-level `if:`: GitHub does not always create one whose condition is false
 # (docs.yml `deploy`, observed on PR #2152), so once the run has completed it
@@ -300,7 +302,9 @@ def matches($j): . as $n | ($j | disp) as $d |
   else ($n == $d or ($n | startswith($j.key + " (")) or ($n | startswith($d + " / "))) end;
 def uniq: reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end);
 $req[0] as $req | $wfs[0] as $wfs | $st[0] as $st
-| ($cr[0] | group_by([.name, .suite]) | map(max_by(.id))) as $crd
+| [ $runs[0] | group_by(.path)[] | sort_by(.id) | .[:-1][] | .suite | select(. != null) ] as $old
+| ($cr[0] | map(select(.suite as $s | any($old[]; . == $s) | not))
+   | group_by([.name, .suite]) | map(max_by(.id))) as $crd
 | [ $unr[0][] | {k: "B", c: "U", t: ("expected checks unreadable: " + cl)} ] as $A
 | [ {k: "E", t: ("required: " + (if ($req | length) == 0 then "(none)" else ($req | map(cl) | join(", ")) end))} ] as $B
 | [ $wfs[] | . as $w |
@@ -359,6 +363,7 @@ $req[0] as $req | $wfs[0] as $wfs | $st[0] as $st
 # buffered so a failed evaluation prints nothing but the UNREADABLE verdict.
 if ! jq -n -r --arg sha "$SHA" --slurpfile req "${T}/req.json" --slurpfile cr "${T}/cr.json" \
      --slurpfile st "${T}/st.json" --slurpfile wfs "${T}/wfs.json" --slurpfile unr "${T}/unr.json" \
+     --slurpfile runs "${T}/runs.json" \
      "${EVAL} | .lines[], ({ci_status: .status, missing, blockers} | tojson)" > "${T}/result" 2>/dev/null; then
   fatal "the evaluation failed"
 fi
