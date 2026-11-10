@@ -12,7 +12,7 @@ pub(super) struct FinalizedRefusal {
     pub(super) envelope: Value,
 }
 
-pub(super) fn validate_state_directory(dir: &Path) -> Result<()> {
+pub(crate) fn validate_state_directory(dir: &Path) -> Result<()> {
     let absolute = if dir.is_absolute() {
         dir.to_path_buf()
     } else {
@@ -54,9 +54,9 @@ pub(super) fn validate_state_directory(dir: &Path) -> Result<()> {
         bail!("unsafe state directory");
     }
     #[cfg(unix)]
-    if m.mode() & 0o022 != 0 || m.uid() != unsafe { libc::geteuid() } {
+    if m.mode() & 0o077 != 0 || m.uid() != unsafe { libc::geteuid() } {
         bail!(
-            "state directory must be owned by current user without group or world write permission"
+            "state directory must be owned by current user with owner-only permissions (chmod 700 after inspecting the directory)"
         );
     }
     Ok(())
@@ -76,7 +76,7 @@ fn persist(dir: &Path, value: &Value) -> Result<()> {
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
             .open(dir)?;
         let m = directory.metadata()?;
-        if m.mode() & 0o022 != 0 || m.uid() != unsafe { libc::geteuid() } {
+        if m.mode() & 0o077 != 0 || m.uid() != unsafe { libc::geteuid() } {
             bail!("state directory changed ownership or permissions");
         }
         let name = std::ffi::CString::new(format!(".preflight-{}", uuid::Uuid::new_v4()))?;
@@ -165,12 +165,13 @@ pub(super) fn finalize_refusal(
     context: FinalizationContext<'_>,
     mut v: Value,
 ) -> Result<FinalizedRefusal> {
+    super::diagnostic::sanitize_value(&mut v);
     let r = context.request;
     let cwd = context.cwd;
 
     v["persistence"] = json!({"initial_record_written":true});
     if let Err(e) = persist(&r.state_dir, &v) {
-        v["persistence_error"] = json!(e.to_string());
+        v["persistence_error"] = json!(super::diagnostic::sanitize(&e.to_string()));
         v["persistence"]["initial_record_written"] = json!(false);
     }
     let outcome: RefusalOutcome = serde_json::from_value(v["outcome"].clone())?;
@@ -231,20 +232,46 @@ pub(super) fn finalize_refusal(
             }
         }
     }
+    let body = super::diagnostic::sanitize(&body);
     let pr = r.pr.to_string();
     let mut comment = vec!["pr", "comment", &pr, "--body", &body];
     if identity(&r.repo) {
         comment.extend(["--repo", &r.repo]);
     }
     if let Err(e) = output(cwd, "gh", &comment) {
-        v["publication_error"] = json!(e.to_string());
+        v["publication_error"] = json!(super::diagnostic::sanitize(&e.to_string()));
     }
     if let Err(e) = persist(&r.state_dir, &v) {
-        v["persistence_error"] = json!(e.to_string());
-    }
-    if let Err(e) = super::super::autodrive_provenance::publish(&v) {
-        v["provenance_error"] = json!(e.to_string());
+        v["persistence_error"] = json!(super::diagnostic::sanitize(&e.to_string()));
     }
 
     Ok(FinalizedRefusal { envelope: v })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn issue_2188_only_owner_private_directories_preserve_recovery_records() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("state");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        persist(&dir, &json!({"recovery":"preserve"})).unwrap();
+        let original = fs::read(dir.join("preflight-result.json")).unwrap();
+        for mode in [0o755, 0o750, 0o770, 0o777, 0o707] {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(persist(&dir, &json!({"replacement":true})).is_err());
+            assert_eq!(
+                fs::read(dir.join("preflight-result.json")).unwrap(),
+                original
+            );
+            assert_eq!(
+                fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+                mode
+            );
+        }
+    }
 }

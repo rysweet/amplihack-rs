@@ -1,5 +1,6 @@
-//! Regression contract for #2188. Uses real Git, a local transport behind a GitHub
-//! URL rewrite, and fake gh. No credentials, real profile roots, or timers.
+//! Regression contract for #2188. Uses real Git, fake gh and an offline wire
+//! substitute after destination validation. Denial tests use real Git rewrites.
+//! No credentials, real profile roots, or timers.
 //! CLI contract: --pr, --repo, --branch, --state-dir; schema_version/outcome
 //! are envelope fields. Hooks provide deterministic race boundaries.
 #![cfg(unix)]
@@ -116,6 +117,41 @@ impl Fixture {
             "https://github.com/source/project.git",
         ]);
         f.git(&["push", "-q", "origin", "HEAD:refs/heads/feature"]);
+        // Keep real Git object/ref/hook behavior while replacing only the HTTPS
+        // wire in this offline fixture. Production policy still sees canonical
+        // GitHub destinations; only the test executable enables file transport.
+        let real_git = f.command("git").args(["--exec-path"]).output().unwrap();
+        assert!(real_git.status.success());
+        let git_path = std::fs::canonicalize(f.tmp.path().join("bin/git"))
+            .ok()
+            .unwrap_or_else(|| PathBuf::from("/usr/bin/git"));
+        fs::remove_file(f.tmp.path().join("bin/git")).ok();
+        f.script(
+            "bin/git",
+            &format!(
+                r#"#!/bin/bash
+args=(); isolated=0
+for arg in "$@"; do
+  case "$arg" in --git-dir=*) isolated=1;; esac
+done
+for arg in "$@"; do
+  if [ "$isolated" = 1 ] && [ "$arg" = https://github.com/source/project.git ]; then
+    args+=("$FIXTURE/source.git")
+  else args+=("$arg"); fi
+done
+if [ "$isolated" = 1 ]; then args=(-c protocol.file.allow=always "${{args[@]}}"); fi
+exec '{}' "${{args[@]}}"
+"#,
+                git_path.display()
+            ),
+        );
+        f.git(&[
+            "config",
+            "--global",
+            "--unset-all",
+            &format!("url.{}.insteadOf", f.remote.display()),
+        ]);
+        f.git(&["remote", "set-url", "origin", f.remote.to_str().unwrap()]);
         let metadata = json!({"number":7,"state":"OPEN","merged":false,"isCrossRepository":true,"headRefName":"feature","headRefOid":f.base,"headRepository":{"name":"project","nameWithOwner":"source/project","url":"https://github.com/source/project"},"headRepositoryOwner":{"login":"source"},"baseRepository":{"nameWithOwner":"target/project"}});
         fs::write(f.tmp.path().join("metadata"), metadata.to_string()).unwrap();
         f.script("bin/gh", "#!/bin/sh\ncase \"$1 $2\" in\n 'pr view') cat \"$FIXTURE/metadata\";;\n 'pr comment') printf 'comment\\n' >> \"$FIXTURE/comments\"; test ! -f \"$FIXTURE/comment-fails\";;\n *) exit 2;;\nesac\n");
@@ -157,12 +193,13 @@ impl Fixture {
         assert_eq!(
             o.status.code(),
             Some(status),
-            "{}",
-            String::from_utf8_lossy(&o.stderr)
+            "stderr={} stdout={}",
+            String::from_utf8_lossy(&o.stderr),
+            String::from_utf8_lossy(&o.stdout)
         );
         let v: Value = serde_json::from_slice(&o.stdout).expect("exactly one JSON envelope");
         assert_eq!(v["schema_version"], 1);
-        assert_eq!(v["outcome"], outcome);
+        assert_eq!(v["outcome"], outcome, "{v}");
         v
     }
 
@@ -432,7 +469,7 @@ impl Fixture {
 case "$1 $2" in
  'repo view') printf 'target/project\n';;
  'pr view') case "$*" in *'--jq .state'*) echo OPEN;; *) cat "$FIXTURE/metadata";; esac;;
- 'pr comment') printf 'comment\n' >> "$FIXTURE/comments"; test ! -f "$FIXTURE/comment-fails";;
+ 'pr comment') printf 'comment\n' >> "$FIXTURE/comments"; printf '%s\n' "$*" > "$FIXTURE/comment-body"; test ! -f "$FIXTURE/comment-fails";;
  *) exit 2;;
 esac
 "#,
@@ -603,8 +640,9 @@ fn both_loops_keep_primary_refusal_when_state_is_a_symlink() {
         assert_eq!(
             o.status.code(),
             Some(1),
-            "{}",
-            String::from_utf8_lossy(&o.stderr)
+            "stderr={} stdout={}",
+            String::from_utf8_lossy(&o.stderr),
+            String::from_utf8_lossy(&o.stdout)
         );
         let v: Value = serde_json::from_slice(&o.stdout).unwrap();
         assert_eq!(v["outcome"], "pr-worktree-dirty");
@@ -893,12 +931,12 @@ esac
 }
 
 #[test]
-fn synchronized_existing_nonwritable_state_directory_keeps_its_permissions() {
+fn synchronized_existing_public_state_directory_is_refused_without_chmod() {
     let f = Fixture::new();
     let state = f.tmp.path().join("state");
     fs::create_dir(&state).unwrap();
     fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
-    f.envelope(0, "ready");
+    f.envelope(1, "pr-worktree-comparison-failed");
     assert_eq!(
         fs::metadata(&state).unwrap().permissions().mode() & 0o777,
         0o755
@@ -913,12 +951,6 @@ fn executable_remote_transport_is_rejected_even_if_enabled_in_configuration() {
         "remote-helper",
         "#!/bin/sh\nprintf invoked > \"$FIXTURE/executed-helper\"\nexit 1\n",
     );
-    f.git(&[
-        "config",
-        "--global",
-        "--unset-all",
-        &format!("url.{}.insteadOf", f.remote.display()),
-    ]);
     f.git(&["config", "--global", "protocol.ext.allow", "always"]);
     f.git(&[
         "config",
@@ -943,4 +975,89 @@ fn sequencer_between_cherry_picks_is_still_an_interrupted_operation() {
     fs::write(sequencer.join("head"), &f.base).unwrap();
     f.refusal("pr-worktree-interrupted");
     assert_eq!(fs::read_to_string(sequencer.join("todo")).unwrap(), todo);
+}
+
+#[test]
+fn destination_policy_rejects_custom_helpers_rewrites_and_multiple_push_urls() {
+    for (key, destination) in [
+        ("insteadOf", "reviewprobe::payload"),
+        ("pushInsteadOf", "reviewprobe::payload"),
+        ("insteadOf", "https://github.com/unintended/repo.git"),
+        ("pushInsteadOf", "https://github.com/unintended/repo.git"),
+    ] {
+        let f = Fixture::new();
+        f.script(
+            "bin/git-remote-reviewprobe",
+            "#!/bin/sh\ntouch \"$FIXTURE/executed-helper\"\nexit 1\n",
+        );
+        let before = fs::read(f.remote.join("refs/heads/feature")).unwrap();
+        f.git(&[
+            "config",
+            "--global",
+            &format!("url.{destination}.{key}"),
+            "https://github.com/source/project.git",
+        ]);
+        f.git(&["config", "--global", "protocol.reviewprobe.allow", "always"]);
+        f.refusal("pr-worktree-comparison-failed");
+        assert!(!f.tmp.path().join("executed-helper").exists());
+        assert_eq!(
+            fs::read(f.remote.join("refs/heads/feature")).unwrap(),
+            before
+        );
+    }
+    let f = Fixture::new();
+    for url in [
+        "https://github.com/source/project.git",
+        "https://github.com/unintended/repo.git",
+    ] {
+        f.git(&["config", "--add", "remote.amplihack-preflight.pushurl", url]);
+    }
+    f.refusal("pr-worktree-comparison-failed");
+}
+
+#[test]
+fn sensitive_subprocess_diagnostics_are_sanitized_in_stdout_and_state() {
+    let f = Fixture::new();
+    f.script("bin/gh", "#!/bin/sh\nprintf '\\033[31mmetadata failed\\033[0m https://user:secret@github.com/a/b\\nAuthorization: Bearer hidden\\n\\033]0;window\\007context remains\\n' >&2\nexit 1\n");
+    let o = f.run();
+    assert!(!o.status.success());
+    let state = fs::read(f.tmp.path().join("state/preflight-result.json")).unwrap();
+    for bytes in [&o.stdout, &state] {
+        let text = String::from_utf8_lossy(bytes);
+        for secret in [
+            "user:secret",
+            "Bearer",
+            "hidden",
+            "window",
+            "\\u001b",
+            "\\u0007",
+        ] {
+            assert!(!text.contains(secret), "{text}");
+        }
+        assert!(text.contains("metadata failed"));
+        assert!(text.contains("context remains"));
+    }
+}
+
+#[test]
+fn rewritten_destination_after_validation_cannot_reach_network_execution() {
+    let f = Fixture::new();
+    f.script(
+        "bin/git-remote-reviewprobe",
+        "#!/bin/sh\ntouch \"$FIXTURE/executed-helper\"\nexit 1\n",
+    );
+    let wrapper = fs::read_to_string(f.tmp.path().join("bin/git")).unwrap();
+    let injection = r#"
+if [ "$isolated" = 1 ]; then
+  case " $* " in
+    *' fetch '*|*' push '*|*' ls-remote '*)
+      printf '[url "reviewprobe::payload"]\n insteadOf = https://github.com/source/project.git\n' > "$FIXTURE/gitconfig";;
+  esac
+fi
+exec '"#;
+    f.script("bin/git", &wrapper.replace("\nexec '", injection));
+    // The command has already captured policy and disabled the global config;
+    // a later write cannot redirect even the first network operation.
+    f.envelope(1, "pr-worktree-comparison-failed");
+    assert!(!f.tmp.path().join("executed-helper").exists());
 }

@@ -5,55 +5,19 @@ use std::{
     fs,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    process::{Command, ExitStatus, Stdio},
-    time::{Duration, Instant},
+    process::{Command, Stdio},
 };
 
+#[path = "autodrive_preflight/diagnostic.rs"]
+mod diagnostic;
 #[path = "autodrive_preflight/finalization.rs"]
 mod finalization;
-use finalization::{FinalizationContext, finalize_refusal, validate_state_directory};
+#[path = "autodrive_preflight/transport.rs"]
+mod transport;
+pub(super) use finalization::validate_state_directory;
+use finalization::{FinalizationContext, finalize_refusal};
 
 const SCHEMA_VERSION: u8 = 1;
-
-// A stuck transport or hook must not prevent refusal finalization. Do not retry:
-// a timed-out push or comment may already have reached the remote service.
-fn run_bounded(command: &mut Command, timeout: Duration) -> Result<ExitStatus> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    let mut child = command.spawn()?;
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) if started.elapsed() < timeout => {
-                std::thread::sleep(Duration::from_millis(20));
-                continue;
-            }
-            result => {
-                // Kill the isolated group as well as the direct child: Git can
-                // have a transport or hook still running after its own exit.
-                #[cfg(unix)]
-                unsafe {
-                    libc::kill(-(child.id() as i32), libc::SIGKILL);
-                }
-                let _ = child.kill();
-                child
-                    .wait()
-                    .context("failed to reap preflight subprocess")?;
-                if let Err(error) = result {
-                    return Err(error.into());
-                }
-                bail!(
-                    "preflight subprocess timed out after {} seconds; remote effects may have completed",
-                    timeout.as_secs()
-                );
-            }
-        }
-    }
-}
 
 #[derive(serde::Serialize)]
 struct Ready<'a> {
@@ -128,15 +92,30 @@ pub struct PreflightRequest {
     pub state_dir: PathBuf,
 }
 
-fn output(at: &Path, program: &str, args: &[&str]) -> Result<Vec<u8>> {
+pub(super) fn output(at: &Path, program: &str, args: &[&str]) -> Result<Vec<u8>> {
     let mut command = if program == "git" {
         amplihack_git::command_in(at)
     } else {
         Command::new(program)
     };
     amplihack_git::scrub(&mut command);
+    let _transport =
+        if program == "git" && matches!(args.first(), Some(&"fetch" | &"push" | &"ls-remote")) {
+            let url = args
+                .iter()
+                .find(|arg| arg.starts_with("https://github.com/"))
+                .context("destination-policy: missing canonical source destination")?;
+            Some(transport::configure(&mut command, at, url)?)
+        } else {
+            None
+        };
     if program == "git" {
-        command.args(["-c", "protocol.ext.allow=never"]);
+        command.args([
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.https.allow=always",
+        ]);
     }
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
@@ -146,13 +125,7 @@ fn output(at: &Path, program: &str, args: &[&str]) -> Result<Vec<u8>> {
         .stdin(Stdio::null())
         .stdout(stdout.try_clone()?)
         .stderr(stderr.try_clone()?);
-    let timeout = if program == "gh" {
-        Duration::from_secs(60)
-    } else {
-        // Push hooks may legitimately run the full build and test suite.
-        Duration::from_secs(3600)
-    };
-    let status = run_bounded(&mut command, timeout)?;
+    let status = command.status()?;
     stdout.seek(SeekFrom::Start(0))?;
     stderr.seek(SeekFrom::Start(0))?;
     let mut bytes = Vec::new();
@@ -163,7 +136,7 @@ fn output(at: &Path, program: &str, args: &[&str]) -> Result<Vec<u8>> {
         bail!(
             "{program} failed ({}): {}",
             status,
-            String::from_utf8_lossy(&diagnostic)
+            diagnostic::sanitize(&String::from_utf8_lossy(&diagnostic))
         );
     }
     if bytes.len() > 1024 * 1024 {
@@ -171,7 +144,7 @@ fn output(at: &Path, program: &str, args: &[&str]) -> Result<Vec<u8>> {
     }
     Ok(bytes)
 }
-fn git(at: &Path, args: &[&str]) -> Result<String> {
+pub(super) fn git(at: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8(output(at, "git", args)?)?.trim().into())
 }
 fn identity(s: &str) -> bool {
@@ -581,15 +554,14 @@ fn evaluate(r: &PreflightRequest, cwd: &Path) -> Result<Value> {
     })?)
 }
 /// Evaluate once, finalize refusals, and emit one versioned envelope.
-pub fn run(mut r: PreflightRequest) -> Result<()> {
+pub(crate) fn inspect(mut r: PreflightRequest, cwd: &Path) -> Result<Value> {
     if r.pr == 0 || (r.repo != "." && !identity(&r.repo)) {
         bail!("invalid PR number or repository identity");
     }
-    let cwd = std::env::current_dir()?;
     let decision = (|| -> Result<Value> {
         if r.repo == "." {
             r.repo = String::from_utf8(output(
-                &cwd,
+                cwd,
                 "gh",
                 &[
                     "repo",
@@ -606,7 +578,7 @@ pub fn run(mut r: PreflightRequest) -> Result<()> {
                 bail!("repository identity is unavailable");
             }
         }
-        evaluate(&r, &cwd)
+        evaluate(&r, cwd)
     })();
     let mut v = decision.unwrap_or_else(|e| {
         refusal(
@@ -627,50 +599,25 @@ pub fn run(mut r: PreflightRequest) -> Result<()> {
         v["repository"] = json!(r.repo);
     }
     if v["outcome"] != "ready" {
-        let v = finalize_refusal(
-            FinalizationContext {
-                request: &r,
-                cwd: &cwd,
-            },
-            v,
-        )?;
-        println!("{}", v.envelope);
+        let v = finalize_refusal(FinalizationContext { request: &r, cwd }, v)?;
+        return Ok(v.envelope);
+    }
+    Ok(v)
+}
+
+/// CLI adapter; the runner uses the same in-process decision directly.
+pub fn run(r: PreflightRequest) -> Result<()> {
+    let v = inspect(r, &std::env::current_dir()?)?;
+    println!("{v}");
+    if v["terminal_refusal"] == true {
         std::process::exit(1);
     }
-    println!("{v}");
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(unix)]
-    #[test]
-    fn issue_2188_external_command_timeout_is_an_error_without_retry() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "while :; do :; done"]);
-        let error = run_bounded(&mut command, Duration::ZERO).unwrap_err();
-        assert!(error.to_string().contains("timed out"));
-        assert!(
-            error
-                .to_string()
-                .contains("remote effects may have completed")
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn issue_2188_external_command_preserves_service_exit_status() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "exit 7"]);
-        assert_eq!(
-            run_bounded(&mut command, Duration::from_secs(5))
-                .unwrap()
-                .code(),
-            Some(7)
-        );
-    }
 
     #[test]
     fn issue_2188_git_paths_preserve_invalid_utf8_and_rename_endpoints() {

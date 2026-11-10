@@ -819,6 +819,34 @@ pub(super) fn execute_recipe_via_rust(
             )
             .with_settings(run_settings.clone());
             workspace.borrow_mut().record_attempt(correlation.run_id());
+            if !dry_run {
+                match crate::commands::orch::autodrive_runner::inspect(
+                    &recipe_name,
+                    context,
+                    working_dir,
+                ) {
+                    Ok(Some(envelope)) => {
+                        let outcome = serde_json::from_value(envelope["outcome"].clone())
+                            .expect("runner preflight returns a known refusal");
+                        correlation.emit_early();
+                        let summary = correlation
+                            .with_preflight_refusal(envelope.clone())
+                            .emit_final(
+                                RecipeRunFinalStatus::PreflightRefusal(outcome),
+                                None,
+                                None,
+                                known_log_paths(None),
+                            );
+                        return AttemptOutcome::Final(serde_json::from_value(serde_json::json!({
+                            "recipe_name":recipe_name, "success":false, "status":outcome.as_str(),
+                            "run_id":summary.run_id, "log_pointer":summary,
+                            "autodrive_preflight_refusal":envelope,
+                        })).map_err(Into::into));
+                    }
+                    Ok(None) => {}
+                    Err(error) => return AttemptOutcome::Final(Err(error)),
+                }
+            }
             let command = match build_command(correlation.run_id()) {
                 Ok(built) => built,
                 // Failing to BUILD the invocation (temp file, project graph db)
@@ -1020,8 +1048,6 @@ fn spawn_with_streaming_stderr(
     tree_id: &str,
     stderr_sink: &mut String,
 ) -> Result<RecipeRunResult> {
-    let preflight_channel =
-        crate::commands::orch::autodrive_provenance::ChannelOwner::attach(&mut command)?;
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
     {
@@ -1262,31 +1288,6 @@ fn spawn_with_streaming_stderr(
     // Issue #1267: hand the tail back to the caller so a failure can be
     // classified from everything the runner said, not just its JSON.
     stderr_sink.clone_from(&stderr_joined);
-    if let Some(envelope) = preflight_channel.read().map_err(|error| {
-        fail_with_final_record(
-            &correlation,
-            RecipeRunFinalStatus::ParseFailure,
-            child_pid,
-            status.code(),
-            error,
-        )
-    })? {
-        let outcome: crate::commands::orch::autodrive_preflight::RefusalOutcome =
-            serde_json::from_value(envelope["outcome"].clone())?;
-        let summary = correlation
-            .with_preflight_refusal(envelope.clone())
-            .emit_final(
-                RecipeRunFinalStatus::PreflightRefusal(outcome),
-                child_pid,
-                status.code(),
-                known_log_paths(None),
-            );
-        return Ok(serde_json::from_value(serde_json::json!({
-            "recipe_name": recipe_name_for_correlation(recipe_path),
-            "success": false, "status": outcome.as_str(), "run_id": summary.run_id,
-            "log_pointer": summary, "autodrive_preflight_refusal": envelope,
-        }))?);
-    }
     match parse_recipe_output_with_stderr_drops(
         &stdout_buf,
         &stderr_joined,
@@ -1294,10 +1295,9 @@ fn spawn_with_streaming_stderr(
         dropped,
     ) {
         Ok(mut result) => {
-            // This reserved field is created only by the private channel
-            // above. A child JSON result cannot assert helper provenance.
+            // Child output never establishes execution authority.
             result.extra.remove("autodrive_preflight_refusal");
-            if crate::commands::orch::autodrive_provenance::known(
+            if crate::commands::orch::autodrive_runner::known(
                 result.status.as_deref().unwrap_or(""),
             ) {
                 result.status = Some("failure".into());

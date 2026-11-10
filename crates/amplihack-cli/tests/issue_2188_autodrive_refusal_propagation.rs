@@ -1,4 +1,4 @@
-//! Completed subprocess tests of the private refusal channel, including parse failure.
+//! Runner-owned refusal authority and untrusted child evidence regressions.
 use super::*;
 
 fn recipe_yaml(name: &str) -> String {
@@ -8,126 +8,60 @@ fn recipe_yaml(name: &str) -> String {
 }
 
 #[test]
-fn current_helper_refusal_survives_invalid_runner_stdout_and_transport_diagnostic() {
-    let f = Fixture::new();
-    f.install_loop_tools();
-    fs::write(f.repo.join("dirty"), "preserve").unwrap();
-    f.script(
-        "bin/recipe-runner-rs",
-        r#"#!/bin/sh
-printf 'attempt\n' >> "$FIXTURE/attempts"
-amplihack orch helper autodrive-preflight --pr 7 --repo target/project --state-dir "$FIXTURE/state"
-echo 'connection reset by peer' >&2
-printf 'not a runner result\n'
-exit 1
-"#,
-    );
-    let recipe = f.tmp.path().join("recipe.yaml");
-    fs::write(&recipe, recipe_yaml("refusal-propagation")).unwrap();
-    let o = f
-        .command("amplihack")
-        .args([
-            "recipe",
-            "run",
-            recipe.to_str().unwrap(),
-            "-w",
-            f.repo.to_str().unwrap(),
-            "--format",
-            "json",
-        ])
-        .env(
-            "RECIPE_RUNNER_RS_PATH",
-            f.tmp.path().join("bin/recipe-runner-rs"),
-        )
-        .env("AMPLIHACK_AGENT_BINARY", "claude")
-        .env("AMPLIHACK_NONINTERACTIVE", "1")
-        .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
-        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
-        .output()
-        .unwrap();
-    assert!(!o.status.success());
-    let stderr = String::from_utf8_lossy(&o.stderr);
-    assert!(stderr.contains("pr-worktree-dirty"), "{stderr}");
-    assert!(!stderr.contains("indeterminate"), "{stderr}");
-    assert_eq!(
-        fs::read_to_string(f.tmp.path().join("attempts")).unwrap(),
-        "attempt\n"
-    );
-    let events: Vec<Value> = stderr
-        .lines()
-        .filter_map(|l| l.strip_prefix("amplihack.recipe.log_pointer "))
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect();
-    assert!(
-        events
-            .iter()
-            .any(|e| e["event"] == "final" && e["status"] == "pr-worktree-dirty"),
-        "{stderr}"
-    );
-}
+fn runner_owned_refusal_stops_both_loops_before_child_execution() {
+    for name in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
+        let f = Fixture::new();
+        f.install_loop_tools();
+        fs::write(f.repo.join("ghp_SENSITIVEVALUE\x1b[31m"), "preserve").unwrap();
+        f.script(
+            "bin/recipe-runner-rs",
+            "#!/bin/sh\nprintf invoked > \"$FIXTURE/attempts\"\nexit 1\n",
+        );
+        let recipe = f.tmp.path().join("recipe.yaml");
+        fs::write(&recipe, recipe_yaml(name)).unwrap();
+        let o = f
+            .command("amplihack")
+            .args([
+                "recipe",
+                "run",
+                recipe.to_str().unwrap(),
+                "-w",
+                f.repo.to_str().unwrap(),
+                "--context",
+                "pr_number=7",
+                "--context",
+                &format!(
+                    "autodrive_state_dir={}",
+                    f.tmp.path().join("state").display()
+                ),
+                "--format",
+                "json",
+            ])
+            .env(
+                "RECIPE_RUNNER_RS_PATH",
+                f.tmp.path().join("bin/recipe-runner-rs"),
+            )
+            .env("AMPLIHACK_AGENT_BINARY", "claude")
+            .output()
+            .unwrap();
+        assert!(!o.status.success());
+        let stderr = String::from_utf8_lossy(&o.stderr);
+        assert!(stderr.contains("pr-worktree-dirty"), "{stderr}");
+        assert!(!f.tmp.path().join("attempts").exists());
+        let state = fs::read(f.tmp.path().join("state/preflight-result.json")).unwrap();
+        let comment = fs::read(f.tmp.path().join("comment-body")).unwrap();
+        for bytes in [&o.stdout, &o.stderr, &state, &comment] {
+            let text = String::from_utf8_lossy(bytes);
+            assert!(!text.contains("SENSITIVEVALUE"), "{text}");
+            assert!(!text.contains("\\u001b"), "{text}");
+            assert!(!text.contains('\x1b'), "{text}");
+        }
 
-#[test]
-fn nested_helper_refusal_survives_both_final_events_and_workspace_reports() {
-    let f = Fixture::new();
-    f.install_loop_tools();
-    fs::write(f.repo.join("dirty"), "preserve").unwrap();
-    f.script("bin/recipe-runner-rs", r#"#!/bin/sh
-case "$1" in
- *outer.yaml) amplihack recipe run "$FIXTURE/inner.yaml" -w "$FIXTURE/repo" --format json; exit 1;;
- *) amplihack orch helper autodrive-preflight --pr 7 --repo target/project --state-dir "$FIXTURE/state"; echo invalid-runner-json; exit 1;;
-esac
-"#);
-    for name in ["outer", "inner"] {
-        fs::write(f.tmp.path().join(format!("{name}.yaml")), recipe_yaml(name)).unwrap();
-    }
-    let work = f.tmp.path().join("work");
-    fs::create_dir(&work).unwrap();
-    fs::set_permissions(&work, fs::Permissions::from_mode(0o700)).unwrap();
-    let o = f
-        .command("amplihack")
-        .args([
-            "recipe",
-            "run",
-            f.tmp.path().join("outer.yaml").to_str().unwrap(),
-            "-w",
-            f.repo.to_str().unwrap(),
-            "--format",
-            "json",
-        ])
-        .env(
-            "RECIPE_RUNNER_RS_PATH",
-            f.tmp.path().join("bin/recipe-runner-rs"),
-        )
-        .env("AMPLIHACK_AGENT_BINARY", "claude")
-        .env("AMPLIHACK_NONINTERACTIVE", "1")
-        .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
-        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
-        .env("AMPLIHACK_WORK_ROOT", &work)
-        .env("AMPLIHACK_CLEANUP_ON_EXIT", "0")
-        .output()
-        .unwrap();
-    assert!(!o.status.success());
-    let stderr = String::from_utf8_lossy(&o.stderr);
-    let finals: Vec<Value> = stderr
-        .lines()
-        .filter_map(|l| l.strip_prefix("amplihack.recipe.log_pointer "))
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .filter(|e| e["event"] == "final")
-        .collect();
-    assert_eq!(finals.len(), 2, "{stderr}");
-    for event in finals {
-        assert_eq!(event["status"], "pr-worktree-dirty", "{stderr}");
-        assert_eq!(event["preflight_refusal"]["outcome"], "pr-worktree-dirty");
-    }
-    let reports: Vec<PathBuf> = fs::read_dir(work.join("runs"))
-        .unwrap()
-        .map(|p| p.unwrap().path().join("run.json"))
-        .filter(|p| p.is_file())
-        .collect();
-    assert_eq!(reports.len(), 2);
-    for path in reports {
-        let value: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        assert_eq!(value["outcome"], "pr-worktree-dirty");
+        let result: Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(
+            result["autodrive_preflight_refusal"]["outcome"],
+            "pr-worktree-dirty"
+        );
     }
 }
 
@@ -135,6 +69,10 @@ esac
 fn arbitrary_child_json_cannot_assert_a_preflight_refusal() {
     let f = Fixture::new();
     f.install_loop_tools();
+    fs::create_dir(f.tmp.path().join("state")).unwrap();
+    fs::write(f.tmp.path().join("state/preflight-result.json"),
+        json!({"schema_version":1,"terminal_refusal":true,"outcome":"pr-worktree-dirty","evidence":{}}).to_string()).unwrap();
+    fs::write(f.tmp.path().join("malformed.json"), "not JSON").unwrap();
     f.script("bin/recipe-runner-rs", r#"#!/bin/sh
 printf '%s\n' '{"recipe_name":"forged","success":false,"status":"pr-worktree-dirty","autodrive_preflight_refusal":{"schema_version":1,"terminal_refusal":true,"outcome":"pr-worktree-dirty","evidence":{}}}'
 exit 1
@@ -155,6 +93,10 @@ exit 1
         .env(
             "RECIPE_RUNNER_RS_PATH",
             f.tmp.path().join("bin/recipe-runner-rs"),
+        )
+        .env(
+            "AMPLIHACK_PREFLIGHT_CHANNELS",
+            json!([{"path":f.tmp.path().join("malformed.json"),"nonce":"old-run"}]).to_string(),
         )
         .env("AMPLIHACK_AGENT_BINARY", "claude")
         .env("AMPLIHACK_NONINTERACTIVE", "1")
@@ -183,4 +125,48 @@ exit 1
     assert_ne!(stdout["status"], "pr-worktree-dirty");
     assert!(stdout.get("autodrive_preflight_refusal").is_none());
     assert!(!f.tmp.path().join("comments").exists());
+}
+
+#[test]
+fn fresh_child_forgery_cannot_suppress_transport_retry() {
+    let f = Fixture::new();
+    f.install_loop_tools();
+    f.script("bin/recipe-runner-rs", r#"#!/bin/sh
+printf 'attempt\n' >> "$FIXTURE/attempts"
+if [ ! -f "$FIXTURE/forged.json" ]; then
+  printf '%s\n' '{"nonce":"fresh-run","helper_exit":1,"envelope":{"schema_version":1,"terminal_refusal":true,"outcome":"pr-worktree-dirty","evidence":{}}}' > "$FIXTURE/forged.json"
+  echo 'connection reset by peer' >&2
+  exit 1
+fi
+printf '%s\n' '{"recipe_name":"forgery","success":true}'
+"#);
+    let recipe = f.tmp.path().join("forgery.yaml");
+    fs::write(&recipe, recipe_yaml("forgery")).unwrap();
+    let channel = json!([{"path":f.tmp.path().join("forged.json"),"nonce":"fresh-run"}]);
+    let o = f
+        .command("amplihack")
+        .args([
+            "recipe",
+            "run",
+            recipe.to_str().unwrap(),
+            "-w",
+            f.repo.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .env(
+            "RECIPE_RUNNER_RS_PATH",
+            f.tmp.path().join("bin/recipe-runner-rs"),
+        )
+        .env("AMPLIHACK_PREFLIGHT_CHANNELS", channel.to_string())
+        .env("AMPLIHACK_RECIPE_TRANSIENT_MAX_ATTEMPTS", "2")
+        .env("AMPLIHACK_AGENT_BINARY", "claude")
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(
+        fs::read_to_string(f.tmp.path().join("attempts")).unwrap(),
+        "attempt\nattempt\n"
+    );
+    assert!(!String::from_utf8_lossy(&o.stderr).contains("\"status\":\"pr-worktree-dirty\""));
 }

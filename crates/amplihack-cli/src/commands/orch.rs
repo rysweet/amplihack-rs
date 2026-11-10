@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use crate::commands::multitask;
 
 pub(crate) mod autodrive_preflight;
-pub(crate) mod autodrive_provenance;
+pub(crate) mod autodrive_runner;
 mod named_branch;
 mod select_workflow;
 mod workflow_log_inventory;

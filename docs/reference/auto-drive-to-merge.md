@@ -275,12 +275,9 @@ update or changed local continuation state also refuses explicitly, with the
 failure stage recorded. There are no timed probes, polling or retries in
 preflight. It never force-pushes, merges, rebases or discards local commits.
 
-Each `gh` invocation has a 60-second deadline. Git invocations have a one-hour
-deadline to allow ordinary push hooks to run builds and tests. On Unix, a
-deadline terminates the isolated subprocess group, including transports and
-hooks. A timeout is a failure, with no retry: publication may already have
-completed remotely. Inspect the remote head or PR comments before restarting.
-A comment timeout preserves the primary refusal and records a publication error.
+Git and `gh` invocations run to completion without deadlines, polling or
+retries. Subprocess failures retain their diagnostics; a failed comment
+preserves the primary refusal and records a publication error.
 
 ### Final events and durable refusal records
 
@@ -310,14 +307,28 @@ Comments sanitize control characters and redact credentials and sensitive
 path prefixes. Necessary detailed evidence stays in protected local state.
 PR comments never control execution or mark phases complete.
 
-The runner accepts a refusal only from its current helper execution with
-validated provenance, a supported envelope, a known outcome and a refusal
-exit status. Stale files and arbitrary child output cannot assert a refusal.
-Valid refusals are terminal: no round or merge gate starts, no retry runs,
-and no successful loop result or completed review marker is written. The
-same outcome and evidence survive output parsing failures, workspace
-finalization and enclosing recipes in the caller-visible final event;
-these refusals never finish merely as `indeterminate`.
+Before launching either loop with an explicit PR, the CLI runner calls the
+shared preflight directly and observes its returned decision. Only that
+runner-owned result can terminate retries. Child-written files, inherited
+channel variables, stdout and claimed helper exit codes carry no authority.
+A refusal is persisted and included in the runner's final correlation event
+and workspace report before any child starts. Unrelated child failures retain
+ordinary transport retry behavior.
+
+Every fetch, push and remote verification resolves both effective fetch and
+push destinations, including Git URL rewrites and all configured destinations.
+Only the exact HTTPS GitHub PR source URL is supported. Redirected destinations
+and executable transports produce a named comparison refusal before network
+access. Execution uses an isolated, frozen Git configuration with deny-by-default
+protocols, HTTPS enabled, HTTP redirects disabled, shared objects and the original
+push hooks. URL rewrites, includes and remote configuration are excluded from
+that execution configuration; authentication settings are copied.
+
+Existing state directories must be owned by the current user with no group or
+other permission bits (normally `0700`). Insecure directories are refused without
+changing their permissions or recovery records. Subprocess error diagnostics are
+redacted for URL credentials and recognized authentication material, stripped of
+terminal escapes and unsafe controls, and bounded before persistence or emission.
 
 Already-merged and completed-phase skips retain their existing behavior.
 No additional preflight configuration is required: both loops use the PR,
