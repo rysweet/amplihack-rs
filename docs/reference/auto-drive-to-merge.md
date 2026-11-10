@@ -4141,7 +4141,7 @@ A budget stop prints, on stderr:
 ```text
 AUTO_DRIVE_LOOP: BUDGET_EXHAUSTED — loop 'merge-ready' stops at round label 'round-12'.
   Reason: usage budget reached (autodrive_budget_loop_rounds); see autodrive-budget-summary.md in the state directory
-  held by: criterion 6: approval_status=NOT_MET
+  held by: criterion 6: approval_status=NOT_MET (source=required-count, required=1, merge_state=BLOCKED)
   held by: reported required-approval-missing
   Round record: ~/.amplihack/state/auto-drive/<key>/merge-ready-round-12.json
   This is a usage budget set by the operator, not a judgement about progress. Relaunch with a higher budget to resume from the recorded round.
@@ -4182,17 +4182,33 @@ conditions in the same sequence:
 | `conflict` is not `false` | `criterion 7: conflict=<value>` | 7 |
 | `unresolved_threads` is not `0` | `criterion 10: unresolved_threads=<value>` | 10 |
 | `crusty_status` is not `DONE_CLEAN` | `criterion 3: crusty_status=<value>` | 3 |
-| `approval_status` is not `MET` | `criterion 6: approval_status=<value>` | 6 |
+| `approval_status` is not `MET` | `criterion 6: approval_status=<value> (source=<approval_source>, required=<required_approvals>, merge_state=<merge_state>)` | 6 |
 | the qa evidence hash does not match the one taken before the agents ran | `qa_evidence=modified` | none |
 | no measurement could be compared at all | `measured_evidence=unreadable` | none |
 
 Each line is the `measured-downgrade` term with its criterion number in
 front, so a line and the term behind it carry the same field name and the
 same value, and neither can drift from the other: one helper reads the
-measurements and both callers format what it read. The line carries the
-status, not `approval_source`, so it separates a missing review (`NOT_MET`)
-from an unread one (`UNREADABLE`) but not the two unread cases from each
-other; the blocker id step-02 reports, and the round record, carry that. Criterion 7 is
+measurements and both callers format what it read. Criterion 6 adds, in
+brackets, the three platform facts that decided the status:
+`approval_source`, `required_approvals` (`unknown` when the count was not
+read) and `merge_state`. The status alone does not say which of the two
+unread cases held the round: `source=facts-unreadable` means the
+measurement failed this round (`gh pr view` failed, or GitHub had not yet
+computed the merge state) and the next round reads it again, while
+`source=unreadable` means the pull request is `BLOCKED` by a rule that only
+a person satisfies and that the tool could not name. For example:
+
+```text
+  held by: criterion 6: approval_status=UNREADABLE (source=unreadable, required=unknown, merge_state=BLOCKED)
+```
+
+Each of the three values comes from the closed vocabulary
+`autodrive_platform_facts.sh` writes, or digits for the count; anything else
+prints as `OTHER`. The facts are read only when criterion 6 holds the round,
+and `measured-downgrade` still prints `approval_status=<value>` alone, so
+the comparison between the two is of which conditions held, not of the
+detail. Criterion 7 is
 `conflict` from `merge_sync`, not `mergeable` or `merge_state` from the
 platform facts: `merge_sync` is the single helper that answers it, its values
 are `true`, `false` and `unknown`, and the line fires on anything but

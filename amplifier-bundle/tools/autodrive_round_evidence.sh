@@ -249,9 +249,37 @@ measured_held_by() {
   [ "$MD_CONFLICT" = "false" ] || h="${h}${h:+|}criterion 7: conflict=${MD_CONFLICT}"
   [ "$MD_THREADS" = "0" ] || h="${h}${h:+|}criterion 10: unresolved_threads=${MD_THREADS}"
   [ "$MD_CRUSTY" = "DONE_CLEAN" ] || h="${h}${h:+|}criterion 3: crusty_status=${MD_CRUSTY}"
-  [ "$MD_APPROVAL" = "MET" ] || h="${h}${h:+|}criterion 6: approval_status=${MD_APPROVAL}"
+  [ "$MD_APPROVAL" = "MET" ] || h="${h}${h:+|}criterion 6: approval_status=${MD_APPROVAL} ($(_approval_detail))"
   { [ -n "$MD_QH" ] && [ "$MD_QH" = "$MD_QNOW" ]; } || h="${h}${h:+|}qa_evidence=modified"
   printf '%s\n' "${h:-none}"
+}
+
+# _approval_detail: the three platform facts behind a criterion 6 status that
+# is not MET, as `source=…, required=…, merge_state=…` (issue #2219, Wanted 3).
+# UNREADABLE alone is ambiguous: approval_source `facts-unreadable` means the
+# measurement failed and the next round reads it again, `unreadable` means a
+# rule only a person satisfies holds the merge. The stop line has to say
+# which without anyone opening the round files. Read only when criterion 6
+# holds the round, so an all-green round costs no extra read. Each value is
+# from a closed vocabulary (the one autodrive_platform_facts.sh writes) or
+# digits; anything else prints as OTHER, and an empty or missing count as
+# unknown, so no agent-written byte reaches the line and it stays well inside
+# the 120-byte cut autodrive_escalate.sh applies.
+_approval_detail() {
+  local src req ms
+  src="$(field "${RECIPE_VAR_platform_facts:-}" approval_source unreadable)"
+  req="$(field "${RECIPE_VAR_platform_facts:-}" required_approvals '')"
+  ms="$(field "${RECIPE_VAR_platform_facts:-}" merge_state unknown)"
+  case "$src" in
+    review-decision|required-count|merge-state|other-blockers|review-rule|facts-unreadable|unreadable) ;;
+    *) src="OTHER" ;;
+  esac
+  case "$req" in '') req="unknown" ;; *[!0-9]*) req="OTHER" ;; *) req="${req:0:6}" ;; esac
+  case "$ms" in
+    UNKNOWN|BEHIND|BLOCKED|CLEAN|DIRTY|DRAFT|HAS_HOOKS|UNSTABLE|unknown) ;;
+    *) ms="OTHER" ;;
+  esac
+  printf 'source=%s, required=%s, merge_state=%s' "$src" "$req" "$ms"
 }
 
 round_findings() {

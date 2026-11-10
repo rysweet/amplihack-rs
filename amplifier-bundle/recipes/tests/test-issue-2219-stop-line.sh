@@ -191,18 +191,63 @@ rr_run RECIPE_VAR_qa_evidence='{"qa_status":"FAIL"}' \
        RECIPE_VAR_crusty_evidence='{"crusty_status":"NOT_CLEAN"}' \
        RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"NOT_MERGE_READY","blocker_count":4}'
 rr_expect_held RR3-every-condition \
-  "criterion 1: qa_status=FAIL|criterion 4: ci_status=RED|criterion 7: conflict=unknown|criterion 10: unresolved_threads=unreadable|criterion 3: crusty_status=NOT_CLEAN|criterion 6: approval_status=NOT_MET|qa_evidence=modified" \
+  "criterion 1: qa_status=FAIL|criterion 4: ci_status=RED|criterion 7: conflict=unknown|criterion 10: unresolved_threads=unreadable|criterion 3: crusty_status=NOT_CLEAN|criterion 6: approval_status=NOT_MET (source=unreadable, required=unknown, merge_state=unknown)|qa_evidence=modified" \
   "every disagreeing measurement is a line, in measured_downgrade's order, and the qa-evidence hash carries no criterion number"
 
 rr_run RECIPE_VAR_qa_evidence='{"qa_status":"PASS"}' \
        RECIPE_VAR_ci_evidence='{"ci_status":"GREEN","ci_signal":"green"}' \
        RECIPE_VAR_merge_sync='{"conflict":"false"}' \
-       RECIPE_VAR_platform_facts='{"unresolved_threads":"0","approval_status":"UNREADABLE"}' \
+       RECIPE_VAR_platform_facts='{"unresolved_threads":"0","approval_status":"UNREADABLE","approval_source":"unreadable","required_approvals":"","merge_state":"BLOCKED"}' \
        RECIPE_VAR_crusty_evidence='{"crusty_status":"DONE_CLEAN"}' \
        RECIPE_VAR_qa_evidence_hash="{\"qa_evidence_sha\":\"${QA_SHA}\"}" \
        RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"NOT_MERGE_READY","blocker_count":1}'
-rr_expect_held RR4-approval-unreadable "criterion 6: approval_status=UNREADABLE" \
-  "an unreadable approval is named as criterion 6, so #999's stop would have said which criterion held it"
+rr_expect_held RR4-approval-unreadable \
+  "criterion 6: approval_status=UNREADABLE (source=unreadable, required=unknown, merge_state=BLOCKED)" \
+  "an unreadable approval is named as criterion 6 with its source, count and merge state, the line issue #2219 asks for"
+RR4_HELD="$(sed -n 's/.*"held_by":"\([^"]*\)".*/\1/p' "${RR_REC}" 2>/dev/null)"
+
+# The same status, but the measurement itself failed (gh pr view failed, or
+# GitHub had not computed the merge state). The next round reads it again;
+# no person is needed. The stop line must tell the two apart on its own.
+rr_run RECIPE_VAR_qa_evidence='{"qa_status":"PASS"}' \
+       RECIPE_VAR_ci_evidence='{"ci_status":"GREEN","ci_signal":"green"}' \
+       RECIPE_VAR_merge_sync='{"conflict":"false"}' \
+       RECIPE_VAR_platform_facts='{"unresolved_threads":"0","approval_status":"UNREADABLE","approval_source":"facts-unreadable","required_approvals":"","merge_state":"UNKNOWN"}' \
+       RECIPE_VAR_crusty_evidence='{"crusty_status":"DONE_CLEAN"}' \
+       RECIPE_VAR_qa_evidence_hash="{\"qa_evidence_sha\":\"${QA_SHA}\"}" \
+       RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"NOT_MERGE_READY","blocker_count":1}'
+rr_expect_held RR4b-approval-facts-unreadable \
+  "criterion 6: approval_status=UNREADABLE (source=facts-unreadable, required=unknown, merge_state=UNKNOWN)" \
+  "a failed approval measurement names source=facts-unreadable, so the operator sees it is re-read next round"
+RR4B_HELD="$(sed -n 's/.*"held_by":"\([^"]*\)".*/\1/p' "${RR_REC}" 2>/dev/null)"
+if [ -n "${RR4_HELD}" ] && [ -n "${RR4B_HELD}" ] && [ "${RR4_HELD}" != "${RR4B_HELD}" ]; then
+  pass RR4c-unreadable-cases-differ "the two UNREADABLE cases give different stop lines"
+else
+  fail RR4c-unreadable-cases-differ "the stop line cannot tell facts-unreadable from unreadable: '${RR4_HELD}' vs '${RR4B_HELD}'"
+fi
+
+# A known count prints as digits, and a value outside the facts tool's
+# vocabulary prints as OTHER: nothing an agent wrote reaches the line.
+rr_run RECIPE_VAR_qa_evidence='{"qa_status":"PASS"}' \
+       RECIPE_VAR_ci_evidence='{"ci_status":"GREEN","ci_signal":"green"}' \
+       RECIPE_VAR_merge_sync='{"conflict":"false"}' \
+       RECIPE_VAR_platform_facts='{"unresolved_threads":"0","approval_status":"NOT_MET","approval_source":"rm -rf /","required_approvals":"2; x","merge_state":"$(id)"}' \
+       RECIPE_VAR_crusty_evidence='{"crusty_status":"DONE_CLEAN"}' \
+       RECIPE_VAR_qa_evidence_hash="{\"qa_evidence_sha\":\"${QA_SHA}\"}" \
+       RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"NOT_MERGE_READY","blocker_count":1}'
+rr_expect_held RR4d-approval-detail-closed \
+  "criterion 6: approval_status=NOT_MET (source=OTHER, required=OTHER, merge_state=OTHER)" \
+  "the approval details stay in a closed vocabulary"
+rr_run RECIPE_VAR_qa_evidence='{"qa_status":"PASS"}' \
+       RECIPE_VAR_ci_evidence='{"ci_status":"GREEN","ci_signal":"green"}' \
+       RECIPE_VAR_merge_sync='{"conflict":"false"}' \
+       RECIPE_VAR_platform_facts='{"unresolved_threads":"0","approval_status":"NOT_MET","approval_source":"required-count","required_approvals":"2","merge_state":"BLOCKED"}' \
+       RECIPE_VAR_crusty_evidence='{"crusty_status":"DONE_CLEAN"}' \
+       RECIPE_VAR_qa_evidence_hash="{\"qa_evidence_sha\":\"${QA_SHA}\"}" \
+       RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"NOT_MERGE_READY","blocker_count":1}'
+rr_expect_held RR4e-approval-count-known \
+  "criterion 6: approval_status=NOT_MET (source=required-count, required=2, merge_state=BLOCKED)" \
+  "a known required count prints as its digits"
 
 rr_run RECIPE_VAR_qa_evidence='{"qa_status":"PASS"}' \
        RECIPE_VAR_ci_evidence='{"ci_status":"GREEN","ci_signal":"green"}' \
@@ -212,7 +257,7 @@ rr_run RECIPE_VAR_qa_evidence='{"qa_status":"PASS"}' \
        RECIPE_VAR_qa_evidence_hash="{\"qa_evidence_sha\":\"${QA_SHA}\"}" \
        RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"NOT_MERGE_READY","blocker_count":1}'
 rr_expect_held RR5-closed-vocabulary \
-  "criterion 3: crusty_status=OTHER|criterion 6: approval_status=OTHER" \
+  "criterion 3: crusty_status=OTHER|criterion 6: approval_status=OTHER (source=unreadable, required=unknown, merge_state=unknown)" \
   "the crusty and approval vocabularies stay closed: an unknown token is OTHER, never the token itself"
 
 rr_run RECIPE_VAR_qa_evidence='{"qa_status":"FAIL; rm -rf / #"}' \
@@ -354,11 +399,11 @@ else
   fail ES5-no-record "$(tr '\n' '|' < "${ES_ERR}")"
 fi
 
-es_setup 'criterion 6: approval_status=UNREADABLE'
+es_setup 'criterion 6: approval_status=UNREADABLE (source=facts-unreadable, required=unknown, merge_state=UNKNOWN)'
 es_run BUDGET_EXHAUSTED "usage budget reached (wall)" budget
 es_expect_lines ES6-budget-prints \
   "the lines print for a budget stop too: the operator still needs to know what was outstanding" \
-  '  held by: criterion 6: approval_status=UNREADABLE'
+  '  held by: criterion 6: approval_status=UNREADABLE (source=facts-unreadable, required=unknown, merge_state=UNKNOWN)'
 
 es_setup 'measured_evidence=unreadable'
 es_run ORPHANED "the recipe run above this loop exited" orphaned
@@ -459,10 +504,11 @@ md_run() { # md_run <RECIPE_VAR_...=value>...: measured-downgrade, same env as r
     bash "${ROUND}" measured-downgrade 2>/dev/null
 }
 # The record's held_by, as a sorted set of field=value with the criterion
-# prefix removed; `none`/empty becomes nothing.
+# prefix and criterion 6's `(source=…)` detail removed (the detail is checked
+# by RR4*; here only which conditions held the round is compared); `none`/empty becomes nothing.
 held_set() {
   sed -n 's/.*"held_by":"\([^"]*\)".*/\1/p' "${RR_REC}" 2>/dev/null \
-    | tr '|' '\n' | sed 's/^criterion [0-9]*: //' | grep -v '^$' | LC_ALL=C sort
+    | tr '|' '\n' | sed 's/^criterion [0-9]*: //; s/ (.*)$//' | grep -v '^$' | LC_ALL=C sort
 }
 # measured-downgrade's line, as the same sorted set.
 down_set() { printf '%s\n' "$1" | tr ' ' '\n' | grep -v '^$' | grep -v '^none$' | LC_ALL=C sort; }
@@ -512,6 +558,10 @@ ag_row AG5-crusty "criterion 3 alone agrees between the two" \
   'RECIPE_VAR_crusty_evidence={"crusty_status":"NOT_CLEAN"}'
 ag_row AG6-approval "criterion 6 alone agrees between the two" \
   'RECIPE_VAR_platform_facts={"unresolved_threads":"0","approval_status":"NOT_MET"}'
+ag_row AG6b-approval-facts-unreadable "criterion 6 from a failed measurement agrees between the two" \
+  'RECIPE_VAR_platform_facts={"unresolved_threads":"0","approval_status":"UNREADABLE","approval_source":"facts-unreadable","merge_state":"UNKNOWN"}'
+ag_row AG6c-approval-unreadable "criterion 6 held by an unnamed rule agrees between the two" \
+  'RECIPE_VAR_platform_facts={"unresolved_threads":"0","approval_status":"UNREADABLE","approval_source":"unreadable","merge_state":"BLOCKED"}'
 agree AG7-qa-evidence-hash "the unnumbered qa-evidence condition agrees too" "${AG_GREEN[@]}"
 agree AG8-every-condition "every condition at once agrees, in both renderings" \
   RECIPE_VAR_qa_evidence='{"qa_status":"FAIL"}' \

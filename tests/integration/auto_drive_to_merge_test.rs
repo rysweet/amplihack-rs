@@ -3098,6 +3098,14 @@ const ROUND_SUBCOMMANDS: [(&str, &str); 8] = [
     ("round-record", "round_record"),
 ];
 
+/// Functions in autodrive_round_evidence.sh that no subcommand dispatches to
+/// but that subcommand bodies call (#2219): measured_downgrade and
+/// measured_held_by read every measurement through `_measured_read`, and the
+/// criterion 6 stop line reads its facts through `_approval_detail`. Without
+/// following them, the reads those bodies make would be invisible to the
+/// step checks below.
+const ROUND_PRIVATE_HELPERS: [&str; 3] = ["_measured_read", "_approval_detail", "measured_held_by"];
+
 /// The bash a merge-round step runs: its own command and, for each
 /// `bash "$T" <subcommand>` of autodrive_round_evidence.sh it calls, the body
 /// of the function that subcommand dispatches to, and of every subcommand
@@ -3140,12 +3148,20 @@ fn round_step_bash(recipe: &Value, id: &str) -> String {
         }
         seen.push(func);
         let body = body_of(func);
-        for (_, callee) in ROUND_SUBCOMMANDS {
+        let callees = ROUND_SUBCOMMANDS
+            .iter()
+            .map(|(_, f)| *f)
+            .chain(ROUND_PRIVATE_HELPERS);
+        for callee in callees {
             let called = body
                 .lines()
                 .skip(1)
                 .filter(|l| !l.trim_start().starts_with('#'))
-                .any(|l| l.contains(&format!("{callee} ")) || l.contains(&format!("{callee})")));
+                .any(|l| {
+                    l.trim() == callee
+                        || l.contains(&format!("{callee} "))
+                        || l.contains(&format!("{callee})"))
+                });
             if called && !seen.contains(&callee) {
                 pending.push(callee);
             }

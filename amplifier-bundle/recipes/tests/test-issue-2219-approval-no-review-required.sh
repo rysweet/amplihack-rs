@@ -267,6 +267,21 @@ expect AC3-merge-state-unknown UNREADABLE facts-unreadable "" \
   "a merge state GitHub has not computed, beside an unreadable count, is a failed measurement"
 SPLIT_LABELS="${SPLIT_LABELS} AC3-merge-state-unknown"
 
+# The shape PR #999 (mistt-repo/Product-Management) stopped on. Its round-3
+# platform facts, still in that run's merge-ready-round-3.log, were
+# merge_state=UNKNOWN, mergeable=UNKNOWN, an empty reviewDecision and no
+# readable count, read straight after a push, before GitHub had computed the
+# merge state (a later read in the same round showed CLEAN/MERGEABLE). On
+# origin/main the UNKNOWN merge state matched no arm, so the tool kept its
+# default UNREADABLE/unreadable, the round reported approval-state-unreadable
+# and the loop stopped with "needs a person". The CLEAN shape the issue
+# describes was round 1 of the same run, and was already MET/merge-state.
+run_pf GH_CLASSIC=fail GH_PROTECTED=true GH_RULES=0 GH_VIEW="$(view_line UNKNOWN '' pass UNKNOWN)"
+expect AC3-issue-999-round-3 UNREADABLE facts-unreadable "" \
+  "PR #999's round-3 facts (merge state and mergeable both UNKNOWN right after a push) are a failed measurement the next round re-reads, not a person's job" \
+  merge_state=UNKNOWN mergeable=UNKNOWN
+SPLIT_LABELS="${SPLIT_LABELS} AC3-issue-999-round-3"
+
 run_pf GH_CLASSIC=2 GH_RULES=0 GH_VIEW="$(view_line UNKNOWN '')"
 expect AC3-unknown-state-known-count NOT_MET required-count 2 \
   "an UNKNOWN merge state does not hide a count that WAS read: 2 required approvals and no decision is not met"
