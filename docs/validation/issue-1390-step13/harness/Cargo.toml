@@ -1,0 +1,8 @@
+[package]
+name = "issue-1390-outside-in"
+version = "0.0.0"
+edition = "2024"
+[dependencies]
+serde_json = "1"
+tempfile = "3"
+libc = "0.2"

@@ -1,0 +1,64 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.02s
+     Running unittests src/lib.rs (/private/tmp/issue-1390-target/debug/deps/issue_1390_outside_in-459a94fbd6a680ea)
+
+running 1 test
+CLI exit=Some(1)
+stdout={
+  "failure_classification": {
+    "action": "terminal",
+    "attempt": 1,
+    "class": "usage_limit",
+    "completed_steps": [
+      "prepare"
+    ],
+    "evidence": "[limited-agent] agent step failed (exit 1)\nAPI Error: 429 Too Many Requests: Agent terminated early due to an API error: You've hit your session limit · resets 9:20am (UTC)",
+    "failed_steps": [
+      "limited-agent"
+    ],
+    "issue": 1267,
+    "reasoning": "classified `usage_limit` — evidence contains \"session limit\"; it resets 9:20am (UTC). This is temporary and NOT a work failure, but it is not retried inside the mechanical budget: that budget is minutes long and a usage limit outlasts it. Wait for the reset and resume.",
+    "retryable": false,
+    "schema_version": 1,
+    "signal": "session limit"
+  },
+  "log_pointer": {
+    "child_pid": 44809,
+    "exit_code": 1,
+    "recipe_name": "issue-1390",
+    "run_id": "55838ae7-4846-452b-ac63-b7794619d7ae",
+    "runner_path": "/Users/ryan/src/factory-home/.amplihack/work/r/c2cb0aef8448/tmp/.tmpUsybIZ/recipe-runner-rs",
+    "status": "failure",
+    "worktree": "/Users/ryan/src/factory-home/.amplihack/work/r/c2cb0aef8448/tmp/.tmpUsybIZ"
+  },
+  "recipe_name": "issue-1390",
+  "run_id": "55838ae7-4846-452b-ac63-b7794619d7ae",
+  "step_results": [
+    {
+      "error": "",
+      "output": "",
+      "status": "completed",
+      "step_id": "prepare"
+    },
+    {
+      "error": "agent step failed (exit 1)",
+      "output": "",
+      "recent_stdout": [
+        "API Error: 429 Too Many Requests: Agent terminated early due to an API error: You've hit your session limit · resets 9:20am (UTC)"
+      ],
+      "status": "error",
+      "step_id": "limited-agent"
+    }
+  ],
+  "success": false
+}
+
+stderr=amplihack: AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage (stamp=<missing> current=1.2.0; installed_bundle="framework bundle compatibility check failed: no amplifier-bundle recipes directory found under /Users/ryan/src/factory-home/.amplihack/work/r/c2cb0aef8448/tmp/.tmpUsybIZ/home/.amplihack/amplifier-bundle")
+amplihack.recipe.log_pointer {"schema_version":1,"event":"early","run_id":"55838ae7-4846-452b-ac63-b7794619d7ae","recipe_name":"issue-1390","cwd":"/Users/ryan/src/factory-home/.amplihack/work/r/c2cb0aef8448/tmp/.tmpUsybIZ","worktree":"/Users/ryan/src/factory-home/.amplihack/work/r/c2cb0aef8448/tmp/.tmpUsybIZ","runner_path":"/Users/ryan/src/factory-home/.amplihack/work/r/c2cb0aef8448/tmp/.tmpUsybIZ/recipe-runner-rs","agent_binary":"claude","agent_binary_source":"env","amplihack_home":"/Users/ryan/src/factory-home/.amplihack/work/r/c2cb0aef8448/tmp/.tmpUsybIZ/home/.amplihack","timestamp":"2026-11-10T16:50:52Z"}
+amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"55838ae7-4846-452b-ac63-b7794619d7ae","recipe_name":"issue-1390","cwd":"/Users/ryan/src/factory-home/.amplihack/work/r/c2cb0aef8448/tmp/.tmpUsybIZ","worktree":"/Users/ryan/src/factory-home/.amplihack/work/r/c2cb0aef8448/tmp/.tmpUsybIZ","runner_path":"/Users/ryan/src/factory-home/.amplihack/work/r/c2cb0aef8448/tmp/.tmpUsybIZ/recipe-runner-rs","agent_binary":"claude","agent_binary_source":"env","amplihack_home":"/Users/ryan/src/factory-home/.amplihack/work/r/c2cb0aef8448/tmp/.tmpUsybIZ/home/.amplihack","child_pid":44809,"exit_code":1,"status":"failure","timestamp":"2026-11-10T16:50:53Z"}
+amplihack.recipe.failure_class {"action":"terminal","attempt":1,"class":"usage_limit","completed_steps":["prepare"],"evidence":"[limited-agent] agent step failed (exit 1)\nAPI Error: 429 Too Many Requests: Agent terminated early due to an API error: You've hit your session limit · resets 9:20am (UTC)","failed_steps":["limited-agent"],"issue":1267,"reasoning":"classified `usage_limit` — evidence contains \"session limit\"; it resets 9:20am (UTC). This is temporary and NOT a work failure, but it is not retried inside the mechanical budget: that budget is minutes long and a usage limit outlasts it. Wait for the reset and resume.","retryable":false,"schema_version":1,"signal":"session limit"}
+ERROR: recipe run terminated on attempt 1 — classified `usage_limit` — evidence contains "session limit"; it resets 9:20am (UTC). This is temporary and NOT a work failure, but it is not retried inside the mechanical budget: that budget is minutes long and a usage limit outlasts it. Wait for the reset and resume.. Not retried: only an unambiguously transient transport fault is. [issue #1267]
+
+test complex::reported_limit_survives_the_cli_boundary_without_transport_retry ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.66s
+
