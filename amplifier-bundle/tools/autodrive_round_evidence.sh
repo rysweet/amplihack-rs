@@ -49,14 +49,6 @@
 #       when a downgrade was given, written private to
 #       AUTODRIVE_ROUND_RECORD.findings. Prints the number of lines.
 #
-#   autodrive_round_evidence.sh held-by
-#       The same disagreements measured-downgrade reports, as the condition
-#       lines the stop prints, joined by `|`, or `none` when every measurement
-#       agrees. round-record writes this as the record's held_by field, and
-#       autodrive_escalate.sh prints one `  held by:` line per entry, so the
-#       operator reading a stop sees which criterion held the pull request
-#       (issue #2219).
-#
 #   autodrive_round_evidence.sh round-record
 #       step-05-write-round-record: writes AUTODRIVE_ROUND_RECORD, private, as
 #       one JSON line starting with {"merge_ready_verdict":", and prints it.
@@ -229,7 +221,8 @@ measured_downgrade() {
 }
 
 # measured_held_by: the same disagreements as measured_downgrade, as the
-# condition lines the stop prints, joined by `|` (issue #2219). Criterion
+# condition lines the stop prints, joined by `|` (issue #2219). round_record
+# is the only caller; there is no subcommand for it. Criterion
 # numbers follow merge-ready/SKILL.md: qa 1, quality-audit 3, checks 4,
 # approval 6, conflict 7, threads 10. The qa-evidence hash carries no
 # criterion number: it is not a criterion, it is the evidence itself failing.
@@ -346,12 +339,11 @@ case "${1:-}" in
   qa-evidence-hash) qa_evidence_hash "${2:-}" ;;
   crusty-evidence) crusty_evidence ;;
   measured-downgrade) measured_downgrade ;;
-  held-by) measured_held_by ;;
   merge-ready-verdict) merge_ready_verdict "${2:-}" "${3:-}" ;;
   findings) round_findings "${2:-}" ;;
   round-record) round_record ;;
   *) echo "ERROR: autodrive_round_evidence.sh: unknown subcommand '${1:-}' (crusty-range," \
-       "qa-evidence-sha <file>, qa-evidence-hash <file>, crusty-evidence, measured-downgrade, held-by, merge-ready-verdict <verdict> <source>," \
+       "qa-evidence-sha <file>, qa-evidence-hash <file>, crusty-evidence, measured-downgrade, merge-ready-verdict <verdict> <source>," \
        "findings [downgrade], round-record)" >&2
      exit 2 ;;
 esac

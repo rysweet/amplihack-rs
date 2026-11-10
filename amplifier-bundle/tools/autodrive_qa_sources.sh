@@ -350,7 +350,7 @@ EOT
 # the diff and the tree walk run once:
 #   paths    autodrive_qa_changed_paths
 #   kind     autodrive_repo_type
-#   greq, docsonly  autodrive_gadugi_required, and autodrive_qa_docs_only as its own measured field so the round reads the exemption instead of inferring it from greq (#2219)
+#   greq, docsonly  autodrive_gadugi_required, and autodrive_qa_docs_only as its own field so the round reads the exemption, not greq (#2219)
 #   target   autodrive_qa_target
 #   source, dir, command  `repo-file` or `ci`, when that source gives a command
 #   invalid  the qa.toml problem, when qa.toml is invalid (qa-config-invalid)

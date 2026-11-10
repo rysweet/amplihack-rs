@@ -12,7 +12,7 @@
 # project, or AUTODRIVE_QA_SCENARIO_DIR set): the qa-team scenarios, validated
 # with `gadugi-test validate` and run one `gadugi-test run --scenario` per
 # file. Elsewhere gadugi_status is NOT_REQUIRED and gadugi-test is never
-# called: qa-team's Rust CLI rule substitutes `cargo test`; and a documentation-only pull request drops (2) in a Node project too, measured as docs_only (#2219).
+# called: qa-team's Rust CLI rule substitutes `cargo test`, and a measured docs_only drops (2) in a Node project too (#2219).
 #
 # Input comes from the environment only:
 #   REPO_PATH              the repository to measure (default: the working directory)
@@ -69,7 +69,7 @@ while IFS=$'\t' read -r key val; do
     ciskip) CISKIP="$val" ;;
   esac
 done <<< "$SCAN"
-case "${KIND}:${GREQ}:${DOCSONLY}" in # node:false only beside docs_only=true (#2219); anything else is a broken install, and gives no evidence rather than a pass
+case "${KIND}:${GREQ}:${DOCSONLY}" in # node:false is legal only beside docs_only=true (#2219); anything else is a broken install, and gives no evidence
   rust-cli:true:*|rust-cli:false:*|node:true:*|node:false:true|python:true:*|python:false:*|unknown:true:*|unknown:false:*) ;;
   *) echo "ERROR: autodrive-qa-helpers-not-found: no repository type (${KIND:-none}:${GREQ:-none}:${DOCSONLY:-none})" >&2
      exit 1 ;;

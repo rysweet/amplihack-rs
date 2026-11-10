@@ -228,17 +228,15 @@ else
         [ "$CHECKS" = "pass" ] || OTHER="true"
         [ "$MERGEABLE" = "CONFLICTING" ] && OTHER="true"
         case "$THREADS" in 0 | unreadable) ;; *) OTHER="true" ;; esac
-        # A review rule only a person satisfies, named by either read at a
-        # count of 0 (see review-rule above).
-        RULE="false"
-        { [ -n "$CLASSIC_RULE" ] || [ -n "$RULES_RULE" ]; } && RULE="true"
         case "$MSTATE" in
           CLEAN | HAS_HOOKS | UNSTABLE) APPROVAL="MET"; SOURCE="merge-state" ;;
           DIRTY | BEHIND) APPROVAL="PENDING"; SOURCE="other-blockers" ;;
           BLOCKED)
             if [ "$OTHER" = "true" ]; then
               APPROVAL="PENDING"; SOURCE="other-blockers"
-            elif [ "$RULE" = "true" ]; then
+            # A review rule only a person satisfies, named by either read at
+            # a count of 0 (see review-rule above).
+            elif [ -n "$CLASSIC_RULE" ] || [ -n "$RULES_RULE" ]; then
               APPROVAL="NOT_MET"; SOURCE="review-rule"
             fi ;;
           UNKNOWN)
@@ -256,11 +254,10 @@ BLOCKER=""
 case "$APPROVAL" in
   MET) ;;
   PENDING) BLOCKER="approval-pending-other-blockers" ;;
-  *) case "$SOURCE" in
-       facts-unreadable) BLOCKER="approval-facts-unreadable" ;;
-       unreadable) BLOCKER="approval-state-unreadable" ;;
-       review-decision) [ "$DECISION" = "CHANGES_REQUESTED" ] \
-         && BLOCKER="changes-requested" || BLOCKER="required-approval-missing" ;;
+  *) case "${SOURCE}:${DECISION}" in
+       facts-unreadable:*) BLOCKER="approval-facts-unreadable" ;;
+       unreadable:*) BLOCKER="approval-state-unreadable" ;;
+       review-decision:CHANGES_REQUESTED) BLOCKER="changes-requested" ;;
        *) BLOCKER="required-approval-missing" ;;
      esac ;;
 esac
