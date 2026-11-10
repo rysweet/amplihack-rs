@@ -5,6 +5,7 @@ pub(super) fn recover_install(root: &Path, binary: &Path, home: &Path) -> Result
 }
 
 fn recover_scoped(root: &Path, binary: &Path, home: &Path) -> Result<()> {
+    recovery_archive::resume(root)?;
     let Some(mut pending) = regular_json(&root.join("pending.json"))? else {
         return Ok(());
     };

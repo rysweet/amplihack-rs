@@ -150,7 +150,7 @@ fn agent_binary_does_not_skip_the_startup_update_check() {
     let fx = Fixture::new();
     let mut session = spawn_command(
         fx.command(
-            &["copilot", "--help"],
+            &["copilot", "--docker"],
             &[
                 ("AMPLIHACK_AGENT_BINARY", "copilot"),
                 ("AMPLIHACK_TEST_FAKE_LATEST_VERSION", "99.99.99"),
@@ -158,7 +158,7 @@ fn agent_binary_does_not_skip_the_startup_update_check() {
         ),
         Some(TIMEOUT_MS),
     )
-    .expect("spawn amplihack copilot --help at a pty");
+    .expect("spawn amplihack copilot --docker at a pty");
     let before = session
         .exp_string("Update now?")
         .expect("the update prompt must be offered at a terminal");

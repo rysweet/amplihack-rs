@@ -112,6 +112,8 @@ mod probe_tests;
 #[cfg(all(test, unix))]
 mod recovery_alias_tests;
 #[cfg(all(test, unix))]
+mod recovery_archive_guard_tests;
+#[cfg(all(test, unix))]
 mod recovery_archive_retry_tests;
 #[cfg(all(test, unix))]
 mod recovery_archive_tests;

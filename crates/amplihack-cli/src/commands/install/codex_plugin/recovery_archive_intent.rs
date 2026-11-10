@@ -1,6 +1,6 @@
-//! A durable intent keeps recovery protection across rename or sync failure.
+//! Intent and completion receipt share one durable marker; neither is unlinked.
 use super::*;
-use recovery_archive_storage::{Identity, capture, publish};
+use recovery_archive_storage::{Identity, capture};
 
 pub(super) const NAME: &str = "recovery-archive.json";
 #[derive(Serialize, Deserialize)]
@@ -9,6 +9,8 @@ pub(super) struct Intent {
     schema_version: u32,
     destination: String,
     identity: Identity,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    complete: bool,
 }
 impl Intent {
     pub fn new(destination: String, identity: Identity) -> Self {
@@ -16,6 +18,7 @@ impl Intent {
             schema_version: 1,
             destination,
             identity,
+            complete: false,
         }
     }
     pub fn bytes(&self) -> Result<Vec<u8>> {
@@ -42,7 +45,15 @@ impl Intent {
         );
         Ok(())
     }
-    pub fn finish(&self, root: &Path) -> Result<PathBuf> {
+    pub fn validate_receipt(&mut self, root: &Path) -> Result<()> {
+        ensure!(
+            self.complete,
+            "Codex archival intent is still incomplete; record retained"
+        );
+        self.finish(root)?;
+        Ok(())
+    }
+    pub fn finish(&mut self, root: &Path) -> Result<PathBuf> {
         self.validate()?;
         let source = root.join("pending.json");
         let destination = root.join(&self.destination);
@@ -56,6 +67,22 @@ impl Intent {
         // Repeat intent durability even after an interrupted publication.
         sync_path(&intent_path)?;
         sync_path(root)?;
+        if self.complete {
+            ensure!(
+                capture(&destination)?.is_some_and(|c| c.identity == self.identity),
+                "Codex archive evidence missing or changed; completion receipt retained"
+            );
+            sync_path(&destination)?;
+            sync_path(root)?;
+            ensure!(
+                capture(&destination)?.is_some_and(|c| c.identity == self.identity)
+                    && capture(&intent_path)?.is_some_and(|c| c.identity == intent.identity),
+                "Codex archive evidence or completion receipt changed; record retained"
+            );
+            // A later transaction may have its own pending.json. A receipt
+            // authorizes no change to that transaction or its targets.
+            return Ok(destination);
+        }
         let pending = capture(&source)?;
         let archived = capture(&destination)?;
         match (pending, archived) {
@@ -88,18 +115,19 @@ impl Intent {
             capture(&intent_path)?.is_some_and(|c| c.identity == intent.identity),
             "Codex archive intent replaced; record retained"
         );
-        path_scope::check()?;
-        fs::remove_file(&intent_path)?;
-        if let Err(error) = sync_path(root) {
-            // Preserve the guard on a reported final durability failure too.
-            if let Err(restore) = publish(&intent_path, &self.bytes()?) {
-                bail!(
-                    "{error:#}; restoring archival protection {} failed: {restore:#}",
-                    intent_path.display()
-                );
-            }
-            return Err(error);
-        }
+        // Atomic replacement keeps the old intent on pre-publication failure,
+        // or the receipt on a final sync failure. No fallback write is needed.
+        let original = serde_json::to_value(&*self)?;
+        self.complete = true;
+        atomic_json(&intent_path, &serde_json::to_value(&*self)?, Some(original))
+            .context("Codex archive completion transition failed; intent or receipt retained")?;
+        let receipt_bytes = self.bytes()?;
+        ensure!(
+            capture(&destination)?.is_some_and(|c| c.identity == self.identity)
+                && capture(&source)?.is_none()
+                && capture(&intent_path)?.is_some_and(|c| c.bytes == receipt_bytes),
+            "Codex archive evidence or completion receipt changed; record retained"
+        );
         Ok(destination)
     }
 }
@@ -107,11 +135,13 @@ pub(super) fn resume(root: &Path) -> Result<Option<PathBuf>> {
     let Some(raw) = capture(&root.join(NAME))? else {
         return Ok(None);
     };
-    let intent: Intent = serde_json::from_slice(&raw.bytes).with_context(|| {
+    let mut intent: Intent = serde_json::from_slice(&raw.bytes).with_context(|| {
         format!(
             "invalid Codex archive intent at {}; repair metadata manually; record retained",
             super::super::paths::sanitize_path(&root.join(NAME))
         )
     })?;
-    intent.finish(root).map(Some)
+    let incomplete = !intent.complete;
+    let destination = intent.finish(root)?;
+    Ok(incomplete.then_some(destination))
 }

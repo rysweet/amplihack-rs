@@ -22,6 +22,7 @@ fn context(root: &Path) -> String {
         super::super::paths::sanitize_path(&root.join("pending.json"))
     )
 }
+/// Shared locked mutation guard: validate receipts and finish incomplete intents.
 pub(super) fn resume(root: &Path) -> Result<bool> {
     let moved = recovery_archive_intent::resume(root).with_context(|| context(root))?;
     if let Some(path) = moved {
@@ -51,8 +52,20 @@ pub(super) fn archive(root: &Path, expected: Option<&[u8]>) -> Result<bool> {
                 .context("Codex archive collision suffix exhausted")?;
             name = format!("{base}.{suffix}");
         }
-        let intent = Intent::new(name, raw.identity);
-        publish(&root.join(NAME), &intent.bytes()?)?;
+        let mut intent = Intent::new(name, raw.identity);
+        let marker = root.join(NAME);
+        if let Some(previous) = capture(&marker)? {
+            // Revalidate the captured receipt at its replacement boundary.
+            let mut receipt: Intent = serde_json::from_slice(&previous.bytes)?;
+            receipt.validate_receipt(root)?;
+            atomic_json(
+                &marker,
+                &serde_json::to_value(&intent)?,
+                Some(serde_json::from_slice(&previous.bytes)?),
+            )?;
+        } else {
+            publish(&marker, &intent.bytes()?)?;
+        }
         let destination = intent.finish(root)?;
         report(&destination);
         Ok(true)

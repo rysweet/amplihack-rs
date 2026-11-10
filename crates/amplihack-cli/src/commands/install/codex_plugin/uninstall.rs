@@ -17,6 +17,7 @@ fn uninstall_scoped(root: &Path, home: &Path) -> Result<()> {
     );
     let lock = open_package_lock(root)?;
     lock.lock_exclusive()?;
+    recovery_archive::resume(root)?;
     if root.join("pending.json").exists() {
         let binary =
             selected_binary()?.context("Codex required for pending installation recovery")?;

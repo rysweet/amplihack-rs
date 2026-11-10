@@ -93,7 +93,8 @@ amplihack codex [--reset-recovery] [other amplihack options] [-- <codex argument
 
 The reset flag must precede native arguments and the explicit `--` separator.
 Amplihack consumes it immediately after parsing, before client resolution,
-startup self-healing or reconciliation. It is not forwarded to native Codex,
+startup updates, self-healing or reconciliation. A reset failure stops before
+updates can install assets. It is not forwarded to native Codex,
 auto-mode or Docker launches. A token after `--` belongs to Codex and does not
 reset recovery.
 

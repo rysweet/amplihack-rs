@@ -82,6 +82,8 @@ pub(super) fn capture(path: &Path) -> Result<Option<Capture>> {
 pub(super) fn publish(path: &Path, bytes: &[u8]) -> Result<()> {
     path_scope::check()?;
     let parent = path.parent().context("recovery evidence parent missing")?;
+    #[cfg(test)]
+    storage::testing::check_write()?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
     file.write_all(bytes)?;
     file.as_file().sync_all()?;

@@ -1247,6 +1247,7 @@ pub(crate) fn with_codex_binary<T>(binary: &Path, action: impl FnOnce() -> T) ->
     codex_plugin::with_binary(binary, action)
 }
 
-pub(crate) fn reset_codex_recovery() -> Result<()> {
+/// Archive pending Codex metadata under the package lock before startup mutations.
+pub fn reset_codex_recovery() -> Result<()> {
     codex_plugin::reset_recovery()
 }

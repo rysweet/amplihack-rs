@@ -126,6 +126,7 @@ fn cmd_with_clean_env(home: &std::path::Path) -> Command {
         cmd.env("PATH", path);
     }
     cmd.env("HOME", home);
+    cmd.env("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
     cmd.env("AMPLIHACK_TEST_FAKE_LATEST_VERSION", FAKE_LATEST_VERSION);
     for name in SIGNAL_ENV_VARS {
         cmd.env_remove(name);
@@ -176,7 +177,7 @@ fn noninteractive_env_emits_skip_line_and_suppresses_prompt() {
     let home = tempfile::tempdir().expect("tempdir");
     let mut cmd = cmd_with_clean_env(home.path());
     cmd.env("AMPLIHACK_NONINTERACTIVE", "1");
-    cmd.arg("copilot").arg("--help");
+    cmd.args(["copilot", "--append", "update-check-fixture"]);
 
     let (stdout, stderr) = run_with_timeout(cmd, Duration::from_secs(15));
 
@@ -203,8 +204,13 @@ fn noninteractive_env_emits_skip_line_and_suppresses_prompt() {
 fn subprocess_safe_argv_flag_emits_skip_line_and_suppresses_prompt() {
     let home = tempfile::tempdir().expect("tempdir");
     let mut cmd = cmd_with_clean_env(home.path());
-    // argv = ["amplihack", "copilot", "--subprocess-safe", "--help"]
-    cmd.arg("copilot").arg("--subprocess-safe").arg("--help");
+    // A valid launch reaches the updater; help now exits during parsing.
+    cmd.args([
+        "copilot",
+        "--subprocess-safe",
+        "--append",
+        "update-check-fixture",
+    ]);
 
     let (stdout, stderr) = run_with_timeout(cmd, Duration::from_secs(15));
 
@@ -237,7 +243,7 @@ fn ci_env_true_emits_skip_line_and_suppresses_prompt() {
     let home = tempfile::tempdir().expect("tempdir");
     let mut cmd = cmd_with_clean_env(home.path());
     cmd.env("CI", "true");
-    cmd.arg("copilot").arg("--help");
+    cmd.args(["copilot", "--append", "update-check-fixture"]);
 
     let (stdout, stderr) = run_with_timeout(cmd, Duration::from_secs(15));
 
@@ -259,7 +265,7 @@ fn ci_env_one_emits_skip_line() {
     let home = tempfile::tempdir().expect("tempdir");
     let mut cmd = cmd_with_clean_env(home.path());
     cmd.env("CI", "1");
-    cmd.arg("copilot").arg("--help");
+    cmd.args(["copilot", "--append", "update-check-fixture"]);
 
     let (_stdout, stderr) = run_with_timeout(cmd, Duration::from_secs(15));
     assert!(
@@ -345,7 +351,7 @@ fn no_update_check_env_does_not_emit_skip_line() {
     let home = tempfile::tempdir().expect("tempdir");
     let mut cmd = cmd_with_clean_env(home.path());
     cmd.env("AMPLIHACK_NO_UPDATE_CHECK", "1");
-    cmd.arg("copilot").arg("--help");
+    cmd.args(["copilot", "--append", "update-check-fixture"]);
 
     let (_stdout, stderr) = run_with_timeout(cmd, Duration::from_secs(15));
 
@@ -373,7 +379,7 @@ fn parity_test_env_does_not_emit_skip_line() {
     let home = tempfile::tempdir().expect("tempdir");
     let mut cmd = cmd_with_clean_env(home.path());
     cmd.env("AMPLIHACK_PARITY_TEST", "1");
-    cmd.arg("copilot").arg("--help");
+    cmd.args(["copilot", "--append", "update-check-fixture"]);
 
     let (_stdout, stderr) = run_with_timeout(cmd, Duration::from_secs(15));
 
@@ -450,7 +456,8 @@ mod pty {
              PATH={path} \
              HOME={home} \
              AMPLIHACK_TEST_FAKE_LATEST_VERSION={fake} \
-             {bin} copilot --help",
+             AMPLIHACK_SKIP_AUTO_INSTALL=1 \
+             {bin} copilot --append update-check-fixture",
             path = path,
             home = home.display(),
             fake = FAKE_LATEST_VERSION,
@@ -472,8 +479,7 @@ mod pty {
             .expect("expected 'Update now?' prompt to be printed under interactive TTY");
 
         // Do NOT send any input — let the 5s libc::poll timeout fire.
-        // The process should then proceed to clap (which short-circuits on
-        // --help) and exit.
+        // The process should then dispatch the fixture append request and exit.
         let status = session
             .process
             .wait()
@@ -505,8 +511,7 @@ mod pty {
             "skip-line must NOT print on interactive TTY path; tail:\n{combined}"
         );
 
-        // Sanity: the process did exit (any status — clap may print help and
-        // exit 0, or exit non-zero if --help is unrecognised in this build).
+        // The append request may fail because there is no active session.
         let _ = status;
     }
 }

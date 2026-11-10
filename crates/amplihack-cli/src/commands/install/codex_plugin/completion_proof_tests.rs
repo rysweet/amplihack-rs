@@ -114,10 +114,7 @@ fn generation_overflow_refuses_before_creating_a_new_transaction() {
     let f = Fixture::new();
     assert!(f.install().unwrap());
     let mut ledger = f.ledger();
-    // A corrupt/unsupported proof can also refuse; wrapping can never publish.
-    if !ledger["completion"].is_object() {
-        ledger["completion"] = json!({"schema_version":1});
-    }
+    assert!(ledger["completion"].is_object());
     ledger["completion"]["generation"] = json!(u64::MAX);
     let before = json_bytes(&ledger).unwrap();
     fs::write(f.root.join("ownership.json"), &before).unwrap();

@@ -3,24 +3,11 @@ use super::recovery_test_support::*;
 use super::*;
 
 fn intents(f: &Fixture) -> Vec<PathBuf> {
-    fs::read_dir(&f.root)
+    let path = f.root.join(recovery_archive_intent::NAME);
+    path_present(&path)
         .unwrap()
-        .map(|e| e.unwrap().path())
-        .filter(|p| {
-            if !p.is_file()
-                || p.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .starts_with("pending.json.stale-")
-            {
-                return false;
-            }
-            fs::read(p).ok().is_some_and(|bytes| {
-                let text = String::from_utf8_lossy(&bytes);
-                text.contains("pending.json.stale-")
-                    && serde_json::from_slice::<Value>(&bytes).is_ok()
-            })
-        })
+        .then_some(path)
+        .into_iter()
         .collect()
 }
 
@@ -89,12 +76,15 @@ fn post_rename_sync_failure_leaves_intent_and_retry_finishes_same_archive() {
         archives,
         "retry must finish the original archival intent"
     );
-    assert!(intents(&f).is_empty());
+    assert_eq!(
+        regular_json(&intents(&f)[0]).unwrap().unwrap()["complete"],
+        true
+    );
     f.assert_progress();
 }
 
 #[test]
-fn intent_retirement_sync_failure_restores_guard_before_returning_error() {
+fn completion_sync_failure_retains_receipt_before_returning_error() {
     let f = Fixture::new();
     let bytes = f.orphan();
     let result = storage::testing::with_sync_hook(
@@ -102,15 +92,17 @@ fn intent_retirement_sync_failure_restores_guard_before_returning_error() {
             if path == f.root
                 && !f.root.join("pending.json").exists()
                 && !f.archives().is_empty()
-                && intents(&f).is_empty()
+                && regular_json(&f.root.join(recovery_archive_intent::NAME))
+                    .unwrap()
+                    .is_some_and(|v| v["complete"] == true)
             {
-                anyhow::bail!("injected intent retirement synchronization failure");
+                anyhow::bail!("injected completion receipt synchronization failure");
             }
             Ok(())
         },
         || f.install(),
     );
-    assert!(format!("{:#}", result.unwrap_err()).contains("injected intent retirement"));
+    assert!(format!("{:#}", result.unwrap_err()).contains("injected completion receipt"));
     assert_eq!(intents(&f).len(), 1);
     let archives = f.archives();
     assert_eq!(archives.len(), 1);
@@ -118,7 +110,10 @@ fn intent_retirement_sync_failure_restores_guard_before_returning_error() {
     assert!(!f.codex.join("config.toml").exists());
     assert!(f.install().unwrap());
     assert_eq!(f.archives(), archives);
-    assert!(intents(&f).is_empty());
+    assert_eq!(
+        regular_json(&intents(&f)[0]).unwrap().unwrap()["complete"],
+        true
+    );
     f.assert_progress();
 }
 
@@ -235,17 +230,6 @@ fn destination_created_after_intent_is_never_overwritten() {
 
 #[test]
 fn retry_rejects_escaping_or_unsupported_archival_intent() {
-    fn escape(value: &mut Value) -> bool {
-        match value {
-            Value::String(s) if s.starts_with("pending.json.stale-") => {
-                *s = "../escaped-journal".into();
-                true
-            }
-            Value::Object(map) => map.values_mut().any(escape),
-            Value::Array(values) => values.iter_mut().any(escape),
-            _ => false,
-        }
-    }
     for invalid in ["destination", "version"] {
         let f = Fixture::new();
         let bytes = f.orphan();
@@ -263,9 +247,13 @@ fn retry_rejects_escaping_or_unsupported_archival_intent() {
         let mut value: Value = serde_json::from_slice(&fs::read(&intent).unwrap()).unwrap();
         if invalid == "destination" {
             assert!(
-                escape(&mut value),
+                value["destination"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("pending.json.stale-"),
                 "intent must record its archive basename"
             );
+            value["destination"] = json!("../escaped-journal");
         } else {
             value["schema_version"] = json!(999);
         }

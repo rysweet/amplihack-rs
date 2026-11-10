@@ -140,15 +140,6 @@ pub fn resolve_startup_client(command: &crate::Commands) -> Result<()> {
     if matches!(
         command,
         crate::Commands::Codex {
-            reset_recovery: true,
-            ..
-        }
-    ) {
-        crate::commands::install::reset_codex_recovery()?;
-    }
-    if matches!(
-        command,
-        crate::Commands::Codex {
             docker: false,
             append: None,
             auto: false,

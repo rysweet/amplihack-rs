@@ -285,10 +285,20 @@ Before movement, a durable archival intent records the validated source identity
 content hash and destination basename. Its destination must stay inside the
 captured metadata directory. The operation rechecks source identity and bytes,
 publishes without replacement and synchronizes storage before reporting success.
-A retry resumes only when retained evidence matches the intent. Missing,
+A retry resumes only when retained evidence matches the intent.
+
+Completion atomically replaces the intent with a receipt in the same
+`recovery-archive.json` file. The receipt retains the archive basename, source
+identity and content hash. Neither transition unlinks the final marker or relies
+on a fallback write: failure leaves an intent or a receipt discoverable.
+Installation, uninstall and strict current-attempt recovery all validate this
+marker under the package lock before returning for an absent `pending.json` or
+changing packages or ownership. Only installer startup classifies stale journals.
+A completed receipt allows a later transaction, but its archive must still
+validate; a later archival replaces the receipt after validating it. Missing,
 changed or conflicting evidence stops reconciliation. If rename or a later
-durability barrier fails, the intent and available journal or archive keep
-recovery protection; absence of `pending.json` alone cannot bypass it. Failure
+durability barrier fails, the intent or receipt and available journal or archive
+keep recovery protection; absence of `pending.json` alone cannot bypass it. Failure
 identifies the affected path, filesystem cause and corrective action.
 Filesystems without the required no-replace rename or synchronization support
 cannot complete archival; reconciliation remains blocked.
@@ -300,8 +310,12 @@ by that path. With nothing to archive or resume, reset reports
 `amplihack: no pending Codex recovery journal` and continues normal launch.
 
 Reset is consumed immediately after successful CLI parsing, before client
-resolution, startup self-healing or reconciliation. It precedes native, auto-mode
-and Docker argument construction; Codex never receives the consumed option. The
+resolution, startup update checks (including accepted updates that install
+assets), startup self-healing or reconciliation. A reset error stops startup
+before those paths. The CLI is parsed once; the reset boolean and its wrapper
+argument are consumed before updater argument forwarding or re-execution.
+Literal native arguments, including reset spellings after `--`, are preserved.
+Reset precedes native, auto-mode and Docker argument construction; Codex never receives the consumed option. The
 explicit `--` separator still starts native arguments. The reset operation moves
 metadata only: configuration, packages, profiles and ownership records remain
 subject to normal reconciliation afterward. Archiving grants no ownership of the

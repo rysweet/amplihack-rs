@@ -8,7 +8,6 @@ thread_local! { static ARCHIVE_STAMP: RefCell<Option<String>> = const { RefCell:
 
 // Implementation seam: the archival clock reads this cfg(test)-only override
 // once per operation. Production uses UTC; tests never wait for clock ticks.
-#[allow(dead_code)]
 pub(super) fn archive_stamp() -> Option<String> {
     ARCHIVE_STAMP.with(|v| v.borrow().clone())
 }
