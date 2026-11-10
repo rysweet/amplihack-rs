@@ -860,6 +860,146 @@ fn the_observed_weekly_limit_run_record_says_usage_limit() {
     );
 }
 
+// Issue #2230: Claude Code's "5-hour limit" wording for the session window
+// fell through to `indeterminate`, and so did the per-model caps.
+
+/// The line from #2230.
+const OBSERVED_FIVE_HOUR_LIMIT: &str =
+    "You've hit your 5-hour limit · resets 8:20pm (America/Los_Angeles)";
+
+fn five_hour_run(stdout: &[&str]) -> RecipeRunResult {
+    RecipeRunResult {
+        success: false,
+        step_results: vec![
+            step("workflow-prep", "success"),
+            failed_step_with_stdout(
+                "step-08-implement",
+                "agent step failed: amplihack claude failed (exit 1)",
+                stdout,
+            ),
+        ],
+        ..RecipeRunResult::default()
+    }
+}
+
+fn assert_five_hour_record(result: &RecipeRunResult, stderr_tail: &str, case: &str) {
+    let payload = classify_run_failure(result, stderr_tail).to_json(1, "terminal");
+    assert_ne!(
+        payload["class"], "indeterminate",
+        "{case}: issue #2230 recorded this run as `indeterminate`: {payload}"
+    );
+    assert_eq!(payload["class"], "usage_limit", "{case}: {payload}");
+    assert_eq!(payload["signal"], "5-hour limit", "{case}: {payload}");
+    assert_eq!(payload["retryable"], false, "{case}: {payload}");
+}
+
+#[test]
+fn the_observed_five_hour_limit_message_classifies_as_a_usage_limit() {
+    assert_eq!(
+        classify_failure_text(OBSERVED_FIVE_HOUR_LIMIT),
+        (FailureClass::UsageLimit, Some("5-hour limit")),
+        "the 5-hour-limit message must classify as a usage limit, not as \
+         `indeterminate`; issue #2230"
+    );
+    assert_eq!(
+        usage_limit_reset_hint(OBSERVED_FIVE_HOUR_LIMIT),
+        Some("8:20pm (America/Los_Angeles)".to_string())
+    );
+}
+
+#[test]
+fn the_five_hour_limit_on_the_runner_stderr_only_says_usage_limit() {
+    let result = five_hour_run(&["working on it"]);
+    assert_five_hour_record(&result, OBSERVED_FIVE_HOUR_LIMIT, "stderr only");
+}
+
+#[test]
+fn the_five_hour_limit_as_the_last_stdout_line_only_says_usage_limit() {
+    let result = five_hour_run(&["working on it", OBSERVED_FIVE_HOUR_LIMIT]);
+    assert_five_hour_record(&result, "", "stdout only");
+}
+
+#[test]
+fn the_five_hour_limit_on_both_streams_says_usage_limit() {
+    let result = five_hour_run(&[OBSERVED_FIVE_HOUR_LIMIT]);
+    assert_five_hour_record(&result, OBSERVED_FIVE_HOUR_LIMIT, "both streams");
+}
+
+#[test]
+fn the_five_hour_limit_verdict_tells_the_operator_when_to_come_back() {
+    let reasoning = classify_error(&anyhow::anyhow!("{OBSERVED_FIVE_HOUR_LIMIT}")).reasoning();
+    assert!(reasoning.contains("usage_limit"), "Got: {reasoning}");
+    assert!(
+        reasoning.contains("8:20pm (America/Los_Angeles)"),
+        "the stated reset must survive into the verdict. Got: {reasoning}"
+    );
+}
+
+#[test]
+fn a_per_model_limit_classifies_as_a_usage_limit() {
+    for (line, signal) in [
+        (
+            "You've hit your Opus limit · resets 8:20pm (America/Los_Angeles)",
+            "opus limit",
+        ),
+        (
+            "You've hit your Sonnet limit · resets 8:20pm (America/Los_Angeles)",
+            "sonnet limit",
+        ),
+        (
+            "You've hit your Fable limit · resets 8:20pm (America/Los_Angeles)",
+            "fable limit",
+        ),
+        ("Fable limit reached · resets 8:20pm (UTC)", "fable limit"),
+    ] {
+        assert_eq!(
+            classify_failure_text(line),
+            (FailureClass::UsageLimit, Some(signal)),
+            "{line:?}; issue #2230"
+        );
+    }
+}
+
+#[test]
+fn work_and_environmental_failures_still_beat_a_five_hour_limit() {
+    let (class, _) = classify_failure_text(&format!(
+        "test result: FAILED. 1 failed\n{OBSERVED_FIVE_HOUR_LIMIT}"
+    ));
+    assert_eq!(class, FailureClass::Work);
+    assert_eq!(
+        classify_failure_text(&format!("API Error: 401\n{OBSERVED_FIVE_HOUR_LIMIT}")),
+        (FailureClass::Environmental, Some("api error: 401"))
+    );
+}
+
+#[test]
+fn a_five_hour_limit_wrapped_in_a_429_is_still_a_usage_limit() {
+    assert_eq!(
+        classify_failure_text(&format!(
+            "API Error: 429 too many requests: {OBSERVED_FIVE_HOUR_LIMIT}"
+        )),
+        (FailureClass::UsageLimit, Some("5-hour limit"))
+    );
+}
+
+#[test]
+fn fast_hourly_and_bare_hit_your_limit_wording_is_never_a_usage_limit() {
+    // Deliberately not markers (#2230): fast mode falls back to normal mode,
+    // an hourly quota clears on its own like a daily one, and a bare "hit
+    // your limit" is common in model and tool prose.
+    for text in [
+        "Fast limit reached · now using normal mode",
+        "You have reached your hourly limit of 500 API requests",
+        "You've hit your limit",
+    ] {
+        assert_ne!(
+            classify_failure_text(text).0,
+            FailureClass::UsageLimit,
+            "{text:?}"
+        );
+    }
+}
+
 // -------------------------------------------------------------------------
 // Issue #1435 — a repository-selection precondition failure is self-describing.
 // `workflow-worktree`'s #1323 precondition refuses a repository with no

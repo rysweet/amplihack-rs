@@ -60,16 +60,27 @@ pub(crate) const SPEND_LIMIT: &str = "spend limit";
 /// short-lived envelopes. "weekly limit" and "spend limit" are listed
 /// because "monthly limit" does not match "monthly spend limit" (#1546).
 /// "daily limit" is absent: provider and GitHub API daily quotas use it and
-/// clear on their own. List order does not pick the reported signal; the
-/// classifier reports the marker that appears earliest in the text.
+/// clear on their own. "hourly limit" is absent for the same reason.
+/// "5-hour limit" is the session window's newer name (#2230). "opus limit",
+/// "sonnet limit" and "fable limit" are per-model caps with a stated reset,
+/// so waiting for the reset or switching login is right. "fast limit" is
+/// absent because fast mode falls back to normal mode and does not block the
+/// account. A bare "hit your limit" is absent because model prose and tool
+/// output also use it; the harness's own messages always name the limit.
+/// List order does not pick the reported signal; the classifier reports the
+/// marker that appears earliest in the text.
 const CLAUDE: Patterns = Patterns {
     markers: &[
         "session limit",
+        "5-hour limit",
         "usage limit",
         "usage_limit_reached",
         "quota exceeded",
         "monthly limit",
         "weekly limit",
+        "opus limit",
+        "sonnet limit",
+        "fable limit",
         SPEND_LIMIT,
     ],
     epoch_marker: "Claude AI usage limit reached",

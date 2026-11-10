@@ -4676,17 +4676,19 @@ An attempt counts as hitting a usage limit only when all of these hold:
 3. the recipe runner's own classifier, applied to the kept stderr tail
    followed by the last 64 KiB of buffered stdout, returns its
    `usage_limit` class. That is the same classifier, with the same markers
-   (`session limit`, `usage limit`, `usage_limit_reached`, `quota exceeded`,
-   `monthly limit`) and the same precedence, the runner uses to end a run
-   with a usage-limit message. Work markers are checked first, then
-   environmental ones, then usage-limit ones, so a tail that also matches a
-   work or environmental marker is not a usage limit. For example, a
-   `claude -p` stdout tail that contains `permission denied` anywhere is
-   classed as environmental and the step is not rerun, even if it also says
-   `usage limit`. Two usage-limit-like messages are environmental for the
-   same reason and never cause a rerun: `credit balance is too low` (an
-   environmental marker, checked first) and `disk quota exceeded` (which
-   matches the environmental marker before `quota exceeded`).
+   (`session limit`, `5-hour limit`, `usage limit`, `usage_limit_reached`,
+   `quota exceeded`, `monthly limit`, `weekly limit`, `opus limit`,
+   `sonnet limit`, `fable limit`, `spend limit`) and the same precedence,
+   the runner uses to end a run with a usage-limit message. Work markers
+   are checked first, then environmental ones, then usage-limit ones, so a
+   tail that also matches a work or environmental marker is not a usage
+   limit. For example, a `claude -p` stdout tail that contains
+   `permission denied` anywhere is classed as environmental and the step
+   is not rerun, even if it also says `usage limit`. Two usage-limit-like
+   messages are environmental for the same reason and never cause a rerun:
+   `credit balance is too low` (an environmental marker, checked first) and
+   `disk quota exceeded` (which matches the environmental marker before
+   `quota exceeded`).
 
 Using one classifier means the supervisor and the runner cannot disagree: a
 step the runner would end the run for is always offered a rerun first. A
@@ -9197,6 +9199,8 @@ starts with `Claude AI usage limit reached|` and Unix seconds, or with
 | Message | Example | Result |
 |---------|---------|--------|
 | Session limit | `You've hit your session limit · resets 1pm (America/Los_Angeles)` | reset wait, when the reset is at most five hours away |
+| 5-hour limit | `You've hit your 5-hour limit · resets 8:20pm (America/Los_Angeles)` | reset wait, when the reset is at most five hours away |
+| Per-model limit | `You've hit your Opus limit · resets 8:20pm (America/Los_Angeles)` | reset wait, when the reset is at most five hours away |
 | Weekly limit | `You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)` | [capacity wait](#capacity-wait) when another login could take over, else `skipped reason=reset_too_far` |
 | Spend limit with a session reset | `You've hit your org's monthly spend limit · run /usage-credits … · your session limit resets 1pm (America/Los_Angeles)` | wait for that reset: the session limit is what stops work |
 | Spend limit with a weekly reset | `… monthly spend limit · … · your weekly limit resets Oct 8, 12am (America/Los_Angeles)` | `skipped reason=reset_too_far`, even when another login could take over |
