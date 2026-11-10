@@ -267,6 +267,14 @@ finalization:
 }
 ```
 
+Later steps read the `should_publish` field of this block as
+`terminal_state.should_publish`. It is an internal output that
+`workflow-terminal-state` computes; a caller cannot set it. Do not pass
+`-c should_publish=false` to keep a recovery run from publishing. That
+context key was removed by #1976, and `amplihack recipe run` now refuses it
+with exit code `1` before any step runs. See
+[Removed context keys](../reference/recipe-cli-reference.md#removed-context-keys).
+
 Use the status exactly as emitted:
 
 | Status | Meaning | What the workflow does next |

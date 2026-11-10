@@ -42,7 +42,12 @@ pub fn scan_system(root: &Path) -> Liveness {
         // SAFETY: getuid has no preconditions.
         let uid = unsafe { libc::getuid() };
         match root.canonicalize() {
-            Ok(root) => scan(Path::new("/proc"), &root, std::process::id(), uid),
+            Ok(root) => scan(
+                &crate::commands::agent::procfs::proc_root(),
+                &root,
+                std::process::id(),
+                uid,
+            ),
             Err(_) => Liveness::Unsupported,
         }
     }

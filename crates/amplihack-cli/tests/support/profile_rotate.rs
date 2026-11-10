@@ -167,6 +167,9 @@ pub struct Fixture {
     pub live_ino: u64,
     pub spare_ino: u64,
     pub extra_ino: u64,
+    /// The fake process table every command reads (issue #2042): the shared
+    /// empty tree unless [`Self::with_proc`] names a test's own.
+    proc_root: std::sync::Mutex<Option<PathBuf>>,
 }
 
 impl Fixture {
@@ -197,6 +200,7 @@ impl Fixture {
             live_ino: 0,
             spare_ino: 0,
             extra_ino: 0,
+            proc_root: std::sync::Mutex::new(None),
         };
         for p in PROFILES {
             f.ok(&["profile", "add", p]);
@@ -399,6 +403,7 @@ impl Fixture {
             .current_dir(&self.work_dir)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env(crate::isolated_amplihack::PROC_ROOT_ENV, self.proc_root())
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
@@ -434,6 +439,26 @@ impl Fixture {
         c.env(IDENTITY_BUDGET_ENV, &ceiling)
             .env(IDENTITY_READ_TIMEOUT_ENV, &ceiling);
         c
+    }
+
+    /// Points every later command at `fake` instead of the shared empty tree
+    /// (issue #2042). Keep `fake` alive while commands run: the seam reads
+    /// the real `/proc` for a tree that is gone, so [`Self::base`] panics
+    /// when the tree has been removed.
+    #[cfg(target_os = "linux")]
+    pub fn with_proc(&self, fake: &super::fake_proc::FakeProc) -> &Self {
+        *self.proc_root.lock().unwrap() = Some(fake.path().to_path_buf());
+        self
+    }
+
+    fn proc_root(&self) -> PathBuf {
+        match &*self.proc_root.lock().unwrap() {
+            Some(tree) => {
+                assert!(tree.is_dir(), "the fake proc tree {tree:?} was removed");
+                tree.clone()
+            }
+            None => crate::isolated_amplihack::shared_empty_proc_root().to_path_buf(),
+        }
     }
 
     /// The loopback identity endpoint, `http://127.0.0.1:<port>`.
@@ -522,6 +547,7 @@ impl Fixture {
             &mut self.cmd(args),
         );
         assert_no_secrets(&out);
+        crate::isolated_amplihack::assert_proc_root_honoured(&text(&out.stderr));
         // A rotate swap off a full login damps it at that whole second, and
         // only a reading strictly later may choose it again (#1870). The
         // fixture cannot read a login directly, so a run in the same second
@@ -627,7 +653,8 @@ pub fn assert_text_has_no_secrets(s: &str) {
 
 /// The documented log grammar: one-shot and `watch` lines start with a UTC
 /// time; `--dry-run` lines do not. `switch <from>-><to>` is the line a
-/// `profile switch` swap writes (issue #1691).
+/// `profile switch` swap writes (issue #1691). `reread:` lines (#1962) appear
+/// when a reading goes stale, as on a loaded host (#2042).
 pub fn assert_log_grammar(line: &str, timed: bool) {
     let msg = if timed {
         let re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z (.+)$").unwrap();
@@ -639,7 +666,7 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
         line.to_string()
     };
     let kinds = regex::Regex::new(
-        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)|failed|per-token|unknown, still running))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)|failed|unknown, still running) target s=\d+% w=(\d+%|\?) reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|would .+)$",
+        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)|failed|per-token|unknown, still running))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)|failed|unknown, still running) target s=\d+% w=(\d+%|\?) reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|reread: \S+ (reading stale .+; fresh .+|(failed|limit reached|time limit reached); treated as unknown)|would .+)$",
     )
     .unwrap();
     assert!(kinds.is_match(&msg), "line outside the grammar: {line:?}");
