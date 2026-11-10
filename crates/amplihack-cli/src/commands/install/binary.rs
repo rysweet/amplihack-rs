@@ -221,6 +221,7 @@ pub(super) fn stage_binary(txn: &mut ReleaseTxn, src: &Path, dst: &Path) -> Resu
         let mut artifacts = ArtifactRegistry::new();
         artifacts.register(src)?;
         artifacts.link_with(src, &staged, &bin_dir, &FilesystemLinks)?;
+        txn.linked_test_binaries.push(staged.clone());
         txn.plan_link(dst, &staged)?;
         return Ok(true);
     }

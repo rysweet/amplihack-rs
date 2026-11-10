@@ -238,27 +238,36 @@ fn final_release_staging_preserves_large_artifact_identity_and_permissions() {
     use super::super::{binary::stage_binary, release_layout::ReleaseTxn};
     // Covers the shared staging boundary for CLI, resolver, and hooks, rather
     // than accepting a link which a subsequent installation silently copies.
-    for name in ["amplihack", "amplihack-asset-resolver", "amplihack-hooks"] {
-        let f = Fixture::new(LIMIT + 1);
-        let before = fs::metadata(&f.source).unwrap();
-        let mut txn = ReleaseTxn::allocate(&f.app, "2182.0.0").unwrap();
-        let published = f.bin.join(name);
-        assert!(stage_binary(&mut txn, &f.source, &published).unwrap());
-        let staged = txn.bin_dir().join(name);
-        let metadata = fs::metadata(&staged).unwrap();
-        assert_eq!(
-            (metadata.dev(), metadata.ino()),
-            (before.dev(), before.ino()),
-            "same-filesystem staging must hardlink {name}"
-        );
-        assert_eq!(
-            fs::metadata(&f.source).unwrap().permissions().mode(),
-            before.permissions().mode(),
-            "link staging must not chmod the source"
-        );
-        let report = txn.commit().unwrap();
-        assert!(report.failed.is_none(), "{report:?}");
-        verify(&f.home, &f.app, &f.registry()).unwrap();
+    for mode in [0o700, 0o750, 0o555] {
+        for name in ["amplihack", "amplihack-asset-resolver", "amplihack-hooks"] {
+            let f = Fixture::new(LIMIT + 1);
+            fs::set_permissions(&f.source, fs::Permissions::from_mode(mode)).unwrap();
+            let registry = f.registry();
+            let before = fs::metadata(&f.source).unwrap();
+            let mut txn = ReleaseTxn::allocate(&f.app, "2182.0.0").unwrap();
+            let published = f.bin.join(name);
+            assert!(stage_binary(&mut txn, &f.source, &published).unwrap());
+            let staged = txn.bin_dir().join(name);
+            let metadata = fs::metadata(&staged).unwrap();
+            assert_eq!(
+                (metadata.dev(), metadata.ino()),
+                (before.dev(), before.ino()),
+                "same-filesystem staging must hardlink {name}"
+            );
+            assert_eq!(
+                fs::metadata(&f.source).unwrap().permissions().mode(),
+                before.permissions().mode(),
+                "link staging must not chmod the source"
+            );
+            let report = txn.commit().unwrap();
+            assert!(report.failed.is_none(), "{report:?}");
+            assert_eq!(
+                fs::metadata(&f.source).unwrap().permissions().mode(),
+                before.permissions().mode(),
+                "release commit must not chmod the linked {name} source"
+            );
+            verify(&f.home, &f.app, &registry).unwrap();
+        }
     }
 }
 
