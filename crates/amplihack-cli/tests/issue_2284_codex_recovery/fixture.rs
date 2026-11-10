@@ -50,6 +50,8 @@ impl LaunchFixture {
             crate::support::exec_stub::write_executable(&tools.join(name), body, 0o700);
         };
         write("codex", FAKE_CODEX);
+        // Modern Codex installations include this sibling executable.
+        write("codex-code-mode-host", "#!/bin/sh\nexit 0\n");
         write("node", "#!/bin/sh\necho v24.0.0\n");
         write(
             "amplihack-hooks",
