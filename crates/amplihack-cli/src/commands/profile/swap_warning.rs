@@ -61,6 +61,18 @@ pub fn complete(
     Ok(())
 }
 
+pub fn abort(
+    root: &Path,
+    tx: &str,
+    producer: &str,
+    host: &str,
+    from: &str,
+    to: &str,
+) -> Result<(), ProfileError> {
+    WarningHistory::open(root)?.abort_transaction(tx, producer, host, from, to)?;
+    Ok(())
+}
+
 /// Called under the producer swap lock before creating a new intent. Both
 /// authoritative journals are inspected, so a crash after journal deletion
 /// cannot leak completion evidence indefinitely. An unreadable journal holds

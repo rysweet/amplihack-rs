@@ -33,6 +33,29 @@ fn pending_intent_is_durable_but_not_deliverable_before_commit() {
 }
 
 #[test]
+fn verified_rollback_retires_only_the_matching_pending_transaction() {
+    let (tmp, mut h) = fixture();
+    h.prepare(&event("rolled-back", "crossing", "rotator", "home"))
+        .unwrap();
+    assert!(
+        h.abort_transaction("rolled-back", "auto-switch", "home", "work", "spare")
+            .is_err()
+    );
+    assert!(
+        h.abort_transaction("rolled-back", "rotator", "home", "work", "spare")
+            .unwrap()
+    );
+    assert!(
+        !h.abort_transaction("rolled-back", "rotator", "home", "work", "spare")
+            .unwrap()
+    );
+    let raw = fs::read(tmp.path().join(".swap-warning-history/journal.json")).unwrap();
+    let value: Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(value["pending"], json!({}));
+    assert_eq!(value["events"], json!([]));
+}
+
+#[test]
 fn same_org_swap_does_not_erase_an_earlier_unconsumed_crossing() {
     let (tmp, mut h) = fixture();
     let session = h.register_current_process("session-a", "home").unwrap();

@@ -270,7 +270,7 @@ pub fn decide_restricted(
         .cloned()
         .collect();
     let targets: Vec<Measured> = plan.iter().filter(|c| allowed(&c.name)).cloned().collect();
-    let same_targets: Vec<Measured> = targets.iter().filter(|c| same(&c.name)).cloned().collect();
+    let same_targets: Vec<Measured> = plan.iter().filter(|c| same(&c.name)).cloned().collect();
     let unknown_plan: Vec<ProfileName> = i
         .unmeasured_plan
         .iter()

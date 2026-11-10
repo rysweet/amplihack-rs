@@ -273,7 +273,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                     .and_then(|(_, a)| a.as_ref())
                     .and_then(|a| a.org()),
             )?;
-            let from = match swap::swap_with_warning(
+            let attempted = swap::swap_with_warning(
                 &ctx.store,
                 &ctx.rs,
                 &ctx.home,
@@ -283,7 +283,18 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 ctx.identity_reader(),
                 Some(&first),
                 Some(&transaction),
-            ) {
+            );
+            if attempted.is_err() && ctx.rs.load_journal()?.is_none() {
+                super::super::swap_warning::abort(
+                    ctx.store.root(),
+                    &transaction,
+                    "rotator",
+                    "home",
+                    outgoing.as_str(),
+                    to.as_str(),
+                )?;
+            }
+            let from = match attempted {
                 Ok(from) => from,
                 // A refusal repeats each cycle: one ALERT per reason.
                 Err(e @ ProfileError::RotateRefused(_)) => {

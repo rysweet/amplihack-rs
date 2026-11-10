@@ -119,10 +119,28 @@ fn fail(state: &State, j: &mut Journal, e: MoveError, undo: &[(&Path, &Path)]) -
         MoveError::Other(msg) => msg,
         MoveError::Exists => unreachable!("handled above"),
     };
+    if let Err(err) = abort_warning(state, j) {
+        msg.push_str(&format!("; warning intent retained: {err}"));
+        return invariant(msg);
+    }
     if let Err(err) = state.delete_journal() {
         msg.push_str(&format!("; could not delete the journal: {err}"));
     }
     invariant(msg)
+}
+
+fn abort_warning(state: &State, j: &Journal) -> Result<(), ProfileError> {
+    if let Some(tx) = &j.warning_transaction {
+        super::super::swap_warning::abort(
+            &state.root,
+            tx,
+            "auto-switch",
+            &format!("profile:{}", j.dir),
+            &j.from,
+            &j.to,
+        )?;
+    }
+    Ok(())
 }
 
 fn mark_disabled(state: &State, dir: &str) -> Result<(), ProfileError> {
@@ -356,6 +374,9 @@ fn resolve_journal(state: &State, ledger: &mut Ledger, j: &Journal) -> Result<bo
         return Err(ambiguous());
     }
     release_refresh_lock(state, &j.dir, j.refresh_lock_ino);
+    if !forward {
+        abort_warning(state, j)?;
+    }
     state.delete_journal()?;
     Ok(forward)
 }
@@ -655,7 +676,7 @@ pub fn swap_check(
                     && candidate::overflow_usable(p.as_str(), &overflow.blocked)
             },
         )?;
-        if !refreshed.contains(&target)
+        if (!refreshed.contains(&target) && !same.contains(&target))
             || super::super::organisation::resolve(state, &ledger, owner.as_str())? != source_org
             || super::super::organisation::resolve_login(state, target.as_str())? != target_org
         {
@@ -684,6 +705,16 @@ pub fn swap_check(
     })();
     let result = prepared.and_then(|()| transfer(state, &mut ledger, j));
     release_refresh_lock(state, owner.as_str(), Some(ino));
+    if result.is_err() && state.load_journal()?.is_none() {
+        super::super::swap_warning::abort(
+            &state.root,
+            &transaction,
+            "auto-switch",
+            &format!("profile:{}", owner),
+            &current,
+            target.as_str(),
+        )?;
+    }
     result?;
     if let Some(warning) = amplihack_utils::organisation_affinity::Affinity::between(
         source_org.as_deref(),

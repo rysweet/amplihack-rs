@@ -106,6 +106,19 @@ fn upgrade_never_crosses_or_treats_unknown_as_same() {
 }
 
 #[test]
+fn same_organisation_plan_room_survives_an_empty_capacity_pool() {
+    let e = fixture(json!("org-a"), json!("org-a"), json!("org-b"));
+    let wanted = ino_at(&e.root.join("spare").join(CREDS));
+    run(&e, plan_room);
+    assert_eq!(
+        ino_at(&e.home.join(".claude").join(CREDS)),
+        wanted,
+        "{}",
+        log_of(&e)
+    );
+}
+
+#[test]
 fn plan_room_and_its_fallback_require_confirmed_affinity() {
     for org in [json!("org-b"), Value::Null] {
         let e = fixture(json!("org-a"), org.clone(), org);

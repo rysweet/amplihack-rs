@@ -250,79 +250,41 @@ that neither authoritative swap journal references. Unreadable recovery journals
 prevent retirement. This also reclaims evidence left by a crash after recovery
 journal deletion, without an age cutoff or a background service.
 
-### Review-fix validation (macOS, 2026-11-10)
+### Lifecycle retention
 
-The focused warning-history and warning-security integration suites passed
-(17 and 6 tests respectively). Formatting, `git diff --check`, and
-`scripts/check-git-command-sanitised.sh` passed during implementation.
-The initial full-live-state fixture was below the storage bound; it was
-increased to 40,000 unresolved intents and its rerun is queued.
+On journal writes, registrations are retired only when kernel process metadata
+proves the process exited or its PID has been reused. Permission errors and
+other unresolved process lookups retain the registration. Pending transaction
+scopes remain intact until the transaction is resolved. Consumed events and
+warnings whose registered processes have demonstrably ended are compacted.
+No timer or age cutoff authorizes deletion.
 
-Hook and CLI behavioral checks and Clippy encountered sandbox-external Cargo
-and ccache directories. Detached retries use writable directories under
-`/private/tmp`; their completion is not yet verified. The pre-commit launcher
-references a missing Python environment; a fallback invocation also failed
-because its dependencies require a newer Python interpreter. Full hook
-validation remains outstanding. Linux-specific checks are deferred to CI.
+### Selection rationale
 
-### Blocking-review follow-up
+Strict capacity relief and plan-room fallback use separate candidate pools.
+The existing selectors define capacity using the configured thresholds; affinity
+does not introduce a second percentage limit. Same-organisation room above a
+threshold cannot hide a different organisation's eligible capacity relief.
+When no strict relief target is selected, existing plan-room policy can still
+choose an eligible, confirmed same-organisation target with room.
 
-The capacity-versus-room blocker is addressed by asking the existing restricted
-selectors whether each target provides relief, with plan-room fallback disabled
-for that query. Affinity no longer defines its own percentage limit. A separate
-Same-only pool remains available to the authoritative plan-room selector.
-Auto-switch, nested reruns, pre-swap revalidation, and rotation use this rule.
-Threshold-boundary regressions cover a Same target at 95% and a Crossing target
-with capacity. The rotation regression remains Linux-gated with its fixture.
+### Validation and platform limits
 
-Static correctness, security, and philosophy re-review confirmed that the fix
-keeps capacity policy in the selectors and preserves the separate fallback and
-warning authorization boundaries. No additional security blocker was found;
-stale-session retention remains a non-blocking hardening item.
+Deterministic regressions use temporary fake profiles and injected events for
+organisation selection, threshold boundaries, unknown metadata, legacy records,
+intervening swaps, delivery scope and kernel lifecycle retention. They do not
+need a live Claude session or real profile roots.
 
-Validation remains a blocker: the new full CLI test attempt encountered the
-existing macOS integration-test import failure for
-`issue_1954_install_leaves_live_runs_alone::proc_link`. A library-only retry and
-hook retry run detached on private tmux socket `/private/tmp/2136-blocking.sock`;
-logs and exit-status files use `/private/tmp/2136-blocking-*`. These pending
-runs are not passing evidence. The newer Python launcher itself references a
-missing temporary virtual environment, so hook completion remains unverified.
-`git diff --check` and the git-command sanitization check passed after the fix.
-Linux runtime checks and final hook/Clippy results are still required before
-approval.
+Linux process discovery, FIFO and live resume integration remain Linux-specific
+and require CI validation. macOS can validate the shared affinity policy,
+warning history, injected delivery routes and CLI library tests. Full workspace
+validation can encounter existing macOS-only integration compilation failures;
+such failures are not passing evidence for the affected checks. Hook validation
+must run without bypasses for the final revision before release.
 
-### Step 18b evidence update
-
-The current patch additionally checks nested-rerun selection exactly at and
-just below configured thresholds 50, 80, 90, and 99, with the overflow gate
-absent. These assertions are pending execution; they are not passing evidence.
-
-The tested base is `0c27385d99f16dcc8a23637a81a8ff6389183390` plus the
-uncommitted patch. The detached validation script
-`/private/tmp/2136-review-final.sh` records the base, patch SHA-256 and macOS
-platform in `/private/tmp/2136-review-revision.txt`. It runs:
-
-- `cargo test --locked -p amplihack-cli --lib issue_2136`
-- `python -m pre_commit run --all-files`
-- `python -m pre_commit run --all-files --hook-stage pre-push`
-
-The Python environment `/private/tmp/cx2188-hook-venv` successfully reports
-pre-commit 4.7.0, repairing the missing-launcher issue for this attempt.
-The private tmux socket is `/private/tmp/2136-review-final.sock`; logs and
-exit files are `/private/tmp/2136-review-{regressions,hooks,push}.{log,exit}`.
-No hooks are bypassed. Completion remains pending. Earlier retention and
-resume test commands in `/private/tmp/2136-final-validation.sh` exited zero;
-they predate this final regression addition and do not establish Linux or
-live-delivery behavior. `git diff --check` passed on this revision.
-
-P2 remains open until hook, CLI, Linux process/FIFO, live warning delivery,
-and final CI results are available for the final revision. Differing gate
-threshold and direct auto-switch regression coverage still require successful
-verification. No reassessment approval is claimed.
-
-Non-blocking follow-up: define lifecycle-aware retirement of dead session
-registrations with deterministic tests. Preserve active and recoverable pending
-warnings, recovery references, and idempotence evidence; elapsed age alone is
-not sufficient authorization to discard them. This follow-up is separate from
-consumed-event compaction. The optional request-type refactor is deferred to
-avoid expanding the selection fix.
+An abrupt process exit between persisting a warning intent and linking it from
+the producer's transaction journal can leave an orphan intent. Ordinary verified
+failure and rollback paths abort their scoped intent. Recovery conservatively
+retains an unlinked intent because missing references alone cannot prove the
+login was unchanged. Such retained intents count toward the storage bound;
+crash-safe reconciliation of this preparation window remains a limitation.

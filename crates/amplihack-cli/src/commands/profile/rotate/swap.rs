@@ -342,12 +342,23 @@ fn abandon(
         eprintln!("warning: the abandoned swap's journal was not updated: {e}");
         release_locks(store, home, &held);
     }
+    if let Err(e) = abort_warning(store, j) {
+        eprintln!("warning: the abandoned swap's warning intent was retained: {e}");
+        return err;
+    }
     if let Err(e) = rs.delete_journal() {
         eprintln!("warning: the abandoned swap's journal was not removed: {e}");
         return err;
     }
     remove_unused_adoption(store, j);
     err
+}
+
+pub(super) fn abort_warning(store: &ProfileStore, j: &RotateJournal) -> Result<(), ProfileError> {
+    if let Some(tx) = &j.warning_transaction {
+        super::super::swap_warning::abort(store.root(), tx, "rotator", "home", &j.from, &j.to)?;
+    }
+    Ok(())
 }
 
 /// Rewrites the journal at `phase`, then stops there in a test run.

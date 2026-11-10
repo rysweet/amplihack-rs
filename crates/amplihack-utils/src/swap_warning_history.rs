@@ -244,6 +244,7 @@ impl WarningHistory {
         if !persist {
             return Ok(result);
         }
+        retire_dead_sessions(&mut journal, crate::session_warning_identity::birth);
         compact(&mut journal);
         let raw = serde_json::to_vec(&journal).map_err(io::Error::other)?;
         if raw.len() as u64 > MAX_BYTES {
@@ -362,8 +363,37 @@ impl WarningHistory {
         from: &str,
         to: &str,
     ) -> io::Result<bool> {
+        self.settle_transaction(transaction, producer, host, from, to, Completion::Committed)
+    }
+
+    /// Discard an intent only after its producer has verified that the swap
+    /// was rolled back. Unresolved transactions must retain their intents.
+    pub fn abort_transaction(
+        &mut self,
+        transaction: &str,
+        producer: &str,
+        host: &str,
+        from: &str,
+        to: &str,
+    ) -> io::Result<bool> {
+        self.settle_transaction(transaction, producer, host, from, to, Completion::Aborted)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn settle_transaction(
+        &mut self,
+        transaction: &str,
+        producer: &str,
+        host: &str,
+        from: &str,
+        to: &str,
+        completion: Completion,
+    ) -> io::Result<bool> {
         let present = self.access_read(|j| {
             if j.completed.contains_key(transaction) {
+                if matches!(completion, Completion::Aborted) {
+                    return Err(invalid("committed warning transaction cannot be aborted"));
+                }
                 return Ok(true);
             }
             let Some(pending) = j.pending.get(transaction) else {
@@ -387,7 +417,7 @@ impl WarningHistory {
                     root: self.root.clone(),
                     transaction_id: transaction.into(),
                 },
-                Completion::Committed,
+                completion,
             )?;
         }
         Ok(present)
@@ -504,10 +534,99 @@ fn compact(j: &mut Journal) {
     });
 }
 
+// A failed lookup is not generally evidence of death (permissions and platform
+// failures must retain warnings). Pending transaction scopes remain untouched
+// until their owner resolves the transaction.
+fn retire_dead_sessions(j: &mut Journal, mut birth: impl FnMut(u32) -> io::Result<String>) {
+    j.sessions.retain(|key, _| {
+        if j.pending.values().any(|p| p.sessions.contains(key)) {
+            return true;
+        }
+        let mut parts = key.splitn(3, ':');
+        let Some(pid) = parts.next().and_then(|s| s.parse::<u32>().ok()) else {
+            return true;
+        };
+        let Some(recorded) = parts.next() else {
+            return true;
+        };
+        match birth(pid) {
+            Ok(current) => current == recorded,
+            Err(error) => !matches!(error.raw_os_error(), Some(libc::ESRCH) | Some(libc::ENOENT)),
+        }
+    });
+    for event in &mut j.events {
+        event.sessions.retain(|key| j.sessions.contains_key(key));
+    }
+}
+
 #[cfg(test)]
 mod retention_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn retirement_requires_kernel_evidence_and_preserves_pending_scopes() {
+        let mut journal = Journal::default();
+        for pid in 1..=6 {
+            journal.sessions.insert(
+                format!("{pid}:original:s"),
+                Registration {
+                    host: "home".into(),
+                    cursor: 0,
+                },
+            );
+        }
+        let event = Event {
+            version: 1,
+            transaction_id: "tx".into(),
+            producer: "rotator".into(),
+            reason: "threshold".into(),
+            host: "home".into(),
+            from_login: "a".into(),
+            to_login: "b".into(),
+            from_org: Some("a".into()),
+            to_org: Some("b".into()),
+            affinity: Affinity::Crossing,
+        };
+        journal.pending.insert(
+            "tx".into(),
+            Pending {
+                event: event.clone(),
+                sessions: vec!["5:original:s".into()],
+            },
+        );
+        journal.events.push(Warning {
+            id: 1,
+            event,
+            sessions: journal.sessions.keys().cloned().collect(),
+        });
+        retire_dead_sessions(&mut journal, |pid| match pid {
+            1 => Ok("original".into()),
+            2 => Ok("reused".into()),
+            3 | 5 => Err(io::Error::from_raw_os_error(libc::ESRCH)),
+            6 => Err(io::Error::from_raw_os_error(libc::EPERM)),
+            _ => Err(io::Error::from_raw_os_error(libc::EACCES)),
+        });
+        assert_eq!(
+            journal.sessions.keys().cloned().collect::<Vec<_>>(),
+            [
+                "1:original:s",
+                "4:original:s",
+                "5:original:s",
+                "6:original:s"
+            ]
+        );
+        assert_eq!(journal.events[0].sessions.len(), 4);
+        assert_eq!(journal.pending["tx"].sessions, ["5:original:s"]);
+        // Resolving the transaction releases its scope for safe retirement.
+        journal.pending.clear();
+        retire_dead_sessions(&mut journal, |_| {
+            Err(io::Error::from_raw_os_error(libc::ENOENT))
+        });
+        compact(&mut journal);
+        assert!(journal.sessions.is_empty());
+        assert!(journal.events.is_empty());
+    }
 
     #[test]
     fn full_live_state_fails_without_overwriting_durable_state() {

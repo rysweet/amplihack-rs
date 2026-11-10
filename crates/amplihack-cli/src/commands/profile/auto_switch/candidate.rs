@@ -315,6 +315,8 @@ pub fn select_with_overflow<'a>(
 
 /// The final plan-room fallback has its own affinity restriction, so a
 /// necessary threshold cycle cannot turn into a cross-organisation preference.
+/// `preference` includes eligibility independently of the capacity-relief pool:
+/// a same-organisation login can have room without having strict capacity.
 pub fn select_restricted<'a>(
     pool: &Pool<'a>,
     ov: &OverflowPool<'a>,
@@ -364,9 +366,7 @@ pub fn select_restricted<'a>(
     }
     let with_room = || {
         let roomy = |r: Option<&Reading>| r.is_some_and(|r| has_room(r, pool.now));
-        own(select_by(&plan_pool, current, roomy, |p| {
-            eligible(p) && preference(p)
-        }))
+        own(select_by(&plan_pool, current, roomy, &preference))
     };
     if on_overflow && let Some(p) = with_room() {
         return Some(p);
