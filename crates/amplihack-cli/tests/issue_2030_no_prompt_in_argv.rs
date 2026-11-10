@@ -110,6 +110,11 @@ impl Fixture {
         for name in ["claude", "copilot", "codex"] {
             crate::support::exec_stub::write_executable(&tools.join(name), STUB, 0o755);
         }
+        crate::support::exec_stub::write_executable(
+            &tools.join("codex-code-mode-host"),
+            "#!/bin/sh\nexit 0\n",
+            0o755,
+        );
         Self {
             _tmp: tmp,
             root,
