@@ -167,6 +167,7 @@ amplihack copilot
 - [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account with the most capacity with `amplihack profile rotate`, and resume sessions stopped by a usage limit
 - [Bring Agent Sessions Back After a Terminal Loss](howto/supervise-agent-sessions.md) - Register long-lived Claude sessions with `amplihack agent` and let a supervisor service resume them from their saved conversation
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
+- [How a Test's Rotator Ends with Its Test](concepts/test-rotator-lifetime.md) - Why a rotator started by a killed test used to leak, and the lifetime pipe that now stops it
 - [Keep Tests off the Host Process Table](howto/keep-tests-off-the-host-process-table.md) - How `amplihack profile` tests read a fake `/proc` through `AMPLIHACK_TEST_PROC_ROOT`, the `FakeProc` builder, and the guard that fails a test reading host processes
 - [Keep Tests out of the Real Profile Root](howto/keep-tests-out-of-the-real-profile-root.md) - How tests avoid writing real profiles' `settings.json`, and the guard that fails the run when one changes
 - [Give Test Logins a Fake Account Identity](howto/give-test-logins-a-fake-account-identity.md) - How profile tests give fake logins a server identity, seed logins in rotate unit tests, re-issue a credential when its account changes, and test the no-record case

@@ -67,6 +67,8 @@ fn rotate_has_the_planned_files() {
         "fresh.rs",
         "fresh_msg.rs",
         "swap_back.rs",
+        // Issue #2095: the test-only lifetime pipe.
+        "lifetime.rs",
     ] {
         assert!(names.iter().any(|n| n == want), "missing rotate/{want}");
     }

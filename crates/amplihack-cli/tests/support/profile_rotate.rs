@@ -19,12 +19,29 @@
 //! to the wait ceiling, the identity endpoint serves each connection on its
 //! own thread, and `$CANNED/hold` (see [`Fixture::hold_probes`]) holds each
 //! `/usage` probe after it has recorded its environment.
+//!
+//! Issue #2095: [`Fixture::new`] arms every command with a lifetime pipe.
+//! This test process holds the write end (close-on-exec, never inherited);
+//! each command gets the read end at the same fd number, named by
+//! [`LIFETIME_FD_ENV`]. A rotator started from the fixture reads it and
+//! leaves through its normal stop path when the write end closes, which the
+//! kernel does however this process ends, SIGKILL included. On drop the
+//! fixture closes the write end and then waits, with no time limit, for its
+//! own recorded rotator to exit before the temporary HOME is removed.
+//! [`Fixture::unarmed`] builds a fixture without the pipe.
 
 #![cfg(unix)]
 #![allow(dead_code)]
 
 use std::fs;
+use std::io::{PipeReader, PipeWriter};
+use std::os::fd::{AsRawFd, RawFd};
+#[cfg(target_os = "linux")]
+use std::os::fd::{FromRawFd, OwnedFd};
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -35,6 +52,9 @@ use super::wait::{CEILING, output_within, wait_until};
 /// Debug-build knobs that raise the identity budget and read timeout.
 pub const IDENTITY_BUDGET_ENV: &str = "AMPLIHACK_TEST_IDENTITY_BUDGET_SECS";
 pub const IDENTITY_READ_TIMEOUT_ENV: &str = "AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS";
+/// Issue #2095: names the fd of the lifetime pipe's read end in a fixture
+/// command. Must never start with `AMPLIHACK_ROTATE`, which `spawn` strips.
+pub const LIFETIME_FD_ENV: &str = "AMPLIHACK_TEST_ROTATOR_LIFETIME_FD";
 /// What `profile rotate stop` reports when the rotator outlives its 10 s wait.
 pub const STOP_REFUSAL: &str = "did not exit within 10 seconds";
 
@@ -154,7 +174,15 @@ pub fn account_json(p: &str) -> serde_json::Value {
     serde_json::json!({"accountUuid": format!("uuid-{p}"), "emailAddress": email(p)})
 }
 
+/// The lifetime pipe of an armed fixture (issue #2095).
+struct Lifetime {
+    reader: PipeReader,
+    writer: Option<PipeWriter>,
+}
+
 pub struct Fixture {
+    /// Dropped by hand in `Drop`, before every other field.
+    lifetime: Option<Lifetime>,
     identity: IdentityEndpoint,
     pub tmp: tempfile::TempDir,
     pub home: PathBuf,
@@ -175,7 +203,27 @@ pub struct Fixture {
 impl Fixture {
     /// `work` is live in `~/.claude` (90/40: over the session threshold);
     /// `spare` 10/20 and `extra` 50/50 are logged in. No rotate ledger.
+    /// Every command is armed with the lifetime pipe (issue #2095).
     pub fn new() -> Self {
+        Self::build(true)
+    }
+
+    /// As [`Self::new`], without the lifetime pipe: a rotator started from
+    /// this fixture outlives the test process unless the test stops it.
+    pub fn unarmed() -> Self {
+        Self::build(false)
+    }
+
+    fn build(armed: bool) -> Self {
+        // Before the first command, so every command of an armed fixture
+        // gets the read end. `std::io::pipe` opens both ends close-on-exec.
+        let lifetime = armed.then(|| {
+            let (reader, writer) = std::io::pipe().expect("create the lifetime pipe");
+            Lifetime {
+                reader,
+                writer: Some(writer),
+            }
+        });
         let tmp = tempfile::tempdir().unwrap();
         fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let home = tmp.path().join("home");
@@ -189,6 +237,7 @@ impl Fixture {
         fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
         write_executable(&tools.join("claude"), FAKE_CLAUDE, 0o755);
         let mut f = Self {
+            lifetime,
             identity: IdentityEndpoint::new(canned.clone()),
             root: home.join("profiles"),
             tmp,
@@ -438,7 +487,32 @@ impl Fixture {
         let ceiling = CEILING.as_secs().to_string();
         c.env(IDENTITY_BUDGET_ENV, &ceiling)
             .env(IDENTITY_READ_TIMEOUT_ENV, &ceiling);
+        if let Some(fd) = self.lifetime_fd() {
+            c.env(LIFETIME_FD_ENV, fd.to_string());
+            // SAFETY: the closure runs in the child between fork and exec. It
+            // captures only an integer and calls only fcntl(F_SETFD), which is
+            // async-signal-safe. It clears close-on-exec on the read end in
+            // this child alone, so the parent's fd stays close-on-exec and no
+            // sibling test's child inherits it. No dup2: no fd std or a
+            // jobserver uses in the child can be overwritten.
+            unsafe {
+                c.pre_exec(move || {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
         c
+    }
+
+    /// The fd of the lifetime pipe's read end; `None` for an unarmed fixture.
+    /// Spawn every command from [`Self::cmd`] while this fixture is alive:
+    /// its `pre_exec` closure holds this bare fd number, which may belong to
+    /// another descriptor once the fixture has been dropped.
+    pub fn lifetime_fd(&self) -> Option<RawFd> {
+        self.lifetime.as_ref().map(|l| l.reader.as_raw_fd())
     }
 
     /// Points every later command at `fake` instead of the shared empty tree
@@ -850,4 +924,141 @@ impl Drop for IdentityEndpoint {
             std::panic::resume_unwind(e);
         }
     }
+}
+
+/// Issue #2095: on drop an armed fixture closes the write end of its
+/// lifetime pipe, then waits with no time limit for the rotator its pid file
+/// names to exit, so the temporary HOME is never removed under a running
+/// rotator. The wait applies only to a process that is this fixture's armed
+/// rotator: the pid is checked through a pidfd and an exact `HOME=` and
+/// lifetime-variable entry in its environment. Sends no signal and never
+/// panics; any failure skips the wait. The wait is Linux-only (pidfd and
+/// `/proc`); elsewhere the drop only closes the write end.
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let Some(life) = self.lifetime.as_mut() else {
+            return;
+        };
+        drop(life.writer.take());
+        #[cfg(target_os = "linux")]
+        self.wait_for_armed_rotator();
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Fixture {
+    /// The Linux part of [`Drop`]: waits with no time limit for this
+    /// fixture's own armed rotator to exit. Prints one line, naming no pid or
+    /// path, if the wait itself fails.
+    fn wait_for_armed_rotator(&self) {
+        let Some(fd) = self.lifetime_fd() else {
+            return;
+        };
+        let Ok(raw) = fs::read_to_string(self.rotate_dir().join("rotate.pid")) else {
+            return;
+        };
+        let Ok(pid) = raw.trim().parse::<i32>() else {
+            return;
+        };
+        if pid <= 1 || pid == std::process::id() as i32 {
+            return;
+        }
+        let Some(pidfd) = pidfd_open(pid) else {
+            return;
+        };
+        if !armed_by(pid, &self.home, fd) {
+            return;
+        }
+        if !pidfd_exited(&pidfd, true) {
+            eprintln!(
+                "profile_rotate fixture: could not wait for its rotator to exit; \
+                 HOME may be removed under it"
+            );
+        }
+    }
+}
+
+/// A pidfd for `pid`; `None` when it has gone (ESRCH) or cannot be opened.
+#[cfg(target_os = "linux")]
+pub fn pidfd_open(pid: i32) -> Option<OwnedFd> {
+    if pid <= 1 {
+        return None;
+    }
+    // SAFETY: pidfd_open takes a pid and flags and returns a new fd or -1.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
+    if fd < 0 {
+        return None;
+    }
+    // SAFETY: the syscall just returned this fd, which nothing else owns.
+    Some(unsafe { OwnedFd::from_raw_fd(fd as RawFd) })
+}
+
+/// Whether the process behind `pidfd` has exited. With `block` waits with
+/// no time limit (`poll` timeout -1); without it only looks (timeout 0).
+/// Retries on EINTR only; another `poll` error counts as not exited.
+#[cfg(target_os = "linux")]
+pub fn pidfd_exited(pidfd: &OwnedFd, block: bool) -> bool {
+    let mut p = libc::pollfd {
+        fd: pidfd.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    loop {
+        // SAFETY: one valid pollfd for an fd `pidfd` keeps open.
+        let n = unsafe { libc::poll(&mut p, 1, if block { -1 } else { 0 }) };
+        if n >= 0 {
+            return n > 0 && p.revents & libc::POLLIN != 0;
+        }
+        if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return false;
+        }
+    }
+}
+
+/// Sends `sig` to the process behind `pidfd`, which cannot be a reused pid.
+#[cfg(target_os = "linux")]
+pub fn pidfd_signal(pidfd: &OwnedFd, sig: i32) -> std::io::Result<()> {
+    // SAFETY: pidfd_send_signal with a valid pidfd, a null siginfo and no
+    // flags signals only the process the pidfd refers to.
+    let rc = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd.as_raw_fd(),
+            sig,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if rc == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Whether `/proc/<pid>/environ` holds every one of `entries` as a whole
+/// NUL-separated entry, compared as bytes. The environment is never printed.
+#[cfg(target_os = "linux")]
+pub fn environ_has(pid: i32, entries: &[&[u8]]) -> bool {
+    let Ok(environ) = fs::read(format!("/proc/{pid}/environ")) else {
+        return false;
+    };
+    entries
+        .iter()
+        .all(|want| environ.split(|b| *b == 0).any(|e| e == *want))
+}
+
+/// The exact `HOME=<home>` entry of a process started with that HOME.
+#[cfg(target_os = "linux")]
+pub fn home_entry(home: &Path) -> Vec<u8> {
+    let mut entry = b"HOME=".to_vec();
+    entry.extend_from_slice(home.as_os_str().as_bytes());
+    entry
+}
+
+/// Whether process `pid` holds exactly `HOME=<home>` and
+/// `<LIFETIME_FD_ENV>=<fd>` in its environment.
+#[cfg(target_os = "linux")]
+fn armed_by(pid: i32, home: &Path, fd: RawFd) -> bool {
+    let want_fd = format!("{LIFETIME_FD_ENV}={fd}").into_bytes();
+    environ_has(pid, &[&home_entry(home), &want_fd])
 }

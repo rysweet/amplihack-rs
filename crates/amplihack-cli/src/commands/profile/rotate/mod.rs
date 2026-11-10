@@ -64,6 +64,8 @@ pub(super) mod key_check;
 #[cfg(unix)]
 pub(super) mod ledger;
 #[cfg(unix)]
+mod lifetime;
+#[cfg(unix)]
 mod log;
 #[cfg(unix)]
 mod login_identity;
@@ -165,8 +167,6 @@ mod tests_issue_1886;
 mod tests_issue_1886_cycle;
 #[cfg(all(test, unix))]
 mod tests_key_check;
-#[cfg(all(test, unix))]
-mod tests_log;
 #[cfg(all(test, unix))]
 mod tests_measure;
 #[cfg(all(test, unix))]

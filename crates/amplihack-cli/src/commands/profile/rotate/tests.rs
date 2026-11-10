@@ -29,6 +29,8 @@ mod tests_issue_1947;
 mod tests_ledger;
 #[path = "tests_live_readers.rs"]
 mod tests_live_readers;
+#[path = "tests_log.rs"]
+mod tests_log;
 #[path = "tests_login_identity.rs"]
 mod tests_login_identity;
 #[path = "tests_overflow.rs"]

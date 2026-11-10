@@ -259,6 +259,7 @@ pub fn watch(
     for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
         signal_hook::flag::register(sig, stop.clone())?;
     }
+    super::lifetime::arm(&stop);
     if !spawned {
         rs.ensure()?;
         // As in `start`: checked and written under the lock.
