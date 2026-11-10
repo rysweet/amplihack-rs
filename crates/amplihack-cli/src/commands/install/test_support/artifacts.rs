@@ -64,24 +64,31 @@ fn identity(m: &fs::Metadata) -> io::Result<Identity> {
         modified: m.modified()?,
     })
 }
+/// Resolve and validate a source before either copying or linking it.
+pub fn validate_executable(source: &Path) -> Result<PathBuf> {
+    let path = source
+        .canonicalize()
+        .with_context(|| format!("resolve artifact {}", source.display()))?;
+    let m = fs::metadata(&path)?;
+    #[cfg(unix)]
+    let executable = m.permissions().mode() & 0o111 != 0;
+    #[cfg(not(unix))]
+    let executable = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
+    if !m.is_file() || !executable {
+        bail!("artifact is not an executable file: {}", path.display());
+    }
+    Ok(path)
+}
+
 impl ArtifactRegistry {
     pub fn new() -> Self {
         Self::default()
     }
     pub fn register(&mut self, source: &Path) -> Result<()> {
-        let path = source
-            .canonicalize()
-            .with_context(|| format!("resolve artifact {}", source.display()))?;
+        let path = validate_executable(source)?;
         let m = fs::metadata(&path)?;
-        #[cfg(unix)]
-        let executable = m.permissions().mode() & 0o111 != 0;
-        #[cfg(not(unix))]
-        let executable = path
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
-        if !m.is_file() || !executable {
-            bail!("artifact is not an executable file: {}", path.display());
-        }
         self.sources.push((path, identity(&m)?));
         Ok(())
     }

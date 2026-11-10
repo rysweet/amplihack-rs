@@ -282,3 +282,80 @@ fn symlinked_destination_parent_cannot_escape_confinement() {
     );
     assert!(!outside.join("resolver").exists());
 }
+
+#[test]
+fn directory_boundaries_reject_links_and_unexpected_types() {
+    for boundary in [
+        ".local",
+        ".local/bin",
+        ".amplihack/releases",
+        ".amplihack/releases/old",
+        ".amplihack/releases/old/bin",
+    ] {
+        for kind in ["dangling", "cycle", "external", "file"] {
+            let f = Fixture::new(16);
+            let path = f.home.join(boundary);
+            if path.is_dir() {
+                fs::remove_dir_all(&path).unwrap();
+            }
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            match kind {
+                "dangling" => symlink(f._temp.path().join("missing"), &path).unwrap(),
+                "cycle" => symlink(&path, &path).unwrap(),
+                "external" => symlink(f._temp.path(), &path).unwrap(),
+                _ => fs::write(&path, b"not a directory").unwrap(),
+            }
+            assert!(
+                verify(&f.home, &f.app, &f.registry()).is_err(),
+                "{boundary}: {kind}"
+            );
+        }
+    }
+}
+
+#[test]
+fn small_external_links_require_registration_but_release_publications_work() {
+    let f = Fixture::new(16);
+    symlink(&f.source, f.bin.join("external")).unwrap();
+    assert!(verify(&f.home, &f.app, &ArtifactRegistry::new()).is_err());
+    verify(&f.home, &f.app, &f.registry()).unwrap();
+    fs::remove_file(f.bin.join("external")).unwrap();
+    let release = f.release("small");
+    fs::copy(&f.source, &release).unwrap();
+    symlink(&release, f.bin.join("published")).unwrap();
+    verify(&f.home, &f.app, &ArtifactRegistry::new()).unwrap();
+}
+
+#[test]
+fn staging_rejects_small_invalid_sources_before_writing() {
+    use super::super::{binary::stage_binary, release_layout::ReleaseTxn};
+    for kind in ["nonexecutable", "directory", "dangling", "cycle"] {
+        let f = Fixture::new(16);
+        fs::remove_file(&f.source).unwrap();
+        match kind {
+            "nonexecutable" => fs::write(&f.source, b"invalid").unwrap(),
+            "directory" => fs::create_dir(&f.source).unwrap(),
+            "dangling" => symlink(f._temp.path().join("missing"), &f.source).unwrap(),
+            _ => symlink(&f.source, &f.source).unwrap(),
+        }
+        let published = f.bin.join("invalid");
+        fs::write(&published, b"existing publication").unwrap();
+        let mut txn = ReleaseTxn::allocate(&f.app, "2182.0.0").unwrap();
+        assert!(
+            stage_binary(&mut txn, &f.source, &published).is_err(),
+            "{kind}"
+        );
+        assert!(!txn.bin_dir().join("invalid").exists());
+        assert_eq!(fs::read(published).unwrap(), b"existing publication");
+    }
+}
+
+#[test]
+fn nested_uninspected_bin_is_not_a_confined_release_target() {
+    let f = Fixture::new(16);
+    let hidden = f.app.join("releases/old/hidden/bin");
+    fs::create_dir_all(&hidden).unwrap();
+    fs::copy(&f.source, hidden.join("resolver")).unwrap();
+    symlink(hidden.join("resolver"), f.bin.join("resolver")).unwrap();
+    assert!(verify(&f.home, &f.app, &ArtifactRegistry::new()).is_err());
+}

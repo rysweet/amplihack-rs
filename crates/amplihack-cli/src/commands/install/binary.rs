@@ -191,13 +191,22 @@ pub(super) fn deploy_binaries(
 /// A source that no longer exists (an update replaced it under a running
 /// process, #524) with `dst` present leaves `dst` as it is.
 pub(super) fn stage_binary(txn: &mut ReleaseTxn, src: &Path, dst: &Path) -> Result<bool> {
-    if let Err(e) = src.metadata()
+    #[cfg(any(test, feature = "test-support"))]
+    let source_metadata = src.symlink_metadata();
+    #[cfg(not(any(test, feature = "test-support")))]
+    let source_metadata = src.metadata();
+    if let Err(e) = source_metadata
         && e.kind() == std::io::ErrorKind::NotFound
     {
         if dst.is_file() {
             return Ok(false);
         }
         return Err(e).with_context(|| format!("source binary not found: {}", src.display()));
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        // Small files must meet the executable contract before copy-and-chmod.
+        super::test_support::artifacts::validate_executable(src)?;
     }
     let name = dst
         .file_name()

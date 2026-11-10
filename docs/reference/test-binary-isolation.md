@@ -25,6 +25,23 @@ The subprocess helper now requests a dedicated `test-support` build and rejects 
 - The pinned Rust 1.97 formatting shim could not write to the read-only Rustup directory. Formatting succeeded using the installed 1.99.1 toolchain explicitly.
 - `scripts/measure_issue_2182.py` provides Linux subreaper/zombie I/O accounting and preserves full logs, but has not yet been validated with comparable baseline and fixed runs. No before/after write totals or full-suite success are claimed.
 
+### Review remediation checkpoint (10 November 2026)
+
+This checkpoint is incomplete and must not be treated as merge approval.
+
+Implemented at this checkpoint:
+
+- Directory boundaries (HOME, `.local`, application root, `releases`, each release, and each `bin`) use `symlink_metadata`. Only `NotFound` is skipped for optional paths. Directory symlinks, including dangling and cyclic links, and unexpected types are rejected.
+- External binary targets require registered provenance at every size. Publication links to confined release files remain valid; all retained and unpublished release bins are still inspected.
+- Test-enabled staging validates small sources as executable regular-file targets before copying or changing destination permissions. Dangling source links cannot take the missing-source no-op path. Production source handling remains unchanged.
+- `scripts/measure_issue_2182.py --self-test` exercises parent, child, grandchild, and orphan writers. It accounted exactly 10,485,760 payload bytes through `wchar`, matching the files' combined lengths, without duplicate accounting. The test also recorded 10,485,760 `write_bytes` on this filesystem. This is a synthetic accounting check, not a suite measurement or a write-reduction claim.
+
+Eighteen focused binary-isolation tests passed after the final remediation (0.04 seconds excluding compilation). Four added regressions cover the directory-boundary matrix, small external links and valid publication links, invalid small staging sources, and nested uninspected release targets. Twenty existing binary discovery/deployment tests also passed. The focused command is `rustup run 1.99.1 cargo test -p amplihack-cli --lib issue_2182_binary_isolation`.
+
+Outstanding merge blockers remain: controlled hooks discovery; fixture-selected stub and real resolver discovery; retained registry integration instead of staging-local registration; fixture-owned roots and subprocess lifetimes with explicit fallible completion; migration of direct and indirect callers; executable-override behavioral validation; complete caller inventory; baseline failure classification; and comparable exact-command full-suite measurements. The accounting self-test does not resolve any of these fixture or suite requirements.
+
+The authoritative GitHub issue body was retrieved using `gh issue view 2182 --repo rysweet/amplihack-rs --json body`. It contains four numbered wanted items and no requirement numbered 9. Requirement 9's exact acceptance criteria therefore remain unavailable from that record and cannot be marked satisfied.
+
 No PR or merge evidence has been recorded. The planned contracts below remain the completion criteria.
 
 Remove the planned labels only after implementation and verification, with links to the caller inventory and measurement evidence described below.
