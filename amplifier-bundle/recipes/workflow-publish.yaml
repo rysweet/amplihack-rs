@@ -23,7 +23,6 @@ context:
   terminal_state: ""
   terminal_reason: ""
   publish_status: ""
-  should_publish: "true"
   should_finalize: "true"
   should_run_ci_wait: "true"
   should_merge: "true"

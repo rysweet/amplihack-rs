@@ -5,6 +5,7 @@
 
 #![cfg(target_os = "linux")]
 
+use crate::support::fake_proc::{FAKE_PID_BASE, FakeProc};
 use crate::support::profile_rotate::*;
 use std::collections::BTreeMap;
 use std::fs;
@@ -490,45 +491,24 @@ fn probes_get_no_rotate_settings_and_the_live_probe_has_no_config_dir() {
 }
 
 /// A stand-in for a rotator started from an older amplihack binary: a
-/// process whose command line names `profile rotate watch` but whose
-/// executable is not this build's. Killed on drop.
-struct OldRotator(std::process::Child);
-
-impl OldRotator {
-    fn start(f: &Fixture) -> Self {
-        // A loop keeps `sh` itself running (it never exec's into `sleep`,
-        // which would replace the command line the rotator check reads), and
-        // the short sleep means no orphan outlives the kill by more than a
-        // second. No inherited pipes, so nextest sees no leak.
-        let child = std::process::Command::new("sh")
-            .args([
-                "-c",
-                "while :; do sleep 1; done",
-                "amplihack",
-                "profile",
-                "rotate",
-                "watch",
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .unwrap();
-        let dir = f.rotate_dir();
-        fs::create_dir_all(&dir).unwrap();
-        for d in [dir.parent().unwrap(), dir.as_path()] {
-            fs::set_permissions(d, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
-        }
-        fs::write(dir.join("rotate.pid"), format!("{}\n", child.id())).unwrap();
-        Self(child)
+/// static entry in a fake process table (issue #2042) whose command line
+/// names `profile rotate watch` and which has no `exe` link to this build.
+/// No process is started; the pid lies above `pid_max`, so nothing can
+/// signal it. Every later fixture command reads the returned tree; keep it
+/// alive while they run.
+fn old_rotator(f: &Fixture) -> FakeProc {
+    let fake = FakeProc::new();
+    fake.process(FAKE_PID_BASE)
+        .cmdline(&["amplihack", "profile", "rotate", "watch"])
+        .status('S');
+    f.with_proc(&fake);
+    let dir = f.rotate_dir();
+    fs::create_dir_all(&dir).unwrap();
+    for d in [dir.parent().unwrap(), dir.as_path()] {
+        fs::set_permissions(d, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     }
-}
-
-impl Drop for OldRotator {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
+    fs::write(dir.join("rotate.pid"), format!("{FAKE_PID_BASE}\n")).unwrap();
+    fake
 }
 
 /// Issue #1659: beside a rotator from another binary, a one-shot cycle says
@@ -538,7 +518,7 @@ impl Drop for OldRotator {
 fn a_one_shot_beside_an_older_rotator_keeps_the_ledger_readable_to_it() {
     let f = Fixture::new();
     f.usage("work", 20, 20);
-    let _old = OldRotator::start(&f);
+    let _old = old_rotator(&f);
     let out = f.ok(&["profile", "rotate"]);
     let stderr = text(&out.stderr);
     assert!(

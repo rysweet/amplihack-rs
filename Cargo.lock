@@ -303,6 +303,7 @@ dependencies = [
  "amplihack-hooks",
  "amplihack-state",
  "amplihack-types",
+ "amplihack-utils",
  "anyhow",
  "serde_json",
  "tempfile",

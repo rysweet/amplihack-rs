@@ -14,8 +14,8 @@
 //! field is `Some`.
 
 use super::command_builder::build_resume_context;
-use super::command_builder_tests::{with_profile_env, workstream};
-use super::launcher::write_recipe_launcher;
+use super::command_builder_tests::{keep, no_env, workstream};
+use super::launcher::write_recipe_launcher_with;
 use super::models::WorkstreamConfig;
 use serde_json::Value;
 
@@ -30,10 +30,7 @@ fn written_context(value: Option<&str>) -> (tempfile::TempDir, Value) {
     let mut ws = workstream(tmp.path());
     ws.is_critical_code = value.map(str::to_string);
     std::fs::create_dir_all(&ws.work_dir).unwrap();
-    with_profile_env(None, None, || {
-        write_recipe_launcher(&ws, "amplihack claude")
-    })
-    .unwrap();
+    write_recipe_launcher_with(&ws, "amplihack claude", no_env, keep).unwrap();
     let raw = std::fs::read(ws.work_dir.join("context.json")).unwrap();
     let parsed = serde_json::from_slice(&raw).unwrap();
     (tmp, parsed)
@@ -139,10 +136,7 @@ fn context_json_with_field_is_mode_0600() {
     let mut ws = workstream(tmp.path());
     ws.is_critical_code = Some("true".to_string());
     std::fs::create_dir_all(&ws.work_dir).unwrap();
-    with_profile_env(None, None, || {
-        write_recipe_launcher(&ws, "amplihack claude")
-    })
-    .unwrap();
+    write_recipe_launcher_with(&ws, "amplihack claude", no_env, keep).unwrap();
     let mode = std::fs::metadata(ws.work_dir.join("context.json"))
         .unwrap()
         .permissions()
@@ -157,10 +151,7 @@ fn value_never_reaches_launcher_or_run_script_text() {
     let marker = "crit-$(touch pwned)-MARKER-1966";
     ws.is_critical_code = Some(marker.to_string());
     std::fs::create_dir_all(&ws.work_dir).unwrap();
-    with_profile_env(None, None, || {
-        write_recipe_launcher(&ws, "amplihack claude")
-    })
-    .unwrap();
+    write_recipe_launcher_with(&ws, "amplihack claude", no_env, keep).unwrap();
     for script in ["launcher.sh", "run.sh"] {
         let text = std::fs::read_to_string(ws.work_dir.join(script)).unwrap();
         assert!(

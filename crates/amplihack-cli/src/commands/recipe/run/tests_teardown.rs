@@ -83,6 +83,17 @@ impl Drop for EnvVarGuard {
     }
 }
 
+/// Kills and reaps a child when dropped, so a test that panics before its
+/// own cleanup does not leave the child running (PR #1885).
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// Points the run's work root at `dir/work` and turns the end-of-run sweep
 /// off. Without this a test inherits `AMPLIHACK_WORK_ROOT` (or falls back to
 /// `$HOME/.amplihack/work`), so `finish` sweeps the developer's real run
@@ -104,7 +115,6 @@ fn write_stub(path: &Path, body: &str) {
         .expect("failed to chmod runner stub");
 }
 
-/// True if a process with `pid` still exists (signal 0 probe).
 // -------------------------------------------------------------------------
 // Test 1 — teardown fires on the FAILURE (non-timeout) path.
 //
@@ -322,13 +332,15 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
 
     // Sibling process in the TEST's process group (NOT the runner's session).
-    // It runs until the test kills it, so its survival does not depend on how
-    // long the recipe run takes on a loaded host.
-    let mut sibling = std::process::Command::new("/bin/sleep")
-        .arg("infinity")
-        .spawn()
-        .expect("failed to spawn sibling process");
-    let sibling_pid = sibling.id();
+    // It runs until the test ends, so its survival does not depend on how
+    // long the recipe run takes on a loaded host. The guard kills and reaps
+    // it when the test ends, including when an assertion panics first.
+    let mut sibling = KillOnDrop(
+        std::process::Command::new("/bin/sleep")
+            .arg("infinity")
+            .spawn()
+            .expect("failed to spawn sibling process"),
+    );
 
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("orphan-marker");
@@ -367,20 +379,13 @@ fn test_teardown_is_scoped_to_runner_process_group() {
 
     // The unrelated sibling (outside the runner's process group) must survive
     // the teardown, proving the reaper is pgid-scoped and not a broadcast.
-    // `try_wait` reports a signalled child even while it is a zombie, which a
-    // `kill(pid, 0)` probe would miss.
+    // `try_wait` rather than `kill(pid, 0)`: an unreaped child that was
+    // killed is a zombie, and `kill(pid, 0)` still succeeds on a zombie.
     assert!(
-        sibling
-            .try_wait()
-            .expect("failed to poll sibling process")
-            .is_none(),
+        matches!(sibling.0.try_wait(), Ok(None)),
         "teardown must be scoped to the runner's process group and must NOT \
          signal unrelated processes (issue #964)"
     );
-
-    // Clean up the sibling deterministically.
-    unsafe { libc::kill(sibling_pid as libc::pid_t, libc::SIGKILL) };
-    let _ = sibling.wait();
 }
 
 // =========================================================================

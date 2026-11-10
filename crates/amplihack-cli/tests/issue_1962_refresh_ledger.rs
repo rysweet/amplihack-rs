@@ -5,6 +5,8 @@
 
 #![cfg(unix)]
 
+#[cfg(target_os = "linux")]
+use crate::support::fake_proc::{FAKE_PID_BASE, FakeProc};
 use crate::support::profile_1962::{Answer, World, account, printed};
 use crate::support::profile_rotate::{ino, private_file, text};
 use std::fs;
@@ -161,14 +163,18 @@ fn barred_profile_folder_is_never_refreshed() {
             "pre_swap_fingerprint": null}}})
         .to_string(),
     );
-    let mut session = std::process::Command::new(crate::support::session_holder::claude_sleep())
-        .arg("600")
-        .env("CLAUDE_CONFIG_DIR", w.f.root.join("spare"))
-        .spawn()
-        .expect("spawn sleep");
+    // A session in `spare`: a static entry in a fake process table (#2042).
+    let fake = FakeProc::new();
+    fake.process(FAKE_PID_BASE)
+        .claude_session()
+        .cmdline(&["sleep", "600"])
+        .status('S')
+        .environ(&[(
+            "CLAUDE_CONFIG_DIR",
+            w.f.root.join("spare").to_str().unwrap(),
+        )]);
+    w.f.with_proc(&fake);
     let _ = w.cycle();
-    let _ = session.kill();
-    let _ = session.wait();
     assert_eq!(w.fake.count("refresh:work"), 1, "{:?}", w.fake.events());
     assert_eq!(w.fake.count("refresh:spare"), 0, "{:?}", w.fake.events());
     assert_eq!(w.token("spare"), "fake-task1962-spare-old");

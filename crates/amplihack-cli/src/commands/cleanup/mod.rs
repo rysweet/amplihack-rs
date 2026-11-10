@@ -104,6 +104,16 @@ pub struct CleanupArgs {
     /// Leave recipe-log and session-log alone.
     #[arg(long)]
     pub skip_logs: bool,
+    /// For the bundled helpers: remove the pre-commit target of a worktree
+    /// that was just removed (issue #2039). The checkout must be absolute and
+    /// no longer exist.
+    #[arg(
+        long,
+        value_name = "CHECKOUT",
+        hide = true,
+        conflicts_with_all = ["only", "skip_logs", "keep_hours", "log_days"]
+    )]
+    pub worktree_target: Option<PathBuf>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -122,7 +132,10 @@ pub enum CleanupCommand {
 pub fn run(args: CleanupArgs) -> Result<()> {
     let outcome = match args.command {
         Some(CleanupCommand::Restore { path, dest }) => run_restore(&path, dest.as_deref()),
-        None => run_cleanup(&args),
+        None => match &args.worktree_target {
+            Some(checkout) => run_worktree_target(&args, checkout),
+            None => run_cleanup(&args),
+        },
     };
     match outcome {
         Ok(true) => Ok(()),
@@ -294,6 +307,58 @@ fn run_cleanup(args: &CleanupArgs) -> Result<bool> {
     let entries = sweep::run_sweep(&settings, lock.is_some())?;
     drop(lock);
 
+    match args.format {
+        OutputFormat::Json => print_json(&entries, &settings)?,
+        OutputFormat::Text => print_text(&entries),
+    }
+    Ok(!entries.iter().any(|e| e.action == sweep::Action::Failed))
+}
+
+/// `amplihack cleanup --worktree-target <checkout>` (issue #2039, D6). The
+/// checkout must be absolute and already gone; the target of that checkout
+/// under each managed root is removed under the usual checks, or reported
+/// without `--apply`. Does not take the work-root lock.
+fn run_worktree_target(args: &CleanupArgs, checkout: &Path) -> Result<bool> {
+    if !checkout.is_absolute() {
+        bail!(
+            "--worktree-target needs an absolute path: {}",
+            checkout.display()
+        );
+    }
+    // Only "not found" means gone; any other error leaves the state unknown.
+    match std::fs::symlink_metadata(checkout) {
+        Ok(_) => bail!(
+            "--worktree-target: checkout still exists: {}",
+            checkout.display()
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => bail!(
+            "--worktree-target: cannot examine checkout {}: {e}",
+            checkout.display()
+        ),
+    }
+    if targets::target_name(checkout).is_none() {
+        bail!(
+            "--worktree-target: cannot resolve the parent of {}",
+            checkout.display()
+        );
+    }
+    let work_root = work_root::resolve_from_env()?;
+    let settings = Settings {
+        archive_dir: work_root.path.join("archive"),
+        work_root,
+        keep: Duration::ZERO,
+        log_age: Duration::MAX,
+        categories: [Category::RunTarget].into_iter().collect(),
+        apply: args.apply,
+        report_unrecorded: false,
+        deadline: None,
+        recipe_log_dir: None,
+        codex_sessions_dir: None,
+        claude_projects_dir: None,
+        hook_cache_base: hook_cache_base(),
+    };
+    let entries = sweep::worktree_target_sweep(&settings, checkout);
     match args.format {
         OutputFormat::Json => print_json(&entries, &settings)?,
         OutputFormat::Text => print_text(&entries),
