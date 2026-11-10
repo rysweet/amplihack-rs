@@ -22,7 +22,7 @@ builtin unset -f gh git jq
 
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 PR=""; REPO="."; ROUND_RECORD=""; QA_EVIDENCE=""; STATE_DIR=""; DRY_RUN="false"
-MERGE_SUBJECT=""; MERGE_BODY_FILE=""; SHA12=""; BODY_RC=0   # the squash message (#2056), set in section 5b
+MERGE_SUBJECT=""; MERGE_BODY_FILE=""; MERGE_BODY_DIGEST=""; SHA12=""; BODY_RC=0  # squash message (#2056), set in 5b
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -151,11 +151,11 @@ if [ "$STATE_DIR_GIVEN" != "true" ] || [ -z "$GATE_HOME" ] || [ ! -f "${GATE_HOM
 elif ! MERGE_SUBJECT="$(autodrive_merge_subject "$STATE_JSON" "$PR")"; then
   block "pull request #${PR} title is unreadable (absent, null, not a string, blank, or over 1024 characters); a criterion we cannot read never merges"
 else
-  MERGE_BODY_FILE="${STATE_DIR}/merge-message-${PR}-${SHA12}.txt"; autodrive_merge_body_file "$STATE_JSON" "$MERGE_BODY_FILE"; BODY_RC=$?
+  MERGE_BODY_FILE="${STATE_DIR}/merge-message-${PR}-${SHA12}.txt"; MERGE_BODY_DIGEST="$(autodrive_merge_body_file "$STATE_JSON" "$MERGE_BODY_FILE")"; BODY_RC=$?
   case "$BODY_RC" in
-    0) note "squash_message merge_subject=\"${MERGE_SUBJECT}\" body_file=${MERGE_BODY_FILE} body_bytes=$(wc -c < "$MERGE_BODY_FILE" | tr -d '[:space:]')" ;;
-    1) MERGE_BODY_FILE=""; block "the body of pull request #${PR} is unreadable (no body key, not a string or null, or over 65536 bytes); a criterion we cannot read never merges" ;;
-    *) MERGE_BODY_FILE=""; block "the squash message file for #${PR} could not be written under ${STATE_DIR} (the directory is unwritable, or something at merge-message-${PR}-${SHA12}.txt could not be replaced); the message is never left for the platform to compose from the branch's commits" ;;
+    0) note "squash_message merge_subject=\"${MERGE_SUBJECT}\" body_file=${MERGE_BODY_FILE} body_bytes=$(wc -c < "$MERGE_BODY_FILE" | tr -d '[:space:]') body_sha256=${MERGE_BODY_DIGEST}" ;;
+    1) MERGE_BODY_FILE=""; MERGE_BODY_DIGEST=""; block "the body of pull request #${PR} is unreadable (no body key, not a string or null, or over 65536 bytes); a criterion we cannot read never merges" ;;
+    *) MERGE_BODY_FILE=""; MERGE_BODY_DIGEST=""; block "the squash message file for #${PR} could not be written under ${STATE_DIR}, or what was written could not be digested (the directory is unwritable, something at merge-message-${PR}-${SHA12}.txt could not be replaced, or neither sha256sum nor shasum is installed); the message is never left for the platform to compose from the branch's commits" ;;
   esac
 fi
 
@@ -357,14 +357,14 @@ fi
 # the evidence above was captured, which is why every criterion binds to HEAD_SHA.
 # The self-check is POSITIONAL: with a subject that may hold spaces, comparing two
 # IFS-joined arrays asserts nothing. #1551: `pr` and `merge` stay at elements 0 and 1.
-# The message file is re-checked for privacy HERE too: the state dir is shared with
-# agent-written files (#1517 D5). The refusal names all three classes it covers.
+# The message file is re-checked HERE for privacy AND for the bytes 5b wrote: the state
+# dir holds files written by this same user (#1517 D5), whom mode and owner cannot stop.
 MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file "$MERGE_BODY_FILE")
 if [ "${#MERGE_ARGV[@]}" -ne 11 ] || [ "${MERGE_ARGV[0]}" != "pr" ] || [ "${MERGE_ARGV[1]}" != "merge" ] || [ "${MERGE_ARGV[2]}" != "$PR" ] \
    || [ "${MERGE_ARGV[3]}" != "--squash" ] || [ "${MERGE_ARGV[4]}" != "--delete-branch" ] || [ "${MERGE_ARGV[5]}" != "--match-head-commit" ] \
    || [ "${MERGE_ARGV[6]}" != "$HEAD_SHA" ] || [ "${MERGE_ARGV[7]}" != "--subject" ] || [ "${MERGE_ARGV[8]}" != "$MERGE_SUBJECT" ] \
-   || [ "${MERGE_ARGV[9]}" != "--body-file" ] || [ "${MERGE_ARGV[10]}" != "$MERGE_BODY_FILE" ] || [ -z "$MERGE_SUBJECT" ] || [ ! -f "$MERGE_BODY_FILE" ] || ! autodrive_private "$MERGE_BODY_FILE"; then
-  echo "ERROR: refusing to merge #${PR}. Either the merge argv is not the fixed 11-element list (gh pr merge <pr> --squash --delete-branch --match-head-commit <sha> --subject <subject> --body-file <file>), or the squash subject is empty, or the message file is no longer a regular file private to this user." >&2
+   || [ "${MERGE_ARGV[9]}" != "--body-file" ] || [ "${MERGE_ARGV[10]}" != "$MERGE_BODY_FILE" ] || [ -z "$MERGE_SUBJECT" ] || ! autodrive_merge_body_intact "$MERGE_BODY_FILE" "$MERGE_BODY_DIGEST"; then
+  echo "ERROR: refusing to merge #${PR}. Either the merge argv is not the fixed 11-element list (gh pr merge <pr> --squash --delete-branch --match-head-commit <sha> --subject <subject> --body-file <file>), or the squash subject is empty, or the message file is no longer a regular file private to this user holding exactly the bytes composed in this run." >&2
   exit 1
 fi
 if [ "$DRY_RUN" = "true" ]; then

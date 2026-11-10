@@ -1681,7 +1681,7 @@ gate_run() { # gate_run <mode> <extra-args...>
   GH_MODE="$mode" GH_CALLS="${GATE_DIR}/gh-calls" GH_HEAD="${GH_HEAD:-${GATE_HEAD}}" GH_BASE="${GH_BASE-main}" \
     PATH="${GATE_PATH_PREFIX:+${GATE_PATH_PREFIX}:}${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" \
     GH_MERGE_RC="${GH_MERGE_RC:-3}" AMPLIHACK_BIN="${REAL_AMPLIHACK}" TMPDIR="${gate_tmp}" \
-    SWAP_FROM="${SWAP_FROM:-}" SWAP_TO="${GATE_DIR}/merge-ready-latest.json" \
+    SWAP_FROM="${SWAP_FROM:-}" SWAP_TO="${GATE_DIR}/${SWAP_TO_NAME:-merge-ready-latest.json}" \
     "${gate_cmd[@]}" --pr 42 --repo "${FX}" ${sd[@]+"${sd[@]}"} ${args[@]+"${args[@]}"} \
     >"${GATE_DIR}/out" 2>"${GATE_DIR}/err"
   local rc=$?
@@ -2543,8 +2543,8 @@ fi
 gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
 MSG_BUNDLE="${GATE_DIR}/merge-evidence-42-${GATE_HEAD:0:12}.txt"
 if grep -qF 'merge_subject=' "${MSG_BUNDLE}" && grep -qF 'body_file=' "${MSG_BUNDLE}" \
-   && grep -qE 'body_bytes=[0-9]+' "${MSG_BUNDLE}"; then
-  pass "MSG-evidence-note" "the evidence bundle records the subject, the body file and its byte count"
+   && grep -qE 'body_bytes=[0-9]+' "${MSG_BUNDLE}" && grep -qE 'body_sha256=[0-9a-f]{64}' "${MSG_BUNDLE}"; then
+  pass "MSG-evidence-note" "the evidence bundle records the subject, the body file, its byte count and its digest"
 else
   fail "MSG-evidence-note" "the bundle does not record the squash message: $(grep -F 'merge_' "${MSG_BUNDLE}" | tr '\n' ' ')"
 fi
@@ -2640,6 +2640,73 @@ if [ "${MSG_RC}" -eq 0 ] && [ -f "${MSG_FILE}" ] && [ "$(cat "${MSG_FILE}")" = "
   pass "MSG-body-file-clobber" "a message file left at the path is replaced with this run's body, never reused"
 else
   fail "MSG-body-file-clobber" "rc=${MSG_RC}: $( [ -f "${MSG_FILE}" ] && head -c 120 "${MSG_FILE}" || echo 'no message file' )"
+fi
+
+# 5m-23b. THE REWRITE. Every case above would pass against a gate that checks
+# only the message file's mode and owner before merging, because the adversary
+# the state dir is hardened against (#1517 D5) is a process running as THIS
+# user: it rewrites the bytes in place, leaving a regular 0600 file this user
+# owns, and `gh` then commits its text to the base branch. The git shim of
+# section 5k rewrites the message file at the section 6b fetch — after section
+# 5b composed it, before section 9 merges — which is exactly that window.
+MSG_FORGED="${WORK}/forged-body.txt"
+printf 'Fixes #9999\nCo-Authored-By: Wrong Person <wrong@example.invalid>\n' > "${MSG_FORGED}"
+SWAP_FROM="${MSG_FORGED}" SWAP_TO_NAME="merge-message-42-${GATE_HEAD:0:12}.txt" \
+  GATE_PATH_PREFIX="${GIT_SHIM}" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+if [ ! -e "${MSG_FILE}.swapped" ]; then
+  fail "MSG-body-file-rewritten" "the gate never fetched the base, so the rewrite could not be tested: $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+elif grep -q '^pr merge' "${GATE_DIR}/gh-calls" 2>/dev/null || printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_RUN"'; then
+  fail "MSG-body-file-rewritten" "the gate would have merged a message file rewritten after it composed it: $(head -c 120 "${MSG_FILE}")"
+elif [ "${MSG_RC}" -ne 0 ] && grep -qF 'refusing to merge' "${GATE_DIR}/err"; then
+  pass "MSG-body-file-rewritten" "a message file rewritten in place between composing it and merging never merges"
+else
+  fail "MSG-body-file-rewritten" "rc=${MSG_RC}: ${GATE_OUT} | $(tail -2 "${GATE_DIR}/err" | tr '\n' ' ')"
+fi
+# The positive control for the case above: the SAME run through the SAME shim,
+# rewriting nothing, still merges. Without it, a gate that refused every run
+# through the shim — or refused every run at all — would pass it.
+SWAP_TO_NAME="merge-message-42-${GATE_HEAD:0:12}.txt" GATE_PATH_PREFIX="${GIT_SHIM}" \
+  gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
+if [ "${MSG_RC}" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_RUN"'; then
+  pass "MSG-body-file-untouched" "a message file no one touched still merges, so the rewrite case refuses the rewrite and not the shim"
+else
+  fail "MSG-body-file-untouched" "rc=${MSG_RC}: ${GATE_OUT} | $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+fi
+
+# 5m-23c. The digest the merge is held to is the one the WRITE reported, not
+# one taken from a later read of the same file. A gate that re-read the file to
+# learn what it should contain would compare it against itself and refuse
+# nothing, and would still pass 5m-23b only by accident of ordering.
+MSG_BAD=""
+grep -qF 'MERGE_BODY_DIGEST="$(autodrive_merge_body_file' "${GATE}" \
+  || MSG_BAD="${MSG_BAD} the gate does not take the digest from the write"
+grep -qF 'autodrive_merge_body_intact "$MERGE_BODY_FILE" "$MERGE_BODY_DIGEST"' "${GATE}" \
+  || MSG_BAD="${MSG_BAD} the merge is not held to the digest"
+grep -qF 'autodrive_private "$MERGE_BODY_FILE"' "${GATE}" \
+  && MSG_BAD="${MSG_BAD} the privacy-only check is still what guards the merge"
+if [ -z "${MSG_BAD}" ]; then
+  pass "MSG-digest-from-write" "the merge is bound to the digest the write reported, not to a re-read of the file"
+else
+  fail "MSG-digest-from-write" "${MSG_BAD}"
+fi
+
+# 5m-23d. An empty digest is a refusal, not a wildcard: a message file that was
+# never digested is not one the gate can vouch for. Asserted on the helper
+# directly, because no gate run can reach section 9 with an empty digest.
+MSG_PROBE="${WORK}/probe-body.txt"; printf 'probe\n' > "${MSG_PROBE}"; chmod 0600 "${MSG_PROBE}"
+MSG_PROBE_OUT="$(bash -c '
+  . "$1"; . "$2"
+  d="$(autodrive_merge_digest "$3")" || { echo "no-digest"; exit 0; }
+  autodrive_merge_body_intact "$3" "$d" || { echo "intact-rejected-the-file-it-digested"; exit 0; }
+  autodrive_merge_body_intact "$3" "" && { echo "empty-digest-accepted"; exit 0; }
+  printf "other\n" >> "$3"
+  autodrive_merge_body_intact "$3" "$d" && { echo "rewrite-accepted"; exit 0; }
+  echo ok' _ "${MSG_HELPER}" "${TOOLS}/autodrive_state.sh" "${MSG_PROBE}" 2>&1)"
+if [ "${MSG_PROBE_OUT}" = "ok" ]; then
+  pass "MSG-intact-contract" "autodrive_merge_body_intact accepts the bytes it digested, and refuses both an empty digest and a rewrite"
+else
+  fail "MSG-intact-contract" "${MSG_PROBE_OUT}"
 fi
 
 # 5m-24. The body is bounded for the reason the title is: 65,536 bytes is

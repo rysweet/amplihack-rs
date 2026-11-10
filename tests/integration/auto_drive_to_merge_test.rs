@@ -842,13 +842,38 @@ fn the_merge_gate_composes_the_squash_message_from_the_pull_request() {
         "autodrive_merge_body_file must report an unreadable body and a failed write separately"
     );
 
-    // The message file is re-checked for privacy immediately before the merge,
-    // not only where it was written: the state dir is shared with
-    // agent-written files (#1517 D5), and every other file that decides this
-    // merge is held to autodrive_private.
+    // The message file is re-checked immediately before the merge, not only
+    // where it was written, and the re-check covers its BYTES as well as its
+    // mode and owner. The state dir holds files written by this same user
+    // (#1517 D5), so privacy alone says who may write the message, not that
+    // nobody did; every other input that decides this merge is bound to its
+    // content by a manifest or a hash, and this one now is too.
     assert!(
-        gate.contains(r#"autodrive_private "$MERGE_BODY_FILE""#),
-        "the message file must pass autodrive_private at the merge, as every other input does"
+        gate.contains(r#"autodrive_merge_body_intact "$MERGE_BODY_FILE" "$MERGE_BODY_DIGEST""#),
+        "the message file must be re-checked for privacy AND content at the merge"
+    );
+    assert!(
+        !gate.contains(r#"autodrive_private "$MERGE_BODY_FILE""#),
+        "the privacy-only re-check must be replaced, not kept beside the content check"
+    );
+    for needle in [
+        "autodrive_merge_body_intact()",
+        "autodrive_merge_digest()",
+        r#"autodrive_private "$path""#,
+    ] {
+        assert!(
+            helper.contains(needle),
+            "the intactness re-check must live in the helper and keep `{needle}`"
+        );
+    }
+    // The digest the gate compares against is the one the write itself
+    // reported, so there is no window in which the gate re-reads the file to
+    // learn what it should contain.
+    assert!(
+        gate.contains(
+            r#"MERGE_BODY_DIGEST="$(autodrive_merge_body_file "$STATE_JSON" "$MERGE_BODY_FILE")""#
+        ),
+        "the gate must take the digest from the write, not from a later read"
     );
 
     // --body-file, never an inline --body: the body stays out of argv, out of

@@ -91,9 +91,11 @@ autodrive_merge_subject() {
 }
 
 # autodrive_merge_body_file <pr-view-json> <path>: write the pull request body
-# to <path> as the squash commit's body, byte for byte. Prints nothing.
+# to <path> as the squash commit's body, byte for byte, and print the SHA-256
+# of exactly those bytes.
 #
-#   0 — written.  1 — the body is unreadable.  2 — the file was not written.
+#   0 — written.  1 — the body is unreadable.  2 — the file was not written,
+#   or what was written could not be digested.
 #
 # The two failures are kept apart because they send an operator to different
 # places: 1 is a platform read that came back malformed, 2 is the filesystem
@@ -127,6 +129,13 @@ autodrive_merge_subject() {
 # at this deterministic name is replaced rather than reused. pipefail is set
 # inside the subshell rather than inherited, so the function behaves the same
 # wherever it is sourced.
+#
+# The digest is printed so the caller can bind the merge to these bytes rather
+# than to the path. Mode and owner say who MAY write the file; they do not say
+# that nobody did. Every other input the gate compares is bound to its content
+# through a manifest or a hash, and this one is written at a deterministic name
+# under a directory the workflow's own agents write to, so it gets the same
+# treatment: see autodrive_merge_body_intact.
 autodrive_merge_body_file() {
   local json="${1:-}" path="${2:-}"
   [ -n "$path" ] || return 2
@@ -135,4 +144,47 @@ autodrive_merge_body_file() {
       and (((.body // "") | utf8bytelength) <= 65536)' >/dev/null 2>&1 || return 1
   ( set -o pipefail; umask 077; set -C; rm -f -- "$path"
     printf '%s' "$json" | jq -j '.body // ""' | tr -d '\000' > "$path" ) 2>/dev/null || return 2
+  autodrive_merge_digest "$path" || return 2
+}
+
+# autodrive_merge_digest <path>: the SHA-256 of <path>'s bytes, as 64 lowercase
+# hex digits. Returns non-zero, printing nothing, when the file cannot be read
+# or no SHA-256 tool is present.
+#
+# sha256sum is coreutils and shasum is perl's; between them every platform this
+# workflow runs on is covered. When neither is there the function fails, the
+# caller blocks, and nothing merges — the gate's standing rule that a criterion
+# it cannot read is a failure rather than a pass. The output is re-validated as
+# hex rather than trusted, so a tool that printed a diagnostic on stdout cannot
+# become a digest that something else could match.
+autodrive_merge_digest() {
+  local sum
+  if command -v sha256sum >/dev/null 2>&1; then sum="$(sha256sum -- "$1" 2>/dev/null)" || return 1
+  elif command -v shasum >/dev/null 2>&1; then sum="$(shasum -a 256 -- "$1" 2>/dev/null)" || return 1
+  else return 1; fi
+  sum="${sum%% *}"
+  [ "${#sum}" -eq 64 ] || return 1
+  case "$sum" in *[!0123456789abcdef]*) return 1 ;; esac
+  printf '%s' "$sum"
+}
+
+# autodrive_merge_body_intact <path> <digest>: 0 only when <path> is STILL a
+# regular file private to this user AND its bytes still hash to <digest>.
+#
+# This is what the gate re-checks immediately before it merges. The privacy
+# tests alone — symlink, owner, mode — describe who may write the file, which
+# is the wrong question between composing the message and merging it: the
+# adversary the state directory is hardened against (#1517 D5) is a process
+# running as this same user, and it passes all three after rewriting the bytes
+# in place. Comparing the digest asks the question that matters, which is
+# whether the bytes about to land on the base branch are the ones composed from
+# the pull request this run gathered its evidence for.
+#
+# An empty <digest> is a refusal, not a wildcard: it means the caller never got
+# one, and a message that was never digested is not one we can vouch for.
+autodrive_merge_body_intact() {
+  local path="${1:-}" want="${2:-}" have
+  [ -n "$want" ] && [ -f "$path" ] && autodrive_private "$path" || return 1
+  have="$(autodrive_merge_digest "$path")" || return 1
+  [ "$have" = "$want" ]
 }

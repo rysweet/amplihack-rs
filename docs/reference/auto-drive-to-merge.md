@@ -3158,6 +3158,7 @@ failure after that point is a write failure and nothing is misattributed.
 | no `--state-dir`, or a state directory that is not private to this user | blocker |
 | the first 12 characters of the head SHA are not lowercase hex | blocker |
 | the message file cannot be written, or a path already there cannot be replaced | blocker |
+| what was written cannot be digested, because neither `sha256sum` nor `shasum` is installed | blocker |
 
 A criterion the gate cannot read never merges, and the message is held to the
 same rule: `pull request #N title is unreadable; a criterion we cannot read
@@ -3165,14 +3166,32 @@ never merges`.
 
 Before the merge runs, section 9 checks the message once more: a non-empty
 subject, and a message file that is still a regular file `autodrive_private`
-accepts. The state directory is shared with agent-written files
-(#1517 D5), and roughly two hundred lines of
-helpers run between the write and the merge, so the file that decides the
-commit message is held to the same standard as every other file that decides
-this merge. That refusal is defence in depth — section 5b has already blocked
-every way of reaching it — and its message names all three classes it covers:
-an argv that is not the fixed eleven-element list, an empty subject, and a
-message file that is no longer private.
+accepts **whose bytes still hash to the digest the write reported**. The state
+directory is shared with agent-written files (#1517 D5), and roughly two
+hundred lines of helpers run between the write and the merge, so the file that
+decides the commit message is held to the same standard as every other file
+that decides this merge. That refusal is defence in depth — section 5b has
+already blocked every way of reaching it — and its message names all three
+classes it covers: an argv that is not the fixed eleven-element list, an empty
+subject, and a message file that is no longer a private regular file holding
+exactly the bytes this run composed.
+
+The digest, not only the mode and the owner, is what binds the merge to the
+message. The adversary the state directory is hardened against is a process
+running as **this same user**: mode `0600` and ownership say who *may* write
+the file, not that nobody did, and a rewrite in place passes all three of the
+symlink, owner and mode tests `autodrive_private` applies. Every other input
+that decides this merge — the round record, the qa evidence, the crusty
+verdict — is bound to its content through a manifest or a hash, and the
+message file now is too. `autodrive_merge_body_file` prints the SHA-256 of
+exactly the bytes it wrote, the gate keeps that value in `MERGE_BODY_DIGEST`,
+and `autodrive_merge_body_intact` re-reads the file at section 9 and compares.
+The digest comes from the write rather than from a later read, so there is no
+point at which the gate asks the file what it ought to contain. An empty
+digest is a refusal rather than a wildcard: a message that was never digested
+is not one the gate can vouch for. The digest is recorded in the evidence
+bundle as `body_sha256=`, so what was committed can be checked against the
+record afterwards.
 
 #### The message file
 
@@ -3209,7 +3228,7 @@ bundle. One evidence line records what was composed, quoting the subject so
 its extent is legible:
 
 ```
-squash_message merge_subject="docs: record main's required CI checks (#2198)" body_file=/…/merge-message-2198-23008e4d1f2c.txt body_bytes=1731
+squash_message merge_subject="docs: record main's required CI checks (#2198)" body_file=/…/merge-message-2198-23008e4d1f2c.txt body_bytes=1731 body_sha256=9f2b…
 ```
 
 That line is added before section 8 writes the bundle, so the text that would
@@ -4892,7 +4911,7 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/tools/autodrive_worktree_guard.sh` | tool | The #1528 checks: the loop preflight (launch-side recipes, review dir is the main checkout of the PR's repository), each round's `step-00-review-dir-guard` (which also refuses a run-worktree gitlink in the review dir's index), `step-02b-review-dir-unchanged` (index stamp and check), the loop's stamp around each round and the evaluator, and the commit block's linked-worktree and head-branch check. Writes nothing. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv; runs as `/bin/bash -p`, the only process the merge guard trusts. Runs `autodrive_followups.sh check` from its own directory. Composes the squash subject and writes the `--body-file` message file ([#2056](#the-squash-commit-message-2056)). |
 | `amplifier-bundle/tools/autodrive_followups.sh` | tool | [#1979](#minor-findings-end-the-crusty-loop-1979): `classify` (derives `MINOR_ONLY` in crusty-round step-03), `collect` (builds the follow-up set from the round that ended the loop), `file` (one `gh issue create` per unfiled minor finding, then one comment on the plan task issue listing them), `resolve-task` (the task-id rule, #1982). |
-| `amplifier-bundle/tools/autodrive_merge_message.sh` | tool | Sourced only; no side effects. [#2056](#the-squash-commit-message-2056): reads `.title` and `.body` out of the gate's one `gh pr view` result with `jq`, composes the squash subject, and writes the `--body-file` message file into the private state directory. Every unreadable case is returned to the gate as a blocker. |
+| `amplifier-bundle/tools/autodrive_merge_message.sh` | tool | Sourced only; no side effects. [#2056](#the-squash-commit-message-2056): reads `.title` and `.body` out of the gate's one `gh pr view` result with `jq`, composes the squash subject, writes the `--body-file` message file into the private state directory and prints its SHA-256, and re-checks that file for privacy and for those exact bytes immediately before the merge. Every unreadable case is returned to the gate as a blocker. |
 | `amplifier-bundle/tools/autodrive_followups_check.sh` | tool | [#1979](#the-follow-up-check-in-the-merge-gate): `check` and `gate`, sourced by `autodrive_followups.sh`: the merge gate's offline follow-up check. |
 | `amplifier-bundle/tools/autodrive_finding_rules.sh` | tool | Sourced only; no side effects. The single definition of the security keyword lists, `cell()` and the minor-finding predicate, used by `autodrive_followups.sh`. |
 | `amplifier-bundle/tools/gh-merge-guard/gh` | tool | The `gh` shim that refuses a merge outside the gate ([#1551](#merges-outside-the-gate-are-refused-1551)). |
@@ -4936,7 +4955,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | [No-progress stop and usage budget](#no-progress-stop-and-usage-budget) (#1743): `STUCK` in code on an unchanged head and open items, no stop when either changed, when the CI signal changed or says `PENDING`, or when the round is clean, a leftover `<record>.light.json` beside the current or previous round's record exempting nothing, `BUDGET_EXHAUSTED` from each of the three limits at the pre-round, post-round and before-round check points, a relaunch with a higher limit resuming from the recorded round and one with the same limit starting no agent, the nested crusty loop counted once, `tokens` recorded as `unknown`, malformed limits and unknown keys exiting `2`, the symlink and `0600` cases, the sanitised PR comment through a stub `gh`, and the `-c` override reaching both loops. Fixture state directories, stub `amplihack`, `gh` and `git` on `PATH`, under `isolated(..)`; nothing under the real `HOME` is read or written | `crates/amplihack-cli/tests/issue_1743_autodrive_budget.rs` |
 | [Minor findings end the crusty loop](#minor-findings-end-the-crusty-loop-1979) (#1979): `classify` on all-minor, mixed, unknown-severity, missing-severity, empty and non-array input; security keywords in an id or summary kept as `CONCERNS`; severity history (a minor finding recurring as minor still `MINOR_ONLY`, a major one downgraded to minor kept as `CONCERNS`, unknown history read as major, no `.severity` file for unreadable input); crusty-loop step-03 refusing to file without `AMPLIHACK_HOME` even when `REPO_PATH` holds the tool; the loop ending `DONE` on `MINOR_ONLY` with `--also-clean-token` and not without it; one `gh issue create` per finding naming the task id and finding id, with N rows in `followups.tsv`; a rerun making no call; `gh` exiting `1` (error recorded, gate prints `ERROR: followups-unfiled`, no merge) and `79` (passed through after one call); an unresolved task id; the task id taken from `Closes #N` in the PR body; two JSON arrays on stdin, or a `concerns` string holding a minor and a blocking array, kept as `CONCERNS`; a `jq` parse failure logged with its exit code; mentions, `#N` and `GH-N` references neutralised in the body and the title; a title with shell metacharacters reaching `gh` as one argument, with `&`, `|` and backticks kept as plain characters rather than HTML entities; an unparseable PR URL; a `CLEAN` drive filing nothing and passing the check; a dry run filing nothing in either step while the gate reports `followup-missing`; `gate` naming each filed issue in its evidence line and printing the error and blocker on a miss; `collect` reading only the terminal round; `check` refusing a symlinked or group-writable `followups.tsv`, a malformed row and `MINOR_ONLY` with no set; `autodrive_crusty_final` accepting `MINOR_ONLY`; and static checks that both `SKILL.md` copies match, the old loop-end wording is gone from the recipes, skill and reference, the 400-line budgets hold with no per-file exception, and `autodrive_followups.sh` sources the shared rules file while no light round tool exists. Stub `gh` on `PATH`, scratch under `$TMPDIR`, no network | `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs`, with `mod issue_1979_crusty_minor_followups;` in `crates/amplihack-cli/tests/main.rs` |
 | A minor-only round ending the loop, and a `[minor, major]` round continuing it, through the `run_loop` stub | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
-| [The squash commit message](#the-squash-commit-message-2056) (#2056): the eleven-element argv asserted exactly, in the real gate and in the #1551 stand-in gate; an unreadable title and an absent `body` key each ending `NOT_MERGED` with no `pr merge` line in the stub's log; a `body` of `""` merging with an empty message file; a title of `--admin` — a flag this workflow never passes and which is prohibited in it — reaching `gh` at element 8 as the subject, asserted positionally, since the string is present in the argv and the claim is that no element *other* than 8 holds it; a title that already ends ` (#42)` not doubled; a dry run printing `--subject`, the composed subject, `--body-file` and the deterministic path, with the file's bytes equal to the pull request body; a body quoting a complete platform-state JSON object, bare and inside a fenced block, changing no criterion the gate reads; and the two regression cases from the issue, a wrong `Co-Authored-By` trailer on a branch commit, and `Fixes #N` and `Task:` lines from a branch this one is stacked on, neither of which reaches the message file | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh`, `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh`, `tests/integration/auto_drive_to_merge_test.rs`. The Rust file also carries the structural assertions: exactly one `gh pr view` in the gate carrying `headRefOid`, which is the pre-merge read, with `title` and `body` on that same `--json` list (the gate has a second `gh pr view` at section 10, the post-merge `state,mergedAt,mergeCommit` confirmation, so an assertion counting `gh pr view "$PR" --json` occurrences would be wrong — it must pin the `headRefOid` one), `autodrive_merge_message.sh` in `AUTODRIVE_TOOLS` and inside the brick budget, and both `SKILL.md` mirrors still byte-identical |
+| [The squash commit message](#the-squash-commit-message-2056) (#2056): the eleven-element argv asserted exactly, in the real gate and in the #1551 stand-in gate; an unreadable title and an absent `body` key each ending `NOT_MERGED` with no `pr merge` line in the stub's log; a `body` of `""` merging with an empty message file; a title of `--admin` — a flag this workflow never passes and which is prohibited in it — reaching `gh` at element 8 as the subject, asserted positionally, since the string is present in the argv and the claim is that no element *other* than 8 holds it; a title that already ends ` (#42)` not doubled; a dry run printing `--subject`, the composed subject, `--body-file` and the deterministic path, with the file's bytes equal to the pull request body; a body quoting a complete platform-state JSON object, bare and inside a fenced block, changing no criterion the gate reads; and the two regression cases from the issue, a wrong `Co-Authored-By` trailer on a branch commit, and `Fixes #N` and `Task:` lines from a branch this one is stacked on, neither of which reaches the message file. The content binding has its own cases: a message file rewritten in place between section 5b and section 9 by a process running as this user — the git shim of section 5k rewrites it at the section 6b fetch — ending with no `pr merge` line, against a positive control through the same shim that rewrites nothing and still merges; the digest coming from the write rather than from a re-read; and `autodrive_merge_body_intact` probed directly, accepting the bytes it digested and refusing both an empty digest and an appended byte | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh`, `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh`, `tests/integration/auto_drive_to_merge_test.rs`. The Rust file also carries the structural assertions: exactly one `gh pr view` in the gate carrying `headRefOid`, which is the pre-merge read, with `title` and `body` on that same `--json` list (the gate has a second `gh pr view` at section 10, the post-merge `state,mergedAt,mergeCommit` confirmation, so an assertion counting `gh pr view "$PR" --json` occurrences would be wrong — it must pin the `headRefOid` one), `autodrive_merge_message.sh` in `AUTODRIVE_TOOLS` and inside the brick budget, and both `SKILL.md` mirrors still byte-identical |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 
