@@ -93,7 +93,7 @@ Waiting for CI to re-run...
 
 - Mergeable: Yes
 - Conflicts: None
-- Reviews Required: 1
+- Reviews: 1 of 1 required
 
 ### Next Steps
 
