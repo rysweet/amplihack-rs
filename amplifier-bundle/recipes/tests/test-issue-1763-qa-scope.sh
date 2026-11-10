@@ -364,7 +364,8 @@ expect_calls ev-ws-readme-calls "cargo runs in ws" cargo "cargo|ws|$CARGO_ARGS"
 
 repo svc/package.json docs/svc.md svc/tests/agentic/s.yaml; base; change docs/svc.md
 run_tool "$B"
-expect ev-svc "svc Node, docs change" qa_repo_type=node qa_dir=svc gadugi_required=true
+# #2219: a Node project whose change is documentation only needs no scenario.
+expect ev-svc "svc Node, docs change" qa_repo_type=node qa_dir=svc gadugi_required=false docs_only=true
 expect_calls ev-svc-calls "npm runs in svc" npm "npm|svc|test"
 
 repo Cargo.toml web/package.json web/src/app.ts; base; change web/src/app.ts
