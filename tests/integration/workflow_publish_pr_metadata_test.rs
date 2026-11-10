@@ -4,6 +4,16 @@
 use serde::Deserialize;
 use std::path::PathBuf;
 
+// #2306: exercise executable behavior as well as the recipe's static contract.
+#[path = "issue_2306_publish/fixture.rs"]
+mod fixture;
+#[path = "issue_2306_publish/recovery.rs"]
+mod recovery;
+#[path = "issue_2306_publish/retry.rs"]
+mod retry;
+#[path = "issue_2306_publish/runner.rs"]
+mod runner;
+
 #[derive(Debug, Deserialize)]
 struct Recipe {
     #[serde(default)]

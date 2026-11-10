@@ -38,8 +38,10 @@ write_body_file() (
   raw=
   tmp=
   trap 'rm -f -- "$raw" "$tmp"' EXIT
-  raw=$(mktemp) || exit 1
-  tmp=$(mktemp) || exit 1
+  # Positional templates honor the caller's TMPDIR on BSD/macOS as well as GNU.
+  # Apple's implicit -t mode may prefer confstr's directory over TMPDIR.
+  raw=$(mktemp "${TMPDIR:-/tmp}/workflow-body-raw.XXXXXX") || exit 1
+  tmp=$(mktemp "${TMPDIR:-/tmp}/workflow-body-write.XXXXXX") || exit 1
 
   cat > "$raw" || {
     printf '%s\n' "write_body_file: failed to read stdin" >&2

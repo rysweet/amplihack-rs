@@ -28,13 +28,42 @@
 # shellcheck disable=SC2034
 
 # --- stderr sanitiser (redacts embedded credentials) -----------------------
-gh_sanitize_stderr() {
+gh_sanitize_stderr() (
+  # Explicit pipefail even when the caller uses a conditional function call.
+  set -o pipefail
   [ -n "${1:-}" ] && [ -s "$1" ] || return 0
-  sed -E \
-    -e 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' \
-    -e 's#gh[pousr]_[A-Za-z0-9]{16,}#REDACTED_TOKEN#g' \
-    -e 's#github_pat_[A-Za-z0-9_]{16,}#REDACTED_TOKEN#g' \
-    "$1" | tr '\n' ' ' | head -c 500
+  # Re-scan AWS matches: their trailing boundary can also begin the next key.
+  LC_ALL=C tr '\r\n\t' '   ' <"$1" | LC_ALL=C tr -d '\000-\037\177' |
+    LC_ALL=C sed -E \
+      -e $'s/\302[\200-\237]//g' \
+      -e $'s/\330\234//g' \
+      -e $'s/\342\200[\213-\217\252-\256]//g' \
+      -e $'s/\342\201[\240-\257]//g' \
+      -e $'s/\357\273\277//g' \
+      -e 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' \
+      -e 's#gh[pousr]_[A-Za-z0-9]{16,}#REDACTED_TOKEN#g' \
+      -e 's#github_pat_[A-Za-z0-9_]{16,}#REDACTED_TOKEN#g' \
+      -e 's#(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}#\1REDACTED_TOKEN#g' \
+      -e ':aws' \
+      -e 's#(^|[^A-Za-z0-9])(AKIA|ASIA)[0-9A-Z]{16}([^0-9A-Za-z]|$)#\1REDACTED_TOKEN\3#g' \
+      -e 't aws' |
+    # Consume all input: truncating with head can SIGPIPE the redactor.
+    LC_ALL=C awk 'length(s) < 500 {s = s substr($0, 1, 500 - length(s))} END {printf "%s", s}'
+)
+
+# Never release a formatter's partial output (it may contain credentials).
+gh_safe_stderr() {
+  local diagnostic
+  if diagnostic="$(gh_sanitize_stderr "$1" 2>/dev/null)"; then
+    printf '%s' "${diagnostic:-empty stderr (no error message)}"
+  else
+    printf '%s' 'stderr sanitization unavailable'
+  fi
+}
+
+gh_remove_capture() {
+  rm -f -- "$1" 2>/dev/null || printf '%s\n' 'WARNING: gh capture cleanup failed' >&2
+  return 0
 }
 
 # --- classifier ------------------------------------------------------------
@@ -256,28 +285,34 @@ _gh_retry_core() {
   local max_windows="${GH_RETRY_MAX_RL_WINDOWS:-}"
   local rest_fallback="${GH_RETRY_REST_FALLBACK:-}"
   local attempt=0 rl_windows=0 delay=1
-  local stderr_file output status class fb_out
+  local stderr_file output status class fb_out diagnostic
   GH_RETRY_LAST_CLASS=""
 
   while :; do
     attempt=$((attempt + 1))
-    stderr_file="${GH_RETRY_TMPDIR:-.}/.workflow-gh-retry-${$}-${attempt}-${RANDOM}.stderr"
-    : >"$stderr_file" || return 1
+    if stderr_file="$(umask 077; mktemp "${GH_RETRY_TMPDIR:-${TMPDIR:-/tmp}}/.workflow-gh-retry.XXXXXX" 2>/dev/null)"; then
+      :
+    else
+      status=$?
+      printf 'ERROR: gh %s: private stderr temp creation failed (exit %s)\n' "$label" "$status" >&2
+      return "$status"
+    fi
     if output="$(timeout 60 gh "$@" 2>"$stderr_file")"; then
-      rm -f "$stderr_file"
+      gh_remove_capture "$stderr_file"
       printf '%s\n' "$output"
       GH_RETRY_LAST_CLASS="success"
       return 0
     else
       status=$?
     fi
-    class="$(classify_gh_error "$stderr_file")"
+    diagnostic="$(gh_safe_stderr "$stderr_file")"
+    class="$(classify_gh_error "$stderr_file")" || class=other
     GH_RETRY_LAST_CLASS="$class"
 
     case "$class" in
       auth)
-        echo "ERROR: gh ${label} failed with an authentication error (exit ${status}); not retrying: $(gh_sanitize_stderr "$stderr_file")" >&2
-        rm -f "$stderr_file"
+        echo "ERROR: gh ${label} failed with an authentication error (exit ${status}); not retrying: $diagnostic" >&2
+        gh_remove_capture "$stderr_file"
         return "$status"
         ;;
       rate_limit)
@@ -286,7 +321,7 @@ _gh_retry_core() {
         if [ -n "$rest_fallback" ] && _gh_core_has_budget; then
           if fb_out="$("$rest_fallback")"; then
             echo "WARNING: gh ${label}: GraphQL rate-limited; served via REST /pulls fallback on the core budget (explicit fallback)." >&2
-            rm -f "$stderr_file"
+            gh_remove_capture "$stderr_file"
             printf '%s\n' "$fb_out"
             GH_RETRY_LAST_CLASS="rate_limit_rest"
             return 0
@@ -298,40 +333,43 @@ _gh_retry_core() {
         if [ -z "$max_windows" ] || [ "$rl_windows" -lt "$max_windows" ]; then
           rl_windows=$((rl_windows + 1))
           if [ -n "$max_windows" ]; then
-            echo "WARNING: gh ${label} hit a GitHub rate limit (exit ${status}); waiting for reset (window ${rl_windows}/${max_windows}): $(gh_sanitize_stderr "$stderr_file")" >&2
+            echo "WARNING: gh ${label} hit a GitHub rate limit (exit ${status}); waiting for reset (window ${rl_windows}/${max_windows}): $diagnostic" >&2
           else
-            echo "WARNING: gh ${label} hit a GitHub rate limit (exit ${status}); waiting for reset (window ${rl_windows}, no arbitrary cap): $(gh_sanitize_stderr "$stderr_file")" >&2
+            echo "WARNING: gh ${label} hit a GitHub rate limit (exit ${status}); waiting for reset (window ${rl_windows}, no arbitrary cap): $diagnostic" >&2
           fi
           gh_wait_for_rate_limit "$resource" "$stderr_file"
-          rm -f "$stderr_file"
+          gh_remove_capture "$stderr_file"
           continue
         fi
         # Windows exhausted: last-ditch REST for reads before failing closed.
         if [ -n "$rest_fallback" ] && _gh_core_has_budget; then
           if fb_out="$("$rest_fallback")"; then
             echo "WARNING: gh ${label}: GraphQL still exhausted after ${rl_windows} reset window(s); served via REST fallback." >&2
-            rm -f "$stderr_file"
+            gh_remove_capture "$stderr_file"
             printf '%s\n' "$fb_out"
             GH_RETRY_LAST_CLASS="rate_limit_rest"
             return 0
           fi
         fi
-        rm -f "$stderr_file"
+        printf 'ERROR: gh %s failed (exit %s): %s\n' "$label" "$status" "$diagnostic" >&2
+        gh_remove_capture "$stderr_file"
         return "$status"
         ;;
       transient)
         if [ "$attempt" -lt "$max_transient" ]; then
-          echo "WARNING: gh ${label} failed transiently (exit ${status}); retrying (${attempt}/${max_transient}): $(gh_sanitize_stderr "$stderr_file")" >&2
-          rm -f "$stderr_file"
+          echo "WARNING: gh ${label} failed transiently (exit ${status}); retrying (${attempt}/${max_transient}): $diagnostic" >&2
+          gh_remove_capture "$stderr_file"
           sleep "$delay"
           delay=$((delay * 2))
           continue
         fi
-        rm -f "$stderr_file"
+        printf 'ERROR: gh %s failed (exit %s): %s\n' "$label" "$status" "$diagnostic" >&2
+        gh_remove_capture "$stderr_file"
         return "$status"
         ;;
       *)
-        rm -f "$stderr_file"
+        printf 'ERROR: gh %s failed (exit %s): %s\n' "$label" "$status" "$diagnostic" >&2
+        gh_remove_capture "$stderr_file"
         return "$status"
         ;;
     esac
