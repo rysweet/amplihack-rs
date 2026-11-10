@@ -177,18 +177,13 @@ impl Codex {
 
 /// A pipe made with `O_CLOEXEC` on both ends, so no process started by
 /// another test inherits it.
+///
+/// `std::io::pipe` sets `O_CLOEXEC` on both ends itself and is portable.
+/// `libc::pipe2` is Linux-only, so the previous spelling did not build on
+/// macOS (#2210).
 fn cloexec_pipe() -> (OwnedFd, OwnedFd) {
-    let mut fds = [0; 2];
-    // SAFETY: `fds` is a valid two-element array.
-    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
-    assert_eq!(rc, 0, "pipe2: {}", std::io::Error::last_os_error());
-    // SAFETY: both descriptors are new and owned only here.
-    unsafe {
-        (
-            std::os::fd::FromRawFd::from_raw_fd(fds[0]),
-            std::os::fd::FromRawFd::from_raw_fd(fds[1]),
-        )
-    }
+    let (r, w) = std::io::pipe().expect("pipe");
+    (OwnedFd::from(r), OwnedFd::from(w))
 }
 
 /// Runs `c` until it and every process it started have exited, and fails
