@@ -3093,6 +3093,20 @@ if printf '%s' "${STEP02_PROMPT}" | grep -qF '{{merge_ready_files.skill_md}}' \
 else
   fail "MERGEREADY-reads-files" "step-02 does not use {{merge_ready_files.skill_md}} and {{merge_ready_files.template}}"
 fi
+# Issue #2033: step-04's agent runs the repository's tests while it fixes
+# blockers. Each of its shell calls inherits the agent's environment, so the
+# "Running tests or hooks" instruction itself must tell it to clear the
+# repository-selecting and run-identity variables, not only the commit block.
+STEP04_TESTS_LINE="$(awk '
+  index($0, "id: \"step-04-address-blockers\"") { on=1; next }
+  on && /^  - id:/ { exit }
+  on && index($0, "**Running tests or hooks**") { print }' "${ROUND_YAML}")"
+R2033_CLEAR='[ ! -L "{{autodrive_tools_dir}}/git-repo-env.sh" ] && . "{{autodrive_tools_dir}}/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env'
+if [ -n "${STEP04_TESTS_LINE}" ] && printf '%s' "${STEP04_TESTS_LINE}" | grep -qF "${R2033_CLEAR}"; then
+  pass "2033-step04-tests-clear-env" "step-04 tells the agent to load git-repo-env.sh and clear both lists before each test or hook run"
+else
+  fail "2033-step04-tests-clear-env" "step-04's 'Running tests or hooks' instruction does not load git-repo-env.sh and clear both lists"
+fi
 if ! printf '%s' "${STEP02_PROMPT}" | grep -qF 'Skill('; then
   pass "MERGEREADY-no-skill-call" "step-02 contains no Skill( at all"
 else
