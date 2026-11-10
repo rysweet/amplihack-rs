@@ -211,7 +211,8 @@ impl SendFailed {
 }
 
 /// Sends [`RESUME_KEYS`] to `pane` in order, checking before each that the
-/// session still runs and is not suspended (S4). Stops at the first failure
+/// session still runs and is not suspended (S4), and that the same pane still
+/// belongs to the session. Stops at the first failure
 /// (D8); nothing is retried and there is no other way to wake the session.
 pub fn send_resume<D: Deps + ?Sized>(deps: &mut D, pane: &Pane) -> Result<(), SendFailed> {
     for (sent, key) in (0u8..).zip(RESUME_KEYS) {
@@ -220,6 +221,13 @@ pub fn send_resume<D: Deps + ?Sized>(deps: &mut D, pane: &Pane) -> Result<(), Se
                 sent,
                 err: io::Error::other(SESSION_GONE),
                 session_gone: true,
+            });
+        }
+        if deps.pane().as_ref() != Some(pane) {
+            return Err(SendFailed {
+                sent,
+                err: io::Error::new(io::ErrorKind::PermissionDenied, "pane ownership changed"),
+                session_gone: false,
             });
         }
         if let Err(err) = deps.send_keys(pane, key) {

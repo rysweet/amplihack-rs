@@ -174,6 +174,7 @@ struct Fake {
     logs: Vec<LogEntry>,
     diagnostics: Vec<String>,
     receipt_clock_advance: i64,
+    refused_log_dir: Option<std::path::PathBuf>,
     panic_on_now: bool,
     rotator_down: bool,
     arm_err: bool,
@@ -184,6 +185,7 @@ struct Fake {
     /// `$TMUX_PANE` of a verified pane, or none.
     pane_id: Option<&'static str>,
     pane_calls: u32,
+    lose_pane_on_call: Option<u32>,
     /// Keys sent successfully, in order.
     keys: Vec<Key>,
     key_attempts: usize,
@@ -208,6 +210,7 @@ impl Fake {
             logs: Vec::new(),
             diagnostics: Vec::new(),
             receipt_clock_advance: 0,
+            refused_log_dir: None,
             panic_on_now: false,
             rotator_down: false,
             arm_err: false,
@@ -216,6 +219,7 @@ impl Fake {
             waits: Vec::new(),
             pane_id: None,
             pane_calls: 0,
+            lose_pane_on_call: None,
             keys: Vec::new(),
             key_attempts: 0,
             fail_key: None,
@@ -273,6 +277,9 @@ impl Deps for Fake {
         &mut self.guard
     }
     fn diagnostic(&mut self, now: i64, entry: &Diagnostic) {
+        if let Some(dir) = &self.refused_log_dir {
+            amplihack_hooks::limit_resume::log::append(dir, &format_diagnostic(now, entry));
+        }
         self.guard
             .order
             .push(format!("diagnostic:{}", entry.disposition));
@@ -349,6 +356,9 @@ impl Deps for Fake {
     }
     fn pane(&mut self) -> Option<Pane> {
         self.pane_calls += 1;
+        if self.lose_pane_on_call.is_some_and(|n| self.pane_calls >= n) {
+            return None;
+        }
         self.pane_id
             .and_then(|id| Pane::parse(Some(TMUX), Some(id)))
     }
@@ -952,8 +962,8 @@ fn the_session_exiting_mid_keys_stops_the_rest() {
 
 #[test]
 fn send_resume_sends_the_four_keys_in_order() {
-    let mut d = Fake::new();
-    let pane = Pane::parse(Some(TMUX), Some("%9")).unwrap();
+    let mut d = Fake::with_pane();
+    let pane = Pane::parse(Some(TMUX), Some("%5")).unwrap();
     assert!(send_resume(&mut d, &pane).is_ok());
     assert_eq!(d.keys, RESUME_KEYS);
 }
@@ -962,6 +972,7 @@ fn send_resume_sends_the_four_keys_in_order() {
 fn send_resume_reports_how_many_keys_were_sent() {
     let mut d = Fake::new();
     d.fail_key = Some(3);
+    d.pane_id = Some("%9");
     let pane = Pane::parse(Some(TMUX), Some("%9")).unwrap();
     let err = send_resume(&mut d, &pane).unwrap_err();
     assert_eq!(err.sent, 2);
@@ -1667,4 +1678,69 @@ fn issue_1932_failed_guard_commit_never_logs_a_continuation_attempt() {
             .contains("stage=continuation-attempt")
     );
     assert_eq!(d.key_attempts, 0);
+}
+
+#[test]
+fn losing_pane_ownership_after_authorization_stops_delivery_without_fallback() {
+    // Call one authorizes the path; later calls authorize each individual key.
+    for sent in 0..4 {
+        let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+        d.lose_pane_on_call = Some(sent as u32 + 2);
+        let mut stderr = Vec::new();
+        assert_eq!(
+            run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d),
+            0
+        );
+        assert!(stderr.is_empty(), "ownership loss must not select exit two");
+        assert_eq!(d.keys, RESUME_KEYS[..sent]);
+        assert_eq!(d.key_attempts, sent);
+        assert_eq!(d.guard.events.len(), 1, "committed authorization remains");
+        assert_eq!(d.last_log().outcome, Outcome::ResumeKeysFailed);
+        assert_eq!(d.last_log().keys_sent, Some(sent as u8));
+        assert_eq!(d.last_log().detail.as_deref(), Some("PermissionDenied"));
+        assert!(
+            d.diagnostics
+                .iter()
+                .any(|line| line.contains("resume-keys-failed"))
+        );
+    }
+}
+
+#[test]
+fn refused_diagnostic_writes_do_not_change_authorization_or_repeat_delivery() {
+    let tmp = tempfile::tempdir().unwrap();
+    let not_a_directory = tmp.path().join("file");
+    std::fs::write(&not_a_directory, "unchanged").unwrap();
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+    d.refused_log_dir = Some(not_a_directory.clone());
+    let mut stderr = Vec::new();
+    assert_eq!(
+        run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d),
+        0
+    );
+    assert_eq!(d.keys, RESUME_KEYS);
+    assert_eq!(d.guard.events.len(), 1);
+    d.restart_at(START + STEP + 1);
+    assert_eq!(
+        run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d),
+        0
+    );
+    assert_eq!(d.last_log().outcome, Outcome::Duplicate);
+    assert_eq!(d.key_attempts, 4, "no duplicate continuation");
+    assert!(stderr.is_empty(), "no exit-two fallback");
+    assert_eq!(
+        std::fs::read_to_string(&not_a_directory).unwrap(),
+        "unchanged"
+    );
+
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+    d.refused_log_dir = Some(not_a_directory);
+    d.guard.force_commit = Some(CommitError::Io);
+    assert_eq!(
+        run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d),
+        0
+    );
+    assert_eq!(d.last_log().outcome, Outcome::GuardFailed);
+    assert_eq!(d.key_attempts, 0, "logging failure cannot authorize keys");
+    assert!(stderr.is_empty());
 }

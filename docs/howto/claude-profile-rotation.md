@@ -1278,10 +1278,12 @@ The keys go only to the pane the hook noted for this session, never to a
 pane found by name or pattern.
 
 Each key is a separate command so that tmux cannot read Esc and Ctrl+U as
-one Meta key. If a command fails, or the session exits part way through, the
-remaining keys are not sent and the hook logs `resume-keys-failed` with the
-number already sent. It does not fall back to the exit `2` wake. Finish by
-hand as in [Continue a session yourself](#continue-a-session-yourself).
+one Meta key. Immediately before each key, the hook reverifies that the same
+pane still belongs to the session. If that check fails, a command fails, or
+the session exits part way through, the remaining keys are not sent and the
+hook logs `resume-keys-failed` with the number already sent. It does not fall
+back to the exit `2` wake. Finish by hand as in
+[Continue a session yourself](#continue-a-session-yourself).
 
 Typing `continue` is a prompt, so any other hook waiting for the same
 session ends as `moved-on`.
@@ -1403,7 +1405,9 @@ The hook acts only when Claude Code runs it, on a `StopFailure` event with
 `error: "rate_limit"`. Receipt is logged before filtering whenever a safe logging root is available,
 including disabled auto-switch and rejected errors or sessions. Logging is
 best effort: unsafe paths, unavailable roots, rotation or write failures can
-leave gaps. A stopped session with no matching record is **no invocation
+leave gaps. Logging failure does not authorize a resume, retry continuation,
+or select a fallback; the guard and delivery checks still decide the action.
+A stopped session with no matching record is **no invocation
 observed**, not proof that Claude omitted the hook. See the
 [diagnostic stages](../reference/profile-command.md#resume-diagnostic-stages).
 
