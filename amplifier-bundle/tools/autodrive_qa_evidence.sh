@@ -12,7 +12,7 @@
 # project, or AUTODRIVE_QA_SCENARIO_DIR set): the qa-team scenarios, validated
 # with `gadugi-test validate` and run one `gadugi-test run --scenario` per
 # file. Elsewhere gadugi_status is NOT_REQUIRED and gadugi-test is never
-# called: qa-team's Rust CLI rule substitutes `cargo test`.
+# called: qa-team's Rust CLI rule substitutes `cargo test`; and a documentation-only pull request drops (2) in a Node project too, measured as docs_only (#2219).
 #
 # Input comes from the environment only:
 #   REPO_PATH              the repository to measure (default: the working directory)
@@ -50,14 +50,15 @@ SCAN="$(. "$H/autodrive_trust.sh" || exit 1
      && declare -F autodrive_qa_report >/dev/null; then
     autodrive_qa_report "$ROOT"
   else
-    printf 'noscope\t1\nkind\t%s\ngreq\t%s\ntarget\t%s\n' "$(autodrive_repo_type "$ROOT")" \
-      "$(autodrive_gadugi_required "$ROOT")" "$(autodrive_qa_target "$ROOT")"
+    printf 'noscope\t1\nkind\t%s\ngreq\t%s\ndocsonly\t%s\ntarget\t%s\n' "$(autodrive_repo_type "$ROOT")" \
+      "$(autodrive_gadugi_required "$ROOT")" "$(autodrive_qa_docs_only "$ROOT")" "$(autodrive_qa_target "$ROOT")"
   fi)" || SCAN=""
-KIND=""; GREQ=""; NOSCOPE=""; TARGET=""; PATHS="(unknown)"; DSRC=""; DDIR=""; DCMD=""; DBAD=""; CISKIP=""
+KIND=""; GREQ=""; DOCSONLY="unknown"; NOSCOPE=""; TARGET=""; PATHS="(unknown)"; DSRC=""; DDIR=""; DCMD=""; DBAD=""; CISKIP=""
 while IFS=$'\t' read -r key val; do
   case "$key" in
     kind) KIND="$val" ;;
     greq) GREQ="$val" ;;
+    docsonly) case "$val" in true|false) DOCSONLY="$val" ;; *) DOCSONLY="unknown" ;; esac ;;
     noscope) NOSCOPE="1" ;;
     target) TARGET="$val" ;;
     paths) PATHS="$val" ;;
@@ -68,9 +69,9 @@ while IFS=$'\t' read -r key val; do
     ciskip) CISKIP="$val" ;;
   esac
 done <<< "$SCAN"
-case "${KIND}:${GREQ}" in
-  rust-cli:true|rust-cli:false|node:true|python:true|python:false|unknown:true|unknown:false) ;;
-  *) echo "ERROR: autodrive-qa-helpers-not-found: no repository type (${KIND:-none}:${GREQ:-none})" >&2
+case "${KIND}:${GREQ}:${DOCSONLY}" in # node:false only beside docs_only=true (#2219); anything else is a broken install, and gives no evidence rather than a pass
+  rust-cli:true:*|rust-cli:false:*|node:true:*|node:false:true|python:true:*|python:false:*|unknown:true:*|unknown:false:*) ;;
+  *) echo "ERROR: autodrive-qa-helpers-not-found: no repository type (${KIND:-none}:${GREQ:-none}:${DOCSONLY:-none})" >&2
      exit 1 ;;
 esac
 [ -z "$NOSCOPE" ] || PATHS="(unknown)"
@@ -378,20 +379,19 @@ SUMMARY="$(printf '%s' "${CAUSES}${CAUSES:+${TAIL:+: }}${TAIL}" | san)"
 # The evidence format: every field a string, so a reader never has to guess a type.
 F='{"qa_status":"%s","qa_reason":"%s","qa_repo_type":"%s","qa_dir":"%s","qa_command":"%s",'
 F="${F}"'"qa_command_source":"%s","qa_command_paths":"%s","qa_candidates":"%s","qa_ci_skip":"%s",'
-F="${F}"'"qa_suite_commands_count":"%s","qa_scenarios":"%s","qa_exit_code":"%s",'
-F="${F}"'"qa_summary":"%s","qa_round":"%s","head_sha":"%s","gadugi_required":"%s","gadugi_status":"%s",'
-F="${F}"'"gadugi_validate_exit_code":"%s","gadugi_run_exit_code":"%s",'
-F="${F}"'"gadugi_scenario_count":"%s","gadugi_scenario_dir":"%s",'
-F="${F}"'"gadugi_scenarios_validated":"%s","gadugi_scenarios_run":"%s",'
-F="${F}"'"gadugi_scenarios_passed":"%s","gadugi_scenarios_failed":"%s",'
-F="${F}"'"gadugi_failed_scenarios":"%s","gadugi_scenario_results":"%s"}\n'
+F="${F}"'"qa_suite_commands_count":"%s","qa_scenarios":"%s","qa_exit_code":"%s","qa_summary":"%s",'
+F="${F}"'"qa_round":"%s","head_sha":"%s","docs_only":"%s","gadugi_required":"%s","gadugi_status":"%s",'
+F="${F}"'"gadugi_validate_exit_code":"%s","gadugi_run_exit_code":"%s","gadugi_scenario_count":"%s",'
+F="${F}"'"gadugi_scenario_dir":"%s","gadugi_scenarios_validated":"%s","gadugi_scenarios_run":"%s",'
+F="${F}"'"gadugi_scenarios_passed":"%s","gadugi_scenarios_failed":"%s","gadugi_failed_scenarios":"%s",'
+F="${F}"'"gadugi_scenario_results":"%s"}\n'
 # shellcheck disable=SC2059 # F is the fixed format above, never input
 OUT="$(printf "$F" \
   "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$QD" | san | ascii | cut -c1-200)" "$(printf '%s' "$CMDTEXT" | san | ascii | cut -c1-500)" \
   "$SRC" "$(printf '%s' "$PATHS" | san | ascii)" "$(printf '%s' "$QUNRES" | san | ascii)" \
   "$(printf '%s' "$CISKIP" | san | ascii | cut -c1-40)" "$RAN" \
   "$(printf '%s' "$SCEN" | san)" "$RC" "$SUMMARY" "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
-  "$GREQ" "$G_STATUS" "$G_VRC" "$G_RRC" "$COUNT" "$(printf '%s' "$SREL" | san)" \
+  "$DOCSONLY" "$GREQ" "$G_STATUS" "$G_VRC" "$G_RRC" "$COUNT" "$(printf '%s' "$SREL" | san)" \
   "$VALIDATED" "$RUNS" "$PASSED" "$FAILED" \
   "$(printf '%s' "${UNNAMED} ${STAGEFAIL} ${RUNFAIL} ${SYMFAIL}" | san | tr -s ' ' | sed 's/^ //; s/ $//')" \
   "$(printf '%s' "$RESULTS" | san)")"

@@ -9,6 +9,7 @@
 # AUTODRIVE_QA_HEAD (the head commit, default HEAD) from the environment:
 #   autodrive_qa_changed_paths <dir>  the changed paths, `(unknown)` or `(none)`
 #   autodrive_qa_target <dir>         `<type>\t<dir>` or `unresolved\t<list>`
+#   autodrive_qa_docs_only <dir>      `true|false|unknown` (autodrive_qa_docs.sh)
 # autodrive_trust.sh builds autodrive_repo_type and autodrive_gadugi_required
 # on these. The declared sources, .amplihack/qa.toml and the CI workflows,
 # are read by autodrive_qa_sources.sh, which only the evidence tool loads.
@@ -128,6 +129,17 @@ autodrive_qa_changed_paths() {
     *) printf '(unknown)\n' ;;
   esac
 }
+
+# autodrive_qa_docs_only lives in autodrive_qa_docs.sh beside this file,
+# which is at its brick budget. Loaded only from this file's physical
+# directory, only as a regular file and not a symlink; without it the
+# predicate says `unknown`, which keeps gadugi required (#2219).
+_ad_docs="$(unset CDPATH; cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || _ad_docs=""
+_ad_docs="${_ad_docs:+${_ad_docs}/autodrive_qa_docs.sh}"
+# shellcheck source=autodrive_qa_docs.sh
+{ [ -n "$_ad_docs" ] && [ -f "$_ad_docs" ] && [ ! -L "$_ad_docs" ] && . "$_ad_docs"; } \
+  || autodrive_qa_docs_only() { printf 'unknown\n'; }
+unset _ad_docs
 
 # _autodrive_manifest_dirs <dir> -> a `<dir><TAB><cargo|python|node>` line per
 # regular Cargo.toml, pyproject.toml, setup.py or package.json blob in the
