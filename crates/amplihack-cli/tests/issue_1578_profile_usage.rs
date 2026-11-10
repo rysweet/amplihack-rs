@@ -396,7 +396,7 @@ fn table_orders_by_capacity_marks_default_and_leases_and_hides_raw_text() {
     for p in ["a", "b", "c", "d"] {
         let args = fs::read_to_string(f.records.join(format!("args.{p}"))).unwrap();
         assert_eq!(
-            args, "2\n-p\n/usage\n",
+            args, "3\n-p\n/usage\n--no-session-persistence\n",
             "exactly `claude -p /usage` for {p}"
         );
         let env = fs::read_to_string(f.records.join(format!("env.{p}"))).unwrap();
@@ -1003,8 +1003,7 @@ fn malformed_ledger_warns_once_and_marks_nothing_live() {
 // ---------------------------------------------------------------------------
 
 const REQUEST_LINE: &str = r#"{"type":"control_request","request_id":"amplihack-usage","request":{"subtype":"get_usage","skip_behaviors":true}}"#;
-const REQUEST_ARGS: &str =
-    "6\n-p\n--input-format\nstream-json\n--output-format\nstream-json\n--verbose\n";
+const REQUEST_ARGS: &str = "7\n-p\n--input-format\nstream-json\n--output-format\nstream-json\n--verbose\n--no-session-persistence\n";
 const SYSTEM_MARKER: &str = "SYSTEM-LINE-MARKER-1698";
 const PROBE_ENV: &str = "AMPLIHACK_PROFILE_USAGE_PROBE";
 
@@ -1070,7 +1069,10 @@ fn an_error_answer_falls_back_to_usage() {
     let (rows, stderr) = f.json(&["profile", "usage", "--json", "a"]);
     assert_eq!(session(&rows[0]), 20.0, "read from /usage");
     assert!(f.recorded("args-request.a").is_some());
-    assert_eq!(f.recorded("args.a").as_deref(), Some("2\n-p\n/usage\n"));
+    assert_eq!(
+        f.recorded("args.a").as_deref(),
+        Some("3\n-p\n/usage\n--no-session-persistence\n")
+    );
     assert!(!stderr.contains("Unknown control request"), "{stderr}");
 }
 
