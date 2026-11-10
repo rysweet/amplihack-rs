@@ -63,19 +63,29 @@ autodrive_qa_docs_only() {
     empty) printf 'false\n'; return 0 ;;
     *) printf 'unknown\n'; return 0 ;;
   esac
+  # The byte-exact rule first, because it needs no lowercased copy and so
+  # costs no process. Either rule failing on any path gives `false`, so which
+  # of the two sees a path first cannot change the answer.
   for p in "${_AD_PATHS[@]}"; do
-    # One lowercased copy with a leading `/`, so that a directory rule and a
-    # root basename (`/agents.md`) match the same `*/name` pattern.
-    l="/$(printf '%s' "$p" | tr 'A-Z' 'a-z')"
-    case "$l" in
-      */.github/* | */.amplihack/* | */.claude/* | */amplifier-bundle/* \
-        | */agents.md | */claude.md | */skill.md \
-        | *.yml | *.yaml | *.toml | *.json | *.sh) printf 'false\n'; return 0 ;;
-    esac
     case "$p" in
       *.md | *.markdown | *.rst | *.txt | LICENSE | NOTICE | COPYING) ;;
       *) printf 'false\n'; return 0 ;;
     esac
   done
+  # Now the case-insensitive rules, against a lowercased copy of the list
+  # carrying a leading `/` per path, so that a directory rule and a root
+  # basename (`/agents.md`) match the same `*/name` pattern. ONE `tr` for the
+  # whole list rather than one per path: a fork costs milliseconds and a
+  # large pull request has hundreds of paths. Safe because a changed path
+  # holding a newline already emptied _AD_PATHS in _autodrive_qa_changed_raw,
+  # so no path spans two lines here. A here-string, never a pipe, so that
+  # `return` below returns from this function.
+  while IFS= read -r l; do
+    case "/$l" in
+      */.github/* | */.amplihack/* | */.claude/* | */amplifier-bundle/* \
+        | */agents.md | */claude.md | */skill.md \
+        | *.yml | *.yaml | *.toml | *.json | *.sh) printf 'false\n'; return 0 ;;
+    esac
+  done <<< "$(printf '%s\n' "${_AD_PATHS[@]}" | tr 'A-Z' 'a-z')"
   printf 'true\n'
 }
