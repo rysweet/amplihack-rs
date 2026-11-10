@@ -138,7 +138,7 @@ RUN_ENV=(
 # same <id> <label> <before> <after>: fail unless two snapshots match.
 same() {
     [[ "$3" == "$4" ]] && return 0
-    fail "$1" "$2 changed: $(diff <(printf '%s\n' "$3") <(printf '%s\n' "$4") | head -n 6 | tr '\n' '|')"
+    fail "$1" "$2 changed: $(diff <(printf '%s\n' "$3") <(printf '%s\n' "$4") | awk 'NR<=6{printf "%s|",$0}')"
     return 1
 }
 
