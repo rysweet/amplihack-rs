@@ -201,7 +201,7 @@ directory distinguishes home sessions from sessions in a named profile.
 The journal is bounded to 8 MiB. Reaching that bound fails explicitly before
 an unrecordable swap rather than discarding warnings. Required history and
 ambiguous intents are retained; long-lived unconsumed sessions can therefore
-require operator attention. Completion identities are retained for idempotence.
+require operator attention. Completion identities are retained while authoritative recovery journals can reference them for idempotence.
 
 State uses owner-private directories (0700) and files (0600), secure temporary
 creation, atomic publication and filesystem synchronization. Unsafe ownership,
@@ -233,3 +233,34 @@ Linux-specific process discovery and resume mechanisms retain their Linux
 requirements. Durability depends on supported filesystem flushing and directory
 synchronization. Earlier thinking restoration and measurement of subsequent
 work quality are outside this feature's contract.
+
+## Warning failure isolation and retention
+
+Scoped warnings are delivered on limit handling even when the rotator is down.
+Warning registration, reading, delivery, and acknowledgement failures do not
+change resume authorization. A committed exit-2 wake remains exit 2 when stderr
+fails. Successful stderr or tmux delivery acknowledges only the captured warning
+prefix; failed delivery leaves warnings pending. Persisted-record parse errors
+use fixed diagnostics without record contents.
+
+Every journal write compacts consumed and non-warning events before enforcing
+the 8 MiB bound. Outstanding warnings and unresolved intents remain durable.
+Before a producer prepares its next intent, it retires completed identities
+that neither authoritative swap journal references. Unreadable recovery journals
+prevent retirement. This also reclaims evidence left by a crash after recovery
+journal deletion, without an age cutoff or a background service.
+
+### Review-fix validation (macOS, 2026-11-10)
+
+The focused warning-history and warning-security integration suites passed
+(17 and 6 tests respectively). Formatting, `git diff --check`, and
+`scripts/check-git-command-sanitised.sh` passed during implementation.
+The initial full-live-state fixture was below the storage bound; it was
+increased to 40,000 unresolved intents and its rerun is queued.
+
+Hook and CLI behavioral checks and Clippy encountered sandbox-external Cargo
+and ccache directories. Detached retries use writable directories under
+`/private/tmp`; their completion is not yet verified. The pre-commit launcher
+references a missing Python environment; a fallback invocation also failed
+because its dependencies require a newer Python interpreter. Full hook
+validation remains outstanding. Linux-specific checks are deferred to CI.

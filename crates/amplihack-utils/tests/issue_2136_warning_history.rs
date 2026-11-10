@@ -226,3 +226,31 @@ fn acknowledgement_does_not_consume_later_events_or_move_backwards() {
     let _ = h.acknowledge(&session, before[0].id);
     assert!(h.pending(&session).unwrap().is_empty());
 }
+
+#[test]
+fn completed_consumed_history_is_compacted_during_persistence() {
+    let (tmp, mut h) = fixture();
+    let s = h.register_current_process("s", "home").unwrap();
+    for n in 0..100 {
+        let intent = h
+            .prepare(&event(&format!("tx-{n}"), "crossing", "rotator", "home"))
+            .unwrap();
+        h.complete(&intent, Completion::Committed).unwrap();
+        let w = h.pending(&s).unwrap();
+        h.acknowledge(&s, w[0].id).unwrap();
+        h.retire_completed_except(&[]).unwrap();
+    }
+    let raw = fs::read(tmp.path().join(".swap-warning-history/journal.json")).unwrap();
+    assert!(raw.len() < 1024);
+}
+
+#[test]
+fn malformed_persisted_records_have_fixed_diagnostics() {
+    let (tmp, h) = fixture();
+    drop(h);
+    let path = tmp.path().join(".swap-warning-history/journal.json");
+    fs::write(&path, b"{\"secret-\\u001b[31m\":42}").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let error = WarningHistory::open(tmp.path()).err().unwrap().to_string();
+    assert_eq!(error, "invalid warning journal encoding");
+}

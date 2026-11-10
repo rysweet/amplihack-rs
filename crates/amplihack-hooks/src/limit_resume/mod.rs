@@ -471,13 +471,14 @@ fn run_with_warning<D: Deps + ?Sized>(
                 }
                 *pending = events;
             }
-            Err(error) => {
-                return note(
+            Err(_) => {
+                // Advisory storage must never control resume authorization.
+                note(
                     deps,
                     now,
                     Outcome::GuardFailed,
                     Note {
-                        detail: Some(format!("warning history: {error}")),
+                        detail: Some("warning history unavailable".into()),
                         ..Note::default()
                     },
                 );
@@ -519,7 +520,8 @@ fn run_with_warning<D: Deps + ?Sized>(
 }
 
 /// Reads at most `MAX_STDIN_BYTES` of payload from `stdin`, decides, and
-/// writes `RESUME_MSG` to `stderr` only on `Resumed`. Returns the exit code:
+/// delivers scoped warnings independently of resume authorization and writes
+/// `RESUME_MSG` to `stderr` only on `Resumed`. Returns the exit code:
 /// 2 on `Resumed`, 0 otherwise, including after keys were sent, for an
 /// oversized or malformed payload and for a panic.
 pub fn run_with_io<D: Deps + ?Sized>(
@@ -555,14 +557,14 @@ pub fn run_with_io<D: Deps + ?Sized>(
                         history_session = Some((history, session));
                     }
                     Err(e) => {
-                        let _ = writeln!(stderr, "Swap warning history unreadable: {e}");
-                        return None;
+                        let _ =
+                            writeln!(stderr, "Swap warning history unreadable ({:?})", e.kind());
+                        history_session = Some((history, session));
                     }
                 },
                 Ok(None) => {}
                 Err(e) => {
-                    let _ = writeln!(stderr, "Swap warning registration failed: {e}");
-                    return None;
+                    let _ = writeln!(stderr, "Swap warning registration failed ({:?})", e.kind());
                 }
             }
         }
@@ -574,33 +576,32 @@ pub fn run_with_io<D: Deps + ?Sized>(
             &mut pending,
         ))
     }));
-    let mut delivered = false;
-    let code = match decided {
-        Ok(Some(Outcome::Resumed)) => {
-            for text in warning.iter().filter_map(|a| a.warning()) {
-                if writeln!(stderr, "{text}").is_err() {
-                    return 0;
-                }
-            }
-            // The resume is already recorded; exit 2 alone wakes the
-            // session, so a failed write still exits 2.
-            delivered = writeln!(stderr, "{RESUME_MSG}")
-                .and_then(|_| stderr.flush())
-                .is_ok();
-            Outcome::Resumed.exit_code()
-        }
-        Ok(Some(outcome)) => {
-            delivered = outcome == Outcome::ResumedKeys;
-            outcome.exit_code()
-        }
-        Ok(None) | Err(_) => 0,
+    let outcome = match decided {
+        Ok(Some(outcome)) => Some(outcome),
+        _ => None,
     };
+    // A tmux success already delivered the warnings. All other outcomes
+    // can deliver advisory output without changing their resume decision.
+    let mut delivered = outcome == Some(Outcome::ResumedKeys);
+    if !delivered {
+        delivered = warning
+            .iter()
+            .filter_map(|a| a.warning())
+            .try_for_each(|text| writeln!(stderr, "{text}"))
+            .and_then(|_| stderr.flush())
+            .is_ok();
+    }
+    if outcome == Some(Outcome::Resumed) {
+        let _ = writeln!(stderr, "{RESUME_MSG}").and_then(|_| stderr.flush());
+    }
+    let code = outcome.map_or(0, Outcome::exit_code);
     if delivered && let Some((mut history, session)) = history_session {
         for event in pending {
             if let Err(e) = history.acknowledge(&session, event.id) {
                 let _ = writeln!(
                     stderr,
-                    "Swap warning acknowledgement failed; delivery may repeat: {e}"
+                    "Swap warning acknowledgement failed; delivery may repeat ({:?})",
+                    e.kind()
                 );
                 break;
             }

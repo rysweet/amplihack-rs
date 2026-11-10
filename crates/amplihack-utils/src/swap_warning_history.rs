@@ -197,7 +197,8 @@ impl WarningHistory {
                 None => Journal::default(),
                 Some((raw, meta)) => {
                     check_private_file(&meta)?;
-                    serde_json::from_slice(&raw).map_err(io::Error::other)?
+                    serde_json::from_slice(&raw)
+                        .map_err(|_| invalid("invalid warning journal encoding"))?
                 }
             };
         let mut previous = 0;
@@ -243,6 +244,7 @@ impl WarningHistory {
         if !persist {
             return Ok(result);
         }
+        compact(&mut journal);
         let raw = serde_json::to_vec(&journal).map_err(io::Error::other)?;
         if raw.len() as u64 > MAX_BYTES {
             return Err(invalid("warning history full; unconsumed events retained"));
@@ -284,7 +286,8 @@ impl WarningHistory {
         })
     }
     pub fn prepare(&mut self, value: &serde_json::Value) -> io::Result<Intent> {
-        let event: Event = serde_json::from_value(value.clone()).map_err(io::Error::other)?;
+        let event: Event = serde_json::from_value(value.clone())
+            .map_err(|_| invalid("invalid swap warning event encoding"))?;
         event.validate()?;
         let tx = event.transaction_id.clone();
         self.access(|j| {
@@ -450,13 +453,28 @@ impl WarningHistory {
             Ok(())
         })
     }
+    /// Retire completion evidence only after the transaction owner confirms
+    /// that no authoritative recovery journal can reference it. Pending intents
+    /// and scoped warnings are unaffected.
+    pub fn retire_completed_except(&mut self, referenced: &[String]) -> io::Result<()> {
+        self.retire_completed_with(|| Ok(referenced.to_vec()))
+    }
+    /// Read authoritative references while holding the journal lock, so a
+    /// concurrent publisher cannot appear between the reference snapshot and
+    /// retirement. The callback must not acquire a swap or history lock.
+    pub fn retire_completed_with(
+        &mut self,
+        references: impl FnOnce() -> io::Result<Vec<String>>,
+    ) -> io::Result<()> {
+        self.access(|j| {
+            let referenced = references()?;
+            j.completed.retain(|tx, _| referenced.contains(tx));
+            Ok(())
+        })
+    }
     pub fn retain_required(&mut self) -> io::Result<()> {
         self.access(|j| {
-            j.events.retain(|w| {
-                w.sessions
-                    .iter()
-                    .any(|key| j.sessions.get(key).is_some_and(|r| r.cursor < w.id))
-            });
+            compact(j);
             Ok(())
         })
     }
@@ -474,5 +492,58 @@ impl WarningHistory {
                 .cloned()
                 .collect())
         })
+    }
+}
+
+fn compact(j: &mut Journal) {
+    j.events.retain(|w| {
+        w.affinity.warning().is_some()
+            && w.sessions
+                .iter()
+                .any(|key| j.sessions.get(key).is_some_and(|r| r.cursor < w.id))
+    });
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn full_live_state_fails_without_overwriting_durable_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let h = WarningHistory::open(tmp.path()).unwrap();
+        h.access(|_| Ok(())).unwrap();
+        let path = tmp.path().join(".swap-warning-history/journal.json");
+        let before = fs::read(&path).unwrap();
+        let error = h
+            .access(|j| {
+                for n in 0..40_000 {
+                    let tx = format!("tx-{n}");
+                    j.pending.insert(
+                        tx.clone(),
+                        Pending {
+                            event: Event {
+                                version: 1,
+                                transaction_id: tx,
+                                producer: "rotator".into(),
+                                reason: "threshold".into(),
+                                host: "home".into(),
+                                from_login: "work".into(),
+                                to_login: "spare".into(),
+                                from_org: Some("a".into()),
+                                to_org: Some("b".into()),
+                                affinity: Affinity::between(Some("a"), Some("b")),
+                            },
+                            sessions: vec![],
+                        },
+                    );
+                }
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("history full"));
+        assert_eq!(fs::read(path).unwrap(), before);
     }
 }

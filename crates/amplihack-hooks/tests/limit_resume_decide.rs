@@ -160,6 +160,7 @@ enum Act {
 
 struct Fake {
     warning_root: Option<std::path::PathBuf>,
+    corrupt_warning_journal: bool,
     on: bool,
     clock: i64,
     /// What the ledger shows (for the event key's live login).
@@ -197,6 +198,7 @@ impl Fake {
     fn new() -> Self {
         Self {
             warning_root: None,
+            corrupt_warning_journal: false,
             on: true,
             clock: START,
             cycle: Some(ledger("work")),
@@ -378,6 +380,9 @@ impl Deps for Fake {
         };
         let mut history = amplihack_utils::swap_warning_history::WarningHistory::open(root)?;
         let session = history.register_current_process(session, "home")?;
+        if self.corrupt_warning_journal {
+            std::fs::write(root.join(".swap-warning-history/journal.json"), b"corrupt")?;
+        }
         Ok(Some((history, session)))
     }
 }

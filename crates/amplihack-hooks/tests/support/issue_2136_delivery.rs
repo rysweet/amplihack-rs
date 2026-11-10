@@ -116,7 +116,7 @@ fn durable_warning_survives_latest_same_org_swap_and_is_acknowledged() {
 }
 
 #[test]
-fn failed_tmux_delivery_keeps_durable_warning_unconsumed() {
+fn failed_tmux_delivery_falls_back_to_stderr() {
     use amplihack_utils::swap_warning_history::{Completion, WarningHistory};
     use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().unwrap();
@@ -137,7 +137,7 @@ fn failed_tmux_delivery_keeps_durable_warning_unconsumed() {
         run_with_io(limit_payload().as_bytes(), &mut Vec::new(), &mut d),
         0
     );
-    assert_eq!(history.pending(&session).unwrap().len(), 1);
+    assert!(history.pending(&session).unwrap().is_empty());
 }
 
 #[test]
@@ -171,4 +171,86 @@ fn a_newly_registered_session_does_not_inherit_an_unscoped_latest_warning() {
         2
     );
     assert_eq!(stderr, format!("{RESUME_MSG}\n").as_bytes());
+}
+
+struct FailedWarningWriter;
+impl std::io::Write for FailedWarningWriter {
+    fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+        Err(io::Error::other("output unavailable"))
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn failed_warning_output_preserves_committed_exit_two() {
+    let mut d = Fake::new().then(Act::Swap(affinity_record("crossing")));
+    assert_eq!(
+        run_with_io(limit_payload().as_bytes(), &mut FailedWarningWriter, &mut d),
+        2
+    );
+    assert_eq!(
+        run_with_io(limit_payload().as_bytes(), &mut Vec::new(), &mut d),
+        0
+    );
+}
+
+#[test]
+fn unavailable_warning_registration_does_not_block_resume() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut d = Fake::new().then(Act::Swap(fresh(2)));
+    d.warning_root = Some(tmp.path().join("missing"));
+    assert_eq!(
+        run_with_io(limit_payload().as_bytes(), &mut Vec::new(), &mut d),
+        2
+    );
+}
+
+#[test]
+fn rotator_down_delivers_scoped_warning_once_without_resume() {
+    use amplihack_utils::swap_warning_history::{Completion, WarningHistory};
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut h = WarningHistory::open(tmp.path()).unwrap();
+    let s = h.register_current_process("s", "home").unwrap();
+    let other = h.register_current_process("other", "unrelated").unwrap();
+    let intent = h
+        .prepare(&json!({"version":1,"transaction_id":"auto",
+        "producer":"auto-switch","reason":"threshold","host":"home",
+        "from_login":"work","to_login":"spare","from_org":"a","to_org":"b",
+        "affinity":"crossing"}))
+        .unwrap();
+    h.complete(&intent, Completion::Committed).unwrap();
+    let mut d = Fake::new();
+    d.rotator_down = true;
+    d.warning_root = Some(tmp.path().to_owned());
+    assert_eq!(
+        run_with_io(limit_payload().as_bytes(), &mut FailedWarningWriter, &mut d),
+        0
+    );
+    assert_eq!(h.pending(&s).unwrap().len(), 1);
+    let mut out = Vec::new();
+    assert_eq!(run_with_io(limit_payload().as_bytes(), &mut out, &mut d), 0);
+    assert!(String::from_utf8(out).unwrap().contains("earlier thinking"));
+    assert!(h.pending(&s).unwrap().is_empty());
+    assert!(h.pending(&other).unwrap().is_empty());
+    let mut out = Vec::new();
+    assert_eq!(run_with_io(limit_payload().as_bytes(), &mut out, &mut d), 0);
+    assert!(out.is_empty());
+}
+
+#[test]
+fn unreadable_warning_journal_does_not_block_resume() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut d = Fake::new().then(Act::Swap(fresh(2)));
+    d.warning_root = Some(tmp.path().to_owned());
+    d.corrupt_warning_journal = true;
+    assert_eq!(
+        run_with_io(limit_payload().as_bytes(), &mut Vec::new(), &mut d),
+        2
+    );
 }

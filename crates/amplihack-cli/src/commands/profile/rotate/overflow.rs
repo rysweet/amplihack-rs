@@ -370,7 +370,7 @@ pub fn decide_restricted(
         return verdict(swap(to.clone(), Reason::OverflowOut), Some(Tag::Out), None);
     }
     // A plan login below 100% costs nothing (issue #1804).
-    if let Some(to) = plan_room::choose(s, None, &targets) {
+    if let Some(to) = plan_room::choose(s, None, &same_targets) {
         return verdict(swap(to, Reason::OverflowOut), Some(Tag::Out), None);
     }
     let earliest = earliest_plan_reset(s, plan.iter().map(|c| (&c.reading, &c.windows)));
@@ -382,7 +382,7 @@ pub fn decide_restricted(
             return verdict(swap(to, Reason::OverflowOut), Some(Tag::Out), None);
         }
         if platform_blocked {
-            if let Some((to, _)) = best(&targets) {
+            if let Some((to, _)) = best(&same_targets) {
                 return verdict(swap(to.clone(), Reason::OverflowOut), Some(Tag::Out), None);
             }
             return verdict(Decision::Alert, Some(Tag::On), None);
@@ -398,7 +398,7 @@ pub fn decide_restricted(
         {
             return verdict(swap(to, Reason::OverflowIn), Some(Tag::In), earliest);
         }
-        if let Some((to, _)) = best(&targets) {
+        if let Some((to, _)) = best(&same_targets) {
             return verdict(swap(to.clone(), Reason::OverflowOut), Some(Tag::Out), None);
         }
         return no_move(Decision::Alert, earliest);
