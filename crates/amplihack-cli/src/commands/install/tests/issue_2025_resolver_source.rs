@@ -157,6 +157,24 @@ fn path_symlink_into_build_dir_is_refused() {
     );
 }
 
+/// The refusal names the path that matched: a PATH entry in a build
+/// directory is reported as itself, not as its canonical target outside it.
+#[cfg(unix)]
+#[test]
+fn refusal_names_raw_entry_when_only_it_is_in_build_dir() {
+    let tmp = plain_tempdir();
+    let self_src = write_exe(&tmp.path().join("bin"), "amplihack", "#!/bin/sh\n");
+    let real = write_exe(&tmp.path().join("store"), RESOLVER, "#!/bin/sh\n");
+    let link_dir = tmp.path().join("checkout").join("target").join("debug");
+    fs::create_dir_all(&link_dir).unwrap();
+    let link = link_dir.join(RESOLVER);
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let chosen = choose_resolver_source(&self_src, true, || Some(link.clone()));
+
+    assert_eq!(chosen, ResolverSource::RefusedBuildArtifact(link));
+}
+
 #[test]
 fn path_copy_outside_build_dir_is_used() {
     let tmp = plain_tempdir();

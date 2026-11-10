@@ -383,7 +383,7 @@ that returns a `ResolverSource`:
 | ------- | ---- | ------ |
 | `Sibling(path)` | An executable `amplihack-asset-resolver` sits beside the running `amplihack`. | Copied from that path. PATH is not searched. |
 | `Path(canonical)` | No sibling; PATH lookup is allowed; the PATH copy is not in a build directory. | Copied from the canonical path that was checked. |
-| `RefusedBuildArtifact(path)` | No sibling; the PATH copy, or its canonical path, is under a build directory. | Not copied. A warning names the path. |
+| `RefusedBuildArtifact(path)` | No sibling; the PATH copy, or its canonical path, is under a build directory. | Not copied. A warning names the path that matched: the PATH entry if it is under a build directory, otherwise its canonical path. |
 | `None` | No sibling, and either no PATH copy or PATH lookup is not allowed. | Nothing is copied. |
 
 PATH lookup is allowed for an explicit `amplihack install`, and for an
@@ -397,8 +397,9 @@ contains `target-` anywhere in its name (so `target-x86_64` and
 unstripped debug resolver is about 590 MB; a release one is a few MB). The
 installer does not inspect ELF headers.
 
-The canonical path is what is both checked and copied, so a symlink on PATH
-that points into `target/debug` is refused. If `canonicalize` fails, the raw
+Both the PATH entry and its canonical path are checked, and the canonical path
+is the one copied, so a symlink on PATH that points into `target/debug` is
+refused. If `canonicalize` fails, the raw
 path is used for both.
 
 On refusal the installer prints:

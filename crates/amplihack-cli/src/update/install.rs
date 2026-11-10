@@ -104,11 +104,13 @@ pub(super) fn download_and_replace(release: &UpdateRelease) -> Result<PathBuf> {
     check_free_space(install_dir, required_free)?;
 
     install_binary_atomic(&new_hooks, &hooks_dest)?;
-    install_binary_atomic(&new_amplihack, &amplihack_dest)?;
-    // The resolver is copied, never executed: it has no `--version` probe.
+    // Issue #2025: the resolver goes before `amplihack`, so a failed copy
+    // leaves `amplihack` on its old version and the update reports failure
+    // truthfully. It is copied, never executed: it has no `--version` probe.
     if let Some((src, dst)) = &resolver_copy {
         install_binary_atomic(src, dst)?;
     }
+    install_binary_atomic(&new_amplihack, &amplihack_dest)?;
 
     report_installed_versions(release, &amplihack_dest, &hooks_dest);
     invalidate_update_cache();

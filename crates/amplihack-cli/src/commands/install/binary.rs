@@ -201,8 +201,11 @@ pub(super) enum ResolverSource {
 /// when `path_lookup_allowed`, the result of `find_on_path`.
 ///
 /// A PATH copy is refused when either the entry itself or its canonical path
-/// lies under a build directory ([`looks_like_build_artifact`]). The sibling
-/// is not checked: it is the resolver built alongside the running binary.
+/// lies under a build directory ([`looks_like_build_artifact`]). The refusal
+/// reports the path that matched: the PATH entry if it is in a build
+/// directory, otherwise its canonical path. An accepted copy is always the
+/// canonical path. The sibling is not checked: it is the resolver built
+/// alongside the running binary.
 pub(super) fn choose_resolver_source(
     self_src: &Path,
     path_lookup_allowed: bool,
@@ -222,7 +225,10 @@ pub(super) fn choose_resolver_source(
         return ResolverSource::None;
     };
     let canonical = fs::canonicalize(&found).unwrap_or_else(|_| found.clone());
-    if looks_like_build_artifact(&found) || looks_like_build_artifact(&canonical) {
+    if looks_like_build_artifact(&found) {
+        return ResolverSource::RefusedBuildArtifact(found);
+    }
+    if looks_like_build_artifact(&canonical) {
         return ResolverSource::RefusedBuildArtifact(canonical);
     }
     ResolverSource::Path(canonical)
