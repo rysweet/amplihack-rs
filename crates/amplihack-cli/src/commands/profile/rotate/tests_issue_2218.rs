@@ -392,6 +392,72 @@ mod local_proof {
         assert_eq!(requests_for_home(&e), 1, "~/.claude is read as before");
     }
 
+    /// The ledger's `swapped_at`, relative to the wall clock now.
+    fn swapped(e: &Env, ago: i64) {
+        let mut l = e.rs.load_ledger().unwrap().unwrap();
+        l.swapped_at = Some(crate::commands::profile::auto_switch::kit::now() - ago);
+        e.rs.save_ledger(&l).unwrap();
+    }
+
+    #[test]
+    fn a_stale_claude_json_after_a_swap_off_the_excluded_login_matches_nothing() {
+        // The swap put spare's login in `~/.claude` and recorded spare live;
+        // a session still on excluded work writes work's account into
+        // `~/.claude.json`. The login file is unchanged since the swap.
+        let (e, _) = fx();
+        exclude(&e, &["work"]);
+        set_ledger(&e, Some("spare"), None);
+        set_home_json(&e, "u-work");
+        swapped(&e, 0);
+        assert_eq!(proof(&e), None);
+        assert!(!local_only_dirs(&e.store, &e.rs, &e.home).contains(&home_dir(&e)));
+        assert_eq!(requests_for_home(&e), 1, "~/.claude is read as spare's");
+    }
+
+    #[test]
+    fn a_login_file_written_after_the_swap_lets_claude_json_match_again() {
+        // A token refresh or a hand login rewrote `~/.claude` after the
+        // swap: it may now hold work's login, so rule 2 applies (S2).
+        let (e, _) = fx();
+        exclude(&e, &["work"]);
+        set_ledger(&e, Some("spare"), None);
+        set_home_json(&e, "u-work");
+        swapped(&e, 60);
+        assert_eq!(proof(&e), Some((n("work"), Match::LocalAccount)));
+        assert_eq!(requests_for_home(&e), 0, "no request with work's token");
+    }
+
+    #[test]
+    fn a_suspected_hand_change_after_a_swap_keeps_rule_2() {
+        let (e, _) = fx();
+        exclude(&e, &["work"]);
+        set_ledger(&e, Some("spare"), Some("work"));
+        set_home_json(&e, "u-work");
+        swapped(&e, 0);
+        assert_eq!(proof(&e), Some((n("work"), Match::LocalAccount)));
+    }
+
+    #[test]
+    fn a_swap_time_in_the_future_proves_nothing() {
+        let (e, _) = fx();
+        exclude(&e, &["work"]);
+        set_ledger(&e, Some("spare"), None);
+        set_home_json(&e, "u-work");
+        swapped(&e, -3600);
+        assert_eq!(proof(&e), Some((n("work"), Match::LocalAccount)));
+    }
+
+    #[test]
+    fn the_excluded_login_s_bytes_still_match_after_a_swap() {
+        // Rule 3 is never skipped: a byte-identical copy is proof.
+        let (e, _) = fx();
+        exclude(&e, &["extra"]);
+        set_ledger(&e, Some("work"), None);
+        copy_slot_to_live(&e, "extra");
+        swapped(&e, 0);
+        assert_eq!(proof(&e), Some((n("extra"), Match::SameBytes)));
+    }
+
     // --- rule 2: the local account ----------------------------------------
 
     #[test]

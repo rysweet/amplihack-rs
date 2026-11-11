@@ -37,7 +37,7 @@
 
 #![cfg(target_os = "linux")]
 
-use crate::support::profile_rotate::{Fixture, private_file, text};
+use crate::support::profile_rotate::{Fixture, account_json, private_file, text};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -940,16 +940,62 @@ fn an_excluded_live_login_with_no_candidate_alerts_and_stays() {
 }
 
 #[test]
-fn an_excluded_live_login_named_only_by_claude_json_is_moved_off_without_a_request() {
+fn an_excluded_live_login_named_only_by_claude_json_is_not_moved_and_sends_no_request() {
     // Rule 2: the ledger has no `live`, ~/.claude.json matches work's record.
+    // A match by the local account alone may be a stale file, so the login
+    // is not moved into work's folder (S4): the cycle alerts and stays.
     let (f, ep) = fixture();
     exclude(&f, &["work"]);
     drop_ledger_live(&f);
+    let (home, slot) = (stamp(&f.home_login()), fs::read(f.slot("work")).ok());
     let out = cycle(&f, &ep);
     let log = f.log();
     assert!(out.status.success(), "{}\nlog:\n{log}", describe(&out));
     assert_no_request_for(&ep, "work");
-    assert_ne!(live(&f), "work", "{log}");
+    assert!(
+        log.contains(
+            "ALERT: live profile work is excluded; not moved, as only ~/.claude.json names it"
+        ),
+        "{log}"
+    );
+    assert_eq!(live(&f), "", "nothing recorded live: {log}");
+    assert_eq!(stamp(&f.home_login()), home, "~/.claude untouched");
+    assert_eq!(fs::read(f.slot("work")).ok(), slot, "work's folder untouched");
+}
+
+#[test]
+fn a_session_still_on_a_moved_off_excluded_login_does_not_stall_rotation() {
+    // After the move off excluded work, a session still running on work
+    // writes work's account into ~/.claude.json. The login the swap put in
+    // ~/.claude is unchanged since `swapped_at`, so the ledger's spare is
+    // trusted: spare is measured and nothing is refused or sent for work.
+    let (f, ep) = fixture();
+    exclude(&f, &["work"]);
+    let out = cycle(&f, &ep);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(live(&f), "spare", "{}", f.log());
+    private_file(
+        &f.home.join(".claude.json"),
+        &serde_json::json!({"oauthAccount": account_json("work")}).to_string(),
+    );
+    ep.clear();
+    let out = cycle(&f, &ep);
+    let log = f.log();
+    assert!(out.status.success(), "{}\nlog:\n{log}", describe(&out));
+    assert_no_request_for(&ep, "work");
+    assert!(!log.contains("not moved, as only ~/.claude.json names it"), "{log}");
+    assert!(
+        ep.requests().iter().any(|r| r.is_usage() && r.for_profile("spare")),
+        "the live login is measured: {:?}\n{log}",
+        ep.requests()
+    );
+    let out = run(&f, &ep, &["profile", "verify"]);
+    assert!(
+        !text(&out.stdout).contains("live profile work"),
+        "{}",
+        describe(&out)
+    );
+    assert_no_request_for(&ep, "work");
 }
 
 #[test]

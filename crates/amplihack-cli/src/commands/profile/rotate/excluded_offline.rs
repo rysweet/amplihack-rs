@@ -13,7 +13,12 @@
 //! Rules 2 and 3 run whatever the ledger names, since a hand login leaves
 //! the ledger stale. A stale `~/.claude.json` that names an excluded profile
 //! therefore makes `~/.claude` local-only: the check fails closed, and
-//! [`may_write_back`] refuses the move-out.
+//! [`may_write_back`] refuses the move-out. The one exception: rule 2 is
+//! skipped when the ledger names a live profile that is not excluded, no
+//! hand change is suspected, and `~/.claude/.credentials.json` has not
+//! changed since the ledger's `swapped_at`. After a move off an excluded
+//! login, its running sessions keep writing its account into
+//! `~/.claude.json`, and without this exception rotation would stall.
 //!
 //! A read that fails gives no match for that rule; nothing is written.
 
@@ -22,7 +27,8 @@ use super::super::ledger::RotateState;
 use super::Account;
 // Its own line: `tests_source_scan` refuses a read next to the login name.
 use super::super::login_identity::Budget;
-use crate::commands::profile::auto_switch::kit::CREDS;
+use super::super::handfix_plan::ino_ctime;
+use crate::commands::profile::auto_switch::kit::{CREDS, now};
 use crate::commands::profile::auto_switch::kit::{
     CLAUDE_JSON, MAX_CLAUDE_JSON, State, euid, read_bounded_nofollow, same_private_bytes,
     writable_by_others,
@@ -63,18 +69,25 @@ pub fn live_excluded_offline(
     }
     // An unreadable ledger proves nothing either way; rules 2 and 3 still
     // apply, so the check fails closed.
-    let live = rs
-        .load_ledger()
-        .ok()
-        .flatten()
-        .and_then(|l| l.live)
-        .and_then(|s| ProfileName::parse(&s).ok());
-    if let Some(name) = live
-        && excluded.contains(&name)
+    let ledger = rs.load_ledger().ok().flatten();
+    let live = ledger
+        .as_ref()
+        .and_then(|l| l.live.as_deref())
+        .and_then(|s| ProfileName::parse(s).ok());
+    if let Some(name) = &live
+        && excluded.contains(name)
     {
-        return Some((name, Match::Ledger));
+        return Some((name.clone(), Match::Ledger));
     }
-    let by_account = local_account(home).and_then(|account| {
+    // Rule 2 is skipped while the login a swap installed is untouched: a
+    // session still running on the login moved off keeps writing its
+    // account into `~/.claude.json`, which then says nothing about
+    // `~/.claude`.
+    let installed = live.is_some()
+        && ledger
+            .as_ref()
+            .is_some_and(|l| l.hand_suspect.is_none() && untouched_since(home, l.swapped_at));
+    let by_account = (!installed).then(|| local_account(home)).flatten().and_then(|account| {
         excluded
             .iter()
             .find(|p| record_names(store, p, &account))
@@ -140,6 +153,19 @@ pub(in crate::commands::profile::rotate) fn local_account(dir: &Path) -> Option<
         return None;
     }
     Account::from_value(&serde_json::from_slice(&raw).ok()?)
+}
+
+/// Whether `~/.claude/.credentials.json` has not changed since the swap
+/// that finished at `swapped_at` (epoch seconds): its change time, read by
+/// `lstat`, is no later. Any write to it, a session's token refresh or a
+/// hand login, sets the change time, so the answer turns false and rule 2
+/// applies again. A swap time in the future (a clock set back) proves
+/// nothing.
+fn untouched_since(home: &Path, swapped_at: Option<i64>) -> bool {
+    let Some(at) = swapped_at.filter(|at| *at <= now()) else {
+        return false;
+    };
+    ino_ctime(&home.join(".claude").join(CREDS)).is_some_and(|(_, _, ctime, _)| ctime <= at)
 }
 
 /// Whether `name`'s stored identity record names `account`.
