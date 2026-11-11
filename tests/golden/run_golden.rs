@@ -26,6 +26,12 @@ impl EnvVarGuard {
         unsafe { std::env::remove_var(key) };
         Self { key, previous }
     }
+
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(key);
+        unsafe { std::env::set_var(key, value) };
+        Self { key, previous }
+    }
 }
 
 impl Drop for EnvVarGuard {
@@ -227,14 +233,25 @@ fn run_golden_tests_for_hook(hook_type: &str) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
-    // The expected outputs assume the XPIA defaults. A session that exports,
-    // for example, XPIA_ENABLED=false would otherwise change which guard
-    // answers a dangerous command.
+    // The expected outputs assume the XPIA defaults, under which XPIA is off
+    // (#1734) and the non-XPIA guards answer dangerous commands. A session
+    // that exports, for example, XPIA_ENABLED=true would otherwise change
+    // which guard answers.
     let _xpia: Vec<EnvVarGuard> = XPIA_ENV_KEYS
         .iter()
         .map(|key| EnvVarGuard::unset(key))
         .collect();
-    let _cwd = TempCwd::new(hook_type);
+    let cwd = TempCwd::new(hook_type);
+    // Since #1963 the hooks write their state under `$AMPLIHACK_HOME`, else
+    // `$HOME/.amplihack`, rather than the cwd. Point both at the temp tree so
+    // golden runs never write into the real `~/.amplihack`.
+    let golden_home = cwd.path.join("home");
+    fs::create_dir_all(&golden_home).expect("golden temp home");
+    let _home = EnvVarGuard::set(
+        "HOME",
+        golden_home.to_str().expect("golden temp home is UTF-8"),
+    );
+    let _amplihack_home = EnvVarGuard::unset("AMPLIHACK_HOME");
 
     let golden_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -356,6 +373,38 @@ fn golden_user_prompt_submit() {
 #[test]
 fn golden_pre_compact() {
     run_golden_tests_for_hook("pre_compact");
+}
+
+/// Issue #1734: XPIA is off by default, but opting in with
+/// `XPIA_ENABLED=true` must still let XPIA answer first. Runs the input of
+/// golden case 100 with XPIA switched on.
+#[test]
+fn pre_tool_use_xpia_opt_in() {
+    let _guard = golden_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
+    let _xpia: Vec<EnvVarGuard> = XPIA_ENV_KEYS
+        .iter()
+        .map(|key| EnvVarGuard::unset(key))
+        .collect();
+    let _enabled = EnvVarGuard::set("XPIA_ENABLED", "true");
+    let _cwd = TempCwd::new("xpia-opt-in");
+
+    let input_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/golden/hooks/pre_tool_use/100_or_rm_rf_dot.input.json");
+    let input: HookInput =
+        serde_json::from_str(&fs::read_to_string(&input_path).expect("read case 100 input"))
+            .expect("parse case 100 input");
+
+    let actual = run_hook("pre_tool_use", input).expect("pre_tool_use process");
+    let expected = serde_json::json!({
+        "block": true,
+        "message": "__CONTAINS__:blocked due to potential security risk"
+    });
+    if let Err(diff) = json_matches(&actual, &expected, "$") {
+        panic!("XPIA_ENABLED=true must let XPIA answer case 100: {diff}\n  actual: {actual}");
+    }
 }
 
 // ---------------------------------------------------------------------------

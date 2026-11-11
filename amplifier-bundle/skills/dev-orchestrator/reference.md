@@ -54,6 +54,8 @@ log: /home/you/.amplihack/recipe-logs/amp-smart-orchestrator-repo-20261020-10150
   the file, so it needs no shell quoting at all.
 - Monitor with: `tail -f <log>` or `tmux attach -t <session>`
 
+**tmux in tests and sandboxes:** pass `-S <private socket>` (or use `env -u TMUX tmux -S <private socket>`) on every tmux command. When `$TMUX` is set, as it is inside any tmux pane, tmux uses that socket and ignores `TMUX_TMPDIR`, so `TMUX_TMPDIR=… tmux kill-server` kills the user's own server. Never run `kill-server` or `kill-session -a` without `-S`/`-L`; a PreToolUse hook denies them.
+
 **Stopping a run**: `amplihack recipe stop <session>` ends the whole tree:
 `amplihack recipe run`, the recipe runner and every agent it started, and
 waits for it. Killing the session (`tmux kill-session`) sends `recipe run` the
@@ -68,7 +70,9 @@ Investigation tasks.** Always try `smart-orchestrator` first.
 
 ### Development routing invariant
 
-Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
+Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
+
+The classifier selects `quick-change` only for a single workstream it judges small; `-c workflow=quick-change` or `-c workflow=default-workflow` forces either recipe. In a parallel decomposition every Development workstream runs `default-workflow` unless `-c workflow=` forces a recipe, so the workflow named in the run log is the one the workstreams run.
 
 Hybrid decompositions route each workstream by its own normalized classification.
 

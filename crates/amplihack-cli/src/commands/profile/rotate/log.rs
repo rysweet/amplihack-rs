@@ -188,9 +188,13 @@ pub fn cut(s: &str, max: usize) -> String {
     s[..end].to_string()
 }
 
+#[path = "log_shown.rs"]
+mod shown;
+pub use shown::{Shown, shown, shown_of};
+
 /// The message grammar of docs/reference/profile-command.md, Rotate log.
 pub mod msg {
-    use super::{Reading, Reason};
+    use super::{Reading, Reason, Shown};
     use crate::commands::profile::name::ProfileName;
 
     /// A percentage as a whole number, rounded down.
@@ -202,14 +206,25 @@ pub mod msg {
         }
     }
 
-    /// `s=<n>% w=<n>%` with `sep` between; an exhausted login shows as
-    /// 100%, a failed probe as `failed`.
-    fn usage(r: &Reading, sep: &str) -> String {
-        match r {
-            Reading::Measured { session, week } => {
-                format!("s={}%{sep}w={}%", pct(*session), pct(*week))
+    /// `s=<n>% w=<n>%` with `sep` between, from the windows read (#1844):
+    /// exhausted shows its stored figures; no session window is `s=0%`, as
+    /// in D1 (#1846), so a weekly-only login never logs a session limit it
+    /// does not have. An unread week is `w=?`, failed `failed`, in flight
+    /// `unknown, still running`.
+    pub(in super::super) fn usage(r: &Shown, sep: &str) -> String {
+        if r.still_running {
+            return "unknown, still running".to_string();
+        }
+        let week = |w: Option<f64>| w.map_or_else(|| "?".to_string(), |w| format!("{}%", pct(w)));
+        match r.reading {
+            Reading::Measured { session, .. } => {
+                let s = r.session.unwrap_or(session);
+                format!("s={}%{sep}w={}", pct(s), week(r.week))
             }
-            Reading::Exhausted => format!("s=100%{sep}w=100%"),
+            Reading::Exhausted { session, week: w } => {
+                let s = session.or(r.session).unwrap_or(0.0);
+                format!("s={}%{sep}w={}", pct(s), week(w.or(r.week)))
+            }
             Reading::Failed => "failed".to_string(),
         }
     }
@@ -217,8 +232,8 @@ pub mod msg {
     pub fn swap(
         from: &ProfileName,
         to: &ProfileName,
-        live: &Reading,
-        target: &Reading,
+        live: &Shown,
+        target: &Shown,
         reason: Reason,
     ) -> String {
         format!(
@@ -232,8 +247,8 @@ pub mod msg {
     /// Every measured profile, live first; the API-key one as `per-token`.
     pub fn cycle(
         live: Option<&ProfileName>,
-        reading: &Reading,
-        others: &[(ProfileName, Reading)],
+        reading: &Shown,
+        others: &[(ProfileName, Shown)],
         platform: Option<&ProfileName>,
     ) -> String {
         let mut sorted: Vec<_> = others.iter().map(|(n, r)| (Some(n), r)).collect();
@@ -249,25 +264,17 @@ pub mod msg {
         out
     }
 
-    #[cfg(test)]
-    pub fn alert_no_capacity(live: &ProfileName, reading: &Reading) -> String {
-        alert_no_capacity_for(live.as_str(), reading)
-    }
-
-    /// As [`alert_no_capacity`], with `-` for a login no profile owns.
-    pub fn alert_no_capacity_for(live: &str, reading: &Reading) -> String {
-        format!(
-            "ALERT: no profile has capacity live={live} {}",
-            usage(reading, " ")
-        )
-    }
-
     pub const NO_LOGIN: &str = "ALERT: no login in ~/.claude; no swap";
     pub const AMBIGUOUS: &str =
         "ALERT: more than one profile matches the account in ~/.claude; no swap";
     pub const AUTO_SWITCH_INCONSISTENT: &str =
         "ALERT: auto-switch recovery is inconsistent; no swap";
     pub const LOCK_BUSY: &str = "skip: state lock busy";
+    /// Issue #1753 (R1): the expired live login was refreshed before its
+    /// identity was read.
+    pub const LIVE_REFRESHED: &str =
+        "refresh: expired login in ~/.claude refreshed; identity read again";
+    pub const LIVE_REFRESH_FAILED: &str = "refresh: expired login in ~/.claude not refreshed";
     pub const CHANGED: &str = "skip: state changed during measurement";
     pub const NO_LIVENESS: &str = "skip: cannot see running sessions; no candidates";
     pub const STOPPED: &str = "stop: signal received; cycle abandoned";
@@ -281,6 +288,15 @@ pub mod msg {
     /// Failed live probes would swap, but the last swap is `secs` too recent.
     pub fn stay_held_failed(secs: u64) -> String {
         format!("stay: live probe failed; held after last swap ({secs}s left)")
+    }
+
+    /// Failed live probes would swap, but a `$HOME` key applies to whichever
+    /// login is live, so the next one would fail its live probe and bill the
+    /// same. Candidates still read normally: they have their own directory.
+    pub fn stay_home_key(setting: &str) -> String {
+        format!(
+            "stay: live probe failed; home key ({setting}) applies to every login once live, a swap changes nothing"
+        )
     }
 
     pub fn hand_change(live: &ProfileName) -> String {
@@ -302,6 +318,9 @@ pub mod msg {
     }
 
     pub use super::super::overflow_msg::*;
+    pub use super::super::revalidate::changed_line as changed;
+    #[cfg(test)]
+    pub use super::super::revalidate::reconsidered;
 
     /// A cycle stopped by the rotation pin (issue #1691).
     pub fn held(name: &ProfileName) -> String {
@@ -323,11 +342,6 @@ pub mod msg {
 
     pub fn switched_already_live(name: &ProfileName) -> String {
         format!("skip: {name} is already the live login; nothing moved")
-    }
-
-    /// After an `overflow-in` swap onto API-key profile `to` (issue #1700).
-    pub fn onto_platform(to: &ProfileName) -> String {
-        format!("moved ~/.claude onto API key profile {to} (billed per token)")
     }
 
     /// After a swap off API-key profile `from` onto `to`.
@@ -353,13 +367,6 @@ pub mod msg {
     pub const AMBIGUOUS_PLATFORM: &str =
         "ALERT: more than one API-key profile could be live in ~/.claude; no swap";
 
-    /// An API-key profile listed in `overflow=`.
-    pub fn platform_ignored_in_overflow(name: &ProfileName) -> String {
-        format!(
-            "skip: API-key profile {name} ignored in overflow=; API-key profiles are always the last tier"
-        )
-    }
-
     /// A session saw a key error but the block could not be stored.
     pub fn platform_block_not_recorded(kind: &str) -> String {
         format!("platform block not recorded: {kind}")
@@ -374,27 +381,6 @@ pub mod msg {
     pub fn lost_login(name: &ProfileName) -> String {
         format!(
             "ALERT: profile {name} has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login {name}"
-        )
-    }
-
-    /// Written once, when `name` is not added to the full `lost_login`
-    /// list and so gets no [`lost_login`] line.
-    pub fn lost_login_cap(name: &ProfileName) -> String {
-        format!(
-            "ALERT: profile {name} has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login {name}"
-        )
-    }
-
-    /// Hand-change recovery, case A: `m` had no login of its own.
-    pub fn recovered_record(m: &ProfileName, l: &ProfileName) -> String {
-        format!("recovered: ~/.claude holds {m}'s login (ledger named {l}); recorded {m} as live")
-    }
-
-    /// Hand-change recovery, case B: `m`'s own copy was moved to `to`.
-    pub fn recovered_moved(m: &ProfileName, to: &std::path::Path) -> String {
-        format!(
-            "recovered: ~/.claude and {m} held the same account; kept ~/.claude, moved {m}'s copy to {}; recorded {m} as live",
-            to.display()
         )
     }
 }

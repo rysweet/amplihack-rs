@@ -8,6 +8,7 @@ use crate::commands::launch;
 use amplihack_utils::launch_target::OverrideOrigin;
 use anyhow::Result;
 use std::env;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 pub fn run_rustyclawd(
@@ -110,6 +111,13 @@ fn origin_for(preferred: Option<&Path>) -> OverrideOrigin {
 }
 
 fn find_preferred_rustyclawd_binary() -> Option<PathBuf> {
+    find_preferred_rustyclawd_binary_in(env::var_os("PATH"))
+}
+
+/// [`find_preferred_rustyclawd_binary`] searching `path_var` instead of the
+/// process `$PATH`, so tests can pass a PATH without setting it on the
+/// process (issue #1765).
+fn find_preferred_rustyclawd_binary_in(path_var: Option<OsString>) -> Option<PathBuf> {
     if let Ok(custom_path) = env::var("RUSTYCLAWD_PATH") {
         let path = PathBuf::from(custom_path);
         if is_executable_file(&path) {
@@ -117,10 +125,10 @@ fn find_preferred_rustyclawd_binary() -> Option<PathBuf> {
         }
     }
 
-    find_in_path(&["rusty", "rustyclawd", "claude-code"])
+    find_in_path(path_var, &["rusty", "rustyclawd", "claude-code"])
 }
 
-fn find_in_path(names: &[&str]) -> Option<PathBuf> {
+fn find_in_path(path_var: Option<OsString>, names: &[&str]) -> Option<PathBuf> {
     // Issue #1266 / F-S2, now via the one seam (#1274): POSIX reads an empty
     // `$PATH` element as the current directory, so a bare `split_paths` hands
     // back `""` for a stray colon and `dir.join(name)` becomes a bare relative
@@ -130,7 +138,10 @@ fn find_in_path(names: &[&str]) -> Option<PathBuf> {
     // funnel already contains the damage — this stops it being produced at
     // all. The rule used to be copied out at four sites; it is now stated once
     // in `launch_target::path_dirs`.
-    for dir in amplihack_utils::launch_target::env_path_dirs() {
+    for dir in amplihack_utils::launch_target::split_path_var_of(
+        path_var,
+        amplihack_utils::launch_target::RelativeEntries::Drop,
+    ) {
         for name in names {
             let candidate = dir.join(name);
             if is_executable_file(&candidate) {
@@ -225,24 +236,60 @@ mod tests {
             fs::set_permissions(binary, perms).unwrap();
         }
 
-        let previous_path = env::var_os("PATH");
+        // Issue #1765: PATH is passed in, not set on the process.
         let previous_custom = env::var_os("RUSTYCLAWD_PATH");
-        unsafe {
-            env::set_var("PATH", dir.path());
-            env::remove_var("RUSTYCLAWD_PATH");
-        }
+        unsafe { env::remove_var("RUSTYCLAWD_PATH") };
 
-        let found = find_preferred_rustyclawd_binary();
+        let found = find_preferred_rustyclawd_binary_in(Some(dir.path().as_os_str().to_owned()));
 
-        match previous_path {
-            Some(value) => unsafe { env::set_var("PATH", value) },
-            None => unsafe { env::remove_var("PATH") },
-        }
         match previous_custom {
             Some(value) => unsafe { env::set_var("RUSTYCLAWD_PATH", value) },
             None => unsafe { env::remove_var("RUSTYCLAWD_PATH") },
         }
 
         assert_eq!(found.as_deref(), Some(rustyclawd.as_path()));
+    }
+
+    /// Issue #1765 / #1266: the PATH-value seam keeps dropping entries that
+    /// are not absolute. The entry here is a relative path that resolves to
+    /// a directory holding an executable `rustyclawd`; if it were searched,
+    /// the binary would be found relative to the current directory.
+    #[test]
+    fn relative_path_entries_never_select_a_rustyclawd_binary() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let rustyclawd = dir.path().join("rustyclawd");
+        fs::write(&rustyclawd, "#!/bin/sh\n").unwrap();
+        let mut perms = fs::metadata(&rustyclawd).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&rustyclawd, perms).unwrap();
+        let cwd = env::current_dir().unwrap();
+        let mut relative = PathBuf::new();
+        for _ in cwd.components().skip(1) {
+            relative.push("..");
+        }
+        relative.push(dir.path().strip_prefix("/").unwrap());
+        assert!(
+            relative.join("rustyclawd").is_file(),
+            "the relative entry {} must name the fake's directory",
+            relative.display()
+        );
+
+        let previous_custom = env::var_os("RUSTYCLAWD_PATH");
+        unsafe { env::remove_var("RUSTYCLAWD_PATH") };
+
+        let found = find_preferred_rustyclawd_binary_in(Some(relative.into_os_string()));
+
+        match previous_custom {
+            Some(value) => unsafe { env::set_var("RUSTYCLAWD_PATH", value) },
+            None => unsafe { env::remove_var("RUSTYCLAWD_PATH") },
+        }
+
+        assert!(
+            found.is_none(),
+            "a relative PATH entry must not be searched, found {found:?}"
+        );
     }
 }

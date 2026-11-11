@@ -113,6 +113,9 @@ fn isolate_scope_child(command: &mut Command, tmp: &Path, repo: &Path) {
             format!("{}:/usr/bin:/bin", tmp.join("bin").display()),
         )
         .env("GH_CALL_LOG", tmp.join("gh-calls.log"));
+    // env_clear() dropped the [env] prompt suppressors and any builder's own
+    // GIT_TERMINAL_PROMPT=0, and the origin is on github.com (#1764).
+    crate::isolated_amplihack::no_git_prompt(command);
 }
 
 fn private_git(tmp: &Path, repo: &Path, args: &[&str]) {

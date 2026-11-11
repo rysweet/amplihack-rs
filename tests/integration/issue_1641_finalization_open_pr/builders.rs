@@ -2,10 +2,11 @@
 
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 use serde_json::{Value, json};
 
-use super::fixture::{BRANCH, Fixture, LEAK_MARKER, Outcome, PR_URL};
+use super::fixture::{BRANCH, Fixture, LEAK_MARKER, Outcome, PR_URL, tool_path};
 
 pub fn check_run(status: &str, conclusion: Value) -> Value {
     json!({"__typename": "CheckRun", "name": "ci", "status": status, "conclusion": conclusion})
@@ -119,4 +120,29 @@ pub fn assert_rejected_after_pr_view(fx: &Fixture, outcome: &Outcome, reason: &s
         "{why}: stderr must name `{reason}`\n{}",
         outcome.describe()
     );
+}
+
+impl Fixture {
+    /// Call `finalization_open_pr_signal <dir> <branch> [<ref>]` directly.
+    pub fn signal(&self, branch: &str, pr_ref: Option<&str>) -> Outcome {
+        let mut command = Command::new("bash");
+        self.isolate(&mut command);
+        command
+            .arg("-c")
+            .arg(r#"set -u; . "$1"; . "$2"; shift 2; finalization_open_pr_signal "$@""#)
+            .arg("signal")
+            .arg(tool_path("workflow_gh_retry.sh"))
+            .arg(tool_path("workflow_finalization_pr_signal.sh"))
+            .arg(&self.repo)
+            .arg(branch);
+        if let Some(pr_ref) = pr_ref {
+            command.arg(pr_ref);
+        }
+        let output = command.output().expect("run finalization_open_pr_signal");
+        Outcome {
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            output,
+        }
+    }
 }

@@ -79,6 +79,10 @@ pub(super) fn uninstall() -> Result<()> {
 }
 #[cfg(test)]
 mod backup_cleanup_tests;
+#[cfg(all(test, unix))]
+mod capability_tests;
+#[cfg(all(test, unix))]
+mod classify_tests;
 #[cfg(test)]
 mod cleanup_performance_tests;
 #[cfg(test)]
@@ -89,6 +93,10 @@ mod durability_tests;
 mod idempotence_tests;
 #[cfg(test)]
 mod legacy_migration_tests;
+#[cfg(all(test, unix))]
+mod probe_install_tests;
+#[cfg(all(test, unix))]
+mod probe_tests;
 #[cfg(all(test, unix))]
 mod recovery_alias_tests;
 #[cfg(test)]

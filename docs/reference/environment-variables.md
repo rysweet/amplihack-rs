@@ -41,6 +41,11 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
   - [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait)
   - [AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS](#amplihack_usage_limit_max_wait_secs)
+  - [AMPLIHACK_GOVERNOR](#amplihack_governor)
+  - [AMPLIHACK_GOVERNOR_WAIT](#amplihack_governor_wait)
+  - [AMPLIHACK_GOVERNOR_CLASS](#amplihack_governor_class)
+  - [AMPLIHACK_GOVERNOR_MANIFEST](#amplihack_governor_manifest)
+  - [AMPLIHACK_WORKSTREAM](#amplihack_workstream)
   - [HOME](#home)
   - [AMPLIHACK_DEFAULT_MODEL](#amplihack_default_model)
   - [AMPLIHACK_ENABLE_BLARIFY](#amplihack_enable_blarify)
@@ -101,7 +106,11 @@ markers: tmux gives it the server's global environment, which holds the
 markers of whatever started the server. `setsid` and `nohup` keep the
 caller's environment, so they need no hand-off.
 `$(amplihack agent-binary --shell)` prints an inline `env` prefix that removes
-every session marker and sets both variables (#1525). It belongs inside the
+every session marker and sets both variables (#1525). It also removes
+`AMPLIHACK_PARENT_RECIPE_PID`, `AMPLIHACK_PARENT_RECIPE_STARTTIME` and
+`AMPLIHACK_AUTODRIVE_STATE_DIR` (#1976): a tmux server first started from a
+recipe step keeps the step's values, and a run in a later session would watch
+a parent that has gone and stop at once with exit `75`. It belongs inside the
 double-quoted tmux command; in single quotes it expands in the new session and
 reads the server's markers. An answer read from a marker the tmux server holds
 is tagged `AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker variable>`. That
@@ -237,6 +246,10 @@ AMPLIHACK_HOME=/opt/amplihack amplihack claude --print-env 2>&1 | grep AMPLIHACK
 ```
 
 **Security note:** The resolved path is validated to be absolute and must not contain `..` path components. Paths that fail validation are silently dropped; a warning is emitted to the trace log. A `paths.home` from the config must also still name an existing directory you own; otherwise it is skipped with a warning in the trace log and the next source answers.
+
+**Hook state:** `amplihack-hooks` writes its session and project state under `$AMPLIHACK_HOME/runtime/` when the variable is an absolute path with no `..` component, and under `$HOME/.amplihack/runtime/` otherwise. The hooks read the variable directly and do not apply the resolution order above. See [Hook State Root Reference](./hook-state-root.md).
+
+**Install source:** `amplihack install` also tries `AMPLIHACK_HOME` as its first framework source. Plain `install` refuses it when its version differs from the binary's. The post-update install of `amplihack update` uses a same-version tree without network access, and fetches the release tag only when the version differs. Install always stages into `$HOME/.amplihack`, so this variable never moves the install. See [Framework source selection](./framework-source-selection.md).
 
 **Python parity:** Corresponds to `AMPLIHACK_HOME` propagation in the Python launcher.
 
@@ -393,6 +406,10 @@ workflow sets this value while compiling so `amplihack --version`, doctor
 output, plugin manifests, hook context loading, and the runtime
 `AMPLIHACK_VERSION` child-process variable all report the release tag version.
 
+A build may [fetch a release tag](./framework-source-selection.md#release-tag-fetch)
+for its framework bundle only when this variable was set at build time and the
+version has no `+` build metadata.
+
 Local builds normally leave this unset and use `CARGO_PKG_VERSION`.
 
 ```sh
@@ -452,7 +469,7 @@ amplihack recipe run recipe.yaml
 
 **Security note:** The value is always a `u64` rendered as a string. No shell metacharacters are possible. The CLI rejects non-numeric input at parse time via clap's type enforcement.
 
-**Usage-limit wait:** a Claude agent step that waits for a usage-limit reset ends its wait at least 60 seconds before this timeout runs out, measured from the start of the step. It does not run the step again after that, because a fresh attempt would be killed by this timeout; the usage-limit failure is passed to the runner. See [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait).
+**Usage-limit wait:** a Claude agent step that waits on a usage limit, for a reset or for another login with capacity, ends its wait at least 60 seconds before this timeout runs out, measured from the start of the step. It does not run the step again after that, because a fresh attempt would be killed by this timeout; the usage-limit failure is passed to the runner. See [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait).
 
 ---
 
@@ -975,8 +992,11 @@ backend configuration reference.
 
 Turns the usage-limit wait on or off: a recipe agent step that fails on a
 Claude usage limit waits for the reset, or for a login with capacity, and
-runs once more instead of ending the run. A spend limit with no reset, a
-reset more than five hours away or an unreadable reset is not waited for. Overrides the
+runs once more instead of ending the run. A reset more than five hours away
+or an unreadable reset is waited out only by a
+[capacity wait](./profile-command.md#capacity-wait), when another login
+could take over. A spend limit is never waited for unless it also states a
+session reset. Overrides the
 config files; empty means unset; an invalid value prints one warning and is
 ignored. See the
 [usage-limit wait reference](./profile-command.md#usage-limit-wait).
@@ -986,14 +1006,84 @@ ignored. See the
 ### AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS
 
 **Type:** string (non-negative integer, seconds)
-**Default:** unset (the reported reset plus 120 seconds)
-**Config key:** `recipe.usage_limit_max_wait_secs` in `config.toml`
+**Default:** `21600` (six hours)
+**Config key:** [`recipe.usage_limit_max_wait_secs`](./user-config.md#recipeusage_limit_wait) in `config.toml`
 **Read by:** `amplihack claude -p` when it runs as a recipe agent step
 
-Upper bound on one usage-limit wait. It only shortens the wait; `0` means
-no wait but one more attempt. No wait lasts longer than five hours and 120
-seconds. Overrides the config file; empty means unset; an invalid value
-prints one warning and is ignored.
+Upper bound on one usage-limit wait. For a wait on a reset it only shortens
+the wait, and `0` means no wait but one more attempt; such a wait never
+lasts longer than five hours and 120 seconds. For a
+[capacity wait](./profile-command.md#capacity-wait) on a weekly or
+unreadable reset it sets the length of the wait, with no five-hour ceiling
+(the wait still ends sooner at the failed login's own reset plus 120 s), and `0` means the step ends at once as a usage limit. The variable may set a
+value above the default. Overrides the config files; empty means unset; an
+invalid value prints one warning, naming the variable only, and is ignored.
+
+---
+
+### AMPLIHACK_GOVERNOR
+
+**Type:** string (boolean)
+**Values:** `off`, `0` or `false` (off) | `on`, `1` or `true` (on)
+**Default:** unset, so `governor.enabled` decides, which is `false`: the governor is opt-in
+**Config key:** none; the governor reads this variable itself. It outranks [`governor.enabled`](./user-config.md#governor-keys).
+**Read by:** `amplihack recipe run`, `amplihack claude`, `amplihack launch`, `amplihack governor status`
+
+Turns the [capacity governor](./capacity-governor.md) on or off. It ships
+off, so `AMPLIHACK_GOVERNOR=1` is how one shell opts in. When off,
+the governor reads and writes no state and prints nothing, and starts
+behave as they did without it. Outranks `governor.enabled`.
+
+---
+
+### AMPLIHACK_GOVERNOR_WAIT
+
+**Type:** string (duration)
+**Values:** one to six digits with an optional `s`, `m` or `h`; capped at 24 hours
+**Default:** `governor.wait_secs`, else 10 minutes
+**Config key:** none; the governor reads this variable itself. It outranks [`governor.wait_secs`](./user-config.md#governor-keys).
+**Read by:** `amplihack recipe run`, `amplihack claude`, `amplihack launch`
+
+Longest time a start waits for admission before it exits with 80 without
+starting. `0` means do not wait. `--governor-wait` outranks it. See
+[Waiting, denial and exit code 80](./capacity-governor.md#waiting-denial-and-exit-code-80).
+
+---
+
+### AMPLIHACK_GOVERNOR_CLASS
+
+**Type:** string
+**Values:** `coordination` | `recovery` | `review` | `ordinary`
+**Default:** inferred from the task and recipe, else `ordinary`
+**Read by:** `amplihack recipe run`, `amplihack claude`, `amplihack launch`
+
+Priority class for admission. Classes other than `ordinary` may use the
+weekly reserve. `--governor-class` outranks it. See
+[Reserves and classes](./capacity-governor.md#reserves-and-classes).
+
+---
+
+### AMPLIHACK_GOVERNOR_MANIFEST
+
+**Type:** string (absolute path)
+**Default:** unset
+**Read by:** `amplihack governor status`
+
+A [workstream usage manifest](./workstream-usage.md) from which status
+computes each workstream's `token_share`. It must be an absolute path to a
+regular file owned by the current user. The path is never printed.
+
+---
+
+### AMPLIHACK_WORKSTREAM
+
+**Type:** string, `[A-Za-z0-9._-]{1,64}`, not `.` or `..`
+**Default:** `AMPLIHACK_WORKSTREAM_ISSUE` as `ws-<n>`, then `AMPLIHACK_RECIPE_RUN_ID` cleaned to fit the pattern, else `default`
+**Read by:** `amplihack recipe run`, `amplihack claude`, `amplihack launch`
+
+Workstream a start is counted against in the governor's
+[fair queue](./capacity-governor.md#fair-queue). `--workstream` outranks it.
+An invalid value becomes `default` with a warning that gives only its length.
 
 ---
 
@@ -1168,27 +1258,6 @@ amplihack claude --model 'claude-opus-5-5[1m]'
 For the other flags amplihack adds to the launch command, such as
 `--dangerously-skip-permissions`, and the order of the assembled command line,
 see [Launch Flag Injection](./launch-flag-injection.md).
-
----
-
-### AMPLIHACK_COPILOT_NO_REMOTE
-
-**Type:** flag
-**Values:** `1` suppresses `--remote` injection; absence or any other value keeps the default
-**Used by:** `should_inject_copilot_remote()` in `commands/launch/command.rs`
-
-When `amplihack copilot` launches the Copilot CLI, it injects `--remote` by
-default to offload compute to GitHub's cloud. Set this variable to `1` to
-suppress the injection and run Copilot locally.
-
-```sh
-# Disable remote mode
-AMPLIHACK_COPILOT_NO_REMOTE=1 amplihack copilot
-# Copilot starts without --remote
-```
-
-Users can also pass `--no-remote` directly as an extra arg; the launcher
-detects this and skips injection automatically.
 
 ---
 
@@ -1389,15 +1458,27 @@ amplihack copilot --print 'run tests'
 is treated as **unset** and the check still runs.
 
 **Diagnostic on skip-with-mismatch:** when the bypass is active *and* the
-stamp does not match `crate::VERSION`, `amplihack` emits one line on stderr
-before dispatch:
+stamp does not match `crate::VERSION` or the installed bundle is incompatible,
+`amplihack` emits one line on stderr before dispatch:
 
 ```
-amplihack: self-heal skipped (AMPLIHACK_SKIP_AUTO_INSTALL set); stamp=<old> current=<new>
+amplihack: AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage (stamp=<old> current=<version>; installed_bundle="compatible")
 ```
+
+`stamp` is `<missing>` when there is no stamp file. `installed_bundle` is
+`"compatible"`, or the reason the installed bundle failed the #1271 check.
 
 This makes the "stale assets, intentionally" state visible in CI logs.
-Matching versions produce no output.
+A matching stamp with a compatible bundle produces no output.
+
+**Work it skips:** under the bypass, self-heal starts no `git` or `curl`
+process, makes no release tag fetch, takes no install lock and writes no
+`~/.amplihack/.tag-fetch-failed` marker. It still runs the bundle
+compatibility check, which may write `~/.amplihack/.bundle-compat-cache.json`.
+The npm update check is controlled separately, by `--skip-update-check` and
+`AMPLIHACK_NONINTERACTIVE`. The full list, and the integration
+test that pins it, are in
+[Self-Heal: What the bypass skips](../features/self-heal-asset-restage.md#what-the-bypass-skips).
 
 **What it does not do:**
 
@@ -1673,5 +1754,6 @@ per-session default is in effect. Setting this alone does **not** enable sharing
 - [Signal Channel](../signal-channel.md) — Full reference for the Signal channel, including the per-session-default group strategy and the opt-in rolling-group variables
 - [Recipe Runner Logging](./recipe-runner-logging.md) — Progress, heartbeat, snippet, and JSONL configuration
 - [amplihack install](./install-command.md) — Variables read during installation
+- [XPIA Configuration Reference](./xpia-configuration.md) — `XPIA_ENABLED` (off by default) and the other `XPIA_*` variables read by the `pre-tool-use` hook
 - [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md) — How `CI`, `AMPLIHACK_NONINTERACTIVE`, `--subprocess-safe`, and non-TTY stdin each suppress the `Update now? [y/N] (5s timeout):` prompt, and why `AMPLIHACK_AGENT_BINARY` does not (#1525)
 - [Manage Tool Update Notifications](../howto/manage-tool-update-checks.md) — npm pre-launch tool update notice (separate code path)

@@ -218,6 +218,7 @@ create HR_DIR under TMPDIR ── fails or inside the worktree ─► status usa
 │                              └─ not a hook rejection ► status not_hook │
 │10. not_fixable_in_code, no diff, same output ──────► status stuck      │
 │11. loop-health-evaluator.yaml (loop_health_enforce=false)              │
+│      failed on a usage limit ─► status usage_limit                     │
 │      CONTINUE ─► round N+1                                             │
 │      STUCK / missing / malformed ─► status stuck                       │
 │      DONE ─► status evaluator_done_unresolved                          │
@@ -339,14 +340,22 @@ bounded however long the loop runs; the full history is kept in
 ## Evidence
 
 The first attempt creates nothing under `TMPDIR`. Its combined output is
-written to a `hook-repair-attempt.XXXXXX` file in the git directory
-(`git rev-parse --absolute-git-dir`, created mode 600), which a commit or push
-must be able to write anyway, and is redacted there. A first-try success, or
-a failure that is not a hook rejection, removes that file and returns; it
+written as `attempt.out` in a `hook-repair-attempt.XXXXXX` directory in the git
+directory (`git rev-parse --absolute-git-dir`; the directory is mode 700), which
+a commit or push must be able to write anyway, and is redacted there. A
+first-try success, or a failure that is not a hook rejection, removes that
+directory and returns; it
 does not matter where `TMPDIR` points or whether it is writable. If the git
-directory cannot hold the file, the command still runs, its combined output
+directory cannot hold the directory, the command still runs, its combined output
 is redacted on its way to stderr and to the `--output` file, and a failure is
 returned as `not_hook`, so step-15 reports `push-failed: <redacted output>`.
+If `git rev-parse --absolute-git-dir` prints nothing, or something that is not an
+existing absolute directory, the driver does not run the command at all: it
+returns status `usage` (rc 2). Once a hook has rejected the operation, `TMPDIR`
+(or `/tmp` when it is unset) must name an existing absolute directory, or the
+driver also returns `usage` (rc 2). `stage_workflow_changes` likewise creates
+its private path lists in the git directory, before `git add -u`, and returns 2
+when that directory is empty or relative.
 
 Only once a hook rejection has been identified does the driver create a
 private directory, `HR_DIR`, move the first attempt's output into it, and
@@ -356,8 +365,8 @@ write each round's `round-<n>.evidence` there:
 - required to lie outside the worktree; otherwise `hook_repair_run` returns 2
   after the first attempt, and no agent runs
 - deleted when the status is `ok` or `not_hook`
-- kept when the status is `stuck`, `refused`, `evaluator_done_unresolved` or
-  `terminal`, and reported in `HOOK_REPAIR_EVIDENCE_DIR`; for every kept
+- kept when the status is `stuck`, `refused`, `evaluator_done_unresolved`,
+  `usage_limit` or `terminal`, and reported in `HOOK_REPAIR_EVIDENCE_DIR`; for every kept
   status except `terminal` it is also reported in the result line (see
   [Result line](#result-line))
 
@@ -637,7 +646,11 @@ inputs as arguments:
 - `hook_repair_evaluate <hr> <round> <output> <bin> <recipe> <step> <op> <wt>
   <ids> <prev-ids> <baseline> <rc> <agent-status>` runs the evaluator and
   prints `<verdict><TAB><reasoning>`, the verdict being `CONTINUE`, `DONE`,
-  `STUCK` or `TERMINAL`
+  `STUCK`, `TERMINAL` or `USAGE_LIMIT`. Before it parses a verdict it runs
+  the same `usage_limit_failure` check as `autodrive_loop.sh` on the
+  evaluator's exit code and output: a non-zero exit with the runner's
+  `usage_limit` failure-class marker gives `USAGE_LIMIT`, never `STUCK`. See
+  [Usage limits are not STUCK](auto-drive-to-merge.md#usage-limits-are-not-stuck).
 
 **Return codes:**
 
@@ -647,6 +660,7 @@ inputs as arguments:
 | command's rc | `not_hook` | the failure was not a hook rejection |
 | 1 | `stuck` | the evaluator returned `STUCK`, or no usable verdict; Artifact Guard blocked what a round staged; or the round made no progress |
 | 1 | `evaluator_done_unresolved` | the evaluator returned `DONE` while the hook still rejects |
+| 1 | `usage_limit` | the evaluator failed on a Claude usage limit that its [usage-limit wait](profile-command.md#usage-limit-wait) did not lift |
 | 1 | `refused` | the agent changed protected configuration, HEAD, refs or the stash, added a suppression, or untracked a file |
 | 79 | `terminal` | a nested recipe run reported orchestration unavailable |
 | 2 | `usage` | invalid arguments; or, after a hook rejection, `HR_DIR` could not be created or lies inside the worktree |
@@ -678,8 +692,8 @@ stages the same set.
 
 ## Result line
 
-When the loop ends with status `stuck`, `refused` or
-`evaluator_done_unresolved`, the driver prints the redacted output of the
+When the loop ends with status `stuck`, `refused`,
+`evaluator_done_unresolved` or `usage_limit`, the driver prints the redacted output of the
 last attempt on stderr, followed by one line:
 
 ```json
@@ -689,11 +703,11 @@ last attempt on stderr, followed by one line:
 | Field | Content |
 |---|---|
 | `version` | `1` |
-| `status` | `stuck`, `refused` or `evaluator_done_unresolved` |
+| `status` | `stuck`, `refused`, `evaluator_done_unresolved` or `usage_limit` |
 | `operation` | `commit` or `push` |
 | `step` | the step id |
 | `hook_ids` | sanitised ids; `["unknown"]` when none parsed |
-| `loop_verdict` | `CONTINUE`, `DONE`, `STUCK`, or empty when the evaluator was not consulted (`refused`, the no-progress stop, an unresolvable evaluator) |
+| `loop_verdict` | `CONTINUE`, `DONE`, `STUCK`, or empty when the evaluator was not consulted or gave no verdict (`refused`, `usage_limit`, the no-progress stop, an unresolvable evaluator) |
 | `reasoning` | evaluator reasoning or refusal reason, redacted |
 | `rounds` | agent rounds run |
 | `evidence_dir` | the kept `HR_DIR` |
@@ -703,7 +717,7 @@ line is always valid JSON.
 
 The output is printed once. The checkpoint steps print the command's output
 themselves only when the driver did not, that is for any status other than
-`stuck`, `refused` or `evaluator_done_unresolved`.
+`stuck`, `refused`, `evaluator_done_unresolved` or `usage_limit`.
 
 On push, a fix commit that fails has its own nested repair, which prints its
 own result line. The last `hook_repair_result` line is the result of the
@@ -723,7 +737,7 @@ Step-15's `commit_result` line keeps its shape. On failure, `pushed` is
 | `commit-failed` | commit failed and was not a hook rejection (new; see below) |
 | `push-failed` | push failed and was not a hook rejection (unchanged) |
 | `orchestration-unavailable` | status `terminal`; the step exits 79 |
-| `hook-rejected-<status>:<op>:<ids>` | the repair loop failed; `<status>` is `stuck`, `refused` or `evaluator_done_unresolved`, `<op>` is `commit` or `push`, `<ids>` is the comma-separated id list |
+| `hook-rejected-<status>:<op>:<ids>` | the repair loop failed; `<status>` is `stuck`, `refused`, `evaluator_done_unresolved` or `usage_limit`, `<op>` is `commit` or `push`, `<ids>` is the comma-separated id list |
 
 For example: `hook-rejected-stuck:push:cargo-test,check-brick-budget`.
 

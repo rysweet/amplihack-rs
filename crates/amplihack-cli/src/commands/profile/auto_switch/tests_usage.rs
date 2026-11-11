@@ -372,3 +372,43 @@ fn a_key_error_is_read_from_stderr_and_from_stdout_only_when_stderr_is_blank() {
         Some("key_revoked")
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1818: status-line input with no session limit
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_status_line_with_only_seven_day_is_accepted() {
+    let raw = input(&format!(
+        "{{\"seven_day\":{{\"used_percentage\":42,\"resets_at\":{}}}}}",
+        NOW + 86_400
+    ));
+    let rl = usage::parse_statusline_input(&raw, NOW).expect("week alone is a reading");
+    assert_eq!(rl.five_hour, None);
+    assert_eq!(rl.seven_day, Some(win(42.0, NOW + 86_400)));
+}
+
+#[test]
+fn the_5h_cell_says_no_session_window_only_for_a_week_without_five_hour() {
+    use super::cli::five_cell;
+    let reading = |five: Option<Window>, seven: Option<Window>| Reading {
+        five_hour: five,
+        seven_day: seven,
+        observed_at: NOW - 10,
+        source: ReadingSource::Statusline,
+    };
+    let weekly = reading(None, Some(win(42.0, NOW + 86_400)));
+    assert_eq!(five_cell(Some(&weekly), NOW), "no session window");
+
+    let both = reading(Some(win(37.0, NOW + 600)), Some(win(42.0, NOW + 86_400)));
+    assert_eq!(five_cell(Some(&both), NOW), "37%");
+    let reset = reading(Some(win(37.0, NOW - 1)), Some(win(42.0, NOW + 86_400)));
+    assert_eq!(five_cell(Some(&reset), NOW), "0%");
+
+    let neither = reading(None, None);
+    assert_eq!(five_cell(Some(&neither), NOW), "-");
+    assert_eq!(five_cell(None, NOW), "-");
+
+    let session_only = reading(Some(win(5.0, NOW + 600)), None);
+    assert_eq!(five_cell(Some(&session_only), NOW), "5%");
+}

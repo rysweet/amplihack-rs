@@ -40,14 +40,15 @@ fn returns_enabled_when_no_runtime_dir_at_all() {
 
 #[test]
 fn noninteractive_removes_disabled_file() {
-    // This test runs in a test harness which has piped stdin (non-interactive).
     let tmp = TempDir::new().unwrap();
     let disabled = setup_disabled(&tmp);
     assert!(disabled.exists());
 
     crate::worktree::clear_cache();
-    let result = prompt_re_enable_if_disabled(Some(tmp.path()));
-    // In the test harness, stdin is piped → non-interactive path fires.
+    // Decided here, not from stdin: under `script` the test process's stdin
+    // is a terminal, and reading it from a background process group stops
+    // the whole test binary on SIGTTIN (issue #1764).
+    let result = try_prompt(Some(tmp.path()), true).unwrap();
     assert_eq!(result, ReEnableResult::Enabled);
     assert!(!disabled.exists(), ".disabled should have been removed");
 }
@@ -108,7 +109,7 @@ fn timeout_constant_is_30() {
 fn try_prompt_with_nonexistent_project_root() {
     crate::worktree::clear_cache();
     // A nonexistent root should still succeed (fail-open).
-    let result = try_prompt(Some(Path::new("/nonexistent-path-for-test")));
+    let result = try_prompt(Some(Path::new("/nonexistent-path-for-test")), true);
     // The worktree module fails gracefully; either we get Enabled (no
     // .disabled file) or an error that gets caught at the outer level.
     match result {

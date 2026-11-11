@@ -103,6 +103,8 @@ Unlike the `remote-work` skill, this migration **intentionally** copies
 credentials (`~/.ssh`, `~/.config/gh/hosts.yml`) to the destination. The
 skill prints a warning before transfer. Only use with trusted destinations.
 
+**tmux:** run `kill-server` and `kill-session -a` only with `-S <private socket>` or `-L <name>`, for a server you started; inside a tmux pane `$TMUX` overrides `TMUX_TMPDIR`, so without them the command reaches the user's own server, and a PreToolUse hook denies it.
+
 ## Invocation
 
 The slash command resolves to this skill's helper script, which is staged by

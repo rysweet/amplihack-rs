@@ -60,8 +60,11 @@ pub struct AfterSwapFailure {
 }
 
 /// A log or ALERT line as a refusal reason, without its prefix.
+/// `RotateRefused` adds `swap refused: ` itself, so an ALERT that already
+/// carries it loses it here.
 fn reason_of(line: &str) -> String {
     let text = line.strip_prefix("ALERT: ").unwrap_or(line);
+    let text = text.strip_prefix("swap refused: ").unwrap_or(text);
     text.strip_prefix("skip: ").unwrap_or(text).to_string()
 }
 
@@ -94,6 +97,7 @@ pub fn switch_live(
 ) -> Result<Result<Switched, AfterSwapFailure>, ProfileError> {
     // Defaults only: a switch decides nothing, so no tuning applies.
     let s = settings::resolve(&TuneFlags::default(), None, &|_| None)?;
+    // No re-read hook: the freshness gate (#1870) applies only to decisions.
     switch_in(Ctx::new(store.clone(), home.to_path_buf(), s), name)
 }
 
@@ -109,14 +113,18 @@ pub(super) fn switch_in(
     // there, and `.default` would launch it directly, so a blocked key
     // refuses the whole switch and writes nothing, before any of the
     // `.default`-only exits below.
-    if !matches!(prelude, Prelude::LockBusy) {
+    if !matches!(
+        prelude,
+        Prelude::LockBusy | Prelude::LedgerUnreadable { .. }
+    ) {
         platform_blocked(&ctx.rs, store, home, name)?;
     }
     let (lock, first) = match prelude {
-        Prelude::Ready { lock, first, .. } => (lock, first),
+        Prelude::Ready { lock, first, .. } => (lock, *first),
         Prelude::LockBusy => return Err(lock_busy()),
         Prelude::AutoSwitchInconsistent => return Err(refused(msg::AUTO_SWITCH_INCONSISTENT)),
         Prelude::Inconsistent(reason) => return Err(refused(&msg::inconsistent(&reason))),
+        Prelude::LedgerUnreadable { line } => return Err(refused(&line)),
         Prelude::LiveUnusable { line, .. } => {
             return default_only(&ctx.rs, store, name, reason_of(&line));
         }
@@ -150,7 +158,16 @@ pub(super) fn switch_in(
             if let Some(reason) = not_a_candidate(store, &first, name) {
                 return default_only(&ctx.rs, store, name, reason);
             }
-            let from = match swap::swap(store, &ctx.rs, home, source, name, now()) {
+            let from = match swap::swap_with(
+                store,
+                &ctx.rs,
+                home,
+                source,
+                name,
+                now(),
+                ctx.identity_reader(),
+                Some(&first),
+            ) {
                 Ok(from) => from,
                 // A swap refusal changes nothing (see `swap::swap`).
                 Err(ProfileError::RotateRefused(reason)) => {
@@ -242,6 +259,9 @@ pub(super) fn not_a_candidate(
     let detail = match skip {
         // Checked by the caller; a live target moves nothing.
         Skip::Live => return None,
+        Skip::Refused => "its directory is a symlink, not owned by you, \
+                          or open to group or other users"
+            .to_string(),
         Skip::NoLogin if !exists(&store.root().join(name.as_str()).join(CREDS)) => {
             return Some(format!(
                 "profile {name} {NO_STORED_LOGIN_HINT} {name}` first"
@@ -261,7 +281,14 @@ pub(super) fn not_a_candidate(
         Skip::Leased => "auto-switch has lent its login to another profile's session".to_string(),
         Skip::Hosting => "its directory holds another account's login for auto-switch".to_string(),
         Skip::Parked => "auto-switch has parked its own login".to_string(),
-        Skip::NoAccount => "its .claude.json has no usable oauthAccount".to_string(),
+        Skip::NoAccount => snap
+            .candidate_refusals
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or_else(
+                || "its trusted login identity is unavailable".to_string(),
+                |(_, cause)| format!("its trusted login identity is unavailable: {cause}"),
+            ),
     };
     Some(format!(
         "profile {name} is not a rotate candidate ({why}): {detail}"

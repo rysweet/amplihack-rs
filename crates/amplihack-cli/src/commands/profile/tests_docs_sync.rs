@@ -253,8 +253,59 @@ fn rotate_log_grammar_is_documented() {
         "stop: signal received; cycle abandoned",
         "recovery: rolled back an interrupted swap",
         "recovery: finished an interrupted swap",
+        "sessions archive: <summary>",
+        // Issue #1870: the freshness gate and swap-back damping.
+        "reread: <name> reading stale s=<n>% w=<n>%; fresh s=<n>% w=<n>%",
+        "reread: <name> failed; treated as unknown",
+        "reread: <name> limit reached; treated as unknown",
+        "reread: <name> time limit reached; treated as unknown",
+        "damp: <name> swapped away exhausted; no later reading shows room",
+        "damp: <name> later reading shows room; swap-back allowed",
+        "#### Rotate reading freshness and swap-back damping",
+        "\"swapped_away\": { \"ggrant\": 1793634010 }",
     ] {
         assert!(REFERENCE.contains(line), "reference is missing `{line}`");
+    }
+}
+
+/// Rotate revalidation (#1721): the labelled skip line, both `revalidate:`
+/// lines and the no-capacity ALERT suffix each have a log-grammar row.
+#[test]
+fn rotate_revalidation_log_rows_are_documented() {
+    for row in [
+        "| `skip: state changed during measurement (<labels>)` |",
+        "| `revalidate: target <name> no longer eligible (<reason>); reconsidered` |",
+        "| `revalidate: ~/.claude.json held no account; read again` |",
+        "`ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`",
+        "#### Rotate revalidation",
+    ] {
+        assert!(REFERENCE.contains(row), "reference is missing `{row}`");
+    }
+    for label in [
+        "`journal`",
+        "`live`",
+        "`pin`",
+        "`overflow`",
+        "`target eligibility: <reason>`",
+        "`target identity`",
+        "`account changed`",
+    ] {
+        assert!(
+            REFERENCE.contains(label),
+            "reference is missing label {label}"
+        );
+    }
+    // `Snap::account` is read from ~/.claude.json and `Snap::home_no_oauth`
+    // from the login file, so the `live` row has to name both files.
+    let live_row = REFERENCE
+        .lines()
+        .find(|l| l.ends_with("| `live` | Every decision |"))
+        .expect("the revalidation table has a `live` row");
+    for file in ["`~/.claude.json`", "`~/.claude/.credentials.json`"] {
+        assert!(
+            live_row.contains(file),
+            "the `live` row does not name {file}"
+        );
     }
 }
 
@@ -455,20 +506,118 @@ fn docs_quote_the_live_profile_login_refusal() {
 #[cfg(unix)]
 #[test]
 fn docs_quote_the_duplicate_login_warning() {
+    // Issue #1845 (D3): both forms, as the code prints them.
     use super::duplicates::{Holder, warning};
     let p = |s: &str| Holder::Profile(super::name::ProfileName::parse(s).unwrap());
-    let template = warning(&p("aaa"), &p("bbb"))
-        .replace("aaa", "<a>")
-        .replace("bbb", "<b>");
+    let placeholders = |w: String| {
+        w.replace("aaa", "<a>")
+            .replace("bbb", "<b>")
+            .replace("www", "<wrong>")
+    };
+    let named = placeholders(warning(&p("aaa"), &p("bbb"), Some(&p("www"))));
+    let unknown = placeholders(warning(&p("aaa"), &p("bbb"), None));
+    assert!(named.contains("<wrong>"), "{named}");
+    assert!(unknown.contains("cannot tell"), "{unknown}");
+    for form in [&named, &unknown] {
+        assert!(
+            REFERENCE.contains(form.as_str()),
+            "reference is missing {form:?}"
+        );
+    }
+    // The how-to's example: `rssourcelabs` holds the wrong login.
+    let (a, b) = (p("rssourcelabs"), p("ryan-ryansweet"));
+    for (doc_name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
+        let example = warning(&a, &b, Some(&a));
+        assert!(doc.contains(&example), "{doc_name} is missing {example:?}");
+    }
+    let note = format!("note: {}", warning(&a, &b, Some(&a)));
+    assert!(HOWTO.contains(&note), "howto is missing {note:?}");
+    let note = format!("note: {}", warning(&a, &b, None));
+    assert!(HOWTO.contains(&note), "howto is missing {note:?}");
+}
+
+/// Issue #1845 (D7): the probe-race message is a note, quoted word for word,
+/// and the old warning text is gone from every doc.
+#[test]
+fn docs_quote_the_probe_race_note_and_not_the_old_warning() {
+    let note = super::usage_cmd::swap_warning(&super::name::ProfileName::parse("work").unwrap());
+    assert!(note.starts_with("note: "), "{note}");
+    assert_eq!(
+        REFERENCE.matches(note.as_str()).count(),
+        1,
+        "reference quotes {note:?} once in the example"
+    );
+    let row = note.replace("\"work\"", "\"<name>\"");
     assert!(
-        REFERENCE.contains(&template),
-        "reference is missing {template:?}"
+        REFERENCE.contains(&row),
+        "reference table is missing {row:?}"
     );
-    let example = format!(
-        "note: {}",
-        warning(&p("rssourcelabs"), &p("ryan-ryansweet"))
+    for (name, doc) in [
+        ("reference", REFERENCE),
+        ("howto", HOWTO),
+        ("rotation howto", ROTATE_HOWTO),
+    ] {
+        assert!(
+            !doc.contains("warning: the login in ~/.claude changed while profile"),
+            "{name} still quotes the old probe-race warning"
+        );
+    }
+}
+
+/// Issue #1845 (D4, D5): the refusal, the ALERT it writes and the record's
+/// save-failure warning are quoted as the code prints them.
+#[cfg(unix)]
+#[test]
+fn docs_quote_the_account_mismatch_refusal_and_alert() {
+    use super::ProfileError as E;
+    let refusal = "the login in ~/.claude is not the account recorded for profile";
+    assert!(
+        super::rotate::DOCUMENTED_REFUSALS.contains(&refusal),
+        "swap::DOCUMENTED lists the account-mismatch refusal"
     );
-    assert!(HOWTO.contains(&example), "howto is missing {example:?}");
+    let alert = format!("ALERT: {}", E::RotateRefused(format!("{refusal} work")));
+    assert!(ROTATE_HOWTO.contains(&alert), "how-to is missing {alert:?}");
+    let row = format!("ALERT: {}", E::RotateRefused(format!("{refusal} <from>")));
+    assert!(REFERENCE.contains(&row), "reference is missing {row:?}");
+    assert!(REFERENCE.contains("`account_mismatch:<from>`"));
+    assert!(REFERENCE.contains(".auto-switch.d/expected/<name>.json"));
+    // The state-file table gives the record format the code writes and
+    // requires: both `account` and `org` (issue #1845, round-2 review).
+    let row = REFERENCE
+        .lines()
+        .find(|l| l.starts_with("| `expected/<name>.json` |"))
+        .expect("state-file table row for expected/<name>.json");
+    assert!(
+        row.contains(r#""account":"<key>""#) && row.contains(r#""org":"#),
+        "state-file table row names both record keys: {row}"
+    );
+    assert!(
+        REFERENCE
+            .contains("warning: the recorded account for profile 'work' was not saved: <reason>")
+    );
+    // The refusal names no way out that is refused for the live profile.
+    assert!(ROTATE_HOWTO.contains("`amplihack profile login work` does not help here"));
+}
+
+/// Issue #1845 review: the per-profile record warning is quoted as the
+/// code prints it, and the docs no longer say the organization is ignored.
+#[cfg(unix)]
+#[test]
+fn docs_quote_the_record_warning_and_compare_the_organization() {
+    use super::duplicates::{Holder, record_warning};
+    let name = |s: &str| super::name::ProfileName::parse(s).unwrap();
+    let line = format!(
+        "warning: {}",
+        record_warning(&Holder::Profile(name("bbuck")))
+    );
+    assert!(HOWTO.contains(&line), "how-to is missing {line:?}");
+    let generic = line.replace("bbuck", "<name>");
+    assert!(
+        REFERENCE.contains(&generic),
+        "reference is missing {generic:?}"
+    );
+    assert!(!REFERENCE.contains("The organization is not compared."));
+    assert!(REFERENCE.contains("\"org\": \"<organization uuid>\""));
 }
 
 #[test]
@@ -514,14 +663,9 @@ fn docs_describe_hand_change_recovery() {
             "{name} is missing the /login sentence"
         );
         for stem in [
-            "recovered: ~/.claude holds",
             "recovered: ~/.claude and",
             "has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login",
             "ALERT: the account in ~/.claude is not the one the ledger names (live=",
-            "fix 1: amplihack profile login",
-            "no profile has that account; no swap",
-            "the next cycle then recovers",
-            "none needed; the next cycle reads ~/.claude.json again",
             "~/.claude.json has had no account that can be read for 5 minutes or more (live=",
             "no swap until it is fixed; do not /login in ~/.claude before the login there is set aside, it would replace",
             "fix 1: run claude with no CLAUDE_CONFIG_DIR and without /login, then quit it; if",
@@ -556,10 +700,6 @@ fn docs_describe_hand_change_recovery() {
         "alert: <line>",
         "warning: <line>",
         "lost_login",
-        "it matches more than one profile (<M1>, <M2>);",
-        "the account of profile <P1>, <P2> cannot be read, so the match is uncertain;",
-        "the account in ~/.claude.json cannot be read;",
-        "~/.claude has no login;",
         "recovery refused: <reason>;",
         "home_unreadable_since",
         "it does not exist",
@@ -569,5 +709,281 @@ fn docs_describe_hand_change_recovery() {
         "its oauthAccount block has no usable accountUuid or emailAddress",
     ] {
         assert!(reference.contains(line), "reference is missing `{line}`");
+    }
+}
+
+/// Issue #1818: the reference defines `session_limit`, the table label and
+/// the `rotate status` line, with the contract wording for the JSON field,
+/// the 0% rule and the stored-reading label (crusty round 1 on #1829).
+#[test]
+fn docs_describe_no_session_limit() {
+    let flat = flat(REFERENCE);
+    for needle in [
+        "| `session_limit` | bool | `false` only when a reading showed no session window; `true` otherwise, including rows that could not be read.",
+        "no active session window was",
+        "shows `no session limit` in full",
+        "| `no session window` | Printed only when the list is not empty",
+        "The `5h` cell shows `no session window`",
+        "Such a line at 0% means the reading has",
+        "a value above 0% shows that a session window exists",
+        "They therefore print `no session window`, not `no session limit`",
+        "shows `s=0%`",
+    ] {
+        assert!(
+            flat.contains(&needle.split_whitespace().collect::<Vec<_>>().join(" ")),
+            "reference is missing {needle:?}"
+        );
+    }
+    assert!(REFERENCE.contains("#### No session limit"));
+}
+
+/// Issue #1813: the reference documents the bar view's flags, `NO_COLOR`,
+/// and the exact `order:` line the command prints.
+#[test]
+fn docs_describe_the_usage_bar_view() {
+    use super::usage_cmd::ORDER_LINE;
+    for flag in ["`--utc`", "`--table`", "`NO_COLOR`", "#### Bar output"] {
+        assert!(REFERENCE.contains(flag), "reference is missing {flag}");
+    }
+    assert!(
+        REFERENCE.contains(
+            "amplihack profile usage [--json | --summary-json | --table] [--utc] [--raw] \
+             [--spend] [--usable-session-pct <1-100>] [<name>...]"
+        ),
+        "reference synopsis"
+    );
+    assert!(ORDER_LINE.starts_with("order: "), "{ORDER_LINE}");
+    assert!(!ORDER_LINE.ends_with('\n'), "{ORDER_LINE:?}");
+    assert!(
+        REFERENCE.contains(ORDER_LINE),
+        "reference must show the printed line {ORDER_LINE:?}"
+    );
+    assert!(HOWTO.contains(ORDER_LINE), "howto must show {ORDER_LINE:?}");
+    for (name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
+        assert!(
+            !doc.contains("most capacity first"),
+            "{name} doc still describes the old order"
+        );
+    }
+}
+
+// --- Issue #1886: hand-change recovery by credential identity ---------------
+//
+// `rotate/tests_issue_1886.rs` asserts that `SWAP_GRACE` is 600 and that the
+// code's note and ALERT texts are exactly the ones quoted here, so a change on
+// either side fails one of the two tests.
+
+/// The issue #1886 lines, as the reference quotes them.
+const ISSUE_1886_LINES: &[&str] = &[
+    "note: ~/.claude holds the same account as profile <M> (ledger names <L>); nothing moved, the next cycle reads again",
+    "note: cannot tell whose login is in ~/.claude (live=<L>): <why>; nothing moved",
+    "ALERT: ~/.claude holds the same account as profile <M> on two readings (ledger names <L>), but <L> has no login of its own, so recording <M> would leave <L> with no login anywhere; nothing moved, no swap",
+    "recovered: ~/.claude and <M> held the same account; kept ~/.claude, moved <M>'s copy to <backup>/.credentials.json; recorded <M> as live",
+];
+
+/// The `<why>` texts of the cannot-tell note.
+const ISSUE_1886_WHY: &[&str] = &[
+    "~/.claude identity read failed: <cause>",
+    "it holds the same account as more than one profile (<M1>, <M2>)",
+    "profile <P1> not read (<cause>), <P2> not read (<cause>)",
+    "the reads ran out of time",
+    "the last swap time is later than now",
+    "it holds the same account as profile <M>, which is not the account recorded for <M>; run amplihack profile verify",
+    "it holds an account other than the one recorded for <L>; run amplihack profile verify",
+];
+
+/// The owner decision of 3 November (#1886): identity is the OAuth profile
+/// endpoint's account, never reset times, and `profile verify` exists.
+#[test]
+fn docs_describe_server_identity_and_profile_verify() {
+    for want in [
+        "`GET /api/oauth/profile`",
+        "#### profile verify",
+        "amplihack profile verify [--fix]",
+        "| `verify [--fix]` |",
+        "usage reset times",
+    ] {
+        assert!(REFERENCE.contains(want), "reference is missing `{want}`");
+    }
+    for gone in [
+        "~/.claude answers as profile",
+        "fewer than two reset times",
+        "report different windows",
+        "This set of reset times is the login's *fingerprint*",
+        "two accounts reset at the same times, and the alert clears",
+    ] {
+        assert!(!REFERENCE.contains(gone), "reference still says `{gone}`");
+        assert!(
+            !ROTATE_HOWTO.contains(gone),
+            "rotate how-to still says `{gone}`"
+        );
+    }
+    assert!(ROTATE_HOWTO.contains("#### Check which account each folder holds"));
+}
+
+#[test]
+fn docs_quote_swap_grace_and_its_value() {
+    assert!(
+        REFERENCE.contains("`SWAP_GRACE` (600 seconds)"),
+        "reference must quote SWAP_GRACE with its value"
+    );
+    assert!(
+        ROTATE_HOWTO.contains("`SWAP_GRACE`, 600 seconds"),
+        "rotate how-to must quote SWAP_GRACE with its value"
+    );
+}
+
+#[test]
+fn reference_quotes_the_issue_1886_lines() {
+    for line in ISSUE_1886_LINES {
+        assert!(REFERENCE.contains(line), "reference is missing `{line}`");
+    }
+    for why in ISSUE_1886_WHY {
+        assert!(
+            REFERENCE.contains(&format!("`{why}`")),
+            "reference why table is missing `{why}`"
+        );
+    }
+    assert!(
+        REFERENCE.contains("would note: <note>"),
+        "the dry-run row names the `would note:` prefix"
+    );
+}
+
+#[test]
+fn docs_describe_credential_identity_and_display_only_claude_json() {
+    for heading in [
+        "#### Two readings",
+        "#### Only-login rule",
+        "#### Hand-change notes",
+        "#### Only-login ALERT",
+    ] {
+        assert!(
+            REFERENCE.contains(heading),
+            "reference is missing {heading}"
+        );
+    }
+    assert!(REFERENCE.contains("`~/.claude.json` is not compared with the ledger"));
+    assert!(ROTATE_HOWTO.contains("### Hand-change notes and alerts"));
+    assert!(ROTATE_HOWTO.contains("#### No profile answers the same"));
+    assert!(ROTATE_HOWTO.contains("```bash\namplihack profile rotate\n```"));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2001: the Codex block of `profile usage`
+// ---------------------------------------------------------------------------
+
+const ENV_VARS: &str = include_str!("../../../../../docs/reference/amplihack-env-vars.md");
+
+#[test]
+fn every_codex_json_key_is_in_the_reference_key_table() {
+    use super::usage_codex::{json_rows, view};
+    use amplihack_utils::codex_capacity::{AccountResult, Outcome, Reading, Window, WindowName};
+    let mut r = Reading::default();
+    r.windows = vec![Window {
+        name: WindowName::Primary,
+        used_percent: Some(1.0),
+        window_minutes: Some(300),
+        resets_at: Some(1_794_001_200),
+    }];
+    let v = view(
+        std::path::PathBuf::from("/r"),
+        vec![AccountResult::new(
+            "a",
+            std::path::PathBuf::from("/r/a"),
+            Outcome::Ok(r),
+            1_793_992_140,
+        )],
+        20,
+    );
+    let row = serde_json::to_value(json_rows(&v)).unwrap()[0].clone();
+    let mut keys: Vec<String> = row.as_object().unwrap().keys().cloned().collect();
+    keys.extend(
+        row["windows"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| format!("windows[].{k}")),
+    );
+    for k in keys {
+        assert!(
+            REFERENCE.contains(&format!("| `{k}` |")),
+            "reference has no key-table row for Codex `{k}`"
+        );
+    }
+}
+
+#[test]
+fn the_codex_settings_are_documented_in_both_references() {
+    use amplihack_utils::codex_capacity::{BIN_ENV, ROOT_ENV, TIMEOUT_ENV};
+    for var in [ROOT_ENV, BIN_ENV, TIMEOUT_ENV] {
+        assert!(REFERENCE.contains(&format!("`{var}`")), "reference: {var}");
+        assert!(ENV_VARS.contains(&format!("`{var}`")), "env-vars: {var}");
+    }
+}
+
+/// Crusty round 3 on #2001: `--json` stays the bare array, because host
+/// scripts read it with `.[]` and `.[0]` and drop stderr. Every `--json | jq`
+/// example reads the array, and every Codex example reads `--summary-json`.
+#[test]
+fn the_docs_read_json_as_an_array_and_codex_from_summary_json() {
+    for (name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
+        for l in doc.lines() {
+            if l.contains("profile usage --json | jq") {
+                assert!(
+                    !l.contains(".claude[]") && !l.contains(".codex"),
+                    "{name}: a jq example reads `--json` as an object: {l}"
+                );
+            }
+            if l.contains(".codex[]") {
+                assert!(
+                    l.contains("profile usage --summary-json | jq"),
+                    "{name}: a Codex example does not read `--summary-json`: {l}"
+                );
+            }
+        }
+        assert!(!doc.contains(".claude[]"), "{name}");
+        assert!(!doc.contains("one break in that promise"), "{name}");
+    }
+}
+
+/// Crusty rounds 1 and 3 on #2001: the reference says `--json` has no Codex
+/// rows and why, the how-to's saved-file cron example says the file is the
+/// Claude array, and neither doc claims the `<- next` marker is
+/// `codex-pick`'s own choice (it reads session files; this view reads live).
+#[test]
+fn the_docs_keep_json_an_array_and_name_the_live_next_rule() {
+    let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (reference, howto) = (flat(REFERENCE), flat(HOWTO));
+    assert!(reference.contains("`--json` prints one JSON array of Claude profile rows"));
+    assert!(reference.contains("`--json` has no Codex rows, and does not read Codex at all."));
+    assert!(reference.contains("Keys are only ever added, never renamed or removed"));
+    let cron = howto
+        .find("profile usage --json > /tmp/claude-usage.json")
+        .expect("howto cron example");
+    assert!(howto[cron..].contains("The saved file is the array of Claude rows"));
+    for (name, doc) in [("reference", &reference), ("howto", &howto)] {
+        assert!(!doc.contains("`codex-pick` would choose"), "{name}");
+    }
+    assert!(reference.contains("refreshing the account's login"));
+}
+
+#[test]
+fn the_reference_quotes_the_codex_texts_the_code_prints() {
+    for text in [
+        "Codex accounts under ",
+        "Codex: no accounts under ",
+        "codex binary not found: ",
+        "unexpected response from codex app-server",
+        "codex usage read is supported only on Unix",
+        "codex account authentication required to read rate limits",
+        "<- next",
+        "no windows reported",
+        "warning: AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS=\"0\" is not a whole number from 1 to 300; using 20",
+    ] {
+        assert!(
+            REFERENCE.contains(text),
+            "reference does not quote {text:?}"
+        );
     }
 }

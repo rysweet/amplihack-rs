@@ -176,8 +176,8 @@ autodrive_phase_done() {
 # DONE: every concern id in crusty-round-*.json.findings goes to
 # resolved-concerns.txt, so a resumed run does not reopen it, and the
 # `crusty-loop` marker is written. The loop reports DONE only on a round whose
-# own verdict was CLEAN, so every concern it raised is settled. Callers check
-# for DONE first; this function does not.
+# own verdict was CLEAN or MINOR_ONLY (whose .findings is empty, #1979), so every
+# concern listed is settled. Callers check for DONE first; this function does not.
 autodrive_record_crusty_loop_done() {
   local dir="${1:?state dir}" f id
   for f in "$dir"/crusty-round-*.json.findings; do
@@ -253,8 +253,8 @@ autodrive_crusty_manifest_row() { autodrive_manifest_row "${1:-}" crusty; }
 # autodrive_crusty_final <state dir> -> criterion 3 under auto-drive (#1517).
 #
 # Prints only the reviewed head SHA and returns 0 when the crusty loop ended
-# DONE and its last loop-written round record is CLEAN. Otherwise prints one
-# token and returns 1. The checks run in this order:
+# DONE and its last loop-written round record is CLEAN or MINOR_ONLY (#1979).
+# Otherwise prints one token and returns 1. The checks run in this order:
 #
 #   crusty-loop-not-done     no `crusty-loop` marker in phases.tsv
 #   crusty-manifest-missing  crusty-records.tsv absent, a symlink, or its last row malformed
@@ -262,7 +262,7 @@ autodrive_crusty_manifest_row() { autodrive_manifest_row "${1:-}" crusty; }
 #   crusty-record-modified   its hash differs from the manifest or from crusty-latest.json,
 #                            or it is not one line that starts with crusty_verdict and
 #                            carries exactly one reviewed_head_sha
-#   crusty-not-clean         its verdict is not CLEAN
+#   crusty-not-clean         its verdict is neither CLEAN nor MINOR_ONLY
 #   crusty-head-sha-empty    reviewed_head_sha is not a 40- or 64-character hex SHA
 #
 # The record is copied once into a private temporary file, and that copy is
@@ -288,10 +288,10 @@ autodrive_crusty_final() {
      || [ ! -f "$latest" ] || [ -L "$latest" ] \
      || [ "$(autodrive_blob_hash "$dir" < "$latest")" != "$want" ] \
      || [ "$(awk 'END { print NR }' "$copy")" != "1" ] \
-     || ! grep -Eq '^\{"crusty_verdict":"(CLEAN|CONCERNS)",' "$copy" \
+     || ! grep -Eq '^\{"crusty_verdict":"(CLEAN|MINOR_ONLY|CONCERNS)",' "$copy" \
      || [ "$(grep -o '"reviewed_head_sha":' "$copy" | wc -l | tr -d ' ')" != "1" ]; then
     tok="crusty-record-modified"
-  elif ! grep -Eq '^\{"crusty_verdict":"CLEAN",' "$copy"; then
+  elif ! grep -Eq '^\{"crusty_verdict":"(CLEAN|MINOR_ONLY)",' "$copy"; then
     tok="crusty-not-clean"
   else
     sha="$(sed -n 's/.*"reviewed_head_sha":"\([0-9a-f]*\)".*/\1/p' "$copy")"

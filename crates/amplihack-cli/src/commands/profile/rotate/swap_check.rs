@@ -1,13 +1,14 @@
 //! The checks a swap runs before anything is written (D9), split from
 //! `swap.rs`: `$HOME` and `~/.claude` ownership, the incoming profile's
 //! account block and, issue #1700, the refusal of a login without OAuth for
-//! a subscription profile.
+//! a subscription profile. Also the name an adopted login's profile gets.
 
 use super::identify::{LoginKind, login_kind};
 use super::swap::{DOT_CLAUDE_NOT_PRIVATE, HOME_NOT_OWNED};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{euid, read_claude_json, writable_by_others};
+use crate::commands::profile::auto_switch::kit::{CREDS, euid, exists, writable_by_others};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::store::ProfileStore;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -33,15 +34,6 @@ pub(super) fn check_home(home: &Path) -> Result<PathBuf, ProfileError> {
     Ok(dot)
 }
 
-/// The `oauthAccount` block of `dir/.claude.json`, if it is an object.
-pub(super) fn account_block(dir: &Path) -> Option<serde_json::Value> {
-    read_claude_json(dir)?
-        .0
-        .get("oauthAccount")
-        .filter(|b| b.is_object())
-        .cloned()
-}
-
 /// Issue #1700: the end of the refusal for a login without OAuth that would
 /// leave `~/.claude` on the API key for a subscription profile.
 const NO_OAUTH: &str = "has no oauth login and is not an API-key profile";
@@ -62,4 +54,31 @@ pub fn is_no_oauth(e: &ProfileError) -> bool {
 /// login, or any login of an API-key profile.
 pub(super) fn may_go_live(t: &Path, platform: bool) -> bool {
     platform || login_kind(t) == LoginKind::OAuth
+}
+
+pub(super) fn ino_at(path: &Path) -> Option<u64> {
+    fs::symlink_metadata(path).ok().map(|m| m.ino())
+}
+
+/// `<parent>/.credentials.json`, for messages: never more of the path.
+pub(super) fn show(p: &Path) -> String {
+    let parent = p.parent().and_then(Path::file_name).unwrap_or_default();
+    format!("{}/{}", parent.to_string_lossy(), CREDS)
+}
+
+const ADOPT_NAME: &str = "default-original";
+
+/// The first free `default-original`, `default-original-2`, ... name.
+pub fn adoption_name(store: &ProfileStore) -> Result<ProfileName, ProfileError> {
+    for n in 1..=1000 {
+        let raw = if n == 1 {
+            ADOPT_NAME.to_string()
+        } else {
+            format!("{ADOPT_NAME}-{n}")
+        };
+        if !exists(&store.root().join(&raw)) {
+            return ProfileName::parse(&raw);
+        }
+    }
+    Err(refused("no free default-original name"))
 }

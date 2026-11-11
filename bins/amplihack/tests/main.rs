@@ -26,6 +26,8 @@ mod issue_1481_recipe_run_agent_binary;
 mod issue_1525_agent_binary_is_not_subprocess_safe;
 #[path = "issue_1525_migrate_detect_cli_uses_the_resolver.rs"]
 mod issue_1525_migrate_detect_cli_uses_the_resolver;
+#[path = "issue_1810_usage_startup.rs"]
+mod issue_1810_usage_startup;
 #[path = "issue_537_git_optional_recipes.rs"]
 mod issue_537_git_optional_recipes;
 #[path = "issue_538_install_completeness.rs"]

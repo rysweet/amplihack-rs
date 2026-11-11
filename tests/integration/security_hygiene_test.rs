@@ -903,9 +903,18 @@ fn tc_sec_20_no_hardcoded_high_entropy_secrets_in_fleet_source() {
         // Public recipe-runner revision pin (recipe-runner.rev), used as a
         // test fixture by runner_validation and runner_ancestry.
         "4d5187eaf95836a549e6e68725f8f853d0dc7034",
+        // The public CACHEDIR.TAG signature (https://bford.info/cachedir/),
+        // written into target folders for issue #1808.
+        "8a477f597d28d172789f06886806bc55",
         // Made-up, obviously non-secret commit ids used by runner pin tests.
         "0123456789abcdef0123456789abcdef01234567",
         "b4a82e7000000000000000000000000000000000",
+        // Made-up `launch_id` fixtures of the `amplihack agent` tests (#1760).
+        "6f1c0d8e2a4b4f0e9c7d3b5a1e2f4c6d",
+        "0000000000000000000000000000000",
+        // The published SHA-256 of "abc" (FIPS 180-2 test vector), the known
+        // answer in the #1955 manifest tests.
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     ];
 
     // Regex-free scan: look for very long alphanumeric tokens in string literals.

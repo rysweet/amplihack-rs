@@ -171,18 +171,20 @@ When you run `amplihack update`, the following happens in order:
    downloads the platform archive, verifies its SHA-256, and atomically
    replaces the running executable.
 2. **Automatic framework install.** As soon as the binary swap succeeds,
-   `amplihack` runs the same logic as `amplihack install` (in-process — no
-   subprocess) to re-stage framework assets (agents, hooks, prompts, recipes)
+   `amplihack` runs the new binary's `amplihack install --force-refresh` as a
+   subprocess to re-stage framework assets (agents, hooks, prompts, recipes)
    under `~/.amplihack/.claude`. This step is non-interactive and uses the
-   default install location. Unlike a standalone `amplihack install`, the
-   post-update install **forces a fresh bundle download** from the upstream
-   archive rather than reusing any existing local bundle at
-   `~/.amplihack/amplifier-bundle/`. This ensures the updated binary always
-   gets matching framework assets (issue #675).
+   default install location. Unlike a standalone `amplihack install`, it doesn't
+   reuse the local bundle at `~/.amplihack/amplifier-bundle/`. It stages from
+   `AMPLIHACK_HOME` when that tree has the new binary's version, and otherwise
+   **fetches the release tag**. See
+   [Framework source selection](../reference/framework-source-selection.md).
 3. **Done.** Both the binary and the on-disk framework now match.
 
 If the binary swap fails, the install step does **not** run and the original
-binary stays in place.
+binary stays in place. If the install step fails, `amplihack update` exits
+non-zero with the new binary already in place. Run `amplihack install` once the
+cause is fixed.
 
 ### Opt out of the automatic install
 

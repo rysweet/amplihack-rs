@@ -10,6 +10,10 @@ description: |
   phase's loop shell, so that crusty loop runs at the same session depth as
   phase 2's; no round recipe starts a loop.
 
+  Before the merge gate, step-02b files a follow-up issue for every minor
+  crusty finding that has none yet, including findings from those re-reviews
+  (issue #1979). If any cannot be filed, the step fails and the gate never runs.
+
   There is NO iteration cap here. The terminator is `loop-health-evaluator`
   (issue #1337), which judges absence of progress rather than counting
   attempts. Host safety stays where it belongs: structurally one layer down in
@@ -41,6 +45,8 @@ context:
   pr_number: ""
   pr_url: ""
   task_description: ""
+  # #1979: the plan task id the follow-up issues name; see auto-drive-to-merge.yaml.
+  plan_task_id: ""
   autodrive_state_dir: ""
   # #1543: the user's own pr_number (empty when phase 1 built the PR) and
   # existing_branch. A PR number in pr_number (the build phase's) or in
@@ -48,6 +54,11 @@ context:
   autodrive_pr_input: ""
   existing_branch: ""
   autodrive_dry_run: "false"
+  # #1743: the usage budget, read from RECIPE_VAR_* in step-02. Empty here, so
+  # this recipe run on its own is unbudgeted; auto-drive-to-merge sets them.
+  autodrive_budget_loop_rounds: ""
+  autodrive_budget_total_rounds: ""
+  autodrive_budget_wall_seconds: ""
   merge_loop_result: ""
   # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
   merge_gate_result: ""
@@ -233,7 +244,10 @@ steps:
         --context "pr_number=${PR}" \
         --context "pr_url=${PR_URL:-}" \
         --context "autodrive_qa_evidence=${DIR}/qa-evidence.json" \
-        --context "autodrive_state_dir=${DIR}"
+        --context "autodrive_state_dir=${DIR}" \
+        --context "autodrive_budget_loop_rounds=${RECIPE_VAR_autodrive_budget_loop_rounds:-}" \
+        --context "autodrive_budget_total_rounds=${RECIPE_VAR_autodrive_budget_total_rounds:-}" \
+        --context "autodrive_budget_wall_seconds=${RECIPE_VAR_autodrive_budget_wall_seconds:-}"
       RC=$?
       if [ "$RC" -eq 79 ]; then
         echo "ERROR: exit 79 terminal policy refusal in the merge-ready loop (#1327/#1332). Final — surfaced and stopped, never retried into the guard." >&2
@@ -241,6 +255,46 @@ steps:
       fi
       exit "$RC"
     output: "merge_loop_result"
+
+  # Issue #1979: every minor crusty finding in the follow-up set gets its
+  # follow-up issue before the gate runs; the gate checks followups.tsv again
+  # itself. The tool comes from the installed bundle only, like the gate.
+  - id: "step-02b-file-followups"
+    condition: "merge_loop_preflight.should_run == 'true'"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      [ -n "${AMPLIHACK_HOME:-}" ] || { echo "ERROR: AMPLIHACK_HOME is not set; follow-up issues are filed only by the installed bundle" >&2; exit 1; }
+      T="${AMPLIHACK_HOME}/amplifier-bundle/tools"
+      g() { printf '%s' "${RECIPE_VAR_merge_loop_preflight:-}" | amplihack orch helper extract-json --require-field "$1" \
+              | amplihack orch helper extract-field --field "$1" --default ''; }
+      DIR="$(g state_dir)"; PR="$(g pr)"
+      case "$DIR" in
+        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-02b]" >&2; exit 1 ;;
+      esac
+      # A dry run writes nothing to GitHub: no follow-up issue is filed, and
+      # the gate reports each unfiled minor finding as followup-missing.
+      if [ "${AUTODRIVE_DRY_RUN:-false}" = "true" ]; then
+        echo "INFO: dry run: no follow-up issue is filed; the merge gate reports each minor finding as followup-missing." >&2
+        exit 0
+      fi
+      if [ ! -f "$T/autodrive_followups.sh" ]; then
+        if [ -e "$DIR/followups.jsonl" ] || grep -q '^{"crusty_verdict":"MINOR_ONLY",' "$DIR/crusty-latest.json" 2>/dev/null; then
+          echo "ERROR: followups-unfiled: autodrive_followups.sh is not under AMPLIHACK_HOME; the minor findings cannot be filed (rerun amplihack install)" >&2
+          exit 1
+        fi
+        echo "INFO: autodrive_followups.sh is not installed and there are no minor findings to file" >&2
+        exit 0
+      fi
+      FT="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/autodrive-followup-task.XXXXXX")" || exit 1
+      trap 'rm -rf -- "$FT"' EXIT
+      : > "$FT/task.txt"
+      . "$T/recipe_context_value.sh" 2>/dev/null && { write_context_value task_description "$FT/task.txt" 2>/dev/null || : > "$FT/task.txt"; }
+      bash "$T/autodrive_followups.sh" file --state-dir "$DIR" --pr "$PR" --task-id "${RECIPE_VAR_plan_task_id:-}" --task-text-file "$FT/task.txt"
+      RC=$?
+      [ "$RC" -ne 79 ] || { echo "ERROR: exit 79 terminal policy refusal while filing follow-up issues; final, never retried." >&2; exit 79; }
+      [ "$RC" -eq 0 ] || { echo "ERROR: followups-unfiled: the follow-up issues could not all be filed; the merge gate does not run and the drive is not READY." >&2; exit 1; }
 
   - id: "step-03-merge-gate"
     condition: "merge_loop_preflight.should_run == 'true'"

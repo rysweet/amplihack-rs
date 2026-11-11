@@ -103,6 +103,15 @@ pub fn run_update(skip_install: bool) -> Result<()> {
     // execute the OLD binary's compiled-in code. Instead we spawn the NEW
     // binary as a subprocess so the freshly-installed code runs.
     super::post_install::run_post_update_install(skip_install, || {
+        // Issue #1954 D6: `download_and_replace` released the install lock
+        // when it returned. The child takes it itself; were it still held
+        // here, the child would wait for this process forever.
+        if crate::install_lock::held_by_current_thread() {
+            bail!(
+                "internal error: the install lock is still held before the post-update \
+                 install starts; the install child would wait for it forever (#1954)"
+            );
+        }
         let cmd = build_install_command(&installed_exe);
         let status =
             crate::util::run_with_timeout(cmd, POST_UPDATE_INSTALL_TIMEOUT).with_context(|| {
@@ -369,33 +378,42 @@ fn print_update_notice(latest: &str) {
 /// — never from `current_exe()`, which may resolve to a deleted inode after
 /// atomic rename on Linux.
 pub(super) fn build_install_command(installed_exe: &Path) -> std::process::Command {
+    build_install_command_with_path(installed_exe, std::env::var_os("PATH"))
+}
+
+/// [`build_install_command`] with the parent PATH passed in rather than read
+/// from the process, so tests need not set it (issue #1765).
+pub(super) fn build_install_command_with_path(
+    installed_exe: &Path,
+    parent_path: Option<std::ffi::OsString>,
+) -> std::process::Command {
+    let parent_path = parent_path.unwrap_or_default();
     let mut cmd = std::process::Command::new(installed_exe);
     cmd.arg("install")
         .arg("--force-refresh")
         .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
         .env("AMPLIHACK_NONINTERACTIVE", "1")
         .env("AMPLIHACK_POST_UPDATE_INSTALL", "1")
-        .env(
-            "AMPLIHACK_REPAIR_ORIGINAL_PATH",
-            std::env::var_os("PATH").unwrap_or_default(),
-        )
+        .env("AMPLIHACK_REPAIR_ORIGINAL_PATH", &parent_path)
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit());
-    if let Some(path) = repair_subprocess_path(installed_exe) {
+    if let Some(path) = repair_subprocess_path(installed_exe, &parent_path) {
         cmd.env("PATH", path);
     }
     cmd
 }
 
-fn repair_subprocess_path(installed_exe: &Path) -> Option<std::ffi::OsString> {
+fn repair_subprocess_path(
+    installed_exe: &Path,
+    existing: &std::ffi::OsStr,
+) -> Option<std::ffi::OsString> {
     let user_bin = std::env::var_os("HOME")
         .map(|home| crate::path_conflicts::preferred_user_bin(Path::new(&home)))
         .or_else(|| installed_exe.parent().map(Path::to_path_buf))?;
-    let existing = std::env::var_os("PATH").unwrap_or_default();
     let mut paths = vec![user_bin.clone()];
     paths.extend(
-        std::env::split_paths(&existing)
+        std::env::split_paths(existing)
             .filter(|path| !paths_equal(path, &user_bin))
             .collect::<Vec<_>>(),
     );

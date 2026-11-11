@@ -6,6 +6,7 @@ use super::hooks::{
 };
 use super::paths::xpia_hooks_dir;
 use super::types::*;
+use crate::commands::profile::is_amplihack_statusline;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
@@ -19,6 +20,13 @@ use std::path::Path;
 /// parent-directory creation, and atomic-write semantics are keyed off
 /// `settings_path.parent()`.
 ///
+/// `status_line`: the `statusLine` command to install (issue #1745). Two
+/// callers pass one, both writing `~/.claude/settings.json`: the explicit
+/// `amplihack install` at global scope (`run_install_scoped`), and the
+/// launch-time hook repair (`ensure_framework_installed_with`), which writes
+/// the user's own settings and so is global too. A repo-local install passes
+/// `None`. With `None` an existing entry is left as it is.
+///
 /// Returns `(success, registered_event_names)` where `registered_event_names`
 /// is a deduplicated list of event names that were configured.
 pub(super) fn ensure_settings_json(
@@ -26,6 +34,7 @@ pub(super) fn ensure_settings_json(
     staging_dir: &Path,
     timestamp: u64,
     hooks_bin: &Path,
+    status_line: Option<&str>,
 ) -> Result<(bool, Vec<String>)> {
     if let Some(parent) = settings_path.parent() {
         fs::create_dir_all(parent)
@@ -81,6 +90,7 @@ pub(super) fn ensure_settings_json(
     }
     let limit_resume = old_claude.is_none();
     register_hooks(&mut settings, hooks_bin, with_xpia, limit_resume);
+    let status_line = status_line.map(|cmd| ensure_status_line(&mut settings, cmd));
 
     fs::write(
         settings_path,
@@ -88,6 +98,9 @@ pub(super) fn ensure_settings_json(
     )
     .with_context(|| format!("failed to write {}", settings_path.display()))?;
     println!("  ✅ settings.json configured");
+    if let Some(message) = status_line.and_then(StatusLineOutcome::message) {
+        println!("  {message}");
+    }
 
     let hook_contract_drift = validate_amplihack_native_hook_contract(&settings, limit_resume);
     if hook_contract_drift.is_empty() {
@@ -113,6 +126,63 @@ pub(super) fn ensure_settings_json(
     };
 
     Ok((true, registered_events))
+}
+
+/// What [`ensure_status_line`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatusLineOutcome {
+    Installed,
+    Updated,
+    Unchanged,
+    /// The entry is the user's and was left byte for byte.
+    KeptUser,
+}
+
+impl StatusLineOutcome {
+    /// The line install prints, if any: nothing when the entry is current.
+    pub(crate) fn message(self) -> Option<&'static str> {
+        match self {
+            Self::Installed => Some("statusLine: installed"),
+            Self::Updated => Some("statusLine: updated"),
+            Self::Unchanged => None,
+            Self::KeptUser => Some("statusLine: kept your existing entry"),
+        }
+    }
+}
+
+/// Points `settings.statusLine` at `cmd` (issue #1745). Only amplihack's
+/// own entry is replaced (`cmd` itself, or see [`is_amplihack_statusline`]);
+/// its `padding` and every other key are kept. Any other entry is the user's
+/// and is not touched.
+pub(crate) fn ensure_status_line(settings: &mut Value, cmd: &str) -> StatusLineOutcome {
+    let Some(obj) = settings.as_object_mut() else {
+        return StatusLineOutcome::KeptUser;
+    };
+    let Some(current) = obj.get_mut("statusLine") else {
+        let mut sl = Map::new();
+        sl.insert("type".into(), "command".into());
+        sl.insert("command".into(), cmd.into());
+        obj.insert("statusLine".into(), Value::Object(sl));
+        return StatusLineOutcome::Installed;
+    };
+    let Some(sl) = current.as_object_mut() else {
+        return StatusLineOutcome::KeptUser;
+    };
+    let ours = sl
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|c| c.trim() == cmd.trim() || is_amplihack_statusline(c));
+    if !ours {
+        return StatusLineOutcome::KeptUser;
+    }
+    let before = sl.clone();
+    sl.insert("type".into(), "command".into());
+    sl.insert("command".into(), cmd.into());
+    if *sl == before {
+        StatusLineOutcome::Unchanged
+    } else {
+        StatusLineOutcome::Updated
+    }
 }
 
 /// The first Claude Code the limit-resume hook (`StopFailure` with
@@ -188,7 +258,10 @@ pub(super) const PROFILE_REFRESH_TEST_OPT_IN: &str = "AMPLIHACK_TEST_PROFILE_REF
 
 /// Issue #1661: gives every profile's existing `settings.json` the same hook
 /// registrations as `~/.claude/settings.json`. Never fails the install: a
-/// profile that cannot be refreshed is reported and skipped.
+/// profile that cannot be refreshed is reported and skipped. Issue #1699: a
+/// `hooks_bin` that does not exist, or that lies under a temporary directory
+/// while the profile root is outside HOME or not itself temporary, is refused
+/// for every profile.
 pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
     use crate::commands::profile::{Refresh, refresh_profile_settings};
     // This crate's in-process install tests inherit the developer's
@@ -200,7 +273,7 @@ pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
     }
     let with_xpia = xpia_hooks_dir().is_ok_and(|dir| dir.exists());
     let limit_resume = claude_too_old_for_limit_resume().is_none();
-    let results = refresh_profile_settings(&|settings| {
+    let results = refresh_profile_settings(hooks_bin, &|settings| {
         register_hooks(settings, hooks_bin, with_xpia, limit_resume)
     });
     let updated = results

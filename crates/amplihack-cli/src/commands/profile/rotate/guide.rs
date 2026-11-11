@@ -1,8 +1,9 @@
-//! The hand-change guidance (issue #1693): one ALERT line and numbered
+//! The hand-change guidance (issues #1693, #1886): one ALERT line and numbered
 //! `fix` lines, worded as in docs/reference/profile-command.md, "Guidance".
 //! The lines hold profile names, fixed text and quoted paths only; never an
 //! account. Each line fits the ledger's `guidance` limits.
 
+use super::handfix_msg::only_login;
 use super::ledger::{MAX_GUIDANCE_LINE, MAX_GUIDANCE_LINES};
 use super::log::{cut, sh_quote};
 use crate::commands::profile::auto_switch::kit::CREDS;
@@ -41,22 +42,19 @@ pub enum Fix {
     Retry,
 }
 
-/// Who holds the account, as far as the guidance needs it.
+/// What the guidance is about.
 pub enum Kind<'a> {
-    Many(&'a [ProfileName]),
-    None,
-    Unreadable(&'a [ProfileName]),
-    HomeUnreadable,
     /// `~/.claude.json` has had no readable account for at least
     /// `HOME_UNREADABLE_GRACE` seconds; `problem` says why, from
     /// `identify::home_problem` (#1702 review).
-    HomeStuck {
-        problem: &'a str,
-    },
-    HomeNoLogin,
+    HomeStuck { problem: &'a str },
+    /// Issue #1886: `~/.claude` holds the same account as `m`'s own login
+    /// on two readings, but `m` cannot be recorded without leaving the ledger's
+    /// profile with no login anywhere (the only-login rule).
+    OnlyLogin { m: &'a ProfileName },
+    /// A confirmed recovery that a check refused.
     Refused {
         m: &'a ProfileName,
-        own_login: bool,
         reason: &'a str,
         fix: Fix,
     },
@@ -88,53 +86,17 @@ fn with_paths(what: &str, paths: &[PathBuf], f: impl Fn(&[String]) -> String) ->
     }
 }
 
-fn join(names: &[ProfileName]) -> String {
-    names
-        .iter()
-        .map(ProfileName::as_str)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 /// The ALERT line and the `fix` lines, at most 16, each at most 1024 bytes
-/// with no control or bidirectional-override character. `l_lost`: the
-/// profile the ledger names has no login file, so `fix 1` logs it in.
-pub fn lines(l: &ProfileName, l_lost: bool, kind: &Kind<'_>, p: &Paths) -> Vec<String> {
-    let middle = match kind {
-        Kind::Many(v) => format!("it matches more than one profile ({})", join(v)),
-        Kind::None => "no profile has that account".into(),
-        Kind::Unreadable(v) => format!(
-            "the account of profile {} cannot be read, so the match is uncertain",
-            join(v)
-        ),
-        Kind::HomeUnreadable => "the account in ~/.claude.json cannot be read".into(),
-        Kind::HomeStuck { .. } => String::new(),
-        Kind::HomeNoLogin => "~/.claude has no login".into(),
-        Kind::Refused {
-            m,
-            own_login,
-            reason,
-            ..
-        } => {
-            let own = if *own_login {
-                " and has its own login"
-            } else {
-                ""
-            };
-            format!("profile {m} holds the same account{own}; recovery refused: {reason}")
-        }
-    };
+/// with no control or bidirectional-override character.
+pub fn lines(l: &ProfileName, kind: &Kind<'_>, p: &Paths) -> Vec<String> {
     let head = match kind {
         Kind::HomeStuck { problem } => home_stuck_head(l, problem),
-        _ => format!(
-            "ALERT: the account in ~/.claude is not the one the ledger names (live={l}); {middle}; no swap"
+        Kind::OnlyLogin { m } => only_login(m, l),
+        Kind::Refused { m, reason, .. } => format!(
+            "ALERT: the account in ~/.claude is not the one the ledger names (live={l}); profile {m} holds the same account and has its own login; recovery refused: {reason}; no swap"
         ),
     };
-    let mut fixes = Vec::new();
-    if l_lost {
-        fixes.push(plain(format!("amplihack profile login {l}")));
-    }
-    fixes.extend(kind_fixes(l, kind, p));
+    let fixes = kind_fixes(l, kind, p);
     let mut out = vec![clean(&head)];
     for (i, f) in fixes.into_iter().enumerate() {
         let prefix = format!("fix {}: ", i + 1);
@@ -170,44 +132,6 @@ pub fn home_stuck_head(l: &ProfileName, problem: &str) -> String {
 
 fn kind_fixes(l: &ProfileName, kind: &Kind<'_>, p: &Paths) -> Vec<FixLine> {
     match kind {
-        Kind::Many(v) => vec![plain(format!(
-            "keep this account in one of {}: log the others in to another account or remove them; the next cycle then recovers",
-            join(v)
-        ))],
-        Kind::None => {
-            let creds = p.home.join(".claude").join(CREDS);
-            vec![
-                with_paths(HOME_WHAT, std::slice::from_ref(&p.ledger), |q| {
-                    format!(
-                        "rm {} (the next swap keeps the login in ~/.claude as profile default-original)",
-                        q[0]
-                    )
-                }),
-                with_paths(
-                    HOME_WHAT,
-                    &[creds, p.manual.clone(), p.ledger.clone()],
-                    |q| {
-                        format!(
-                            "or, to set that login aside instead: close every claude session that uses ~/.claude, then run: mkdir -m 700 {1} && mv -n {0} {1}/ && rm {2}; then run claude with no CLAUDE_CONFIG_DIR and /login",
-                            q[0], q[1], q[2]
-                        )
-                    },
-                ),
-            ]
-        }
-        Kind::Unreadable(v) => v
-            .iter()
-            .map(|n| {
-                plain(format!(
-                    "amplihack profile login {n}; the next cycle then recovers"
-                ))
-            })
-            .collect(),
-        // Never `/login` after one failed read: Claude rewrites
-        // ~/.claude.json often, and a `/login` replaces the login there (#1702).
-        Kind::HomeUnreadable => vec![plain(
-            "none needed; the next cycle reads ~/.claude.json again".into(),
-        )],
         // The login in ~/.claude is L's as far as anyone knows: neither fix
         // replaces it. The first lets Claude write the file again; the
         // second gives L its login back before any `/login` (#1702 review).
@@ -234,9 +158,28 @@ fn kind_fixes(l: &ProfileName, kind: &Kind<'_>, p: &Paths) -> Vec<FixLine> {
                 ),
             ]
         }
-        Kind::HomeNoLogin => vec![plain(
-            "run claude with no CLAUDE_CONFIG_DIR and /login".into(),
-        )],
+        // The server says `~/.claude` holds M's account (issue #1886). Either
+        // a `/login` replaced L's only login, or L and M are two profiles of
+        // one account and L has no record saying so (a record that names
+        // the account would have made the finding Clear).
+        Kind::OnlyLogin { m } => {
+            let creds = p.root.join(m.as_str()).join(CREDS);
+            vec![
+                with_paths(
+                    &format!("{m}'s copy"),
+                    &[p.manual.clone(), creds, p.ledger.clone()],
+                    |q| {
+                        format!(
+                            "if a /login in ~/.claude replaced {l}'s login: close every claude session that uses ~/.claude, then run: mkdir -m 700 {0} && mv -n {1} {0}/ && rm {2}; then run: amplihack profile login {l}",
+                            q[0], q[1], q[2]
+                        )
+                    },
+                ),
+                plain(format!(
+                    "if {l} and {m} are profiles of one account, run amplihack profile verify to see the account each folder holds, then remove one of the two profiles"
+                )),
+            ]
+        }
         Kind::Refused { m, fix, .. } => vec![refused_fix(m, *fix, p)],
     }
 }

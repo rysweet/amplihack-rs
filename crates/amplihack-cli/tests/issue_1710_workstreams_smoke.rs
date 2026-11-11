@@ -98,6 +98,8 @@ impl Fx {
             .env("HOME", &self.home)
             .env("AMPLIHACK_STATE_DIR", &self.state)
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.profiles)
+            .env("AMPLIHACK_PROFILE_USAGE_PROBE", "text")
+            .env("AMPLIHACK_PROFILE_USAGE_PARALLEL", "8")
             .env("AMPLIHACK_NONINTERACTIVE", "1")
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
@@ -375,11 +377,14 @@ fn deadline_cancels_and_reaps_usage_probes_in_later_batches() {
 }
 
 #[test]
-fn deadline_cancels_and_reaps_the_sequential_home_login_probe() {
+fn deadline_cancels_and_reaps_the_live_home_login_probe() {
     let fx = Fx::new();
-    fx.add_profile("spare");
-    // A manual home login differs from the account in the rotate ledger,
-    // so usage probes it after the profile batch has finished.
+    // Eight slow profiles fill the first batch. The login live at home is
+    // in the next batch, which is still running at the overall deadline.
+    for n in 0..8 {
+        fx.add_profile(&format!("spare-{n:02}"));
+    }
+    fx.add_profile("zz-live");
     fs::create_dir_all(fx.home.join(".claude")).unwrap();
     let rotate = fx.profiles.join(".auto-switch.d/rotate");
     fs::create_dir_all(&rotate).unwrap();
@@ -401,7 +406,7 @@ fn deadline_cancels_and_reaps_the_sequential_home_login_probe() {
         ),
         (
             rotate.join("ledger.json"),
-            r#"{"version":1,"live":"spare","account":"old-account","since":10}"#,
+            r#"{"version":1,"live":"zz-live","account":"home-account","since":10}"#,
         ),
     ] {
         fs::write(&path, body).unwrap();
@@ -419,13 +424,16 @@ fn deadline_cancels_and_reaps_the_sequential_home_login_probe() {
     );
     assert_eq!(
         assert_usage_probes_reaped(&pids),
-        2,
+        9,
         "order: {:?}; stdout: {}; stderr: {}",
         fs::read_to_string(&order),
         stdout(&out),
         stderr(&out)
     );
-    assert_eq!(fs::read_to_string(order).unwrap(), "profile\nhome\n");
+    assert_eq!(
+        fs::read_to_string(order).unwrap(),
+        format!("{}home\n", "profile\n".repeat(8))
+    );
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(took < Duration::from_secs(10), "took {took:?}");
     assert!(

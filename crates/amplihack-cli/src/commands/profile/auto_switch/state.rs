@@ -18,9 +18,16 @@ pub const DIR: &str = ".auto-switch.d";
 pub const CREDS: &str = ".credentials.json";
 pub const CLAUDE_JSON: &str = ".claude.json";
 const MAX_STATE: u64 = 64 * 1024;
+/// The marker that keeps auto-switch's held-key ALERT to one line per
+/// held set (`per_token::record_key_held`).
+const KEY_HELD: &str = "key-held";
 /// `.claude.json` keeps project history and can grow large.
 pub const MAX_CLAUDE_JSON: u64 = 32 * 1024 * 1024;
 const VERSION: u32 = 1;
+/// The readings that passive reads, `profile rotate` and auto-switch use.
+const USAGE: &str = "usage.json";
+/// Readings taken in `~/.claude`; see [`State::try_load_home_usage`].
+pub const HOME_USAGE: &str = "home-usage.json";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -274,23 +281,60 @@ impl State {
         Ok(())
     }
 
+    /// The plan logins named by the last `ALERT: API key not used` that
+    /// auto-switch wrote to the rotate log, one per line; `None` when there
+    /// is none, or the marker cannot be read, so the ALERT is written again.
+    pub fn load_key_held(&self) -> Option<String> {
+        let raw = self.read_state(KEY_HELD).ok()??;
+        String::from_utf8(raw).ok()
+    }
+
+    pub fn save_key_held(&self, held: &str) -> Result<(), ProfileError> {
+        self.write_state(KEY_HELD, held.as_bytes())
+    }
+
+    /// Forgets the last held set, so the next one is written. Missing is fine.
+    pub fn clear_key_held(&self) -> Result<(), ProfileError> {
+        match fs::remove_file(self.dir.join(KEY_HELD)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Readings. A missing file is empty; a damaged one (bad JSON, unknown
     /// version, or a key that is not a valid profile name) is an error that
     /// names the file and, for bad JSON, only the line and column.
     pub fn try_load_usage(&self) -> Result<UsageFile, ProfileError> {
-        let Some(raw) = self.read_state("usage.json")? else {
+        self.try_load_readings(USAGE)
+    }
+
+    /// Readings recorded by the status line in `~/.claude` (issue #1745),
+    /// with the same rules as [`State::try_load_usage`]. They are kept apart
+    /// from `usage.json` because nothing checks which account `~/.claude`
+    /// really held when they were taken: a hand-run `claude /login`, or a
+    /// session that kept its old token past a swap, files them under the
+    /// wrong login. Only the status line's spare count reads this file;
+    /// passive readings, `profile rotate`, auto-switch and the capacity file
+    /// read `usage.json` alone, so these readings never steer a decision.
+    pub fn try_load_home_usage(&self) -> Result<UsageFile, ProfileError> {
+        self.try_load_readings(HOME_USAGE)
+    }
+
+    fn try_load_readings(&self, file: &str) -> Result<UsageFile, ProfileError> {
+        let Some(raw) = self.read_state(file)? else {
             return Ok(UsageFile {
                 version: VERSION,
                 accounts: BTreeMap::new(),
             });
         };
         let u: UsageFile = serde_json::from_slice(&raw)
-            .map_err(|e| invariant(format!("{DIR}/usage.json: {}", parse_position(&e))))?;
+            .map_err(|e| invariant(format!("{DIR}/{file}: {}", parse_position(&e))))?;
         if u.version != VERSION {
-            return Err(invariant(format!("{DIR}/usage.json: unknown version")));
+            return Err(invariant(format!("{DIR}/{file}: unknown version")));
         }
         if u.accounts.keys().any(|k| ProfileName::parse(k).is_err()) {
-            return Err(invariant(format!("{DIR}/usage.json: invalid profile name")));
+            return Err(invariant(format!("{DIR}/{file}: invalid profile name")));
         }
         Ok(u)
     }
@@ -317,13 +361,22 @@ impl State {
     }
 
     pub fn save_usage(&self, usage: &UsageFile) -> Result<(), ProfileError> {
+        self.save_readings(USAGE, usage)
+    }
+
+    /// Saves the `~/.claude` readings; see [`State::try_load_home_usage`].
+    pub fn save_home_usage(&self, usage: &UsageFile) -> Result<(), ProfileError> {
+        self.save_readings(HOME_USAGE, usage)
+    }
+
+    fn save_readings(&self, file: &str, usage: &UsageFile) -> Result<(), ProfileError> {
         let mut usage = usage.clone();
         usage.version = VERSION;
         usage
             .accounts
             .retain(|name, _| ProfileName::parse(name).is_ok());
         let bytes = serde_json::to_vec_pretty(&usage).map_err(|e| invariant(e.to_string()))?;
-        self.write_state("usage.json", &bytes)
+        self.write_state(file, &bytes)
     }
 
     /// A small JSON file under a state subdirectory (`accounts/`,
@@ -361,6 +414,36 @@ impl State {
         let bytes = serde_json::to_vec_pretty(v).map_err(|e| invariant(e.to_string()))?;
         fsx::write_private_atomic(&dir, &format!("{name}.json"), &bytes)
             .map_err(|e| invariant(format!("{DIR}/{sub}/{name}.json: {e}")))
+    }
+
+    /// [`State::write_sub_json`] for a file that must not be replaced (issue
+    /// #1962): `Ok(false)` when the name already exists, which is left as it
+    /// is. A symlink at the name is refused and never followed.
+    pub fn create_sub_json(
+        &self,
+        sub: &str,
+        name: &str,
+        v: &serde_json::Value,
+    ) -> Result<bool, ProfileError> {
+        self.ensure()?;
+        let dir = self.dir.join(sub);
+        self.ensure_sub(&dir)?;
+        let bytes = serde_json::to_vec_pretty(v).map_err(|e| invariant(e.to_string()))?;
+        let shown = |e: std::io::Error| invariant(format!("{DIR}/{sub}/{name}.json: {e}"));
+        fsx::PrivateTemp::create(&dir, &format!("{name}.json"))
+            .and_then(|temp| temp.link_new(&bytes))
+            .map_err(shown)
+    }
+
+    /// Removes a file written by [`State::write_sub_json`]. A file that is
+    /// already absent is not an error; a symlink is removed, never followed.
+    pub fn remove_sub_json(&self, sub: &str, name: &str) -> Result<(), ProfileError> {
+        let path = self.dir.join(sub).join(format!("{name}.json"));
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(invariant(format!("{DIR}/{sub}/{name}.json: {e}"))),
+        }
     }
 }
 

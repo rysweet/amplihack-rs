@@ -38,6 +38,9 @@
 # wrapper, which already gives it a fresh shell; saying `+e` here means the file
 # also behaves when it is run under `bash -e` directly.
 set +e -uo pipefail
+# Issue #1764: no git this script runs may wait on a credential prompt.
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
+exec </dev/null
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLAIM="$ROOT/amplifier-bundle/tools/workflow_issue_claim_check.sh"

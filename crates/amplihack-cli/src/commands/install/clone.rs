@@ -1,8 +1,9 @@
-//! Framework source resolution: bundled-first, with network fallback.
+//! Framework source resolution over local candidates, and the bounded git runner.
 //!
 //! As of issue #254 the framework assets are bundled inside the amplihack-rs
 //! source tree (`amplifier-bundle/`) and no longer fetched from the upstream
-//! `rysweet/amplihack` repository at install time.
+//! `rysweet/amplihack` repository at install time. Issue #1955 adds a version
+//! gate to every step here; see [`super::framework_source`].
 //!
 //! Resolution order (fix #341 — prefer the user's actual checkout over any
 //! baked-at-build-time path):
@@ -22,8 +23,9 @@
 //!    from the workspace itself; demoted because for an installed binary it
 //!    pins the bundle to whatever was on disk at compile time (issue #341).
 //! 5. **`~/.amplihack`** — staged install location from a prior run.
-//! 6. **Network download** (legacy fallback) — `git clone` / tarball from
-//!    upstream, only attempted when none of the above yields a usable root.
+//!
+//! When none of these has this binary's version, the source is the exact release
+//! tag ([`super::tag_fetch`]), never a branch.
 //!
 //! # How far a walk-up may walk (issue #1275)
 //!
@@ -51,8 +53,8 @@
 //! one it picked when the answer is not obvious.
 
 use super::bundle_compat::validate_framework_bundle_compatibility;
-use super::types::{REPO_ARCHIVE_URL, REPO_GIT_URL};
-use crate::update::{extract_archive, http_get_with_retry, validate_download_url};
+use super::framework_source::{self, MismatchRule, SourceRefused, SourceVersion};
+use super::paths::{sanitize_path, sanitize_text};
 #[cfg(windows)]
 use crate::util::run_with_timeout;
 use anyhow::{Context, Result, bail};
@@ -62,21 +64,49 @@ use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-#[cfg(not(test))]
-const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
-#[cfg(test)]
-const GIT_CLONE_TIMEOUT: Duration = Duration::from_millis(250);
-const GIT_CLONE_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const GIT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 #[cfg(windows)]
 const TERMINATE_PROCESS_TREE_TIMEOUT: Duration = Duration::from_secs(5);
 const CAPTURE_LIMIT: usize = 8192;
 
+/// SEC-2: removed from every git call. The first 15 are
+/// `git rev-parse --local-env-vars`, which could point git at another repository
+/// or config; the rest can run a command or supply templates.
+const GIT_SCRUBBED_ENV: [&str; 20] = [
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_SSH_COMMAND",
+    "GIT_PROXY_COMMAND",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "GIT_TEMPLATE_DIR",
+];
+
+/// SEC-6: a repository's own config can't run anything through these.
+#[cfg(not(windows))]
+const GIT_HOOKS_OFF: &str = "core.hooksPath=/dev/null";
+#[cfg(windows)]
+const GIT_HOOKS_OFF: &str = "core.hooksPath=NUL";
+
 /// Workspace-member path that identifies an amplihack-rs `Cargo.toml`.
-const AMPLIHACK_WORKSPACE_MARKER: &str = "crates/amplihack-cli";
+pub(super) const AMPLIHACK_WORKSPACE_MARKER: &str = "crates/amplihack-cli";
 
 /// Bytes of a candidate `Cargo.toml` read when sniffing for the marker above.
 const CARGO_TOML_SNIFF_LIMIT: u64 = 64 * 1024;
@@ -112,8 +142,8 @@ impl FrameworkRootOrigin {
         }
     }
 
-    /// Short label used in diagnostics about a rejected candidate.
-    fn label(self) -> &'static str {
+    /// Short label used in diagnostics about a candidate.
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::AmplihackHome => "AMPLIHACK_HOME",
             Self::CurrentDirectory => "current directory",
@@ -149,6 +179,13 @@ pub(super) enum ResolutionNote {
     /// A bundle-carrying directory that does not look like an amplihack
     /// source tree.
     NotAmplihackSource { path: PathBuf },
+    /// A valid candidate whose version is not the binary's (issue #1955).
+    VersionMismatch {
+        path: PathBuf,
+        label: &'static str,
+        source_version: SourceVersion,
+        binary_version: String,
+    },
 }
 
 impl std::fmt::Display for ResolutionNote {
@@ -156,25 +193,35 @@ impl std::fmt::Display for ResolutionNote {
         match self {
             Self::IncompatibleBundle { path, label, error } => write!(
                 f,
-                "⚠️  Skipping incompatible framework bundle from {label}: {}: {error}",
-                path.display()
+                "⚠️  Skipping incompatible framework bundle from {label}: {}: {}",
+                sanitize_path(path),
+                sanitize_text(error)
             ),
             Self::OutsideStartingRepository { path, start } => write!(
                 f,
-                "ℹ️  Ignoring the framework bundle at {}: it is outside the repository \
+                "ℹ️  Ignoring the framework bundle at {path}: it is outside the repository \
                  containing {}, so amplihack will not stage from it implicitly. \
-                 Run `amplihack install --local {}` to stage from it deliberately.",
-                path.display(),
-                start.display(),
-                path.display()
+                 Run `amplihack install --local {path}` to stage from it deliberately.",
+                sanitize_path(start),
+                path = sanitize_path(path),
             ),
             Self::NotAmplihackSource { path } => write!(
                 f,
-                "ℹ️  Ignoring the framework bundle at {}: that directory does not look like \
+                "ℹ️  Ignoring the framework bundle at {path}: that directory does not look like \
                  an amplihack source checkout (no `.claude/`, no amplihack cargo workspace). \
-                 Run `amplihack install --local {}` to stage from it deliberately.",
-                path.display(),
-                path.display()
+                 Run `amplihack install --local {path}` to stage from it deliberately.",
+                path = sanitize_path(path),
+            ),
+            Self::VersionMismatch {
+                path,
+                label,
+                source_version,
+                binary_version,
+            } => write!(
+                f,
+                "ℹ️  Ignoring the framework source at {} ({label}): its version is \
+                 {source_version} and this binary is v{binary_version}.",
+                sanitize_path(path),
             ),
         }
     }
@@ -184,7 +231,19 @@ impl std::fmt::Display for ResolutionNote {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct FrameworkRootResolution {
     pub(super) resolved: Option<ResolvedFrameworkRoot>,
+    /// The version the gate read for `resolved`.
+    pub(super) version: Option<SourceVersion>,
+    /// A plain `install` stops at a mismatched source the user pointed at.
+    pub(super) refused: Option<SourceRefused>,
     pub(super) notes: Vec<ResolutionNote>,
+}
+
+/// What the version gate decides about a valid candidate (issue #1955).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum CandidateVerdict {
+    Accept(SourceVersion),
+    Skip(ResolutionNote),
+    Refuse(SourceRefused),
 }
 
 /// The environment resolution reads, gathered up front.
@@ -200,6 +259,43 @@ pub(super) struct FrameworkRootQuery {
     pub(super) current_exe: Option<PathBuf>,
     pub(super) compile_time_workspace_root: Option<PathBuf>,
     pub(super) home: Option<PathBuf>,
+}
+
+impl FrameworkRootQuery {
+    /// The environment of this process.
+    pub(super) fn from_environment() -> Self {
+        Self {
+            amplihack_home: std::env::var_os("AMPLIHACK_HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from),
+            current_dir: std::env::current_dir().ok(),
+            current_exe: std::env::current_exe().ok(),
+            compile_time_workspace_root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf),
+            home: std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from),
+        }
+    }
+
+    /// D5: sessions set `AMPLIHACK_HOME` to `~/.amplihack` themselves, so that
+    /// directory is judged as the staged install it is, never as a source the
+    /// user pointed at. A path that can't be canonicalized doesn't count.
+    pub(super) fn without_staged_home(&self) -> Self {
+        let mut query = self.clone();
+        if let (Some(amplihack_home), Some(home)) = (&self.amplihack_home, &self.home)
+            && let (Ok(named), Ok(staged)) = (
+                amplihack_home.canonicalize(),
+                home.join(".amplihack").canonicalize(),
+            )
+            && named == staged
+        {
+            query.amplihack_home = None;
+        }
+        query
+    }
 }
 
 /// Does `dir` hold a repository marker?
@@ -240,7 +336,13 @@ fn looks_like_amplihack_source(dir: &Path) -> bool {
     if dir.join(".claude").is_dir() {
         return true;
     }
-    let Ok(file) = fs::File::open(dir.join("Cargo.toml")) else {
+    // SEC-11: only a regular file, so a FIFO in a directory the user is only
+    // standing in can't block a launch.
+    let cargo_toml = dir.join("Cargo.toml");
+    if !fs::symlink_metadata(&cargo_toml).is_ok_and(|meta| meta.is_file()) {
+        return false;
+    }
+    let Ok(file) = fs::File::open(&cargo_toml) else {
         return false;
     };
     let mut head = Vec::new();
@@ -254,265 +356,246 @@ fn looks_like_amplihack_source(dir: &Path) -> bool {
     String::from_utf8_lossy(&head).contains(AMPLIHACK_WORKSPACE_MARKER)
 }
 
-/// Accept `candidate` if it carries a compatible `amplifier-bundle/`.
-///
-/// Records why a shape-valid bundle was turned down instead of failing mute.
-fn compatible_candidate(
-    candidate: &Path,
-    origin: FrameworkRootOrigin,
-    validate: &dyn Fn(&Path) -> Result<(), String>,
-    notes: &mut Vec<ResolutionNote>,
-) -> Option<PathBuf> {
-    if !candidate.join("amplifier-bundle").is_dir() {
-        return None;
-    }
-    match validate(candidate) {
-        Ok(()) => Some(candidate.to_path_buf()),
-        Err(error) => {
-            notes.push(ResolutionNote::IncompatibleBundle {
+/// The version gate, applied to each candidate that passes validation.
+type CandidateGate<'a> = dyn Fn(&Path, FrameworkRootOrigin) -> CandidateVerdict + 'a;
+
+/// The checks resolution applies to a candidate, and what they found.
+struct CandidateChecks<'a> {
+    validate: &'a dyn Fn(&Path) -> Result<(), String>,
+    gate: &'a CandidateGate<'a>,
+    notes: Vec<ResolutionNote>,
+}
+
+impl CandidateChecks<'_> {
+    /// Accept `candidate` if it carries a compatible `amplifier-bundle/` and
+    /// passes the gate. Validation comes first, so an incompatible source is
+    /// skipped whatever its version (D4).
+    ///
+    /// Records why a shape-valid bundle was turned down instead of failing mute.
+    fn check(
+        &mut self,
+        candidate: &Path,
+        origin: FrameworkRootOrigin,
+    ) -> Result<Option<SourceVersion>, SourceRefused> {
+        if !candidate.join("amplifier-bundle").is_dir() {
+            return Ok(None);
+        }
+        if let Err(error) = (self.validate)(candidate) {
+            self.notes.push(ResolutionNote::IncompatibleBundle {
                 path: candidate.to_path_buf(),
                 label: origin.label(),
                 error,
             });
-            None
+            return Ok(None);
         }
-    }
-}
-
-/// Bounded walk-up from `start`, accepting only amplihack source trees.
-///
-/// `report_out_of_scope` asks for a note naming the nearest bundle-carrying
-/// ancestor the bound kept us from reaching — the pre-#1275 answer — so a user
-/// who expected that directory to win learns why it did not, and how to ask
-/// for it on purpose.
-fn resolve_from_walk_up(
-    start: &Path,
-    origin: FrameworkRootOrigin,
-    report_out_of_scope: bool,
-    validate: &dyn Fn(&Path) -> Result<(), String>,
-    notes: &mut Vec<ResolutionNote>,
-) -> Option<PathBuf> {
-    let scope = walk_up_scope(start);
-    for dir in &scope {
-        if !dir.join("amplifier-bundle").is_dir() {
-            continue;
-        }
-        if !looks_like_amplihack_source(dir) {
-            notes.push(ResolutionNote::NotAmplihackSource { path: dir.clone() });
-            continue;
-        }
-        if let Some(root) = compatible_candidate(dir, origin, validate, notes) {
-            return Some(root);
+        match (self.gate)(candidate, origin) {
+            CandidateVerdict::Accept(version) => Ok(Some(version)),
+            CandidateVerdict::Skip(note) => {
+                self.notes.push(note);
+                Ok(None)
+            }
+            CandidateVerdict::Refuse(refused) => Err(refused),
         }
     }
 
-    if report_out_of_scope
-        && let Some(boundary) = scope.last()
-        && let Some(out_of_scope) = boundary
-            .ancestors()
-            .skip(1)
-            .find(|dir| dir.join("amplifier-bundle").is_dir())
-    {
-        notes.push(ResolutionNote::OutsideStartingRepository {
-            path: out_of_scope.to_path_buf(),
-            start: start.to_path_buf(),
-        });
+    /// Bounded walk-up from `start`, accepting only amplihack source trees.
+    ///
+    /// `report_out_of_scope` asks for a note naming the nearest bundle-carrying
+    /// ancestor the bound kept us from reaching — the pre-#1275 answer — so a user
+    /// who expected that directory to win learns why it did not, and how to ask
+    /// for it on purpose.
+    fn walk_up(
+        &mut self,
+        start: &Path,
+        origin: FrameworkRootOrigin,
+        report_out_of_scope: bool,
+    ) -> Result<Option<(PathBuf, SourceVersion)>, SourceRefused> {
+        let scope = walk_up_scope(start);
+        for dir in &scope {
+            if !dir.join("amplifier-bundle").is_dir() {
+                continue;
+            }
+            if !looks_like_amplihack_source(dir) {
+                self.notes
+                    .push(ResolutionNote::NotAmplihackSource { path: dir.clone() });
+                continue;
+            }
+            if let Some(version) = self.check(dir, origin)? {
+                return Ok(Some((dir.clone(), version)));
+            }
+        }
+
+        if report_out_of_scope
+            && let Some(boundary) = scope.last()
+            && let Some(out_of_scope) = boundary
+                .ancestors()
+                .skip(1)
+                .find(|dir| dir.join("amplifier-bundle").is_dir())
+        {
+            self.notes.push(ResolutionNote::OutsideStartingRepository {
+                path: out_of_scope.to_path_buf(),
+                start: start.to_path_buf(),
+            });
+        }
+
+        Ok(None)
     }
 
-    None
+    fn walk_candidates(
+        &mut self,
+        query: &FrameworkRootQuery,
+    ) -> Result<Option<(PathBuf, FrameworkRootOrigin, SourceVersion)>, SourceRefused> {
+        // 1. AMPLIHACK_HOME env var — explicit user override. No source-shape
+        //    requirement: the user named this directory on purpose.
+        let origin = FrameworkRootOrigin::AmplihackHome;
+        if let Some(home) = &query.amplihack_home
+            && let Some(version) = self.check(home, origin)?
+        {
+            return Ok(Some((home.clone(), origin, version)));
+        }
+
+        // 2. Bounded walk-up from the current directory — the checkout the user is
+        //    installing from (fix #341), and no further (issue #1275).
+        let origin = FrameworkRootOrigin::CurrentDirectory;
+        if let Some(cwd) = &query.current_dir
+            && let Some((root, version)) = self.walk_up(cwd, origin, true)?
+        {
+            return Ok(Some((root, origin, version)));
+        }
+
+        // 3. Bounded walk-up from the executable (in-tree dev binary under
+        //    `target/`). An installed binary has no enclosing checkout, so this
+        //    step now stops instead of climbing towards `$HOME`.
+        let origin = FrameworkRootOrigin::ExecutableParent;
+        if let Some(exe_dir) = query.current_exe.as_deref().and_then(Path::parent)
+            && let Some((root, version)) = self.walk_up(exe_dir, origin, false)?
+        {
+            return Ok(Some((root, origin, version)));
+        }
+
+        // 4. Compile-time workspace root (only meaningful for `cargo run` from
+        //    the workspace; demoted because for installed binaries it pins the
+        //    bundle to whatever was on disk at build time — issue #341).
+        let origin = FrameworkRootOrigin::CompileTimeWorkspaceRoot;
+        if let Some(workspace_root) = &query.compile_time_workspace_root
+            && let Some(version) = self.check(workspace_root, origin)?
+        {
+            return Ok(Some((workspace_root.clone(), origin, version)));
+        }
+
+        // 5. ~/.amplihack (from prior staged install)
+        let origin = FrameworkRootOrigin::PriorStagedInstall;
+        if let Some(home) = &query.home {
+            let dot = home.join(".amplihack");
+            if dot.join(".claude").is_dir()
+                && let Some(version) = self.check(&dot, origin)?
+            {
+                return Ok(Some((dot, origin, version)));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 /// Resolve the framework root from an explicit description of the environment.
 ///
 /// Pure with respect to the process: every input is an argument, including the
-/// bundle compatibility check, so the ordering and the bound are testable
-/// against fabricated directory layouts.
+/// bundle compatibility check and the version gate, so the ordering and the
+/// bound are testable against fabricated directory layouts.
+pub(super) fn resolve_framework_root_gated(
+    query: &FrameworkRootQuery,
+    validate: &dyn Fn(&Path) -> Result<(), String>,
+    gate: &CandidateGate<'_>,
+) -> FrameworkRootResolution {
+    let mut checks = CandidateChecks {
+        validate,
+        gate,
+        notes: Vec::new(),
+    };
+    let outcome = checks.walk_candidates(query);
+    let notes = checks.notes;
+    match outcome {
+        Ok(Some((root, origin, version))) => FrameworkRootResolution {
+            resolved: Some(ResolvedFrameworkRoot { root, origin }),
+            version: Some(version),
+            refused: None,
+            notes,
+        },
+        Ok(None) => FrameworkRootResolution {
+            notes,
+            ..FrameworkRootResolution::default()
+        },
+        Err(refused) => FrameworkRootResolution {
+            refused: Some(refused),
+            notes,
+            ..FrameworkRootResolution::default()
+        },
+    }
+}
+
+/// [`resolve_framework_root_gated`] with no version gate, for the tests of
+/// ordering and the walk-up bound.
+#[cfg(test)]
 pub(super) fn resolve_framework_root(
     query: &FrameworkRootQuery,
     validate: &dyn Fn(&Path) -> Result<(), String>,
 ) -> FrameworkRootResolution {
-    let mut notes = Vec::new();
-
-    // 1. AMPLIHACK_HOME env var — explicit user override. No source-shape
-    //    requirement: the user named this directory on purpose.
-    if let Some(home) = &query.amplihack_home
-        && let Some(root) = compatible_candidate(
-            home,
-            FrameworkRootOrigin::AmplihackHome,
-            validate,
-            &mut notes,
-        )
-    {
-        return FrameworkRootResolution {
-            resolved: Some(ResolvedFrameworkRoot {
-                root,
-                origin: FrameworkRootOrigin::AmplihackHome,
-            }),
-            notes,
-        };
-    }
-
-    // 2. Bounded walk-up from the current directory — the checkout the user is
-    //    installing from (fix #341), and no further (issue #1275).
-    if let Some(cwd) = &query.current_dir
-        && let Some(root) = resolve_from_walk_up(
-            cwd,
-            FrameworkRootOrigin::CurrentDirectory,
-            true,
-            validate,
-            &mut notes,
-        )
-    {
-        return FrameworkRootResolution {
-            resolved: Some(ResolvedFrameworkRoot {
-                root,
-                origin: FrameworkRootOrigin::CurrentDirectory,
-            }),
-            notes,
-        };
-    }
-
-    // 3. Bounded walk-up from the executable (in-tree dev binary under
-    //    `target/`). An installed binary has no enclosing checkout, so this
-    //    step now stops instead of climbing towards `$HOME`.
-    if let Some(exe_dir) = query.current_exe.as_deref().and_then(Path::parent)
-        && let Some(root) = resolve_from_walk_up(
-            exe_dir,
-            FrameworkRootOrigin::ExecutableParent,
-            false,
-            validate,
-            &mut notes,
-        )
-    {
-        return FrameworkRootResolution {
-            resolved: Some(ResolvedFrameworkRoot {
-                root,
-                origin: FrameworkRootOrigin::ExecutableParent,
-            }),
-            notes,
-        };
-    }
-
-    // 4. Compile-time workspace root (only meaningful for `cargo run` from
-    //    the workspace; demoted because for installed binaries it pins the
-    //    bundle to whatever was on disk at build time — issue #341).
-    if let Some(workspace_root) = &query.compile_time_workspace_root
-        && let Some(root) = compatible_candidate(
-            workspace_root,
-            FrameworkRootOrigin::CompileTimeWorkspaceRoot,
-            validate,
-            &mut notes,
-        )
-    {
-        return FrameworkRootResolution {
-            resolved: Some(ResolvedFrameworkRoot {
-                root,
-                origin: FrameworkRootOrigin::CompileTimeWorkspaceRoot,
-            }),
-            notes,
-        };
-    }
-
-    // 5. ~/.amplihack (from prior staged install)
-    if let Some(home) = &query.home {
-        let dot = home.join(".amplihack");
-        if dot.join(".claude").is_dir()
-            && let Some(root) = compatible_candidate(
-                &dot,
-                FrameworkRootOrigin::PriorStagedInstall,
-                validate,
-                &mut notes,
-            )
-        {
-            return FrameworkRootResolution {
-                resolved: Some(ResolvedFrameworkRoot {
-                    root,
-                    origin: FrameworkRootOrigin::PriorStagedInstall,
-                }),
-                notes,
-            };
-        }
-    }
-
-    FrameworkRootResolution {
-        resolved: None,
-        notes,
-    }
+    resolve_framework_root_gated(query, validate, &|_, _| {
+        CandidateVerdict::Accept(SourceVersion::Unknown)
+    })
 }
 
-/// Locate the bundled framework source from the amplihack-rs source tree.
+/// Locate a framework source with this binary's version, without any network
+/// access, for callers that read from it rather than stage a whole bundle.
 ///
 /// Returns the repo root (the directory that contains `amplifier-bundle/`
 /// and — for a complete source checkout — `.claude/`) together with the step
-/// that found it, without any network access.  Returns `None` when the source
-/// tree is not reachable (e.g. the binary was installed via `cargo install`
-/// and the original checkout was deleted).
+/// that found it. Returns `None` when no local source has this binary's version.
 ///
-/// Candidates that were turned down are printed, not swallowed: see
-/// [`ResolutionNote`].
+/// Candidates that were turned down go to the debug log, not stderr: this runs
+/// on every Codex launch, and only staging needs to say why a fetch runs.
 pub(super) fn find_bundled_framework_root() -> Option<ResolvedFrameworkRoot> {
-    let query = FrameworkRootQuery {
-        amplihack_home: std::env::var_os("AMPLIHACK_HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from),
-        current_dir: std::env::current_dir().ok(),
-        current_exe: std::env::current_exe().ok(),
-        compile_time_workspace_root: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf),
-        home: std::env::var_os("HOME")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from),
-    };
+    find_bundled_framework_root_for(&FrameworkRootQuery::from_environment(), crate::VERSION)
+}
 
-    let resolution = resolve_framework_root(&query, &|candidate| {
-        validate_framework_bundle_compatibility(candidate).map_err(|err| format!("{err:#}"))
-    });
+/// [`find_bundled_framework_root`] with its inputs passed in (D9).
+pub(super) fn find_bundled_framework_root_for(
+    query: &FrameworkRootQuery,
+    binary_version: &str,
+) -> Option<ResolvedFrameworkRoot> {
+    let resolution = framework_source::resolve_gated(
+        query,
+        binary_version,
+        MismatchRule::NoteAndContinue,
+        &|candidate| {
+            validate_framework_bundle_compatibility(candidate).map_err(|err| format!("{err:#}"))
+        },
+    );
     for note in &resolution.notes {
-        eprintln!("{note}");
+        tracing::debug!("{note}");
     }
     resolution.resolved
 }
 
-/// Fetch the framework repository into `destination`.
-///
-/// **Deprecated path** — only reached when `find_bundled_framework_root()`
-/// returns `None` (source tree unavailable).
-///
-/// Strategy (matches Python `amplihack install` behaviour):
-/// 1. If `git` is found on PATH, run `git clone --depth 1 <url> <dest>`.
-/// 2. If `git` is NOT on PATH, fall back to HTTP tarball download.
-pub(super) fn download_and_extract_framework_repo(destination: &Path) -> Result<PathBuf> {
-    if let Ok(git_path) = which_git() {
-        git_clone_framework_repo(&git_path, destination)?;
-        return find_compatible_framework_repo_root(destination, REPO_GIT_URL);
-    }
-
-    // git not available — fall back to HTTP tarball download
-    validate_download_url(REPO_ARCHIVE_URL)?;
-    let archive_bytes = http_get_with_retry(REPO_ARCHIVE_URL)
-        .with_context(|| format!("failed to download framework archive from {REPO_ARCHIVE_URL}"))?;
-    extract_archive(&archive_bytes, destination).with_context(|| {
-        format!(
-            "failed to extract framework archive into {}",
-            destination.display()
-        )
-    })?;
-    find_compatible_framework_repo_root(destination, REPO_ARCHIVE_URL)
-}
-
 /// Resolve the `git` binary path from PATH.
-fn which_git() -> Result<PathBuf> {
+pub(super) fn which_git() -> Result<PathBuf> {
     let Some(paths) = std::env::var_os("PATH") else {
         bail!("git not found on PATH");
     };
+    which_git_in(&paths)
+}
+
+/// [`which_git`] over an explicit PATH value. Relative entries are skipped
+/// (SEC-8): version reading runs in untrusted directories, and `.` on PATH must
+/// not hand git to whatever the directory holds.
+pub(super) fn which_git_in(paths: &std::ffi::OsStr) -> Result<PathBuf> {
     let candidates: &[&str] = if cfg!(windows) {
         &["git.exe", "git"]
     } else {
         &["git"]
     };
-    for dir in std::env::split_paths(&paths) {
+    for dir in std::env::split_paths(paths).filter(|dir| dir.is_absolute()) {
         for candidate in candidates {
             let path = dir.join(candidate);
             if is_executable_file(&path) {
@@ -536,22 +619,64 @@ fn is_executable_file(path: &Path) -> bool {
     path.is_file()
 }
 
-/// Run `git clone --depth 1 <REPO_GIT_URL> <destination>`.
-fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
-    let stdout_file = tempfile::NamedTempFile::new()
-        .context("failed to create temporary stdout file for git clone")?;
-    let stderr_file = tempfile::NamedTempFile::new()
-        .context("failed to create temporary stderr file for git clone")?;
-    let mut command = Command::new(git_path);
+/// What a bounded git call did. `status` is `None` when it hit its time limit.
+#[derive(Debug)]
+pub(super) struct GitOutput {
+    pub(super) status: Option<ExitStatus>,
+    pub(super) stdout: String,
+    pub(super) stderr: String,
+    /// All of stdout, including what `stdout` was truncated to leave out.
+    pub(super) stdout_bytes: u64,
+}
+
+impl GitOutput {
+    pub(super) fn succeeded(&self) -> bool {
+        self.status.is_some_and(|status| status.success())
+    }
+}
+
+/// The one way install runs git: scrubbed environment, hooks and credential
+/// helpers off, no stdin, its own session, and killed with its children at
+/// `timeout` (SEC-2, SEC-6).
+pub(super) fn run_bounded_git(
+    git: &Path,
+    args: &[&str],
+    cwd: &Path,
+    timeout: Duration,
+) -> Result<GitOutput> {
+    run_bounded_git_with(git, args, cwd, timeout, &|_| {})
+}
+
+/// [`run_bounded_git`] with `configure` applied to the command just before the
+/// spawn.
+pub(super) fn run_bounded_git_with(
+    git: &Path,
+    args: &[&str],
+    cwd: &Path,
+    timeout: Duration,
+    configure: &dyn Fn(&mut Command),
+) -> Result<GitOutput> {
+    let stdout_file =
+        tempfile::NamedTempFile::new().context("failed to create temporary stdout file for git")?;
+    let stderr_file =
+        tempfile::NamedTempFile::new().context("failed to create temporary stderr file for git")?;
+    let mut command = Command::new(git);
     amplihack_utils::litellm_proxy::scrub_inference_environment(&mut command);
+    for name in GIT_SCRUBBED_ENV {
+        command.env_remove(name);
+    }
     command
+        .env("GIT_TERMINAL_PROMPT", "0")
         .args([
-            "clone",
-            "--depth",
-            "1",
-            REPO_GIT_URL,
-            &destination.to_string_lossy(),
+            "-c",
+            GIT_HOOKS_OFF,
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "credential.helper=",
         ])
+        .args(args)
+        .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::from(
             stdout_file
@@ -567,7 +692,7 @@ fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
         ));
     #[cfg(unix)]
     // SAFETY: `pre_exec` runs after fork and before exec. `setsid` is async-signal-safe
-    // and isolates the git clone process tree so timeout cleanup can terminate it.
+    // and isolates the git process tree so timeout cleanup can terminate it.
     unsafe {
         command.pre_exec(|| {
             if libc::setsid() == -1 {
@@ -576,45 +701,35 @@ fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
             Ok(())
         });
     }
+    configure(&mut command);
     let mut child = command
         .spawn()
-        .with_context(|| format!("failed to spawn git clone for {REPO_GIT_URL}"))?;
+        .with_context(|| format!("failed to spawn {} in {}", git.display(), cwd.display()))?;
     let started = Instant::now();
     let status = loop {
-        if let Some(status) = child
-            .try_wait()
-            .context("failed to poll git clone status")?
-        {
-            break status;
+        if let Some(status) = child.try_wait().context("failed to poll git status")? {
+            break Some(status);
         }
-        if started.elapsed() >= GIT_CLONE_TIMEOUT {
-            terminate_git_clone(&mut child);
-            let stdout = read_limited(stdout_file.path())?;
-            let stderr = read_limited(stderr_file.path())?;
-            bail!(
-                "git clone timed out after {:?} for {REPO_GIT_URL} into {}\nstdout:\n{}\nstderr:\n{}",
-                GIT_CLONE_TIMEOUT,
-                destination.display(),
-                stdout,
-                stderr
-            );
+        if started.elapsed() >= timeout {
+            terminate_git(&mut child);
+            break None;
         }
-        thread::sleep(GIT_CLONE_POLL_INTERVAL);
+        thread::sleep(GIT_POLL_INTERVAL);
     };
-    if !status.success() {
-        let stdout = read_limited(stdout_file.path())?;
-        let stderr = read_limited(stderr_file.path())?;
-        bail!(
-            "git clone failed with status {status} for {REPO_GIT_URL} into {}\nstdout:\n{}\nstderr:\n{}",
-            destination.display(),
-            stdout,
-            stderr
-        );
-    }
-    Ok(())
+    let stdout_bytes = stdout_file
+        .as_file()
+        .metadata()
+        .context("failed to inspect captured git stdout")?
+        .len();
+    Ok(GitOutput {
+        status,
+        stdout: read_limited(stdout_file.path())?,
+        stderr: read_limited(stderr_file.path())?,
+        stdout_bytes,
+    })
 }
 
-fn terminate_git_clone(child: &mut std::process::Child) {
+fn terminate_git(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
         let pid = child.id() as libc::pid_t;
@@ -691,21 +806,11 @@ pub(super) fn find_framework_repo_root(root: &Path) -> Result<PathBuf> {
     )
 }
 
-pub(super) fn find_compatible_framework_repo_root(root: &Path, source: &str) -> Result<PathBuf> {
-    let repo_root = find_framework_repo_root(root)?;
-    if let Err(error) = validate_framework_bundle_compatibility(&repo_root) {
-        return Err(anyhow::anyhow!(
-            "downloaded framework bundle from {source} is incompatible at {}: {error}",
-            repo_root.display()
-        ));
-    }
-
-    Ok(repo_root)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::commands::profile::ROOT_ENV;
 
     /// Accept everything: isolates the *ordering and bound* under test from
     /// the (separately tested) bundle compatibility rules.
@@ -750,7 +855,7 @@ mod tests {
     fn walk_up_finds_the_checkout_that_contains_the_current_directory() {
         // Fix #341's workflow: `amplihack install` run from deep inside the
         // clone must stage from that clone.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let repo = temp.path().join("amplihack-rs");
         amplihack_source(&repo);
         git_dir(&repo);
@@ -776,7 +881,7 @@ mod tests {
         // well-formed amplihack source tree; the user is working in an
         // unrelated repository underneath it. The old walk-up staged from
         // `~/src`; nothing about the user's cwd asked for that.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let ancestor = temp.path().join("src");
         amplihack_source(&ancestor);
         let project = ancestor.join("unrelated-project");
@@ -809,7 +914,7 @@ mod tests {
         // An unpacked tarball has no `.git`. Installing from inside it still
         // works (this is the shape `bugfix_341_install_freshness` builds), but
         // it does not license a climb towards `$HOME`.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let checkout = temp.path().join("checkout");
         amplihack_source(&checkout);
         let nested = checkout.join("docs");
@@ -837,10 +942,28 @@ mod tests {
     }
 
     #[test]
+    fn a_scratch_directory_has_no_repository_marker_above_it() {
+        // Issue #1937: a stray `.git` in the scratch parent (for example
+        // `/tmp/.git`, written by a fixture that inherited a hook's GIT_DIR)
+        // makes every walk-up that starts below it stop there. The walk-up
+        // tests above all build their fixtures in a scratch directory, so the
+        // scope of a fresh one must be that directory alone.
+        let temp = crate::test_support::tempdir_outside_framework_roots();
+
+        assert_eq!(
+            walk_up_scope(temp.path()),
+            vec![temp.path().to_path_buf()],
+            "a repository marker above the scratch directory {} was found by the walk-up; \
+             remove the stray .git from its ancestors",
+            temp.path().display()
+        );
+    }
+
+    #[test]
     fn a_directory_that_merely_carries_a_bundle_is_not_an_install_source() {
         // The shape check alone cannot tell an amplihack checkout from any
         // project that happens to vendor a directory of the same shape.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let repo = temp.path().join("some-project");
         bundle_only(&repo);
         git_dir(&repo);
@@ -871,7 +994,7 @@ mod tests {
     fn a_git_file_marks_a_worktree_root() {
         // Linked worktrees and submodules carry `.git` as a file, not a
         // directory. Getting that wrong would silently unbound the walk.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let ancestor = temp.path().join("src");
         amplihack_source(&ancestor);
         let worktree = ancestor.join("wt-1275");
@@ -897,7 +1020,7 @@ mod tests {
     fn amplihack_home_is_taken_at_its_word() {
         // An explicit override needs no source markers and no walk: the user
         // named this directory.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let explicit = bundle_only(&temp.path().join("explicit"));
 
         let resolution = resolve_framework_root(
@@ -919,7 +1042,7 @@ mod tests {
 
     #[test]
     fn an_incompatible_bundle_is_reported_rather_than_dropped() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let explicit = bundle_only(&temp.path().join("explicit"));
 
         let resolution = resolve_framework_root(
@@ -941,7 +1064,7 @@ mod tests {
 
     #[test]
     fn the_executable_walk_up_stays_inside_its_own_checkout() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
 
         // In-tree dev binary: `<repo>/target/debug/amplihack` must still find
         // the repo it was built in.
@@ -991,7 +1114,7 @@ mod tests {
 
     #[test]
     fn a_prior_staged_install_is_the_last_local_step() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let home = temp.path().join("home");
         let staged = home.join(".amplihack");
         amplihack_source(&staged);
@@ -1017,7 +1140,7 @@ mod tests {
     fn the_current_checkout_outranks_the_compile_time_workspace() {
         // Fix #341 in one assertion: a binary built elsewhere must not pin the
         // bundle to whatever was on disk at build time.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let built_from = amplihack_source(&temp.path().join("build-host"));
         let repo = temp.path().join("amplihack-rs");
         amplihack_source(&repo);
@@ -1058,41 +1181,36 @@ mod tests {
     }
 
     #[cfg(unix)]
+    /// Written through `test_support::write_executable`, so no concurrent
+    /// fork can hold a write descriptor to the script when it is spawned
+    /// (`ETXTBSY`, issue #1973).
     fn fake_git(dir: &Path, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-
         let path = dir.join("git");
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_support::write_executable(&path, &format!("#!/bin/sh\n{body}\n"));
         path
     }
 
     #[cfg(unix)]
     #[test]
-    fn git_clone_reports_nonzero_exit_with_captured_output() {
-        let temp = tempfile::tempdir().unwrap();
+    fn bounded_git_reports_nonzero_exit_with_captured_output() {
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let fake = fake_git(
             temp.path(),
             "echo stdout-marker; echo stderr-marker >&2; exit 42",
         );
 
-        let err = git_clone_framework_repo(&fake, &temp.path().join("dest"))
-            .expect_err("non-zero git clone must fail");
-        let msg = format!("{err:#}");
+        let output =
+            run_bounded_git(&fake, &["fetch"], temp.path(), Duration::from_secs(30)).unwrap();
 
-        assert!(
-            msg.contains("status"),
-            "error must include exit status: {msg}"
-        );
-        assert!(
-            msg.contains("stdout-marker") && msg.contains("stderr-marker"),
-            "error must include captured stdout/stderr: {msg}"
-        );
+        assert_eq!(output.status.and_then(|status| status.code()), Some(42));
+        assert!(!output.succeeded());
+        assert!(output.stdout.contains("stdout-marker"), "{output:?}");
+        assert!(output.stderr.contains("stderr-marker"), "{output:?}");
     }
 
     #[test]
     fn read_limited_reports_discarded_bytes() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let output = temp.path().join("captured.log");
         fs::write(&output, vec![b'x'; CAPTURE_LIMIT + 7]).unwrap();
 
@@ -1104,38 +1222,55 @@ mod tests {
         );
     }
 
+    /// Issue #1765: the fake outlives the bound by far and the bound is loose,
+    /// so only a timeout that never fires can fail it. The orphan writes its
+    /// marker 5 s after it starts, long after the 250 ms timeout, so a
+    /// surviving descendant has time to show itself before the check.
     #[cfg(unix)]
     #[test]
-    fn git_clone_times_out_and_reaps_child() {
-        let temp = tempfile::tempdir().unwrap();
+    fn bounded_git_times_out_and_reaps_child() {
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let marker = temp.path().join("orphan-marker");
+        let marker_text = marker.to_str().expect("temporary paths are UTF-8");
+        assert!(
+            !marker_text.contains(['\'', '\n']),
+            "cannot single-quote {marker_text:?} for /bin/sh"
+        );
         let fake = fake_git(
             temp.path(),
             &format!(
-                "(/bin/sleep 1; echo orphan > '{}') & echo started; /bin/sleep 5",
-                marker.display()
+                "(/bin/sleep 5; echo orphan > '{marker_text}') & echo started; exec /bin/sleep 60"
             ),
         );
         let start = Instant::now();
 
-        let err = git_clone_framework_repo(&fake, &temp.path().join("dest"))
-            .expect_err("hung git clone must time out");
-        let msg = format!("{err:#}");
+        let output = run_bounded_git_with(
+            &fake,
+            &["fetch"],
+            temp.path(),
+            Duration::from_millis(250),
+            &|command: &mut Command| {
+                command.env("HOME", temp.path()).env_remove(ROOT_ENV);
+            },
+        )
+        .unwrap();
+        let elapsed = start.elapsed();
 
         assert!(
-            start.elapsed() < Duration::from_secs(2),
-            "test timeout should be bounded, elapsed {:?}",
-            start.elapsed()
+            elapsed < Duration::from_secs(30),
+            "test timeout should be bounded, elapsed {elapsed:?}"
         );
-        assert!(msg.contains("timed out"), "error must name timeout: {msg}");
+        assert!(output.status.is_none(), "a hung git must time out");
         assert!(
-            msg.contains("started"),
-            "timeout error must include captured output: {msg}"
+            output.stdout.contains("started"),
+            "a timeout must still return the captured output: {output:?}"
         );
-        thread::sleep(Duration::from_millis(1_200));
+        if let Some(remaining) = Duration::from_secs(6).checked_sub(start.elapsed()) {
+            thread::sleep(remaining);
+        }
         assert!(
             !marker.exists(),
-            "timeout cleanup must terminate git clone descendants"
+            "timeout cleanup must terminate git's descendants (the call took {elapsed:?})"
         );
     }
 }

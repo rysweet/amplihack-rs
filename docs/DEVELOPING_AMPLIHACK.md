@@ -181,9 +181,9 @@ OPENAI_API_KEY=your-key
 OPENAI_BASE_URL=https://your-endpoint.openai.azure.com
 AZURE_OPENAI_API_VERSION=2025-01-01-preview
 
-# Security Configuration
+# Security Configuration (XPIA is off by default; this opts in)
+XPIA_ENABLED=true              # 1|true|yes, any case; unset = off
 XPIA_SECURITY_LEVEL=MODERATE   # STRICT|HIGH|MODERATE|LOW
-XPIA_ENABLED=true
 XPIA_BASH_VALIDATION=true
 ```
 
@@ -922,8 +922,10 @@ class XPIADefender(XPIADefenseInterface):
 # Security level
 XPIA_SECURITY_LEVEL=MODERATE  # STRICT|HIGH|MODERATE|LOW
 
-# Feature flags
+# Opt in (XPIA is off unless this is 1, true or yes)
 XPIA_ENABLED=true
+
+# Feature flags
 XPIA_BASH_VALIDATION=true
 XPIA_CONTENT_SCANNING=true
 XPIA_LOGGING=true
@@ -1475,13 +1477,16 @@ uvx --from git+https://github.com/rysweet/amplihack-rs amplihack
 
 #### 5.4.1 XPIA Security Configuration
 
+XPIA is **off by default**. Set `XPIA_ENABLED=true` (or `1` / `yes`, any case) to opt in. The CWD deletion, CWD rename, commit-on-main and `--no-verify` guards run either way; on Claude Code and Copilot those guards' answers do not stop the call (#1773). The tmux guard and the tail-follow guard (#1794) run either way and answer with an enforced deny, which stops the call on every agent CLI. See the [XPIA Configuration Reference](reference/xpia-configuration.md).
+
 **Environment Variables**:
 
 ```bash
 # Security level (STRICT|HIGH|MODERATE|LOW)
 XPIA_SECURITY_LEVEL=MODERATE
 
-# Enable/disable XPIA defense
+# Opt in to XPIA defense. Off by default: unset, false, 0, no or any
+# other value leaves it off. Only 1, true or yes (any case) turn it on.
 XPIA_ENABLED=true
 
 # Feature flags
@@ -2227,9 +2232,9 @@ See: `~/.amplihack/.claude/commands/amplihack/my-command.md`
 ```bash
 # Create .env file with security settings
 cat > security.env << 'EOF'
-# Security configuration
-XPIA_SECURITY_LEVEL=MODERATE
+# Security configuration (XPIA is off by default; this opts in)
 XPIA_ENABLED=true
+XPIA_SECURITY_LEVEL=MODERATE
 XPIA_BASH_VALIDATION=true
 XPIA_CONTENT_SCANNING=true
 XPIA_LOGGING=true
@@ -3044,8 +3049,8 @@ amplihack claude --auto --max-turns 20 -- -p "task"
 # Force staging (UVX mode)
 amplihack claude --force-staging
 
-# With system prompt
-amplihack claude --append-system-prompt ./prompt.md
+# With your own appended system prompt (replaces amplihack's contract)
+amplihack claude -- --append-system-prompt-file ./prompt.md
 
 # Forward args to Claude
 amplihack claude -- --model claude-sonnet-4-5-20250929

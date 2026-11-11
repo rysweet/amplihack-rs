@@ -40,14 +40,25 @@ fn install_scoped(
     home: &Path,
 ) -> Result<bool> {
     // Scope capture precedes probing and any optional-provider mutations.
-    let probe = native(binary, &["plugin", "list", "--json"], home);
+    let selected = crate::freshness::codex_selected();
+    let probe = native_with_timeout(
+        binary,
+        &["plugin", "list", "--json"],
+        home,
+        probe_timeout(selected),
+    );
     path_scope::check()?;
-    if probe.is_err() {
-        if crate::freshness::codex_selected() {
-            bail!("selected Codex requires native plugin support; update Codex and retry");
+    if let Err(error) = probe {
+        if !selected {
+            println!(
+                "  ⚠️ Optional Codex plugin skipped: native plugin inventory probe failed: {error:#}"
+            );
+            return Ok(false);
         }
-        println!("  ⚠️ Optional Codex plugin skipped: native plugin support unavailable");
-        return Ok(false);
+        return Err(classify_probe_failure(
+            error,
+            plugin_capability(binary, home),
+        ));
     }
     path_scope::check()?;
     fs::create_dir_all(root)?;

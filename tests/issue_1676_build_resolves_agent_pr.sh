@@ -30,6 +30,9 @@
 #
 # Run: bash tests/issue_1676_build_resolves_agent_pr.sh
 set -uo pipefail
+# Issue #1764: no git this script runs may wait on a credential prompt.
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
+exec </dev/null
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$REPO_ROOT/amplifier-bundle/recipes/autodrive-build.yaml"
 BASH_BIN="$(command -v bash)"
@@ -113,7 +116,7 @@ ws_json() {
 run() {
   local home="$1" wt="$2" br="$3"; shift 3
   : > "$GH_LOG"
-  ( cd "$REPO" && env -i HOME="$HOME_D" PATH="$STUB:/usr/bin:/bin" GH_LOG="$GH_LOG" \
+  ( cd "$REPO" && env -i GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true HOME="$HOME_D" PATH="$STUB:/usr/bin:/bin" GH_LOG="$GH_LOG" \
       AMPLIHACK_HOME="$home" REPO_PATH="$REPO" \
       BUILD_PREFLIGHT="${PF:-$PREFLIGHT}" RECIPE_VAR_build_preflight="${PF:-$PREFLIGHT}" \
       NO_MERGE=false RECIPE_VAR_no_merge=false \

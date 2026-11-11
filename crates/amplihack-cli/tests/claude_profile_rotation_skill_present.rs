@@ -49,6 +49,10 @@ fn help(args: &[&str]) -> String {
         .arg("--help")
         .env_clear()
         .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+        .env(
+            crate::isolated_amplihack::PROC_ROOT_ENV,
+            crate::isolated_amplihack::shared_empty_proc_root(),
+        )
         .env("TMPDIR", std::env::temp_dir())
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", tmp.path())
@@ -100,10 +104,13 @@ fn skill_covers_the_commands_and_the_credential_rule() {
 #[test]
 fn every_flag_the_skill_cites_exists() {
     let content = skill_md();
+    // `profile usage` too: the skill cites its `--utc` and `--table`
+    // (issue #1813).
     let known = format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
         help(&["profile", "rotate"]),
-        help(&["profile", "rotate", "start"])
+        help(&["profile", "rotate", "start"]),
+        help(&["profile", "usage"])
     );
     let re = regex::Regex::new(r"(?:^|[\s`(])(--[a-z][a-z-]+)").unwrap();
     let mut cited: Vec<&str> = re
@@ -125,7 +132,7 @@ fn every_flag_the_skill_cites_exists() {
         }
         assert!(
             known.contains(f),
-            "SKILL.md cites {f}, which rotate does not accept"
+            "SKILL.md cites {f}, which neither rotate nor usage accepts"
         );
     }
     assert!(

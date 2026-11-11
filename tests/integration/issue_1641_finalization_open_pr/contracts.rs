@@ -60,10 +60,21 @@ fn open_pr_path_uses_only_typed_evidence_and_bounded_read_only_gh() {
         "workflow_finalization_pr_signal.sh must stay within the 300-line budget"
     );
 
+    // The open-PR check lives in its own brick (#1714) and the validator
+    // calls it; neither reads prose or raw pre-commit reports.
+    let open_pr = tool_text("workflow_finalization_open_pr.sh");
+    assert!(
+        open_pr.contains("finalization_open_pr_signal"),
+        "the open-PR check must use the pr signal helper"
+    );
+    assert!(
+        !open_pr.contains("agentic_finalizer_narrative") && !open_pr.contains("precommit_results"),
+        "the open-PR check must not read prose or raw precommit reports"
+    );
     let validate = tool_text("workflow_finalization_validate.sh");
     assert!(
-        validate.contains("finalization_open_pr_signal"),
-        "validator must use the pr signal helper"
+        validate.contains("confirm_open_pr"),
+        "validator must use the open-PR check"
     );
     assert!(
         validate.contains("EXISTING_OPEN_PR"),
@@ -92,8 +103,8 @@ fn open_pr_path_runs_after_no_op_and_before_the_default_failure() {
         .find("classify_success \"EXISTING_OPEN_PR\"")
         .expect("EXISTING_OPEN_PR success path");
     let default = validate
-        .rfind("fail_result \"FAILED_IMPLEMENTATION\"")
-        .expect("default FAILED_IMPLEMENTATION");
+        .rfind("finalization_fail_or_handoff_open_pr \"FAILED_IMPLEMENTATION\"")
+        .expect("default FAILED_IMPLEMENTATION (#1714 routes it through the hand-off brick)");
     let hollow = validate
         .find("\"HOLLOW_SUCCESS\"")
         .expect("hollow-success blocker");

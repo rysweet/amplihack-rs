@@ -1,32 +1,42 @@
-//! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude`
-//! on the account with the most capacity left, by moving logins between
-//! `~/.claude` and the profiles. One-shot, `--dry-run`, and a background
-//! `watch` with `start`, `stop` and `status`, which launches start on their
-//! own while auto-switch is on (`autostart`). `profile switch NAME` moves a
-//! login with the same swap and pins rotation to it (`switch`, `pin`). See
-//! the Rotate section of docs/reference/profile-command.md.
-//!
-//! Login files are never opened, read, copied or hashed: they are checked
-//! with `lstat` and moved with rename and exchange calls only.
-
+//! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude` on
+//! the account with the most capacity left; `profile switch` uses the same swap.
+//! See docs/reference/profile-command.md.
+#[cfg(unix)]
+mod account;
+#[cfg(unix)]
+mod adopt;
 #[cfg(unix)]
 mod alert;
 #[cfg(unix)]
 mod autostart;
 #[cfg(unix)]
-mod backup;
+pub(super) mod backup;
 #[cfg(unix)]
 mod candidates;
 #[cfg(unix)]
+mod capacity;
+#[cfg(unix)]
+pub(in crate::commands::profile) mod change_log;
+#[cfg(unix)]
 mod control;
+#[cfg(unix)]
+pub(super) mod cred_identity;
 #[cfg(unix)]
 mod cycle;
 #[cfg(unix)]
-mod daemon;
+pub(super) mod daemon;
 #[cfg(unix)]
 mod damp;
 #[cfg(unix)]
-mod decide;
+pub(super) mod decide;
+#[cfg(unix)]
+mod dry_run;
+#[cfg(unix)]
+mod exhausted;
+#[cfg(unix)]
+mod fresh;
+#[cfg(unix)]
+mod fresh_msg;
 #[cfg(unix)]
 mod gate_record;
 #[cfg(unix)]
@@ -36,15 +46,27 @@ mod hand_fields;
 #[cfg(unix)]
 mod handfix;
 #[cfg(unix)]
+mod handfix_msg;
+#[cfg(unix)]
+mod handfix_plan;
+#[cfg(unix)]
 mod held;
 #[cfg(unix)]
-mod holders;
+mod history;
 #[cfg(unix)]
 pub(super) mod identify;
+#[cfg(unix)]
+mod identity_claims;
+#[cfg(unix)]
+mod inflight;
+#[cfg(unix)]
+pub(super) mod key_check;
 #[cfg(unix)]
 pub(super) mod ledger;
 #[cfg(unix)]
 mod log;
+#[cfg(unix)]
+mod login_identity;
 #[cfg(unix)]
 mod lost;
 #[cfg(unix)]
@@ -60,7 +82,11 @@ mod overflow_msg;
 #[cfg(unix)]
 mod overflow_record;
 #[cfg(unix)]
+mod owner;
+#[cfg(unix)]
 mod pin;
+#[cfg(unix)]
+pub(super) mod plan_room;
 #[cfg(unix)]
 pub(super) mod platform_block;
 #[cfg(unix)]
@@ -70,30 +96,45 @@ mod prelude;
 #[cfg(unix)]
 mod recover;
 #[cfg(unix)]
+mod revalidate;
+#[cfg(unix)]
+pub(super) mod seed;
+#[cfg(unix)]
+mod sessions_daily;
+#[cfg(unix)]
 mod settings;
 #[cfg(unix)]
 mod spend_blocks;
 #[cfg(unix)]
 mod swap;
 #[cfg(unix)]
+mod swap_authorize;
+#[cfg(unix)]
+mod swap_back;
+#[cfg(unix)]
 mod swap_check;
+#[cfg(unix)]
+mod swap_expect;
+#[cfg(unix)]
+mod swap_finish;
+#[cfg(unix)]
+mod swap_record;
 #[cfg(unix)]
 mod switch;
 #[cfg(all(test, unix))]
 pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 
 pub use super::rotate_args::{RotateAction, RotateArgs, TuneFlags};
+pub use candidates::login_unusable;
+pub use overflow_msg::{CheckNote, alert_key_held_session, per_token_off_key, per_token_reason};
+pub use overflow_record::append_to_log;
 
+#[cfg(all(test, unix))]
+mod tests;
 #[cfg(all(test, unix))]
 mod tests_autostart;
 #[cfg(all(test, unix))]
 mod tests_daemon;
-#[cfg(all(test, unix))]
-mod tests_damp;
-#[cfg(all(test, unix))]
-mod tests_decide;
-#[cfg(all(test, unix))]
-mod tests_gate_record;
 #[cfg(all(test, unix))]
 mod tests_handfix;
 #[cfg(all(test, unix))]
@@ -105,29 +146,43 @@ mod tests_home_unreadable;
 #[cfg(all(test, unix))]
 mod tests_identify;
 #[cfg(all(test, unix))]
-mod tests_ledger;
+mod tests_issue_1804;
 #[cfg(all(test, unix))]
-mod tests_live_readers;
+mod tests_issue_1804_cycle;
+#[cfg(all(test, unix))]
+mod tests_issue_1845_cycle;
+#[cfg(all(test, unix))]
+mod tests_issue_1845_swap;
+#[cfg(all(test, unix))]
+mod tests_issue_1870;
+#[cfg(all(test, unix))]
+mod tests_issue_1870_cycle;
+#[cfg(all(test, unix))]
+mod tests_issue_1870_probe;
+#[cfg(all(test, unix))]
+mod tests_issue_1886;
+#[cfg(all(test, unix))]
+mod tests_issue_1886_cycle;
+#[cfg(all(test, unix))]
+mod tests_key_check;
 #[cfg(all(test, unix))]
 mod tests_log;
 #[cfg(all(test, unix))]
-mod tests_overflow;
+mod tests_measure;
 #[cfg(all(test, unix))]
 mod tests_pin;
 #[cfg(all(test, target_os = "linux"))]
 mod tests_pin_overflow;
 #[cfg(all(test, unix))]
-mod tests_pin_platform;
-#[cfg(all(test, unix))]
-mod tests_platform;
-#[cfg(all(test, unix))]
-mod tests_platform_block;
-#[cfg(all(test, unix))]
-mod tests_platform_identify;
-#[cfg(all(test, unix))]
 mod tests_recover;
 #[cfg(all(test, unix))]
-mod tests_settings;
+mod tests_revalidate;
+#[cfg(all(test, unix))]
+mod tests_revalidate_cause;
+#[cfg(all(test, unix))]
+mod tests_revalidate_unit;
+#[cfg(all(test, unix))]
+mod tests_sessions_daily;
 #[cfg(test)]
 mod tests_source_scan;
 #[cfg(all(test, unix))]
@@ -142,32 +197,26 @@ mod tests_switch_candidates;
 mod tests_switch_hold;
 #[cfg(all(test, unix))]
 mod tests_switch_race;
+use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
 
-use super::name::ProfileName;
-use super::root_config::RootSource;
-use super::store::ProfileStore;
-
+// Issue #1797: `Probes` is what the usage history records from a cycle.
+#[cfg(unix)]
+pub(super) use self::{identify::is_live, observe::Probes, platform_block::platform_live_line};
 #[cfg(unix)]
 pub(in crate::commands::profile) use autostart::autostart_line;
 #[cfg(unix)]
-pub(crate) use autostart::autostart_on_launch;
+pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rotator};
 #[cfg(unix)]
-pub(super) use control::{clear_overflow_block, overflow_blocks};
-#[cfg(unix)]
-pub(super) use log::timestamp;
-#[cfg(unix)]
-pub(crate) use older_readers::warn_foreign_rotator;
+pub(super) use {control::clear_overflow_block, control::overflow_blocks, log::timestamp};
 
 // Auto-switch's overflow gate (`gate_record`): the running rotator's own
-// settings, or, when no rotator runs, the `AMPLIHACK_ROTATE_*` variables.
 #[cfg(all(test, unix))]
 pub(super) use gate_record::effective_at as overflow_gate_at;
 #[cfg(unix)]
 pub(super) use gate_record::{GateSource, effective as overflow_gate, line as overflow_gate_line};
 
-/// The tail of the warning printed after `profile switch NAME` (issue
-/// #1691) while a rotator from another amplihack binary runs: one started
-/// before the upgrade does not read the switch hold and may swap away.
+/// The tail of the warning after `profile switch NAME` (#1691) while a rotator
+/// of another amplihack binary, which ignores the switch hold, runs.
 #[cfg(unix)]
 const FOREIGN_IGNORES_HOLD: &str = "runs another amplihack binary and ignores the switch \
     hold; restart it: amplihack profile rotate stop && amplihack profile rotate start";
@@ -186,40 +235,6 @@ fn foreign_note_for(
     })
 }
 
-/// Whether rotate live-profile detection names `name` as the login in
-/// `<home>/.claude` (issue #1700: the launch guard's "held"). Any error, a
-/// hand change, an ambiguous or an adopted login is not.
-#[cfg(unix)]
-pub(super) fn is_live(
-    store: &super::store::ProfileStore,
-    home: Option<&std::path::Path>,
-    name: &super::name::ProfileName,
-) -> bool {
-    let Some(home) = home else {
-        return false;
-    };
-    let rs = ledger::RotateState::new(store.root());
-    matches!(identify::live(store, &rs, home), Ok((identify::LiveId::Known(n), _)) if &n == name)
-}
-
-/// The status line while the rotate ledger says the live login is an
-/// API-key profile (issue #1700), for `rotate status` and `auto-switch
-/// status`. The ledger is the only evidence; nothing is probed.
-#[cfg(unix)]
-pub(super) fn platform_live_line(root: &std::path::Path) -> Option<String> {
-    let l = ledger::RotateState::new(root).load_ledger().ok()??;
-    if l.live_kind.as_deref() != Some(ledger::LIVE_KIND_PLATFORM) {
-        return None;
-    }
-    let live = l.live?;
-    let since = l
-        .since
-        .map_or_else(|| "unknown".to_string(), log::timestamp);
-    Some(format!(
-        "~/.claude is on API key profile {live}: work is billed per token (since {since})"
-    ))
-}
-
 /// After a successful `profile switch NAME`: one line on stderr when the
 /// running rotator would ignore the hold. The switch itself succeeded, so
 /// this never changes the exit code.
@@ -227,7 +242,7 @@ pub(super) fn platform_live_line(root: &std::path::Path) -> Option<String> {
 fn warn_switch_hold(root: &std::path::Path) {
     let exe = std::env::current_exe().ok();
     let rs = ledger::RotateState::new(root);
-    if let Some(note) = foreign_note_for(&rs, std::path::Path::new("/proc"), exe.as_deref()) {
+    if let Some(note) = foreign_note_for(&rs, &daemon::proc_root(), exe.as_deref()) {
         eprintln!("{note}");
     }
 }
@@ -241,7 +256,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
     #[cfg(unix)]
     {
         let env = |k: &str| std::env::var_os(k);
-        let home = home_dir();
+        let home = settings::home_dir();
         match args.action {
             None => {
                 let s = settings::resolve(&args.tune, None, &env)?;
@@ -254,19 +269,26 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                     warn_foreign_rotator(Some(store.root()));
                 }
                 let mut ctx = cycle::Ctx::new(store.clone(), home?, s);
+                ctx.reread = Some(fresh::reread_as_configured);
                 cycle::run_cycle(&mut ctx, mode)?;
             }
             Some(RotateAction::Start(w)) => {
+                if w.supervised.is_some() {
+                    let why = "--supervised applies to rotate watch only";
+                    return Err(super::ProfileError::RotateRefused(why.into()).into());
+                }
                 let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
                 daemon::start(store, &home?, &s)?;
             }
             Some(RotateAction::Watch(w)) => {
+                owner::check_flag(&w.supervised)?;
                 let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
-                daemon::watch(store, home?, s, w.spawned)?;
+                daemon::watch(store, home?, s, w.spawned, w.supervised.clone())?;
             }
             Some(RotateAction::Stop) => control::stop(store, home.as_deref().ok())?,
             Some(RotateAction::Status) => control::status(store, home.as_deref().ok(), source),
             Some(RotateAction::Autostart { state }) => autostart::cli(store, state.as_deref())?,
+            Some(RotateAction::Owner { action }) => owner::cli(store, action.is_some())?,
         }
         Ok(())
     }
@@ -277,28 +299,16 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
     }
 }
 
-/// `$HOME`, which holds the live `~/.claude`.
-#[cfg(unix)]
-fn home_dir() -> Result<std::path::PathBuf, super::ProfileError> {
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| super::ProfileError::RotateRefused("HOME is not set".into()))
-}
-
-/// `profile switch NAME` (issue #1691): moves NAME's login into `~/.claude`
-/// with the rotator's swap, pins rotation to it and makes it the default.
-/// Prints three lines. When the login moved but a later write failed, the
-/// error says so; it is not a refusal, since something did change. When the
-/// live login cannot be moved, NAME is still made the default for new
-/// launches, that is printed, and the refusal exits non-zero.
+/// `profile switch NAME` swaps the login and pins rotation. A later failed
+/// write is an error, not a refusal. If the login cannot move, NAME is still
+/// made the default for new launches and printed, then the refusal exits 1.
 pub(in crate::commands::profile) fn switch_live(
     store: &ProfileStore,
     name: &ProfileName,
 ) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
-        let home = home_dir()?;
+        let home = settings::home_dir()?;
         // Judged before the move, from the profile's own login (or from
         // `~/.claude` when it is already live), as the kind guard does.
         let platform = super::kind::kind_of(store, name, &home) == super::kind::Kind::Platform;

@@ -2,7 +2,8 @@
 //! profile down to the nested `amplihack` launch.
 
 use super::command_builder::{
-    classic_run_script, profile_exports, recipe_run_script, sh_single_quote,
+    CREATE_ISSUE_ENV, build_resume_context_with, classic_run_script, profile_exports,
+    recipe_run_script, sh_single_quote,
 };
 use super::models::Workstream;
 use std::collections::HashMap;
@@ -22,7 +23,14 @@ fn getter(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
 }
 
 /// The auto-switch substitution seam with no substitution (switch off).
-fn keep(_inherited: &str) -> Option<String> {
+pub(super) fn keep(_inherited: &str) -> Option<String> {
+    None
+}
+
+/// Issue #2014: an injected environment in which no variable is set. Tests
+/// pass it to the launcher seam so that they never read the process
+/// environment, which other tests in the same binary may change.
+pub(super) fn no_env(_key: &str) -> Option<OsString> {
     None
 }
 
@@ -35,22 +43,6 @@ pub(super) fn workstream(dir: &Path) -> Workstream {
         "default-workflow".to_string(),
         dir,
         dir,
-    )
-}
-
-/// Runs `f` with both profile variables set to `values` (or removed),
-/// restoring the previous values afterwards.
-pub(super) fn with_profile_env<T>(
-    profile: Option<&str>,
-    root: Option<&str>,
-    f: impl FnOnce() -> T,
-) -> T {
-    crate::test_support::with_env(
-        &[
-            (PROFILE_VAR, profile.map(std::ffi::OsStr::new)),
-            (ROOT_VAR, root.map(std::ffi::OsStr::new)),
-        ],
-        f,
     )
 }
 
@@ -112,6 +104,12 @@ fn hostile_root_round_trips_through_bash_without_running_anything() {
     let exports =
         profile_exports(getter(&[(PROFILE_VAR, "work"), (ROOT_VAR, root)]), keep).unwrap();
     let script = format!("{exports}printf '%s' \"$AMPLIHACK_CLAUDE_PROFILE_ROOT\"");
+    // `bash` is resolved from PATH, which other tests point at an empty
+    // tempdir while holding the env lock; hold it so the spawn cannot see
+    // their PATH and fail with ENOENT (#1730, #1731).
+    let _env = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let out = Command::new("bash")
         .arg("-c")
         .arg(&script)
@@ -130,9 +128,14 @@ fn hostile_root_round_trips_through_bash_without_running_anything() {
 fn recipe_run_script_exports_profile_when_set() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = workstream(tmp.path());
-    let script = with_profile_env(Some("work"), Some("/p/it's"), || {
-        recipe_run_script(&ws, "amplihack claude").unwrap()
-    });
+    // Issue #2014: the environment is injected, never read from the process.
+    let script = recipe_run_script(
+        &ws,
+        "amplihack claude",
+        getter(&[(PROFILE_VAR, "work"), (ROOT_VAR, "/p/it's")]),
+        keep,
+    )
+    .unwrap();
     assert!(
         script.contains("export AMPLIHACK_CLAUDE_PROFILE='work'\n"),
         "{script}"
@@ -151,9 +154,13 @@ fn recipe_run_script_exports_profile_when_set() {
 fn classic_run_script_exports_profile_when_set() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = workstream(tmp.path());
-    let script = with_profile_env(Some("work"), Some("/p"), || {
-        classic_run_script(&ws, "amplihack claude").unwrap()
-    });
+    let script = classic_run_script(
+        &ws,
+        "amplihack claude",
+        getter(&[(PROFILE_VAR, "work"), (ROOT_VAR, "/p")]),
+        keep,
+    )
+    .unwrap();
     assert!(
         script.contains("export AMPLIHACK_CLAUDE_PROFILE='work'\n"),
         "{script}"
@@ -172,13 +179,12 @@ fn classic_run_script_exports_profile_when_set() {
 fn run_scripts_have_no_profile_exports_when_unset_or_empty() {
     let tmp = tempfile::tempdir().unwrap();
     let ws = workstream(tmp.path());
-    for (profile, root) in [(None, None), (Some(""), Some(""))] {
-        let (recipe, classic) = with_profile_env(profile, root, || {
-            (
-                recipe_run_script(&ws, "amplihack claude").unwrap(),
-                classic_run_script(&ws, "amplihack claude").unwrap(),
-            )
-        });
+    let unset: &[(&str, &str)] = &[];
+    let empty: &[(&str, &str)] = &[(PROFILE_VAR, ""), (ROOT_VAR, "")];
+    for pairs in [unset, empty] {
+        // `impl Fn` getters are not `Copy`: build one per call.
+        let recipe = recipe_run_script(&ws, "amplihack claude", getter(pairs), keep).unwrap();
+        let classic = classic_run_script(&ws, "amplihack claude", getter(pairs), keep).unwrap();
         for script in [recipe, classic] {
             assert!(!script.contains(PROFILE_VAR), "{script}");
         }
@@ -210,25 +216,28 @@ fn profile_exports_refuses_non_utf8_values_without_printing_them() {
 #[cfg(unix)]
 #[test]
 fn run_scripts_refuse_a_non_utf8_profile_root() {
-    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::ffi::OsStringExt;
     let tmp = tempfile::tempdir().unwrap();
     let ws = workstream(tmp.path());
-    let bad_root = std::ffi::OsStr::from_bytes(&[b'/', 0xff]);
-    let (recipe, classic) = crate::test_support::with_env(
-        &[
-            (PROFILE_VAR, Some(std::ffi::OsStr::new("work"))),
-            (ROOT_VAR, Some(bad_root)),
-        ],
-        || {
-            (
-                recipe_run_script(&ws, "amplihack claude"),
-                classic_run_script(&ws, "amplihack claude"),
-            )
-        },
-    );
-    for result in [recipe, classic] {
+    // Issue #2014: the invalid root is injected, so this test no longer sets
+    // AMPLIHACK_CLAUDE_PROFILE_ROOT in the process for other tests to see.
+    let bad = |k: &str| match k {
+        PROFILE_VAR => Some(OsString::from("work")),
+        ROOT_VAR => Some(OsString::from_vec(vec![b'/', 0xff])),
+        _ => None,
+    };
+    let results = [
+        recipe_run_script(&ws, "amplihack claude", bad, keep),
+        classic_run_script(&ws, "amplihack claude", bad, keep),
+    ];
+    for result in results {
         let msg = format!("{:#}", result.expect_err("script must not be built"));
         assert!(msg.contains(ROOT_VAR), "{msg}");
+        assert!(msg.contains("not valid UTF-8"), "{msg}");
+        assert!(
+            !msg.contains('\u{fffd}'),
+            "value must not be printed: {msg}"
+        );
     }
 }
 
@@ -272,4 +281,21 @@ fn profile_exports_quotes_the_substituted_name() {
         out.contains("export AMPLIHACK_CLAUDE_PROFILE='it'\\''s'\n"),
         "{out}"
     );
+}
+
+/// Issue #1881: the parent's create_issue opt-in reaches each workstream's
+/// recipe context; without it the workstream keeps the local default.
+#[test]
+fn resume_context_forwards_create_issue_only_when_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = workstream(dir.path());
+    let ctx =
+        build_resume_context_with(&ws, |k| (k == CREATE_ISSUE_ENV).then(|| "true".to_string()));
+    assert_eq!(ctx.get("create_issue"), Some(&serde_json::json!("true")));
+    assert_eq!(ctx.get("issue_number"), Some(&serde_json::json!(1567)));
+
+    let ctx = build_resume_context_with(&ws, |_| None);
+    assert!(!ctx.contains_key("create_issue"));
+    let ctx = build_resume_context_with(&ws, |_| Some("  ".to_string()));
+    assert!(!ctx.contains_key("create_issue"));
 }

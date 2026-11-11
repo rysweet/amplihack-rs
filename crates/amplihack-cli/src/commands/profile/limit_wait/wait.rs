@@ -1,14 +1,15 @@
 //! The wait itself (issue #1618), over a `WaitDeps` so tests drive it with
 //! their own clock. Each pass checks, in order: a stop signal, the end of
-//! the session that started the step, the deadline, the login fingerprint
-//! and the rotator's capacity (every 30 s), and the progress line (every
-//! 60 s), then sleeps at most one second. The login baseline is the first
-//! value two probes in a row agree on, and a change is a different value
-//! that two probes in a row agree on, so a torn or failed read of
-//! `.claude.json`, first or later, never ends the wait.
+//! the session that started the step, the deadline, the login fingerprint,
+//! the rotator's capacity and, on a capacity wait, another login's capacity
+//! (every 30 s), and the progress line (every 60 s), then sleeps at most one
+//! second. The login baseline is the first value two probes in a row agree
+//! on, and a change is a different value that two probes in a row agree on,
+//! so a torn or failed read of `.claude.json`, first or later, never ends the
+//! wait.
 
 use super::events::{Event, line};
-use super::plan::{Bound, Plan};
+use super::plan::{Bound, Plan, PlanKind};
 use std::time::Duration;
 
 /// How often the login fingerprint is taken again.
@@ -31,6 +32,8 @@ pub(crate) trait WaitDeps {
     fn session_ended(&mut self) -> bool;
     /// The rotator recorded a cycle with capacity after `start`.
     fn rotator_capacity(&mut self, start: i64) -> bool;
+    /// A reading taken after `start` shows another stored login has capacity.
+    fn other_capacity(&mut self, start: i64) -> bool;
     fn log(&mut self, line: &str);
 }
 
@@ -42,6 +45,10 @@ pub(crate) enum End {
     StepTimeout,
     LoginChanged,
     RotatorCapacity,
+    /// A capacity wait's `max_wait` deadline passed; nothing lifted the limit.
+    CapacityExpired,
+    /// A reading showed that another stored login has capacity.
+    OtherCapacity,
     SessionEnded,
     Signal(i32),
 }
@@ -54,23 +61,29 @@ impl End {
             End::StepTimeout => "step timeout",
             End::LoginChanged => "login changed",
             End::RotatorCapacity => "rotator capacity",
+            End::CapacityExpired => "capacity expired",
+            End::OtherCapacity => "login capacity",
             End::SessionEnded => "session ended",
             End::Signal(_) => "signal",
         }
     }
 
-    fn at_deadline(bound: Bound) -> Self {
-        match bound {
-            Bound::ResetMargin => End::ResetReached,
-            Bound::MaxWait => End::MaxReached,
-            Bound::StepTimeout => End::StepTimeout,
+    fn at_deadline(bound: Bound, kind: PlanKind) -> Self {
+        match (bound, kind) {
+            (Bound::StepTimeout, _) => End::StepTimeout,
+            // On a capacity wait the reset is the failed login's own: it has
+            // recovered, so the step is retried.
+            (Bound::ResetMargin, _) => End::ResetReached,
+            (Bound::MaxWait, PlanKind::Reset) => End::MaxReached,
+            (Bound::MaxWait, PlanKind::Capacity) => End::CapacityExpired,
         }
     }
 }
 
-/// Waits until `plan.until`, a login change, rotator capacity, the end of
-/// the step's session or a stop signal. Writes only `progress` lines;
-/// `start`, `end` and `resume` are the caller's.
+/// Waits until `plan.until`, a login change, rotator capacity, on a capacity
+/// wait another login's capacity, the end of the step's session or a stop
+/// signal. Writes only `progress` lines; `start`, `end` and `resume` are the
+/// caller's.
 pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
     let start = deps.now();
     // The previous probe, and the value two probes in a row agreed on.
@@ -87,7 +100,7 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
         }
         let now = deps.now();
         if now >= plan.until {
-            return End::at_deadline(plan.bound);
+            return End::at_deadline(plan.bound, plan.kind);
         }
         if now >= next_poll {
             let probe = deps.fingerprint();
@@ -104,6 +117,9 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
             }
             if deps.rotator_capacity(start) {
                 return End::RotatorCapacity;
+            }
+            if plan.kind == PlanKind::Capacity && deps.other_capacity(start) {
+                return End::OtherCapacity;
             }
             next_poll = now.saturating_add(POLL_SECS);
         }

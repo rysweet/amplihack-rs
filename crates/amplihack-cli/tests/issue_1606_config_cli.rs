@@ -14,7 +14,6 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
 
 const SCHEMA_ORDER: &[&str] = &[
     "agent.binary",
@@ -29,11 +28,15 @@ const SCHEMA_ORDER: &[&str] = &[
     "recipe.usage_limit_wait",
     "recipe.usage_limit_max_wait_secs",
     "orchestrator.max_depth",
+    "sessions.daily_archive",
+    "sessions.archive_days",
+    "sessions.archive_dest",
 ];
 
 /// Records argv and its environment, then reports success in the runner's
 /// JSON format.
 const STUB_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 env > "$RECORD_DIR/env.txt"
 printf '%s\n' '{"recipe_name":"issue-1606","success":true,"step_results":[],"context":{}}'
 "#;
@@ -41,6 +44,7 @@ printf '%s\n' '{"recipe_name":"issue-1606","success":true,"step_results":[],"con
 /// Answers `tmux show-environment -g COPILOT_CLI` the way a server started
 /// from a Copilot session would.
 const TMUX_STUB: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 if [ "$1 $2 $3" = "show-environment -g COPILOT_CLI" ]; then
   echo "COPILOT_CLI=1"
   exit 0
@@ -207,24 +211,10 @@ fn write_secure(path: &Path, body: &str) {
 }
 
 /// Run with a hard 60 s bound so a FIFO or a prompt cannot hang the suite.
+/// Runs amplihack to completion under the shared 10-minute ceiling
+/// (issue #1973); a hang still fails, naming the command.
 fn run_bounded(mut c: Command) -> Output {
-    c.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = c.spawn().expect("failed to spawn amplihack");
-    let deadline = Instant::now() + Duration::from_secs(60);
-    loop {
-        if child.try_wait().unwrap().is_some() {
-            return child.wait_with_output().unwrap();
-        }
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let out = child.wait_with_output().unwrap();
-            panic!(
-                "amplihack did not exit within 60 s\nstderr:\n{}",
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    crate::support::wait::output_within("amplihack to exit", &mut c)
 }
 
 fn stdout(o: &Output) -> String {
@@ -336,8 +326,19 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "recipe.tmux_session_pattern = \"amp-{recipe}-{repo}-{ts}\"",
             "recipe.log_dir = (unset)",
             "recipe.usage_limit_wait = true",
-            "recipe.usage_limit_max_wait_secs = (unset)",
+            "recipe.usage_limit_max_wait_secs = 21600",
             "orchestrator.max_depth = 3",
+            "governor.enabled = false",
+            "governor.max_concurrency = 4",
+            "governor.reserve_points = 10",
+            "governor.step = 1",
+            "governor.band_pct = 10",
+            "governor.eval_interval_secs = 60",
+            "governor.wait_secs = 600",
+            "governor.max_reading_age_secs = 3600",
+            "sessions.daily_archive = true",
+            "sessions.archive_days = 3",
+            "sessions.archive_dest = (unset)",
         ]
     );
 }
@@ -931,7 +932,7 @@ fn edit_passes_a_metacharacter_path_as_one_argument() {
     let editor = fx.tools.join("ed-stub");
     crate::support::exec_stub::write_executable(
         &editor,
-        "#!/bin/sh\nprintf '[recipe]\\nverbose = true\\n' > \"$1\"\n",
+        "#!/bin/sh\ncase \"$*\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nprintf '[recipe]\\nverbose = true\\n' > \"$1\"\n",
         0o755,
     );
     let out = fx.amp_env(&["config", "edit"], &[("VISUAL", editor.to_str().unwrap())]);
@@ -948,7 +949,7 @@ fn edit_that_leaves_problems_exits_1_and_keeps_the_file() {
     let editor = fx.tools.join("ed-stub");
     crate::support::exec_stub::write_executable(
         &editor,
-        "#!/bin/sh\nprintf '[orchestrator]\\nmax_depth = 999\\n' > \"$1\"\n",
+        "#!/bin/sh\ncase \"$*\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nprintf '[orchestrator]\\nmax_depth = 999\\n' > \"$1\"\n",
         0o755,
     );
     let out = fx.amp_env(&["config", "edit"], &[("EDITOR", editor.to_str().unwrap())]);

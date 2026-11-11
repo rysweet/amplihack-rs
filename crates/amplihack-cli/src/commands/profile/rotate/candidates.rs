@@ -3,17 +3,21 @@
 //! the kind and account checks it makes go through `kind` and
 //! [`Account::of_dir`], so no file is looked inside here.
 
-use super::identify::Account;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{CREDS, Ledger, Liveness, exists, movable_login};
-use crate::commands::profile::kind::{self, Kind};
+use crate::commands::profile::kind::{self, Resolved};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
+use std::path::Path;
 
 /// Why a profile is not a candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Skip {
     Live,
+    /// The profile directory fails the ownership and mode check, so its
+    /// login cannot be checked (issue #1698). A plan profile skipped for
+    /// this holds a move onto overflow until the directory is fixed.
+    Refused,
     NoLogin,
     Excluded,
     SessionRunning,
@@ -30,6 +34,7 @@ impl Skip {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Live => "live",
+            Self::Refused => "directory refused",
             Self::NoLogin => "no login",
             Self::Excluded => "excluded",
             Self::SessionRunning => "session running",
@@ -54,6 +59,35 @@ pub struct CandidateInput<'a> {
 /// The candidates, then every skipped profile with its reason.
 pub type Candidates = (Vec<ProfileName>, Vec<(ProfileName, Skip)>);
 
+/// Why the login in profile directory `dir` can never be used, if so: the
+/// tests that come before anything about the profile's current state.
+fn login_skip<'a>(dir: Option<&Path>, resolved: impl FnOnce() -> &'a Resolved) -> Option<Skip> {
+    if !dir.is_some_and(|d| movable_login(&d.join(CREDS))) {
+        Some(Skip::NoLogin)
+    } else if !resolved().may_be_live() {
+        Some(Skip::NotOAuth)
+    } else {
+        None
+    }
+}
+
+/// Whether `name` would be skipped as [`Skip::NoLogin`] or [`Skip::NotOAuth`]:
+/// it holds no login that could be measured or moved, so it is no plan login
+/// (issue #1804). Auto-switch uses this so that it and the rotator leave out
+/// the same profiles when asking which plan logins may have room.
+/// `resolved` is the profile's kind as [`kind::Ctx::resolve_kind`] gives
+/// it; the caller has already read it, so no login or settings file is read
+/// again here, only the directory and the login file's metadata.
+///
+/// A directory that fails the check is not unusable: the rotator skips it as
+/// [`Skip::Refused`], its login cannot be checked, and it holds a per-token
+/// move (issue #1698), so auto-switch keeps counting it as unread too.
+pub fn login_unusable(store: &ProfileStore, name: &ProfileName, resolved: &Resolved) -> bool {
+    store
+        .verify_profile_dir(name)
+        .is_ok_and(|dir| login_skip(Some(&dir), || resolved).is_some())
+}
+
 /// The profiles that may receive the login in `~/.claude`, sorted by name,
 /// and every other profile with the first reason it is skipped. A profile
 /// root that cannot be listed is an error, not an empty list.
@@ -73,10 +107,16 @@ pub fn candidates(
         let resolved = || resolved.get_or_init(|| kinds.resolve_kind(store, &name));
         let skip = if input.live == Some(&name) {
             Some(Skip::Live)
-        } else if !dir.as_ref().is_some_and(|d| movable_login(&d.join(CREDS))) {
-            Some(Skip::NoLogin)
-        } else if !resolved().may_be_live() {
-            Some(Skip::NotOAuth)
+        } else if dir.is_none() {
+            // An excluded profile is out of rotation whatever its directory,
+            // so it holds nothing back.
+            Some(if input.exclude.contains(&name) {
+                Skip::Excluded
+            } else {
+                Skip::Refused
+            })
+        } else if let Some(s) = login_skip(dir.as_deref(), resolved) {
+            Some(s)
         } else if input.exclude.contains(&name) {
             Some(Skip::Excluded)
         } else if input.liveness.is_live(&name) {
@@ -87,10 +127,6 @@ pub fn candidates(
             Some(Skip::Hosting)
         } else if exists(&parked.join(n)) {
             Some(Skip::Parked)
-        } else if resolved().kind == Kind::Subscription
-            && dir.as_deref().and_then(Account::of_dir).is_none()
-        {
-            Some(Skip::NoAccount)
         } else {
             None
         };
@@ -100,4 +136,13 @@ pub fn candidates(
         }
     }
     Ok((ok, skips))
+}
+
+/// The profiles skipped as [`Skip::Refused`], for the overflow rule.
+pub fn refused_dirs(skips: &[(ProfileName, Skip)]) -> Vec<ProfileName> {
+    skips
+        .iter()
+        .filter(|(_, s)| *s == Skip::Refused)
+        .map(|(n, _)| n.clone())
+        .collect()
 }

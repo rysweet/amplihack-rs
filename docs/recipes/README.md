@@ -57,6 +57,7 @@ Set `RECIPE_RUNNER_ENGINE=rust` to use the full feature set.
 - [Recipe YAML Format](#recipe-yaml-format)
 - [SDK Adapters](#sdk-adapters)
 - [Available Recipes](#available-recipes)
+- [Choosing between quick-change, auto-drive-light and auto-drive-to-merge](#choosing-between-quick-change-auto-drive-light-and-auto-drive-to-merge)
 - [Creating Custom Recipes](#creating-custom-recipes)
 - [Integration with Amplihack](#integration-with-amplihack)
 - [UltraThink Recipe Runner Integration](./RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution
@@ -85,8 +86,10 @@ Complete documentation for using the Recipe Runner:
 - **[Tutorial: Workflow Terminal-State Closure](../tutorials/workflow-terminal-state-closure.md)** - Walk through successful evidence, planning-only failure, and rerun behavior
 - **[Scoped Workflow Closure](../reference/scoped-workflow-closure.md)** - Persisted PR, process, and workstream ownership contract for default-workflow closure
 - **[Leak-Proof, Self-Healing Worktree Setup (#840)](issue-840-leak-proof-worktree.md)** - Orphan-worktree sweep and cleanup-on-failure for `step-04-setup-worktree`, with the `workflow_worktree_sweep.sh` helper API, the data-loss safety gate, and `AMPLIHACK_WORKTREE_STALE_SECS` configuration
+- **[Local Worktree Archives and the Sweep Lock (#2061)](issue-2061-sweep-local-archive.md)** - The step-4 orphan sweep keeps `refs/amplihack-archive/*` in the local clone, never pushes or runs the `pre-push` hook, and skips when another sweep of the same repository holds its lock
 - **[Relative-Path-Safe, Idempotent Worktree Setup (#1121)](issue-1121-relative-repo-path.md)** - Canonicalizes `repo_path` (`pwd -P`) and routes every `git worktree add` through a guarded `wt_add_idempotent` helper so `step-04-setup-worktree` reuses an already-present worktree instead of hard-failing with `already exists` (exit 128) under a relative `repo_path`
 - **[Re-runs Never Destroy an Existing Worktree's Work (#1565, #1626)](issue-1565-rerun-preserves-worktree.md)** - `step-04-setup-worktree` and consensus `step3-setup-worktree` keep a dirty or ahead branch and worktree untouched and move the re-run to a fresh branch via `workflow_worktree_deconflict.sh resolve --base`; how to continue the kept branch with `existing_branch`
+- **[Caller Branch Worktree Alias (#1762)](issue-1762-caller-branch-worktree-alias.md)** - When the target branch is checked out in the caller's clone, `step-04-setup-worktree` creates the task worktree on a local alias branch `<branch>--wt-<n>` tracking `origin/<branch>`, and later steps push with `git push origin HEAD:<branch>` and look the PR up by `<branch>`; covers the three stops (uncommitted changes, branch not on origin, unpushed commits), the default-branch exclusion and the `workflow_remote_branch.sh` resolver
 
 ## Why It Exists
 
@@ -347,6 +350,30 @@ amplihack ships with recipes covering the most common development workflows.
 | `quick-fix`             | 4     | Lightweight fix for simple, well-understood issues      |
 
 Recipes live in `~/.amplihack/.claude/recipes/`. Run `amplihack recipe list` to see all available recipes including any custom ones you have added.
+
+### Choosing between quick-change, auto-drive-light and auto-drive-to-merge
+
+Three recipes take a task to a pull request with less supervision than `default-workflow` run by hand. They differ in how far they go and how much design work they do.
+
+| | `quick-change` | `auto-drive-light` | `auto-drive-to-merge` |
+| --- | --- | --- | --- |
+| Build | One agent session | One agent session | `default-workflow`, including design and architect steps |
+| Ends at | An open PR | A merged PR | A merged PR |
+| Size check | Diff limits (3 files, 150 lines by default), hands over to `default-workflow` | Eligibility rules (300 lines, no new modules, public API, schema or recipe contract changes by default), escalates to `auto-drive-to-merge` | None |
+| Crusty review loop | No | Yes. A round whose findings are all minor ends the loop, and each finding is filed as its own follow-up issue linked to the task before merge | Yes, the same per-finding model |
+| Merge gate | No | The same gate as `auto-drive-to-merge` | Yes |
+| Selected by smart-orchestrator | Yes, for small single-workstream tasks | No, run by name | No, run by name or skill |
+| Existing PR | Not supported | `pr_number` or `existing_branch` | `pr_number` or `existing_branch` |
+
+Use `quick-change` when you will review and merge the PR yourself. Use `auto-drive-light` for a small change that should be driven to merge without supervision. Use `auto-drive-to-merge` for a feature, a public interface change or anything that needs design.
+
+```bash
+amplihack recipe run auto-drive-light \
+  -c task_description="Return an error instead of panicking when the round record is empty in autodrive_last_round.sh" \
+  -c repo_path=.
+```
+
+See [Quick-Change Recipe](../reference/quick-change-recipe.md), [Auto-Drive-Light Recipe](../reference/auto-drive-light.md) and [Auto Drive To Merge Reference](../reference/auto-drive-to-merge.md).
 
 ### Recipe Discovery
 

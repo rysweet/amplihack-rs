@@ -20,12 +20,24 @@ recursion:
 
 context:
   force_single_workstream: ""
+  workflow: ""
+  selected_workflow: ""
+  # Inherited from smart-orchestrator; either one rules out quick-change (#1740).
+  existing_branch: ""
+  pr_number: ""
+
+recovery:
+  version: 1
+  persist:
+    context: ["adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
+    outputs: ["preflight-validation", "classify-and-decompose", "parse-decomposition", "activate-workflow", "select-workflow", "materialize-force-single-workstream", "materialize-allow-no-op", "setup-session"]
 
 steps:
   # ─────────────────────────────────────────────────────────────────────────
   # Phase 0: Pre-flight Validation
   # ─────────────────────────────────────────────────────────────────────────
   - id: "preflight-validation"
+    recovery: {"replay": "reuse"}
     type: "bash"
     command: |
       ERRORS=""
@@ -54,6 +66,7 @@ steps:
   # ─────────────────────────────────────────────────────────────────────────
 
   - id: "classify-and-decompose"
+    recovery: {"replay": "reuse"}
     type: "agent"
     agent: "amplihack:core:architect"
     prompt: |
@@ -85,6 +98,15 @@ steps:
          unusual ones like "hold off merging", "keep it as a draft", "wait for
          my review", "leave it open", "don't merge", "no admin merge". Default
          to `false` when the request says nothing about merging.
+      6. recommended_workflow: "quick-change" | "default-workflow", and
+         workflow_reason: one short sentence (issue #1740). Recommend
+         "quick-change" only for a Development task with exactly one
+         workstream that is one of: documentation only; a dependency lock
+         update; a comment or typo fix; a configuration or wording change; a
+         single-file fix with no behaviour change to a public interface.
+         Never recommend it for a feature, a behaviour change visible to
+         users, or more than one workstream. When in doubt, choose
+         "default-workflow".
 
       **Classification rules — read carefully (#269)**:
       - **Operations** is ONLY for one-shot read-only or trivial mutating
@@ -97,7 +119,7 @@ steps:
         ANY code; OR write/add tests; OR open a PR; OR modify files in
         `src/` / `crates/` / `bins/`. Multi-requirement tasks with numbered
         items `(1)`, `(2)`, `(3)` are almost always Development.
-      - Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
+      - Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
       - Hybrid decompositions route each workstream by its own normalized classification.
       - When in doubt between Operations and Development, choose Development.
 
@@ -112,7 +134,9 @@ steps:
         "no_merge": false,
         "workstreams": [
           {"name": "slug", "description": "full task", "recipe": "default-workflow"}
-        ]
+        ],
+        "recommended_workflow": "default-workflow",
+        "workflow_reason": "one short sentence"
       }
       ```
     output: "decomposition_json"
@@ -121,6 +145,7 @@ steps:
   # Outputs ONLY the canonical task_type string (e.g. "Development").
   # Uses native Rust `amplihack orch helper` (#270).
   - id: "parse-decomposition"
+    recovery: {"replay": "reuse"}
     type: "bash"
     command: |
       _DECOMP_TMPFILE=$(mktemp)
@@ -164,6 +189,7 @@ steps:
   # activate-workflow: compute workstream_count, set workflow semaphore, announce.
   # Uses native Rust `amplihack orch helper count-workstreams` (#270).
   - id: "activate-workflow"
+    recovery: {"replay": "rebind"}
     type: "bash"
     command: |
       _DECOMP_TMPFILE=$(mktemp)
@@ -203,6 +229,27 @@ steps:
       printf '%s' "$COUNT"
     output: "workstream_count"
 
+  # select-workflow (#1740): quick-change, default-workflow or none, from the
+  # -c workflow= override, task_type, the classifier's recommended_workflow,
+  # the workstream count, and existing_branch/pr_number or a `Branch: <ref>`
+  # line in the task text (each rules out quick-change; the helper reads the
+  # task from RECIPE_VAR_task_description). It logs the choice to stderr.
+  - id: "select-workflow"
+    recovery: {"replay": "reuse"}
+    type: "bash"
+    command: |
+      _DECOMP_TMPFILE=$(mktemp)
+      trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
+      printf '%s' "${RECIPE_VAR_decomposition_json:-}" > "$_DECOMP_TMPFILE"
+      amplihack orch helper select-workflow \
+        --override "${RECIPE_VAR_workflow:-}" \
+        --task-type "${RECIPE_VAR_task_type:-}" \
+        --workstream-count "${RECIPE_VAR_workstream_count:-1}" \
+        --existing-branch "${RECIPE_VAR_existing_branch:-}" \
+        --pr-number "${RECIPE_VAR_pr_number:-}" \
+        < "$_DECOMP_TMPFILE"
+    output: "selected_workflow"
+
   # ─────────────────────────────────────────────────────────────────────────
   # Materialize user_context overrides into step outputs so they are
   # available in condition evaluation (fix #3075, #3130).
@@ -212,6 +259,7 @@ steps:
   # NOTE: Use "$ENV_VAR" — safe against word-splitting and injection.
   # ─────────────────────────────────────────────────────────────────────────
   - id: "materialize-force-single-workstream"
+    recovery: {"replay": "reuse"}
     type: "bash"
     command: |
       printf '%s' "${RECIPE_VAR_force_single_workstream:-}"
@@ -232,6 +280,7 @@ steps:
   # bypass the guard for code-producing classifications.
   # ─────────────────────────────────────────────────────────────────────────
   - id: "materialize-allow-no-op"
+    recovery: {"replay": "reuse"}
     type: "bash"
     command: |
       set -euo pipefail
@@ -255,6 +304,7 @@ steps:
   # ─────────────────────────────────────────────────────────────────────────
 
   - id: "setup-session"
+    recovery: {"replay": "rebind", "resources": [{"kind": "live", "name": "session_tree"}]}
     type: "bash"
     condition: "'Development' in task_type or 'Investigation' in task_type or task_type == ''"
     command: |

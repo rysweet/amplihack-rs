@@ -116,3 +116,55 @@ fn generate_unique_session_id_produces_different_ids() {
     assert!(id1.starts_with("hook-"), "ID should start with 'hook-'");
     assert!(id2.starts_with("hook-"), "ID should start with 'hook-'");
 }
+
+/// Issue #1760 (A7): `process` writes the SessionEnd marker for the input's
+/// own `session_id`, and never for the generated fallback id.
+#[cfg(unix)]
+#[test]
+fn session_end_marker_uses_the_inputs_own_session_id() {
+    use std::os::unix::fs::PermissionsExt;
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let agents = dir.path().join(".amplihack/agents");
+    fs::create_dir_all(&agents).unwrap();
+    for d in [&dir.path().join(".amplihack"), &agents] {
+        fs::set_permissions(d, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let reg = agents.join("registry.json");
+    fs::write(&reg, "{\"version\":1,\"agents\":{}}\n").unwrap();
+    fs::set_permissions(&reg, fs::Permissions::from_mode(0o600)).unwrap();
+    let prev_home = std::env::var_os("HOME");
+    unsafe { std::env::set_var("HOME", dir.path()) };
+
+    let id = "3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57";
+    let hook = SessionStopHook;
+    let with_id = hook.process(HookInput::SessionStop {
+        session_id: Some(id.to_string()),
+        transcript_path: None,
+        extra: serde_json::json!({ "reason": "prompt_input_exit" }),
+    });
+    let without_id = hook.process(HookInput::SessionStop {
+        session_id: None,
+        transcript_path: None,
+        extra: serde_json::json!({ "reason": "logout" }),
+    });
+
+    match prev_home {
+        Some(value) => unsafe { std::env::set_var("HOME", value) },
+        None => unsafe { std::env::remove_var("HOME") },
+    }
+
+    assert!(
+        with_id.is_ok() && without_id.is_ok(),
+        "the hook still succeeds"
+    );
+    let names: Vec<String> = fs::read_dir(agents.join("ended"))
+        .map(|rd| {
+            rd.map(|e| e.unwrap().file_name().into_string().unwrap())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(names, [id], "one marker, named by the input's session_id");
+}

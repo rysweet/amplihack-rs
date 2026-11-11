@@ -159,8 +159,8 @@ capacity):
   usage` alone (issue #1700); this command has no check of its own.
 - A row with `overflow` set shows `overflow, paid credits (no plan limits)`
   instead of bars.
-- When `~/.claude` holds a login that no profile holds, `profile usage` adds
-  a `~/.claude` row, shown here as `~/.claude (live)`.
+- A profile whose login is live in `~/.claude` keeps its profile name and
+  is marked `(live)`, as reported by `profile usage --json`.
 - Percentages are formatted as in `profile usage`: whole numbers without a
   decimal, others with one. A value over 100 is printed as read, with a full
   bar.
@@ -207,14 +207,15 @@ at most 128 bytes and printable ASCII:
 
 | Order | Variable | Identity |
 |-------|----------|----------|
-| 1 | `AMPLIHACK_RUN_ID` | `run:<value>` |
-| 2 | `AMPLIHACK_SESSION_ID` | `session:<value>` |
-| 3 | `AMPLIHACK_TREE_ID` | `tree:<value>` |
-| 4 | `CLAUDE_CODE_SESSION_ID` | `claude:<value>` |
+| 1 | `AMPLIHACK_WORKSTREAM_RUN_ID` | `run:<value>` |
+| 2 | `AMPLIHACK_RUN_ID` | `run:<value>` |
+| 3 | `AMPLIHACK_SESSION_ID` | `session:<value>` |
+| 4 | `AMPLIHACK_TREE_ID` | `tree:<value>` |
+| 5 | `CLAUDE_CODE_SESSION_ID` | `claude:<value>` |
 
 The prefix keeps identities from different sources apart. `recipe run
 --detach` uses the same order to fill in a new run's `parent`, and sets
-`AMPLIHACK_RUN_ID` to the run's session name for everything the run starts.
+`AMPLIHACK_WORKSTREAM_RUN_ID` to the run's session name for everything the run starts.
 So a run launched from inside a detached run is that run's child, even though
 both share `AMPLIHACK_SESSION_ID`.
 
@@ -368,8 +369,8 @@ commands cannot disagree about a login.
 
 - Each probe gets `--timeout-secs` one second under the
   [deadline](#time-limits) (at least 1), so a slow login can give a `timeout`
-  row. Profiles run eight at a time; later batches and the sequential
-  `~/.claude` probe share the command's overall deadline.
+  row. `profile usage` controls probe concurrency; all batches, including
+  profiles whose login is live in `~/.claude`, share the overall deadline.
 - At the deadline, SIGTERM asks `profile usage` to cancel its running probes,
   kill and reap their separate process groups, and join the probe workers.
   Queued probes are skipped. The runner waits up to 3 seconds for this cleanup

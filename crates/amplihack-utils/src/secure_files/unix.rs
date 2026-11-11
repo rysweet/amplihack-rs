@@ -8,7 +8,7 @@
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn euid() -> u32 {
     // SAFETY: geteuid has no preconditions.
@@ -76,11 +76,20 @@ pub fn open_private_nofollow(path: &Path) -> io::Result<fs::File> {
             e
         }
     })?;
-    let meta = file.metadata()?;
+    check_private_file(&file.metadata()?)?;
+    Ok(file)
+}
+
+/// The rule [`open_private_nofollow`] applies to an opened file: a regular
+/// file owned by the current user with exactly one hard link and no group
+/// or other mode bits. Anything else is an `InvalidData` error. Readers of
+/// a file that writers open with [`open_private_nofollow`] use it so that
+/// both sides accept the same files.
+pub fn check_private_file(meta: &fs::Metadata) -> io::Result<()> {
     if !meta.is_file() {
         return Err(invalid("is not a regular file"));
     }
-    if !owned_by_euid(&meta) {
+    if !owned_by_euid(meta) {
         return Err(invalid("is owned by another user"));
     }
     if meta.nlink() != 1 {
@@ -89,7 +98,7 @@ pub fn open_private_nofollow(path: &Path) -> io::Result<fs::File> {
     if meta.mode() & 0o077 != 0 {
         return Err(invalid("is not private (owner-only mode 0600)"));
     }
-    Ok(file)
+    Ok(())
 }
 
 pub fn invalid(msg: &str) -> io::Error {
@@ -144,31 +153,128 @@ fn check_replaceable(target: &Path) -> io::Result<Option<fs::Metadata>> {
 }
 
 fn write_atomic(dir: &Path, name: &str, bytes: &[u8], mode: u32, sync: bool) -> io::Result<()> {
-    let target = dir.join(name);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let tmp = dir.join(format!(".{name}.tmp.{}.{nanos}", std::process::id()));
-    let mut opts = fs::OpenOptions::new();
-    opts.write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    let result = (|| -> io::Result<()> {
-        let mut f = opts.open(&tmp)?;
+    let temp = PrivateTemp::open(dir, name)?;
+    temp.finish(bytes, mode, sync)
+}
+
+/// A private temporary file opened beside `dir/name` before the bytes are
+/// known (issue #1844, SR-10). A caller that must know it can save a result
+/// before it does something that cannot be undone opens one first, then
+/// calls [`PrivateTemp::commit`]. Dropping it without a commit removes the
+/// file.
+pub struct PrivateTemp {
+    file: Option<fs::File>,
+    dir: PathBuf,
+    target: PathBuf,
+    tmp: PathBuf,
+}
+
+impl PrivateTemp {
+    /// Checks that `dir/name` may be replaced, as [`write_private_atomic`]
+    /// does, and creates a new `0600` file in `dir` without following a
+    /// symlink.
+    pub fn create(dir: &Path, name: &str) -> io::Result<Self> {
+        check_replaceable(&dir.join(name))?;
+        Self::open(dir, name)
+    }
+
+    fn open(dir: &Path, name: &str) -> io::Result<Self> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let tmp = dir.join(format!(".{name}.tmp.{}.{nanos}", std::process::id()));
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        let file = opts.open(&tmp)?;
+        Ok(Self {
+            file: Some(file),
+            dir: dir.to_path_buf(),
+            target: dir.join(name),
+            tmp,
+        })
+    }
+
+    /// The temporary file.
+    pub fn path(&self) -> &Path {
+        &self.tmp
+    }
+
+    /// Writes `bytes`, syncs the file, renames it over the target and syncs
+    /// the directory. The target ends with mode `0600`.
+    pub fn commit(self, bytes: &[u8]) -> io::Result<()> {
+        self.finish(bytes, 0o600, true)
+    }
+
+    /// Writes `bytes`, syncs the file and hard-links it to the target, which
+    /// is never replaced, then removes the temporary name and syncs the
+    /// directory (issue #1962). `Ok(true)`: the target is linked and holds
+    /// `bytes`; a later failure to remove the temporary name or to sync the
+    /// directory is logged as a warning, not returned, because the target
+    /// exists either way. `Ok(false)`: the target already exists and is
+    /// unchanged. A filesystem that refuses hard links is an error; there is
+    /// no fallback to a rename, which could replace a file written meanwhile.
+    pub fn link_new(mut self, bytes: &[u8]) -> io::Result<bool> {
+        self.fill(bytes, 0o600, true)?;
+        match fs::hard_link(&self.tmp, &self.target) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(e) => return Err(e),
+        }
+        self.after_link();
+        Ok(true)
+    }
+
+    /// Cleanup once the target is linked. A failed removal keeps `tmp` set so
+    /// `Drop` tries again.
+    fn after_link(&mut self) {
+        match fs::remove_file(&self.tmp) {
+            Ok(()) => self.tmp = PathBuf::new(),
+            Err(e) => tracing::warn!(
+                "{} linked, but its temporary name could not be removed: {e}",
+                self.target.display()
+            ),
+        }
+        if let Err(e) = fsync_dir(&self.dir) {
+            tracing::warn!(
+                "{} linked, but its directory could not be synced: {e}",
+                self.target.display()
+            );
+        }
+    }
+
+    /// Writes `bytes` to the temporary file and closes it.
+    fn fill(&mut self, bytes: &[u8], mode: u32, sync: bool) -> io::Result<()> {
+        let Some(mut f) = self.file.take() else {
+            return Err(invalid("was already committed"));
+        };
         // `mode` on open is filtered by the umask; set it exactly.
         f.set_permissions(fs::Permissions::from_mode(mode))?;
         f.write_all(bytes)?;
         if sync {
             f.sync_all()?;
         }
-        fs::rename(&tmp, &target)?;
-        if sync { fsync_dir(dir) } else { Ok(()) }
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
+        Ok(())
     }
-    result
+
+    fn finish(mut self, bytes: &[u8], mode: u32, sync: bool) -> io::Result<()> {
+        self.fill(bytes, mode, sync)?;
+        fs::rename(&self.tmp, &self.target)?;
+        // Renamed: nothing is left for `Drop` to remove.
+        self.tmp = PathBuf::new();
+        if sync { fsync_dir(&self.dir) } else { Ok(()) }
+    }
+}
+
+impl Drop for PrivateTemp {
+    fn drop(&mut self) {
+        self.file = None;
+        if !self.tmp.as_os_str().is_empty() {
+            let _ = fs::remove_file(&self.tmp);
+        }
+    }
 }
 
 /// Creates `path` as a private directory (one level only, mode `0700`), or
@@ -203,10 +309,72 @@ pub fn check_private_dir(path: &Path) -> io::Result<()> {
 /// listed members), the usual layout with a umask of 002.
 pub fn writable_by_others(meta: &fs::Metadata) -> bool {
     let mode = meta.mode();
-    if mode & 0o002 != 0 {
+    mode_lets_others_write(mode, mode & 0o020 != 0 && is_user_private_group(meta.gid()))
+}
+
+/// The rule of [`writable_by_others`] on a mode: world write always counts,
+/// and group write counts unless the group is the user's own private group.
+pub fn mode_lets_others_write(mode: u32, group_is_private: bool) -> bool {
+    mode & 0o002 != 0 || (mode & 0o020 != 0 && !group_is_private)
+}
+
+/// [`mode_lets_others_write`] for a login directory (issue #1962), which also
+/// refuses an access ACL on a group-writable directory: there the group bits
+/// are the ACL's mask, so named users or groups may hold write. `acl` reads
+/// `system.posix_acl_access`, and only when the group write bit is set.
+/// `ENODATA` and `ENOTSUP` mean no ACL. `Ok(())` means one is present, and any
+/// other error means it could not be checked, which also counts as writable.
+pub fn dir_rule(mode: u32, group_is_private: bool, acl: impl FnOnce() -> io::Result<()>) -> bool {
+    if mode_lets_others_write(mode, group_is_private) {
         return true;
     }
-    mode & 0o020 != 0 && !is_user_private_group(meta.gid())
+    if mode & 0o020 == 0 {
+        return false;
+    }
+    match acl() {
+        Ok(()) => true,
+        Err(e) => !matches!(e.raw_os_error(), Some(libc::ENODATA | libc::ENOTSUP)),
+    }
+}
+
+/// Whether others can write the directory at `path`, whose `lstat` is `meta`,
+/// by [`dir_rule`]. A failed group lookup counts as a shared group.
+pub fn dir_writable_by_others(path: &Path, meta: &fs::Metadata) -> bool {
+    let mode = meta.mode();
+    dir_rule(
+        mode,
+        mode & 0o020 != 0 && is_user_private_group(meta.gid()),
+        || access_acl(path),
+    )
+}
+
+/// `Ok(())` when `path` has an access ACL, read without following a symlink.
+#[cfg(target_os = "linux")]
+fn access_acl(path: &Path) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| invalid("has a NUL in its path"))?;
+    // SAFETY: both strings are NUL-terminated and outlive the call; a null
+    // buffer of size 0 only asks for the attribute's size.
+    let size = unsafe {
+        libc::lgetxattr(
+            path.as_ptr(),
+            c"system.posix_acl_access".as_ptr(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if size < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// No ACL reader here: the answer is "could not be checked", so a
+/// group-writable directory stays refused, as it was before issue #1962.
+#[cfg(not(target_os = "linux"))]
+fn access_acl(_path: &Path) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
 }
 
 fn is_user_private_group(gid: u32) -> bool {
@@ -221,6 +389,24 @@ fn is_user_private_group(gid: u32) -> bool {
 }
 
 fn user_name(uid: u32) -> Option<String> {
+    passwd_field(uid, |pwd| pwd.pw_name).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The effective user's home directory from the passwd database, which a
+/// changed `HOME` does not affect. `None` when there is no entry, the entry
+/// does not fit the 16 KiB buffer (`ERANGE`), or the field is empty.
+///
+/// The one lookup used both by the CLI's profile settings refresh and by the
+/// issue #1699 test guard, so the two cannot disagree about the account home.
+pub fn passwd_home() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    passwd_field(euid(), |pwd| pwd.pw_dir)
+        .map(|bytes| PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+}
+
+/// The bytes of one string field of `uid`'s passwd entry; `None` when the
+/// lookup fails or the field is null or empty.
+fn passwd_field(uid: u32, field: fn(&libc::passwd) -> *mut libc::c_char) -> Option<Vec<u8>> {
     let mut buf = vec![0 as libc::c_char; 16 * 1024];
     let mut pwd = std::mem::MaybeUninit::<libc::passwd>::zeroed();
     let mut out: *mut libc::passwd = std::ptr::null_mut();
@@ -231,9 +417,15 @@ fn user_name(uid: u32) -> Option<String> {
     if rc != 0 || out.is_null() {
         return None;
     }
-    // SAFETY: on success pw_name points into `buf` and is NUL-terminated.
-    let name = unsafe { std::ffi::CStr::from_ptr((*out).pw_name) };
-    Some(name.to_string_lossy().into_owned())
+    // SAFETY: on success `out` points to the filled entry.
+    let ptr = field(unsafe { &*out });
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: on success the entry's string fields point into `buf` and are
+    // NUL-terminated; `buf` outlives this borrow.
+    let bytes = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_bytes().to_vec();
+    (!bytes.is_empty()).then_some(bytes)
 }
 
 fn group_info(gid: u32) -> Option<(String, usize)> {
@@ -261,3 +453,11 @@ fn group_info(gid: u32) -> Option<(String, usize)> {
         Some((name, count))
     }
 }
+
+#[cfg(test)]
+#[path = "tests_dir_rule.rs"]
+mod tests_dir_rule;
+
+#[cfg(test)]
+#[path = "tests_link_new.rs"]
+mod tests_link_new;

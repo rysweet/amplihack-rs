@@ -138,7 +138,8 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 ```rust
 // Automatically triggered after each tool use
-// Metrics saved to .claude/runtime/metrics/
+// Metrics saved to ${AMPLIHACK_HOME:-~/.amplihack}/runtime/sessions/<session_key>/metrics/
+// Nothing is written into the session's working directory
 ```
 
 #### `pre_compact`
@@ -696,7 +697,7 @@ Reflection system uses `security.rs` to sanitize all content before GitHub issue
 
 ### XPIA Defense
 
-`xpia_defense.rs` provides Cross-Process Injection Attack protection.
+`xpia_defense.rs` provides Cross-Process Injection Attack protection. It is off by default and runs only when `XPIA_ENABLED` is `1`, `true` or `yes` (any case). The pre-tool-use CWD, commit-on-main and `--no-verify` guards do not depend on it.
 
 ### Permissions
 

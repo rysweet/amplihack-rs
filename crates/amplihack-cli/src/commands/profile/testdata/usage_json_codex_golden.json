@@ -1,0 +1,134 @@
+[
+  {
+    "account": "ffarmer",
+    "path": "/home/ryan/.codex-profiles/ffarmer",
+    "state": "ok",
+    "error": null,
+    "windows": [
+      {
+        "name": "primary",
+        "used_percent": 12.0,
+        "window_minutes": 300,
+        "resets_at": 1794001200,
+        "resets_at_rfc3339": "2026-11-06T21:40:00Z"
+      },
+      {
+        "name": "secondary",
+        "used_percent": 41.0,
+        "window_minutes": 10080,
+        "resets_at": 1794470400,
+        "resets_at_rfc3339": "2026-11-12T08:00:00Z"
+      }
+    ],
+    "credits": null,
+    "plan_type": "plus",
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": true,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": false
+  },
+  {
+    "account": "ggrant",
+    "path": "/home/ryan/.codex-profiles/ggrant",
+    "state": "ok",
+    "error": null,
+    "windows": [
+      {
+        "name": "secondary",
+        "used_percent": 34.0,
+        "window_minutes": 10080,
+        "resets_at": 1794321000,
+        "resets_at_rfc3339": "2026-11-10T14:30:00Z"
+      }
+    ],
+    "credits": null,
+    "plan_type": "pro",
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": true,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": true
+  },
+  {
+    "account": "hhale",
+    "path": "/home/ryan/.codex-profiles/hhale",
+    "state": "ok",
+    "error": null,
+    "windows": [],
+    "credits": {
+      "has_credits": true,
+      "balance": 4200.0
+    },
+    "plan_type": "team",
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": null,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": false
+  },
+  {
+    "account": "jjones",
+    "path": "/home/ryan/.codex-profiles/jjones",
+    "state": "not_signed_in",
+    "error": null,
+    "windows": [],
+    "credits": null,
+    "plan_type": null,
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": null,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": false
+  },
+  {
+    "account": "kkim",
+    "path": "/home/ryan/.codex-profiles/kkim",
+    "state": "timeout",
+    "error": "timed out after 20s",
+    "windows": [],
+    "credits": null,
+    "plan_type": null,
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": null,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": false
+  },
+  {
+    "account": "mmoss",
+    "path": "/home/ryan/.codex-profiles/mmoss",
+    "state": "error",
+    "error": "codex app-server exited (exit status: 1): error: unrecognized subcommand 'app-server'",
+    "windows": [],
+    "credits": null,
+    "plan_type": null,
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": null,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": false
+  },
+  {
+    "account": "~/.codex",
+    "path": "/home/ryan/.codex",
+    "state": "ok",
+    "error": null,
+    "windows": [
+      {
+        "name": "primary",
+        "used_percent": 88.0,
+        "window_minutes": 300,
+        "resets_at": 1793996100,
+        "resets_at_rfc3339": "2026-11-06T20:15:00Z"
+      },
+      {
+        "name": "secondary",
+        "used_percent": 70.0,
+        "window_minutes": 10080,
+        "resets_at": 1794193200,
+        "resets_at_rfc3339": "2026-11-09T03:00:00Z"
+      }
+    ],
+    "credits": null,
+    "plan_type": "plus",
+    "rate_limit_reached_type": null,
+    "ordinary_usage_allowed": null,
+    "read_at": "2026-11-06T19:09:00Z",
+    "next_choice": false
+  }
+]

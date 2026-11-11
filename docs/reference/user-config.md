@@ -19,6 +19,9 @@ files.
   - [recipe.detach, recipe.tmux_session_pattern and recipe.log_dir](#recipedetach)
   - [recipe.usage_limit_wait and recipe.usage_limit_max_wait_secs](#recipeusage_limit_wait)
   - [orchestrator.max_depth](#orchestratormax_depth)
+  - [Governor keys](#governor-keys)
+  - [sessions.daily_archive](#sessionsdaily_archive)
+  - [sessions.archive_days and sessions.archive_dest](#sessionsarchive_days-and-sessionsarchive_dest)
 - [The config command](#the-config-command)
   - [config get](#config-get)
   - [config set](#config-set)
@@ -57,8 +60,11 @@ recipe.detach = "none"  # default
 recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
 recipe.log_dir = (unset)  # default
 recipe.usage_limit_wait = true  # default
-recipe.usage_limit_max_wait_secs = (unset)  # default
+recipe.usage_limit_max_wait_secs = 21600  # default
 orchestrator.max_depth = 3  # default
+sessions.daily_archive = true  # default
+sessions.archive_days = 3  # default
+sessions.archive_dest = (unset)  # default
 ```
 
 `amplihack agent-binary` now answers `claude (user_config)`, even inside a tmux
@@ -116,7 +122,7 @@ For each key, the first layer that sets it wins:
 
 | Rank | Origin label | Source |
 |------|--------------|--------|
-| 1 | `flag` | A command-line flag, for the keys that have one (`--verbose`, `--step-timeout`) |
+| 1 | `flag` | A command-line flag, for the keys that have one (`--verbose`, `--step-timeout`, `sessions archive --days`, `--dest`) |
 | 2 | `env` | The key's environment variable, for the keys that have one |
 | 3 | `project` | The project file |
 | 4 | `user` | The user file |
@@ -145,8 +151,19 @@ command, so it never prints `flag`.
 | `recipe.tmux_session_pattern` | session-name pattern | `amp-{recipe}-{repo}-{ts}` | — | — | user, project |
 | `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | — | — | user only |
 | `recipe.usage_limit_wait` | bool | `true` (`false` in CI) | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
-| `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | (unset) | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
+| `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | `21600` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
+| `governor.enabled` | bool | `false` | — | — | user only |
+| `governor.max_concurrency` | integer, 1 to 64 | `4` | — | — | user only |
+| `governor.reserve_points` | integer, 0 to 100 | `10` | — | — | user only |
+| `governor.step` | integer, 1 to 8 | `1` | — | — | user only |
+| `governor.band_pct` | integer, 0 to 50 | `10` | — | — | user only |
+| `governor.eval_interval_secs` | integer seconds, 1 to 3600 | `60` | — | — | user only |
+| `governor.wait_secs` | integer seconds, 0 to 86400 | `600` | — | — | user only |
+| `governor.max_reading_age_secs` | integer seconds, 60 to 86400 | `3600` | — | — | user only |
+| `sessions.daily_archive` | bool | `true` | — | — | user only |
+| `sessions.archive_days` | integer days, 1 to 4294967295 | `3` | — | `--days` | user only |
+| `sessions.archive_dest` | absolute path | (unset: `~/.amplihack/session-archive`) | — | `--dest` | user only |
 
 Any other key is an error for `config set` and a diagnostic when found in a
 file. A user-only key in a project file is reported and ignored.
@@ -220,7 +237,7 @@ not the marker, so the tag is `user_config:<binary>` and never
 
 ```console
 $ amplihack agent-binary --shell
-env -u CLAUDECODE -u CLAUDE_CODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PROJECT_DIR -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT -u COPILOT_AGENT AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=user_config:claude
+env -u CLAUDECODE -u CLAUDE_CODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PROJECT_DIR -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT -u COPILOT_AGENT -u AMPLIHACK_PARENT_RECIPE_PID -u AMPLIHACK_PARENT_RECIPE_STARTTIME -u AMPLIHACK_AUTODRIVE_STATE_DIR AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=user_config:claude
 ```
 
 The full resolver is described in [Active Agent Binary](./active-agent-binary.md).
@@ -262,6 +279,10 @@ the user file. The launcher reports the saved choice on every launch:
 - `node.heap_consent = true` applies the limit without asking.
 - `node.heap_consent = false` skips it without asking.
 - Unset, the launcher asks, as before.
+- The launcher saves your answer without an `fsync`, so a crash soon after the
+  first launch can lose it and the launcher asks again. `amplihack config set
+  node.heap_consent` saves it durably. See
+  [How files are written](#how-files-are-written).
 - `node.max_old_space_mb` overrides the limit. Unset, the limit is computed
   from the machine's RAM on every launch, as before. Values outside 8192 to
   32768 are rejected.
@@ -318,15 +339,33 @@ like every path.
 
 ### recipe.usage_limit_wait
 
-Whether a recipe agent step that fails on a Claude usage limit waits for the
-reset and runs once more, instead of ending the run. See the
+Whether a recipe agent step that fails on a Claude usage limit waits, for
+the reset or for another login with capacity, and runs once more, instead of
+ending the run. See the
 [usage-limit wait](./profile-command.md#usage-limit-wait). With no setting
 in the environment or a file, it is on, except in CI: any `CI` that is
 not, after trimming, empty, `0` or `false` in any case. Setting it in a file or the variable turns it on
 in CI too. The environment variable also accepts `1` and `0`.
 
-`recipe.usage_limit_max_wait_secs` caps one wait; it only shortens it, and
-`0` means one more attempt with no wait.
+`recipe.usage_limit_max_wait_secs` bounds one wait and defaults to `21600`
+(six hours). It shortens a wait for a reset, which never lasts beyond the
+reset plus 120 seconds, and sets how long a
+[capacity wait](./profile-command.md#capacity-wait) for another login lasts.
+`0` means one more attempt with no wait for a reset, and an immediate
+`usage_limit` failure for a capacity wait.
+
+The default is not a ceiling. A user file or
+`AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` may set a higher value, and a capacity
+wait honours it. A project file is `lower only`: it can shorten the maximum
+but never raise it above the user or default value, so a repository cannot
+make your runs wait longer.
+
+A value that is not a whole number of seconds from `0` upwards is handled
+like any other invalid value: `amplihack config set` rejects it with exit
+code `2` and writes nothing, a file value is reported when the file loads
+and ignored, and an invalid `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` is
+reported by name and ignored. In each case the next layer down, ending at
+the default `21600`, applies.
 
 ```sh
 amplihack config set recipe.usage_limit_wait false
@@ -345,6 +384,93 @@ stays at 2 even with `orchestrator.max_depth = 10` configured. See
 
 A project file can only lower this value: the result is the smaller of the
 project value and the user value (or the default, 3).
+
+### Governor keys
+
+Settings for the [capacity governor](./capacity-governor.md), which decides
+when `recipe run`, `claude` and `launch` may start.
+
+| Key | Effect |
+|-----|--------|
+| `governor.enabled` | Turns the governor on or off. Off by default: the governor is opt-in, because the owner has retired admission controls and capacity holds. `AMPLIHACK_GOVERNOR` (`off`, `0`, `false`, `on`, `1`, `true`) outranks it. |
+| `governor.max_concurrency` | Highest concurrency limit; the limit never goes below 1. |
+| `governor.reserve_points` | Weekly points kept for coordination, recovery and review work. |
+| `governor.step` | How far one rate evaluation moves the limit. |
+| `governor.band_pct` | Width of the band around the sustainable rate in which the limit stays put. |
+| `governor.eval_interval_secs` | Shortest time between two rate evaluations. |
+| `governor.wait_secs` | Default longest wait for admission; `0` means do not wait. |
+| `governor.max_reading_age_secs` | Oldest stored usage reading the governor trusts for room; a profile with an older reading is left out of the pool unless that reading shows a window exhausted with its reset still ahead, in which case it stays in the pool as exhausted. |
+
+All eight are user-only, so a project file cannot turn the governor on or
+off, or loosen it.
+
+The Keys table lists no environment variable or flag for these keys. The
+governor reads `AMPLIHACK_GOVERNOR`, `AMPLIHACK_GOVERNOR_WAIT` and
+`--governor-wait` itself, because they accept values the config file does not
+(`off`, `15m`). They outrank `governor.enabled` and `governor.wait_secs`, but
+`config get --show-origin` does not see them and reports the file or default
+the key came from.
+
+```sh
+amplihack config set governor.enabled true
+amplihack config set governor.max_concurrency 2
+amplihack config set governor.wait_secs 1800
+```
+
+### sessions.daily_archive
+
+Whether the Claude login rotator runs its
+[daily session archive](./profile-command.md#rotate-daily-session-archive),
+which moves session logs older than three days out of `~/.claude/projects`.
+On by default.
+
+```sh
+amplihack config set sessions.daily_archive false
+```
+
+The rotator reads the key from the user file each time a run is due, so a
+change reaches a rotator that is already running. It has no environment
+variable: the background rotator does not inherit the launching shell's
+`AMPLIHACK_ROTATE*` variables, so a variable would not reach it. It is
+user-only, because it decides whether files are removed from your home
+directory; a project file's `sessions.daily_archive` is reported and ignored.
+
+Because the run removes files, the rotator treats a user file it cannot use
+as off for that day, not as the default: a file that cannot be read or
+parsed, a value that is not `true` or `false`, or a file that group or
+others can write. The rotator log then says
+`sessions archive: cannot read sessions.daily_archive (<why>); not run`.
+
+### sessions.archive_days and sessions.archive_dest
+
+The days and the destination for
+[`amplihack sessions archive`](./sessions-command.md#configuration),
+`sessions restore` and the rotator's
+[daily session archive](./profile-command.md#rotate-daily-session-archive).
+A session is archived when nothing in it has been written for
+`sessions.archive_days` days. Archives, the manifest and the lock go in
+`sessions.archive_dest`, which must be an absolute path to a directory you
+own that group and others cannot write, outside `~/.claude/projects`.
+`--days` and `--dest` override the keys for one command.
+
+```sh
+amplihack config set sessions.archive_days 7
+amplihack config set sessions.archive_dest /mnt/backup/claude-sessions
+```
+
+The command and the rotator read the keys from the user file each time
+they start a run, so a rotator that is already running uses a new value
+from its next run, and `sessions restore` looks in the directory the daily
+run wrote to. They have no environment variables: a rotator keeps the
+environment it was started with, so a variable exported later in a shell
+would reach `restore` but not the rotator. Both are user-only; a project
+file's value is reported and ignored.
+
+As with `sessions.daily_archive`, a user file that cannot give a key a
+value is not replaced by the default. The command prints
+`cannot read <key> (<why>)` and exits 1, and the daily run logs
+`sessions archive: cannot read <key> (<why>); not run`. A flag still works,
+because the key is then not read.
 
 ## The config command
 
@@ -534,9 +660,11 @@ have just cloned, so it is trusted less.
 
 - **The user file must be owned by you and not writable by group or others.**
   If it is not, its user-only keys (`agent.binary`, `paths.home`, `node.*`,
-  `recipe.log_dir`) are ignored and reported. Its other keys still apply.
+  `recipe.log_dir`, `governor.*`) are ignored and reported. Its other keys still apply.
 - **The project file never names a path, a command, an executable or the
   agent CLI.** `agent.binary` and every path-valued key are user-only.
+- **The project file cannot change the capacity governor.** Every
+  `governor.*` key is user-only.
 - **`config set --project` and `config edit --project` refuse a project
   `config.toml` that is a symlink, or whose directory resolves outside the git
   repository**, and exit 1.
@@ -639,6 +767,13 @@ so the user file is the only place the consent lives.
 - Writes are atomic: a temporary file with a random name in the same
   directory, set to mode 0600 before anything is written, synced, then
   renamed over the target. A reader never sees a half-written file.
+- One write is not synced: the launcher's save of `node.heap_consent` on the
+  first launch. It is still atomic and 0600, but skips the `fsync`, which took
+  9.76 s on a host under write load and delayed claude's start. If a crash
+  loses it, the next launch asks again. `config set`, `config unset` and the
+  migration from `~/.amplihack/config` all sync. `config edit` hands the file
+  to your editor, which decides how it is written. See
+  [Config Write Durability](../concepts/config-write-durability.md).
 - The user file is created with mode 0600. A new `~/.amplihack` is created
   with mode 0700; an existing one that you own loses group and other access.
   Your own permission bits are never widened.
@@ -653,4 +788,6 @@ so the user file is the only place the consent lives.
 - [Environment Variables](./environment-variables.md) — What each variable does
 - [Active Agent Binary](./active-agent-binary.md) — The full agent-binary resolver, including the `user_config` layer
 - [amplihack doctor](./doctor-command.md) — The `Effective config` section
+- [Capacity Governor](./capacity-governor.md): What the `governor.*` keys control
 - [Memory Configuration Consent](../features/memory-consent-prompt.md) — The NODE_OPTIONS prompt whose answer `node.heap_consent` stores
+- [Config Write Durability](../concepts/config-write-durability.md): Why the launcher's consent save skips the `fsync` that other config writes perform

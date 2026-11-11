@@ -6,8 +6,13 @@
 //!
 //! An overflow profile is a login that costs money per use (today: a Claude
 //! account billed to usage credits). The rotator and auto-switch move onto
-//! one only when [`Gate::allows`] says so, and both leave it as soon as a
-//! plan profile has capacity again.
+//! one only when the rotator's and auto-switch's deciders, using [`Gate::far`],
+//! allow it, and both leave it as soon as a plan profile has capacity again.
+//!
+//! An API-key profile is never a plan login, marked or not (issue #1804). It
+//! has no usage reading, and "no reading" must not count as free capacity, so
+//! it is a target only as the one API-key tier from [`tiers_of`]. Every
+//! decider leaves all other API-key profiles out of its plan logins.
 //!
 //! `add` and `remove` change the file through `config::update`, under the
 //! auto-switch state lock, so a concurrent `auto-switch exclude` or `on`, or
@@ -98,17 +103,6 @@ impl Gate {
             Some(t) => t.saturating_sub(now) > i64::try_from(self.wait).unwrap_or(i64::MAX),
         }
     }
-
-    /// Whether work may move onto an overflow profile: no plan profile has
-    /// capacity and [`Self::far`] holds.
-    pub fn allows(
-        &self,
-        plan_has_capacity: bool,
-        earliest_plan_reset: Option<i64>,
-        now: i64,
-    ) -> bool {
-        !plan_has_capacity && self.far(earliest_plan_reset, now)
-    }
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -157,18 +151,11 @@ pub fn overflow_names(root: &Path) -> Vec<ProfileName> {
     overflow_entries(root).into_iter().map(|e| e.name).collect()
 }
 
-/// Every tier the rotator and auto-switch try, in order: the `overflow=`
-/// entries without API-key profiles, then the first API-key profile by name
-/// at [`PLATFORM_TIER`] (issue #1700). Empty when `.auto-switch` is
-/// corrupt, so a damaged file never spends, on credits or on the API key.
+/// Every tier the rotator and auto-switch try, in order, and the marked
+/// API-key profiles that are not used because another comes first by name.
+/// See [`tiers_of`] for the order. Both are empty when `.auto-switch` is
+/// corrupt or the root cannot be listed, so a damaged file never spends, on credits or on the API key.
 /// `home` is the user's home directory.
-#[cfg(all(test, unix))]
-pub fn tiers(store: &ProfileStore, home: &Path) -> Vec<OverflowEntry> {
-    tiers_detail(store, Some(home)).0
-}
-
-/// [`tiers`], and the API-key profiles that `overflow=` lists, which are
-/// left out of the credit tiers.
 #[cfg(unix)]
 pub fn tiers_detail(
     store: &ProfileStore,
@@ -180,14 +167,39 @@ pub fn tiers_detail(
         FileState::Missing => Vec::new(),
         FileState::Corrupt => return (Vec::new(), Vec::new()),
     };
-    let platforms = super::kind::Ctx::load(store, home).platform_profiles(store);
-    let (ignored, mut out): (Vec<OverflowEntry>, Vec<OverflowEntry>) = marked
+    let kinds = super::kind::Ctx::load(store, home);
+    if kinds.corrupt() {
+        return (Vec::new(), Vec::new());
+    }
+    // A root that cannot be listed would make every marked key a credit tier.
+    match kinds.try_platform_profiles(store) {
+        Some(platforms) => tiers_of(marked, &platforms),
+        None => (Vec::new(), Vec::new()),
+    }
+}
+
+/// The tiers of the entries `marked`, given every API-key profile: the
+/// entries that are not API-key profiles, then the first API-key profile by
+/// name that `marked` names, at [`PLATFORM_TIER`] whatever tier is written
+/// (issue #1700). Issue #1804: the mark is the consent to per-token billing,
+/// so an API-key profile that `marked` does not name is never a tier. The
+/// second list is the marked API-key profiles after the first. Pure.
+#[cfg(unix)]
+pub fn tiers_of(
+    marked: Vec<OverflowEntry>,
+    platforms: &[ProfileName],
+) -> (Vec<OverflowEntry>, Vec<ProfileName>) {
+    let (keys, mut out): (Vec<OverflowEntry>, Vec<OverflowEntry>) = marked
         .into_iter()
         .partition(|e| platforms.contains(&e.name));
-    if let Some(first) = platforms.first() {
-        out.push(OverflowEntry::platform(first.clone()));
+    let mut keys: Vec<ProfileName> = keys.into_iter().map(|e| e.name).collect();
+    keys.sort();
+    keys.dedup();
+    let mut keys = keys.into_iter();
+    if let Some(first) = keys.next() {
+        out.push(OverflowEntry::platform(first));
     }
-    (out, ignored.into_iter().map(|e| e.name).collect())
+    (out, keys.collect())
 }
 
 #[cfg(unix)]
@@ -200,10 +212,14 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
             // An existing profile directory, not a symlink.
             store.resolve(&name)?;
             let home = super::usage_cmd::home_dir();
-            if super::kind::Ctx::load(store, home.as_deref()).kind(store, &name)
-                == super::kind::Kind::Platform
-            {
-                return Err(ProfileError::PlatformNotMarkable(name.to_string()));
+            let key = super::kind::Ctx::load(store, home.as_deref()).kind(store, &name)
+                == super::kind::Kind::Platform;
+            // Issue #1804: an API-key profile is always the last tier, so
+            // its mark is stored as the bare name, `tiers_of` applies the
+            // tier when reading, and `--tier` is refused before anything is
+            // written.
+            if key && tier.is_some() {
+                return Err(ProfileError::PlatformTierFixed(name.to_string()));
             }
             // `before`: `None` when newly added, else the tier it had. A
             // repeated `add` without `--tier` keeps the tier.
@@ -224,10 +240,17 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
                 Ok(())
             })?;
             match before {
+                None if key => {
+                    println!("overflow: added {name} (api-key tier, tier {PLATFORM_TIER})");
+                    println!(
+                        "note: {name} is billed per token; it is used only when every plan login is measured and none is below 100% on both windows, no credit profile can be used, the earliest plan reset is more than --overflow-wait away and its login check passes."
+                    );
+                }
+                Some(_) if key => println!("overflow: {name} is already marked (api-key tier)"),
                 None => {
                     println!("overflow: added {name} (tier {now_tier})");
                     println!(
-                        "note: {name} is used only when every plan profile is exhausted and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account."
+                        "note: {name} is used only when no measured plan login is below 100% on both windows and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account."
                     );
                 }
                 Some(old) if old == now_tier => {
@@ -235,7 +258,22 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
                 }
                 Some(old) => println!("overflow: {name} moved from tier {old} to tier {now_tier}"),
             }
-            if before.is_none() {
+            // Issue #1804: the mark does not decide this, so say so now.
+            if key
+                && let Some(setting) = super::usage_cmd::home_dir()
+                    .and_then(|home| super::rotate::key_check::home_key(&home))
+            {
+                eprintln!(
+                    "warning: {setting}: {}",
+                    super::rotate::key_check::HOME_KEY_EFFECT
+                );
+            }
+            if !super::auto_switch::can_take_login(root, &name) {
+                eprintln!(
+                    "warning: {name} has no login file, so it cannot be used as overflow until it has one: neither the rotator nor auto-switch can move onto it, and the capacity file does not count it"
+                );
+            }
+            if before.is_none() && !key {
                 println!(
                     "note: set a spend limit for the organization at https://claude.ai/settings/usage; the rotator is not a spending cap."
                 );
@@ -287,9 +325,13 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
                 .ok()
                 .flatten()
                 .and_then(|l| super::rotate::platform_block::active(&l, now()).cloned());
+            let marked: Vec<&ProfileName> = platforms.iter().filter(|p| c.is_overflow(p)).collect();
             for e in c.overflow_order() {
                 let n = &e.name;
-                let mut line = format!("{n}  tier {}", e.tier);
+                if platforms.contains(n) {
+                    continue;
+                }
+                let mut line = format!("{n}  tier {}  marked", e.tier);
                 if store.resolve(n).is_err() {
                     line.push_str("  missing (no profile directory)");
                 }
@@ -301,10 +343,14 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
                 }
                 println!("{line}");
             }
-            for (i, p) in platforms.iter().enumerate() {
-                let mut line = format!("{p}  api-key tier");
-                match (&key_block, platforms.first()) {
-                    (_, Some(first)) if i > 0 => {
+            for p in &platforms {
+                if !marked.contains(&p) {
+                    println!("{p}  api-key tier  not marked (not used)");
+                    continue;
+                }
+                let mut line = format!("{p}  api-key tier  marked");
+                match (&key_block, marked.first()) {
+                    (_, Some(first)) if *first != p => {
                         line.push_str(&format!("  not used ({first} comes first)"));
                     }
                     (Some(b), _) => line.push_str(&format!(

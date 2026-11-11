@@ -2,7 +2,9 @@
 //! signal only a verified rotator. Also the ledger side of `profile
 //! overflow list` and `clear` (issue #1606).
 
-use super::daemon::{DaemonState, current_state, daemon_err};
+use super::daemon::{DaemonState, current_state, daemon_err, exe_name, proc_root, running_on_host};
+use super::exhausted;
+use super::history;
 use super::identify::{self, LiveId};
 use super::ledger::{LastCycle, Phase, RotateLedger, RotateState, active_blocks};
 use super::log::{msg, timestamp};
@@ -77,7 +79,7 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
             .as_ref()
             .and_then(|l| l.live.clone())
             .unwrap_or_else(|| "-".into()),
-        Err(_) => "- (ledger unreadable)".into(),
+        Err(e) => super::handfix_msg::status_live_unreadable(super::ledger::refused_field(e)),
     };
     let ledger = ledger.ok().flatten();
     let last = match ledger.as_ref().and_then(|l| l.last_cycle.as_ref()) {
@@ -99,9 +101,27 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         None => "-".into(),
     };
     let auto = super::autostart_line(store.root());
-    println!("rotate: {word}\n{auto}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    // Issue #1803: read only under a private root; never echoes the marker.
+    let exe = exe_name();
+    let owner = super::owner::describe(store.root(), &proc_root(), exe.as_deref());
+    println!("rotate: {word}\n{auto}\n{owner}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    // Issue #1797: from the usage history only; no probe and no `claude`.
+    let (capacity, warnings) = history::capacity(store.root(), now());
+    for w in warnings {
+        eprintln!("{w}");
+    }
+    println!("{capacity}");
     println!("overflow: {overflow}\napi key: {api_key}\non overflow: {on_overflow}");
     if let Some(line) = super::platform_live_line(store.root()) {
+        println!("{line}");
+    }
+    // Issue #1818: profiles whose stored reading has no session window. Not
+    // labelled "no session limit": the stored reading cannot tell a plan
+    // with none from a session window that was not recorded.
+    let names_now = store.list().unwrap_or_default();
+    if let Some(line) =
+        crate::commands::profile::auto_switch::no_session_window_line(store.root(), &names_now)
+    {
         println!("{line}");
     }
     // `.default` bypasses the rotator: say so when it names an overflow profile.
@@ -120,6 +140,9 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     for line in ledger.as_ref().map(status_alerts).unwrap_or_default() {
         println!("{line}");
     }
+    if let Some(line) = exhausted::status_line(store.root(), now()) {
+        println!("{}", sanitize_display(&line, false));
+    }
     match rs.load_journal() {
         Ok(Some(j)) if j.phase == Phase::Inconsistent => println!("journal: inconsistent"),
         Ok(Some(j)) => println!("journal: pending (phase {})", j.phase.as_str()),
@@ -129,23 +152,24 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     println!("log: {}", rs.log.display());
 }
 
-/// The `alert:` lines of the ledger's hand-change guidance, then a
-/// `warning:` line for each profile in `lost_login` (issue #1693). Shows
+/// The ledger's hand-change guidance as `note:` or `alert:` lines, then a
+/// `warning:` line for each profile in `lost_login` (#1693, #1886). Shows
 /// what the last cycle decided; compares no accounts.
 pub fn status_alerts(l: &RotateLedger) -> Vec<String> {
-    let alerts = l.guidance.iter().flatten().map(|g| {
-        let text = g.strip_prefix("ALERT: ").unwrap_or(g);
-        format!("alert: {}", sanitize_display(text, false))
-    });
-    let warnings = l
+    let line = |kind: &str, text: &str| format!("{kind}: {}", sanitize_display(text, false));
+    let alerts = l
+        .guidance
+        .iter()
+        .flatten()
+        .map(|g| match g.strip_prefix("note: ") {
+            Some(note) => line("note", note),
+            None => line("alert", g.strip_prefix("ALERT: ").unwrap_or(g)),
+        });
+    let lost = l
         .lost_login
         .iter()
-        .filter_map(|n| ProfileName::parse(n).ok())
-        .map(|n| {
-            let line = msg::lost_login(&n);
-            let text = line.strip_prefix("ALERT: ").unwrap_or(&line);
-            format!("warning: {}", sanitize_display(text, false))
-        });
+        .filter_map(|n| ProfileName::parse(n).ok());
+    let warnings = lost.map(|n| line("warning", msg::lost_login(&n).trim_start_matches("ALERT: ")));
     alerts.chain(warnings).collect()
 }
 
@@ -187,8 +211,9 @@ pub fn stop(store: &ProfileStore, home: Option<&Path>) -> Result<(), ProfileErro
     Ok(())
 }
 
-/// Sends SIGTERM to `pid`, verified again after a pidfd pins it on Linux.
+/// SIGTERM to `pid`, verified on the real `/proc` (#2042) after a pidfd pins it on Linux.
 fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
+    let verified = || exe_name().is_some_and(|n| running_on_host(&rs.pid, pid, &n));
     let gone = || {
         daemon_err(format!(
             "the rotator (pid {pid}) changed before it was signalled"
@@ -196,16 +221,15 @@ fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
     };
     #[cfg(target_os = "linux")]
     {
-        use std::os::fd::{FromRawFd, OwnedFd};
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
         // SAFETY: pidfd_open takes a pid and flags and touches no memory.
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
         if fd >= 0 {
             // SAFETY: `fd` is a new descriptor owned by nothing else.
             let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
-            if current_state(rs) != DaemonState::Running(pid) {
+            if !verified() {
                 return Err(gone());
             }
-            use std::os::fd::AsRawFd;
             // SAFETY: a valid pidfd, a signal number, no siginfo and no flags.
             let rc = unsafe {
                 libc::syscall(
@@ -223,7 +247,7 @@ fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
             };
         }
     }
-    if current_state(rs) != DaemonState::Running(pid) {
+    if !verified() {
         return Err(gone());
     }
     let pid = libc::pid_t::try_from(pid).map_err(|_| gone())?;
@@ -274,23 +298,33 @@ fn overflow_line(
 /// that tag, `no` for a plan profile, `-` when the live profile cannot be
 /// identified. Runs no probe.
 /// The `api key:` line (issue #1700): the API-key profile the tier uses,
-/// with the active API-key block, or `-`.
+/// `(marked)` or `(not marked)` (issue #1804), with the active API-key
+/// block, or `-`.
 fn api_key_line(
     store: &ProfileStore,
     home: Option<&Path>,
     ledger: Option<&RotateLedger>,
 ) -> String {
+    use crate::commands::profile::overflow::{PLATFORM_TIER, tiers_detail};
+    // Issue #1804: the marked one, else the first by name, labelled.
+    let marked = tiers_detail(store, home)
+        .0
+        .into_iter()
+        .find(|e| e.tier == PLATFORM_TIER)
+        .map(|e| e.name);
     let platforms = crate::commands::profile::kind::Ctx::load(store, home).platform_profiles(store);
-    let Some(first) = platforms.first() else {
-        return "-".into();
+    let (first, label) = match (marked, platforms.into_iter().next()) {
+        (Some(m), _) => (m, "marked"),
+        (None, Some(p)) => (p, "not marked"),
+        (None, None) => return "-".into(),
     };
     match ledger.and_then(|l| super::platform_block::active(l, now())) {
         Some(b) => format!(
-            "{first} (blocked until {}, {})",
+            "{first} ({label}) (blocked until {}, {})",
             timestamp(b.until),
             sanitize_display(&b.reason, false)
         ),
-        None => first.to_string(),
+        None => format!("{first} ({label})"),
     }
 }
 

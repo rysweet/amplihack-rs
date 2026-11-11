@@ -4,12 +4,17 @@
 //! here.
 
 use super::cycle::{self, Ctx, CycleOutcome, LOCK_WAIT, Mode, prototype_guard};
+use super::exhausted::{self, paused};
+use super::inflight::{finish_refreshes, refresh_grace};
 use super::ledger::{LastCycle, RotateState};
 use super::log::{Sink, msg, open_or_warn};
+use super::owner;
 use super::settings::Settings;
 use super::swap::{self, RecoverOutcome};
+/// The process table root (issue #2042), for the rotate readers.
+pub(super) use crate::commands::agent::procfs::proc_root;
 use crate::commands::profile::auto_switch::kit::{
-    Source, State, check_root_private, effective, now, read_bounded_nofollow, recover_auto_switch,
+    State, check_root_private, now, read_bounded_nofollow, recover_auto_switch,
     write_private_atomic,
 };
 use crate::commands::profile::root_config::{ROTATE_ROOT_FILE, config_dir, save};
@@ -24,6 +29,7 @@ use std::time::{Duration, Instant};
 const MAX_PID_FILE: usize = 32;
 
 pub use amplihack_utils::rotator_status::DaemonState;
+pub(super) use amplihack_utils::rotator_status::running_on_host;
 
 pub(super) fn daemon_err(msg: impl Into<String>) -> ProfileError {
     ProfileError::RotateDaemon(msg.into())
@@ -43,9 +49,36 @@ pub(super) fn exe_name() -> Option<std::ffi::OsString> {
 
 pub(super) fn current_state(rs: &RotateState) -> DaemonState {
     match exe_name() {
-        Some(name) => state_at(rs, Path::new("/proc"), &name),
+        Some(name) => state_at(rs, &proc_root(), &name),
         None => DaemonState::Unverifiable,
     }
+}
+
+/// Whether a login rotator is running for the store at `root`: the built-in
+/// daemon, or the external prototype holding `.rotator/lock` (issue #1801).
+/// Any read error is `false`. Writes nothing, but the prototype check takes
+/// and at once releases a non-blocking exclusive `flock` on `.rotator/lock`
+/// when nothing holds it (see [`prototype_guard`]), so a rotator taking that
+/// lock with `LOCK_NB` in the same instant can be refused once.
+pub(in crate::commands::profile) fn running(root: &Path) -> bool {
+    matches!(
+        current_state(&RotateState::new(root)),
+        DaemonState::Running(_)
+    ) || matches!(
+        prototype_guard(root),
+        Err(ProfileError::RotatePrototypeRunning)
+    )
+}
+
+/// Whether a running rotator is rotating logins: [`running`], and auto-switch
+/// is not turned off. A rotator with auto-switch off stays idle (the watch
+/// loop skips every cycle while [`paused`]), so it records no cycle and makes
+/// no swap. This uses the watch loop's own [`paused`] rule, so the two cannot
+/// drift. `paused` is checked first and needs no lock, so with auto-switch
+/// off `.rotator/lock` is not touched. The auto-switch setting is read in the
+/// calling process, environment first, as everywhere else.
+pub(in crate::commands::profile) fn rotating(root: &Path) -> bool {
+    !paused(root) && running(root)
 }
 
 /// Why `start` refuses before it takes the lock, if it does: the external
@@ -175,7 +208,9 @@ pub(super) fn spawned_args(s: &Settings) -> Vec<String> {
 /// the child gets no `AMPLIHACK_ROTATE*` variable and no profile selection
 /// (`CLAUDE_CONFIG_DIR`, `AMPLIHACK_CLAUDE_PROFILE`) from the launch that
 /// started it, and is pinned to `root` whatever the variable or the saved
-/// root say later (issue #1592).
+/// root say later (issue #1592). Nor does it get `INVOCATION_ID`, so a
+/// rotator started from a shell inside a systemd unit never claims to be
+/// that unit's owner (issue #1803).
 pub(super) fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, ProfileError> {
     use std::os::unix::process::CommandExt;
     let errors = super::log::RotateLog::open(&rs.err, &rs.err)?;
@@ -190,7 +225,9 @@ pub(super) fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, 
             cmd.env_remove(k);
         }
     }
-    cmd.env_remove("CLAUDE_CONFIG_DIR").env_remove(PROFILE_ENV);
+    cmd.env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove(PROFILE_ENV)
+        .env_remove("INVOCATION_ID");
     cmd.env(ROOT_ENV, root);
     // SAFETY: the closure runs in the child between fork and exec and calls
     // only setsid and signal, which are async-signal-safe.
@@ -207,12 +244,15 @@ pub(super) fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, 
 }
 
 /// `watch`: cycles every `interval` seconds until SIGTERM or SIGINT. Never
-/// acts on a signal while holding the lock.
+/// acts on a signal while holding the lock. A watch that is not `--spawned`
+/// and is supervised (`--supervised[=UNIT]` or `INVOCATION_ID`) records
+/// itself as the rotation owner (issue #1803); no watch removes the marker.
 pub fn watch(
     store: &ProfileStore,
     home: PathBuf,
     s: Settings,
     spawned: bool,
+    supervised: Option<Option<String>>,
 ) -> Result<(), ProfileError> {
     let rs = RotateState::new(store.root());
     let stop = PROBE_CANCEL.clone();
@@ -236,6 +276,21 @@ pub fn watch(
             "rotate.pid",
             format!("{}\n", std::process::id()).as_bytes(),
         )?;
+        let env = |k: &str| std::env::var_os(k);
+        let proc_root = proc_root();
+        if owner::supervised(&supervised, &env, &proc_root) {
+            let flag = supervised.as_ref().and_then(|f| f.as_deref());
+            let m = owner::Marker {
+                unit: owner::unit_name(flag, &proc_root),
+                pid: std::process::id(),
+                since: Some(now()),
+            };
+            if let Err(e) = owner::write(store.root(), &m) {
+                log_line(&rs, &format!("skip: owner marker not written ({e})"));
+            }
+        } else if let Some(note) = owner::watch_note(store.root()) {
+            eprintln!("{note}");
+        }
     }
     // Auto-switch reads its overflow gate from this record, so it applies
     // this rotator's flags, not its own environment. Without the record it
@@ -246,10 +301,18 @@ pub fn watch(
             &format!("overflow: gate not recorded, auto-switch will not use overflow ({e})"),
         );
     }
+    let archive_home = home.clone();
     let mut ctx = Ctx::new(store.clone(), home, s);
+    ctx.reread = Some(super::fresh::reread_as_configured);
     ctx.stop = Some(stop.clone());
+    // Issue #1844: reads that outlast a cycle are used by the next one.
+    let (probe_secs, _) = crate::commands::profile::probe_limits::timeout_from_env(None);
+    let probe_timeout = Duration::from_secs(probe_secs);
+    ctx.in_flight = Some(std::sync::Mutex::new(super::inflight::InFlight::new(
+        super::inflight::max_age(probe_timeout),
+    )));
     let mut idle = false;
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::SeqCst) {
         if !paused(store.root()) {
             idle = false;
             match cycle::run_cycle(&mut ctx, Mode::Watch) {
@@ -262,21 +325,28 @@ pub fn watch(
             log_line(&rs, msg::IDLE);
             record_idle(&rs, store);
         }
+        // Every paused cycle, not once per idle latch; changes nothing.
+        if let Some(line) = exhausted::watch_line(store.root(), now()) {
+            log_line(&rs, &line);
+        }
+        super::sessions_daily::tick(&rs, &archive_home, now(), &stop);
         let until = Instant::now() + Duration::from_secs(s.interval);
-        while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+        while Instant::now() < until && !stop.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_secs(1).min(until - Instant::now()));
         }
     }
+    // SR-9: `stop` is `PROBE_CANCEL`, already set here. A refresh counts
+    // itself before it reads that flag and backs out if it is set, so once
+    // the count reaches zero no refresh can take a lock. Any that counted
+    // in time is let finish, so the lock is never left behind.
+    if !finish_refreshes(refresh_grace(probe_timeout)) {
+        log_line(
+            &rs,
+            "stop: a token refresh was still running; remove .oauth_refresh.lock if it stays",
+        );
+    }
     remove_own_pid(&rs);
     Ok(())
-}
-
-/// Whether auto-switch has been turned off (by its settings file or
-/// `AMPLIHACK_CLAUDE_AUTO_SWITCH=0`), or its settings file is damaged.
-/// Without any setting, rotation runs.
-fn paused(root: &Path) -> bool {
-    let eff = effective(root);
-    !eff.on && eff.source != Source::Default
 }
 
 /// The log line for a cycle that failed: a refused swap is an ALERT.
@@ -288,7 +358,7 @@ fn failure(e: &ProfileError) -> String {
     }
 }
 
-fn log_line(rs: &RotateState, line: &str) {
+pub(super) fn log_line(rs: &RotateState, line: &str) {
     match rs.ensure() {
         Ok(()) => Sink::new(open_or_warn(&rs.log, &rs.log1), false, true).emit(now(), line),
         Err(e) => eprintln!("warning: rotate log unavailable ({e}): {line}"),

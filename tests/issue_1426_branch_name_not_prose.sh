@@ -539,21 +539,26 @@ fi
 #     If a branch is already checked out in the working directory the recipe was
 #     pointed at with -w, prefer it rather than creating a second one.
 #
-# It cannot be granted here. #858 forbids adopting the caller checkout as a task
-# worktree at all, because that checkout may carry unrelated commits and
-# uncommitted files from another recipe. The two requests are irreconcilable and
-# the conflict is resolved in #858's favour; the reasoning is written down in
-# docs/features/branch-name-generation.md so that whoever reopens #858 finds it.
+# #858 still forbids adopting the caller checkout as a task worktree, because
+# that checkout may carry unrelated commits and uncommitted files from another
+# recipe. Since #1762, step 4 instead gives the task a worktree on a local alias
+# (`<branch>--wt-<n>`) tracking origin/<branch>, but only when the caller's
+# checkout holds nothing that worktree would miss. The reasoning is written down
+# in docs/features/branch-name-generation.md and
+# docs/recipes/issue-1762-caller-branch-worktree-alias.md.
 #
-# So the reporter's exact setup gets a LOUD REFUSAL rather than the branch. That
-# is a deliberate trade and this case exists to keep it deliberate. C1 covers the
-# pinned branch when it is checked out NOWHERE; only this case reproduces the
-# incident as it was actually filed.
+# Here, as in the incident, the pinned branch was never pushed, so origin has no
+# copy for an alias to track and the run STOPS LOUDLY, naming origin/<branch>
+# and #1762, rather than adopting the caller checkout. C1 covers the pinned
+# branch when it is checked out NOWHERE; only this case reproduces the incident
+# as it was actually filed.
 REPO_E2="$(build_repo e2)"
 git -C "${REPO_E2}" checkout -q -b "${PINNED_BRANCH}" main
 run_step "${REPO_E2}" 142 "${INCIDENT_TASK}"
-if [[ "${RUN_RC}" -ne 0 ]] && printf '%s' "${RUN_ERR}" | grep -q 'issue #858'; then
-    pass "E2-caller-checkout-refused" "the pinned branch checked out in the caller repo is refused loudly, never silently adopted (#858)"
+if [[ "${RUN_RC}" -ne 0 ]] \
+    && printf '%s' "${RUN_ERR}" | grep -qF 'issue #1762' \
+    && printf '%s' "${RUN_ERR}" | grep -qF "origin/${PINNED_BRANCH}"; then
+    pass "E2-caller-checkout-refused" "the pinned branch checked out in the caller repo, never pushed, stops loudly and is never silently adopted (#858, #1762)"
 else
     fail "E2-caller-checkout-refused" "rc=${RUN_RC} json=${RUN_JSON}\nstderr:\n${RUN_ERR}"
 fi

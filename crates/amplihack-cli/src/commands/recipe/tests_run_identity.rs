@@ -3,7 +3,8 @@
 //!
 //! Contract: `run_identity::caller_identity(get)` takes a getter for one
 //! environment variable and returns `<source>:<value>` for the first usable
-//! variable in the order `AMPLIHACK_RUN_ID`, `AMPLIHACK_SESSION_ID`,
+//! variable in the order `AMPLIHACK_WORKSTREAM_RUN_ID`, `AMPLIHACK_RUN_ID`,
+//! `AMPLIHACK_SESSION_ID`,
 //! `AMPLIHACK_TREE_ID`, `CLAUDE_CODE_SESSION_ID`. A value is usable when it is
 //! non-empty, at most 128 bytes and printable ASCII. Pure: never reads the
 //! process environment itself.
@@ -20,8 +21,12 @@ fn identity(vars: &[(&str, &str)]) -> Option<String> {
 }
 
 #[test]
-fn the_run_id_variable_is_named_amplihack_run_id() {
-    assert_eq!(RUN_ID_ENV, "AMPLIHACK_RUN_ID");
+fn the_detached_identity_does_not_overwrite_the_workspace_run_id() {
+    assert_eq!(RUN_ID_ENV, "AMPLIHACK_WORKSTREAM_RUN_ID");
+    assert_eq!(
+        identity(&[(RUN_ID_ENV, "detached"), ("AMPLIHACK_RUN_ID", "uuid")]).as_deref(),
+        Some("run:detached")
+    );
 }
 
 #[test]

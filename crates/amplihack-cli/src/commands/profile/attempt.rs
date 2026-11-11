@@ -11,6 +11,7 @@ use super::auto_switch::SUPERVISED_ENV;
 use super::fsx;
 use super::limit_wait::plan::{self, WaitFor};
 use super::name::ProfileName;
+use crate::commands::recipe::run::limit_patterns::{self, Harness};
 use crate::commands::recipe::run::{FailureClass, classify_failure_text};
 use anyhow::{Context, Result};
 use std::fs;
@@ -128,7 +129,8 @@ impl Drop for Signals {
 
 /// Runs attempt `n`. `env` is a profile to switch to and its directory;
 /// `None` keeps the inherited environment.
-pub(crate) fn run_attempt(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_attempt_with_recovery(
     exe: &Path,
     args: &[std::ffi::OsString],
     rerun_dir: &Path,
@@ -136,6 +138,7 @@ pub(crate) fn run_attempt(
     stdin: std::io::Result<Stdio>,
     n: u32,
     signals: &Signals,
+    recovery: Option<&recipe_runner_rs::recovery::ipc::Client>,
 ) -> Result<Attempt> {
     let stdout_path = rerun_dir.join(format!("{}-{n}.out", std::process::id()));
     let mut opts = fs::OpenOptions::new();
@@ -146,6 +149,12 @@ pub(crate) fn run_attempt(
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
     let stdout = opts.open(&stdout_path)?;
     let mut cmd = Command::new(exe);
+    if let Some(client) = recovery {
+        cmd.env(
+            recipe_runner_rs::recovery::ipc::ATTACHMENT_ENV,
+            client.environment()?,
+        );
+    }
     let spawned = stdin.and_then(|input| {
         cmd.args(args)
             .env(SUPERVISED_ENV, "1")
@@ -221,6 +230,9 @@ pub(crate) struct Limited {
     pub(crate) ledger_reset: i64,
     /// Whether, and until when, the usage-limit wait may wait.
     pub(crate) wait: WaitFor,
+    /// The limit as read, for a capacity wait (issue #1801). `None` for a
+    /// spend limit, which keeps its skip whatever reset it states.
+    pub(crate) seen: Option<(Harness, Option<i64>)>,
 }
 
 /// `Some` when `attempt` hit its usage limit. `now` is the wait's clock.
@@ -235,9 +247,11 @@ pub(crate) fn usage_limited(attempt: &Attempt, now: i64) -> Option<Limited> {
     let (err, out) = (&attempt.stderr_tail, &out_tail);
     let text = joined(err, out);
     let ledger_reset = classified_reset(&text, err, out, fsx::now())?;
+    let message = limit_patterns::limit_message(err, out, now);
     Some(Limited {
         ledger_reset,
-        wait: plan::wait_for(err, out, now),
+        wait: plan::wait_for_message(message, now),
+        seen: message.filter(|m| !m.spend).map(|m| (m.harness, m.reset)),
     })
 }
 

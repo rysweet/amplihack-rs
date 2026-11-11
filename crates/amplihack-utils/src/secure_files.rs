@@ -13,7 +13,7 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::time::Duration;
 
@@ -21,6 +21,41 @@ use std::time::Duration;
 mod unix;
 #[cfg(unix)]
 pub use unix::*;
+
+/// No passwd database off Unix: always `None`.
+#[cfg(not(unix))]
+pub fn passwd_home() -> Option<PathBuf> {
+    None
+}
+
+/// The canonical temporary-directory bases: `temp_dir()`, an absolute
+/// `$TMPDIR` and `/tmp`, in that order and without duplicates. A base that
+/// cannot be canonicalised is left out.
+///
+/// The one list used both by the CLI's profile settings refresh (to refuse a
+/// hooks binary from a temporary build) and by the issue #1699 test guard (to
+/// skip profile roots that are test fixtures), so the two cannot drift.
+pub fn temp_bases() -> Vec<PathBuf> {
+    let tmpdir = std::env::var_os("TMPDIR")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    let mut bases: Vec<PathBuf> = Vec::new();
+    for candidate in [
+        Some(std::env::temp_dir()),
+        tmpdir,
+        Some(PathBuf::from("/tmp")),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Ok(base) = candidate.canonicalize()
+            && !bases.contains(&base)
+        {
+            bases.push(base);
+        }
+    }
+    bases
+}
 
 /// An exclusive `flock` held on a file; released when dropped.
 #[derive(Debug)]
@@ -137,6 +172,29 @@ pub fn open_private_append(path: &Path) -> io::Result<fs::File> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn temp_bases_are_canonical_and_distinct() {
+        let bases = temp_bases();
+        assert!(!bases.is_empty(), "temp_dir() always canonicalises here");
+        for base in &bases {
+            assert_eq!(&base.canonicalize().unwrap(), base);
+        }
+        let mut sorted = bases.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), bases.len());
+        let temp = std::env::temp_dir().canonicalize().unwrap();
+        assert_eq!(bases[0], temp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn passwd_home_is_absolute_when_present() {
+        if let Some(home) = passwd_home() {
+            assert!(home.is_absolute(), "{}", home.display());
+        }
+    }
 
     #[test]
     fn ensure_private_directory_creates_dir() {

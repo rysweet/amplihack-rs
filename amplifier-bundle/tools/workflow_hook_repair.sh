@@ -27,7 +27,7 @@
 # needs nothing the bare command did not.
 #
 # Return codes: 0 ok, the command's own rc when the failure was not a hook
-# rejection, 1 stuck / evaluator_done_unresolved / refused, 79 terminal, 2
+# rejection, 1 stuck / evaluator_done_unresolved / refused / usage_limit, 79 terminal, 2
 # usage. HOOK_REPAIR_STATUS, HOOK_REPAIR_HOOK_IDS, HOOK_REPAIR_REASON,
 # HOOK_REPAIR_ROUNDS and HOOK_REPAIR_EVIDENCE_DIR are set on every return.
 # Nothing is written to stdout, no trap is installed, and all loop state is
@@ -88,6 +88,7 @@ hook_repair_jsafe() {
 hook_repair_hooks_dir() {
   local dir
   dir="$(git rev-parse --git-path hooks 2>/dev/null)" || return 1
+  [ -n "$dir" ] || return 1
   case "$dir" in /*) ;; *) dir="$(pwd -P)/${dir}" ;; esac
   printf '%s' "$dir"
 }
@@ -152,6 +153,28 @@ hook_repair_terminal_refusal() {
     | grep -vE '^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)' \
     | grep -F 'BLOCKED_TERMINAL orchestration_unavailable' >/dev/null && return 0
   return 1
+}
+
+# hook_repair_usage_limit_failure <rc> <log>: a non-zero exit and, outside
+# input echoes, a column-0 failure_class marker whose top-level class is
+# usage_limit: jq when installed, else anchored to the runner's alphabetical
+# key order. Copied from autodrive_escalate.sh usage_limit_failure (#1801).
+hook_repair_usage_limit_failure() {
+  local found="" markers=""
+  [ "${1:-0}" != "0" ] && [ -f "${2:-}" ] || return 1
+  markers="$(awk 'NR > 1 { if (prev ~ /^Recipe: / && $0 ~ /^(Run ID|Status): /) { cut = 1; exit } print prev } { prev = $0 } END { if (NR > 0 && !cut) print prev }' "$2" 2>/dev/null \
+    | grep -vE '^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)' \
+    | grep -E '^amplihack\.recipe\.failure_class \{')"
+  [ -n "$markers" ] || return 1
+  if command -v jq >/dev/null 2>&1; then
+    found="$(printf '%s\n' "$markers" \
+      | jq -R -r 'ltrimstr("amplihack.recipe.failure_class ") | (fromjson? // null)
+          | select(type == "object" and .class == "usage_limit") | "usage_limit"' 2>/dev/null)"
+  else
+    found="$(printf '%s\n' "$markers" \
+      | grep -E '^amplihack\.recipe\.failure_class \{"action":"[a-z_]+","attempt":[0-9]+,"class":"usage_limit"')"
+  fi
+  [ -n "$found" ]
 }
 
 # hook_repair_hash <path>: sha256 of a file.
@@ -444,7 +467,7 @@ hook_repair_result_line() {
 hook_repair_step15_reason() {
   case "${HOOK_REPAIR_STATUS:-}" in
     terminal) printf 'orchestration-unavailable' ;;
-    stuck|refused|evaluator_done_unresolved)
+    stuck|refused|evaluator_done_unresolved|usage_limit)
       printf 'hook-rejected-%s:%s:%s' "$HOOK_REPAIR_STATUS" "$1" "${HOOK_REPAIR_HOOK_IDS:-unknown}" ;;
     *) return 1 ;;
   esac
@@ -464,9 +487,10 @@ hook_repair_push_commit() {
 # hook_repair_evaluate <hr> <round> <output> <bin> <recipe> <step> <op> <wt>
 #   <ids> <prev-ids> <baseline> <rc> <agent-status>
 # Runs the loop-health evaluator on the round just finished and prints
-# `<verdict><TAB><reasoning>`, where the verdict is CONTINUE, DONE, STUCK or
-# TERMINAL. A missing or malformed verdict, or a non-zero exit other than 79,
-# is STUCK. Returns 79 for TERMINAL, otherwise 0.
+# `<verdict><TAB><reasoning>`, where the verdict is CONTINUE, DONE, STUCK,
+# TERMINAL or USAGE_LIMIT. A missing or malformed verdict, or a non-zero exit
+# other than 79 without the runner's usage-limit marker, is STUCK. Returns 79
+# for TERMINAL, otherwise 0.
 hook_repair_evaluate() {
   local hr="$1" round="$2" out="$3" bin="$4" recipe="$5" step="$6" op="$7" wt="$8"
   local ids="$9" prev_ids="${10}" baseline="${11}" rc="${12}" agent_status="${13}"
@@ -496,6 +520,11 @@ hook_repair_evaluate() {
     echo "ERROR: hook_repair_run: loop-health-evaluator returned the exit-${HOOK_REPAIR_EXIT_TERMINAL} terminal policy refusal; not retried (#1327)." >&2
     printf 'TERMINAL\t'
     return "$HOOK_REPAIR_EXIT_TERMINAL"
+  fi
+  if hook_repair_usage_limit_failure "$erc" "$log"; then
+    hook_repair_redact_in_place "$log"
+    printf 'USAGE_LIMIT\tthe loop-health evaluator failed on a Claude usage limit that no login lifted'
+    return 0
   fi
   if [ "$erc" -eq 0 ]; then
     line="$(hook_repair_health_line "$log")"
@@ -546,9 +575,11 @@ hook_repair_run() {
     hook_repair_usage "--fix-message applies to push only"; return 2
   fi
 
-  local wt gd hr hooks bin round_recipe health_recipe
+  local wt gd hr hooks bin round_recipe health_recipe attempt_dir physical tmp_root
   wt="$(git rev-parse --show-toplevel 2>/dev/null)" || { hook_repair_usage "not inside a git work tree"; return 2; }
-  wt="$(cd "$wt" && pwd -P)"
+  [[ "$wt" == /* && -d "$wt" ]] || { hook_repair_usage "empty or invalid worktree path"; return 2; }
+  wt="$(cd -- "$wt" && pwd -P)" || { hook_repair_usage "could not canonicalise worktree"; return 2; }
+  [[ "$wt" == /* && "$wt" != / && -d "$wt" ]] || { hook_repair_usage "invalid canonical worktree path"; return 2; }
   bin="${AMPLIHACK_BIN:-amplihack}"
   round_recipe="${HOOK_REPAIR_ROUND_RECIPE:-${HOOK_REPAIR_TOOLS_DIR%/*}/recipes/hook-rejection-repair.yaml}"
   health_recipe="${HOOK_REPAIR_HEALTH_RECIPE:-${HOOK_REPAIR_TOOLS_DIR%/*}/recipes/loop-health-evaluator.yaml}"
@@ -559,7 +590,19 @@ hook_repair_run() {
   # the operation.
   local rc=0 out
   gd="$(git rev-parse --absolute-git-dir 2>/dev/null)" || gd=""
-  out="$([ -n "$gd" ] && umask 077 && mktemp "${gd}/hook-repair-attempt.XXXXXX" 2>/dev/null)" || out=""
+  [[ "$gd" == /* && -d "$gd" ]] || { hook_repair_usage "empty or invalid Git metadata path"; return 2; }
+  gd="$(cd -- "$gd" && pwd -P)" || { hook_repair_usage "could not canonicalise Git metadata"; return 2; }
+  [[ "$gd" == /* && "$gd" != / && -d "$gd" ]] || { hook_repair_usage "invalid canonical Git metadata path"; return 2; }
+  out=""
+  if attempt_dir="$(umask 077 && mktemp -d "${gd:?}/hook-repair-attempt.XXXXXX" 2>/dev/null)"; then
+    case "$attempt_dir" in "${gd:?}/hook-repair-attempt."*) ;; *) hook_repair_usage "invalid first-attempt allocation"; return 2 ;; esac
+    [[ -d "$attempt_dir" && ! -L "$attempt_dir" && -O "$attempt_dir" ]] \
+      || { hook_repair_usage "first-attempt allocation is not an owned directory"; return 2; }
+    physical="$(cd -- "$attempt_dir" && pwd -P)" || { hook_repair_usage "could not canonicalise first-attempt allocation"; return 2; }
+    [[ -n "$physical" && "$physical" == "$attempt_dir" && "${attempt_dir%/*}" == "$gd" ]] \
+      || { hook_repair_usage "first-attempt allocation escaped Git metadata"; return 2; }
+    out="${attempt_dir:?}/attempt.out"
+  fi
   if [ -z "$out" ]; then
     # With nowhere to keep the output the failure cannot be classified: the
     # command runs and a failure is returned unrepaired. Its output is still
@@ -571,29 +614,45 @@ hook_repair_run() {
   fi
   if hook_repair_attempt "$out" "$output_file" "$@"; then rc=0; else rc=$?; fi
   if [ "$rc" -eq 0 ]; then
-    rm -f -- "$out"; HOOK_REPAIR_STATUS="ok"; return 0
+    rm -rf -- "${attempt_dir:?}"; HOOK_REPAIR_STATUS="ok"; return 0
   fi
   # Resolved only once something has failed; the success path skips it. An
   # unresolvable directory leaves hooks empty, so hook_repair_is_rejection
   # finds no hook and returns not_hook: the loop never runs without one.
   hooks="$(hook_repair_hooks_dir)" || hooks=""
   if ! hook_repair_is_rejection "$op" "$rc" "$out" "$hooks"; then
-    rm -f -- "$out"; HOOK_REPAIR_STATUS="not_hook"; return "$rc"
+    rm -rf -- "${attempt_dir:?}"; HOOK_REPAIR_STATUS="not_hook"; return "$rc"
   fi
 
   # A hook rejected the operation: from here on everything goes in a private
   # evidence directory outside the worktree.
-  hr="$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/hook-repair.XXXXXX")" \
-    || { rm -f -- "$out"; hook_repair_usage "could not create a private evidence directory under ${TMPDIR:-/tmp}"; return 2; }
-  hr="$(cd "$hr" && pwd -P)"
+  tmp_root="${TMPDIR:-/tmp}"
+  [[ "$tmp_root" == /* && -d "$tmp_root" ]] \
+    || { rm -rf -- "${attempt_dir:?}"; hook_repair_usage "TMPDIR must name an existing absolute directory"; return 2; }
+  tmp_root="$(cd -- "$tmp_root" && pwd -P)" \
+    || { rm -rf -- "${attempt_dir:?}"; hook_repair_usage "could not canonicalise TMPDIR"; return 2; }
+  [[ "$tmp_root" == /* && "$tmp_root" != / && -d "$tmp_root" ]] \
+    || { rm -rf -- "${attempt_dir:?}"; hook_repair_usage "invalid canonical TMPDIR"; return 2; }
+  hr="$(umask 077 && mktemp -d "${tmp_root:?}/hook-repair.XXXXXX")" \
+    || { rm -rf -- "${attempt_dir:?}"; hook_repair_usage "could not create a private evidence directory under ${tmp_root}"; return 2; }
+  case "$hr" in "${tmp_root:?}/hook-repair."*) ;; *)
+    rm -rf -- "${attempt_dir:?}"; hook_repair_usage "invalid evidence allocation"; return 2 ;;
+  esac
+  [[ -d "$hr" && ! -L "$hr" && -O "$hr" ]] \
+    || { rm -rf -- "${attempt_dir:?}"; hook_repair_usage "evidence allocation is not an owned directory"; return 2; }
+  physical="$(cd -- "$hr" && pwd -P)" \
+    || { rm -rf -- "${attempt_dir:?}"; hook_repair_usage "could not canonicalise evidence allocation"; return 2; }
+  [[ -n "$physical" && "$physical" == "$hr" && "${hr%/*}" == "$tmp_root" ]] \
+    || { rm -rf -- "${attempt_dir:?}"; hook_repair_usage "evidence allocation escaped TMPDIR"; return 2; }
   case "$hr/" in
     "$wt"/*)
-      rm -rf -- "$hr"; rm -f -- "$out"
+      rm -rf -- "${hr:?}" "${attempt_dir:?}"
       hook_repair_usage "the evidence directory ${hr} lies inside the worktree ${wt}; set TMPDIR outside it (SR-14)"
       return 2 ;;
   esac
   mv -f -- "$out" "${hr}/attempt.out" \
-    || { rm -rf -- "$hr"; rm -f -- "$out"; hook_repair_usage "could not move the first attempt's output into ${hr}"; return 2; }
+    || { rm -rf -- "${hr:?}" "${attempt_dir:?}"; hook_repair_usage "could not move the first attempt's output into ${hr}"; return 2; }
+  rm -rf -- "${attempt_dir:?}"
   out="${hr}/attempt.out"
 
   local ids prev_ids="" verdict="" reasoning="" status="" round=0 prev_hash agent_status evaluation
@@ -724,6 +783,7 @@ hook_repair_run() {
     case "$verdict" in
       CONTINUE) reasoning="" ;;
       TERMINAL) status="terminal"; verdict="" ;;
+      USAGE_LIMIT) status="usage_limit"; verdict="" ;;
       DONE) status="evaluator_done_unresolved"
         reasoning="evaluator ended the loop while the hook still rejects${reasoning:+: ${reasoning}}" ;;
       *) status="stuck"; verdict="STUCK"

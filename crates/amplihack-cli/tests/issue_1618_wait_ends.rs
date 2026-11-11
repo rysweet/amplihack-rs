@@ -9,8 +9,8 @@
 
 #![cfg(unix)]
 
-use crate::issue_1618_fixture::{Fixture, claude_stdout, describe, events};
-use std::time::{Duration, Instant};
+use crate::issue_1618_fixture::{Fixture, WAIT_PREFIX, claude_stdout, describe, events};
+use std::fs;
 
 #[test]
 fn ac4_a_zero_maximum_waits_zero_seconds_and_retries_once() {
@@ -68,7 +68,7 @@ fn ac4_a_step_timeout_of_sixty_seconds_or_less_ends_the_step_without_a_retry() {
     assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
     assert_eq!(f.count("0"), 1, "no retry after a step timeout");
     let ev = events(&out);
-    assert_eq!(ev.len(), 2, "{ev:?}");
+    assert_eq!(ev.len(), 3, "{ev:?}");
     assert!(
         ev[0].starts_with(
             "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until="
@@ -77,6 +77,8 @@ fn ac4_a_step_timeout_of_sixty_seconds_or_less_ends_the_step_without_a_retry() {
     );
     assert!(ev[0].ends_with(" bound=step_timeout"), "{ev:?}");
     assert_eq!(ev[1], "end reason=step timeout");
+    // The closing line keeps the step classed usage_limit (#1801).
+    assert_eq!(ev[2], "failed reason=step_timeout: usage limit not lifted");
     assert_eq!(
         claude_stdout(&out),
         "attempt 1 output\n",
@@ -102,12 +104,26 @@ fn a_zero_step_timeout_does_not_bound_the_wait() {
 fn ac5_a_login_moved_into_place_during_the_wait_ends_it() {
     let f = Fixture::new();
     let mut c = f.step();
-    // 100x: a 30 s virtual poll is 0.3 s real, the 1920 s wait 19.2 s real.
-    // The credentials file appears 1 s (real) after the first attempt.
-    c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "100")
-        .env("CHANGE_LOGIN_AFTER", "1");
-    let started = Instant::now();
-    let out = f.run(&mut c);
+    // Issue #1973: the test moves the login into place itself, once the
+    // wait's first `progress` line shows two polls have agreed on the old
+    // state, rather than a fixed second after the first attempt. 3x: a 30 s
+    // virtual poll is 10 s real, and the 1920 s wait 640 s real, so on a
+    // loaded host the wait cannot reach the reset before the change. The
+    // `end reason=login changed` event proves it ended at the change, not
+    // the reset (an elapsed-time check was removed). If the change never
+    // ends the wait, `run_watching` kills the step at the shared 10-minute
+    // ceiling; the scale does not bound a failing run.
+    c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "3");
+    let creds = f.config.join(".credentials.json");
+    let progress = format!("{WAIT_PREFIX}progress ");
+    let mut moved = false;
+    let out = f.run_watching(&mut c, |line| {
+        if !moved && line.starts_with(&progress) {
+            fs::write(&creds, "").expect("move a login into place");
+            moved = true;
+        }
+    });
+    assert!(moved, "the wait wrote no progress line: {}", describe(&out));
     assert!(out.status.success(), "{}", describe(&out));
     let ev = events(&out);
     assert_eq!(
@@ -116,8 +132,25 @@ fn ac5_a_login_moved_into_place_during_the_wait_ends_it() {
         "{ev:?}"
     );
     assert_eq!(f.count("0"), 2);
-    assert!(
-        started.elapsed() < Duration::from_secs(15),
-        "the wait should end at the login change, not the reset"
-    );
+}
+
+/// Issue #1743: a finished wait appends its real length to the ledger that
+/// auto-drive names, so its wall budget can leave the wait out.
+#[test]
+fn a_finished_wait_is_written_to_the_ledger_auto_drive_names() {
+    let f = Fixture::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger");
+    let mut c = f.step();
+    c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0")
+        .env("AMPLIHACK_USAGE_WAIT_LEDGER", &ledger);
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(events(&out)[1], "end reason=max reached");
+    let text = std::fs::read_to_string(&ledger).expect("ledger written");
+    assert_eq!(text.lines().count(), 1, "{text:?}");
+    assert!(text.trim_end().parse::<u64>().is_ok(), "{text:?}");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&ledger).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
 }

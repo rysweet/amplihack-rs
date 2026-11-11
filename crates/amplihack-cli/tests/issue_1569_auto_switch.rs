@@ -13,14 +13,20 @@
 #![cfg(unix)]
 
 use crate::support::amplihack_bin::amplihack_bin;
+#[cfg(target_os = "linux")]
+use crate::support::fake_proc::{FAKE_PID_BASE, FakeProc};
 use crate::support::profile_default::set_default;
+#[cfg(target_os = "linux")]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
+#[cfg(target_os = "linux")]
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
@@ -65,7 +71,7 @@ fn private_file(path: &Path, body: &str) {
 /// - otherwise prints `done as <profile>` and exits `$EXIT_CODE`.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 p="${AMPLIHACK_CLAUDE_PROFILE-<unset>}"
 echo "$p" >> "$RECORD_DIR/attempts"
@@ -110,13 +116,18 @@ echo "done as $p"
 exit "${EXIT_CODE:-0}"
 "#;
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux-only swap tests
-struct Holder(Child);
+/// A fake Claude session in the fixture's process table (issue #2042);
+/// dropping it removes the entry, as the session exiting would.
+#[cfg(target_os = "linux")]
+struct Holder {
+    proc: Rc<FakeProc>,
+    pid: u32,
+}
 
+#[cfg(target_os = "linux")]
 impl Drop for Holder {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        self.proc.remove(self.pid);
     }
 }
 
@@ -131,6 +142,12 @@ struct Fixture {
     printed: RefCell<Vec<u8>>,
     /// Sentinel credential contents, by profile.
     creds: BTreeMap<String, String>,
+    /// The process table every command reads instead of `/proc`.
+    #[cfg(target_os = "linux")]
+    proc: Rc<FakeProc>,
+    /// The pid the next [`Fixture::hold`] uses.
+    #[cfg(target_os = "linux")]
+    next_pid: Cell<u32>,
 }
 
 impl Fixture {
@@ -154,6 +171,10 @@ impl Fixture {
             tools,
             printed: RefCell::new(Vec::new()),
             creds: BTreeMap::new(),
+            #[cfg(target_os = "linux")]
+            proc: Rc::new(FakeProc::new()),
+            #[cfg(target_os = "linux")]
+            next_pid: Cell::new(FAKE_PID_BASE),
         };
         for name in PROFILES {
             f.ok(&["profile", "add", name]);
@@ -201,6 +222,10 @@ impl Fixture {
             .current_dir(&self.work)
             .env_clear()
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env(
+                crate::isolated_amplihack::PROC_ROOT_ENV,
+                crate::isolated_amplihack::shared_empty_proc_root(),
+            )
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
@@ -222,8 +247,13 @@ impl Fixture {
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
             // Launches never start a real background rotator here (autostart).
             .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
+            // These tests cover auto-switch alone; the #1811 capacity
+            // governor would hold exhausted readings and write `.governor.d`.
+            .env("AMPLIHACK_GOVERNOR", "off")
             .env("AMPLIHACK_SKIP_REFLECTION", "1")
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
+        #[cfg(target_os = "linux")]
+        c.env(crate::isolated_amplihack::PROC_ROOT_ENV, self.proc.path());
         c
     }
 
@@ -273,27 +303,23 @@ impl Fixture {
         self.ok(&["profile", "auto-switch", "on"]);
     }
 
-    /// A process standing in for a Claude session running in `name`.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux-only swap tests
+    /// A static entry standing in for a Claude session running in `name`:
+    /// not a zombie, owned by this user, with `CLAUDE_CONFIG_DIR` set to the
+    /// profile's absolute directory. No process is started.
+    #[cfg(target_os = "linux")]
     fn hold(&self, name: &str) -> Holder {
-        let child = Command::new("sleep")
-            .arg("120")
-            .env_clear()
-            .env("CLAUDE_CONFIG_DIR", self.dir(name))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        // Make sure /proc/<pid>/environ is the child's, not the pre-exec copy.
-        for _ in 0..100 {
-            let exe = fs::read_link(format!("/proc/{}/exe", child.id())).unwrap_or_default();
-            if exe.file_name().is_some_and(|n| n == "sleep") {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+        let pid = self.next_pid.get();
+        self.next_pid.set(pid + 1);
+        let dir = self.dir(name);
+        self.proc
+            .process(pid)
+            .cmdline(&["sleep", "120"])
+            .status('S')
+            .environ(&[("CLAUDE_CONFIG_DIR", dir.to_str().unwrap())]);
+        Holder {
+            proc: Rc::clone(&self.proc),
+            pid,
         }
-        Holder(child)
     }
 
     /// Status-line input like Claude Code's, with the given usage.
@@ -1152,19 +1178,19 @@ mod swap {
     /// The in-session swap asks the overflow gate (issue #1606): a plan
     /// profile with capacity wins over the overflow profile; with none, and
     /// the plan reset an hour away (beyond the default 30-minute wait), the
-    /// session moves onto the overflow profile. "Capacity" is the rotator's
-    /// test, below 85% session and 90% week, so a plan profile at 87%
-    /// session does not count. No rotator runs here, so the gate is the
-    /// defaults.
+    /// session moves onto the overflow profile. A plan profile at 87% session
+    /// has no capacity by the rotator's test but still has room, so no credit
+    /// is spent (issue #1804): overflow needs every plan profile at 100%. No
+    /// rotator runs here, so the gate is the defaults.
     #[test]
     fn the_swap_uses_overflow_only_when_no_plan_profile_has_capacity() {
-        for (y, to) in [(40.0, "Y"), (87.0, "Z"), (99.0, "Z")] {
+        for (x, y, to) in [(95.0, 40.0, "Y"), (95.0, 87.0, "Y"), (100.0, 100.0, "Z")] {
             let f = Fixture::new();
             prime(&f);
             f.ok(&["profile", "overflow", "add", "Z"]);
             f.seed_usage(&[("Y", y), ("Z", 0.0)]);
             let _session = f.hold("X");
-            let out = f.tick("X", 95.0);
+            let out = f.tick("X", x);
             assert!(out.status.success(), "{}", text(&out.stderr));
             assert_eq!(
                 f.hosts().get("X").map(String::as_str),
@@ -1182,17 +1208,17 @@ mod swap {
     /// default gate (85% session, 90% week), a plan profile whose session
     /// has reset but whose week reads 85% has capacity for the rotator, so
     /// the session leaves the overflow profile for it although 85% is over
-    /// the auto-switch threshold. At 92% week it has none, and the session
-    /// stays on the overflow profile.
+    /// the auto-switch threshold. At 100% week it has no room either (issue
+    /// #1804), and the session stays on the overflow profile.
     #[test]
     fn the_move_back_off_overflow_uses_the_gate_not_the_auto_switch_threshold() {
-        for (y_week, to) in [(85.0, "Y"), (92.0, "Z")] {
+        for (y_week, to) in [(85.0, "Y"), (100.0, "Z")] {
             let f = Fixture::new();
             f.ok(&["profile", "auto-switch", "on", "--threshold", "80"]);
             f.ok(&["profile", "overflow", "add", "Z"]);
-            f.seed_usage(&[("Y", 99.0), ("Z", 0.0)]);
+            f.seed_usage(&[("Y", 100.0), ("Z", 0.0)]);
             let _session = f.hold("X");
-            let out = f.tick("X", 95.0);
+            let out = f.tick("X", 100.0);
             assert!(out.status.success(), "{}", text(&out.stderr));
             assert_eq!(
                 f.hosts().get("X").map(String::as_str),
@@ -1203,7 +1229,7 @@ mod swap {
             // Y's session resets; its week stays at `y_week`. The swap
             // was over five minutes ago.
             f.age_swaps();
-            f.seed_usage_weeks(&[("X", 95.0, 10.0), ("Y", 0.0, y_week), ("Z", 10.0, 10.0)]);
+            f.seed_usage_weeks(&[("X", 100.0, 10.0), ("Y", 0.0, y_week), ("Z", 10.0, 10.0)]);
             let out = f.tick("X", 10.0);
             assert!(out.status.success(), "{}", text(&out.stderr));
             assert_eq!(
@@ -1714,7 +1740,7 @@ mod swap {
         prime(&f);
         let _x = f.hold("X");
         let json = Fixture::statusline_json(95.0, 10.0);
-        let children: Vec<Child> = (0..8)
+        let children: Vec<std::process::Child> = (0..8)
             .map(|_| {
                 let mut c = f.tick_cmd("X");
                 let mut child = c.spawn().unwrap();
@@ -2000,8 +2026,10 @@ fn shared_account_is_a_note_without_the_uuid() {
     assert!(
         status.contains(
             "note: profiles 'X' and 'Z' are signed in to the same account and organization \
-             (duplicate login); fix: run 'amplihack profile login Z' with the browser signed \
-             out of claude.ai or in a private window.\n"
+             (duplicate login); amplihack cannot tell which of them holds the wrong login; \
+             fix: run 'amplihack profile login <name>' for the one that should hold a \
+             different account, with the browser signed out of claude.ai or in a private \
+             window.\n"
         ),
         "{status}"
     );
@@ -2552,6 +2580,24 @@ fn auto_switch_never_opens_reads_or_copies_credentials() {
         );
     }
     assert!(seen > 10, "the scan must see the login paths ({seen})");
+}
+
+#[test]
+fn source_guards_cover_the_capacity_line_modules() {
+    // Issue #1745: the no-owner status line and its renderer are scanned by
+    // every guard here, and never name a login file at all.
+    let sources = auto_switch_sources();
+    for name in ["capacity_line.rs", "home_line.rs", "statusline.rs"] {
+        let (_, src) = sources
+            .iter()
+            .find(|(p, _)| p.file_name().is_some_and(|f| f == name))
+            .unwrap_or_else(|| panic!("{name} must be among the scanned sources"));
+        if name != "statusline.rs" {
+            assert!(!src.contains(".credentials.json"), "{name}");
+            assert!(!src.contains("CREDS"), "{name}");
+            assert!(!src.contains(".claude.json"), "{name}");
+        }
+    }
 }
 
 #[test]

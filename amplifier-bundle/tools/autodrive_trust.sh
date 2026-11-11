@@ -10,18 +10,20 @@
 # was measured; autodrive_qa_trusted accepts it only through the hash chain
 # that starts at the loop's merge-ready-records.tsv manifest.
 # autodrive_gadugi_required says whether criterion 1 needs gadugi-test in a
-# repository at all; it follows qa-team's repo-type table.
+# repository at all; it follows qa-team's repo-type table. The QA target and
+# command sources (autodrive_qa_target and friends, #1763) live in
+# autodrive_qa_scope.sh, which this file loads from its own directory.
 #
-# Every function prints only a fixed token, a hex SHA, or a JSON line built
-# from those. Commit subjects, paths and file contents are never printed, so
-# nothing from the branch under review reaches a log or a prompt through here.
-# The one exception is autodrive_qa_target: it prints a relative directory
-# limited to A-Z a-z 0-9 . _ / -, or candidates with every other byte as `_`.
+# Every function here prints only a fixed token, a hex SHA, or a JSON line
+# built from those. Commit subjects, paths and file contents are never
+# printed, so nothing from the branch under review reaches a log or a prompt
+# through here; autodrive_qa_scope.sh documents its own sanitised output.
 #
 # Callers source autodrive_state.sh first: autodrive_blob_hash,
 # autodrive_manifest_row, autodrive_crusty_final and autodrive_clear_phase live
-# there. This file only DEFINES functions and two read-only variables; sourcing
-# it has no other side effect. Needs bash 3.2 or later, git and coreutils.
+# there. This file only DEFINES functions, two read-only variables,
+# AUTODRIVE_TRUST_GIT_UNSET_VARS and the _AD_SCOPE_OK flag; sourcing it has no
+# other side effect. Needs bash 3.2 or later, git and coreutils.
 #
 # Same-user limit: these checks catch an agent following instructions found in
 # branch text, an accidental edit, and the replay of an older record. They are
@@ -54,14 +56,20 @@ autodrive_is_sha() {
   return 0
 }
 
-# autodrive_trust_git <repo> <git args...>: git with history rewriting turned
-# off. Replace refs and grafts cannot change what is walked, an inherited
-# GIT_DIR or GIT_WORK_TREE cannot point git at another repository, and git
-# never prompts for credentials.
+# Copy git-repo-env.sh's 12 names, then GIT_REPLACE_REF_BASE to forbid history
+# rewriting. This GATE_FILE cannot source another helper without widening the
+# guard's trusted set. tests/issue_1278_git_env_isolation.sh checks the copy.
+# Assign unconditionally so the environment cannot shorten it (#2033).
+AUTODRIVE_TRUST_GIT_UNSET_VARS="GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR GIT_DIR GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_INDEX_FILE GIT_INDEX_VERSION GIT_NAMESPACE GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_QUARANTINE_PATH GIT_WORK_TREE GIT_REPLACE_REF_BASE"
+
+# autodrive_trust_git <repo> <git args...>: git without history rewriting,
+# inherited repository selection or credential prompts.
 autodrive_trust_git() {
-  local repo="$1"; shift
-  env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_OBJECT_DIRECTORY \
-    -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_COMMON_DIR -u GIT_REPLACE_REF_BASE \
+  local repo="$1" v
+  local -a unset_args=()
+  shift
+  for v in $AUTODRIVE_TRUST_GIT_UNSET_VARS; do unset_args+=(-u "$v"); done
+  env "${unset_args[@]}" \
     GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null GIT_TERMINAL_PROMPT=0 LC_ALL=C \
     git -C "$repo" "$@"
 }
@@ -331,68 +339,60 @@ autodrive_scenario_results() {
 # else: auto-drive's first step, merge round step-00, the qa evidence tool
 # and the merge gate. None needs autodrive_state.sh.
 
-# _autodrive_cargo_dirs <dir> -> the directory, relative to <dir>, of each
-# Cargo.toml 1 to 3 levels down, sorted with LC_ALL=C. target, worktrees,
-# node_modules and hidden directories are pruned; symlinks are not followed.
-# No -mindepth: find skips -prune above the minimum depth, so target/ would
-# be searched. A non-./<path>/Cargo.toml line (a newline in a name) or a
-# find error (an unreadable directory may hide a crate) is `!`: ambiguous.
-# CDPATH is unset so a relative <dir> cannot resolve elsewhere.
-_autodrive_cargo_dirs() {
-  ( unset CDPATH; cd -- "${1:-.}" 2>/dev/null && { LC_ALL=C find . -maxdepth 3 \
-      \( -type d \( -name target -o -name worktrees -o -name node_modules -o -name '.?*' \) -prune \) \
-      -o \( -type f -name Cargo.toml -print \) 2>/dev/null || printf '!\n'; } ) | while IFS= read -r p; do
-    case "$p" in ./Cargo.toml) ;; ./?*/Cargo.toml) p="${p#./}"; printf '%s\n' "${p%/Cargo.toml}" ;; *) printf '!\n' ;; esac
-  done | LC_ALL=C sort
-}
-
-# autodrive_qa_target <dir> -> `<type><TAB><field>`, the one place the QA
-# target is chosen; the first rule that matches wins. At the top of <dir>:
-# Cargo.toml gives `rust-cli .`; pyproject.toml or setup.py `python .`, even
-# beside package.json; package.json `node .`. A root project always beats a
-# nested crate (mistt-repo/jamestown, #1516), so any other root project file
-# (AUTODRIVE_ROOT_PROJECT_FILES) gives `unknown .`. Else one nested crate, or a
-# first sorted hit that is an ancestor of every other, gives `rust-cli <rel>`.
-# Several unrelated hits, or a path that is absolute, has a `..` or empty
-# component or a byte outside A-Z a-z 0-9 . _ / -, give `ambiguous <list>`:
-# space-separated, other bytes as `_`, each cut to 128 bytes, at most 10 and
-# then `(+N more)`; a search error is `(search-error)`. No manifest: `unknown .`.
-autodrive_qa_target() {
-  local -x LC_ALL=C
-  local d="${1:-.}" list="" first="" h="" bad="" n=0 shown=""
-  if [ -f "$d/Cargo.toml" ]; then printf 'rust-cli\t.\n'; return 0; fi
-  if [ -f "$d/pyproject.toml" ] || [ -f "$d/setup.py" ]; then printf 'python\t.\n'; return 0; fi
-  if [ -f "$d/package.json" ]; then printf 'node\t.\n'; return 0; fi
-  for h in "${AUTODRIVE_ROOT_PROJECT_FILES[@]}"; do { [ -e "$d/$h" ] || [ -L "$d/$h" ]; } && { printf 'unknown\t.\n'; return 0; }; done
-  list="$(_autodrive_cargo_dirs "$d")"
-  if [ -z "$list" ]; then printf 'unknown\t.\n'; return 0; fi
-  while IFS= read -r h; do
-    case "$h" in ''|/*|*//*|*/|..|../*|*/..|*/../*|*[!A-Za-z0-9._/-]*) bad="1" ;; esac
-    if [ -z "$first" ]; then first="$h"; else case "$h" in "$first"/*) ;; *) bad="1" ;; esac; fi
-  done <<< "$list"
-  if [ -z "$bad" ]; then printf 'rust-cli\t%s\n' "$first"; return 0; fi
-  while IFS= read -r h; do
-    n=$((n + 1)); [ "$h" = "!" ] && h="(search-error)" || h="$(printf '%s' "$h" | tr -c 'A-Za-z0-9._/-' '_' | cut -c1-128)"
-    [ "$n" -gt 10 ] || shown="${shown}${shown:+ }${h}"
-  done <<< "$list"
-  if [ "$n" -gt 10 ]; then shown="${shown} (+$((n - 10)) more)"; fi
-  printf 'ambiguous\t%s\n' "$shown"
-}
+# The QA target lives in autodrive_qa_scope.sh, loaded only from the physical
+# directory of this file, only when it is a regular file and not a symlink.
+# _AD_SCOPE_OK is set only when it loaded. Without it autodrive_qa_target says
+# `unknown .` and autodrive_gadugi_required says true, so a broken install
+# blocks and never passes.
+_AD_SCOPE_OK=""
+_ad_scope="$(unset CDPATH; cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || _ad_scope=""
+_ad_scope="${_ad_scope:+${_ad_scope}/autodrive_qa_scope.sh}"
+# shellcheck source=autodrive_qa_scope.sh
+if [ -n "$_ad_scope" ] && [ -f "$_ad_scope" ] && [ ! -L "$_ad_scope" ] && . "$_ad_scope"; then
+  _AD_SCOPE_OK="1"
+else
+  autodrive_qa_target() { printf 'unknown\t.\n'; }
+  # Nothing was measured, so nothing is documentation-only: `unknown` is not
+  # `true`, and autodrive_gadugi_required refuses before it asks in any case.
+  autodrive_qa_docs_only() { printf 'unknown\n'; }
+fi
+unset _ad_scope
 
 # autodrive_repo_type <dir> -> rust-cli, node, python or unknown: the type
-# autodrive_qa_target chose, with ambiguous reported as unknown.
+# autodrive_qa_target chose, with unresolved reported as unknown.
 autodrive_repo_type() {
   local t=""
   t="$(autodrive_qa_target "${1:-.}")"
   case "${t%%$'\t'*}" in rust-cli|node|python) printf '%s\n' "${t%%$'\t'*}" ;; *) printf 'unknown\n' ;; esac
 }
 
-# autodrive_gadugi_required <dir> -> true or false. The result is true for a
-# Node repository, and when the operator sets AUTODRIVE_QA_SCENARIO_DIR in
-# the environment, which asks for gadugi scenarios in any repository type.
+# autodrive_gadugi_required <dir> -> true or false. The result is true when
+# the operator sets AUTODRIVE_QA_SCENARIO_DIR in the environment (gadugi
+# scenarios in any repository type), when the scope helper did not load, when
+# the chosen project is Node, and when the choice is unresolved and any
+# candidate directory is a Node project (_autodrive_qa_needs_gadugi).
 # Otherwise it is false.
+#
+# One exception, issue #2219: a pull request that changes documentation and
+# nothing else does not need a gadugi scenario, because it changes no
+# user-facing surface for one to drive. autodrive_qa_docs_only decides that,
+# so the answer is a measurement and not an agent's reading of the diff
+# (#1517, #1518), and the merge round and the merge gate read the same
+# function and cannot disagree.
+#
+# Precedence, all fail-closed. The operator's AUTODRIVE_QA_SCENARIO_DIR and a
+# scope helper that did not load are both tested FIRST and both still force
+# true; `unknown` is not `true`. The exemption narrows what evidence criterion
+# 1 requires and nothing else: the repository's own suite, CI, crusty review
+# and every other criterion still apply.
 autodrive_gadugi_required() {
-  if [ -n "${AUTODRIVE_QA_SCENARIO_DIR:-}" ] || [ "$(autodrive_repo_type "${1:-.}")" = "node" ]; then
+  if [ -n "${AUTODRIVE_QA_SCENARIO_DIR:-}" ] || [ -z "${_AD_SCOPE_OK:-}" ] \
+     || ! declare -F _autodrive_qa_needs_gadugi >/dev/null; then
+    printf 'true\n'
+  elif declare -F autodrive_qa_docs_only >/dev/null \
+       && [ "$(autodrive_qa_docs_only "${1:-.}")" = "true" ]; then
+    printf 'false\n'
+  elif _autodrive_qa_needs_gadugi "${1:-.}"; then
     printf 'true\n'
   else
     printf 'false\n'

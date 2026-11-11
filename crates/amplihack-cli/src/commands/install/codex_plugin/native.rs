@@ -1,14 +1,44 @@
 //! Native command and inventory boundary.
 use super::*;
+use std::process::Stdio;
+
+/// Limit for native plugin commands other than the inventory probe.
+pub(super) const NATIVE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Limit for the `plugin list --json` inventory probe when Codex is the
+/// selected provider. A cold probe after a Codex auto-update was measured at
+/// 32.8 s on codex-cli 0.165.0, over the general limit, so the probe gets
+/// roughly four times that.
+pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Limit for the `plugin --help` capability check.
+pub(super) const CAPABILITY_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Inventory probe limit. Only a selected Codex gets the longer limit; an
+/// optional Codex keeps the general one, since its plugin is skipped anyway.
+pub(super) fn probe_timeout(codex_selected: bool) -> Duration {
+    if codex_selected {
+        PROBE_TIMEOUT
+    } else {
+        NATIVE_TIMEOUT
+    }
+}
+
 pub(super) fn native(binary: &Path, args: &[&str], home: &Path) -> Result<Value> {
+    native_with_timeout(binary, args, home, NATIVE_TIMEOUT)
+}
+
+pub(super) fn native_with_timeout(
+    binary: &Path,
+    args: &[&str],
+    home: &Path,
+    timeout: Duration,
+) -> Result<Value> {
     path_scope::check()?;
     let mut cmd = Command::new(binary);
-    cmd.args(args).env("CODEX_HOME", home);
+    cmd.args(args).env("CODEX_HOME", home).stdin(Stdio::null());
     if !args.contains(&"--json") {
         cmd.arg("--json");
     }
-    let output =
-        crate::util::run_output_with_timeout_limited(cmd, Duration::from_secs(30), 1024 * 1024)?;
+    let output = crate::util::run_output_with_timeout_limited(cmd, timeout, 1024 * 1024)?;
     path_scope::check()?;
     ensure!(
         output.status.success(),
@@ -18,6 +48,67 @@ pub(super) fn native(binary: &Path, args: &[&str], home: &Path) -> Result<Value>
     serde_json::from_slice(&output.stdout).map_err(|_| {
         anyhow::anyhow!("invalid native Codex plugin response; expected JSON inventory")
     })
+}
+
+/// Whether the pinned Codex offers the `plugin list` subcommand, judged from
+/// `plugin --help`. Returns `Ok(false)` only when the subcommand is clearly
+/// missing: help exits 0 without plugin help, or exits 2 reporting an
+/// unrecognized subcommand. Any other failure is an error. Child output is
+/// matched against fixed literals only and never leaves this function:
+/// callers receive a bool or an amplihack error.
+pub(super) fn plugin_capability(binary: &Path, home: &Path) -> Result<bool> {
+    path_scope::check()?;
+    let mut cmd = Command::new(binary);
+    cmd.args(["plugin", "--help"])
+        .env("CODEX_HOME", home)
+        .stdin(Stdio::null());
+    let output = crate::util::run_output_with_timeout_limited(cmd, CAPABILITY_TIMEOUT, 64 * 1024)?;
+    path_scope::check()?;
+    match output.status.code() {
+        Some(0) => Ok(is_plugin_help(&String::from_utf8_lossy(&output.stdout))),
+        Some(2) if String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand") => {
+            Ok(false)
+        }
+        _ => bail!(
+            "native plugin capability check `plugin --help` failed with {}",
+            output.status
+        ),
+    }
+}
+
+/// Plugin help has a usage line whose subcommand is `plugin` and a `list`
+/// command line. The binary name in the usage line is not checked, so a
+/// renamed or symlinked Codex still matches.
+fn is_plugin_help(help: &str) -> bool {
+    let usage = help.lines().any(|line| {
+        let mut words = line.split_whitespace();
+        words.next() == Some("Usage:") && words.nth(1) == Some("plugin")
+    });
+    let list = help.lines().any(|line| {
+        line.trim_start()
+            .strip_prefix("list")
+            .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+    });
+    usage && list
+}
+
+/// Explain a failed inventory probe for selected Codex. Only errors amplihack
+/// generated are formatted here; they never quote child output.
+pub(super) fn classify_probe_failure(
+    probe_err: anyhow::Error,
+    capability: Result<bool>,
+) -> anyhow::Error {
+    match capability {
+        Ok(false) => {
+            anyhow::anyhow!("selected Codex requires native plugin support; update Codex and retry")
+        }
+        Ok(true) => probe_err.context(
+            "selected Codex supports native plugins but the plugin inventory probe failed",
+        ),
+        Err(cap) => probe_err.context(format!(
+            "native plugin inventory probe failed; capability check also failed: {cap:#}"
+        )),
+    }
 }
 pub(super) fn installed(value: &Value) -> bool {
     value["installed"].as_array().is_some_and(|entries| {

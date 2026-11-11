@@ -1,6 +1,6 @@
 //! Issue #1710 (D2, D3, R1): `recipe run --detach` leaves a private
 //! `<session>.run.json` beside the log, names the launching session as its
-//! parent, gives the run `AMPLIHACK_RUN_ID=<session>`, and records the
+//! parent, gives the run `AMPLIHACK_WORKSTREAM_RUN_ID=<session>`, and records the
 //! outcome when the run ends. The context file is still removed; the record
 //! is not.
 //!
@@ -16,10 +16,10 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::Duration;
 
 /// Records its environment, then exits at once so the run finishes.
 const QUICK_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%s\n' '{"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]}'; exit 0 ;; esac
 env > "$RECORD_DIR/env.tmp" && mv "$RECORD_DIR/env.tmp" "$RECORD_DIR/env.txt"
 exit 0
 "#;
@@ -65,7 +65,6 @@ fn record_path(fx: &Fx, session: &str) -> PathBuf {
 fn finished_record(fx: &Fx, session: &str) -> Value {
     let path = record_path(fx, session);
     wait_for(
-        Duration::from_secs(60),
         || {
             fs::read_to_string(&path)
                 .ok()
@@ -137,11 +136,7 @@ fn the_context_file_is_removed_but_the_record_survives() {
     let (session, _) = launch(&fx, &[]);
     finished_record(&fx, &session);
     let context = fx.log_dir().join(format!("{session}.context.json"));
-    wait_for(
-        Duration::from_secs(30),
-        || !context.exists(),
-        "the context file to be removed",
-    );
+    wait_for(|| !context.exists(), "the context file to be removed");
     assert!(record_path(&fx, &session).is_file());
     let tmp_left: Vec<String> = fs::read_dir(fx.log_dir())
         .unwrap()
@@ -153,18 +148,19 @@ fn the_context_file_is_removed_but_the_record_survives() {
 }
 
 #[test]
-fn the_run_gets_its_own_session_as_amplihack_run_id() {
+fn the_run_keeps_its_session_identity_alongside_the_workspace_uuid() {
     let fx = Fx::with_runner(QUICK_RUNNER);
     if !usable(&fx) {
         return;
     }
     let (session, _) = launch(&fx, &[("AMPLIHACK_RUN_ID", "outer-run")]);
-    wait_for(
-        Duration::from_secs(60),
-        || fx.records.join("env.txt").is_file(),
-        "runner env",
+    wait_for(|| fx.records.join("env.txt").is_file(), "runner env");
+    assert_eq!(
+        fx.runner_env("AMPLIHACK_WORKSTREAM_RUN_ID"),
+        Some(session.clone())
     );
-    assert_eq!(fx.runner_env("AMPLIHACK_RUN_ID"), Some(session.clone()));
+    let workspace_id = fx.runner_env("AMPLIHACK_RUN_ID").expect("workspace run id");
+    uuid::Uuid::parse_str(&workspace_id).expect("workspace keeps its UUID");
     // Launched from inside another run, it is that run's child.
     assert_eq!(finished_record(&fx, &session)["parent"], "run:outer-run");
 }

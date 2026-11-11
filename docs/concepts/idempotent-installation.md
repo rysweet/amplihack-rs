@@ -37,7 +37,7 @@ On an idempotent run, each entry is matched and replaced in place, which preserv
 
 ### Binary Deployment
 
-`deploy_binaries()` checks ownership before overwriting an existing binary at `~/.local/bin/amplihack-hooks` or `~/.local/bin/amplihack`. A file owned by the current user is overwritten. A file owned by another user causes an error (to prevent privilege escalation via binary replacement).
+`deploy_binaries()` copies the binaries into a new release directory under `~/.amplihack/releases/` and switches the `~/.local/bin/amplihack`, `amplihack-hooks` and `amplihack-asset-resolver` links to it. A repeated install of the same version gets its own release directory (`<version>-<timestamp>-<pid>`); an existing release is never rewritten. A file at a link path owned by another user causes an error (to prevent privilege escalation via binary replacement). See [Versioned Install Layout](./versioned-install-layout.md).
 
 ### Manifest
 
@@ -48,7 +48,8 @@ Each install writes a fresh manifest, replacing the previous one. The manifest a
 - Hook array entries (matched and replaced in place)
 - Allowed tools in `settings.json.permissions.allow`
 - Additional directories in `settings.json.additionalDirectories`
-- Files in `~/.amplihack/.claude/` (overwritten by `copy_dir_recursive`)
+- Files in `~/.amplihack/.claude/` (each mapped directory is rebuilt and swapped in; the old tree is retired, not overwritten)
+- Release directories (unused ones are removed after each install)
 - Runtime directories (already exist, `create_dir_all` is a no-op)
 
 ## Upgrading
@@ -94,7 +95,7 @@ The second run of `amplihack install` produces output identical to the first, bu
 ```
 ✓ Python 3.11.4 detected
 ✓ amplihack Python package detected
-✓ Using bundled framework assets...
+📦 Using framework source /home/alice/src/amplihack-rs (v1.2.99, from AMPLIHACK_HOME)
 ✓ Updated amplihack → ~/.local/bin/amplihack
 ✓ Updated amplihack-hooks → ~/.local/bin/amplihack-hooks
 ✓ Staged framework assets (47 files, 12 directories)
@@ -108,6 +109,7 @@ amplihack installed successfully.
 
 ## See Also
 
+- [Versioned Install Layout](./versioned-install-layout.md) — why repeated installs never disturb running recipe runs
 - [Bootstrap Parity](./bootstrap-parity.md) — why the install sequence is ordered the way it is
 - [Hook Specifications](../reference/hook-specifications.md) — the 7 hooks and their idempotency matching rules
 - [amplihack install reference](../reference/install-command.md) — full command reference

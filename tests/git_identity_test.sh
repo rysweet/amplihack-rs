@@ -7,6 +7,9 @@
 # Run: bash tests/git_identity_test.sh
 
 set -uo pipefail
+# Issue #1764: no git this script runs may wait on a credential prompt.
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
+exec </dev/null
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HELPER="$REPO_ROOT/amplifier-bundle/tools/git-identity.sh"
@@ -130,6 +133,7 @@ run_prepare() {
     (
         cd "$repo" || exit 1
         env -i \
+            GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true \
             PATH="$fake_bin:$PATH" \
             HOME="$TMPROOT/home" \
             REPO_PATH="$repo" \
@@ -157,6 +161,7 @@ run_prepare_expect_failure() {
     (
         cd "$repo" || exit 1
         env -i \
+            GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true \
             PATH="$fake_bin:$PATH" \
             HOME="$TMPROOT/home" \
             REPO_PATH="$repo" \
@@ -173,7 +178,7 @@ run_prepare_expect_failure() {
 
 detect_host() {
     local url="$1"
-    env -i PATH="$PATH" HELPER="$HELPER" bash -c '
+    env -i GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true PATH="$PATH" HELPER="$HELPER" bash -c '
         set -euo pipefail
         . "$HELPER"
         amplihack_detect_remote_host_type "$1"

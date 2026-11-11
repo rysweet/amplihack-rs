@@ -556,6 +556,9 @@ pub enum ConfigCommands {
 pub enum RecipeCommands {
     /// Run a recipe
     Run {
+        /// Bypass historical recovery for this launch and its delegated recipes.
+        #[arg(long)]
+        fresh: bool,
         /// Recipe path
         recipe_path: String,
         /// Set context variable (key=value)
@@ -599,6 +602,8 @@ pub enum RecipeCommands {
         /// Run in the foreground even when `recipe.detach = "tmux"`.
         #[arg(long, overrides_with = "detach")]
         no_detach: bool,
+        #[command(flatten)]
+        governor: crate::commands::governor::GovernorArgs,
     },
     /// Stop a recipe run and its whole process tree: a tmux session started
     /// by `recipe run --detach`, or a run id from its log pointer

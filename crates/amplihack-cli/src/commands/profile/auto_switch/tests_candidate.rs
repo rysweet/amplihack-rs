@@ -265,6 +265,9 @@ impl Over {
             blocked: &self.blocked,
             gate: self.gate,
             platform: None,
+            not_plan: &[],
+            no_login: &[],
+            kinds_unknown: false,
         }
     }
 
@@ -286,8 +289,8 @@ impl Over {
 /// is overflow with nothing used.
 fn all_plan_out(spare_reset: i64) -> Case {
     Case::new(&["work", "spare", "cred"])
-        .with("work", five_hour(95.0, 4 * 3600))
-        .with("spare", five_hour(99.0, spare_reset))
+        .with("work", five_hour(100.0, 4 * 3600))
+        .with("spare", five_hour(100.0, spare_reset))
         .with("cred", reading(0.0, 0.0))
 }
 
@@ -318,7 +321,7 @@ fn a_plan_reset_inside_the_wait_keeps_overflow_unused() {
     );
     assert_eq!(o.pick(&all_plan_out(60), "work"), None);
     // The live profile's own reset counts too.
-    let c = all_plan_out(4 * 3600).with("work", five_hour(95.0, 600));
+    let c = all_plan_out(4 * 3600).with("work", five_hour(100.0, 600));
     assert_eq!(o.pick(&c, "work"), None);
 }
 
@@ -394,7 +397,7 @@ fn a_plan_exhausted_tier_1_profile_beats_a_fresh_tier_2_profile() {
     // first, then a tier 2 API key that reads 0%.
     let o = Over::new(&["credits", "api-key"]);
     let c = Case::new(&["work", "credits", "api-key"])
-        .with("work", five_hour(95.0, 4 * 3600))
+        .with("work", five_hour(100.0, 4 * 3600))
         .with("credits", credit_used_up())
         .with("api-key", reading(0.0, 0.0));
     assert_eq!(o.pick(&c, "work").as_deref(), Some("credits"));
@@ -406,7 +409,7 @@ fn overflow_profiles_are_tried_in_the_order_given() {
     // The order passed in is tier order (`Config::overflow_order`).
     let o = Over::new(&["low", "high"]);
     let c = Case::new(&["work", "high", "low"])
-        .with("work", five_hour(95.0, 4 * 3600))
+        .with("work", five_hour(100.0, 4 * 3600))
         .with("high", reading(0.0, 0.0))
         .with("low", reading(0.0, 0.0));
     assert_eq!(o.pick(&c, "work").as_deref(), Some("low"));
@@ -485,7 +488,7 @@ fn the_rerun_candidate_follows_the_overflow_rule() {
         kind: Default::default(),
     };
     let mut readings = BTreeMap::new();
-    readings.insert("work".to_string(), live(95.0, 4 * 3600));
+    readings.insert("work".to_string(), live(100.0, 4 * 3600));
     readings.insert("spare".to_string(), live(40.0, 4 * 3600));
     // cred is a credit account at its plan limit: still usable.
     readings.insert("cred".to_string(), live(100.0, 4 * 3600));
@@ -500,26 +503,26 @@ fn the_rerun_candidate_follows_the_overflow_rule() {
             current,
             &skip,
         )
-        .map(|p| p.to_string())
+        .map(|p| p.profile.to_string())
     };
     assert_eq!(
         pick(&readings, "work").as_deref(),
         Some("spare"),
         "plan first"
     );
-    readings.insert("spare".to_string(), live(99.0, 4 * 3600));
+    readings.insert("spare".to_string(), live(100.0, 4 * 3600));
     assert_eq!(
         pick(&readings, "work").as_deref(),
         Some("cred"),
         "every plan profile out for longer than the wait"
     );
-    readings.insert("spare".to_string(), live(99.0, 600));
+    readings.insert("spare".to_string(), live(100.0, 600));
     assert_eq!(
         pick(&readings, "work"),
         None,
         "spare is back within the wait"
     );
-    readings.insert("spare".to_string(), live(99.0, 4 * 3600));
+    readings.insert("spare".to_string(), live(100.0, 4 * 3600));
     assert_eq!(pick(&readings, "cred"), None, "stays on cred");
     readings.insert("spare".to_string(), live(20.0, 4 * 3600));
     assert_eq!(
@@ -527,4 +530,49 @@ fn the_rerun_candidate_follows_the_overflow_rule() {
         Some("spare"),
         "back to the plan profile once it recovers"
     );
+}
+
+// --- Issue #1818: readings with no session limit ----------------------------
+
+/// A reading with a week window and no five-hour window.
+fn weekly_only(seven: f64) -> Reading {
+    Reading {
+        five_hour: None,
+        seven_day: w(seven, 86_400),
+        observed_at: NOW - 10,
+        source: ReadingSource::Statusline,
+    }
+}
+
+#[test]
+fn a_weekly_only_reading_is_judged_on_its_week() {
+    assert!(!candidate::is_exhausted(Some(&weekly_only(0.0)), 90, NOW));
+    assert!(!candidate::is_exhausted(Some(&weekly_only(89.9)), 90, NOW));
+    assert!(candidate::is_exhausted(Some(&weekly_only(90.0)), 90, NOW));
+    assert!(candidate::is_exhausted(Some(&weekly_only(100.0)), 90, NOW));
+}
+
+#[test]
+fn a_weekly_only_profile_is_picked_when_the_rest_are_session_exhausted() {
+    let c = Case::new(&["cur", "a", "b", "free"])
+        .with("cur", reading(100.0, 10.0))
+        .with("a", reading(95.0, 5.0))
+        .with("b", reading(100.0, 0.0))
+        .with("free", weekly_only(40.0));
+    assert_eq!(c.pick("cur").as_deref(), Some("free"));
+}
+
+#[test]
+fn weekly_only_profiles_rank_by_their_week() {
+    let c = Case::new(&["cur", "x", "y", "z"])
+        .with("cur", reading(100.0, 0.0))
+        .with("x", weekly_only(60.0))
+        .with("y", reading(30.0, 30.0))
+        .with("z", weekly_only(20.0));
+    assert_eq!(c.pick("cur").as_deref(), Some("z"));
+    let c = Case::new(&["cur", "x", "y"])
+        .with("cur", reading(100.0, 0.0))
+        .with("x", weekly_only(60.0))
+        .with("y", reading(30.0, 30.0));
+    assert_eq!(c.pick("cur").as_deref(), Some("y"));
 }

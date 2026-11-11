@@ -125,7 +125,11 @@ fn off_overflow(_: &Ctx, _: &super::observe::Snap) -> Result<Measurement, Profil
         tag: Some(Tag::Out),
         new_blocks: Vec::new(),
         next_plan_reset: None,
+        unknown_plan: Vec::new(),
+        key_held: Vec::new(),
         measured_at: at,
+        probed: None,
+        fresh_lines: Vec::new(),
     })
 }
 
@@ -190,7 +194,7 @@ static ONTO_MEASURED: AtomicUsize = AtomicUsize::new(0);
 fn onto_overflow(_: &Ctx, _: &super::observe::Snap) -> Result<Measurement, ProfileError> {
     ONTO_MEASURED.fetch_add(1, Ordering::SeqCst);
     Ok(Measurement {
-        live: Reading::Exhausted,
+        live: Reading::EXHAUSTED,
         others: vec![(
             n("work"),
             Reading::Measured {
@@ -207,7 +211,11 @@ fn onto_overflow(_: &Ctx, _: &super::observe::Snap) -> Result<Measurement, Profi
         tag: Some(Tag::In),
         new_blocks: Vec::new(),
         next_plan_reset: Some(now() + 4 * 3600),
+        unknown_plan: Vec::new(),
+        key_held: Vec::new(),
         measured_at: now(),
+        probed: None,
+        fresh_lines: Vec::new(),
     })
 }
 

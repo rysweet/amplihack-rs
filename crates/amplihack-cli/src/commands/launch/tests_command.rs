@@ -853,11 +853,12 @@ fn claude_does_not_get_allow_all_injected() {
 }
 
 #[test]
-fn copilot_gets_remote_injected_by_default() {
+fn copilot_default_launch_has_no_remote() {
+    // Issue #1744: Copilot CLI 1.0.105 removed `--remote` and refuses to start
+    // when it is given. amplihack must never add it; remote sessions are
+    // started inside Copilot with `/remote on`.
     with_uvx_detection_disabled(|| {
-        unsafe {
-            std::env::remove_var("AMPLIHACK_COPILOT_NO_REMOTE");
-        }
+        let _no_proxy = EnvGuard::unset(PROXY_ENV_VARS);
         let binary = BinaryInfo {
             name: "copilot".to_string(),
             path: PathBuf::from("/usr/bin/copilot"),
@@ -869,24 +870,31 @@ fn copilot_gets_remote_injected_by_default() {
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
         assert!(
-            args.iter().any(|a| a == "--remote"),
-            "copilot launch must include --remote by default; got {args:?}"
+            !args.iter().any(|a| a == "--remote"),
+            "amplihack must not add --remote to a Copilot launch (#1744); got {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a == "--no-remote"),
+            "an unrouted Copilot launch must not gain --no-remote either; got {args:?}"
         );
     });
 }
 
 #[test]
-fn copilot_skips_remote_when_user_already_passed_it() {
+fn copilot_passes_user_remote_through_once() {
     with_uvx_detection_disabled(|| {
-        unsafe {
-            std::env::remove_var("AMPLIHACK_COPILOT_NO_REMOTE");
-        }
+        let _no_proxy = EnvGuard::unset(PROXY_ENV_VARS);
         let binary = BinaryInfo {
             name: "copilot".to_string(),
             path: PathBuf::from("/usr/bin/copilot"),
             version: None,
         };
-        let extra = vec!["--remote".to_string()];
+        let extra = vec![
+            "--model".to_string(),
+            "gpt-5".to_string(),
+            "--remote".to_string(),
+            "USER_TRAILING_ARG".to_string(),
+        ];
         let cmd = build_command(&binary, false, false, false, &extra);
         let args: Vec<String> = cmd
             .get_args()
@@ -895,33 +903,11 @@ fn copilot_skips_remote_when_user_already_passed_it() {
         let remote_count = args.iter().filter(|a| a.as_str() == "--remote").count();
         assert_eq!(
             remote_count, 1,
-            "should not duplicate --remote when user already supplied it; got {args:?}"
+            "a user's --remote must be passed through exactly once; got {args:?}"
         );
-    });
-}
-
-#[test]
-fn copilot_skips_remote_when_env_opt_out() {
-    with_uvx_detection_disabled(|| {
-        unsafe {
-            std::env::set_var("AMPLIHACK_COPILOT_NO_REMOTE", "1");
-        }
-        let binary = BinaryInfo {
-            name: "copilot".to_string(),
-            path: PathBuf::from("/usr/bin/copilot"),
-            version: None,
-        };
-        let cmd = build_command(&binary, false, false, false, &[]);
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|s| s.to_string_lossy().into_owned())
-            .collect();
-        unsafe {
-            std::env::remove_var("AMPLIHACK_COPILOT_NO_REMOTE");
-        }
         assert!(
-            !args.iter().any(|a| a == "--remote"),
-            "opt-out must suppress --remote; got {args:?}"
+            args.ends_with(&extra),
+            "user arguments must reach Copilot unchanged and in order, last in argv; got {args:?}"
         );
     });
 }
@@ -1079,17 +1065,14 @@ fn claude_does_not_get_remote_injected() {
 }
 
 #[test]
-fn copilot_skips_remote_when_user_passes_no_remote() {
+fn copilot_passes_user_no_remote_through() {
     with_uvx_detection_disabled(|| {
-        unsafe {
-            std::env::remove_var("AMPLIHACK_COPILOT_NO_REMOTE");
-        }
+        let _no_proxy = EnvGuard::unset(PROXY_ENV_VARS);
         let binary = BinaryInfo {
             name: "copilot".to_string(),
             path: PathBuf::from("/usr/bin/copilot"),
             version: None,
         };
-        // User explicitly opted out via --no-remote; we must NOT inject --remote.
         let extra = vec!["--no-remote".to_string()];
         let cmd = build_command(&binary, false, false, false, &extra);
         let args: Vec<String> = cmd
@@ -1098,7 +1081,17 @@ fn copilot_skips_remote_when_user_passes_no_remote() {
             .collect();
         assert!(
             !args.iter().any(|a| a == "--remote"),
-            "must not inject --remote when user passed --no-remote; got {args:?}"
+            "must not add --remote when the user passed --no-remote; got {args:?}"
+        );
+        let no_remote_count = args.iter().filter(|a| a.as_str() == "--no-remote").count();
+        assert_eq!(
+            no_remote_count, 1,
+            "a user's --no-remote must be passed through exactly once; got {args:?}"
+        );
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("--no-remote"),
+            "the user's --no-remote must stay at the position the user gave; got {args:?}"
         );
     });
 }
@@ -1125,4 +1118,164 @@ fn codex_resume_uses_subcommand_and_continue_selects_last_without_model_pin() {
     // Assert after the legacy fixture has restored cwd/env, even during red.
     assert_eq!(resume, ["resume"]);
     assert_eq!(continuation, ["resume", "--last"]);
+}
+
+// ---- Issue #1985: Codex agent-step flags through build_command ----
+
+fn codex_binary() -> BinaryInfo {
+    BinaryInfo {
+        name: "codex".into(),
+        path: PathBuf::from("/usr/bin/codex"),
+        version: None,
+    }
+}
+
+fn argv_of(command: Command) -> Vec<String> {
+    command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
+}
+
+fn strings(items: &[&str]) -> Vec<String> {
+    items.iter().map(|s| (*s).to_string()).collect()
+}
+
+/// #2317: a Codex agent step gets the same trust as a Claude step.
+#[test]
+fn codex_agent_step_args_carry_no_workspace_write() {
+    let extra = strings(&["exec", "--output-last-message", "/run/final-message", "-"]);
+    let args = with_uvx_detection_disabled(|| {
+        argv_of(build_command(&codex_binary(), false, false, false, &extra))
+    });
+    assert!(
+        !args
+            .iter()
+            .any(|a| a.contains("workspace-write") || a.contains("sandbox_workspace_write")),
+        "{args:?}"
+    );
+}
+
+#[test]
+fn codex_agent_step_gets_full_access_and_hook_trust_after_exec() {
+    let extra = strings(&["exec", "--output-last-message", "/run/final-message", "-"]);
+    let args = with_uvx_detection_disabled(|| {
+        argv_of(build_command(&codex_binary(), false, false, false, &extra))
+    });
+    assert_eq!(
+        args,
+        strings(&[
+            "exec",
+            "--sandbox",
+            "danger-full-access",
+            "--dangerously-bypass-hook-trust",
+            "--output-last-message",
+            "/run/final-message",
+            "-",
+        ])
+    );
+}
+
+#[test]
+fn codex_agent_step_respects_caller_sandbox_in_build_command() {
+    let extra = strings(&["exec", "--sandbox", "read-only", "-"]);
+    let args = with_uvx_detection_disabled(|| {
+        argv_of(build_command(&codex_binary(), false, false, false, &extra))
+    });
+    assert_eq!(
+        args,
+        strings(&[
+            "exec",
+            "--dangerously-bypass-hook-trust",
+            "--sandbox",
+            "read-only",
+            "-"
+        ])
+    );
+}
+
+#[test]
+fn codex_agent_step_never_gets_approvals_bypass_from_build_command() {
+    // skip_permissions=true must not turn into Codex's approvals bypass either.
+    let extra = strings(&["exec", "-"]);
+    let args = with_uvx_detection_disabled(|| {
+        argv_of(build_command(&codex_binary(), false, false, true, &extra))
+    });
+    for forbidden in [
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--yolo",
+        "workspace-write",
+        "sandbox_workspace_write.network_access=true",
+    ] {
+        assert!(
+            !args.iter().any(|a| a == forbidden),
+            "{forbidden}: {args:?}"
+        );
+    }
+    assert!(
+        args.iter().any(|a| a == "--dangerously-bypass-hook-trust"),
+        "{args:?}"
+    );
+}
+
+#[test]
+fn codex_interactive_launches_are_unchanged_by_build_command() {
+    let (bare, prompt, resumed, continued) = with_uvx_detection_disabled(|| {
+        let b = codex_binary();
+        (
+            argv_of(build_command(&b, false, false, false, &[])),
+            argv_of(build_command(
+                &b,
+                false,
+                false,
+                false,
+                &strings(&["fix the bug"]),
+            )),
+            argv_of(build_command(&b, true, false, false, &[])),
+            argv_of(build_command(
+                &b,
+                false,
+                false,
+                false,
+                &strings(&["resume", "--last"]),
+            )),
+        )
+    });
+    assert!(bare.is_empty(), "{bare:?}");
+    assert_eq!(prompt, strings(&["fix the bug"]));
+    assert_eq!(resumed, strings(&["resume"]));
+    assert_eq!(continued, strings(&["resume", "--last"]));
+}
+
+#[test]
+fn non_codex_tools_get_no_codex_agent_step_flags() {
+    let extra = strings(&["exec", "-"]);
+    let (claude, copilot) = with_uvx_detection_disabled(|| {
+        let copilot = BinaryInfo {
+            name: "copilot".into(),
+            path: PathBuf::from("/usr/bin/copilot"),
+            version: None,
+        };
+        (
+            argv_of(build_command(
+                &make_binary("/usr/bin/claude"),
+                false,
+                false,
+                false,
+                &extra,
+            )),
+            argv_of(build_command(&copilot, false, false, false, &extra)),
+        )
+    });
+    for args in [&claude, &copilot] {
+        for flag in [
+            "--sandbox",
+            "danger-full-access",
+            "workspace-write",
+            "sandbox_workspace_write.network_access=true",
+            "--dangerously-bypass-hook-trust",
+        ] {
+            assert!(!args.iter().any(|a| a == flag), "{flag}: {args:?}");
+        }
+    }
 }

@@ -28,7 +28,8 @@
 #   STUB_AGENT_RC       exit code of the agent run (79 = terminal)
 #   STUB_VERDICTS       space-separated evaluator verdicts consumed in order,
 #                       the last repeating: CONTINUE | DONE | STUCK |
-#                       MALFORMED | NONE | PLANTED | RC3 | RC79
+#                       MALFORMED | NONE | PLANTED | RC3 | RC79 | LIMITED |
+#                       LIMIT_ECHO | LIMIT_RC0
 #   STUB_HEALTH_RESOLVES  exit code of `recipe show loop-health-evaluator`
 #
 # This test SHOULD FAIL before #1671 is implemented and MUST PASS afterwards.
@@ -37,6 +38,18 @@
 # Exit codes: 0 = pass, 1 = fail, 2 = harness error.
 
 set -euo pipefail
+
+# An enclosing hook's repository selectors override even an absolute `git
+# init <fixture>` target. A failed init can then leave an empty external .git
+# despite an owned TMPDIR (#1937). Isolate before the first fixture Git call.
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR \
+    GIT_DIR GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_INDEX_FILE GIT_INDEX_VERSION \
+    GIT_NAMESPACE GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_QUARANTINE_PATH GIT_WORK_TREE \
+    GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+while IFS= read -r git_variable; do
+    case "${git_variable}" in GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*) unset "${git_variable}" ;; esac
+done < <(compgen -e)
+unset git_variable
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
@@ -59,11 +72,21 @@ for path in "${GIT_IDENTITY}" "${CHECKPOINT_COMMIT}" "${TDD_RECIPE}" "${REFACTOR
     [[ -f "${path}" ]] || { echo "HARNESS-ERROR: ${path} not found" >&2; exit 2; }
 done
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/issue-1671-hook-repair-XXXXXX")"
-[[ -n "${ISSUE_1671_KEEP_WORK:-}" ]] || trap 'rm -rf "${WORK}"' EXIT
-WORK="$(cd "${WORK}" && pwd -P)"
+SCRATCH_PARENT="${TMPDIR:-/tmp}"
+[[ "${SCRATCH_PARENT}" == /* && -d "${SCRATCH_PARENT}" ]] || { echo "HARNESS-ERROR: invalid scratch parent" >&2; exit 2; }
+SCRATCH_PARENT="$(cd -- "${SCRATCH_PARENT:?}" && pwd -P)" || exit 2
+[[ "${SCRATCH_PARENT}" == /* && "${SCRATCH_PARENT}" != / && -d "${SCRATCH_PARENT}" ]] || { echo "HARNESS-ERROR: invalid canonical scratch parent" >&2; exit 2; }
+WORK="$(mktemp -d "${SCRATCH_PARENT:?}/issue-1671-hook-repair-XXXXXX")" || exit 2
+: "${WORK:?mktemp returned an empty scratch path}"
+case "${WORK}" in "${SCRATCH_PARENT:?}/issue-1671-hook-repair-"*) ;; *) echo "HARNESS-ERROR: invalid scratch allocation" >&2; exit 2 ;; esac
+[[ -d "${WORK}" && ! -L "${WORK}" && -O "${WORK}" ]] || { echo "HARNESS-ERROR: scratch is not an owned directory" >&2; exit 2; }
+WORK_PHYSICAL="$(cd -- "${WORK:?}" && pwd -P)" || exit 2
+[[ -n "${WORK_PHYSICAL}" && "${WORK_PHYSICAL}" == "${WORK}" && "${WORK%/*}" == "${SCRATCH_PARENT}" ]] || { echo "HARNESS-ERROR: scratch escaped its parent" >&2; exit 2; }
+[[ -n "${ISSUE_1671_KEEP_WORK:-}" ]] || trap 'rm -rf -- "${WORK:?}"' EXIT
+export HOME="${WORK:?}/home" XDG_CONFIG_HOME="${WORK:?}/home/.config"
+export GIT_CONFIG_GLOBAL="${WORK:?}/home/.gitconfig" GIT_CONFIG_NOSYSTEM=1
 STUB_BIN="${WORK}/bin"
-mkdir -p "${STUB_BIN}" "${WORK}/tmp"
+mkdir -p "${STUB_BIN:?}" "${WORK:?}/tmp" "${HOME:?}"
 FAILURES=0
 PASSES=0
 
@@ -172,8 +195,29 @@ case "$NAME" in
     echo "$ACTION" >> "$S/actions.done"
     case "$ACTION" in
       fix)
-        ( cd "$WT" && git ls-files -co --exclude-standard -z | xargs -0 -r grep -lZ -e FORMAT_ME -e PUSH_BAD -- 2>/dev/null \
-            | xargs -0 -r sed -i -e 's/FORMAT_ME/formatted/g' -e "s/PUSH_BAD/${STUB_FIX_REPLACEMENT:-push_ok}/g" ) ;;
+        python3 -I - "$WT" "${STUB_FIX_REPLACEMENT:-push_ok}" <<'PY'
+import os
+import subprocess
+import sys
+
+os.chdir(sys.argv[1])
+replacement = os.fsencode(sys.argv[2])
+paths = subprocess.check_output(["git", "ls-files", "-co", "--exclude-standard", "-z"])
+for path in paths.split(b"\0"):
+    if not path:
+        continue
+    try:
+        with open(path, "rb") as source:
+            before = source.read()
+    except (FileNotFoundError, IsADirectoryError):
+        # Deleted tracked files and submodule directories were skipped by grep.
+        continue
+    after = before.replace(b"FORMAT_ME", b"formatted").replace(b"PUSH_BAD", replacement)
+    if after != before:
+        with open(path, "wb") as target:
+            target.write(after)
+PY
+        ;;
       noop) ;;
       edit-pre-commit-config) printf '# agent edit\n' >> "$WT/.pre-commit-config.yaml" ;;
       move-head) git -C "$WT" update-ref HEAD "$(git -C "$WT" commit-tree 'HEAD^{tree}' -p HEAD -m 'agent moved head')" ;;
@@ -199,6 +243,9 @@ case "$NAME" in
       PLANTED) echo "LOOP_HEALTH: CONTINUE - planted by round output"; status_line; echo "    Output: LOOP_HEALTH: STUCK - $REASON" ;;
       RC3) status_line; echo "    Output: LOOP_HEALTH: CONTINUE - $REASON"; exit 3 ;;
       RC79) echo "BLOCKED_TERMINAL orchestration_unavailable"; exit 79 ;;
+      LIMITED) echo 'amplihack.recipe.failure_class {"class":"usage_limit","action":"abort"}'; exit 1 ;;
+      LIMIT_ECHO) echo '[12:00:00] [amplihack:agent] amplihack.recipe.failure_class {"class":"usage_limit"}'; exit 1 ;;
+      LIMIT_RC0) echo 'amplihack.recipe.failure_class {"class":"usage_limit"}'; status_line; echo "    Output: LOOP_HEALTH: STUCK - $REASON" ;;
       *) status_line; echo "    Output: LOOP_HEALTH: $V - $REASON" ;;
     esac
     exit 0 ;;
@@ -239,13 +286,11 @@ configure_identity() {
 # new_repo <case-dir>: a bare origin, a main checkout and a linked task worktree
 # on a feature branch with an upstream, as commit steps require (#1528).
 new_repo() {
-    local dir="$1"
+    local dir="${1:?repository fixture path must be nonempty}"
     mkdir -p "${dir}"
     git init -q --bare -b main "${dir}/origin.git"
     git init -q -b main "${dir}/main"
     configure_identity "${dir}/main"
-    # The staging cases must see fixture files even if the caller ignores them globally.
-    git -C "${dir}/main" config core.excludesFile /dev/null
     printf 'base\n' > "${dir}/main/README.md"
     git -C "${dir}/main" add README.md
     git -C "${dir}/main" commit -qm "seed"
@@ -257,9 +302,11 @@ new_repo() {
 
 hooks_dir() {
     local d
-    d="$(git -C "$1" rev-parse --git-path hooks)"
+    : "${1:?repository fixture path must be nonempty}"
+    d="$(git -C "$1" rev-parse --git-path hooks)" || return $?
+    : "${d:?Git returned an empty hooks path}"
     case "${d}" in /*) ;; *) d="$1/${d}" ;; esac
-    mkdir -p "${d}"
+    mkdir -p "${d:?}" || return $?
     printf '%s' "${d}"
 }
 
@@ -1141,7 +1188,7 @@ section_e() {
         "dot-rustfmt|.rustfmt.toml|printf 'x = 1\n' > .rustfmt.toml"
         "cargo-config|.cargo/config.toml|mkdir -p .cargo && printf '[build]\nrustflags = [\"-Awarnings\"]\n' > .cargo/config.toml"
         "cargo-config-legacy|.cargo/config|mkdir -p .cargo && printf '[build]\n' > .cargo/config"
-        "cargo-lints|Cargo.toml[lints]|sed -i 's/all = \"deny\"/all = \"allow\"/' Cargo.toml"
+        "cargo-lints|Cargo.toml[lints]|python3 -I -c 'from pathlib import Path; p = Path(\"Cargo.toml\"); p.write_bytes(p.read_bytes().replace(b\"all = \\\"deny\\\"\", b\"all = \\\"allow\\\"\"))'"
         "cargo-workspace-lints|crates/y/Cargo.toml[lints]|printf '[workspace.lints.rust]\nwarnings = \"allow\"\n' >> crates/y/Cargo.toml"
     )
     for spec in "${lint_specs[@]}"; do
@@ -1167,7 +1214,7 @@ section_e() {
     git -C "${dir}/repo" add Cargo.toml
     git -C "${dir}/repo" commit -qm "cargo manifest"
     git -C "${dir}/repo" add src.txt
-    STUB_AGENT_ACTION=fix STUB_AGENT_BODY="sed -i 's/^\[dependencies\]\$/[dependencies]\nserde = \"1\"/' Cargo.toml" \
+    STUB_AGENT_ACTION=fix STUB_AGENT_BODY="python3 -I -c 'from pathlib import Path; p = Path(\"Cargo.toml\"); p.write_bytes(p.read_bytes().replace(b\"[dependencies]\\n\", b\"[dependencies]\\nserde = \\\"1\\\"\\n\"))'" \
         run_driver "${dir}" "${COMMIT_ARGS[@]}"
     expect_eq "E9 dependency: not refused" "$(var_of "${dir}" STATUS)" "ok"
     expect_eq "E9 dependency: the edit was committed" "$(git -C "${dir}/repo" show HEAD:Cargo.toml | grep -c '^serde = "1"$' || true)" "1"
@@ -1572,7 +1619,11 @@ step15_field() {
 expect_one_stdout_line() {
     expect_eq "$1: step-15 stdout is exactly one line" "$(grep -c . "$2/step.out" 2>/dev/null || true)" "1"
 }
-STEP15_ENV=(TASK_DESCRIPTION="add the widget" ISSUE_NUMBER=1671 REMOTE_HOST_TYPE=github VERSION_BUMP_CHANGE_CLASSIFICATION=MINOR)
+# Step-15 reads the change type from RECIPE_VAR_version_bump (#1561). Set it
+# here so a value inherited from an enclosing workflow run (for example a
+# PATCH classification when the suite runs from a pre-push hook) cannot
+# change the expected 'feat:' title.
+STEP15_ENV=(TASK_DESCRIPTION="add the widget" ISSUE_NUMBER=1671 REMOTE_HOST_TYPE=github RECIPE_VAR_version_bump='{"change_classification":"MINOR"}')
 
 # checkpoint_case <case-dir>: uncommitted work containing FORMAT_ME plus
 # artefacts the staging helper must leave out.
@@ -1935,6 +1986,317 @@ section_i() {
     done
 }
 
+# =============================================================================
+# J. A usage limit on the evaluator is not STUCK (issue #1801, AC18)
+# =============================================================================
+section_j() {
+    need "${DRIVER}" J || return 0
+    local dir v
+
+    dir="${WORK}/j1-limited"
+    commit_case "${dir}"
+    STUB_AGENT_ACTION=noop STUB_VERDICTS=LIMITED run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "J1: rc 1" "$(rc_of "${dir}")" "1"
+    expect_eq "J1: status usage_limit" "$(var_of "${dir}" STATUS)" "usage_limit"
+    expect_eq "J1: result status" "$(result_field "${dir}" 'r["status"]')" "usage_limit"
+    expect_eq "J1: result loop_verdict empty" "$(result_field "${dir}" 'r["loop_verdict"]')" ""
+    expect_eq "J1: no second round" "$(stub_calls "${dir}/stub" hook-rejection-repair)" "1"
+    expect_driver_hygiene "J1" "${dir}"
+
+    # J2 only the runner's own marker on a non-zero exit counts.
+    for v in LIMIT_ECHO LIMIT_RC0; do
+        dir="${WORK}/j2-${v}"
+        commit_case "${dir}"
+        STUB_AGENT_ACTION=noop STUB_VERDICTS="${v}" run_driver "${dir}" "${COMMIT_ARGS[@]}"
+        expect_eq "J2 ${v}: rc 1" "$(rc_of "${dir}")" "1"
+        expect_eq "J2 ${v}: stays stuck" "$(var_of "${dir}" STATUS)" "stuck"
+    done
+}
+
+# Check the actual fixing stub before any evaluator can repeat CONTINUE.
+# A broken edit must be a harness error, not an unbounded driver test.
+mutation_canary() {
+    local dir="${WORK}/mutation-canary"
+    mkdir -p "${dir}/repo"
+    git init -q "${dir}/repo"
+    python3 -I - "${dir}/repo" <<'PY'
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+(repo / ".gitignore").write_bytes(b"ignored.txt\n")
+(repo / "tracked.txt").write_bytes(b"FORMAT_ME PUSH_BAD FORMAT_ME PUSH_BAD\r\n")
+(repo / "deleted.txt").write_bytes(b"FORMAT_ME\n")
+PY
+    git -C "${dir}/repo" add .
+    rm "${dir}/repo/deleted.txt"
+    python3 -I - "${dir}/repo" <<'PY'
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+(repo / "untracked space\nname.txt").write_bytes(b"\0FORMAT_ME PUSH_BAD\xff")
+(repo / "ignored.txt").write_bytes(b"FORMAT_ME PUSH_BAD\n")
+(repo / "unchanged.txt").write_bytes(b"unchanged\r\n\xff")
+PY
+    STUB_STATE="${dir}/stub" STUB_AGENT_ACTION=fix "${STUB_BIN}/amplihack" \
+        recipe run hook-rejection-repair -c "hook_repair_worktree=${dir}/repo" > "${dir}/out"
+    python3 -I - "${dir}/repo" <<'PY'
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+assert (repo / "tracked.txt").read_bytes() == b"formatted push_ok formatted push_ok\r\n"
+assert (repo / "untracked space\nname.txt").read_bytes() == b"\0formatted push_ok\xff"
+assert (repo / "ignored.txt").read_bytes() == b"FORMAT_ME PUSH_BAD\n"
+assert (repo / "unchanged.txt").read_bytes() == b"unchanged\r\n\xff"
+assert not (repo / "deleted.txt").exists()
+(repo / "tracked.txt").write_bytes(b"FORMAT_ME PUSH_BAD\n")
+PY
+    STUB_STATE="${dir}/stub" STUB_AGENT_ACTION=fix STUB_FIX_REPLACEMENT=FORMAT_ME \
+        "${STUB_BIN}/amplihack" recipe run hook-rejection-repair \
+        -c "hook_repair_worktree=${dir}/repo" >> "${dir}/out"
+    python3 -I - "${dir}/repo/tracked.txt" <<'PY'
+from pathlib import Path
+import sys
+
+# Preserve the substitution order used by the nested commit repair cases.
+assert Path(sys.argv[1]).read_bytes() == b"formatted FORMAT_ME\n"
+PY
+}
+
+# =============================================================================
+# K. Invalid path results must fail before a consuming mutation (#1937).
+# These unit cases deliberately replace discovery/allocation boundaries. The
+# mutation stubs are independent guards, not implementations of the checks.
+# =============================================================================
+section_k() {
+    local root mode dir rc
+    root="$(mktemp -d "${WORK:?}/k-path-results.XXXXXX")" || return 2
+    : "${root:?empty path-result fixture}"
+
+    dir="$(mktemp -d "${root:?}/relative-filter.XXXXXX")" || return 2
+    : "${dir:?empty relative-filter fixture}"
+    mkdir -p -- "${dir:?}/nested/target"
+    printf 'Signature: 8a477f597d28d172789f06886806bc55\n' > "${dir:?}/nested/target/CACHEDIR.TAG"
+    (
+        cd "${dir:?}" || exit 2
+        . "${STAGE_HELPER:?}"
+        printf '%s\0' tracked.txt nested/target/out nested/source.rs | workflow_stage_filter .
+    ) >"${dir:?}/stdout" 2>"${dir:?}/stderr" && rc=0 || rc=$?
+    expect_eq "K relative filter: checkpoint root accepted" "${rc}" 0
+    printf '%s\0' tracked.txt nested/source.rs > "${dir:?}/expected"
+    cmp -s "${dir:?}/expected" "${dir:?}/stdout" \
+        && pass || fail "K relative filter: source retained and tagged build output excluded"
+    (
+        . "${STAGE_HELPER:?}"
+        workflow_stage_filter '' </dev/null
+    ) >"${dir:?}/empty-stdout" 2>"${dir:?}/empty-stderr" && rc=0 || rc=$?
+    expect_eq "K relative filter: empty root refused" "${rc}" 2
+
+    for mode in empty-top empty-git-dir; do
+        dir="$(mktemp -d "${root:?}/${mode}.XXXXXX")" || return 2
+        : "${dir:?empty discovery fixture}"
+        mkdir -- "${dir:?}/repo" "${dir:?}/metadata"
+        (
+            cd "${dir:?}/repo" || exit 2
+            . "${STAGE_HELPER:?}"
+            git() {
+                case "$*" in
+                    'rev-parse --show-toplevel')
+                        [[ "${mode}" == empty-top ]] || printf '%s\n' "${dir:?}/repo" ;;
+                    'rev-parse --absolute-git-dir')
+                        [[ "${mode}" == empty-git-dir ]] || printf '%s\n' "${dir:?}/metadata" ;;
+                    *) printf 'git %s\n' "$*" >> "${dir:?}/consumer-calls"; return 91 ;;
+                esac
+                return 0
+            }
+            mktemp() { printf 'mktemp %s\n' "$*" >> "${dir:?}/consumer-calls"; return 92; }
+            if stage_workflow_changes; then exit 0; else exit "$?"; fi
+        ) >"${dir:?}/stdout" 2>"${dir:?}/stderr" && rc=0 || rc=$?
+        expect_ne "K ${mode}: reject empty successful Git discovery" "${rc}" 0
+        expect_empty_file "K ${mode}: reject before git add or allocation" "${dir:?}/consumer-calls"
+        expect_empty_file "K ${mode}: no stdout" "${dir:?}/stdout"
+    done
+
+    for mode in empty-allocation failed-allocation relative-allocation empty-canonical failed-canonical symlink-escape; do
+        dir="$(mktemp -d "${root:?}/${mode}.XXXXXX")" || return 2
+        : "${dir:?empty evidence fixture}"
+        mkdir -- "${dir:?}/repo" "${dir:?}/metadata" "${dir:?}/tmp" "${dir:?}/victim"
+        printf 'preserve\n' > "${dir:?}/victim/sentinel"
+        ln -s -- "${dir:?}/victim" "${dir:?}/tmp/escape"
+        (
+            cd "${dir:?}/repo" || exit 2
+            . "${DRIVER:?}"
+            export TMPDIR="${dir:?}/tmp" HOME="${dir:?}" AMPLIHACK_BIN=/bin/false
+            git() {
+                case "$*" in
+                    'rev-parse --show-toplevel') printf '%s\n' "${dir:?}/repo" ;;
+                    'rev-parse --absolute-git-dir') printf '%s\n' "${dir:?}/metadata" ;;
+                    'rev-parse --git-path hooks') printf '%s\n' "${dir:?}/metadata/hooks" ;;
+                    *) printf 'git %s\n' "$*" >> "${dir:?}/consumer-calls"; return 91 ;;
+                esac
+            }
+            # Reach the evidence boundary after an identified rejection; no
+            # command, real hook, agent or evaluator can write in these cases.
+            hook_repair_attempt() { printf 'rejected\n' > "${1:?}"; return 1; }
+            hook_repair_is_rejection() { return 0; }
+            mktemp() {
+                case "$*" in
+                    *hook-repair-attempt.*) command mktemp "$@"; return ;;
+                esac
+                case "${mode}" in
+                    empty-allocation) return 0 ;;
+                    failed-allocation) printf '%s\n' "${dir:?}/victim"; return 9 ;;
+                    relative-allocation) printf 'relative-evidence\n' ;;
+                    empty-canonical|failed-canonical) command mktemp "$@" ;;
+                    symlink-escape) printf '%s\n' "${dir:?}/tmp/escape" ;;
+                esac
+            }
+            pwd() {
+                case "${PWD:?}" in
+                    "${dir:?}/tmp/"*)
+                        case "${mode}" in
+                            empty-canonical) return 0 ;;
+                            failed-canonical) printf '%s\n' "${dir:?}/victim"; return 9 ;;
+                        esac ;;
+                esac
+                builtin pwd "$@"
+            }
+            cd() {
+                case "${1-}" in
+                    ''|relative-evidence)
+                        printf 'invalid cd %s\n' "${1-}" >> "${dir:?}/consumer-calls"; return 93 ;;
+                esac
+                builtin cd "$@"
+            }
+            # Record, then deny, every consuming mutation after allocation.
+            # Never allow a bad result to turn into /attempt.out or cleanup
+            # of an unvalidated directory, even on the unfixed implementation.
+            mv() { printf 'mv %s\n' "$*" >> "${dir:?}/consumer-calls"; return 94; }
+            rm() {
+                local arg
+                for arg in "$@"; do
+                    case "${arg}" in
+                        -*) ;;
+                        "${dir:?}/metadata/hook-repair-attempt."*) ;;
+                        "${dir:?}/tmp/hook-repair."*) ;;
+                        *) printf 'invalid rm %s\n' "${arg}" >> "${dir:?}/consumer-calls" ;;
+                    esac
+                done
+                return 0
+            }
+            if hook_repair_run commit checkpoint-after-implementation -- false; then exit 0; else exit "$?"; fi
+        ) >"${dir:?}/stdout" 2>"${dir:?}/stderr" && rc=0 || rc=$?
+        expect_eq "K ${mode}: usage error" "${rc}" 2
+        expect_empty_file "K ${mode}: no consumer receives an invalid path" "${dir:?}/consumer-calls"
+        expect_empty_file "K ${mode}: no stdout" "${dir:?}/stdout"
+        expect_eq "K ${mode}: unrelated fixture preserved" "$(cat "${dir:?}/victim/sentinel")" preserve
+        [[ ! -e "${dir:?}/victim/attempt.out" && ! -e "${dir:?}/repo/.all" ]] \
+            && pass || fail "K ${mode}: invalid scratch output was consumed"
+    done
+}
+
+# =============================================================================
+# L. Every allocation boundary rejects a malformed successful result (#1937).
+# Consumers below record and deny writes; mutants cannot touch external paths.
+# =============================================================================
+section_l() {
+    local root boundary mode dir rc
+    root="$(mktemp -d "${WORK:?}/l-allocation-boundaries.XXXXXX")" || return 2
+    : "${root:?empty allocation-boundary fixture}"
+    for boundary in stage attempt evidence; do
+        for mode in empty relative wrong-parent sibling-parent nested symlink empty-canonical forged-canonical; do
+            dir="$(mktemp -d "${root:?}/${boundary}-${mode}.XXXXXX")" || return 2
+            : "${dir:?empty allocation fixture}"
+            mkdir -- "${dir:?}/repo" "${dir:?}/metadata" "${dir:?}/tmp" "${dir:?}/victim" \
+                "${dir:?}/metadata-sibling" "${dir:?}/tmp-sibling"
+            printf 'preserve\n' > "${dir:?}/victim/sentinel"
+            (
+                cd "${dir:?}/repo" || exit 2
+                . "${STAGE_HELPER:?}"
+                . "${DRIVER:?}"
+                export TMPDIR="${dir:?}/tmp" HOME="${dir:?}" AMPLIHACK_BIN=/bin/false
+                local parent prefix allocated
+                case "${boundary}" in
+                    stage) parent="${dir:?}/metadata"; prefix=stage-workflow-changes ;;
+                    attempt) parent="${dir:?}/metadata"; prefix=hook-repair-attempt ;;
+                    evidence) parent="${dir:?}/tmp"; prefix=hook-repair ;;
+                esac
+                git() {
+                    case "$*" in
+                        'rev-parse --show-toplevel') printf '%s\n' "${dir:?}/repo" ;;
+                        'rev-parse --absolute-git-dir') printf '%s\n' "${dir:?}/metadata" ;;
+                        'rev-parse --git-path hooks') printf '%s\n' "${dir:?}/metadata/hooks" ;;
+                        *) printf 'git %s\n' "$*" >> "${dir:?}/consumer-calls"; return 91 ;;
+                    esac
+                }
+                mktemp() {
+                    # Evidence tests permit the earlier, valid allocation.
+                    if [[ "${boundary}" == evidence && "$*" == *hook-repair-attempt.* ]]; then
+                        command mktemp "$@"; return
+                    fi
+                    case "${mode}" in
+                        empty) return 0 ;;
+                        relative) printf 'relative-allocation\n' ;;
+                        wrong-parent) printf '%s\n' "${dir:?}/victim" ;;
+                        sibling-parent) command mktemp -d "${parent:?}-sibling/${prefix:?}.XXXXXX" ;;
+                        nested)
+                            allocated="$(command mktemp -d "${parent:?}/${prefix:?}.XXXXXX")" || return
+                            command mktemp -d "${allocated:?}/child.XXXXXX" ;;
+                        symlink)
+                            ln -s -- "${dir:?}/victim" "${parent:?}/${prefix:?}.link"
+                            printf '%s\n' "${parent:?}/${prefix:?}.link" ;;
+                        empty-canonical|forged-canonical) command mktemp "$@" ;;
+                    esac
+                }
+                pwd() {
+                    if [[ "${PWD:?}" == "${parent:?}/${prefix:?}."* ]]; then
+                        case "${mode}" in
+                            empty-canonical) return 0 ;;
+                            forged-canonical) printf '%s\n' "${dir:?}/victim"; return 0 ;;
+                        esac
+                    fi
+                    builtin pwd "$@"
+                }
+                hook_repair_attempt() {
+                    if [[ "${boundary}" == evidence ]]; then
+                        printf 'rejected\n' > "${1:?}"; return 1
+                    fi
+                    printf 'attempt %s\n' "$*" >> "${dir:?}/consumer-calls"; return 94
+                }
+                hook_repair_is_rejection() { return 0; }
+                mv() { printf 'mv %s\n' "$*" >> "${dir:?}/consumer-calls"; return 95; }
+                rm() {
+                    # Only the earlier validated attempt may be cleaned up.
+                    if [[ "${boundary}" == evidence && "${2-}" == -- \
+                        && "${3-}" == "${dir:?}/metadata/hook-repair-attempt."* && "$#" == 3 ]]; then
+                        return 0
+                    fi
+                    printf 'rm %s\n' "$*" >> "${dir:?}/consumer-calls"; return 96
+                }
+                if [[ "${boundary}" == stage ]]; then
+                    if stage_workflow_changes; then exit 0; else exit "$?"; fi
+                else
+                    if hook_repair_run commit checkpoint-after-implementation -- false; then exit 0; else exit "$?"; fi
+                fi
+            ) >"${dir:?}/stdout" 2>"${dir:?}/stderr" && rc=0 || rc=$?
+            expect_eq "L ${boundary}/${mode}: refuse malformed allocation" "${rc}" 2
+            expect_empty_file "L ${boundary}/${mode}: reject before consuming mutation" "${dir:?}/consumer-calls"
+            expect_empty_file "L ${boundary}/${mode}: no stdout" "${dir:?}/stdout"
+            expect_eq "L ${boundary}/${mode}: preserve unrelated fixture" "$(cat "${dir:?}/victim/sentinel")" preserve
+        done
+    done
+}
+
+# Keep errexit active inside the canary: an intermediate assertion failure
+# must stop before later commands can mask it.
+(
+    set -eE
+    trap 'echo "HARNESS-ERROR: fixing stub mutation canary failed" >&2; exit 2' ERR
+    mutation_canary
+)
+
 section_a
 section_b
 section_c
@@ -1945,6 +2307,9 @@ section_g
 section_h_static
 section_h_dynamic
 section_i
+section_j
+section_k
+section_l
 
 echo "issue #1671 hook-rejection repair: ${PASSES} passed, ${FAILURES} failed" >&2
 if (( FAILURES > 0 )); then

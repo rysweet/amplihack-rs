@@ -4,17 +4,20 @@
 //! runner's own classifier calls a usage limit, reruns it under the next
 //! eligible profile while auto-switch is on (#1569). When none is left, or
 //! auto-switch is off or no profile was inherited, the usage-limit wait may
-//! run the step once more in the inherited environment (#1618). Only the
-//! final attempt's stdout is printed.
+//! run the step once more in the inherited environment (#1618), or, after a
+//! capacity wait, on the login that showed capacity (#1801). Only the final
+//! attempt's stdout is printed.
 
 use super::candidate::{self, Pool};
 use super::config::{self, Config};
 use super::fsx;
 use super::overflow_inputs::OverflowInputs;
+use super::per_token;
 use super::state::{Ledger, State};
+use super::takeover::{capacity_candidate, profile_check};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{
-    Limited, Signals, note_key_error, run_attempt, usage_limited,
+    Limited, Signals, note_key_error, run_attempt_with_recovery, usage_limited,
 };
 use crate::commands::profile::limit_wait::plan::{self, NoWait, WaitFor};
 use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
@@ -29,13 +32,27 @@ use std::path::PathBuf;
 #[cfg(test)]
 pub(super) use crate::commands::profile::attempt::limit_reset;
 
+/// A profile for a nested launch.
+#[derive(Debug, PartialEq)]
+pub struct Pick {
+    pub profile: ProfileName,
+    /// The reason line for a move onto a per-token profile, for
+    /// [`per_token::record`]; `None` for a plan profile.
+    pub per_token: Option<String>,
+}
+
 /// An eligible profile for a nested launch: not excluded, not exhausted (an
 /// overflow profile: not spend-blocked; its own plan reading does not
 /// count), not in `skip`, holding its own login at home, and not hosting
 /// another account. Plan profiles come first; an overflow profile only when
-/// no plan profile has capacity and the overflow gate allows it (issue #1606), and
-/// a launch on an overflow profile gets a plan profile as soon as one has
-/// capacity (see `candidate::select_with_overflow`).
+/// no plan profile has room (both windows below 100%) and the earliest plan
+/// reset is beyond the overflow wait (issues #1606, #1804), and a launch on an
+/// overflow profile gets a plan profile as soon as one has capacity (see
+/// `candidate::select_with_overflow`). An API-key profile is never a plan
+/// profile.
+///
+/// The caller writes [`Pick::per_token`] when it makes the move, not here: a
+/// piped prompt can still refuse the rerun.
 pub fn nested_candidate(
     state: &State,
     ledger: &Ledger,
@@ -44,7 +61,7 @@ pub fn nested_candidate(
     cfg: &Config,
     current: &str,
     skip: &[String],
-) -> Option<ProfileName> {
+) -> Option<Pick> {
     let now = fsx::now();
     let overflow = OverflowInputs::load(&state.root, cfg, now);
     let pool = Pool {
@@ -54,15 +71,35 @@ pub fn nested_candidate(
         exclude: &cfg.exclude,
         now,
     };
-    candidate::select_with_overflow(&pool, &overflow.pool(), current, |c| {
+    let eligible = |c: &ProfileName| {
         let n = c.as_str();
         !skip.iter().any(|s| s == n)
             && !ledger.hosts.contains_key(n)
             && ledger.leased_to(n).is_none()
-            // macOS keeps logins in the Keychain: no file to look for.
-            && (cfg!(target_os = "macos") || fsx::exists(&state.live_creds(n)))
-    })
-    .cloned()
+            && login_ready(state, &overflow, c)
+    };
+    let picked = candidate::select_with_overflow(&pool, &overflow.pool(), current, eligible);
+    if picked.is_none_or(|p| overflow.platform.as_ref() != Some(p)) {
+        let held = per_token::key_held(&pool, &overflow, current, eligible);
+        per_token::record_key_held(state, &held);
+    }
+    let profile = picked?.clone();
+    // Read again for the detail the reason line gives. A key that went away
+    // since the check above is refused like any other failed check.
+    let check = overflow.check_note(&state.root, &profile)?;
+    let per_token = per_token::reason(&pool, &overflow, cfg, current, &profile, check);
+    Some(Pick { profile, per_token })
+}
+
+/// The login checks a move onto `c` must pass, apart from the readings and
+/// the ledger: `c` holds its own login on this platform (macOS keeps logins
+/// in the Keychain: no file to look for), and an API-key profile passes its
+/// login check (issue #1804). [`nested_candidate`] and the takeover check
+/// (`takeover::could_take_over`, issue #1801) both use this one rule, so a
+/// capacity wait never starts for a login the selection would refuse.
+pub(super) fn login_ready(state: &State, overflow: &OverflowInputs, c: &ProfileName) -> bool {
+    (cfg!(target_os = "macos") || fsx::exists(&state.live_creds(c.as_str())))
+        && overflow.check_note(&state.root, c).is_some()
 }
 
 pub fn profile_names(store: &ProfileStore) -> Vec<ProfileName> {
@@ -120,6 +157,8 @@ pub struct Substitute {
     /// When the inherited account's used-up windows reset (ledger clock);
     /// `None` when it was passed over only for being over the threshold.
     pub inherited_reset: Option<i64>,
+    /// See [`Pick::per_token`].
+    pub per_token: Option<String>,
 }
 
 /// The profile a nested launch inheriting `inherited` should use, when the
@@ -159,9 +198,10 @@ pub fn substitute(
     let skip = vec![inherited.to_string()];
     nested_candidate(state, &ledger, &profiles, &readings, cfg, &account, &skip).map(|c| {
         Substitute {
-            profile: c,
+            profile: c.profile,
             reason,
             inherited_reset,
+            per_token: c.per_token,
         }
     })
 }
@@ -284,6 +324,18 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     // free for the inherited profile's own limit, which is the likelier one
     // on a nearly-empty window (#1618).
     let mut inherited_has_capacity = false;
+    // Whether another login could end a capacity wait: the one read-only
+    // check, made when a limit is seen (#1801). Both kinds of step need a
+    // running rotator, so a wait never starts when nothing could end it.
+    let takeover = |waiter: &Waiter| match &switch {
+        Some(sw) => profile_check(sw.store, sw.inherited.as_str()),
+        None => waiter.takeover_home(),
+    };
+    let probe = |start, now| {
+        switch.as_ref().is_some_and(|sw| {
+            capacity_candidate(sw.store, &sw.state, &sw.inherited, start, now).is_some()
+        })
+    };
     if let Some(sw) = &switch {
         let eff = config::effective(sw.store.root());
         if let Some(sub) = substitute(sw.store, &sw.state, &eff.config, &sw.inherited) {
@@ -291,6 +343,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 "{}",
                 substitution_note(&sw.inherited, &sub.reason, &sub.profile)
             );
+            per_token::record(&sw.state.root, sub.per_token.as_deref());
             // The inherited account never runs before the retry, so its
             // reset comes from the readings, moved onto the wait's clock.
             // Without one (no window at 100%) no wait is built at all: see
@@ -300,7 +353,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 Some(r) => {
                     let wait_now = waiter.now();
                     let reset = wait_now.saturating_add(r.saturating_sub(fsx::now()));
-                    inherited_wait = Some(plan::from_reading(Harness::Claude, reset, wait_now));
+                    let wait = plan::from_reading(Harness::Claude, reset, wait_now);
+                    let seen = Some((Harness::Claude, Some(reset)));
+                    inherited_wait = Some(plan::upgrade(wait, seen, || takeover(&waiter)));
                 }
                 None => inherited_has_capacity = true,
             }
@@ -309,15 +364,30 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     }
     let mut tried: Vec<String> = Vec::new();
     let mut n = 0u32;
+    let mut recovery = recipe_runner_rs::recovery::ipc::Client::from_environment()?;
     loop {
         n += 1;
+        if n > 1
+            && let Some(client) = &recovery
+        {
+            recovery = Some(client.renew()?);
+        }
         let switch_dir = switch
             .as_ref()
             .zip(profile.as_ref())
             .map(|(sw, p)| (p, sw.state.profile_dir(p.as_str())));
         let env = switch_dir.as_ref().map(|(p, d)| (*p, d.as_path()));
         let input = stdin.for_attempt(n);
-        let attempt = match run_attempt(&exe, &args, &rerun_dir, env, input, n, &signals) {
+        let attempt = match run_attempt_with_recovery(
+            &exe,
+            &args,
+            &rerun_dir,
+            env,
+            input,
+            n,
+            &signals,
+            recovery.as_ref(),
+        ) {
             Ok(a) => a,
             // The first attempt never started, so a plain launch can follow.
             Err(e) if n == 1 && profile.is_none() => {
@@ -334,10 +404,13 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         let Some(lim) = usage_limited(&attempt, waiter.now()) else {
             return attempt.finish(None);
         };
+        if let Some(client) = &recovery {
+            client.outcome(recipe_runner_rs::recovery::model::Outcome::UsageLimit)?;
+        }
         if profile.is_none() {
             // This attempt ran under the inherited profile: its limit is the
             // freshest word on that profile.
-            inherited_wait = Some(lim.wait);
+            inherited_wait = Some(plan::upgrade(lim.wait, lim.seen, || takeover(&waiter)));
         }
         if let Some(sw) = &switch {
             let current = profile.as_ref().unwrap_or(&sw.inherited).clone();
@@ -361,9 +434,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                     // wait below refuses too, with `piped_prompt`.
                     eprintln!(
                         "auto-switch: no rerun under profile {:?}: this step's prompt came on a pipe, which a rerun cannot read again",
-                        next.as_str()
+                        next.profile.as_str()
                     );
-                    refused = Some(next);
+                    refused = Some(next.profile);
                 } else {
                     if let Some(sig) = signals.received() {
                         eprintln!("auto-switch: no rerun: this step was told to stop");
@@ -372,10 +445,11 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                     eprintln!(
                         "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?} (auto-switch)",
                         current.as_str(),
-                        next.as_str()
+                        next.profile.as_str()
                     );
+                    per_token::record(&sw.state.root, next.per_token.as_deref());
                     attempt.discard();
-                    profile = Some(next).filter(|p| *p != sw.inherited);
+                    profile = Some(next.profile).filter(|p| *p != sw.inherited);
                     continue;
                 }
             }
@@ -421,14 +495,35 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         let Some(wait) = inherited_wait.or_else(|| waiter.blocked_skip()) else {
             return attempt.finish(None);
         };
-        match waiter.after_limit(wait, n, &signals) {
+        match waiter.after_limit(wait, n, &signals, &probe) {
             AfterLimit::Finish(code) => return attempt.finish(code),
             AfterLimit::Retry => {
                 attempt.discard();
-                profile = None;
+                profile = retry_profile(switch.as_ref(), &waiter);
             }
         }
     }
+}
+
+/// The profile the retry after a wait runs under; `None` keeps the inherited
+/// environment. After a capacity wait that is the login that showed capacity,
+/// never the exhausted inherited one; after a reset wait, always `None`. The
+/// candidate is chosen again here and may now be `None`: the one retry then
+/// runs on the inherited profile, at a cost of one more attempt.
+fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<ProfileName> {
+    let sw = switch?;
+    let start = waiter.capacity_start()?;
+    let pick = capacity_candidate(sw.store, &sw.state, &sw.inherited, start, waiter.now())?;
+    // The run log names the login the retry moves to, as every other move
+    // in this loop does (#1801, item 3).
+    eprintln!(
+        "amplihack: a login has capacity again; rerunning this step under profile {:?} (auto-switch)",
+        pick.profile.as_str()
+    );
+    // A move onto a per-token profile gives its reason line, as any rerun
+    // onto one does (#1804).
+    per_token::record(&sw.state.root, pick.per_token.as_deref());
+    Some(pick.profile)
 }
 
 /// `<root>/.auto-switch.d/rerun` with auto-switch on, else
@@ -471,7 +566,7 @@ fn next_profile(
     tried: &[String],
     lim: &Limited,
     waiter: &Waiter,
-) -> Option<ProfileName> {
+) -> Option<Pick> {
     // Without the ledger the account is unknown: recording the limit under
     // the profile name could mark the wrong account exhausted.
     let account = match state.load_ledger() {

@@ -1,3 +1,10 @@
+---
+title: amplihack recipe reference
+description: Commands and options for inspecting and executing recipes.
+doc_type: reference
+last_updated: 2026-11-11
+---
+
 # amplihack recipe — Reference
 
 Full CLI reference for the `amplihack recipe` subcommand, which lists,
@@ -11,6 +18,7 @@ inspects, validates, and runs YAML recipe files.
   - [recipe show](#recipe-show)
   - [recipe validate](#recipe-validate)
   - [recipe run](#recipe-run)
+  - [Usage-limit relaunch recovery](#usage-limit-relaunch-recovery)
   - [Detached runs](#detached-runs)
     - [Run records](#run-records)
   - [recipe stop](#recipe-stop)
@@ -198,9 +206,10 @@ Exit code is 1 on validation failure; 0 on success.
 Execute a recipe by delegating to the `recipe-runner-rs` binary.
 
 ```
-amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
+amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--fresh] [--verbose]
   [--format <FORMAT>] [--working-dir <DIR>] [--step-timeout <SECONDS>]
-  [--detach | --no-detach]
+  [--detach | --no-detach] [--governor-wait <DURATION>]
+  [--governor-class <CLASS>] [--workstream <ID>]
 ```
 
 | Flag | Default | Description |
@@ -208,12 +217,18 @@ amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
 | `<FILE>` | (required) | Path to the recipe YAML file |
 | `-c KEY=VALUE` | (none) | Set a context variable; repeat for multiple values |
 | `--dry-run` | false | Print the execution plan without running any steps |
+| `--fresh` | false | Bypass historical recovery for this launch and its delegated execution; preserve existing history |
 | `--verbose` | false, or [`recipe.verbose`](./user-config.md#recipeverbose) | Increase progress detail on stderr; basic step progress is emitted by default. On when either the flag or `recipe.verbose = true` is set |
 | `--format <FORMAT>` | `table` | Output format for results: `table`, `json`, or `yaml` |
 | `--working-dir <DIR>` | `.` | Working directory for step execution |
 | `--detach` | false, or [`recipe.detach`](./user-config.md#recipedetach) `= "tmux"` | Run in a new tmux session with a private log, print the session and log path, and return. See [Detached runs](#detached-runs) |
 | `--no-detach` | | Run in the foreground even when `recipe.detach = "tmux"` |
+| `--governor-wait <DURATION>` | `AMPLIHACK_GOVERNOR_WAIT`, then `governor.wait_secs`, else `10m` | Longest time to wait for the [capacity governor](./capacity-governor.md) to admit the run. `0` means do not wait |
+| `--governor-class <CLASS>` | inferred, else `ordinary` | Priority class for admission: `coordination`, `recovery`, `review` or `ordinary`. See [Reserves and classes](./capacity-governor.md#reserves-and-classes) |
+| `--workstream <ID>` | `AMPLIHACK_WORKSTREAM`, then the issue or run id | Workstream the run is counted against for [fair queueing](./capacity-governor.md#fair-queue) |
 | `--step-timeout <SECONDS>` | `AMPLIHACK_STEP_TIMEOUT`, then [`recipe.step_timeout`](./user-config.md#recipestep_timeout), else none | Apply a global per-step timeout ceiling to **every** step in the recipe. Useful for CI guard rails. `0` disables all step timeouts. When omitted, agent steps run without a per-step timeout and bash steps use the YAML-defined `timeout_seconds` only when present |
+
+When the [capacity governor](./capacity-governor.md) is turned on (it ships off; see [Kill switch and governor keys](./capacity-governor.md#kill-switch-and-governor-keys)), then after the pre-flight checks and before `recipe-runner-rs` starts, `recipe run` (but not `--dry-run`) asks it for a slot and holds it until the recipe returns. Before the slot is recorded, the run's `AMPLIHACK_TREE_ID` is settled (inherited, or generated once) and the environment built for agent steps reuses it, so agent steps run under that slot. If the governor makes the run wait, a reason line goes to stderr; if the wait runs out or the run is refused, the runner is not started and the command exits with 80. With `--detach`, the governor flags are passed on to the run in the tmux session, and that run asks the governor; the detaching command itself holds no slot.
 
 Before spawning `recipe-runner-rs`, the Rust CLI always injects `AMPLIHACK_HOME` and, when available, `AMPLIHACK_ASSET_RESOLVER` into the child environment. That gives recipes a stable native way to resolve `amplifier-bundle/...` assets without assuming the Python package layout. Additionally, when `--step-timeout` is provided, the CLI sets [`AMPLIHACK_STEP_TIMEOUT`](./environment-variables.md#amplihack_step_timeout) in the child environment so `recipe-runner-rs` can read and apply the override. Without the flag, an `AMPLIHACK_STEP_TIMEOUT` already in the environment is passed on unchanged, and otherwise a configured `recipe.step_timeout` is exported.
 
@@ -311,6 +326,48 @@ SIGKILL cannot be caught. If `recipe run` is killed that way, on Linux the
 kernel sends the runner SIGTERM (`PR_SET_PDEATHSIG`); agents the runner started
 can outlive it. Use `amplihack recipe stop <run_id>` to end them.
 
+### Usage-limit relaunch recovery
+
+Durable relaunch recovery is supported by the pinned Rust runner. Use
+`--fresh` to bypass historical replay for one launch. See the
+[recovery reference](recipe-recovery.md) for persistence policies and resources.
+
+An identified launch selects the latest matching recipe/work attempt.
+For `smart-orchestrator`, supply the same repository and a positive
+`issue_number` or validated matching `issue_url`. Canonical Git worktrees
+share a repository identity; independent clones remain separate. An
+unidentified launch runs fresh outside shared recovery namespaces.
+
+Recovery requires a durable usage-limit stop in that latest attempt and
+an owner that is no longer active. A newer success, non-limit failure, or
+unknown termination prevents recovery from older history. Current live
+session ownership, authorization, governor admission, and recursion
+accounting are established before dependent replay.
+
+The runner restores compatible completed results and typed context changes
+in order, including children beneath incomplete parent steps. It executes
+the first incomplete or invalidated step. Compatibility covers effective
+inputs, execution definitions and settings, cumulative repository state,
+and required files/artifacts. Workflow-produced branch changes are checked
+against recorded progression. Missing or unverifiable history causes a
+logged fresh fallback; unsafe current storage or failed durable publication
+stops execution.
+
+`--fresh` bypasses this historical replay throughout the tree, including
+detached and delegated execution. It preserves earlier records and records
+the current attempt, which can support a later recovery. It does not reset
+Git or clear an explicit `resume_checkpoint`.
+
+`--dry-run` admits no recovery attempt, writes no recovery records, and
+does not advance the latest marker, including when combined with `--fresh`.
+The existing same-process usage-limit wait/retry behavior remains in place.
+
+Stderr identifies the source run and actual restart step with its nested
+invocation path, or explains the fresh fallback. JSON/YAML preserve the
+additive [recovery metadata](recipe-result.md#recovery-metadata).
+See [relaunch commands](../howto/resume-recipe-after-usage-limit.md) and
+[the recovery contract](recipe-recovery.md) for policies and storage rules.
+
 ### Detached runs
 
 `recipe run --detach` (or every `recipe run` once
@@ -351,11 +408,15 @@ log: /home/alice/.amplihack/recipe-logs/amp-smart-orchestrator-myapp-20261020-10
 - **Stopping** — `amplihack recipe stop <session>`, or `tmux kill-session`.
 - **Run record**: a 0600 `<session>.run.json` in the log directory, kept
   after the run ends. See [Run records](#run-records).
-- **`AMPLIHACK_RUN_ID`**: the run, and everything it starts, gets
-  `AMPLIHACK_RUN_ID=<session>`, so a run launched from inside it records it
+- **`AMPLIHACK_WORKSTREAM_RUN_ID`**: the run, and everything it starts, gets
+  `AMPLIHACK_WORKSTREAM_RUN_ID=<session>`, so a run launched from inside it records it
   as its parent.
 
 Needs `tmux` on `PATH`.
+
+Recovery settings, including `--fresh`, travel in the
+private launch payload. The detaching process does not register a recovery
+attempt or advance its latest marker; admission happens once in the executing pane.
 
 #### Run records
 
@@ -386,7 +447,7 @@ records to find the runs a session started.
 | Field | Content |
 |-------|---------|
 | `version` | `1`. |
-| `session` | The tmux session name. It is also the value of `AMPLIHACK_RUN_ID` inside the run. |
+| `session` | The tmux session name. It is also the value of `AMPLIHACK_WORKSTREAM_RUN_ID` inside the run. |
 | `parent` | The launching session's identity, or `null` when it has none. See below. |
 | `started_at` | RFC 3339 UTC time of the launch. |
 | `recipe` | The recipe's name or file stem. |
@@ -397,7 +458,8 @@ records to find the runs a session started.
 
 `parent` is the first of these variables in the launching environment that is
 set, non-empty, at most 128 bytes and printable ASCII:
-`AMPLIHACK_RUN_ID` (`run:<value>`), `AMPLIHACK_SESSION_ID`
+`AMPLIHACK_WORKSTREAM_RUN_ID` (`run:<value>`), `AMPLIHACK_RUN_ID`
+(`run:<value>`, the recipe workspace UUID), `AMPLIHACK_SESSION_ID`
 (`session:<value>`), `AMPLIHACK_TREE_ID` (`tree:<value>`),
 `CLAUDE_CODE_SESSION_ID` (`claude:<value>`). It is read before agent session
 markers are removed from the run's environment.
@@ -577,6 +639,10 @@ A recipe is a YAML file. The top-level document must be a mapping.
 | `mode`        | string  | no       | Step execution mode |
 | `auto_stage`  | bool    | no       | Auto-stage git changes after step completes |
 
+Recipe-level and step-level `recovery` mappings opt into durable recording.
+See [persistence policies](recipe-recovery.md#recipe-persistence-policy)
+and [step resources](recipe-recovery.md#step-replay-policy-and-resources).
+
 ### Step types
 
 | Type     | Description |
@@ -717,6 +783,13 @@ This allows local overrides of bundled recipes.
 The same lookup is used by `amplihack install` and the launch-time freshness
 refresh, so all three agree on which binary is in use.
 
+The recovery integration requires the selected binary to
+advertise `durable_recovery_v1`, including when `--fresh` is requested.
+Validation enforces that capability. Supported runner
+delivery retains the pinned upstream revision and ancestry validation.
+A binary with partial recovery support does not satisfy this requirement; see
+[the capability contract](recipe-recovery.md#capability-and-dependency-contract).
+
 If no binary is found, `recipe run` fails with:
 
 ```
@@ -740,6 +813,8 @@ amplihack recipe run recipe.yaml -c task_description="..."
 |-----------|---------|
 | 0 | Success (list, show, validate passed; run completed with all steps succeeded) |
 | 1 | Error (validate failed; run failed; recipe-runner-rs not found; malformed context args) |
+| 2 | Usage error (for example an invalid `--workstream` or `--governor-wait`) |
+| 80 | Not started: the [capacity governor](./capacity-governor.md#waiting-denial-and-exit-code-80) refused the run or its wait ran out |
 
 ---
 
@@ -755,6 +830,7 @@ Recipe execution can fail at multiple levels. For diagnosis:
 | Duplicate issues filed | Repeated `gh issue create` on retries | [Issue Deduplication](./issue-dedup.md) |
 | Condition parse error | `condition` field uses unsupported expression | [Agentic Step Patterns](../concepts/agentic-step-patterns.md) |
 | Context variable missing | `{{var}}` renders as empty string | [Context variables](#context-variables) |
+| Run not started, exit 80 | `amplihack: governor: not started (<code>): ...` on stderr | [Capacity Governor](./capacity-governor.md#reason-codes) |
 | Opaque long-running step | No visible child output for a while | [Recipe Runner Logging](./recipe-runner-logging.md) |
 
 For general troubleshooting, see [Troubleshoot Recipe Execution Failures](../howto/troubleshoot-recipe-execution.md).
@@ -765,6 +841,7 @@ For general troubleshooting, see [Troubleshoot Recipe Execution Failures](../how
 
 - [Run a Recipe End-to-End](../howto/run-a-recipe.md) — Step-by-step guide to executing recipes
 - [`amplihack workstreams` Reference](./workstreams-command.md) - Status table of the detached runs a session started, built from run records
+- [Capacity Governor](./capacity-governor.md): When `recipe run` may start, waits or exits with 80
 - [Environment Variables](./environment-variables.md) — `AMPLIHACK_CONTEXT_*`, `AMPLIHACK_TASK_DESCRIPTION`, `RECIPE_RUNNER_RS_PATH`
 - [Recipe Runner Logging](./recipe-runner-logging.md) — stderr progress, heartbeats, snippets, and JSONL logs
 - [Parity Test Scenarios](./parity-test-scenarios.md) — `tier4-recipe-run.yaml` test cases

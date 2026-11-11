@@ -252,7 +252,21 @@ impl NativeReasonerBackend {
         }
     }
 
+    /// Test-only: production calls the `_with` form directly (issue #1765).
+    #[cfg(test)]
     pub(super) fn complete(&self, prompt: &str) -> Result<String> {
+        self.complete_with(prompt, &|_| {})
+    }
+
+    /// `complete` with `configure` applied to the `claude` child after
+    /// its environment is built and before it starts, so a test can give the
+    /// child its own environment without changing the test process's
+    /// (issue #1765).
+    pub(super) fn complete_with(
+        &self,
+        prompt: &str,
+        configure: &dyn Fn(&mut Command),
+    ) -> Result<String> {
         match self {
             NativeReasonerBackend::None => {
                 bail!("no native reasoner backend available")
@@ -277,6 +291,7 @@ impl NativeReasonerBackend {
                     env_builder = env_builder.with_project_graph_db(&current_dir)?;
                 }
                 env_builder.apply_to_command(&mut cmd);
+                configure(&mut cmd);
                 // Issue #1570: the prompt goes to `claude -p` on stdin, never argv.
                 let output = run_output_with_timeout_stdin(
                     cmd,

@@ -396,7 +396,7 @@ Full reference:
 <details>
 <summary>Quality, Security & Customization (5 features)</summary>
 
-- **[Security Analysis](/amplihack:xpia)** — Cross-prompt injection defense
+- **[Security Analysis](/amplihack:xpia)** — Cross-prompt injection defense (opt-in: set `XPIA_ENABLED=true`; see [XPIA configuration](docs/reference/xpia-configuration.md))
 - **[Socratic Questioning](/amplihack:socratic)** — Challenge claims and clarify
   requirements
 - **[Benchmarking](https://rysweet.github.io/amplihack-rs/BENCHMARKING/)** —

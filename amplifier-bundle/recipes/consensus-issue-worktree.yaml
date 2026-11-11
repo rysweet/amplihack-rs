@@ -77,11 +77,11 @@ steps:
       **Task:** {{task_description}}
       **Issue:** {{issue_number}}
       **Requirements:** {{final_requirements}}
-      **Worktree Directory:** {{worktree_dir}}
+      **Worktree Directory:** {{worktree_dir}} (if empty, the commands below work it out)
 
       Create worktree setup:
       1. Branch name format: `feat/issue-{number}-{brief-description}` or `feat/{brief-description}`
-      2. Create worktree in `{{worktree_dir}}/{branch-name}`
+      2. Create the worktree with the commands below; they place it under the worktree directory
       3. Push branch to remote with tracking
 
       Commands to execute:
@@ -96,6 +96,25 @@ steps:
       # of deriving a slug. EXISTING_BRANCH wins on tie (WARNING to stderr).
       # Keep in sync with default-workflow.yaml step-04-setup-worktree.
       # ========================================================================
+      # --- Bundle tools: TOOLS_DIR serves every helper below (#829/#840, #1808) ---
+      # Lookup: step-04's 5-tier ladder, checking for the deconflict helper
+      # (step3 never runs the sweep helper), then step-04's two DECONFLICT_HELPER
+      # lines. Set AMPLIHACK_HOME to an installed bundle to make that copy win.
+      DECONFLICT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
+      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
+      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
+      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
+      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
+      TOOLS_DIR="$(dirname "$DECONFLICT_HELPER")"
+      DECONFLICT_HELPER="$TOOLS_DIR/workflow_worktree_deconflict.sh"
+      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
+      # Issue #1808: a caller-supplied worktree_dir wins; else `workflow_worktree_root.sh base`, asked only
+      # with AMPLIHACK_WORK_ROOT_EXPLICIT=1 and a work root (older helpers lack `base`; otherwise it is <main>/worktrees).
+      ROOT_HELPER="$TOOLS_DIR/workflow_worktree_root.sh"
+      if [ -z "${WORKTREE_DIR:-}" ] && [ -f "$ROOT_HELPER" ] && [ "${AMPLIHACK_WORK_ROOT_EXPLICIT:-0}" = 1 ] && [ -n "${AMPLIHACK_WORK_ROOT:-}" ]; then
+        WORKTREE_DIR="$(bash "$ROOT_HELPER" base "$(pwd)")" || { echo "ERROR: cannot work out where worktrees go (see above; issue #1808)." >&2; exit 1; }
+      fi
+      [ -n "$WORKTREE_DIR" ] || WORKTREE_DIR="$(cd "$(git rev-parse --git-common-dir)/.." && pwd -P)/worktrees"
       EXISTING_BRANCH="${EXISTING_BRANCH:-}"
       PR_NUMBER="${PR_NUMBER:-}"
       if [ -n "$EXISTING_BRANCH" ] || [ -n "$PR_NUMBER" ]; then
@@ -205,30 +224,17 @@ steps:
         return 1
       }
 
-      fetch_origin_with_retry() {
-        local attempt status delay=1 max_attempts=3
-        for attempt in 1 2 3; do
-          if git fetch origin --no-tags >&2; then
-            return 0
-          fi
-          status=$?
-          if [ "$attempt" -lt "$max_attempts" ]; then
-            echo "WARNING: git fetch origin failed (exit ${status}); retrying (${attempt}/${max_attempts})." >&2
-            sleep "$delay"
-            delay=$((delay * 2))
-            continue
-          fi
-          echo "WARNING: git fetch origin failed after ${max_attempts} attempts (exit ${status}); continuing with local refs." >&2
-          return 0
-        done
-      }
-
       if ! git remote get-url origin >/dev/null 2>&1; then
         echo "ERROR: no 'origin' remote configured — refusing to create a task worktree off the caller's HEAD (issue #858)." >&2
         echo "ERROR: a recipe task worktree must branch off a fetched remote base ref, never the caller checkout." >&2
         exit 1
       fi
-      fetch_origin_with_retry
+      # Fetch with retries (tools/workflow_fetch_origin.sh); one plain fetch without it.
+      if [ -f "$TOOLS_DIR/workflow_fetch_origin.sh" ]; then
+        bash "$TOOLS_DIR/workflow_fetch_origin.sh"
+      else
+        git fetch origin --no-tags >&2 || echo "WARNING: git fetch origin failed; continuing with local refs." >&2
+      fi
       if ! BASE_REF="$(resolve_base_ref)"; then
         echo "ERROR: could not resolve a remote base ref — refusing to fall back to caller HEAD (issue #858)." >&2
         exit 1
@@ -260,18 +266,7 @@ steps:
       # reset or deleted: the helper returns a NEW free suffixed name for this run, or
       # the candidate unchanged. If work still turns up at the guard below (helper
       # missing, or new work since), the step refuses with an error instead.
-      # Helper lookup: step-04's 5-tier ladder, checking for the deconflict helper
-      # (step3 never runs the sweep helper), then step-04's two DECONFLICT_HELPER
-      # lines. Set AMPLIHACK_HOME to an installed bundle to make that copy win.
       # Its answer is untrusted and validated before any ref or worktree changes.
-      DECONFLICT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
-      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
-      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
-      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
-      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
-      TOOLS_DIR="$(dirname "$DECONFLICT_HELPER")"
-      DECONFLICT_HELPER="$TOOLS_DIR/workflow_worktree_deconflict.sh"
-      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
       if [ -f "$DECONFLICT_HELPER" ]; then
         if ! RESOLVED_BRANCH="$(bash "$DECONFLICT_HELPER" resolve --base "$BASE_REF" "$BRANCH_NAME" "$WORKTREE_DIR/$BRANCH_NAME" "$(pwd)")"; then
           echo "ERROR: worktree branch deconfliction failed for '$BRANCH_NAME' (retries exhausted or helper misconfig; see stderr). Aborting to avoid clobbering a concurrent foreign worktree or a branch that holds work." >&2
@@ -351,6 +346,10 @@ steps:
           exit 1
         fi
         SETUP_STATE="create-from-base"
+      fi
+      # Issue #1808: record the worktree for cleanup (adopt on reuse); a failure only warns.
+      if [ -f "$TOOLS_DIR/amplihack_run_owned.sh" ]; then
+        bash "$TOOLS_DIR/amplihack_run_owned.sh" setup-worktree "$SETUP_STATE" "$WORKTREE_PATH" "$BRANCH_NAME" || true
       fi
 
       # Push with tracking (bootstrap-aware). Never forced: a deconflicted run pushes

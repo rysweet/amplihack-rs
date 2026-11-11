@@ -17,15 +17,34 @@
 use super::ledger::{Phase, RotateJournal, RotateState};
 use super::swap::{RecoverOutcome, Source, recover, swap};
 use crate::commands::profile::ProfileError;
+use crate::commands::profile::auto_switch::kit::{Lock, State};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub(super) const CREDS: &str = ".credentials.json";
 pub(super) const LOCK: &str = ".oauth_refresh.lock";
 pub(super) const NOW: i64 = 1_760_000_000;
+
+/// Takes the rotate state lock under `root` for a test that holds it while
+/// it calls the code under test.
+///
+/// It waits up to 10 s instead of not at all (#1774). While another test
+/// thread spawns a child process, the child has a copy of this process's
+/// descriptors until it reaches `exec`, including one for a lock file
+/// that this test opened and has since closed. `flock` belongs to the open
+/// file, so the lock stays held for that window, which grows on a loaded
+/// host. The waits under test are in the code the test calls, not here.
+pub(super) fn hold_state_lock(root: &Path) -> Lock {
+    State::new(root)
+        .unwrap()
+        .try_lock(Duration::from_secs(10))
+        .unwrap()
+        .expect("the test's own state lock was still held after 10 s")
+}
 
 pub(super) fn private(path: &Path, body: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -34,12 +53,13 @@ pub(super) fn private(path: &Path, body: &str) {
 }
 
 pub(super) fn login(path: &Path) -> u64 {
+    let body = super::tests::tests_fixture_identity::body(path);
     if path.exists() {
         fs::remove_file(path).unwrap();
     }
     // Issue #1700: an OAuth login (its top-level keys are read for the
     // kind); the value is a sentinel that must never be printed.
-    private(path, r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#);
+    private(path, &body);
     ino(path)
 }
 
@@ -114,6 +134,15 @@ pub(super) fn env() -> Env {
     let t = login(&root.join("spare").join(CREDS));
     let rs = RotateState::new(&root);
     rs.ensure().unwrap();
+    rs.save_ledger(&super::ledger::RotateLedger {
+        live: Some("work".into()),
+        account: Some("u-work".into()),
+        login_identity: Some(super::login_identity::Identity::new(
+            &(super::cred_identity::DEFAULT_READ)(&home.join(".claude")).unwrap(),
+        )),
+        ..Default::default()
+    })
+    .unwrap();
     Env {
         _tmp: tmp,
         home,
@@ -163,6 +192,16 @@ impl Env {
             to_lock_ino: None,
             started_at: NOW,
             pid: std::process::id(),
+            identity: Some(super::login_identity::SwapIdentity::new(
+                Some(
+                    &super::identify::Account::from_block(&acct("u-work", "work@example.com"))
+                        .unwrap(),
+                ),
+                Some(
+                    &super::identify::Account::from_block(&acct("u-spare", "spare@example.com"))
+                        .unwrap(),
+                ),
+            )),
         }
     }
 

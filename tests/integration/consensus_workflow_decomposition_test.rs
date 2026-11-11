@@ -61,6 +61,8 @@ const PHASE_RECIPES: &[&str] = &[
 ];
 
 const EXPECTED_STEP_INVENTORY: &[&str] = &[
+    // consensus-workflow step 0 (issue #1966): required-input check
+    "validate-criticality-input",
     // consensus-preflight
     "step0-preflight",
     "step1-requirements-analysis",
@@ -85,8 +87,10 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step4-design-round1-tester",
     "step4-design-round2-cross-examination",
     "step4-design-round3-consensus",
-    // consensus-tdd-impl (tests + standard impl + N-version 3 builders + vote)
+    // consensus-tdd-impl (tests + criticality gate + standard impl + N-version
+    // 3 builders + vote + route-completion gate)
     "step4-write-tests",
+    "step5-validate-criticality",
     "step5-standard-implementation",
     "step5-nversion-identify-critical",
     "step5-nversion-builder1-conservative",
@@ -95,6 +99,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step5-nversion-compare",
     "step5-nversion-synthesize",
     "step5-nversion-vote",
+    "step5-require-complete-route",
     // consensus-panel-cleanup (4-perspective panel + apply)
     "step6-panel-cleanup",
     "step6-panel-optimizer",
@@ -138,14 +143,24 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
 fn composer_calls_eleven_phase_subrecipes_in_order() {
     let composer = load("consensus-workflow");
     assert_eq!(composer.name, "consensus-workflow");
+    // Issue #1966 (D2): step 0 is the inline required-input check; steps 1 to
+    // 11 are the phase recipes in their existing order.
     assert_eq!(
         composer.steps.len(),
-        PHASE_RECIPES.len(),
-        "composer must have exactly {} sub-recipe calls; found {}",
+        PHASE_RECIPES.len() + 1,
+        "composer must have the validation step plus exactly {} sub-recipe calls; found {}",
         PHASE_RECIPES.len(),
         composer.steps.len()
     );
-    for (i, (step, expected)) in composer.steps.iter().zip(PHASE_RECIPES).enumerate() {
+    let first = &composer.steps[0];
+    assert_eq!(first.id, "validate-criticality-input", "composer step 0");
+    assert_eq!(
+        first.step_type.as_deref(),
+        Some("bash"),
+        "composer step 0 must be a bash step"
+    );
+    for (i, (step, expected)) in composer.steps[1..].iter().zip(PHASE_RECIPES).enumerate() {
+        let i = i + 1;
         assert_eq!(
             step.step_type.as_deref(),
             Some("recipe"),
@@ -161,6 +176,21 @@ fn composer_calls_eleven_phase_subrecipes_in_order() {
     }
 }
 
+/// Composer steps expanded: a `recipe` step contributes its sub-recipe's
+/// steps, any other step contributes its own id.
+fn composed_inventory() -> Vec<String> {
+    let mut composed = Vec::new();
+    for step in load("consensus-workflow").steps {
+        match step.recipe.as_deref() {
+            Some(name) if step.step_type.as_deref() == Some("recipe") => {
+                composed.extend(load(name).steps.into_iter().map(|s| s.id));
+            }
+            _ => composed.push(step.id),
+        }
+    }
+    composed
+}
+
 #[test]
 fn every_phase_subrecipe_loads_and_has_steps() {
     for name in PHASE_RECIPES {
@@ -172,10 +202,7 @@ fn every_phase_subrecipe_loads_and_has_steps() {
 
 #[test]
 fn composed_step_inventory_matches_expected_in_order() {
-    let mut composed: Vec<String> = Vec::new();
-    for name in PHASE_RECIPES {
-        composed.extend(load(name).steps.into_iter().map(|s| s.id));
-    }
+    let composed = composed_inventory();
     assert_eq!(
         composed.len(),
         EXPECTED_STEP_INVENTORY.len(),

@@ -213,6 +213,9 @@ pub(super) fn resolve_session_tree_id() -> String {
     env::var("AMPLIHACK_TREE_ID")
         .ok()
         .filter(|value| !value.trim().is_empty())
+        // Issue #1811: the id the capacity governor recorded with this
+        // process's slot, so nested launches run under it.
+        .or_else(crate::commands::governor::settled_tree_id)
         .unwrap_or_else(|| {
             generate_session_id()
                 .chars()

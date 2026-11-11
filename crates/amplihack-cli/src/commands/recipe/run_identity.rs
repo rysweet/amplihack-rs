@@ -5,12 +5,14 @@
 //! names the variable the value came from, so identities from different
 //! sources never match each other.
 
-/// Set to the detached run's tmux session name for everything the run starts.
-pub(crate) const RUN_ID_ENV: &str = "AMPLIHACK_RUN_ID";
+/// The detached run's tmux session name. Separate from `AMPLIHACK_RUN_ID`,
+/// which the recipe workspace uses for its per-attempt UUID.
+pub(crate) const RUN_ID_ENV: &str = "AMPLIHACK_WORKSTREAM_RUN_ID";
 
 /// The variables consulted, in order, with the prefix each one gives.
-const SOURCES: [(&str, &str); 4] = [
+const SOURCES: [(&str, &str); 5] = [
     (RUN_ID_ENV, "run"),
+    ("AMPLIHACK_RUN_ID", "run"),
     ("AMPLIHACK_SESSION_ID", "session"),
     ("AMPLIHACK_TREE_ID", "tree"),
     ("CLAUDE_CODE_SESSION_ID", "claude"),

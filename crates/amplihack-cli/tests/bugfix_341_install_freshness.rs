@@ -128,6 +128,16 @@ fn install_stages_amplifier_bundle_from_local_checkout_not_stale_source() {
             fs::write(claude.join("AMPLIHACK.md"), "framework\n").unwrap();
             fs::write(claude.join("settings.json"), "{}\n").unwrap();
             fs::write(checkout.path().join("CLAUDE.md"), "root\n").unwrap();
+            // Issue #1955: only a checkout at this binary's version is staged.
+            fs::write(
+                checkout.path().join("Cargo.toml"),
+                format!(
+                    "[workspace]\nmembers = [\"crates/amplihack-cli\"]\n\n\
+                     [workspace.package]\nversion = \"{}\"\n",
+                    amplihack_cli::VERSION
+                ),
+            )
+            .unwrap();
 
             // Inject sentinel into the checkout's smart-orchestrator.yaml so we can
             // prove which source the install consumed.
@@ -157,6 +167,9 @@ fn install_stages_amplifier_bundle_from_local_checkout_not_stale_source() {
             child_set_var("HOME", home.path());
             child_set_var("AMPLIHACK_AGENT_BINARY", "claude");
             child_remove_var("AMPLIHACK_HOME");
+            // Issue #1699: `run_install` refreshes every profile under this
+            // root; an inherited value would point at the real profiles.
+            child_remove_var("AMPLIHACK_CLAUDE_PROFILE_ROOT");
             child_set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
             child_set_current_dir(checkout.path());
 

@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-10-19
+last_updated: 2026-11-09
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -12,18 +12,27 @@ owner: workflow-team
 `auto-drive-to-merge` wraps [`default-workflow`](../../amplifier-bundle/recipes/default-workflow.yaml)
 and drives the pull request it produces all the way to a merge. It encodes the
 method of using the `crusty-old-engineer` skill as the maintainer's proxy:
-iterate on the PR until crusty has zero outstanding concerns, then iterate
-until every merge-ready criterion holds, then merge behind an evidence gate.
+iterate on the PR until crusty's verdict is `CLEAN`, or lists minor findings
+only, then iterate until every merge-ready criterion holds, then merge behind
+an evidence gate. Each minor finding left at the end of the crusty loop is
+filed as a follow-up issue linked to the plan task before the PR can merge
+([#1979](#minor-findings-end-the-crusty-loop-1979)).
 
 It is invocable as a recipe or as the [`auto-drive-to-merge`
 skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
+
+For a small change, [`auto-drive-light`](auto-drive-light.md) builds in one
+agent session and uses the same crusty loop, merge loop and gate. It hands the
+PR to this recipe when the change exceeds its eligibility rules.
 
 ## Contents
 
 - [The three phases](#the-three-phases)
 - [PR head and worktree resolution](#pr-head-and-worktree-resolution)
+- [Finalization hand-off from phase 1 (#1714)](#finalization-hand-off-from-phase-1-1714)
 - [Why there is no iteration cap](#why-there-is-no-iteration-cap)
 - [Structured verdicts](#structured-verdicts)
+- [Minor findings end the crusty loop (#1979)](#minor-findings-end-the-crusty-loop-1979)
 - [How the merge round applies merge-ready](#how-the-merge-round-applies-merge-ready)
 - [Reading step outputs](#reading-step-outputs)
 - [Reading the loop-health line](#reading-the-loop-health-line)
@@ -31,6 +40,9 @@ skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
 - [No silent merge](#no-silent-merge)
 - [Merges outside the gate are refused (#1551)](#merges-outside-the-gate-are-refused-1551)
 - [Exit code 79 is terminal](#exit-code-79-is-terminal)
+- [Orphaned rounds](#orphaned-rounds)
+- [Usage limits are not STUCK](#usage-limits-are-not-stuck)
+- [No-progress stop and usage budget](#no-progress-stop-and-usage-budget)
 - [Recursion context propagation](#recursion-context-propagation)
 - [Resumability](#resumability)
 - [The run report](#the-run-report)
@@ -46,8 +58,8 @@ skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
 | Phase | Brick | What it does |
 | --- | --- | --- |
 | 0. Prerequisites | `auto-drive-to-merge.yaml` step `autodrive-prerequisites` | Where criterion 1 needs `gadugi-test` (a Node repository, or `AUTODRIVE_QA_SCENARIO_DIR` set), stops the run with `ERROR: gadugi-test-not-installed` when it is not on `PATH`, before the build and the crusty loop spend hours. A Rust CLI or Python repository does not need it. |
-| 1. Build | `autodrive-build.yaml` | Runs `default-workflow` with `no_merge: "true"` to produce a PR. Never merges. |
-| 2. Crusty loop | `autodrive-crusty-loop.yaml` over `autodrive-crusty-round.yaml` | Runs `crusty-old-engineer` as the maintainer's proxy, addresses every concern, re-reviews, repeats until `crusty_verdict` is `CLEAN`. |
+| 1. Build | `autodrive-build.yaml` | Runs `default-workflow` with `no_merge: "true"` to produce a PR. Never merges. A build that ends `BLOCKED_CI`, or `FAILED_IMPLEMENTATION` on a confirmed open PR, hands that PR to phases 2 and 3 instead of ending the run ([#1714](#finalization-hand-off-from-phase-1-1714)). |
+| 2. Crusty loop | `autodrive-crusty-loop.yaml` over `autodrive-crusty-round.yaml` | Runs `crusty-old-engineer` as the maintainer's proxy, addresses every concern, re-reviews, repeats until `crusty_verdict` is `CLEAN` or `MINOR_ONLY`. Then files one follow-up issue for each minor finding ([#1979](#minor-findings-end-the-crusty-loop-1979)). |
 | 3. Merge-ready loop | `autodrive-merge-loop.yaml` over `autodrive-merge-round.yaml` | Before each round, sends code commits made after the clean crusty round back to the crusty loop (`autodrive_crusty_rereview.sh`). Syncs the base, runs the repository tests and, where criterion 1 needs them, the `gadugi-test` scenarios, waits for CI, applies the `merge-ready` criteria read from the skill's files, clears blockers, repeats, then merges behind the gate. |
 
 Phase 1 is a no-op when an open PR already exists for the branch, and the whole
@@ -356,10 +368,255 @@ worktree whose round and evaluator always pass, and checks that neither runs.
 The round steps still run the PR's own code by design (tests, hooks,
 `qa-team`), so drive only PRs whose code you are prepared to run.
 
+## Finalization hand-off from phase 1 (#1714)
+
+`default-workflow` fails closed when finalization cannot prove the run
+complete. Run on its own, that is correct, because a standalone run must never
+report success it cannot prove. Inside auto-drive it ended the whole run at
+phase 1 even when a published, open PR existed, although phases 2 and 3 exist
+to review that PR and fix what keeps it from merging. Two cases were reported
+in #1714:
+
+1. The PR's checks were red, so finalization ended `BLOCKED_CI`.
+2. A merge of main had been pushed to the PR from another checkout, so the PR
+   head was a fast-forward of the local HEAD rather than equal to it. The
+   open-PR check found no signal and the run ended `FAILED_IMPLEMENTATION`.
+
+Case 2 has two parts. First, both checks that decide whether an open PR is
+this run's PR now treat a PR head that is a fast-forward of the local HEAD as
+the same PR:
+
+- the terminal-state probe that `workflow-finalize` runs first
+  (`finalize-terminal-state`, with `accept_pr_head_ahead: "true"`; see
+  [A PR ahead of local HEAD](./workflow-terminal-state.md#a-pr-ahead-of-local-head-is-the-same-pr-1714));
+- the open-PR check in the finalization validator (see
+  [the open-PR check](./default-workflow-agentic-finalization.md#resumed-runs-open-pr-success-path-1641)).
+
+Both use one shared test, `_finalization_pr_head_descends` in
+[`workflow_pr_head_fetch.sh`](../../amplifier-bundle/tools/workflow_pr_head_fetch.sh),
+so the fix holds whenever the merge reached the PR: before finalization
+started (another checkout, or GitHub's "Update branch" button) or during it.
+With green checks such a run succeeds as `EXISTING_OPEN_PR`. A PR head that
+does not contain the local HEAD, or a remote rewound behind a commit this
+checkout saw on `origin/<branch>`, is still stale metadata
+(`FAILED_INVALID_INPUT`), which is never handed off. When the probe accepts a
+head that is ahead, `step-20-sync-pr-head` fast-forwards the worktree to it
+before any agent step edits the tree, and step-20b pulls before it pushes
+whether or not the branch had an upstream (see
+[A PR ahead of local HEAD](./workflow-terminal-state.md#a-pr-ahead-of-local-head-is-the-same-pr-1714)). Second, under auto-drive, a `FAILED_IMPLEMENTATION` on a PR that the
+open-PR check confirmed (open, same repository, on the run branch, head at or
+a fast-forward of the local HEAD) is handed to the crusty loop and the
+merge-ready loop, as `BLOCKED_CI` is. A `FAILED_REPORTING` on such a PR is
+handed on in the same way.
+
+The hand-off is decided from typed data only: the `terminal_state` and
+`handoff` fields of `workflow_result`, and the PR number step-03 resolves
+itself. No step reads log text, stderr or the finalizer narrative to decide
+it.
+
+### Which states are handed on
+
+`BLOCKED_CI`, `FAILED_IMPLEMENTATION` and `FAILED_REPORTING` are handed on. The list is defined once, in
+`finalization_handoff_allowed`
+([`workflow_finalization_handoff.sh`](../../amplifier-bundle/tools/workflow_finalization_handoff.sh)),
+as an exact `case` match with no globs and no case folding. The finalization
+validator and `autodrive-build` step-03 both source that file; neither holds
+its own copy.
+
+| State | Handed on? | Reason |
+| --- | --- | --- |
+| `BLOCKED_CI` | Yes | A PR exists and only its checks are failing, which is the merge-ready loop's work. |
+| `FAILED_IMPLEMENTATION` | Only on a PR the open-PR check confirmed | The PR is open, on the run branch and contains every local commit, but this run's own evidence does not prove the work complete. Reviewing that PR is the crusty loop's work. Without a confirmed PR the run ends. |
+| `FAILED_DIRTY_WORKTREE`, `FAILED_WRONG_BRANCH` | No | The local checkout is not the PR's, so nothing ties the PR to this build. |
+| `FAILED_CLOSED_UNMERGED` | No | The PR is closed. |
+| `FAILED_PR_METADATA_UNAVAILABLE` | No | No PR could be identified. |
+| `FAILED_MEANINGFUL_DIFF` | No | There is no diff worth reviewing. |
+| `FAILED_INVALID_INPUT`, `FAILED_INVALID_EVIDENCE`, `FAILED_MISSING_TERMINAL_EVIDENCE`, `FAILED_MISSING_TOOLING` | No | The evidence or tooling cannot be read, so the build cannot be trusted. |
+| `FAILED_REPORTING` | Only on a PR the open-PR check confirmed | Implementation and verification succeeded and only the reporting step failed. The reporting narrative has no effect on the PR, which the loops review and fix. Without a confirmed PR the run ends. |
+| `HOLLOW_SUCCESS`, `INCOMPLETE` | No | The agent output is empty or unfinished, so the PR may be too. |
+| `EXISTING_OPEN_PR`, `IMPLEMENTED_VERIFIED` and the other success states | Not applicable | They already succeed and need no hand-off. |
+
+When the reporting step failed, the validator runs the open-PR check before
+both reporting-failure exits (`FAILED_REPORTING`, and `FAILED_IMPLEMENTATION`
+when the evidence is incomplete), but only when the hand-off flag is on. A
+standalone run makes no extra `gh` call and fails closed as before. On these
+exits the check can only hand a confirmed PR to the loops; even a PR with
+every check green does not turn a reporting failure into success.
+
+`blocked_ci`, ` BLOCKED_CI`, `BLOCKED_CI` followed by a newline,
+`failed_implementation`, `failed_reporting`, `BLOCKED_*` and `FAILED_*` are
+all rejected.
+
+### How the flag reaches finalization
+
+| Recipe | Setting | Effect |
+| --- | --- | --- |
+| `autodrive-build.yaml` step-02 | `finalization_handoff: "true"` in the sub-recipe `context:` | The only setter in the bundle. |
+| `autodrive-build.yaml` | `finalization_handoff: ""` in `context:` | Off for autodrive-build's own steps. Step-03 sources the brick that reads the key, so it is declared (#1561); step-02's `"true"` overrides it for the sub-recipe only. |
+| `default-workflow.yaml` | `finalization_handoff: ""` in `context:`, beside `no_merge: ""` | Every standalone run, and every other caller of `default-workflow`, starts with the hand-off off, even when `RECIPE_VAR_finalization_handoff` is set in the environment. |
+| `workflow-finalize.yaml` | Not declared | Inherits the value from `default-workflow`, as it does `no_merge`. |
+
+`finalization_handoff_flag` prints `true` only when `RECIPE_VAR_finalization_handoff`
+is exactly `true`. `1`, `yes`, `TRUE`, ` true` and an empty value all print
+`false`. Unlike `no_merge_flag` it has no bare-environment fallback, so an
+exported `FINALIZATION_HANDOFF` is ignored. No recipe declares
+`output: "finalization_handoff"`, so no step can switch it on at run time.
+
+### What finalization does under the flag
+
+`workflow_finalization_validate.sh` has two `BLOCKED_CI` exits: the
+prior-state probe (`prior_terminal_state=BLOCKED_CI`) and the open-PR check
+(an open PR for the run branch with a failing check). Both call
+`finalization_fail_or_handoff` in place of `fail_result`. When the state is
+`BLOCKED_CI`, the flag is on and `pr_number` is numeric, it emits the same
+failure result as before, adds one field and exits `0`:
+
+```json
+{"terminal_success":"false","terminal_failure":"true","terminal_state":"BLOCKED_CI","pr_number":"134","pr_url":"https://github.com/rysweet/amplihack-rs/pull/134","handoff":"merge_ready_loop"}
+```
+
+The object above shows only the fields this section concerns; the full
+result keeps all 19 canonical keys. `terminal_success` stays `"false"` in
+`workflow_result`, in `workflow_completion` and in every flattened alias, so
+no consumer can read the build as a success. stderr gets one line for
+people, which no code reads:
+
+```text
+INFO: #1714: BLOCKED_CI handed to the merge-ready loop (PR #134)
+```
+
+The default `FAILED_IMPLEMENTATION` exit calls
+`finalization_fail_or_handoff_open_pr` instead. It hands off only when the
+open-PR check earlier in the same validation confirmed a PR (checks pending or
+absent, and no `verification_completed` from this run, so it could not
+succeed). The result then names the confirmed PR and records its facts in
+`evidence_used`, for example
+`pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=false,pr_head_fast_forwards_local_head=true,pr_number=134,all_checks=pending`,
+and stderr gets `INFO: #1714: FAILED_IMPLEMENTATION handed to the merge-ready loop (PR #134)`.
+A `pr_number` the open-PR check did not confirm (gh failed, the PR is closed,
+or its head diverged from the local HEAD) is never handed off.
+
+In every other case, including a `BLOCKED_CI` with an empty or non-numeric
+`pr_number`, the helper calls `fail_result` and the run exits `1` as before;
+a failed `FAILED_IMPLEMENTATION` keeps the run's own PR evidence, not the
+confirmed PR's. A result that is not handed off has no `handoff` key at
+all; it is never `""`. The result is written under `pipefail`, so if `jq`
+fails while adding `handoff` the validator exits `1` rather than `0` with
+partial output.
+
+### What step-03 does with the result
+
+When step-02 has left a `workflow_result`, `autodrive-build.yaml` step-03
+sources `recipe_var.sh` and `workflow_finalization_handoff.sh` only from an
+absolute `AMPLIHACK_HOME`, never from `REPO_PATH`, the working directory or
+`~/.copilot`. When either is missing, or `AMPLIHACK_HOME` is relative, it
+stops:
+
+```text
+ERROR: #1714: workflow_finalization_handoff.sh not found under AMPLIHACK_HOME; cannot decide the finalization hand-off [autodrive-build/step-03]
+```
+
+After its usual PR resolution (see
+[How step-03 finds phase 1's pull request](#how-step-03-finds-phase-1s-pull-request)),
+and before the `phase 1 finished without a pull request` error, step-03 calls
+`autodrive_build_handoff "$PR"`. A resumed run that skipped step-02 has no
+`workflow_result`, so step-03 neither loads the brick nor calls it, and
+continues as before with `handed_off` `"false"`. The function reads `workflow_result` through
+`rv_field` only, and applies these rules in order:
+
+| # | `workflow_result` | Outcome |
+| --- | --- | --- |
+| R1 | Set, but no readable `terminal_state` (not one JSON object, or the field is missing) | Exit `1`: `ERROR: #1714: workflow_result is set but has no readable terminal_state; cannot decide the finalization hand-off [autodrive-build/step-03]`. An empty `workflow_result` never reaches this table (see above). |
+| R2 | `terminal_success` is `"true"` | Continue as before; `handed_off` is `"false"`. |
+| R3 | State passes `finalization_handoff_allowed` and `handoff` is `merge_ready_loop` | Check the PR (below). If every check passes, continue with `handed_off` `"true"`. |
+| R4 | R3's state and field, but a PR check fails | Exit `1` with the matching error below. |
+| R5 | Anything else, including `BLOCKED_CI` with no `handoff` field | Exit `1`, naming the state. |
+
+The PR is step-03's own resolution, called A here. `workflow_result.pr_number`,
+called B, may only confirm A; it is never adopted in A's place. This stops
+the merge loop from taking over an unrelated open PR supplied through a
+low-trust value such as a bare `PR_NUMBER`.
+
+| Check | Error (all on stderr, then exit `1`) |
+| --- | --- |
+| A is empty or not all digits | `ERROR: #1714: BLOCKED_CI was reported with no published open PR to hand to the merge-ready loop [autodrive-build/step-03]` |
+| B is non-empty and differs from A | `ERROR: #1714: workflow_result names PR #99 but phase 1 resolved PR #134; refusing the hand-off [autodrive-build/step-03]`. When B is not all digits, `#99` is replaced by `<invalid>`. |
+| `autodrive_pr_state A` is not `OPEN` (one retry on `UNKNOWN`) | `ERROR: #1714: PR #134 is CLOSED, not OPEN; BLOCKED_CI cannot be handed to the merge-ready loop [autodrive-build/step-03]` |
+| R5 | `ERROR: #1714: default-workflow ended BLOCKED_CI without a merge-ready hand-off; auto-drive stops here [autodrive-build/step-03]` |
+
+The messages name the state that was reported, `BLOCKED_CI` or
+`FAILED_IMPLEMENTATION`. Step-03 repeats the open check because the
+prior-state path in finalization never asked `gh` whether the PR is open, and
+the PR may have closed since. A `gh` failure reads as `UNKNOWN`,
+so it can never count as `OPEN`. B appears in the E3 message only after it is
+known to be all digits; a non-empty B that is not all digits is printed as
+`<invalid>`. A state outside the 20-entry `terminal_vocabulary` is printed as
+`<unrecognised>`. Neither placeholder lets a crafted value write its own log
+line.
+
+R5 does not arise from a normal failing build. Every failed state other than a
+handed-off `BLOCKED_CI` or `FAILED_IMPLEMENTATION` makes `default-workflow` exit `1`, so phase 1 stops
+before step-03 runs. R5 applies when step-03 finds a failed `workflow_result`
+with no `handoff` field, for example one left from an earlier run and read on
+resume, or a `BLOCKED_CI` or `FAILED_IMPLEMENTATION` result produced while
+the flag was off.
+
+### The build result
+
+`build_result` is built with `jq -n --arg` and gains two fields. The existing
+`pr`, `pr_url`, `state_dir` and `merged_before_run` fields are unchanged.
+
+```json
+{"pr":"134","pr_url":"https://github.com/rysweet/amplihack-rs/pull/134","state_dir":"/home/ryan/.amplihack/state/auto-drive/https___github.com_rysweet_amplihack-rs_feat_issue-1714-fix-issue-1714-on-auto","merged_before_run":"false","terminal_state":"BLOCKED_CI","handed_off":"true"}
+```
+
+| Field | Values |
+| --- | --- |
+| `terminal_state` | The `workflow_result.terminal_state` when it is one of the 20 `terminal_vocabulary` strings, otherwise `""`. Empty when `workflow_result` is empty (a resumed run). |
+| `handed_off` | `"true"` after R3, otherwise `"false"`. |
+
+The loops already take `pr_number: "{{build_result.pr}}"`, so the composer's
+control flow is unchanged. Neither `autodrive-crusty-loop.yaml` nor
+`autodrive-merge-loop.yaml` has a condition that skips a handed-off build.
+The merge gate stays the only merge control: `autodrive_merge_gate.sh` and the
+merge and crusty recipes never read `terminal_state` or `handed_off`, and the
+merge-ready loop checks CI itself before it merges. The
+[run report](#the-run-report) shows both fields.
+
+### Example: a build that ends with red CI
+
+Phase 1 publishes PR 134 and finalization finds a failing check:
+
+```text
+INFO: #1714: BLOCKED_CI handed to the merge-ready loop (PR #134)
+```
+
+`default-workflow` exits `0`, step-03 confirms PR 134 is open and writes
+`"terminal_state":"BLOCKED_CI","handed_off":"true"`, and the crusty loop
+starts on PR 134. The same `BLOCKED_CI` from
+`amplihack recipe run default-workflow` run on its own still exits `1`.
+
+### Example: a merge of main pushed from another checkout
+
+The local HEAD is `5174029`. The PR head is `50e41db`, a merge of main whose
+first parent is `5174029`. The terminal-state probe, and then the open-PR
+check, fetch `50e41db` if it is not in the local object store, confirm that
+`5174029` is its ancestor, and treat the PR as this run's. This holds whether
+the merge was pushed before finalization began or while it ran. With green checks the run ends `EXISTING_OPEN_PR` and
+succeeds. With checks still pending and no verification evidence from this
+run, auto-drive gets:
+
+```text
+INFO: #1714: FAILED_IMPLEMENTATION handed to the merge-ready loop (PR #138)
+```
+
+and the crusty loop starts on PR 138. A standalone `default-workflow` still
+exits `1` with `FAILED_IMPLEMENTATION`.
+
 ## Why there is no iteration cap
 
-Neither loop has a `max_rounds`, a "backstop" integer, or a wall-clock budget.
-Integer caps fail in both directions:
+Neither loop has a `max_rounds` or a "backstop" integer. Integer caps fail in
+both directions:
 
 - **A cap cuts off work that was about to converge.** Round 12 of a loop
   steadily resolving concerns is the round you least want to kill.
@@ -372,6 +629,14 @@ round therefore ends by invoking the
 evidence — what the round actually produced, which findings are new /
 recurring / resolved, whether test and CI signals moved, whether the same text
 keeps reappearing — and answers `CONTINUE`, `DONE`, or `STUCK`.
+
+Two stops sit in front of the evaluator and are decided in code (#1743). A
+round that is not clean and leaves both the PR head and its open items as
+they were in the previous round stops the loop as `STUCK` without an
+evaluator run. A per-run usage budget, set by the operator and resumable,
+stops the loop as `BUDGET_EXHAUSTED`. The budget is a cost ceiling, not the
+convergence terminator, and `BUDGET_EXHAUSTED` is never success. See
+[No-progress stop and usage budget](#no-progress-stop-and-usage-budget).
 
 `autodrive_loop.sh` carries a round **label** (`round-3`) for reports and the
 round's file names. Nothing compares it to a limit and no branch reads it. A
@@ -466,13 +731,20 @@ token outside the allow-list falls to the safe default.
 
 | Signal | Field | Clean token | Fail-safe default | `verdict_source` values |
 | --- | --- | --- | --- | --- |
-| Crusty review | `crusty_verdict` | `CLEAN` | `CONCERNS` | `crusty`, `missing_verdict`, `unparseable_verdict` |
+| Crusty review | `crusty_verdict` | `CLEAN`; `MINOR_ONLY` also ends the crusty loop | `CONCERNS` | `crusty`, `missing_verdict`, `unparseable_verdict` |
 | Merge-ready | `merge_ready_verdict` | `MERGE_READY` | `NOT_MERGE_READY` | `merge_ready`, `missing_verdict`, `unparseable_verdict`, `evidence_downgrade` |
 | Loop health | `loop_verdict` | `DONE` | `STUCK` | see [loop-health-evaluator](loop-health-evaluator.md) |
 
 **A missing or unparseable verdict is never the permissive one.** It is
-`CONCERNS`, `NOT_MERGE_READY`, `STUCK` — never `CLEAN`, `MERGE_READY`, or
-`CONTINUE`.
+`CONCERNS`, `NOT_MERGE_READY`, `STUCK` — never `CLEAN`, `MINOR_ONLY`,
+`MERGE_READY`, or `CONTINUE`.
+
+Crusty itself emits only `CLEAN` or `CONCERNS`. `MINOR_ONLY` is never read
+from crusty's output: step-03 of the crusty round derives it from a
+`CONCERNS` verdict whose findings are all minor (see
+[How a round becomes `MINOR_ONLY`](#how-a-round-becomes-minor_only)). A
+`MINOR_ONLY` written by crusty in its `crusty_verdict` field is outside the
+allow-list and falls to `CONCERNS`.
 
 ### Advancing needs two independent signals
 
@@ -480,6 +752,16 @@ token outside the allow-list falls to the safe default.
 
 1. the round's own machine-checked verdict is the clean token, **and**
 2. the loop-health evaluator returned `DONE`.
+
+The crusty loop has a second clean token. `autodrive-crusty-loop.yaml` and
+`autodrive_crusty_rereview.sh` call `autodrive_loop.sh` with
+`--clean-token CLEAN --also-clean-token MINOR_ONLY`, so a `MINOR_ONLY` round
+counts as clean in this table. On such a round the loop passes
+`loop_round_verdict=CLEAN` to the evaluator and uses the same value for its
+own `DONE` check, so loop-health judges the health of the loop and not the
+follow-up obligation; the [follow-up check](#the-follow-up-check-in-the-merge-gate)
+enforces that. The `DONE` message and `<loop>-result.json` keep the real
+verdict, `MINOR_ONLY`. The merge-ready loop passes no second token.
 
 A clean round verdict with `CONTINUE` simply runs another confirming round,
 which is cheap and safe. `DONE` over a round that is not clean never advances.
@@ -493,6 +775,19 @@ What happens instead depends on the round:
 | `DONE` | non-clean, the previous round was also overridden, and nothing moved | `STUCK`, exit `1`. |
 | `CONTINUE` | any | Another round. |
 | `STUCK` or unreadable | any | `STUCK`, exit `1`. |
+
+A round or an evaluator run that failed on a Claude usage limit never
+reaches this table: the loop stops as `USAGE_LIMIT` first. See
+[Usage limits are not STUCK](#usage-limits-are-not-stuck).
+
+Two results are decided in code before the evaluator runs, and only for a
+round that is not clean ([No-progress stop and usage
+budget](#no-progress-stop-and-usage-budget)):
+
+| Condition | Result |
+| --- | --- |
+| Previous round not clean, same non-empty head SHA, same open items, same `ci_signal` with no `PENDING` | `STUCK` (decided in code), exit `1`. The evaluator does not run. |
+| A budget limit is reached | `BUDGET_EXHAUSTED`, exit `1`. The evaluator does not run. |
 
 A non-clean `DONE` usually means the findings were addressed without a new
 review: in PR #1587 crusty said `CONCERNS` and the concerns were fixed by a
@@ -629,6 +924,488 @@ in its usual structure and emits no JSON. `id` must be stable across rounds and
 derived from the substance of the concern — that is what lets the loop tell a
 recurring concern from a new one.
 
+The contract is unchanged by #1979. `severity` decides whether a `CONCERNS`
+verdict ends the loop: only a non-empty list whose every entry is a valid
+`minor` finding does. A missing, empty or unknown `severity`, such as `nit`
+or `low`, counts as `major`.
+
+## Minor findings end the crusty loop (#1979)
+
+A crusty verdict whose findings are all minor ends the crusty loop. The
+findings are not dropped: before the PR can merge, each one is filed as a
+follow-up issue linked to the plan task, and the issue numbers are recorded in
+the drive's evidence. A verdict with any blocking or major finding continues
+the loop as before. Merging the PR closes the plan task's issue when the PR
+body says `Closes #N`, while the follow-ups stay open, so `file` also posts one
+comment on that issue listing them, and the merge gate waits for it
+([The parent task comment](#the-parent-task-comment)). Auto-drive files and
+lists the follow-ups; it does not track them to completion.
+
+```mermaid
+flowchart TD
+    R[crusty round step-03] --> V{crusty verdict}
+    V -->|CLEAN| C[round clean]
+    V -->|CONCERNS| K{every finding a valid minor finding?}
+    K -->|no| A[CONCERNS: step-04 addresses, step-05 checks]
+    K -->|yes| M[MINOR_ONLY: write record.minor, empty record.findings]
+    M --> C
+    C --> L{loop-health DONE?}
+    L -->|CONTINUE| R
+    L -->|DONE| P[crusty-loop step-03: collect, then file]
+    P -->|filed| MK[crusty-loop marker written]
+    P -->|failed| X[step fails, no marker, drive not READY]
+    MK --> ML[merge-ready loop]
+    ML --> F2[step-02b: file again, covers re-reviews]
+    F2 --> G[merge gate: autodrive_followups.sh check]
+    G -->|ok| MG[merge]
+    G -->|ERROR: followups-unfiled| NM[NOT_MERGED]
+```
+
+### How a round becomes `MINOR_ONLY`
+
+Crusty still emits only `CLEAN` or `CONCERNS`. Step-03 of
+`autodrive-crusty-round.yaml` runs one extra line, and only when the parsed
+verdict is `CONCERNS`, its `verdict_source` is `crusty` and the round record
+path is set:
+
+```bash
+bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_followups.sh" classify \
+  --record "$RECORD" --state-dir "$DIR" < concerns.json
+```
+
+The tool is loaded from `AUTODRIVE_LAUNCH_TOOLS`, the tool root that step-00
+has already checked (#1543), in the same way as the review-dir guard. There is no
+fallback to the worktree or another install: if the file cannot be loaded,
+step-03 keeps `CONCERNS`.
+
+Before any of this, step-03 merges crusty's `concerns` into one array: when
+`concerns` is a string holding several JSON arrays, they are joined in order,
+and any other non-array value becomes `[]`. Without `jq`, or when the text does
+not parse, the old check stays: text that starts with `[` and ends with `]` is
+kept as it is, and anything else becomes `[]`. So `.findings`, address-concerns
+and `classify` all see every finding, and a blocking finding cannot be hidden
+behind a minor one.
+
+`classify` prints `MINOR_ONLY` when every rule below holds, and prints nothing
+otherwise:
+
+| Rule | Otherwise |
+| --- | --- |
+| `jq` is available. | Not minor-only. |
+| stdin is exactly one JSON value, and it is an array with at least one element. `classify` reads stdin as a whole (`jq -s`). | Not minor-only. Two arrays, an array followed by any other value, or an empty array with `CONCERNS` all stay `CONCERNS`. |
+| Every element is an object whose `severity` is exactly `minor`. | Not minor-only. A missing, empty or unknown severity (`nit`, `low`, `Minor`) counts as major. |
+| Every `id` matches `^[A-Za-z0-9._-]{1,64}$`. | Not minor-only. |
+| No `id` was ever major in another crusty round (see [Severity history](#severity-history)). | Not minor-only. |
+| No `id` contains a security word (whole words, `-`, `_` and `.` read as spaces), and no `summary` or `evidence` contains a security word. | Not minor-only. |
+
+In the `summary` and `evidence`, `classify` matches `TEXT_KEYWORDS`: whole
+words that begin with one of these stems: `secur` (and `insecure`),
+`authenticat`, `authoris`/`authoriz`, `authn`, `authz`, `secret`, `token`,
+`credential`, `inject`, `xss`, `csrf`, `cve`, `vuln`, `unsafe`, `privilege`,
+`permission`, `sanitis`/`sanitiz`, `escape`, `traversal`, `ssrf`, `rce` and
+`password`. Whole words are used because free text would otherwise match
+almost every finding (`sec` in "second", `auth` in "author"). This check
+covers a security finding that crusty grades `minor` under a neutral id such
+as `c3`. Some harmless findings are also promoted, for example one about a
+parser's tokens or file permissions; each costs one fix round.
+
+The lists and the predicate are defined once, in
+`amplifier-bundle/tools/autodrive_finding_rules.sh`, so a minor finding about
+secrets, injection, authentication or permissions is always treated as major
+and is fixed before merge rather than filed. auto-drive-light uses the same
+`classify` step and the same lists; it has no rule of its own (see
+[auto-drive-light: minor findings and follow-up issues](auto-drive-light.md#minor-findings-and-follow-up-issues)).
+
+For the id, `classify` passes `ID_KEYWORDS`: the id is lower-cased, `-`, `_`
+and `.` are read as spaces, and the result is matched against whole words.
+`ID_KEYWORDS` is the summary word list plus the short forms used in ids:
+`sec`, `auth`, `perm`/`perms`, `cred`/`creds`, `priv`/`privs`, `privesc` and
+`xsrf`. `sec-3`, `auth_bypass`, `perm.check`, `creds-in-log` and
+`CVE-2026-1234` are therefore major, while `section-1`,
+`pr-body-testing-section-stale`, `head-commit-wrong-author-identity` and
+`test-f-one-second-timing-margin` stay minor. Across the 2,371 distinct ids in
+past crusty rounds, a substring match on the same keywords would have
+promoted 38 such ids that contain only the letters of a keyword; each would
+have cost another review round. An id written as one run of letters, such as
+`authbypass`, is not split and is not matched; its `summary` and `evidence`
+are still checked.
+
+#### Severity history
+
+Decision 17.104 says that a crusty verdict with only minor findings ends the
+loop, with no exception for findings raised before. A minor finding that
+recurs as minor therefore does not keep the loop running. What `classify`
+does refuse is a downgrade: a finding that an earlier round reported as major
+or blocking, and that comes back as minor, stays `CONCERNS` and is fixed
+before merge. Without this, the reviewer, or a builder that edits the
+reviewer's input, could end the loop by relabelling an unfixed major finding.
+
+Before deciding, `classify` writes `<record>.severity`, one `id<TAB>minor` or
+`id<TAB>major` line per concern. `major` means anything the shared rules do
+not call minor: `major`, `blocking`, an unknown or missing severity, or a
+security keyword. The file is written whatever the round's verdict, and only
+when stdin is exactly one JSON array.
+
+An id counts as previously major when, in another crusty round of the same
+state directory:
+
+| Source | Read as major |
+| --- | --- |
+| `<round>.severity` | The ids on lines whose second field is not `minor`. |
+| `<round>.findings` with no `<round>.severity` beside it | Every id. `classify` did not run on that round, so its severities are unknown. |
+| `resolved-concerns.txt` | Every id that no `.severity` file names, for the same reason. |
+
+All three are read only from regular files that are not symlinks.
+
+| Round 1 | Round 2 | Round 2 verdict |
+| --- | --- | --- |
+| `naming-1` minor, `bug-2` major | `naming-1` minor | `MINOR_ONLY` |
+| `naming-1` minor, `bug-2` major | `bug-2` minor | `CONCERNS` |
+| `naming-1` minor, `bug-2` major | `naming-1` minor, `bug-2` minor | `CONCERNS` |
+
+`classify` fails closed. A missing `jq`, input that is not exactly one array, a
+state directory or record path that is not private to the user, or any other
+error gives empty stdout and a diagnostic on stderr only. When `jq` cannot read
+the input, the diagnostic is
+`ERROR: classify: the concerns could not be read (jq rc=N): <first line of jq's
+stderr, sanitised and clipped to 200 characters>; the verdict stays CONCERNS`,
+so a broken filter is not mistaken for a real `CONCERNS` decision. The round then stays
+`CONCERNS` and is addressed as before.
+
+On `MINOR_ONLY`, `classify` writes two files next to the round record, both
+under `umask 077`:
+
+| File | Content |
+| --- | --- |
+| `<record>.minor` | JSON Lines, one object per finding: `{"id": …, "summary": …, "evidence": …}`. `summary` and `evidence` are clipped to 200 characters. |
+| `<record>.findings` | Empty. `autodrive_record_crusty_loop_done` therefore never moves a minor id into `resolved-concerns.txt`. |
+
+Step-03 then reports `crusty_verdict` `MINOR_ONLY`, with `concern_count` set
+to the number of lines in `<record>.minor`. Step-04 (address concerns) and
+step-05 (fix check) keep their `== 'CONCERNS'` conditions, so they do not run.
+Step-06 accepts `CLEAN`, `MINOR_ONLY` and `CONCERNS`; any other value is
+written as `CONCERNS`.
+
+A round with a mix of minor and major or blocking findings writes no
+`.minor` file. All of its findings go to step-04, as before #1979.
+
+#### Light mode
+
+An [auto-drive-light](auto-drive-light.md) drive uses this model unchanged
+(#1982). `autodrive-crusty-round` has no light branch: a light drive's rounds
+run exactly the steps above, and nothing in them measures the change again
+(see [auto-drive-light: nothing is measured inside the loops](auto-drive-light.md#nothing-is-measured-inside-the-loops)).
+A light drive, an escalated light drive and a full drive therefore all file
+one issue per finding through `collect` and `file`, keep the same state files,
+apply the same severity history, and pass the same `check` in the merge gate.
+The task id a light drive forwards is checked and normalised by
+`autodrive_followups.sh resolve-task --task-id <id>`, which prints the id
+`file` would use (`#N` for an issue reference) or exits 2; see
+[auto-drive-light: the task id](auto-drive-light.md#the-task-id).
+
+### Which verdicts end the loop
+
+| Findings in the round | Round verdict | Loop |
+| --- | --- | --- |
+| None | `CLEAN` | Ends on loop-health `DONE`. No follow-up issue. |
+| `[minor]`, `[minor, minor, …]` | `MINOR_ONLY` | Ends on loop-health `DONE`. One follow-up issue per finding. |
+| `[minor, major]`, `[minor, blocking]` | `CONCERNS` | Continues. |
+| `[minor]` with severity `nit`, or with no severity | `CONCERNS` | Continues. |
+| `[minor]` with id `token-leak`, or a summary that mentions a password | `CONCERNS` | Continues. |
+| `CONCERNS` with an empty `concerns` array | `CONCERNS` | Continues. |
+| No verdict, or an unparseable one | `CONCERNS` | Continues. |
+
+### The follow-up set
+
+The follow-up set is `followups.jsonl` in the drive's state directory. It is
+built only by `autodrive_followups.sh collect`, which runs when a crusty loop
+ends `DONE`:
+
+- in `autodrive-crusty-loop.yaml` step-03, before the `crusty-loop` marker is
+  written;
+- in `autodrive_crusty_rereview.sh`, before `autodrive_record_crusty_loop_done`.
+
+`collect` reads only the round that ended the loop. It takes the last row of
+`crusty-records.tsv`, checks the record and `crusty-latest.json` against the
+row's blob hash, and reads `<record>.minor` only when that record says
+`MINOR_ONLY`. A finding from an earlier round that a later round no longer
+reports was fixed and is never filed. Every line of the `.minor` file is
+validated again; a bad line fails `collect` with
+`ERROR: followup-set-invalid` rather than being dropped. When the last record
+is `CLEAN`, `collect` adds nothing and exits `0`.
+
+Rows are appended to `followups.jsonl` by id. When a re-review reports an id
+the set already holds, the first occurrence is kept.
+
+### The plan task id
+
+Each follow-up issue names the plan task it belongs to. The task id is
+resolved in this order:
+
+1. the `plan_task_id` input of `auto-drive-to-merge.yaml`, passed to both
+   loop recipes (auto-drive-light passes its effective task id here; see
+   [auto-drive-light: the task id](auto-drive-light.md#the-task-id));
+2. the first `Closes #N`, `Fixes #N` or `Resolves #N` in the PR body, read with
+   `gh pr view <pr> --json body`;
+3. the same pattern in `task_description`.
+
+| Value | Task id |
+| --- | --- |
+| `1979` or `#1979` | `#1979` |
+| `plan/17.104` (matches `^[A-Za-z0-9._:/-]{1,64}$`) | `plan/17.104` |
+| `#0`, an empty value, or anything else | Unresolved |
+
+From the PR body and the task description only the digits of the anchored
+match are used. A task id is needed only when the follow-up set is not empty:
+a drive that ends `CLEAN` needs none.
+
+```bash
+amplihack recipe run auto-drive-to-merge \
+  -c task_description="Implement issue #1979" \
+  -c plan_task_id=1979 \
+  -c repo_path=.
+```
+
+### Filing the follow-up issues
+
+`autodrive_followups.sh file` runs at two points:
+
+| Where | When | On failure |
+| --- | --- | --- |
+| `autodrive-crusty-loop.yaml` step-03 | After the loop ended `DONE` and `collect` succeeded, before the `crusty-loop` marker is written. | The step exits `1` and writes no marker, so a resumed run returns to the crusty loop. |
+| `autodrive-merge-loop.yaml` step-02b-file-followups | When `merge_loop_preflight.should_run` is `true`, after the merge-ready loop and before step-03-merge-gate. Covers findings from re-reviews. | The step exits `1`; the gate does not run. |
+
+Both steps run the tool only from `$AMPLIHACK_HOME/amplifier-bundle/tools`,
+because it writes to GitHub. Crusty-loop step-03 may still load the state
+helper from its `REPO_PATH` or working-directory fallbacks, but it never takes
+`autodrive_followups.sh` from there, since either can be a PR checkout. With
+`AMPLIHACK_HOME` unset, or without the tool under it, a loop that ended
+`MINOR_ONLY` fails with `ERROR: followups-unfiled` and writes no marker;
+merge-loop step-02b refuses to run at all.
+
+`file` makes one `gh issue create` call for each id in the set that has no row
+in `followups.tsv`:
+
+```bash
+gh issue create --repo rysweet/amplihack-rs \
+  --title "Follow-up (#1979): Rename tmp_rec to record_copy" \
+  --body-file "$PRIVATE_TMP/body.md"
+```
+
+- `--repo` is the `owner/name` taken from the PR URL (`gh pr view <pr> --json url`),
+  matched by an anchored regex. A URL that does not match fails the step.
+- The title is `Follow-up (<task id>): <summary>`. The summary for the title
+  passes through `sanitize_cli_output`, has control characters removed and
+  then goes through `break_refs`, which puts a zero-width space after every
+  `@` and into each `#N`, `GH-N` and `github.com/`, as in the body. The whole
+  title is clipped to 80 characters and passed as one argument. The title
+  does not go through the rest of `cell()`: GitHub shows titles as plain
+  text, so HTML entities such as `&amp;`, `&#x60;` and `&#x7C;` would appear
+  literally.
+- The body is written to a private `mktemp -d` directory under `$TMPDIR`,
+  removed by an `EXIT` trap. No labels or assignees are added, and the
+  follow-up issue gets no comment.
+
+The body of the issue for the example finding:
+
+```markdown
+Follow-up from the auto-drive crusty review of PR #2001.
+
+Task: #1979
+Finding: naming-1 (severity: minor)
+
+Summary: Rename tmp_rec to record_copy
+Evidence: autodrive_last_round.sh line 41
+
+<!-- autodrive-followup task=#1979 finding=naming-1 -->
+```
+
+In the body, `summary` and `evidence` pass through the shared `cell()` of
+`autodrive_finding_rules.sh` (see [Cell sanitising](#cell-sanitising)). A
+finding cannot mention a user, link an issue or post a URL in the body. The
+task id line is the one place where `#1979` links the parent task.
+
+The issue number is read only from `/issues/<digits>` at the end of the last
+line `gh` prints. After each successful create, `file` appends a row to
+`followups.tsv` at once and prints:
+
+```text
+INFO: followup naming-1 -> #2017 (task #1979, PR #2001)
+```
+
+A follow-up issue publishes the finding's sanitised summary and evidence,
+at most 200 characters each. Security findings never take this path, because
+the shared rules treat them as major, but in a public repository any other
+minor finding becomes public before it is fixed.
+
+A rerun files only ids that have no row, so it makes no call when every
+finding is filed. If `gh` succeeds but the append fails, the next run files
+that one finding again; this window is accepted and limited to one issue.
+
+#### The parent task comment
+
+Merging the PR closes the plan task's issue when the PR body says `Closes #N`,
+and the follow-ups would then hang off a closed issue that names none of them.
+So when every id has a row and the task id is an issue (`#N`), `file` posts one
+comment on that issue in the PR's repository:
+
+```bash
+gh issue comment 1979 --repo rysweet/amplihack-rs --body-file "$PRIVATE_TMP/parent.md"
+```
+
+```markdown
+Auto-drive filed follow-up issues for the minor crusty findings on PR #2001.
+Merging that PR closes this issue. The task is not complete until these are done:
+
+- #2017 (finding `naming-1`)
+- #2018 (finding `docs-typo-2`)
+
+<!-- autodrive-followups-parent pr=2001 -->
+```
+
+The comment carries only issue numbers and finding ids, which `followups.tsv`
+has already validated; no agent text reaches it. After it is posted, `file`
+writes `followups.parent` with `<task issue>:<follow-up issues>,`, such as
+`1979:2017,2018,`. A rerun posts nothing while that key matches the rows. When
+a crusty re-review in the merge-ready loop adds a follow-up, the key no longer
+matches and the full list is posted again. A task id that is not an issue,
+such as `plan/17.104`, gets no comment, and `file` logs
+`INFO: followups: the task is not an issue number; no comment lists the follow-ups`.
+
+#### Failures
+
+| Cause | Token written to `followups.error` | Exit |
+| --- | --- | --- |
+| `gh issue create` exits non-zero, or prints no issue URL | `followup-create-failed` | `1` |
+| The set is not empty and no task id resolves | `followup-task-unresolved` | `1` |
+| The PR URL does not give `owner/name` | `followup-repo-unresolved` | `1` |
+| `gh issue comment` on the parent task exits non-zero | `followup-comment-failed` | `1` |
+| The set or a state file is invalid or not private | `followup-set-invalid`, `followup-state-unsafe` | `1` |
+| `gh` exits `79` | none; passed through | `79` |
+
+On failure `file` prints `ERROR: <token>: <detail>` to stderr. `<detail>` is
+the first line of `gh`'s stderr, sanitised and clipped to 200 characters.
+There is no retry: a GraphQL secondary rate limit fails the step visibly, and
+a rerun files only the ids that still have no row. A run that files every
+remaining id removes `followups.error`.
+
+#### Cell sanitising
+
+`cell()` and `break_refs` are defined once, in
+`amplifier-bundle/tools/autodrive_finding_rules.sh`, which
+`autodrive_followups.sh` sources. Before a finding reaches `cell()`, the jq
+`clean` definition in the same file turns it into one line: control
+characters become spaces and the text is clipped to 200 characters. `cell()`
+then, in order:
+
+1. passes the text through `sanitize_cli_output` from
+   `workflow_issue_tracking.sh`;
+2. encodes `&`, `<` and `>` as HTML entities;
+3. runs `break_refs`, which puts U+200B (a zero-width space) after every `@`,
+   between `#` and a following digit, between `GH-` and a following digit,
+   and after `github.com/`, matching `GH-` and `github.com/` without regard to
+   case;
+4. replaces `|` and backticks with the numeric entities `&#x7C;` and `&#x60;`.
+
+A finding therefore cannot mention a user, link an issue or a URL, break the
+Markdown, or write the `<!-- autodrive-followup … -->` marker, however its
+text is written. Titles use `break_refs` alone, as described above, because
+GitHub shows titles as plain text. The parent task comment carries only
+validated finding ids and issue numbers, and does not use `cell()`.
+
+### The follow-up check in the merge gate
+
+When the crusty verdict is `CLEAN` or `MINOR_ONLY`, `autodrive_merge_gate.sh`
+runs `autodrive_followups.sh gate` from its own directory (`${GATE_HOME}`).
+`gate` runs `check`, which makes no network call, and turns the result into one
+evidence line or one blocker. Both commands live in
+`autodrive_followups_check.sh`, which `autodrive_followups.sh` sources from
+beside itself; when that file is missing, `check` and `gate` exit `1` with an
+error and the gate blocks. It passes when the set is empty and the last crusty
+record is `CLEAN`, or when every id in the set has a valid row and the parent
+task comment is recorded. It fails on:
+
+| Condition | Token |
+| --- | --- |
+| `followups.error` exists | `followup-error-recorded` |
+| A state file is a symlink, is not owned by the user, or is group- or world-writable | `followup-state-unsafe` |
+| A row does not have four fields, a valid id, an issue number matching `^[1-9][0-9]*$`, a valid task id, and the gate's own PR number | `followup-row-malformed` |
+| An id in the set has no row | `followup-missing:<id>` |
+| The last crusty record is `MINOR_ONLY` and the set is empty | `followup-set-empty` |
+| The task in `followups.tsv` is an issue and `followups.parent` does not hold the current key | `followup-parent-uncommented` |
+
+On a failure `gate` prints the error line on stderr and the blocker sentence
+on stdout, which the gate passes to `block`:
+
+```text
+ERROR: followups-unfiled: followup-missing:naming-1
+  BLOCKER: follow-up issues not filed for every minor finding (followup-missing:naming-1); the drive is not READY (#1979)
+```
+
+and the PR is not merged. When the tool is missing beside the gate, or prints
+nothing, the gate blocks with `ERROR: followups-unfiled: autodrive_followups.sh
+gate did not run beside the merge gate`, whatever the crusty verdict: the tool
+is part of the installed bundle, as `autodrive_state.sh` is. On a pass the
+evidence line names each follow-up issue from `followups.tsv`, so the evidence
+bundle records them:
+
+```text
+  evidence: followups-ok 2 naming-1=#2017 docs-typo-2=#2018
+```
+
+### State files
+
+| File | Written by | Content |
+| --- | --- | --- |
+| `<record>.minor` | `classify`, in crusty-round step-03 | One JSON object per minor finding: `id`, `summary`, `evidence`. |
+| `followups.jsonl` | `collect` | The follow-up set: one object per id, first occurrence kept. |
+| `followups.tsv` | `file`, one append per created issue | `finding_id`, `issue_number`, `task_id`, `pr_number`, tab-separated. |
+| `followups.error` | `file` | One fixed token. Removed by a later run that files every id. |
+| `followups.parent` | `file`, after the parent task comment | `<task issue>:<follow-up issues>,`, the list last posted on the task issue. |
+
+All are written under `umask 077`. `file` refuses to append to a
+`followups.tsv` that is a symlink or not owned by the user. Logs and step
+output contain only finding ids, issue numbers, the task id and fixed tokens.
+
+### Dry runs
+
+With `autodrive_dry_run=true` nothing is written to GitHub. Crusty-loop step-03
+still runs `collect`, so `followups.jsonl` holds the minor findings and the
+crusty-loop marker is written, but neither it nor merge-loop step-02b runs
+`file`; both log `INFO: dry run: no follow-up issue is filed`. The gate then
+reports each finding as `followup-missing:<id>`, and the dry run ends
+`NOT_MERGED`, naming the findings a real run would file. A dry run on a `CLEAN`
+drive is unaffected. `auto-drive-to-merge.yaml` passes `autodrive_dry_run` to
+the crusty loop for this.
+
+### The run report
+
+The final summary of `auto-drive-to-merge.yaml` lists each filed follow-up:
+
+```text
+AUTO_DRIVE_TO_MERGE: MERGED — PR #2001 (crusty loop: DONE, merge gate: MERGED)
+Follow-up issues (task #1979):
+  naming-1 -> #2017
+  docs-typo-2 -> #2018
+```
+
+### `autodrive_followups.sh` reference
+
+| Subcommand | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `classify` | `--record FILE --state-dir DIR`; exactly one JSON array, crusty's `concerns`, on stdin | `MINOR_ONLY`, or nothing; writes `<record>.severity` | `0` on a decision, and also when `jq` cannot read the concerns (logged as `ERROR`, nothing printed, so the verdict stays `CONCERNS`); `1` when the state is unusable (no `jq`, state directory not private, no temporary directory, a state file not written), also with empty stdout |
+| `collect` | `--state-dir DIR` | Nothing on stdout | `0`, or `1` with `ERROR: followup-set-invalid` |
+| `file` | `--state-dir DIR --pr N [--task-id ID] [--task-text-file FILE]` | One `INFO` line per issue created | `0`, `1` on failure, `79` passed through |
+| `check` | `--state-dir DIR --pr N` | `followups-ok <count>` | `0`, or `1` with the failing token on stdout |
+| `gate` | `--state-dir DIR --pr N` | `followups-ok <count>` then ` <id>=#<issue>` per row, or the blocker sentence | `0`, or `1` with `ERROR: followups-unfiled: <token>` on stderr |
+| `resolve-task` | `--task-id ID` only; reads no state and makes no network call | The task id `file` would use: `#N` for an issue reference (`N`, `#N`, leading zeros dropped), otherwise the id unchanged | `0`, or `2` with empty stdout and a usage line that does not repeat the value. The one task-id rule; auto-drive-light's `light-task-id` calls it (#1982) |
+| any | wrong or missing arguments | usage on stderr | `2` |
+
+The tool sources `autodrive_state.sh` and `autodrive_finding_rules.sh` from its
+own directory. It uses the ambient `gh` login, has no timeouts and no numeric
+caps, and passes agent text to `jq` only through `--arg`, `--argjson` or
+stdin. The recipe steps that call it are bash steps and call no recipes.
+
 ## How the merge round applies merge-ready
 
 The [`merge-ready`](../../amplifier-bundle/skills/merge-ready/SKILL.md) skill
@@ -641,6 +1418,22 @@ Inside auto-drive, criterion 1 follows qa-team's repo-type table (see
 `/merge-ready` still needs `gadugi-test validate` and `gadugi-test run`
 (criterion 1) and a `quality-audit` of at least 3 SEEK, VALIDATE, FIX cycles
 (criterion 3).
+
+The skill carries the documentation-only exemption itself, so a manual
+`/merge-ready` and an auto-drive round reach the same answer about scenarios.
+It is written as one instance of the user-facing-surface rule criterion 2
+already states: a pull request that changes no user-facing surface, because
+every path it changes is documentation, has no behaviour for a scenario to
+cover. What that makes not applicable differs between the two readings, and
+the wording has to keep them apart. At skill level criterion 1 is the scenario
+requirement and nothing else, so the exemption makes criterion 1 itself not
+applicable. Inside auto-drive criterion 1 is wider: step-02 counts it met only
+when `qa_status` is `PASS`, which the suite commands decide, so the exemption
+makes the gadugi-scenario requirement within criterion 1 not applicable and
+leaves criterion 1 met or unmet as before. The assessment still names the
+changed files it read. Auto-drive decides the exemption by measurement, not by
+reading that sentence: see
+[Documentation-only pull requests](#documentation-only-pull-requests).
 
 ### Round steps
 
@@ -655,17 +1448,21 @@ Inside auto-drive, criterion 1 follows qa-team's repo-type table (see
 | `step-02-merge-ready-assessment` | agent | `merge_ready_review` | Applies the criteria; emits `merge_ready_verdict`. |
 | `step-03-extract-merge-ready-verdict` | bash | `merge_ready_verdict` | Parses the verdict; applies the [measured downgrade](#measurement-outranks-the-model) (`measured-downgrade`) and writes the findings (`findings`). |
 | `step-04-address-blockers` | agent | `merge_ready_fixes` | On `NOT_MERGE_READY`: clears blockers, commits, pushes. |
-| `step-05-write-round-record` | bash | `merge_round_record_written` | `autodrive_round_evidence.sh round-record` writes the round record under `umask 077`: `merge_ready_verdict`, `blocker_count`, `head_sha`, `round_label`, `test_signal`, `ci_signal`, `qa_status`, `ci_status`, `qa_evidence_sha`. |
+| `step-05-write-round-record` | bash | `merge_round_record_written` | `autodrive_round_evidence.sh round-record` writes the round record under `umask 077`: `merge_ready_verdict`, `blocker_count`, `head_sha`, `round_label`, `test_signal`, `ci_signal`, `qa_status`, `ci_status`, `held_by`, `qa_evidence_sha`. Every interpolated value is reduced to `[A-Za-z0-9_.:/-]` first, `round_label` included: the field reader is last-wins on duplicate JSON keys, so a value able to carry a `"` could append a second, winning `merge_ready_verdict` after the measured one and the gate would read the forged pair. |
 
 `step-00-tools-dir` finds the round's tools once: the first
-`amplifier-bundle/tools/` under `$AMPLIHACK_HOME`, `$REPO_PATH`, the git
-toplevel, `~/.copilot`, then `~/.amplihack` that holds every one of
+`amplifier-bundle/tools/` under `$AMPLIHACK_HOME`, `$REPO_PATH`,
+`~/.copilot`, then `~/.amplihack` that holds every one of
 `autodrive_merge_ready_files.sh`, `autodrive_platform_facts.sh`,
-`autodrive_round_evidence.sh`, `autodrive_state.sh`, `autodrive_trust.sh` and
-`git-identity.sh`, so the tools never come from two installs. It prints the
+`autodrive_round_evidence.sh`, `autodrive_state.sh`, `autodrive_trust.sh`,
+`git-identity.sh` and `git-repo-env.sh`, so the tools never come from two
+installs. It does not search the git toplevel, because an inherited
+`GIT_WORK_TREE` could point that search at a planted tree (#2033). It prints the
 physical path, which later bash steps read as
 `"${RECIPE_VAR_autodrive_tools_dir:-}"` and step-04's prompt uses to source
-`git-identity.sh`. Later steps check the value before use; see
+`git-identity.sh` and `git-repo-env.sh`. The round passes it to
+`autodrive-merge-evidence` as `autodrive_tools_dir`, whose steps 01 and 02
+load `git-repo-env.sh` from it with step-04's line. Later steps check the value before use; see
 [The merge round's tools directory](#the-merge-rounds-tools-directory). A path holding a quote, backslash,
 `$`, backtick, control byte or template brace is skipped, because it reaches
 that prompt. No complete root fails the step with
@@ -733,6 +1530,9 @@ scenarios. A missing tool fails the step with
 `ERROR: autodrive-qa-evidence-tool-not-found`. The tool needs
 `autodrive_state.sh` and `autodrive_trust.sh` beside it, and without them
 fails with `ERROR: autodrive-qa-helpers-not-found` and writes no evidence.
+Step-02 reads `base` from `merge_sync` (step-01's output) and runs the tool as
+`AUTODRIVE_QA_BASE="$B" REPO_PATH="$PWD" bash "$T"`, so the changed paths are
+the pull request's. An empty base gives `(unknown)` paths.
 
 Criterion 1 follows the
 [`qa-team`](../../amplifier-bundle/skills/qa-team/SKILL.md) skill's
@@ -742,103 +1542,616 @@ function, `autodrive_gadugi_required <dir>` in `autodrive_trust.sh`, decides
 whether `gadugi-test` is part of criterion 1. `autodrive-prerequisites`,
 step-00, the evidence tool and the merge gate all ask it.
 
-The repository type comes from the manifests in the checkout. The first row
-that matches wins; `qa_dir` is the directory the suite command runs in,
-relative to the repository root:
+The suite command and the directory it runs in come from the first of four
+sources that gives one, in the order described in
+[Choosing the QA command](#choosing-the-qa-command). When no source is
+declared, the command is detected from the manifests committed at the merge
+base of the pull request and its base branch, scoped to the files the pull
+request changes (see
+[Project candidates and path scoping](#project-candidates-and-path-scoping)).
+The chosen project's type gives the detected command; `qa_dir` is the project
+directory, relative to the repository root:
 
-| Order | Repository (`autodrive_repo_type`) | Matches when | Suite command when none is configured | `qa_dir` | gadugi scenarios |
-| --- | --- | --- | --- | --- | --- |
-| 1 | `rust-cli` | Root `Cargo.toml` | `cargo test --workspace --locked --no-fail-fast` | `.` | Not required: qa-team's Rust CLI line substitutes `cargo test` and says not to require gadugi. `qa_scenarios` lists `tests/parity/scenarios/*.yaml`, which `cargo test` runs. |
-| 2 | `python` | Root `pyproject.toml` or `setup.py`, with or without a root `package.json` | `pytest` | `.` | Not required: qa-team lists `pytest` for Python. |
-| 3 | `node` | Root `package.json`, and none of the files above | `npm test` | `.` | Required. |
-| 4 | `rust-cli` (nested) | No root manifest above, no other root project file (see below), and exactly one nested Cargo workspace (see [Nested Cargo workspaces](#nested-cargo-workspaces)) | `cargo test --workspace --locked --no-fail-fast` | The workspace directory, for example `x/y` | Not required. `qa_scenarios` lists `x/y/tests/parity/scenarios/*.yaml`: the detected workspace directory, even when `AUTODRIVE_QA_DIR` sends `AUTODRIVE_QA_COMMAND` elsewhere. |
-| 5 | `unknown` | Nothing above, another root project file, or ambiguous nested candidates | none (`qa-command-missing`, `BLOCKED`, unless one is configured) | `.` | Not required. |
-| any | any | `AUTODRIVE_QA_SCENARIO_DIR` set | as above | as above | Required: the operator asked for gadugi scenarios. |
+| Repository (`autodrive_repo_type`) | The chosen project directory has | Suite command when detected | gadugi scenarios |
+| --- | --- | --- | --- |
+| `rust-cli` | `Cargo.toml` | `cargo test --workspace --locked --no-fail-fast` | Not required: qa-team's Rust CLI line substitutes `cargo test` and says not to require gadugi. `qa_scenarios` lists `<qa_dir>/tests/parity/scenarios/*.yaml`, which `cargo test` runs. |
+| `python` | `pyproject.toml` or `setup.py`, and no `Cargo.toml` | `pytest` | Not required: qa-team lists `pytest` for Python. |
+| `node` | `package.json`, and none of the files above | `npm test` | Required. |
+| `unknown` | No project at all, or a root project file listed in `AUTODRIVE_ROOT_PROJECT_FILES` and no root manifest | none (`qa-command-missing`, `BLOCKED`, unless a command is declared) | Not required. |
+| `unknown` (`autodrive_qa_target` says `unresolved`) | Several candidates, and the changed paths do not pick one | none (`qa-unresolved`, `QA_UNRESOLVED`, unless a command is declared) | Required when any candidate directory has a `package.json`. |
+| any | `AUTODRIVE_QA_SCENARIO_DIR` set | as the matching row above | Required, and decided first: the operator asked for gadugi scenarios, documentation-only or not. |
+| any | no `AUTODRIVE_QA_SCENARIO_DIR`, and every changed path is documentation (`autodrive_qa_docs_only` says `true`) | as the matching row above | Not required: [Documentation-only pull requests](#documentation-only-pull-requests). |
 
-Only a root `Cargo.toml`, `pyproject.toml`, `setup.py` or `package.json`
-counts as a root manifest that selects a command. Any other root project file
+Only a `Cargo.toml`, `pyproject.toml`, `setup.py` or `package.json` counts as
+a manifest that selects a command. Any other root project file
 (`requirements.txt`, `setup.cfg`, `tox.ini`, `Pipfile`, `go.mod`, `pom.xml`,
 `build.gradle`, `build.gradle.kts`, `Makefile`, `makefile`, `GNUmakefile`,
 `CMakeLists.txt`, `meson.build`, `build.sbt`, `Gemfile`, `composer.json`,
-`mix.exs` or `flake.nix`, listed in `AUTODRIVE_ROOT_PROJECT_FILES`) gives
-`unknown`, and the round is `BLOCKED` unless `AUTODRIVE_QA_COMMAND` is set: a
-nested crate beside such a root is a helper, and passing its `cargo test`
-would not show that the root project's own tests ran. A root with `Cargo.toml`
-and `pyproject.toml` (a maturin project, say) is `rust-cli`. A root with
-`package.json` and `pyproject.toml` is `python`: it runs `pytest`, never `npm
-test`, and `gadugi_required` is `false`. An operator who still wants gadugi
-scenarios there sets `AUTODRIVE_QA_SCENARIO_DIR`. A mixed repository whose
-real suite is `npm test` sets `AUTODRIVE_QA_COMMAND='npm test'`.
+`mix.exs` or `flake.nix`, listed in `AUTODRIVE_ROOT_PROJECT_FILES`) with no
+root manifest gives `unknown` at `.`, whatever the pull request changes, and
+the round is `BLOCKED` with `qa-command-missing` unless a command is
+declared: a nested crate beside such a root is a helper, and passing its
+`cargo test` would not show that the root project's own tests ran. A root
+`requirements.txt` or `go.mod` beside `c/Cargo.toml` is `BLOCKED` even when
+the pull request changes only `c/src/lib.rs`.
 
-A root Python or Node project always wins over a nested crate. A repository
-with a root `pyproject.toml`, a root `tests/` suite and a helper crate in
-`grid-encode-decode/Cargo.toml` runs `pytest` at the root, and `cargo` is
-never called. A root `package.json` beside `sub/Cargo.toml` runs `npm test`.
-A root `requirements.txt` or `go.mod` beside `c/Cargo.toml` is `BLOCKED`.
+A directory with more than one manifest takes the first type in the order
+Cargo, Python, Node. A root with `Cargo.toml` and `pyproject.toml` (a maturin
+project, say) is `rust-cli`. A root with `package.json` and `pyproject.toml`
+is `python`: it runs `pytest`, never `npm test`, and `gadugi_required` is
+`false`. An operator who still wants gadugi scenarios there sets
+`AUTODRIVE_QA_SCENARIO_DIR`. A mixed repository whose real suite is
+`npm test` declares it in [`.amplihack/qa.toml`](#the-repository-file-amplihackqatoml)
+or sets `AUTODRIVE_QA_COMMAND='npm test'`.
 
-This departs from the literal order in
-[#1516](https://github.com/rysweet/amplihack-rs/issues/1516), which put the
-nested Cargo search before `pyproject.toml` and `package.json`. With that
-order, a Python repository with one helper crate ran `cargo test` in the
-crate and never ran its own root suite. Searching for nested crates only when
-the root has no manifest keeps the issue's fix for a repository whose only
-Rust code is nested, such as `WorldModelsExplorations/src/Cargo.toml`.
+#### Choosing the QA command
 
-#### Nested Cargo workspaces
+`autodrive_qa_evidence.sh` takes the suite command from the first source
+below that is present. A later source is not read once an earlier one is
+present, even when the earlier one gives no usable command.
 
-Row 4 searches only when no root manifest matched. It looks for regular files
-named `Cargo.toml` at most three levels below the root (`a/b/Cargo.toml` is
-found, `a/b/c/Cargo.toml` is not). It skips every directory named `target`,
-`worktrees` or `node_modules` and every hidden directory (`.git`, `.venv`), at
-any level, and never follows a symlink. It reads no file contents.
+| Order | `qa_command_source` | Source | Present when |
+| --- | --- | --- | --- |
+| 1 | `env` | `AUTODRIVE_QA_COMMAND` (with `AUTODRIVE_QA_DIR`) and `AUTODRIVE_QA_COMMANDS`, from the operator's environment | Either variable is set, even to the empty string. `.amplihack/qa.toml` and the CI workflows are then not read. |
+| 2 | `repo-file` | The `.amplihack/qa.toml` committed at the merge base of the pull request and its base branch; a pull request that changes it is refused | In the merge-base tree, `.amplihack` is anything other than a directory (a symlink included), or `.amplihack/qa.toml` has an entry of any kind; or the pull request changes `.amplihack/qa.toml`. A real `.amplihack` directory with no `qa.toml` in it is not present, and the CI source is tried next. An untracked, modified or ignored copy in the working tree is never read. A file that breaks any rule below gives `BLOCKED` with `qa-config-invalid`; the CI source and detection are not tried. |
+| 3 | `ci` | Exactly one clean test step in the merge base's `.github/workflows/*.yml` or `*.yaml` | The reader finds one. Anything else falls through to detection, because CI is advisory; the evidence names the reason in `qa_ci_skip`. |
+| 4 | `detected` | The merge base's manifests, scoped to the changed paths | Always tried last. |
 
-The hits are sorted in the C locale, then:
+For sources 1 to 3, `qa_repo_type` is `configured`; for source 4 it is the
+detected type. `qa_command_source` is `env` whenever an operator variable is
+set, even to the empty string, and empty when no other source gave a command:
+`qa-command-missing`, `qa-unresolved` and `qa-config-invalid`.
 
-| Hits | Result |
+The gadugi decision and the parity scenarios never follow a declared command.
+`gadugi_required`, `qa_scenarios` and the Rust parity directory always come
+from `autodrive_qa_target`, the same scoped detection the merge gate runs, so
+the evidence and the gate agree whichever source chose the command. In a
+repository whose only crate is `ws/Cargo.toml`,
+`AUTODRIVE_QA_COMMAND=make AUTODRIVE_QA_DIR=sub` runs `make` in `sub` and
+records `qa_dir` `sub`, while `qa_scenarios` still lists
+`ws/tests/parity/scenarios/*.yaml`. When detection is `unresolved`, the
+parity directory is `.`.
+
+##### The operator environment
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `AUTODRIVE_QA_COMMAND` | unset | One command, run in `AUTODRIVE_QA_DIR`, split into words with globbing off. |
+| `AUTODRIVE_QA_DIR` | `.` | The directory `AUTODRIVE_QA_COMMAND` runs in: relative to the repository root, or absolute. Used only with `AUTODRIVE_QA_COMMAND`; the other sources choose their own directory and ignore it. Recorded as `qa_dir`. A directory that does not exist gives `BLOCKED` with `qa-command-missing` and the summary `AUTODRIVE_QA_DIR <dir> not found`. |
+| `AUTODRIVE_QA_COMMANDS` | unset | One command per line, each run as `( cd -- "$ROOT" && bash -c "$entry" )` after `AUTODRIVE_QA_COMMAND`; blank and `#` lines skipped. Only this variable may run shell source: `.amplihack/qa.toml` and CI commands never go through `bash -c`. |
+| `AUTODRIVE_QA_SCENARIO_DIR` | the first existing of `tests/agentic`, `tests/gadugi/scenarios`, `scenarios`; else `tests/agentic` | The scenario directory, searched only where gadugi is required. Setting it requires gadugi scenarios in any repository type. An override naming a missing directory means no scenarios. |
+| `AUTODRIVE_QA_BASE` | set by the caller | The pull request's base branch name, used to find the merge base and the changed paths. Evidence step-02 sets it from the `base` field of `merge_sync`, and the merge gate sets it from its own `gh pr view --json baseRefName`. Both replace any inherited value, even with an empty one, so an operator does not set it. When it is unset, as in `autodrive-prerequisites` and merge round step-00, which only check that `gadugi-test` is installed where it will be needed, the checkout's committed `HEAD` stands in for the merge base and the changed paths are `(none)`; that answer is advisory, and the evidence step and the gate decide again with the real base. Set but empty or invalid, the merge base and the changed paths are unknown, and [gadugi stays required](#an-unknown-merge-base-keeps-gadugi-required). |
+| `AUTODRIVE_QA_HEAD` | `HEAD` | The commit whose changes are judged. The merge gate sets it to the pull request's `headRefOid`, because it runs in the launch checkout, which is normally on the base branch. It must be a full SHA of a commit in the clone; anything else makes the changed paths unknown and gadugi required. The evidence tool leaves it unset and judges its checkout's `HEAD`, the pull request head. |
+
+A variable set to the empty string still means no command:
+`AUTODRIVE_QA_COMMAND=` gives `BLOCKED` with `qa-command-missing`, records
+`qa_command_source` `env`, and stops `.amplihack/qa.toml` from being read. The variables come from the environment
+only, never recipe context (`no_recipe_declares_the_qa_overrides_as_context`).
+
+##### The repository file `.amplihack/qa.toml`
+
+A repository declares its suite once, so that every operator's auto-drive
+runs the same command without setting a variable:
+
+```toml
+# .amplihack/qa.toml
+# The engine's suite; the root crate is only a thin CLI wrapper.
+command = "cargo nextest run --workspace --locked"
+dir = "engine"
+```
+
+With that file committed at the merge base, the evidence for a pull request
+that does not touch it records:
+
+```console
+$ jq -r '.qa_command_source, .qa_repo_type, .qa_dir, .qa_command' "$EVIDENCE"
+repo-file
+configured
+engine
+cargo nextest run --workspace --locked
+```
+
+The file is read from git, never from disk: the tool looks up
+`.amplihack/qa.toml` in the merge-base tree with `git ls-tree`, checks the
+entry's mode and size there, and reads the blob with `git cat-file blob`. The
+working tree's copy, whether untracked, modified, ignored or spelled with a
+different case, plays no part. The blob is parsed as a small, strict subset
+of TOML, from a copy of at most 4097 bytes taken before parsing:
+
+- In the merge-base tree, `.amplihack` must be a directory and `qa.toml` a
+  regular file (mode `100644` or `100755`); a symlink (`120000`), submodule
+  (`160000`) or directory is refused. The file holds at most 4096 bytes.
+- Each line is blank, a whole-line `#` comment, or `key = "value"`. The value
+  is a basic double-quoted string with no backslash. Spaces around `=` are
+  allowed.
+- Every byte is a tab or printable ASCII (`0x20` to `0x7E`). A NUL, a carriage
+  return or any other byte rejects the file.
+- `command` is required and must split into at least one word. `dir` is
+  optional, and defaults to `.`.
+- The command, after the quotes are removed, uses only letters, digits,
+  spaces and `. _ / - = + : , @ %`. A `$`, backtick, quote, `\`, `;`, `&`,
+  `|`, `<`, `>`, `(`, `)`, `*`, `?`, `[`, `]`, `{`, `}`, `~`, `!` or `#`
+  rejects the file.
+- `dir` is relative, does not start with `/` or `-`, contains no `..` or empty
+  component, uses only `A-Z a-z 0-9 . _ / -`, and names an existing directory
+  whose physical path lies inside the repository. This is the one check made
+  on disk, because the command runs in that directory of the checkout.
+- The pull request does not change `.amplihack/qa.toml` (`changed-in-pr`),
+  the changed paths are known (`paths-unknown`), and the diff is not empty
+  (`paths-empty`). See
+  [Declared commands come from the merge base](#declared-commands-come-from-the-merge-base).
+
+Anything else gives `qa_status` `BLOCKED`, `qa_reason` `qa-config-invalid`,
+and a `qa_summary` of the form `.amplihack/qa.toml: <problem>`. The summary
+names the problem token only; no part of the file's content is ever printed.
+
+| Problem | Cause |
 | --- | --- |
-| One, in `x/y` | `rust-cli`, `qa_dir` `x/y`. |
-| Several, where the first sorted hit's directory is an ancestor of every other hit (`ws/Cargo.toml` with `ws/a/Cargo.toml` and `ws/b/Cargo.toml`) | `rust-cli`, `qa_dir` `ws`. Cargo resolves the members itself, so the root does not need a `[workspace]` table. |
-| Several otherwise (`a/Cargo.toml` and `b/Cargo.toml`) | `unknown`, `BLOCKED` with `qa-command-missing`. `qa_summary` reads `ambiguous nested Cargo workspace candidates: a b`. |
-| None | `unknown`, `BLOCKED` with `qa-command-missing`. |
+| `symlink` | `.amplihack` or `.amplihack/qa.toml` is a symlink in the merge-base tree. |
+| `not-regular` | In the merge-base tree, `.amplihack` is not a directory, or `qa.toml` is not a regular file; or the blob read back is not the size its entry gives. |
+| `too-large` | The file is longer than 4096 bytes. |
+| `syntax` | A line that is not blank, a comment or `key = "value"`: a table header, a single-quoted or unterminated string, a backslash, a trailing comment, or a byte outside tab and printable ASCII. |
+| `unknown-key` | A key other than `command` or `dir`. |
+| `duplicate-key` | A key given twice. |
+| `missing-command` | No `command`, or one made only of spaces. |
+| `unsafe-command` | A command byte outside the command alphabet. |
+| `unsafe-dir` | A `dir` that breaks the directory rule. |
+| `dir-not-found` | A `dir` that is not an existing directory inside the repository, including one reached through a symlink that leaves it. |
+| `changed-in-pr` | The pull request changes `.amplihack/qa.toml`, or `.amplihack` itself. A workflow edit does not refuse the file. |
+| `paths-empty` | The diff from the merge base to the head is empty, so there is no pull request change to show that the file is unchanged. |
+| `paths-unknown` | The changed paths are `(unknown)`, or no base was given, so the tool cannot show that the file is unchanged. With no merge base, the file is looked up in `HEAD` only to decide whether it is present. |
 
-Auto-drive does not guess between unrelated crates. To unblock a repository
-with several of them, name the suite:
-`AUTODRIVE_QA_COMMAND='cargo test --workspace --locked' AUTODRIVE_QA_DIR=a`.
-
-The candidate list in that summary is data, never instructions. Each byte
-outside `A-Z a-z 0-9 . _ / -` is replaced with `_`, each candidate is cut to
-128 bytes, and after ten candidates the rest are counted as `(+N more)`. The
-whole list in the summary is cut to 1500 bytes. The
-chosen directory must be relative, use only those characters, and contain no
-`..` or empty component. A directory named `my crate` or `$(x)` is never run:
-it makes the result ambiguous, so the round is `BLOCKED`.
-
-The command is the same `--locked` command as at the root, so a nested
-workspace without a `Cargo.lock` fails with `qa-command-failed`. That is a
-real QA failure; commit the lock file.
-
-`autodrive_qa_target <dir>` in `autodrive_trust.sh` makes this choice, and
-`autodrive_repo_type` and `autodrive_gadugi_required` are built on it, so the
-evidence tool, the prerequisite check and the merge gate always agree. It
-prints one line, `<type>\t<field>`: `rust-cli`, `python`, `node` or `unknown`
-with the relative directory, or `ambiguous` with the sanitised candidates
-separated by single spaces (the BLOCKED summary uses the same list).
-`autodrive_repo_type` reports `ambiguous` as `unknown`. The evidence tool
-checks the answer again. If it is empty, not one of those tokens, names an
-unsafe directory, or disagrees with `autodrive_repo_type`, the tool detects no
-command: without `AUTODRIVE_QA_COMMAND(S)` the round is `BLOCKED` with
-`qa-command-missing`, and an operator-configured command still runs. Detection
-never falls back to running at the root.
+These tokens are the complete set. The command runs exactly as a word
+command does:
 
 ```bash
-$ . amplifier-bundle/tools/autodrive_trust.sh
-$ autodrive_qa_target "$PWD"          # root pyproject.toml + grid-encode-decode/Cargo.toml
-python	.
-$ autodrive_qa_target "$PWD"          # only ws/Cargo.toml, ws/a/Cargo.toml and ws/b/Cargo.toml
-rust-cli	ws
-$ autodrive_qa_target "$PWD"          # only a/Cargo.toml and b/Cargo.toml
-ambiguous	a b
+( set -f; cd -- "./$dir" && $command ) </dev/null
 ```
+
+It is split into words with globbing off, never passed to `bash -c` or
+`eval`, and its first word is checked with the same installed check as
+`AUTODRIVE_QA_COMMAND`. A value such as `command = "$(touch pwned)"` is
+rejected as `unsafe-command` and runs nothing.
+
+##### The CI workflows
+
+With no operator variable and no `.amplihack/qa.toml`, the tool looks for the
+repository's test step in the GitHub Actions workflows committed at the merge
+base. It lists `.github/workflows/` in the merge-base tree with
+`git ls-tree --long`, and reads each blob with `git cat-file blob`; files in
+the working tree are never read. Only regular blobs matching `*.yml` or
+`*.yaml` at the top level count. `.github` and `.github/workflows` must be
+directories in that tree, not symlinks. More than 50 files (counted before
+any file is read), an entry that is not a regular blob, a file name outside
+`A-Z a-z 0-9 . _ -`, or any file larger than 256 KiB skips the CI source.
+
+A `run:` value is a match when it starts with one of:
+
+- `cargo test`
+- `cargo nextest run`
+- `npm test`
+- `npm run test`
+- `pytest`
+- `python -m pytest` or `python3 -m pytest`
+
+A match is clean only when it is a single-line value that holds none of
+`${{`, a quote, a backtick, `$`, `\`, `&`, `;`, `|`, `<` or `>`, and does not
+start with an environment assignment such as `RUST_LOG=debug cargo test`. A
+block scalar (`run: |` or `run: >`) whose body holds a recognised invocation
+is a match that is not clean. So is a match whose plain value continues on
+the next, more indented line, and any match in a workflow or job with
+`defaults: run: working-directory`.
+
+The CI source gives a command only when there is exactly one match in all the
+files and it is clean. The step's own `working-directory`, if present, becomes
+`qa_dir` once its `.` components are removed, so `./engine`, `././engine` and
+`engine/.` all give `engine` and an empty result gives `.`. Nothing else is
+rewritten: `.//engine` becomes `/engine` and `./../x` becomes `../x`, and both
+still break the `dir` rule. The result must pass the `dir` rule above and
+exist. The step must also
+cover the change. For each changed path, take the deepest detection candidate
+(a directory with `Cargo.toml`, `pyproject.toml`, `setup.py` or
+`package.json`, after the same-ecosystem collapse) that contains it. The
+step's directory must contain the path and lie inside that candidate. A clean
+step in `a/` when the pull request changes only `b/src/lib.rs` would test a
+project the pull request did not touch, and so would a root `pytest` step
+when the change lies only in a nested `grid-encode-decode/Cargo.toml` crate.
+In both cases the reader gives nothing and scoped detection chooses the
+changed project. Changed paths outside every candidate, such as
+documentation, do not count against the step. In every other case,
+including zero matches, two clean matches, one clean match beside one that is
+not clean, and a CI file changed by the pull request, the tool uses detection,
+prints nothing about CI on stderr, and records the reason in the evidence
+field `qa_ci_skip`:
+
+| `qa_ci_skip` | Cause |
+| --- | --- |
+| `paths-empty`, `paths-unknown` | The diff is empty, the changed paths are unknown, or no base was given. |
+| `changed-in-pr` | The pull request changes `.github`, a workflow file or `.amplihack/qa.toml`. |
+| `no-workflows` | `.github` or `.github/workflows` is not a directory in the merge-base tree, or holds no top-level `*.yml` or `*.yaml` file. |
+| `list-failed` | git could not list `.github/workflows`. |
+| `too-many-files` | More than 50 workflow files. |
+| `unsafe-name` | A file name outside `A-Z a-z 0-9 . _ -`. |
+| `not-regular` | An entry is not a regular blob, a symlink included. |
+| `too-large` | A file larger than 256 KiB. |
+| `read-failed` | git or awk failed while reading a file. |
+| `not-clean` | A match that is not clean, anywhere in the files. |
+| `no-match` | No `run:` value matches. |
+| `several-matches` | More than one clean match. |
+| `unsafe-command` | The command holds a byte outside the command alphabet. |
+| `unsafe-dir`, `dir-not-found` | The step's `working-directory` breaks the `dir` rule, or is missing. |
+| `out-of-scope` | For some changed path, the step's `working-directory` does not contain it, or lies above the deepest detection candidate that does. |
+
+`qa_ci_skip` is `""` when the CI source gave the command or was not read. This
+workflow gives `cargo nextest run --workspace` in `engine` when every changed
+path that a project contains lies in `engine` and `engine` is, or lies inside,
+the deepest project holding it:
+
+```yaml
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo nextest run --workspace
+        working-directory: engine
+```
+
+amplihack-rs's own `ci.yml` has a clean `cargo nextest run --workspace
+--locked` step, a doctest step and a `run: |` block that calls
+`cargo nextest run`. The block scalar makes the match not clean
+(`qa_ci_skip` `not-clean`), so this repository uses detection and runs `cargo test --workspace --locked
+--no-fail-fast` at `.`. A fixture with the same shape pins that result.
+
+##### Declared commands come from the merge base
+
+The pull request under test cannot choose its own suite. `.amplihack/qa.toml`,
+the CI workflows and the candidate manifests are all read from the tree of
+the merge base of `HEAD` and `refs/remotes/origin/<base>`, which the pull
+request cannot change. An untracked, modified or ignored file in the
+checkout, written by an agent or by branch code from an earlier suite run, is
+never read, and neither is a file whose name differs only in case. When the
+changed
+paths include `.amplihack/qa.toml`, the repository file is refused with
+`changed-in-pr`; when they include any file under `.github/workflows/`, the
+CI source gives nothing. A workflow edit does not refuse `qa.toml`, which is
+read from the merge base and cannot be changed by it. Without the rule, a pull request could add `command = "true"` and
+pass criterion 1. When the changed paths are `(unknown)` or `(none)`, the
+tool cannot show that the file is unchanged: the repository file is refused
+with `paths-unknown` and the CI source gives nothing. An empty diff is
+reported as `paths-empty` in the same way. The usual cause is a
+missing `AUTODRIVE_QA_BASE` or an unfetched base branch, not a change to the
+file, so the fix is to the run's base wiring rather than to `qa.toml`.
+
+As a result, a repository's first `.amplihack/qa.toml` cannot take effect in
+the pull request that adds it. Merge it in its own pull request, or drive that
+pull request with `AUTODRIVE_QA_COMMAND` set to the same command.
+
+##### An unknown merge base keeps gadugi required
+
+When the merge base is unknown (`AUTODRIVE_QA_BASE` set but empty or invalid,
+the remote-tracking ref missing, or `git merge-base` failing),
+`autodrive_gadugi_required` answers `true`, whatever the manifests say. The
+target can still fall back to a project, read from the manifests committed in
+`HEAD`, but those manifests are the pull request's own, so they never make
+gadugi optional. The merge gate and evidence step-02 always set
+`AUTODRIVE_QA_BASE`, so a broken base wiring blocks Rust and Python
+repositories on `NO_SCENARIOS` rather than passing without gadugi.
+
+##### Documentation-only pull requests
+
+A pull request that changes documentation and nothing else has no external
+behaviour for a scenario to drive, so gadugi is not required for it.
+`autodrive_qa_docs_only <dir>` measures that, and
+`autodrive_gadugi_required` reads it, so the prerequisite check, the evidence
+tool, the merge round and the merge gate get the same answer. It is built on
+the `_autodrive_qa_scan` the rest of that file shares, so it runs no further
+git command.
+
+What the exemption costs is worth stating plainly, because it is wider than
+waiving authorship. `gadugi_required=false` means criterion 1 asks for no
+scenario, and it also means no scenario *runs* — including one the repository
+already has. A Node project holding `svc/tests/agentic/s.yaml` whose pull
+request changes only `docs/svc.md` runs `npm test` and no agentic scenario,
+where before #2219 it ran both. That is deliberate: an agentic scenario
+spawns agents and costs minutes, and driving external behaviour that the pull
+request did not touch buys no signal about the change under review. The suite
+command still runs in every case, so the exemption narrows scenario
+validation and not testing. A repository that disagrees sets
+`AUTODRIVE_QA_SCENARIO_DIR`, which keeps gadugi required whatever the
+predicate says — the first arm of `autodrive_gadugi_required`, above every
+other.
+
+It lives in `autodrive_qa_docs.sh`, which `autodrive_qa_scope.sh` loads from
+its own physical directory, only as a regular file and never a symlink, the
+same way `autodrive_trust.sh` loads the scope file; if it does not load, the
+predicate says `unknown` and gadugi stays required. It is a separate file
+because `autodrive_qa_scope.sh` is at its 400-line brick budget, the reason
+`autodrive_qa_sources.sh` is separate too; the split is physical only, since
+both run in one shell and share one scan. It is a gate file, so the merge
+gate's mode check covers it.
+
+It reads `_AD_PATHS` and `_AD_PATHS_STATE` directly, not the line
+`autodrive_qa_changed_paths` prints. That line is rendered for people: it
+caps the list at ten entries with a `(+N more)` tail and rewrites every byte
+outside `A-Za-z0-9._/-` as `_`. A predicate built on it would read a pull
+request of eleven changed paths whose eleventh is `src/index.js` as
+documentation-only, and would judge a rewritten byte rather than the path.
+`autodrive_qa_docs_only` examines every changed path as git reported it.
+
+| Output | `_AD_PATHS_STATE` |
+| --- | --- |
+| `true` | `known`, and every path in `_AD_PATHS` qualifies. |
+| `false` | `known`, and at least one path in `_AD_PATHS` does not qualify; or `empty` (the diff is empty, so no documentation was changed either); or `known` over a list that holds nothing, which is the same answer as `empty`. |
+| `unknown` | `unknown` (the paths could not be read) or `nobase` (no `AUTODRIVE_QA_BASE` was given, so the head stood in for the merge base); or `autodrive_qa_scope.sh` did not load, or `autodrive_qa_docs.sh` did not load beside it, which prints a `WARNING` on stderr naming the file. |
+
+The arms key on the state rather than on what `autodrive_qa_changed_paths`
+would print, because that line collapses `empty` and `nobase` into one
+`(none)` — and the two are opposite answers here. An empty diff is a measured
+fact: it changed no documentation, so it is not a documentation-only change
+and the exemption does not apply. `nobase` measured nothing at all.
+
+A path qualifies when it ends `.md`, `.markdown` or `.rst`, or when it is a
+root `LICENSE`, `NOTICE` or `COPYING`. Qualifying is compared byte for byte,
+so `README.MD` does not qualify: unusual casing costs the exemption rather
+than granting it, and `docs/build.SH` is not documentation for the same
+reason — `.SH` is none of the extensions.
+
+`.txt` qualifies only where prose lives: under a `docs/` component at any
+depth, whether at the root (`docs/notes.txt`, `docs/guide/install.txt`) or
+below one (`sub/docs/notes.txt`), or as one of the root documentation names
+`README.txt`, `CHANGELOG.txt`, `CHANGES.txt`, `LICENSE.txt`, `NOTICE.txt`,
+`COPYING.txt`, `AUTHORS.txt`, `CONTRIBUTING.txt` and `INSTALL.txt`. The
+extension is generic — a golden fixture, a page template, a fuzz corpus seed
+and a dependency pin all wear it — so qualifying it everywhere exempted
+`tests/fixtures/expected.txt`, `src/templates/welcome.txt`,
+`fuzz/corpus/seed.txt`, `requirements-dev.txt` and `Makefile.txt` from the
+gadugi requirement in a repository of ordinary code. Naming the places prose
+lives closes the class; a list of build-input basenames never could, because
+`requirements-dev.txt` and `dev-requirements.txt` are each one spelling away
+from the next.
+
+`docs/` widens where a `.txt` may sit; it qualifies no extension on its own.
+So `docs/conf.py`, `docs/Makefile` and `docs/release.js` still do not
+qualify, and a `.txt` under `docs/` is still checked against the
+disqualifiers below — `docs/requirements.txt` is a Sphinx pin sitting in
+exactly the directory this rule trusts, and so are the other spellings of it.
+
+A path that qualifies is then checked against the disqualifiers below. Every
+rule there is a rule the predicate runs: there is no extension disqualifier
+for `.yml`, `.toml`, `.json` or `.sh`, because the byte-exact qualifier has
+already rejected each of those and such a rule could never be reached.
+
+| Not documentation | Why |
+| --- | --- |
+| anything under a dot-directory at any depth: `.github/`, `.amplihack/`, `.claude/`, and `.cursor/`, `.codex/`, `.devcontainer/` and whatever the next tool adds | CI workflows and auto-drive's own configuration decide what runs, and an editor or agent directory is an instruction surface on the same reasoning as `.claude/`. One pattern covers them all, so a directory nobody listed is covered too. A dot-*file* is not a dot-directory: `docs/.hidden.md` is still prose. |
+| anything under `amplifier-bundle/`, and any `AGENTS.md`, `CLAUDE.md` or `SKILL.md` | An agent reads these as instructions. A change to `skills/merge-ready/SKILL.md` edits the rules the merge is judged by; it is not inert prose. |
+| a `.txt` whose path holds `requirements` or `constraints`, and `CMakeLists.txt`, at the root or nested | A build reads them rather than a person: the first two pin the dependencies a suite installs and the third is a build script. The narrowed `.txt` qualifier already stops every pin at the root, so what this rule still catches is the copy under `docs/` — `docs/requirements.txt` is the ordinary Sphinx pin, which is why the rule is not anchored at the root. The two pin patterns match a substring of the path rather than a basename, so `docs/requirements-dev.txt`, `docs/dev-requirements.txt` and `docs/requirements/base.txt` are caught as well; the cost is that a prose file named for requirements loses the exemption and runs the scenarios it would otherwise have skipped, which is the direction this predicate fails in. `requirements.txt` and `CMakeLists.txt` are also in `AUTODRIVE_ROOT_PROJECT_FILES`, where auto-drive already calls them project files; the test pins the two lists together so the next `.txt` added there is caught. |
+
+The disqualifying comparisons are case-insensitive, so `Agents.md`,
+`.GitHub/notes.md` and `docs/Requirements.txt` are disqualified too.
+
+```console
+$ . amplifier-bundle/tools/autodrive_trust.sh
+$ AUTODRIVE_QA_BASE=main autodrive_qa_changed_paths "$PWD"
+docs/reference/auto-drive-to-merge.md README.md
+$ AUTODRIVE_QA_BASE=main autodrive_qa_docs_only "$PWD"
+true
+$ AUTODRIVE_QA_BASE=main autodrive_gadugi_required "$PWD"
+false
+```
+
+The exemption removes the scenario-writing and gadugi-run requirement and
+nothing else. `gadugi_required` is `false`, `gadugi_status` is `NOT_REQUIRED`
+and `gadugi-test` is never called, exactly as in a Rust CLI repository; the
+suite commands still run, CI must still be green, and the crusty loop, the
+review threads, conflicts, criterion 2 and every other criterion are
+unchanged. Step-02 still counts criterion 1 met only when `qa_status` is
+`PASS`, so a `FAIL` or a `BLOCKED` is as much a blocker in a
+documentation-only pull request as in any other. What it writes as not
+applicable is the gadugi-scenario requirement inside criterion 1, naming the
+changed files it read from `qa_command_paths` in the evidence rather than
+running a diff of its own, and it raises neither a missing-scenario blocker
+nor a request for a gadugi run.
+
+It fails closed. `unknown` is not `true`; a scope file that did not load, or
+an unknown merge base, keeps gadugi required whatever the paths look like; and
+an operator who sets `AUTODRIVE_QA_SCENARIO_DIR` gets scenarios in a
+documentation-only pull request as well. The merge gate measures `docs_only`
+again from its own `baseRefName` and `headRefOid`, so a code commit pushed to
+the head between the evidence step and the gate gives the gate `false` and
+`gadugi_required` `true`, the evidence's `NOT_REQUIRED` stops matching, and
+the gate refuses.
+
+Two limits bound the exemption. A repository with no
+recognised manifest is `unknown`, where gadugi was never required, so the
+exemption changes the answer only in a `node` repository and in one whose
+detection is `unresolved` with a Node candidate. And a repository with no
+detectable suite command is still `BLOCKED` with `qa-command-missing`
+whatever it changed, documentation or not; a documentation-only pull request
+there needs `AUTODRIVE_QA_COMMAND` or
+[`.amplihack/qa.toml`](#the-repository-file-amplihackqatoml) like any other.
+
+#### Project candidates and path scoping
+
+`autodrive_qa_target <dir>` makes the detection choice, and
+`autodrive_repo_type` and `autodrive_gadugi_required` are built on it, so the
+evidence tool, the prerequisite check and the merge gate always agree. It
+lives in `amplifier-bundle/tools/autodrive_qa_scope.sh`, which
+`autodrive_trust.sh` loads from its own physical directory, never from
+`$PWD`, `REPO_PATH` or the pull request's tree.
+
+**Candidates.** The search lists the merge-base tree with
+`git ls-tree -r` (the `HEAD` tree when the merge base is unknown) and keeps
+regular blobs named `Cargo.toml`, `pyproject.toml`, `setup.py` or
+`package.json` at the root and at most three levels below it
+(`a/b/Cargo.toml` is found, `a/b/c/Cargo.toml` is not). It skips every path
+under a directory named `target`, `worktrees` or `node_modules` or a hidden
+directory (`.git`, `.venv`), at any level, never counts a symlink, reads no
+file contents and sorts in the C locale. Each directory with a manifest is a
+candidate, and its type follows the Cargo, Python, Node order. A manifest the
+pull request adds, at any depth and including one at the root, is not in the
+merge-base tree and so is never a candidate: adding `src/Cargo.toml` or a
+root `Cargo.toml` to a Node repository cannot make gadugi optional. Neither
+is a manifest that exists only on disk.
+
+**Same-ecosystem collapse.** A candidate is dropped when an ancestor
+directory has a manifest of the same ecosystem: Cargo workspaces resolve their
+members, npm workspaces their packages, and a Python root its subpackages.
+`ws/a/Cargo.toml` collapses into `ws/Cargo.toml`, and in amplihack-rs every
+crate under `bins/` and `crates/` collapses into the root. Candidates of
+different ecosystems stay separate: `web/package.json` under a root
+`Cargo.toml` is its own candidate.
+
+**Changed paths.** `autodrive_qa_changed_paths <dir>` prints the files the
+pull request changes, separated by spaces, or one of two tokens:
+
+| Output | When |
+| --- | --- |
+| The paths | `AUTODRIVE_QA_BASE` is a valid branch name, `refs/remotes/origin/<base>` exists, and the diff from the merge base to `AUTODRIVE_QA_HEAD` (default `HEAD`) lists at least one file. |
+| `(unknown)` | `AUTODRIVE_QA_BASE` is empty, starts with `-`, holds a byte outside the branch-name allowlist or fails `git check-ref-format --branch`; the remote-tracking ref is missing; `merge-base` fails; or a path holds a newline. |
+| `(none)` | The diff is empty, or `AUTODRIVE_QA_BASE` is unset (a preflight: `HEAD` is the merge base). |
+
+The helper never fetches; evidence step-01 has already fetched the base. It
+runs `git merge-base` and `git diff --name-only --no-renames -z <merge-base>
+HEAD` through `autodrive_trust_git`, tree against tree, with `--no-ext-diff`
+and `--no-textconv`, so uncommitted files are not counted. `--no-renames`
+lists both the old and the new path of a moved file, so a move from one
+project to another counts as changing both.
+
+**Choice.** A candidate `c` contains a path when `c` is `.` or the path
+starts with `c/`, compared byte for byte, so `svc-a` never contains
+`svc-ab/x`. With known paths, a changed path that no candidate contains (a
+root `README.md`, `.gitignore` or workflow file in a repository with no root
+project) is set aside. The chosen project is the deepest candidate that
+contains every remaining path. A root project contains every path, so with a
+root project nothing is set aside, and a pull request that touches root files
+or more than one nested project runs the root suite. When no path remains,
+or the paths are `(unknown)` or `(none)`, there must be exactly one top-level
+candidate, one with no candidate above it; a root project is always that
+one. Otherwise the result is `unresolved`.
+
+| Candidates after collapse | Changed paths | `autodrive_qa_target` |
+| --- | --- | --- |
+| `.` (Cargo) | `crates/x/src/lib.rs` | `rust-cli`, `.` |
+| `.` (Python), `grid-encode-decode` (Cargo) | `(unknown)` | `python`, `.` |
+| `.` (Python), `grid-encode-decode` (Cargo) | `grid-encode-decode/src/lib.rs` | `rust-cli`, `grid-encode-decode` |
+| `.` (Cargo), `web` (Node) | `web/src/app.ts` | `node`, `web` |
+| `.` (Cargo), `web` (Node) | `web/src/app.ts README.md` | `rust-cli`, `.` |
+| `ws` (Cargo) | `(unknown)` | `rust-cli`, `ws` |
+| `a` (Cargo), `b` (Cargo) | `b/src/main.rs` | `rust-cli`, `b` |
+| `a` (Cargo), `b` (Cargo) | `b/src/main.rs README.md` | `rust-cli`, `b` |
+| `a` (Cargo), `b` (Cargo) | `README.md` | `unresolved`, `a b` |
+| `a` (Cargo), `b` (Cargo) | `(unknown)` | `unresolved`, `a b` |
+| `a` (Cargo), `b` (Cargo) | `a/src/lib.rs b/src/main.rs` | `unresolved`, `a b` |
+| `a` (Cargo), `b` (Cargo) | `a/src/x.rs b/src/x.rs`, a move from `a` to `b` | `unresolved`, `a b` |
+| `ws` (Cargo) | `README.md .gitignore .github/workflows/ci.yml` | `rust-cli`, `ws` |
+| `svc` (Node) | `docs/svc.md` | `node`, `svc` |
+| none | anything | `unknown`, `.` |
+
+Setting aside paths outside every candidate keeps a repository whose only
+project is nested, such as `ws/Cargo.toml`, from blocking on a pull request
+that edits only its top-level `README.md`: the single top-level candidate
+`ws` is chosen. With two top-level candidates and no root project, such a
+pull request is `unresolved`, as it is with `(unknown)` paths.
+
+This is looser than decision D5 of issue #1763, which treats a changed path
+outside every candidate as unresolved. A pull request that changes `a/x` and
+`shared/y` therefore runs only `a`'s suite. Declare the suite in
+`.amplihack/qa.toml` where shared code needs the whole repository tested.
+
+This scoping changes two results from earlier releases, on purpose. Under a
+root `Cargo.toml` or `pyproject.toml`, a pull request that changes only a
+nested Node project now runs `npm test` in that project. Under a root
+`package.json`, a pull request that changes only a nested crate now runs
+`cargo test` in the crate, and gadugi is not required for it.
+
+If the search hits an error, such as a tree object git cannot read that could
+hide a candidate, the result falls back to the root project when there is one.
+With no root project it is `unresolved`, and the candidate list names the
+error as `(search-error)`. The search never runs a candidate it could read
+while another may be hidden.
+
+`autodrive_qa_target` prints one line, `<type>\t<field>`: `rust-cli`,
+`python`, `node` or `unknown` with the relative directory, or `unresolved`
+with the candidate directories separated by single spaces. The candidate list
+is data, never instructions. Each byte outside `A-Z a-z 0-9 . _ / -` is
+replaced with `_`, each entry is cut to 128 bytes, and after ten entries the
+rest are counted as `(+N more)`. The chosen directory must be relative, use
+only those characters, and contain no `..` or empty component. A directory
+named `my crate` or `$(x)` is never run: it makes the result `unresolved`.
+`autodrive_repo_type` reports `unresolved` as `unknown`. The evidence tool
+checks the answer again. If it is empty, not one of those tokens, names an
+unsafe directory, or disagrees with `autodrive_repo_type`, the tool detects
+no command; a declared command still runs. Detection never falls back to
+running at the root.
+
+```console
+$ . amplifier-bundle/tools/autodrive_trust.sh
+$ AUTODRIVE_QA_BASE= autodrive_qa_target "$PWD"       # amplihack-rs, no base
+rust-cli	.
+$ AUTODRIVE_QA_BASE= autodrive_qa_changed_paths "$PWD"
+(unknown)
+$ AUTODRIVE_QA_BASE=main autodrive_qa_changed_paths "$PWD"   # a PR that changes two crates
+crates/amplihack-cli/src/lib.rs crates/amplihack-hooks/src/lib.rs
+$ AUTODRIVE_QA_BASE=main autodrive_qa_target "$PWD"
+rust-cli	.
+```
+
+When `autodrive_qa_scope.sh` is missing, is a symlink, or fails to load,
+`autodrive_trust.sh` defines a fallback `autodrive_qa_target` that prints
+`unknown`, `.`, and `autodrive_gadugi_required` answers `true`. The declared
+sources, `autodrive_qa_config` and `autodrive_qa_ci`, live in
+`autodrive_qa_sources.sh`, which only the evidence tool loads, from its own
+directory and only as a regular file; the merge gate never loads it. When
+either file is missing, the evidence tool writes `BLOCKED` with
+`qa-command-missing`. A broken install therefore blocks; it never passes.
+
+**Computed once.** `_autodrive_qa_scan` runs the diff and the tree walk, and
+`_autodrive_qa_choose` makes the project choice, once per directory, base and
+head in a shell. The evidence tool asks every question through
+`autodrive_qa_report` in one shell, so a run makes one `git diff` and one
+`git ls-tree -r`; a regression test counts them.
+
+`autodrive_gadugi_required <dir>` returns `true` when
+`AUTODRIVE_QA_SCENARIO_DIR` is set, when the scope file did not load, or when
+the merge base is unknown; those three are decided first and nothing lifts
+them. Failing those, it returns `true` when the chosen type is `node`, or when
+the result is `unresolved` and any candidate directory has a `package.json`,
+unless `autodrive_qa_docs_only` says `true`, which exempts a
+[documentation-only pull request](#documentation-only-pull-requests).
+Otherwise it returns `false`.
+
+##### The QA_UNRESOLVED result
+
+When no source declares a command and detection is `unresolved`, no suite
+runs and the evidence records:
+
+| Field | Value |
+| --- | --- |
+| `qa_status` | `QA_UNRESOLVED` |
+| `qa_reason` | `qa-unresolved` |
+| `qa_candidates` | The candidate directories, `.` for the root, limited as above: `a b` |
+| `qa_command`, `qa_dir`, `qa_command_source` | `""` |
+| `qa_summary` | `unresolved QA project candidates: a b` |
+
+Gadugi follows `autodrive_gadugi_required` as in any other round. When it
+answers `true` (a candidate directory has a `package.json`, or
+`AUTODRIVE_QA_SCENARIO_DIR` is set), the gadugi check runs in full: `gadugi-test`
+is looked up, the scenario directory is validated and each scenario runs, and
+`gadugi_required`, `gadugi_status`, the scenario counts and
+`gadugi_scenario_results` record the outcome. When it answers `false`,
+`gadugi_status` is `NOT_REQUIRED` and `gadugi-test` is never called. Either
+way `qa_status` stays `QA_UNRESOLVED` and `qa_reason` stays `qa-unresolved`:
+a gadugi failure (`no-scenarios`, `gadugi-validate-failed`,
+`gadugi-scenario-unnamed`, `gadugi-run-failed`, `gadugi-test-missing`) is
+named in `qa_summary` but never replaces them, and a gadugi `PASS` never makes
+the round pass. `QA_UNRESOLVED` is not `PASS`, so the round is not merge-ready and
+the gate refuses it. The round reports it, and `qa-config-invalid`, as an
+operator action, never a code fix: set `AUTODRIVE_QA_COMMAND`, or add or fix
+`.amplihack/qa.toml` on the base branch, so that it is committed at the merge
+base. The blocker-clearing step does not
+edit tests or manifests to make one candidate win.
 
 Where gadugi is not required, `gadugi_required` is `false`,
 `gadugi_status` is `NOT_REQUIRED`, `gadugi-test` is never called (installed
@@ -849,35 +2162,26 @@ repository it would also report `NO_SCENARIOS` until the round committed
 gadugi scenario files, and each of those commits would cost a crusty
 re-review.
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `AUTODRIVE_QA_COMMAND` | unset | One command, run in `AUTODRIVE_QA_DIR`, split into words with globbing off. |
-| `AUTODRIVE_QA_DIR` | `.` | The directory `AUTODRIVE_QA_COMMAND` runs in: relative to the repository root, or absolute. Used only with `AUTODRIVE_QA_COMMAND`; detection picks its own directory and ignores it. Recorded as `qa_dir`. A directory that does not exist gives `BLOCKED` with `qa-command-missing` and the summary `AUTODRIVE_QA_DIR <dir> not found`. |
-| `AUTODRIVE_QA_COMMANDS` | unset | One command per line, each run as `( cd -- "$ROOT" && bash -c "$entry" )` after `AUTODRIVE_QA_COMMAND`; blank and `#` lines skipped. |
-| `AUTODRIVE_QA_SCENARIO_DIR` | the first existing of `tests/agentic`, `tests/gadugi/scenarios`, `scenarios`; else `tests/agentic` | The scenario directory, searched only where gadugi is required. Setting it requires gadugi scenarios in any repository type. An override naming a missing directory means no scenarios. |
+#### Running the suite commands
 
-With a command variable set, `qa_repo_type` is `configured` and command
-detection is skipped; a variable set to the empty string still means no
-command. `autodrive_qa_target` and `autodrive_repo_type` still run, because
-they decide `gadugi_required` and `qa_scenarios`. In a repository whose only
-crate is `ws/Cargo.toml`, `AUTODRIVE_QA_COMMAND=make AUTODRIVE_QA_DIR=sub`
-runs `make` in `sub` and records `qa_dir` `sub`, while `qa_scenarios` still
-lists `ws/tests/parity/scenarios/*.yaml`.
+Before it enters the repository, the tool sources
+[`git-repo-env.sh`](git-repo-env-helper.md) from its own directory and
+clears `GIT_DIR`, `GIT_WORK_TREE` and the other ten git repository selectors,
+and the outer run's `AMPLIHACK_RECIPE_RUN_ID`, `AMPLIHACK_RUN_DIR`,
+`AMPLIHACK_RUN_ID`, `AMPLIHACK_SESSION_TREE_DIR` and `AMPLIHACK_TREE_ID`. A
+suite's `git` commands therefore act on the repository they run in, never on
+a repository an inherited variable names (#2033). A missing or symlinked
+helper stops the tool with `autodrive-qa-helpers-not-found` and no evidence.
 
-With no command variable set, the
-[repo-type table](#criterion-1-qa-team-scenarios-by-repository-type) decides:
+The detected Cargo command is the same `--locked` command at every depth, so
+a nested workspace without a `Cargo.lock` fails with `qa-command-failed`.
+That is a QA failure; commit the lock file.
 
-- a root `Cargo.toml` gives `rust-cli` with
-  `cargo test --workspace --locked --no-fail-fast`;
-- a root `pyproject.toml` or `setup.py` gives `python` with `pytest`, even
-  beside a `package.json`;
-- a root `package.json` alone gives `node` with `npm test`;
-- a single nested Cargo workspace gives `rust-cli`, run in its directory;
-- anything else is `unknown`.
-
-`AUTODRIVE_QA_COMMAND` and detected commands run as
-`( cd -- "$QA_DIR" && <command> )`; `AUTODRIVE_QA_COMMANDS` entries run from
-the root. A detected command counts as installed when `command -v`, run in
+`AUTODRIVE_QA_COMMAND`, the `.amplihack/qa.toml` command, the CI command and
+detected commands share one run path,
+`( set -f; cd -- "$QA_DIR" && $command ) </dev/null`, from the repository
+root, split into words with globbing off. `AUTODRIVE_QA_COMMANDS` entries run
+from the root. A command counts as installed when `command -v`, run in
 `qa_dir`, finds it on `PATH`; where it resolves is not checked. A project
 `.venv/bin/pytest` (uv, poetry with in-project virtualenvs,
 `python -m venv .venv`) is used when `.venv/bin` is on `PATH`.
@@ -891,7 +2195,9 @@ The suite runs code from the branch whichever binary starts it: `npm test`
 runs `package.json` `scripts.test`, pytest imports `conftest.py`, and
 `cargo test` compiles and runs `build.rs` and the tests. Refusing a `cargo`
 or `pytest` found inside the repository would contain nothing the suite does
-not already run, so the tool does not do it. Run auto-drive only on branches
+not already run, so the tool does not do it. The command alphabet of
+`.amplihack/qa.toml` and the CI reader stops shell and log injection; it does
+not limit what a command does once it runs. Run auto-drive only on branches
 whose code you are willing to execute.
 
 When `AUTODRIVE_QA_DIR` names a directory that does not exist, the command
@@ -946,14 +2252,16 @@ all passed, and `gadugi_status` is `PASS` or, where gadugi is not required,
 
 | Order | `qa_reason` | `qa_status` | Cause (`gadugi_status`) |
 | --- | --- | --- | --- |
-| 1 | `qa-command-failed` | `FAIL` | A suite command exited non-zero. |
-| 2 | `no-scenarios` | `FAIL` | Gadugi is required and there is no scenario file (`NO_SCENARIOS`). |
-| 3 | `gadugi-validate-failed` | `FAIL` | Validate failed; no scenario ran (`VALIDATE_FAILED`). |
-| 4 | `gadugi-scenario-unnamed` | `FAIL` | A name is empty, starts with `-`, holds a control byte, exceeds 200 bytes, or is a block scalar or flow mapping (`RUN_FAILED`). |
-| 5 | `gadugi-run-failed` | `FAIL` | A run or staging failed, or a symlinked or non-regular entry exists; such entries never run (`RUN_FAILED`). |
-| 6 | `qa-command-missing` | `BLOCKED` | No suite command, or incomplete evidence with no other token. |
-| 7 | `qa-command-not-installed` | `BLOCKED` | The single or detected command's program is missing. |
-| 8 | `gadugi-test-missing` | `BLOCKED` | Gadugi is required and `gadugi-test` is not on `PATH`; no gadugi check ran (`NOT_INSTALLED`). Step-00 stops the round before this when the tool is missing, so in a merge round it means the tool went away during the round; step-04 leaves it to a person. |
+| 1 | `qa-unresolved` | `QA_UNRESOLVED` | No command was declared and the changed paths do not pick one candidate; `qa_candidates` lists them. No suite ran. Takes precedence over tokens 4 to 7 and 10, which are then named in `qa_summary` only. |
+| 2 | `qa-config-invalid` | `BLOCKED` | `.amplihack/qa.toml` is present and breaks a rule; `qa_summary` names the [problem token](#the-repository-file-amplihackqatoml). No suite ran. Like `qa-unresolved` it needs an operator, so it also takes precedence over the gadugi tokens: a broken `qa.toml` in a repository with no scenarios is `qa-config-invalid`, not `no-scenarios`. |
+| 3 | `qa-command-failed` | `FAIL` | A suite command exited non-zero. |
+| 4 | `no-scenarios` | `FAIL` | Gadugi is required and there is no scenario file (`NO_SCENARIOS`). |
+| 5 | `gadugi-validate-failed` | `FAIL` | Validate failed; no scenario ran (`VALIDATE_FAILED`). |
+| 6 | `gadugi-scenario-unnamed` | `FAIL` | A name is empty, starts with `-`, holds a control byte, exceeds 200 bytes, or is a block scalar or flow mapping (`RUN_FAILED`). |
+| 7 | `gadugi-run-failed` | `FAIL` | A run or staging failed, or a symlinked or non-regular entry exists; such entries never run (`RUN_FAILED`). |
+| 8 | `qa-command-missing` | `BLOCKED` | No suite command, a missing scope helper, or incomplete evidence with no other token. |
+| 9 | `qa-command-not-installed` | `BLOCKED` | The program of the single, repository-file, CI or detected command is missing. |
+| 10 | `gadugi-test-missing` | `BLOCKED` | Gadugi is required and `gadugi-test` is not on `PATH`; no gadugi check ran (`NOT_INSTALLED`). Step-00 stops the round before this when the tool is missing, so in a merge round it means the tool went away during the round; step-04 leaves it to a person. |
 
 The evidence is one JSON line of sanitised strings in `qa-evidence.json`,
 written under `umask 077`. A failed temporary file gives
@@ -962,15 +2270,21 @@ written under `umask 077`. A failed temporary file gives
 | Field | Value |
 | --- | --- |
 | `qa_status`, `qa_reason`, `gadugi_status`, `qa_summary` | As above. `gadugi_status` is `NOT_REQUIRED` where gadugi is not required. |
-| `gadugi_required` | `true` or `false`, from `autodrive_gadugi_required`. The gate decides it again from the checkout's files and does not read this field. |
-| `qa_repo_type`, `qa_round` | `configured`, `rust-cli`, `node`, `python` or `unknown`; the round label. |
-| `qa_dir` | The directory the suite command ran in, relative to the repository root, with no trailing slash: `.` for a root manifest, `x/y` for a nested Cargo workspace, the `AUTODRIVE_QA_DIR` value with `AUTODRIVE_QA_COMMAND`, and `.` with `AUTODRIVE_QA_COMMANDS` alone or when no command was selected (`unknown`, ambiguous candidates, an empty override). A selected command that could not run (`qa-command-not-installed`, or an `AUTODRIVE_QA_DIR` that does not exist) still records the directory it would have run in. Detection never records an absolute path; an absolute `AUTODRIVE_QA_DIR` set by the operator is recorded as given, sanitised. |
+| `gadugi_required` | `true` or `false`, from `autodrive_gadugi_required`. The gate decides it again from its own `baseRefName` and `headRefOid` (passed as `AUTODRIVE_QA_HEAD`, not the checkout's `HEAD`, which is normally the base branch), and does not read this field. A head commit missing from the clone makes gadugi required. |
+| `docs_only` | `true`, `false` or `unknown`, from `autodrive_qa_docs_only`: whether every changed path is [documentation](#documentation-only-pull-requests). Recorded as its own measurement so that the round reads why gadugi was not required instead of inferring it. The gate decides it again and does not read this field. |
+| `qa_repo_type`, `qa_round` | `configured` for the `env`, `repo-file` and `ci` sources, else the detected `rust-cli`, `node`, `python` or `unknown`; the round label. |
+| `qa_command_source` | `env`, `repo-file`, `ci` or `detected`: the [source](#choosing-the-qa-command) that gave the command. `""` when none did. |
+| `qa_command_paths` | The changed paths the choice used, separated by spaces, or `(unknown)` or `(none)`. Filled for every source, `env` included. Bytes outside `A-Z a-z 0-9 . _ / -` become `_`, each entry is cut to 128 bytes, and after ten entries the rest are counted as `(+N more)`. |
+| `qa_candidates` | With `QA_UNRESOLVED`, the candidate directories (`.` for the root), limited in the same way; `""` otherwise. |
+| `qa_ci_skip` | Why the [CI source](#the-ci-workflows) gave no command, as a fixed token, when it was read and gave none; `""` otherwise. |
+| `qa_dir` | The directory the suite command ran in, relative to the repository root, with no trailing slash: `.` for a root manifest, `x/y` for a nested detected project, the `AUTODRIVE_QA_DIR` value with `AUTODRIVE_QA_COMMAND`, the `dir` of `.amplihack/qa.toml` or the CI step's `working-directory` (`.` when absent), `.` with `AUTODRIVE_QA_COMMANDS` alone or when no command was selected (`unknown`, an empty override, `qa-config-invalid`), and `""` with `QA_UNRESOLVED`. A selected command that could not run (`qa-command-not-installed`, or an `AUTODRIVE_QA_DIR` that does not exist) still records the directory it would have run in. Detection never records an absolute path; an absolute `AUTODRIVE_QA_DIR` set by the operator is recorded as given, sanitised. |
 | `qa_command`, `qa_suite_commands_count` | The commands run, joined by `; ` (at most 500 characters, so reference secrets as `$VAR`), and their number. |
 | `qa_exit_code`, `gadugi_run_exit_code`, `gadugi_validate_exit_code` | The first non-zero exit code, `"0"` when all passed, `""` when none ran. |
 | `head_sha` | `git rev-parse HEAD` before any check: the commit tested. |
 | `gadugi_scenario_dir`, `qa_scenarios`, `gadugi_failed_scenarios` | The directory, the counted files, the failed files; relative to the repository root. Where gadugi is not required, the directory is `""`, and in a `rust-cli` repository `qa_scenarios` lists `tests/parity/scenarios/*.yaml` under the detected workspace directory (`.` at the root, `x/y` when nested), not under `qa_dir`. |
 | `gadugi_scenario_count`, `gadugi_scenarios_validated`, `gadugi_scenarios_run`, `gadugi_scenarios_passed`, `gadugi_scenarios_failed` | Files found; that count if validate passed, else `"0"`; runs; passes; failures, counting unnamed, unstaged and (after validate) symlinked or non-regular entries. |
 | `gadugi_scenario_results` | `<file>=<result>` per entry (`PASS`, `FAIL`, or `INVALID` for not run), sorted, from `autodrive_scenario_results`. Informational only. |
+| `git_env_cleared`, `run_env_cleared` | The `GIT_*` repository selectors and outer-run `AMPLIHACK_*` names that were set when the tool started and that it cleared before any `cd`, `git` or suite command, in list order, separated by spaces; `none` when nothing was set. Names only, never values. See the [Git Repository Environment Helper](git-repo-env-helper.md) (#2033). |
 
 For `NO_SCENARIOS`, `VALIDATE_FAILED`, `RUN_FAILED`, or step-02's
 `qa-team-scenarios-do-not-cover-the-change`, step-04 uses `qa-team` and
@@ -981,11 +2295,14 @@ commits. In a Rust CLI or Python repository it adds the missing coverage to
 failing scenario or test is fixed, never weakened or deleted. A directory
 outside the repository gives `gadugi-scenario-dir-outside-repo`.
 
-### Criterion 3: the crusty loop ended DONE and CLEAN
+### Criterion 3: the crusty loop ended DONE and CLEAN or MINOR_ONLY
 
 Criterion 3 is met when phase 2's `crusty-old-engineer` loop ended `DONE`, its
-last loop-written record is `CLEAN`, and every later commit is a base merge or
-a description or evidence change. No minimum round count applies
+last loop-written record is `CLEAN` or `MINOR_ONLY`, and every later commit is
+a base merge or a description or evidence change. A `MINOR_ONLY` record meets
+criterion 3 only because the merge gate separately requires a filed follow-up
+issue for each of its findings (see
+[The follow-up check in the merge gate](#the-follow-up-check-in-the-merge-gate)). No minimum round count applies
 (`no_round_minimum_in_any_recipe_or_tool`), nor does the skill's three-cycle
 rule.
 
@@ -1016,8 +2333,8 @@ record and prints the reviewed SHA or the first failing token:
 | 1 | `phases.tsv` has the `crusty-loop` marker. | `crusty-loop-not-done` |
 | 2 | `crusty-records.tsv` is a regular file, not a symlink; its last row has a label, a name matching `^crusty-[A-Za-z0-9._-]+\.json$`, and a 40- or 64-hex hash. | `crusty-manifest-missing` |
 | 3 | The named record is a regular file, not a symlink. | `crusty-record-missing` |
-| 4 | The record and `crusty-latest.json` hash to the manifest hash; the record is one line starting `{"crusty_verdict":"CLEAN",` or `{"crusty_verdict":"CONCERNS",` with one `reviewed_head_sha`. | `crusty-record-modified` |
-| 5 | The verdict is `CLEAN`. | `crusty-not-clean` |
+| 4 | The record and `crusty-latest.json` hash to the manifest hash; the record is one line starting `{"crusty_verdict":"CLEAN",`, `{"crusty_verdict":"MINOR_ONLY",` or `{"crusty_verdict":"CONCERNS",` with one `reviewed_head_sha`. | `crusty-record-modified` |
+| 5 | The verdict is `CLEAN` or `MINOR_ONLY`. | `crusty-not-clean` |
 | 6 | `reviewed_head_sha` is 40 or 64 hex characters. | `crusty-head-sha-empty` |
 
 `autodrive_crusty_range` in `autodrive_trust.sh` walks
@@ -1046,7 +2363,10 @@ phase 2 ended at `round-2`, the re-review's first round is `round-3`. Phase 2's
 records, findings, logs and manifest rows stay as they were, and the
 manifest's last row is the re-review's last round. When that loop ends `DONE`,
 `autodrive_record_crusty_loop_done` writes the resolved concern ids and the
-marker back, exactly as phase 2's step-03 does. The tool prints one JSON line
+marker back, exactly as phase 2's step-03 does. Before it does, the tool
+runs `autodrive_followups.sh collect` on the state directory, so a re-review
+that ended `MINOR_ONLY` adds its findings to the follow-up set. If `collect`
+fails, the tool reports `crusty-rereview-not-done` and writes no marker. The tool prints one JSON line
 whose `before_round_result` is one of:
 
 | `before_round_result` | Exit | Merge-ready loop |
@@ -1074,7 +2394,7 @@ the current `HEAD`:
 
 | `crusty_status` | `crusty_reason` | step-02 blocker |
 | --- | --- | --- |
-| `DONE_CLEAN` | `""` | None; cites `crusty_reviewed_head_sha`. |
+| `DONE_CLEAN` | `""` | None; cites `crusty_reviewed_head_sha`. A last record of `CLEAN` or `MINOR_ONLY` both give this status. |
 | `ABSENT` | `crusty-loop-not-done` | `quality-audit-convergence-crusty-not-done-clean` |
 | `NOT_CLEAN` | `crusty-not-clean` | the same |
 | `UNTRUSTED` | `crusty-manifest-missing`, `crusty-record-missing`, `crusty-record-modified`, `crusty-head-sha-empty`, `crusty-other` | the same |
@@ -1090,8 +2410,8 @@ git older than 2.38 and a failed base fetch all fail closed into a re-review.
 `step-01-platform-facts` runs `autodrive_platform_facts.sh [pr]` (#1518). Its
 one JSON line holds `pr`, `state`, `is_draft`, `mergeable`, `merge_state`,
 `review_decision`, `head_sha`, `base_ref`, `unresolved_threads`,
-`required_approvals`, `approval_status` and `approval_source`; a malformed
-value is reported as unreadable.
+`required_approvals`, `approval_blocker`, `approval_status` and
+`approval_source`; a malformed value is reported as unreadable.
 
 | `reviewDecision` | Other input | `approval_status` | `approval_source` |
 | --- | --- | --- | --- |
@@ -1101,7 +2421,23 @@ value is reported as unreadable.
 | empty | `required_approvals` is above `0` | `NOT_MET` | `required-count` |
 | empty | count unreadable or unknown; `merge_state` is `CLEAN`, `HAS_HOOKS` or `UNSTABLE` | `MET`; `required_approvals` stays empty, never `0` | `merge-state` |
 | empty | count unreadable or unknown; `merge_state` is `DIRTY` or `BEHIND`, or `BLOCKED` with a check in the rollup that has not passed (or no checks), `mergeable` `CONFLICTING`, or an unresolved review thread, outdated or not | `PENDING` | `other-blockers` |
-| anything else, or no PR read | none | `UNREADABLE` | `unreadable` |
+| empty | count unreadable or unknown; `merge_state` is `BLOCKED`, nothing an agent can clear is outstanding, and a review rule is named | `NOT_MET` | `review-rule` |
+| empty | count unreadable or unknown; `merge_state` is `UNKNOWN` | `UNREADABLE` | `facts-unreadable` |
+| empty | count unreadable or unknown; `merge_state` is `BLOCKED` with no review rule named, `DRAFT`, or any other value | `UNREADABLE` | `unreadable` |
+| anything outside the values above | none | `UNREADABLE` | `facts-unreadable` |
+| any, or none read at all | `gh pr view` failed | `UNREADABLE` | `facts-unreadable` |
+
+The rows are read top-down and the first that matches decides, so the two
+axes do not interleave. A readable `required_approvals` settles the question
+before `merge_state` is consulted at all: at a count of `0` with no rule
+making it unknown the status is `MET` by `required-count`, whatever the merge
+state and draft or not. Within the count-unknown rows, `CLEAN`, `HAS_HOOKS`
+or `UNSTABLE` gives `MET` by `merge-state` even where the branch names a
+review rule, since a named rule is exactly what made the count unknown. A
+draft is read from `merge_state` `DRAFT`, which matches no merge-state row
+and so falls through to `unreadable`; the `is_draft` field is reported for the
+operator and decides nothing, and the implementation and its test key on
+`merge_state`.
 
 A check has passed when its `conclusion` (a check run) or `state` (a status
 context) is `SUCCESS`, `NEUTRAL` or `SKIPPED`; a run that has not finished has
@@ -1120,9 +2456,20 @@ alike. That is
 step-04 treats as a reason to clear the other blockers first, not as a request
 for a person; the next round reads the approval again. `BLOCKED` with every
 check passed, no conflict, the branch up to date and no unresolved thread
-leaves only rules a person satisfies, a required review among them, and stays
-`UNREADABLE`. The INFO line shows `mergeable`, `checks=pass|not-passed|none`
-and `threads=<count>|unreadable`.
+leaves only rules a person satisfies, a required review among them, and which
+status that is turns on whether the branch names one. With
+`require_code_owner_reviews` or `require_last_push_approval` in classic
+protection, or `require_code_owner_review`, `require_last_push_approval` or a
+non-empty `required_reviewers` in a ruleset `pull_request` rule, the
+measurement is complete: a review is required and it is missing. That is
+`NOT_MET` with the source `review-rule`, which step-02 reports as
+`required-approval-missing`. With no rule named, nothing that was read says a
+review is required, and the status stays `UNREADABLE` with the source
+`unreadable`; a draft pull request, whose `merge_state` is `DRAFT`, is
+`UNREADABLE` by the same fall-through. Both go to a person,
+and the named rule only tells them what to satisfy. The INFO line shows
+`mergeable`, `checks=pass|not-passed|none` and
+`threads=<count>|unreadable`.
 
 An empty `reviewDecision` does not mean that no review is required. GitHub
 publishes a decision only when a rule on the base branch requires at least one
@@ -1134,8 +2481,9 @@ A count of `0` that comes with such a rule is therefore unknown, not `0`:
 protection, and `require_code_owner_review`, `require_last_push_approval` or a
 non-empty `required_reviewers` in a ruleset `pull_request` rule. The INFO line
 shows it as `unknown(<rule>)`, `required_approvals` stays empty, and the
-`merge-state` and `other-blockers` rows decide, so `BLOCKED` gives `PENDING`
-or `UNREADABLE`, never `MET`. A count above `0` is kept whatever else the
+`merge-state`, `other-blockers`, `review-rule` and `unreadable` rows decide, so
+`BLOCKED` gives `PENDING`, `NOT_MET` from the named rule, or `UNREADABLE`,
+never `MET`. A count above `0` is kept whatever else the
 rule requires, because GitHub publishes a decision for it.
 
 `required_approvals` is the higher of `required_approving_review_count` from
@@ -1150,13 +2498,61 @@ rysweet/amplihack-rs (404 `Not Found` while `branches/main` says
 
 Step-02 counts criterion 6 met only for `MET`, otherwise reporting
 `changes-requested`, `required-approval-missing`,
-`approval-pending-other-blockers` or `approval-state-unreadable`. It reads criterion 8 from `merge_state`: `CLEAN`,
+`approval-pending-other-blockers`, `approval-facts-unreadable` or
+`approval-state-unreadable`, one per `approval_source` as the table in
+[A failed measurement is not a missing review](#a-failed-measurement-is-not-a-missing-review)
+sets out. It reads criterion 8 from `merge_state`: `CLEAN`,
 `HAS_HOOKS` or `UNSTABLE` means no protection rule blocks, and a protection-API
 404 is not a blocker. Step-03 downgrades with `approval_status=<value>`.
 Step-04 cannot approve; it answers requested changes and a person approves.
 Without the tool, or with a tool that prints no facts, step-01 fails by name.
 The gate's criterion 6 check is unchanged: it refuses `CHANGES_REQUESTED`,
 and GitHub refuses a merge missing a required review.
+
+#### A failed measurement is not a missing review
+
+Three things leave the approval facts unread rather than unmet: `gh pr view`
+failing, a `reviewDecision` outside the values the tool knows, and a
+`mergeStateStatus` of `UNKNOWN` (GitHub has not finished computing
+mergeability) where the required count could not be read either. None of them
+says anything about reviews, so they are `UNREADABLE` with the source
+`facts-unreadable`, and step-02 reports `approval-facts-unreadable`. The
+first two hold whatever else was read; the third does not, because a readable
+count decides first and a count of `0` is `MET` while GitHub is still
+computing the merge state.
+
+The tool, not the assessment agent, maps a source to a blocker: it prints the
+id as `approval_blocker`, empty only when the status is `MET`, and step-02
+reports that id verbatim while citing `approval_source` (#1517, #1518 — a
+blocker is a measurement, not a reading). The INFO line on stderr names it
+too, as `blocker=`.
+
+| `approval_source` | Round blocker (`approval_blocker`) | What the round does with it |
+| --- | --- | --- |
+| `review-decision`, `CHANGES_REQUESTED` | `changes-requested` | Step-04 answers the review; a person approves. |
+| `review-decision`, `REVIEW_REQUIRED`, or `required-count` above `0` | `required-approval-missing` | A person approves. |
+| `review-rule` | `required-approval-missing` | A person approves, or satisfies the rule the INFO line names. |
+| `other-blockers` | `approval-pending-other-blockers` | Step-04 clears the other blockers; the next round reads the approval again. |
+| `facts-unreadable` | `approval-facts-unreadable` | Nothing. The next round measures again. |
+| `unreadable` | `approval-state-unreadable` | A person reads the branch's rules. |
+
+`approval-facts-unreadable` is self-clearing, like
+`approval-pending-other-blockers`: step-04 neither acts on it nor asks for a
+person, because nothing a person could do would change the reading, and a
+transient failure answers itself next round. Two of the three sources are
+transient in that way — a `gh` failure and a merge state GitHub has not
+finished computing. The third is not: a `reviewDecision` outside the
+allow-list means GitHub has added an enum value this tool does not know, and
+re-reading returns the same token every round until the tool is taught it. It
+is grouped with the other two because the read succeeded and the field is
+simply not understood, which says nothing about whether a review exists —
+reporting it as a missing review would be a finding the tool did not make.
+Unreadability that persists therefore spends rounds rather than escalating;
+the
+[no-progress stop](#the-no-progress-rule) and the
+[usage budget](#budget-keys-and-defaults) bound that, and the pull request
+cannot slip through meanwhile, since `UNREADABLE` is not `MET`, criterion 6 is
+not counted met, and the gate refuses a merge without it.
 
 ### The qa evidence hash chain
 
@@ -1245,16 +2641,26 @@ record. **They are not a boundary against a deliberate forger running as the
 same user**, who still cannot satisfy required CI, review state, or
 `gh pr merge --match-head-commit`.
 
-The branch's own manifests decide the repository type. A branch can turn a
-Node repository into a Python one by adding `pyproject.toml`, and so turn the
-gadugi requirement off. `qa_repo_type` and `qa_dir` in the evidence show the
-choice; set `AUTODRIVE_QA_SCENARIO_DIR` to require gadugi whatever the
-branch's manifests say. If the nested crate search hits an error, such as an
-unreadable directory that could hide a second crate, the result is
-`ambiguous` and the round is BLOCKED; it never runs the crate it could read.
-The candidate list then names the error as `(search-error)`.
-Checking the type at the merge base is tracked in
-[#1640](https://github.com/rysweet/amplihack-rs/issues/1640). Detected
+The manifests committed at the merge base decide the repository type, so a
+branch cannot turn a Node repository into a Python or Rust one by adding
+`pyproject.toml` or `Cargo.toml`, at the root or below it, and so turn the
+gadugi requirement off; with no known merge base, gadugi stays required. A
+nested project that already exists at the merge base can still be chosen for
+a pull request confined to it, as
+[Project candidates and path scoping](#project-candidates-and-path-scoping)
+describes ([#1640](https://github.com/rysweet/amplihack-rs/issues/1640)).
+`qa_repo_type` and `qa_dir` in the evidence show the choice; set
+`AUTODRIVE_QA_SCENARIO_DIR` to require gadugi whatever the manifests say. If
+the candidate search hits an error, such as a tree object git cannot read
+that could hide a second project, and there is no root
+project, the result is `unresolved` and the round is `QA_UNRESOLVED`; it never
+runs the project it could read. The candidate list then names the error as
+`(search-error)`. A declared command is trusted only from the merge base:
+`.amplihack/qa.toml` and the CI workflows are read from the merge-base tree,
+never the working tree, and are refused when the pull request changes them
+(see
+[Declared commands come from the merge base](#declared-commands-come-from-the-merge-base)).
+Detected
 commands run in `qa_dir` and are found through the operator's `PATH`; where
 the program resolves, inside or outside the repository, is not checked. That
 is deliberate: the suite runs the branch's code anyway (`build.rs`,
@@ -1266,8 +2672,9 @@ is a sandbox, and no part of the installed check should be cited as one.
 code, and running it is the point of criterion 1. The tool unsets `CDPATH`, so
 `qa_dir` and a relative `AUTODRIVE_QA_DIR` resolve from the repository root,
 never in a `CDPATH` directory of the same name. The environment override does
-not change the repository type: with `AUTODRIVE_QA_COMMAND` set,
-`gadugi_required` still follows the detected type.
+not change the repository type: with `AUTODRIVE_QA_COMMAND` set, or a
+command from `.amplihack/qa.toml` or CI, `gadugi_required` still follows the
+scoped detection.
 
 Accepted limits: a `scenarios:` list in one file runs in one process (#207); a
 scenario using paths relative to its own file fails after staging; without
@@ -1342,15 +2749,22 @@ A read is one `${RECIPE_VAR_<name>:-` occurrence for a name in the checked
 output set, so a line that reads the same output twice counts twice. Reads
 made inside a bundled tool, such as the merge round's evidence reads in
 `autodrive_round_evidence.sh`, are not counted here; that file uses the same
-form. There are 34 in all:
+form. `autodrive-build` step-03's read of `workflow_result` (#1714) goes
+through `rv_field` inside `workflow_finalization_handoff.sh`, and
+`workflow_result` is the output of a `workflow-finalize.yaml` step, not of an
+autodrive step, so it is outside the checked output set and adds no row;
+`autodrive-build.yaml` only declares it `""` in `context:`. The #1979 inputs
+`plan_task_id` and `task_description` are recipe context, not step outputs, so
+they add no row; `autodrive-merge-loop.yaml` step-02b's read of
+`merge_loop_preflight` does. There are 36 in all:
 
 | Recipe | Step-output reads |
 | --- | --- |
-| `auto-drive-to-merge.yaml` | 4 |
+| `auto-drive-to-merge.yaml` | 5 |
 | `autodrive-build.yaml` | 1 |
 | `autodrive-crusty-loop.yaml` | 7 |
 | `autodrive-crusty-round.yaml` | 8 |
-| `autodrive-merge-loop.yaml` | 6 |
+| `autodrive-merge-loop.yaml` | 7 |
 | `autodrive-merge-round.yaml` | 8 |
 
 ### Step outputs ignore inherited bare variables
@@ -1823,8 +3237,9 @@ merges, it re-verifies and records:
 | CI | `gh pr checks --json name,state,bucket` | any pending or failing check, zero checks, **or an unreadable rollup** |
 | qa-team scenarios | evidence file from this run | `qa_status` other than `PASS`, no evidence file, or evidence whose `head_sha` is missing or is not the SHA being merged |
 | qa evidence chain | `merge-ready-records.tsv`, `merge-ready-latest.json`, `qa-evidence.json` | any of them not private; `autodrive_qa_trusted` not `ok` (its token, or `qa-other`; see [The qa evidence hash chain](#the-qa-evidence-hash-chain)) |
-| gadugi scenarios | same evidence file, and `autodrive_gadugi_required .` on the checkout's own files, the same files the evidence step measured | Unless the gate's own `autodrive_gadugi_required` says `false` and `gadugi_status` is `NOT_REQUIRED`: `gadugi_status` other than `PASS`, or `gadugi_scenario_count` not a positive integer. An unreadable answer counts as required. |
-| Crusty loop | `phases.tsv`, `crusty-latest.json`, `crusty-records.tsv` and its record, in `--state-dir` | no `--state-dir`; the directory or a file not private; no `crusty-loop` marker; `crusty_verdict` not `CLEAN`; `autodrive_crusty_final` failing (its token, or `crusty-other`); `HEAD_SHA` not in the clone; `autodrive_crusty_range` not `ok` (its token, or `crusty-range-other`) |
+| gadugi scenarios | same evidence file, and `autodrive_gadugi_required .` on the checkout's own files, the same files the evidence step measured, with `AUTODRIVE_QA_BASE` set from the gate's own `baseRefName` so its changed paths match step-02's; an inherited value is replaced | Unless the gate's own `autodrive_gadugi_required` says `false` and `gadugi_status` is `NOT_REQUIRED`: `gadugi_status` other than `PASS`, or `gadugi_scenario_count` not a positive integer. An unreadable answer counts as required. |
+| Crusty loop | `phases.tsv`, `crusty-latest.json`, `crusty-records.tsv` and its record, in `--state-dir` | no `--state-dir`; the directory or a file not private; no `crusty-loop` marker; `crusty_verdict` neither `CLEAN` nor `MINOR_ONLY`; `autodrive_crusty_final` failing (its token, or `crusty-other`); `HEAD_SHA` not in the clone; `autodrive_crusty_range` not `ok` (its token, or `crusty-range-other`) |
+| Follow-up issues (#1979) | `followups.jsonl`, `followups.tsv`, `followups.error`, `followups.parent` in `--state-dir`, checked by `autodrive_followups.sh gate` from the gate's own directory | `ERROR: followups-unfiled: <token>`: a finding in the set with no issue row, no recorded comment on the parent task issue, a recorded filing error, a malformed or unsafe file, or `MINOR_ONLY` with an empty set. A missing tool blocks whatever the verdict. See [The follow-up check in the merge gate](#the-follow-up-check-in-the-merge-gate). |
 | merge-ready verdict | round record from this run | not `MERGE_READY`, or captured against a different head SHA |
 
 The review-thread query pages. `reviewThreads(first:100)` with no `pageInfo`
@@ -1903,7 +3318,7 @@ the host has no executable `/bin/bash` (NixOS: the shim could not start, so
 every `gh` call would fail), the shim is missing or not a regular executable, or
 anything the shim trusts is group- or other-writable: the shim, its
 directory, `tools/` above it, and the gate and the helpers it sources there
-(`autodrive_state.sh`, `autodrive_trust.sh`, `autodrive_unmerged.sh`). The install sets the shim and its directory to
+(`autodrive_state.sh`, `autodrive_trust.sh`, `autodrive_qa_scope.sh`, `autodrive_unmerged.sh`). The install sets the shim and its directory to
 `0755` and removes group and other write from the rest. Nothing skips this:
 
 ```text
@@ -1992,7 +3407,12 @@ deliberate evasion and a [non-goal](#what-this-does-not-stop).
 and inspections alike (`bash -n`, `command -v`, `bash -c '… gate'`).
 
 The program is the first word of each command after splitting at unquoted
-`;`, `&`, `|`, parentheses and newlines. Reserved words (`if`, `then`, `{`,
+`;`, `&`, `|`, parentheses and newlines. A backslash-newline is removed
+first, as the shell removes it, redirections are dropped and `$'…'`
+escapes are decoded, so `gh pr \` followed by `merge 38` on the next line,
+`>out gh pr merge 38` and `gh $'\x70r' merge 38` are refused. Builds
+before #1733, whose tmux guard now shares this tokeniser, allowed those
+three forms. Reserved words (`if`, `then`, `{`,
 `!`, …), `VAR=value` assignments and the wrappers `env`, `exec`, `command`,
 `nohup`, `time`, `nice`, `timeout` and `sudo` (with their options) are
 skipped. Nothing else is read. Quoted text (with `\'` escaped inside
@@ -2223,6 +3643,806 @@ partial first line of the 20000-byte tail and keeps the summary header when
 a long summary would push it out of the window. See
 [Agent output lines are not refusals](loop-health-evaluator.md#agent-output-lines-are-not-refusals).
 
+## Orphaned rounds
+
+A round or evaluator run that loses its driver stops itself. Before #1976 a
+fixer round whose parent run was killed kept running headless and could still
+push and comment.
+
+`autodrive_loop.sh` starts each round and evaluator with a nested
+`amplihack recipe run`. It sets `AMPLIHACK_AUTODRIVE_STATE_DIR="$STATE_DIR"`
+on the round's command only; the evaluator's command does not set it, so an
+orphaned evaluator writes no `orphaned.json`. Both nested runs inherit
+`AMPLIHACK_PARENT_RECIPE_PID` and `AMPLIHACK_PARENT_RECIPE_STARTTIME` from
+the run above the loop. When that
+parent `amplihack recipe run` exits, the nested run:
+
+1. prints `orphaned: parent recipe run <pid> exited; stopping` on stderr;
+2. writes `orphaned.json` in the state directory;
+3. tears down its runner's process group with `SIGTERM` then `SIGKILL`;
+4. exits `75`.
+
+The parent is the `amplihack recipe run` one level up, never the human's
+shell or Claude session. The pane root of a `--detach` run watches nothing,
+because `--detach` removes the parent and state-directory variables from the
+pane environment. A detached auto-drive therefore keeps running after the
+launching session ends; only its own nested rounds stop when it stops. The
+watch is event-driven (`pidfd_open` and `poll()` with no timeout) and
+Linux-only. See
+[Nested runs and orphan stops](./recipe-cli-reference.md#nested-runs-and-orphan-stops).
+
+### `orphaned.json`
+
+```json
+{
+  "parent_pid": 41822,
+  "tree_id": "t-41790",
+  "run_id": "0c1f8e2a-6b7d-4a52-9e0f-3d4c5b6a7e81",
+  "reason": "parent recipe run exited",
+  "timestamp": "2026-06-12T04:25:02Z"
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `parent_pid` | PID of the parent run that exited. |
+| `tree_id` | `AMPLIHACK_TREE_ID` of the orphaned run. |
+| `run_id` | `run_id` of the orphaned run, matching its correlation pointers. |
+| `reason` | Always `parent recipe run exited`. |
+| `timestamp` | RFC 3339 time of the stop. |
+
+The file holds only these fields, never context values or log text. It is
+written only when `AMPLIHACK_AUTODRIVE_STATE_DIR` is an absolute path to a
+directory that is not a symlink, is owned by the current user, and has no
+group or other write bit. It is created as `.orphaned.json.<pid>.tmp` with
+mode `0600` and `O_NOFOLLOW`, synced, then renamed to `orphaned.json`. If any
+check fails, the file is skipped with a warning; the stderr line and the
+final correlation record, with `status: "orphaned"`, `parent_pid` and
+`reason`, are still written.
+
+Only the round's own `recipe run` writes the file. `recipe run` removes
+`AMPLIHACK_AUTODRIVE_STATE_DIR` from the runner's environment before the
+runner starts, so a run nested below the round cannot write or overwrite it.
+
+### How the loop treats exit 75
+
+The parent a round watches is the `amplihack recipe run` above
+`autodrive_loop.sh`, not the loop. A clean `SIGTERM` to that run tears down
+its process group, loop and round included. The orphan stop matters when that
+run dies without teardown (`SIGKILL`, the OOM killer or a crash); the loop is
+then usually still alive and reads the round's exit code.
+
+Exit `75` from a round, or from the loop-health evaluator, stops the loop at
+once with `loop_result` `ORPHANED` and exit `75`:
+
+```json
+{"loop":"crusty","loop_result":"ORPHANED","round_label":"round-2","reason":"round round-2 exited 75: the recipe run above this loop exited, so the nested run stopped itself; see orphaned.json in the state directory"}
+```
+
+The check runs straight after the child exits, before the round record is
+read, before the progress row is written and before the evaluator starts.
+Without it the loop would record a failed round and start the evaluator,
+which inherits the same dead parent, stops at its pre-spawn check and prints
+no `LOOP_HEALTH` line; the loop would then report the driver crash as
+`STUCK ... loop-health-evaluator returned STUCK`. `ORPHANED` is not a
+judgement about progress, and it is not a terminal refusal like
+[exit 79](#exit-code-79-is-terminal): relaunching auto-drive resumes from the
+recorded round. `orphan_stop` in `autodrive_escalate.sh` makes the decision.
+
+`orphaned.json` is a record for people and for later tools; the loop decides
+from the exit code and does not read it. On [resume](#resume) the file is not
+cleared, so it may describe an earlier stop rather than the current round. A
+reader and clearing on resume are tracked in
+[#2093](https://github.com/rysweet/amplihack-rs/issues/2093).
+
+## Usage limits are not STUCK
+
+A Claude usage limit is not a judgement about progress. When the
+`--before-round` step, a round or the loop-health evaluator fails on one,
+`autodrive_loop.sh` stops the loop as `USAGE_LIMIT`, exit `1`. Without this
+check a limit on the evaluator ended the loop as `STUCK ... loop-health-evaluator
+returned STUCK (or an unreadable verdict)`, because the loop's verdict
+defaults to `STUCK` when the evaluator recipe fails, and a limit on a round
+reached the evaluator as evidence of a round that did nothing.
+
+Every agent step first goes through the
+[usage-limit wait](profile-command.md#usage-limit-wait): it waits for the
+reset or, for a weekly limit, for another login with capacity
+([capacity wait](profile-command.md#capacity-wait)), and runs once more. The
+loop stops only when that wait was skipped, expired or used up. When the
+retry succeeds, the round or evaluator run completes normally and the loop
+never learns that a limit was hit; for the evaluator see
+[Retry inside the step](loop-health-evaluator.md#retry-inside-the-step).
+
+### How the loop recognises a usage limit
+
+`usage_limit_failure <rc> <log>` answers true only when all of these hold.
+It lives in `autodrive_escalate.sh`, which `autodrive_loop.sh` sources from
+its own directory together with `escalate`; the loop exits `2` if that file
+is missing.
+
+1. `<rc>` is not `0`. A run that exits `0` is never a usage limit, whatever
+   its log says.
+2. After the same cut and exclusions as `terminal_refusal()` (the runner's
+   run summary, agent output lines `[HH:MM:SS] [amplihack:...]` and the
+   runner's `amplihack.recipe.log_pointer {...}` lines are removed), a line
+   starts at column 0 with `amplihack.recipe.failure_class ` followed by a
+   JSON object.
+3. That object's **top-level** `class` is `usage_limit`. With `jq` on
+   `PATH`, `jq` parses the object and checks `.class == "usage_limit"`; a
+   line that is not valid JSON does not count. Without `jq`, the line must
+   match
+   `^amplihack\.recipe\.failure_class \{"action":"[a-z_]+","attempt":[0-9]+,"class":"usage_limit"`.
+   The runner builds the marker with `serde_json` without the
+   `preserve_order` feature, so its keys are written in alphabetical order
+   and `action`, `attempt` and `class` are always the first three. A
+   `"class":"usage_limit"` nested inside `evidence` or another field does
+   not count either way.
+
+That marker is written by the recipe runner, which classifies a failed
+step's evidence. The usage-limit wait's
+[closing line](profile-command.md#closing-line) keeps the limit inside the
+runner's 40-line evidence window after a long wait. The runner prefixes
+every line of agent output, so an agent cannot write a column-0 marker. A
+bash step that runs a nested `amplihack recipe run` and tolerates its
+failure can still leave that run's column-0 marker in the log; if the round
+then fails for another reason, the loop stops as `USAGE_LIMIT`. A
+model that only mentions a usage limit, an indented or quoted copy of the
+marker, and `amplihack.recipe.usage_limit_wait` lines on their own do not
+stop the loop. A forged marker could at most change the label on a run that
+had already failed. The result is captured before it is tested, so
+`pipefail` and an early-exiting `grep` cannot change it.
+
+`workflow_hook_repair.sh` has a copy of this check,
+`hook_repair_usage_limit_failure`, with the same rules.
+
+The `USAGE_LIMIT` record on stdout, like every record `escalate` writes, is
+valid JSON whatever the round label or reason holds: backslashes and double
+quotes are escaped, and control characters become spaces.
+
+### Where it is checked
+
+The check runs immediately after `terminal_refusal`, so a policy refusal
+still exits `79` first.
+
+| Check point | Reason on stderr |
+| --- | --- |
+| `--before-round` step | `the before-round step failed on a Claude usage limit that no login lifted` |
+| round | `round <label> failed on a Claude usage limit that no login lifted; it is not passed to the evaluator` |
+| loop-health evaluator | `the loop-health evaluator failed on a Claude usage limit that no login lifted` |
+
+A round that failed on a limit is not handed to the evaluator, so it cannot
+draw a `STUCK` verdict for a round that never ran.
+
+### Output
+
+On stderr:
+
+```
+AUTO_DRIVE_LOOP: USAGE_LIMIT — loop 'crusty' stops at round label 'round-3'.
+  Reason: the loop-health evaluator failed on a Claude usage limit that no login lifted
+  Round record: ~/.amplihack/state/auto-drive/<key>/crusty-round-3.json
+  This is a usage limit, not a judgement about progress. Run again when a login has capacity.
+```
+
+and one line on stdout:
+
+```json
+{"loop":"crusty","loop_result":"USAGE_LIMIT","round_label":"round-3","reason":"the loop-health evaluator failed on a Claude usage limit that no login lifted"}
+```
+
+`escalate` takes an optional third argument, the kind of stop, which selects
+the last stderr line. Called with two arguments, as every other stop is, its
+stderr lines are unchanged. The three `USAGE_LIMIT` reasons are fixed text,
+with no account, profile or log content in them. The stdout line is built
+with `tr` and `sed`, never `jq`: backslashes and double quotes are escaped
+and control characters become spaces, so every reason gives valid JSON.
+
+### Readers of the result
+
+`USAGE_LIMIT` is always a failure. No reader maps it to success or to
+`STUCK`:
+
+| Reader | Behaviour on `USAGE_LIMIT` |
+| --- | --- |
+| `autodrive_crusty_rereview.sh` | prints `before_round_result` `crusty-rereview-not-done` with `crusty_loop_result` `USAGE_LIMIT`, says on stderr that the re-review stopped on a usage limit, leaves the `crusty-loop` marker absent and exits `1` |
+| `autodrive_merge_gate.sh` | does not merge: a loop that ended `USAGE_LIMIT` is not `DONE` |
+| `autodrive-report` in `auto-drive-to-merge.yaml` | reports `crusty_loop` as `USAGE_LIMIT`; the outcome follows `merge_result` as before, so it is `NOT_MERGED` unless a merge happened |
+| [commit hook repair](recipe-commit-hook-repair.md#hook_repair_run) | ends with status `usage_limit`, exit `1` |
+
+The loop exits `1`, as for `STUCK`. Callers tell the two apart by the
+`loop_result` field and by the runner's failure-class marker, not by the
+exit code.
+
+To continue, wait until a login has capacity (`amplihack profile usage`
+shows it) and run auto-drive again with the same `pr_number`; finished
+phases are skipped. To give the wait longer before the loop stops, raise
+[`recipe.usage_limit_max_wait_secs`](user-config.md#recipeusage_limit_wait).
+
+## No-progress stop and usage budget
+
+Issue #1743 added two stops that are decided by code in the loop driver, not
+by an agent. Both apply to the crusty loop and the merge-ready loop, and both
+exit `1`. Neither changes the evaluator, the [#1597
+override](#advancing-needs-two-independent-signals) or how verdicts are read;
+the loop-health evaluator still decides every other case.
+
+| Stop | `loop_result` | Decided from | Record of the run |
+| --- | --- | --- | --- |
+| No progress | `STUCK` | the PR head SHA and the round's open items, compared with the loop's previous round | `<loop>-stuck-reason.txt`, `<loop>-result.json`, the `escalate` line, a PR comment |
+| Usage budget | `BUDGET_EXHAUSTED` | rounds and wall seconds recorded in the state directory, compared with three limits | `autodrive-budget-summary.md`, `<loop>-result.json`, the `escalate` line, a PR comment |
+
+`BUDGET_EXHAUSTED` is never success. No reader maps it to `DONE`, and the
+merge gate does not merge after it.
+
+### The no-progress rule
+
+After a round that is **not** clean, and before the evaluator runs, the driver
+compares the round with the last row of `<loop>-progress.tsv`. It stops the
+loop as `STUCK` only when all of these hold:
+
+1. the previous row is not clean;
+2. the PR head SHA is non-empty in both rounds and is the same;
+3. the set of open items is the same;
+4. the round record's `ci_signal` is the same, and it does not contain
+   `PENDING`.
+
+In every other case the round goes to the evaluator as before. A round that
+makes progress, by a new commit, by a change in its open items or by a change
+in CI, is never stopped by this rule. CI that is still running is something to
+wait for, so it never stops the loop here. The merge round already waits for
+CI before it assesses the PR; condition 4 covers a race with that wait. The
+crusty loop records an empty `ci_signal`, so condition 4 always holds there.
+
+The head SHA is `git -C <repo> rev-parse HEAD` in the PR worktree, read once
+after the round and the review-dir checks. It is the same value the #1597
+override receives. A `git` failure gives an empty SHA, which never matches, so
+an unreadable head sends the round to the evaluator. `autodrive_progress.sh`
+then prints `WARNING: no valid HEAD SHA for <label>; the no-progress rule is
+off for this round.`
+
+The open items are the lines of the round record's findings file,
+`<loop>-round-N.json.findings`. For the crusty loop these are crusty's concern
+ids. For the merge-ready loop they are the blocker ids, plus the
+`measured-evidence-disagrees` line when the measured evidence downgraded the
+verdict. Before comparison each line has `\r` removed and surrounding space
+trimmed; blank lines are dropped; the rest is sorted with duplicates removed
+(`LC_ALL=C sort -u`). A missing findings file is an empty set. Commas, tabs and
+control characters inside an item become `_`, each item is cut to 200 bytes,
+and the joined field is cut to 3,700 bytes and ends `…(truncated)` when cut,
+so a whole progress row stays within 4 KiB. The cut text is only for display:
+two rounds are compared by the `sha256` of the full sorted set, stored as the
+last column of the row. A row written before that column existed, or on a host
+with neither `sha256sum` nor `shasum`, is compared by the cut text.
+
+A round stopped as `STUCK` still appends its own progress row before it stops,
+so after a resume the budget summary and `last` name the round that stopped.
+
+Exemptions:
+
+- **A clean round.** When the round verdict is the clean token, neither the
+  no-progress check nor the post-round budget check runs. The round goes to
+  the evaluator, which can return `DONE`.
+- **A first round.** A loop with no earlier row in its progress file has
+  nothing to compare with.
+- **A failed round.** When the round exited non-zero or left no readable
+  verdict (`MISSING`), its findings file is empty or absent and does not
+  describe its open concerns. The no-progress check does not run, and the
+  round goes to the evaluator, which judges infrastructure faults such as
+  `transient_transport`. Its row is appended with `2` in the clean column,
+  and a row with `2` never matches the next round either. The post-round
+  budget check still runs, so a loop of crashing rounds is bounded by the
+  budget.
+- **An untrusted progress file.** A progress file that is a symlink, is not a
+  regular file or is readable by group or others is not read. The driver
+  prints a `WARNING` and the evaluator decides. This check fails open, because
+  its worst outcome is an extra evaluator run. The driver checks the file
+  when it starts, before it sets untrusted state entries aside; when the file
+  is untrusted then, the rule stays off for the rest of that run.
+- **A row that could not be written.** When appending a row fails, the driver
+  prints `WARNING: could not append the <label> row to <file>.` The next
+  round compares with an older row, or with none, so the rule can miss one
+  stop; the evaluator still decides. A missing head SHA (above) has the same
+  effect for one round. Every one of these cases prints a `WARNING` and fails
+  open to the evaluator; none of them stops the loop.
+
+No other file exempts a round. A `<record>.light.json` file that an earlier
+version of [auto-drive-light](auto-drive-light.md) left beside a round record
+is not read, so a light round on an unchanged head with unchanged open items
+stops as `STUCK` like any other round.
+
+The reason is written to `<loop>-stuck-reason.txt` and is also the `reason`
+field of the `escalate` line:
+
+```text
+no progress (decided in code): head 3f9c2a1e6b0d4c7a8e5f1b2c9d0a3e4f5b6c7d8e and open items unchanged since round-4: missing-test-for-budget,unpinned-gh-timeout
+```
+
+When the set is empty, the text after the colon is `none`.
+
+### Budget keys and defaults
+
+The limits are context keys of `auto-drive-to-merge.yaml`. Override them with
+`-c` on the command line:
+
+| Key | Default | Counts |
+| --- | --- | --- |
+| `autodrive_budget_loop_rounds` | `12` | Round recipes run by one loop. Each loop is compared with this limit on its own. |
+| `autodrive_budget_total_rounds` | `20` | Round recipes run by both loops together. |
+| `autodrive_budget_wall_seconds` | `14400` | Seconds spent in children: before-round steps, rounds and evaluator runs, across both loops, less the time they waited for a usage limit to lift. |
+
+Time spent waiting for a usage limit is not counted. An agent step that hits
+a Claude usage limit can wait inside the child for the reset or for another
+login ([Usage-limit wait](profile-command.md#usage-limit-wait)). On a
+workstation that wait is on by default and has no maximum, so it could spend
+the whole budget without any agent working. The driver therefore sets
+`AMPLIHACK_USAGE_WAIT_LEDGER` for each child it times to a file in the state
+directory. Each wait that ends appends its real length in whole seconds to
+that file. The driver takes the total out of the child's row and records it
+as a separate row of phase `wait`, which no limit counts. The summary and
+`autodrive-usage.json` report it as usage-limit wait seconds. A
+`BUDGET_EXHAUSTED` stop is therefore never caused by a wait.
+
+The subtraction is bounded by the child's own time. A ledger that is a
+symlink or not a regular file of this user subtracts nothing, with a
+`WARNING`, and lines that are not integers are skipped with a `WARNING`;
+both err towards counting more time, not less. Waits in a nested crusty loop
+are recorded by that loop and taken out of the outer before-round step with
+its other rows. Waits that run at the same time in parallel steps of one
+round are added together, so a round with parallel waits can have more
+subtracted than any single wait took, up to the round's own length.
+
+The CI wait inside a merge round is agent time for this purpose and is
+counted.
+
+All three are cumulative across every run that uses the same state
+directory. A relaunch therefore continues counting from the rounds and
+seconds already recorded; it does not start again at zero.
+
+A limit is reached when it is greater than `0` and the recorded use is equal
+to or greater than it. `0` or an empty value means unlimited.
+
+Every value must match `^[0-9]{1,12}$` and is read in base 10, so `012` is
+twelve. Any other value makes `autodrive_loop.sh` exit `2` with a usage error
+naming the key, before the first round. Only the three keys above are
+accepted: an unknown `autodrive_budget_*` key also exits `2`.
+
+The defaults are declared only in `auto-drive-to-merge.yaml`.
+`autodrive-crusty-loop.yaml` and `autodrive-merge-loop.yaml` declare the keys
+with empty defaults, so either loop recipe run on its own is unbudgeted.
+Their step-02 reads the values from `RECIPE_VAR_autodrive_budget_*` and
+passes them to the driver as `--context` arguments; no
+`{{autodrive_budget_*}}` placeholder appears inside a `command:` block. The
+driver keeps them apart from the round context, so they never reach a round
+recipe.
+
+```bash
+# Default limits.
+amplihack recipe run auto-drive-to-merge -c pr_number=1743
+
+# A longer merge-ready loop and a six-hour wall budget.
+amplihack recipe run auto-drive-to-merge -c pr_number=1743 \
+  -c autodrive_budget_loop_rounds=20 \
+  -c autodrive_budget_total_rounds=30 \
+  -c autodrive_budget_wall_seconds=21600
+
+# No budget at all.
+amplihack recipe run auto-drive-to-merge -c pr_number=1743 \
+  -c autodrive_budget_loop_rounds=0 \
+  -c autodrive_budget_total_rounds=0 \
+  -c autodrive_budget_wall_seconds=0
+```
+
+The budget is a cost ceiling chosen by the operator. It is not the
+convergence terminator, and [there is still no iteration
+cap](#why-there-is-no-iteration-cap): a loop ends `DONE` only through the
+evaluator.
+
+### Where the checks run
+
+The order of operations in each round is:
+
+1. **Pre-round budget check**, before the round label is advanced, before the
+   review directory is stamped and before the `--before-round` step. If a
+   limit is reached, the loop stops as `BUDGET_EXHAUSTED` and no agent starts.
+   The `escalate` line carries the last label in the loop's progress file, or
+   `?` when there is none.
+2. The round label is advanced, the baseline taken and the review directory
+   stamped.
+3. The `--before-round` step, timed. If it fails, the budget is checked
+   first. When a limit is reached, the result is `BUDGET_EXHAUSTED`, not
+   `BEFORE_ROUND_FAILED`. Otherwise the existing handling applies.
+4. The round recipe, timed.
+5. The exit-`79` and review-dir checks.
+6. The head SHA and the open items.
+7. For a round that is not clean: the **no-progress check**, giving `STUCK`.
+8. For a round that is not clean: the **post-round budget check**, giving
+   `BUDGET_EXHAUSTED`.
+9. A row is appended to `<loop>-progress.tsv`, for clean rounds as well.
+10. The evaluator, timed, then the existing decision logic.
+
+A clean round is never stopped by the budget after it has run, so a loop that
+has converged keeps its `DONE`. The pre-round check before the next round
+still stops any further agent work.
+
+A terminal refusal (exit `79`) and a [usage limit](#usage-limits-are-not-stuck)
+are checked before either stop and keep their own results.
+
+All comparisons of round counts are made in `autodrive_budget.sh`, against
+counts read from the state directory. `autodrive_loop.sh` never compares
+`ROUND`, and the guard test `no_numeric_iteration_cap_anywhere` covers both
+new helpers.
+
+### The nested crusty loop
+
+The merge-ready loop's `--before-round` step,
+`autodrive_crusty_rereview.sh`, can start the crusty loop again. It forwards
+exactly the three budget keys to that nested loop and drops any other
+`autodrive_budget_*` key with a `WARNING`.
+
+The nested loop records its own rounds under the `crusty` loop, so they count
+towards the crusty per-loop limit and the total. Its progress rows go into the
+same `crusty-progress.tsv`. The outer driver takes a mark of the usage file
+before the before-round step, and afterwards records only what the nested loop
+did not: the step's elapsed seconds minus the seconds the nested loop
+recorded, and one session only when the nested loop recorded none. Each second
+and each session is counted once.
+
+When the nested loop stops as `BUDGET_EXHAUSTED`, the re-review prints
+`before_round_result` `crusty-rereview-budget-exhausted`, writes no
+`crusty-loop` marker and exits `1`. The outer loop then reports
+`BUDGET_EXHAUSTED` with the summary rewritten for the outer loop, even when
+the outer limits were not reached on their own. The nested loop has already
+posted its stop as a PR comment, so the outer loop does not post a second one.
+
+### State files
+
+All of these are in the run's state directory, created under `umask 077` with
+mode `0600`. None is written through a symlink. Rewritten files are replaced
+atomically with `mktemp` and `mv -f`; appends are single writes of at most
+4 KiB, taken under `flock -w 10` where it is available. When the lock is not
+taken within 10 seconds, a `WARNING` is printed and the row is appended
+without it (still one `O_APPEND` write). A file counts as trusted only when
+`find` can check its mode; a `find` error makes it untrusted.
+
+| File | Written | Content |
+| --- | --- | --- |
+| `<loop>-progress.tsv` | appended after every round | `round_label`, `head_sha`, `clean` (`1` clean, `0` not clean, `2` failed), open items joined by `,` (cut for display), `ci_signal` (empty for the crusty loop), `sha256` of the full open-item set |
+| `autodrive-usage.tsv` | appended after every child | `loop`, `round_label`, `phase` (`before`, `round`, `evaluator`, or `wait` for the usage-limit waits of the child in the row before it, with `0` sessions), `sessions`, `seconds`, `tokens` |
+| `autodrive-usage.json` | rewritten after every row | totals by loop and overall |
+| `<loop>-stuck-reason.txt` | on a no-progress stop | the reason line |
+| `autodrive-budget-summary.md` | on a budget stop | the summary below |
+| `comment-error.log` | when a stop comment fails to post | the error output of `gh pr comment`, at most 4 KiB |
+| `<loop>-result.json` | on every stop of the loop | the same fields as the `escalate` line |
+
+`<loop>` is `crusty` or `merge-ready`. Rows in `autodrive-usage.tsv` that do
+not parse are skipped with a `WARNING`. A usage file that is a symlink, is not
+a regular file or is readable by group or others makes the budget check exit
+`2` before any agent starts. The loop then exits `2` with an `ERROR` on stderr
+and no `loop_result`: it writes no `<loop>-result.json`, prints no `escalate`
+line and posts no PR comment. This check fails closed, unlike the progress
+check.
+
+`tokens` is an integer only when the agent CLI prints a token count on a line
+the driver recognises. No current CLI does, so the value is `unknown`. It is
+never recorded as `0`, and `autodrive-usage.json` reports the total as
+`unknown` when any row is `unknown`. No token, environment variable, prompt or
+log text is written to these files.
+
+An example `autodrive-usage.json`:
+
+```json
+{"loops":{"crusty":{"rounds":7,"sessions":15,"seconds":5130,"wait_seconds":0},"merge-ready":{"rounds":12,"sessions":26,"seconds":8811,"wait_seconds":5402}},"total":{"rounds":19,"sessions":41,"seconds":13941,"wait_seconds":5402,"tokens":"unknown"}}
+```
+
+### Output
+
+A no-progress stop prints, on stderr:
+
+```text
+AUTO_DRIVE_LOOP: STUCK — loop 'merge-ready' stops at round label 'round-5'.
+  Reason: no progress (decided in code): head 3f9c2a1e6b0d4c7a8e5f1b2c9d0a3e4f5b6c7d8e and open items unchanged since round-4: ci-red,unresolved-review-thread
+  held by: criterion 4: ci_status=RED
+  held by: criterion 10: unresolved_threads=2
+  held by: reported ci-red
+  held by: reported unresolved-review-thread
+  Round record: ~/.amplihack/state/auto-drive/<key>/merge-ready-round-5.json
+  This is a judgement about absence of progress, not an attempt count.
+```
+
+A budget stop prints, on stderr:
+
+```text
+AUTO_DRIVE_LOOP: BUDGET_EXHAUSTED — loop 'merge-ready' stops at round label 'round-12'.
+  Reason: usage budget reached (autodrive_budget_loop_rounds); see autodrive-budget-summary.md in the state directory
+  held by: criterion 6: approval_status=NOT_MET (source=required-count, required=1, merge_state=BLOCKED)
+  held by: reported required-approval-missing
+  Round record: ~/.amplihack/state/auto-drive/<key>/merge-ready-round-12.json
+  This is a usage budget set by the operator, not a judgement about progress. Relaunch with a higher budget to resume from the recorded round.
+```
+
+Each prints one line on stdout and writes the same line to
+`<loop>-result.json`:
+
+```json
+{"loop":"merge-ready","loop_result":"BUDGET_EXHAUSTED","round_label":"round-12","reason":"usage budget reached (autodrive_budget_loop_rounds); see autodrive-budget-summary.md in the state directory"}
+```
+
+The sentence `This is a judgement about absence of progress, not an attempt
+count.` is printed only for `STUCK` results, whether decided by the
+evaluator or by the no-progress rule. `escalate` takes `budget` as its third
+argument for the budget wording.
+
+### What held the round
+
+Between `Reason:` and `Round record:`, `escalate` prints one `  held by:` line
+for each condition that was holding the pull request when the loop stopped, so
+the stop says what to do next without the operator opening the round record.
+The lines print on every stop `escalate` writes: `STUCK`,
+`BUDGET_EXHAUSTED`, `USAGE_LIMIT` and `ORPHANED` alike.
+
+The measured lines come from `held_by` in the round record, which
+`autodrive_round_evidence.sh round-record` writes from the same measurements
+the [measured downgrade](#measurement-outranks-the-model) reads, through the
+one helper both call, and in that function's order — qa, checks, conflict,
+threads, quality-audit, approval, then the hash — not in ascending criterion
+order, so a stop block and the `downgrade_reason` beside it list the same
+conditions in the same sequence:
+
+| Condition | Line | Criterion |
+| --- | --- | --- |
+| `qa_status` is not `PASS` | `criterion 1: qa_status=<value>` | 1 |
+| `ci_status` is not `GREEN` | `criterion 4: ci_status=<value>` | 4 |
+| `conflict` is not `false` | `criterion 7: conflict=<value>` | 7 |
+| `unresolved_threads` is not `0` | `criterion 10: unresolved_threads=<value>` | 10 |
+| `crusty_status` is not `DONE_CLEAN` | `criterion 3: crusty_status=<value>` | 3 |
+| `approval_status` is not `MET` | `criterion 6: approval_status=<value> (source=<approval_source>, required=<required_approvals>, merge_state=<merge_state>)` | 6 |
+| the qa evidence hash does not match the one taken before the agents ran | `qa_evidence=modified` | none |
+| no measurement could be compared at all | `measured_evidence=unreadable` | none |
+
+Each line is the `measured-downgrade` term with its criterion number in
+front, so a line and the term behind it carry the same field name and the
+same value, and neither can drift from the other: one helper reads the
+measurements and both callers format what it read. Criterion 6 adds, in
+brackets, the three platform facts that decided the status:
+`approval_source`, `required_approvals` (`unknown` when the count was not
+read) and `merge_state`. The status alone does not say which of the two
+unread cases held the round: `source=facts-unreadable` means the
+measurement failed this round (`gh pr view` failed, or GitHub had not yet
+computed the merge state) and the next round reads it again, while
+`source=unreadable` means the pull request is `BLOCKED` by a rule that only
+a person satisfies and that the tool could not name. For example:
+
+```text
+  held by: criterion 6: approval_status=UNREADABLE (source=unreadable, required=unknown, merge_state=BLOCKED)
+```
+
+Each of the three values comes from the closed vocabulary
+`autodrive_platform_facts.sh` writes, or digits for the count; anything else
+prints as `OTHER`. The facts are read only when criterion 6 holds the round,
+and `measured-downgrade` still prints `approval_status=<value>` alone, so
+the comparison between the two is of which conditions held, not of the
+detail. Criterion 7 is
+`conflict` from `merge_sync`, not `mergeable` or `merge_state` from the
+platform facts: `merge_sync` is the single helper that answers it, its values
+are `true`, `false` and `unknown`, and the line fires on anything but
+`false`. `unknown` means the merge-sync step found no git work tree, or the
+field could not be read; it holds the round, and sourcing the line from the
+platform facts instead would drop it. Criterion 3's value is
+`crusty_status`, one of `DONE_CLEAN`, `ABSENT`, `NOT_CLEAN`, `UNTRUSTED`,
+`UNREVIEWED_COMMITS`, `MISSING` or `OTHER`.
+
+The criterion numbers are the merge-ready criteria. Two lines carry no
+number. `qa_evidence=modified` is evidence about the evidence rather than one
+of the criteria. `measured_evidence=unreadable` is the case where the helper
+printed nothing at all, which the round already treats as a disagreement; it
+stands alone, because when no measurement could be read there is no
+per-criterion line to write. The helper prints `none`, not an empty string,
+when every measurement agrees, so the round can tell "nothing held it" from
+"this could not run" and the two never collapse into the same record.
+The record keeps the conditions as one `|`-separated field, and `escalate`
+splits it on read.
+
+After those come the round's own findings, one line each, marked `reported`
+because an agent wrote them:
+
+```text
+  held by: reported ci-red
+  held by: reported unresolved-review-thread
+```
+
+Findings are agent text, so they are filtered on the way out: control
+characters become spaces, each line is cut to 120 bytes, at most ten are
+printed and a further `  held by: reported (+N more)` line follows when
+there were more, and the two-space prefix is unconditional, so no agent-written byte can
+begin a line at column 0 where the loop's own greps read. Ten is the cap
+`_autodrive_qa_list` already uses for a rendered list, and the two are meant
+to stay equal.
+
+`held_by` lines take the control-character strip, the 120-byte cut and the
+two-space prefix as well, but not the token-byte-set restriction: a line such
+as `criterion 6: approval_status=NOT_MET` holds spaces, a colon and an `=`,
+and `token()` keeps only `[A-Za-z0-9_.:/-]`, so that filter would shred the
+line into `criterion6:approval_status=NOT_MET`. It is not needed, because
+each value a `held_by` line carries is already a bare token when the record
+is written, through the same `token()` call or closed-vocabulary
+normalisation `measured-downgrade` applies. The ten-line cap is for findings alone: `held_by`
+cannot exceed the eight conditions in the table above.
+
+Nothing reads these lines back: not the gate, not the loop-health evaluator,
+not the progress check. They go to stderr only. The stdout line and
+`<loop>-result.json` carry the same fields as before, and the
+[pull request comment](#pull-request-comments) is built separately, so nothing
+from `held_by` or the findings reaches GitHub. A record with no `held_by` and
+no findings, a crusty round record among them, prints no such line, and its
+stop block reads as it does elsewhere on this page.
+
+### The budget summary
+
+`autodrive-budget-summary.md` has a fixed layout:
+
+````markdown
+# Auto-drive usage budget reached
+
+Stopped: loop `merge-ready` at round label `round-12` (post-round check).
+Limits reached: autodrive_budget_loop_rounds
+
+| Measure | Used | Limit |
+| --- | --- | --- |
+| crusty rounds | 7 | 12 |
+| merge-ready rounds | 12 | 12 |
+| total rounds | 19 | 20 |
+| wall seconds | 13941 | 14400 |
+| usage-limit wait seconds | 5402 | not counted |
+| sessions | 41 | none |
+| tokens | unknown | none |
+
+Wall seconds are the time children ran, less the time they waited for a
+usage limit to lift. Those waits are the usage-limit wait seconds row, and
+no limit counts them.
+
+## Open items of round-12
+
+```text
+ci-red
+unresolved-review-thread
+```
+
+## Remaining work
+
+- Loops without a DONE result: merge-ready
+- The open items above
+
+## Resume
+
+amplihack recipe run auto-drive-to-merge -c pr_number=1743 -c task_description="<the original task>" -c autodrive_budget_loop_rounds=24
+````
+
+The check point is `pre-round check`, `post-round check` or `before-round
+step`. The resume command names each key whose limit was reached, with a
+suggested value of twice the current limit. Only numbers derived from
+validated limits are printed.
+
+The command also holds `-c task_description="<the original task>"`. Replace
+the placeholder with the task the run was started with. Both loop steps refuse
+an empty task (`--task-file ... is missing or empty; refusing to run without a
+task`), and the copy of the task in the state directory is removed when a loop
+exits, so nothing else supplies it. The summary prints a placeholder, not the
+task, because the summary is posted to the pull request.
+
+### Resuming after BUDGET_EXHAUSTED
+
+Run auto-drive again with the same `pr_number`, the original
+`task_description` and a higher value for the key named in the summary:
+
+```bash
+amplihack recipe run auto-drive-to-merge -c pr_number=1743 \
+  -c task_description="<the original task>" \
+  -c autodrive_budget_loop_rounds=24
+```
+
+Without `task_description` the resume fails at the loop step: the loop refuses
+an empty task.
+
+Finished phases are skipped as usual ([Resumability](#resumability)). The
+stopped loop labels its next round after the last recorded one, and the
+previous row of its progress file is the last round of the earlier run, so the
+no-progress rule compares across the relaunch. A relaunch with the same or a
+lower limit stops at the pre-round check without starting an agent.
+
+A loop that stopped as `STUCK` by the no-progress rule resumes the same way,
+with `pr_number` and the original `task_description` and without a budget
+key, once something has changed: a commit on the PR head or a change in the open
+items. `<loop>-progress.tsv` is kept across relaunches, so the first round of
+a relaunch is compared with the last round of the earlier run. A relaunch with
+nothing changed runs one round and then stops as `STUCK` in code, before the
+evaluator, with the same reason as before. Push a commit, or resolve or add an
+open item, before relaunching.
+
+### Pull request comments
+
+On either stop, when `pr_number` is set, the driver posts one comment with
+`gh pr comment <pr> --body-file <private file>`. The comment holds the
+reason, or the summary for a budget stop. Before posting:
+
+- the PR number must match `^[0-9]{1,10}$`;
+- secrets are replaced by `[REDACTED]`, because the comment is public and
+  GitHub push protection does not scan comments: PEM private key blocks
+  (to the end of the text when the `END` line was cut off), `user:password@`
+  in URLs, GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`,
+  `github_pat_`), `sk-` keys (Anthropic, OpenAI), AWS access key ids (`AKIA`,
+  `ASIA`, `A3T`), Slack `xox?-`, GitLab `glpat-`, `npm_`, Google `AIza` and
+  JSON web tokens; the value of an `Authorization` or `Proxy-Authorization`
+  key after `:` or `=`, quoted or not, with or without a scheme (after
+  `Bearer`, `Basic`, `Token`, `Negotiate` or `NTLM` the next word is masked
+  and the scheme kept; any other unquoted value is masked to the end of the
+  line, so `Authorization: s3cr3t` and "the authorization: rules" both
+  become `...: [REDACTED]`; a quoted value is masked inside its quotes);
+  elsewhere, a word of 12 or more characters after `Bearer`,
+  `Basic` or `token` when it contains a digit or one of `_ - / + =`, so prose
+  such as "the basic implementation" is kept; and the value after `=` or `:`
+  of any key whose name ends in `token`, `secret`, `password`, `passwd`,
+  `api_key`, `access_key`, `account_key`, `private_key`, `credential(s)`,
+  `signature` (as in `X-Amz-Signature`), `sig` or `sharedaccesskey`, in any
+  case. A failure of this step posts nothing. Not recognised: a secret with
+  neither a known shape nor a telling key name, and a letters-only word after
+  `Bearer`, `Basic` or `token` outside an `Authorization` key. The
+  masking uses POSIX `sed -E` only, with no GNU `\xHH` escapes, so it does
+  not depend on GNU sed;
+- `@` mentions and `#N` cross-links are neutralised, so the comment notifies
+  no one and links no issue;
+- absolute paths are reduced to their base names, including a path after
+  a space, a quote, `(`, `=`, `:` or a backtick (`file:/home/u/x` becomes
+  `file:x`);
+- agent-derived text such as open items sits inside a fenced block in which
+  any triple backtick is replaced, so it cannot close the fence;
+- the body is capped at 60,000 bytes.
+
+`gh` runs with `GH_PROMPT_DISABLED=1` and `GH_NO_UPDATE_NOTIFIER=1`, under `timeout 900` (a ceiling on a
+hung post, well above any real one, in keeping with the [no-timeout
+policy](#no-short-timeouts)), in a new session
+where `setsid` is available, and with no terminal on any stream. The last
+point matters on hosts whose `timeout` is the uutils one: a child that reads
+from a terminal there is stopped by `SIGTTIN` and never reaches the deadline.
+A failed post prints a
+`WARNING` with the exit code and does not change the loop result. The
+`WARNING` does not include `gh`'s error output, which can name the host or
+account; that output goes to `comment-error.log` (mode `0600`) in the state
+directory, and the `WARNING` gives its path. `gh` is
+used only for `pr comment`; the new helpers never call `gh pr merge`, `gh
+api` or any bypass flag.
+
+Tests never reach GitHub: each suite that drives the loop puts a stub `gh`
+first on `PATH`. Production code has no environment switch that skips the
+post.
+
+### How the run report shows these stops
+
+A loop that stops as `STUCK` or `BUDGET_EXHAUSTED` fails its loop step, and
+the composed recipe stops there as it does for any other loop failure. The
+record of the run is then the `escalate` line, `<loop>-result.json`, the
+reason or summary file and the PR comment. The recipe failure semantics are
+unchanged.
+
+When `autodrive-report` does run with such a result, for example in a dry
+run, it reads both `crusty_loop_result` and `merge_loop_result`, reduces each
+`loop_result` to `^[A-Z_]+$` (anything else is `unknown`), and for `STUCK` or
+`BUDGET_EXHAUSTED` in either loop:
+
+- prints a pointer line on stderr, such as
+  `AUTO_DRIVE_TO_MERGE: the merge-ready loop stopped as BUDGET_EXHAUSTED; see autodrive-budget-summary.md in the state directory.`;
+- reports the outcome as `NOT_MERGED`, whatever `merge_result` says;
+- exits `1`.
+
+### Threat model
+
+The budget is a cost ceiling, not a security boundary. A forged or corrupted
+state file can at most stop a run early: a false `STUCK` or
+`BUDGET_EXHAUSTED` exits `1` and writes no gate evidence, and the merge gate
+remains the only authority that merges. Limits and stored counts are
+validated as integers before any arithmetic, sums are done in `awk`, and no
+state file is ever `eval`'d or sourced.
+
 ## Recursion context propagation
 
 `autodrive_loop.sh` exports `AMPLIHACK_TREE_ID` and `AMPLIHACK_SESSION_DEPTH`
@@ -2326,12 +4546,12 @@ AUTO_DRIVE_TO_MERGE: MERGED — PR #27 (crusty loop: unknown, merge gate: MERGED
 ```
 
 ```json
-{"outcome":"MERGED","pr":"27","crusty_loop":"unknown","merge_result":"MERGED"}
+{"outcome":"MERGED","pr":"27","crusty_loop":"unknown","merge_result":"MERGED","merge_loop":"DONE"}
 ```
 
 Each phase result is read from its `RECIPE_VAR_` name only:
-`${RECIPE_VAR_build_result:-}`, and the same for `merge_gate_result` and
-`crusty_loop_result`. An inherited `BUILD_RESULT`, `MERGE_GATE_RESULT` or
+`${RECIPE_VAR_build_result:-}`, and the same for `merge_gate_result`,
+`crusty_loop_result` and `merge_loop_result`. An inherited `BUILD_RESULT`, `MERGE_GATE_RESULT` or
 `CRUSTY_LOOP_RESULT` is ignored. A skipped phase leaves
 its own result empty, so the report does not depend on it. These fallbacks,
 and with them the `merge_result` read that the #1543 incident showed as
@@ -2360,6 +4580,21 @@ becomes `NOT_MERGED` or `unknown`. The outcome mapping is:
 | `MERGED`, `ALREADY_MERGED` | `MERGED` |
 | `DRY_RUN` | `DRY_RUN` |
 | anything else | `NOT_MERGED` |
+
+`merge_loop` is the merge-ready loop's `loop_result`, reduced to `^[A-Z_]+$`
+or `unknown`. A `STUCK` or `BUDGET_EXHAUSTED` result in either loop overrides
+the table: the outcome is `NOT_MERGED` and the step exits `1` (see [How the
+run report shows these stops](#how-the-run-report-shows-these-stops)).
+
+The report's markdown output also shows how phase 1 ended, from the two
+[`build_result` fields](#the-build-result) (#1714):
+
+```text
+Phase 1 terminal state: BLOCKED_CI (handed off: true)
+```
+
+Both values reach the template only after step-03 has bounded them:
+`terminal_state` to the vocabulary and `handed_off` to `true` or `false`.
 
 ## No short timeouts
 
@@ -2725,7 +4960,7 @@ commit, push.
 
 ```bash
 cd "{{repo_path}}" || { echo "STOP: cannot enter the PR worktree (#1528)" >&2; exit 1; }
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO
+unset GH_REPO; [ ! -L "{{autodrive_tools_dir}}/git-repo-env.sh" ] && . "{{autodrive_tools_dir}}/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }
 bash "{{autodrive_launch_tools}}/autodrive_worktree_guard.sh" commit-dir {{pr_number}} || { echo "STOP: not the PR's linked worktree on its head branch; never stage or commit in the main checkout or another checkout (#1528)" >&2; exit 1; }
 # … source git-identity.sh (issue #1394) …
 amplihack_prepare_git_commit_identity || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }
@@ -2738,7 +4973,7 @@ git push || { echo "STOP: the push failed (#1528)" >&2; exit 1; }
 
 | Line | Why |
 | --- | --- |
-| `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO` | An inherited `GIT_DIR` would make the main checkout the current repository, and `GIT_INDEX_FILE` would make `git add` and `git commit` use an index the guard never read. An inherited `GH_REPO` would make `gh pr view` ask a different repository than the `origin` the push goes to. |
+| `unset GH_REPO; … git-repo-env.sh … amplihack_clear_git_repo_env && amplihack_clear_run_identity_env` | Clears all 12 repository-selecting `GIT_*` names and the outer run's identity ([Git Repository Environment Helper](git-repo-env-helper.md), #2033); a missing or symlinked helper stops the block. An inherited `GIT_DIR` would make the main checkout the current repository, and `GIT_INDEX_FILE` would make `git add` and `git commit` use an index the guard never read. An inherited `GH_REPO` would make `gh pr view` ask a different repository than the `origin` the push goes to. |
 | `commit-dir`: `--show-toplevel` equals `pwd -P` | Refuses a subdirectory of some other checkout. |
 | `commit-dir`: git directory differs from the absolute common directory | True only for a linked worktree. Refuses the main checkout. Needs Git 2.31 or later. |
 | `commit-dir`: current branch equals the pull request's head (`gh pr view <pr> --json headRefName`, empty never matches) | Refuses a linked worktree on some other branch. |
@@ -2799,24 +5034,35 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | phase 3 | Loop driver + merge gate + bookkeeping. |
 | `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver; writes `<loop>-records.tsv`; runs a `--before-round` step at its own depth. |
+| `amplifier-bundle/tools/autodrive_progress.sh` | tool | The [no-progress rule](#the-no-progress-rule): `record` appends a row to `<loop>-progress.tsv`; `check` compares the current round with the last row and exits `10` with `<loop>-stuck-reason.txt` written on no progress. Exits `2` on a usage error. |
+| `amplifier-bundle/tools/autodrive_budget.sh` | tool | The [usage budget](#budget-keys-and-defaults): `mark`, `add`, `totals`, `check` (exits `10` with `autodrive-budget-summary.md` written when a limit is reached) and `post` (the sanitised PR comment). All round-count comparisons live here. |
+| `amplifier-bundle/tools/autodrive_escalate.sh` | tool | `escalate`, its `usage_limit` and `budget` wordings and its [`held by:` lines](#what-held-the-round), `usage_limit_stop`, `stops_preflight` (the start-up check of the usage and progress files), `usage_add`, `progress_stop`, `budget_stop`, `post_stop` and `record_result`, which writes `<loop>-result.json`. Sourced by the loop driver. |
 | `amplifier-bundle/tools/autodrive_last_round.sh` | tool | The highest round number a loop already has in the state dir, so a second or resumed loop labels its rounds after it. Writes nothing. |
 | `amplifier-bundle/tools/autodrive_done_override.sh` | tool | What the loop does with a loop-health `DONE` over a non-clean round (#1597): exit `0` runs a re-review round; exit `1` is `STUCK` for a missing record or a repeat with no progress. Writes nothing. |
 | `amplifier-bundle/tools/autodrive_round_tail.sh` | tool | The last 20000 bytes of a round log for the loop-health evaluator, without the partial first line a byte cut leaves, so no prefix-less agent fragment reaches the evidence collector, and with the runner summary's header kept when a long summary pushes it out of the window (#1510). Writes nothing. |
 | `amplifier-bundle/tools/autodrive_crusty_rereview.sh` | tool | The merge-ready loop's `--before-round` step: sends code commits made after the clean crusty round back to the crusty loop. |
 | `amplifier-bundle/tools/autodrive_pr_worktree.sh` | tool | Resolves the pull request's linked worktree for phases 2 and 3. Read-only apart from `git worktree add` and fast-forward-only fetches. Refuses a tip that is stale against origin. |
 | `amplifier-bundle/tools/autodrive_worktree_guard.sh` | tool | The #1528 checks: the loop preflight (launch-side recipes, review dir is the main checkout of the PR's repository), each round's `step-00-review-dir-guard` (which also refuses a run-worktree gitlink in the review dir's index), `step-02b-review-dir-unchanged` (index stamp and check), the loop's stamp around each round and the evaluator, and the commit block's linked-worktree and head-branch check. Writes nothing. |
-| `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv; runs as `/bin/bash -p`, the only process the merge guard trusts. |
+| `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv; runs as `/bin/bash -p`, the only process the merge guard trusts. Runs `autodrive_followups.sh check` from its own directory. |
+| `amplifier-bundle/tools/autodrive_followups.sh` | tool | [#1979](#minor-findings-end-the-crusty-loop-1979): `classify` (derives `MINOR_ONLY` in crusty-round step-03), `collect` (builds the follow-up set from the round that ended the loop), `file` (one `gh issue create` per unfiled minor finding, then one comment on the plan task issue listing them), `resolve-task` (the task-id rule, #1982). |
+| `amplifier-bundle/tools/autodrive_followups_check.sh` | tool | [#1979](#the-follow-up-check-in-the-merge-gate): `check` and `gate`, sourced by `autodrive_followups.sh`: the merge gate's offline follow-up check. |
+| `amplifier-bundle/tools/autodrive_finding_rules.sh` | tool | Sourced only; no side effects. The single definition of the security keyword lists, `cell()` and the minor-finding predicate, used by `autodrive_followups.sh`. |
 | `amplifier-bundle/tools/gh-merge-guard/gh` | tool | The `gh` shim that refuses a merge outside the gate ([#1551](#merges-outside-the-gate-are-refused-1551)). |
 | `crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs` | launcher | Decides when the shim goes first on `PATH` and exports its `BASH_ENV` file; fails closed when either is missing, the shim is not executable, or either is writable by group or others. |
 | `amplifier-bundle/tools/gh-merge-guard/bash-env` | tool | Sourced through `BASH_ENV`; puts the shim back first on `PATH` after a login shell's profile. |
 | `crates/amplihack-hooks/src/pre_tool_use/merge_guard.rs` | hook | Refuses the prohibited forms `gh pr merge`, `gh api` on a merge endpoint and a run of the gate, by program word only. |
 | `amplifier-bundle/tools/autodrive_merge_ready_files.sh` | tool | Finds the merge-ready `SKILL.md` and template. |
-| `amplifier-bundle/tools/autodrive_platform_facts.sh` | tool | Platform facts for the merge round, criterion 6 included; the review-thread count for the merge gate too. |
+| `amplifier-bundle/tools/autodrive_platform_facts.sh` | tool | Platform facts for the merge round, criterion 6 included, with the `review-rule`, `unreadable` and `facts-unreadable` split of [an unread approval](#a-failed-measurement-is-not-a-missing-review); the review-thread count for the merge gate too. |
 | `amplifier-bundle/tools/autodrive_qa_evidence.sh` | tool | Criterion 1: the suite commands and, where `autodrive_gadugi_required` says so, the gadugi scenarios, for `autodrive-merge-evidence.yaml` step-02. |
-| `amplifier-bundle/tools/autodrive_round_evidence.sh` | tool | The merge round's deterministic step bodies, and the crusty range the re-review reads: crusty range and evidence, the qa evidence hash, the measured downgrade, the findings and the round record. |
+| `amplifier-bundle/tools/autodrive_round_evidence.sh` | tool | The merge round's deterministic step bodies, and the crusty range the re-review reads: crusty range and evidence, the qa evidence hash, the measured downgrade, the findings, and the round record with its [`held_by`](#what-held-the-round) conditions. |
 | `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, `autodrive_crusty_final`, `autodrive_private`; platform truth for merged-ness. |
-| `amplifier-bundle/tools/autodrive_trust.sh` | tool | Range check and qa evidence chain. |
+| `amplifier-bundle/tools/autodrive_trust.sh` | tool | Range check and qa evidence chain; `autodrive_repo_type` and `autodrive_gadugi_required`, which reads `autodrive_qa_docs_only`. Loads `autodrive_qa_scope.sh` from its own directory, with a fail-closed fallback. |
+| `amplifier-bundle/tools/autodrive_qa_scope.sh` | tool | Defines functions only: the changed paths, the candidate search and the project choice (`autodrive_qa_changed_paths`, `autodrive_qa_target`), computed once per shell, and loads `autodrive_qa_docs.sh` beside it. Runs nothing it reads. A gate file, so the install mode check covers it. |
+| `amplifier-bundle/tools/autodrive_qa_docs.sh` | tool | Defines one function: the [documentation-only](#documentation-only-pull-requests) predicate `autodrive_qa_docs_only`, over the scan `autodrive_qa_scope.sh` already made. Compares changed paths, never runs them. A gate file. |
+| `amplifier-bundle/tools/autodrive_qa_sources.sh` | tool | Defines functions only: the `.amplihack/qa.toml` parser `autodrive_qa_config`, the CI reader `autodrive_qa_ci` and `autodrive_qa_report`, which gives the evidence tool every answer from one scan. Loaded by the evidence tool only. |
+| `amplifier-bundle/tools/autodrive_scenario_name.sh` | tool | Prints the `name:` of one qa-team scenario file for `gadugi-test run --scenario`. Run by the evidence tool. |
 | `amplifier-bundle/tools/autodrive_pr_head.sh` | tool | Read-only PR head and worktree resolver. |
+| `amplifier-bundle/tools/workflow_finalization_handoff.sh` | tool | The [#1714 hand-off](#finalization-hand-off-from-phase-1-1714): the allow-list, the exact-match flag, `finalization_fail_or_handoff` and `finalization_fail_or_handoff_open_pr` for the validator and `autodrive_build_handoff` for step-03. No top-level side effects; safe to source twice. |
 | `amplifier-bundle/skills/auto-drive-to-merge/SKILL.md` | skill | Invocable entry point. |
 | `amplifier-bundle/skills/merge-ready/SKILL.md` | skill | The criteria the merge round reads. |
 
@@ -2828,7 +5074,8 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | --- | --- |
 | Executable contract test: loop, verdicts, forbidden-flag scan, merge-gate refusals, qa evidence against stub `cargo` and `gadugi-test`, crusty records and range; a step output read through `RECIPE_VAR_` only, the [#1511 repro](#reading-step-outputs) (`1511-repro`), the `state_dir` refusals and their silence on a safe value, the static `RECIPE_VAR_` check, the inherited-variable rows (`1561-stale-*`, `1561-empty-tools-dir-fails-closed`, `1561-NO_MERGE-*`, `MERGEREADY-no-round-tool-inherited`), and every row of the [loop-health line table](#reading-the-loop-health-line) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | PR head and worktree resolution, refusal, relative `repo_path`, run report, and two runs of the composed recipe through `recipe-runner-rs` (a fresh build whose stand-in default-workflow builds in its own worktree, as the real one does, where both loops must get that worktree and not the launch checkout; skipped build and crusty phases followed by a merge), and the `pr-worktree-stale` refusal (#1543). It needs `recipe-runner-rs` on `PATH` or in `RECIPE_RUNNER_RS_PATH`, and stops with a harness error without it | `amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh` |
-| QA command selection (#1516): `AUTODRIVE_QA_DIR` with `AUTODRIVE_QA_COMMAND`, root Cargo, nested and nested-workspace Cargo, pruned `target`/`worktrees`/`node_modules`/`.git` crates, ambiguous and depth-4 crates, mixed Node/Python roots, the jamestown shape (root `pytest` beside a nested crate), `package.json` beside a nested crate, a root `requirements.txt`, `go.mod` or other unhandled project file beside a nested crate (BLOCKED, never `cargo test` in the crate), the `./<word>` installed check, an `AUTODRIVE_QA_DIR` that does not exist, parity scenarios under the detected workspace directory (including `AUTODRIVE_QA_COMMAND` with `AUTODRIVE_QA_DIR=sub` in a nested-Cargo repository), the space-separated ambiguous candidate list, symlinked and unsafely named directories, a `cargo` in the workspace that is off `PATH` and never runs, an in-repository `cargo` on `PATH` that runs (the check is a `PATH` lookup, not a sandbox), a `.venv/bin/pytest` on `PATH` that runs whether detected or set with `AUTODRIVE_QA_COMMAND=pytest`, and a crate in a directory named `-` or an exported `CDPATH` that never moves the suite outside the checkout. Stub `cargo`, `pytest`, `npm` and `gadugi-test` record their directory and arguments | `amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh` |
+| QA command selection (#1516): `AUTODRIVE_QA_DIR` with `AUTODRIVE_QA_COMMAND`, root Cargo, nested and nested-workspace Cargo, pruned `target`/`worktrees`/`node_modules`/`.git` crates, unrelated sibling crates with no base (`QA_UNRESOLVED`) and depth-4 crates, mixed Node/Python roots, the jamestown shape (root `pytest` beside a nested crate), `package.json` beside a nested crate, a root `requirements.txt`, `go.mod` or other unhandled project file beside a nested crate (BLOCKED, never `cargo test` in the crate), the `./<word>` installed check, an `AUTODRIVE_QA_DIR` that does not exist, parity scenarios under the detected workspace directory (including `AUTODRIVE_QA_COMMAND` with `AUTODRIVE_QA_DIR=sub` in a nested-Cargo repository), the space-separated unresolved candidate list, symlinked and unsafely named directories, a `cargo` in the workspace that is off `PATH` and never runs, an in-repository `cargo` on `PATH` that runs (the check is a `PATH` lookup, not a sandbox), a `.venv/bin/pytest` on `PATH` that runs whether detected or set with `AUTODRIVE_QA_COMMAND=pytest`, and a crate in a directory named `-` or an exported `CDPATH` that never moves the suite outside the checkout. Stub `cargo`, `pytest`, `npm` and `gadugi-test` record their directory and arguments | `amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh` |
+| QA command source and path scoping (#1763): the env, `.amplihack/qa.toml`, CI and detected sources and their precedence (an empty env value still wins); malformed, oversized, symlinked and unsafe `qa.toml` files, one per problem token, with injection markers that leave no side effect; `changed-in-pr` for a `qa.toml` or workflow file changed by the pull request; a clean CI step, an ambiguous CI source, and one shaped like this repository's `ci.yml` that falls through to `cargo test` at `.`; `paths-unknown` for `(unknown)` and `(none)` paths; a present `.amplihack` symlink, a `.amplihack` file and a dangling `qa.toml` symlink, and a real `.amplihack` directory without `qa.toml` that falls through to CI; known paths inside one nested project, a move across projects, a nested-only `ws` crate with a pull request that changes only `README.md` (`rust-cli` at `ws`) and `svc/package.json` with `docs/svc.md` (`node` at `svc`), an unknown base with two projects (`QA_UNRESOLVED`), and `QA_UNRESOLVED` with a `package.json` candidate, asserting both that gadugi ran and that `qa_status` stays `QA_UNRESOLVED` when gadugi passes and when it fails, a root workspace with a change in `crates/x`, and the gate given `AUTODRIVE_QA_BASE` in a mixed fixture repository. Merge-base reads: an untracked, an ignored and a differently-cased `qa.toml` give `none`, a modified tracked one gives the merge-base command, a `qa.toml` symlink committed at the merge base gives `symlink`, an untracked workflow file is ignored, a PR-added nested or root `Cargo.toml` in a Node repository keeps gadugi required, an untracked manifest is not a candidate, an unknown or empty base keeps gadugi required, an unset base (a preflight) reads `HEAD`'s committed tree, 50 workflow files are read and 51 are not, and a broken `qa.toml` outranks `no-scenarios`. `shellcheck -x -S warning` runs on the scope file, `autodrive_trust.sh`, the evidence tool and the gate, and is skipped with a message when it is not installed. Fake `cargo`, `npm`, `pytest` and `gadugi-test` record their directory and arguments; children run under `env -i` with `HOME` in the test's own directory and no `AMPLIHACK_CLAUDE_PROFILE_ROOT` | `amplifier-bundle/recipes/tests/test-issue-1763-qa-scope.sh` (the cases above); `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` (the four direct #1763 cases and the `1763-gate-*` gate cases); `amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh` (the #1516 detection cases changed by #1763) |
 | Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step, the PR-head resolver read-only guard, `autodrive_step_outputs_are_read_from_recipe_var_only` (the four [static checks](#the-static-check), with the read counts taken from this page), `autodrive_round_with_inherited_stale_tools_dir_uses_its_own` (#1607), and the contract shell suite run with inherited variables scrubbed, set to a conflicting decoy, and set to the round's own tools | `tests/integration/auto_drive_to_merge_test.rs` |
 | [The bundle guard](#the-bundle-guard) (#1561) | `crates/amplihack-cli/tests/issue_1561_step_outputs_prefer_recipe_var.rs` |
 | Where phases 2 and 3 run (issue #1528): resolver behaviour and refusals (including a local branch or worktree behind, ahead of or diverged from origin), loop `step-02` resolution and forwarding, round `step-04` commit blocks, a forced-add reproduction the guard refuses, and a commit from the pull request worktree that leaves the launch checkout's index clean | `tests/integration/autodrive_pr_worktree_tests.rs` |
@@ -2836,22 +5083,42 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | When the launcher applies the guard, idempotent `PATH` with the guard first, `no_merge` alone not applying it, the inherited marker, the fail-closed error for an unset, empty or relative `AMPLIHACK_HOME` and a missing or non-executable shim, and (Linux only) a phase-1 `autodrive-*` bash step whose `gh pr merge 1` gets exit `3` and `REFUSED` while the stub `gh` logs no merge, a login shell whose profile prepends another `gh` still resolving `gh` to the shim, the shipped `bash-env` sourcing a user `BASH_ENV` first; off Linux, a companion test shows the merge is refused | `crates/amplihack-cli/tests/issue_1551_merge_guard.rs` |
 | `guard_applies` truth table (`0` and `false` still apply it) and `locate_guard_dir` errors, a group- or other-writable shim or directory included | `crates/amplihack-cli/src/commands/recipe/run/tests_merge_guard.rs` |
 | The real gate's `MERGED` path with the guard first on `PATH`, the phase-2 `MERGED` check, and the directive reaching the agent prompts (§5i-1551) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
+| [Finalization hand-off](#finalization-hand-off-from-phase-1-1714) (#1714): the allow-list and flag exactness, the validator's hand-off on both `BLOCKED_CI` exits and on `FAILED_IMPLEMENTATION` with a confirmed open PR (and its refusal without one), the open-PR check's PR head rule (a fast-forward PR head present locally or fetched without writing refs is the same PR; a diverged, rewritten or unfetchable head is not), the real terminal-state probe followed by the validator on a merge already on the PR before finalization (`EXISTING_OPEN_PR` when green, `FAILED_IMPLEMENTATION` handed off when pending, `BLOCKED_CI` handed off when red; a diverged head, a rewound remote, or a probe without `accept_pr_head_ahead` still `FAILED_INVALID_INPUT` and never handed off), `step-20-sync-pr-head` and step-20b run from the YAML against a remote that is ahead, with an upstream, with only `origin/<branch>` and with neither (the push lands on the PR head), standalone runs and all five other prior-state blockers still failing closed, step-03 run from its YAML against a stub `gh` (hand-off, closed or different PR, a non-digit `pr_number` printed as `<invalid>`, no PR, resume, `BLOCKED_CI` with no `handoff` field, a state outside the vocabulary, a missing brick), and static guards on the flag's only setter and on the merge gate | `tests/integration/issue_1714_finalization_handoff.rs` |
+| [Usage limits are not STUCK](#usage-limits-are-not-stuck) (#1801): `1801-evaluator-retry-verdict` (the evaluator hits a limit once, is retried inside step-02 and returns a verdict the loop records, with no `STUCK`), `1801-evaluator-usage-limit` (the limit is not lifted and the loop reports `USAGE_LIMIT`), a round and a before-round step that fail on a limit, and negative cases where the loop does not stop as `USAGE_LIMIT`: a nested `class`, the marker with exit `0`, an indented or echoed marker, and `usage_limit_wait` lines alone | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
+| The same retry through the real step supervisor: fake `claude` and a stub `recipe-runner-rs` under an isolated `HOME` | `crates/amplihack-cli/tests/issue_1801_evaluator_retry.rs` |
+| [No-progress stop and usage budget](#no-progress-stop-and-usage-budget) (#1743): `STUCK` in code on an unchanged head and open items, no stop when either changed, when the CI signal changed or says `PENDING`, or when the round is clean, a leftover `<record>.light.json` beside the current or previous round's record exempting nothing, `BUDGET_EXHAUSTED` from each of the three limits at the pre-round, post-round and before-round check points, a relaunch with a higher limit resuming from the recorded round and one with the same limit starting no agent, the nested crusty loop counted once, `tokens` recorded as `unknown`, malformed limits and unknown keys exiting `2`, the symlink and `0600` cases, the sanitised PR comment through a stub `gh`, and the `-c` override reaching both loops. Fixture state directories, stub `amplihack`, `gh` and `git` on `PATH`, under `isolated(..)`; nothing under the real `HOME` is read or written | `crates/amplihack-cli/tests/issue_1743_autodrive_budget.rs` |
+| [Minor findings end the crusty loop](#minor-findings-end-the-crusty-loop-1979) (#1979): `classify` on all-minor, mixed, unknown-severity, missing-severity, empty and non-array input; security keywords in an id or summary kept as `CONCERNS`; severity history (a minor finding recurring as minor still `MINOR_ONLY`, a major one downgraded to minor kept as `CONCERNS`, unknown history read as major, no `.severity` file for unreadable input); crusty-loop step-03 refusing to file without `AMPLIHACK_HOME` even when `REPO_PATH` holds the tool; the loop ending `DONE` on `MINOR_ONLY` with `--also-clean-token` and not without it; one `gh issue create` per finding naming the task id and finding id, with N rows in `followups.tsv`; a rerun making no call; `gh` exiting `1` (error recorded, gate prints `ERROR: followups-unfiled`, no merge) and `79` (passed through after one call); an unresolved task id; the task id taken from `Closes #N` in the PR body; two JSON arrays on stdin, or a `concerns` string holding a minor and a blocking array, kept as `CONCERNS`; a `jq` parse failure logged with its exit code; mentions, `#N` and `GH-N` references neutralised in the body and the title; a title with shell metacharacters reaching `gh` as one argument, with `&`, `|` and backticks kept as plain characters rather than HTML entities; an unparseable PR URL; a `CLEAN` drive filing nothing and passing the check; a dry run filing nothing in either step while the gate reports `followup-missing`; `gate` naming each filed issue in its evidence line and printing the error and blocker on a miss; `collect` reading only the terminal round; `check` refusing a symlinked or group-writable `followups.tsv`, a malformed row and `MINOR_ONLY` with no set; `autodrive_crusty_final` accepting `MINOR_ONLY`; and static checks that both `SKILL.md` copies match, the old loop-end wording is gone from the recipes, skill and reference, the 400-line budgets hold with no per-file exception, and `autodrive_followups.sh` sources the shared rules file while no light round tool exists. Stub `gh` on `PATH`, scratch under `$TMPDIR`, no network | `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs`, with `mod issue_1979_crusty_minor_followups;` in `crates/amplihack-cli/tests/main.rs` |
+| A minor-only round ending the loop, and a `[minor, major]` round continuing it, through the `run_loop` stub | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
+| [Criterion 6 without a required review](#criterion-6-reviews-and-approvals) (#2219): a fake `gh` returning each endpoint's post-`--jq` answer per scenario; a required count of `0` with no review rule, and an unprotected branch, still `MET` through `required-count`, including under `BLOCKED`, so a readable count decides before the merge state is consulted; a classic `0` beside a *failed* rulesets read staying `UNREADABLE`, so `REQ` is not widened; `BLOCKED` beside a code-owner, last-push or required-reviewer rule as `NOT_MET` with `review-rule`; `BLOCKED` with no rule named, and a `DRAFT` merge state, as `UNREADABLE` with `unreadable`; a failed `gh pr view`, a `reviewDecision` the tool does not know (even beside a readable count of 2), and an `UNKNOWN` merge state with the count unreadable, as `UNREADABLE` with `facts-unreadable`; an `UNKNOWN` merge state beside a *readable* count still decided by that count; `CLEAN`, `HAS_HOOKS` and `UNSTABLE`, and every agent-clearable blocker, winning over a named review rule; no reclassified case reaching `MET`; and `approval_blocker` carrying the id for each source, empty only on `MET`. No `jq`, no timers | `amplifier-bundle/recipes/tests/test-issue-2219-approval-no-review-required.sh` |
+| [Documentation-only pull requests](#documentation-only-pull-requests) (#2219): `autodrive_qa_docs_only` and `autodrive_gadugi_required` over synthetic git repositories, both sides of the predicate and both of the function that reads it: prose-only changes `true`, and `.markdown`, `.rst`, a `docs/` `.txt` and root `LICENSE`, `NOTICE`, `COPYING` with them; a `.txt` outside `docs/` and outside the root documentation names `false` (`tests/fixtures/expected.txt`, `src/templates/welcome.txt`, `fuzz/corpus/seed.txt`, `testdata/golden.txt`, `scripts/deploy.txt`), and the near-miss pin spellings `requirements-dev.txt`, `dev-requirements.txt`, `constraints-dev.txt`, `Makefile.txt` and `requirements/base.txt` `false` with them, while `README.txt`, `CHANGELOG.txt` and `CONTRIBUTING.txt` stay `true`, a `docs/` component qualifies a `.txt` at any depth and `notdocs/notes.txt` does not; a `.js`, `.json`, `.sh`, `.github/`, `.amplihack/`, `.claude/`, `.cursor/`, `AGENTS.md`, `CLAUDE.md`, `amplifier-bundle/` or `SKILL.md` path `false`; `requirements.txt`, `docs/requirements.txt`, `constraints.txt` and `CMakeLists.txt` `false`, the pin spellings under `docs/` (`docs/requirements-dev.txt`, `docs/dev-requirements.txt`, `docs/requirements/base.txt`, `docs/constraints-dev.txt`) `false` while ordinary prose under `docs/` stays `true`, with every `.txt` entry of `AUTODRIVE_ROOT_PROJECT_FILES` pinned against the predicate so the two lists cannot drift; `docs/.hidden.md` `true`, since a dot-file is not a dot-directory; `docs/conf.py` and `docs/release.js` `false`, so the `docs/` directory qualifies no extension; `README.MD` and `docs/build.SH` `false` on the byte-exact qualifier while `docs/Requirements.txt` is `false` on a case-insensitive disqualifier, the asymmetry in both directions; `vendor/LICENSE` `false`, since the licence names qualify at the root only; an empty diff `false`, and a read list holding nothing `false` on both bash 3.2 and bash 5; no base and a base that fails the branch rules `unknown`; a hostile path name that still ends `.md` measured as documentation and never executed; a Rust repository and an unresolved Node choice, so the reach is pinned too; `AUTODRIVE_QA_SCENARIO_DIR` keeping gadugi required over a `true` answer; and the qa evidence line carrying `docs_only` as its own field for all three values | `amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh` |
+| [The stop line's held-by lines](#what-held-the-round) (#2219): a synthetic state directory and round record, with the real `amplihack orch helper` behind the field reads; one line per measured condition in the measured-downgrade order, with `conflict=` for criterion 7 and `crusty_status=` for criterion 3; the record's shape unchanged, so `autodrive_qa_trusted` still accepts it; the crusty and approval vocabularies staying closed at `OTHER`; an interpolated value keeping only `[A-Za-z0-9_.:/-]`; a hostile `AUTODRIVE_ROUND_LABEL` carrying `","merge_ready_verdict":"MERGE_READY` driven through the real tool and opening no second JSON key, so the measured verdict is the one the merge gate reads and the real conditions still reach `held_by`; `held_by` empty on an all-green round; the lines printing for `BUDGET_EXHAUSTED` and `ORPHANED` as well as `STUCK`; the `reported` findings after them, control characters replaced, the token byte set applied to findings but not to `held_by`, an over-long entry cut to 120 bytes, more than ten findings capped with `reported (+N more)`, counting only the lines that survive the filter so the tail names exactly the number withheld, while all eight conditions still print; `measured_downgrade` and `measured_held_by` driven over a matrix of one failing measurement at a time and asserted to name the same set of conditions, since the two write that list out separately; a forged column-0 `amplihack.recipe.failure_class` marker in findings never reaching column 0; and a record without `held_by` printing no condition line | `amplifier-bundle/recipes/tests/test-issue-2219-stop-line.sh` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 
 ```bash
 cargo test -p amplihack --test integration auto_drive_to_merge::
 cargo test -p amplihack --test integration merge_ready_platform_contract::
 cargo test -p amplihack --test integration autodrive_pr_worktree::
+cargo test -p amplihack --test integration issue_1714_finalization_handoff::
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 bash amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh
 bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
 cargo test -p amplihack-cli --test cli_integration issue_1551
 cargo test -p amplihack-cli --test cli_integration issue_1561
+cargo test -p amplihack-cli --test cli_integration issue_1801
+cargo test -p amplihack-cli --test cli_integration issue_1743
+cargo test -p amplihack-cli --test cli_integration issue_1979_crusty_minor_followups::
 bash amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh
+bash amplifier-bundle/recipes/tests/test-issue-2219-approval-no-review-required.sh
+bash amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh
+bash amplifier-bundle/recipes/tests/test-issue-2219-stop-line.sh
 gadugi-test validate -d tests/gadugi/scenarios
 bash tests/gadugi/run-autodrive-crusty-rereview-scenario.sh   # and the other run-autodrive-*-scenario.sh
 ```
+
+`amplihack-cli` builds all its integration tests as the single
+`cli_integration` binary, so a new test file runs only once
+`crates/amplihack-cli/tests/main.rs` declares it with a `mod` line.
 
 ### Which `amplihack` binary the shell test uses
 
@@ -2886,6 +5153,11 @@ tests here run and pass without #1347.
 
 ## Related references
 
+- [Git Repository Environment Helper](git-repo-env-helper.md) — the `GIT_*`
+  and outer-run `AMPLIHACK_*` variables the QA and merge-round steps clear
+  before running a repository's tests (#2033).
+- [Auto-Drive-Light Recipe](auto-drive-light.md): the smaller recipe for small
+  changes, which escalates to this one.
 - [Loop-Health Evaluator](loop-health-evaluator.md) — the agentic terminator
   both loops use (ships with PR #1347).
 - [Structured Verdict & Intent Parsing](structured-verdict-parsing.md) — the
@@ -2898,3 +5170,6 @@ tests here run and pass without #1347.
   the `--match-head-commit` binding used here.
 - [Artifact Guard](../artifact-guard.md#run-worktrees-in-the-index) — the
   `run-worktree-gitlink` rule both round commit blocks rely on.
+- [Usage-limit wait](profile-command.md#usage-limit-wait): the reset and
+  capacity waits every agent step runs before a usage limit reaches the
+  loop.

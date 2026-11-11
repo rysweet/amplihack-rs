@@ -186,12 +186,12 @@ else
   elif [ -n "$HEAD_SHA" ] && [ "$QA_SHA" != "$HEAD_SHA" ]; then
     block "the qa-team evidence was captured against ${QA_SHA} but the head is now ${HEAD_SHA}; evidence must bind to the SHA being merged"
   fi
-  # Whether gadugi is required is decided here, from the checkout's own files,
-  # by autodrive_gadugi_required beside this gate, never by the evidence; if it
-  # cannot be read, gadugi is required. Evidence with no gadugi fields never merges.
+  # Gadugi need: from this gate's own baseRefName and headRefOid (#1763), never the evidence; failure: required.
   GADUGI_STATUS="$(field "$QA_RAW" gadugi_status MISSING)"
   GADUGI_COUNT="$(field "$QA_RAW" gadugi_scenario_count "")"
-  GADUGI_REQ="$(. "${GATE_HOME:-/nonexistent}/autodrive_trust.sh" 2>/dev/null && autodrive_gadugi_required .)" || GADUGI_REQ="true"
+  GADUGI_REQ="$(AUTODRIVE_QA_BASE="$(field "$STATE_JSON" baseRefName "")"; AUTODRIVE_QA_HEAD="$HEAD_SHA"
+    export AUTODRIVE_QA_BASE AUTODRIVE_QA_HEAD
+    . "${GATE_HOME:-/nonexistent}/autodrive_trust.sh" 2>/dev/null && autodrive_gadugi_required .)" || GADUGI_REQ="true"
   note "gadugi_required=${GADUGI_REQ} gadugi_status=${GADUGI_STATUS} gadugi_scenario_count=${GADUGI_COUNT:-<none>} gadugi_scenario_dir=$(field "$QA_RAW" gadugi_scenario_dir '')"
   if [ "${GADUGI_REQ}:${GADUGI_STATUS}" != "false:NOT_REQUIRED" ]; then
     [ "$GADUGI_STATUS" = "PASS" ] || block "gadugi-test scenarios were not validated and run to a pass in this run (gadugi_status=${GADUGI_STATUS})"
@@ -201,30 +201,25 @@ else
   fi
 fi
 
-# --- 6b. Criterion 3: the crusty loop of this run ended DONE and CLEAN -------
-# Under auto-drive the quality-audit criterion is met by the crusty loop: the
-# `crusty-loop` marker in phases.tsv (written only after the loop reports DONE)
-# and a final CLEAN verdict in crusty-latest.json. These files are evidence, so
-# they are read only from a state dir that was given explicitly, is owned by
-# this user and writable by nobody else, and only when they are regular files
-# rather than symlinks. The state helper is sourced from beside this gate and
-# from nowhere a pull request could populate. The writers make the directory
-# and every file private whatever the caller's umask (autodrive_state.sh,
-# PRIVATE STATE), so on a host whose umask is 0002 this check still passes for
-# state the workflow wrote itself.
-#
-# Since #1517 the last loop-written round record must also check out against
+# --- 6b. Criterion 3: crusty loop DONE, CLEAN or MINOR_ONLY with follow-ups filed (#1979)
+# The crusty loop meets the quality-audit criterion: the `crusty-loop` marker in
+# phases.tsv (written only after the loop reports DONE) and a final CLEAN or
+# MINOR_ONLY verdict in crusty-latest.json; MINOR_ONLY also needs a follow-up
+# issue filed for every minor finding (autodrive_followups.sh gate).
+# This evidence is read only from a state dir given explicitly, owned by this
+# user and writable by nobody else, and only from regular files, not symlinks.
+# The state helper is sourced from beside this gate, never from a path a pull
+# request could populate. Writers make the directory and files private whatever
+# the umask (autodrive_state.sh, PRIVATE STATE), so a 0002 umask still passes.
+# Since #1517 the last loop-written round record must also match
 # crusty-records.tsv, the manifest autodrive_loop.sh writes before any agent
-# runs: autodrive_crusty_final rejects an injected, edited or archived record.
-# These checks only add to the ones above; none of them replaces one.
-# autodrive_private <path> comes from autodrive_state.sh: owned by this user,
-# not a symlink, no group or world write bit.
-#
+# runs, so autodrive_crusty_final rejects an injected, edited or archived
+# record. These checks add to the ones above. autodrive_private <path> (from
+# autodrive_state.sh): owned by this user, not a symlink, no group/world write.
 # block_unless_private <what> <name>...: blocks each named file in STATE_DIR
-# that is a symlink, or that exists and is not a private regular file, as not
-# evidence of <what>. An empty name, or a file that does not exist, passes
-# here; the checks that read the file decide what absence means. Returns 1
-# when any file blocked.
+# that is a symlink, or exists and is not a private regular file, as not
+# evidence of <what>. An empty name or an absent file passes; the checks that
+# read the file decide what absence means. Returns 1 when any file blocked.
 block_unless_private() {
   local what="$1" f p rc=0
   shift
@@ -253,7 +248,12 @@ elif block_unless_private "crusty state" phases.tsv crusty-latest.json crusty-re
     CRUSTY_VERDICT="MISSING"
     [ -f "${STATE_DIR}/crusty-latest.json" ] && CRUSTY_VERDICT="$(field "$(cat "${STATE_DIR}/crusty-latest.json")" crusty_verdict MISSING)"
     note "crusty_phase_done=true crusty_verdict=$(printf '%s' "$CRUSTY_VERDICT" | tr -cd 'A-Za-z_')"
-    [ "$CRUSTY_VERDICT" = "CLEAN" ] || block "the crusty loop's final crusty_verdict is not CLEAN in ${STATE_DIR}/crusty-latest.json; criterion 3 is not met"
+    case "$CRUSTY_VERDICT" in
+      CLEAN|MINOR_ONLY)
+        FU_NONE="ERROR: followups-unfiled: autodrive_followups.sh gate did not run beside the merge gate (#1979)"
+        FU="$(bash "${GATE_HOME}/autodrive_followups.sh" gate --state-dir "$STATE_DIR" --pr "$PR")" && note "$FU" || block "${FU:-$FU_NONE}" ;;
+      *) block "the crusty loop's final crusty_verdict is not CLEAN in ${STATE_DIR}/crusty-latest.json; criterion 3 is not met" ;;
+    esac
     # The record the manifest's last row names must be private too. Its
     # name is validated before any path is built from it.
     CRUSTY_ROW="$(autodrive_crusty_manifest_row "$STATE_DIR")" || CRUSTY_ROW=""

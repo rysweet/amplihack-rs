@@ -24,7 +24,7 @@ use super::alert::{alert_key, should_alert};
 use super::damp::{FAILED_PROBE_LIMIT, damp, next_failed};
 use super::decide::{Decision, Measured, Reading, Reason, Windows, decide, held};
 use super::ledger::RotateLedger;
-use super::log::msg;
+use super::log::{Shown, msg};
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 
@@ -58,6 +58,7 @@ fn c(n: &str, reading: Reading) -> Measured {
         reading,
         windows: Windows::default(),
         spend_limit: false,
+        unknown: false,
     }
 }
 
@@ -101,7 +102,7 @@ fn the_counter_counts_failed_live_probes_and_resets_on_anything_else() {
         0,
         "a measured breach resets"
     );
-    assert_eq!(next_failed(5, &Reading::Exhausted), 0);
+    assert_eq!(next_failed(5, &Reading::EXHAUSTED), 0);
 }
 
 #[test]
@@ -265,7 +266,7 @@ fn other_decisions_and_readings_pass_through_unchanged() {
     let cases = [
         // A measured breach and an exhausted live login swap at once.
         (threshold_swap(), r(90.0, 10.0)),
-        (threshold_swap(), Reading::Exhausted),
+        (threshold_swap(), Reading::EXHAUSTED),
         // Upgrades keep their own hold inside `decide`.
         (swap("spare", Reason::Upgrade), r(50.0, 10.0)),
         (swap("spare", Reason::Upgrade), Reading::Failed),
@@ -303,8 +304,8 @@ fn failed_probe_log_lines() {
         msg::swap(
             &name("work"),
             &name("spare"),
-            &Reading::Failed,
-            &r(0.0, 12.0),
+            &Shown::from_reading(Reading::Failed),
+            &Shown::from_reading(r(0.0, 12.0)),
             Reason::FailedProbe
         ),
         "swap work->spare live failed target s=0% w=12% reason=failed-probe"
@@ -459,7 +460,7 @@ fn every_account_over_the_threshold_alerts_once_and_never_swaps() {
     let live = name("work");
     let cands = [
         c("spare", r(88.0, 92.0)),
-        c("third", Reading::Exhausted),
+        c("third", Reading::EXHAUSTED),
         c("fourth", Reading::Failed),
     ];
     let mut ledger = RotateLedger::default();
@@ -480,7 +481,7 @@ fn every_account_over_the_threshold_alerts_once_and_never_swaps() {
 #[test]
 fn a_failed_live_probe_with_no_usable_candidate_alerts_and_never_swaps() {
     let s = settings();
-    let cands = [c("spare", Reading::Exhausted), c("third", Reading::Failed)];
+    let cands = [c("spare", Reading::EXHAUSTED), c("third", Reading::Failed)];
     let mut sim = Sim::new();
     for i in 0..6 {
         let d = sim.cycle(&s, &Reading::Failed, &cands, NOW + i * INTERVAL);

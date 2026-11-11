@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use super::super::check::build_install_command;
+use super::super::check::{build_install_command, build_install_command_with_path};
 
 // ============================================================================
 // Program path tests
@@ -187,13 +187,10 @@ fn prepends_user_local_bin_to_repair_subprocess_path() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _home = crate::test_support::HomeGuard::set(temp.path());
-    let previous_path = std::env::var_os("PATH");
-    unsafe {
-        std::env::set_var("PATH", "/tmp/stale-uvx:/usr/bin");
-    }
 
+    // Issue #1765: the parent PATH is passed in, not set on the process.
     let fake_path = temp.path().join(".local/bin/amplihack");
-    let cmd = build_install_command(&fake_path);
+    let cmd = build_install_command_with_path(&fake_path, Some("/tmp/stale-uvx:/usr/bin".into()));
     let path_env = cmd
         .get_envs()
         .find_map(|(key, value)| {
@@ -202,16 +199,16 @@ fn prepends_user_local_bin_to_repair_subprocess_path() {
         .flatten()
         .expect("post-update repair subprocess must set PATH explicitly");
 
-    match previous_path {
-        Some(value) => unsafe { std::env::set_var("PATH", value) },
-        None => unsafe { std::env::remove_var("PATH") },
-    }
-
     let path_env = path_env.to_string_lossy();
     let expected_prefix = temp.path().join(".local/bin").display().to_string();
     assert!(
         path_env.starts_with(&expected_prefix),
         "post-update repair PATH must start with the Rust user-level bin dir {expected_prefix}, got {path_env}"
+    );
+    assert_eq!(
+        path_env,
+        format!("{expected_prefix}:/tmp/stale-uvx:/usr/bin"),
+        "the repaired PATH must keep the parent PATH it was given, in order, after the user bin dir"
     );
 }
 
@@ -222,13 +219,9 @@ fn preserves_parent_path_for_stale_wrapper_discovery() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let _home = crate::test_support::HomeGuard::set(temp.path());
-    let previous_path = std::env::var_os("PATH");
-    unsafe {
-        std::env::set_var("PATH", "/tmp/stale-uvx:/usr/bin");
-    }
 
     let fake_path = temp.path().join(".local/bin/amplihack");
-    let cmd = build_install_command(&fake_path);
+    let cmd = build_install_command_with_path(&fake_path, Some("/tmp/stale-uvx:/usr/bin".into()));
     let original_path = cmd
         .get_envs()
         .find_map(|(key, value)| {
@@ -238,14 +231,106 @@ fn preserves_parent_path_for_stale_wrapper_discovery() {
         .flatten()
         .expect("post-update install must preserve the parent PATH for stale-wrapper discovery");
 
-    match previous_path {
-        Some(value) => unsafe { std::env::set_var("PATH", value) },
-        None => unsafe { std::env::remove_var("PATH") },
-    }
-
     assert_eq!(
         original_path.to_string_lossy(),
         "/tmp/stale-uvx:/usr/bin",
         "the install subprocess needs the original shadowing PATH, not only the repaired PATH"
     );
+}
+
+/// An unset parent PATH is recorded as empty, as `build_install_command`
+/// does when the process has no PATH.
+#[test]
+fn records_an_empty_original_path_when_the_parent_has_none() {
+    let fake_path = PathBuf::from("/usr/local/bin/amplihack");
+    let cmd = build_install_command_with_path(&fake_path, None);
+    let original_path = cmd
+        .get_envs()
+        .find_map(|(key, value)| {
+            (key == std::ffi::OsStr::new("AMPLIHACK_REPAIR_ORIGINAL_PATH"))
+                .then(|| value.map(|v| v.to_os_string()))
+        })
+        .flatten()
+        .expect("post-update install must always set AMPLIHACK_REPAIR_ORIGINAL_PATH");
+
+    assert!(
+        original_path.is_empty(),
+        "an unset parent PATH must be recorded as empty, got {original_path:?}"
+    );
+}
+
+// ============================================================================
+// Issue #1954: the hand-off an installed 1.2.107 makes
+// ============================================================================
+
+/// Issue #1954 (R6): pins the hand-off that decides which binary re-stages
+/// the bundle during `amplihack update`. The old installed binary only
+/// renames the new binary over `~/.local/bin/amplihack` and then runs this
+/// command; the NEW binary's install code does all the staging. The
+/// first-install test (`tests/issue_1954_first_install_restager.rs`) uses a
+/// stub "old" binary with exactly this argv and these variables, so a drift
+/// here must be reflected there.
+///
+/// Quoted from `v1.2.107:crates/amplihack-cli/src/update/check.rs:361-397`:
+///
+/// ```text
+/// pub(super) fn build_install_command_with_path(
+///     installed_exe: &Path,
+///     parent_path: Option<std::ffi::OsString>,
+/// ) -> std::process::Command {
+///     let parent_path = parent_path.unwrap_or_default();
+///     let mut cmd = std::process::Command::new(installed_exe);
+///     cmd.arg("install")
+///         .arg("--force-refresh")
+///         .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
+///         .env("AMPLIHACK_NONINTERACTIVE", "1")
+///         .env("AMPLIHACK_POST_UPDATE_INSTALL", "1")
+///         .env("AMPLIHACK_REPAIR_ORIGINAL_PATH", &parent_path)
+///         .stdin(std::process::Stdio::inherit())
+///         .stdout(std::process::Stdio::inherit())
+///         .stderr(std::process::Stdio::inherit());
+///     if let Some(path) = repair_subprocess_path(installed_exe, &parent_path) {
+///         cmd.env("PATH", path);
+///     }
+///     cmd
+/// }
+/// ```
+///
+/// `AMPLIHACK_REPAIR_ORIGINAL_PATH` and `PATH` are not part of this check;
+/// other tests in this file cover them.
+#[test]
+fn exact_handoff_contract_matches_v1_2_107() {
+    let installed = PathBuf::from("/home/u/.local/bin/amplihack");
+    let cmd = build_install_command(&installed);
+
+    assert_eq!(cmd.get_program(), installed.as_os_str());
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    assert_eq!(
+        args,
+        ["install", "--force-refresh"],
+        "the argv a v1.2.107 binary passes to the new one must not drift"
+    );
+
+    let envs: Vec<(String, Option<String>)> = cmd
+        .get_envs()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().to_string(),
+                v.map(|v| v.to_string_lossy().to_string()),
+            )
+        })
+        .collect();
+    for name in [
+        "AMPLIHACK_NO_UPDATE_CHECK",
+        "AMPLIHACK_NONINTERACTIVE",
+        "AMPLIHACK_POST_UPDATE_INSTALL",
+    ] {
+        assert!(
+            envs.contains(&(name.to_string(), Some("1".to_string()))),
+            "the hand-off must set {name}=1, got envs: {envs:?}"
+        );
+    }
 }

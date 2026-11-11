@@ -182,6 +182,7 @@ assume you have already completed.
 - **One bastion session per host** — only **ONE** bastion/azlin session to a
   given VM at a time. Concurrent sessions to the same VM core-dump. Do not run
   this skill against the same host from two places at once.
+- **tmux:** run `kill-server` and `kill-session -a` only with `-S <private socket>` or `-L <name>`, for a server you started; inside a tmux pane `$TMUX` overrides `TMUX_TMPDIR`, so without them the command reaches the user's own server, and a PreToolUse hook denies it.
 - **azlin invocation form**:
   ```bash
   azlin connect <host> --resource-group rysweet-linux-vm-pool --no-tmux -y -- "<cmd>"

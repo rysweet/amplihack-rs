@@ -127,7 +127,10 @@ fn resolve_amplihack_binary_from(
 fn write_success_executable(dir: &Path, name: &str) -> PathBuf {
     fs::create_dir_all(dir).expect("create test executable dir");
     let path = dir.join(name);
-    let content = format!("#!/bin/sh\nexit 0\n{}\n", "x".repeat(1100));
+    let content = format!(
+        "#!/bin/sh\nif [ \"$1\" = --capabilities ]; then printf '%s\\n' '{{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}}'; exit 0; fi\nexit 0\n{}\n",
+        "x".repeat(1100)
+    );
     fs::write(&path, content).expect("write test executable");
     #[cfg(unix)]
     {
@@ -142,6 +145,7 @@ fn write_install_tooling(home: &Path) -> PathBuf {
     let bin_dir = home.join("test-bin");
     let hooks_bin = write_success_executable(&bin_dir, "amplihack-hooks");
     write_success_executable(&bin_dir, "recipe-runner-rs");
+    write_success_executable(&bin_dir, "codex");
     hooks_bin
 }
 
@@ -168,6 +172,13 @@ fn amplihack_install_command_with_binary(
         .env("AMPLIHACK_AGENT_BINARY", "claude")
         .env("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", hooks_bin)
         .env("RECIPE_RUNNER_RS_PATH", recipe_runner)
+        // This contract checks staged framework assets. Keep provider discovery
+        // off the host's Codex installation and the enclosing agent session.
+        .env("AMPLIHACK_AGENT_BINARY", "claude")
+        .env(
+            "AMPLIHACK_CODEX_BINARY_PATH",
+            hooks_bin.parent().unwrap().join("codex"),
+        )
         .env_remove("AMPLIHACK_HOME")
         .env_remove("CLAUDECODE");
     cmd

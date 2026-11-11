@@ -102,6 +102,7 @@ fn finalize_rechecks_terminal_state_before_mutation_ci_or_merge_steps() {
     let terminal_probe_index = find_terminal_probe_index(&recipe);
 
     for guarded_step in [
+        "step-20-sync-pr-head",
         "step-20b-push-cleanup",
         "step-21-pr-ready",
         "step-22-ensure-mergeable",
@@ -119,6 +120,7 @@ fn finalize_mutation_and_ci_steps_are_suppressed_for_terminal_success() {
     let recipe = load_finalize_recipe();
 
     for guarded_step in [
+        "step-20-sync-pr-head",
         "step-20b-push-cleanup",
         "step-21-pr-ready",
         "step-22-ensure-mergeable",

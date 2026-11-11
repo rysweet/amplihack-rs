@@ -30,7 +30,7 @@ use super::pin::{self, Gate, PinState};
 use super::settings;
 use super::swap::{DOCUMENTED, Source, swap};
 use super::switch::{Switched, release, switch_live};
-use super::tests_swap::{CREDS, Env, LOCK, NOW, env, ino_at, json, login, n, private};
+use super::tests_swap::{CREDS, Env, LOCK, NOW, env, hold_state_lock, ino_at, json, login, n};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::State;
 use crate::commands::profile::name::ProfileName;
@@ -238,6 +238,7 @@ fn a_switch_logs_a_switch_line_not_a_swap_line() {
 #[test]
 fn a_switch_adopts_a_login_no_profile_owns() {
     let e = env();
+    fs::remove_file(&e.rs.ledger).unwrap();
     fs::remove_file(e.root.join("work/.claude.json")).unwrap();
     assert_eq!(
         switch(&e, "spare").unwrap(),
@@ -324,8 +325,9 @@ fn a_profile_without_a_stored_login_is_refused() {
 
 #[test]
 fn the_no_stored_login_reason_is_documented() {
-    // 11 since D4 added `FOREIGN_IGNORES_HOLD`; see tests_switch_hold.rs.
-    assert_eq!(DOCUMENTED.len(), 11);
+    // 13 since #1845 added `ACCOUNT_MISMATCH` and `NOT_RELABELLED`; see
+    // tests_issue_1845_swap.rs.
+    assert_eq!(DOCUMENTED.len(), 13);
     let e = env();
     fs::remove_file(e.slot("spare")).unwrap();
     let Ok(Ok(Switched::DefaultOnly { reason: m, .. })) =
@@ -344,8 +346,7 @@ fn the_no_stored_login_reason_is_documented() {
 #[test]
 fn a_held_state_lock_is_refused_within_the_bounded_wait() {
     let e = env();
-    let state = State::new(&e.root).unwrap();
-    let _held = state.try_lock(Duration::ZERO).unwrap().unwrap();
+    let _held = hold_state_lock(&e.root);
     let start = std::time::Instant::now();
     assert_refused_untouched(&e, "spare", "lock busy");
     assert!(start.elapsed() < Duration::from_secs(10), "bounded wait");
@@ -361,20 +362,19 @@ fn an_inconsistent_journal_is_refused() {
 
 #[test]
 fn a_hand_changed_login_is_refused_without_an_alert() {
+    // Issue #1886: an open suspicion from the credential readings, not a
+    // `.claude.json` that names another account, makes the login hand-changed.
     let e = env();
     e.rs.save_ledger(&RotateLedger {
         live: Some("work".into()),
         account: Some("u-work".into()),
+        hand_suspect: Some(super::hand_fields::HandSuspect {
+            profile: "spare".into(),
+            first_seen: 1,
+        }),
         ..RotateLedger::default()
     })
     .unwrap();
-    private(
-        &e.home.join(".claude.json"),
-        &serde_json::json!({
-            "oauthAccount": {"accountUuid": "u-other", "emailAddress": "other@example.com"}
-        })
-        .to_string(),
-    );
     assert_refused(&e, "spare", "is not the one the ledger names (live=work)");
 }
 
@@ -388,6 +388,7 @@ fn no_login_in_home_is_refused() {
 #[test]
 fn an_ambiguous_login_is_refused() {
     let e = env();
+    fs::remove_file(&e.rs.ledger).unwrap();
     // A second login-less profile with work's account: two profiles match.
     e.store.add(&n("twin")).unwrap();
     fs::copy(
@@ -395,6 +396,14 @@ fn an_ambiguous_login_is_refused() {
         e.root.join("twin/.claude.json"),
     )
     .unwrap();
+    let state = State::new(&e.root).unwrap();
+    let a = super::tests::tests_fixture_identity::read(&e.home.join(".claude")).unwrap();
+    for name in ["work", "twin"] {
+        if !e.root.join(name).exists() {
+            e.store.add(&n(name)).unwrap();
+        }
+        crate::commands::profile::expected::record(&state, &n(name), &a).unwrap();
+    }
     assert_refused(&e, "spare", "more than one profile matches");
 }
 
@@ -572,8 +581,7 @@ fn release_under_a_held_lock_is_refused_and_removes_nothing() {
     pin::write(&e.rs, &n("spare")).unwrap();
     pointer::write(&e.root, &n("spare")).unwrap();
     let before = fs::read(&e.rs.pin).unwrap();
-    let state = State::new(&e.root).unwrap();
-    let _held = state.try_lock(Duration::ZERO).unwrap().unwrap();
+    let _held = hold_state_lock(&e.root);
     assert!(matches!(
         release(&e.store),
         Err(ProfileError::RotateRefused(_))
@@ -588,8 +596,7 @@ fn release_without_a_pin_still_waits_for_the_lock() {
     // between writing its pin and its pointer.
     let e = env();
     pointer::write(&e.root, &n("spare")).unwrap();
-    let state = State::new(&e.root).unwrap();
-    let _held = state.try_lock(Duration::ZERO).unwrap().unwrap();
+    let _held = hold_state_lock(&e.root);
     assert!(matches!(
         release(&e.store),
         Err(ProfileError::RotateRefused(_))

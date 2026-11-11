@@ -7,7 +7,7 @@
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_wait;`.
 
-use super::plan::{Bound, Plan};
+use super::plan::{Bound, Plan, PlanKind};
 use super::wait::{End, WaitDeps, wait};
 use std::time::Duration;
 
@@ -32,6 +32,8 @@ pub(super) struct Fake {
     pub(super) parent_gone_from: Option<i64>,
     /// Virtual second from which the rotator reports fresh capacity.
     pub(super) capacity_from: Option<i64>,
+    /// Virtual second from which another stored login reports capacity.
+    pub(super) other_from: Option<i64>,
 }
 
 impl Fake {
@@ -47,6 +49,7 @@ impl Fake {
             logs: Vec::new(),
             parent_gone_from: None,
             capacity_from: None,
+            other_from: None,
         }
     }
 
@@ -113,6 +116,11 @@ impl WaitDeps for Fake {
         self.capacity_from.is_some_and(|t| self.elapsed() >= t)
     }
 
+    fn other_capacity(&mut self, start: i64) -> bool {
+        assert_eq!(start, T0, "capacity is judged from the wait's start");
+        self.other_from.is_some_and(|t| self.elapsed() >= t)
+    }
+
     fn log(&mut self, line: &str) {
         self.logs.push(line.to_string());
     }
@@ -122,7 +130,16 @@ pub(super) fn plan_in(secs: i64, bound: Bound) -> Plan {
     Plan {
         until: T0 + secs,
         bound,
-        reset: T0,
+        kind: PlanKind::Reset,
+        reset: Some(T0),
+    }
+}
+
+pub(super) fn capacity_plan_in(secs: i64, bound: Bound) -> Plan {
+    Plan {
+        kind: PlanKind::Capacity,
+        reset: None,
+        ..plan_in(secs, bound)
     }
 }
 

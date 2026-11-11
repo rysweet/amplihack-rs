@@ -15,6 +15,8 @@ Work autonomously. Follow workflows without asking permission between steps. Onl
 - Background processes that must persist beyond the session MUST use `detach: true` (or `tmux new-session -d`).
 - When delegating long work, return control to the user immediately after launching; do not block on completion.
 
+**tmux in tests and sandboxes:** pass `-S <private socket>` (or use `env -u TMUX tmux -S <private socket>`) on every tmux command. When `$TMUX` is set, as it is inside any tmux pane, tmux uses that socket and ignores `TMUX_TMPDIR`, so `TMUX_TMPDIR=… tmux kill-server` kills the user's own server. Never run `kill-server` or `kill-session -a` without `-S`/`-L`; a PreToolUse hook denies them.
+
 ## Core Preferences
 
 | Setting             | Value                      |

@@ -2,11 +2,16 @@ name: "autodrive-crusty-loop"
 description: |
   Phase 2 of auto-drive-to-merge: iterate `autodrive-crusty-round` — the
   `crusty-old-engineer` skill acting as the maintainer's proxy — until crusty
-  has ZERO outstanding concerns, or until the agentic loop-health evaluator
-  says the loop has stopped making progress.
+  reports CLEAN, or reports minor findings only (MINOR_ONLY, issue #1979), or
+  until the agentic loop-health evaluator says the loop has stopped making
+  progress. Any blocking or major finding keeps the loop going. When the loop
+  ends on MINOR_ONLY, step-03 files one follow-up issue per minor finding,
+  linked to the plan task, before the phase is recorded; if they cannot be
+  filed, the phase is not recorded and the drive cannot become READY.
 
-  There is NO iteration cap here. Not a max-rounds integer, not a backstop, not
-  a wall-clock budget. The terminator is `loop-health-evaluator` (issue #1337):
+  There is NO iteration cap here. Not a max-rounds integer, not a backstop.
+  The operator's usage budget (#1743) is a resumable cost ceiling, not the
+  convergence terminator. The terminator is `loop-health-evaluator` (issue #1337):
   after each round it reads measured evidence — what the round actually
   produced, which concerns are new / recurring / resolved, whether signals
   moved — and answers CONTINUE / DONE / STUCK. Absence of progress stops the
@@ -38,12 +43,23 @@ context:
   pr_number: ""
   pr_url: ""
   task_description: ""
+  # #1979: the plan task id the follow-up issues name (#N or an id); empty
+  # falls back to Closes/Fixes/Resolves #N in the PR body, then the task.
+  plan_task_id: ""
   autodrive_state_dir: ""
+  # #1979: "true" collects the minor findings but files no follow-up issue;
+  # the merge gate then reports each as followup-missing (no GitHub write).
+  autodrive_dry_run: "false"
   # #1543: the user's own pr_number (empty when phase 1 built the PR) and
   # existing_branch. A PR number in pr_number (the build phase's) or in
   # autodrive_pr_input turns on PR worktree resolution in the preflight.
   autodrive_pr_input: ""
   existing_branch: ""
+  # #1743: the usage budget, read from RECIPE_VAR_* in step-02. Empty here, so
+  # this recipe run on its own is unbudgeted; auto-drive-to-merge sets them.
+  autodrive_budget_loop_rounds: ""
+  autodrive_budget_total_rounds: ""
+  autodrive_budget_wall_seconds: ""
   crusty_loop_result: ""
 
 steps:
@@ -223,14 +239,17 @@ steps:
       bash "$LOOP_HELPER" --task-file "$TASK_IN" \
         --loop-name "crusty" \
         --round-recipe "$ROUND_RECIPE" \
-        --clean-token "CLEAN" \
+        --clean-token "CLEAN" --also-clean-token MINOR_ONLY \
         --verdict-field "crusty_verdict" \
         --repo "$PR_WORKTREE" \
         --review-dir "$REVIEW_DIR" \
         --state-dir "$DIR" \
         --context "repo_path=$PR_WORKTREE" \
         --context "pr_number=${PR}" \
-        --context "pr_url=${PR_URL:-}"
+        --context "pr_url=${PR_URL:-}" \
+        --context "autodrive_budget_loop_rounds=${RECIPE_VAR_autodrive_budget_loop_rounds:-}" \
+        --context "autodrive_budget_total_rounds=${RECIPE_VAR_autodrive_budget_total_rounds:-}" \
+        --context "autodrive_budget_wall_seconds=${RECIPE_VAR_autodrive_budget_wall_seconds:-}"
       RC=$?
       if [ "$RC" -eq 79 ]; then
         echo "ERROR: exit 79 terminal policy refusal in the crusty loop (#1327/#1332). Final — surfaced and stopped, never retried into the guard." >&2
@@ -269,10 +288,39 @@ steps:
         echo "INFO: crusty loop result is '${RESULT:-unknown}', not DONE; the phase is NOT recorded complete." >&2
         exit 0
       fi
-      # Every concern crusty raised during this loop is now settled: the loop
-      # only reports DONE on a round whose own verdict was CLEAN. Record the
-      # ids so a resumed run does not reopen them, then the marker. The
-      # re-review between merge rounds records its loop the same way.
+      # Issue #1979: a loop that ended on MINOR_ONLY files one follow-up issue
+      # per minor finding of that last round before anything is recorded. If
+      # collecting or filing fails, no marker is written: the merge gate then
+      # refuses criterion 3 and the drive is not READY. The tool writes to
+      # GitHub, so, as in merge-loop step-02b, it runs only from AMPLIHACK_HOME,
+      # never from the STATE_HELPER fallbacks (REPO_PATH or the cwd can be a PR
+      # checkout). Without AMPLIHACK_HOME a MINOR_ONLY loop is refused.
+      H=""; [ -z "${AMPLIHACK_HOME:-}" ] || H="${AMPLIHACK_HOME}/amplifier-bundle/tools"; FU="$H/autodrive_followups.sh"
+      LAST="$(sed -n 's/^{"crusty_verdict":"\([A-Z_]*\)",.*/\1/p' "$DIR/crusty-latest.json" 2>/dev/null | head -n 1)"
+      if [ -n "$H" ] && [ -f "$FU" ] && { [ -n "$PR" ] || [ "$LAST" = "MINOR_ONLY" ]; }; then
+        bash "$FU" collect --state-dir "$DIR" \
+          || { echo "ERROR: followups-unfiled: the minor findings could not be collected; the crusty loop is NOT recorded complete." >&2; exit 1; }
+        if [ "${AUTODRIVE_DRY_RUN:-false}" = "true" ]; then
+          echo "INFO: dry run: no follow-up issue is filed; the merge gate reports each minor finding as followup-missing." >&2
+        else
+          FT="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/autodrive-followup-task.XXXXXX")" || exit 1
+          trap 'rm -rf -- "$FT"' EXIT
+          printf '%s' "${RECIPE_VAR_task_description:-}" > "$FT/task.txt"
+          . "$H/recipe_context_value.sh" 2>/dev/null && { write_context_value task_description "$FT/task.txt" 2>/dev/null || : > "$FT/task.txt"; }
+          bash "$FU" file --state-dir "$DIR" --pr "$PR" --task-id "${RECIPE_VAR_plan_task_id:-}" --task-text-file "$FT/task.txt"
+          RC=$?
+          [ "$RC" -ne 79 ] || { echo "ERROR: exit 79 terminal policy refusal while filing follow-up issues; final, never retried." >&2; exit 79; }
+          [ "$RC" -eq 0 ] || { echo "ERROR: followups-unfiled: the follow-up issues could not all be filed; the crusty loop is NOT recorded complete and the drive is not READY." >&2; exit 1; }
+        fi
+      elif [ "$LAST" = "MINOR_ONLY" ]; then
+        echo "ERROR: followups-unfiled: AMPLIHACK_HOME is unset or has no autodrive_followups.sh; the minor findings cannot be filed, so the crusty loop is NOT recorded complete." >&2
+        exit 1
+      fi
+      # Every concern crusty raised during this loop is now settled or filed:
+      # the loop only reports DONE on a round whose own verdict was CLEAN or
+      # MINOR_ONLY (whose .findings is empty). Record the ids so a resumed run
+      # does not reopen them, then the marker. The re-review between merge
+      # rounds records its loop the same way.
       autodrive_record_crusty_loop_done "$DIR"
       echo "INFO: crusty loop recorded complete for PR #${PR:-<none>}." >&2
     output: "crusty_phase_record"

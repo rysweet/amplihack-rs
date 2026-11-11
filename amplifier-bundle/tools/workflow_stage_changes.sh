@@ -24,7 +24,13 @@
 # stdout, NUL-separated. Skipped paths are reported on stderr. Also used by
 # the TDD checkpoint, whose first add is scoped to the paths it captured (#1672).
 workflow_stage_filter() {
-  local top="$1" path rest prefix cargo_dir=""
+  local top="${1-}" path rest prefix cargo_dir=""
+  [ -n "$top" ] || { echo 'stage_workflow_changes: empty filter root' >&2; return 2; }
+  # The checkpoint recipe supplies ".". Resolve it before checking tags,
+  # while refusing empty or failed canonicalisation results.
+  top="$(cd -- "$top" && pwd -P)" || return 2
+  [[ "$top" == /* && "$top" != / && -d "$top" ]] \
+    || { echo 'stage_workflow_changes: invalid canonical filter root' >&2; return 2; }
   # The artefact test is inline in this loop, not a per-path function call:
   # one call per untracked path was most of the cost on a large un-ignored node_modules or target tree.
   # The two runtime directories are matched at the top only.
@@ -55,21 +61,36 @@ workflow_stage_filter() {
 }
 
 stage_workflow_changes() {
-  local top git_dir list add_help rc=0
+  local top git_dir scratch physical list add_help rc=0
   top="$(git rev-parse --show-toplevel)" || return $?
   git_dir="$(git rev-parse --absolute-git-dir)" || return $?
+  case "$top" in /*) ;; *) echo 'stage_workflow_changes: empty or relative worktree path' >&2; return 2 ;; esac
+  case "$git_dir" in /*) ;; *) echo 'stage_workflow_changes: empty or relative Git metadata path' >&2; return 2 ;; esac
+  top="$(cd -- "$top" && pwd -P)" || return 2
+  git_dir="$(cd -- "$git_dir" && pwd -P)" || return 2
+  [[ "$top" == /* && "$top" != / && -d "$top" && "$git_dir" == /* && "$git_dir" != / && -d "$git_dir" ]] \
+    || { echo 'stage_workflow_changes: invalid canonical repository paths' >&2; return 2; }
+  # Keep both lists in one private allocation, never in the tree being staged.
+  # Do not consume or clean up a failed/invalid allocator result.
+  scratch="$(umask 077 && mktemp -d "${git_dir:?}/stage-workflow-changes.XXXXXX")" || return $?
+  case "$scratch" in "${git_dir:?}/stage-workflow-changes."*) ;; *) echo 'stage_workflow_changes: invalid scratch allocation' >&2; return 2 ;; esac
+  [[ -d "$scratch" && ! -L "$scratch" && -O "$scratch" ]] || { echo 'stage_workflow_changes: scratch is not an owned directory' >&2; return 2; }
+  physical="$(cd -- "$scratch" && pwd -P)" || return 2
+  [[ -n "$physical" && "$physical" == "$scratch" && "${scratch%/*}" == "$git_dir" ]] \
+    || { echo 'stage_workflow_changes: scratch escaped Git metadata' >&2; return 2; }
+  list="${scratch:?}/paths"
   # No pathspec: `add -u` covers the whole tree, and unlike `-- :/` it does
   # not fail in a repository with nothing tracked yet.
-  git -C "$top" add -u || return $?
-  # The path lists live in the git dir, never in the tree being staged.
-  list="$(mktemp "${git_dir}/stage-workflow-changes.XXXXXX")" || return $?
+  git -C "$top" add -u || { rc=$?; rm -rf -- "${scratch:?}"; return "$rc"; }
   # --full-name with `:/` lists paths from the top whatever the cwd.
   git -C "$top" ls-files --others --exclude-standard --full-name -z -- :/ >"${list}.all" || {
     rc=$?
-    rm -f -- "$list" "${list}.all"
+    rm -rf -- "${scratch:?}"
     return "$rc"
   }
-  workflow_stage_filter "$top" <"${list}.all" >"$list"
+  workflow_stage_filter "$top" <"${list}.all" >"$list" || {
+    rc=$?; rm -rf -- "${scratch:?}"; return "$rc"
+  }
   if [ -s "$list" ]; then
     # `git add -h` exits 129, so its text is tested with case, not a pipe:
     # under pipefail the pipe would always be false.
@@ -81,6 +102,6 @@ stage_workflow_changes() {
       *) xargs -0 git -C "$top" --literal-pathspecs add -- <"$list" >&2 || rc=$? ;;
     esac
   fi
-  rm -f -- "$list" "${list}.all"
+  rm -rf -- "${scratch:?}"
   return "$rc"
 }

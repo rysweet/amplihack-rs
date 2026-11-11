@@ -99,7 +99,7 @@ AUTODRIVE_RECIPES=(
   autodrive-crusty-loop autodrive-merge-evidence autodrive-merge-round
   autodrive-merge-loop
 )
-AUTODRIVE_TOOLS=(autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh
+AUTODRIVE_TOOLS=(autodrive_budget.sh autodrive_progress.sh autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_escalate.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh
   autodrive_platform_facts.sh autodrive_pr_head.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh
   autodrive_trust.sh autodrive_unmerged.sh autodrive_worktree_guard.sh)
 # merge-round step-00-tools-dir finds the tools once and every later step of
@@ -278,6 +278,7 @@ STUB
 chmod +x "${STUB_BIN}/amplihack"
 
 LOOP="${TOOLS}/autodrive_loop.sh"
+ESCALATE="${TOOLS}/autodrive_escalate.sh" # escalate and the usage-limit check (#1801)
 GATE="${TOOLS}/autodrive_merge_gate.sh"
 
 # The stub reads its knobs from the ENVIRONMENT, so they must be exported —
@@ -313,6 +314,7 @@ LOOP_DIR=""; LOOP_LOGS=""; LOOP_OUT=""
 # The optional positionals pick the loop (issue #1597 runs the merge-ready
 # loop too); they default to the crusty loop. RUN_LOOP_TIMEOUT, when set,
 # runs the loop under `timeout`, so a loop that never stops fails with 124.
+# RUN_LOOP_ALSO_CLEAN, when set, is passed as --also-clean-token (#1979).
 run_loop() { # run_loop <state-dir-suffix> [loop-name] [round-recipe] [clean-token] [verdict-field]
   LOOP_DIR="${WORK}/loop-$1"; LOOP_LOGS="${WORK}/loop-$1.logs"
   mkdir -p "${LOOP_DIR}" "${LOOP_LOGS}"
@@ -322,7 +324,7 @@ run_loop() { # run_loop <state-dir-suffix> [loop-name] [round-recipe] [clean-tok
   [ -z "${RUN_LOOP_TIMEOUT:-}" ] || wrap=(timeout "${RUN_LOOP_TIMEOUT}")
   PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
     ${wrap[@]+"${wrap[@]}"} bash "${LOOP}" --loop-name "${2:-crusty}" --round-recipe "${3:-autodrive-crusty-round}" \
-      --clean-token "${4-CLEAN}" --verdict-field "${5:-crusty_verdict}" \
+      --clean-token "${4-CLEAN}" ${RUN_LOOP_ALSO_CLEAN:+--also-clean-token "${RUN_LOOP_ALSO_CLEAN}"} --verdict-field "${5:-crusty_verdict}" \
       --repo "${LOOP_WT}" --review-dir "${LOOP_MAIN}" --state-dir "${LOOP_DIR}" --task-file "${LOOP_LOGS}/task.txt" \
       >"${LOOP_LOGS}/out" 2>"${LOOP_LOGS}/err"
   local rc=$?
@@ -418,6 +420,55 @@ if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"DONE"
 else
   fail "PASSTHRU" "a converging loop was not allowed to finish (rc=${rc}): ${LOOP_OUT}"
 fi
+
+# Issue #1979: with --also-clean-token MINOR_ONLY, a minor-only round ends the
+# crusty loop on DONE, and the result keeps the round's real verdict.
+set_stub '{"crusty_verdict":"MINOR_ONLY","concern_count":2}' 0 "$H_DONE"
+RUN_LOOP_ALSO_CLEAN=MINOR_ONLY run_loop minor-ends; rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"DONE"' \
+   && [ "$(grep -c '^autodrive-crusty-round$' "${LOOP_LOGS}/calls" 2>/dev/null)" = "1" ]; then
+  pass "1979-minor-only-ends-loop" "a MINOR_ONLY round plus DONE ends the loop after one round"
+else
+  fail "1979-minor-only-ends-loop" "a MINOR_ONLY round did not end the loop (rc=${rc}): ${LOOP_OUT}; $(tail -n3 "${LOOP_LOGS}/err")"
+fi
+if printf '%s' "${LOOP_OUT}" | grep -qF 'MINOR_ONLY'; then
+  pass "1979-minor-only-verdict-kept" "the loop result reports the real verdict MINOR_ONLY, not CLEAN"
+else
+  fail "1979-minor-only-verdict-kept" "the loop result hides the MINOR_ONLY verdict: ${LOOP_OUT}"
+fi
+# The history the evaluator reads keeps MINOR_ONLY too; only loop_round_verdict,
+# which its DONE rule compares with loop_clean_token, carries the clean token.
+EVAL_ARGV="$(grep -F 'loop-health-evaluator.yaml' "${LOOP_LOGS}/calls.argv" 2>/dev/null | head -n 1)"
+if printf '%s' "$EVAL_ARGV" | grep -qE 'loop_history=.*crusty_verdict=MINOR_ONLY ' \
+   && ! printf '%s' "$EVAL_ARGV" | grep -qE 'loop_history=.*crusty_verdict=CLEAN ' \
+   && printf '%s' "$EVAL_ARGV" | grep -qE '(^| )loop_round_verdict=CLEAN( |$)' \
+   && printf '%s' "$EVAL_ARGV" | grep -qE '(^| )loop_clean_token=CLEAN( |$)'; then
+  pass "1979-minor-only-history-kept" "the evaluator's history records MINOR_ONLY; loop_round_verdict is the clean token"
+else
+  fail "1979-minor-only-history-kept" "the history or loop_round_verdict is wrong for a MINOR_ONLY round: ${EVAL_ARGV}"
+fi
+# Without the second token (the merge-ready loop), MINOR_ONLY is not clean.
+fu_two_rounds() { # fu_two_rounds <label> <round-1 verdict> <also-clean token|""> <why>
+  set_stub '' 0 "$H_DONE"
+  export STUB_ROUND_BODY="case \"\$AUTODRIVE_ROUND_LABEL\" in
+  round-1) printf '%s' '{\"crusty_verdict\":\"$2\"}' > \"\$AUTODRIVE_ROUND_RECORD\"; printf 'naming-1\\n' > \"\${AUTODRIVE_ROUND_RECORD}.findings\" ;;
+  *) printf '%s' '{\"crusty_verdict\":\"CLEAN\"}' > \"\$AUTODRIVE_ROUND_RECORD\"; : > \"\${AUTODRIVE_ROUND_RECORD}.findings\" ;;
+esac"
+  RUN_LOOP_ALSO_CLEAN="$3" RUN_LOOP_TIMEOUT=120 run_loop "$1"; local rc=$?
+  unset STUB_ROUND_BODY
+  if [ "$rc" -eq 0 ] && [ "$(grep -c '^loop-health-evaluator$' "${LOOP_LOGS}/calls" 2>/dev/null)" = "2" ] \
+     && printf '%s' "${LOOP_OUT}" | grep -qF '"round_label":"round-2"'; then
+    pass "$1" "$4"
+  else
+    fail "$1" "$4 (rc=${rc}): ${LOOP_OUT}; $(tail -n3 "${LOOP_LOGS}/err")"
+  fi
+}
+fu_two_rounds "1979-minor-only-needs-token" MINOR_ONLY "" \
+  "without --also-clean-token a MINOR_ONLY round does not end the loop; a clean round 2 is needed"
+# A [minor, major] or [minor, blocking] round is CONCERNS from step-03, so the
+# second token never applies to it: the loop continues.
+fu_two_rounds "1979-mixed-continues" CONCERNS MINOR_ONLY \
+  "a CONCERNS round ([minor, major]) does not end the loop even with --also-clean-token MINOR_ONLY"
 
 # ---------------------------------------------------------------------------
 # 2b. Dependency preflight — a missing terminator costs ZERO rounds.
@@ -722,7 +773,7 @@ done
 # would resolve "launch-side" recipes from that tree. It must refuse before a
 # single round runs.
 mkdir -p "${TAMPERED}/amplifier-bundle/tools"
-for t in autodrive_loop.sh autodrive_state.sh autodrive_worktree_guard.sh; do
+for t in autodrive_loop.sh autodrive_state.sh autodrive_escalate.sh autodrive_worktree_guard.sh autodrive_budget.sh autodrive_progress.sh; do
   cp "$(dirname "${LOOP}")/${t}" "${TAMPERED}/amplifier-bundle/tools/${t}"
 done
 LOOP_DIR="${WORK}/loop-inside"; mkdir -p "${LOOP_DIR}"
@@ -790,6 +841,7 @@ cat > "${BR_HOOK}" <<'HOOK'
 #!/usr/bin/env bash
 echo "before $* depth=${AMPLIHACK_SESSION_DEPTH:-unset}" >> "${STUB_CALLS:-/dev/null}"
 echo "the before-round step's own stderr" >&2
+[ -z "${BR_STDERR:-}" ] || printf '%s\n' "$BR_STDERR" >&2
 printf '{"before_round_result":"%s"}\n' "${BR_RESULT:-hook-ran}"
 exit "${BR_RC:-0}"
 HOOK
@@ -862,6 +914,244 @@ if [ "$rc" -eq 2 ] && grep -qF -- "--before-round '${WORK}/no-such-hook.sh' is n
 else
   fail "BEFORE-not-a-file" "rc=${rc} err=$(tr '\n' ' ' < "${LOOP_LOGS}/err")"
 fi
+
+# ---------------------------------------------------------------------------
+# 3d. A usage limit is not STUCK (issue #1801).
+# ---------------------------------------------------------------------------
+# The marker is what the recipe runner writes for a step it classified. Only
+# that line, on a non-zero exit, stops the loop as USAGE_LIMIT.
+UL_MARKER='amplihack.recipe.failure_class {"schema_version":1,"issue":1267,"class":"usage_limit","signal":"usage limit","action":"abort","attempt":1,"retryable":false}'
+UL_NOT_PROGRESS='This is a judgement about absence of progress'
+UL_USAGE_LINE='This is a usage limit, not a judgement about progress. Run again when a login has capacity.'
+
+ul_expect() { # ul_expect <label> <rc> <reason> <evaluator-calls> <why>
+  local bad="" evals
+  evals="$(grep -c '^loop-health-evaluator$' "${LOOP_LOGS}/calls" 2>/dev/null || true)"
+  [ "$UL_RC" = "$2" ] || bad="${bad} rc=${UL_RC}(want $2)"
+  printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"USAGE_LIMIT"' || bad="${bad} no-USAGE_LIMIT-result"
+  grep -qF "  Reason: $3" "${LOOP_LOGS}/err" || bad="${bad} wrong-reason"
+  grep -qF "${UL_USAGE_LINE}" "${LOOP_LOGS}/err" || bad="${bad} no-usage-limit-line"
+  ! grep -qF "${UL_NOT_PROGRESS}" "${LOOP_LOGS}/err" || bad="${bad} says-absence-of-progress"
+  ! grep -qF 'AUTO_DRIVE_LOOP: STUCK' "${LOOP_LOGS}/err" || bad="${bad} says-STUCK"
+  [ "${evals:-0}" = "$4" ] || bad="${bad} evaluator-calls=${evals:-0}(want $4)"
+  if [ -z "$bad" ]; then pass "$1" "$5"; else fail "$1" "${5} --${bad} out=${LOOP_OUT} err=$(tail -n 5 "${LOOP_LOGS}/err" | tr '\n' ' ')"; fi
+}
+
+set_stub '{"crusty_verdict":"CONCERNS"}' 1 "${UL_MARKER}"
+run_loop ul-evaluator; UL_RC=$?
+ul_expect "1801-evaluator-usage-limit" 1 \
+  "the loop-health evaluator failed on a Claude usage limit that no login lifted" 1 \
+  "AC2: an evaluator that failed on a limit stops the loop as USAGE_LIMIT, not STUCK"
+
+set_stub '{"crusty_verdict":"CONCERNS"}' 0 "${H_DONE}" 1
+export STUB_ROUND_STDOUT="${UL_MARKER}"
+run_loop ul-round; UL_RC=$?
+ul_expect "1801-round-usage-limit" 1 \
+  "round round-1 failed on a Claude usage limit that no login lifted; it is not passed to the evaluator" 0 \
+  "AC16: a round that failed on a limit escalates without running the evaluator"
+
+set_stub '{"crusty_verdict":"CLEAN"}' 0 "${H_DONE}"
+export BR_RC=1 BR_RESULT=crusty-rereview-not-done BR_STDERR="${UL_MARKER}"
+run_loop_before ul-before; UL_RC=$?
+unset BR_RC BR_RESULT BR_STDERR
+ul_expect "1801-before-usage-limit" 1 \
+  "the before-round step failed on a Claude usage limit that no login lifted" 0 \
+  "a before-round step that failed on a limit stops the loop, and the round never runs"
+if ! grep -q 'autodrive-crusty-round' "${LOOP_LOGS}/calls" 2>/dev/null; then
+  pass "1801-before-no-round" "no round ran after the before-round limit"
+else
+  fail "1801-before-no-round" "calls: $(tr '\n' '|' < "${LOOP_LOGS}/calls")"
+fi
+
+# AC17: text in a log is not the runner's marker.
+ul_not_limit() { # ul_not_limit <label> <log-text> <why>
+  set_stub '{"crusty_verdict":"CONCERNS"}' 1 "$2"
+  run_loop "$1"; UL_RC=$?
+  if [ "$UL_RC" -eq 1 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"STUCK"' \
+     && ! printf '%s' "${LOOP_OUT}" | grep -qF 'USAGE_LIMIT'; then
+    pass "$1" "$3"
+  else
+    fail "$1" "${3} -- rc=${UL_RC} out=${LOOP_OUT}"
+  fi
+}
+ul_not_limit "1801-agent-echo" "[12:00:00] [amplihack:agent] ${UL_MARKER}" \
+  "AC17: an agent line that quotes the marker is not a usage limit"
+ul_not_limit "1801-summary-echo" "Recipe: loop-health-evaluator"$'\n'"Status: failed"$'\n'"${UL_MARKER}" \
+  "AC17: the marker below the run summary is not a usage limit"
+ul_not_limit "1801-indented-echo" "    Output: ${UL_MARKER}" \
+  "AC17: a step output quoting the marker is not anchored at the line start"
+ul_not_limit "1801-prose" "Claude said: you've hit your usage limit, class usage_limit" \
+  "AC17: a model that mentions a usage limit is not a usage limit"
+ul_not_limit "1801-other-class" 'amplihack.recipe.failure_class {"class":"work","signal":"usage_limit"}' \
+  "AC17: another class that mentions usage_limit is not a usage limit"
+
+set_stub '{"crusty_verdict":"CLEAN"}' 0 "${UL_MARKER}"$'\n'"${H_DONE}"
+run_loop ul-rc-zero; UL_RC=$?
+if [ "$UL_RC" -eq 0 ] && ! printf '%s' "${LOOP_OUT}" | grep -qF 'USAGE_LIMIT'; then
+  pass "1801-exit-zero" "the marker on exit 0 is not a usage limit: rc must be non-zero"
+else
+  fail "1801-exit-zero" "rc=${UL_RC} out=${LOOP_OUT}"
+fi
+
+# G2: the evaluator's agent hit the limit, the nested supervisor waited and
+# ran step-02 again, and the retry returned a verdict. The run exits 0 and its
+# log holds only wait lines, never a failure_class marker. The loop must read
+# the verdict as it would any other.
+UL_WAIT='amplihack.recipe.usage_limit_wait'
+UL_RETRIED="${UL_WAIT} start reason=usage_limit wait=capacity harness=claude reset=none until=2026-10-18 14:00:00 -07:00 bound=max_wait
+${UL_WAIT} end reason=rotator capacity
+${UL_WAIT} resume attempt=2
+${S01}
+${S02}
+${S03}
+${H_DONE}"
+set_stub '{"crusty_verdict":"CLEAN"}' 0 "${UL_RETRIED}"
+run_loop ul-retry-verdict; UL_RC=$?
+UL_EVALS="$(grep -c '^loop-health-evaluator$' "${LOOP_LOGS}/calls" 2>/dev/null || true)"
+if [ "$UL_RC" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"DONE"' \
+   && ! printf '%s' "${LOOP_OUT}" | grep -qF 'USAGE_LIMIT' \
+   && ! grep -qF 'AUTO_DRIVE_LOOP: STUCK' "${LOOP_LOGS}/err" \
+   && [ "${UL_EVALS:-0}" = "1" ]; then
+  pass "1801-evaluator-retry-verdict" "AC2: an evaluator retried inside step-02 gives its verdict, not STUCK or USAGE_LIMIT"
+else
+  fail "1801-evaluator-retry-verdict" "rc=${UL_RC} evals=${UL_EVALS:-0} out=${LOOP_OUT} err=$(tail -n 5 "${LOOP_LOGS}/err" | tr '\n' ' ')"
+fi
+
+# A wait that expired writes wait lines; with no failure_class marker they
+# are not a usage limit (V5). The step's own failure is judged as before.
+ul_not_limit "1801-wait-lines-only" "${UL_WAIT} start reason=usage_limit wait=capacity harness=claude reset=none until=2026-10-18 08:02:00 -07:00 bound=max_wait
+${UL_WAIT} end reason=capacity expired
+${UL_WAIT} failed reason=capacity_expired: usage limit not lifted" \
+  "V5: wait lines without the runner's marker are not a usage limit"
+
+# The runner writes the marker with serde_json's default map, so its keys are
+# in alphabetical order (docs/reference/auto-drive-to-merge.md). A class
+# nested in evidence sorts after the top-level one and must not count (V6).
+UL_RUNNER_MARKER='amplihack.recipe.failure_class {"action":"abort","attempt":1,"class":"usage_limit","issue":1267,"retryable":false,"schema_version":1,"signal":"usage limit"}'
+UL_NESTED_MARKER='amplihack.recipe.failure_class {"action":"abort","attempt":1,"class":"work","evidence":{"class":"usage_limit"},"issue":1267,"retryable":false,"schema_version":1,"signal":"step failed"}'
+
+set_stub '{"crusty_verdict":"CONCERNS"}' 1 "${UL_RUNNER_MARKER}"
+run_loop ul-runner-order; UL_RC=$?
+ul_expect "1801-runner-key-order" 1 \
+  "the loop-health evaluator failed on a Claude usage limit that no login lifted" 1 \
+  "the marker in the runner's own key order is a usage limit"
+
+ul_not_limit "1801-nested-class" "${UL_NESTED_MARKER}" \
+  "V6: a usage_limit class nested below the top level is not a usage limit"
+
+# The same two markers through usage_limit_failure with and without jq on
+# PATH: the jq check and the anchored fallback must agree. Helpers the check
+# calls must be named log_body or usage_limit_* so they are extracted here.
+UL_FUNCS="$(sed -n '/^log_body() {/,/^}/p; /^_\{0,1\}usage_limit[a-z_]*() {/,/^}/p' "${ESCALATE}")"
+UL_NOJQ_BIN="${WORK}/ul-nojq-bin"
+mkdir -p "${UL_NOJQ_BIN}"
+for UL_TOOL in awk grep sed cat tr head; do
+  UL_PATH_TOOL="$(command -v "${UL_TOOL}")" && ln -sf "${UL_PATH_TOOL}" "${UL_NOJQ_BIN}/${UL_TOOL}"
+done
+UL_JQ_BIN="${WORK}/ul-jq-bin"
+mkdir -p "${UL_JQ_BIN}"
+cp -P "${UL_NOJQ_BIN}"/* "${UL_JQ_BIN}/"
+if command -v jq >/dev/null 2>&1; then ln -sf "$(command -v jq)" "${UL_JQ_BIN}/jq"; fi
+ul_check() { # ul_check <bin-dir> <rc> <log-text>: usage_limit_failure's answer, 0 or 1
+  local log="${WORK}/ul-check.log"
+  printf '%s\n' "$3" > "${log}"
+  env -i PATH="$1" "$(command -v bash)" -c "${UL_FUNCS}"$'\n''usage_limit_failure "$1" "$2"' _ "$2" "${log}" >/dev/null 2>&1
+}
+for UL_MODE in jq nojq; do
+  if [ "${UL_MODE}" = jq ]; then UL_BIN="${UL_JQ_BIN}"; else UL_BIN="${UL_NOJQ_BIN}"; fi
+  if [ "${UL_MODE}" = jq ] && [ ! -e "${UL_BIN}/jq" ]; then
+    pass "1801-check-${UL_MODE}" "jq is not installed; the jq case is covered by the fallback"
+    continue
+  fi
+  UL_BAD=""
+  ul_check "${UL_BIN}" 1 "${UL_RUNNER_MARKER}" || UL_BAD="${UL_BAD} runner-order-missed"
+  # Only jq reads a marker whatever its key order; the fallback is anchored
+  # to the runner's alphabetical order.
+  if [ "${UL_MODE}" = jq ]; then
+    ul_check "${UL_BIN}" 1 "${UL_MARKER}" || UL_BAD="${UL_BAD} schema-order-missed"
+  fi
+  ! ul_check "${UL_BIN}" 1 "${UL_NESTED_MARKER}" || UL_BAD="${UL_BAD} nested-class-matched"
+  ! ul_check "${UL_BIN}" 0 "${UL_RUNNER_MARKER}" || UL_BAD="${UL_BAD} exit-zero-matched"
+  ! ul_check "${UL_BIN}" 1 " ${UL_RUNNER_MARKER}" || UL_BAD="${UL_BAD} indented-matched"
+  ! ul_check "${UL_BIN}" 1 "amplihack.recipe.failure_class {\"action\":\"abort\",\"attempt\":1,\"class\":\"usage_limit_other\"}" \
+    || UL_BAD="${UL_BAD} longer-class-matched"
+  if [ "${UL_MODE}" = jq ]; then
+    ! ul_check "${UL_BIN}" 1 'amplihack.recipe.failure_class {"class":"work","evidence":"\"class\":\"usage_limit\""}' \
+      || UL_BAD="${UL_BAD} class-in-string-matched"
+  fi
+  if [ -z "${UL_BAD}" ]; then
+    pass "1801-check-${UL_MODE}" "usage_limit_failure matches only a top-level usage_limit class (${UL_MODE})"
+  else
+    fail "1801-check-${UL_MODE}" "usage_limit_failure (${UL_MODE}):${UL_BAD}"
+  fi
+done
+
+# D4: the USAGE_LIMIT record is valid JSON whatever the round label holds.
+ul_escalate_label() { env -i PATH="/usr/bin:/bin" bash -c "LOOP_NAME=crusty ROUND_LABEL='$1' RECORD=/r.json; ${UL_FUNC}"$'\n''escalate USAGE_LIMIT "fixed reason" usage_limit' 2>/dev/null; }
+UL_FUNC="$(sed -n '/^escalate() {/,/^}/p; /^record_result() {/,/^}/p' "${ESCALATE}")" # record_result: #1743
+UL_JSON="$(ul_escalate_label 'r\1"x' | tail -n 1)"
+if command -v jq >/dev/null 2>&1; then
+  if printf '%s' "${UL_JSON}" | jq -e '.loop_result == "USAGE_LIMIT" and .round_label == "r\\1\"x"' >/dev/null 2>&1; then
+    pass "1801-escalate-escaped" "D4: the USAGE_LIMIT record escapes backslashes and quotes"
+  else
+    fail "1801-escalate-escaped" "not valid JSON or wrong fields: ${UL_JSON}"
+  fi
+else
+  pass "1801-escalate-escaped" "jq is not installed; JSON escaping not checked here"
+fi
+
+set_stub '{"crusty_verdict":"CONCERNS"}' 79 "${UL_MARKER}"
+run_loop ul-refusal-first; UL_RC=$?
+if [ "$UL_RC" -eq 79 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"TERMINAL_POLICY_REFUSAL"'; then
+  pass "1801-refusal-first" "a policy refusal is checked first and still exits 79"
+else
+  fail "1801-refusal-first" "rc=${UL_RC} out=${LOOP_OUT}"
+fi
+
+# Two-argument escalate is byte-identical; only the third argument changes it.
+# held_by_lines comes too (#2219): escalate calls it, and with no round record
+# at RECORD it prints nothing, so the output below is unchanged by it.
+UL_FUNC="$(sed -n '/^escalate() {/,/^}/p; /^record_result() {/,/^}/p; /^held_by_lines() {/,/^}/p' "${ESCALATE}")" # record_result: #1743
+ul_escalate() { env -i PATH="/usr/bin:/bin" bash -c "LOOP_NAME=crusty ROUND_LABEL=round-1 RECORD=/r.json; ${UL_FUNC}"$'\n''escalate "$@"' _ "$@" 2>&1; }
+UL_GOT="$(ul_escalate STUCK 'it did not move')"
+UL_WANT="AUTO_DRIVE_LOOP: STUCK — loop 'crusty' stops at round label 'round-1'.
+  Reason: it did not move
+  Round record: /r.json
+  This is a judgement about absence of progress, not an attempt count.
+{\"loop\":\"crusty\",\"loop_result\":\"STUCK\",\"round_label\":\"round-1\",\"reason\":\"it did not move\"}"
+if [ "${UL_GOT}" = "${UL_WANT}" ]; then
+  pass "1801-escalate-two-args" "two-argument escalate output is byte for byte what it was"
+else
+  fail "1801-escalate-two-args" "got: ${UL_GOT}"
+fi
+
+# AC18: no reader maps USAGE_LIMIT to success or STUCK.
+# The merge gate has no such arm: GATE-usage-limit-no-marker runs it.
+for UL_READER in "${TOOLS}/autodrive_crusty_rereview.sh" \
+    "$(dirname "${TOOLS}")/recipes/auto-drive-to-merge.yaml"; do
+  if grep -qF 'USAGE_LIMIT' "${UL_READER}"; then
+    pass "1801-reader-${UL_READER##*/}" "the reader has an explicit USAGE_LIMIT failure arm"
+  else
+    fail "1801-reader-${UL_READER##*/}" "${UL_READER##*/} does not name USAGE_LIMIT"
+  fi
+done
+
+# workflow_hook_repair.sh is sourced on its own, so it keeps its own copy of
+# log_body's filter. The copies must not drift: a line one reader drops would
+# be a marker to the other.
+ul_filter() { # ul_filter <script> <function>: the function's awk and grep -v
+  sed -n "/^$2() {/,/^}/p" "$1" | grep -oE "awk '[^']*'|grep -vE '[^']*'"
+}
+UL_BODY="$(ul_filter "${ESCALATE}" log_body)"
+for UL_COPY in hook_repair_terminal_refusal hook_repair_usage_limit_failure; do
+  if [ "$(printf '%s\n' "${UL_BODY}" | wc -l)" -eq 2 ] \
+     && [ "$(ul_filter "${TOOLS}/workflow_hook_repair.sh" "${UL_COPY}")" = "${UL_BODY}" ]; then
+    pass "1801-filter-${UL_COPY}" "${UL_COPY} uses the same filter as log_body"
+  else
+    fail "1801-filter-${UL_COPY}" "${UL_COPY} has drifted from log_body in autodrive_escalate.sh"
+  fi
+done
+export STUB_ROUND_STDOUT="round ran"
 
 # ---------------------------------------------------------------------------
 # 3c. A round log that QUOTES the guard's refusal is not a refusal.
@@ -1110,18 +1400,22 @@ loop_writes_round() { # loop_writes_round <dir> <label> <record-text>: what auto
   printf '%s\t%s\t%s\n' "$2" "${f}" "$(git hash-object --no-filters --stdin < "$1/${f}")" >> "$1/crusty-records.tsv"
   chmod 0644 "$1/${f}" "$1/crusty-latest.json"; chmod 0600 "$1/crusty-records.tsv"
 }
-seed_crusty() { # seed_crusty <dir> <clean|concerns|none|legacy-clean>
+seed_crusty() { # seed_crusty <dir> <clean|concerns|minor|none|legacy-clean|usage-limit>
   mkdir -p "$1"; chmod 0755 "$1"
   case "$2" in
-    clean|concerns)
+    clean|concerns|minor)
       printf 'crusty-loop\t2026-10-03T00:00:00Z\n' > "$1/phases.tsv"; chmod 0644 "$1/phases.tsv"
       if [ "$2" = "clean" ]; then loop_writes_round "$1" round-1 "$(crusty_record CLEAN "$CR_SHA")"
+      elif [ "$2" = "minor" ]; then loop_writes_round "$1" round-1 "$(crusty_record MINOR_ONLY "$CR_SHA")"
       else loop_writes_round "$1" round-1 "$(crusty_record CONCERNS "$CR_SHA")"; fi
       ;;
     legacy-clean) # a state dir written before #1517: marker and a CLEAN latest file, no manifest
       printf 'crusty-loop\t2026-10-03T00:00:00Z\n' > "$1/phases.tsv"
       printf '{"crusty_verdict":"CLEAN","concerns":[],"summary":"no outstanding concerns"}' > "$1/crusty-latest.json"
       chmod 0644 "$1/phases.tsv" "$1/crusty-latest.json"
+      ;;
+    usage-limit) # a loop that stopped USAGE_LIMIT after a clean round: no marker
+      loop_writes_round "$1" round-1 "$(crusty_record CLEAN "$CR_SHA")"
       ;;
     none) : ;;
   esac
@@ -1185,12 +1479,25 @@ crusty_mutate() { # crusty_mutate <dir> <mutation>: what an agent, or a broken l
       old_row="$(tail -n 1 "$d/crusty-records.tsv")"
       loop_writes_round "$d" round-1 "$(crusty_record CONCERNS "$CR_SHA2" round-1)"
       printf '%s\n' "${old_row}" >> "$d/crusty-records.tsv" ;;
+    # #1979: the follow-up set and what `file` recorded for it (PR 42).
+    followups-unfiled)
+      printf '{"id":"naming-1","summary":"Rename","evidence":"e"}\n' > "$d/followups.jsonl"; chmod 0600 "$d/followups.jsonl" ;;
+    followups-filed)
+      crusty_mutate "$d" followups-uncommented
+      printf '1979:2017,\n' > "$d/followups.parent"; chmod 0600 "$d/followups.parent" ;;
+    # The issues are filed, but no comment on the task issue lists them.
+    followups-uncommented)
+      printf '{"id":"naming-1","summary":"Rename","evidence":"e"}\n' > "$d/followups.jsonl"
+      printf 'naming-1\t2017\t#1979\t42\n' > "$d/followups.tsv"; chmod 0600 "$d/followups.jsonl" "$d/followups.tsv" ;;
+    followups-error)
+      crusty_mutate "$d" followups-filed
+      printf 'followup-create-failed\n' > "$d/followups.error"; chmod 0600 "$d/followups.error" ;;
     *) echo "HARNESS-ERROR: unknown crusty mutation '$2'" >&2; exit 2 ;;
   esac
 }
 
 # Knobs (exported or set inline by the caller, all optional):
-#   GATE_CRUSTY       clean | concerns | none | legacy-clean   crusty state seeded in --state-dir (default clean)
+#   GATE_CRUSTY       clean | concerns | none | legacy-clean | usage-limit   crusty state seeded in --state-dir (default clean)
 #   GATE_CRUSTY_MUT   a crusty_mutate mutation applied after seeding
 #   GATE_STATE_ARG    given | none | empty      how --state-dir is passed (default given). For
 #                                               none/empty, CLEAN crusty state is planted in the
@@ -1272,7 +1579,9 @@ qa_chain_mutate() { # qa_chain_mutate <dir> <mutation>: what an agent could leav
 GATE_DIR=""; GATE_OUT=""
 gate_run() { # gate_run <mode> <extra-args...>
   local mode="$1"; shift
-  GATE_DIR="${WORK}/gate-${mode}-${RANDOM}"; mkdir -p "${GATE_DIR}"; chmod 0755 "${GATE_DIR}"
+  # mktemp, not $RANDOM: a repeated name reuses an earlier case's directory and
+  # its planted symlink or extra manifest row, which fails a positive control.
+  GATE_DIR="$(mktemp -d "${WORK}/gate-${mode}-XXXXXX")"; chmod 0755 "${GATE_DIR}"
   local gate_tmp="${GATE_DIR}/tmp"; mkdir -p "${gate_tmp}"
   local -a sd=(--state-dir "${GATE_DIR}") args=()
   local rec_src="" qa_src=""
@@ -1536,7 +1845,8 @@ if [ -x "${GUARD_1551}/gh" ]; then
   # A copy of the gate with every helper beside it passes every check and then
   # has its merge refused: only the bundle's own gate may merge.
   COPY_1551="${WORK_PHYS}/gate-copy-1551"; mkdir -p "${COPY_1551}"
-  cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" "${COPY_1551}/"
+  cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" \
+     "${TOOLS}/autodrive_followups.sh" "${TOOLS}/autodrive_followups_check.sh" "${TOOLS}/autodrive_finding_rules.sh" "${COPY_1551}/"
   GATE_PRIV=1 GATE_SCRIPT="${COPY_1551}/autodrive_merge_gate.sh" GATE_PATH_PREFIX="${GUARD_1551}" \
     gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
   if [ "$rc" -eq 1 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
@@ -1641,6 +1951,39 @@ else
   fail "GATE-full-evidence" "a PR with every piece of evidence was blocked (rc=${rc}): $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
 fi
 
+# Issue #1979: a crusty loop that ended MINOR_ONLY merges only once every
+# minor finding has a follow-up issue; the gate checks followups.tsv itself.
+fu_gate() { # fu_gate <label> <want: merges|blocks> <crusty seed> <mutation> <why>
+  GATE_CRUSTY="$3" GATE_CRUSTY_MUT="$4" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; local rc=$?
+  local merged=no; grep -q '^pr merge' "${GATE_DIR}/gh-calls" 2>/dev/null && merged=yes
+  if [ "$2" = merges ] && [ "$rc" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_RUN"'; then
+    pass "$1" "$5"
+  elif [ "$2" = blocks ] && [ "$rc" -ne 0 ] && [ "$merged" = no ] \
+       && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
+       && grep -qF 'ERROR: followups-unfiled' "${GATE_DIR}/err"; then
+    pass "$1" "$5"
+  else
+    fail "$1" "$5 (rc=${rc}, merged=${merged}): ${GATE_OUT} | $(grep -E 'ERROR|BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+  fi
+}
+fu_gate "1979-gate-minor-filed" merges minor followups-filed \
+  "a MINOR_ONLY crusty end with every follow-up filed meets criterion 3 and merges"
+if grep -qF 'evidence: followups-ok 1 naming-1=#2017' "${GATE_DIR}/err"; then
+  pass "1979-gate-evidence-names-issue" "the gate's evidence line names each finding and its follow-up issue"
+else
+  fail "1979-gate-evidence-names-issue" "no follow-up evidence line: $(grep -F 'followups' "${GATE_DIR}/err" | tr '\n' ' ')"
+fi
+fu_gate "1979-gate-minor-unfiled" blocks minor followups-unfiled \
+  "a MINOR_ONLY crusty end with an unfiled finding prints ERROR: followups-unfiled and never merges"
+fu_gate "1979-gate-minor-no-set" blocks minor "" \
+  "a MINOR_ONLY crusty end with no follow-up set never merges"
+fu_gate "1979-gate-parent-uncommented" blocks minor followups-uncommented \
+  "follow-ups filed but not listed on the task issue, which the merge closes, never merge"
+fu_gate "1979-gate-error-recorded" blocks minor followups-error \
+  "a recorded filing error blocks the merge even when rows exist"
+fu_gate "1979-gate-clean-no-followups" merges clean "" \
+  "a CLEAN crusty end needs no follow-up and still merges"
+
 for st in RUN_FAILED VALIDATE_FAILED NO_SCENARIOS NOT_INSTALLED; do
   f="${WORK}/qa-gadugi-${st}.json"; qa_fixture "${GATE_HEAD}" "$st" 3 > "$f"
   gate_blocks "GATE-gadugi-required-${st}" "gadugi" \
@@ -1669,16 +2012,25 @@ else
 fi
 AUTODRIVE_QA_SCENARIO_DIR=tests/agentic gate_blocks "GATE-gadugi-not-required-but-opted-in" "gadugi-test scenarios were not validated" \
   "NOT_REQUIRED evidence never merges when AUTODRIVE_QA_SCENARIO_DIR asks for gadugi" --qa-evidence "$QA_NR"
-: > "${FX}/package.json"
-gate_blocks "GATE-gadugi-not-required-node" "gadugi-test scenarios were not validated" \
+# A Node repository: package.json committed on base branch bnode (#1763 reads
+# the merge-base tree, so a file on disk only would not count).
+GN_SAVED="$(git -C "$FX" rev-parse HEAD)"
+GN_BASE="$(fx_change "$FX_M1" "node base" package.json=x)"; GN_HEAD="$(fx_change "$GN_BASE" "node change" src.js=v1)"
+git -C "$FX" push -q origin "${GN_BASE}:refs/heads/bnode" >/dev/null 2>&1 \
+  && git -C "$FX" update-ref refs/remotes/origin/bnode "$GN_BASE" \
+  || { echo "HARNESS-ERROR: could not create the Node base branch" >&2; exit 2; }
+fx_head "$GN_HEAD"
+GH_BASE=bnode GH_HEAD="$GN_HEAD" gate_blocks "GATE-gadugi-not-required-node" "gadugi-test scenarios were not validated" \
   "NOT_REQUIRED evidence never merges a Node repository, whatever the evidence says" --qa-evidence "$QA_NR"
-rm -f "${FX}/package.json"
+fx_head "$GN_SAVED"
 GATE_LONE_G="${WORK}/gate-lonely-gadugi"; mkdir -p "${GATE_LONE_G}"; cp "${GATE}" "${GATE_LONE_G}/"
 GATE_SCRIPT="${GATE_LONE_G}/autodrive_merge_gate.sh" gate_blocks "GATE-gadugi-rule-unreadable" "gadugi-test scenarios were not validated" \
   "without autodrive_trust.sh beside the gate, gadugi counts as required and NOT_REQUIRED never merges" --qa-evidence "$QA_NR"
 
 GATE_CRUSTY=none gate_blocks "GATE-crusty-absent" "crusty" \
   "no crusty-loop marker in the state dir never merges" --qa-evidence "$QA"
+GATE_CRUSTY=usage-limit gate_blocks "GATE-usage-limit-no-marker" "crusty-loop phase is not recorded" \
+  "a loop that ended USAGE_LIMIT writes no marker, so even a clean last round never merges" --qa-evidence "$QA"
 GATE_CRUSTY=concerns gate_blocks "GATE-crusty-concerns" "crusty" \
   "a crusty loop that did not end CLEAN never merges" --qa-evidence "$QA"
 GATE_STATE_ARG=none gate_blocks "GATE-crusty-no-state-dir" "crusty" \
@@ -2174,6 +2526,24 @@ else
   fail "CRUSTY-review-object" "a JSON-only review, exported as RECIPE_VAR_crusty_review alone, became '${v}'"
 fi
 
+# Issue #1979: crusty writes `concerns` as a string holding two arrays, a minor
+# one and then a blocking one. step-03 merges them into one array, so the
+# blocking finding is kept in .findings and the round stays CONCERNS; it must
+# never be hidden behind the minor one and classed MINOR_ONLY.
+FU_TWO_DIR="$(mktemp -d "${WORK}/fu-two.XXXXXX")"; chmod 700 "${FU_TWO_DIR}"
+FU_TWO_REVIEW='{"crusty_verdict":"CONCERNS","concerns":"[{\"id\":\"naming-1\",\"severity\":\"minor\",\"summary\":\"Rename x\",\"evidence\":\"a.rs\"}] [{\"id\":\"bug-2\",\"severity\":\"blocking\",\"summary\":\"Crash on start\",\"evidence\":\"b.rs\"}]"}'
+v="$(PATH="${STUB_BIN}:${PATH}" RECIPE_VAR_crusty_review="${FU_TWO_REVIEW}" AUTODRIVE_ROUND_RECORD="${FU_TWO_DIR}/crusty-round-1.json" \
+  AUTODRIVE_ROUND_LABEL="r" AUTODRIVE_LAUNCH_TOOLS="${TOOLS}" bash -c "$CRUSTY_BODY" 2>/dev/null \
+  | "$REAL_AMPLIHACK" orch helper extract-json \
+  | "$REAL_AMPLIHACK" orch helper extract-field --field crusty_verdict --default MISSING)"
+if [ "$v" = "CONCERNS" ] && grep -qx 'bug-2' "${FU_TWO_DIR}/crusty-round-1.json.findings" 2>/dev/null \
+   && [ ! -e "${FU_TWO_DIR}/crusty-round-1.json.minor" ]; then
+  pass "1979-two-arrays-stay-concerns" "a concerns string of a minor and a blocking array stays CONCERNS with the blocking id in .findings"
+else
+  fail "1979-two-arrays-stay-concerns" "verdict '${v}', .findings: $(tr '\n' ' ' < "${FU_TWO_DIR}/crusty-round-1.json.findings" 2>/dev/null)"
+fi
+rm -rf -- "${FU_TWO_DIR}"; unset FU_TWO_DIR FU_TWO_REVIEW
+
 # THE fail-open path this gate had. `extract-json` without `--require-field`
 # returns the FIRST parseable object and PREFERS a ```json fence over raw
 # prose, so a reviewer that restates its output contract — normal behaviour,
@@ -2545,7 +2915,7 @@ SENTINEL_1607="DECOY-1607-SENTINEL"
 # and exits 0, so a step that sourced it ends "successfully": only the marker
 # shows which tools directory was used, whatever the step prints.
 R1607_MARK="${WORK_PHYS}/1607-decoy.ran"
-for t in "${AUTODRIVE_TOOLS[@]}" git-identity.sh; do
+for t in "${AUTODRIVE_TOOLS[@]}" git-identity.sh git-repo-env.sh; do
   cat > "${DECOY_1607}/${t}" <<EOF
 printf '%s\n' "${t}" >> "${R1607_MARK}"
 printf '%s\n' "${SENTINEL_1607}" >&2
@@ -2725,6 +3095,20 @@ if printf '%s' "${STEP02_PROMPT}" | grep -qF '{{merge_ready_files.skill_md}}' \
 else
   fail "MERGEREADY-reads-files" "step-02 does not use {{merge_ready_files.skill_md}} and {{merge_ready_files.template}}"
 fi
+# Issue #2033: step-04's agent runs the repository's tests while it fixes
+# blockers. Each of its shell calls inherits the agent's environment, so the
+# "Running tests or hooks" instruction itself must tell it to clear the
+# repository-selecting and run-identity variables, not only the commit block.
+STEP04_TESTS_LINE="$(awk '
+  index($0, "id: \"step-04-address-blockers\"") { on=1; next }
+  on && /^  - id:/ { exit }
+  on && index($0, "**Running tests or hooks**") { print }' "${ROUND_YAML}")"
+R2033_CLEAR='[ ! -L "{{autodrive_tools_dir}}/git-repo-env.sh" ] && . "{{autodrive_tools_dir}}/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env'
+if [ -n "${STEP04_TESTS_LINE}" ] && printf '%s' "${STEP04_TESTS_LINE}" | grep -qF "${R2033_CLEAR}"; then
+  pass "2033-step04-tests-clear-env" "step-04 tells the agent to load git-repo-env.sh and clear both lists before each test or hook run"
+else
+  fail "2033-step04-tests-clear-env" "step-04's 'Running tests or hooks' instruction does not load git-repo-env.sh and clear both lists"
+fi
 if ! printf '%s' "${STEP02_PROMPT}" | grep -qF 'Skill('; then
   pass "MERGEREADY-no-skill-call" "step-02 contains no Skill( at all"
 else
@@ -2887,7 +3271,7 @@ else
   td_root() { # td_root <dir> [tool to leave out]: a root whose amplifier-bundle/tools copies the round's tools
     mkdir -p "$1/amplifier-bundle/tools"
     for t in autodrive_merge_ready_files.sh autodrive_platform_facts.sh autodrive_round_evidence.sh \
-             autodrive_state.sh autodrive_trust.sh git-identity.sh; do
+             autodrive_state.sh autodrive_trust.sh git-identity.sh git-repo-env.sh; do
       [ "$t" = "${2:-}" ] || cp "${TOOLS}/$t" "$1/amplifier-bundle/tools/"
     done
   }
@@ -2933,8 +3317,15 @@ else
   S00_GADUGI_BIN="${WORK_PHYS}/s00-gadugi-bin"; S00_NO_GADUGI_BIN="${WORK_PHYS}/s00-no-gadugi-bin"
   mkdir -p "${S00_GADUGI_BIN}" "${S00_NO_GADUGI_BIN}"
   S00_RT="${WORK_PHYS}/s00-rt"
-  for t in node:package.json rust:Cargo.toml python:pyproject.toml; do
+  # Committed repositories: #1763 reads manifests from git, and with no
+  # AUTODRIVE_QA_BASE (a preflight) from HEAD's tree.
+  for t in node:package.json rust:Cargo.toml python:pyproject.toml plain:README.md; do
     mkdir -p "${S00_RT}/${t%%:*}"; : > "${S00_RT}/${t%%:*}/${t#*:}"
+    ( cd "${S00_RT}/${t%%:*}" && git init -q . && git add -A \
+      && c="$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
+              GIT_COMMITTER_EMAIL=t@example.invalid git commit-tree "$(git write-tree)" -m init)" \
+      && git update-ref HEAD "$c" ) >/dev/null 2>&1 \
+      || { echo "HARNESS-ERROR: could not commit the step-00 fixture ${t%%:*}" >&2; exit 2; }
   done
   printf '#!/bin/sh\necho "gadugi-test must not run in step-00" >&2\nexit 99\n' > "${S00_GADUGI_BIN}/gadugi-test"
   chmod +x "${S00_GADUGI_BIN}/gadugi-test"
@@ -3002,7 +3393,7 @@ else
   # qa-team's repo-type table: a Rust CLI or Python repository, or one with
   # no marker file, runs without gadugi-test; AUTODRIVE_QA_SCENARIO_DIR asks for it.
   for rt in rust python plain; do
-    repo="${S00_RT}/${rt}"; [ "$rt" = plain ] && repo=""
+    repo="${S00_RT}/${rt}"
     s00_run "${REPO_ROOT}" "${repo}" "${S00_NO_GADUGI_BIN}"
     if [ "${S00_RC}" -eq 0 ] && [ "$(printf '%s' "${S00_OUT}" | jq -r .skill_md 2>/dev/null)" != "" ] \
        && ! printf '%s' "${S00_ERR}" | grep -q 'gadugi-test-not-installed'; then
@@ -3142,14 +3533,17 @@ if PATH="${EV_NOG}:/usr/bin:/bin" command -v git >/dev/null 2>&1; then :; else
 fi
 
 EV_REPO=""; EV_OUT=""; EV_ERR=""; EV_CALLS=""; EV_N=0
-ev_repo() { # ev_repo <marker-file> -> fresh scratch repo with one commit, written via plumbing (no hooks)
+# ev_repo <marker-file> -> fresh scratch repo with one commit, written via
+# plumbing (no hooks), that is also refs/remotes/origin/main: #1763 reads the
+# manifests from the merge-base tree, and an unknown base requires gadugi.
+ev_repo() {
   EV_N=$((EV_N + 1))
   EV_REPO="${WORK_PHYS}/ev-repo-${EV_N}"; mkdir -p "${EV_REPO}"
   : > "${EV_REPO}/$1"
   ( cd "${EV_REPO}" && git init -q . && git add -A \
     && c="$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
             GIT_COMMITTER_EMAIL=t@example.invalid git commit-tree "$(git write-tree)" -m init)" \
-    && git update-ref HEAD "$c" ) >/dev/null 2>&1 \
+    && git update-ref HEAD "$c" && git update-ref refs/remotes/origin/main "$c" ) >/dev/null 2>&1 \
     || { echo "HARNESS-ERROR: could not create a scratch git repo" >&2; exit 2; }
 }
 ev_scen() { # ev_scen <relative-file> ... -> scenario files named after their base name (a.yaml -> name: a)
@@ -3169,14 +3563,17 @@ ev_script() { # ev_script <relative-file>: an executable suite command that logs
     "${1##*/}" > "${EV_REPO}/$1"
   chmod +x "${EV_REPO}/$1"
 }
+# The step reads the base from merge_sync with `amplihack orch helper`; EV_AMP
+# holds only that binary, so step-02 sees base main as step-01 would give it.
+EV_AMP="${WORK_PHYS}/ev-amplihack"; mkdir -p "${EV_AMP}"; ln -sf "${REAL_AMPLIHACK}" "${EV_AMP}/amplihack"
 ev_run() { # ev_run <stub-dir> [VAR=value ...] -> runs the step; EV_OUT = last stdout line
   local stubs="$1"; shift
   EV_CALLS="${EV_REPO}.calls"; : > "${EV_CALLS}"
   # AMPLIHACK_HOME is this tree, so gadugi_scenario_results comes from the
   # autodrive_trust.sh under test, as in a real run.
-  env -i HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" PATH="${stubs}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" \
+  env -i HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" PATH="${stubs}:${EV_AMP}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" \
     REPO_PATH="${EV_REPO}" AUTODRIVE_ROUND_LABEL="round-7" AUTODRIVE_QA_EVIDENCE="${EV_REPO}.evidence.json" \
-    EV_CALLS="${EV_CALLS}" "$@" \
+    EV_CALLS="${EV_CALLS}" RECIPE_VAR_merge_sync='{"base":"main","conflict":"false"}' "$@" \
     "${BASH}" -c "${EV_BODY}" >"${EV_REPO}.out" 2>"${EV_REPO}.err"
   EV_OUT="$(tail -n 1 "${EV_REPO}.out")"
   EV_ERR="${EV_REPO}.err"
@@ -3208,6 +3605,7 @@ ev_expect() { # ev_expect <label> <field>=<value> ...
     PASS:) ;;
     FAIL:qa-command-failed|FAIL:no-scenarios|FAIL:gadugi-validate-failed|FAIL:gadugi-scenario-unnamed|FAIL:gadugi-run-failed) ;;
     BLOCKED:qa-command-missing|BLOCKED:qa-command-not-installed|BLOCKED:gadugi-test-missing) ;;
+    BLOCKED:qa-config-invalid|QA_UNRESOLVED:qa-unresolved) ;;
     *) bad="${bad} qa_status/qa_reason='$(evf qa_status)/$(evf qa_reason)'(not a valid pair)" ;;
   esac
   want="$(git -C "${EV_REPO}" rev-parse HEAD)"
@@ -3292,7 +3690,9 @@ if [ "$(printf '%s' "${EV_REL_OUT}" | jq -r '.qa_status' 2>/dev/null)" = "PASS" 
 else
   fail "QA-relative-repo-path" "got: ${EV_REL_OUT}"
 fi
-EV_NO_TOOLS="${WORK_PHYS}/ev-no-tools"; mkdir -p "${EV_NO_TOOLS}/home" "${EV_NO_TOOLS}/ah"
+EV_NO_TOOLS="${WORK_PHYS}/ev-no-tools"; mkdir -p "${EV_NO_TOOLS}/home" "${EV_NO_TOOLS}/ah/amplifier-bundle/tools"
+# Only the QA tool is missing: the #2033 helper the step loads first is there.
+cp "${REPO_ROOT}/amplifier-bundle/tools/git-repo-env.sh" "${EV_NO_TOOLS}/ah/amplifier-bundle/tools/"
 EV_MISS_OUT="$(env -i HOME="${EV_NO_TOOLS}/home" TMPDIR="${WORK_PHYS}" PATH="${EV_FULL}:/usr/bin:/bin" \
   AMPLIHACK_HOME="${EV_NO_TOOLS}/ah" REPO_PATH="${EV_REPO}" EV_CALLS=/dev/null \
   "${BASH}" -c "${EV_BODY}" 2>"${EV_NO_TOOLS}.err")"; EV_MISS_RC=$?
@@ -3775,6 +4175,11 @@ ev_expect "QA-rust-no-gadugi" qa_status=PASS qa_reason="" qa_repo_type=rust-cli 
 ev_rt_expect_no_gadugi "QA-rust-no-gadugi-calls" "a Rust CLI repository runs cargo test and never calls gadugi-test, as qa-team's Rust CLI line says"
 ev_run "${EV_NOG}"
 ev_expect "QA-rust-gadugi-not-installed" qa_status=PASS qa_reason="" gadugi_required=false gadugi_status=NOT_REQUIRED
+# #1763: merge_sync without a base leaves the merge base unknown, so the
+# evidence step keeps gadugi required even in a Rust CLI repository.
+ev_run "${EV_NOG}" RECIPE_VAR_merge_sync='{"conflict":"false"}'
+ev_expect "QA-rust-no-base-requires-gadugi" qa_status=BLOCKED qa_reason=gadugi-test-missing qa_repo_type=rust-cli \
+  gadugi_required=true gadugi_status=NOT_INSTALLED
 ev_run "${EV_FULL}" STUB_REPO_TEST_RC=101
 ev_expect "QA-rust-cargo-fails" qa_status=FAIL qa_reason=qa-command-failed qa_exit_code=101 \
   gadugi_required=false gadugi_status=NOT_REQUIRED
@@ -3828,7 +4233,7 @@ fi
 # The tool needs autodrive_trust.sh beside it to know which measurements
 # apply; alone, it fails by name and writes no evidence.
 EV_ALONE="${WORK_PHYS}/ev-alone/amplifier-bundle/tools"; mkdir -p "${EV_ALONE}"
-cp "${REPO_ROOT}/amplifier-bundle/tools/autodrive_qa_evidence.sh" "${EV_ALONE}/"
+cp "${REPO_ROOT}/amplifier-bundle/tools/autodrive_qa_evidence.sh" "${REPO_ROOT}/amplifier-bundle/tools/git-repo-env.sh" "${EV_ALONE}/"
 ev_repo Cargo.toml
 rm -f "${EV_REPO}.evidence.json"
 ev_run "${EV_FULL}" AMPLIHACK_HOME="${WORK_PHYS}/ev-alone"
@@ -4487,6 +4892,18 @@ loop-health-evaluator 2" ]; then
     fail "RRTOOL-refused-no-evaluator" "calls: $(tr '\n' '|' < "${RRT_LOGS}/calls")"
   fi
 
+  # Issue #1801, AC18: a usage limit in the re-review.
+  rrt_run clean "${FX}" STUB_ROUND_RECORD="$(crusty_record CONCERNS "${FX_CODE}")" STUB_HEALTH_RC=1 \
+    STUB_HEALTH_STDOUT='amplihack.recipe.failure_class {"class":"usage_limit"}'
+  rrt_expect "RRTOOL-usage-limit" 1 crusty-rereview-not-done crusty-unreviewed-commits 1 absent \
+    "a re-review stopped by a usage limit exits 1 and leaves the marker absent, as any other failure"
+  if [ "$(printf '%s' "${RRT_OUT}" | jq -r .crusty_loop_result 2>/dev/null)" = "USAGE_LIMIT" ] \
+     && grep -qiF 'usage limit' "${RRT_LOGS}/err"; then
+    pass "RRTOOL-usage-limit-named" "USAGE_LIMIT is named in the result and said on stderr"
+  else
+    fail "RRTOOL-usage-limit-named" "out=${RRT_OUT}"
+  fi
+
   fx_head "${FX_MERGE}"; rrt_run clean "${FX}" STUB_HEALTH_STDOUT="${H_DONE}"
   rrt_expect "RRTOOL-base-merge" 0 crusty-rereview-not-needed ok 0 kept "a clean base merge needs no re-review"
   fx_head "${CR_SHA2}"; rrt_run clean "${FX}" STUB_HEALTH_STDOUT="${H_DONE}"
@@ -4763,7 +5180,7 @@ fi
 exit 1
 GH
 chmod +x "${PF_BIN}/gh"
-PF_KEYS='["approval_source","approval_status","base_ref","head_sha","is_draft","merge_state","mergeable","pr","required_approvals","review_decision","state","unresolved_threads"]'
+PF_KEYS='["approval_blocker","approval_source","approval_status","base_ref","head_sha","is_draft","merge_state","mergeable","pr","required_approvals","review_decision","state","unresolved_threads"]'
 PF_OUT=""; PF_RC=0; PF_N=0; PF_CALLS=""
 pf_run() { # pf_run [PF_VAR=value ...]: runs the tool for PR 42 with nothing but the stub gh, jq and coreutils
   PF_N=$((PF_N + 1)); PF_CALLS="${WORK_PHYS}/pf-${PF_N}.calls"; : > "${PF_CALLS}"
@@ -4775,7 +5192,7 @@ pf_expect() { # pf_expect <label> <approval_status> <approval_source> <required_
   if [ "${PF_RC}" != 0 ] || [ "$(printf '%s\n' "${PF_OUT}" | grep -c .)" != 1 ] \
      || [ "$(printf '%s' "${PF_OUT}" | jq -c '[keys[]]' 2>/dev/null)" != "${PF_KEYS}" ] \
      || ! printf '%s' "${PF_OUT}" | jq -e '[.[] | type == "string"] | all' >/dev/null 2>&1; then
-    fail "$label" "not one JSON line of the 12 string fields (rc=${PF_RC}): ${PF_OUT} | $(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
+    fail "$label" "not one JSON line of the 13 string fields (rc=${PF_RC}): ${PF_OUT} | $(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
     return
   fi
   got="$(printf '%s' "${PF_OUT}" | jq -r '[.approval_status, .approval_source, .required_approvals] | join(" ")')"
@@ -4847,7 +5264,7 @@ else
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED PF_THREADS='{"message":"x"}'
   pf_expect "PF-threads-unreadable-not-pending" UNREADABLE unreadable "" "an unreadable thread count is not a thread: BLOCKED with every check passed still needs a person" unresolved_threads=unreadable
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=UNKNOWN PF_CHECKS="${PF_FAIL_RUN}"
-  pf_expect "PF-unknown-state-not-pending" UNREADABLE unreadable "" "a merge state GitHub has not computed is never read as pending"
+  pf_expect "PF-unknown-state-not-pending" UNREADABLE facts-unreadable "" "a merge state GitHub has not computed, beside an unreadable count, is a failed measurement, not a finding"
   pf_run PF_CLASSIC=1 PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED PF_CHECKS="${PF_FAIL_RUN}"
   pf_expect "PF-known-count-not-pending" NOT_MET required-count 1 "a known count decides whatever else blocks; PENDING is only for an unknown count"
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION=APPROVED PF_MSTATE=BLOCKED PF_CHECKS="${PF_FAIL_RUN}"
@@ -4865,7 +5282,7 @@ else
   pf_run PF_CLASSIC=0 PF_RULES='[]' PF_DECISION=CHANGES_REQUESTED PF_MSTATE=BLOCKED
   pf_expect "PF-changes-requested" NOT_MET review-decision 0 "requested changes are outstanding even when no approval is required"
   pf_run PF_VIEW=fail PF_CLASSIC=0 PF_RULES='[]'
-  pf_expect "PF-view-unreadable" UNREADABLE unreadable "" "an unreadable pull request is never an empty review decision" \
+  pf_expect "PF-view-unreadable" UNREADABLE facts-unreadable "" "an unreadable pull request is never an empty review decision; the failed read is reported as a failed measurement" \
     state=UNKNOWN head_sha= merge_state=UNKNOWN base_ref=
   pf_run PF_BASE='main"},"x":"y' PF_CLASSIC=0 PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
   pf_expect "PF-hostile-base-ref" UNREADABLE unreadable "" "a base ref outside [A-Za-z0-9._/-] is dropped and never reaches a URL" base_ref=
@@ -4876,7 +5293,7 @@ else
   # required-reviewer rule blocks the merge. Such a count is unknown, so the
   # merge state decides, and BLOCKED is never MET.
   pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_code_owner_reviews":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
-  pf_expect "PF-count-0-code-owner-blocked" UNREADABLE unreadable "" "protection requires code-owner review at a count of 0: a null decision with BLOCKED is not met"
+  pf_expect "PF-count-0-code-owner-blocked" NOT_MET review-rule "" "protection names code-owner review at a count of 0: BLOCKED with nothing an agent can clear means that review is missing"
   if grep -qF 'classic=unknown(code-owner-or-last-push)' "${WORK_PHYS}/pf-${PF_N}.err"; then
     pass "PF-count-0-code-owner-named" "the INFO line names the review rule that made the count unknown"
   else
@@ -4885,20 +5302,20 @@ else
   pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_code_owner_reviews":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN
   pf_expect "PF-count-0-code-owner-clean" MET merge-state "" "with code-owner review required at a count of 0, CLEAN is met through the merge state, never through a count of 0"
   pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_last_push_approval":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
-  pf_expect "PF-count-0-last-push-blocked" UNREADABLE unreadable "" "protection requires last-push approval at a count of 0: BLOCKED is not met"
+  pf_expect "PF-count-0-last-push-blocked" NOT_MET review-rule "" "protection names last-push approval at a count of 0: BLOCKED means that approval is missing"
   pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_code_owner_reviews":false,"require_last_push_approval":false' PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
   pf_expect "PF-count-0-flags-false" MET required-count 0 "flags that are present but false leave a count of 0 known"
   pf_run PF_CLASSIC=1 PF_CLASSIC_FLAGS='"require_code_owner_reviews":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN
   pf_expect "PF-count-1-code-owner" NOT_MET required-count 1 "a count above 0 is kept beside a code-owner rule"
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_DECISION= PF_MSTATE=BLOCKED \
     PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_code_owner_review":true}}]'
-  pf_expect "PF-ruleset-0-code-owner-blocked" UNREADABLE unreadable "" "a ruleset requiring code-owner review at a count of 0: BLOCKED is not met"
+  pf_expect "PF-ruleset-0-code-owner-blocked" NOT_MET review-rule "" "a ruleset names code-owner review at a count of 0: BLOCKED means that review is missing"
   pf_run PF_CLASSIC=0 PF_DECISION= PF_MSTATE=BLOCKED \
     PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_last_push_approval":true}}]'
-  pf_expect "PF-ruleset-0-last-push-blocked" UNREADABLE unreadable "" "a classic 0 beside a ruleset requiring last-push approval at a count of 0 is not the whole count"
+  pf_expect "PF-ruleset-0-last-push-blocked" NOT_MET review-rule "" "a classic 0 beside a ruleset naming last-push approval at a count of 0 is not the whole count; BLOCKED means that approval is missing"
   pf_run PF_CLASSIC=0 PF_DECISION= PF_MSTATE=BLOCKED \
     PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"required_reviewers":[{"minimum_approvals":1,"file_patterns":["*"],"reviewer":{"id":1,"type":"Team"}}]}}]'
-  pf_expect "PF-ruleset-0-required-reviewers-blocked" UNREADABLE unreadable "" "a ruleset listing required reviewers at a count of 0: BLOCKED is not met"
+  pf_expect "PF-ruleset-0-required-reviewers-blocked" NOT_MET review-rule "" "a ruleset listing required reviewers at a count of 0: BLOCKED means that review is missing"
   pf_run PF_CLASSIC=0 PF_DECISION= PF_MSTATE=CLEAN \
     PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_code_owner_review":true}}]'
   pf_expect "PF-ruleset-0-code-owner-clean" MET merge-state "" "with a ruleset code-owner rule at a count of 0, CLEAN is met through the merge state"
@@ -5968,10 +6385,19 @@ health_argv() { # health_argv <n>: the n-th evaluator call's flattened argv
 info_count() { grep -cF "running another round to re-review" "${LOOP_LOGS}/err" 2>/dev/null || true; }
 p1597_reset() { # p1597_reset <spec-dir>: stub defaults with DONE from every evaluator call
   set_stub '' 0 "$H_DONE"
-  unset STUB_HEALTH_SEQ
+  unset STUB_HEALTH_SEQ STUB_HEALTH_BODY
   rm -rf "$1"; mkdir -p "$1"
   spec_body "$1"
   export STUB_HISTORY_LOG="${WORK}/p1597-history.tmp"; : > "${STUB_HISTORY_LOG}"
+}
+# #1743 stops a loop in code, before the evaluator, when a non-clean round
+# leaves the head and the open items as the previous round left them. The
+# cases below test #1597's own check, which compares a round with its own
+# baseline, so a commit lands on the PR worktree between rounds (made here by
+# the stub evaluator): the next round starts from it and makes no commit
+# itself, so #1743 sees progress and #1597 still sees an unchanged HEAD.
+p1597_commit_between_rounds() {
+  export STUB_HEALTH_BODY="git -C '${P1597_WT}' update-ref HEAD \"\$(git -C '${P1597_WT}' commit-tree \"\$(git -C '${P1597_WT}' rev-parse 'HEAD^{tree}')\" -p HEAD -m between-rounds)\""
 }
 p1597_collect() { # move the evaluator's history log beside this run's logs
   mv "${STUB_HISTORY_LOG}" "${LOOP_LOGS}/history" 2>/dev/null || : > "${LOOP_LOGS}/history"
@@ -6041,7 +6467,7 @@ else
 fi
 
 # (d) DONE every round over an unchanged CONCERNS round: one override, then STUCK.
-SPEC="${WORK}/spec-1597-d"; p1597_reset "${SPEC}"
+SPEC="${WORK}/spec-1597-d"; p1597_reset "${SPEC}"; p1597_commit_between_rounds
 spec_round "${SPEC}" default crusty_verdict '"CONCERNS"' $'C1: same finding\nC2: another\n'
 run_loop p1597-noprogress; rc=$?; p1597_collect
 if [ "$rc" -eq 1 ] && [ "$(rounds)" = "2" ] && [ "$(info_count)" = "1" ] \
@@ -6082,7 +6508,7 @@ else
   fail "1597-progress-findings" "rc=${rc}: ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
 fi
 # Verdict changed, same findings, no commit.
-SPEC="${WORK}/spec-1597-verdict"; p1597_reset "${SPEC}"
+SPEC="${WORK}/spec-1597-verdict"; p1597_reset "${SPEC}"; p1597_commit_between_rounds
 spec_round "${SPEC}" round-1 crusty_verdict '"CONCERNS"' $'C1: same finding\n'
 spec_round "${SPEC}" round-2 crusty_verdict '"BLOCKING"' $'C1: same finding\n'
 spec_round "${SPEC}" default crusty_verdict '"CLEAN"' ''
@@ -6123,7 +6549,7 @@ fi
 
 # A CONTINUE in between resets the override: DONE, CONTINUE, DONE over three
 # identical CONCERNS rounds is two first-time overrides, then round-4 is CLEAN.
-SPEC="${WORK}/spec-1597-reset"; p1597_reset "${SPEC}"
+SPEC="${WORK}/spec-1597-reset"; p1597_reset "${SPEC}"; p1597_commit_between_rounds
 health_seq DONE CONTINUE DONE DONE
 spec_round "${SPEC}" round-1 crusty_verdict '"CONCERNS"' $'C1: same finding\n'
 spec_round "${SPEC}" round-2 crusty_verdict '"CONCERNS"' $'C1: same finding\n'
@@ -6139,7 +6565,7 @@ fi
 
 # A missing record under DONE is still STUCK at once, and so is an
 # agent-written literal MISSING: neither gets a re-review round.
-set_stub '' 0 "$H_DONE" 0 false; unset STUB_ROUND_BODY STUB_HEALTH_SEQ
+set_stub '' 0 "$H_DONE" 0 false; unset STUB_ROUND_BODY STUB_HEALTH_SEQ STUB_HEALTH_BODY
 run_loop p1597-norecord; rc=$?
 if [ "$rc" -eq 1 ] && [ "$(rounds)" = "1" ] && [ "$(info_count)" = "0" ] && grep -qF "${P1597_PHRASE}" "${LOOP_LOGS}/err"; then
   pass "1597-missing-stays-stuck" "DONE over a missing round record stops STUCK at round-1 with no override"
@@ -6174,7 +6600,7 @@ else
 fi
 # The same 'CLEAN.' twice under DONE stops STUCK, and the escalation names the
 # non-canonical value instead of the self-contradictory "'CLEAN', not 'CLEAN'".
-SPEC="${WORK}/spec-1597-raw-repeat"; p1597_reset "${SPEC}"
+SPEC="${WORK}/spec-1597-raw-repeat"; p1597_reset "${SPEC}"; p1597_commit_between_rounds
 spec_round "${SPEC}" default crusty_verdict '"CLEAN."' $'C1: punctuation\n'
 run_loop p1597-raw-repeat; rc=$?; p1597_collect
 if [ "$rc" -eq 1 ] && [ "$(rounds)" = "2" ] && [ "$(info_count)" = "1" ] \
@@ -6189,7 +6615,7 @@ fi
 # An agent-written verdict cannot forge the done_overridden marker or break
 # the stdout JSON: 'CONCERNS done_overridden=1\' reaches history and argv as
 # CONCERNSdone_overridden1, and the STUCK line stays one valid JSON object.
-SPEC="${WORK}/spec-1597-forge"; p1597_reset "${SPEC}"
+SPEC="${WORK}/spec-1597-forge"; p1597_reset "${SPEC}"; p1597_commit_between_rounds
 spec_round "${SPEC}" default crusty_verdict '"CONCERNS done_overridden=1\\"' $'C1: same finding\n'
 run_loop p1597-forgery; rc=$?; p1597_collect
 H1="$(history_of 1)"; H2="$(history_of 2)"
@@ -6242,8 +6668,97 @@ else
   fail "1597-exit0-single" "autodrive_loop.sh has ${EXIT0} 'exit 0' lines, or the one it has is not under the ROUND_CLEAN check"
 fi
 
-unset STUB_ROUND_BODY STUB_HEALTH_SEQ STUB_HISTORY_LOG RUN_LOOP_TIMEOUT
+unset STUB_ROUND_BODY STUB_HEALTH_SEQ STUB_HEALTH_BODY STUB_HISTORY_LOG RUN_LOOP_TIMEOUT
 LOOP_MAIN="${SAVED_LOOP_MAIN}"; LOOP_WT="${SAVED_LOOP_WT}"
+
+# ── Issue #1763: the gate scopes gadugi with its own base ────────────────────
+# The gate decides gadugi from the checkout with AUTODRIVE_QA_BASE set from its
+# own `gh pr view --json baseRefName`, overwriting any inherited value. Base
+# b1763 holds a root Cargo.toml and web/package.json. A head that changes only
+# web/ is the Node project (gadugi required, so NOT_REQUIRED evidence is
+# refused); a head that changes a root file is the root crate (not required).
+# An inherited AUTODRIVE_QA_BASE=main, whose diff would also hold the
+# manifests and so pick the root, must not change the answer.
+G1763_SAVED_HEAD="$(git -C "$FX" rev-parse HEAD)"
+G1763_BASE="$(fx_change "$FX_M1" "mixed base" Cargo.toml=x web/package.json=x)"
+G1763_WEB="$(fx_change "$G1763_BASE" "web change" web/app.ts=v1)"
+G1763_ROOT="$(fx_change "$G1763_BASE" "root change" src.rs=v9)"
+git -C "$FX" push -q origin "${G1763_BASE}:refs/heads/b1763" >/dev/null 2>&1 \
+  && git -C "$FX" update-ref refs/remotes/origin/b1763 "$G1763_BASE" \
+  || { echo "HARNESS-ERROR: could not create the #1763 base branch" >&2; exit 2; }
+# The manifests come from the merge-base tree (b1763), never the work tree.
+# Run in this shell, not in $(...), so GATE_OUT below is this run's output.
+g1763_req() { # g1763_req <head> [env NAME=VALUE] -> G1763_GOT, the gate's gadugi_required note
+  fx_head "$1"
+  GH_BASE=b1763 GH_HEAD="$1" GATE_EXTRA_ENV="${2:-}" gate_run green --round-record "$REC" --qa-evidence "$QA_NR" --dry-run
+  G1763_GOT="$(grep -oE 'gadugi_required=[a-z]+' "${GATE_DIR}/err" | head -n 1)"
+}
+g1763_req "$G1763_WEB"
+if [ "$G1763_GOT" = "gadugi_required=true" ] && ! printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_RUN"'; then
+  pass "1763-gate-web" "a head that changes only web/ makes the gate require gadugi, so NOT_REQUIRED evidence is refused"
+else
+  fail "1763-gate-web" "got '${G1763_GOT}': ${GATE_OUT}"
+fi
+g1763_req "$G1763_WEB" AUTODRIVE_QA_BASE=main
+if [ "$G1763_GOT" = "gadugi_required=true" ]; then
+  pass "1763-gate-inherited-base" "an inherited AUTODRIVE_QA_BASE does not override the gate's own baseRefName"
+else
+  fail "1763-gate-inherited-base" "got '${G1763_GOT}' with AUTODRIVE_QA_BASE=main inherited"
+fi
+g1763_req "$G1763_ROOT"
+if [ "$G1763_GOT" = "gadugi_required=false" ]; then
+  pass "1763-gate-root" "a head that changes a root file is the root crate, and gadugi is not required"
+else
+  fail "1763-gate-root" "got '${G1763_GOT}'"
+fi
+fx_head "$G1763_SAVED_HEAD"
+# ── Issue #1763: the QA sources on the real evidence step ───────────────────
+# One direct case for each of the four behaviours the issue names, on the
+# step-02 body and stubs of section 6b. The full matrix (qa.toml syntax, CI
+# parsing, path scoping edge cases) is test-issue-1763-qa-scope.sh, which
+# ci.yml runs as its own step. It is not called from here: the Rust harness
+# runs this file three times, and that suite starts every case under env -i,
+# so a nested call repeated the same 2m47s of checks on each run.
+ev_commit() { # ev_commit [base]: commit EV_REPO's work tree on HEAD; `base` also makes it origin/main
+  ( cd "${EV_REPO}" && git add -A && t="$(git write-tree)" && p="$(git rev-parse HEAD)" \
+    && c="$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
+            GIT_COMMITTER_EMAIL=t@example.invalid git commit-tree "$t" -p "$p" -m c)" \
+    && git update-ref HEAD "$c" \
+    && { [ "${1:-}" != base ] || git update-ref refs/remotes/origin/main "$c"; } ) >/dev/null 2>&1 \
+    || { echo "HARNESS-ERROR: could not commit in ${EV_REPO}" >&2; exit 2; }
+}
+ev_put() { # ev_put <relative-file>... : one more line in each file
+  local f; for f in "$@"; do mkdir -p "${EV_REPO}/$(dirname "$f")"; printf 'x\n' >> "${EV_REPO}/$f"; done
+}
+# repo-file: a qa.toml committed at the merge base names the command and dir.
+ev_repo Cargo.toml; ev_put engine/Cargo.toml src/lib.rs
+ev_scen_raw .amplihack/qa.toml 'command = "cargo nextest run --workspace"\ndir = "engine"\n'
+ev_commit base; ev_put src/lib.rs; ev_commit
+ev_run "${EV_FULL}"
+ev_expect "1763-repo-file" qa_status=PASS qa_command_source=repo-file qa_repo_type=configured qa_dir=engine \
+  qa_command="cargo nextest run --workspace" qa_command_paths=src/lib.rs
+if ev_called "cargo nextest run --workspace"; then
+  pass "1763-repo-file-runs" "the qa.toml command is the one that runs"
+else fail "1763-repo-file-runs" "calls: $(tr '\n' '|' < "${EV_CALLS}")"; fi
+# env: AUTODRIVE_QA_COMMAND still wins over the qa.toml in the same tree.
+ev_run "${EV_FULL}" AUTODRIVE_QA_COMMAND="cargo check"
+ev_expect "1763-env-wins" qa_status=PASS qa_command_source=env qa_dir=. qa_command_paths=src/lib.rs
+if ev_called "cargo check" && ! ev_called "cargo nextest"; then
+  pass "1763-env-wins-runs" "only the env command runs; qa.toml is not read"
+else fail "1763-env-wins-runs" "calls: $(tr '\n' '|' < "${EV_CALLS}")"; fi
+# detected, scoped: two Rust projects, and a change inside b runs b's suite.
+ev_repo README.md; ev_put a/Cargo.toml b/Cargo.toml a/src/lib.rs b/src/main.rs; ev_commit base
+ev_put b/src/main.rs; ev_commit
+ev_run "${EV_FULL}"
+ev_expect "1763-scoped" qa_status=PASS qa_command_source=detected qa_repo_type=rust-cli qa_dir=b \
+  qa_command_paths=b/src/main.rs
+# unresolved: a change in both projects names no single suite, and none runs.
+ev_put a/src/lib.rs; ev_commit
+ev_run "${EV_FULL}"
+ev_expect "1763-unresolved" qa_status=QA_UNRESOLVED qa_reason=qa-unresolved qa_candidates="a b" \
+  qa_command="" qa_command_source="" qa_suite_commands_count=0
+if ev_called "cargo "; then fail "1763-unresolved-no-suite" "a suite ran: $(tr '\n' '|' < "${EV_CALLS}")"
+else pass "1763-unresolved-no-suite" "no suite runs when the project is unresolved"; fi
 echo
 echo "═══════════════════════════════"
 echo "Results: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"

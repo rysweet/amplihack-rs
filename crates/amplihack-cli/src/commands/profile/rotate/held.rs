@@ -8,6 +8,7 @@
 
 use super::alert::clear_alert;
 use super::cycle::{Ctx, CycleOutcome, LOCK_WAIT, prototype_guard, save};
+use super::decide::Decision;
 use super::identify::LiveId;
 use super::ledger::{RotateLedger, SWITCHED, active_blocks};
 use super::log::{Sink, msg};
@@ -16,6 +17,7 @@ use super::observe::{Snap, snapshot};
 use super::overflow_record::block_pinned_spend_limited;
 use super::overflow_record::note_live;
 use super::pin::PinState;
+use super::revalidate::changed;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Lock, State, exists, now};
 use crate::commands::profile::name::ProfileName;
@@ -73,9 +75,9 @@ fn pinned_overflow_unblocked(snap: &Snap, l: &RotateLedger, t: i64) -> Option<Pr
 /// stops every move, but not the spend-limit check, so a login held on
 /// credits that run out is still blocked with one ALERT, which names
 /// `profile switch --none`. Probes the live login only, without the lock,
-/// as a measuring cycle does; then, under the lock and only if nothing
-/// changed meanwhile, records the block. Never swaps. A probe that fails
-/// or reads anything but a spend limit records nothing.
+/// as a measuring cycle does; then, under the lock and only if nothing a
+/// stay depends on changed meanwhile, records the block. Never swaps. A
+/// probe that fails or reads anything but a spend limit records nothing.
 fn watch_pinned_spend(
     ctx: &Ctx,
     out: &mut Sink,
@@ -100,9 +102,13 @@ fn watch_pinned_spend(
         return Ok(());
     };
     prototype_guard(ctx.store.root())?;
-    if exists(&ctx.rs.journal) || snapshot(ctx, state)? != *first {
+    // Only what the live login's block depends on, as for a stay (#1721):
+    // another profile's churn does not stop it.
+    let fresh = snapshot(ctx, state)?;
+    let why = changed(first, &fresh, &Decision::Stay, exists(&ctx.rs.journal));
+    if !why.is_empty() {
         // The probe may have read another login; the next cycle probes again.
-        out.emit(now(), msg::CHANGED);
+        out.emit(now(), &msg::changed(&why));
         return Ok(());
     }
     let t = now();

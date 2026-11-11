@@ -1,5 +1,6 @@
 //! Filesystem walking, copying, and permission utilities.
 
+use super::paths::sanitize_path;
 use anyhow::{Context, Result};
 use std::collections::{BTreeSet, VecDeque};
 use std::ffi::OsStr;
@@ -21,6 +22,9 @@ use std::path::{Component, Path, PathBuf};
 ///   replacement is atomically visible as executable.
 /// - On `EXDEV` (cross-filesystem rename), falls back to a copy-then-rename
 ///   inside the destination filesystem.
+// Issue #1954: installs stage binaries into a release and link to them; this
+// in-place copy remains for the #302/#524 tests of its no-op rules.
+#[cfg(test)]
 pub(super) fn deploy_binary(src: &Path, dst: &Path) -> Result<()> {
     // Same-file no-op (issue #302).
     if let (Ok(s), Ok(d)) = (src.canonicalize(), dst.canonicalize())
@@ -265,64 +269,169 @@ fn is_known_safe_bundle_symlink(path: &Path) -> bool {
 /// Copy a directory recursively, skipping symlinks with a warning.
 /// Device files, sockets, and FIFOs are skipped silently.
 /// `__pycache__` directories and `.pyc`/`.pyo` files are excluded.
-/// Broken symlinks are removed during traversal.
+///
+/// What gets copied is exactly [`WalkScope::CopySet`], the same walk the bundle
+/// manifest reads, so the two can't disagree about which files belong (#1955).
 pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     // Same-path guard (issue #302): if source and destination resolve to the
     // same location, this is a legitimate re-stage-after-update workflow
     // (`amplihack install` from `~/.amplihack` when target is `~/.amplihack/.claude`).
     // Skip the copy and return Ok rather than bailing.
-    if let (Ok(src_canon), Ok(dst_canon)) = (src.canonicalize(), dst.canonicalize())
-        && src_canon == dst_canon
-    {
-        println!(
-            "  ↩️  Skipping {}: source and destination are identical",
-            src_canon.display()
-        );
+    if is_same_location(src, dst) {
+        print_same_location_skip(src);
         return Ok(());
     }
 
     fs::create_dir_all(dst).with_context(|| format!("failed to create {}", dst.display()))?;
-    for entry in fs::read_dir(src).with_context(|| format!("failed to read {}", src.display()))? {
-        let entry = entry?;
-        let source = entry.path();
-        let file_name = entry.file_name();
-        let target = dst.join(&file_name);
-        // Use entry.file_type() — symlink-safe (does not follow symlinks)
-        let kind = entry.file_type()?;
-        if kind.is_symlink() {
-            // Skip symlinks with a warning to prevent directory traversal attacks
-            if !is_known_safe_bundle_symlink(&source) {
-                println!("  ⚠️  Skipping symlink: {}", source.display());
-            }
-            continue;
-        } else if kind.is_dir() {
-            if is_excluded_dir(&file_name) {
-                continue;
-            }
-            copy_dir_recursive(&source, &target)?;
-        } else if kind.is_file() {
-            if is_excluded_file(&file_name) {
-                continue;
-            }
-            // Per-file same-path guard: protects against the case where the
-            // top-level dirs differ but a recursed subdirectory aliases back.
-            if target.exists()
-                && let (Ok(s), Ok(t)) = (source.canonicalize(), target.canonicalize())
-                && s == t
-            {
-                continue;
-            }
-            fs::copy(&source, &target).with_context(|| {
-                format!(
-                    "failed to copy {} to {}",
-                    source.display(),
-                    target.display()
-                )
-            })?;
+    let entries = walk_tree_reporting(src, WalkScope::CopySet, &mut |symlink| {
+        // Skip symlinks with a warning to prevent directory traversal attacks.
+        if !is_known_safe_bundle_symlink(symlink) {
+            println!("  ⚠️  Skipping symlink: {}", sanitize_path(symlink));
         }
-        // Device files, sockets, FIFOs: silently skipped
+    })?;
+    // Subdirectories whose destination aliases the source: nothing under them
+    // needs copying.
+    let mut aliased: Vec<&Path> = Vec::new();
+    for entry in &entries {
+        if aliased.iter().any(|dir| entry.rel.starts_with(dir)) {
+            continue;
+        }
+        let target = dst.join(&entry.rel);
+        match entry.kind {
+            WalkEntryKind::Dir => {
+                if is_same_location(&entry.path, &target) {
+                    print_same_location_skip(&entry.path);
+                    aliased.push(&entry.rel);
+                    continue;
+                }
+                fs::create_dir_all(&target)
+                    .with_context(|| format!("failed to create {}", target.display()))?;
+            }
+            WalkEntryKind::File => {
+                // Per-file same-path guard: protects against the case where the
+                // top-level dirs differ but a file aliases back.
+                if target.exists() && is_same_location(&entry.path, &target) {
+                    continue;
+                }
+                fs::copy(&entry.path, &target).with_context(|| {
+                    format!(
+                        "failed to copy {} to {}",
+                        entry.path.display(),
+                        target.display()
+                    )
+                })?;
+            }
+            WalkEntryKind::Symlink | WalkEntryKind::Other => {}
+        }
     }
     Ok(())
+}
+
+fn is_same_location(a: &Path, b: &Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
+fn print_same_location_skip(path: &Path) {
+    let shown = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    println!(
+        "  ↩️  Skipping {}: source and destination are identical",
+        shown.display()
+    );
+}
+
+/// Which entries [`walk_tree`] reports (issue #1955).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WalkScope {
+    /// What `copy_dir_recursive` copies: regular files and directories, minus
+    /// the excluded names, symlinks and special files.
+    CopySet,
+    /// Everything present, symlinks included and never followed.
+    Everything,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WalkEntryKind {
+    File,
+    Dir,
+    Symlink,
+    Other,
+}
+
+/// One entry below the walk's root. The root itself is not reported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct WalkEntry {
+    pub(super) path: PathBuf,
+    pub(super) rel: PathBuf,
+    pub(super) kind: WalkEntryKind,
+}
+
+/// The one walker the copy and the manifest share (issue #1955).
+///
+/// Symlinks are never followed. A parent always comes before its children, and
+/// each directory's entries are sorted by name. A directory that can't be read
+/// is an error, so a walk can't quietly report less than the tree holds.
+pub(super) fn walk_tree(root: &Path, scope: WalkScope) -> Result<Vec<WalkEntry>> {
+    walk_tree_reporting(root, scope, &mut |_| {})
+}
+
+/// [`walk_tree`], calling `on_skipped_symlink` for each symlink
+/// [`WalkScope::CopySet`] leaves out.
+fn walk_tree_reporting(
+    root: &Path,
+    scope: WalkScope,
+    on_skipped_symlink: &mut dyn FnMut(&Path),
+) -> Result<Vec<WalkEntry>> {
+    let mut found = Vec::new();
+    let mut pending = VecDeque::from([PathBuf::new()]);
+    while let Some(rel_dir) = pending.pop_front() {
+        let dir = if rel_dir.as_os_str().is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(&rel_dir)
+        };
+        let mut children = fs::read_dir(&dir)
+            .with_context(|| format!("failed to read {}", dir.display()))?
+            .collect::<io::Result<Vec<_>>>()
+            .with_context(|| format!("failed to read {}", dir.display()))?;
+        children.sort_by_key(fs::DirEntry::file_name);
+        for child in children {
+            let name = child.file_name();
+            let path = child.path();
+            // file_type() does not follow symlinks.
+            let file_type = child
+                .file_type()
+                .with_context(|| format!("failed to inspect {}", path.display()))?;
+            let kind = if file_type.is_symlink() {
+                WalkEntryKind::Symlink
+            } else if file_type.is_dir() {
+                WalkEntryKind::Dir
+            } else if file_type.is_file() {
+                WalkEntryKind::File
+            } else {
+                WalkEntryKind::Other
+            };
+            if scope == WalkScope::CopySet {
+                let keep = match kind {
+                    WalkEntryKind::Symlink => {
+                        on_skipped_symlink(&path);
+                        false
+                    }
+                    WalkEntryKind::Dir => !is_excluded_dir(&name),
+                    WalkEntryKind::File => !is_excluded_file(&name),
+                    WalkEntryKind::Other => false,
+                };
+                if !keep {
+                    continue;
+                }
+            }
+            let rel = rel_dir.join(&name);
+            if kind == WalkEntryKind::Dir {
+                pending.push_back(rel.clone());
+            }
+            found.push(WalkEntry { path, rel, kind });
+        }
+    }
+    Ok(found)
 }
 
 pub(super) fn set_hook_permissions(target_dir: &Path) -> Result<usize> {

@@ -44,9 +44,17 @@ impl PluginManager {
             let dir = tempfile::tempdir().context("failed to create temp dir for plugin clone")?;
             let clone_path = dir.path().join(&plugin_name);
 
-            let mut git_cmd = amplihack_git::command();
+            // The user runs `plugin install` at a terminal with their own URL,
+            // so the clone may ask them for a credential (issue #1764).
+            let mut git_cmd = amplihack_git::interactive_command();
             git_cmd.arg("clone").arg(source).arg(&clone_path);
-            let status = match run_with_timeout(git_cmd, GIT_CLONE_TIMEOUT) {
+            // The description keeps the URL, and any token in it, out of the
+            // timeout error.
+            let status = match run_with_timeout_described(
+                git_cmd,
+                GIT_CLONE_TIMEOUT,
+                "git clone <plugin source>",
+            ) {
                 Ok(s) => s,
                 Err(err) => {
                     return Ok(InstallResult {

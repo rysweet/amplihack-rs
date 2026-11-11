@@ -19,6 +19,9 @@
 #
 # Run: bash tests/issue_1680_fresh_run_state_key.sh
 set -uo pipefail
+# Issue #1764: no git this script runs may wait on a credential prompt.
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
+exec </dev/null
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$REPO_ROOT/amplifier-bundle/recipes/autodrive-build.yaml"
 BASH_BIN="$(command -v bash)"
@@ -80,7 +83,7 @@ git -C "$REPO" remote add origin https://github.com/acme/widget.git
 # run <cmd> [extra env...]: one step, from REPO_PATH, sandboxed.
 run() {
   local cmd="$1"; shift
-  ( cd "$REPO" && env -i HOME="$HOME_D" PATH="$STUB:/usr/bin:/bin" \
+  ( cd "$REPO" && env -i GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true HOME="$HOME_D" PATH="$STUB:/usr/bin:/bin" \
       AMPLIHACK_HOME="$REPO_ROOT" AMPLIHACK_STATE_DIR="$STATE_ROOT" REPO_PATH="$REPO" \
       NO_MERGE=false RECIPE_VAR_no_merge=false \
       "$@" "$BASH_BIN" -c "$cmd" ) > "$OUT" 2> "$ERR"

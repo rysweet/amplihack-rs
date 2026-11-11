@@ -21,7 +21,7 @@
 use rexpect::session::spawn_command;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 const TIMEOUT_MS: u64 = 60_000;
 const SKIP_LINE: &str = "amplihack: skipping update check (subprocess-safe / no TTY)";
@@ -80,6 +80,9 @@ impl Fixture {
             .env("TERM", "dumb")
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .current_dir(self.dir.path().join("work"))
+            // rexpect makes its pseudo-terminal stdin before `exec`, and the
+            // null stdin `isolated(..)` sets would replace it (issue #1764).
+            .stdin(Stdio::inherit())
             .args(args);
         for (key, value) in extra {
             command.env(key, value);

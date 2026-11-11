@@ -20,6 +20,7 @@ code-change completion.
 - [Shell Helper API](#shell-helper-api)
 - [Branch PR Lookup](#branch-pr-lookup)
 - [Configuration](#configuration)
+- [Finalization Hand-Off Allow-List](#finalization-hand-off-allow-list)
 - [Failure Semantics](#failure-semantics)
 - [Examples](#examples)
 - [Scoped-PR Signal and Agentic Adjudication](#scoped-pr-signal-and-agentic-adjudication)
@@ -486,7 +487,30 @@ state, and a non-empty `terminal_reason`.
 
 There is no configuration flag that makes development terminal validation
 advisory. CI, local recipe runs, and nested `smart-orchestrator` routing all use
-the same fail-closed behavior.
+the same fail-closed behavior. The `finalization_handoff` flag below does not
+change this: it changes the exit code of two failure states for one caller,
+and the result still reports `terminal_success=false`.
+
+### `finalization_handoff`
+
+Set only by `autodrive-build` step-02, so that a `BLOCKED_CI` build with a
+published PR, or a `FAILED_IMPLEMENTATION` build whose open PR the open-PR
+check confirmed, reaches auto-drive's crusty and merge-ready loops instead of
+ending the run (issue #1714). It is on only when
+`RECIPE_VAR_finalization_handoff` is exactly `true`; there is no truthy alias
+and no bare-environment fallback. `default-workflow.yaml` declares it `""`, so
+a standalone run keeps failing closed on both states.
+
+A `RECIPE_VAR_finalization_handoff=true` exported in the shell does not switch
+it on, because the recipe runner gives a recipe's declared context priority
+over an inherited `RECIPE_VAR_` value. That protection depends on the runner
+keeping this priority. In the other direction, the hand-off depends on the
+`"true"` that step-02 passes to its sub-recipe overriding the `""` declared in
+`default-workflow.yaml`. If it does not, the flag is never on and an
+auto-drive build that ends `BLOCKED_CI` or `FAILED_IMPLEMENTATION` fails
+closed as before. See the
+[allow-list](#finalization-hand-off-allow-list) and
+[Auto-Drive Finalization Hand-Off](./default-workflow-agentic-finalization.md#auto-drive-finalization-hand-off-1714).
 
 ### Agentic Finalizer
 
@@ -512,6 +536,41 @@ export NODE_OPTIONS=--max-old-space-size=32768
 
 This affects child tool memory limits only. It does not change terminal-state
 success rules.
+
+---
+
+## Finalization Hand-Off Allow-List
+
+`finalization_handoff_allowed` in
+`amplifier-bundle/tools/workflow_finalization_handoff.sh` is the only
+definition of which terminal states may be handed from `default-workflow` to
+auto-drive's crusty and merge-ready loops. It is an exact `case` match: no globs, regular
+expressions, trimming or case folding.
+
+| State | Allowed | Reason |
+| --- | --- | --- |
+| `BLOCKED_CI` | Yes | A PR exists and needs only merge-ready work on its checks. |
+| `FAILED_IMPLEMENTATION` | Yes, only on a PR the open-PR check confirmed | The PR is open, on the run branch and contains every local commit; this run's own evidence does not prove the work complete, which the crusty loop reviews. With no confirmed PR it fails closed. |
+| `FAILED_CLOSED_UNMERGED` | No | The PR is closed. |
+| `FAILED_PR_METADATA_UNAVAILABLE` | No | No PR could be identified. |
+| `FAILED_MEANINGFUL_DIFF` | No | There is no diff worth reviewing. |
+| `FAILED_DIRTY_WORKTREE` | No | The local checkout is not the PR's. |
+| `FAILED_WRONG_BRANCH` | No | The local checkout is not the PR's. |
+| `FAILED_INVALID_INPUT` | No | The evidence cannot be read. |
+| `FAILED_INVALID_EVIDENCE` | No | The evidence cannot be read. |
+| `FAILED_MISSING_TERMINAL_EVIDENCE` | No | The evidence cannot be read. |
+| `FAILED_REPORTING` | Yes, only on a PR the open-PR check confirmed | Implementation and verification succeeded and only the reporting step failed; the reporting narrative has no effect on the PR the loops review and fix. With no confirmed PR it fails closed. |
+| `FAILED_MISSING_TOOLING` | No | The tooling to read the evidence is missing. |
+| `HOLLOW_SUCCESS` | No | The agent output is empty, so the PR may be too. |
+| `INCOMPLETE` | No | The run did not finish. |
+| Success states (`EXISTING_OPEN_PR`, `IMPLEMENTED_VERIFIED`, ...) | Not applicable | They already succeed. |
+
+A handed-off result keeps its `terminal_state` (`BLOCKED_CI`,
+`FAILED_IMPLEMENTATION` or `FAILED_REPORTING`), `terminal_success=false` and `terminal_failure=true`, and adds
+`handoff=merge_ready_loop`. Only the process exit code changes, to `0`.
+`autodrive-build` step-03 still checks that the PR is open and is the one
+phase 1 resolved before it continues; see
+[Finalization hand-off from phase 1](./auto-drive-to-merge.md#finalization-hand-off-from-phase-1-1714).
 
 ---
 
@@ -650,6 +709,59 @@ fetched is caught too), still fails as
 `stale PR metadata` or `no_scoped_pr`. Merged-with-unpushed-commits must not be
 reported as `MERGED`, because the local commits would be lost.
 
+### A PR ahead of local HEAD is the same PR (#1714)
+
+The opposite case: a merge of main was pushed to the PR from another checkout,
+or with GitHub's "Update branch" button, so the PR's `headRefOid` is a
+fast-forward of local `HEAD` (local `HEAD` is its ancestor). Every local commit
+is in the PR, so its checks cover this run's work. When the caller sets the
+input `accept_pr_head_ahead` to exactly `"true"` and the PR is `OPEN`, the
+probe:
+
+- checks the branch, the base and that the PR's head and base repositories are
+  the current repository, then calls `_finalization_pr_head_descends` from
+  [`workflow_pr_head_fetch.sh`](../../amplifier-bundle/tools/workflow_pr_head_fetch.sh).
+  That fetches the PR head commit once if it is missing, non-interactively and
+  with bounded time, writing no ref and no `FETCH_HEAD`. It is the same
+  function the finalization open-PR check uses, so the two cannot disagree;
+- keeps the rewind guard above: every value `origin/<branch>` held must be an
+  ancestor of the PR head;
+- prints
+  `INFO: ... open PR head ... commit(s) ahead of local HEAD, a fast-forward of it; same PR (#1714)`
+  and continues. Failing checks on that head still end `BLOCKED_CI`, because
+  they ran on a commit that holds the run's work;
+- passes `--allow-head-ahead` to `workflow_pr_scope.sh`, which then accepts a
+  named PR that is `OPEN` and whose head is a fast-forward of local `HEAD`.
+
+Only `workflow-finalize` sets `accept_pr_head_ahead` (default `"false"`). The
+probe's verdict alone does not bring the PR head's commits into the worktree,
+so `workflow-finalize` acts on it in two places:
+
+- `step-20-sync-pr-head` runs straight after the probe and before any agent
+  step. It runs
+  [`workflow_pr_head_sync.sh`](../../amplifier-bundle/tools/workflow_pr_head_sync.sh),
+  which fetches `origin/<branch>` (no prompt, bounded time), sets the upstream
+  when the branch has none, and runs `git merge --ff-only` to the PR head when
+  that head is a strict descendant of `HEAD`. The fast-forward cannot conflict,
+  because `HEAD` is its ancestor. `step-20-final-cleanup` and
+  `step-20c-quality-audit` therefore edit the PR's own tree. The tool always
+  exits `0`; a failed fetch or a refused fast-forward prints one warning and
+  leaves the worktree as it was.
+- `step-20b-push-cleanup` runs the same tool after its cleanup commit, so it
+  fetches `origin/<branch>` again and sets a missing upstream, then runs
+  `git pull --rebase` before it pushes. It falls back to
+  `git push -u origin <branch>` only when the branch has no upstream after
+  that, which means origin has no such branch, or the fetch failed and this
+  checkout never saw one.
+
+`tests/integration/issue_1714_finalization_handoff/step20b.rs` runs both steps
+from the YAML against a bare remote whose branch is a merge of main on top of
+the local `HEAD`, with an upstream, with only `origin/<branch>`, and with
+neither, and checks that the push succeeds on top of the PR head.
+`workflow-publish` pushes without pulling, so it keeps the exact-head rule. A head that does not contain local `HEAD` (diverged
+or rewritten), a rewound remote, a merged or closed PR, or a PR head commit
+that cannot be fetched, still fails as `stale PR metadata` or `no_scoped_pr`.
+
 In workflow-finalize, `step-20c-quality-audit` runs before `step-20a-artifact-guard`
 and `step-20b-push-cleanup`, so the audit's commits are checked and pushed
 before `step-21-pr-ready` validates the PR.
@@ -779,7 +891,12 @@ orphan a live artifact.
   failure reason names `amplihack install`.
 - Diagnostics do not print full environments, tokens, credentials, or auth
   headers.
-- Nonzero exit codes are preserved through nested recipe routing.
+- Nonzero exit codes are preserved through nested recipe routing. The one
+  exception is the auto-drive finalization hand-off (issue #1714), which exits
+  `0` only when `RECIPE_VAR_finalization_handoff` is exactly `true`, the
+  state is `BLOCKED_CI` or `FAILED_IMPLEMENTATION` on a confirmed open PR,
+  and the result has a numeric `pr_number`. Its result still reports
+  `terminal_success=false`, and the merge gate never reads it.
 
 ---
 

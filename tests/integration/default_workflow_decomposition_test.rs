@@ -30,7 +30,11 @@ use tempfile::TempDir;
 
 const BRICK_LIMIT: usize = 400;
 
-const EXTRA_RECIPE_NAMES: &[&str] = &["default-workflow", "smart-validate-summarize"];
+const EXTRA_RECIPE_NAMES: &[&str] = &[
+    "default-workflow",
+    "smart-validate-summarize",
+    "smart-reflect-loop",
+];
 
 static RECIPE_TEXTS: LazyLock<HashMap<&'static str, String>> = LazyLock::new(|| {
     PHASE_RECIPES
@@ -282,6 +286,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-19d-verification-gate",
     // Phase 8: workflow-finalize (terminal gate + steps 20-22b + complete)
     "finalize-terminal-state",
+    // Issue #1714: fast-forward to an accepted PR head before any agent edits.
+    "step-20-sync-pr-head",
     "step-20-final-cleanup",
     // Issue #1467: the audit runs before the guard and push, so its fixes are pushed.
     "step-20c-quality-audit",
@@ -408,6 +414,43 @@ fn no_duplicate_step_ids_across_subrecipes() {
         }
     }
     assert!(dups.is_empty(), "duplicate step IDs found: {dups:?}");
+}
+
+/// Issue #1794: agents waited with `tail -f /dev/null`, which outlives the
+/// tool call. The orphans came from step 18b, and the reflect steps poll CI,
+/// so those prompts, step 13 and the Claude system-prompt fragment all name
+/// the supported ways to wait and the forms the hook denies. Copilot and
+/// Codex agents do not read the system-prompt fragment, so the recipe
+/// prompts are their only advance notice.
+#[test]
+fn recipe_prompts_and_system_prompt_name_the_supported_ways_to_wait() {
+    let fragment_path = recipes_dir()
+        .join("..")
+        .join("context")
+        .join("SYSTEM_PROMPT_APPEND.md");
+    let fragment = std::fs::read_to_string(&fragment_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", fragment_path.display()));
+    let mut prompts: Vec<(String, &str)> = vec![("SYSTEM_PROMPT_APPEND.md".into(), &fragment)];
+    for (recipe, step) in [
+        ("workflow-precommit-test", "step-13-local-testing"),
+        ("workflow-pr-review", "step-18b-implement-feedback"),
+        ("smart-reflect-loop", "reflect-round-1"),
+        ("smart-reflect-loop", "reflect-round-2"),
+        ("smart-reflect-loop", "reflect-final"),
+    ] {
+        prompts.push((format!("{recipe}/{step}"), step_prompt(recipe, step)));
+    }
+    for (name, text) in &prompts {
+        for needle in ["amplihack wait --seconds", "tail -f /dev/null", "wait $pid"] {
+            assert!(text.contains(needle), "{name} lacks {needle:?}");
+        }
+        if name != "SYSTEM_PROMPT_APPEND.md" {
+            assert!(
+                text.contains("timeout N tail"),
+                "{name} must name `timeout N tail` as a form not to use"
+            );
+        }
+    }
 }
 
 #[test]
@@ -940,8 +983,10 @@ fn workflow_prep_step_03_reuses_existing_issue_number_before_provider_commands()
     let issue_number_pos = command
         .find("RECIPE_VAR_issue_number")
         .expect("step-03 must read existing ISSUE_NUMBER context before creating/searching issues");
+    // #1881: GitHub issue logic lives in sourced helpers; the first GitHub
+    // provider call in the step is the selection helper.
     let first_gh_issue_pos = command
-        .find("gh issue")
+        .find("select_github_tracking_issue")
         .expect("step-03 must retain GitHub issue logic for GitHub hosts");
     let first_az_boards_pos = command
         .find("az boards")
@@ -965,22 +1010,30 @@ fn workflow_prep_step_03_reuses_existing_issue_number_before_provider_commands()
 fn workflow_prep_step_03_has_github_path_inside_host_conditional() {
     let command = step_command("workflow-prep", "step-03-create-issue");
 
-    // gh issue commands must still exist (for GitHub remotes)
+    // #1881: the GitHub create moved into workflow_issue_create.sh, which
+    // step-03 calls through create_github_issue_bounded.
+    let helper_path = recipes_dir()
+        .parent()
+        .expect("amplifier-bundle dir")
+        .join("tools")
+        .join("workflow_issue_create.sh");
+    let helper = fs::read_to_string(&helper_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", helper_path.display()));
     assert!(
-        command.contains("gh issue"),
-        "step-03 must retain 'gh issue' commands for GitHub remotes"
+        helper.contains("gh issue create"),
+        "workflow_issue_create.sh must retain 'gh issue create' for GitHub remotes"
     );
 
-    // gh issue must NOT appear before HOST_TYPE is set from REMOTE_HOST_TYPE
+    // The create must NOT appear before HOST_TYPE is set from REMOTE_HOST_TYPE
     let host_type_pos = command
         .find("HOST_TYPE")
         .expect("HOST_TYPE must exist in step-03");
-    let first_gh_issue_pos = command
-        .find("gh issue")
-        .expect("'gh issue' must exist in step-03");
+    let create_pos = command
+        .rfind("create_github_issue_bounded")
+        .expect("step-03 must call create_github_issue_bounded");
     assert!(
-        first_gh_issue_pos > host_type_pos,
-        "step-03 must not invoke 'gh issue' before consuming the remote host type"
+        create_pos > host_type_pos,
+        "step-03 must not create a GitHub issue before consuming the remote host type"
     );
 }
 
@@ -1264,12 +1317,15 @@ fn step_18c_does_not_fall_back_to_repo_path() {
 fn workflow_publish_step_16_guards_non_github_remotes() {
     // step-16 hands PR creation to workflow_publish_pr.sh, and the host-type
     // decision is made there (#1684). Check the tool's code lines, not the
-    // step body: the step only mentions REMOTE_HOST_TYPE in a comment.
+    // step body: the step only mentions REMOTE_HOST_TYPE in a comment. The
+    // final exec hands cancellation to the helper after removing the step trap.
     let command = step_command("workflow-publish", "step-16-create-draft-pr");
     assert!(
-        command
-            .lines()
-            .any(|line| line.trim_start().starts_with("bash \"$PUBLISH_HELPER\"")),
+        command.split(';').any(|statement| {
+            statement
+                .trim_start()
+                .starts_with("exec bash \"$PUBLISH_HELPER\"")
+        }),
         "step-16 must create the PR by running workflow_publish_pr.sh"
     );
     assert!(

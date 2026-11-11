@@ -145,6 +145,39 @@ bash scripts/check-leaked-rotators.sh
 
 See [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md).
 
+### Real Profile Root Changed by a Test Run
+
+`cargo test -p amplihack-cli` fails with `real profile root changed during
+this test run` when a test rewrote a real profile's `settings.json`. See
+[Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md).
+
+### Tests That Change PATH or HOME
+
+A test that passes alone but fails in a full run with `No such file or
+directory (os error 2)`, or runs another test's fake binary, may be seeing a
+`PATH` or `HOME` that another test set for the whole process. A timeout test
+that fails only on a loaded host is measuring the host's speed. Set `PATH`
+and `HOME` on the child's `Command` through a seam instead of calling
+`std::env::set_var`, and bound a timeout at 30 s against a fake that ends
+with `exec /bin/sleep 60`. See
+[Keep Tests from Changing PATH and HOME](./keep-tests-from-changing-path-and-home.md).
+
+### Profile Root Is Not Valid UTF-8 in a Full Run
+
+A test that passes alone but fails in a full run with
+`AMPLIHACK_CLAUDE_PROFILE_ROOT is set but is not valid UTF-8` read the
+variable from the process while another test had set it. Pass the
+environment as an argument instead. See
+[Bug Fix #2014](../bugfixes/bugfix-2014-multitask-launcher-env-race.md).
+
+### A Test Run Stops Instead of Failing
+
+A run under plain `timeout` from a terminal can stop, with its processes in
+state `T`, when git asks for credentials. Run long commands as
+`GIT_TERMINAL_PROMPT=0 setsid -w timeout --kill-after=60 <secs> <command> </dev/null`.
+Ctrl-C does not stop that form; the guide says how to. See
+[Keep Tests from Prompting for Git Credentials](./keep-tests-from-prompting-for-git.md).
+
 ### Pre-commit Hook Issues
 
 The project uses pre-commit hooks. If they fail:
@@ -160,3 +193,6 @@ pre-commit run --all-files
 - [Create Your Own Tools](../howto/create-your-own-tools.md) — building custom tools
 - [Code Review](../reference/code-review.md) — code review practices
 - [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md) — test stops and the leak check for `rotate watch` daemons
+- [Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md) — profile-root isolation and the real-root guard
+- [Keep Tests from Changing PATH and HOME](./keep-tests-from-changing-path-and-home.md) - giving a child process its `PATH` and `HOME`, and bounding timeouts under load
+- [Keep Tests from Prompting for Git Credentials](./keep-tests-from-prompting-for-git.md) - git prompt settings for tests and amplihack, and running long commands

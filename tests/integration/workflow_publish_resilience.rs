@@ -473,6 +473,9 @@ esac
             "WORKFLOW_RUNTIME_ARTIFACT_HELPER",
             workspace_helper_path("workflow_runtime_artifacts.sh"),
         );
+    // The script runs `git remote set-head origin -a` against a github.com
+    // origin; env_clear() dropped the [env] prompt suppressors (#1764).
+    crate::isolated_amplihack::no_git_prompt(&mut cmd);
     for (k, v) in extra {
         cmd.env(k, v);
     }

@@ -28,6 +28,7 @@ signal = ["dep:amplihack-signal", "dep:qrcode"]
 test-support = ["amplihack-memory/test-support"]
 
 [dependencies]
+recipe-runner-rs = { git = "https://github.com/rysweet/amplihack-recipe-runner", rev = "90286bc50b84ded773795d2c8301b689f680db0b" }
 fs2 = "0.4"
 amplihack-git = { workspace = true }
 amplihack-hive = { path = "../amplihack-hive" }
@@ -50,8 +51,7 @@ dialoguer = "0.11"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # Issue #1578: `profile usage` resolves reset times printed with an IANA zone.
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
-# Issue #1710: the workstreams title names the host's zone (`PDT`). Already
-# in the tree through chrono's `clock` feature.
+# Issue #1813: the bar view names the local zone; already locked through chrono.
 iana-time-zone = "0.1"
 flate2 = "1"
 libc = { workspace = true }

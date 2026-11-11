@@ -195,7 +195,7 @@ fi
 # A11: step-04-setup-worktree invokes the deconflict helper.
 if [[ -z "${STEP04}" ]]; then
     fail "A11-invoke" "could not extract step-04-setup-worktree from workflow-worktree.yaml"
-elif printf '%s\n' "${STEP04}" | grep -qE 'workflow_worktree_deconflict\.sh'; then
+elif grep -qE 'workflow_worktree_deconflict\.sh' <<<"${STEP04}"; then
     pass "A11-invoke" "step-04 invokes workflow_worktree_deconflict.sh"
 else
     fail "A11-invoke" "step-04 does not invoke workflow_worktree_deconflict.sh"
@@ -203,8 +203,11 @@ fi
 
 # A12: the inline call is best-effort (graceful no-op): guarded by a file-
 # existence test and/or `|| true`/`|| echo` so a missing helper never aborts.
-if printf '%s\n' "${STEP04}" | grep -E 'workflow_worktree_deconflict\.sh' \
-       | grep -qE '(\|\||-f )'; then
+# Here-strings, not `printf | grep -q`: under `pipefail` an early-exiting
+# `grep -q` leaves printf writing into a closed pipe, and the check then fails
+# at random (the #1434 problem, seen here on A11, A14, A16 and A17).
+if grep -E 'workflow_worktree_deconflict\.sh' <<<"${STEP04}" \
+       | grep -E '(\|\||-f )' >/dev/null; then
     pass "A12-best-effort" "step-04 deconflict call is best-effort (guarded / '|| ...')"
 else
     fail "A12-best-effort" "step-04 deconflict call is not guarded best-effort"
@@ -234,7 +237,7 @@ else
 fi
 
 # A14: deconflicted name reassigns BRANCH_NAME so it flows into the JSON output.
-if printf '%s\n' "${STEP04}" | grep -qE 'BRANCH_NAME=.*RESOLVED|BRANCH_NAME="\$RESOLVED_BRANCH"|RESOLVED_BRANCH'; then
+if grep -qE 'BRANCH_NAME=.*RESOLVED|BRANCH_NAME="\$RESOLVED_BRANCH"|RESOLVED_BRANCH' <<<"${STEP04}"; then
     pass "A14-surfaced" "step-04 reassigns BRANCH_NAME from the resolved value (surfaces in JSON output)"
 else
     fail "A14-surfaced" "step-04 does not reassign BRANCH_NAME from the deconflict result"
@@ -253,8 +256,8 @@ fi
 STEP3="$(extract_step "${CONSENSUS_YAML}" "step3-setup-worktree")"
 if [[ -z "${STEP3}" ]]; then
     fail "A16-parity" "could not extract step3-setup-worktree from consensus-issue-worktree.yaml"
-elif printf '%s\n' "${STEP3}" | grep -qE 'workflow_worktree_deconflict\.sh' \
-     && printf '%s\n' "${STEP3}" | grep -qiE 'foreign|deconflict'; then
+elif grep -qE 'workflow_worktree_deconflict\.sh' <<<"${STEP3}" \
+     && grep -qiE 'foreign|deconflict' <<<"${STEP3}"; then
     pass "A16-parity" "consensus step3 prompt mirrors the deconfliction guidance"
 else
     fail "A16-parity" "consensus step3 prompt is missing the deconfliction mirror"
@@ -264,17 +267,17 @@ fi
 # the helper's exit code and abort ('deconfliction failed' + exit 1) instead of
 # silently falling back to the CONFLICTING name via '2>/dev/null || echo "$BRANCH_NAME"'.
 A17_OK=1
-if ! printf '%s\n' "${STEP04}" | grep -qE 'deconfliction failed'; then
+if ! grep -qE 'deconfliction failed' <<<"${STEP04}"; then
     A17_OK=0
 fi
-if printf '%s\n' "${STEP04}" | grep -qE '\|\|[[:space:]]*echo[[:space:]]+"\$\{?BRANCH_NAME\}?"'; then
+if grep -qE '\|\|[[:space:]]*echo[[:space:]]+"\$\{?BRANCH_NAME\}?"' <<<"${STEP04}"; then
     A17_OK=0
 fi
 if [[ -n "${STEP3}" ]]; then
-    if ! printf '%s\n' "${STEP3}" | grep -qE 'deconfliction failed'; then
+    if ! grep -qE 'deconfliction failed' <<<"${STEP3}"; then
         A17_OK=0
     fi
-    if printf '%s\n' "${STEP3}" | grep -qE '\|\|[[:space:]]*echo[[:space:]]+"\$\{?BRANCH_NAME\}?"'; then
+    if grep -qE '\|\|[[:space:]]*echo[[:space:]]+"\$\{?BRANCH_NAME\}?"' <<<"${STEP3}"; then
         A17_OK=0
     fi
 fi
