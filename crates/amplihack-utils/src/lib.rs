@@ -44,6 +44,8 @@ pub mod claude_native;
 pub mod cleanup;
 /// Live Codex rate-limit readings through `codex app-server` (issue #2001).
 pub mod codex_capacity;
+/// Local Codex executable, npm layout, and required-helper validation.
+pub mod codex_installation;
 pub mod defensive;
 pub mod docker_detector;
 pub mod docker_manager;

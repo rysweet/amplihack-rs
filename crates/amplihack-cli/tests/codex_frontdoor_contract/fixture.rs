@@ -20,6 +20,7 @@ pub(super) fn cold_client_install_registers_hooks_and_launches_with_fresh_or_sta
         let home = tempfile::tempdir().unwrap();
         let tools = home.path().join("tools");
         fs::create_dir(&tools).unwrap();
+        executable(&tools.join("codex-code-mode-host"), "#!/bin/sh\nexit 0\n");
         for tool in [
             "sh",
             "mkdir",
@@ -59,7 +60,8 @@ pub(super) fn cold_client_install_registers_hooks_and_launches_with_fresh_or_sta
             &tools.join("npm"),
             r#"#!/bin/sh
 case "$*" in
- *install*@openai/codex*) echo install >> "$HOME/events"; cp "$HOME/client-template" "$HOME/tools/codex"; chmod +x "$HOME/tools/codex";;
+ *install*@openai/codex-*) echo platform-install >> "$HOME/events";;
+ *install*@openai/codex*) echo install >> "$HOME/events"; cp "$HOME/client-template" "$HOME/tools/codex"; chmod +x "$HOME/tools/codex"; mkdir -p "$HOME/.npm-global/lib/node_modules/@openai/codex"; printf '%s\n' '{"name":"@openai/codex","version":"0.160.0"}' > "$HOME/.npm-global/lib/node_modules/@openai/codex/package.json";;
  *install*) echo other-install >> "$HOME/events";;
  *view*) echo 1.0.0;;
  *--version*) echo 10.9.0;;

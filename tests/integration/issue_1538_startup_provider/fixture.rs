@@ -126,6 +126,7 @@ case "$*" in
 esac"#
             ),
         );
+        executable(&tools.join("codex-code-mode-host"), "#!/bin/sh\nexit 0\n");
         executable(&tools.join("node"), "#!/bin/sh\nprintf '%s\\n' 'v24.1.0'");
         executable(
             &tools.join("amplihack-hooks"),

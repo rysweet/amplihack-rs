@@ -157,6 +157,21 @@ pub fn build_tool_command_from_env(
     build_tool_command_with_prompt_delivery(binary, project_path, extra_args, prompt, from_env())
 }
 
+/// Build with a retained validated target while preserving Codex prompt delivery.
+pub(crate) fn build_codex_command_at(
+    executable: &std::path::Path,
+    project_path: &std::path::Path,
+    args: &[String],
+    prompt: &str,
+) -> io::Result<DeliveredCommand> {
+    let requested = from_env();
+    validate_prompt_delivery_request(AgentBinary::Codex, requested)?;
+    let mut command = Command::new(executable);
+    command.current_dir(project_path);
+    describe_launched_session(&mut command, "codex");
+    finish_codex_delivery(command, args, prompt, requested)
+}
+
 /// Codex has separate interactive and unattended prompt contracts. Never pipe
 /// interactive stdin: it belongs to the terminal, including during resume.
 /// Root option values are consumed before classifying the native command.
