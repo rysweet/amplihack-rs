@@ -651,3 +651,108 @@ fn hook_never_reads_target_link_roots() {
     let hook = fs::read_to_string(repo_root().join("scripts/git-hook-cargo.sh")).unwrap();
     assert!(!hook.contains("AMPLIHACK_TARGET_LINK_ROOTS"));
 }
+
+// ----- issue #2291: the last-resort target folder ---------------------------
+
+/// Issue #2291 (D13): the work root and the HOME cache are both unusable, so
+/// the hook falls back to a temp folder. Returns the step-like runtime folder
+/// (`AMPLIHACK_WORKFLOW_RUNTIME_DIR`) and its `tmp/` (the step's `TMPDIR`).
+fn step_runtime(fx: &Fx) -> (PathBuf, PathBuf, PathBuf) {
+    let runtime = fx.root.join("runroot/amplihack-run-0123456789ab");
+    let tmp = runtime.join("tmp");
+    fs::create_dir_all(&tmp).unwrap();
+    // A file, so `mkdir -p "$XDG_CACHE_HOME/amplihack"` fails.
+    let no_cache = fx.root.join("cache-is-a-file");
+    fs::write(&no_cache, "x").unwrap();
+    (runtime, tmp, no_cache)
+}
+
+/// Issue #2291 (AC7): inside a step, `TMPDIR` lies in the run folder, which is
+/// removed at run end. The hook uses the absolute `AMPLIHACK_RUN_TMP_ROOT`
+/// instead, so the target outlives the run.
+#[test]
+fn hook_fallback_skips_a_tmpdir_inside_the_run_folder_for_the_run_tmp_root() {
+    let fx = Fx::new();
+    let (runtime, tmp, no_cache) = step_runtime(&fx);
+    let root = fx.root.join("runroot");
+    for rt in [
+        runtime.clone(),
+        PathBuf::from(format!("{}/", runtime.display())),
+    ] {
+        let (target, _) = hook_target(
+            &fx,
+            &[
+                ("TMPDIR", &tmp),
+                ("AMPLIHACK_WORKFLOW_RUNTIME_DIR", &rt),
+                ("AMPLIHACK_RUN_TMP_ROOT", &root),
+                ("XDG_CACHE_HOME", &no_cache),
+            ],
+            &[],
+        );
+        assert_eq!(target.parent(), Some(root.as_path()), "{}", rt.display());
+        assert!(!target.starts_with(&runtime), "{}", target.display());
+        assert!(!present(&target), "the hook leaves the target for cargo");
+    }
+}
+
+/// Issue #2291 (AC7): without a usable `AMPLIHACK_RUN_TMP_ROOT`, the hook uses
+/// `/tmp`, never the run folder. A relative value counts as unset.
+#[test]
+fn hook_fallback_skips_a_tmpdir_inside_the_run_folder_for_slash_tmp() {
+    let fx = Fx::new();
+    let (runtime, tmp, no_cache) = step_runtime(&fx);
+    for strs in [vec![], vec![("AMPLIHACK_RUN_TMP_ROOT", "relative/root")]] {
+        let (target, _) = hook_target(
+            &fx,
+            &[
+                ("TMPDIR", &tmp),
+                ("AMPLIHACK_WORKFLOW_RUNTIME_DIR", &runtime),
+                ("XDG_CACHE_HOME", &no_cache),
+            ],
+            &strs,
+        );
+        assert_eq!(target.parent(), Some(Path::new("/tmp")), "{strs:?}");
+    }
+    assert!(!fx.repo.join("relative").exists());
+}
+
+/// Issue #2291: a `TMPDIR` outside the run folder is still the fallback, as
+/// before, and a run folder that only shares a prefix does not count.
+#[test]
+fn hook_fallback_keeps_a_tmpdir_outside_the_run_folder() {
+    let fx = Fx::new();
+    let (runtime, _, no_cache) = step_runtime(&fx);
+    let beside = PathBuf::from(format!("{}-other", runtime.display()));
+    fs::create_dir_all(&beside).unwrap();
+    for tmpdir in [fx.tmp.clone(), beside] {
+        let (target, _) = hook_target(
+            &fx,
+            &[
+                ("TMPDIR", &tmpdir),
+                ("AMPLIHACK_WORKFLOW_RUNTIME_DIR", &runtime),
+                ("AMPLIHACK_RUN_TMP_ROOT", &fx.root.join("runroot")),
+                ("XDG_CACHE_HOME", &no_cache),
+            ],
+            &[],
+        );
+        assert_eq!(target.parent(), Some(tmpdir.as_path()));
+    }
+}
+
+/// Issue #2291 (D13): a caller's `CARGO_TARGET_DIR` still wins inside a step.
+#[test]
+fn hook_keeps_a_caller_cargo_target_dir_inside_a_run() {
+    let fx = Fx::new();
+    let (runtime, tmp, _) = step_runtime(&fx);
+    let caller = fx.root.join("caller-target");
+    let (target, _) = hook_target(
+        &fx,
+        &[
+            ("TMPDIR", &tmp),
+            ("AMPLIHACK_WORKFLOW_RUNTIME_DIR", &runtime),
+            ("CARGO_TARGET_DIR", &caller),
+        ],
+        &[],
+    );
+    assert_eq!(target, caller);
+}

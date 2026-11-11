@@ -519,6 +519,22 @@ The cache root is then `${TMPDIR:-/tmp}`, and the current cache is:
 ${TMPDIR:-/tmp}/amplihack-precommit-target-<hash>
 ```
 
+Inside a recipe step, `TMPDIR` is the run's own temporary folder, which is
+removed when the run ends. When `TMPDIR` lies inside
+`AMPLIHACK_WORKFLOW_RUNTIME_DIR` (compared after removing one trailing `/`
+from that variable), the wrapper uses a different fallback:
+
+| Condition | Cache root |
+| --- | --- |
+| `AMPLIHACK_RUN_TMP_ROOT` is an absolute path | `$AMPLIHACK_RUN_TMP_ROOT` |
+| `AMPLIHACK_RUN_TMP_ROOT` is unset, empty or relative | `/tmp` |
+
+The wrapper never creates or changes the mode of that folder. A target is
+therefore never placed where the end of the run would delete it. A
+`CARGO_TARGET_DIR` set by the caller still takes precedence over every rule
+here. See
+[Where a run's temp folder goes](../howto/clean-up-after-recipe-runs.md#build-targets-stay-out-of-the-run-folder).
+
 All the rules above still apply there. The ownership checks matter most in this
 case, because other users can create prefixed links in a shared `/tmp`; the
 wrapper never follows or deletes a link it does not own.
@@ -534,8 +550,9 @@ account and are not exercised in CI.
 directory sweep. The `ci.yml` workflow runs both tests on every pull request.
 `crates/amplihack-cli/tests/issue_1808_run_cleanup/scripts.rs` covers the
 target name inside and outside a run, the `created` and `reused` records,
-the duplicate-record check, and paths that try to inject shell or `printf`
-syntax. `cleanup/tests_targets.rs` checks that the Rust hash matches
+the duplicate-record check, paths that try to inject shell or `printf`
+syntax, and the fallback when `TMPDIR` lies inside the run's temporary
+folder. `cleanup/tests_targets.rs` checks that the Rust hash matches
 `sha256sum` for an existing and a removed checkout.
 
 ## See also

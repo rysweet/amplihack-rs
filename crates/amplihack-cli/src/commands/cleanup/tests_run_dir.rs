@@ -269,3 +269,45 @@ fn five_field_lines_count_toward_the_10000_line_cap() {
     assert_eq!(parsed.len(), 10_000);
     assert!(parsed.iter().all(|o| o.target.is_some()));
 }
+
+// ----- issue #2291 (D8): the optional `runtime_dir` field -------------------
+
+fn minimal_report_json() -> &'static str {
+    r#"{"schema_version":1,"run_id":"3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3"}"#
+}
+
+#[test]
+fn report_without_runtime_dir_reads_as_none() {
+    let report: RunReport = serde_json::from_str(minimal_report_json()).unwrap();
+    assert_eq!(report.runtime_dir, None);
+    assert_eq!(report.schema_version, RUN_SCHEMA_VERSION);
+}
+
+#[test]
+fn runtime_dir_none_is_not_written() {
+    let report: RunReport = serde_json::from_str(minimal_report_json()).unwrap();
+    let json = serde_json::to_value(&report).unwrap();
+    assert!(json.get("runtime_dir").is_none(), "{json:#}");
+}
+
+#[test]
+fn runtime_dir_round_trips() {
+    let mut report: RunReport = serde_json::from_str(minimal_report_json()).unwrap();
+    report.runtime_dir = Some("/scratch/amplihack-run-3f0c9a526d1e".into());
+    let json = serde_json::to_string(&report).unwrap();
+    let back: RunReport = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        back.runtime_dir.as_deref(),
+        Some("/scratch/amplihack-run-3f0c9a526d1e")
+    );
+}
+
+#[test]
+fn schema_version_stays_1() {
+    assert_eq!(RUN_SCHEMA_VERSION, 1);
+}
+
+#[test]
+fn runtime_tmp_limit_is_shared_and_80_bytes() {
+    assert_eq!(MAX_RUNTIME_TMP_BYTES, 80);
+}

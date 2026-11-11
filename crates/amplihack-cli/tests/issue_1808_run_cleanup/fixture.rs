@@ -152,7 +152,28 @@ pub fn mkdir_0700(path: &Path) {
 
 impl Fx {
     pub fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        Self::in_tempdir(tempfile::tempdir().unwrap())
+    }
+
+    /// Issue #2291: a fixture whose root is at most 30 bytes, so a run's
+    /// `<root>/tmp/amplihack-run-<12 hex>/tmp` fits the 80-byte limit even
+    /// when the test process has a long `TMPDIR`.
+    pub fn new_short() -> Self {
+        let short =
+            |t: &tempfile::TempDir| t.path().canonicalize().unwrap().as_os_str().len() <= 30;
+        let mut tmp = tempfile::tempdir().unwrap();
+        if !short(&tmp) {
+            tmp = tempfile::tempdir_in("/tmp").unwrap();
+        }
+        assert!(
+            short(&tmp),
+            "no temp folder short enough: {}",
+            tmp.path().display()
+        );
+        Self::in_tempdir(tmp)
+    }
+
+    fn in_tempdir(tmp: tempfile::TempDir) -> Self {
         let root = tmp.path().canonicalize().unwrap();
         mkdir_0700(&root.join("tmp"));
         let proc = FakeProc::new_in(root.join("tmp"));
@@ -271,6 +292,9 @@ impl Fx {
             // isolated() keeps CARGO*; the hook would honour an inherited
             // CARGO_TARGET_DIR (this test binary's own) as explicit.
             .env_remove("CARGO_TARGET_DIR")
+            // Issue #2291: a test that wants a temp root sets it itself.
+            .env_remove("AMPLIHACK_RUN_TMP_ROOT")
+            .env_remove("AMPLIHACK_WORKFLOW_RUNTIME_DIR")
             .env_remove("TMUX")
             .stdin(Stdio::null());
         c
@@ -424,7 +448,7 @@ impl Fx {
             None => "null".into(),
         };
         let json = format!(
-            r#"{{"schema_version":{sv},"run_id":"{id}","recipe":"seeded","pid":{pid},"pid_start_ticks":{ticks},"cwd":"{cwd}","started_at":"{started}","ended_at":{ended},"outcome":"{outcome}","attempts":[{{"correlation_id":"{corr}"}}],"steps":[],"log_path":null}}"#,
+            r#"{{"schema_version":{sv},"run_id":"{id}","recipe":"seeded","pid":{pid},"pid_start_ticks":{ticks},"cwd":"{cwd}","started_at":"{started}","ended_at":{ended},"outcome":"{outcome}","attempts":[{{"correlation_id":"{corr}"}}],"steps":[],"log_path":null{runtime}}}"#,
             sv = run.schema_version,
             id = run.id,
             pid = run.pid,
@@ -437,6 +461,13 @@ impl Fx {
                 "interrupted"
             },
             corr = uuid::Uuid::new_v4(),
+            runtime = match &run.runtime_dir {
+                Some(p) => format!(
+                    ",\"runtime_dir\":{}",
+                    serde_json::Value::from(p.display().to_string())
+                ),
+                None => String::new(),
+            },
         );
         fs::write(dir.join("run.json"), json).unwrap();
         fs::set_permissions(dir.join("run.json"), fs::Permissions::from_mode(0o600)).unwrap();
@@ -508,6 +539,8 @@ pub struct SeedRun {
     pub schema_version: u32,
     pub owned: Vec<(&'static str, PathBuf, String)>,
     pub with_runtime: bool,
+    /// Issue #2291: the `runtime_dir` field of `run.json`, written as given.
+    pub runtime_dir: Option<PathBuf>,
 }
 
 impl SeedRun {
@@ -522,6 +555,7 @@ impl SeedRun {
             schema_version: 1,
             owned: Vec::new(),
             with_runtime: false,
+            runtime_dir: None,
         }
     }
 
@@ -727,7 +761,8 @@ pub fn entry_for(report: &serde_json::Value, path: &Path) -> serde_json::Value {
 pub const RECORD_ENV_SNIPPET: &str = r#"
 for v in AMPLIHACK_WORK_ROOT AMPLIHACK_WORK_ROOT_EXPLICIT AMPLIHACK_RUN_ID AMPLIHACK_RUN_DIR \
          AMPLIHACK_RECIPE_RUN_ID AMPLIHACK_WORKFLOW_RUNTIME_DIR AMPLIHACK_RUNTIME_ROOT \
-         AMPLIHACK_WORKFLOW_ARTIFACT_DIR TMPDIR TMP TEMP HOME XDG_CACHE_HOME; do
+         AMPLIHACK_WORKFLOW_ARTIFACT_DIR TMPDIR TMP TEMP HOME XDG_CACHE_HOME \
+         CARGO_TARGET_DIR AMPLIHACK_RUN_TMP_ROOT; do
   eval "val=\${$v-__unset__}"
   printf '%s=%s\n' "$v" "$val" >> "$RECORD_DIR/env"
 done
@@ -739,13 +774,24 @@ pub const RUNNER_SUCCESS_JSON: &str = r#"printf '%s\n' '{"recipe_name":"issue-18
 pub const RUNNER_FAILURE_JSON: &str = r#"printf '%s\n' '{"recipe_name":"issue-1808-probe","success":false,"step_results":[],"context":{}}'
 exit 7"#;
 
-/// The runtime folder the 80-byte rule picks for `run_id` under `work`.
-pub fn expected_runtime_dir(work: &Path, run_id: &str) -> PathBuf {
+/// The runtime folder a run with the caller `TMPDIR` `tmp` picks for `run_id`
+/// under `work` (issue #2291, D1). A `tmp` outside `work` is honoured:
+/// `<canonical tmp>/amplihack-run-<12 hex>`, unless its `tmp/` would pass
+/// 80 bytes. Otherwise the 80-byte rule of the default layout applies.
+pub fn expected_runtime_dir(work: &Path, run_id: &str, tmp: &Path) -> PathBuf {
+    let short: String = run_id.chars().filter(|c| *c != '-').take(12).collect();
+    let canon_tmp = fs::canonicalize(tmp).unwrap_or_else(|_| tmp.to_path_buf());
+    let canon_work = fs::canonicalize(work).unwrap_or_else(|_| work.to_path_buf());
+    if !canon_tmp.starts_with(&canon_work) {
+        let external = canon_tmp.join(format!("amplihack-run-{short}"));
+        if external.join("tmp").as_os_str().len() <= 80 {
+            return external;
+        }
+    }
     let default = work.join("runs").join(run_id).join("runtime");
     if default.join("tmp").as_os_str().len() <= 80 {
         default
     } else {
-        let short: String = run_id.chars().filter(|c| *c != '-').take(12).collect();
         work.join("r").join(short)
     }
 }

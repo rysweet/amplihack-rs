@@ -31,8 +31,10 @@ fn is_managed(item: &Item, roots: &ManagedRoots) -> bool {
     let c = item.canonical.as_path();
     match &item.op {
         Op::Skip | Op::Fail | Op::Archive { .. } => true,
-        Op::RemoveRunTmp { .. } => item.run_id.as_deref().is_some_and(|id| {
-            c == roots.runs.join(id).join("runtime") || c == roots.short_runtime.join(short_id(id))
+        Op::RemoveRunTmp { run_dir } => item.run_id.as_deref().is_some_and(|id| {
+            c == roots.runs.join(id).join("runtime")
+                || c == roots.short_runtime.join(short_id(id))
+                || recorded_external_matches(run_dir, id, c)
         }),
         Op::RemoveWorktree { main, .. } => is_contained(OwnedKind::Worktree, c, roots, Some(main)),
         Op::RemoveDir { .. } if item.category == Category::TmpLeftover => {
@@ -44,6 +46,24 @@ fn is_managed(item: &Item, roots: &ManagedRoots) -> bool {
         Op::RemoveTarget { .. } => target_remove::location(&item.path)
             .is_ok_and(|at| is_contained(OwnedKind::Target, &at, roots, None)),
     }
+}
+
+/// Issue #2291, D10, S12: `c` is the external per-run folder that the run's
+/// `run.json`, read again now, still records: same resolved path, this run's
+/// name and owned by this user. The liveness, in-use and real-folder checks
+/// follow in `execute`.
+fn recorded_external_matches(run_dir: &Path, id: &str, c: &Path) -> bool {
+    let Ok(report) = RunReport::read(run_dir) else {
+        return false;
+    };
+    let Some(recorded) = report.runtime_dir.as_deref().map(Path::new) else {
+        return false;
+    };
+    let name = super::super::run_tmp_root::external_dir_name(id);
+    recorded == c
+        && fs::canonicalize(recorded).is_ok_and(|now| now == c)
+        && name.is_some_and(|n| c.file_name() == Some(std::ffi::OsStr::new(&n)))
+        && fs::symlink_metadata(c).is_ok_and(|m| m.uid() == euid())
 }
 
 /// Removes the folder at the canonical `path`, refusing a symlink or a

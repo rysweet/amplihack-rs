@@ -4,7 +4,10 @@
 //! append to, `cleanup-record.json` after a sweep removed something, and the
 //! ephemeral `runtime/` folder that [`RuntimeGuard`] removes when the run ends.
 
-use super::work_root::{WorkRoot, create_private_dir_all};
+use super::run_tmp_root::{
+    RUN_TMP_ROOT_ENV, RuntimeChoice, TmpRootInputs, choose_runtime_dir, usable_explicit_root,
+};
+use super::work_root::{WORK_ROOT_ENV, WorkRoot, create_private_dir_all};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -20,7 +23,7 @@ pub(crate) const RUN_SCHEMA_VERSION: u32 = 1;
 
 /// Longest `runtime/tmp` path the default layout may produce, leaving room
 /// under the 108-byte Unix socket path limit.
-const MAX_RUNTIME_TMP_BYTES: usize = 80;
+pub(crate) const MAX_RUNTIME_TMP_BYTES: usize = 80;
 const OWNED_PATHS_MAX_BYTES: u64 = 1024 * 1024;
 const OWNED_PATHS_MAX_LINES: usize = 10_000;
 const RUN_JSON_MAX_BYTES: u64 = 1024 * 1024;
@@ -357,6 +360,10 @@ pub(crate) struct RunReport {
     pub steps: Vec<StepStatus>,
     #[serde(default)]
     pub log_path: Option<String>,
+    /// The resolved per-run folder under an external root (issue #2291).
+    /// Absent for the default layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_dir: Option<String>,
 }
 
 impl RunReport {
@@ -396,17 +403,30 @@ pub(crate) struct RunScope {
     pub work_root: WorkRoot,
     pub run_id: String,
     pub run_dir: PathBuf,
+    /// The resolved external root the runtime folder lives in, if any
+    /// (issue #2291); exported to steps as `AMPLIHACK_RUN_TMP_ROOT`.
+    pub runtime_root: Option<PathBuf>,
     report: RunReport,
 }
 
 impl RunScope {
-    /// Creates the run folder, writes the first `run.json` and creates
-    /// `runtime/tmp` and `runtime/artifacts`. The returned guard removes
-    /// `runtime/` when dropped.
+    /// Creates the run folder, chooses the runtime folder (issue #2291),
+    /// writes the first `run.json` and creates `tmp/` and `artifacts/` in
+    /// the runtime folder. The returned guard removes the runtime folder when
+    /// dropped.
     pub(crate) fn begin(
         work_root: WorkRoot,
         recipe: &str,
         cwd: &Path,
+    ) -> Result<(Self, RuntimeGuard)> {
+        Self::begin_with(work_root, recipe, cwd, &TmpRootInputs::from_env())
+    }
+
+    pub(crate) fn begin_with(
+        work_root: WorkRoot,
+        recipe: &str,
+        cwd: &Path,
+        inputs: &TmpRootInputs,
     ) -> Result<(Self, RuntimeGuard)> {
         work_root.ensure_created()?;
         let runs = work_root.runs_dir();
@@ -419,6 +439,17 @@ impl RunScope {
             .with_context(|| format!("cannot create run folder {}", run_dir.display()))?;
         fs::set_permissions(&run_dir, fs::Permissions::from_mode(0o700))
             .with_context(|| format!("cannot set mode 0700 on {}", run_dir.display()))?;
+        let chosen = choose_runtime_dir(&work_root.path, &run_id, inputs);
+        if let Some(warning) = &chosen.warning {
+            eprintln!("{warning}");
+        }
+        let (runtime_dir, runtime_root) = match chosen.choice {
+            RuntimeChoice::Default(dir) => (dir, None),
+            RuntimeChoice::External { dir, root } => (dir, Some(root)),
+        };
+        // Created before the first write, so a failed write still removes an
+        // external folder the chooser has just made.
+        let guard = RuntimeGuard::new(runtime_dir.clone());
         let pid = std::process::id();
         let report = RunReport {
             schema_version: RUN_SCHEMA_VERSION,
@@ -433,16 +464,18 @@ impl RunScope {
             attempts: Vec::new(),
             steps: Vec::new(),
             log_path: None,
+            runtime_dir: runtime_root
+                .as_ref()
+                .map(|_| runtime_dir.display().to_string()),
         };
-        let runtime_dir = runtime_dir_for(&work_root.path, &run_id);
         let scope = Self {
             work_root,
             run_id,
             run_dir,
+            runtime_root,
             report,
         };
         scope.write_report()?;
-        let guard = RuntimeGuard::new(runtime_dir.clone());
         create_private_dir_all(&runtime_dir.join("tmp"))?;
         create_private_dir_all(&runtime_dir.join("artifacts"))?;
         Ok((scope, guard))
@@ -493,6 +526,9 @@ pub(crate) enum RunWorkspace {
     },
     Legacy {
         dir: tempfile::TempDir,
+        /// The resolved `AMPLIHACK_RUN_TMP_ROOT` the folder was made in,
+        /// when rule 1 accepted it (issue #2291, D12).
+        explicit_root: Option<PathBuf>,
     },
 }
 
@@ -511,13 +547,25 @@ impl RunWorkspace {
                     "amplihack: warning: cannot use the work root ({error:#}); this run uses a \
                      private temporary folder and no run folder or cleanup"
                 );
-                let dir = tempfile::Builder::new()
-                    .prefix("amplihack-workflow-")
-                    .tempdir()
-                    .context("failed to create isolated workflow runtime directory")?;
+                let inputs = TmpRootInputs::from_env();
+                let explicit_root = match usable_explicit_root(&legacy_work_root(&inputs), &inputs)
+                {
+                    Ok(root) => root,
+                    Err(warning) => {
+                        eprintln!("{warning}");
+                        None
+                    }
+                };
+                let mut builder = tempfile::Builder::new();
+                builder.prefix("amplihack-workflow-");
+                let dir = match &explicit_root {
+                    Some(root) => builder.tempdir_in(root),
+                    None => builder.tempdir(),
+                }
+                .context("failed to create isolated workflow runtime directory")?;
                 create_private_dir_all(&dir.path().join("tmp"))?;
                 create_private_dir_all(&dir.path().join("artifacts"))?;
-                Ok(Self::Legacy { dir })
+                Ok(Self::Legacy { dir, explicit_root })
             }
         }
     }
@@ -525,7 +573,7 @@ impl RunWorkspace {
     pub(crate) fn runtime_dir(&self) -> &Path {
         match self {
             Self::Scoped { guard, .. } => guard.path(),
-            Self::Legacy { dir } => dir.path(),
+            Self::Legacy { dir, .. } => dir.path(),
         }
     }
 
@@ -547,6 +595,15 @@ impl RunWorkspace {
             ("TMP", tmp.clone()),
             ("TEMP", tmp),
         ];
+        // Issue #2291, D7: a sub-recipe applies rule 1 and makes a sibling
+        // folder under the same root. Never the per-run folder itself.
+        let runtime_root = match self {
+            Self::Scoped { scope, .. } => scope.runtime_root.as_ref(),
+            Self::Legacy { explicit_root, .. } => explicit_root.as_ref(),
+        };
+        if let Some(root) = runtime_root {
+            vars.push((RUN_TMP_ROOT_ENV, root.clone().into_os_string()));
+        }
         if let Self::Scoped { scope, .. } = self {
             vars.push((
                 super::work_root::WORK_ROOT_ENV,
@@ -593,12 +650,26 @@ impl RunWorkspace {
                     super::sweep::end_of_run(&scope.work_root);
                 }
             }
-            Self::Legacy { dir } => {
+            Self::Legacy { dir, .. } => {
                 if let Err(error) = dir.close() {
                     eprintln!("amplihack: warning: could not remove the runtime folder: {error}");
                 }
             }
         }
+    }
+}
+
+/// The work root a legacy-mode run compares `AMPLIHACK_RUN_TMP_ROOT`
+/// against: the one that was refused, as given, or the default under
+/// `$HOME`. `$HOME/.amplihack` is checked separately.
+fn legacy_work_root(inputs: &TmpRootInputs) -> PathBuf {
+    match std::env::var_os(WORK_ROOT_ENV).filter(|v| !v.is_empty()) {
+        Some(root) => PathBuf::from(root),
+        None => inputs
+            .home
+            .as_ref()
+            .map(|h| h.join(".amplihack").join("work"))
+            .unwrap_or_default(),
     }
 }
 

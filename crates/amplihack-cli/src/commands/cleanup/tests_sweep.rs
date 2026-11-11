@@ -69,6 +69,7 @@ impl Fx {
             attempts: Vec::new(),
             steps: Vec::new(),
             log_path: None,
+            runtime_dir: None,
         };
         fs::write(dir.join(RUN_JSON), serde_json::to_vec(&report).unwrap()).unwrap();
         let mut owned = Vec::new();
@@ -375,6 +376,7 @@ fn seed(fx: &Fx, id: &str, active: bool, owned: &[u8]) -> PathBuf {
         attempts: Vec::new(),
         steps: Vec::new(),
         log_path: None,
+        runtime_dir: None,
     };
     fs::write(dir.join(RUN_JSON), serde_json::to_vec(&report).unwrap()).unwrap();
     fs::write(dir.join(OWNED_PATHS), owned).unwrap();
@@ -721,4 +723,287 @@ fn remove_target_refuses_a_shape_change_at_apply() {
     );
     assert!(moved.join("debug/keep-me").exists());
     assert!(fs::symlink_metadata(&t).unwrap().is_symlink());
+}
+
+// ----- issue #2291: recorded external runtime folders -----------------------
+//
+// Contract: `fn external_runtime_check(path: &Path, id: &str, work_root: &Path,
+// euid: u32) -> Result<(), String>` in `sweep.rs`. The checks run in this
+// order and the first failure is the reason: `not an absolute path`, `wrong
+// name`, `is a symbolic link`, `not a folder`, `owned by another user`, `path
+// is not canonical`, `inside the work root`. `collect_runs` turns a failure
+// into `Item::skip(RunTmp, path, "recorded temp folder refused: <reason>")`.
+
+const EXT_ID: &str = "0123abcd-0000-0000-0000-000000000002";
+const EXT_NAME: &str = "amplihack-run-0123abcd0000";
+
+/// A run `EXT_ID` whose `run.json` records `runtime_dir`. An active run uses
+/// this test process's own pid and start ticks; a dead one has pid 0 and no
+/// end time, as a killed run leaves it.
+fn seed_ext(fx: &Fx, active: bool, runtime_dir: Option<&Path>) -> PathBuf {
+    let dir = fx.work.runs_dir().join(EXT_ID);
+    fs::create_dir_all(&dir).unwrap();
+    let pid = std::process::id();
+    let report = RunReport {
+        schema_version: RUN_SCHEMA_VERSION,
+        run_id: EXT_ID.into(),
+        recipe: "test".into(),
+        pid: if active { pid } else { 0 },
+        pid_start_ticks: if active {
+            crate::commands::cleanup::run_dir::pid_start_ticks(pid)
+        } else {
+            None
+        },
+        cwd: String::new(),
+        started_at: now_rfc3339(),
+        ended_at: None,
+        outcome: "interrupted".into(),
+        attempts: Vec::new(),
+        steps: Vec::new(),
+        log_path: None,
+        runtime_dir: runtime_dir.map(|p| p.display().to_string()),
+    };
+    fs::write(dir.join(RUN_JSON), serde_json::to_vec(&report).unwrap()).unwrap();
+    dir
+}
+
+/// `<root>/ext/amplihack-run-0123abcd0000`, a private folder holding a file.
+fn ext_dir(fx: &Fx) -> PathBuf {
+    let dir = dir_with_file(&fx.root.join("ext").join(EXT_NAME));
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    dir
+}
+
+fn check(fx: &Fx, path: &Path, uid: u32) -> Result<(), String> {
+    external_runtime_check(path, EXT_ID, &fx.work.path, uid).map_err(|e| e.to_string())
+}
+
+fn refused(result: Result<(), String>, reason: &str) {
+    let err = result.expect_err("the check must refuse");
+    assert!(err.contains(reason), "want {reason:?}, got {err:?}");
+}
+
+#[test]
+fn external_check_accepts_a_private_folder_with_this_runs_name() {
+    let fx = Fx::new();
+    let dir = ext_dir(&fx);
+    assert_eq!(check(&fx, &dir, euid()), Ok(()));
+}
+
+#[test]
+fn external_check_refuses_a_relative_path() {
+    let fx = Fx::new();
+    refused(
+        check(&fx, Path::new("ext/amplihack-run-0123abcd0000"), euid()),
+        "not an absolute path",
+    );
+}
+
+#[test]
+fn external_check_refuses_another_runs_name() {
+    let fx = Fx::new();
+    let other = dir_with_file(&fx.root.join("ext/amplihack-run-ffffffffffff"));
+    refused(check(&fx, &other, euid()), "wrong name");
+    let bare = dir_with_file(&fx.root.join("ext/0123abcd0000"));
+    refused(check(&fx, &bare, euid()), "wrong name");
+}
+
+/// The link check comes before the folder check, whatever the link names.
+#[test]
+fn external_check_refuses_a_symbolic_link_before_the_folder_check() {
+    let fx = Fx::new();
+    let real = dir_with_file(&fx.root.join("real"));
+    fs::create_dir_all(fx.root.join("ext")).unwrap();
+    let link = fx.root.join("ext").join(EXT_NAME);
+    symlink(&real, &link).unwrap();
+    refused(check(&fx, &link, euid()), "is a symbolic link");
+    fs::remove_file(&link).unwrap();
+    symlink(fx.root.join("nowhere"), &link).unwrap();
+    refused(check(&fx, &link, euid()), "is a symbolic link");
+}
+
+#[test]
+fn external_check_refuses_a_file() {
+    let fx = Fx::new();
+    fs::create_dir_all(fx.root.join("ext")).unwrap();
+    let file = fx.root.join("ext").join(EXT_NAME);
+    fs::write(&file, "x").unwrap();
+    refused(check(&fx, &file, euid()), "not a folder");
+}
+
+#[test]
+fn external_check_refuses_a_folder_of_another_user() {
+    let fx = Fx::new();
+    let dir = ext_dir(&fx);
+    refused(
+        check(&fx, &dir, euid().wrapping_add(1).max(1)),
+        "owned by another user",
+    );
+}
+
+/// S11: a parent swapped for a link makes the recorded path non-canonical.
+#[test]
+fn external_check_refuses_a_path_through_a_linked_parent() {
+    let fx = Fx::new();
+    let dir = ext_dir(&fx);
+    let lnk = fx.root.join("lnk");
+    symlink(dir.parent().unwrap(), &lnk).unwrap();
+    refused(
+        check(&fx, &lnk.join(EXT_NAME), euid()),
+        "path is not canonical",
+    );
+}
+
+#[test]
+fn external_check_refuses_a_folder_inside_the_work_root() {
+    let fx = Fx::new();
+    let inside = dir_with_file(&fx.work.path.join("tmp").join(EXT_NAME));
+    refused(check(&fx, &inside, euid()), "inside the work root");
+}
+
+/// AC5: a dead run's recorded folder is removed by the sweep, and the root
+/// that holds it is kept.
+#[test]
+fn recorded_external_folder_of_a_dead_run_is_removed() {
+    let fx = Fx::new();
+    let dir = ext_dir(&fx);
+    seed_ext(&fx, false, Some(&dir));
+    let settings = fx.settings(&[Category::RunTmp]);
+
+    let entries = run_sweep(&settings, true).unwrap();
+
+    let e = entry(&entries, &dir);
+    assert_eq!(e.category, Category::RunTmp, "{e:?}");
+    assert_eq!(e.action, Action::Removed, "{e:?}");
+    assert_eq!(e.run_id.as_deref(), Some(EXT_ID));
+    assert!(!dir.exists());
+    assert!(fx.root.join("ext").is_dir(), "the root is never removed");
+}
+
+/// AC8: a live run's recorded folder is kept.
+#[test]
+fn recorded_external_folder_of_a_live_run_is_kept() {
+    let fx = Fx::new();
+    let dir = ext_dir(&fx);
+    seed_ext(&fx, true, Some(&dir));
+    let settings = fx.settings(&[Category::RunTmp]);
+
+    let entries = run_sweep(&settings, true).unwrap();
+
+    let e = entry(&entries, &dir);
+    assert_eq!(e.action, Action::Skipped, "{e:?}");
+    assert!(e.reason.contains("run is active"), "{e:?}");
+    assert!(dir.join("keep-me").exists());
+}
+
+/// AC5: a refused recorded path is reported with its reason and left alone.
+#[test]
+fn refused_recorded_folder_is_reported_and_kept() {
+    let fx = Fx::new();
+    let real = dir_with_file(&fx.root.join("real"));
+    fs::create_dir_all(fx.root.join("ext")).unwrap();
+    let link = fx.root.join("ext").join(EXT_NAME);
+    symlink(&real, &link).unwrap();
+    seed_ext(&fx, false, Some(&link));
+    let settings = fx.settings(&[Category::RunTmp]);
+
+    let entries = run_sweep(&settings, true).unwrap();
+
+    let e = entry(&entries, &link);
+    assert_eq!(e.action, Action::Skipped, "{e:?}");
+    assert_eq!(
+        e.reason, "recorded temp folder refused: is a symbolic link",
+        "{e:?}"
+    );
+    assert!(real.join("keep-me").exists(), "the link target survives");
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+/// S15: a recorded path that no longer exists produces no item.
+#[test]
+fn missing_recorded_folder_produces_no_item() {
+    let fx = Fx::new();
+    let gone = fx.root.join("ext").join(EXT_NAME);
+    seed_ext(&fx, false, Some(&gone));
+    let settings = fx.settings(&[Category::RunTmp]);
+
+    let items = collect(&settings).unwrap();
+    assert!(
+        items.iter().all(|i| i.path != gone),
+        "no item for a missing path: {items:#?}"
+    );
+}
+
+/// D10, S12: a `run.json` rewritten between collection and apply, to name
+/// another folder or none, means the collected folder is refused.
+#[test]
+fn recorded_folder_is_refused_when_run_json_changes_before_apply() {
+    for rewrite in [Some("other"), None] {
+        let fx = Fx::new();
+        let dir = ext_dir(&fx);
+        let run_dir = seed_ext(&fx, false, Some(&dir));
+        let settings = fx.settings(&[Category::RunTmp]);
+
+        let items = collect(&settings).unwrap();
+        assert!(
+            items
+                .iter()
+                .any(|i| i.path == dir && matches!(i.op, Op::RemoveRunTmp { .. })),
+            "{items:#?}"
+        );
+        let other = rewrite.map(|name| ext_dir_named(&fx, name));
+        seed_ext(&fx, false, other.as_deref());
+        assert!(run_dir.join(RUN_JSON).is_file());
+        let entries = apply_items(items, &settings, true);
+
+        let e = entry(&entries, &dir);
+        assert_eq!(e.action, Action::Skipped, "{rewrite:?}: {e:?}");
+        assert!(
+            e.reason
+                .contains("no longer inside the folders cleanup manages"),
+            "{rewrite:?}: {e:?}"
+        );
+        assert!(dir.join("keep-me").exists(), "{rewrite:?}");
+        if let Some(other) = other {
+            assert!(other.join("keep-me").exists(), "{rewrite:?}");
+        }
+    }
+}
+
+fn ext_dir_named(fx: &Fx, parent: &str) -> PathBuf {
+    let dir = dir_with_file(&fx.root.join(parent).join(EXT_NAME));
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    dir
+}
+
+/// S14: links inside a removed folder are removed, never followed.
+#[test]
+fn links_inside_a_removed_recorded_folder_are_not_followed() {
+    let fx = Fx::new();
+    let dir = ext_dir(&fx);
+    let outside = dir_with_file(&fx.root.join("outside"));
+    symlink(&outside, dir.join("link-out")).unwrap();
+    seed_ext(&fx, false, Some(&dir));
+    let settings = fx.settings(&[Category::RunTmp]);
+
+    let entries = run_sweep(&settings, true).unwrap();
+
+    assert_eq!(entry(&entries, &dir).action, Action::Removed);
+    assert!(!dir.exists());
+    assert!(outside.join("keep-me").exists(), "the link target survives");
+}
+
+/// S16: `amplihack-run-` is not a `tmp-leftover` pattern, so a folder no
+/// `run.json` records is never removed by age.
+#[test]
+fn per_run_prefix_is_not_a_tmp_leftover_pattern() {
+    assert!(!has_prefix(
+        Path::new("/x/amplihack-run-0123abcd0000"),
+        TMP_PREFIXES
+    ));
 }

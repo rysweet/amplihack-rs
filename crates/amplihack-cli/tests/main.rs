@@ -402,5 +402,7 @@ mod spec_conformance;
 #[path = "system_prompt_append_fragment.rs"]
 mod system_prompt_append_fragment;
 
+#[path = "issue_2291_run_tmp_root.rs"]
+mod issue_2291_run_tmp_root;
 #[path = "issue_2297_codex_installation.rs"]
 mod issue_2297_codex_installation;

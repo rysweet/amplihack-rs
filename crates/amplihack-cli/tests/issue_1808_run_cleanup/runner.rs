@@ -27,8 +27,11 @@ fn success_runner() -> String {
     format!("#!/bin/sh\n{RECORD_ENV_SNIPPET}\n{RUNNER_SUCCESS_JSON}\n")
 }
 
-/// AC7 and R3: TMPDIR, TMP and TEMP all point at `<run dir>/runtime/tmp`,
-/// which exists while the step runs and is gone afterwards; `run.json` stays.
+/// AC7 and R3: TMPDIR, TMP and TEMP all point at the run's `tmp/`, which
+/// exists while the step runs and is gone afterwards; `run.json` stays. Since
+/// issue #2291 the fixture's `TMPDIR`, which lies outside the work root, is
+/// honoured, so that folder is `<tmp>/amplihack-run-<12 hex>/tmp` (see
+/// [`expected_runtime_dir`]).
 #[test]
 fn ac7_successful_run_gets_per_run_tmpdir_which_is_removed_at_end() {
     let fx = Fx::new();
@@ -39,7 +42,7 @@ fn ac7_successful_run_gets_per_run_tmpdir_which_is_removed_at_end() {
     let run_id = env["AMPLIHACK_RUN_ID"].clone();
     assert!(is_uuid(&run_id), "AMPLIHACK_RUN_ID must be a UUID: {env:?}");
     let run_dir = fx.runs_dir().join(&run_id);
-    let runtime = expected_runtime_dir(&fx.work, &run_id);
+    let runtime = expected_runtime_dir(&fx.work, &run_id, &fx.tmp);
     let tmp = runtime.join("tmp");
 
     assert_eq!(env["AMPLIHACK_RUN_DIR"], run_dir.display().to_string());
@@ -79,7 +82,7 @@ fn ac7_failing_run_removes_runtime_and_records_failure() {
 
     let run_id = fx.recorded_env()["AMPLIHACK_RUN_ID"].clone();
     let run_dir = fx.runs_dir().join(&run_id);
-    assert!(!expected_runtime_dir(&fx.work, &run_id).exists());
+    assert!(!expected_runtime_dir(&fx.work, &run_id, &fx.tmp).exists());
     let report = run_json(&run_dir);
     assert_eq!(report["outcome"], "failure", "{report:#}");
     assert!(report["ended_at"].as_str().is_some_and(|s| !s.is_empty()));
@@ -287,7 +290,7 @@ fn ac15_cleanup_on_exit_0_skips_sweep_but_removes_runtime() {
         "AMPLIHACK_RUN_ID must be exported: {run_id}"
     );
     assert!(fx.runs_dir().join(&run_id).join("run.json").is_file());
-    assert!(!expected_runtime_dir(&fx.work, &run_id).exists());
+    assert!(!expected_runtime_dir(&fx.work, &run_id, &fx.tmp).exists());
     assert!(old_target.exists(), "the sweep must not run");
     assert!(
         !fx.runs_dir()

@@ -218,7 +218,21 @@ cache_root() {
         printf '%s' "$base/amplihack"
         return 0
     fi
-    printf '%s' "${TMPDIR:-/tmp}"
+    # Issue #2291: inside a recipe step TMPDIR lies in the run's own folder,
+    # which is removed when the run ends; keep the target out of it.
+    local tmp="${TMPDIR:-/tmp}" rt="${AMPLIHACK_WORKFLOW_RUNTIME_DIR:-}"
+    rt="${rt%/}"
+    if [ -n "$rt" ]; then
+        case "$tmp" in
+            "$rt" | "$rt"/*)
+                case "${AMPLIHACK_RUN_TMP_ROOT:-}" in
+                    /*) tmp="$AMPLIHACK_RUN_TMP_ROOT" ;;
+                    *) tmp=/tmp ;;
+                esac
+                ;;
+        esac
+    fi
+    printf '%s' "$tmp"
 }
 
 # Issue #1808: a run id cleanup would also accept, `^[0-9a-f-]{1,64}$`.
