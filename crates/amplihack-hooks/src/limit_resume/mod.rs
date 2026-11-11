@@ -41,7 +41,7 @@ pub mod log;
 use amplihack_types::HookInput;
 use amplihack_utils::file_event::{PROMPT_MASK, SWAP_MASK, Waiter, Watch, Woke};
 use amplihack_utils::rotator_status::swap_record::{
-    self, Judgement, SWAP_FILE, SwapRecord, after_stop_at, judge_at, rotate_dir,
+    self, Judgement, SWAP_FILE, SwapRecord, judge_at, noted_after_stop, rotate_dir,
 };
 use amplihack_utils::rotator_status::{self, CycleStatus, MAX_WAIT};
 use amplihack_utils::secure_files::{euid, read_bounded};
@@ -298,29 +298,30 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     let start = deps.now();
     let first = deps.read_cycle(start);
     let live_at_start = first.as_ref().and_then(|s| s.live.as_deref());
-    let stop = deps.stop_time(transcript_path.as_deref(), start);
     let session = session_key(session_id);
     let stop_hook = gate(&facts) == Gate::StopHookActive;
     // D4: the record seen at the stop resumes only when it may itself be
     // after the stop (a swap between the stop and this read); otherwise only
-    // a different one, newer than the stop, does. See `judge_at`. With
-    // `stop_hook_active` the hook never waits, so it reads no guard state.
-    let (snapshot, resumed) = if stop_hook {
-        (None, Ok(None))
+    // a different one, newer than the stop, does. See `noted_after_stop`,
+    // which `judge_at` and `key_login` below share. With
+    // `stop_hook_active` the hook never waits, so it reads neither the
+    // transcript nor any guard state.
+    let (stop, snapshot, resumed) = if stop_hook {
+        (None, None, Ok(None))
     } else {
+        let stop = deps.stop_time(transcript_path.as_deref(), start);
         let snapshot = deps.read_swap(start);
         // A swap at or before this session's last resume is never after
         // its stop, however close the times (see `after_stop_at`).
-        (snapshot, deps.guard().last_resume(&session))
+        (stop, snapshot, deps.guard().last_resume(&session))
     };
     // The login the session stopped on is part of the event: the same login
     // limited again is the same event, a limit after a swap is a new one.
     // When a swap noted at the start falls after the stop, the session
-    // stopped on its outgoing login, not on the live one (#2235).
+    // stopped on its outgoing login, not on the live one (#2235). The
+    // condition is `noted_after_stop`, the same one `judge_at` uses.
     let key_login = match (&snapshot, &resumed) {
-        (Some(r), Ok(resumed_at))
-            if r.swapped_at <= start && after_stop_at(r.swapped_at, start, stop, *resumed_at) =>
-        {
+        (Some(r), Ok(resumed_at)) if noted_after_stop(r, start, stop, *resumed_at) => {
             Some(r.from_login.as_str())
         }
         _ => live_at_start,

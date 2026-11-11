@@ -160,8 +160,8 @@ struct LastEntry {
 /// opened file. A FIFO never blocks the open.
 #[cfg(unix)]
 pub fn read_stop_time(transcript: &Path, start: i64) -> Option<i64> {
-    use crate::secure_files::{owned_by_euid, read_bounded};
-    use std::io::{Seek, SeekFrom};
+    use crate::secure_files::owned_by_euid;
+    use std::io::{Read, Seek, SeekFrom};
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let mut file = std::fs::OpenOptions::new()
         .read(true)
@@ -174,9 +174,9 @@ pub fn read_stop_time(transcript: &Path, start: i64) -> Option<i64> {
     }
     let off = meta.len().saturating_sub(STOP_TAIL_BYTES);
     file.seek(SeekFrom::Start(off)).ok()?;
-    let mut raw = read_bounded(file, STOP_TAIL_BYTES).ok()?;
-    // The file may have grown since the size was read.
-    raw.truncate(STOP_TAIL_BYTES as usize);
+    // Bounded even if the file has grown since the size was read.
+    let mut raw = Vec::new();
+    file.take(STOP_TAIL_BYTES).read_to_end(&mut raw).ok()?;
     // Everything after the last newline is a line still being written.
     let end = raw.iter().rposition(|&b| b == b'\n')?;
     let mut complete = raw.get(..end)?;
@@ -232,6 +232,21 @@ pub fn after_stop_at(
     swapped_at >= threshold && resumed_at.is_none_or(|r| swapped_at > r)
 }
 
+/// Whether `record`, seen when the hook started at `start`, may be a swap
+/// made between the stop and that start: dated no later than `start` and
+/// after the stop by [`after_stop_at`]. Such a snapshot is not `Same`
+/// ([`judge_at`]), and the session stopped on its `from_login` (#2235).
+/// This is the single definition of that rule; the hook's event key and
+/// [`judge_at`] both call it so they cannot disagree.
+pub fn noted_after_stop(
+    record: &SwapRecord,
+    start: i64,
+    stop: Option<i64>,
+    resumed_at: Option<i64>,
+) -> bool {
+    record.swapped_at <= start && after_stop_at(record.swapped_at, start, stop, resumed_at)
+}
+
 /// [`judge_at`] with no stop time.
 pub fn judge(
     snapshot: Option<&SwapRecord>,
@@ -250,8 +265,8 @@ pub fn judge(
 /// the snapshot and is newer than the stop is a new swap, so a reset `seq`
 /// still resumes and a replayed old record is stale.
 ///
-/// A snapshot that may itself be after the stop ([`after_stop_at`]) and is
-/// not later than `start` is not `Same`: a swap can finish between the stop
+/// A snapshot that may itself be after the stop and is not later than
+/// `start` ([`noted_after_stop`]) is not `Same`: a swap can finish between the stop
 /// and the hook's start, and the hook then notes it at once. That record is
 /// judged on room like any other, so the session stopped on the outgoing
 /// login still resumes. A snapshot dated after `start` cannot be such a
@@ -265,7 +280,7 @@ pub fn judge_at(
     resumed_at: Option<i64>,
 ) -> Judgement {
     let after = after_stop_at(record.swapped_at, start, stop, resumed_at);
-    if snapshot == Some(record) && !(after && record.swapped_at <= start) {
+    if snapshot == Some(record) && !noted_after_stop(record, start, stop, resumed_at) {
         Judgement::Same
     } else if !after {
         Judgement::Stale

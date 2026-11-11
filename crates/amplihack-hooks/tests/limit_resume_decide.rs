@@ -1186,6 +1186,7 @@ fn stop_hook_active_never_resumes_and_touches_no_guard_state() {
     );
     assert_eq!(out, Outcome::StopHookActive);
     assert_eq!(d.guard.calls, 0, "checked before any guard I/O");
+    assert!(d.stop_calls.is_empty(), "the transcript is not read");
     assert_eq!(d.arms, 0);
     assert_eq!(d.key_attempts, 0);
     assert_eq!(d.outcomes(), [Outcome::StopHookActive]);
