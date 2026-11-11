@@ -235,11 +235,11 @@ esac
             String::from_utf8_lossy(&out.stderr)
         );
         let argv = fs::read_to_string(home.path().join("launch-argv")).unwrap();
-        // Issue #1985: an agent step gets the sandbox, network and hook-trust
+        // Issues #1985 and #2317: an agent step gets full access and hook-trust
         // flags right after `exec`, ahead of the caller's own arguments.
         assert!(
             argv.contains(
-                "exec\n--sandbox\nworkspace-write\n-c\nsandbox_workspace_write.network_access=true\n--dangerously-bypass-hook-trust\n--model\nfixture-model\n-\n"
+                "exec\n--sandbox\ndanger-full-access\n--dangerously-bypass-hook-trust\n--model\nfixture-model\n-\n"
             ),
             "{argv}"
         );
@@ -247,6 +247,7 @@ esac
             !argv.contains("--dangerously-bypass-approvals-and-sandbox"),
             "{argv}"
         );
+        assert!(!argv.contains("workspace-write"), "{argv}");
         assert!(
             home.path()
                 .join(".amplihack/codex/ownership.json")
