@@ -3,7 +3,7 @@ Issue #2342 recovery prerequisite — 11 November 2026
 Status: BLOCKED. Earlier implementation work was not recovered.
 This records a prerequisite investigation, not an implemented fix.
 
-Evidence:
+Initial investigation evidence (before the checkpoint below):
 - Local and remote feat/issue-2342-auto-drive-merge-ready both point to
   c4935c8adee1b5e3c5ad597713d410f2bbce3aab, the main baseline.
 - git worktree list identifies this issue worktree and its main checkout
@@ -28,6 +28,42 @@ Preserved work:
   tests/integration/issue_2342_evidence/ remain untouched.
 - These are the supplied design documentation and regression contracts.
   They do not establish recovery of the earlier implementation.
+
+Step 11b recovery recheck — 11 November 2026:
+- Reviewed f6ed87df9c8a6c2704f29c15951568e95d63c6ab, the automatic
+  checkpoint titled "wip: checkpoint after implementation (steps 7-8)".
+  Its parent is c4935c8adee1b5e3c5ad597713d410f2bbce3aab. Despite its
+  title, the checkpoint changes only six documentation files and five
+  test/fixture files. It contains no production implementation to recover.
+- All supplied documentation and regression contracts listed above are now
+  tracked in that checkpoint and remain unchanged during this recheck.
+- Rechecked branch/reflog history and both registered worktrees. The local
+  issue branch now points to f6ed87df; the remote issue branch still points
+  to c4935c8a, as confirmed by git ls-remote. No earlier implementation
+  commit or checkout was identified.
+- Rechecked unreachable commit subjects for the issue number, evidence
+  helper, CI preparation, conditional synchronization and merge suppression;
+  no matching implementation was identified. This subject search does not
+  establish the contents of every unreachable commit.
+- Queried issue #2342 and all PRs for the exact issue branch using gh.
+  There is no matching PR. The issue contains the original task, assignment,
+  and the initial recovery report, with no recovery patch or commit supplied.
+- Searched local run metadata and patch/diff filenames. The matching run,
+  8bd80d4c-c62b-4fec-aca2-2c118aa728e4, records an interrupted
+  auto-drive-to-merge run rooted at /d0/src/cx-amplihack-rs-2342. Its
+  owned-paths record identifies this worktree and a build target; its runtime
+  directories contain no recoverable files. Other located patch files belong
+  to unrelated issues. The broader filename search encountered an inaccessible
+  systemd directory inside an unrelated run; that directory was not inspected.
+- Recovery remains unresolved. Step 11b explicitly prohibits replacement
+  implementation until recovery is resolved, so the requested production
+  changes and PR delivery cannot proceed. The review's P1/P2 findings remain
+  open; this documentation update does not implement or validate them.
+- No runtime tests, benchmarks, Clippy or hooks were rerun for this
+  documentation-only recovery update. Earlier test failures and the reported
+  toolchain mismatch remain prior-step evidence, not resolved checks.
+- No commit, push, PR creation, merge, auto-merge enablement or real final
+  merge-gate execution was performed. no_merge=true remains in force.
 
 Disposition:
 - Requirement 1 and the first implementation-order item explicitly block
