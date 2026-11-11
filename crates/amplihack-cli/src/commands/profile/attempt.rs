@@ -129,7 +129,8 @@ impl Drop for Signals {
 
 /// Runs attempt `n`. `env` is a profile to switch to and its directory;
 /// `None` keeps the inherited environment.
-pub(crate) fn run_attempt(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_attempt_with_recovery(
     exe: &Path,
     args: &[std::ffi::OsString],
     rerun_dir: &Path,
@@ -137,6 +138,7 @@ pub(crate) fn run_attempt(
     stdin: std::io::Result<Stdio>,
     n: u32,
     signals: &Signals,
+    recovery: Option<&recipe_runner_rs::recovery::ipc::Client>,
 ) -> Result<Attempt> {
     let stdout_path = rerun_dir.join(format!("{}-{n}.out", std::process::id()));
     let mut opts = fs::OpenOptions::new();
@@ -147,6 +149,12 @@ pub(crate) fn run_attempt(
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
     let stdout = opts.open(&stdout_path)?;
     let mut cmd = Command::new(exe);
+    if let Some(client) = recovery {
+        cmd.env(
+            recipe_runner_rs::recovery::ipc::ATTACHMENT_ENV,
+            client.environment()?,
+        );
+    }
     let spawned = stdin.and_then(|input| {
         cmd.args(args)
             .env(SUPERVISED_ENV, "1")

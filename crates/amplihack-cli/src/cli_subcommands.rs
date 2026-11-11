@@ -558,6 +558,9 @@ pub enum ConfigCommands {
 pub enum RecipeCommands {
     /// Run a recipe
     Run {
+        /// Bypass historical recovery for this launch and its delegated recipes.
+        #[arg(long)]
+        fresh: bool,
         /// Recipe path
         recipe_path: String,
         /// Set context variable (key=value)
