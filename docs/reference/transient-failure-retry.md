@@ -164,7 +164,7 @@ the command exits with code `1`. For a usage limit on the first runner attempt:
 For a result with a completed `setup` step and a failed `limited-agent` step,
 the arrays are `["setup"]` and `["limited-agent"]`. These identities describe
 the reported run. A completed-step ID alone does not make that step eligible
-for replay on a later invocation. The [planned durable recovery](#planned-durable-recovery--integration-and-validation-pending)
+for replay on a later invocation. The implemented [durable recipe recovery](#durable-recipe-recovery)
 requires separately validated records.
 
 Here **terminal** means the recipe transport mechanism stops automatic retries.
@@ -183,8 +183,8 @@ marker remains `indeterminate`.
 
 `retryable: false` and `action: "terminal"` describe the transport retry
 decision for this invocation. A usage limit can still be temporary. The
-same-process wait is implemented; durable recipe recovery remains a planned
-integration requirement.
+same-process wait and durable recipe recovery are implemented, with separate
+contracts described below. Upstream session lifecycle remains distinct.
 
 | Mechanism | Trigger and behavior | State retained or reused |
 | --- | --- | --- |

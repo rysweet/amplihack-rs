@@ -1302,7 +1302,7 @@ pub(crate) fn scan_with(
 /// release and starting the process makes that process read as older than
 /// the release, and the release can be removed from under it. A forward step
 /// errs toward keeping. This limit is documented under "Known limits" in
-/// `docs/concepts/versioned-install-layout.md`; the lease in #2185 removes it.
+/// `docs/concepts/versioned-install-layout.md`.
 #[cfg(target_os = "linux")]
 const START_TIME_SLACK: std::time::Duration = std::time::Duration::from_secs(2);
 

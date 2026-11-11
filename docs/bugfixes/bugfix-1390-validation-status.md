@@ -14,7 +14,77 @@ filesystem limitations. They are not final verification. The ordinary push
 is the final delivery gate; its result and matching local/remote/PR head
 receipt are recorded in the [PR description](https://github.com/rysweet/amplihack-rs/pull/2289).
 
-## Current implementation and verification
+## Renewed review integration — 2026-11-11
+
+The step 11b review correction integrates freshly fetched main
+`2951181459e2a7958a4f2ec60aad2c42013982fc` into the existing branch at
+`2b1540d3c61f91f22413f11b7c99eda0543d6859` through a normal merge, preserving
+both parents. The merge had no conflicts. Both stale planned-recovery
+statements in the retry reference now describe implemented durable recipe
+recovery and link to its existing `#durable-recipe-recovery` heading.
+The upstream session-lifecycle distinction and the limits of the controlled
+fixture remain explicit. No production classification, recovery, cleanup,
+or fixture implementation was changed by this correction.
+
+Renewed receipts are separate from all earlier runs under
+`target/review-1390-step11b-renewed/`. The original push log and its digest
+remain unchanged. The following older verification and cleanup comparisons
+are historical evidence at `bf64691d12ea5ce61b0616e65e14fbbdb5e80dda`;
+they do not by themselves verify the renewed integration. The linked PR
+records the final merge commit, hook receipts, fresh main ancestry,
+and matching local, remote branch, and PR heads after normal delivery.
+
+Renewed commands, complete logs and exit receipts are retained as
+`run.sh`, `*.command`, `*.log` and `*.exit` in that directory. The source
+fixture digests are in `source-digests.json`; issue/PR snapshots are retained
+separately. This run uses Rust 1.97.0, four build jobs, an empty
+`RUSTC_WRAPPER`, umask 022, eight configured test threads, and
+`TMPDIR=/tmp/issue-1390-compare-scratch` with the unchanged scratch guard's
+clean `/var/tmp` fallback. The installed pinned runner is explicitly selected
+by `RECIPE_RUNNER_RS_PATH=/home/ryan/.cargo/bin/recipe-runner-rs`.
+`AMPLIHACK_TEST_BINARY` and `RUST_TEST_THREADS` are unset.
+
+Renewed validation on Linux, Rust 1.97.0, after integrating main
+`2951181459e2a7958a4f2ec60aad2c42013982fc`:
+
+- Registered usage-limit CLI tests with `AMPLIHACK_TEST_BINARY` absent: **4 passed**, including both complete behavioral scenarios and both fixture contracts.
+- Failure classification: **52 passed**. Limit patterns: **14 passed**.
+- Resolver fixture suite: **48 passed**. Install-completeness fixture suite: **10 passed**.
+- Formatting, whitespace, recovery heading link, unchanged cleanup-source comparison, and all pre-commit checks (including clippy with warnings denied): passed.
+- Starting branch `99ff1cab9` CLI library comparison: **5,620 passed**, 5 ignored, 975 filtered; the exact cleanup-lock test also passed separately.
+- Integrated main `295118145` CLI library comparison: **5,620 passed**, 5 ignored, 977 filtered; the exact cleanup-lock test also passed separately.
+
+The exact affected commands remain those in the previous table below;
+renewed resolver and install receipts are `resolver.{log,exit}` and
+`install.{log,exit}`. Both CLI scenarios passed all assertions for the full
+reset hint, preserved evidence, matching stdout/stderr diagnostics,
+terminal action on attempt 1, exactly one execution, durable admission and
+finalization, and the launcher boundaries. The fixture SHA-256 remains
+`531e135c5b1d44160daf9b4f28017c91dfd3d2a3204a5a3cec430957b1aacf48`.
+
+The cleanup comparison was renewed sequentially against unchanged starting
+branch `99ff1cab9cd06059f979b18f8fd82d24a7ac02b1` and newly integrated main
+`2951181459e2a7958a4f2ec60aad2c42013982fc`, using their separate existing
+XFS targets, the same scratch base, umask 022 and eight test threads.
+The exact commands and exclusion-file digest are retained with
+`start-{cleanup,library}.*`, `main-{cleanup,library}.*` and
+`exclusions.sha256`. Library commands retain the same configured heavy,
+process and install/update exclusions as the previous comparison. Main adds
+two install tests, accounting for its two additional filtered tests. This is
+not an unfiltered workspace run; the ordinary push remains the workspace
+hook gate. The main-vs-branch cleanup source comparison returned 0.
+The historical cleanup failure remains unexplained: these passing
+comparisons do not reproduce it or establish non-causation. No cleanup
+behavior or protection was changed.
+
+Delivery uses an ordinary merge commit and normal push with hooks enabled.
+Separate `commit.*`, `push.*`, `fetch-final.*`, `ancestry-final.*`,
+`delivery.txt`, `pr-final.json` and `issue-final.json` receipts record their
+actual outcomes, with final log digests in `receipts.sha256`; the linked PR description records the final head and
+required hook result. A freshly fetched `origin/main` must be an ancestor
+before sign-off. PR #2289 and issue #1390 remain open with `Refs #1390`.
+
+## Previous implementation and verification
 
 Starting branch: `99ff1cab9cd06059f979b18f8fd82d24a7ac02b1`.
 Fetched main: `bf64691d12ea5ce61b0616e65e14fbbdb5e80dda`.
@@ -150,7 +220,7 @@ was changed. The final ordinary commit and push run their configured hooks;
 their receipts belong in the linked PR description rather than being
 inferred from these targeted passes.
 
-### Current cleanup comparison
+### Previous cleanup comparison
 
 The original failure is the post-release `Refused(InUse)` shown in the
 preserved log below. Comparable worktrees were created at
@@ -219,7 +289,8 @@ and no cleanup production change or timing-based workaround was added.
 
 ## Contents
 
-- [Current implementation and verification](#current-implementation-and-verification)
+- [Renewed review integration](#renewed-review-integration--2026-11-11)
+- [Previous implementation and verification](#previous-implementation-and-verification)
 - [Review disposition](#review-disposition)
 - [Evidence required before delivery](#evidence-required-before-delivery)
 - [Historical push-log digest and sanitized excerpt](#historical-push-log-digest-and-sanitized-excerpt)
@@ -232,6 +303,10 @@ and no cleanup production change or timing-based workaround was added.
 - [Cleanup attribution](#cleanup-attribution)
 
 ## Review disposition
+
+The renewed integration and validation above supersede the older baseline
+references in these dispositions. Final commit/push outcomes and head
+checks are recorded separately in the linked PR description.
 
 | Review finding | Disposition | Evidence or remaining requirement |
 | --- | --- | --- |
