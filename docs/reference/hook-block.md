@@ -78,8 +78,6 @@ present on disk. See [XPIA](#xpia).
 ## Files that hold the block
 
 | File                                                 | Created by amplihack                    | Kept current by                                                           |
-| ---------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------- |
-| File                                                 | Created by amplihack                    | Kept current by                                                           |
 | ---------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------  |
 | `~/.claude/settings.json`                            | Yes, by `amplihack install` only        | install, update, launch repair, rotator cycle                             |
 | `$CLAUDE_CONFIG_DIR/settings.json`                   | No                                      | launch repair, when `CLAUDE_CONFIG_DIR` is set and the file exists        |
@@ -133,7 +131,7 @@ wording below is an example; only the path and the reason in brackets are
 fixed:
 
 ```text
-warning: /home/you/.claude/settings.json: refused (symlink); hooks not repaired
+amplihack: warning: /home/you/.claude/settings.json could not be used (is a symlink); hook registrations were not checked or repaired. Fix the file, then run `amplihack install`.
 ```
 
 ### Rotator cycle
@@ -279,11 +277,11 @@ Checked in this order. In each case the launch continues without
 | No `amplihack-hooks` binary is found, or its path contains unsafe characters | Nothing written                                  |
 | `$AMPLIHACK_HOME` is not owned by you, or is writable by group or others     | Nothing written                                  |
 | `runtime/` is a symlink, is not owned by you, or cannot be made `0700`       | Nothing written                                  |
+| Writing the file fails                                                       | One warning line                                 |
 
 When the skip is because `$AMPLIHACK_HOME` or `runtime/` is not private, the
 launch prints one warning that names the directory and says it must not be
 group- or other-writable. The other skips are logged at debug level only.
-| Writing the file fails                                                       | One warning line                                 |
 
 A `--settings` that appears after `--` is an argument to something else and
 does not suppress the injection.
@@ -358,7 +356,7 @@ Every read and write of a settings file in this module follows these rules.
 
 | Rule                   | Detail                                                                                |
 | ---------------------- | ------------------------------------------------------------------------------------- |
-| No symlinks            | Opened with `O_NOFOLLOW`; a symlink is `refused (symlink)`                            |
+| No symlinks            | Opened with `O_NOFOLLOW`; a symlink is `refused (is a symlink)`                            |
 | Regular files only     | A FIFO, socket or directory is refused                                                |
 | Size limit             | Files over 1 MiB are refused                                                          |
 | Owner                  | A file not owned by the effective uid is refused                                      |
