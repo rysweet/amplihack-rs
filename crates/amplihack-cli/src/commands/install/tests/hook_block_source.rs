@@ -318,3 +318,62 @@ fn missing_hook_registrations_reports_every_event_for_a_fully_stripped_file() {
         );
     }
 }
+
+// ── S1: only the exact form amplihack writes is amplihack's ────────────────
+
+fn with_stop_command(command: &str) -> Value {
+    json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": command}]}]}})
+}
+
+#[test]
+fn merge_keeps_a_user_wrapper_whose_name_mentions_amplihack_hooks() {
+    for foreign in [
+        "~/bin/my-amplihack-hooks-wrapper stop",
+        "sh -c '/opt/x/amplihack-hooks stop'",
+        "/opt/x/amplihack-hooks --verbose stop",
+        "/opt/x/not-amplihack-hooks stop",
+    ] {
+        let mut s = with_stop_command(foreign);
+        hook_block::merge(&mut s, &target(true));
+        assert!(
+            commands(&s, "Stop").iter().any(|c| c == foreign),
+            "{foreign} was removed: {s}"
+        );
+    }
+}
+
+#[test]
+fn merge_still_replaces_the_forms_amplihack_wrote() {
+    for own in [
+        "\"/opt/amplihack-old/bin/amplihack-hooks\" stop",
+        "/opt/amplihack-old/bin/amplihack-hooks stop",
+        "amplihack-hooks stop",
+        "\"C:\\\\amplihack\\\\amplihack-hooks.exe\" stop",
+        "/home/u/.claude/tools/amplihack/hooks/stop.py",
+    ] {
+        let mut s = with_stop_command(own);
+        hook_block::merge(&mut s, &target(true));
+        let stop = commands(&s, "Stop");
+        assert!(!stop.iter().any(|c| c == own), "{own} was kept: {s}");
+        assert!(stop.iter().any(|c| c.starts_with(&format!("\"{BIN}\""))));
+    }
+}
+
+#[test]
+fn native_subcommand_accepts_only_the_written_form() {
+    assert_eq!(
+        hooks::native_subcommand("\"/a b/amplihack-hooks\" pre-tool-use"),
+        Some("pre-tool-use")
+    );
+    assert_eq!(
+        hooks::native_subcommand("/a/amplihack-hooks stop"),
+        Some("stop")
+    );
+    assert_eq!(hooks::native_subcommand("/a/amplihack-hooks"), None);
+    assert_eq!(hooks::native_subcommand("\"/a/amplihack-hooks\"stop"), None);
+    assert_eq!(
+        hooks::native_subcommand("/a/amplihack-hooks stop now"),
+        None
+    );
+    assert_eq!(hooks::native_subcommand("/a/my-amplihack-hooks stop"), None);
+}

@@ -118,7 +118,9 @@ pub(crate) fn render(report: &Report) -> (bool, String) {
             }
             FileDrift::Absent => "absent".to_string(),
             FileDrift::Unparseable(reason) => format!("unparseable ({reason})"),
-            FileDrift::Refused(reason) => format!("refused ({reason})"),
+            FileDrift::Refused(reason) => {
+                format!("refused ({reason}); replace it with a regular file you own")
+            }
             FileDrift::Drift(d) => format!("drift {}", d.summary()),
         };
         let passes = match r.state {

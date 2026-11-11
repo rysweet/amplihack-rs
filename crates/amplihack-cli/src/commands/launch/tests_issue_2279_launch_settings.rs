@@ -5,7 +5,7 @@
 //!
 //! API this file pins (in `launch::hook_settings` unless noted):
 //! - `LAUNCH_FILE = "runtime/launch-hooks-settings.json"` (relative to AMPLIHACK_HOME)
-//! - `enum Inject { Path(PathBuf), Skip(&'static str) }`
+//! - `enum Inject { Path(PathBuf), NotPrivate, Skip(&'static str) }`
 //! - `struct Inputs<'a> { binary_name, extra_args, proxy, newer_stamp,
 //!    target: Option<&HookTarget>, amplihack_home: &Path }`
 //! - `prepare_with(&Inputs) -> Inject` (pure apart from the file write);
@@ -185,10 +185,10 @@ fn a_group_writable_amplihack_home_is_skipped() {
     fs::set_permissions(home.path(), fs::Permissions::from_mode(0o770)).unwrap();
     let t = target();
     let extra = args(&[]);
-    let Inject::Skip(reason) = prepare_with(&inputs(home.path(), &extra, &t)) else {
-        panic!("expected Skip");
-    };
-    assert!(reason.contains("runtime dir not private"), "{reason}");
+    assert_eq!(
+        prepare_with(&inputs(home.path(), &extra, &t)),
+        Inject::NotPrivate
+    );
     assert!(!home.path().join(LAUNCH_FILE).exists());
 }
 
@@ -199,10 +199,10 @@ fn a_symlinked_runtime_dir_is_skipped_and_its_target_untouched() {
     symlink(elsewhere.path(), home.path().join("runtime")).unwrap();
     let t = target();
     let extra = args(&[]);
-    assert!(matches!(
+    assert_eq!(
         prepare_with(&inputs(home.path(), &extra, &t)),
-        Inject::Skip(_)
-    ));
+        Inject::NotPrivate
+    );
     assert_eq!(fs::read_dir(elsewhere.path()).unwrap().count(), 0);
 }
 

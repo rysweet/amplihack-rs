@@ -170,9 +170,17 @@ The merge changes only `settings["hooks"]`.
   these removals. A wrapper whose `hooks` list was already empty is not
   amplihack's and is kept.
 - **Kept byte-equal and in order:** every wrapper that amplihack does not own.
-  A wrapper is amplihack's only when `is_own_wrapper` matches it against a spec,
-  or its command contains `tools/xpia/hooks/`. A foreign hook such as
-  `block-tmux-kill.py` is kept even when another field mentions amplihack.
+  A hook command is amplihack's only in one of these forms:
+  - a path whose file name is exactly `amplihack-hooks` (or
+    `amplihack-hooks.exe`), quoted or bare, followed by one known subcommand
+    and nothing else, for example `"/home/u/.local/bin/amplihack-hooks" stop`;
+  - a legacy script under `tools/amplihack/hooks/`;
+  - an XPIA script under `tools/xpia/hooks/`.
+
+  A foreign hook such as `block-tmux-kill.py` is kept even when another field
+  mentions amplihack. So is a user's wrapper whose name or arguments mention
+  `amplihack-hooks`, such as `~/bin/my-amplihack-hooks-wrapper stop` or
+  `sh -c '/opt/x/amplihack-hooks stop'`.
 - **Never touched:** `env`, `permissions`, `statusLine` (outside install),
   `model` and every other top-level key.
 
@@ -306,7 +314,7 @@ Each line has the form `<path>: <state>`, where the state is one of:
 | `clean`                                        | The file matches the block                              |
 | `absent`                                       | The file does not exist                                 |
 | `unparseable (<reason>)`                       | Not valid JSON; the reason gives line and column only   |
-| `refused (<reason>)`                           | Not read, for a [file-safety](#file-safety) reason      |
+| `refused (<reason>); replace it with a regular file you own` | Not read, for a [file-safety](#file-safety) reason |
 | `drift missing=[..] differing=[..] extra=[..]` | The file differs from the block; lists hold event names |
 | `absent; repo-local install clean`             | Home file only: absent, and `<cwd>/.claude/settings.json` matches the block |
 

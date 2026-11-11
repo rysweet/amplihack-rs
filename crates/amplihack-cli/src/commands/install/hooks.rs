@@ -114,7 +114,7 @@ pub(super) fn is_own_wrapper(wrapper: &Value, spec: &HookSpec, hook_system: &str
 
     match &spec.cmd {
         HookCommandKind::BinarySubcmd { subcmd } => {
-            (command.contains("amplihack-hooks") && command.ends_with(subcmd))
+            native_subcommand(command) == Some(*subcmd)
                 || legacy_hook_script_name(subcmd).is_some_and(|legacy_name| {
                     ((hook_system == "amplihack" && command.contains("tools/amplihack/hooks/"))
                         || (hook_system == "xpia" && command.contains("tools/xpia/hooks/")))
@@ -122,6 +122,42 @@ pub(super) fn is_own_wrapper(wrapper: &Value, spec: &HookSpec, hook_system: &str
                 })
         }
     }
+}
+
+/// Issue #2279 (S1): the subcommand of a hook command in the exact form
+/// [`build_hook_wrapper`] writes, `"<dir>/amplihack-hooks" <sub>`, or the
+/// same with the path unquoted. The path's file name must be exactly
+/// `amplihack-hooks` (or `amplihack-hooks.exe`) and one token must follow it,
+/// so a user's wrapper script whose name or arguments merely mention
+/// `amplihack-hooks` is never taken for amplihack's own entry.
+pub(super) fn native_subcommand(command: &str) -> Option<&str> {
+    let command = command.trim();
+    let (bin, rest) = match command.strip_prefix('"') {
+        Some(quoted) => {
+            let mut escaped = false;
+            let end = quoted.char_indices().find_map(|(i, c)| {
+                match (escaped, c) {
+                    (true, _) => escaped = false,
+                    (false, '\\') => escaped = true,
+                    (false, '"') => return Some(i),
+                    _ => {}
+                }
+                None
+            })?;
+            let rest = &quoted[end + 1..];
+            if !rest.starts_with(char::is_whitespace) {
+                return None;
+            }
+            (&quoted[..end], rest)
+        }
+        None => command.split_once(char::is_whitespace)?,
+    };
+    let sub = rest.trim();
+    if sub.is_empty() || sub.contains(char::is_whitespace) {
+        return None;
+    }
+    let name = bin.rsplit(['/', '\\']).next()?;
+    matches!(name, "amplihack-hooks" | "amplihack-hooks.exe").then_some(sub)
 }
 
 /// The `amplihack-hooks` subcommand `spec` runs.

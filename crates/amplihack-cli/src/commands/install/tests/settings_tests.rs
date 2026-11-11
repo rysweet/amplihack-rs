@@ -448,6 +448,52 @@ fn ensure_settings_json_reports_a_symlinked_file_without_failing() {
     );
 }
 
+/// Issue #2279 (B4): a hard-linked settings.json is reported the same way,
+/// and neither name of the file is changed.
+#[cfg(unix)]
+#[test]
+fn ensure_settings_json_reports_a_hard_linked_file_without_failing() {
+    use std::os::unix::fs::MetadataExt;
+
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    let other = temp.path().join("dotfiles/settings.json");
+    fs::create_dir_all(other.parent().unwrap()).unwrap();
+    fs::write(&other, b"{}\n").unwrap();
+    let settings_path = temp.path().join(".claude/settings.json");
+    fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+    fs::hard_link(&other, &settings_path).unwrap();
+    let staging_dir = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(&staging_dir).unwrap();
+    let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
+
+    let result =
+        settings::ensure_settings_json(&settings_path, &staging_dir, 99999, &hooks_bin, None);
+
+    crate::test_support::restore_home(previous);
+
+    let (ok, events) = result.expect("a refused file must not fail the install");
+    assert!(!ok, "a refused file is reported as a settings issue");
+    assert!(events.is_empty());
+    assert_eq!(fs::read(&other).unwrap(), b"{}\n");
+    assert_eq!(fs::metadata(&settings_path).unwrap().nlink(), 2);
+    let backups = fs::read_dir(settings_path.parent().unwrap())
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("backup")
+        })
+        .count();
+    assert_eq!(backups, 0, "no backup is written for a refused file");
+}
+
 #[cfg(unix)]
 #[test]
 fn ensure_settings_json_repo_local_backup_is_owner_only() {

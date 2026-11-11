@@ -8,7 +8,7 @@
 //!   profiles sorted by name, then the launch file, then one `Unlisted` per
 //!   source that cannot be located or listed. Read-only.
 //! - `render(&Report) -> (bool, String)`: one line per file,
-//!   `<path>: clean|absent|unparseable (r)|refused (r)|drift missing=[..] differing=[..] extra=[..]`,
+//!   `<path>: clean|absent|unparseable (r)|refused (r); <fix>|drift missing=[..] differing=[..] extra=[..]`,
 //!   and `<source>: cannot list (r)` per unlisted source. Fails when home is
 //!   not clean (an absent home beside a clean repo-local file passes, #1088),
 //!   when any present profile or launch file is not clean, or when a source
@@ -288,4 +288,46 @@ fn test_check_hooks_installed_passes_with_repo_local_hooks_only() {
         &target(),
     ));
     assert!(!ok, "{text}");
+}
+
+// ── B4: a linked home file is one failing row with the fix ────────────────
+
+fn assert_refused_row_with_fix(l: &Layout, target_file: &Path, before: &[u8]) {
+    let (ok, text) = render(&check(&l.home, Source::At(&l.root), Source::At(&l.launch)));
+    assert!(!ok, "{text}");
+    let row = text
+        .lines()
+        .find(|line| line.contains("settings.json: refused ("))
+        .unwrap_or_else(|| panic!("no refused row: {text}"));
+    assert!(
+        row.ends_with("replace it with a regular file you own"),
+        "{row}"
+    );
+    assert!(!text.contains(SECRET), "{text}");
+    assert_eq!(fs::read(target_file).unwrap(), before);
+}
+
+#[test]
+fn a_symlinked_home_file_is_a_failing_row_with_the_fix_and_is_unchanged() {
+    let l = layout();
+    let real = l.home.join("real-settings.json");
+    private(&real, &stripped());
+    std::os::unix::fs::symlink(&real, l.home.join(".claude/settings.json")).unwrap();
+    assert_refused_row_with_fix(&l, &real, &stripped());
+    assert!(
+        fs::symlink_metadata(l.home.join(".claude/settings.json"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
+fn a_hard_linked_home_file_is_a_failing_row_with_the_fix_and_is_unchanged() {
+    let l = layout();
+    let other = l.home.join("other-name.json");
+    private(&other, &stripped());
+    fs::hard_link(&other, l.home.join(".claude/settings.json")).unwrap();
+    assert_refused_row_with_fix(&l, &other, &stripped());
+    assert_eq!(fs::metadata(&other).unwrap().nlink(), 2);
 }

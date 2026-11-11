@@ -29,6 +29,9 @@ pub(crate) fn launch_file_path() -> Option<PathBuf> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Inject {
     Path(PathBuf),
+    /// The amplihack home or `runtime/` is not private (SR-15). The one skip
+    /// the user can fix, so the launch warns about it.
+    NotPrivate,
     Skip(&'static str),
 }
 
@@ -66,7 +69,7 @@ pub(super) fn prepare(binary_name: &str, extra_args: &[String]) -> Inject {
     }
     let proxy = amplihack_utils::litellm_proxy::proxy_requested();
     // An unreadable stamp counts as newer: never write over a newer install.
-    let newer_stamp = !matches!(crate::commands::install::newer_install_stamp(), Ok(None));
+    let newer_stamp = !crate::commands::install::binary_is_current();
     let target = if newer_stamp || proxy || user_passed_settings(extra_args) {
         None
     } else {
@@ -106,12 +109,12 @@ pub(super) fn prepare_with(i: &Inputs<'_>) -> Inject {
         return Inject::Skip("no hooks binary");
     };
     if !home_is_private(i.amplihack_home) {
-        return Inject::Skip("runtime dir not private");
+        return Inject::NotPrivate;
     }
     let path = i.amplihack_home.join(LAUNCH_FILE);
     match write_if_changed(&path, target) {
         Ok(()) => Inject::Path(path),
-        Err(WriteError::NotPrivate) => Inject::Skip("runtime dir not private"),
+        Err(WriteError::NotPrivate) => Inject::NotPrivate,
         Err(WriteError::Io(reason)) => {
             tracing::warn!("launch hooks settings file not written: {reason}");
             eprintln!(

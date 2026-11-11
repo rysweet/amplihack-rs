@@ -387,6 +387,13 @@ pub(crate) fn newer_install_stamp() -> Result<Option<String>> {
         }))
 }
 
+/// Issue #2279: whether this binary may write hooks implicitly, that is, it
+/// is not older than the install stamp. An unreadable stamp counts as newer,
+/// so the answer is `false`. Used by launch, profile seeding and the rotator.
+pub(crate) fn binary_is_current() -> bool {
+    matches!(newer_install_stamp(), Ok(None))
+}
+
 pub(crate) fn ensure_framework_installed() -> Result<()> {
     ensure_framework_installed_with(&mut std::io::stderr())
 }

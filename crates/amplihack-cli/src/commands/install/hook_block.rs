@@ -19,7 +19,7 @@
 
 use super::binary::validate_binary_path;
 use super::hooks::{build_hook_wrapper, ensure_array, ensure_object, is_xpia_command};
-use super::hooks::{legacy_hook_script_name, subcmd_of};
+use super::hooks::{legacy_hook_script_name, native_subcommand, subcmd_of};
 use super::types::{AMPLIHACK_HOOK_SPECS, HookSpec, LIMIT_RESUME_EVENT};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
@@ -55,7 +55,7 @@ pub(crate) fn hook_target() -> Option<HookTarget> {
     let bin = match super::binary::stable_hooks_binary() {
         Ok(bin) => bin,
         Err(error) => {
-            tracing::debug!("no hooks binary, hooks block not written: {error:#}");
+            tracing::info!("no hooks binary, hooks block not written: {error:#}");
             return None;
         }
     };
@@ -227,10 +227,10 @@ fn classify(command: &str) -> Option<Owned> {
     if is_xpia_command(command) {
         return Some(Owned::Unspecified);
     }
-    let last = command.split_whitespace().last();
+    let native = native_subcommand(command);
     for spec in AMPLIHACK_HOOK_SPECS {
         let sub = subcmd_of(spec);
-        if command.contains("amplihack-hooks") && last == Some(sub) {
+        if native == Some(sub) {
             return Some(Owned::Sub(sub));
         }
         if command.contains("tools/amplihack/hooks/")
