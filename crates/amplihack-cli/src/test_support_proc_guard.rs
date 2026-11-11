@@ -43,30 +43,60 @@ struct Guard {
 }
 
 impl<'ast> Visit<'ast> for Guard {
+    fn visit_file(&mut self, node: &'ast syn::File) {
+        self.bind_constants(&node.items);
+        visit::visit_file(self, node);
+    }
+
     fn visit_item_mod(&mut self, node: &'ast syn::ItemMod) {
         let was = self.in_test;
+        let bindings = self.bindings.clone();
         self.in_test |= test_attrs(&node.attrs);
+        if let Some((_, items)) = &node.content {
+            self.bind_constants(items);
+        }
         visit::visit_item_mod(self, node);
         self.in_test = was;
+        self.bindings = bindings;
     }
 
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
         let was = self.in_test;
-        let bindings = std::mem::take(&mut self.bindings);
+        let bindings = self.bindings.clone();
         self.in_test |= test_attrs(&node.attrs);
         visit::visit_item_fn(self, node);
         self.in_test = was;
         self.bindings = bindings;
     }
 
+    fn visit_block(&mut self, node: &'ast syn::Block) {
+        let bindings = self.bindings.clone();
+        self.bind_constants(node.stmts.iter().filter_map(|stmt| match stmt {
+            syn::Stmt::Item(item) => Some(item),
+            _ => None,
+        }));
+        visit::visit_block(self, node);
+        self.bindings = bindings;
+    }
+
     fn visit_local(&mut self, node: &'ast syn::Local) {
-        if let syn::Pat::Ident(name) = &node.pat
+        // A type annotation wraps the identifier in Pat::Type.
+        let mut pat = &node.pat;
+        while let syn::Pat::Type(typed) = pat {
+            pat = &typed.pat;
+        }
+        let binding = if let syn::Pat::Ident(name) = pat
             && let Some(init) = &node.init
         {
-            let paths = self.paths(&init.expr);
-            self.bindings.insert(name.ident.to_string(), paths);
-        }
+            Some((name.ident.to_string(), self.paths(&init.expr)))
+        } else {
+            None
+        };
+        // The initializer still sees the previous binding when shadowing.
         visit::visit_local(self, node);
+        if let Some((name, paths)) = binding {
+            self.bindings.insert(name, paths);
+        }
     }
 
     fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
@@ -119,6 +149,33 @@ impl<'ast> Visit<'ast> for Guard {
 }
 
 impl Guard {
+    fn bind_constants<'a>(&mut self, items: impl IntoIterator<Item = &'a syn::Item>) {
+        let constants: Vec<_> = items
+            .into_iter()
+            .filter_map(|item| match item {
+                syn::Item::Const(item) => Some(item),
+                _ => None,
+            })
+            .collect();
+        // Items are in scope before their declaration, and an alias may
+        // reference a later constant. At most N passes resolve N constants.
+        for item in &constants {
+            self.bindings.insert(item.ident.to_string(), Vec::new());
+        }
+        for _ in 0..constants.len() {
+            let mut changed = false;
+            for item in &constants {
+                let paths = self.paths(&item.expr);
+                let binding = self.bindings.get_mut(&item.ident.to_string()).unwrap();
+                changed |= *binding != paths;
+                *binding = paths;
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
     fn paths(&self, expr: &syn::Expr) -> Vec<String> {
         let mut paths = ReadPaths {
             found: Vec::new(),
@@ -196,6 +253,91 @@ fn lib_tests_do_not_read_foreign_host_processes_directly() {
         "lib tests read the host process table directly:\n{}",
         findings.join("\n")
     );
+}
+
+#[test]
+fn typed_bindings_and_constants_fail_the_lib_guard() {
+    for body in [
+        r#"let root: &str = "/proc"; let _ = std::fs::read_dir(root);"#,
+        r#"let path: PathBuf = PathBuf::from("/proc/1/stat"); let _ = fs::read(path);"#,
+        r#"const ROOT: &str = "/proc"; let _ = std::fs::read_dir(ROOT);"#,
+        r#"let _ = std::fs::read_dir(ROOT); const ROOT: &str = "/proc";"#,
+    ] {
+        let function = format!("fn example() {{ {body} }}");
+        for (src, in_test) in [
+            (function.clone(), true),
+            (format!("#[test] {function}"), false),
+            (format!("#[cfg(test)] mod tests {{ {function} }}"), false),
+        ] {
+            assert_eq!(scan(&src, in_test).len(), 1, "missed {src}");
+        }
+        assert!(scan(&function, false).is_empty());
+    }
+
+    for items in [
+        r#"const ROOT: &str = "/proc";
+           #[test] fn leaks() { let _ = std::fs::read_dir(ROOT); }"#,
+        r#"#[test] fn leaks() { let _ = std::fs::read_dir(ROOT); }
+           const ROOT: &str = "/proc";"#,
+        r#"const ROOT: &str = ALIAS;
+           const ALIAS: &str = "/proc";
+           #[test] fn leaks() {
+               let root: &str = ROOT;
+               let _ = std::fs::read_dir(root);
+           }"#,
+    ] {
+        assert_eq!(scan(items, false), ["/proc"], "missed {items}");
+        assert_eq!(
+            scan(&format!("#[cfg(test)] mod tests {{ {items} }}"), false),
+            ["/proc"],
+            "missed inline module: {items}"
+        );
+    }
+    assert_eq!(
+        scan(
+            r#"const ROOT: &str = "/proc";
+               #[cfg(test)] mod tests {
+                   use super::*;
+                   #[test] fn leaks() { let _ = std::fs::read_dir(ROOT); }
+               }"#,
+            false
+        ),
+        ["/proc"]
+    );
+}
+
+#[test]
+fn bindings_and_constants_respect_scopes() {
+    assert_eq!(
+        scan(
+            r#"const ROOT: &str = "/proc";
+               #[test] fn leaks() {
+                   { let ROOT: &str = "/tmp/fake"; let _ = fs::read_dir(ROOT); }
+                   let _ = fs::read_dir(ROOT);
+               }"#,
+            false
+        ),
+        ["/proc"]
+    );
+    for src in [
+        r#"const ROOT: &str = "/proc";
+           #[test] fn safe() { let ROOT: &str = "/tmp/fake"; let _ = fs::read_dir(ROOT); }"#,
+        r#"const ROOT: &str = "/proc";
+           #[test] fn safe() { let _ = fs::read_dir(ROOT); const ROOT: &str = "/tmp/fake"; }"#,
+        r#"#[test] fn unused() { let root: &str = "/proc"; }
+           #[test] fn safe() { let root: &str = "/tmp/fake"; let _ = fs::read_dir(root); }"#,
+        r#"mod unrelated { const ROOT: &str = "/proc"; }
+           mod sibling {
+               const ROOT: &str = "/tmp/fake";
+               #[test] fn safe() { let _ = fs::read_dir(ROOT); }
+           }"#,
+        r#"const OWN: &str = "/proc/self/stat";
+           #[test] fn safe() { let path: &str = OWN; let _ = fs::read(path); }"#,
+        r#"const ROOT: &str = "/proc";
+           fn production() { let _ = fs::read_dir(ROOT); }"#,
+    ] {
+        assert!(scan(src, false).is_empty(), "unexpected finding: {src}");
+    }
 }
 
 #[test]

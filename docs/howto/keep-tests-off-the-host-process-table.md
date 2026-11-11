@@ -572,10 +572,13 @@ parses every Rust source under `src/`, checks inline `#[cfg(test)]` modules
 and `#[test]` functions, and checks helpers in `tests/`, `tests*.rs`,
 `*_tests.rs` and `test_support*.rs` files. It rejects filesystem reads that
 enumerate a literal `/proc` root or name a literal numeric host pid, even
-when the path is passed through local bindings, `Path` constructors,
+when the path is passed through local bindings (including typed bindings),
+module or block constants, `Path` constructors,
 `format!`, raw strings or an assertion. Pure validation inputs and diagnostic
 strings do not count as reads. The guard's negative samples include
-`fs::read_to_string("/proc/1/stat")` in both inline and separate test code.
+`fs::read_to_string("/proc/1/stat")` in both inline and separate test code,
+typed `let root: &str = "/proc"` bindings, and constant aliases declared
+before or after the test. Bindings follow block scope and shadowing.
 
 This source guard complements the integration guard; its coverage does not
 depend on whether a particular lib test happened to run during a trace.
