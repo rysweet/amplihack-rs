@@ -449,6 +449,8 @@ fn install_stages_every_source_skill_agent_and_command_directory() {
     let workspace = workspace_root();
 
     amplihack_install_command(home.path(), &hooks_bin, workspace)
+        // Asset staging must not inherit the checkout's persisted launcher.
+        .env("AMPLIHACK_AGENT_BINARY", "copilot")
         .assert()
         .success();
 

@@ -184,6 +184,8 @@ impl Sandbox {
             .env_remove("GH_REPO")
             .env_remove("AMPLIHACK_HOME")
             .env_remove("REPO_PATH")
+            .env_remove("AMPLIHACK_WORK_ROOT")
+            .env_remove("AMPLIHACK_WORK_ROOT_EXPLICIT")
     }
 
     fn git_output(&self, dir: &Path, args: &[&str]) -> Output {
