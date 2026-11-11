@@ -212,6 +212,22 @@ steps:
       {{task_description}}
       ----- TASK END -----
 
+      You need none of the auto-drive state files (crusty-round-*.json,
+      merge-ready-round-*.json, phases.tsv); everything you need is in this
+      prompt. If something you expect is absent, report it by name.
+
+      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`,
+      `ugrep -r`, `rg`, `du`) from /, ~, /d0, ~/.amplihack, ~/.claude or any
+      directory outside the PR worktree and the main checkout named above. Every
+      path you need is given here; read only the files named here outside those
+      two checkouts.
+
+      If a named file is missing, report it by name and do not search for it.
+
+      Write scratch files only under `$TMPDIR`
+      (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and
+      remove them by their literal path before the step ends.
+
       Constraints:
       - Do not start an orchestrator, a recipe, a workflow or another agent
         session (#1333). Work directly with your own tools.

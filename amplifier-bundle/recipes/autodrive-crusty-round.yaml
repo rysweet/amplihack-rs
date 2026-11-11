@@ -96,8 +96,17 @@ steps:
       if [ -z "$PR" ]; then
         echo "WARNING: no pull request could be resolved; crusty will review the working diff instead." >&2
       fi
-      printf '{"pr":"%s","head_sha":"%s","resolved_concerns":"%s","round_label":"%s"}\n' \
-        "$PR" "$SHA" "$RESOLVED" "${AUTODRIVE_ROUND_LABEL:-round}"
+      # #2222: the crusty prompts give these skill paths; from the launcher's install only, never the checkout or HOME, with no fallback.
+      # unsafe_path is copied from amplifier-bundle/tools/autodrive_merge_ready_files.sh; keep the two identical.
+      unsafe_path() { case "$1" in *'"'* | *'\'* | *'{{'* | *'}}'*) return 0 ;; esac; [ "$(printf '%s' "$1" | LC_ALL=C tr -d '\040-\176\200-\377'; printf x)" != "x" ]; }
+      clean() { printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177'; }  # a path echoed before it is checked loses its control bytes
+      [ -n "${AUTODRIVE_LAUNCH_TOOLS:-}" ] || { echo "ERROR: crusty-skill-path-not-found: AUTODRIVE_LAUNCH_TOOLS is empty" >&2; exit 1; }
+      SKILLS="/${AUTODRIVE_LAUNCH_TOOLS#/}/../skills"
+      for f in merge-ready/SKILL.md auto-drive-to-merge/SKILL.md; do [ -f "${SKILLS}/$f" ] || { echo "ERROR: crusty-skill-path-not-found: $(clean "${SKILLS}/$f")" >&2; exit 1; }; done
+      MR="$(cd -- "${SKILLS}/merge-ready" 2>/dev/null && pwd -P)" && ADS="$(cd -- "${SKILLS}/auto-drive-to-merge" 2>/dev/null && pwd -P)" || { echo "ERROR: crusty-skill-path-unusable: $(clean "$SKILLS") cannot be entered" >&2; exit 1; }
+      for d in "$MR" "$ADS"; do ! unsafe_path "$d" || { echo "ERROR: crusty-skill-path-unusable: $(clean "$d") holds a quote, backslash, control byte or template braces" >&2; exit 1; }; done
+      printf '{"pr":"%s","head_sha":"%s","resolved_concerns":"%s","round_label":"%s","merge_ready_skill_md":"%s","auto_drive_skill_dir":"%s"}\n' \
+        "$PR" "$SHA" "$RESOLVED" "${AUTODRIVE_ROUND_LABEL:-round}" "${MR}/SKILL.md" "$ADS"
     output: "crusty_round_context"
 
   - id: "step-02-crusty-review"
@@ -118,6 +127,10 @@ steps:
       Do not create, edit, move, rename, delete or archive any file in the
       auto-drive state directory (the directory holding crusty-round-*.json,
       merge-ready-round-*.json and phases.tsv).
+
+      ## Files you need (#2222)
+      The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the concern ids a previous run resolved `{{autodrive_resolved_concerns_file}}`, the merge-ready criteria `{{crusty_round_context.merge_ready_skill_md}}` and the auto-drive-to-merge skill folder `{{crusty_round_context.auto_drive_skill_dir}}`. A path shown as empty was not given to you; do not look for it. If a named file is missing, report it by name and do not search for it.
+      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `ugrep -r`, `rg`, `du`) from /, ~, /d0, ~/.amplihack, ~/.claude or any directory outside the PR worktree and the main checkout named above. Every path you need is given here; read only the files named here outside those two checkouts. Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by their literal path before the step ends.
 
       **Round label:** {{autodrive_round_label}}
       **PR:** {{pr_url}} (#{{crusty_round_context.pr}}) at `{{crusty_round_context.head_sha}}`
@@ -143,37 +156,28 @@ steps:
 
       `{{crusty_round_context.resolved_concerns}}`
 
-      Those were addressed and confirmed clean in an earlier round. Do not
-      re-raise one merely because you would have raised it fresh. Re-raise it
-      only if you have NEW evidence in the current diff that it is not in fact
-      resolved — and say what that evidence is.
+      Those were addressed and confirmed clean in an earlier round. Do not re-raise one merely because you would have raised it fresh. Re-raise it
+      only if you have NEW evidence in the current diff that it is not in fact resolved — and say what that evidence is.
 
       ## What counts as a concern
 
-      Correctness, hidden operational cost, ownership burden, failure modes
-      this change makes likelier, tests that do not test the thing, docs that
-      describe something else, complexity with no payer. Be specific. A vague
-      warning is not a concern and must not be emitted as one.
+      Correctness, hidden operational cost, ownership burden, failure modes this change makes likelier, tests that do not test the thing, docs that
+      describe something else, complexity with no payer. Be specific. A vague warning is not a concern and must not be emitted as one.
 
       ## Output contract (REQUIRED)
 
-      Write your normal review in the skill's usual structure — framing, sharp
-      edges, recommended approach, references. Then, as the **very last thing**
-      you emit, output a single JSON object on its own, with no code fence and
-      no trailing prose:
+      Write your normal review in the skill's usual structure — framing, sharp edges, recommended approach, references. Then, as the **very last
+      thing** you emit, output a single JSON object on its own, with no code fence and no trailing prose:
 
       {"crusty_verdict": "CLEAN" | "CONCERNS", "concerns": [{"id": "<stable-kebab-id>", "severity": "blocking" | "major" | "minor", "summary": "<one line>", "evidence": "<file:line or command output>"}], "summary": "<one line>"}
 
       Rules that decide a phase, so get them right:
 
-      - `CLEAN` means you have **no outstanding concerns at all** on this diff.
-        It is not "nothing blocking". If you would say "one small thing", that
+      - `CLEAN` means you have **no outstanding concerns at all** on this diff. It is not "nothing blocking". If you would say "one small thing", that
         is `CONCERNS`.
-      - `id` must be **stable across rounds** for the same concern, so the loop
-        can tell a recurring concern from a new one. Derive it from the
+      - `id` must be **stable across rounds** for the same concern, so the loop can tell a recurring concern from a new one. Derive it from the
         substance (`silent-fallback-in-ci-status`), never from a round number.
-      - A missing or unreadable verdict is read as `CONCERNS`, never `CLEAN`.
-        Failing safe here means more review, not an unearned advance.
+      - A missing or unreadable verdict is read as `CONCERNS`, never `CLEAN`. Failing safe here means more review, not an unearned advance.
     output: "crusty_review"
 
   - id: "step-02b-review-dir-unchanged"
@@ -263,20 +267,21 @@ steps:
 
       ## What to do
 
-      Work through the `concerns` array. For each one, either fix the cause or
-      — where the concern rests on a mistaken reading — make the code or the
-      docs say plainly what crusty misread, so the next round has the evidence.
-      Neither of those is an argument in a comment thread: the change lands in
-      the tree.
+      Work through the `concerns` array. For each one, either fix the cause or — where the concern rests on a mistaken reading — make the code or the
+      docs say plainly what crusty misread, so the next round has the evidence. Neither of those is an argument in a comment thread: the change lands
+      in the tree.
 
-      Do not paper over a concern. Do not narrow a test until it passes. Do not
-      leave a TODO in place of a fix.
+      Do not paper over a concern. Do not narrow a test until it passes. Do not leave a TODO in place of a fix.
 
       [amplihack:no-merge] Do NOT run "gh pr merge" or call the pulls/<N>/merge API, and do not list merging in requirements or acceptance criteria. Leave the PR open. Auto-drive's merge gate merges it after a Crusty CLEAN and the merge-ready loop; any other merge attempt is refused.
 
       Do not create, edit, move, rename, delete or archive any file in the
       auto-drive state directory (the directory holding crusty-round-*.json,
       merge-ready-round-*.json and phases.tsv).
+
+      ## Files you need (#2222)
+      The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the concern ids a previous run resolved `{{autodrive_resolved_concerns_file}}`, the merge-ready criteria `{{crusty_round_context.merge_ready_skill_md}}` and the auto-drive-to-merge skill folder `{{crusty_round_context.auto_drive_skill_dir}}`. A path shown as empty was not given to you; do not look for it. If a named file is missing, report it by name and do not search for it.
+      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `ugrep -r`, `rg`, `du`) from /, ~, /d0, ~/.amplihack, ~/.claude or any directory outside the PR worktree and the main checkout named above. Every path you need is given here; read only the files named here outside those two checkouts. Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by their literal path before the step ends.
 
       ## Committing
 
@@ -302,16 +307,12 @@ steps:
       git push || { echo "STOP: the push failed (#1528)" >&2; exit 1; }
       ```
 
-      The artifact guard runs before and after staging; if it objects, remove
-      the artifact rather than silencing it. Stage only through the block:
-      never stage ignored files or anything under `worktrees/` (other
-      checkouts; staging one records a gitlink to another checkout, #1528), and
-      never force a path past `.gitignore` or past a guard refusal.
+      The artifact guard runs before and after staging; if it objects, remove the artifact rather than silencing it. Stage only through the block:
+      never stage ignored files or anything under `worktrees/` (other checkouts; staging one records a gitlink to another checkout, #1528), and never
+      force a path past `.gitignore` or past a guard refusal.
 
-      The hooks are the point. If a hook fails, **fix what it is complaining
-      about**. Never reach for a flag that skips them — the pre-tool-use hook
-      blocks it, CI would catch it later, and it is prohibited by this
-      workflow. The same goes for the merge later: no bypass, ever.
+      The hooks are the point. If a hook fails, **fix what it is complaining about**. Never reach for a flag that skips them — the pre-tool-use hook
+      blocks it, CI would catch it later, and it is prohibited by this workflow. The same goes for the merge later: no bypass, ever.
     output: "crusty_fixes"
 
   - id: "step-05-verify-concerns-addressed"

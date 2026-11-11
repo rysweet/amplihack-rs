@@ -3115,10 +3115,14 @@ if [ ! -f "${RESOLVER}" ]; then
 else
   pass "RESOLVER-exists" "the merge-ready file resolver is in amplifier-bundle/tools"
 fi
-mk_skill() { # mk_skill <dir> [no-template]
+mk_skill() { # mk_skill <dir> [no-template|no-auto-drive]: also the sibling auto-drive-to-merge/SKILL.md (#2222)
   mkdir -p "$1"
   printf -- '---\nname: merge-ready\ndisable-model-invocation: true\n---\n\n# criteria from %s\n' "$1" > "$1/SKILL.md"
   [ "${2:-}" = "no-template" ] || printf '## Template\n' > "$1/pr-description-template.md"
+  if [ "${2:-}" != "no-auto-drive" ]; then
+    mkdir -p "$1/../auto-drive-to-merge"
+    printf -- '---\nname: auto-drive-to-merge\n---\n' > "$1/../auto-drive-to-merge/SKILL.md"
+  fi
 }
 RS=""; RS_N=0; RS_RC=0; RS_OUT=""; RS_ERR=""
 rs_tree() { # rs_tree -> RS: home/, ah/, repo/ (a git repo with sub/), plain/ (no git)
@@ -3133,10 +3137,11 @@ rs_run() { # rs_run [VAR=value ...]: runs the resolver from plain/ with HOME=RS/
 }
 rs_field() { printf '%s' "${RS_OUT}" | jq -r --arg k "$1" '.[$k] // "<absent>"' 2>/dev/null; }
 rs_expect_dir() { # rs_expect_dir <label> <dir> <why>
-  local want; want="$(cd "$2" 2>/dev/null && pwd -P)"
+  local want ads; want="$(cd "$2" 2>/dev/null && pwd -P)"; ads="$(cd "$2/../auto-drive-to-merge" 2>/dev/null && pwd -P)"
   if [ "${RS_RC}" -eq 0 ] && [ "$(printf '%s\n' "${RS_OUT}" | grep -c .)" = "1" ] \
-     && printf '%s' "${RS_OUT}" | jq -e 'type == "object" and (keys == ["skill_dir","skill_md","skill_md_sha","template"])' >/dev/null 2>&1 \
+     && printf '%s' "${RS_OUT}" | jq -e 'type == "object" and (keys == ["auto_drive_skill_dir","skill_dir","skill_md","skill_md_sha","template"])' >/dev/null 2>&1 \
      && [ "$(rs_field skill_dir)" = "${want}" ] \
+     && [ -n "${ads}" ] && [ "$(rs_field auto_drive_skill_dir)" = "${ads}" ] \
      && [ "$(rs_field skill_md)" = "${want}/SKILL.md" ] \
      && [ "$(rs_field template)" = "${want}/pr-description-template.md" ] \
      && [ "$(rs_field skill_md_sha)" = "$(git hash-object --no-filters "${want}/SKILL.md")" ] \
@@ -3193,6 +3198,31 @@ if [ -f "${RESOLVER}" ]; then
   rs_run AMPLIHACK_HOME="${RS}/ah"
   rs_expect_error "RESOLVER-template-not-found" "ERROR: merge-ready-template-not-found: ${RS}/ah/amplifier-bundle/skills/merge-ready" \
     "a missing template in the first SKILL.md directory fails; the next directory is not used"
+
+  # Issue #2222: the auto-drive-to-merge folder is the sibling of the chosen
+  # merge-ready folder and nothing else; a missing sibling fails by name.
+  rs_tree
+  mk_skill "${RS}/ah/amplifier-bundle/skills/merge-ready" no-auto-drive
+  mk_skill "${RS}/home/.amplihack/amplifier-bundle/skills/merge-ready"
+  rs_run AMPLIHACK_HOME="${RS}/ah"
+  rs_expect_error "RESOLVER-auto-drive-skill-dir-not-found" "ERROR: auto-drive-skill-dir-not-found:" \
+    "a merge-ready folder without a sibling auto-drive-to-merge fails; another root is not used (#2222)"
+
+  # Issue #2222 (S1): an auto-drive-to-merge SKILL.md from the branch under
+  # review that differs from the base gives a WARNING and still exits 0.
+  rs_tree
+  mk_skill "${RS}/repo/amplifier-bundle/skills/merge-ready"
+  git -C "${RS}/repo" add -A >/dev/null 2>&1
+  git -C "${RS}/repo" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c core.hooksPath= \
+    commit -q -m base >/dev/null 2>&1 || { echo "HARNESS-ERROR: git commit failed" >&2; exit 2; }
+  git -C "${RS}/repo" update-ref refs/remotes/origin/main HEAD
+  printf '# changed on the branch\n' > "${RS}/repo/amplifier-bundle/skills/auto-drive-to-merge/SKILL.md"
+  rs_run REPO_PATH="${RS}/repo"
+  if [ "${RS_RC}" -eq 0 ] && printf '%s' "${RS_ERR}" | grep -qF "WARNING: auto-drive-to-merge skill comes from the branch under review and differs from origin/main"; then
+    pass "RESOLVER-auto-drive-skill-branch-warning" "a changed auto-drive-to-merge skill from the branch under review warns and exits 0 (#2222)"
+  else
+    fail "RESOLVER-auto-drive-skill-branch-warning" "rc=${RS_RC} out=${RS_OUT} err=$(printf '%s' "${RS_ERR}" | tr '\n' ' ')"
+  fi
 
   # Nothing anywhere: the error lists every path searched.
   rs_tree
@@ -5360,7 +5390,7 @@ CTX_OUT=""; CTX_RC=0; CTX_ERR="${WORK_PHYS}/ctx.err"
 ctx_run() { # ctx_run <gh-mode> <gh-head> [VAR=value ...]: FX's HEAD is wherever fx_head left it
   local mode="$1" head="$2"; shift 2
   CTX_OUT="$(env -i HOME="${TEST_HOME}" PATH="${STUB_BIN}:/usr/bin:/bin" REPO_PATH="${FX}" PR_NUMBER=42 \
-    GH_MODE="$mode" GH_HEAD="$head" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@" \
+    AUTODRIVE_LAUNCH_TOOLS="${TOOLS}" GH_MODE="$mode" GH_HEAD="$head" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@" \
     bash -c "${CTX_BODY}" 2>"${CTX_ERR}")"; CTX_RC=$?
 }
 ctx_expect_error() { # ctx_expect_error <label> <ERROR text> <reason text> <why>

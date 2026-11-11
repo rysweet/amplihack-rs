@@ -62,6 +62,8 @@ mod issue_1976_removed_should_publish;
 mod issue_2030_guards;
 #[path = "issue_2030_no_prompt_in_argv.rs"]
 mod issue_2030_no_prompt_in_argv;
+#[path = "issue_2222_prompt_paths.rs"]
+mod issue_2222_prompt_paths;
 
 #[path = "active_agent_binary_default_test.rs"]
 mod active_agent_binary_default;

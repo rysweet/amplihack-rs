@@ -179,6 +179,10 @@ steps:
       auto-drive state directory (the directory holding crusty-round-*.json,
       merge-ready-round-*.json and phases.tsv).
 
+      ## Files you need (#2222)
+      The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the merge-ready criteria `{{merge_ready_files.skill_md}}` and the auto-drive-to-merge skill folder `{{merge_ready_files.auto_drive_skill_dir}}`. A path shown as empty was not given to you; do not look for it. If a named file is missing, report it by name and do not search for it.
+      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `ugrep -r`, `rg`, `du`) from /, ~, /d0, ~/.amplihack, ~/.claude or any directory outside the PR worktree and the main checkout named above. Every path you need is given here; read only the files named here outside those two checkouts. Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by their literal path before the step ends.
+
       ## Where you are (#1528)
 
       You start in the main checkout (`{{review_dir}}`), not the PR worktree (`{{repo_path}}`),
@@ -305,8 +309,7 @@ steps:
       - Crusty loop: `{{crusty_evidence}}`
 
       ## What to do: clear the blockers at their cause
-      - **Failing CI, or a failing suite command** (`qa-command-failed`): read
-        the failing log and fix what it found. Rerun only a job you have
+      - **Failing CI, or a failing suite command** (`qa-command-failed`): read the failing log and fix what it found. Rerun only a job you have
         positively identified as flaky, and say why.
       - **qa-team scenarios** with `gadugi_status` `NO_SCENARIOS`,
         `VALIDATE_FAILED` or `RUN_FAILED`, or tests that miss the changed
@@ -325,33 +328,28 @@ steps:
         nothing there; report `gadugi-scenario-dir-outside-repo`.
       - **`qa-unresolved`**, **`qa-config-invalid`**: operator action, not a code fix: set
         AUTODRIVE_QA_COMMAND or fix/add .amplihack/qa.toml; keep the blocker.
-      - **`gadugi-test-missing`**: only a person can install `gadugi-test`. Do
-        not install, stub or work around it; keep this blocker in your report.
-      - **`quality-audit-convergence-crusty-not-done-clean`**: do not run a
-        quality-audit in its place. Fix any crusty concern still open and keep
+      - **`gadugi-test-missing`**: only a person can install `gadugi-test`. Do not install, stub or work around it; keep this blocker in your report.
+      - **`quality-audit-convergence-crusty-not-done-clean`**: do not run a quality-audit in its place. Fix any crusty concern still open and keep
         this blocker in your report.
-      - **`crusty-review-required`** and **`crusty-range-unreadable`**: do not
-        try to clear them. Before the next round the merge-ready loop sends
-        unreviewed commits to crusty, so every code commit you make costs one
-        crusty run; an unreadable range (a shallow clone, a git error) needs a
+      - **`crusty-review-required`** and **`crusty-range-unreadable`**: do not try to clear them. Before the next round the merge-ready loop sends
+        unreviewed commits to crusty, so every code commit you make costs one crusty run; an unreadable range (a shallow clone, a git error) needs a
         person.
-      - **`approval-pending-other-blockers`**: not a request for a person yet.
-        Clear the other blockers first: failing or pending CI, a conflict, a
-        branch behind its base, unresolved review threads (outdated ones
-        included: `unresolved_threads` counts them). The next round
-        reads the approval again, and only then can it say whether a review
-        is missing.
-      - **`changes-requested`**, **`required-approval-missing`** and
-        **`approval-state-unreadable`**: an agent cannot approve. Fix and
-        answer any requested changes; the approval itself needs a person.
-      - **Merge conflicts, unresolved review threads (outdated ones too),
-        missing docs or evidence**: resolve, answer and resolve, or write them.
+      - **`approval-pending-other-blockers`**: not a request for a person yet. Clear the other blockers first: failing or pending CI, a conflict, a
+        branch behind its base, unresolved review threads (outdated ones included: `unresolved_threads` counts them). The next round reads the
+        approval again, and only then can it say whether a review is missing.
+      - **`changes-requested`**, **`required-approval-missing`** and **`approval-state-unreadable`**: an agent cannot approve. Fix and answer any
+        requested changes; the approval itself needs a person.
+      - **Merge conflicts, unresolved review threads (outdated ones too), missing docs or evidence**: resolve, answer and resolve, or write them.
       - **Running tests or hooks**: export `GIT_TERMINAL_PROMPT=0`, then run each long command as `setsid -w timeout --kill-after=60 <secs> <cmd> </dev/null`, or as `timeout --foreground --kill-after=60 <secs> <cmd> </dev/null` where `setsid` is missing. Plain `timeout` puts the command in a background process group, so a git credential prompt reads the terminal and `SIGTTIN` stops it: nothing fails, and the run waits until it is killed, indefinitely where `timeout` is stopped too (issue #1764).
 
       Do not create, edit, move, rename, delete or archive any file in the
       auto-drive state directory (the directory holding crusty-round-*.json,
       merge-ready-round-*.json and phases.tsv). Do not rewrite history,
       reset, force-push, or edit refs.
+
+      ## Files you need (#2222)
+      The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the merge-ready criteria `{{merge_ready_files.skill_md}}` and the auto-drive-to-merge skill folder `{{merge_ready_files.auto_drive_skill_dir}}`. A path shown as empty was not given to you; do not look for it. If a named file is missing, report it by name and do not search for it.
+      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `ugrep -r`, `rg`, `du`) from /, ~, /d0, ~/.amplihack, ~/.claude or any directory outside the PR worktree and the main checkout named above. Every path you need is given here; read only the files named here outside those two checkouts. Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by their literal path before the step ends.
 
       Commit normally so the repository's hooks run, then push. Run the block below as
       one shell command, exactly as written: each check ends in `exit 1` and stops the rest,

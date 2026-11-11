@@ -1,7 +1,7 @@
 ---
 title: Auto-Drive-Light Recipe
 description: The smaller drive-to-merge recipe for small pull requests, its eligibility rules, escalation to auto-drive-to-merge, the task id its follow-up issues name, and how it shares auto-drive-to-merge's per-finding follow-up model.
-last_updated: 2026-11-08
+last_updated: 2026-11-11
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
@@ -23,6 +23,7 @@ The recipe is `amplifier-bundle/recipes/auto-drive-light.yaml`. It was added for
 - [Running it](#running-it)
 - [Context variables](#context-variables)
 - [Steps](#steps)
+- [Agent paths and state access](#agent-paths-and-state-access)
 - [Eligibility rules](#eligibility-rules)
 - [The eligibility tool](#the-eligibility-tool)
 - [Escalation to auto-drive-to-merge](#escalation-to-auto-drive-to-merge)
@@ -142,7 +143,7 @@ The recipe also fills these values as it runs: `light_base`, `light_task_id`, `b
 
 **Prerequisites (steps 1 to 3).** `light-prereqs` checks that every tool the run loads exists under `$AMPLIHACK_HOME/amplifier-bundle/tools`. The list includes `autodrive_light_eligibility.sh`, `autodrive_finding_rules.sh`, and the follow-up tools `autodrive_followups.sh`, `autodrive_followups_check.sh` and `workflow_issue_tracking.sh`, which the loops load from the same root. `light-task-id` checks `plan_task_id` and works out the effective task id, before any work starts; see [The task id](#the-task-id).
 
-**Build (steps 4 to 10).** The worktree and branch come from `workflow-worktree` and `quick_change_common.sh`, so the branch is named `quick/<issue-or-slug>`. `light-base-pin` records the base commit before the agent runs; that commit is `light_base`. `light-implement` is a single agent session whose prompt carries the quick-change leaf-step constraints and the line `[amplihack:no-merge]`. It never tells the agent to start an orchestrator. `light-qa` runs `qa_command` or `quick_change_checks.sh`; `light-precommit` runs the repository's pre-commit hooks. A failing check stops the run before anything is pushed.
+**Build (steps 4 to 10).** The worktree and branch come from `workflow-worktree` and `quick_change_common.sh`, so the branch is named `quick/<issue-or-slug>`. `light-base-pin` records the base commit before the agent runs; that commit is `light_base`. `light-implement` is a single agent session whose prompt carries the quick-change leaf-step constraints and the line `[amplihack:no-merge]`. It never tells the agent to start an orchestrator. Its prompt already says no auto-drive state files are needed. Naming both absolute checkout locations and using the exact shared search restriction remain planned requirements for #2222. See [Agent paths and state access](#agent-paths-and-state-access). `light-qa` runs `qa_command` or `quick_change_checks.sh`; `light-precommit` runs the repository's pre-commit hooks. A failing check stops the run before anything is pushed.
 
 **PR resolution (step 11).** `light-resolve-pr` writes `build_result` in the same shape as `autodrive-build`, with `pr`, `branch`, `head_sha`, `base_sha` and `state_dir`. For an existing PR it reads `gh pr view` and refuses a PR whose `isCrossRepository` is true (`light-cross-repo`). For an existing PR, `light_base` is the merge base of the PR head and `origin/<baseRefName>`. PR code fetched as `refs/pull/<N>/head` is not checked out, sourced or run before review.
 
@@ -161,6 +162,49 @@ Its output, `light_summary`, is one JSON line:
 ```
 
 The recipe's markdown report shows the list in a "Follow-up issues" row. The list comes from column 2 of `<state>/followups.tsv`, which is read only when it is a regular file, not a symlink, and owned by the current user. Values that do not match `^[0-9]{1,10}$` are dropped, a repeated number is listed once, and the numbers keep the order of the rows. When the file is absent, unsafe or holds no valid number, the value is `none`. The report does not read any other follow-up file.
+
+## Agent paths and state access
+
+**[PLANNED - Implementation Pending]** The #2222 contract requires
+`light-implement` to name the absolute PR worktree and authoritative main
+checkout in its prompt. Currently it names neither location, although the
+session's `working_dir` is `worktree_setup.worktree_path`. The deterministic
+producer for the main-checkout path is not yet implemented. It must resolve
+the main checkout even when the caller's `repo_path` names a linked worktree.
+
+`light-implement` already says it needs none of the auto-drive state files
+(`crusty-round-*.json`, `merge-ready-round-*.json`, `phases.tsv`). Under the
+planned contract, its task and required checkout locations must all arrive in
+the prompt, with no state-file discovery. A missing input must be reported by
+name without searching for a replacement. Deterministic steps own state
+records; the agent must not create, edit, move, rename, delete or archive them.
+
+The prompt must include the exact
+[shared search restriction](auto-drive-to-merge.md#paths-the-agent-prompts-give)
+on its own line. Its existing wording differs from that sentence. Source
+searches must remain bounded by the two named checkouts and the step's role.
+Scratch files must go under `$TMPDIR` and be removed by their literal paths
+before the step ends. This guidance is a prompt instruction, not a filesystem
+sandbox.
+
+The later Crusty and merge-ready agents must receive exact absolute state-file
+paths and earlier findings through the shared loop context. The evaluator
+must receive evidence in context and need no state files. The
+[driver's planned path-resolution contract](auto-drive-to-merge.md#state-directory-path-resolution)
+applies to those loops: canonicalization of relative `--state-dir` values is
+not implemented. The recipe's `autodrive_state_dir` input still requires an
+absolute path.
+
+**[PLANNED - Validation Pending]** The
+[prompt-path regression contract](auto-drive-to-merge.md#prompt-path-regression-contract)
+must include `light-implement`, even though it is conditional and needs no
+state files. Existing tests use a fixed six-prompt inventory, synthetic
+absolute paths and whitespace-normalized assertions; they do not validate
+context captured from the actual driver. Required coverage must check both
+checkout locations, the exact restriction line, explicit no-state/no-discovery
+guidance and state ownership. Local prompt rendering and driver/helper
+subprocess checks do not establish external recipe-runner coverage. Reconcile
+this section with verified behavior once implementation and validation exist.
 
 ## Eligibility rules
 
