@@ -799,7 +799,6 @@ fn a_pending_journal_means_no_read_and_no_move() {
     let f = fx(true, false);
     f.suspected();
     f.rs.save_journal(&RotateJournal {
-        warning_transaction: None,
         version: 1,
         from: C.into(),
         to: M.into(),

@@ -69,8 +69,6 @@ pub enum Op {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Journal {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub warning_transaction: Option<String>,
     pub version: u32,
     pub op: Op,
     /// The directory whose live login changes.
@@ -257,9 +255,6 @@ impl State {
         let j: Journal = serde_json::from_slice(&raw)
             .map_err(|e| invariant(format!("{DIR}/journal.json: {}", parse_position(&e))))?;
         if j.version != VERSION
-            || j.warning_transaction
-                .as_deref()
-                .is_some_and(|id| !amplihack_utils::organisation_affinity::valid_id(id))
             || ProfileName::parse(&j.dir).is_err()
             || ProfileName::parse(&j.from).is_err()
             || ProfileName::parse(&j.to).is_err()

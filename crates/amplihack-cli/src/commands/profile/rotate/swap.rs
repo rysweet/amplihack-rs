@@ -104,13 +104,10 @@ pub fn swap(
             budget: &budget,
         },
         None,
-        None,
     )
 }
 
-/// Shared swap checked against the accepted snapshot (None in legacy unit
-/// primitives). `warning_transaction` links an advisory warning intent
-/// (#2136) from the journal; `None` when there is none.
+/// Shared swap checked against the accepted snapshot (None in legacy unit primitives).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn swap_with(
     store: &ProfileStore,
@@ -121,7 +118,6 @@ pub(super) fn swap_with(
     now: i64,
     reader: Reader<'_>,
     basis: Option<&super::observe::Snap>,
-    warning_transaction: Option<&str>,
 ) -> Result<ProfileName, ProfileError> {
     check_root_private(store.root()).map_err(|e| refused(format!("profile root {e}")))?;
     let dot = check_home(home)?;
@@ -216,7 +212,6 @@ pub(super) fn swap_with(
             Source::Adopt => (adopt(store, auth.outgoing.account())?, true),
         };
         let j = RotateJournal {
-            warning_transaction: warning_transaction.map(str::to_owned),
             from: from.to_string(),
             to: to.to_string(),
             adopt,
@@ -331,7 +326,6 @@ fn abandon(
         eprintln!("warning: the abandoned swap's journal was not updated: {e}");
         release_locks(store, home, &held);
     }
-    super::observe::affinity::abort_warning(store, j);
     if let Err(e) = rs.delete_journal() {
         eprintln!("warning: the abandoned swap's journal was not removed: {e}");
         return err;

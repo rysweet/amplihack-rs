@@ -31,8 +31,6 @@ impl Phase {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RotateJournal {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub warning_transaction: Option<String>,
     pub version: u32,
     pub from: String,
     pub to: String,

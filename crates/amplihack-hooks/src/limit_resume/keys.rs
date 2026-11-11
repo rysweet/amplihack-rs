@@ -34,7 +34,6 @@ pub enum Key {
     LiteralContinue,
     LiteralCrossing,
     LiteralUnresolved,
-    LiteralMixed,
     /// `Enter`: submits the line.
     Enter,
 }
@@ -105,17 +104,6 @@ pub fn argv(pane: &Pane, key: Key) -> Vec<String> {
         Key::Escape => a.push("Escape".into()),
         Key::ClearLine => a.push("C-u".into()),
         Key::LiteralContinue => a.extend(["-l".to_string(), "continue".to_string()]),
-        Key::LiteralMixed => {
-            use amplihack_utils::organisation_affinity::Affinity;
-            a.extend([
-                "-l".to_string(),
-                format!(
-                    "{} {} Continue.",
-                    Affinity::Crossing.warning().unwrap_or_default(),
-                    Affinity::Unresolved.warning().unwrap_or_default()
-                ),
-            ]);
-        }
         Key::LiteralCrossing | Key::LiteralUnresolved => {
             let affinity = if key == Key::LiteralCrossing {
                 amplihack_utils::organisation_affinity::Affinity::Crossing

@@ -1,6 +1,6 @@
 ---
 title: Profile Organisation Affinity
-description: Organisation restrictions and durable session warnings for automatic login swaps.
+description: Organisation restrictions and session warnings for automatic login swaps.
 doc_type: reference
 review_schedule: as-needed
 ---
@@ -23,9 +23,8 @@ to the existing [profile rules](profile-command.md); it grants no swap authority
 - [Selection rules](#selection-rules)
 - [Configuration and operator commands](#configuration-and-operator-commands)
 - [Warnings](#warnings)
-- [Durable event contract](#durable-event-contract)
-- [Session delivery contract](#session-delivery-contract)
-- [Storage and recovery](#storage-and-recovery)
+- [Swap record](#swap-record)
+- [Session delivery](#session-delivery)
 - [Compatibility and platform limits](#compatibility-and-platform-limits)
 
 ## Organisation identity
@@ -122,182 +121,97 @@ The existing operator commands remain the entry points:
 
 | Command | Relevant behavior |
 | --- | --- |
-| `amplihack profile rotate --dry-run` | Previews selection under the affinity policy without moving a login or publishing a completed warning event |
-| `amplihack profile rotate` | Applies the policy and records completed swaps |
-| `amplihack profile rotate status` | Reports confirmed crossings and unresolved risks for operator inspection |
-| `amplihack profile auto-switch status` | Reports auto-switch affinity outcomes without waking sessions |
+| `amplihack profile rotate --dry-run` | Previews selection under the affinity policy without moving a login or writing a swap record |
+| `amplihack profile rotate` | Applies the policy, writes the warning to the rotate log and records the organisation outcome in the swap record |
+| `amplihack profile rotate status` | Prints the last swap's warning (`last swap: ...`) when that swap was a crossing or unresolved |
+| `amplihack profile auto-switch` | Applies the policy and prints the warning on its stderr when a swap it makes is a crossing or unresolved |
 
 For setup and command examples, see [Rotate Claude Logins](../howto/claude-profile-rotation.md)
 and [Switch Accounts Automatically](../howto/claude-profiles.md#switch-accounts-automatically).
 
 ## Warnings
 
-Rotate logs, operator status and session delivery use the same distinction:
+Rotate logs, `rotate status` and session delivery use the same text:
 
 | Outcome | Warning text |
 | --- | --- |
-| Crossing | Organisation crossing: earlier thinking becomes unavailable on the next turn. The visible conversation remains available and the session can continue. |
-| Unresolved | Organisation affinity is unresolved: earlier thinking may become unavailable on the next turn. The visible conversation remains available and the session can continue. |
-| Same | No cross-organisation thinking-loss warning |
+| Crossing | Cross-organisation swap: earlier thinking becomes unavailable on the next turn. The visible conversation remains and the session can continue. |
+| Unresolved | Organisation affinity is unresolved: earlier thinking may become unavailable on the next turn. The visible conversation remains and the session can continue. |
+| Same | None |
 
-Diagnostics identify the swap event and producer, distinguishing rotator from
-auto-switch activity. Metadata displayed in terminals is escaped. Warning
-records contain no credentials, tokens or conversation content.
+Warnings contain no credentials, tokens, organisation IDs or conversation
+content.
 
-## Durable event contract
+## Swap record
 
-Completed swaps record source and destination organisation IDs, an explicit
-Same, Crossing or Unresolved outcome, and sufficient event identity and scope
-to deliver warnings independently to affected sessions. Event records include:
+The rotator's swap record (`<profile-root>/.auto-switch.d/rotate/swap.json`,
+see [profile-command](profile-command.md)) carries three fields for this
+feature:
 
-- A supported schema version and synchronized, monotonically ordered event ID.
-- The producer and final swap reason.
-- Source and destination organisation IDs, with unknown values represented explicitly.
-- Affinity consistent with those IDs.
-- The canonical profile root and affected registered session identities.
+| Field | Meaning |
+| --- | --- |
+| `from_org` | The outgoing login's organisation ID, or absent when unknown |
+| `to_org` | The incoming login's organisation ID, or absent when unknown |
+| `affinity` | `same`, `crossing` or `unresolved`, derived from the two IDs |
 
-The completed event history is separate from the latest rotator resume signal.
-A single overwritten latest-swap record is not sufficient warning storage.
-For example, Crossing event 41 followed by Same event 42 leaves event 41
-pending for every affected session that has not consumed it.
+A record whose `affinity` disagrees with its IDs, or whose IDs are not valid,
+is rejected as a whole. The record is overwritten by each swap; it describes
+the latest swap only. The rotate log keeps the history.
 
-This is an internal persistence contract, not a public file-editing API.
-Record versions, sizes, collection bounds, ordering, producer, reason, scope
-and affinity consistency are validated before use.
+## Session delivery
 
-## Session delivery contract
+The warning reaches a session through the `limit-resume` hook, with the
+resume that follows the swap. When the hook decides to resume a stopped
+session, it reads the organisation outcome from the swap record that woke
+it, and from nothing else:
 
-Trusted lifecycle registration binds a session identity to its canonical
-profile root before a relevant swap can be missed. Registration coordinates
-its initial event position with publication. Caller-supplied identifiers alone
-cannot register a session, read another session's warnings or advance its cursor.
+- On the exit-2 wake, the hook writes the warning on stderr, on the line
+  before the resume message. Claude Code passes exit-2 stderr to the
+  session.
+- On the tmux route, the warning text replaces the word `continue` in the
+  keys it sends, followed by `Continue.`
 
-At the next limit-resume handling that reaches the session, each affected
-session receives pending warnings in event order, either in the tmux resume keys
-or in the hook's stderr on an exit-2 wake. Claude Code passes hook stderr to the
-session only on exit 2; on exit 0 it reaches the operator at most. Every other
-outcome (rotator down, auto-switch off, guard failure, no swap to resume onto,
-failed tmux keys) still writes the warnings to stderr for the operator and
-leaves them pending for a later stop. Immediate
-interruption of every running session is not required. Auto-switch scopes its
-events to affected sessions; it does not manufacture rotator resume records or
-wake unrelated sessions.
+A stop that does not end in a resume (rotator down, auto-switch off, no swap
+with room, the session moved on) gets no warning. A session that keeps
+running through a swap is not told by the hook; the swap is in the rotate log
+and `rotate status`, and Claude Code shows its own notice when it cannot use
+thinking from another organisation.
 
-Warning delivery does not alter `judge()` or existing resume authorisation.
-The tmux route preserves safe argument and key handling and never interpolates
-metadata into shell commands.
+The hook keeps no per-session warning state. Each call decides from the swap
+record alone, so delivery does not depend on which process is the hook's
+parent. Claude Code runs hook commands through `/bin/sh -c`; where `/bin/sh`
+is dash, the shell does not `exec` the command, and the hook's parent is the
+short-lived shell, not the Claude Code process. A design that identified the
+session by the hook's parent would lose its state when the shell exits. The
+test `shell_wrapped_hook_delivers_the_warning_from_the_swap_record_alone`
+(`bins/amplihack-hooks/tests/limit_resume_binary.rs`) runs the real binary
+through `/bin/sh -c` twice to cover this.
 
-Each session has an independent, monotonic consumption cursor. Only a
-successfully handled prefix can be acknowledged, after successful delivery to
-the session. Failed delivery, and output the session does not read, leaves
-warnings pending. If delivery succeeds but cursor
-persistence fails, delivery may repeat: the guarantee is at least once.
+The same shell wrapper means the tmux route's pane check, which compares the
+pane's terminal with the hook parent's standard input, does not match on
+such hosts, and the hook falls back to the exit-2 wake. That behaviour
+predates this feature; the warning goes out on whichever route the resume
+takes.
 
-History needed by an unconsumed registered session is retained. A later swap,
-another session's acknowledgment or retention maintenance cannot discard it.
-Corrupt or unsupported committed records are reported explicitly; consumption
-and retention never silently skip past them.
+Warning delivery does not change `judge()` or resume authorisation. A
+failure to write the warning to stderr still exits 2. The tmux route sends
+the fixed warning text with `send-keys -l` and never puts record contents
+into a command.
 
-## Storage and recovery
-
-The private journal lives at `<profile-root>/.swap-warning-history/journal.json`.
-Its directory has mode 0700 and its files have mode 0600. One kernel file lock
-serializes registration, intent persistence, publication, acknowledgment and
-retention; callers take the existing swap lock before the journal lock.
-Journal writes use an atomic rename and directory synchronization. Reads reject
-unsafe files, unsupported events, inconsistent affinity and corrupt state.
-
-Event IDs increase under that lock. Transaction identities correlate intents
-with the existing swap journal: rotator identities include its process, recorded
-start and credential inodes; auto-switch identities include its process,
-recorded start, host and source/destination login names. Start timestamps are
-correlation data, not a delivery clock or a recovery timeout. Publication runs
-in the verified completion path before the transaction journal is removed, so
-the same recovery path can repeat publication safely after a failure.
-Both swap journals retain an explicit warning reference; a credential refresh
-between selection and exchange cannot disconnect the intent from recovery.
-
-Lifecycle identities combine the hook parent's kernel PID and process birth
-identity with the session ID. macOS reads process birth metadata through
-`proc_pidinfo`; Linux reads the process's start field from `/proc`. A reused PID
-does not inherit a previous process's cursor. The canonical configuration
-directory distinguishes home sessions from sessions in a named profile.
-
-The journal is bounded to 8 MiB. Reaching that bound refuses the new warning
-intent rather than discarding warnings already recorded; the swap itself goes
-ahead (see [Warnings are advisory](#warnings-are-advisory)). Required history and
-ambiguous intents are retained; long-lived unconsumed sessions can therefore
-require operator attention. Completion identities are retained while authoritative recovery journals can reference them for idempotence.
-
-State uses owner-private directories (0700) and files (0600), secure temporary
-creation, atomic publication and filesystem synchronization. Unsafe ownership,
-symlink traversal, unexpected file types and unsafe parent directories are
-rejected. One consistent lock order coordinates execution, registration,
-event allocation, publication, cursor updates and retention.
-
-A private durable intent is written before login mutation. Pending intents
-are not deliverable events. Recovery publishes them only when authoritative transaction evidence
-proves completion; ambiguous recovery retains evidence and reports the
-inconsistency.
-
-### Warnings are advisory
-
-The swap is the job; the warning tells live sessions about it. No failure of
-the warning journal stops or undoes a swap:
-
-- If the intent cannot be written before the move (journal full, unsafe
-  directory, unreadable transaction journal), the producer reports it on
-  stderr and swaps without a session warning. The swap record and the rotate
-  log still record the organisation outcome.
-- If publication fails after the move, the producer reports it and finishes
-  the swap normally; the transaction journal is removed as for any completed
-  swap.
-- If an aborted swap's intent cannot be dropped, the producer reports it.
-  The intent is never delivered, since only completed transactions publish
-  events.
+Auto-switch does not write the rotator's swap record and does not wake
+sessions. It prints the warning on its own stderr when it makes a crossing
+or unresolved swap.
 
 ## Compatibility and platform limits
 
 Legacy swap records remain readable. Absent organisation fields mean unknown
-historical information. A legacy record alone produces neither a new confirmed
-crossing nor a thinking-loss warning. New records explicitly classify affinity;
-they do not infer a crossing from absent legacy fields.
+historical information, and a record without an `affinity` field produces no
+warning. New records always carry `affinity`.
 
-Affinity and durable delivery do not remove existing platform restrictions on
-rotation or session discovery. See the rotation guide's [limits](../howto/claude-profile-rotation.md#limits).
-Linux-specific process discovery and resume mechanisms retain their Linux
-requirements. Durability depends on supported filesystem flushing and directory
-synchronization. Earlier thinking restoration and measurement of subsequent
-work quality are outside this feature's contract.
-
-## Warning failure isolation and retention
-
-Scoped warnings are delivered on limit handling even when the rotator is down.
-Warning registration, reading, delivery, and acknowledgement failures do not
-change resume authorization. A committed exit-2 wake remains exit 2 when stderr
-fails. Sent tmux keys, or stderr written on an exit-2 wake, acknowledge only the
-captured warning prefix; failed delivery and exit-0 stderr leave warnings
-pending. Persisted-record parse errors
-use fixed diagnostics without record contents.
-
-Every journal write compacts consumed and non-warning events before enforcing
-the 8 MiB bound. Outstanding warnings and unresolved intents remain durable.
-Before a producer prepares its next intent, it retires completed identities
-and pending intents that neither authoritative swap journal references. It does
-this under the swap lock that the rotator and auto-switch share, so no live swap
-can be between writing its intent and writing its journal. Unreadable recovery
-journals prevent retirement. This reclaims evidence left by a crash after
-recovery journal deletion, and intents left by a crash before the journal was
-written, without an age cutoff or a background service.
-
-### Lifecycle retention
-
-On journal writes, registrations are retired only when kernel process metadata
-proves the process exited or its PID has been reused. Permission errors and
-other unresolved process lookups retain the registration. Pending transaction
-scopes remain intact until the transaction is resolved. Consumed events and
-warnings whose registered processes have demonstrably ended are compacted.
-No timer or age cutoff authorizes deletion.
+Affinity does not remove existing platform restrictions on rotation or
+session discovery. See the rotation guide's [limits](../howto/claude-profile-rotation.md#limits).
+Waiting for a swap and the tmux route are Linux-only. Restoring earlier
+thinking and measuring the quality of later work are outside this feature.
 
 ### Selection rationale
 
@@ -307,24 +221,3 @@ does not introduce a second percentage limit. Same-organisation room above a
 threshold cannot hide a different organisation's eligible capacity relief.
 When no strict relief target is selected, existing plan-room policy can still
 choose an eligible, confirmed same-organisation target with room.
-
-### Validation and platform limits
-
-Deterministic regressions use temporary fake profiles and injected events for
-organisation selection, threshold boundaries, unknown metadata, legacy records,
-intervening swaps, delivery scope and kernel lifecycle retention. They do not
-need a live Claude session or real profile roots.
-
-Linux process discovery, FIFO and live resume integration remain Linux-specific
-and require CI validation. macOS can validate the shared affinity policy,
-warning history, injected delivery routes and CLI library tests. Full workspace
-validation can encounter existing macOS-only integration compilation failures;
-such failures are not passing evidence for the affected checks. Hook validation
-must run without bypasses for the final revision before release.
-
-An abrupt process exit between persisting a warning intent and linking it from
-the producer's transaction journal leaves an orphan intent. Ordinary verified
-failure and rollback paths abort their scoped intent. An orphan intent is never
-deliverable, because only recovery through a journal publishes an intent, so the
-next producer's preparation clears it under the shared swap lock, together with
-its hold on the sessions it scoped.

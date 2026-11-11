@@ -119,24 +119,10 @@ fn fail(state: &State, j: &mut Journal, e: MoveError, undo: &[(&Path, &Path)]) -
         MoveError::Other(msg) => msg,
         MoveError::Exists => unreachable!("handled above"),
     };
-    abort_warning(state, j);
     if let Err(err) = state.delete_journal() {
         msg.push_str(&format!("; could not delete the journal: {err}"));
     }
     invariant(msg)
-}
-
-fn abort_warning(state: &State, j: &Journal) {
-    if let Some(tx) = &j.warning_transaction {
-        super::super::swap_warning::abort(
-            &state.root,
-            tx,
-            "auto-switch",
-            &format!("profile:{}", j.dir),
-            &j.from,
-            &j.to,
-        );
-    }
 }
 
 fn mark_disabled(state: &State, dir: &str) -> Result<(), ProfileError> {
@@ -166,16 +152,6 @@ fn finish(state: &State, ledger: &mut Ledger, j: &Journal) -> Result<(), Profile
     }
     state.save_ledger(ledger)?;
     patch_oauth_account(state, &j.dir, &j.to);
-    if let Some(transaction) = &j.warning_transaction {
-        super::super::swap_warning::complete(
-            &state.root,
-            transaction,
-            "auto-switch",
-            &format!("profile:{}", j.dir),
-            &j.from,
-            &j.to,
-        );
-    }
     Ok(())
 }
 
@@ -370,9 +346,6 @@ fn resolve_journal(state: &State, ledger: &mut Ledger, j: &Journal) -> Result<bo
         return Err(ambiguous());
     }
     release_refresh_lock(state, &j.dir, j.refresh_lock_ino);
-    if !forward {
-        abort_warning(state, j);
-    }
     state.delete_journal()?;
     Ok(forward)
 }
@@ -401,7 +374,6 @@ fn return_dir(
         return Ok(());
     }
     let j = Journal {
-        warning_transaction: None,
         version: 1,
         op: Op::Return,
         dir: dir.to_string(),
@@ -600,8 +572,7 @@ pub fn swap_check(
         CheckNote::NoSpendBlock,
     );
     per_token::record(&state.root, reason.as_deref());
-    let mut j = Journal {
-        warning_transaction: None,
+    let j = Journal {
         version: 1,
         op: Op::Swap,
         dir: owner.to_string(),
@@ -614,53 +585,18 @@ pub fn swap_check(
         fingerprint: Some(usage::fingerprint(rl)),
         refresh_lock_ino: Some(ino),
     };
-    let transaction =
-        super::super::swap_warning::auto_key(j.pid, j.started_at, &j.dir, &j.from, &j.to);
     // The organisations this decision used must still hold before the
     // move: a record rewritten in between could turn the swap into a
     // crossing the policy refused. Two record reads, not a fresh selection.
     let unchanged = super::super::organisation::resolve(state, &ledger, owner.as_str())
         == source_org
         && super::super::organisation::resolve_login(state, target.as_str()) == target_org;
-    let mut prepared = false;
     let result = if unchanged {
-        // Advisory (#2136): a warning journal that cannot take the intent
-        // never stops the swap; `prepare` reports why and returns `None`.
-        j.warning_transaction = super::super::swap_warning::prepare(
-            &state.root,
-            &transaction,
-            "auto-switch",
-            if necessary {
-                if leaving_overflow {
-                    "overflow-out"
-                } else {
-                    "threshold"
-                }
-            } else {
-                "upgrade"
-            },
-            &format!("profile:{}", j.dir),
-            &j.from,
-            &j.to,
-            source_org.as_deref(),
-            target_org.as_deref(),
-        );
-        prepared = j.warning_transaction.is_some();
         transfer(state, &mut ledger, j)
     } else {
         Err(invariant("organisation affinity changed before swap"))
     };
     release_refresh_lock(state, owner.as_str(), Some(ino));
-    if prepared && result.is_err() && state.load_journal()?.is_none() {
-        super::super::swap_warning::abort(
-            &state.root,
-            &transaction,
-            "auto-switch",
-            &format!("profile:{}", owner),
-            &current,
-            target.as_str(),
-        );
-    }
     result?;
     if let Some(warning) = amplihack_utils::organisation_affinity::Affinity::between(
         source_org.as_deref(),

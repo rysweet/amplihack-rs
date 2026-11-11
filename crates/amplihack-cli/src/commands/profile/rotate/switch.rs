@@ -167,7 +167,6 @@ pub(super) fn switch_in(
                 now(),
                 ctx.identity_reader(),
                 Some(&first),
-                None,
             ) {
                 Ok(from) => from,
                 // A swap refusal changes nothing (see `swap::swap`).

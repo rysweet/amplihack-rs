@@ -94,7 +94,6 @@ pub(super) fn recover_with(
             ));
         }
         drop_locks(store, rs, home, &mut j)?;
-        super::observe::affinity::abort_warning(store, &j);
         rs.delete_journal()?;
         return Ok(RecoverOutcome::RolledBack { from, to });
     }
@@ -118,7 +117,6 @@ pub(super) fn recover_with(
     let (at_t, at_s) = (ino_at(&t), ino_at(&s));
     if at_t == Some(j.target_ino) && at_s.is_none() {
         drop_locks(store, rs, home, &mut j)?;
-        super::observe::affinity::abort_warning(store, &j);
         rs.delete_journal()?;
         remove_unused_adoption(store, &j);
         return Ok(RecoverOutcome::RolledBack { from, to });

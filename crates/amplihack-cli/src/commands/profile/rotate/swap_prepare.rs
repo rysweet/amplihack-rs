@@ -18,7 +18,6 @@ pub(super) fn begin(
         Source::Adopt => adoption_name(store)?,
     };
     let mut j = RotateJournal {
-        warning_transaction: None,
         version: 1,
         from: name.to_string(),
         to: to.to_string(),

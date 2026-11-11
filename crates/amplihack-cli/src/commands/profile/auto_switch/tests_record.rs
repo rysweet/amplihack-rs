@@ -133,7 +133,6 @@ fn a_held_lock_means_busy_and_nothing_is_written() {
 fn a_swap_journal_skips_recording_and_is_left_alone() {
     let r = root(true);
     let journal = Journal {
-        warning_transaction: None,
         version: 1,
         op: Op::Swap,
         dir: "a".into(),

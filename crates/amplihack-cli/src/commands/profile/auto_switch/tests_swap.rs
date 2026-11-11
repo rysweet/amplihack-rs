@@ -25,7 +25,6 @@ fn root() -> Root {
 
 fn journal() -> Journal {
     Journal {
-        warning_transaction: None,
         version: 1,
         op: Op::Swap,
         dir: "X".into(),
@@ -38,38 +37,6 @@ fn journal() -> Journal {
         fingerprint: None,
         refresh_lock_ino: None,
     }
-}
-
-#[test]
-fn verified_failed_swap_aborts_warning_before_removing_its_journal() {
-    let r = root();
-    let mut j = journal();
-    j.warning_transaction = Some("aborted-swap".into());
-    crate::commands::profile::swap_warning::prepare(
-        &r.state.root,
-        "aborted-swap",
-        "auto-switch",
-        "threshold",
-        "profile:X",
-        "X",
-        "Y",
-        Some("a"),
-        Some("b"),
-    )
-    .unwrap();
-    r.state.save_journal(&j).unwrap();
-    let error = fail(
-        &r.state,
-        &mut j,
-        MoveError::Other("injected failure".into()),
-        &[],
-    );
-    assert!(error.to_string().contains("injected failure"));
-    assert!(r.state.load_journal().unwrap().is_none());
-    let raw = fs::read(r.state.root.join(".swap-warning-history/journal.json")).unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-    assert_eq!(value["pending"], serde_json::json!({}));
-    assert_eq!(value["events"], serde_json::json!([]));
 }
 
 /// Permission bits do not stop root, so these tests need an ordinary user.

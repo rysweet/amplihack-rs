@@ -210,30 +210,6 @@ fn unknown_organisation_on_overflow_returns_to_the_recovered_plan_login() {
     }
 }
 
-/// Crusty round 1 on #2295: the warning journal is advisory. A journal
-/// that cannot be read never stops capacity relief off an exhausted login.
-#[test]
-fn a_corrupt_warning_journal_does_not_stop_capacity_relief() {
-    use std::os::unix::fs::PermissionsExt;
-    let e = fixture(json!("org-a"), json!("org-a"), json!("org-b"));
-    let history = e.root.join(".swap-warning-history");
-    fs::create_dir_all(&history).unwrap();
-    fs::set_permissions(&history, fs::Permissions::from_mode(0o700)).unwrap();
-    private(&history.join("journal.json"), "not a journal");
-    let wanted = ino_at(&e.root.join("spare").join(CREDS));
-    run(&e, threshold);
-    assert_eq!(
-        ino_at(&e.home.join(".claude").join(CREDS)),
-        wanted,
-        "{}",
-        log_of(&e)
-    );
-    assert!(
-        e.rs.load_journal().unwrap().is_none(),
-        "no transaction journal is retained for the warning"
-    );
-}
-
 #[test]
 fn necessary_crossing_records_both_organisations_and_warns() {
     let e = fixture(json!("org-a"), json!("org-b"), json!("org-b"));

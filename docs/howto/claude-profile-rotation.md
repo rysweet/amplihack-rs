@@ -21,12 +21,10 @@ selection before capacity ranking: crossing is allowed only for necessary
 capacity relief without an eligible same-organisation target with capacity.
 Plan-room and upgrade moves never make a confirmed crossing, including
 fallbacks; an unknown organisation is not a crossing, so missing metadata never
-keeps a session on an overflow login. Session warnings are advisory: a warning
-journal failure is reported and the swap still happens. Logs and status distinguish confirmed crossings from unresolved
-affinity. Affected sessions receive pending warnings at the next limit-resume
-handling that reaches them (tmux resume keys, or an exit-2 wake), even if
-another swap intervenes; a stop that only reaches the operator leaves them
-pending.
+keeps a session on an overflow login. The rotate log and `rotate status`
+distinguish confirmed crossings from unresolved affinity. A session stopped
+at a limit receives the warning with the resume that follows the swap, read
+from the swap record; a stop that does not end in a resume gets none.
 
 Use it when you run plain `claude` (no `CLAUDE_CONFIG_DIR`) and have several
 profiles. [Auto-switch](claude-profiles.md#switch-accounts-automatically) is

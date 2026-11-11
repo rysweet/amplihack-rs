@@ -236,9 +236,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 LiveId::Known(n) => Source::Profile(n.clone()),
                 _ => Source::Adopt,
             };
-            let warning =
-                super::observe::affinity::prepare_warning(ctx, &first, &source, &to, reason, t);
-            let attempted = swap::swap_with(
+            let from = match swap::swap_with(
                 &ctx.store,
                 &ctx.rs,
                 &ctx.home,
@@ -247,12 +245,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 t,
                 ctx.identity_reader(),
                 Some(&first),
-                warning.as_ref().map(|w| w.transaction.as_str()),
-            );
-            if attempted.is_err() && ctx.rs.load_journal()?.is_none() {
-                super::observe::affinity::abort_prepared(ctx, warning.as_ref(), &to);
-            }
-            let from = match attempted {
+            ) {
                 Ok(from) => from,
                 // A refusal repeats each cycle: one ALERT per reason.
                 Err(e @ ProfileError::RotateRefused(_)) => {

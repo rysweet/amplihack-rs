@@ -144,7 +144,6 @@ impl GuardStore for MemGuard {
 enum Act {
     /// The rotator writes this record: `Event::Swap`.
     Swap(SwapRecord),
-    PublishWarningThenSwap(SwapRecord),
     /// `swap.json` changes nothing (a rewrite, or an overflow): `Event::Swap`.
     Touch,
     /// The user prompts in `session` now: `Event::Prompted`.
@@ -159,8 +158,6 @@ enum Act {
 }
 
 struct Fake {
-    warning_root: Option<std::path::PathBuf>,
-    corrupt_warning_journal: bool,
     on: bool,
     clock: i64,
     /// What the ledger shows (for the event key's live login).
@@ -197,8 +194,6 @@ struct Fake {
 impl Fake {
     fn new() -> Self {
         Self {
-            warning_root: None,
-            corrupt_warning_journal: false,
             on: true,
             clock: START,
             cycle: Some(ledger("work")),
@@ -306,20 +301,6 @@ impl Deps for Fake {
                 self.swap = Some(r);
                 Event::Swap
             }
-            Act::PublishWarningThenSwap(r) => {
-                use amplihack_utils::swap_warning_history::{Completion, WarningHistory};
-                let mut history =
-                    WarningHistory::open(self.warning_root.as_ref().unwrap()).unwrap();
-                let intent = history
-                    .prepare(&json!({"version":1,"transaction_id":"during-wait",
-                    "producer":"rotator","reason":"threshold","host":"home",
-                    "from_login":"work","to_login":"spare","from_org":"org-a",
-                    "to_org":"org-b","affinity":"crossing"}))
-                    .unwrap();
-                history.complete(&intent, Completion::Committed).unwrap();
-                self.swap = Some(r);
-                Event::Swap
-            }
             Act::Touch => Event::Swap,
             Act::Prompt(session) => {
                 self.guard.prompted.insert(session_key(session), self.clock);
@@ -365,25 +346,6 @@ impl Deps for Fake {
     }
     fn session_alive_now(&mut self) -> bool {
         self.gone_after_keys.is_none_or(|n| self.keys.len() < n)
-    }
-    fn warning_session(
-        &mut self,
-        session: &str,
-    ) -> io::Result<
-        Option<(
-            amplihack_utils::swap_warning_history::WarningHistory,
-            amplihack_utils::swap_warning_history::Session,
-        )>,
-    > {
-        let Some(root) = &self.warning_root else {
-            return Ok(None);
-        };
-        let mut history = amplihack_utils::swap_warning_history::WarningHistory::open(root)?;
-        let session = history.register_current_process(session, "home")?;
-        if self.corrupt_warning_journal {
-            std::fs::write(root.join(".swap-warning-history/journal.json"), b"corrupt")?;
-        }
-        Ok(Some((history, session)))
     }
 }
 

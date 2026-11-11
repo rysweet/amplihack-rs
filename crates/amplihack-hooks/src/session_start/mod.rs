@@ -59,14 +59,6 @@ impl Hook for SessionStartHook {
         // These surface errors that did not block session start (fail-open) but that
         // the host should be aware of — e.g. code-graph setup failures.
         let mut warnings: Vec<String> = Vec::new();
-        #[cfg(unix)]
-        if let Some(session) = session_id.as_deref()
-            && let Some(root) = amplihack_utils::claude_capacity::resolve_root()
-            && root.is_dir()
-            && let Err(error) = amplihack_utils::session_warning_state::register(&root, session)
-        {
-            warnings.push(format!("Swap warning registration failed: {error}"));
-        }
 
         // The original request is saved under the amplihack state root, never
         // the working directory (#1963). The context is injected either way.

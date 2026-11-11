@@ -36,6 +36,7 @@ pub mod log;
 
 use amplihack_types::HookInput;
 use amplihack_utils::file_event::{PROMPT_MASK, SWAP_MASK, Waiter, Watch, Woke};
+use amplihack_utils::organisation_affinity::Affinity;
 use amplihack_utils::rotator_status::swap_record::{
     Judgement, SWAP_FILE, SwapRecord, judge, rotate_dir,
 };
@@ -184,19 +185,6 @@ pub trait Deps {
     /// Whether the session still runs and is in its terminal's foreground,
     /// checked without blocking.
     fn session_alive_now(&mut self) -> bool;
-    /// An optional durable journal for this trusted lifecycle. Environments
-    /// without persistent profile state use the latest-record compatibility route.
-    fn warning_session(
-        &mut self,
-        _session: &str,
-    ) -> io::Result<
-        Option<(
-            amplihack_utils::swap_warning_history::WarningHistory,
-            amplihack_utils::swap_warning_history::Session,
-        )>,
-    > {
-        Ok(None)
-    }
 }
 
 /// Why [`send_resume`] stopped.
@@ -225,24 +213,20 @@ impl SendFailed {
 /// session still runs and is not suspended (S4). Stops at the first failure
 /// (D8); nothing is retried and there is no other way to wake the session.
 pub fn send_resume<D: Deps + ?Sized>(deps: &mut D, pane: &Pane) -> Result<(), SendFailed> {
-    send_resume_affinity(deps, pane, &[])
+    send_resume_affinity(deps, pane, None)
 }
 
+/// [`send_resume`], with `continue` replaced by the warning text for
+/// `affinity` when the swap record carries one that warns.
 fn send_resume_affinity<D: Deps + ?Sized>(
     deps: &mut D,
     pane: &Pane,
-    affinity: &[amplihack_utils::organisation_affinity::Affinity],
+    affinity: Option<Affinity>,
 ) -> Result<(), SendFailed> {
     for (sent, key) in (0u8..).zip(RESUME_KEYS) {
-        use amplihack_utils::organisation_affinity::Affinity;
-        let key = match (
-            key,
-            affinity.contains(&Affinity::Crossing),
-            affinity.contains(&Affinity::Unresolved),
-        ) {
-            (Key::LiteralContinue, true, true) => Key::LiteralMixed,
-            (Key::LiteralContinue, true, false) => Key::LiteralCrossing,
-            (Key::LiteralContinue, false, true) => Key::LiteralUnresolved,
+        let key = match (key, affinity) {
+            (Key::LiteralContinue, Some(Affinity::Crossing)) => Key::LiteralCrossing,
+            (Key::LiteralContinue, Some(Affinity::Unresolved)) => Key::LiteralUnresolved,
             _ => key,
         };
         if !deps.session_alive_now() {
@@ -283,18 +267,16 @@ fn swap(r: &SwapRecord) -> Note<'_> {
 
 /// Decides one hook invocation.
 pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
-    run_with_warning(input, deps, &mut Vec::new(), &mut None, &mut Vec::new())
+    run_with_affinity(input, deps, &mut None)
 }
 
-fn run_with_warning<D: Deps + ?Sized>(
+/// [`run_with`], also setting `affinity` to the organisation outcome of the
+/// swap record this resume follows. Only a resume reads it; every other
+/// outcome leaves it `None`.
+fn run_with_affinity<D: Deps + ?Sized>(
     input: &HookInput,
     deps: &mut D,
-    warning: &mut Vec<amplihack_utils::organisation_affinity::Affinity>,
-    history_session: &mut Option<(
-        amplihack_utils::swap_warning_history::WarningHistory,
-        amplihack_utils::swap_warning_history::Session,
-    )>,
-    pending: &mut Vec<amplihack_utils::swap_warning_history::Warning>,
+    affinity: &mut Option<Affinity>,
 ) -> Outcome {
     let enabled = deps.auto_switch_on();
     let HookInput::StopFailure {
@@ -459,32 +441,6 @@ fn run_with_warning<D: Deps + ?Sized>(
     // D7: the path is chosen before the commit, so a session never gets
     // both keys and an exit-2 wake.
     let pane = deps.pane();
-    // Swaps may have completed during the event wait. Snapshot the exact
-    // warning prefix delivered now; later publications remain unacknowledged.
-    if let Some((history, session)) = history_session {
-        match history.pending(session) {
-            Ok(events) => {
-                for event in &events {
-                    if !warning.contains(&event.affinity) {
-                        warning.push(event.affinity);
-                    }
-                }
-                *pending = events;
-            }
-            Err(_) => {
-                // Advisory storage must never control resume authorization.
-                note(
-                    deps,
-                    now,
-                    Outcome::GuardFailed,
-                    Note {
-                        detail: Some("warning history unavailable".into()),
-                        ..Note::default()
-                    },
-                );
-            }
-        }
-    }
     match deps.guard().commit(&event, &session, start, now) {
         Ok(()) => {}
         Err(e) => {
@@ -496,16 +452,13 @@ fn run_with_warning<D: Deps + ?Sized>(
             return note(deps, now, outcome, swap(&record));
         }
     }
-    if history_session.is_none()
-        && let Some(affinity) = record.affinity
-        && !warning.contains(&affinity)
-    {
-        warning.push(affinity);
-    }
+    // The swap that woke this wait carries its own organisation outcome
+    // (#2136). Nothing else is consulted: there is no per-session state.
+    *affinity = record.affinity.filter(|a| a.warning().is_some());
     let Some(pane) = pane else {
         return note(deps, now, Outcome::Resumed, swap(&record));
     };
-    let (outcome, keys_sent, detail) = match send_resume_affinity(deps, &pane, warning) {
+    let (outcome, keys_sent, detail) = match send_resume_affinity(deps, &pane, *affinity) {
         Ok(()) => (Outcome::ResumedKeys, RESUME_KEYS.len() as u8, None),
         Err(f) => (Outcome::ResumeKeysFailed, f.sent, Some(f.detail())),
     };
@@ -520,102 +473,39 @@ fn run_with_warning<D: Deps + ?Sized>(
 }
 
 /// Reads at most `MAX_STDIN_BYTES` of payload from `stdin`, decides, and
-/// writes scoped warnings independently of resume authorization. Warnings are
-/// acknowledged only when the session receives them: tmux keys sent, or
-/// stderr on an exit-2 `Resumed` wake. It writes
-/// `RESUME_MSG` to `stderr` only on `Resumed`. Returns the exit code:
-/// 2 on `Resumed`, 0 otherwise, including after keys were sent, for an
+/// writes `RESUME_MSG` to `stderr` only on `Resumed`, preceded by the swap
+/// record's organisation warning when it has one (#2136). On `ResumedKeys`
+/// the warning went with the keys instead. Returns the exit code: 2 on
+/// `Resumed`, 0 otherwise, including after keys were sent, for an
 /// oversized or malformed payload and for a panic.
 pub fn run_with_io<D: Deps + ?Sized>(
     stdin: impl Read,
     stderr: &mut dyn Write,
     deps: &mut D,
 ) -> i32 {
-    let mut warning = Vec::new();
-    let mut history_session = None;
-    let mut pending = Vec::new();
+    let mut affinity = None;
     let decided = catch_unwind(AssertUnwindSafe(|| {
         let raw = read_bounded(stdin, MAX_STDIN_BYTES).ok()?;
         if raw.len() as u64 > MAX_STDIN_BYTES {
             return None;
         }
         let input: HookInput = serde_json::from_slice(&raw).ok()?;
-        if let HookInput::StopFailure {
-            session_id: Some(id),
-            error,
-            ..
-        } = &input
-            && is_limit(error.as_deref())
-        {
-            match deps.warning_session(id) {
-                Ok(Some((history, session))) => match history.pending(&session) {
-                    Ok(events) => {
-                        for event in &events {
-                            if !warning.contains(&event.affinity) {
-                                warning.push(event.affinity);
-                            }
-                        }
-                        pending = events;
-                        history_session = Some((history, session));
-                    }
-                    Err(e) => {
-                        let _ =
-                            writeln!(stderr, "Swap warning history unreadable ({:?})", e.kind());
-                        history_session = Some((history, session));
-                    }
-                },
-                Ok(None) => {}
-                Err(e) => {
-                    let _ = writeln!(stderr, "Swap warning registration failed ({:?})", e.kind());
-                }
-            }
-        }
-        Some(run_with_warning(
-            &input,
-            deps,
-            &mut warning,
-            &mut history_session,
-            &mut pending,
-        ))
+        Some(run_with_affinity(&input, deps, &mut affinity))
     }));
-    let outcome = match decided {
-        Ok(Some(outcome)) => Some(outcome),
-        _ => None,
-    };
-    // The session reads a warning only through tmux keys that were sent
-    // (`ResumedKeys`) or through hook stderr on an exit-2 wake (`Resumed`).
-    // Claude Code shows exit-0 stderr to the operator at most, never to the
-    // model, so every other outcome still writes the warning for the
-    // operator but leaves it pending for the next stop that reaches the
-    // session. Writing to stderr never changes the resume decision.
-    let keys_delivered = outcome == Some(Outcome::ResumedKeys);
-    let mut delivered = keys_delivered;
-    if !keys_delivered {
-        let written = warning
-            .iter()
-            .filter_map(|a| a.warning())
-            .try_for_each(|text| writeln!(stderr, "{text}"))
-            .and_then(|_| stderr.flush())
-            .is_ok();
-        delivered = written && outcome == Some(Outcome::Resumed);
-    }
-    if outcome == Some(Outcome::Resumed) {
-        let _ = writeln!(stderr, "{RESUME_MSG}").and_then(|_| stderr.flush());
-    }
-    let code = outcome.map_or(0, Outcome::exit_code);
-    if delivered && let Some((mut history, session)) = history_session {
-        for event in pending {
-            if let Err(e) = history.acknowledge(&session, event.id) {
-                let _ = writeln!(
-                    stderr,
-                    "Swap warning acknowledgement failed; delivery may repeat ({:?})",
-                    e.kind()
-                );
-                break;
+    match decided {
+        Ok(Some(Outcome::Resumed)) => {
+            // The resume is already recorded; exit 2 alone wakes the
+            // session, so a failed write still exits 2.
+            if let Some(text) = affinity.and_then(Affinity::warning) {
+                let _ = writeln!(stderr, "{text}");
             }
+            let _ = writeln!(stderr, "{RESUME_MSG}");
+            let _ = stderr.flush();
+            Outcome::Resumed.exit_code()
         }
+        Ok(Some(outcome)) => outcome.exit_code(),
+        Ok(None) | Err(_) => 0,
     }
-    code
 }
 
 /// Whether `dir` may be watched (S2): a real directory, not a symlink,
@@ -658,17 +548,6 @@ struct SystemDeps {
 }
 
 impl Deps for SystemDeps {
-    fn warning_session(
-        &mut self,
-        session: &str,
-    ) -> io::Result<
-        Option<(
-            amplihack_utils::swap_warning_history::WarningHistory,
-            amplihack_utils::swap_warning_history::Session,
-        )>,
-    > {
-        amplihack_utils::session_warning_state::register(&self.root, session).map(Some)
-    }
     fn auto_switch_on(&mut self) -> bool {
         rotator_status::auto_switch_on(&self.root)
     }

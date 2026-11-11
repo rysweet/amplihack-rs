@@ -25,8 +25,6 @@ mod kind;
 mod limit_wait;
 #[cfg(unix)]
 mod organisation;
-#[cfg(unix)]
-mod swap_warning;
 /// Issue #2030: Commander option arity, for the `amplihack claude` passthrough rewrite.
 pub(crate) use limit_wait::claude_args::option_end as claude_option_end;
 #[cfg(unix)]
