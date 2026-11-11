@@ -380,9 +380,9 @@ commands cannot disagree about a login.
 - `profile usage` records the readings it takes for auto-switch and the
   rotator, as it does when run on its own. `--no-logins` starts no probe and
   records nothing.
-- When `profile usage` refuses (inside Docker, without a `claude` binary, with
-  no readable profile store) or fails, the section prints one fixed reason in
-  place of rows. Its stderr is not shown, as it may name a path:
+- When `profile usage` cannot start, exits with an error, or produces
+  incomplete output, the section prints one fixed reason in place of rows.
+  Its stderr is not shown, as it may name a path:
 
   | Reason | When |
   |--------|------|

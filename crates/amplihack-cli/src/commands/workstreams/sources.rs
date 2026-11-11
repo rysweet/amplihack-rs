@@ -52,7 +52,7 @@ pub(crate) trait OriginSource {
 pub(crate) trait UsageSource: Send + Sync {
     /// The standard output of `amplihack profile usage --json`. Stops when
     /// `cancel` is set. `Err` is fixed text that names no path, such as a
-    /// refusal inside Docker.
+    /// refusal of an unsupported launch mode.
     fn usage_json(&self, cancel: &AtomicBool) -> Result<Vec<u8>, String>;
 }
 
@@ -140,9 +140,8 @@ impl OriginSource for GitOrigin {
 const USAGE_CAP: usize = 1024 * 1024;
 /// How long the pipes may stay open after `profile usage` exits.
 const USAGE_READ_GRACE: Duration = Duration::from_secs(1);
-/// Shown when `profile usage` could not be run or failed. It refuses inside
-/// Docker and without a `claude` binary; its own stderr says why and is not
-/// shown here, as it may name a path.
+/// Shown when `profile usage` could not be run or failed. Its own stderr
+/// says why and is not shown here, as it may name a path.
 pub(crate) const USAGE_FAILED: &str =
     "amplihack profile usage failed; run it on its own to see why";
 

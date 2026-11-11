@@ -107,6 +107,7 @@ impl Fx {
         for (k, v) in env {
             cmd.env(k, v);
         }
+        crate::isolated_amplihack::reapply_proc_root(&mut cmd);
         let start = Instant::now();
         let out = cmd.output().unwrap();
         (out, start.elapsed())
