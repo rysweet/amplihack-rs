@@ -61,12 +61,22 @@ pub(crate) const SPEND_LIMIT: &str = "spend limit";
 /// because "monthly limit" does not match "monthly spend limit" (#1546).
 /// "daily limit" is absent: provider and GitHub API daily quotas use it and
 /// clear on their own. "hourly limit" is absent for the same reason.
-/// "5-hour limit" is the session window's newer name (#2230). "opus limit",
-/// "sonnet limit" and "fable limit" are per-model caps with a stated reset,
-/// so waiting for the reset or switching login is right. "fast limit" is
-/// absent because fast mode falls back to normal mode and does not block the
-/// account. A bare "hit your limit" is absent because model prose and tool
-/// output also use it; the harness's own messages always name the limit.
+/// "5-hour limit" is the session window's newer name (#2230).
+///
+/// The per-model caps are matched only in the stopping form "hit your <model>
+/// limit", never as a bare "opus limit". Claude Code 2.1.322 names its limit
+/// windows in one table (`five_hour` "5-hour limit", `seven_day` "weekly
+/// limit", `seven_day_opus` "Opus limit", `seven_day_sonnet` "Sonnet limit",
+/// `seven_day_overage_included` "Fable limit") and prints a stop as
+/// "You've hit your <name> · resets <time>". The same names also appear in
+/// notices that do not stop work, such as "Fable limit reached · continuing
+/// on <model>" or a model fallback of the form "Opus limit reached · now
+/// using Sonnet"; a bare marker would class those as `usage_limit`, and
+/// auto-drive would then stop as USAGE_LIMIT. Both apostrophes match because
+/// the marker starts after it. "fast limit" is absent because fast mode falls
+/// back to normal mode and does not block the account. A bare "hit your
+/// limit" is absent because model prose and tool output also use it; the
+/// harness's own messages always name the limit.
 /// List order does not pick the reported signal; the classifier reports the
 /// marker that appears earliest in the text.
 const CLAUDE: Patterns = Patterns {
@@ -78,9 +88,9 @@ const CLAUDE: Patterns = Patterns {
         "quota exceeded",
         "monthly limit",
         "weekly limit",
-        "opus limit",
-        "sonnet limit",
-        "fable limit",
+        "hit your opus limit",
+        "hit your sonnet limit",
+        "hit your fable limit",
         SPEND_LIMIT,
     ],
     epoch_marker: "Claude AI usage limit reached",

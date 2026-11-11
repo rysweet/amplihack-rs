@@ -4677,8 +4677,9 @@ An attempt counts as hitting a usage limit only when all of these hold:
    followed by the last 64 KiB of buffered stdout, returns its
    `usage_limit` class. That is the same classifier, with the same markers
    (`session limit`, `5-hour limit`, `usage limit`, `usage_limit_reached`,
-   `quota exceeded`, `monthly limit`, `weekly limit`, `opus limit`,
-   `sonnet limit`, `fable limit`, `spend limit`) and the same precedence,
+   `quota exceeded`, `monthly limit`, `weekly limit`,
+   `hit your opus limit`, `hit your sonnet limit`, `hit your fable limit`,
+   `spend limit`) and the same precedence,
    the runner uses to end a run with a usage-limit message. Work markers
    are checked first, then environmental ones, then usage-limit ones, so a
    tail that also matches a work or environmental marker is not a usage

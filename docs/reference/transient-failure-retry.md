@@ -57,7 +57,8 @@ failed (exit 1)`; the 529 was in the captured stdout, which is why both are read
 
 The markers are `session limit`, `5-hour limit`, `usage limit`,
 `usage_limit_reached`, `quota exceeded`, `monthly limit`, `weekly limit`,
-`opus limit`, `sonnet limit`, `fable limit` and `spend limit`. Matching
+`hit your opus limit`, `hit your sonnet limit`, `hit your fable limit` and
+`spend limit`. Matching
 ignores case. They are Claude Code's, and are kept in one
 table per harness in `limit_patterns.rs`, together with the patterns that
 read the reset time. The classifier, the auto-switch supervisor and the
@@ -87,11 +88,19 @@ its table there.
   the line is in the step's stderr, is the last non-empty line of its stdout,
   or both. Its reset hint is `8:20pm (America/Los_Angeles)`. The curly
   apostrophe form (`You’ve`) reads the same way.
-- **Per-model limits are markers.** `opus limit`, `sonnet limit` and
-  `fable limit` cover messages such as
+- **Per-model limits match only their stopping form.** `hit your opus limit`,
+  `hit your sonnet limit` and `hit your fable limit` cover messages such as
   `You've hit your Opus limit · resets 8:20pm (America/Los_Angeles)`, which
-  reports signal `opus limit`. These are usage caps with a stated reset, so
-  the run waits for the reset or switches login, as for a session limit.
+  reports signal `hit your opus limit`. These are usage caps with a stated
+  reset, so the run waits for the reset or switches login, as for a session
+  limit. The names come from Claude Code 2.1.322, which maps its limit
+  windows `seven_day_opus`, `seven_day_sonnet` and
+  `seven_day_overage_included` to "Opus limit", "Sonnet limit" and "Fable
+  limit". A bare `opus limit` is not a marker: Claude Code also prints those
+  names in notices that do not stop work, such as
+  `Fable limit reached · continuing on <model> …` or a model fallback such as
+  `Opus limit reached · now using Sonnet`. Those stay `indeterminate`, so
+  auto-drive does not stop as USAGE_LIMIT on them.
 - **Why `spend limit` is listed.** `monthly limit` alone does not match Claude
   Code's `monthly spend limit` message, so both are markers (#1546).
 - **Reset hint.** The reset time the message states is quoted in the verdict:

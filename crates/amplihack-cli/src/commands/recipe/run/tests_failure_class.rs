@@ -940,22 +940,47 @@ fn a_per_model_limit_classifies_as_a_usage_limit() {
     for (line, signal) in [
         (
             "You've hit your Opus limit · resets 8:20pm (America/Los_Angeles)",
-            "opus limit",
+            "hit your opus limit",
+        ),
+        (
+            "You’ve hit your Opus limit · resets 8:20pm (America/Los_Angeles)",
+            "hit your opus limit",
         ),
         (
             "You've hit your Sonnet limit · resets 8:20pm (America/Los_Angeles)",
-            "sonnet limit",
+            "hit your sonnet limit",
         ),
         (
             "You've hit your Fable limit · resets 8:20pm (America/Los_Angeles)",
-            "fable limit",
+            "hit your fable limit",
         ),
-        ("Fable limit reached · resets 8:20pm (UTC)", "fable limit"),
     ] {
         assert_eq!(
             classify_failure_text(line),
             (FailureClass::UsageLimit, Some(signal)),
             "{line:?}; issue #2230"
+        );
+    }
+}
+
+#[test]
+fn a_per_model_fallback_or_consent_notice_is_not_a_usage_limit() {
+    // Claude Code prints these when it moves to another model or asks before
+    // spending usage credits; neither is a limit that a wait for the reset
+    // or a login switch is for. The first is the fallback form crusty named
+    // on PR #2349; the second and third are Claude Code 2.1.322's own text.
+    for text in [
+        "Opus limit reached · now using Sonnet",
+        "Fable limit reached · continuing on claude-opus-5 uses usage credits, \
+         and the prompt to confirm went unanswered",
+        "You've used your included Fable usage for this week. Continuing on \
+         claude-opus-5 uses usage credits",
+        "Sonnet limit reached · now using Haiku",
+    ] {
+        assert_ne!(
+            classify_failure_text(text).0,
+            FailureClass::UsageLimit,
+            "{text:?}; PR #2349 review"
         );
     }
 }
@@ -1191,4 +1216,89 @@ fn a_transient_fault_mentioning_a_repository_stays_transient() {
         "API Error: 529 Overloaded while fetching origin from the repository",
     );
     assert_eq!(class, FailureClass::TransientTransport);
+}
+
+// Issue #2230, comment of 10 Nov: a nested loop sub-recipe (a crusty round or
+// the loop-health evaluator) that hits the 5-hour limit after an earlier wait
+// must stop the auto-drive loop as USAGE_LIMIT, not STUCK. The loop decides
+// that in `autodrive_escalate.sh`'s `usage_limit_failure`, which reads only
+// the nested run's own `amplihack.recipe.failure_class` line. These tests
+// feed it the line this classifier writes for the observed message, with and
+// without `jq` on PATH.
+
+/// The nested run's log as the loop sees it: the round's own output, the
+/// runner's marker line at column 0, then the run summary.
+#[cfg(unix)]
+fn nested_round_log(stderr_tail: &str) -> String {
+    let result = five_hour_run(&["working on it"]);
+    let line = marker_line(&classify_run_failure(&result, stderr_tail).to_json(1, "terminal"));
+    format!("[crusty] round 2 review\n{stderr_tail}\n{line}\nStatus: failed\n")
+}
+
+/// Runs `usage_limit_failure 1 <log>` from the shipped script. `with_jq`
+/// false gives a PATH without `jq`, so the anchored fallback is used.
+#[cfg(unix)]
+fn usage_limit_failure(log_text: &str, with_jq: bool) -> bool {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = dir.path().join("round.log");
+    std::fs::write(&log, log_text).expect("write the round log");
+    let bin = dir.path().join("bin");
+    std::fs::create_dir(&bin).expect("bin dir");
+    let mut tools = vec!["awk", "grep", "sed", "cat", "tr", "head"];
+    if with_jq {
+        tools.push("jq");
+    }
+    for tool in tools {
+        let Some(found) = std::env::var_os("PATH").and_then(|p| {
+            std::env::split_paths(&p)
+                .map(|d| d.join(tool))
+                .find(|c| c.is_file())
+        }) else {
+            assert!(tool == "jq", "{tool} is needed on PATH for this test");
+            return usage_limit_failure(log_text, false);
+        };
+        std::os::unix::fs::symlink(found, bin.join(tool)).expect("link tool");
+    }
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../amplifier-bundle/tools/autodrive_escalate.sh");
+    let bash = ["/bin/bash", "/usr/bin/bash"]
+        .into_iter()
+        .find(|b| std::path::Path::new(b).is_file())
+        .expect("bash");
+    std::process::Command::new(bash)
+        .env_clear()
+        .env("PATH", &bin)
+        .arg("-c")
+        .arg(". \"$0\" && usage_limit_failure 1 \"$1\"")
+        .arg(&script)
+        .arg(&log)
+        .status()
+        .expect("run bash")
+        .success()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_nested_round_that_hits_the_five_hour_limit_stops_the_loop_as_usage_limit() {
+    let log = nested_round_log(OBSERVED_FIVE_HOUR_LIMIT);
+    assert!(log.contains("\"class\":\"usage_limit\""), "{log}");
+    for with_jq in [true, false] {
+        assert!(
+            usage_limit_failure(&log, with_jq),
+            "jq={with_jq}: the loop must read the nested 5-hour limit as \
+             USAGE_LIMIT; issue #2230:\n{log}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_nested_round_with_a_model_fallback_notice_does_not_stop_as_usage_limit() {
+    let log = nested_round_log("Opus limit reached · now using Sonnet");
+    for with_jq in [true, false] {
+        assert!(
+            !usage_limit_failure(&log, with_jq),
+            "jq={with_jq}: a fallback notice is not a usage limit; PR #2349:\n{log}"
+        );
+    }
 }
