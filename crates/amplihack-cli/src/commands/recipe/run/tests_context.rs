@@ -726,7 +726,7 @@ mod capacity_warning {
         std::fs::write(
             &runner,
             format!(
-                "#!/bin/sh\n: > '{}'\n\
+                "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n: > '{}'\n\
                  printf '%s' '{{\"recipe_name\":\"probe\",\"success\":true,\"step_results\":[],\"context\":{{}}}}'\n",
                 ran.display()
             ),

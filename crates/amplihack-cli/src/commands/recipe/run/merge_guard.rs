@@ -29,12 +29,14 @@ pub(crate) const USER_BASH_ENV: &str = "AMPLIHACK_MERGE_GUARD_USER_BASH_ENV";
 
 /// The files in the guard directory's parent (`tools/`) that the shim trusts
 /// to merge: the gate, and every helper the gate sources, directly or through
-/// another helper (`autodrive_state.sh` sources `autodrive_unmerged.sh`, and
-/// `autodrive_trust.sh` loads `autodrive_qa_scope.sh`, #1763).
+/// another helper (`autodrive_state.sh` sources `autodrive_unmerged.sh`,
+/// `autodrive_trust.sh` loads `autodrive_qa_scope.sh`, #1763, and that loads
+/// `autodrive_qa_docs.sh`, #2219).
 /// Replacing any of them is as good as replacing the shim, so they get the
 /// shim's mode check.
-pub(crate) const GATE_FILES: [&str; 5] = [
+pub(crate) const GATE_FILES: [&str; 6] = [
     "autodrive_merge_gate.sh",
+    "autodrive_qa_docs.sh",
     "autodrive_qa_scope.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",

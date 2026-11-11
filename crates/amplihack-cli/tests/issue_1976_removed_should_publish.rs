@@ -103,11 +103,14 @@ fn the_internal_terminal_state_should_publish_is_kept() {
 
 /// Appends its argv to `$CALL_LOG_DIR/<name>.log`, then succeeds.
 fn logging_stub(name: &str) -> String {
-    format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CALL_LOG_DIR/{name}.log\"\nexit 0\n")
+    format!(
+        "#!/bin/sh\ncase \"$*\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nprintf '%s\\n' \"$*\" >> \"$CALL_LOG_DIR/{name}.log\"\nexit 0\n"
+    )
 }
 
 /// Records that the runner started, then reports success.
 const STUB_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 printf '%s\n' "$*" >> "$CALL_LOG_DIR/runner.log"
 printf '%s\n' '{"recipe_name":"issue-1976","success":true,"step_results":[],"context":{}}'
 "#;

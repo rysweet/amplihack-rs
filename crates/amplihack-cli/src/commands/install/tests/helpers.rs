@@ -152,6 +152,9 @@ esac
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
+    if name == "codex" {
+        create_exe_stub(dir, "codex-code-mode-host");
+    }
     path
 }
 
