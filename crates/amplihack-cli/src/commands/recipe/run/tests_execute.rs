@@ -3925,7 +3925,7 @@ fn test_execute_recipe_via_rust_child_sees_no_outer_run_identity() {
     let runner = temp.path().join("recipe-runner-rs");
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"outer-identity-probe\",\"success\":true,\"step_results\":[],\"context\":{\
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"outer-identity-probe\",\"success\":true,\"step_results\":[],\"context\":{\
 \"session_depth\":\"$AMPLIHACK_SESSION_DEPTH\",\"max_depth\":\"$AMPLIHACK_MAX_DEPTH\",\
 \"run_dir\":\"$AMPLIHACK_RUN_DIR\",\"run_id\":\"$AMPLIHACK_RUN_ID\",\
 \"recipe_run_id\":\"$AMPLIHACK_RECIPE_RUN_ID\",\"session_tree_dir\":\"$AMPLIHACK_SESSION_TREE_DIR\",\

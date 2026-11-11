@@ -99,7 +99,7 @@ pub(super) fn create_exe_stub(dir: &Path, name: &str) -> std::path::PathBuf {
     fs::create_dir_all(dir).unwrap();
     let path = dir.join(name);
     let response = if name == "recipe-runner-rs" {
-        "printf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'\n"
+        "printf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n"
     } else if name == "codex" {
         r#"case "$1 $2 $3" in
   '--version  ') printf '%s\n' 'codex-cli 0.160.0';;
