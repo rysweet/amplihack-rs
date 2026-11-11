@@ -8858,7 +8858,7 @@ The checks run in this order. The first one that fails decides the outcome.
 
 | Step | Check | When it fails |
 |------|-------|---------------|
-| 1 | The [profile root](#profile-root) resolves (`AMPLIHACK_CLAUDE_PROFILE_ROOT`, then `~/.amplihack/profile-root`, then `~/.amplihack/claude-profiles`) to an absolute path with no `..` component. The pointer file must not be writable by group or others, and auto-switch is on by the same rule as `auto-switch status`. The pointer file is read with no-follow and at most 4 KiB. | Exit `0`. An unresolved or unsafe root prevents logging. With a safe logging root, receipt and disabled-auto-switch diagnostics may be written; no resume is authorized. |
+| 1 | The [profile root](#profile-root) resolves (`AMPLIHACK_CLAUDE_PROFILE_ROOT`, then `~/.amplihack/profile-root`, then `~/.amplihack/claude-profiles`) to an absolute path with no `..` component. The pointer file must not be writable by group or others, and auto-switch is on by the same rule as `auto-switch status`. The pointer file is read with no-follow and at most 4 KiB. | Exit `0`. An unresolved or unsafe root prevents logging. With auto-switch off nothing is created: for a JSON object, one receipt and one `disabled-auto-switch` line are appended to an existing `resume/resume.log`, and input that is not a JSON object writes nothing. No resume is authorized. See [Resume diagnostic stages](#resume-diagnostic-stages). |
 | 2 | The stop was a usage limit (see [Limit detection](#limit-detection)), and `session_id` is present and at most 256 bytes. | Exit `0`; record receipt and the filtering disposition when safe logging is available. |
 | 3 | `stop_hook_active` is absent, `null` or `false` (any other non-boolean value counts as `true`). The ledger is read once here, for the `live` profile that goes into the [event key](#resume-state-directory). | Exit `0`, outcome `stop-hook-active`. |
 | 4 | No marker exists for this limit event. | Exit `0`, outcome `duplicate`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe (see [Resume state directory](#resume-state-directory)). |
@@ -9213,34 +9213,68 @@ and epoch seconds. No pane id is stored.
 Diagnostics distinguish receipt from processing and from observed host behavior.
 The invocation start is captured before logging and remains the timestamp used
 for swap eligibility. Receipt requires neither a readable ledger nor an event
-identity; a rejected invocation can therefore create diagnostic files in a
-safely resolved private root. Every stage carries a bounded, payload-independent
-`invocation` identifier created once for that call. Use it to join interleaved
-records, including repeated calls for one session. A validated session hash is
-retained on filtering records, including typed-payload decoding failures.
+identity. With auto-switch on, a rejected invocation can therefore create
+`resume/` and `resume.log` in a safely resolved private root; this is how a
+host shows whether Claude Code ran the hook at all. With auto-switch off the
+hook creates nothing and appends only to an existing `resume/` directory.
+The `filtered` disposition is derived from the same gate call that decides
+the outcome, so the log cannot name a reason the gate did not use.
+
+Every stage carries an `invocation` identifier, made once per call from the
+process id, the time and a counter (`<pid hex>-<nanoseconds hex>-<counter hex>`).
+It holds no payload data. Use it to join interleaved records, including
+repeated calls for one session; compare it only for equality, never for order.
+
+The `session` field on receipt and filtered lines is the same 12-character
+hash used by decision records. It is taken from the raw JSON object before the
+typed parse (`session_id`, else `sessionId`; a string of 1 to 256 bytes), so a
+`malformed-input` line after a typed parse failure has the same `session` as its
+receipt. This hash only joins log lines; decisions use the parsed input alone.
+
+**Processing order.** The hook writes at most one receipt and one filtered
+line per call, in this order:
+
+| Order | Stage | Auto-switch on | Auto-switch off |
+|-------|-------|----------------|-----------------|
+| 1 | Input read: `input-read-failed`, `oversized-input`, or `malformed-input` when the input is not a JSON object. No receipt exists yet. | One filtered line. | Nothing written. |
+| 2 | Receipt (`stage=receipt disposition=received`), for every JSON object. | Written; may create `resume/`. | Appended only to an existing `resume.log`. |
+| 3 | `disabled-auto-switch`. | Skipped. | One filtered line, then exit `0`. Takes precedence over every later reason. |
+| 4 | `malformed-input` when a field has the wrong type for the typed parse. | One filtered line. | Not reached. |
+| 5 | Gate reasons: `not-stop-failure`, `missing-error`, `non-limit-error`, `missing-session`, `invalid-session`. | One filtered line. | Not reached. |
+
+**Appending while auto-switch is off.** The hook opens `resume/lock` and
+`resume/resume.log` only if both already exist and pass the same private-file
+checks as on-mode logging (no-follow, owner, link count, mode). It never
+creates `resume/`, the lock, the log or `resume.log.1`, and never rotates: a
+line that would take `resume.log` past 64 KiB is dropped. With auto-switch off
+the hook reads no ledger, takes no guard, sends no keys and prints nothing.
+
+```
+2026-11-09T03:02:44Z resume stage=receipt disposition=received invocation=1f3a2-1879c4e0a6b31c40-0 session=8e21c04b7d93 error_kind=unrecognized error_bytes=27
+2026-11-09T03:02:44Z resume stage=filtered disposition=disabled-auto-switch invocation=1f3a2-1879c4e0a6b31c40-0 session=8e21c04b7d93
+```
 
 | Stage | Meaning |
 |-------|---------|
-| Receipt | The hook received input. Records whether `error` is missing, has an invalid type, is a recognized code, or is an unknown string retained only as a fingerprint. This is not an eligible-limit decision. |
-| Filtered | Processing stopped: disabled auto-switch, missing error, invalid error type, non-limit error, missing or invalid session, malformed input, or oversized input. Dispositions are fixed names, never payload text. |
+| Receipt | The hook received input. Records whether `error` is missing, has an invalid type, is a recognized code, or is an unrecognized string, recorded only by its length (`error_bytes`). This is not an eligible-limit decision. |
+| Filtered | Processing stopped: disabled auto-switch, missing error (also an `error` of the wrong type, which the receipt shows as `error_kind=invalid-type`), non-limit error, not a `StopFailure`, missing or invalid session, malformed input, or oversized input. Dispositions are fixed names, never payload text. |
 | Waiting armed | Event watches are established; the hook can now wait for swap or cancellation events. |
 | Swap judged | The shared judgement accepted capacity or rejected a stale or full target. Acceptance alone does not authorize continuation. |
 | Continuation attempt | Durable event/session guard commit succeeded and authorized the selected keys or wake action. |
 | Continuation result | The action completed or failed. Existing outcomes such as `resumed`, `resumed-keys` and `resume-keys-failed` retain their meaning. |
 
-Only the exact original string `rate_limit` qualifies. Diagnostic redaction
+Only the exact original string `rate_limit` qualifies. What the log records
 never changes matching or event identity. Receipts preserve the actual values
 `rate_limit`, `authentication_failed` and `overloaded`. Every other string is
-recorded as `error_kind=redacted` with a SHA-256 `error_sha256` fingerprint of
-the complete original value. Unknown raw error values are deliberately withheld:
-actual-value observation is limited to these recognized codes so arbitrary
-credential-bearing strings cannot reach the log. Use the fingerprint to
-correlate repeated unknown errors; it does not identify their meaning.
+recorded as `error_kind=unrecognized` with `error_bytes`, its length in bytes.
+No text and no hash of it is kept: such a string may hold a credential, and a
+hash of a short or guessable token lets a reader of `resume.log` confirm a
+guess.
 Invalid-type observations never serialize arbitrary objects or arrays.
 
 Raw payloads, `error_details`, prompts, assistant messages, transcripts,
-credentials and environment dumps are excluded. Fingerprints are correlatable
-and may permit guessing low-entropy values; sanitize shared evidence.
+credentials and environment dumps are excluded. `error_bytes` shows only how
+long an unrecognized error string was.
 Session and pane identifiers are hashed; hashes remain
 correlatable and should still be treated as private. Logging retains private
 directory checks, restrictive file permissions, symlink protections and bounded
@@ -9287,7 +9321,7 @@ after `cycle` appear only when they apply:
 
 In these existing decision records, fields hold only `A-Z`, `a-z`, `0-9`,
 `.`, `_`, `:` and `-`; other characters become `-`. Additive receipt records
-use the recognized-code and unknown-string fingerprint policy described above. The log excludes
+use the recognised-code and length-only policy for other strings described above. The log excludes
 assistant message text, raw pane ids, account IDs and tokens. A log written by an earlier version, without
 the new fields, is still valid. Failing to write it does not change the
 outcome.

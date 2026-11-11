@@ -41,7 +41,10 @@ use amplihack_utils::rotator_status::swap_record::{
 };
 use amplihack_utils::rotator_status::{self, CycleStatus, MAX_WAIT};
 use amplihack_utils::secure_files::{euid, read_bounded};
-use decide::{Facts, Gate, event_key, gate, is_limit, session_id_ok, session_key};
+use decide::{
+    DISABLED, Facts, Gate, event_key, filter_disposition, gate, is_limit, session_id_ok,
+    session_key,
+};
 use guard::{CommitError, FsGuard, GuardStore};
 use keys::{Key, Pane, RESUME_KEYS};
 use log::{Diagnostic, ErrorObservation, LogEntry, Stage};
@@ -166,8 +169,14 @@ pub trait Deps {
     fn guard(&mut self) -> &mut dyn GuardStore;
     /// Records a decision; must never fail or print.
     fn log(&mut self, now: i64, entry: &LogEntry);
-    /// Best-effort lifecycle diagnostics; existing test dependencies may ignore them.
+    /// Best-effort receipt and lifecycle diagnostics; must never fail or
+    /// print. Called only while auto-switch is on; may create the resume
+    /// directory.
     fn diagnostic(&mut self, _now: i64, _entry: &Diagnostic) {}
+    /// Best-effort diagnostics while auto-switch is off: appended only to an
+    /// existing `resume.log` under an existing lock. Creates nothing, must
+    /// never fail or print.
+    fn diagnostic_existing(&mut self, _now: i64, _entry: &Diagnostic) {}
     /// Whether no rotator can record a cycle (see
     /// [`rotator_status::rotator_down`]).
     fn rotator_down(&mut self, now: i64) -> bool;
@@ -259,10 +268,31 @@ fn swap(r: &SwapRecord) -> Note<'_> {
     }
 }
 
-/// Decides one hook invocation.
+/// Decides one hook invocation. Writes the same receipt and `filtered`
+/// diagnostics as [`run_with_io`], from the same gate.
 pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     let start = deps.now();
-    run_started(input, deps, start, &invocation_key())
+    let invocation = invocation_key();
+    let enabled = deps.auto_switch_on();
+    let error = match input {
+        HookInput::StopFailure { error, .. } => error.as_deref(),
+        _ => None,
+    };
+    let session = match input {
+        HookInput::StopFailure { session_id, .. } => session_hash(session_id.as_deref()),
+        _ => None,
+    };
+    let receipt = Receipt {
+        start,
+        invocation: &invocation,
+        enabled,
+        session,
+    };
+    receipt.write(deps, ErrorObservation::from_parsed(error));
+    if let Some(outcome) = receipt.stop_if_disabled(deps) {
+        return outcome;
+    }
+    run_started(input, deps, &receipt)
 }
 
 // Independent of payload data; the counter distinguishes calls within one process,
@@ -282,34 +312,99 @@ fn invocation_key() -> String {
     )
 }
 
-fn diagnostic<D: Deps + ?Sized>(
-    deps: &mut D,
-    now: i64,
-    invocation: &str,
-    session: &Option<String>,
-    stage: Stage,
-    disposition: &'static str,
-) {
-    deps.diagnostic(
-        now,
-        &Diagnostic {
-            invocation: invocation.to_string(),
-            session: session.clone(),
+/// The logged session prefix: the first [`LOG_KEY_CHARS`] of
+/// [`session_key`], or `None` when `id` is absent or fails
+/// [`session_id_ok`]. The one function behind the receipt and every later
+/// line, so they always agree.
+fn session_hash(id: Option<&str>) -> Option<String> {
+    match id {
+        Some(id) if session_id_ok(Some(id)) => Some(session_key(id)[..LOG_KEY_CHARS].to_string()),
+        _ => None,
+    }
+}
+
+/// The raw session ID of a JSON object, with the parser's precedence: the
+/// first of `session_id` and `sessionId` that is present. A present value
+/// that is not a string (including `null`) gives `None` and never falls
+/// back to the second name. Used only to correlate log lines; decisions
+/// read the parsed input.
+fn raw_session(value: &serde_json::Value) -> Option<&str> {
+    ["session_id", "sessionId"]
+        .iter()
+        .find_map(|name| value.get(*name))
+        .and_then(serde_json::Value::as_str)
+}
+
+/// What every diagnostic of one invocation shares. `enabled` is the single
+/// read of the auto-switch toggle that the gate also uses. While it is on,
+/// lines go through [`Deps::diagnostic`]; while it is off, through
+/// [`Deps::diagnostic_existing`], which only appends to an existing log.
+struct Receipt<'a> {
+    start: i64,
+    invocation: &'a str,
+    enabled: bool,
+    session: Option<String>,
+}
+
+impl Receipt<'_> {
+    fn emit<D: Deps + ?Sized>(
+        &self,
+        deps: &mut D,
+        stage: Stage,
+        disposition: &'static str,
+        error: Option<ErrorObservation>,
+    ) {
+        let entry = Diagnostic {
+            invocation: self.invocation.to_string(),
+            session: self.session.clone(),
             event: None,
             stage,
             disposition,
-            error: None,
-        },
-    );
+            error,
+        };
+        if self.enabled {
+            deps.diagnostic(self.start, &entry);
+        } else {
+            deps.diagnostic_existing(self.start, &entry);
+        }
+    }
+
+    fn write<D: Deps + ?Sized>(&self, deps: &mut D, error: ErrorObservation) {
+        self.emit(deps, Stage::Receipt, "received", Some(error));
+    }
+
+    fn filtered<D: Deps + ?Sized>(&self, deps: &mut D, disposition: &'static str) {
+        self.emit(deps, Stage::Filtered, disposition, None);
+    }
+
+    /// A `filtered` line for input refused before any receipt exists:
+    /// written only while auto-switch is on, as there is no receipt to
+    /// correlate it with when off.
+    fn input_rejected<D: Deps + ?Sized>(&self, deps: &mut D, disposition: &'static str) {
+        if self.enabled {
+            self.filtered(deps, disposition);
+        }
+    }
+
+    /// With auto-switch off, writes the one [`DISABLED`] line and returns
+    /// [`Outcome::Disabled`]; off is final for this run.
+    fn stop_if_disabled<D: Deps + ?Sized>(&self, deps: &mut D) -> Option<Outcome> {
+        if self.enabled {
+            return None;
+        }
+        self.filtered(deps, DISABLED);
+        Some(Outcome::Disabled)
+    }
 }
 
 fn run_started<D: Deps + ?Sized>(
     input: &HookInput,
     deps: &mut D,
-    start: i64,
-    invocation: &str,
+    receipt: &Receipt<'_>,
 ) -> Outcome {
-    let enabled = deps.auto_switch_on();
+    // Off mode has already written its line and stopped in `stop_if_disabled`.
+    debug_assert!(receipt.enabled);
+    let (start, invocation, enabled) = (receipt.start, receipt.invocation, receipt.enabled);
     let HookInput::StopFailure {
         session_id,
         error,
@@ -319,11 +414,8 @@ fn run_started<D: Deps + ?Sized>(
         ..
     } = input
     else {
-        return if enabled {
-            Outcome::NotLimit
-        } else {
-            Outcome::Disabled
-        };
+        receipt.filtered(deps, "not-stop-failure");
+        return Outcome::NotLimit;
     };
     let (error, details, message) = (
         error.as_deref(),
@@ -338,10 +430,14 @@ fn run_started<D: Deps + ?Sized>(
         duplicate: false,
         capped: false,
     };
-    match gate(&facts) {
-        Gate::Disabled => return Outcome::Disabled,
-        Gate::NotLimit => return Outcome::NotLimit,
-        _ => {}
+    if matches!(gate(&facts), Gate::Disabled) {
+        // Unreachable in practice (see the assertion above); writes nothing,
+        // so a second disabled line is impossible.
+        return Outcome::Disabled;
+    }
+    if let Some(disposition) = filter_disposition(&facts, error.is_some(), session_id.is_some()) {
+        receipt.filtered(deps, disposition);
+        return Outcome::NotLimit;
     }
 
     let session_id = session_id.as_deref().unwrap_or_default();
@@ -546,127 +642,47 @@ pub fn run_with_io<D: Deps + ?Sized>(
         // Capture before any diagnostics: log latency must not shift the stop.
         let start = deps.now();
         let invocation = invocation_key();
-        let mut session = None;
+        // The one toggle read the gate uses; see `Receipt`.
+        let enabled = deps.auto_switch_on();
+        let mut receipt = Receipt {
+            start,
+            invocation: &invocation,
+            enabled,
+            session: None,
+        };
         let raw = match read_bounded(stdin, MAX_STDIN_BYTES) {
             Ok(raw) => raw,
             Err(_) => {
-                diagnostic(
-                    deps,
-                    start,
-                    &invocation,
-                    &session,
-                    Stage::Filtered,
-                    "input-read-failed",
-                );
+                receipt.input_rejected(deps, "input-read-failed");
                 return None;
             }
         };
         if raw.len() as u64 > MAX_STDIN_BYTES {
-            diagnostic(
-                deps,
-                start,
-                &invocation,
-                &session,
-                Stage::Filtered,
-                "oversized-input",
-            );
+            receipt.input_rejected(deps, "oversized-input");
             return None;
         }
-        let value: serde_json::Value = match serde_json::from_slice(&raw) {
-            Ok(value) => value,
-            Err(_) => {
-                diagnostic(
-                    deps,
-                    start,
-                    &invocation,
-                    &session,
-                    Stage::Filtered,
-                    "malformed-input",
-                );
+        let value = match serde_json::from_slice::<serde_json::Value>(&raw) {
+            Ok(value) if value.is_object() => value,
+            _ => {
+                receipt.input_rejected(deps, "malformed-input");
                 return None;
             }
         };
-        if !value.is_object() {
-            diagnostic(
-                deps,
-                start,
-                &invocation,
-                &session,
-                Stage::Filtered,
-                "malformed-input",
-            );
-            return None;
+        // Only the raw type of `error` is read here, for the receipt; every
+        // decision is taken by `run_started` from the parsed input.
+        // The session hash comes from the raw object, so the receipt and a
+        // later `malformed-input` line agree even when the typed parse fails.
+        receipt.session = session_hash(raw_session(&value));
+        receipt.write(deps, ErrorObservation::from_value(value.get("error")));
+        if let Some(outcome) = receipt.stop_if_disabled(deps) {
+            return Some(outcome);
         }
-        session = value
-            .get("session_id")
-            .and_then(serde_json::Value::as_str)
-            .filter(|id| session_id_ok(Some(id)))
-            .map(|id| session_key(id)[..LOG_KEY_CHARS].to_string());
-        let observation = ErrorObservation::from_value(value.get("error"));
-        deps.diagnostic(
-            start,
-            &Diagnostic {
-                invocation: invocation.clone(),
-                session: session.clone(),
-                event: None,
-                stage: Stage::Receipt,
-                disposition: "received",
-                error: Some(observation),
-            },
-        );
-        let disposition = if !deps.auto_switch_on() {
-            Some("disabled-auto-switch")
-        } else {
-            match value.get("error") {
-                None => Some("missing-error"),
-                Some(serde_json::Value::String(error)) if error != "rate_limit" => {
-                    Some("non-limit-error")
-                }
-                Some(serde_json::Value::String(_)) => match value.get("session_id") {
-                    None | Some(serde_json::Value::Null) => Some("missing-session"),
-                    Some(serde_json::Value::String(id)) if session_id_ok(Some(id)) => None,
-                    _ => Some("invalid-session"),
-                },
-                Some(_) => Some("invalid-error-type"),
-            }
+        let parsed = serde_json::from_value::<HookInput>(value);
+        let Ok(input) = parsed else {
+            receipt.filtered(deps, "malformed-input");
+            return None;
         };
-        if let Some(disposition) = disposition {
-            diagnostic(
-                deps,
-                start,
-                &invocation,
-                &session,
-                Stage::Filtered,
-                disposition,
-            );
-            return None;
-        }
-        let input: HookInput = match serde_json::from_value(value) {
-            Ok(input) => input,
-            Err(_) => {
-                diagnostic(
-                    deps,
-                    start,
-                    &invocation,
-                    &session,
-                    Stage::Filtered,
-                    "malformed-input",
-                );
-                return None;
-            }
-        };
-        if !matches!(input, HookInput::StopFailure { .. }) {
-            diagnostic(
-                deps,
-                start,
-                &invocation,
-                &session,
-                Stage::Filtered,
-                "not-stop-failure",
-            );
-            return None;
-        }
-        Some(run_started(&input, deps, start, &invocation))
+        Some(run_started(&input, deps, &receipt))
     }));
     match decided {
         Ok(Some(Outcome::Resumed)) => {
@@ -749,6 +765,14 @@ impl Deps for SystemDeps {
         if let Ok(dir) = self.guard.ensure_resume_dir() {
             log::append(&dir, &log::format_diagnostic(now, entry));
         }
+    }
+
+    fn diagnostic_existing(&mut self, now: i64, entry: &Diagnostic) {
+        // Never `ensure_resume_dir`: off mode creates nothing.
+        log::append_existing(
+            &self.guard.resume_dir(),
+            &log::format_diagnostic(now, entry),
+        );
     }
 
     fn rotator_down(&mut self, now: i64) -> bool {

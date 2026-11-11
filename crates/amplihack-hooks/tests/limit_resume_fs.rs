@@ -1179,12 +1179,10 @@ fn issue_1932_error_observation_retains_only_recognized_codes() {
         );
     }
     for value in ["Bearer PRIVATE_TOKEN", "OPAQUE_CREDENTIAL", "a %=\n界"] {
-        let observed = ErrorObservation::from_value(Some(&serde_json::json!(value)));
-        let ErrorObservation::Redacted { sha256 } = observed else {
-            panic!("unrecognized error must be redacted");
-        };
-        assert_eq!(sha256.len(), 64);
-        assert!(sha256.bytes().all(|b| b.is_ascii_hexdigit()));
-        assert!(!sha256.contains(value));
+        // Only the length is kept: no text and no hash.
+        assert_eq!(
+            ErrorObservation::from_value(Some(&serde_json::json!(value))),
+            ErrorObservation::Unrecognized { bytes: value.len() }
+        );
     }
 }

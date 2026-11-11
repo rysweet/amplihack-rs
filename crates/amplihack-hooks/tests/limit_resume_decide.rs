@@ -26,7 +26,7 @@
 //! one wake per session: concurrent waiters with distinct events → 1 resume
 
 use amplihack_hooks::limit_resume::decide::{
-    Facts, Gate, event_key, gate, is_limit, session_id_ok, session_key,
+    Facts, Gate, event_key, filter_disposition, gate, is_limit, session_id_ok, session_key,
 };
 use amplihack_hooks::limit_resume::guard::{CommitError, GuardStore};
 use amplihack_hooks::limit_resume::keys::{Key, Pane, RESUME_KEYS};
@@ -173,6 +173,9 @@ struct Fake {
     reads: Vec<i64>,
     logs: Vec<LogEntry>,
     diagnostics: Vec<String>,
+    /// Lines routed through `diagnostic_existing`: the append-only path
+    /// used while auto-switch is off, which never creates anything.
+    diagnostics_existing: Vec<String>,
     receipt_clock_advance: i64,
     receipt_barrier: Option<std::sync::Arc<std::sync::Barrier>>,
     refused_log_dir: Option<std::path::PathBuf>,
@@ -210,6 +213,7 @@ impl Fake {
             reads: Vec::new(),
             logs: Vec::new(),
             diagnostics: Vec::new(),
+            diagnostics_existing: Vec::new(),
             receipt_clock_advance: 0,
             receipt_barrier: None,
             refused_log_dir: None,
@@ -286,6 +290,23 @@ impl Deps for Fake {
             .order
             .push(format!("diagnostic:{}", entry.disposition));
         self.diagnostics.push(format_diagnostic(now, entry));
+        if matches!(
+            entry.stage,
+            amplihack_hooks::limit_resume::log::Stage::Receipt
+        ) {
+            if let Some(barrier) = &self.receipt_barrier {
+                barrier.wait();
+            }
+            self.clock += self.receipt_clock_advance;
+        }
+    }
+
+    fn diagnostic_existing(&mut self, now: i64, entry: &Diagnostic) {
+        self.guard
+            .order
+            .push(format!("diagnostic_existing:{}", entry.disposition));
+        self.diagnostics_existing
+            .push(format_diagnostic(now, entry));
         if matches!(
             entry.stage,
             amplihack_hooks::limit_resume::log::Stage::Receipt
@@ -1762,7 +1783,7 @@ fn concurrent_distinct_session_receipts_keep_filter_correlation() {
 
 fn assert_interleaved_filter_correlation(sessions: [&str; 2]) {
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
-    let handles: Vec<_> = ["invalid-error-type", "malformed-input"]
+    let handles: Vec<_> = ["non-limit-error", "malformed-input"]
         .into_iter()
         .zip(sessions.map(str::to_owned))
         .map(|(reason, session)| {
@@ -1770,16 +1791,20 @@ fn assert_interleaved_filter_correlation(sessions: [&str; 2]) {
             std::thread::spawn(move || {
                 let mut d = Fake::new();
                 d.receipt_barrier = Some(barrier);
-                let error = if reason == "invalid-error-type" {
-                    serde_json::json!(42)
+                // A valid stop the gate filters, and a payload the parser refuses.
+                let (event, error) = if reason == "non-limit-error" {
+                    (
+                        serde_json::json!("StopFailure"),
+                        serde_json::json!("overloaded"),
+                    )
                 } else {
-                    serde_json::json!("rate_limit")
+                    (serde_json::json!(42), serde_json::json!("rate_limit"))
                 };
                 let raw = serde_json::json!({
-                    "hook_event_name": 42,
+                    "hook_event_name": event,
                     "session_id": session,
                     "error": error,
-                    "stop_hook_active": 42,
+                    "stop_hook_active": false,
                 })
                 .to_string();
                 assert_eq!(run_with_io(raw.as_bytes(), &mut Vec::new(), &mut d), 0);
@@ -1789,23 +1814,522 @@ fn assert_interleaved_filter_correlation(sessions: [&str; 2]) {
         })
         .collect();
     let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    // D2: the session hash comes from the raw JSON object, so a payload the
+    // typed parser refuses carries the same hash in its receipt and its
+    // `malformed-input` line, exactly as a filtered stop does.
     let field = |line: &str, key: &str| {
         line.split_whitespace()
             .find(|part| part.starts_with(key))
-            .unwrap()
-            .to_string()
+            .map(str::to_string)
     };
     let mut ids = Vec::new();
     for (reason, lines) in results {
         assert!(lines[0].contains("stage=receipt "));
         assert!(lines[1].contains(&format!("disposition={reason} ")));
         assert_eq!(field(&lines[0], "session="), field(&lines[1], "session="));
-        let id = field(&lines[0], "invocation=");
-        assert_eq!(id, field(&lines[1], "invocation="));
+        assert!(
+            field(&lines[0], "session=").is_some(),
+            "{reason}: the receipt must carry the session hash: {lines:?}"
+        );
+        let id = field(&lines[0], "invocation=").unwrap();
+        assert_eq!(Some(&id), field(&lines[1], "invocation=").as_ref());
         assert!(id.len() <= 75, "invocation identifier must be bounded");
         assert!(!lines.concat().contains("stop_hook_active"));
         assert!(!lines.concat().contains("private-session"));
         ids.push(id);
     }
     assert_ne!(ids[0], ids[1]);
+}
+
+#[test]
+fn filter_disposition_names_only_what_the_gate_decided() {
+    let base = Facts {
+        enabled: true,
+        limit: true,
+        session_ok: true,
+        stop_hook_active: false,
+        duplicate: false,
+        capped: false,
+    };
+    let disabled = Facts {
+        enabled: false,
+        limit: false,
+        ..base
+    };
+    let not_limit = Facts {
+        limit: false,
+        ..base
+    };
+    let bad_session = Facts {
+        session_ok: false,
+        ..base
+    };
+    let cases = [
+        (disabled, true, true, Some("disabled-auto-switch")),
+        (not_limit, false, true, Some("missing-error")),
+        (not_limit, true, true, Some("non-limit-error")),
+        (bad_session, true, false, Some("missing-session")),
+        (bad_session, true, true, Some("invalid-session")),
+        (base, true, true, None),
+        (
+            Facts {
+                stop_hook_active: true,
+                ..base
+            },
+            true,
+            true,
+            None,
+        ),
+        (
+            Facts {
+                duplicate: true,
+                ..base
+            },
+            true,
+            true,
+            None,
+        ),
+        (
+            Facts {
+                capped: true,
+                ..base
+            },
+            true,
+            true,
+            None,
+        ),
+    ];
+    for (facts, error, session, expected) in cases {
+        assert_eq!(
+            filter_disposition(&facts, error, session),
+            expected,
+            "{facts:?}"
+        );
+        // A disposition is logged exactly when the gate stops before the wait.
+        assert_eq!(
+            expected.is_some(),
+            matches!(gate(&facts), Gate::Disabled | Gate::NotLimit),
+            "{facts:?}"
+        );
+    }
+}
+
+#[test]
+fn run_with_logs_the_same_receipt_and_filter_as_run_with_io() {
+    for (input, disposition) in [
+        (
+            HookInput::StopFailure {
+                session_id: Some("private-session".into()),
+                error: Some("overloaded".into()),
+                error_details: None,
+                last_assistant_message: None,
+                stop_hook_active: None,
+                transcript_path: None,
+                extra: serde_json::Value::Null,
+            },
+            "non-limit-error",
+        ),
+        (
+            HookInput::StopFailure {
+                session_id: None,
+                error: Some("rate_limit".into()),
+                error_details: None,
+                last_assistant_message: None,
+                stop_hook_active: None,
+                transcript_path: None,
+                extra: serde_json::Value::Null,
+            },
+            "missing-session",
+        ),
+    ] {
+        let mut d = Fake::new();
+        assert_eq!(run_with(&input, &mut d), Outcome::NotLimit);
+        assert_eq!(d.diagnostics.len(), 2, "{:?}", d.diagnostics);
+        assert!(d.diagnostics[0].contains("stage=receipt "));
+        assert!(
+            d.diagnostics[1].contains(&format!("stage=filtered disposition={disposition} ")),
+            "{:?}",
+            d.diagnostics
+        );
+    }
+}
+
+// ── #1932 D1–D3: off-mode routing, raw session hash, disposition order ─────
+
+/// The `session=` value of a diagnostic line, if any.
+fn session_field(line: &str) -> Option<&str> {
+    line.split_whitespace()
+        .find_map(|part| part.strip_prefix("session="))
+}
+
+fn stage_disposition(line: &str) -> (String, String) {
+    let get = |key: &str| {
+        line.split_whitespace()
+            .find_map(|part| part.strip_prefix(key))
+            .unwrap_or_default()
+            .to_string()
+    };
+    (get("stage="), get("disposition="))
+}
+
+/// Off mode never reaches the ledger, the guard, the wait or the keys.
+fn assert_off_path_untouched(d: &Fake) {
+    assert_untouched(d);
+    assert_eq!(d.pane_calls, 0, "pane checked");
+    assert!(
+        d.guard
+            .order
+            .iter()
+            .all(|o| o.starts_with("diagnostic_existing:")),
+        "off mode did more than append: {:?}",
+        d.guard.order
+    );
+}
+
+#[test]
+fn disabled_disposition_is_one_shared_constant() {
+    use amplihack_hooks::limit_resume::decide::DISABLED;
+    assert_eq!(DISABLED, "disabled-auto-switch");
+    let off = Facts {
+        enabled: false,
+        limit: true,
+        session_ok: true,
+        stop_hook_active: false,
+        duplicate: false,
+        capped: false,
+    };
+    assert_eq!(gate(&off), Gate::Disabled);
+    for (error, session) in [(true, true), (false, false), (true, false)] {
+        assert_eq!(filter_disposition(&off, error, session), Some(DISABLED));
+    }
+}
+
+/// Case 1: auto-switch on, the typed parse fails (a `Stop` payload is read
+/// strictly, so a wrongly typed `stop_hook_active` is refused), yet the
+/// receipt and the `malformed-input` line carry the same session hash, taken
+/// from the raw object.
+#[test]
+fn typed_parse_failure_keeps_the_session_hash_on_both_lines() {
+    let mut d = Fake::with_pane();
+    let raw = json!({
+        "hook_event_name": "Stop",
+        "session_id": "private-session",
+        "error": "rate_limit",
+        "stop_hook_active": "not-a-bool",
+    })
+    .to_string();
+    let mut stderr = Vec::new();
+    assert_eq!(run_with_io(raw.as_bytes(), &mut stderr, &mut d), 0);
+    assert!(stderr.is_empty());
+    assert_eq!(d.diagnostics.len(), 2, "{:?}", d.diagnostics);
+    assert_eq!(
+        stage_disposition(&d.diagnostics[0]),
+        ("receipt".into(), "received".into())
+    );
+    assert_eq!(
+        stage_disposition(&d.diagnostics[1]),
+        ("filtered".into(), "malformed-input".into())
+    );
+    let expected = &session_key("private-session")[..12];
+    assert_eq!(session_field(&d.diagnostics[0]), Some(expected));
+    assert_eq!(session_field(&d.diagnostics[1]), Some(expected));
+    assert!(!d.diagnostics.concat().contains("private-session"));
+    assert!(d.diagnostics_existing.is_empty());
+    assert_untouched(&d);
+}
+
+/// Case 2: an event name that is not a string still gives the receipt and
+/// the `malformed-input` line the same hash; the hash does not depend on
+/// `hook_event_name`.
+#[test]
+fn non_string_event_name_keeps_the_session_hash() {
+    for session_field_name in ["session_id", "sessionId"] {
+        let mut d = Fake::new();
+        let mut raw = json!({"hook_event_name": 42, "error": "rate_limit"});
+        raw[session_field_name] = json!("private-session");
+        assert_eq!(
+            run_with_io(raw.to_string().as_bytes(), &mut Vec::new(), &mut d),
+            0
+        );
+        assert_eq!(d.diagnostics.len(), 2, "{:?}", d.diagnostics);
+        assert!(d.diagnostics[1].contains("disposition=malformed-input "));
+        let expected = &session_key("private-session")[..12];
+        assert_eq!(session_field(&d.diagnostics[0]), Some(expected));
+        assert_eq!(session_field(&d.diagnostics[1]), Some(expected));
+    }
+}
+
+/// The raw session lookup uses the parser's precedence: `session_id` first,
+/// and a present-but-unusable value never falls back to `sessionId`. Values
+/// that fail `session_id_ok` or are not strings give no hash.
+#[test]
+fn raw_session_hash_follows_field_precedence_and_validity() {
+    let long = "x".repeat(257);
+    let cases: Vec<(serde_json::Value, Option<String>)> = vec![
+        (
+            json!({"session_id": "a", "sessionId": "b"}),
+            Some(session_key("a")[..12].to_string()),
+        ),
+        (
+            json!({"sessionId": "b"}),
+            Some(session_key("b")[..12].to_string()),
+        ),
+        (json!({"session_id": ""}), None),
+        (json!({"session_id": long}), None),
+        (json!({"session_id": 7}), None),
+        (json!({"session_id": null, "sessionId": "b"}), None),
+        (json!({"session_id": ["a"]}), None),
+        (json!({}), None),
+    ];
+    for (fields, expected) in cases {
+        let mut raw = fields.clone();
+        raw["hook_event_name"] = json!(42);
+        raw["error"] = json!("rate_limit");
+        let mut d = Fake::new();
+        assert_eq!(
+            run_with_io(raw.to_string().as_bytes(), &mut Vec::new(), &mut d),
+            0
+        );
+        assert_eq!(d.diagnostics.len(), 2, "{fields}: {:?}", d.diagnostics);
+        for line in &d.diagnostics {
+            assert_eq!(session_field(line), expected.as_deref(), "{fields}: {line}");
+        }
+    }
+}
+
+/// Case 3: auto-switch off with a JSON object: exactly one receipt and one
+/// `disabled-auto-switch` line, both through the append-only path, and
+/// nothing else is touched.
+#[test]
+fn off_mode_object_writes_receipt_then_disabled_through_the_append_only_path() {
+    for raw in [
+        limit_payload(),
+        json!({"hook_event_name": "StopFailure", "session_id": "s", "error": "overloaded"})
+            .to_string(),
+        json!({"hook_event_name": "Stop", "session_id": "s"}).to_string(),
+        json!({"hook_event_name": "StopFailure", "error": "rate_limit"}).to_string(),
+    ] {
+        let mut d = Fake::off().then(Act::Swap(fresh(1)));
+        d.pane_id = Some("%5");
+        let mut stderr = Vec::new();
+        assert_eq!(run_with_io(raw.as_bytes(), &mut stderr, &mut d), 0);
+        assert!(stderr.is_empty(), "{raw}");
+        assert!(d.diagnostics.is_empty(), "{raw}: {:?}", d.diagnostics);
+        assert_eq!(
+            d.diagnostics_existing.len(),
+            2,
+            "{raw}: {:?}",
+            d.diagnostics_existing
+        );
+        assert_eq!(
+            stage_disposition(&d.diagnostics_existing[0]),
+            ("receipt".into(), "received".into()),
+            "{raw}"
+        );
+        assert_eq!(
+            stage_disposition(&d.diagnostics_existing[1]),
+            ("filtered".into(), "disabled-auto-switch".into()),
+            "{raw}"
+        );
+        assert_eq!(
+            session_field(&d.diagnostics_existing[0]),
+            session_field(&d.diagnostics_existing[1]),
+            "{raw}"
+        );
+        assert_eq!(
+            d.guard.order,
+            vec![
+                "diagnostic_existing:received".to_string(),
+                "diagnostic_existing:disabled-auto-switch".to_string(),
+            ],
+            "{raw}"
+        );
+        assert_off_path_untouched(&d);
+    }
+}
+
+/// `run_with` writes the same two off-mode lines as `run_with_io`.
+#[test]
+fn off_mode_run_with_matches_run_with_io() {
+    let mut d = Fake::off().then(Act::Swap(fresh(1)));
+    assert_eq!(
+        run_with(&limit_input("s", "hit your limit"), &mut d),
+        Outcome::Disabled
+    );
+    assert!(d.diagnostics.is_empty(), "{:?}", d.diagnostics);
+    let stages: Vec<_> = d
+        .diagnostics_existing
+        .iter()
+        .map(|l| stage_disposition(l))
+        .collect();
+    assert_eq!(
+        stages,
+        vec![
+            ("receipt".to_string(), "received".to_string()),
+            ("filtered".to_string(), "disabled-auto-switch".to_string()),
+        ]
+    );
+    assert_off_path_untouched(&d);
+}
+
+/// Case 4: auto-switch off and input that is not a JSON object: no receipt
+/// exists to correlate with, so nothing is written on either path.
+#[test]
+fn off_mode_rejected_input_writes_nothing() {
+    let oversized = vec![b' '; amplihack_hooks::limit_resume::MAX_STDIN_BYTES as usize + 1];
+    let inputs: Vec<Vec<u8>> = vec![
+        b"null".to_vec(),
+        b"[]".to_vec(),
+        b"\"x\"".to_vec(),
+        b"not json".to_vec(),
+        vec![0xff, 0xfe, b'{'],
+        oversized,
+    ];
+    for raw in inputs {
+        let mut d = Fake::off();
+        let mut stderr = Vec::new();
+        assert_eq!(run_with_io(raw.as_slice(), &mut stderr, &mut d), 0);
+        assert!(stderr.is_empty());
+        assert!(d.diagnostics.is_empty(), "{:?}", d.diagnostics);
+        assert!(
+            d.diagnostics_existing.is_empty(),
+            "{:?}",
+            d.diagnostics_existing
+        );
+        assert_off_path_untouched(&d);
+    }
+}
+
+/// With auto-switch on, the same rejected inputs give one `filtered` line
+/// and no receipt (D3 stage 1).
+#[test]
+fn on_mode_rejected_input_writes_one_filtered_line_without_receipt() {
+    let oversized = vec![b' '; amplihack_hooks::limit_resume::MAX_STDIN_BYTES as usize + 1];
+    for (raw, disposition) in [
+        (b"null".to_vec(), "malformed-input"),
+        (b"[]".to_vec(), "malformed-input"),
+        (b"not json".to_vec(), "malformed-input"),
+        (oversized, "oversized-input"),
+    ] {
+        let mut d = Fake::new();
+        assert_eq!(run_with_io(raw.as_slice(), &mut Vec::new(), &mut d), 0);
+        assert_eq!(d.diagnostics.len(), 1, "{:?}", d.diagnostics);
+        assert_eq!(
+            stage_disposition(&d.diagnostics[0]),
+            ("filtered".to_string(), disposition.to_string())
+        );
+        assert!(session_field(&d.diagnostics[0]).is_none());
+        assert!(d.diagnostics_existing.is_empty());
+    }
+}
+
+/// Case 5: auto-switch off takes precedence over a typed parse failure: the
+/// second line is `disabled-auto-switch`, never `malformed-input`.
+#[test]
+fn off_mode_typed_parse_failure_reports_disabled_not_malformed() {
+    for raw in [
+        json!({"hook_event_name": 42, "session_id": "s", "error": "rate_limit"}),
+        json!({"hook_event_name": "Stop", "session_id": "s", "stop_hook_active": "yes"}),
+    ] {
+        let mut d = Fake::off();
+        assert_eq!(
+            run_with_io(raw.to_string().as_bytes(), &mut Vec::new(), &mut d),
+            0
+        );
+        assert!(d.diagnostics.is_empty());
+        let lines = &d.diagnostics_existing;
+        assert_eq!(lines.len(), 2, "{raw}: {lines:?}");
+        assert!(lines[0].contains("stage=receipt "), "{lines:?}");
+        assert!(
+            lines[1].contains("stage=filtered disposition=disabled-auto-switch "),
+            "{lines:?}"
+        );
+        assert!(!lines.concat().contains("malformed-input"));
+        let expected = &session_key("s")[..12];
+        assert_eq!(session_field(&lines[0]), Some(expected));
+        assert_eq!(session_field(&lines[1]), Some(expected));
+        assert_off_path_untouched(&d);
+    }
+}
+
+/// Case 6: an unrecognised error string is recorded by length only, with no
+/// text, encoding or hash, whether auto-switch is on or off.
+#[test]
+fn credentials_in_error_are_recorded_by_length_only_on_and_off() {
+    for on in [true, false] {
+        for secret in [
+            "token=PRIVATE_VALUE",
+            "Bearer abc.def",
+            "界🦀 PRIVATE_VALUE 界🦀",
+        ] {
+            let mut d = if on { Fake::new() } else { Fake::off() };
+            let raw = json!({
+                "hook_event_name": "StopFailure",
+                "session_id": "s",
+                "error": secret,
+            })
+            .to_string();
+            assert_eq!(run_with_io(raw.as_bytes(), &mut Vec::new(), &mut d), 0);
+            let lines = if on {
+                assert!(d.diagnostics_existing.is_empty());
+                &d.diagnostics
+            } else {
+                assert!(d.diagnostics.is_empty());
+                &d.diagnostics_existing
+            };
+            assert!(!lines.is_empty(), "on={on} {secret}");
+            let receipt = &lines[0];
+            assert!(
+                receipt.trim_end().ends_with(&format!(
+                    "error_kind=unrecognized error_bytes={}",
+                    secret.len()
+                )),
+                "on={on}: {receipt}"
+            );
+            let all = format!(
+                "{}{}",
+                d.diagnostics.concat(),
+                d.diagnostics_existing.concat()
+            );
+            for banned in [
+                "PRIVATE_VALUE",
+                "PRIVATE",
+                "abc.def",
+                "Bearer",
+                "token",
+                "sha256",
+                "error_sha",
+                "redacted",
+            ] {
+                assert!(!all.contains(banned), "on={on} {banned}: {all}");
+            }
+        }
+    }
+}
+
+/// Wrongly typed `error` values are recorded as `invalid-type` and their
+/// content never reaches a line, on and off.
+#[test]
+fn non_string_error_values_never_reach_the_log() {
+    for on in [true, false] {
+        for error in [
+            json!(null),
+            json!(["PRIVATE_VALUE"]),
+            json!({"token": "PRIVATE_VALUE"}),
+            json!(429),
+        ] {
+            let mut d = if on { Fake::new() } else { Fake::off() };
+            let raw = json!({"hook_event_name": "StopFailure", "session_id": "s", "error": error})
+                .to_string();
+            assert_eq!(run_with_io(raw.as_bytes(), &mut Vec::new(), &mut d), 0);
+            let all = format!(
+                "{}{}",
+                d.diagnostics.concat(),
+                d.diagnostics_existing.concat()
+            );
+            assert!(all.contains("stage=receipt "), "on={on} {error}: {all}");
+            assert!(!all.contains("PRIVATE"), "{all}");
+            assert!(!all.contains("sha256"), "{all}");
+        }
+    }
 }

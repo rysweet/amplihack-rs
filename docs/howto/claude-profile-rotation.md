@@ -1403,7 +1403,22 @@ resume.
 
 The hook acts only when Claude Code runs it, on a `StopFailure` event with
 `error: "rate_limit"`. Receipt is logged before filtering whenever a safe logging root is available,
-including disabled auto-switch and rejected errors or sessions. Logging is
+including disabled auto-switch and rejected errors or sessions. With
+auto-switch off the receipt is only appended to an existing log, as
+described under [Turn it off](#turn-it-off). The order is: input checks,
+receipt, `disabled-auto-switch`, typed-parse `malformed-input`, then the
+gate's reason. Each line carries an `invocation` id that joins the lines of
+one call. Lines written after the receipt carry the same `session` hash as
+the receipt, even after a typed parse failure; a line from the input checks
+comes before any receipt, so there is no receipt to match. An error string other than `rate_limit`,
+`authentication_failed` or `overloaded` is recorded only by its length:
+
+```
+2026-11-09T03:02:44Z resume stage=receipt disposition=received invocation=1f3a2-1879c4e0a6b31c40-0 session=8e21c04b7d93 error_kind=unrecognized error_bytes=27
+2026-11-09T03:02:44Z resume stage=filtered disposition=non-limit-error invocation=1f3a2-1879c4e0a6b31c40-0 session=8e21c04b7d93
+```
+
+Logging is
 best effort: unsafe paths, unavailable roots, rotation or write failures can
 leave gaps. Logging failure does not authorize a resume, retry continuation,
 or select a fallback; the guard and delivery checks still decide the action.
@@ -1464,8 +1479,12 @@ short turn, bounded by the per-session cap.
 
 `amplihack profile auto-switch off` turns the hook off together with
 background rotation and auto-switch. A new limit then exits at once, prints
-nothing, and may write receipt and filtering diagnostics under a safely
-resolved private root. A hook already
+nothing, and creates nothing on disk. If `<root>/.auto-switch.d/resume/`
+already holds a `lock` and a `resume.log` from earlier use, the receipt and
+one `filtered` line (`disabled-auto-switch`) are appended to that log. The
+hook never creates the directory, the lock or the log while auto-switch is
+off, and never rotates the log: a line that would take it past 64 KiB is
+dropped. Input that is not a JSON object writes nothing. A hook already
 waiting notices at the next swap record and ends as `disabled` without
 resuming. To keep rotation but not the resume, delete the `StopFailure`
 entry from `~/.claude/settings.json`. `amplihack install` adds it again.

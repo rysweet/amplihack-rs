@@ -15,15 +15,18 @@
 //! Every field is a hash prefix, a fixed outcome name, a checked profile
 //! name, the ledger's cycle outcome, a number or an `io::ErrorKind` name,
 //! and is reduced to `[A-Za-z0-9._:-]`, so no message text reaches the
-//! file. Only recognized error codes are retained; other strings are hashed.
-//! No other payload text is logged. Past `LOG_MAX_BYTES` the file is moved to `resume.log.1`.
+//! file. Only the recognised error codes `rate_limit`, `authentication_failed`
+//! and `overloaded` are written as text; any other string is recorded as
+//! `error_kind=unrecognized` with its length in bytes, and no hash, because a
+//! hash of a short secret can be confirmed by guessing. No other payload text
+//! is logged. Past `LOG_MAX_BYTES` the file is moved to `resume.log.1`.
 //! Logging is best effort: a failure never changes the outcome or prints.
 
 use super::Outcome;
 use amplihack_utils::secure_files::{
-    check_private_dir, lock_exclusive_timeout, open_private_nofollow,
+    check_private_dir, lock_exclusive_timeout, open_private_existing_nofollow,
+    open_private_nofollow,
 };
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -42,29 +45,32 @@ const MAX_FIELD_CHARS: usize = 64;
 pub enum ErrorObservation {
     Missing,
     InvalidType,
-    /// Unrecognized strings may contain credentials; retain only a fingerprint.
-    Redacted {
-        sha256: String,
+    /// A string that is not a recognised code. It may hold a credential, so
+    /// only its length is kept: no text and no hash.
+    Unrecognized {
+        bytes: usize,
     },
     Value(String),
 }
 
 impl ErrorObservation {
+    /// From the raw `error` field, so a wrongly typed value is visible.
     pub fn from_value(value: Option<&serde_json::Value>) -> Self {
         match value {
             None => Self::Missing,
-            Some(serde_json::Value::String(value))
-                if !matches!(
-                    value.as_str(),
-                    "rate_limit" | "authentication_failed" | "overloaded"
-                ) =>
-            {
-                Self::Redacted {
-                    sha256: format!("{:x}", Sha256::digest(value.as_bytes())),
-                }
-            }
-            Some(serde_json::Value::String(value)) => Self::Value(value.clone()),
+            Some(serde_json::Value::String(value)) => Self::from_parsed(Some(value)),
             Some(_) => Self::InvalidType,
+        }
+    }
+
+    /// From an already parsed `error` field.
+    pub fn from_parsed(value: Option<&str>) -> Self {
+        match value {
+            None => Self::Missing,
+            Some(code @ ("rate_limit" | "authentication_failed" | "overloaded")) => {
+                Self::Value(code.to_string())
+            }
+            Some(other) => Self::Unrecognized { bytes: other.len() },
         }
     }
 }
@@ -119,10 +125,9 @@ pub fn format_diagnostic(now: i64, entry: &Diagnostic) -> String {
     match &entry.error {
         Some(ErrorObservation::Missing) => line.push_str(" error_kind=missing"),
         Some(ErrorObservation::InvalidType) => line.push_str(" error_kind=invalid-type"),
-        Some(ErrorObservation::Redacted { sha256 }) => {
-            line.push_str(&format!(" error_kind=redacted error_sha256={sha256}"));
+        Some(ErrorObservation::Unrecognized { bytes }) => {
+            line.push_str(&format!(" error_kind=unrecognized error_bytes={bytes}"));
         }
-
         Some(ErrorObservation::Value(value)) => {
             line.push_str(&format!(" error_kind=value error={}", sanitize(value)));
         }
@@ -227,30 +232,55 @@ fn utc_timestamp(secs: i64) -> String {
 /// Appends `line` to `dir/resume.log` under the resume lock, rotating it
 /// first when it would pass `LOG_MAX_BYTES`. Does nothing when `dir` is not
 /// an existing private directory or when any step fails; never creates
-/// `dir` and never writes through a symlink.
+/// `dir` and never writes through a symlink. Creates the lock and the log
+/// when missing. Used only while auto-switch is on.
 pub fn append(dir: &Path, line: &str) {
+    write_line(dir, line, true);
+}
+
+/// Appends `line` to an existing `dir/resume.log` under an existing lock.
+/// Used while auto-switch is off, so it creates nothing: no lock, no log
+/// and no rotated file. When either file is missing it writes nothing, and
+/// a line that would take the log past `LOG_MAX_BYTES` is dropped rather
+/// than rotated. The same directory, symlink and ownership checks apply as
+/// for [`append`].
+pub fn append_existing(dir: &Path, line: &str) {
+    write_line(dir, line, false);
+}
+
+/// The one writer behind [`append`] and [`append_existing`]: `create`
+/// allows creating the lock and log and rotating a full log.
+fn write_line(dir: &Path, line: &str, create: bool) {
+    let open = if create {
+        open_private_nofollow
+    } else {
+        open_private_existing_nofollow
+    };
     if check_private_dir(dir).is_err() {
         return;
     }
-    let Ok(lock_file) = open_private_nofollow(&dir.join(LOCK_FILE)) else {
+    let Ok(lock_file) = open(&dir.join(LOCK_FILE)) else {
         return;
     };
     let Ok(_lock) = lock_exclusive_timeout(lock_file, LOCK_TIMEOUT) else {
         return;
     };
     let path = dir.join(LOG_FILE);
-    let Ok(mut file) = open_private_nofollow(&path) else {
+    let Ok(mut file) = open(&path) else {
         return;
     };
     let Ok(meta) = file.metadata() else {
         return;
     };
     if meta.len() + line.len() as u64 > LOG_MAX_BYTES && meta.len() > 0 {
+        if !create {
+            return;
+        }
         drop(file);
         if fs::rename(&path, dir.join(ROTATED_FILE)).is_err() {
             return;
         }
-        file = match open_private_nofollow(&path) {
+        file = match open(&path) {
             Ok(f) => f,
             Err(_) => return,
         };

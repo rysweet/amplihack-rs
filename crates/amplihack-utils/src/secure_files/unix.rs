@@ -63,12 +63,24 @@ pub fn read_bounded_nofollow(
 /// and no group or other mode bits; anything else is an `InvalidData` error
 /// and is left as it is. Never blocks on a FIFO.
 pub fn open_private_nofollow(path: &Path) -> io::Result<fs::File> {
+    open_private(path, true)
+}
+
+/// Like [`open_private_nofollow`], but never creates `path`: a missing file
+/// is a `NotFound` error and nothing is written to the directory. The same
+/// symlink, FIFO, ownership, link-count and mode rules apply.
+pub fn open_private_existing_nofollow(path: &Path) -> io::Result<fs::File> {
+    open_private(path, false)
+}
+
+fn open_private(path: &Path, create: bool) -> io::Result<fs::File> {
     let mut opts = fs::OpenOptions::new();
     opts.read(true)
         .append(true)
-        .create(true)
-        .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC);
+    if create {
+        opts.create(true).mode(0o600);
+    }
     let file = opts.open(path).map_err(|e| {
         if e.raw_os_error() == Some(libc::ELOOP) {
             invalid("is a symlink")
