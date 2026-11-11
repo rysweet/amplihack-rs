@@ -539,6 +539,7 @@ pub(super) fn context_env_pairs(
 // The resolved agent binary is an extra argument on purpose: the caller
 // decided it once, for the pre-flight and the steps alike (issue #1481).
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(super) fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
@@ -550,15 +551,51 @@ pub(super) fn execute_recipe_via_rust(
     step_timeout: Option<u64>,
     agent_binary: amplihack_utils::agent_binary::Resolution,
 ) -> Result<RecipeRunResult> {
+    execute_recipe_via_rust_fresh(
+        recipe_path,
+        context,
+        explicit_inputs,
+        dry_run,
+        verbose,
+        working_dir,
+        search_dirs,
+        step_timeout,
+        agent_binary,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_recipe_via_rust_fresh(
+    recipe_path: &Path,
+    context: &BTreeMap<String, String>,
+    explicit_inputs: &BTreeMap<String, String>,
+    dry_run: bool,
+    verbose: bool,
+    working_dir: &Path,
+    search_dirs: &[PathBuf],
+    step_timeout: Option<u64>,
+    agent_binary: amplihack_utils::agent_binary::Resolution,
+    fresh: bool,
+) -> Result<RecipeRunResult> {
     use crate::commands::orch::autodrive::{authorization::InvocationAuthorization, trusted};
     let invocation_name = recipe_name_for_correlation(recipe_path);
+    // #2329: authority is captured once, from the raw operator inputs of this
+    // invocation, before defaults, recovery normalisation or admission. A
+    // --fresh launch or a recovery resume captures new authority (and a new
+    // run_id) like any other invocation; stored context never grants it.
     let mut authorization = trusted::applies(&invocation_name)
         .then(|| InvocationAuthorization::capture(&invocation_name, explicit_inputs))
         .transpose()?;
     if dry_run && let Some(auth) = &mut authorization {
         auth.restrict_dry_run();
     }
-    // Policy refusal remains terminal before bundle copies or child setup.
+    // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
+    // recipe-runner once the session has reached the configured maximum depth,
+    // so a failing / misbehaving orchestration can never recursively re-enter
+    // the orchestrator and fork-bomb the host. Runs BEFORE any work (binary
+    // lookup, temp dirs, bundle copies, spawn) so no descendant is ever
+    // created past the limit.
     let guard = enforce_recursion_depth_guard(working_dir)?;
     let launch = if let Some(auth) = &mut authorization {
         let env = EnvBuilder::new().with_amplihack_home_from(working_dir);
@@ -583,7 +620,12 @@ pub(super) fn execute_recipe_via_rust(
     // Neither requested recipe defaults nor inferred values grant authority.
     let (mut invocation_context, inferred) = if launch.is_some() {
         let recipe = super::parse_recipe_from_path(recipe_path)?;
-        super::infer_missing_context(&recipe.context, explicit_inputs)
+        let (mut expanded, inferred) =
+            super::infer_missing_context(&recipe.context, explicit_inputs);
+        // Recovery identity is normalised on this derived copy only, never on
+        // `explicit_inputs`, which stays the raw source of authority.
+        super::recovery::normalize(&mut expanded, working_dir);
+        (expanded, inferred)
     } else {
         (context.clone(), Vec::new())
     };
@@ -594,30 +636,6 @@ pub(super) fn execute_recipe_via_rust(
             inferred.join(", ")
         );
     }
-    if let Some(auth) = &authorization {
-        invocation_context.insert("no_merge".into(), auth.no_merge().to_string());
-        invocation_context.insert("autodrive_dry_run".into(), auth.dry_run().to_string());
-        invocation_context.insert(
-            "autodrive_authorization".into(),
-            serde_json::to_string(auth)?,
-        );
-        invocation_context.insert(
-            "autodrive_invocation_file".into(),
-            launch
-                .as_ref()
-                .unwrap()
-                .home
-                .join("invocation.json")
-                .to_string_lossy()
-                .into(),
-        );
-    }
-    let context = &invocation_context;
-    // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
-    // recipe-runner once the session has reached the configured maximum depth,
-    // so a failing / misbehaving orchestration can never recursively re-enter
-    // the orchestrator and fork-bomb the host. Runs BEFORE any work (binary
-    // lookup, temp dirs, spawn) so no descendant is ever created past the limit.
     // Issue #1606: from here on a SIGHUP/SIGINT/SIGTERM stops the run, at any
     // point: setup, a running attempt, or retry backoff.
     super::stop_signal::arm();
@@ -627,6 +645,23 @@ pub(super) fn execute_recipe_via_rust(
 
     let binary = super::binary::find_recipe_runner_binary()?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
+    if let Err(error) = crate::runner_validation::probe(&binary, &agent_binary.binary) {
+        let correlation = RecipeRunCorrelation::new(
+            recipe_name.clone(),
+            working_dir,
+            &BTreeMap::new(),
+            binary.as_path(),
+        );
+        correlation.emit_early();
+        eprintln!("amplihack: runner capability check failed: {error}");
+        return Err(fail_with_final_record(
+            &correlation,
+            RecipeRunFinalStatus::SpawnFailure,
+            None,
+            None,
+            error,
+        ));
+    }
 
     // Issue #1481: the caller resolved the agent binary once, from
     // `working_dir`, while this process could still see the session markers of
@@ -654,10 +689,58 @@ pub(super) fn execute_recipe_via_rust(
     // Issue #1808: the run's folder under the work root holds run.json and
     // owned-paths; its runtime/ (TMPDIR, TMP, TEMP and artifacts) is removed
     // when the run ends, on every exit path including a panic.
-    let workspace = RefCell::new(crate::commands::cleanup::run_dir::RunWorkspace::begin(
-        &recipe_name,
-        working_dir,
-    )?);
+    let workspace = RefCell::new(if dry_run {
+        crate::commands::cleanup::run_dir::RunWorkspace::dry_runtime()?
+    } else {
+        crate::commands::cleanup::run_dir::RunWorkspace::begin_durable(&recipe_name, working_dir)?
+    });
+    let delegated = recipe_runner_rs::recovery::ipc::Client::from_environment()?;
+    let admission = if !dry_run && delegated.is_none() {
+        // #2329: whether auto-drive authority applies is part of the resume
+        // settings, so a resume cannot switch it. No per-run value (run_id,
+        // state directory) enters the fingerprint. This protects resume
+        // consistency only; it is not an authority check.
+        let settings = recipe_runner_rs::recovery::model::fingerprint(&(
+            &agent_binary.binary,
+            step_timeout,
+            authorization.is_some(),
+            env!("CARGO_PKG_VERSION"),
+        ))?;
+        Some(super::recovery::admit(
+            &workspace.borrow(),
+            recipe_path,
+            &recipe_name,
+            working_dir,
+            &invocation_context,
+            fresh,
+            settings,
+        )?)
+    } else {
+        None
+    };
+    // #2329 (S2): the runner writes its own keys last, after admission and
+    // immediately before launch, so no stored, recovered or operator-supplied
+    // value for them reaches the child.
+    if let Some(auth) = &authorization {
+        let launch = launch
+            .as_ref()
+            .context("trusted launch bundle missing for auto-drive")?;
+        invocation_context.insert("no_merge".into(), auth.no_merge().to_string());
+        invocation_context.insert("autodrive_dry_run".into(), auth.dry_run().to_string());
+        invocation_context.insert(
+            "autodrive_authorization".into(),
+            serde_json::to_string(auth)?,
+        );
+        invocation_context.insert(
+            "autodrive_invocation_file".into(),
+            launch
+                .home
+                .join("invocation.json")
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+    let context = &invocation_context;
 
     // Issue #964: snapshot the caller checkout's git state BEFORE spawning so a
     // runner that corrupts it (e.g. flips `core.bare=true`, which breaks
@@ -691,6 +774,14 @@ pub(super) fn execute_recipe_via_rust(
             .arg("-C")
             .arg(working_dir);
 
+        if fresh {
+            command.arg("--fresh");
+        }
+        if let Some(admission) = &admission {
+            command
+                .arg("--recovery-descriptor")
+                .arg(admission.descriptor_path());
+        }
         // Issue #494: forward sub-recipe search dirs as -R flags so
         // recipe-runner-rs can resolve sub-recipes the same way amplihack
         // resolves top-level recipes. One -R per non-empty entry, in order.
@@ -795,6 +886,9 @@ pub(super) fn execute_recipe_via_rust(
         command.env(MAX_DEPTH_ENV, guard.max_depth.to_string());
         command.env("AMPLIHACK_RECIPE_RUN_ID", run_id);
         command.envs(workspace.borrow().env());
+        if dry_run {
+            command.env("AMPLIHACK_RUN_ID", run_id);
+        }
         // Issue #1976: name this `recipe run` as the parent of any nested run
         // a step starts, on the child only (never set_var). Without a start
         // time the pair is omitted: a pid alone could be reused.
@@ -1004,6 +1098,31 @@ pub(super) fn execute_recipe_via_rust(
         }
         Err(error) => Err(error),
     };
+    if let Some(admission) = &admission {
+        use recipe_runner_rs::recovery::model::Outcome;
+        let outcome = match &final_result {
+            Ok(result) if result.success => Some(Outcome::Success),
+            Ok(_)
+                if last_verdict
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|v| v.class == super::FailureClass::UsageLimit) =>
+            {
+                Some(Outcome::UsageLimit)
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<super::stop_signal::StoppedBySignal>()
+                    .is_some() =>
+            {
+                None
+            }
+            _ => Some(Outcome::Failure),
+        };
+        if let Some(outcome) = outcome {
+            admission.finish(outcome)?;
+        }
+    }
     finish_workspace(workspace.into_inner(), &final_result, dry_run);
     final_result
 }

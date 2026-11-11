@@ -98,10 +98,10 @@ fn test_execute_recipe_via_rust_propagates_asset_resolver_env() {
 
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"resolver\":\"$AMPLIHACK_ASSET_RESOLVER\",\"home\":\"$AMPLIHACK_HOME\",\"graph\":\"$AMPLIHACK_GRAPH_DB_PATH\",\"legacy_graph_alias\":\"$AMPLIHACK_KUZU_DB_PATH\"}}\nEOF\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"resolver\":\"$AMPLIHACK_ASSET_RESOLVER\",\"home\":\"$AMPLIHACK_HOME\",\"graph\":\"$AMPLIHACK_GRAPH_DB_PATH\",\"legacy_graph_alias\":\"$AMPLIHACK_KUZU_DB_PATH\"}}\nEOF\n",
     )
     .expect("failed to write runner stub");
-    std::fs::write(&resolver, "#!/bin/sh\nexit 0\n").expect("failed to write resolver stub");
+    std::fs::write(&resolver, "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nexit 0\n").expect("failed to write resolver stub");
 
     #[cfg(unix)]
     {
@@ -212,7 +212,7 @@ fn test_execute_recipe_via_rust_sets_home_from_working_dir_bundle_root() {
 
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"home-probe\",\"success\":true,\"step_results\":[],\"context\":{\"home\":\"$AMPLIHACK_HOME\"}}\nEOF\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"home-probe\",\"success\":true,\"step_results\":[],\"context\":{\"home\":\"$AMPLIHACK_HOME\"}}\nEOF\n",
     )
     .expect("failed to write runner stub");
 
@@ -275,7 +275,7 @@ fn test_execute_recipe_via_rust_propagates_agent_binary_env() {
 
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"agent_binary\":\"$AMPLIHACK_AGENT_BINARY\"}}\nEOF\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"agent_binary\":\"$AMPLIHACK_AGENT_BINARY\"}}\nEOF\n",
     )
     .expect("failed to write runner stub");
 
@@ -340,7 +340,7 @@ fn test_execute_recipe_via_rust_sets_pager_safe_env() {
 
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"pager-probe\",\"success\":true,\"step_results\":[],\"context\":{\"git_pager\":\"$GIT_PAGER\",\"gh_pager\":\"$GH_PAGER\",\"pager\":\"$PAGER\",\"less\":\"$LESS\"}}\nEOF\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"pager-probe\",\"success\":true,\"step_results\":[],\"context\":{\"git_pager\":\"$GIT_PAGER\",\"gh_pager\":\"$GH_PAGER\",\"pager\":\"$PAGER\",\"less\":\"$LESS\"}}\nEOF\n",
     )
     .expect("failed to write runner stub");
 
@@ -438,7 +438,7 @@ fn test_execute_recipe_via_rust_forces_noninteractive_and_strips_claudecode() {
 
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"subprocess-env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"noninteractive\":\"$AMPLIHACK_NONINTERACTIVE\",\"claudecode\":\"${CLAUDECODE+present}\"}}\nEOF\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"subprocess-env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"noninteractive\":\"$AMPLIHACK_NONINTERACTIVE\",\"claudecode\":\"${CLAUDECODE+present}\"}}\nEOF\n",
     )
     .expect("failed to write runner stub");
 
@@ -509,7 +509,7 @@ fn test_execute_recipe_via_rust_reports_nonzero_exit_with_stderr() {
     let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
-    std::fs::write(&runner, "#!/bin/sh\necho \"runner exploded\" >&2\nexit 2\n")
+    std::fs::write(&runner, "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\necho \"runner exploded\" >&2\nexit 2\n")
         .expect("failed to write runner stub");
 
     #[cfg(unix)]
@@ -561,7 +561,7 @@ fn test_execute_recipe_via_rust_reports_signal_kill_clearly() {
     let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
-    std::fs::write(&runner, "#!/bin/sh\nkill -TERM $$\n").expect("failed to write runner stub");
+    std::fs::write(&runner, "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nkill -TERM $$\n").expect("failed to write runner stub");
 
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
@@ -613,7 +613,7 @@ fn test_execute_recipe_via_rust_sets_stable_run_id_env_and_result_metadata() {
 
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":true,\"step_results\":[],\"context\":{\"env_run_id\":\"$AMPLIHACK_RECIPE_RUN_ID\"}}\nEOF\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":true,\"step_results\":[],\"context\":{\"env_run_id\":\"$AMPLIHACK_RECIPE_RUN_ID\"}}\nEOF\n",
     )
     .expect("failed to write runner stub");
     make_executable(&runner);
@@ -670,7 +670,7 @@ fn test_execute_recipe_via_rust_emits_early_and_final_success_log_pointers() {
 
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":true,\"step_results\":[],\"context\":{}}\nEOF\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":true,\"step_results\":[],\"context\":{}}\nEOF\n",
     )
     .expect("failed to write runner stub");
     make_executable(&runner);
@@ -777,7 +777,7 @@ fn test_execute_recipe_via_rust_nonzero_exit_emits_failure_pointer_and_result_su
 
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":false,\"step_results\":[],\"context\":{}}\nEOF\nexit 7\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"correlation-probe\",\"success\":false,\"step_results\":[],\"context\":{}}\nEOF\nexit 7\n",
     )
     .expect("failed to write runner stub");
     make_executable(&runner);
@@ -839,7 +839,7 @@ fn test_execute_recipe_via_rust_parse_failure_emits_final_pointer() {
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(&runner, "#!/bin/sh\necho 'not-json'\nexit 0\n")
+    std::fs::write(&runner, "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\necho 'not-json'\nexit 0\n")
         .expect("failed to write runner stub");
     make_executable(&runner);
 
@@ -893,7 +893,7 @@ fn test_execute_recipe_via_rust_spawn_failure_emits_final_pointer_without_child_
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
-    std::fs::write(&runner, "#!/bin/sh\nexit 0\n").expect("failed to write runner stub");
+    std::fs::write(&runner, "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nexit 0\n").expect("failed to write runner stub");
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: spawn-failure-probe\nsteps: []\n")
         .expect("failed to write recipe");
@@ -1134,6 +1134,7 @@ fn test_large_context_does_not_hit_e2big() {
     std::fs::write(
         &runner,
         r#"#!/bin/sh
+case "$1" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 sets=0; bytes=0; prev=""
 for arg in "$@"; do
     if [ "$arg" = "--context-file" ]; then
@@ -1210,7 +1211,7 @@ fn test_step_timeout_propagated_as_env_var() {
     // Stub captures the AMPLIHACK_STEP_TIMEOUT env var and returns it in context.
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
     )
     .expect("failed to write runner stub");
 
@@ -1282,7 +1283,7 @@ fn test_step_timeout_zero_disables_timeouts() {
 
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
     )
     .expect("failed to write runner stub");
 
@@ -1354,7 +1355,7 @@ fn test_step_timeout_none_does_not_set_env_var() {
     // Stub captures env var; if unset, shell expands $VAR to empty string.
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"timeout-probe\",\"success\":true,\"step_results\":[],\"context\":{\"step_timeout\":\"$AMPLIHACK_STEP_TIMEOUT\"}}\nEOF\n",
     )
     .expect("failed to write runner stub");
 
@@ -1800,7 +1801,7 @@ fn test_execute_recipe_via_rust_sets_isolated_runtime_directories() {
 
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"runtime-isolation-probe\",\"success\":true,\"step_results\":[],\"context\":{\"runtime_dir\":\"$AMPLIHACK_WORKFLOW_RUNTIME_DIR\",\"artifact_dir\":\"$AMPLIHACK_WORKFLOW_ARTIFACT_DIR\",\"tmpdir\":\"$TMPDIR\",\"tmp\":\"$TMP\",\"temp\":\"$TEMP\",\"run_id\":\"$AMPLIHACK_RUN_ID\",\"run_dir\":\"$AMPLIHACK_RUN_DIR\",\"tmpdir_exists\":\"$(test -d \"$TMPDIR\" && echo yes)\"}}\nEOF\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"runtime-isolation-probe\",\"success\":true,\"step_results\":[],\"context\":{\"runtime_dir\":\"$AMPLIHACK_WORKFLOW_RUNTIME_DIR\",\"artifact_dir\":\"$AMPLIHACK_WORKFLOW_ARTIFACT_DIR\",\"tmpdir\":\"$TMPDIR\",\"tmp\":\"$TMP\",\"temp\":\"$TEMP\",\"run_id\":\"$AMPLIHACK_RUN_ID\",\"run_dir\":\"$AMPLIHACK_RUN_DIR\",\"tmpdir_exists\":\"$(test -d \"$TMPDIR\" && echo yes)\"}}\nEOF\n",
     )
     .expect("failed to write runner stub");
     make_executable(&runner);
@@ -1897,7 +1898,7 @@ fn test_execute_recipe_via_rust_verbose_does_not_pass_progress_flag_to_child() {
     std::fs::write(
         &runner,
         format!(
-            "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
             log = arg_log.display()
         ),
     )
@@ -1949,7 +1950,7 @@ fn test_execute_recipe_via_rust_non_verbose_does_not_pass_progress() {
     std::fs::write(
         &runner,
         format!(
-            "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
             log = arg_log.display()
         ),
     )
@@ -2006,7 +2007,7 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
     // then enough valid lines to fill a typical pipe buffer (~64KB on Linux).
     std::fs::write(
         &runner,
-        "#!/bin/sh\n\
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n\
          printf '\\xff\\n' >&2\n\
          echo 'after-bad-bytes' >&2\n\
          i=0; while [ $i -lt 200 ]; do echo \"flood-line-$i\" >&2; i=$((i+1)); done\n\
@@ -2068,7 +2069,7 @@ fn test_execute_recipe_via_rust_times_out_hung_runner() {
     let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
-    std::fs::write(&runner, "#!/bin/sh\n/bin/sleep 5\n").expect("failed to write runner stub");
+    std::fs::write(&runner, "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n/bin/sleep 5\n").expect("failed to write runner stub");
 
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755))
@@ -2141,7 +2142,7 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
     std::fs::write(
         &runner,
         format!(
-            "#!/bin/sh\n(/bin/sleep 2; echo orphan > '{}') &\n/bin/sleep 5\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n(/bin/sleep 2; echo orphan > '{}') &\n/bin/sleep 5\n",
             marker.display()
         ),
     )
@@ -2200,7 +2201,7 @@ fn write_argv_logging_stub(runner: &Path, arg_log: &Path) {
     std::fs::write(
         runner,
         format!(
-            "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\nexit 0\n",
             log = arg_log.display()
         ),
     )
@@ -2508,7 +2509,7 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
     std::fs::write(
         &runner,
         format!(
-            "#!/bin/sh\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\n\
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nfor a in \"$@\"; do echo \"$a\" >> {log}; done\n\
              echo '{{\"recipe_name\":\"probe\",\"success\":true,\"step_results\":[],\"context\":{{}}}}'\n\
              exit 0\n",
             log = arg_log.display()
@@ -2830,7 +2831,7 @@ fn test_execute_recipe_via_rust_exports_context_as_env_under_set_u() {
 
     std::fs::write(
         &runner,
-        "#!/bin/sh\nset -u\nprintf '{\"recipe_name\":\"ctx-env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"task\":\"%s\",\"repo\":\"%s\"}}' \"$TASK_DESCRIPTION\" \"$REPO_PATH\"\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nset -u\nprintf '{\"recipe_name\":\"ctx-env-probe\",\"success\":true,\"step_results\":[],\"context\":{\"task\":\"%s\",\"repo\":\"%s\"}}' \"$TASK_DESCRIPTION\" \"$REPO_PATH\"\n",
     )
     .expect("failed to write runner stub");
     make_executable(&runner);
@@ -2905,7 +2906,7 @@ fn test_execute_recipe_via_rust_exports_context_to_nested_subprocess() {
 
     std::fs::write(
         &runner,
-        "#!/bin/sh\nset -u\nNESTED_TASK=$(sh -c 'set -u; printf %s \"$TASK_DESCRIPTION\"')\nNESTED_REPO=$(sh -c 'set -u; printf %s \"$REPO_PATH\"')\nprintf '{\"recipe_name\":\"nested-ctx-probe\",\"success\":true,\"step_results\":[],\"context\":{\"nested_task\":\"%s\",\"nested_repo\":\"%s\"}}' \"$NESTED_TASK\" \"$NESTED_REPO\"\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nset -u\nNESTED_TASK=$(sh -c 'set -u; printf %s \"$TASK_DESCRIPTION\"')\nNESTED_REPO=$(sh -c 'set -u; printf %s \"$REPO_PATH\"')\nprintf '{\"recipe_name\":\"nested-ctx-probe\",\"success\":true,\"step_results\":[],\"context\":{\"nested_task\":\"%s\",\"nested_repo\":\"%s\"}}' \"$NESTED_TASK\" \"$NESTED_REPO\"\n",
     )
     .expect("failed to write runner stub");
     make_executable(&runner);
@@ -2981,7 +2982,7 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
     // `:-` default to distinguish "unset" (safe) from "attacker value" (bug).
     std::fs::write(
         &runner,
-        "#!/bin/sh\nprintf '{\"recipe_name\":\"sec-probe\",\"success\":true,\"step_results\":[],\"context\":{\"task\":\"%s\",\"path\":\"%s\",\"preload\":\"%s\",\"ahome\":\"%s\"}}' \"${TASK_DESCRIPTION:-MISSING}\" \"$PATH\" \"${LD_PRELOAD:-}\" \"${AMPLIHACK_HOME:-}\"\n",
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nprintf '{\"recipe_name\":\"sec-probe\",\"success\":true,\"step_results\":[],\"context\":{\"task\":\"%s\",\"path\":\"%s\",\"preload\":\"%s\",\"ahome\":\"%s\"}}' \"${TASK_DESCRIPTION:-MISSING}\" \"$PATH\" \"${LD_PRELOAD:-}\" \"${AMPLIHACK_HOME:-}\"\n",
     )
     .expect("failed to write runner stub");
     make_executable(&runner);
@@ -3457,7 +3458,7 @@ fn fixture_environment_keeps_runs_out_of_the_inherited_work_root() {
         std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
         std::fs::write(
             &runner,
-            "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"work-root-probe\",\"success\":true,\"step_results\":[],\"context\":{\"run_dir\":\"$AMPLIHACK_RUN_DIR\"}}\nEOF\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{\"recipe_name\":\"work-root-probe\",\"success\":true,\"step_results\":[],\"context\":{\"run_dir\":\"$AMPLIHACK_RUN_DIR\"}}\nEOF\n",
         )
         .expect("failed to write runner stub");
         make_executable(&runner);
@@ -3696,7 +3697,7 @@ mod issue_1570_nested_environment {
         std::fs::write(
             &runner,
             format!(
-                "#!/bin/sh\ncat <<EOF\n{{\"recipe_name\":\"nested-env\",\"success\":true,\"step_results\":[],\"context\":{{{fields}}}}}\nEOF\n"
+                "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\ncat <<EOF\n{{\"recipe_name\":\"nested-env\",\"success\":true,\"step_results\":[],\"context\":{{{fields}}}}}\nEOF\n"
             ),
         )
         .unwrap();

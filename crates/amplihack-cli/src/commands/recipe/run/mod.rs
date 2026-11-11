@@ -15,6 +15,7 @@ mod limit_reset;
 /// Issue #1976 — a nested run watches its parent `recipe run`.
 pub(crate) mod orphan_record;
 pub(crate) mod parent_watch;
+mod recovery;
 /// Issue #1976 — context keys that were removed, refused before any work.
 pub(crate) mod removed_keys;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
@@ -28,6 +29,7 @@ pub use context_sources::resolve_context_args;
 pub(crate) use failure_class::{FailureClass, classify_failure_text};
 pub(crate) use removed_keys::reject_removed_context_keys;
 
+#[cfg(test)]
 use execute::execute_recipe_via_rust;
 use format::format_recipe_run_result;
 
@@ -159,6 +161,33 @@ pub fn run_recipe(
     )
 }
 
+/// CLI launch with explicit fresh execution; internal callers retain the default.
+#[allow(clippy::too_many_arguments)]
+pub fn run_recipe_fresh(
+    recipe_path: &str,
+    context_args: &[String],
+    dry_run: bool,
+    verbose: bool,
+    format: &str,
+    working_dir: Option<&str>,
+    step_timeout: Option<u64>,
+    governor: &GovernorArgs,
+    fresh: bool,
+) -> Result<()> {
+    run_recipe_with_options(
+        recipe_path,
+        context_args,
+        dry_run,
+        verbose,
+        format,
+        working_dir,
+        step_timeout,
+        &RootSandboxPreflight::live().governed(governor),
+        &mut io::stderr(),
+        fresh,
+    )
+}
+
 /// Where the issue #1482 pre-flight gets the agent binary and the
 /// root-sandbox decision; injected so tests reach the call in
 /// [`run_recipe_with`] whatever uid and configuration they run under.
@@ -202,6 +231,33 @@ pub(crate) fn run_recipe_with(
     preflight: &RootSandboxPreflight,
     preflight_out: &mut dyn Write,
 ) -> Result<()> {
+    run_recipe_with_options(
+        recipe_path,
+        context_args,
+        dry_run,
+        verbose,
+        format,
+        working_dir,
+        step_timeout,
+        preflight,
+        preflight_out,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_recipe_with_options(
+    recipe_path: &str,
+    context_args: &[String],
+    dry_run: bool,
+    verbose: bool,
+    format: &str,
+    working_dir: Option<&str>,
+    step_timeout: Option<u64>,
+    preflight: &RootSandboxPreflight,
+    preflight_out: &mut dyn Write,
+    fresh: bool,
+) -> Result<()> {
     // Issue #1976: also checked in the CLI before --detach; this copy covers
     // the detached pane's child and every caller inside the crate.
     reject_removed_context_keys(context_args, &mut io::stderr())?;
@@ -232,7 +288,7 @@ pub(crate) fn run_recipe_with(
     let recipe = parse_recipe_from_path(&validated_path)?;
     // Keep operator inputs separate from defaults for authorization. Auto-drive
     // expands context only after selecting its pinned trusted entrypoint.
-    let (merged_context, inferred) =
+    let (mut merged_context, inferred) =
         if crate::commands::orch::autodrive::trusted::applies(&recipe.name) {
             (context.clone(), Vec::new())
         } else {
@@ -252,6 +308,11 @@ pub(crate) fn run_recipe_with(
             )?;
         }
     }
+    // Recovery normalisation rewrites the derived context only. `context`, the
+    // raw operator inputs, is passed on untouched as `explicit_inputs`: it is
+    // the sole source of auto-drive authority and must never be normalised,
+    // defaulted or recovered (#2329).
+    recovery::normalize(&mut merged_context, &abs_working_dir);
     // Issue #1481: resolve the agent binary once, from the directory the steps
     // run in, and hand that one answer to both the #1482 pre-flight and the
     // runner. Resolving the pre-flight's copy from the process cwd let the two
@@ -277,7 +338,7 @@ pub(crate) fn run_recipe_with(
     let request = AdmitRequest::recipe(governed, &recipe.name);
     let _slot = governor::admit(request).map_err(Denied::report)?;
     let search_dirs = build_search_dirs(&validated_path, &abs_working_dir)?;
-    let result = match execute_recipe_via_rust(
+    let result = match execute::execute_recipe_via_rust_fresh(
         &validated_path,
         &merged_context,
         &context,
@@ -287,6 +348,7 @@ pub(crate) fn run_recipe_with(
         &search_dirs,
         step_timeout,
         agent_binary,
+        fresh,
     ) {
         Ok(result) => result,
         Err(error) => {

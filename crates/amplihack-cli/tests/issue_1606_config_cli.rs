@@ -36,6 +36,7 @@ const SCHEMA_ORDER: &[&str] = &[
 /// Records argv and its environment, then reports success in the runner's
 /// JSON format.
 const STUB_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 env > "$RECORD_DIR/env.txt"
 printf '%s\n' '{"recipe_name":"issue-1606","success":true,"step_results":[],"context":{}}'
 "#;
@@ -43,6 +44,7 @@ printf '%s\n' '{"recipe_name":"issue-1606","success":true,"step_results":[],"con
 /// Answers `tmux show-environment -g COPILOT_CLI` the way a server started
 /// from a Copilot session would.
 const TMUX_STUB: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 if [ "$1 $2 $3" = "show-environment -g COPILOT_CLI" ]; then
   echo "COPILOT_CLI=1"
   exit 0
@@ -930,7 +932,7 @@ fn edit_passes_a_metacharacter_path_as_one_argument() {
     let editor = fx.tools.join("ed-stub");
     crate::support::exec_stub::write_executable(
         &editor,
-        "#!/bin/sh\nprintf '[recipe]\\nverbose = true\\n' > \"$1\"\n",
+        "#!/bin/sh\ncase \"$*\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nprintf '[recipe]\\nverbose = true\\n' > \"$1\"\n",
         0o755,
     );
     let out = fx.amp_env(&["config", "edit"], &[("VISUAL", editor.to_str().unwrap())]);
@@ -947,7 +949,7 @@ fn edit_that_leaves_problems_exits_1_and_keeps_the_file() {
     let editor = fx.tools.join("ed-stub");
     crate::support::exec_stub::write_executable(
         &editor,
-        "#!/bin/sh\nprintf '[orchestrator]\\nmax_depth = 999\\n' > \"$1\"\n",
+        "#!/bin/sh\ncase \"$*\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nprintf '[orchestrator]\\nmax_depth = 999\\n' > \"$1\"\n",
         0o755,
     );
     let out = fx.amp_env(&["config", "edit"], &[("EDITOR", editor.to_str().unwrap())]);

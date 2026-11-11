@@ -222,8 +222,13 @@ mod runner {
         record: PathBuf,
     }
 
+    /// Copies the checkout's bundle as an install would stage it: modes are
+    /// normalised to drop group and other write, so the trusted-bundle
+    /// ownership and mode check does not depend on the checkout's umask.
     fn copy_without_gate(from: &Path, to: &Path) {
+        use std::os::unix::fs::PermissionsExt;
         fs::create_dir_all(to).unwrap();
+        fs::set_permissions(to, fs::Permissions::from_mode(0o755)).unwrap();
         for entry in fs::read_dir(from).unwrap() {
             let entry = entry.unwrap();
             if ["autodrive_merge_gate.sh", "gh-merge-guard"]
@@ -243,7 +248,10 @@ mod runner {
             } else if kind.is_dir() {
                 copy_without_gate(&entry.path(), &to.join(entry.file_name()));
             } else {
-                fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+                let dest = to.join(entry.file_name());
+                fs::copy(entry.path(), &dest).unwrap();
+                let mode = fs::metadata(&dest).unwrap().permissions().mode() & 0o755;
+                fs::set_permissions(&dest, fs::Permissions::from_mode(mode)).unwrap();
             }
         }
     }
@@ -270,7 +278,7 @@ mod runner {
                 "context":{"no_merge":"false", "autodrive_dry_run":"false",
                     "autodrive_authorization":{"requested_action":"merge"}}});
             let body = format!(
-                "#!/bin/sh\nif [ \"${{1:-}}\" = --capabilities ]; then\n  printf '%s\\n' '{{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}}'\n  exit 0\nfi\nprintf started > \"$RECORD_FILE\"\nprintf '%s\\n' \"${{NO_MERGE:-}}\" \"${{TASK_DESCRIPTION:-}}\" \"${{PR_NUMBER:-}}\" > \"$CONTEXT_RECORD\"\nprintf '%s' \"$PATH\" > \"$PATH_RECORD\"\nprintf '%s' \"${{BASH_ENV:-}}\" > \"$BASH_RECORD\"\nprintf '%s\\n' '{}'\n",
+                "#!/bin/sh\nif [ \"${{1:-}}\" = --capabilities ]; then\n  printf '%s\\n' '{{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}}'\n  exit 0\nfi\nprintf started > \"$RECORD_FILE\"\nprintf '%s\\n' \"${{NO_MERGE:-}}\" \"${{TASK_DESCRIPTION:-}}\" \"${{PR_NUMBER:-}}\" > \"$CONTEXT_RECORD\"\nprintf '%s' \"$PATH\" > \"$PATH_RECORD\"\nprintf '%s' \"${{BASH_ENV:-}}\" > \"$BASH_RECORD\"\nprintf '%s\\n' '{}'\n",
                 forged
             );
             crate::support::exec_stub::write_executable(&runner, &body, 0o755);
