@@ -179,19 +179,19 @@ pub fn render(rows: &[Row]) -> Vec<String> {
     rows.iter().map(|r| line(rows, r)).collect()
 }
 
-fn line(rows: &[Row], r: &Row) -> String {
-    if matches!(r.held, Held::Excluded) {
-        return match &r.place {
-            Place::Home { live: Some(l) } => format!(
-                "~/.claude: {EXCLUDED_CELL}, live profile {}",
-                sanitize_display(l.as_str(), false)
-            ),
-            Place::Home { live: None } => format!("~/.claude: {EXCLUDED_CELL}"),
-            Place::Profile(n) => {
-                format!("{}: {EXCLUDED_CELL}", sanitize_display(n.as_str(), false))
-            }
-        };
+/// The line for an excluded row (issue #2218): nothing was read for it.
+fn excluded_line(place: &Place) -> String {
+    match place {
+        Place::Home { live: Some(l) } => format!(
+            "~/.claude: {EXCLUDED_CELL}, live profile {}",
+            sanitize_display(l.as_str(), false)
+        ),
+        Place::Home { live: None } => format!("~/.claude: {EXCLUDED_CELL}"),
+        Place::Profile(n) => format!("{}: {EXCLUDED_CELL}", sanitize_display(n.as_str(), false)),
     }
+}
+
+fn line(rows: &[Row], r: &Row) -> String {
     let place = match &r.place {
         Place::Home { live: Some(l) } => format!("~/.claude (live {l})"),
         Place::Home { live: None } => "~/.claude".to_string(),
@@ -201,7 +201,7 @@ fn line(rows: &[Row], r: &Row) -> String {
         Held::NoLogin => return format!("{place} -> no login"),
         Held::NotOAuth => return format!("{place} -> not an OAuth login"),
         Held::Unread(why) => return format!("{place} -> not read ({why})"),
-        Held::Excluded => return format!("{place}: {EXCLUDED_CELL}"),
+        Held::Excluded => return excluded_line(&r.place),
         Held::Account(a) => a,
     };
     let owners = recorded_for(rows, a);
