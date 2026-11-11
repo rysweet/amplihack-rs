@@ -1271,6 +1271,11 @@ or a context file. The resolution order, the support for each binary and the
 log lines are in
 [Effort and Model Inheritance for Recipe Steps](./effort-and-model-inheritance.md).
 
+`AMPLIHACK_PARENT_MODEL_BINARY` accompanies an exported model and records the
+binary that selected it. Codex and Copilot inherit models from a parent launch
+of the same binary, including through nested recipe runs. This marker is
+removed whenever no model is exported, and its context alias is also reserved.
+
 ```sh
 amplihack claude -- --effort high
 # the agent's environment holds AMPLIHACK_PARENT_EFFORT=high

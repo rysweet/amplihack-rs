@@ -19,7 +19,7 @@ use super::inherit::{
     EffortArgs, InheritSource, Inherited, PARENT_EFFORT_ENV, PARENT_MODEL_ENV, ParentInputs,
     Resolved, cannot_pass_line, codex_effort, codex_effort_from_argv, copilot_effort, effort_args,
     export_to_child, flag_value, gateway_model_line, ignoring_line, inherit_summary_line,
-    inherited_from_env, model_checked_for_run, resolve_parent, run_printed_lines_for_run,
+    inherited_from_env, model_matches_binary, resolve_parent, run_printed_lines_for_run,
     vet_for_binary,
 };
 use crate::test_support::with_env;
@@ -354,7 +354,7 @@ fn claude_compatible_binaries_take_both_values_with_no_lines() {
         Some(("claude-opus-5-5", InheritSource::ParentClaude)),
     );
     for binary in CLAUDE_LIKE {
-        let (vetted, lines) = vet_for_binary(binary, &r, false);
+        let (vetted, lines) = vet_for_binary(binary, &r, false, None);
         assert_eq!(
             vetted,
             inherited(Some("max"), Some("claude-opus-5-5")),
@@ -374,7 +374,7 @@ fn claude_compatible_binaries_drop_the_model_under_the_gateway() {
         Some(("claude-opus-5-5", InheritSource::ParentClaude)),
     );
     for binary in CLAUDE_LIKE {
-        let (vetted, lines) = vet_for_binary(binary, &r, true);
+        let (vetted, lines) = vet_for_binary(binary, &r, true, None);
         assert_eq!(vetted, inherited(Some("max"), None), "{binary}");
         assert_eq!(
             lines,
@@ -397,7 +397,7 @@ fn claude_compatible_binaries_drop_the_model_under_the_gateway() {
 fn nothing_resolved_vets_to_nothing_for_every_binary() {
     let r = resolved(None, None);
     for binary in ["claude", "rusty", "codex", "copilot", "something-else"] {
-        let (vetted, lines) = vet_for_binary(binary, &r, false);
+        let (vetted, lines) = vet_for_binary(binary, &r, false, None);
         assert_eq!(vetted, Inherited::default(), "{binary}");
         assert!(lines.is_empty(), "{binary}: {lines:?}");
     }
@@ -407,7 +407,7 @@ fn nothing_resolved_vets_to_nothing_for_every_binary() {
 fn codex_takes_low_medium_and_high_effort() {
     for level in ["low", "medium", "high"] {
         let r = resolved(Some((level, InheritSource::ParentLaunch)), None);
-        let (vetted, lines) = vet_for_binary("codex", &r, false);
+        let (vetted, lines) = vet_for_binary("codex", &r, false, None);
         assert_eq!(vetted.effort.as_deref(), Some(level));
         assert!(lines.is_empty(), "{level}: {lines:?}");
     }
@@ -417,7 +417,7 @@ fn codex_takes_low_medium_and_high_effort() {
 fn codex_drops_any_other_effort_with_one_line() {
     for level in ["max", "xhigh", "HIGH", "high,foo=bar"] {
         let r = resolved(Some((level, InheritSource::ParentLaunch)), None);
-        let (vetted, lines) = vet_for_binary("codex", &r, false);
+        let (vetted, lines) = vet_for_binary("codex", &r, false, None);
         assert_eq!(vetted.effort, None, "{level}");
         assert_eq!(lines, vec![cannot_pass_line("effort", level, "codex")]);
     }
@@ -434,7 +434,7 @@ fn codex_and_copilot_drop_an_inherited_model_with_one_line() {
     ] {
         for binary in ["codex", "copilot"] {
             let r = resolved(None, Some(("claude-opus-5-5", source)));
-            let (vetted, lines) = vet_for_binary(binary, &r, false);
+            let (vetted, lines) = vet_for_binary(binary, &r, false, None);
             assert_eq!(vetted.model, None, "{binary} {source:?}");
             assert_eq!(
                 lines,
@@ -449,7 +449,7 @@ fn codex_and_copilot_drop_an_inherited_model_with_one_line() {
 fn codex_and_copilot_take_a_model_from_the_recipe_context() {
     for binary in ["codex", "copilot"] {
         let r = resolved(None, Some(("gpt-5.1", InheritSource::RecipeContext)));
-        let (vetted, lines) = vet_for_binary(binary, &r, false);
+        let (vetted, lines) = vet_for_binary(binary, &r, false, None);
         assert_eq!(vetted.model.as_deref(), Some("gpt-5.1"), "{binary}");
         assert!(lines.is_empty(), "{binary}: {lines:?}");
     }
@@ -460,7 +460,7 @@ fn codex_and_copilot_take_a_model_from_the_recipe_context() {
 #[test]
 fn copilot_refuses_any_model_under_the_gateway() {
     let r = resolved(None, Some(("gpt-5.1", InheritSource::RecipeContext)));
-    let (vetted, lines) = vet_for_binary("copilot", &r, true);
+    let (vetted, lines) = vet_for_binary("copilot", &r, true, None);
     assert_eq!(vetted.model, None);
     assert_eq!(lines, vec![cannot_pass_line("model", "gpt-5.1", "copilot")]);
 }
@@ -471,7 +471,7 @@ fn copilot_refuses_any_model_under_the_gateway() {
 fn copilot_takes_every_listed_reasoning_effort() {
     for level in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
         let r = resolved(Some((level, InheritSource::ParentClaude)), None);
-        let (vetted, lines) = vet_for_binary("copilot", &r, false);
+        let (vetted, lines) = vet_for_binary("copilot", &r, false, None);
         assert_eq!(vetted.effort.as_deref(), Some(level));
         assert!(lines.is_empty(), "{level}: {lines:?}");
     }
@@ -481,7 +481,7 @@ fn copilot_takes_every_listed_reasoning_effort() {
 fn copilot_drops_any_other_effort_with_one_line() {
     for level in ["HIGH", "ultra", "high,foo"] {
         let r = resolved(Some((level, InheritSource::RecipeContext)), None);
-        let (vetted, lines) = vet_for_binary("copilot", &r, false);
+        let (vetted, lines) = vet_for_binary("copilot", &r, false, None);
         assert_eq!(vetted.effort, None, "{level}");
         assert_eq!(lines, vec![cannot_pass_line("effort", level, "copilot")]);
     }
@@ -495,7 +495,7 @@ fn an_unknown_binary_takes_no_effort_and_no_inherited_model() {
         Some(("high", InheritSource::ParentLaunch)),
         Some(("claude-opus-5-5", InheritSource::ParentLaunch)),
     );
-    let (vetted, lines) = vet_for_binary("mystery", &r, false);
+    let (vetted, lines) = vet_for_binary("mystery", &r, false, None);
     assert_eq!(vetted, Inherited::default());
     assert_eq!(
         lines,
@@ -597,6 +597,7 @@ fn export_to_child_passes_on_a_rusty_step_effort() {
             effort: effort.exported,
             model: Some("claude-opus-5-5".to_string()),
         },
+        "rusty",
     );
     assert_eq!(
         parent_env_of(&cmd),
@@ -617,7 +618,7 @@ fn export_to_child_removes_unset_and_invalid_values() {
     let mut cmd = Command::new("rusty");
     cmd.env(PARENT_EFFORT_ENV, "stale");
     cmd.env(PARENT_MODEL_ENV, "stale");
-    export_to_child(&mut cmd, &inherited(Some("-bad"), None));
+    export_to_child(&mut cmd, &inherited(Some("-bad"), None), "rusty");
     assert_eq!(
         parent_env_of(&cmd),
         vec![
@@ -760,32 +761,19 @@ fn copilot_effort_maps_only_the_listed_literals() {
 /// round 2: quality-loop.yaml runs `amplihack copilot` under a Claude run).
 #[test]
 fn model_checked_only_for_the_runs_binary() {
-    // codex and copilot: only inside a run of the same binary.
-    assert!(model_checked_for_run("copilot", Some("copilot"), true));
-    assert!(model_checked_for_run("codex", Some("codex"), true));
-    assert!(!model_checked_for_run("copilot", Some("claude"), true));
-    assert!(!model_checked_for_run("copilot", Some("codex"), true));
-    assert!(!model_checked_for_run("copilot", None, true));
-    assert!(!model_checked_for_run("copilot", Some("copilot"), false));
+    // Codex and Copilot require the same originating binary.
+    assert!(model_matches_binary("copilot", Some("copilot")));
+    assert!(model_matches_binary("codex", Some("codex")));
+    assert!(!model_matches_binary("copilot", Some("claude")));
+    assert!(!model_matches_binary("copilot", Some("codex")));
+    assert!(!model_matches_binary("copilot", None));
     // Claude-compatible: unless the run's binary is not Claude-compatible.
     for binary in ["claude", "rusty", "rustyclawd", "amplifier"] {
-        assert!(model_checked_for_run(binary, None, false), "{binary}");
-        assert!(
-            model_checked_for_run(binary, Some("claude"), true),
-            "{binary}"
-        );
-        assert!(
-            model_checked_for_run(binary, Some("amplifier"), true),
-            "{binary}"
-        );
-        assert!(
-            !model_checked_for_run(binary, Some("copilot"), true),
-            "{binary}"
-        );
-        assert!(
-            !model_checked_for_run(binary, Some("codex"), false),
-            "{binary}"
-        );
+        assert!(model_matches_binary(binary, None), "{binary}");
+        assert!(model_matches_binary(binary, Some("claude")), "{binary}");
+        assert!(model_matches_binary(binary, Some("amplifier")), "{binary}");
+        assert!(!model_matches_binary(binary, Some("copilot")), "{binary}");
+        assert!(!model_matches_binary(binary, Some("codex")), "{binary}");
     }
 }
 
@@ -836,15 +824,16 @@ fn codex_effort_maps_only_the_three_literals() {
 #[test]
 fn flag_value_reads_both_spellings_and_the_last_wins() {
     assert_eq!(
-        flag_value(&s(&["--effort", "high"]), "--effort").as_deref(),
+        flag_value("claude", &s(&["--effort", "high"]), "--effort").as_deref(),
         Some("high")
     );
     assert_eq!(
-        flag_value(&s(&["--effort=high"]), "--effort").as_deref(),
+        flag_value("claude", &s(&["--effort=high"]), "--effort").as_deref(),
         Some("high")
     );
     assert_eq!(
         flag_value(
+            "claude",
             &s(&["--effort", "low", "-p", "x", "--effort=high"]),
             "--effort"
         )
@@ -852,34 +841,48 @@ fn flag_value_reads_both_spellings_and_the_last_wins() {
         Some("high")
     );
     assert_eq!(
-        flag_value(&s(&["--model", "a", "--model", "b"]), "--model").as_deref(),
+        flag_value("claude", &s(&["--model", "a", "--model", "b"]), "--model").as_deref(),
         Some("b")
     );
 }
 
 #[test]
 fn flag_value_with_a_trailing_flag_and_no_value_is_none() {
-    assert_eq!(flag_value(&s(&["-p", "x", "--effort"]), "--effort"), None);
-    assert_eq!(flag_value(&s(&[]), "--effort"), None);
+    assert_eq!(
+        flag_value("claude", &s(&["-p", "x", "--effort"]), "--effort"),
+        None
+    );
+    assert_eq!(flag_value("claude", &s(&[]), "--effort"), None);
 }
 
 /// S7: nothing after `--` is read, so prompt text is never taken as a flag.
 #[test]
 fn flag_value_stops_at_double_dash() {
     assert_eq!(
-        flag_value(&s(&["-p", "--", "--effort", "high"]), "--effort"),
+        flag_value("claude", &s(&["-p", "--", "--effort", "high"]), "--effort"),
         None
     );
     assert_eq!(
-        flag_value(&s(&["--effort", "low", "--", "--effort=high"]), "--effort").as_deref(),
+        flag_value(
+            "claude",
+            &s(&["--effort", "low", "--", "--effort=high"]),
+            "--effort"
+        )
+        .as_deref(),
         Some("low")
     );
 }
 
 #[test]
 fn flag_value_does_not_match_a_longer_flag() {
-    assert_eq!(flag_value(&s(&["--efforts", "high"]), "--effort"), None);
-    assert_eq!(flag_value(&s(&["--modelx=high"]), "--model"), None);
+    assert_eq!(
+        flag_value("claude", &s(&["--efforts", "high"]), "--effort"),
+        None
+    );
+    assert_eq!(
+        flag_value("claude", &s(&["--modelx=high"]), "--model"),
+        None
+    );
 }
 
 #[test]
@@ -898,6 +901,51 @@ fn codex_effort_from_argv_reads_config_overrides() {
         None
     );
     assert_eq!(codex_effort_from_argv(&s(&["-c"])), None);
+}
+
+#[test]
+fn codex_quoted_effort_is_decoded_before_export_and_nested_inheritance() {
+    for args in [
+        s(&["-c", r#"model_reasoning_effort="high""#]),
+        s(&["--config", "model_reasoning_effort='high'"]),
+        s(&[r#"--config=model_reasoning_effort="h\u0069gh""#]),
+        s(&[r#"-cmodel_reasoning_effort="high""#]),
+        s(&[r#"-c=model_reasoning_effort="high""#]),
+        s(&["-c", " model_reasoning_effort = 'high' "]),
+        s(&[
+            "-c",
+            "model_reasoning_effort=low",
+            "-c",
+            r#"model_reasoning_effort="high""#,
+            "--",
+            "-c",
+            "model_reasoning_effort=medium",
+        ]),
+    ] {
+        assert_eq!(
+            codex_effort_from_argv(&args).as_deref(),
+            Some("high"),
+            "{args:?}"
+        );
+        let parent = effort_args("codex", &args, &inherited(Some("low"), None));
+        assert!(parent.argv.is_empty(), "{args:?}: {:?}", parent.argv);
+        assert_eq!(parent.exported.as_deref(), Some("high"), "{args:?}");
+        assert!(parent.unsupported.is_none(), "{args:?}");
+
+        let child = effort_args("codex", &[], &inherited(parent.exported.as_deref(), None));
+        assert_eq!(
+            child.argv,
+            s(&["-c", "model_reasoning_effort=high"]),
+            "{args:?}"
+        );
+        assert_eq!(child.exported.as_deref(), Some("high"), "{args:?}");
+        assert!(child.unsupported.is_none(), "{args:?}");
+
+        let child = effort_args("claude", &[], &inherited(parent.exported.as_deref(), None));
+        assert_eq!(child.argv, s(&["--effort", "high"]), "{args:?}");
+        assert_eq!(child.exported.as_deref(), Some("high"), "{args:?}");
+        assert!(child.unsupported.is_none(), "{args:?}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1048,4 +1096,118 @@ fn run_printed_lines_only_for_the_runs_own_binary() {
     assert!(!run_printed_lines_for_run("copilot", Some("claude"), true));
     assert!(!run_printed_lines_for_run("codex", None, true));
     assert!(!run_printed_lines_for_run("codex", Some("codex"), false));
+}
+
+#[test]
+fn same_binary_parent_models_are_vetted_and_cross_binary_models_are_refused() {
+    for binary in ["codex", "copilot"] {
+        let r = resolved(None, Some(("gpt-5.1", InheritSource::ParentLaunch)));
+        for origin in ["codex", "copilot", "claude"] {
+            let (got, lines) = vet_for_binary(binary, &r, false, Some(origin));
+            if origin == binary {
+                assert_eq!(got.model.as_deref(), Some("gpt-5.1"));
+                assert!(lines.is_empty());
+            } else {
+                assert_eq!(got.model, None);
+                assert_eq!(lines, vec![cannot_pass_line("model", "gpt-5.1", binary)]);
+            }
+        }
+        let (got, lines) = vet_for_binary("claude", &r, false, Some(binary));
+        assert_eq!(got.model, None);
+        assert_eq!(lines, vec![cannot_pass_line("model", "gpt-5.1", "claude")]);
+    }
+}
+
+#[test]
+fn codex_quoted_effort_is_decoded_before_export_and_subsequent_inheritance() {
+    for arg in [
+        r#"model_reasoning_effort="high""#,
+        "model_reasoning_effort='high'",
+        r#"model_reasoning_effort="h\u0069gh""#,
+        "model_reasoning_effort = \"high\"",
+        " model_reasoning_effort = 'high' ",
+        " model_reasoning_effort = high ",
+    ] {
+        for args in [
+            s(&["-c", arg]),
+            s(&["--config", arg]),
+            s(&[&format!("--config={arg}")]),
+        ] {
+            let parent = effort_args("codex", &args, &inherited(Some("low"), None));
+            assert_eq!(parent.exported.as_deref(), Some("high"), "{args:?}");
+            assert!(parent.argv.is_empty(), "own effort must win: {args:?}");
+            let mut cmd = Command::new("codex");
+            export_to_child(
+                &mut cmd,
+                &inherited(parent.exported.as_deref(), None),
+                "codex",
+            );
+            let parent_effort = cmd
+                .get_envs()
+                .find(|(key, _)| *key == PARENT_EFFORT_ENV)
+                .and_then(|(_, value)| value.and_then(OsStr::to_str));
+            let resolved = resolve_parent(&ParentInputs {
+                parent_effort,
+                ..ParentInputs::default()
+            });
+            assert_eq!(resolved.effort_source, Some(InheritSource::ParentLaunch));
+            assert!(resolved.warnings.is_empty(), "{args:?}");
+            let (vetted, lines) = vet_for_binary("codex", &resolved, false, None);
+            assert_eq!(vetted.effort.as_deref(), Some("high"), "{args:?}");
+            assert!(lines.is_empty(), "{args:?}: {lines:?}");
+            let child = effort_args("codex", &[], &vetted);
+            assert_eq!(child.argv, s(&["-c", "model_reasoning_effort=high"]));
+            assert_eq!(child.exported.as_deref(), Some("high"));
+        }
+    }
+}
+
+#[test]
+fn model_provenance_is_exported_with_model_and_removed_with_it() {
+    use super::inherit::PARENT_MODEL_BINARY_ENV;
+    let mut cmd = Command::new("copilot");
+    export_to_child(&mut cmd, &inherited(None, Some("gpt-5.1")), "copilot");
+    assert!(
+        cmd.get_envs()
+            .any(|(k, v)| k == PARENT_MODEL_BINARY_ENV && v == Some(OsStr::new("copilot")))
+    );
+    export_to_child(&mut cmd, &Inherited::default(), "claude");
+    assert!(
+        cmd.get_envs()
+            .any(|(k, v)| k == PARENT_MODEL_BINARY_ENV && v.is_none())
+    );
+}
+
+#[test]
+fn consumed_option_values_cannot_set_model_effort_or_config() {
+    for prompt in ["--model=haiku", "--effort=low", "--model", "--effort"] {
+        for option in ["--system-prompt", "--append-system-prompt", "--settings"] {
+            let args = s(&[option, prompt]);
+            assert_eq!(flag_value("claude", &args, "--model"), None);
+            assert_eq!(flag_value("claude", &args, "--effort"), None);
+            let effort = effort_args("claude", &args, &inherited(Some("high"), None));
+            assert_eq!(effort.exported.as_deref(), Some("high"));
+            assert_eq!(effort.argv, s(&["--effort", "high"]));
+        }
+    }
+    assert_eq!(
+        codex_effort_from_argv(&s(&["--profile", "--config=model_reasoning_effort=low"])),
+        None,
+    );
+    assert_eq!(
+        flag_value("codex", &s(&["--config", "--model=phantom"]), "--model"),
+        None,
+    );
+    assert_eq!(
+        flag_value("codex", &s(&["--model=first", "-m", "last"]), "--model").as_deref(),
+        Some("last"),
+    );
+    assert_eq!(
+        flag_value("codex", &s(&["-mfirst", "--model", "last"]), "--model").as_deref(),
+        Some("last"),
+    );
+    assert_eq!(
+        flag_value("codex", &s(&["--", "-m", "prompt"]), "--model"),
+        None
+    );
 }

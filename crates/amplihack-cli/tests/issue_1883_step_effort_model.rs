@@ -43,7 +43,7 @@ use crate::support::amplihack_bin::amplihack_bin;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{Command, Output};
 
 /// The model amplihack passes when nothing else chooses one
 /// (`command::DEFAULT_MODEL`).
@@ -70,8 +70,14 @@ step="${STEP:-0}"
   printf 'ANTHROPIC_MODEL=%s\n' "${ANTHROPIC_MODEL-<unset>}"
   printf 'AMPLIHACK_PARENT_EFFORT=%s\n' "${AMPLIHACK_PARENT_EFFORT-<unset>}"
   printf 'AMPLIHACK_PARENT_MODEL=%s\n' "${AMPLIHACK_PARENT_MODEL-<unset>}"
+  printf 'AMPLIHACK_PARENT_MODEL_BINARY=%s\n' "${AMPLIHACK_PARENT_MODEL_BINARY-<unset>}"
   printf 'HOME=%s\n' "$HOME"
 } > "$RECORD_DIR/call.$step"
+if [ "${AMPLIHACK_TEST_NESTED_ONCE-}" = "$step" ]; then
+  unset AMPLIHACK_TEST_NESTED_ONCE
+  export RECORD_DIR="$RECORD_DIR/nested"
+  exec "$AMPLIHACK_UNDER_TEST" recipe run "$AMPLIHACK_TEST_RECIPE" -w "$AMPLIHACK_TEST_WORK"
+fi
 echo "step $step done"
 exit 0
 "#;
@@ -83,6 +89,7 @@ exit 0
 const STUB_RUNNER: &str = r#"#!/bin/sh
 case "$1" in
   --version) echo 'recipe-runner-rs 0.0.0 (stub)'; exit 0 ;;
+  --capabilities) printf '%s\n' '{"schema_version":1,"version":"fixture","capabilities":["codex_exec"]}'; exit 0 ;;
 esac
 export AMPLIHACK_NONINTERACTIVE=1
 bin="${AMPLIHACK_AGENT_BINARY:-claude}"
@@ -204,15 +211,9 @@ impl Fixture {
 
     /// `amplihack recipe run <extra>` with the stub runner, isolated, with
     /// only the fixture's environment plus `env`.
-    fn run_with(&self, agent: &str, extra: &[&str], env: &[(&str, &str)]) -> Output {
+    fn command(&self, agent: &str, env: &[(&str, &str)]) -> Command {
         let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
-        c.arg("recipe")
-            .arg("run")
-            .arg(self.root.join("inherit-1883.yaml"))
-            .arg("-w")
-            .arg(&self.work)
-            .args(extra)
-            .current_dir(&self.work)
+        c.current_dir(&self.work)
             .env(
                 "PATH",
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),
@@ -225,6 +226,8 @@ impl Fixture {
             .env("AMPLIHACK_COPILOT_BINARY_PATH", self.tools.join("copilot"))
             .env("AMPLIHACK_CODEX_BINARY_PATH", self.tools.join("codex"))
             .env("AMPLIHACK_UNDER_TEST", amplihack_bin())
+            .env("AMPLIHACK_TEST_RECIPE", self.root.join("inherit-1883.yaml"))
+            .env("AMPLIHACK_TEST_WORK", &self.work)
             .env("AMPLIHACK_HOME", self.home.join(".amplihack"))
             .env("AMPLIHACK_TEST_PROC_ROOT", &self.proc_root)
             .env("RECORD_DIR", &self.records)
@@ -241,6 +244,17 @@ impl Fixture {
         for (k, v) in env {
             c.env(k, v);
         }
+        c
+    }
+
+    fn run_with(&self, agent: &str, extra: &[&str], env: &[(&str, &str)]) -> Output {
+        let mut c = self.command(agent, env);
+        c.arg("recipe")
+            .arg("run")
+            .arg(self.root.join("inherit-1883.yaml"))
+            .arg("-w")
+            .arg(&self.work)
+            .args(extra);
         let mut tries = 0;
         loop {
             match c.output() {
@@ -702,4 +716,348 @@ fn h_claude_run_effort_codex_cannot_take_is_logged_by_the_codex_step() {
         "{}",
         describe(&out)
     );
+}
+
+/// A real top-level launch exports both the model and the binary that selected
+/// it. A recipe started by the agent then passes it to every same-binary step.
+#[test]
+fn codex_and_copilot_parent_models_reach_nested_recipe_steps() {
+    for agent in ["codex", "copilot"] {
+        let f = Fixture::new(&[]);
+        fs::create_dir(f.records.join("nested")).unwrap();
+        let out = f
+            .command(
+                agent,
+                &[("STEP", "parent"), ("AMPLIHACK_TEST_NESTED_ONCE", "parent")],
+            )
+            .args([agent, "--subprocess-safe", "--", "--model", "gpt-5.1"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{agent}: {}", describe(&out));
+        for step in [1, 2] {
+            let raw = fs::read_to_string(f.records.join(format!("nested/call.{step}"))).unwrap();
+            assert!(raw.contains("--model|gpt-5.1|"), "{agent}: {raw}");
+            assert!(raw.contains("AMPLIHACK_PARENT_MODEL=gpt-5.1\n"), "{raw}");
+            assert!(
+                raw.contains(&format!("AMPLIHACK_PARENT_MODEL_BINARY={agent}\n")),
+                "{raw}"
+            );
+            assert!(raw.contains("ANTHROPIC_MODEL=<unset>"), "{raw}");
+        }
+    }
+}
+
+/// Context-selected models survive a step starting a second recipe, and a
+/// step's explicit model replaces the enclosing run's choice for its children.
+#[test]
+fn context_and_step_models_survive_subsequent_same_binary_runs() {
+    for agent in ["codex", "copilot"] {
+        for own in [false, true] {
+            let f = Fixture::new(&[]);
+            fs::create_dir(f.records.join("nested")).unwrap();
+            if own {
+                // Step 2 selects the model and starts the nested run. Its own
+                // choice must win over the surrounding run's gpt-5.1.
+                let out = f.run_with(
+                    agent,
+                    &["-c", "model=gpt-5.1"],
+                    &[
+                        ("AMPLIHACK_TEST_NESTED_ONCE", "2"),
+                        ("STEP2_ARGS", "--model gpt-5.2"),
+                    ],
+                );
+                assert!(out.status.success(), "{}", describe(&out));
+            } else {
+                // The nested recipe has no model context, so it must inherit
+                // what the first run resolved rather than finding it again.
+                let out = f.run_with(
+                    agent,
+                    &["-c", "model=gpt-5.1"],
+                    &[("AMPLIHACK_TEST_NESTED_ONCE", "1")],
+                );
+                assert!(out.status.success(), "{}", describe(&out));
+            }
+            let model = if own { "gpt-5.2" } else { "gpt-5.1" };
+            let raw = fs::read_to_string(f.records.join("nested/call.1")).unwrap();
+            assert!(raw.contains(&format!("--model|{model}|")), "{agent}: {raw}");
+            assert!(
+                raw.contains(&format!("AMPLIHACK_PARENT_MODEL={model}\n")),
+                "{raw}"
+            );
+        }
+    }
+}
+
+#[test]
+fn codex_quoted_toml_effort_survives_a_nested_recipe() {
+    for (args, level) in [
+        (vec!["-c", r#"model_reasoning_effort="high""#], "high"),
+        (vec!["-c", "model_reasoning_effort='high'"], "high"),
+        (vec!["-c", r#"model_reasoning_effort="h\u0069gh""#], "high"),
+        (vec!["-c", "model_reasoning_effort = \"high\""], "high"),
+        (
+            vec!["--config", " model_reasoning_effort = 'high' "],
+            "high",
+        ),
+        (vec!["--config= model_reasoning_effort = \"high\" "], "high"),
+        (vec!["-c", " model_reasoning_effort = high "], "high"),
+        (vec!["-c", r#"model_reasoning_effort="low""#], "low"),
+    ] {
+        let f = Fixture::new(&[]);
+        fs::create_dir(f.records.join("nested")).unwrap();
+        let out = f
+            .command(
+                "codex",
+                &[
+                    ("STEP", "parent"),
+                    ("AMPLIHACK_TEST_NESTED_ONCE", "parent"),
+                    ("AMPLIHACK_PARENT_EFFORT", "low"),
+                ],
+            )
+            .args(["codex", "--subprocess-safe", "--"])
+            .args(&args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{args:?}: {}", describe(&out));
+        assert!(
+            text(&out.stderr).contains(
+                &format!("amplihack: steps inherit effort={level} model=unset (from the parent amplihack launch)")
+            ),
+            "{args:?}: {}",
+            describe(&out)
+        );
+        assert!(
+            !text(&out.stderr).contains("cannot be passed"),
+            "{}",
+            describe(&out)
+        );
+        let raw = fs::read_to_string(f.records.join("call.parent")).unwrap();
+        assert!(
+            raw.contains(&format!("AMPLIHACK_PARENT_EFFORT={level}\n")),
+            "{raw}"
+        );
+        for step in [1, 2] {
+            let raw = fs::read_to_string(f.records.join(format!("nested/call.{step}"))).unwrap();
+            assert!(
+                raw.contains(&format!("-c|model_reasoning_effort={level}|")),
+                "{args:?}: {raw}"
+            );
+            assert!(
+                raw.contains(&format!("AMPLIHACK_PARENT_EFFORT={level}\n")),
+                "{raw}"
+            );
+        }
+    }
+}
+
+/// Exercise the public command with the real runner, including a successful
+/// bash launch control. A stub cannot detect the runner's YAML alias exports.
+#[test]
+fn real_runner_yaml_cannot_override_checked_parent_inheritance() {
+    let runner = std::env::var_os("RECIPE_RUNNER_RS_PATH")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("PATH").and_then(|paths| {
+                std::env::split_paths(&paths)
+                    .map(|p| p.join("recipe-runner-rs"))
+                    .find(|p| p.is_file())
+            })
+        })
+        .expect("install the runner pinned in claude-plugin/recipe-runner.rev");
+    let f = Fixture::new(&[]);
+    let recipe = r#"name: inherit-1883
+version: 1.0.0
+context: {}
+steps:
+  - id: nested-launch
+    type: bash
+    command: |
+      STEP=1 "$AMPLIHACK_UNDER_TEST" claude --subprocess-safe -- -p control
+"#;
+    fs::write(f.root.join("inherit-1883.yaml"), recipe).unwrap();
+    let run = || {
+        f.command("claude", &PARENT_HIGH_X)
+            .env("RECIPE_RUNNER_RS_PATH", &runner)
+            .args(["recipe", "run"])
+            .arg(f.root.join("inherit-1883.yaml"))
+            .arg("-w")
+            .arg(&f.work)
+            .output()
+            .unwrap()
+    };
+    let out = run();
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.call(1)["AMPLIHACK_PARENT_EFFORT"], "high");
+    assert_eq!(f.call(1)["AMPLIHACK_PARENT_MODEL"], X);
+    fs::remove_file(f.records.join("call.1")).unwrap();
+    for key in [
+        "amplihack_parent_effort",
+        "AMPLIHACK_PARENT_MODEL",
+        "Amplihack_Parent_Model_Binary",
+    ] {
+        let yaml = recipe.replace("context: {}", &format!("context: {{{key}: low}}"));
+        fs::write(f.root.join("inherit-1883.yaml"), yaml).unwrap();
+        let out = run();
+        assert!(!out.status.success(), "{key}: {}", describe(&out));
+        assert!(
+            text(&out.stderr).contains("namespace cannot be set from recipe context"),
+            "{}",
+            describe(&out)
+        );
+        assert!(
+            !f.records.join("call.1").exists(),
+            "reserved YAML reached a bash launch"
+        );
+    }
+}
+
+#[test]
+fn codex_step_short_model_overrides_the_recipe_context_model() {
+    let f = Fixture::new(&[]);
+    let out = f.run_with(
+        "codex",
+        &["-c", "model=inherited-model"],
+        &[("STEP2_ARGS", "-m step-model")],
+    );
+    assert!(out.status.success(), "{}", describe(&out));
+    let inherited_call = f.call(1);
+    let inherited_args = argv(&inherited_call);
+    assert!(
+        inherited_args
+            .windows(2)
+            .any(|pair| pair == ["--model", "inherited-model"]),
+        "{inherited_args:?}"
+    );
+    let explicit_call = f.call(2);
+    let explicit_args = argv(&explicit_call);
+    assert!(
+        explicit_args
+            .windows(2)
+            .any(|pair| pair == ["-m", "step-model"]),
+        "{explicit_args:?}"
+    );
+    assert_eq!(count(&explicit_args, "--model"), 0, "{explicit_args:?}");
+    assert_eq!(count(&explicit_args, "-m"), 1, "{explicit_args:?}");
+    assert_eq!(explicit_call["AMPLIHACK_PARENT_MODEL"], "step-model");
+    assert_eq!(explicit_call["AMPLIHACK_PARENT_MODEL_BINARY"], "codex");
+}
+
+#[test]
+fn codex_short_model_override_is_forwarded_without_a_duplicate_and_inherited_by_nested_run() {
+    let f = Fixture::new(&[]);
+    fs::create_dir(f.records.join("nested")).unwrap();
+    let out = f
+        .command(
+            "codex",
+            &[
+                ("STEP", "0"),
+                ("AMPLIHACK_TEST_NESTED_ONCE", "0"),
+                ("AMPLIHACK_PARENT_MODEL", "parent-model"),
+                ("AMPLIHACK_PARENT_MODEL_BINARY", "codex"),
+            ],
+        )
+        .args(["codex", "--subprocess-safe", "--", "-m", "own-model"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", describe(&out));
+    let call = f.call(0);
+    let args = argv(&call);
+    assert!(
+        args.windows(2).any(|pair| pair == ["-m", "own-model"]),
+        "{args:?}"
+    );
+    assert!(!args.iter().any(|arg| arg == "--model"), "{args:?}");
+    assert_eq!(call["AMPLIHACK_PARENT_MODEL"], "own-model");
+    for step in [1, 2] {
+        let raw = fs::read_to_string(f.records.join(format!("nested/call.{step}"))).unwrap();
+        assert!(raw.contains("--model|own-model|"), "{raw}");
+        assert!(raw.contains("AMPLIHACK_PARENT_MODEL=own-model\n"), "{raw}");
+    }
+}
+
+#[test]
+fn codex_quoted_and_attached_effort_overrides_reach_nested_runs_without_quotes() {
+    for nested_binary in ["codex", "claude"] {
+        for extra in [
+            vec!["-c", r#"model_reasoning_effort="low""#],
+            vec!["-cmodel_reasoning_effort=low"],
+            vec![r#"-c=model_reasoning_effort="low""#],
+        ] {
+            let f = Fixture::new(&[]);
+            fs::create_dir(f.records.join("nested")).unwrap();
+            let out = f
+                .command(
+                    "codex",
+                    &[
+                        ("STEP", "0"),
+                        ("AMPLIHACK_TEST_NESTED_ONCE", "0"),
+                        ("AMPLIHACK_PARENT_EFFORT", "high"),
+                        ("STEP2_BIN", nested_binary),
+                    ],
+                )
+                .args(["codex", "--subprocess-safe", "--"])
+                .args(&extra)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{extra:?}: {}", describe(&out));
+            let call = f.call(0);
+            let args = argv(&call);
+            assert_eq!(args, extra, "explicit config must be forwarded unchanged");
+            assert_eq!(call["AMPLIHACK_PARENT_EFFORT"], "low", "{extra:?}");
+            for step in [1, 2] {
+                let raw =
+                    fs::read_to_string(f.records.join(format!("nested/call.{step}"))).unwrap();
+                let expected_effort = if step == 1 || nested_binary == "codex" {
+                    "-c|model_reasoning_effort=low|"
+                } else {
+                    "--effort|low|"
+                };
+                assert!(
+                    raw.contains(expected_effort),
+                    "{nested_binary}, {extra:?}: {raw}"
+                );
+                if step == 2 && nested_binary == "claude" {
+                    assert!(raw.contains("CLAUDE_CODE_EFFORT_LEVEL=low\n"), "{raw}");
+                }
+                assert!(
+                    raw.contains("AMPLIHACK_PARENT_EFFORT=low\n"),
+                    "{extra:?}: {raw}"
+                );
+                assert!(
+                    !raw.contains("model_reasoning_effort=high"),
+                    "{extra:?}: {raw}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn system_prompt_that_looks_like_a_model_flag_keeps_inherited_model() {
+    let f = Fixture::new(&[]);
+    let out = f
+        .command("claude", &[("AMPLIHACK_PARENT_MODEL", "sonnet")])
+        .args([
+            "claude",
+            "--subprocess-safe",
+            "--",
+            "--system-prompt",
+            "--model=haiku",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", describe(&out));
+    let call = f.call(0);
+    let args = argv(&call);
+    assert!(
+        args.windows(2).any(|pair| pair == ["--model", "sonnet"]),
+        "{args:?}"
+    );
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--system-prompt", "--model=haiku"]),
+        "{args:?}"
+    );
+    assert_eq!(call["ANTHROPIC_MODEL"], "sonnet");
+    assert_eq!(call["AMPLIHACK_PARENT_MODEL"], "sonnet");
 }

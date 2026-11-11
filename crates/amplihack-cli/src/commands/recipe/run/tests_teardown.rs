@@ -307,6 +307,9 @@ fn test_teardown_is_scoped_to_runner_process_group() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
+    // Keep the exit sweep inside this fixture; the caller's work root can
+    // contain enough historical runs to outlast the sibling's lifetime.
+    let _work_root_env = EnvVarGuard::set("AMPLIHACK_WORK_ROOT", temp.path());
 
     // Sibling process in the TEST's process group (NOT the runner's session).
     let mut sibling = std::process::Command::new("/bin/sleep")

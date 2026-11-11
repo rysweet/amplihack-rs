@@ -293,6 +293,17 @@ pub(super) fn is_reserved_context_key(key: &str) -> bool {
     key.to_ascii_uppercase().starts_with("AMPLIHACK_")
 }
 
+/// Refuse reserved aliases before handing either YAML or --set to the runner.
+fn reject_reserved_context_keys<'a>(mut keys: impl Iterator<Item = &'a str>) -> Result<()> {
+    if let Some(key) = keys.find(|key| is_reserved_context_key(key)) {
+        anyhow::bail!(
+            "recipe context key {} is reserved: the AMPLIHACK_ namespace cannot be set from recipe context",
+            crate::commands::profile::escape_for_error(key)
+        );
+    }
+    Ok(())
+}
+
 /// Validate a single recipe context entry for env export (issue #784 / #1023),
 /// independent of any budget accounting. Returns the uppercased env name on
 /// success, or a static, name-only skip `reason` on rejection. The filters run
@@ -551,11 +562,18 @@ pub(super) fn execute_recipe_via_rust(
     agent_binary: amplihack_utils::agent_binary::Resolution,
     merge_guard: bool,
 ) -> Result<RecipeRunResult> {
+    // Validate the file the runner actually reads, independently of the caller's
+    // context map. The public command merges YAML defaults, but internal callers
+    // need the same protection against the runner's uppercase context aliases.
+    let recipe: RecipeDoc = serde_yaml::from_str(&std::fs::read_to_string(recipe_path)?)?;
+    reject_reserved_context_keys(recipe.context.keys().map(String::as_str))?;
+    reject_reserved_context_keys(context.keys().map(String::as_str))?;
+
     // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
     // recipe-runner once the session has reached the configured maximum depth,
     // so a failing / misbehaving orchestration can never recursively re-enter
-    // the orchestrator and fork-bomb the host. Runs BEFORE any work (binary
-    // lookup, temp dirs, spawn) so no descendant is ever created past the limit.
+    // the orchestrator and fork-bomb the host. Runs before binary lookup,
+    // temp dirs and spawn, so no descendant is ever created past the limit.
     let guard = enforce_recursion_depth_guard(working_dir)?;
     // Issue #1606: from here on a SIGHUP/SIGINT/SIGTERM stops the run, at any
     // point: setup, a running attempt, or retry backoff.
@@ -621,12 +639,9 @@ pub(super) fn execute_recipe_via_rust(
         // keeps AMPLIHACK_* variables, which is why only the profile name (not
         // CLAUDE_CONFIG_DIR) needs to survive: each step's nested
         // `amplihack claude` rebuilds the dir from it. `pass_context` refuses
-        // `AMPLIHACK_*` keys from `-c` and this run's context. The runner still
-        // exports top-level context keys under their uppercase names
-        // (`legacy_uppercase_alias`), so a recipe's own YAML `context:`
-        // defaults or a step `output:` named `amplihack_claude_profile` can
-        // still override the pinned value until the runner refuses that
-        // namespace too (rysweet/amplihack-recipe-runner#146).
+        // `AMPLIHACK_*` keys from `-c`; the boundary check above independently
+        // refuses YAML defaults before the runner can export uppercase aliases.
+        // Step outputs remain the runner's responsibility (#146).
         let mut command = Command::new(&binary);
         command
             .arg(recipe_path)
@@ -723,7 +738,11 @@ pub(super) fn execute_recipe_via_rust(
         // Issue #1883 (C3): the runner passes these to every step. Removed
         // first, so a stale value from this process never reaches a step, and
         // set only with the run's checked value.
-        crate::commands::launch::inherit::set_parent_env(&mut command, &inherited);
+        crate::commands::launch::inherit::set_parent_env(
+            &mut command,
+            &inherited,
+            &agent_binary.binary,
+        );
         // Issue #1326: pin the session-tree directory for every descendant. Without
         // this each level re-derives it, and the previous derivation was based on
         // TMPDIR -- which we replace below with a fresh per-run tempdir, giving every
@@ -1335,12 +1354,7 @@ pub(super) fn pass_context(
     command: &mut Command,
     context: &BTreeMap<String, String>,
 ) -> Result<usize> {
-    if let Some(key) = context.keys().find(|k| is_reserved_context_key(k)) {
-        anyhow::bail!(
-            "recipe context key {} is reserved: the AMPLIHACK_ namespace cannot be set from recipe context",
-            crate::commands::profile::escape_for_error(key)
-        );
-    }
+    reject_reserved_context_keys(context.keys().map(String::as_str))?;
     if let Some((key, value)) = context
         .iter()
         .find(|(k, v)| k.len() + 1 + v.len() + 1 > MAX_ARG_STRLEN_BYTES)

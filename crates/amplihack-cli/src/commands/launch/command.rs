@@ -360,11 +360,13 @@ pub(super) struct ModelArgs {
 /// the user had never chosen and could not find anywhere, because it existed
 /// only at resolution time. [`DEFAULT_MODEL`] is concrete for that reason.
 ///
-/// Only a Claude-compatible tool ([`is_claude_compatible_tool`]) gets a model
-/// from amplihack. Precedence, highest first:
+/// Configured defaults apply only to Claude-compatible tools
+/// ([`is_claude_compatible_tool`]). Explicit models and models inherited from
+/// the same binary also apply to Codex and Copilot. Precedence, highest first:
 ///
-/// 1. `--model` on the command line: the operator's, forwarded untouched, even
-///    when dotted (#1527 asks that an explicit value be left alone). A dotted
+/// 1. `--model` (also `-m` for Codex) on the command line: the operator's,
+///    forwarded untouched, even when dotted (#1527 asks that an explicit
+///    value be left alone). A dotted
 ///    Claude id gets one stderr warning naming the hyphenated spelling; see
 ///    [`explicit_model_warnings`] for when.
 /// 2. `AMPLIHACK_LITELLM_MODEL`, when the launch goes through the LiteLLM
@@ -379,10 +381,9 @@ pub(super) struct ModelArgs {
 ///    printed only outside a recipe run; inside one, `recipe run` prints one
 ///    summary line instead. It is used only when
 ///    [`inherit::model_checked_for`] holds: the run checked it for this
-///    binary. Codex and copilot take it only inside a recipe run whose agent
-///    binary (`AMPLIHACK_AGENT_BINARY`) is the same binary, because
-///    `recipe run` checks the model for its own binary only, by where it came
-///    from, not by its spelling; and never through the gateway. A model that
+///    binary. Codex and copilot require matching model provenance
+///    (`AMPLIHACK_PARENT_MODEL_BINARY`), or a legacy recipe run for that same
+///    binary; and never through the gateway. A model that
 ///    was not checked for this binary is dropped with one "cannot be passed"
 ///    line.
 /// 4. `AMPLIHACK_DEFAULT_MODEL`, which pins every launch; an empty value means
@@ -410,7 +411,7 @@ pub(super) fn model_args(
         exported: None,
     };
 
-    let own = inherit::flag_value(extra_args, "--model");
+    let own = inherit::flag_value(binary_name, extra_args, "--model");
     // Issue #1883 (D6): a model the run checked for another binary is not
     // inherited. The run's own lines named only its own binary, so this
     // launch says so once, unless the step chose its own model.
@@ -424,38 +425,40 @@ pub(super) fn model_args(
         }
         model => model.clone(),
     };
-    if own.is_some() {
-        // Issue #1883 (D5): the child holds only the step's own model. A
-        // gateway route name, or a codex or copilot model, is not a Claude
-        // model id, so it is neither put in ANTHROPIC_MODEL nor exported.
-        //
-        // `auto` is the recipe runner's final-attempt retry sentinel, not a
-        // model choice. It applies to that one attempt only: it is never put
-        // in ANTHROPIC_MODEL, and the step's children are passed the model
-        // the step would have run without the retry, so a nested run is not
-        // pinned to `auto`.
-        if is_claude_compatible && !through_gateway {
-            if own.as_deref().is_some_and(is_runner_auto_model) {
+    if let Some(own) = own {
+        // `auto` is the runner's retry sentinel, not a persistent model choice.
+        // Gateway routes are also local to this launch.
+        if !proxy {
+            if is_runner_auto_model(&own) {
                 out.exported = inherited_model;
                 return out;
             }
-            if let (Some(own), Some(_)) = (&own, &inherited_model) {
+            if is_claude_compatible && inherited_model.is_some() {
                 out.env.push(("ANTHROPIC_MODEL", own.clone()));
             }
-            out.exported = own;
+            out.exported = Some(own);
         }
         return out;
     }
     // #1872: role model goes here, between the step's own model and the
     // gateway model.
     if !is_claude_compatible {
-        // Issue #1883: codex and copilot get a model only from a `recipe run`
-        // for this same binary, which passes on only a model given for the
-        // run (checked above), and never through the gateway, where the run's
-        // lines already refused it.
+        // Codex and Copilot inherit only models selected for the same binary,
+        // including models exported by a parent launch outside a recipe run.
         if let Some(model) = inherited_model
             && !proxy
         {
+            if !inherit::in_recipe_run() {
+                out.stderr.push(model_selection_notice(
+                    &ModelSelection {
+                        model: model.clone(),
+                        source: ModelSource::Inherited,
+                        normalised_from: None,
+                    },
+                    binary_name,
+                ));
+            }
+            out.exported = Some(model.clone());
             out.argv = vec!["--model".to_string(), model];
         }
         return out;
@@ -718,13 +721,9 @@ pub(super) fn explicit_model_warnings(
         return Vec::new();
     }
     let mut warnings = Vec::new();
-    let mut args = extra_args.iter().map(String::as_str);
-    while let Some(arg) = args.next() {
-        let value = if arg == "--model" {
-            args.next()
-        } else {
-            arg.strip_prefix("--model=")
-        };
+    for (_, value) in
+        inherit::launch_options(binary_name, extra_args).filter(|(name, _)| *name == "--model")
+    {
         let Some(value) = value else { continue };
         if let Some(hyphenated) = normalize_dotted_claude_model_id(value.trim()) {
             warnings.push(format!(

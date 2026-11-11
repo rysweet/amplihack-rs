@@ -505,7 +505,7 @@ fn run_launch_core(
         cmd.env_remove(crate::commands::profile::AUTO_SWITCH_SUPERVISED_ENV);
         // Issue #1883 (C1): tell the agent's children which effort and model
         // this launch runs with, after the launch environment is applied.
-        inherit::export_to_child(&mut cmd, &applied);
+        inherit::export_to_child(&mut cmd, &applied, tool);
 
         // Spawn child in its own process group.
         //

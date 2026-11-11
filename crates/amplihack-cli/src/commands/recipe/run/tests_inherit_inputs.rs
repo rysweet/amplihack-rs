@@ -68,9 +68,11 @@ fn fake_proc(ancestor: &[&str]) -> FakeProc {
     FakeProc { _tmp: tmp, root }
 }
 
-const READ_VARS: [&str; 6] = [
+const READ_VARS: [&str; 8] = [
     "AMPLIHACK_PARENT_EFFORT",
     "AMPLIHACK_PARENT_MODEL",
+    "AMPLIHACK_PARENT_MODEL_BINARY",
+    "AMPLIHACK_AGENT_BINARY",
     "CLAUDE_CODE_EFFORT_LEVEL",
     "ANTHROPIC_MODEL",
     "AMPLIHACK_SESSION_ID",
@@ -428,6 +430,7 @@ fn parent_variables_are_reserved_context_keys_in_any_case() {
     for key in [
         "AMPLIHACK_PARENT_EFFORT",
         "AMPLIHACK_PARENT_MODEL",
+        "AMPLIHACK_PARENT_MODEL_BINARY",
         "amplihack_parent_model",
         "Amplihack_Parent_Effort",
     ] {
@@ -454,4 +457,65 @@ fn a_parent_variable_in_the_context_is_not_an_inheritance_source() {
     );
     assert_eq!(got, Inherited::default());
     assert!(lines.is_empty(), "{lines:?}");
+}
+
+#[test]
+fn same_binary_parent_models_are_preserved_by_recipe_resolution() {
+    let p = fake_proc(&[]);
+    for binary in ["codex", "copilot"] {
+        let (got, lines) = run(
+            &p,
+            &[],
+            &[
+                ("AMPLIHACK_PARENT_MODEL", "gpt-5.1"),
+                ("AMPLIHACK_PARENT_MODEL_BINARY", binary),
+            ],
+            binary,
+        );
+        assert_eq!(got.model.as_deref(), Some("gpt-5.1"));
+        assert_eq!(
+            lines,
+            vec![
+                "amplihack: steps inherit effort=unset model=gpt-5.1 (from the parent amplihack launch)"
+            ]
+        );
+    }
+}
+
+/// Internal callers may supply an empty context map rather than merging YAML
+/// defaults. The boundary still refuses reserved YAML before any runner spawn.
+#[test]
+fn runner_boundary_checks_yaml_independently_of_the_supplied_context_map() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let recipe = temp.path().join("reserved.yaml");
+    for key in [
+        "amplihack_parent_effort",
+        "AMPLIHACK_PARENT_MODEL",
+        "Amplihack_Parent_Model_Binary",
+    ] {
+        fs::write(
+            &recipe,
+            format!("name: reserved\ncontext: {{{key}: low}}\nsteps: []\n"),
+        )
+        .unwrap();
+        let error = super::execute_recipe_via_rust_for_test(
+            &recipe,
+            &BTreeMap::new(),
+            false,
+            false,
+            temp.path(),
+            &[],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("namespace cannot be set from recipe context"),
+            "{error:#}"
+        );
+    }
 }

@@ -6,7 +6,7 @@
 
 use crate::commands::launch::inherit::{
     Inherited, PARENT_EFFORT_ENV, PARENT_MODEL_ENV, ParentInputs, Resolved, checked,
-    inherit_summary_line, resolve_parent, vet_for_binary,
+    inherit_summary_line, parent_model_binary, resolve_parent, vet_for_binary,
 };
 use std::collections::BTreeMap;
 
@@ -55,7 +55,12 @@ pub(crate) fn inherit_for_run(
         model_env: model_env.as_deref(),
     });
     let through_gateway = amplihack_utils::litellm_proxy::proxy_requested();
-    let (vetted, notices) = vet_for_binary(binary, &resolved, through_gateway);
+    let (vetted, notices) = vet_for_binary(
+        binary,
+        &resolved,
+        through_gateway,
+        parent_model_binary().as_deref(),
+    );
     let mut lines = resolved.warnings.clone();
     lines.extend(notices);
     // The summary names only what the steps receive, so it never repeats a

@@ -79,7 +79,8 @@ amplihack: steps inherit effort=medium model=claude-sonnet-4-5 (from the recipe 
    the runner.
 4. The runner passes its environment to every step unchanged. Each step's
    `amplihack <binary> -- …` launch reads only these two variables and the
-   step's own arguments. Steps do not read `/proc` or the fallback variables.
+   step's own arguments, plus `AMPLIHACK_PARENT_MODEL_BINARY` for model
+   compatibility. Steps do not read `/proc` or the fallback variables.
 5. Each launch exports `AMPLIHACK_PARENT_EFFORT` and `AMPLIHACK_PARENT_MODEL`
    again for the agent it starts. The effort is the one the agent runs with:
    the step's own effort if given, otherwise the inherited effort when the
@@ -128,7 +129,7 @@ platforms other than Linux. It accepts both `--effort high` and
 nothing after `--` is read.
 
 `AMPLIHACK_PARENT_EFFORT` and `AMPLIHACK_PARENT_MODEL` cannot be set through
-`-c` or a context file, in any letter case. Context keys starting with
+`-c`, a context file or YAML context defaults, in any letter case. Context keys starting with
 `AMPLIHACK_` are reserved and are not exported to the runner.
 
 ## Precedence inside each step
@@ -172,8 +173,8 @@ the parent's.
 |---|---|---|
 | `claude` | `--effort L`, and `CLAUDE_CODE_EFFORT_LEVEL=L` when an effort is inherited | `--model M`, and `ANTHROPIC_MODEL=M` when a model is inherited |
 | `rusty`, `rustyclawd`, `amplifier` | `CLAUDE_CODE_EFFORT_LEVEL=L` when an effort is inherited; no `--effort` on argv | `--model M`, and `ANTHROPIC_MODEL=M` when a model is inherited |
-| `codex` | `-c model_reasoning_effort=L` when L is `low`, `medium` or `high`; any other value is dropped with a log line | Only a model from the recipe context (`-c model=` or a context file) of a run whose agent binary is `codex`, and never while a LiteLLM gateway variable is set. Any other inherited model is dropped with a log line. |
-| `copilot` | `--reasoning-effort L` when L is one of the values `copilot --help` lists: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; any other value is dropped with a log line | Only a model from the recipe context of a run whose agent binary is `copilot`, and never while a LiteLLM gateway variable is set. Any other inherited model is dropped with a log line. |
+| `codex` | `-c model_reasoning_effort=L` when L is `low`, `medium` or `high`; any other value is dropped with a log line | A model selected in the recipe context or exported by a parent Codex launch, and never while a LiteLLM gateway variable is set. Models selected for another binary are dropped with a log line. |
+| `copilot` | `--reasoning-effort L` when L is one of the values `copilot --help` lists: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; any other value is dropped with a log line | A model selected in the recipe context or exported by a parent Copilot launch, and never while a LiteLLM gateway variable is set. Models selected for another binary are dropped with a log line. |
 
 Notes:
 
@@ -185,6 +186,22 @@ Notes:
 - For `copilot`, the `--reasoning-effort` value is built from a matched
   literal in the same way. Copilot refuses to start with a value it does not
   list, so such a value is dropped rather than passed.
+- Quoted Codex TOML overrides are decoded before export: both
+  `-c 'model_reasoning_effort="low"'` and
+  `-c "model_reasoning_effort='low'"` export `low`, so subsequent Codex
+  launches inherit the effort without TOML quotes or escapes, and Claude
+  launches receive `--effort low`. Whitespace
+  around `=` is accepted too: `-c 'model_reasoning_effort = "high"'`
+  exports `high` to nested recipe runs. Attached short options such as
+  `-cmodel_reasoning_effort=low` and `-c='model_reasoning_effort="low"'`
+  also export `low` and suppress an inherited effort override.
+- A Codex step can select its own model with `-m <id>`, `-m=<id>`,
+  `-m<id>`, `--model <id>` or `--model=<id>`. Each suppresses inherited
+  model arguments and exports the selected model for nested runs.
+- Values consumed by other options are not inheritance flags. For example,
+  `--system-prompt '--model=haiku'` leaves an inherited `sonnet` selected
+  and exports `sonnet`; the prompt is forwarded unchanged. `--` stops
+  inheritance option parsing.
 - A step's own effort wins: `--effort` for Claude-compatible binaries,
   `-c model_reasoning_effort=L` for `codex` and `--reasoning-effort` for
   `copilot`.
@@ -194,10 +211,11 @@ Notes:
   run's binary. A run's `AMPLIHACK_PARENT_MODEL` reaches every process under
   the run, including a bash step that starts another binary, such as the
   `amplihack copilot -p …` steps in `quality-loop.yaml`. Such a launch drops
-  the model with one "cannot be passed" line when the run's
-  `AMPLIHACK_AGENT_BINARY` is a different binary (`codex` and `copilot`
-  need the same binary; Claude-compatible binaries need a Claude-compatible
-  run binary, or none). The effort is still passed, through the checks
+  the model with one "cannot be passed" line when its provenance names a
+  different binary (`codex` and `copilot` need the same binary;
+  Claude-compatible binaries need a Claude-compatible origin, or none).
+  `AMPLIHACK_PARENT_MODEL_BINARY` records the model's origin; older recipe
+  runs use `AMPLIHACK_AGENT_BINARY` as a compatibility fallback. The effort is still passed, through the checks
   above.
 - `codex` and `copilot` receive no added `CLAUDE_CODE_EFFORT_LEVEL` or
   `ANTHROPIC_MODEL`. They still see `AMPLIHACK_PARENT_EFFORT` and
@@ -210,18 +228,25 @@ Notes:
 |---|---|---|
 | `AMPLIHACK_PARENT_EFFORT` | Each `amplihack <binary>` launch (the effort its agent runs with) and `amplihack recipe run` (for the runner) | `amplihack recipe run`, and each step's launch |
 | `AMPLIHACK_PARENT_MODEL` | Each `amplihack <binary>` launch (see below) and `amplihack recipe run` (for the runner) | `amplihack recipe run`, and each step's launch |
+| `AMPLIHACK_PARENT_MODEL_BINARY` | Each launch or recipe run, alongside its exported model; removed when no model is exported | Model compatibility checks in nested launches and recipe runs |
 | `CLAUDE_CODE_EFFORT_LEVEL` | Each Claude-compatible step, only when an effort is inherited. It holds the step's own `--effort` if given, otherwise the inherited effort. | The agent; and `amplihack recipe run` as the last effort fallback |
 | `ANTHROPIC_MODEL` | Each Claude-compatible step, only when a model is inherited. It holds the step's own `--model` if given, otherwise the inherited model. | The agent; and `amplihack recipe run` as the last model fallback |
 
 A launch with nothing inherited sets neither `CLAUDE_CODE_EFFORT_LEVEL` nor
 `ANTHROPIC_MODEL`, even when it has its own `--effort` or `--model`.
 
+Codex and Copilot export explicit and inherited models with their binary name
+in `AMPLIHACK_PARENT_MODEL_BINARY`. A subsequent same-binary launch or recipe
+run inherits that choice, including a model first selected from recipe context.
+A step's explicit `--model` replaces the parent choice and provenance for its
+children. Models are never matched by guessing their vendor from their spelling.
+
 A launch sets `AMPLIHACK_PARENT_MODEL` only when the model came from the
 command line or was inherited. It is not set when amplihack chose the model
 itself (`AMPLIHACK_DEFAULT_MODEL`, the built-in default or the gateway model),
 so amplihack's own default never takes the place of a real choice further down.
 
-None of the four variables is ever set to an empty string. A launch sets them after
+None of these variables is ever set to an empty string. A launch sets them after
 the launch environment is built and are not managed by `EnvBuilder`. The
 gateway's `ANTHROPIC_MODEL` is applied last, so it still wins under the
 gateway.
@@ -357,7 +382,7 @@ inherited", and the operator's own flags still apply.
   A step that starts a different binary checks the values again for itself:
   its effort through the checks in
   [Support for each agent binary](#support-for-each-agent-binary), and its
-  model by refusing one the run checked for another binary. That launch
+  model by refusing one whose provenance names an incompatible binary. That launch
   prints its own "cannot be passed" lines for the effort and the model.
 - **Sessions started by an older amplihack.** Such a session does not export
   `AMPLIHACK_PARENT_*`. Its effort is still found through the ancestor lookup.
@@ -371,10 +396,14 @@ inherited", and the operator's own flags still apply.
   `-c model=`.
 - **No per-step effort field** in the recipe schema. A step sets its own effort
   by passing `--effort` in its agent arguments.
-- **Nested runs under codex or copilot steps.** A codex or copilot step
-  receives the inherited model as its own option, but does not export it as
-  `AMPLIHACK_PARENT_MODEL`. A `recipe run` started from inside such a step
-  therefore does not inherit the model. Pass `-c model=<id>` to that run.
+- **Reserved context aliases.** The runner boundary rejects every top-level
+  YAML context key or supplied context key in the `AMPLIHACK_` namespace,
+  case-insensitively, before starting the runner. This includes
+  `amplihack_parent_effort`, `AMPLIHACK_PARENT_MODEL` and model provenance.
+  The check reads the YAML independently of the caller's merged context map;
+  filtering only `--set` arguments would leave the runner's uppercase alias
+  exports able to overwrite validated inheritance. Use `effort` and `model`
+  to select the documented recipe context values.
 - **Values from a recipe's own context.** A recipe can set `effort` or
   `model` in its context, and its steps and nested runs then use them. This
   mainly affects cost. A recipe could already do the same by putting
@@ -394,7 +423,7 @@ Code comments and tests for #1883 cite these labels.
 
 | Label | Meaning |
 |---|---|
-| D1 | A step's launch reads only `AMPLIHACK_PARENT_EFFORT`, `AMPLIHACK_PARENT_MODEL` and its own arguments; never `/proc` or the fallback variables. |
+| D1 | A step's launch reads `AMPLIHACK_PARENT_EFFORT`, `AMPLIHACK_PARENT_MODEL`, model binary provenance and its own arguments; never `/proc` or the fallback variables. |
 | D2 | The `claude` ancestor lookup is a fallback only, follows same-user processes, and is skipped when the values are already known. |
 | D3 | The source order for each setting, and the source labels in log lines. |
 | D4 | What a launch adds for an inherited effort. |

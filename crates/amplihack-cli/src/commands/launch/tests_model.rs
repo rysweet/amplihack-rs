@@ -808,7 +808,10 @@ fn test_model_args_never_warns_copilot_or_codex() {
             for env in [&[][..], &[("AMPLIHACK_DEFAULT_MODEL", "claude-opus-5.5")]] {
                 assert_eq!(
                     model_args_with(env, tool, extra),
-                    ModelArgs::default(),
+                    ModelArgs {
+                        exported: (!extra.is_empty()).then(|| "claude-opus-4.5".to_string()),
+                        ..ModelArgs::default()
+                    },
                     "`amplihack {tool}` with {extra:?} and {env:?}"
                 );
             }
@@ -1346,6 +1349,7 @@ fn model_args_inherited(
             "AMPLIHACK_RECIPE_RUN_ID",
             "AMPLIHACK_PARENT_EFFORT",
             "AMPLIHACK_PARENT_MODEL",
+            "AMPLIHACK_PARENT_MODEL_BINARY",
             "AMPLIHACK_AGENT_BINARY",
         ]);
     let restore = RestoreEnv(names.map(|name| (name, std::env::var_os(name))).collect());
@@ -1704,4 +1708,63 @@ fn test_copilot_under_the_gateway_takes_no_inherited_model() {
     );
     assert!(got.argv.is_empty(), "{:?}", got.argv);
     assert!(got.env.is_empty(), "{:?}", got.env);
+}
+
+#[test]
+fn test_codex_and_copilot_export_explicit_and_inherited_models() {
+    for tool in ["codex", "copilot"] {
+        let own = model_args_inherited(&[], tool, &["--model", "gpt-5.1"], &Inherited::default());
+        assert_eq!(own.exported.as_deref(), Some("gpt-5.1"));
+        assert!(own.env.is_empty());
+        // Provenance, rather than an enclosing recipe's binary, describes the
+        // parent launch when a bash step starts a different tool explicitly.
+        let inherited = model_args_inherited(
+            &[
+                ("AMPLIHACK_PARENT_MODEL_BINARY", tool),
+                ("AMPLIHACK_AGENT_BINARY", "claude"),
+            ],
+            tool,
+            &[],
+            &inherit_model("gpt-5.1"),
+        );
+        assert_eq!(inherited.argv, vec!["--model", "gpt-5.1"]);
+        assert_eq!(inherited.exported.as_deref(), Some("gpt-5.1"));
+        assert!(inherited.env.is_empty());
+    }
+}
+
+#[test]
+fn test_codex_short_model_override_suppresses_inherited_model() {
+    for extra in [
+        vec!["-m", "own-model"],
+        vec!["-m=own-model"],
+        vec!["-mown-model"],
+        vec!["--model=own-model"],
+    ] {
+        let got = model_args_inherited(
+            &[("AMPLIHACK_PARENT_MODEL_BINARY", "codex")],
+            "codex",
+            &extra,
+            &inherit_model("inherited-model"),
+        );
+        assert!(got.argv.is_empty(), "{extra:?}: {:?}", got.argv);
+        assert_eq!(got.exported.as_deref(), Some("own-model"), "{extra:?}");
+        assert!(got.env.is_empty());
+        assert!(got.stderr.is_empty());
+    }
+}
+
+#[test]
+fn test_prompt_value_cannot_override_inherited_model_or_emit_model_warnings() {
+    for option in ["--system-prompt", "--append-system-prompt", "--settings"] {
+        for prompt in ["--model=haiku", "--model=claude-opus-5.5", "--model"] {
+            let got =
+                model_args_inherited(&[], "claude", &[option, prompt], &inherit_model("sonnet"));
+            assert_eq!(got.argv, vec!["--model", "sonnet"], "{option} {prompt}");
+            assert_eq!(got.env, model_env("sonnet"));
+            assert_eq!(got.exported.as_deref(), Some("sonnet"));
+            assert_eq!(got.stderr.len(), 1, "{:?}", got.stderr);
+            assert!(!got.stderr[0].contains("warning"), "{:?}", got.stderr);
+        }
+    }
 }

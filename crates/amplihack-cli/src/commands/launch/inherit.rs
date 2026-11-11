@@ -17,6 +17,7 @@
 
 use super::command::is_claude_compatible_tool as is_claude_compatible;
 use crate::commands::agent::option_check::option_value;
+use serde::Deserialize;
 use std::process::Command;
 use std::sync::Once;
 
@@ -24,6 +25,8 @@ use std::sync::Once;
 pub(crate) const PARENT_EFFORT_ENV: &str = "AMPLIHACK_PARENT_EFFORT";
 /// The model the parent session ran with, exported for children.
 pub(crate) const PARENT_MODEL_ENV: &str = "AMPLIHACK_PARENT_MODEL";
+/// The binary for which the parent model was selected. Model ids are not portable.
+pub(crate) const PARENT_MODEL_BINARY_ENV: &str = "AMPLIHACK_PARENT_MODEL_BINARY";
 
 const EFFORT_LEVEL_ENV: &str = "CLAUDE_CODE_EFFORT_LEVEL";
 const RECIPE_RUN_ID_ENV: &str = "AMPLIHACK_RECIPE_RUN_ID";
@@ -162,13 +165,14 @@ pub(crate) fn resolve_parent(inputs: &ParentInputs<'_>) -> Resolved {
 }
 
 /// What `binary` may receive of `resolved` (D6), and one "cannot be passed"
-/// line per dropped setting, effort first. A binary amplihack does not know
-/// takes no effort and only a model from the recipe context, as codex and
-/// copilot do. `through_gateway` is whether a LiteLLM gateway variable is set.
+/// line per dropped setting, effort first. Models from the recipe context
+/// apply to the run's binary; parent-launch models require compatible binary
+/// provenance. `through_gateway` is whether a LiteLLM gateway variable is set.
 pub(crate) fn vet_for_binary(
     binary: &str,
     resolved: &Resolved,
     through_gateway: bool,
+    parent_model_binary: Option<&str>,
 ) -> (Inherited, Vec<String>) {
     let mut lines = Vec::new();
     if is_claude_compatible(binary) {
@@ -176,6 +180,12 @@ pub(crate) fn vet_for_binary(
         // the LiteLLM gateway, so the inherited model reaches no step and is
         // neither passed on nor named in the run's summary line.
         let mut passed = resolved.inherited.clone();
+        if resolved.model_source == Some(InheritSource::ParentLaunch)
+            && !model_matches_binary(binary, parent_model_binary)
+            && let Some(model) = passed.model.take()
+        {
+            lines.push(cannot_pass_line("model", &model, binary));
+        }
         if through_gateway && let Some(model) = passed.model.take() {
             lines.push(gateway_model_line(&model, binary));
         }
@@ -194,7 +204,9 @@ pub(crate) fn vet_for_binary(
         // `model_args` gives codex and copilot no model under the gateway
         // either, so the run reports it here rather than each step dropping
         // it silently.
-        if from_context && !through_gateway {
+        let from_same_binary = resolved.model_source == Some(InheritSource::ParentLaunch)
+            && parent_model_binary == Some(binary);
+        if (from_context || from_same_binary) && !through_gateway {
             Some(m.to_string())
         } else {
             lines.push(cannot_pass_line("model", m, binary));
@@ -214,11 +226,11 @@ pub(crate) fn effort_args(
 ) -> EffortArgs {
     let mut out = EffortArgs::default();
     let own = if is_claude_compatible(binary) {
-        flag_value(extra_args, "--effort")
+        flag_value(binary, extra_args, "--effort")
     } else if binary == "codex" {
         codex_effort_from_argv(extra_args)
     } else if binary == "copilot" {
-        flag_value(extra_args, COPILOT_EFFORT_FLAG)
+        flag_value(binary, extra_args, COPILOT_EFFORT_FLAG)
     } else {
         None
     };
@@ -298,53 +310,163 @@ pub(crate) fn codex_effort(level: &str) -> Option<String> {
     Some(format!("{CODEX_EFFORT_KEY}{literal}"))
 }
 
-/// The value of the last `flag` (`--flag v` or `--flag=v`) in `args`. Stops
-/// at `--`, so prompt text is never read as a flag (S7). A final `flag` with
-/// no value gives `None`.
-pub(crate) fn flag_value(args: &[String], flag: &str) -> Option<String> {
-    let mut out = None;
-    let mut i = 0;
-    while i < args.len() {
-        let arg = args[i].as_str();
+/// Walk launch options without interpreting another option's consumed value as
+/// a flag. The value-taking options belong to the supported agent CLIs; unknown
+/// options are forwarded untouched. `--` ends option parsing. Codex short model
+/// and config aliases (including attached values) use their canonical names.
+pub(crate) fn launch_options<'a>(
+    binary: &'a str,
+    args: &'a [String],
+) -> impl Iterator<Item = (&'a str, Option<&'a str>)> {
+    let mut args = args.iter().map(String::as_str);
+    let mut ended = false;
+    std::iter::from_fn(move || {
+        if ended {
+            return None;
+        }
+        let arg = args.next()?;
         if arg == "--" {
-            break;
+            ended = true;
+            return None;
         }
-        if arg == flag {
-            match args.get(i + 1).filter(|v| v.as_str() != "--") {
-                Some(v) => {
-                    out = Some(v.clone());
-                    i += 1;
+        let (mut name, mut value) = arg
+            .split_once('=')
+            .map_or((arg, None), |(name, value)| (name, Some(value)));
+        if binary == "codex" {
+            // Clap also accepts -mMODEL, -m=MODEL and -cKEY=VALUE.
+            for (short, long) in [("-m", "--model"), ("-c", "--config")] {
+                if let Some(rest) = arg.strip_prefix(short) {
+                    name = long;
+                    value = (!rest.is_empty()).then(|| rest.strip_prefix('=').unwrap_or(rest));
+                    break;
                 }
-                None => out = None,
             }
-        } else if let Some(v) = arg.strip_prefix(flag).and_then(|r| r.strip_prefix('=')) {
-            out = Some(v.to_string());
         }
-        i += 1;
-    }
-    out
+        let takes_value = name == "--model"
+            || if is_claude_compatible(binary) {
+                matches!(
+                    name,
+                    "--effort"
+                        | "--system-prompt"
+                        | "--system-prompt-file"
+                        | "--append-system-prompt"
+                        | "--append-system-prompt-file"
+                        | "--agent"
+                        | "--agents"
+                        | "--settings"
+                        | "--setting-sources"
+                        | "--session-id"
+                        | "--name"
+                        | "-n"
+                        | "--fallback-model"
+                        | "--input-format"
+                        | "--output-format"
+                        | "--json-schema"
+                        | "--max-budget-usd"
+                        | "--max-turns"
+                        | "--permission-mode"
+                        | "--permission-prompt-tool"
+                        | "--permission-prompts"
+                        | "--mcp-config"
+                        | "--plugin-dir"
+                        | "--plugin-url"
+                        | "--add-dir"
+                        | "--allowedTools"
+                        | "--allowed-tools"
+                        | "--disallowedTools"
+                        | "--disallowed-tools"
+                        | "--tools"
+                        | "--betas"
+                        | "--file"
+                        | "--environment"
+                        | "--autocompact"
+                        | "--system-prompt-snapshot"
+                        | "--remote-control-session-name-prefix"
+                )
+            } else if binary == "codex" {
+                matches!(
+                    name,
+                    "--config"
+                        | "--profile"
+                        | "-p"
+                        | "--sandbox"
+                        | "-s"
+                        | "--cd"
+                        | "-C"
+                        | "--ask-for-approval"
+                        | "-a"
+                        | "--image"
+                        | "-i"
+                        | "--add-dir"
+                        | "--local-provider"
+                        | "--enable"
+                        | "--disable"
+                        | "--remote"
+                        | "--remote-auth-token-env"
+                        | "--output-last-message"
+                        | "-o"
+                        | "--output-schema"
+                        | "--color"
+                )
+            } else if binary == "copilot" {
+                matches!(
+                    name,
+                    "--reasoning-effort"
+                        | "--prompt"
+                        | "-p"
+                        | "--system-prompt"
+                        | "--additional-mcp-config"
+                        | "--agent"
+                        | "--config-dir"
+                        | "--log-dir"
+                        | "--log-level"
+                        | "--output-format"
+                        | "--add-dir"
+                        | "--allow-tool"
+                        | "--deny-tool"
+                        | "--allow-url"
+                        | "--deny-url"
+                )
+            } else {
+                false
+            };
+        if value.is_none() && takes_value {
+            value = args.next();
+            // Even a missing value must not let parsing resume after `--`.
+            if value == Some("--") {
+                ended = true;
+                value = None;
+            }
+        }
+        Some((name, value))
+    })
+}
+
+/// The last effective `flag` value. Consumed option values and everything
+/// after `--` are excluded; a final flag without a value gives `None`.
+pub(crate) fn flag_value(binary: &str, args: &[String], flag: &str) -> Option<String> {
+    launch_options(binary, args)
+        .filter(|(name, _)| *name == flag)
+        .last()
+        .and_then(|(_, value)| value.map(str::to_owned))
 }
 
 /// The level of the last `-c`/`--config model_reasoning_effort=L` in a codex
-/// argv, stopping at `--`.
+/// argv, stopping at `--`. Decode TOML strings and trim assignment whitespace
+/// as Codex does, so children inherit the effective effort rather than quotes.
 pub(crate) fn codex_effort_from_argv(args: &[String]) -> Option<String> {
     let mut out = None;
-    let mut i = 0;
-    while i < args.len() {
-        let arg = args[i].as_str();
-        if arg == "--" {
-            break;
+    for (_, value) in launch_options("codex", args).filter(|(name, _)| *name == "--config") {
+        if let Some((key, raw)) = value.and_then(|v| v.split_once('='))
+            && key.trim() == "model_reasoning_effort"
+        {
+            // Codex parses overrides as TOML, falling back to a bare string.
+            // Decode quotes and escapes before passing the value to children.
+            out = Some(
+                String::deserialize(toml::de::ValueDeserializer::new(raw.trim()))
+                    .unwrap_or_else(|_| raw.trim().to_string()),
+            );
         }
-        let value = if arg == "-c" || arg == "--config" {
-            i += 1;
-            args.get(i).map(String::as_str)
-        } else {
-            arg.strip_prefix("--config=")
-        };
-        if let Some(level) = value.and_then(|v| v.strip_prefix(CODEX_EFFORT_KEY)) {
-            out = Some(level.to_string());
-        }
-        i += 1;
     }
     out
 }
@@ -366,21 +488,30 @@ pub(crate) fn in_recipe_run() -> bool {
     std::env::var_os(RECIPE_RUN_ID_ENV).is_some_and(|v| !v.is_empty())
 }
 
-/// Whether the inherited model was checked for a launch of `binary` (D6).
-///
-/// `recipe run` checks the model for the run's agent binary, which it exports
-/// as `AMPLIHACK_AGENT_BINARY`, and every process under the run sees both
-/// variables, including a bash step that starts a different binary (for
-/// example `amplihack copilot -p …` in quality-loop.yaml under a Claude run).
-/// So:
-///
-/// - codex and copilot take the model only inside a recipe run whose agent
-///   binary is the same binary, the one case where `recipe run` passed it on
-///   as a model given for that binary;
-/// - a Claude-compatible binary takes it unless the run's agent binary is
-///   one that is not Claude-compatible, whose model is not a Claude model id.
+/// Whether the inherited model was selected for this binary or a compatible
+/// Claude binary. Explicit provenance also works outside recipe runs.
 pub(crate) fn model_checked_for(binary: &str) -> bool {
-    model_checked_for_run(binary, run_binary().as_deref(), in_recipe_run())
+    model_matches_binary(binary, parent_model_binary().as_deref())
+}
+
+/// Explicit model provenance takes precedence over the enclosing run's binary:
+/// a bash step may launch a different binary with its own model. Older runs
+/// carried only AMPLIHACK_AGENT_BINARY, which remains a compatibility fallback.
+pub(crate) fn parent_model_binary() -> Option<String> {
+    std::env::var(PARENT_MODEL_BINARY_ENV)
+        .ok()
+        .or_else(|| in_recipe_run().then(run_binary).flatten())
+}
+
+/// Whether a model selected for `origin` can be used by `binary`.
+/// Missing provenance keeps legacy Claude inheritance working; other binaries
+/// require an exact match rather than guessing from the model's spelling.
+pub(crate) fn model_matches_binary(binary: &str, origin: Option<&str>) -> bool {
+    if is_claude_compatible(binary) {
+        origin.is_none_or(is_claude_compatible)
+    } else {
+        origin == Some(binary)
+    }
 }
 
 /// The run's agent binary, as `recipe run` exports it in
@@ -409,15 +540,6 @@ pub(crate) fn run_printed_lines_for_run(
     in_run: bool,
 ) -> bool {
     in_run && run_binary == Some(binary)
-}
-
-/// [`model_checked_for`] with its environment passed in.
-pub(crate) fn model_checked_for_run(binary: &str, run_binary: Option<&str>, in_run: bool) -> bool {
-    if is_claude_compatible(binary) {
-        run_binary.is_none_or(is_claude_compatible)
-    } else {
-        in_run && run_binary == Some(binary)
-    }
 }
 
 /// The line for a setting `binary` cannot take (D7).
@@ -480,25 +602,28 @@ pub(crate) fn print_once(line: &str) {
 /// variable is set only with a valid value (I1, I2, S4). Called after the
 /// launch environment is applied; these variables are not managed by
 /// `EnvBuilder`.
-pub(crate) fn export_to_child(cmd: &mut Command, applied: &Inherited) {
+pub(crate) fn export_to_child(cmd: &mut Command, applied: &Inherited, binary: &str) {
     set_parent_env(
         cmd,
         &Inherited {
             effort: applied.effort.as_deref().and_then(checked),
             model: applied.model.as_deref().and_then(checked),
         },
+        binary,
     );
 }
 
-/// Replace both parent variables on `cmd` with `values`: each is removed
-/// first, so a stale value is never passed on, and set only when present.
-pub(crate) fn set_parent_env(cmd: &mut Command, values: &Inherited) {
+/// Replace parent values and model provenance together, removing stale values
+/// first and setting provenance only when a model is present.
+pub(crate) fn set_parent_env(cmd: &mut Command, values: &Inherited, binary: &str) {
     cmd.env_remove(PARENT_EFFORT_ENV);
     cmd.env_remove(PARENT_MODEL_ENV);
+    cmd.env_remove(PARENT_MODEL_BINARY_ENV);
     if let Some(effort) = &values.effort {
         cmd.env(PARENT_EFFORT_ENV, effort);
     }
     if let Some(model) = &values.model {
         cmd.env(PARENT_MODEL_ENV, model);
+        cmd.env(PARENT_MODEL_BINARY_ENV, binary);
     }
 }
