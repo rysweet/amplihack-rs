@@ -18,9 +18,9 @@ use crate::commands::orch::autodrive::{
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
-const HEAD: &str = "1111111111111111111111111111111111111111";
-const BASE: &str = "2222222222222222222222222222222222222222";
-const OTHER: &str = "3333333333333333333333333333333333333333";
+const HEAD: &str = concat!("11111111111111111111", "11111111111111111111");
+const BASE: &str = concat!("22222222222222222222", "22222222222222222222");
+const OTHER: &str = concat!("33333333333333333333", "33333333333333333333");
 const CRITERIA: [&str; 13] = [
     "qa",
     "documentation",
