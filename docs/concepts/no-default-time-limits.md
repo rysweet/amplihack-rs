@@ -177,7 +177,7 @@ These are the values amplihack installs:
 The Claude login rotator waits at most 7 days (`MAX_WAIT`) for a login to
 regain capacity.
 
-The `limit-resume` hook ends its own wait early enough to leave
+The `limit-resume` hook ends its own wait early enough to leave at least
 `LIMIT_RESUME_TIMEOUT_MARGIN` (300 s) before the 608400 s timeout, so the
 hook always decides, logs and exits before Claude Code stops it. A
 compile-time check in `amplihack-utils` keeps `MAX_WAIT` plus the margin
