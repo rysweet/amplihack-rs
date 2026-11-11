@@ -447,6 +447,10 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
         "PATH",
     ]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
-    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    unsafe {
+        std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude");
+        // Optional Mermaid delivery has dedicated fake-command tests.
+        std::env::set_var("AMPLIHACK_SKIP_MMDC", "1");
+    };
     saved
 }

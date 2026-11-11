@@ -373,6 +373,7 @@ fn reinstall_keeps_the_first_installs_directories_in_the_manifest() {
 fn fixture_environment() -> crate::test_support::EnvGuard {
     let saved = crate::test_support::EnvGuard::capture(&[
         "AMPLIHACK_AGENT_BINARY",
+        "AMPLIHACK_SKIP_MMDC",
         "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
         "AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL",
         "CARGO_HOME",
@@ -381,6 +382,10 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
         "RECIPE_RUNNER_RS_PATH",
     ]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
-    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    unsafe {
+        std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude");
+        // Optional Mermaid delivery has dedicated fake-command tests.
+        std::env::set_var("AMPLIHACK_SKIP_MMDC", "1");
+    };
     saved
 }

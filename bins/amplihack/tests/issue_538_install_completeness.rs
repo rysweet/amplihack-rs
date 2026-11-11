@@ -165,6 +165,10 @@ fn amplihack_install_command_with_binary(
         .arg("--local")
         .arg(source)
         .env("HOME", home)
+        // Asset completeness uses the Claude staging fixture. A launcher
+        // context above the checkout must not select a real Codex install.
+        .env("AMPLIHACK_AGENT_BINARY", "claude")
+        .env("AMPLIHACK_SKIP_MMDC", "1")
         .env("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", hooks_bin)
         .env("RECIPE_RUNNER_RS_PATH", recipe_runner)
         .env_remove("AMPLIHACK_HOME")

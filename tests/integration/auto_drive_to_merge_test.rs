@@ -3536,7 +3536,12 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
     let log = tmp.path().join("runner.log");
     fs::write(
         &runner,
-        "#!/bin/sh\nprintf 'depth=%s\\n' \"${AMPLIHACK_SESSION_DEPTH:-}\" >> \"$RUNNER_LOG\"\nprintf '{}\\n'\n",
+        "#!/bin/sh\n\
+         case \"${1:-}\" in\n\
+         --capabilities) printf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'; exit 0 ;;\n\
+         --version) echo fixture; exit 0 ;;\n\
+         esac\n\
+         printf 'depth=%s\\n' \"${AMPLIHACK_SESSION_DEPTH:-}\" >> \"$RUNNER_LOG\"\nprintf '{}\\n'\n",
     )
     .expect("write the runner stub");
     #[cfg(unix)]

@@ -1,5 +1,6 @@
 //! Unix process ownership and FIFO handshakes for test fixtures.
 
+#![cfg(unix)]
 #![allow(dead_code)]
 
 use std::fs::OpenOptions;
