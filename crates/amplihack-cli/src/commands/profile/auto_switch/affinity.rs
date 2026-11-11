@@ -13,7 +13,7 @@ use super::overflow_inputs::OverflowInputs;
 use super::state::{Ledger, State};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::organisation;
-use amplihack_utils::organisation_affinity::{Affinity, Candidate, pools, valid_id};
+use amplihack_utils::organisation_affinity::{Affinity, Candidate, Need, pools, valid_id};
 
 /// The pools one auto-switch decision may select from, and the
 /// organisations it read to work them out.
@@ -49,7 +49,7 @@ pub fn restrict(
     overflow: &OverflowInputs,
     source_host: &str,
     current: &str,
-    necessary: bool,
+    need: Need,
     eligible: impl Fn(&ProfileName) -> bool,
 ) -> Restriction {
     let ov = overflow.pool();
@@ -91,7 +91,7 @@ pub fn restrict(
             room: only(p, false),
         })
         .collect();
-    let pools = pools(source_org.as_deref(), necessary, &candidates);
+    let pools = pools(source_org.as_deref(), need, &candidates);
     let names = |indices: &[usize]| -> Vec<ProfileName> {
         indices.iter().map(|&i| orgs[i].0.clone()).collect()
     };

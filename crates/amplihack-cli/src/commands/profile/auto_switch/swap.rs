@@ -505,11 +505,7 @@ pub fn swap_check(
     let readings = state.load_usage().accounts;
     let overflow = OverflowInputs::load(&state.root, cfg, now);
     let leaving_overflow = overflow.order.iter().any(|o| o.as_str() == current);
-    let necessary = if leaving_overflow {
-        !candidate::overflow_usable(&current, &overflow.blocked)
-    } else {
-        exhausted
-    };
+    let need = amplihack_utils::organisation_affinity::Need::of(leaving_overflow, exhausted);
     if !exhausted && !leaving_overflow {
         return Ok(()); // the account changed since the first check
     }
@@ -538,7 +534,7 @@ pub fn swap_check(
         &overflow,
         owner.as_str(),
         &current,
-        necessary,
+        need,
         eligible,
     );
     let Some(target) = candidate::select_restricted(

@@ -1212,8 +1212,12 @@ fn moving_back_off_overflow_ignores_a_recent_swap() {
 // `.default` and compares verdicts with and without it is
 // `tests/profile_overflow.rs::the_default_pointer_does_not_change_the_rotators_verdict`.
 
+/// The overflow exit's room fallback ranks only the plan-room pool it is
+/// given. Which logins that pool holds (a crossing is in it when leaving
+/// overflow and no same-organisation plan login has room) is decided by
+/// `organisation_affinity::pools`; see its tests.
 #[test]
-fn issue_2136_blocked_overflow_plan_room_requires_confirmed_affinity() {
+fn issue_2136_blocked_overflow_room_fallback_ranks_only_its_pool() {
     for same_org in [false, true] {
         let case = Case::new("credits", spend_limited())
             .overflow(&["credits"])

@@ -210,6 +210,83 @@ fn unknown_organisation_on_overflow_returns_to_the_recovered_plan_login() {
     }
 }
 
+/// Runs one cycle and names the profile whose login is live afterwards,
+/// from each stored login's inode before the cycle (a swap moves files).
+fn live_after(e: &Env, measure: MeasureFn) -> &'static str {
+    let before: Vec<_> = ["work", "spare", "third"]
+        .into_iter()
+        .map(|p| {
+            let path = if p == "work" {
+                e.home.join(".claude").join(CREDS)
+            } else {
+                e.root.join(p).join(CREDS)
+            };
+            (p, ino_at(&path))
+        })
+        .collect();
+    run(e, measure);
+    let live = ino_at(&e.home.join(".claude").join(CREDS));
+    before
+        .into_iter()
+        .find(|(_, ino)| *ino == live)
+        .map_or("none", |(p, _)| p)
+}
+
+fn swap_affinity(e: &Env) -> Value {
+    let v: Value = serde_json::from_slice(&fs::read(e.rs.dir.join("swap.json")).unwrap()).unwrap();
+    v["affinity"].clone()
+}
+
+/// Crusty round 7 on #2295: leaving a paid overflow login is cost relief,
+/// so with the overflow organisation recorded and no same-organisation plan
+/// login with capacity, the session crosses back to a recovered plan login
+/// rather than paying until the overflow login is blocked.
+#[test]
+fn known_organisation_overflow_crosses_back_to_a_recovered_plan_login() {
+    let e = fixture(json!("org-b"), json!("org-a"), json!("org-a"));
+    mark_overflow(&e, "work");
+    let live = live_after(&e, plan_recovers);
+    let log = log_of(&e);
+    assert!(live == "spare" || live == "third", "{log}");
+    assert_eq!(swap_affinity(&e), "crossing", "{log}");
+}
+
+/// The crossing is a last resort: a same-organisation plan login with
+/// capacity is taken even when a cross-organisation one has more headroom.
+#[test]
+fn overflow_exit_prefers_a_same_organisation_plan_login() {
+    // spare (org-b) at 40%, third (org-a) at 1%.
+    let e = fixture(json!("org-b"), json!("org-b"), json!("org-a"));
+    mark_overflow(&e, "work");
+    assert_eq!(live_after(&e, plan_recovers), "spare", "{}", log_of(&e));
+}
+
+/// Crusty round 7 on #2295, minor: a blocked overflow login whose only way
+/// off is a cross-organisation plan login with room (no strict capacity)
+/// moves there; it does not alert and stay on the blocked login.
+#[test]
+fn blocked_overflow_crosses_to_a_plan_login_with_room() {
+    for blocked in [false, true] {
+        let e = fixture(json!("org-b"), json!("org-a"), json!("org-a"));
+        mark_overflow(&e, "work");
+        if blocked {
+            let mut ledger = e.rs.load_ledger().unwrap().unwrap();
+            ledger.overflow_blocked.insert(
+                "work".into(),
+                super::super::ledger::OverflowBlock::spend_limit(at()),
+            );
+            e.rs.save_ledger(&ledger).unwrap();
+        }
+        let live = live_after(&e, plan_room);
+        let log = log_of(&e);
+        assert!(
+            live == "spare" || live == "third",
+            "blocked={blocked}: {log}"
+        );
+        assert_eq!(swap_affinity(&e), "crossing", "blocked={blocked}: {log}");
+    }
+}
+
 #[test]
 fn necessary_crossing_records_both_organisations_and_warns() {
     let e = fixture(json!("org-a"), json!("org-b"), json!("org-b"));

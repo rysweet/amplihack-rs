@@ -80,11 +80,11 @@ pub fn nested_candidate(
             && ledger.leased_to(n).is_none()
             && login_ready(state, &overflow, c)
     };
-    let necessary = if overflow.order.iter().any(|p| p.as_str() == current) {
-        !candidate::overflow_usable(current, &overflow.blocked)
-    } else {
-        candidate::is_exhausted(readings.get(current), cfg.threshold, now)
-    };
+    let on_overflow = overflow.order.iter().any(|p| p.as_str() == current);
+    let need = amplihack_utils::organisation_affinity::Need::of(
+        on_overflow,
+        !on_overflow && candidate::is_exhausted(readings.get(current), cfg.threshold, now),
+    );
     let restriction = super::affinity::restrict(
         state,
         ledger,
@@ -92,7 +92,7 @@ pub fn nested_candidate(
         &overflow,
         source_host,
         current,
-        necessary,
+        need,
         eligible,
     );
     let picked = candidate::select_restricted(

@@ -15,7 +15,7 @@ use super::super::overflow::{OverflowInput, Verdict, decide_restricted};
 use super::Snap;
 use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::name::ProfileName;
-use amplihack_utils::organisation_affinity::{Candidate, pools, preference_permitted};
+use amplihack_utils::organisation_affinity::{Candidate, Need, pools, preference_permitted};
 use std::path::Path;
 
 impl Snap {
@@ -39,14 +39,14 @@ impl Snap {
 
 /// The overflow-aware decision, restricted by organisation affinity before
 /// headroom ranking. `eligible` is each measured candidate's own rule;
-/// affinity never makes an ineligible login eligible. `necessary` is
-/// whether the live login needs capacity relief.
+/// affinity never makes an ineligible login eligible. `need` says why the
+/// session may move ([`Need::of`]).
 pub(in super::super) fn decide(
     snap: &Snap,
     input: &OverflowInput<'_>,
     measured: &[Measured],
     eligible: &[bool],
-    necessary: bool,
+    need: Need,
 ) -> Verdict {
     let overflow = input.overflow;
     let is_overflow = |n: &ProfileName| overflow.iter().any(|e| &e.name == n);
@@ -79,7 +79,7 @@ pub(in super::super) fn decide(
             }
         })
         .collect();
-    let pools = pools(snap.source_org(), necessary, &candidates);
+    let pools = pools(snap.source_org(), need, &candidates);
     let names = |indices: &[usize]| -> Vec<ProfileName> {
         indices.iter().map(|&i| measured[i].name.clone()).collect()
     };

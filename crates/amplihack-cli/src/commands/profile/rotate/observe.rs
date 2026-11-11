@@ -282,13 +282,10 @@ pub(super) fn decide_measured(
     };
     let on_overflow =
         live_name(&snap.live).is_some_and(|n| snap.overflow.iter().any(|e| &e.name == n));
-    let necessary = if on_overflow {
-        probe.spend_limit
-            || live_name(&snap.live).is_some_and(blocked)
-            || probe.reading == Reading::Failed
-    } else {
-        super::decide::needs_swap(&ctx.settings, &probe.reading)
-    };
+    let need = amplihack_utils::organisation_affinity::Need::of(
+        on_overflow,
+        !on_overflow && super::decide::needs_swap(&ctx.settings, &probe.reading),
+    );
     let eligible: Vec<bool> = measured
         .iter()
         .map(|c| !c.spend_limit && !blocked(&c.name))
@@ -319,7 +316,7 @@ pub(super) fn decide_measured(
         swapped_at,
         now: t,
     };
-    let verdict = affinity::decide(snap, &input, &measured, &eligible, necessary);
+    let verdict = affinity::decide(snap, &input, &measured, &eligible, need);
     // A spend limit on a live overflow profile is handled by its block, so
     // it does not count towards the failed live probes.
     let live_over = live_name.is_some_and(|n| overflow.iter().any(|e| &e.name == n));

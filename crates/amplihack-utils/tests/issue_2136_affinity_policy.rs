@@ -3,7 +3,7 @@
 //! indices preserve input order so the existing ranking remains authoritative.
 //! Only a confirmed crossing is restricted: unknown is not crossing.
 use amplihack_utils::organisation_affinity::{
-    Affinity, Candidate, Purpose, allowed_indices, pools, preference_permitted,
+    Affinity, Candidate, Need, Purpose, allowed_indices, pools, preference_permitted,
 };
 
 #[test]
@@ -106,10 +106,10 @@ fn preference_only_purposes_never_cross_but_unknown_is_not_crossing() {
 #[test]
 fn unknown_source_still_returns_from_overflow_to_a_recovered_plan_login() {
     // A session on a paid overflow login whose organisation was never
-    // recorded: the recovered plan login must stay reachable (an upgrade).
+    // recorded: the recovered plan login must stay reachable.
     let candidates = [c(None, true, true), c(Some("org-a"), true, true)];
     assert_eq!(
-        pools(None, false, &candidates).allowed,
+        pools(None, Need::LeaveOverflow, &candidates).allowed,
         vec![0, 1],
         "missing metadata must not keep a session on overflow"
     );
@@ -125,7 +125,7 @@ fn pools_give_the_plan_room_fallback_its_own_non_crossing_pool() {
         r(Some("org-a"), false, true),
         c(Some("org-a"), false, true),
     ];
-    let p = pools(Some("org-a"), true, &candidates);
+    let p = pools(Some("org-a"), Need::Relief, &candidates);
     assert_eq!(p.allowed, vec![0], "necessary relief may cross");
     assert_eq!(p.plan_room, vec![1], "room fallback never crosses");
 }
@@ -135,11 +135,53 @@ fn a_same_org_login_without_room_does_not_exclude_an_unknown_org_login_with_room
     // login: room but not strict capacity. The plan-room fallback must keep
     // the unknown one, or a session stays on paid overflow.
     let candidates = [r(Some("org-a"), false, false), r(None, false, true)];
-    let p = pools(Some("org-a"), true, &candidates);
+    let p = pools(Some("org-a"), Need::Relief, &candidates);
     assert_eq!(p.plan_room, vec![1]);
     // With room on the same-organisation login it is preferred.
     let candidates = [r(Some("org-a"), false, true), r(None, false, true)];
-    assert_eq!(pools(Some("org-a"), true, &candidates).plan_room, vec![0]);
+    assert_eq!(
+        pools(Some("org-a"), Need::Relief, &candidates).plan_room,
+        vec![0]
+    );
+}
+#[test]
+fn need_is_worked_out_in_one_place() {
+    assert_eq!(Need::of(true, false), Need::LeaveOverflow);
+    assert_eq!(Need::of(true, true), Need::LeaveOverflow);
+    assert_eq!(Need::of(false, true), Need::Relief);
+    assert_eq!(Need::of(false, false), Need::Upgrade);
+}
+#[test]
+fn leaving_paid_overflow_may_cross_only_without_a_same_org_plan_login() {
+    // Crusty round 7 on #2295: the overflow login's organisation (org-b) is
+    // recorded and the only plan login with capacity is in org-a. Leaving
+    // paid spend is cost relief, so the crossing is permitted.
+    let cross = [c(Some("org-a"), true, true)];
+    assert_eq!(
+        pools(Some("org-b"), Need::LeaveOverflow, &cross).allowed,
+        vec![0]
+    );
+    // A same-organisation plan login with capacity excludes the crossing.
+    let both = [c(Some("org-a"), true, true), c(Some("org-b"), true, true)];
+    assert_eq!(
+        pools(Some("org-b"), Need::LeaveOverflow, &both).allowed,
+        vec![1]
+    );
+    // The room fallback off overflow may cross on the same terms ...
+    let room = [r(Some("org-a"), false, true)];
+    assert_eq!(
+        pools(Some("org-b"), Need::LeaveOverflow, &room).plan_room,
+        vec![0]
+    );
+    let room_both = [r(Some("org-a"), false, true), r(Some("org-b"), false, true)];
+    assert_eq!(
+        pools(Some("org-b"), Need::LeaveOverflow, &room_both).plan_room,
+        vec![1]
+    );
+    // ... while plan room from a plan login never crosses.
+    for need in [Need::Upgrade, Need::Relief] {
+        assert!(pools(Some("org-b"), need, &room).plan_room.is_empty());
+    }
 }
 #[test]
 fn log_lines_carry_the_affinity_kind_and_both_profiles() {

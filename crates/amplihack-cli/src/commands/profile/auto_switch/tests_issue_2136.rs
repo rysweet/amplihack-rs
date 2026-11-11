@@ -23,6 +23,24 @@ fn pick_with_threshold(
     hosted: bool,
     threshold: u8,
 ) -> Option<String> {
+    pick_from(same_reading, 1.0, exclude_same, hosted, threshold, false)
+}
+
+/// The source `work` (organisation `org-a`) is a paid overflow login that
+/// is not blocked; `same` (org-a) and `other` (org-b) are plan logins, and
+/// `hosted` (org-b) is exhausted.
+fn pick_from_overflow(same_reading: Option<f64>, other_reading: f64) -> Option<String> {
+    pick_from(same_reading, other_reading, false, false, 90, true)
+}
+
+fn pick_from(
+    same_reading: Option<f64>,
+    other_reading: f64,
+    exclude_same: bool,
+    hosted: bool,
+    threshold: u8,
+    work_is_overflow: bool,
+) -> Option<String> {
     let _lock = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -90,10 +108,15 @@ fn pick_with_threshold(
     };
     let mut readings = BTreeMap::from([
         ("work".into(), reading(100.0)),
-        ("other".into(), reading(1.0)),
+        ("other".into(), reading(other_reading)),
     ]);
     if let Some(used) = same_reading {
         readings.insert("same".into(), reading(used));
+    }
+    if work_is_overflow {
+        // An unread plan login counts as capacity: read `hosted` (org-b) as
+        // exhausted so only `same` and `other` are ways off overflow.
+        readings.insert("hosted".into(), reading(100.0));
     }
     let cfg = Config {
         enabled: true,
@@ -103,7 +126,14 @@ fn pick_with_threshold(
         } else {
             vec![]
         },
-        overflow: vec![],
+        overflow: if work_is_overflow {
+            vec![crate::commands::profile::overflow::OverflowEntry::new(
+                n("work"),
+                1,
+            )]
+        } else {
+            vec![]
+        },
         kind: Default::default(),
     };
     let mut ledger = Ledger::default();
@@ -173,4 +203,38 @@ fn configured_threshold_is_exclusive_for_same_org_relief() {
             "below threshold {threshold}"
         );
     }
+}
+
+/// Crusty round 7 on #2295: leaving a paid overflow login is cost relief.
+/// With the source organisation recorded and no same-organisation plan login
+/// with capacity, the session goes back to a plan login in another
+/// organisation rather than paying until the overflow login is blocked.
+#[test]
+fn known_organisation_overflow_returns_to_a_cross_organisation_plan_login() {
+    assert_eq!(
+        pick_from_overflow(Some(100.0), 1.0).as_deref(),
+        Some("other")
+    );
+}
+
+/// The crossing is a last resort: a same-organisation plan login with
+/// capacity is taken first, even with less headroom.
+#[test]
+fn overflow_exit_prefers_a_same_organisation_plan_login() {
+    assert_eq!(pick_from_overflow(Some(40.0), 1.0).as_deref(), Some("same"));
+}
+
+/// The room fallback of an overflow exit may cross as well: a plan login
+/// below 100% costs nothing, whatever its organisation.
+#[test]
+fn overflow_exit_room_fallback_may_cross() {
+    assert_eq!(
+        pick_from_overflow(Some(100.0), 95.0).as_deref(),
+        Some("other")
+    );
+    // A same-organisation login with room still comes first.
+    assert_eq!(
+        pick_from_overflow(Some(95.0), 95.0).as_deref(),
+        Some("same")
+    );
 }

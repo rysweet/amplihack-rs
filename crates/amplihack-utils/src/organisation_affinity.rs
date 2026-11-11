@@ -124,13 +124,40 @@ pub struct Pools {
     pub plan_room: Vec<usize>,
 }
 
-/// Work out [`Pools`] once per decision. `necessary` is whether the swap is
-/// capacity relief the session needs; otherwise it is an upgrade.
-pub fn pools(source: Option<&str>, necessary: bool, candidates: &[Candidate<'_>]) -> Pools {
-    let purpose = if necessary {
-        Purpose::CapacityRelief
-    } else {
-        Purpose::Upgrade
+/// Why one swap decision may move the session. Every selector (the
+/// rotator, the auto-switch threshold swap and the nested rerun) works this
+/// out with [`Need::of`], so the rule lives in one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Need {
+    /// The live plan login still has capacity: any move is an upgrade and
+    /// never makes a confirmed crossing.
+    Upgrade,
+    /// The live plan login is exhausted: capacity relief, which may cross
+    /// when no same-organisation login has capacity.
+    Relief,
+    /// The session is on a paid overflow login, blocked or not. Leaving it
+    /// is cost relief: it may cross when no same-organisation plan login
+    /// has capacity, and its room fallback (a plan login below 100%) may
+    /// cross on the same terms, because staying keeps spending money.
+    LeaveOverflow,
+}
+impl Need {
+    /// `on_overflow`: the live login is a paid overflow login.
+    /// `exhausted`: the live plan login needs capacity relief.
+    pub fn of(on_overflow: bool, exhausted: bool) -> Self {
+        match (on_overflow, exhausted) {
+            (true, _) => Self::LeaveOverflow,
+            (false, true) => Self::Relief,
+            (false, false) => Self::Upgrade,
+        }
+    }
+}
+
+/// Work out [`Pools`] once per decision.
+pub fn pools(source: Option<&str>, need: Need, candidates: &[Candidate<'_>]) -> Pools {
+    let (purpose, necessary) = match need {
+        Need::Upgrade => (Purpose::Upgrade, false),
+        Need::Relief | Need::LeaveOverflow => (Purpose::CapacityRelief, true),
     };
     let room: Vec<_> = candidates
         .iter()
@@ -141,8 +168,14 @@ pub fn pools(source: Option<&str>, necessary: bool, candidates: &[Candidate<'_>]
             room: c.room,
         })
         .collect();
+    // Plan room from a plan login is a preference and never crosses. From
+    // an overflow login it is the way off paid spend.
+    let plan_room = match need {
+        Need::LeaveOverflow => allowed_indices(source, Purpose::CapacityRelief, true, &room),
+        Need::Upgrade | Need::Relief => allowed_indices(source, Purpose::PlanRoom, false, &room),
+    };
     Pools {
         allowed: allowed_indices(source, purpose, necessary, candidates),
-        plan_room: allowed_indices(source, Purpose::PlanRoom, false, &room),
+        plan_room,
     }
 }

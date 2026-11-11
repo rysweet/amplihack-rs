@@ -68,18 +68,41 @@ by affinity, before applying the existing ranking within the permitted set.
 Only a confirmed crossing, where both organisations are known and differ, is
 restricted. An unknown organisation on either side is not a crossing.
 
-| Final swap purpose | Permitted candidates |
+Each decision first works out why the session may move
+(`organisation_affinity::Need::of`), in one place for all three selectors:
+
+| Live login | Need |
+| --- | --- |
+| Paid overflow login, blocked or not | Leave overflow (cost relief) |
+| Plan login that needs capacity relief | Capacity relief |
+| Plan login with capacity | Upgrade |
+
+| Need and final swap purpose | Permitted candidates |
 | --- | --- |
 | Any, with a known source and an eligible Same target that has capacity | Same targets only |
 | Any, otherwise | Same and Unresolved targets |
-| Necessary capacity relief, with no eligible Same target that has capacity | Crossing targets as well |
-| Upgrade or plan-room | Never a Crossing target |
+| Capacity relief or leave overflow, with no eligible Same target that has capacity | Crossing targets as well |
+| Upgrade, or plan-room from a plan login | Never a Crossing target |
+| Leaving overflow through its room fallback, with no eligible Same target that has room | Crossing targets as well |
+
+Leaving a paid overflow login counts as cost relief whether or not the
+overflow login is blocked. Staying keeps spending money until the login is
+blocked; crossing costs earlier thinking on the next turn, and the visible
+conversation remains. The policy takes the crossing: a session on overflow
+returns to a plan login in another organisation once no plan login in its
+own organisation has capacity, and the swap carries the confirmed-crossing
+warning. A same-organisation plan login with capacity is always taken
+first.
 
 The plan-room pool applies the same rules with room in place of strict
 capacity: a Same target restricts it only when the plan-room fallback, offered
 that target alone, would pick it. A Same login without room therefore never
-excludes an Unresolved login with room, so a session on paid overflow can
-still leave it.
+excludes an Unresolved login with room. From a plan login the plan-room pool
+never crosses. From an overflow login it is the way off paid spend, including
+the best-headroom fallback used when the overflow login is blocked, so it may
+cross on the same terms as the selection pool. A blocked overflow login
+therefore moves to a plan login with room in another organisation rather
+than raising an alert and staying.
 
 A better headroom score in another organisation does not override available
 same-organisation capacity. Missing metadata never keeps a session where it
@@ -100,8 +123,8 @@ source and target organisations under the execution locks and refuses the
 swap if either changed since selection.
 
 The rotator, auto-switch swap and nested rerun share one policy function
-(`organisation_affinity::pools`), called once per decision, which returns both
-the selection pool and the plan-room pool. Auto-switch reaches it through one
+(`organisation_affinity::pools`), called once per decision with the need from
+`Need::of`, which returns both the selection pool and the plan-room pool. Auto-switch reaches it through one
 helper (`auto_switch/affinity.rs`).
 
 ### Selection examples
@@ -115,7 +138,10 @@ These are policy examples, using profile names from the rotation guide:
 | `work` requests an upgrade; `personal` is the only better target and is Crossing | No upgrade |
 | `work` requests an upgrade; `personal` is the only better target and its ID is unknown | Upgrade, with a risk warning |
 | `work` is a paid overflow login with no recorded organisation; plan login `spare` recovers | Back to `spare`, with a risk warning |
-| Plan-room fallback finds only Crossing targets | No plan-room swap |
+| `work` is a paid overflow login in organisation B; plan login `spare` (A) recovers and nothing in B has capacity | Back to `spare`, with a confirmed-crossing warning |
+| `work` is a paid overflow login in B; `spare` (B) and `personal` (A) both have capacity, `personal` with more headroom | Back to `spare` |
+| `work` is a blocked overflow login in B; no plan login has capacity; `personal` (A) has room | Moves to `personal`, with a confirmed-crossing warning |
+| Plan-room fallback from a plan login finds only Crossing targets | No plan-room swap |
 
 ## Configuration and operator commands
 
