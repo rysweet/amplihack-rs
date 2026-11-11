@@ -3,12 +3,11 @@ description: |
   Deterministic evidence collection for one round of the auto-drive-to-merge
   merge-ready loop: bring the branch up to date with its base, run the
   repository's own tests and, where qa-team's repo-type table requires
-  gadugi, validate and run the `qa-team` scenarios with gadugi-test, and wait
-  for CI on the current head to reach a terminal state.
+  gadugi, validate and run the `qa-team` scenarios with gadugi-test, and establish a private evidence session. The agent chooses CI collection and waiting.
 
   Everything here is MEASURED. No step in this brick forms an opinion, and
   nothing it reports is a model's impression. Unreadable is never reported as
-  passing: a criterion that cannot be read comes back as a failure, because
+  passing: an unavailable criterion requires further evidence, because
   "we do not know" must not merge.
 version: "1.0.0"
 author: "Amplihack Team"
@@ -32,6 +31,9 @@ context:
   pr_number: ""
   autodrive_qa_evidence: ""
   autodrive_round_label: "round"
+  autodrive_state_dir: ""
+  autodrive_launch_tools: ""
+  no_merge: "true"
 
 steps:
   - id: "step-01-sync-with-base"
@@ -49,8 +51,8 @@ steps:
         printf '{"base":"","synced":"false","conflict":"unknown","head_sha":"","git_observed":"false"}\n'
         exit 0
       fi
-      BASE="$(gh pr view "${PR_NUMBER:-}" --json baseRefName --jq .baseRefName 2>/dev/null || printf '')"
-      [ -n "$BASE" ] || BASE="main"
+      BASE="$(gh api "repos/{owner}/{repo}/pulls/${PR_NUMBER:?}" --jq .base.ref 2>/dev/null || printf '')"
+      [ -n "$BASE" ] || { printf '{"base":"","synced":"false","conflict":"unknown"}\n'; exit 0; }
       SYNCED="false"; CONFLICT="false"
       if git fetch origin "$BASE" >/dev/null 2>&1; then
         BEHIND="$(git rev-list --count "HEAD..origin/${BASE}" 2>/dev/null || printf 0)"
@@ -112,51 +114,15 @@ steps:
       AUTODRIVE_QA_BASE="$B" REPO_PATH="$PWD" bash "$T"
     output: "qa_evidence"
 
-  - id: "step-03-wait-for-ci"
+  - id: "step-03-evidence-session"
     type: "bash"
     parse_json: true
     command: |
-      set -uo pipefail
-      cd "${REPO_PATH:-.}" 2>/dev/null || true
-      export GH_PAGER=cat PAGER=cat LESS=FRX
-      PR="${PR_NUMBER:-}"
-      case "$PR" in ''|*[!0-9]*) PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')" ;; esac
-      if [ -z "$PR" ] || ! command -v jq >/dev/null 2>&1; then
-        echo "ERROR: cannot read CI (pr='${PR:-none}', jq present=$(command -v jq >/dev/null 2>&1 && echo yes || echo no)). Unreadable CI is a FAILURE, not a pass." >&2
-        printf '{"ci_status":"UNREADABLE","ci_total":"0","ci_pending":"","ci_failing":"","ci_signal":"unreadable"}\n'
-        exit 0
-      fi
-      # Poll until CI reaches a terminal state. The loop is bounded by the
-      # build finishing or by the status becoming unreadable — never by a
-      # seconds-scale or single-digit-minute stopwatch, and never by a count.
-      while :; do
-        JSON="$(gh pr checks "$PR" --json name,state,bucket 2>/dev/null)"
-        if [ -z "$JSON" ]; then
-          echo "ERROR: CI status for #${PR} became unreadable while waiting. Unreadable is a FAILURE, not a pass." >&2
-          printf '{"ci_status":"UNREADABLE","ci_total":"0","ci_pending":"","ci_failing":"","ci_signal":"unreadable"}\n'
-          exit 0
-        fi
-        TOTAL="$(printf '%s' "$JSON" | jq -r 'length' 2>/dev/null)"
-        PENDING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="pending")]|length' 2>/dev/null)"
-        FAILING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="fail" or .bucket=="cancel")]|length' 2>/dev/null)"
-        [ -n "${PENDING:-}" ] || PENDING="unreadable"
-        if [ "$PENDING" = "0" ] || [ "$PENDING" = "unreadable" ]; then break; fi
-        echo "INFO: waiting on CI for #${PR}: ${PENDING}/${TOTAL} pending, ${FAILING} failing." >&2
-        sleep 60
-      done
-      if [ "$PENDING" = "unreadable" ]; then
-        STATUS="UNREADABLE"
-      elif [ "${TOTAL:-0}" = "0" ]; then
-        STATUS="NO_CHECKS"
-        echo "ERROR: #${PR} reports zero CI checks. Zero checks is not a green build." >&2
-      elif [ "${FAILING:-1}" = "0" ]; then
-        STATUS="GREEN"
-      else
-        STATUS="RED"
-      fi
-      echo "INFO: CI for #${PR}: ${STATUS} (total=${TOTAL:-?} failing=${FAILING:-?})" >&2
-      printf '{"ci_status":"%s","ci_total":"%s","ci_pending":"%s","ci_failing":"%s","ci_signal":"%s:%s/%s"}\n' \
-        "$STATUS" "${TOTAL:-0}" "$PENDING" "${FAILING:-}" "$STATUS" "${FAILING:-?}" "${TOTAL:-?}"
+      set -eu
+      cd "${REPO_PATH:-.}"
+      amplihack pr evidence session --pr "${PR_NUMBER:?}" --repo "$PWD" \
+        --state-dir "${AUTODRIVE_STATE_DIR:?}" --round "${AUTODRIVE_ROUND_LABEL:?}" \
+        --tools "/${AUTODRIVE_LAUNCH_TOOLS#/}" --no-merge "${NO_MERGE:-true}"
     output: "ci_evidence"
 
 output:

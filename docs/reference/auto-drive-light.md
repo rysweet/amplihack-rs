@@ -1,13 +1,20 @@
 ---
 title: Auto-Drive-Light Recipe
 description: The smaller drive-to-merge recipe for small pull requests, its eligibility rules, escalation to auto-drive-to-merge, the task id its follow-up issues name, and how it shares auto-drive-to-merge's per-finding follow-up model.
-last_updated: 2026-11-08
+last_updated: 2026-11-11
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
 ---
 
 # Auto-Drive-Light Recipe
+
+> **[PLANNED - Implementation Pending]: issue-2333 changes.** The full-run
+> `no_merge` behavior, REST metadata recovery, registered evidence and
+> agent-selected waits below specify the intended shared-loop integration.
+> They are not implemented guarantees. Current `no_merge` governs the build
+> only, including after escalation; use `autodrive_dry_run=true` to suppress the
+> current final gate's merge action. The evidence/execute/inspect CLI is planned.
 
 > [Home](../index.md) > Reference > Auto-Drive-Light
 
@@ -106,13 +113,21 @@ AUTODRIVE_LIGHT_ELIGIBILITY=light reason=within-limits
 | `light_max_recipe_contract` | `"0"` | Limit on recipes whose `context:` key set changed. |
 | `autodrive_state_dir` | `""` | Durable state root. Empty means derive it from the repository remote and the PR, as `auto-drive-to-merge` does. Must be an absolute path with no `..` component and no control characters. |
 | `autodrive_dry_run` | `"false"` | Passed to the merge loop unchanged. |
-| `no_merge` | `"true"` | Applies to the build only. See [The no_merge value](#the-no_merge-value). |
+| `no_merge` | `"true"` | Keeps the delivery PR open and disables automatic merging across the whole run, including escalation. See [The no_merge value](#the-no_merge-value). |
 
 Every limit must match `^[0-9]{1,6}$` and is read as base 10, so `010` means ten. The `light-eligibility` step validates all five limits itself, before it calls the eligibility tool, and fails with exit code 2 on any other value. An invalid limit therefore stops the run; it is never turned into an escalation. There is no option that skips the eligibility check and no force-light override: selecting `auto-drive-light` by name is still subject to the check.
 
 ### The no_merge value
 
-`no_merge` governs the build only. `light-implement` never merges, and its prompt carries `[amplihack:no-merge]` whatever the value. On escalation the value is passed to the nested `auto-drive-to-merge`, where it again governs only that recipe's build phase. It does not stop either merge loop from merging through the gate. To verify a PR without merging it, set `autodrive_dry_run=true`.
+**[PLANNED]** This replaces the current build-only interpretation.
+
+`no_merge=true` is preserved in trusted launch authorization through the build,
+both shared loops, escalation and final execution. The run can establish readiness
+but invokes neither merge nor automatic-merge enablement. `light-implement` always
+carries `[amplihack:no-merge]`; only the final trusted executor may merge when launch
+authorization permits it. Set `no_merge=false` at launch to authorize that path.
+A trusted no-merge directive or truthy `NO_MERGE` override still disables merging.
+Agent output cannot override it. `autodrive_dry_run=true` also suppresses merging.
 
 The recipe also fills these values as it runs: `light_base`, `light_task_id`, `build_result`, `light_eligibility`, `light_escalation_result`, `crusty_loop_result`, `merge_gate_result` and `light_summary`.
 
@@ -144,7 +159,7 @@ The recipe also fills these values as it runs: `light_base`, `light_task_id`, `b
 
 **Build (steps 4 to 10).** The worktree and branch come from `workflow-worktree` and `quick_change_common.sh`, so the branch is named `quick/<issue-or-slug>`. `light-base-pin` records the base commit before the agent runs; that commit is `light_base`. `light-implement` is a single agent session whose prompt carries the quick-change leaf-step constraints and the line `[amplihack:no-merge]`. It never tells the agent to start an orchestrator. `light-qa` runs `qa_command` or `quick_change_checks.sh`; `light-precommit` runs the repository's pre-commit hooks. A failing check stops the run before anything is pushed.
 
-**PR resolution (step 11).** `light-resolve-pr` writes `build_result` in the same shape as `autodrive-build`, with `pr`, `branch`, `head_sha`, `base_sha` and `state_dir`. For an existing PR it reads `gh pr view` and refuses a PR whose `isCrossRepository` is true (`light-cross-repo`). For an existing PR, `light_base` is the merge base of the PR head and `origin/<baseRefName>`. PR code fetched as `refs/pull/<N>/head` is not checked out, sourced or run before review.
+**PR resolution (step 11).** `light-resolve-pr` writes `build_result` in the same shape as `autodrive-build`, with `pr`, `branch`, `head_sha`, `base_sha` and `state_dir`. For an existing PR it uses supported PR metadata evidence, including REST, and refuses a cross-repository PR (`light-cross-repo`). GraphQL availability is not a precondition for resolution. For an existing PR, `light_base` is the merge base of the PR head and `origin/<baseRefName>`. PR code fetched as `refs/pull/<N>/head` is not checked out, sourced or run before review.
 
 **Light path (steps 14 to 16).** `light-crusty-loop` and `light-merge-loop` run the unchanged `autodrive-crusty-loop` and `autodrive-merge-loop` sub-recipes that `auto-drive-to-merge` uses, on the same state directory, with `plan_task_id` set to the effective task id. There is no `autodrive-check-unmerged` recipe: in `auto-drive-to-merge.yaml` that check is an inline bash step. `light-check-unmerged` is a bash step with the same body. It reads `build_result`, sources `autodrive_state.sh` from `AMPLIHACK_HOME` and calls `autodrive_require_unmerged`, so a PR merged outside the gate during the crusty loop stops the run with exit 1 (#1551). Light mode adds nothing inside these loops; see [Nothing is measured inside the loops](#nothing-is-measured-inside-the-loops).
 
@@ -295,19 +310,34 @@ A drive that ends `MINOR_ONLY` with no task id that resolves stops with `followu
 
 ## Merge criteria
 
-The merge criteria are those of `auto-drive-to-merge`, unchanged. `autodrive-merge-loop`, `autodrive-merge-round`, `autodrive-merge-evidence` and `autodrive_merge_gate.sh` are the same files, and the gate has no light exemption. A light run merges only through the gate, which requires:
+**[PLANNED]** The following shared-loop behavior requires issue #2333.
 
-- the crusty loop to have ended DONE with a latest record that is `CLEAN`, or `MINOR_ONLY` with every follow-up filed and the parent task comment recorded (`autodrive_followups.sh check`; see [The follow-up check in the merge gate](auto-drive-to-merge.md#the-follow-up-check-in-the-merge-gate));
-- qa-team scenarios;
-- green CI;
-- no conflicts;
-- resolved review threads.
+Light mode uses the same agent readiness assessment, evidence validator,
+loop-health evaluator and final gate as `auto-drive-to-merge`. It has no readiness
+exemption. Both loops consume the [versioned evidence contract](pr-evidence-contract.md).
 
-See [How the merge round applies merge-ready](auto-drive-to-merge.md#how-the-merge-round-applies-merge-ready).
+The agent can select REST after a GraphQL refusal; collection never switches API
+or retries automatically. CI support requires complete current-head check runs and
+commit statuses plus applicable required checks and apps. Review comments alone do
+not prove resolved threads, and `mergeable_state=clean` alone does not prove readiness.
+Existing QA hashes, synchronization, Crusty reviewed ranges and minor follow-up
+obligations remain enforced.
+
+Pending CI and rate-limit recovery can remain external waits across repeated rounds
+at the same head. The agent selects a time or existing readiness event; fresh
+collection follows wake. Unchanged head, findings or CI and repeated non-clean
+`DONE` never cause code-generated `STUCK`. Only the loop-health agent decides
+convergence termination; invalid evaluations and operator limits remain distinct.
+
+Advancement requires accepted clean evidence and evaluator `DONE`. Final execution
+covers all mutable criteria with the agent-selected revalidation plan and requires
+trusted merge authorization. `no_merge=true` keeps the PR open and automatic merging
+disabled. See [the merge gate](auto-drive-to-merge.md#no-silent-merge) and
+[handling external waits](../howto/handle-auto-drive-external-waits.md).
 
 ## State files
 
-All files live in the autodrive state directory. They are written under `umask 077` with `mktemp` and `mv -f`, after a symlink check.
+All files live in the private autodrive state directory. Legacy light-state writers use `umask 077` and atomic replacement after a symlink check. Planned registered evidence uses directories `0700`, files `0600` and immutable finalized receipts; see the [artifact contract](pr-evidence-contract.md#identity-and-artifact-references).
 
 | File | Written by | Content |
 | --- | --- | --- |
@@ -342,7 +372,7 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 ## Security limits
 
 - No step tells an agent to start an orchestrator or recipe. The guard in `issue_1333_leaf_steps_do_not_orchestrate.rs` covers this recipe.
-- `--admin`, `--no-verify`, `SKIP=` and `gh pr merge` do not appear in the recipe, the eligibility tool or `autodrive_followups.sh`. Merging happens only through the unchanged merge loop and gate.
+- `--admin`, `--no-verify`, `SKIP=` and `gh pr merge` do not appear in the recipe, the eligibility tool or `autodrive_followups.sh`. Merging happens only through the shared trusted executor and gate.
 - Bash steps read context only as `RECIPE_VAR_*` values and contain no `{{...}}` templates. Every value is validated before use.
 - `plan_task_id` is validated by `light-task-id` through `autodrive_followups.sh resolve-task`, and `file` applies the same function to the forwarded value. Its character set contains no quote, brace, newline or `$`, so it cannot inject template or YAML text into the context of the three child recipes.
 - The light steps make no GitHub call of their own beyond `light-open-pr` and `light-resolve-pr`; the eligibility tool is offline. `autodrive_followups.sh file` is the only code that writes follow-up issues and parent comments.

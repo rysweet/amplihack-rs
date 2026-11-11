@@ -97,6 +97,10 @@ pub enum OrchHelperCommands {
     /// (stop and escalate), never `CONTINUE` (spend another round). Failing
     /// safe here means stopping, not looping (issue #1337).
     NormaliseLoopVerdict,
+    /// Resolve an actual evaluator answer without inventing a STUCK judgment.
+    ResolveLoopHealth,
+    /// Enforce the resolved evaluator record (distinct evaluation/policy errors).
+    EnforceLoopHealth,
 
     /// Read decomposition JSON from stdin, print the workstream count.
     ///
@@ -518,6 +522,46 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
             let input = read_stdin()?;
             println!("{}", normalise_loop_verdict(&input));
             Ok(())
+        }
+        OrchHelperCommands::ResolveLoopHealth => {
+            let input = read_stdin()?;
+            let mut value = extract_json_with_field(&input, "loop_verdict")
+                .or_else(|| extract_json_with_field(&input, "verdict"))
+                .unwrap_or(serde_json::json!({}));
+            let token = value.get("loop_verdict").or_else(|| value.get("verdict"))
+                .and_then(serde_json::Value::as_str).unwrap_or("").trim().to_uppercase();
+            let terminal = std::env::var("RECIPE_VAR_loop_evidence").ok()
+                .and_then(|s|serde_json::from_str::<serde_json::Value>(&s).ok())
+                .is_some_and(|e| e["terminal_refusal"] == "true");
+            if terminal {
+                value = serde_json::json!({"loop_verdict":"POLICY_REFUSED","verdict_source":"terminal_policy_refusal","not_converging":[]});
+            } else if ["CONTINUE", "DONE", "STUCK"].contains(&token.as_str())
+                && value.get("not_converging").is_none_or(|v|v.as_array().is_some_and(|a|a.iter().all(serde_json::Value::is_string))) {
+                value["loop_verdict"] = serde_json::json!(token);
+                value["verdict_source"] = serde_json::json!("evaluator");
+            } else {
+                value = serde_json::json!({"loop_verdict":"EVALUATOR_INVALID","verdict_source":"invalid_evaluation","not_converging":[],"error":{"code":"EVALUATOR_INVALID"}});
+            }
+            if value["verdict_source"] == "evaluator" {
+                crate::commands::pr::evidence::launch::register_health(&mut value)?;
+            }
+            println!("{value}");
+            Ok(())
+        }
+        OrchHelperCommands::EnforceLoopHealth => {
+            let input = read_stdin()?;
+            let value: serde_json::Value = serde_json::from_str(&input)?;
+            let verdict = value["loop_verdict"].as_str().unwrap_or("EVALUATOR_INVALID");
+            match verdict {
+                "CONTINUE"|"DONE" => { println!("LOOP_HEALTH: {verdict}"); Ok(()) },
+                "STUCK" if value["verdict_source"] == "evaluator" => {
+                    eprintln!("LOOP_HEALTH: STUCK — {} (source=evaluator)", value["not_converging"]);
+                    if std::env::var("LOOP_HEALTH_ENFORCE").as_deref() == Ok("false") { Ok(()) }
+                    else { anyhow::bail!("explicit agent STUCK judgment") }
+                },
+                "POLICY_REFUSED" => { eprintln!("BLOCKED_TERMINAL orchestration_unavailable"); std::process::exit(79); },
+                _ => anyhow::bail!("EVALUATOR_INVALID: evaluator output is not a judgment"),
+            }
         }
         OrchHelperCommands::CountWorkstreams { force_single } => {
             let input = read_stdin()?;

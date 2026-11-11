@@ -114,7 +114,7 @@ escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned]
     usage_limit) echo "  This is a usage limit, not a judgement about progress. Run again when a login has capacity." >&2 ;;
     orphaned) echo "  This is a lost driver, not a judgement about progress. Relaunch auto-drive to resume from the recorded round." >&2 ;;
     budget) echo "  This is a usage budget set by the operator, not a judgement about progress. Relaunch with a higher budget to resume from the recorded round." >&2 ;;
-    *) echo "  This is a judgement about absence of progress, not an attempt count." >&2 ;;
+    *) if [ "$1" = STUCK ]; then echo "  This is the agent evaluator's judgment." >&2; else echo "  This is an execution or evaluation failure, not an agent STUCK judgment." >&2; fi ;;
   esac
   local f=() v # JSON-escaped; control characters become spaces (#1801)
   for v in "$LOOP_NAME" "$1" "${ROUND_LABEL:-?}" "$2"; do f+=("$(printf '%s' "$v" | tr '\001-\037' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g')"); done
@@ -160,20 +160,6 @@ stops_preflight() {
   bash "${LOOP_HOME}/autodrive_budget.sh" mark "$STATE_DIR" >/dev/null || return 1
   bash "${LOOP_HOME}/autodrive_progress.sh" last "$STATE_DIR" "$LOOP_NAME" >/dev/null
   [ $? -ne 3 ] || PROGRESS_OFF=1
-}
-
-# progress_stop <head sha> [<ci signal>]: the no-progress rule for a round that is not clean.
-progress_stop() {
-  local why rc
-  [ -z "${PROGRESS_OFF:-}" ] || return 0
-  why="$(bash "${LOOP_HOME}/autodrive_progress.sh" check "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "${RECORD}.findings" "${2:-}")"
-  rc=$?
-  [ "$rc" -eq 10 ] || { [ "$rc" -eq 0 ] || echo "WARNING: the no-progress check exited ${rc}; the evaluator decides." >&2; return 0; }
-  # Record the stopped round too, so a resumed run's summary names it.
-  bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" 0 "${RECORD}.findings" "${2:-}"
-  post_stop "${STATE_DIR}/${LOOP_NAME}-stuck-reason.txt"
-  escalate "STUCK" "$why"
-  exit 1
 }
 
 # budget_stop pre|post|before [--force]: BUDGET_EXHAUSTED when a limit is

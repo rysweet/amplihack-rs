@@ -521,6 +521,9 @@ fn args_should_skip(args: &[OsString]) -> bool {
     // downstream (issue #1062). A self-heal install would emit its banner onto
     // stdout and corrupt the very pipe these helpers exist to make robust, so
     // none of them may trigger auto-install.
+    if matches!(positionals.as_slice(), ["pr", "evidence" | "merge", ..]) {
+        return true; // File protocol commands must never install assets or pollute diagnostics.
+    }
     if matches!(positionals.as_slice(), ["orch", "helper", ..]) {
         return true;
     }

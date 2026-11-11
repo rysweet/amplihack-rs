@@ -42,6 +42,7 @@ recursion:
 
 context:
   repo_path: "."
+  no_merge: "false"
   pr_number: ""
   pr_url: ""
   task_description: ""
@@ -242,6 +243,7 @@ steps:
         --state-dir "$DIR" \
         --context "repo_path=$PR_WORKTREE" \
         --context "pr_number=${PR}" \
+        --context "no_merge=${RECIPE_VAR_no_merge:-true}" \
         --context "pr_url=${PR_URL:-}" \
         --context "autodrive_qa_evidence=${DIR}/qa-evidence.json" \
         --context "autodrive_state_dir=${DIR}" \

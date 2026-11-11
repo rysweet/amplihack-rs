@@ -10,6 +10,9 @@
 mod tests;
 
 mod lease;
+pub mod evidence;
+mod gh;
+mod merge;
 
 use crate::util::run_output_with_timeout;
 use anyhow::{Context, Result, bail};
@@ -27,6 +30,12 @@ const GH_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 pub enum PrCommands {
     /// Watch CI checks on a PR and merge when all pass.
     WatchAndMerge(WatchAndMergeArgs),
+    /// Collect and validate agent-selected readiness evidence.
+    #[command(subcommand)]
+    Evidence(evidence::Commands),
+    /// Execute or inspect an authorized evidence-bound merge.
+    #[command(subcommand)]
+    Merge(merge::Commands),
 }
 
 /// Arguments for `amplihack pr watch-and-merge`.
@@ -66,12 +75,23 @@ pub struct GhOutput {
 /// `MockGhRunner` (in tests) returns canned responses.
 pub trait GhRunner {
     fn run_gh(&self, args: &[&str]) -> Result<GhOutput>;
+    fn run_raw(&self, args: &[&str]) -> Result<gh::RawOutput> {
+        let out = self.run_gh(args)?;
+        Ok(gh::RawOutput { stdout: out.stdout.into_bytes(), success: out.success,
+            exit_code: Some(if out.success { 0 } else { 1 }) })
+    }
 }
 
 /// Production runner — calls `gh` via `std::process::Command`.
 pub struct RealGhRunner;
 
 impl GhRunner for RealGhRunner {
+    fn run_raw(&self, args: &[&str]) -> Result<gh::RawOutput> {
+        let mut command = std::process::Command::new("gh");
+        command.args(args);
+        let output = run_output_with_timeout(command, GH_COMMAND_TIMEOUT)?;
+        Ok(gh::RawOutput { stdout: output.stdout, success: output.status.success(), exit_code: output.status.code() })
+    }
     fn run_gh(&self, args: &[&str]) -> Result<GhOutput> {
         let mut cmd = std::process::Command::new("gh");
         cmd.args(args);
@@ -360,6 +380,8 @@ pub fn validate_args(args: &WatchAndMergeArgs) -> Result<()> {
 /// Entry point for `amplihack pr` dispatch.
 pub fn run(command: PrCommands) -> Result<()> {
     match command {
+        PrCommands::Evidence(command) => evidence::run(command),
+        PrCommands::Merge(command) => merge::run(command),
         PrCommands::WatchAndMerge(args) => {
             validate_args(&args)?;
 

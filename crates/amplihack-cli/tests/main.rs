@@ -26,6 +26,13 @@
 mod isolated_amplihack;
 mod support;
 
+#[path = "issue_2333_pr_evidence.rs"]
+mod issue_2333_pr_evidence;
+#[path = "issue_2333_autodrive_recovery.rs"]
+mod issue_2333_autodrive_recovery;
+#[path = "issue_2333_merge_security.rs"]
+mod issue_2333_merge_security;
+
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
 #[path = "issue_1753_login_identity.rs"]

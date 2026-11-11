@@ -167,6 +167,41 @@ parent_is_gate() {
   return 0
 }
 
+# The native executor is allowed only beneath the same privileged gate, with
+# its executable bound to an actual recipe runner ancestor. A binary name,
+# request flag or environment marker alone never grants merging.
+parent_is_rust_gate() {
+  local proc="/proc/$PPID" rp line rest pid gate exe runner count=0
+  local -a argv=() fields=()
+  parent_pid_matches || return 1
+  rp="$(sys_tool realpath)" || return 1
+  mapfile -d '' -t argv < "$proc/cmdline" 2>/dev/null || return 1
+  [[ "${argv[1]-} ${argv[2]-} ${argv[3]-}" == 'pr merge gate' ]] || return 1
+  parent_environ_clean "$proc" || return 1
+  exe="$("$rp" -e -- "$proc/exe")" || return 1
+  IFS= read -r line < "$proc/stat" || return 1
+  rest="${line##*)}"; read -r -a fields <<< "$rest"; pid="${fields[1]-}"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  gate="$("$rp" -e -- "$SELF_DIR/../autodrive_merge_gate.sh")" || return 1
+  mapfile -d '' -t argv < "/proc/$pid/cmdline" 2>/dev/null || return 1
+  [[ "${argv[1]-}" == -p && "${argv[2]-}" == "$gate" && "/proc/$pid/fd/255" -ef "$gate" ]] || return 1
+  [[ "/proc/$pid/exe" -ef /bin/bash ]] || return 1
+  parent_environ_clean "/proc/$pid" || return 1
+  # Find the launch runner, comparing executable identity as well as argv.
+  while (( count < 16 )); do
+    IFS= read -r line < "/proc/$pid/stat" 2>/dev/null || return 1
+    rest="${line##*)}"; read -r -a fields <<< "$rest"; pid="${fields[1]-}"
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    mapfile -d '' -t argv < "/proc/$pid/cmdline" 2>/dev/null || return 1
+    if [[ "${argv[1]-} ${argv[2]-}" == 'recipe run' ]]; then
+      [[ "/proc/$pid/exe" -ef "$exe" ]] && parent_pid_matches
+      return $?
+    fi
+    count=$((count + 1))
+  done
+  return 1
+}
+
 # to_lower <text>: sets LOWER. macOS ships /bin/bash 3.2, where `${x,,}` is a
 # bad substitution that would end the shim on every `gh api` call, so older
 # bash lowercases through the system tr instead.
@@ -391,7 +426,7 @@ if ! find_real_gh; then
 fi
 
 classify 1 "$@"
-if [[ -n "$CLASS" ]] && ! parent_is_gate; then
+if [[ -n "$CLASS" ]] && ! parent_is_gate && ! parent_is_rust_gate; then
   refuse "$CLASS"
 fi
 exec "$REAL_GH" "$@"

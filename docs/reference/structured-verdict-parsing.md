@@ -1,6 +1,8 @@
 ---
 title: Structured Verdict & Intent Parsing Reference
-last_updated: 2026-10-06
+description: Legacy structured text helpers and strict evidence-bound auto-drive decision parsing.
+doc_type: reference
+last_updated: 2026-11-11
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -10,7 +12,16 @@ owner: workflow-team
 The default-workflow recipe family reads every agent verdict, intent, and
 outcome signal through the tested `amplihack orch helper` toolchain and through
 agent-emitted `parse_json` fields evaluated by engine conditions. There is no
-bash text-scraping of agent prose in the control path.
+bash text-scraping of agent prose in the control path. Auto-drive will use the
+planned stricter [versioned evidence path](pr-evidence-contract.md) for readiness and
+loop-health decisions; the text helper contracts below remain available to legacy
+callers.
+
+> **[PLANNED - Implementation Pending]: versioned auto-drive records.** The
+> registered evidence/evaluator bindings and failure semantics below specify
+> issue #2333. Current auto-drive still uses the text helpers, their safe
+> defaults and deterministic no-progress handling. No evidence/execute/inspect
+> commands are exposed yet. The helper documentation describes existing behavior.
 
 This reference documents the contract that recipe steps and the backing Rust
 CLI honour: the `normalise-verdict` helper, the `session-tree register --json`
@@ -45,12 +56,12 @@ phrasing. The fix routes every one of these signals through one tested tool
 normaliser, and moves intent/outcome signals into agent-emitted `parse_json`
 fields that engine `condition:` expressions read directly.
 
-The parsing mechanism changed. The fail-safe defaults, loud `WARNING` stderr
-messages, and issue-referenced defensive branches did not.
+Legacy helpers retain their documented safe defaults. The auto-drive versioned
+path separates evaluation failure from a valid agent `STUCK` judgment.
 
 ## The canonical extraction pipeline
 
-Every recipe step that reads a field from agent output uses this one pattern
+Legacy recipe steps that read a field from agent output use this pattern
 (the template lives at `smart-classify-route.yaml`):
 
 ```bash
@@ -195,13 +206,11 @@ amplihack orch helper normalise-loop-verdict
 | `STUCK`, `STOP`, `BLOCKED`, `NO_PROGRESS`, `ESCALATE`, `LOOPING`, `NOT_CONVERGING` | `STUCK` |
 | _(anything else, including empty input)_ | `STUCK` |
 
-> **The two normalisers fail in opposite directions, deliberately.** An
-> unreadable *work* verdict resolves to `INSUFFICIENT_EVIDENCE`, which is
-> non-fatal — a recipe with real artifacts must never be hard-failed by a
-> verifier-formatting bug. An unreadable *loop* verdict resolves to `STUCK`,
-> which stops the loop — because the fail-open alternative authorises another
-> round of a loop that is already burning budget for nothing. Do not collapse
-> them into one shared default.
+> **Legacy helper default:** Unknown loop-verdict text normalizes to `STUCK`.
+> Auto-drive bypasses that default: missing, malformed, stale or failed evaluation
+> produces a distinct evaluation failure. Only a valid bound agent judgment can
+> produce convergence `STUCK`. Invalid output authorizes neither continuation nor
+> advancement. Valid legacy caller contracts remain supported.
 
 The R2 equality property matters even more here: `DISCONTINUE`,
 `CANNOT_CONTINUE`, `DO_NOT_CONTINUE` and `SHOULD_NOT_CONTINUE` all contain
@@ -252,9 +261,8 @@ are unchanged; only the success-line format is selectable.
 
 ## Structured fields by recipe
 
-Each control signal below is either extracted with the pipeline above or
-emitted by an agent step as a `parse_json` field and read by an engine
-`condition:`.
+Control signals use legacy extraction, agent `parse_json` fields, or the bound
+versioned evidence records identified below.
 
 | Finding | Recipe / step                                   | Signal                | Source                                                                 |
 | ------- | ----------------------------------------------- | --------------------- | --------------------------------------------------------------------- |
@@ -265,9 +273,9 @@ emitted by an agent step as a `parse_json` field and read by an engine
 | C       | `smart-reflect-loop.yaml`                       | `goal_status`         | reviewer `parse_json` field, `reflection_N.goal_status == '…'`        |
 | D1      | `smart-execute-routing.yaml`                    | `status`              | `extract-json \| extract-field --field status --default unknown`      |
 | D2      | `smart-classify-route.yaml`                     | `tree_id`, `depth`    | `session-tree register --json` → `extract-field`                      |
-| E       | `loop-health-evaluator.yaml`                     | `loop_verdict`        | `extract-json --require-field loop_verdict \| extract-field --field loop_verdict --default STUCK \| normalise-loop-verdict`; then the `verdict` key and a line-leading prose token as [fallbacks](loop-health-evaluator.md#how-step-03-resolves-the-verdict) |
+| E | `loop-health-evaluator.yaml` | `loop_verdict` | **Planned auto-drive:** schema/version, exact decision, registered assessment and run/round/target bindings; invalid output is an evaluation failure. Legacy helpers retain their separate contract. |
 | F1      | `autodrive-crusty-round.yaml`                    | `crusty_verdict`      | `extract-json --require-field crusty_verdict \| extract-field --field crusty_verdict --default CONCERNS` |
-| F2      | `autodrive-merge-round.yaml`                     | `merge_ready_verdict` | `extract-json --require-field merge_ready_verdict \| extract-field --field merge_ready_verdict --default NOT_MERGE_READY` |
+| F2 | `autodrive-merge-round.yaml` | `merge_ready_verdict` | **Planned:** agent proposal plus accepted evidence bundle; validate every criterion, provenance, completeness and scoped supersession before advancement. |
 
 ### A1 — TDD work-verifier gate (`verdict`)
 
@@ -362,17 +370,22 @@ STATUS=$(printf '%s' "$SESSION_INFO" \
 
 ## Fail-safe guarantees
 
-Every gate remains fail-closed. The parsing change never weakens these:
+Every gate remains fail-closed. Legacy parsing and versioned validation preserve these boundaries:
 
 - Missing / malformed JSON → the step's documented safe default
-  (`INSUFFICIENT_EVIDENCE`, `NEEDS_ATTENTION`, `unknown`, `no_merge=false`).
+  (`INSUFFICIENT_EVIDENCE`, `NEEDS_ATTENTION` or `unknown` for the relevant
+  legacy helper). Trusted no-merge authorization is never cleared by invalid output.
 - `extract-json` on non-JSON prints `{}`; `extract-field` then returns the
   supplied `--default`.
 - `normalise-verdict` resolves any unrecognised or empty verdict to
   `INSUFFICIENT_EVIDENCE`.
-- `normalise-loop-verdict` resolves any unrecognised or empty loop verdict to
-  `STUCK` — never `CONTINUE`. Failing safe on a loop means stopping, not
-  spending another round (issue #1337).
+- The legacy `normalise-loop-verdict` helper resolves unknown text to `STUCK`.
+  Auto-drive does not use that normalization to create a convergence judgment;
+  it reports evaluation failure and authorizes no action.
+- Versioned evidence rejects duplicate JSON keys, unknown schemas/decisions and
+  stale or unrelated bindings. An inconsistent `DONE` returns
+  `DONE_WITH_NONCLEAN_ROUND` for reassessment on every occurrence, never a
+  code-generated `STUCK`.
 - The `WARNING` stderr messages, `continue_on_error` settings, additive
   "suppress-only" gate semantics, and `# issue #NNN` defensive branches are
   preserved byte-for-behaviour.
@@ -402,5 +415,5 @@ agent-prose scraping, and are left unchanged:
 - [Workflow Terminal State](workflow-terminal-state.md) — no-merge and
   auto-merge semantics consumed by finding B.
 - [Loop-Health Evaluator](loop-health-evaluator.md) — the reusable
-  `CONTINUE`/`DONE`/`STUCK` loop-health contract built on this pipeline.
+  `CONTINUE`/`DONE`/`STUCK` loop-health contract and versioned evaluator validation.
 - How-to: [Read agent verdicts with `orch helper`](../howto/parse-agent-verdicts-with-orch-helper.md).

@@ -111,31 +111,5 @@ case "$CMD" in
     exit 1 ;;
 esac
 
-# check
-LABEL="$(safe_label "$3")"; SHA="$(safe_sha "$4")"
-no_sha_warning
-ROW="$(last_row)" || exit 0
-P_LABEL="$(printf '%s' "$ROW" | cut -f1)"; P_SHA="$(printf '%s' "$ROW" | cut -f2)"
-P_CLEAN="$(printf '%s' "$ROW" | cut -f3)"; P_ITEMS="$(printf '%s' "$ROW" | cut -f4)"
-P_CI="$(printf '%s' "$ROW" | cut -s -f5)"; CI="$(safe_ci "${6:-}")"
-P_HASH="$(safe_sha "$(printf '%s' "$ROW" | cut -s -f6)")"
-[ -n "$P_LABEL" ] && [ "$P_LABEL" = "$(safe_label "$P_LABEL")" ] || { echo "WARNING: the last progress row has no valid round label; the no-progress rule is off this round." >&2; exit 0; }
-# A clean (1) or failed (2) previous round never matches: a failed round's
-# empty findings file does not describe its open concerns.
-[ "$P_CLEAN" = "0" ] || exit 0
-[ -n "$SHA" ] && [ "$SHA" = "$(safe_sha "$P_SHA")" ] || exit 0
-ALL="$(full_items "$5")"; CUR="$(items "$ALL")"; HASH="$(items_hash "$ALL")"
-# The hash compares the full set; the cut text is only for display.
-if [ -n "$P_HASH" ] && [ -n "$HASH" ]; then [ "$HASH" = "$P_HASH" ] || exit 0
-else [ "$CUR" = "$P_ITEMS" ] || exit 0; fi
-# A change in CI is progress; CI still running is waited on, never a stop.
-[ "$CI" = "$(safe_ci "$P_CI")" ] || exit 0
-case "$(printf '%s' "$CI" | tr 'a-z' 'A-Z')" in *PENDING*) exit 0 ;; esac
-
-REASON="no progress (decided in code): head ${SHA} and open items unchanged since ${P_LABEL}: ${CUR:-none}"
-OUT="${STATE}/${LOOP}-stuck-reason.txt"
-TMP="$(mktemp "${STATE}/.${LOOP}-stuck-reason.XXXXXX")" \
-  && printf '%s\n' "$REASON" > "$TMP" && mv -f -- "$TMP" "$OUT" \
-  || { rm -f -- "${TMP:-}"; echo "WARNING: could not write ${OUT}; the reason is in the escalate line." >&2; }
-printf '%s\n' "$REASON"
-exit 10
+# Compatibility operation: observations never decide convergence (#2333).
+exit 0

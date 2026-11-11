@@ -189,6 +189,8 @@ HISTORY=""
 PREV_FINDINGS=""
 PREV_TEST=""
 PREV_CI=""; PREV_VERDICT=""; PREV_OVERRIDDEN=0
+DISCREPANCY=""
+EVIDENCE_HISTORY="${STATE_DIR}/${LOOP_NAME}-evidence-history.jsonl"
 TOKEN_SAFE="$(printf '%s' "$CLEAN_TOKEN" | LC_ALL=C tr -cd 'A-Za-z0-9_')" # see VERDICT_SAFE
 [ -n "$TOKEN_SAFE" ] || echo "WARNING: loop '${LOOP_NAME}': the clean token has no A-Za-z0-9_ characters, so loop-health-evaluator gets an empty loop_clean_token." >&2
 
@@ -298,12 +300,16 @@ while :; do
   # #1743, decided in code before the evaluator: no progress, then the budget. RF: 1 clean, 2 failed (rc!=0 or no verdict; the evaluator judges faults), 0 otherwise.
   HEAD_NOW="$(git -C "$REPO" rev-parse HEAD || printf '')"; CI_SIGNAL="$(field "$RAW" ci_signal "")"
   RF=0; [ "$ROUND_CLEAN" = "true" ] && RF=1 || { [ "$ROUND_RC" -eq 0 ] && [ "$ROUND_VERDICT" != "MISSING" ]; } || RF=2
-  [ "$RF" != 0 ] || progress_stop "$HEAD_NOW" "$CI_SIGNAL"
   bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$HEAD_NOW" "$RF" "${RECORD}.findings" "$CI_SIGNAL"
   [ "$ROUND_CLEAN" = "true" ] || budget_stop post
   TEST_SIGNAL="$(field "$RAW" test_signal "")"
   HISTORY="${HISTORY}
 ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(printf '%s' "$FINDINGS" | grep -c . || true)${BEFORE_RESULT:+ before=${BEFORE_RESULT}}"
+
+  # Preserve full observations; no observation is a convergence verdict.
+  if [ -n "$RAW" ]; then
+    printf '%s\n' "$RAW" >> "$EVIDENCE_HISTORY" || { escalate "RESULT_PERSIST_FAILED" "cannot persist evaluator evidence"; exit 1; }
+  fi
 
   # --- the agentic terminator ----------------------------------------------
   assert_ceiling_untouched
@@ -312,7 +318,9 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
       --working-dir "$REVIEW_REAL" \
       -c "loop_name=auto-drive:${LOOP_NAME}" \
       -c "loop_round_label=${ROUND_LABEL}" \
-      -c "loop_history=${HISTORY}" \
+      -c "loop_history=${HISTORY} ${DISCREPANCY}" \
+      -c "loop_evidence_history_file=${EVIDENCE_HISTORY}" \
+      -c "loop_round_record=${RECORD}" \
       -c "loop_last_round_output=$(bash "${LOOP_HOME}/autodrive_round_tail.sh" "$LOG")" \
       -c "loop_repo_path=${REPO}" -c "loop_agent_working_dir=${REVIEW_REAL}" \
       -c "loop_baseline_ref=${BASELINE}" \
@@ -343,27 +351,32 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
   # else is STUCK (docs/reference/auto-drive-to-merge.md#reading-the-loop-health-line). BSD awk and mawk
   # safe. format_recipe_run_table (crates/amplihack-cli/src/commands/recipe/run/format.rs) owns the
   # format; tests_autodrive_health_log.rs runs this awk over its output.
-  LOOP_VERDICT="STUCK"
+  LOOP_VERDICT="EVALUATION_FAILED"
   if [ "$HEALTH_RC" -eq 0 ]; then
     HEALTH_READ="$(LC_ALL=C awk '
       function verdict(s, p) {
         if (s == p "CONTINUE" || index(s, p "CONTINUE ") == 1) return "CONTINUE"
         if (s == p "DONE" || index(s, p "DONE ") == 1) return "DONE"
-        return "STUCK"
+        return "EVALUATOR_INVALID"
       }
       pend { rec = $0; pend = 0 }
       /^  [^ ]+ step-[^ :(]+( \([^)]*\))?: / {
         rec = ""; pend = 0
         if ($0 ~ /^  ✓ step-04-enforce-loop-verdict( \([^)]*\))?: completed( \[[^]]*\])?$/) pend = 1
       }
-      END { v = verdict(rec, "    Output: LOOP_HEALTH: "); if (v == "STUCK") v = verdict(rec, "LOOP_HEALTH: "); print v }' "$HEALTH_LOG" || echo STUCK)"
+      END { v = verdict(rec, "    Output: LOOP_HEALTH: "); if (v == "EVALUATOR_INVALID") v = verdict(rec, "LOOP_HEALTH: "); print v }' "$HEALTH_LOG" || echo EVALUATOR_INVALID)"
     case "$HEALTH_READ" in
       CONTINUE) LOOP_VERDICT="CONTINUE" ;;
       DONE) LOOP_VERDICT="DONE" ;;
       *)
-        echo "WARNING: loop-health-evaluator exited 0 with no readable LOOP_HEALTH verdict; failing safe to STUCK." >&2
+        LOOP_VERDICT="EVALUATOR_INVALID"
+        echo "ERROR: EVALUATOR_INVALID: no readable agent verdict." >&2
         ;;
     esac
+  elif grep -qE '^LOOP_HEALTH: STUCK .*source=evaluator' "$HEALTH_LOG"; then
+    LOOP_VERDICT="STUCK"
+  elif grep -q 'EVALUATOR_INVALID' "$HEALTH_LOG"; then
+    LOOP_VERDICT="EVALUATOR_INVALID"
   fi
 
   OVERRIDE_ARGS=("$ROUND_VERDICT" "$VERDICT_SAFE" "$PREV_OVERRIDDEN" "$PREV_VERDICT" "$FINDINGS" "$PREV_FINDINGS" "$BASELINE" "$HEAD_NOW")
@@ -379,10 +392,8 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
           "$LOOP_NAME" "$ROUND_LABEL" "$ROUND_VERDICT")"
         exit 0
       fi
-      # #1597: re-review once; a missing record, or a repeat that moved nothing, is STUCK.
-      WHY="$(bash "${LOOP_HOME}/autodrive_done_override.sh" "${OVERRIDE_ARGS[@]}")" \
-        || { escalate "STUCK" "loop-health said DONE while the round verdict is '${VERDICT_SAFE}', not '${TOKEN_SAFE}'${WHY:+: ${WHY}}. An inconsistent pair never advances a phase."; exit 1; }
-      echo "INFO: loop-health said DONE but ${VERDICT_FIELD}=${VERDICT_SAFE}, not ${TOKEN_SAFE}; running another round to re-review." >&2
+      DISCREPANCY="DONE_WITH_NONCLEAN_ROUND: evaluator DONE conflicts with ${VERDICT_SAFE}; reassess with fresh evidence"
+      echo "INFO: ${DISCREPANCY}" >&2
       HISTORY="${HISTORY} done_overridden=1"; PREV_OVERRIDDEN=1
       continue
       ;;
@@ -392,8 +403,12 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
       fi
       continue
       ;;
+    STUCK)
+      escalate "STUCK" "loop-health-evaluator explicitly judged '${LOOP_NAME}' unable to progress"
+      exit 1
+      ;;
     *)
-      escalate "STUCK" "loop-health-evaluator returned STUCK (or an unreadable verdict) for '${LOOP_NAME}'"
+      escalate "$LOOP_VERDICT" "loop-health evaluation did not produce a valid judgment"
       exit 1
       ;;
   esac

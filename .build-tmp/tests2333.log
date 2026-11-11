@@ -1,0 +1,6 @@
+   Compiling ring v0.17.14
+   Compiling rustls-webpki v0.103.15
+   Compiling rustls v0.23.46
+   Compiling ureq v2.12.1
+   Compiling recipe-runner-rs v0.6.0 (https://github.com/rysweet/amplihack-recipe-runner?rev=90286bc50b84ded773795d2c8301b689f680db0b#90286bc5)
+   Compiling amplihack-cli v1.2.0 (/d0/src/amplihack-work/worktrees/cx-amplihack-rs-2333-a8a29222/feat/issue-2333-auto-drive-merge-ready/crates/amplihack-cli)
