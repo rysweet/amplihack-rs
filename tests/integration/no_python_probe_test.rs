@@ -1,3 +1,4 @@
+use amplihack_utils::clock::{Clock, SystemClock};
 /// Integration tests: AC9 no-Python probe — extended coverage (Issue #77).
 ///
 /// These tests validate that the amplihack binary handles code-graph subcommands
@@ -21,6 +22,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
+
+use crate::wait::{CEILING, wait_child};
 
 /// Returns the path to the compiled `amplihack` binary.
 fn amplihack_bin() -> PathBuf {
@@ -163,10 +166,8 @@ struct Closed {
 /// Owns the pty master. A dedicated thread reads it, blocking, and passes
 /// each chunk over a channel; [`PtyReader::wait_for`] blocks on that channel.
 ///
-/// Nothing here measures time (issue #1977): a wait ends when its screen text
-/// arrives or when the stream ends. A child that hangs is bounded by the test
-/// harness's own timeout, and [`KillOnDrop`] ends the child, and with it the
-/// stream, when a test fails.
+/// Success depends on screen events; the shared hang guard bounds a missing
+/// event even when the child stays alive. Unwinding triggers [`KillOnDrop`].
 struct PtyReader {
     events: mpsc::Receiver<PtyEvent>,
     output: Vec<u8>,
@@ -204,6 +205,16 @@ impl PtyReader {
     /// Blocks until the output so far satisfies `predicate` and returns it,
     /// or returns [`Closed`] with the captured output once the stream ends.
     fn wait_for(&mut self, mut predicate: impl FnMut(&[u8]) -> bool) -> Result<&[u8], Closed> {
+        self.wait_for_with(CEILING, &SystemClock, &mut predicate)
+    }
+
+    fn wait_for_with(
+        &mut self,
+        ceiling: std::time::Duration,
+        clock: &dyn Clock,
+        mut predicate: impl FnMut(&[u8]) -> bool,
+    ) -> Result<&[u8], Closed> {
+        let deadline = clock.now() + ceiling;
         loop {
             if predicate(&self.output) {
                 return Ok(&self.output);
@@ -213,9 +224,22 @@ impl PtyReader {
                     output: screen(&self.output),
                 });
             }
-            match self.events.recv() {
+            let now = clock.now();
+            assert!(
+                now < deadline,
+                "hung: waiting for PTY output or EOF for {ceiling:?}; output tail:\n{}",
+                crate::wait::tail_of(&self.output)
+            );
+            match self
+                .events
+                .recv_timeout(deadline.saturating_duration_since(now))
+            {
                 Ok(PtyEvent::Data(bytes)) => self.output.extend_from_slice(&bytes),
-                Ok(PtyEvent::End) | Err(_) => self.ended = true,
+                Ok(PtyEvent::End) | Err(mpsc::RecvTimeoutError::Disconnected) => self.ended = true,
+                Err(mpsc::RecvTimeoutError::Timeout) => panic!(
+                    "hung: waiting for PTY output or EOF for {ceiling:?}; output tail:\n{}",
+                    crate::wait::tail_of(&self.output)
+                ),
             }
         }
     }
@@ -224,6 +248,68 @@ impl PtyReader {
     fn read_to_end(&mut self) {
         let _ = self.wait_for(|_| false);
     }
+}
+
+#[test]
+fn pty_wait_returns_on_matching_output_and_reports_eof() {
+    let (sender, events) = mpsc::channel();
+    sender.send(PtyEvent::Data(b"ready".to_vec())).unwrap();
+    sender.send(PtyEvent::End).unwrap();
+    let mut reader = PtyReader {
+        events,
+        output: Vec::new(),
+        ended: false,
+    };
+    assert_eq!(
+        reader.wait_for(|bytes| bytes == b"ready").unwrap(),
+        b"ready"
+    );
+    assert_eq!(reader.wait_for(|_| false).unwrap_err().output, "ready");
+}
+
+#[test]
+#[should_panic(expected = "hung: waiting for PTY output or EOF")]
+fn pty_wait_bounds_a_live_silent_stream() {
+    let (_sender, events) = mpsc::channel();
+    let mut reader = PtyReader {
+        events,
+        output: Vec::new(),
+        ended: false,
+    };
+    let _ = reader.wait_for_with(std::time::Duration::ZERO, &SystemClock, |_| false);
+}
+
+#[test]
+#[should_panic(expected = "hung: waiting for PTY output or EOF")]
+fn pty_redraws_do_not_reset_the_wait_ceiling() {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    struct TickingClock(Mutex<Instant>);
+    impl Clock for TickingClock {
+        fn now(&self) -> Instant {
+            let mut now = self.0.lock().unwrap();
+            let result = *now;
+            *now += Duration::from_secs(1);
+            result
+        }
+        fn sleep(&self, _: Duration) {
+            panic!("PTY waits receive events instead of sleeping");
+        }
+    }
+    let (sender, events) = mpsc::channel();
+    for _ in 0..10 {
+        sender.send(PtyEvent::Data(b"redraw".to_vec())).unwrap();
+    }
+    // Keep the sender alive: the wait must reach its original deadline while
+    // redraws are still queued, rather than ending through a disconnected EOF.
+    let mut reader = PtyReader {
+        events,
+        output: Vec::new(),
+        ended: false,
+    };
+    let clock = TickingClock(Mutex::new(Instant::now()));
+    let _ = reader.wait_for_with(Duration::from_secs(5), &clock, |_| false);
 }
 
 /// Kills and reaps the child if it is still running when the test drops it,
@@ -1312,11 +1398,7 @@ exit 1
     fn quit(&mut self) -> String {
         self.send(b"q");
         self.reader.read_to_end();
-        let status = self
-            .child
-            .0
-            .wait()
-            .unwrap_or_else(|error| panic!("failed to wait for fleet tui: {error}"));
+        let status = wait_child("fleet tui exit", &mut self.child.0);
         let cleaned = self.text();
         assert!(
             status.success(),

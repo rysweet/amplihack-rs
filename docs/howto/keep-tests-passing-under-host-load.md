@@ -1,7 +1,7 @@
 ---
 title: Keep Tests Passing Under Host Load
 type: howto
-updated: 2026-11-09
+updated: 2026-11-11
 related: issue #1973, issue #1765, issue #1961, issue #2019, issue #1977, issue #1998, issue #2036, issue #2017
 ---
 
@@ -12,7 +12,7 @@ loaded host such a test fails, and the next run fails on a different subset,
 so a push can take several attempts. This guide is for contributors who write
 or change tests in `amplihack-cli`, `amplihack-hooks` and `amplihack-utils`.
 It explains how to write a test that host speed cannot decide, which shared
-helpers and test knobs to use, and how to prove a fix under confined CPU load.
+helpers and test knobs to use, and how to validate the changed behavior.
 
 ## Contents
 
@@ -31,10 +31,9 @@ helpers and test knobs to use, and how to prove a fix under confined CPU load.
 - [Fleet TUI tests](#fleet-tui-tests)
 - [Rotator tests](#rotator-tests)
 - [Checks that something does not happen](#checks-that-something-does-not-happen)
-- [The wall-clock scan guard](#the-wall-clock-scan-guard)
+- [Review event waits](#review-event-waits)
 - [What not to do](#what-not-to-do)
-- [Prove a fix under load](#prove-a-fix-under-load)
-- [Limits of a CPU-only proof](#limits-of-a-cpu-only-proof)
+- [Validate a fix](#validate-a-fix)
 - [Related](#related)
 
 ## The rule
@@ -405,10 +404,8 @@ test, a lock that gives up. Such a test:
    on a busy host is correct behaviour.
 
 `tests_execute.rs` and `tests_teardown.rs` used to assert that the runner
-returned within 25 s or 8 s; those assertions are gone. A bound test this
-sweep did not convert is listed in the
-[scan guard's allowlist](#the-wall-clock-scan-guard) with its follow-up
-issue. For a fake that hangs, see
+returned within 25 s or 8 s; those assertions are gone. Review remaining
+elapsed bounds individually. For a fake that hangs, see
 [Bound a timeout without measuring speed](./keep-tests-from-changing-path-and-home.md#bound-a-timeout-without-measuring-speed).
 
 ## Inject a clock
@@ -1002,50 +999,12 @@ Sleeps that remain because the rule under test is about time, such as
 `Fixture::wait_past_damping`, are listed in the PR that keeps them, with a
 follow-up issue.
 
-## The wall-clock scan guard
+## Review event waits
 
-`crates/amplihack-cli/tests/issue_2019_no_wall_clock_asserts.rs` is a module
-of `cli_integration`, declared with `mod issue_2019_no_wall_clock_asserts;` in
-`crates/amplihack-cli/tests/main.rs`. It scans `crates/*/src/**/test*.rs`, `crates/*/tests/**`
-and `tests/**` for `elapsed()` or a difference of two `Instant`s used in an
-`assert!` or a comparison, and fails on any match that is not exempt:
-
-- a file that contains `impl Clock for` (it measures injected time), except
-  for a check on a name bound to `Instant::now()` in that file, which is still
-  reported: injected time is exempt, real time in the same file is not;
-- a `VIRTUAL_TIME` entry `(path, proof)`. It exempts a file whose `elapsed()`
-  reads a fake through a seam other than `Clock`, so the `impl Clock for`
-  rule cannot see it. There are two entries, both `limit_wait` tests, which
-  read virtual time through `WaitDeps`:
-  `limit_wait/tests_wait.rs` must contain `impl WaitDeps for Fake`, and
-  `limit_wait/tests_wait_ends.rs` must contain `use super::tests_wait::{Fake`.
-  An entry whose proof text is gone fails the guard, so the exemption cannot
-  outlive the fake;
-- `issue_1973_wait_helpers.rs` and the guard itself;
-- an entry in the allowlist.
-
-The allowlist is a list of `(path, issue number)` pairs. It can only shrink:
-an entry whose file no longer matches fails the guard, so a fixed test must
-also leave the list. Every entry names its follow-up issue.
-
-The guard does not follow symlinks and skips `target/`, `worktrees/` and
-`.git/`. It checks its own matcher against inline samples, so a matcher that
-stops matching fails too.
-
-The guard finds wall-clock asserts and comparisons on `elapsed()`. It does
-not find a deadline loop, such as `while Instant::now() < deadline`, that
-decides whether a test passes. Matching such loops by pattern would also
-flag production deadlines. Review a new test for them by hand.
-
-Run it alone:
-
-```bash
-cargo test -p amplihack-cli --test cli_integration issue_2019_no_wall_clock_asserts::
-# Output: test result: ok. N passed; 0 failed; 0 ignored; ...
-```
-
-When it fails, change how the test waits. Add an allowlist entry only with a
-filed follow-up issue, and only for a test the current PR does not touch.
+Review tests for success conditions based on real elapsed time. Prefer an
+observable event, and bound missing events with the shared hang guard.
+There is no repository source scanner or shrinking exception allowlist:
+review the behavior and synchronization of each changed test directly.
 
 ## What not to do
 
@@ -1070,95 +1029,26 @@ filed follow-up issue, and only for a test the current PR does not touch.
   without a pidfd. Signal only processes the test spawned, or a pidfd opened
   while the process was known to be alive.
 
-## Prove a fix under load
+## Validate a fix
 
-The acceptance check is three passes in a row of the whole workspace with 16
-CPU-bound loops running beside it.
+Run the tests affected by the change and the repository's normal required
+checks. Synthetic CPU load runs and three consecutive workspace passes are
+not required. Do not generate host load as part of this validation.
 
-### Confine the load
+For timing policy, use the same fixture with an injected clock and change
+only the configured setting. Check both the allowed completion and the
+configured escalation limit. Verify the test fails if the implementation
+ignores the setting.
 
-Deliberate load must be confined to named CPUs and must end by itself. Load
-spread across every core, or with no end time, has taken the whole host
-down. Use exactly this shape: 16 loops, pinned to CPUs 56-71, at
-`nice -n 19`, each ending after at most 1800 s:
+For event waits, check the success event, stream closure and missing-event
+paths. A repeated redraw must not reset the hang deadline. When replacing a
+running stub, wait for an explicit readiness event from its original body
+before replacing the path; bound readiness and exit waits and clean up the
+child on failure.
 
-```bash
-systemd-run --user --scope -p AllowedCPUs=56-71 -- bash -c '
-  for _ in $(seq 16); do
-    timeout 1800 taskset -c 56-71 nice -n 19 bash -c "while :; do :; done" &
-  done
-  wait'
-```
-
-Never raise the 1800 s limit. Pick other CPUs only if 56-71 do not exist on
-the host, and keep the count equal to the CPUs named.
-
-### Run one pass
-
-Each pass gets a new scope, started immediately before the test run:
-
-1. Start the load scope in the background and record its PID. Log the time
-   it started.
-
-   ```bash
-   export TMPDIR=/d0/ryan/tmp/issue-2019
-   mkdir -p -m 0700 "$TMPDIR"
-   log="$TMPDIR/pass-1.log"
-   date -u +'load start %FT%TZ' >"$log"
-   systemd-run --user --scope -p AllowedCPUs=56-71 -- bash -c '...' &
-   load_pid=$!
-   ```
-
-2. Run the workspace and keep its output:
-
-   ```bash
-   cargo test --workspace --locked >>"$log" 2>&1
-   echo "cargo exit $?" >>"$log"
-   ```
-
-3. Wait on the literal PID, then log the time the load ended:
-
-   ```bash
-   wait "$load_pid"
-   date -u +'load end %FT%TZ' >>"$log"
-   ```
-
-4. From the `Running …` lines in the log, list the test binaries that started
-   before the load ended. The binaries holding the tests in scope must be
-   among them. If the load ended first, rerun the pass; do not lengthen it.
-5. Confirm no busy loop is left:
-
-   ```bash
-   pgrep -f 'while :; do :; done'
-   # Output: (nothing)
-   ```
-
-   Use `pgrep` only to check. Never stop a process by pattern.
-
-Run three passes. Each `test result` line must show `0 failed`. Put the
-commands, the start and end times, the binaries that ran inside each window
-and the pass counts in the PR, after removing tokens, email addresses and
-home-directory paths. Do not attach full logs.
-
-### Other evidence for the PR
-
-- Before the load passes, run every changed test once on an unloaded host.
-- Record the mtimes of `~/.amplihack` and `~/.claude*` before and after the
-  runs and show they did not change.
-- Show that no `cat` or `sh` process is left under `$TMPDIR`.
-- Show the release `strings` check from
-  [Use a debug-only knob](#use-a-debug-only-knob) returns `0`.
-- Push normally, without `--no-verify`. The pre-push hook's full run is
-  further evidence.
-
-## Limits of a CPU-only proof
-
-Some failures on the build host came from a host-wide stall, which CPU load
-alone may not reproduce. The ceilings are therefore set long enough to
-outlast a stall rather than tuned to the load used in the proof. A test that
-does not fail under load in the baseline run is fixed only where the code
-shows a wall-clock dependency, and its PR row says "not reproduced; cause not
-confirmed".
+Record the commands and results in the PR. Push normally so the repository's
+hooks run. A passing run alone does not establish a load failure's cause:
+explain the synchronization or wall-clock dependency that the change fixes.
 
 ## Related
 

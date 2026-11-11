@@ -31,12 +31,18 @@
 use super::*;
 
 mod execute {
-    pub(super) use super::super::execute::{new_tree_id, resolve_claimed_depth};
+    pub(super) use super::super::execute::{
+        new_tree_id, resolve_claimed_depth, terminate_recipe_runner_with,
+    };
     pub(super) use super::execute_recipe_via_rust_for_test as execute_recipe_via_rust;
 }
+#[cfg(target_os = "linux")]
 use crate::test_support::wait::CEILING;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
+#[cfg(target_os = "linux")]
 use std::sync::mpsc;
 
 /// Environment-variable name the deterministic-teardown feature must honour to
@@ -102,6 +108,7 @@ fn mkfifo(path: &Path) {
 /// Runs `execute_recipe_via_rust` for `recipe` on a worker thread and hands
 /// back a receiver for whether it failed, so the test can act while the
 /// runner is still running. The receive is bounded by `CEILING` only.
+#[cfg(target_os = "linux")]
 fn execute_on_worker(recipe: &Path, working_dir: &Path) -> mpsc::Receiver<bool> {
     let (tx, rx) = mpsc::channel();
     let (recipe, working_dir) = (recipe.to_path_buf(), working_dir.to_path_buf());
@@ -123,7 +130,10 @@ fn execute_on_worker(recipe: &Path, working_dir: &Path) -> mpsc::Receiver<bool> 
 /// A runner that starts an orphan in its own process group and then exits 1
 /// once the test opens `go`. The orphan writes its pid to `pid` and blocks
 /// opening the FIFO `hold`, which nothing ever opens for writing, so it ends
-/// only by a signal; it would write `marker` only if released.
+/// only by a signal; it would write `marker` only if released. Its lifetime
+/// is observed through a Linux pidfd; portable signal and grace coverage lives
+/// in the tests below without this probe.
+#[cfg(target_os = "linux")]
 struct OrphanProbe {
     runner: PathBuf,
     recipe: PathBuf,
@@ -132,6 +142,7 @@ struct OrphanProbe {
     marker: PathBuf,
 }
 
+#[cfg(target_os = "linux")]
 impl OrphanProbe {
     fn new(dir: &Path) -> Self {
         let probe = Self {
@@ -197,6 +208,7 @@ impl OrphanProbe {
 //
 // RED today: the failure path never reaps the tree, so the marker appears.
 // -------------------------------------------------------------------------
+#[cfg(target_os = "linux")]
 #[test]
 fn test_failure_path_reaps_orphaned_descendants() {
     use crate::test_support::pidfd_wait::{KillOnDrop, wait_pid_gone};
@@ -306,80 +318,81 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
 }
 
 // -------------------------------------------------------------------------
-// Test 3 — the grace window is CONFIGURABLE via AMPLIHACK_TEARDOWN_GRACE_SECS.
+// Test 3 — configurable grace, with identical cleanup under both settings.
 //
-// The trapped runner needs ~1s of work to shut down cleanly.
-//   * grace = 0  -> escalate to SIGKILL immediately -> clean-exit marker ABSENT.
-//   * grace = 4  -> allow the ~1s cleanup to finish -> clean-exit marker PRESENT.
-//
-// RED today: no grace env var is honoured and SIGKILL is immediate, so the
-// grace = 4 phase never produces the marker.
+// The first two cases use identical one-second cleanup after TERM; only the
+// configured grace changes. The last case checks escalation when cleanup takes
+// longer than the grace. This runs on every Unix target; only the pidfd-based
+// orphan probes require Linux.
 // -------------------------------------------------------------------------
 #[test]
 fn test_teardown_grace_window_is_configurable() {
+    use amplihack_utils::clock::Clock;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    struct CleanupClock(Mutex<Instant>);
+    impl Clock for CleanupClock {
+        fn now(&self) -> Instant {
+            *self.0.lock().unwrap()
+        }
+        fn sleep(&self, duration: Duration) {
+            *self.0.lock().unwrap() += duration;
+        }
+    }
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _fixture_environment = fixture_environment();
-
-    let _timeout_env = EnvVarGuard::set(RUNNER_TIMEOUT_ENV, "1");
     let grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "0");
-
-    // Runs one timeout->teardown cycle; returns whether the SIGTERM handler's
-    // clean-exit marker was written. With `slow_cleanup` the handler first
-    // blocks on a FIFO nobody opens for writing, so only SIGKILL ends it.
-    // The teardown reaps the runner before it returns, so the marker, which
-    // the handler writes before the runner exits, is settled by then.
-    let run_once = |grace: &str, slow_cleanup: bool| -> bool {
-        grace_env.apply(grace);
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
-        let runner = temp.path().join("recipe-runner-rs");
-        let marker = temp.path().join("clean-exit-marker");
-        let hold = temp.path().join("hold");
-        mkfifo(&hold);
-        let cleanup_hold = temp.path().join("cleanup-hold");
-        mkfifo(&cleanup_hold);
-        let on_term = if slow_cleanup {
-            format!("/bin/cat \"{}\" >/dev/null;", cleanup_hold.display())
-        } else {
-            String::new()
-        };
-        write_stub(
-            &runner,
-            &format!(
-                "#!/bin/sh\ntrap '{on_term} echo done > \"{}\"; exit 0' TERM\n/bin/cat \"{}\" >/dev/null\n",
-                marker.display(),
-                hold.display(),
-            ),
+    for (setting, cleanup_duration, expected_elapsed, cleaned) in [
+        ("0", 1, 0, false),
+        ("4", 1, 1, true),
+        // An uncooperative process must receive KILL at the configured limit.
+        ("4", 10, 4, false),
+    ] {
+        grace_env.apply(setting);
+        let start = Instant::now();
+        let clock = CleanupClock(Mutex::new(start));
+        let events = std::cell::RefCell::new(Vec::new());
+        let terminated = std::cell::Cell::new(false);
+        let cleanup_done = std::cell::Cell::new(false);
+        execute::terminate_recipe_runner_with(
+            &clock,
+            || {
+                assert!(terminated.get(), "TERM must precede the grace wait");
+                if clock.now().duration_since(start) >= Duration::from_secs(cleanup_duration) {
+                    cleanup_done.set(true);
+                    events.borrow_mut().push("cleanup");
+                    false
+                } else {
+                    true
+                }
+            },
+            |signal| match signal {
+                libc::SIGTERM => {
+                    terminated.set(true);
+                    events.borrow_mut().push("TERM");
+                }
+                libc::SIGKILL => events.borrow_mut().push("KILL"),
+                other => panic!("unexpected signal {other}"),
+            },
         );
-        let recipe = temp.path().join("recipe.yaml");
-        std::fs::write(&recipe, "name: grace-probe\nsteps: []\n").expect("failed to write recipe");
-
-        let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-        let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-        let done = execute_on_worker(&recipe, temp.path());
-        let failed = done
-            .recv_timeout(CEILING)
-            .expect("hung: the teardown did not end the runner");
-        assert!(failed, "hung recipe-runner must time out");
-        marker.exists()
-    };
-
-    // grace = 0: the cleanup cannot finish before the escalation to SIGKILL.
-    let wrote_with_zero_grace = run_once("0", true);
-    // grace = 4: the cleanup is immediate, so the grace window lets it finish.
-    let wrote_with_ample_grace = run_once("4", false);
-
-    assert!(
-        !wrote_with_zero_grace,
-        "grace = 0 must escalate to SIGKILL immediately; the ~1s cleanup must \
-         NOT complete (issue #964)"
-    );
-    assert!(
-        wrote_with_ample_grace,
-        "grace = 4 must give the runner its ~1s cleanup window before SIGKILL \
-         via AMPLIHACK_TEARDOWN_GRACE_SECS (issue #964)"
-    );
+        assert_eq!(cleanup_done.get(), cleaned, "configured grace {setting}");
+        assert_eq!(
+            clock.now().duration_since(start),
+            Duration::from_secs(expected_elapsed),
+            "virtual elapsed time for configured grace {setting}"
+        );
+        assert_eq!(
+            *events.borrow(),
+            if cleaned {
+                vec!["TERM", "cleanup", "KILL"]
+            } else {
+                vec!["TERM", "KILL"]
+            }
+        );
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -394,6 +407,7 @@ fn test_teardown_grace_window_is_configurable() {
 // sibling-survives half already holds; this test also guards against a future
 // over-broad kill.
 // -------------------------------------------------------------------------
+#[cfg(target_os = "linux")]
 #[test]
 fn test_teardown_is_scoped_to_runner_process_group() {
     use crate::test_support::pidfd_wait::{KillOnDrop, wait_pid_gone};

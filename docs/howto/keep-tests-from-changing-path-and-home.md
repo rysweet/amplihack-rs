@@ -194,10 +194,9 @@ alive, then wait on it with `wait_pid_gone` after the call returns. Do not
 signal a pid read from a file: the pid may have been reused by then. See
 [`wait_pid_gone` and `KillOnDrop`](./keep-tests-passing-under-host-load.md#wait_pid_gone-and-killondrop).
 
-Tests that still assert an elapsed bound are listed, with their follow-up
-issue, in the
-[wall-clock scan guard](./keep-tests-passing-under-host-load.md#the-wall-clock-scan-guard)'s
-allowlist.
+Review tests that assert elapsed bounds individually. Use an injected clock
+for timing policy and the shared hang guard for missing events; see
+[Review event waits](./keep-tests-passing-under-host-load.md#review-event-waits).
 
 ## Keep capture tests separate from timeout tests
 

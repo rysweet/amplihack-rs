@@ -171,32 +171,61 @@ fn write_executable_gives_the_plain_mode_and_runs() {
 #[cfg(unix)]
 #[test]
 fn rewriting_a_running_stub_replaces_it_instead_of_failing() {
-    // The first copy blocks on a FIFO; rewriting the path while it runs
-    // must not fail with ETXTBSY, and the new copy runs the new body.
+    use std::io::{BufRead, Write};
+    use std::process::{Command, Stdio};
+
+    // The original interpreter must execute its body before we replace it.
+    // A shell builtin waits on stdin, so no FIFO open or grandchild can hang.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("stub");
-    let fifo = dir.path().join("hold");
-    assert!(
-        std::process::Command::new("mkfifo")
-            .arg(&fifo)
-            .status()
-            .unwrap()
-            .success()
+    super::write_executable(
+        &path,
+        "#!/bin/sh\nprintf 'ready\\n'\nread -r release\nexit 1\n",
     );
-    super::write_executable(&path, "#!/bin/sh\ncat \"$1\" >/dev/null\nexit 1\n");
-    let mut running = std::process::Command::new(&path)
-        .arg(&fifo)
-        .spawn()
-        .unwrap();
+    struct Reap(std::process::Child);
+    impl Drop for Reap {
+        fn drop(&mut self) {
+            super::wait::kill_and_reap(&mut self.0);
+        }
+    }
+    let mut running = Reap(
+        Command::new(&path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = running.0.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = std::io::BufReader::new(stdout).read_line(&mut line);
+        let _ = tx.send(result.map(|_| line));
+    });
+    assert_eq!(
+        rx.recv_timeout(CEILING)
+            .expect("hung: original stub never announced readiness")
+            .unwrap(),
+        "ready\n"
+    );
+    reader.join().unwrap();
     super::write_executable(&path, "#!/bin/sh\nexit 0\n");
     assert!(
-        std::process::Command::new(&path)
-            .status()
-            .unwrap()
+        super::wait::output_within("replacement stub", &mut Command::new(&path))
+            .status
             .success()
     );
-    drop(std::fs::OpenOptions::new().write(true).open(&fifo).unwrap());
-    assert_eq!(running.wait().unwrap().code(), Some(1));
+    running
+        .0
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"release\n")
+        .unwrap();
+    assert_eq!(
+        super::wait::wait_child("original stub exit", &mut running.0).code(),
+        Some(1)
+    );
 }
 
 // ── pidfd_wait (Linux) ──────────────────────────────────────────────────────

@@ -736,6 +736,14 @@ jobs:
           -p amplihack -p amplihack-hooks-bin
           --features amplihack-hooks-bin/signal
 
+      # The release build does not compile cfg(test) code. Check the CLI's
+      # Unix tests on macOS too, where Linux-only pidfds are unavailable.
+      - name: Check CLI test compilation (macOS)
+        if: runner.os == 'macOS'
+        run: >
+          cargo check --release --locked -p amplihack-cli --tests
+          --target ${{ matrix.target }}
+
       # Outside-in: drive the real hooks binary through session-stop and
       # user-prompt-submit, as Claude Code does (issue #1483).
       - name: Outside-in — memory injection via the real hooks binary (issue #1483)

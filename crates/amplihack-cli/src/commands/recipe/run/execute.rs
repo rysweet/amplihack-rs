@@ -11,6 +11,8 @@ use crate::env_builder::EnvBuilder;
 #[cfg(windows)]
 use crate::util::run_with_timeout;
 use crate::util::truncate_chars_with_notice;
+#[cfg(unix)]
+use amplihack_utils::clock::{Clock, SystemClock};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::ffi::OsString;
@@ -1500,11 +1502,12 @@ fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
         //      a runner that ignored SIGTERM and any lingering descendants.
         // The signal target is `-pgid`, so this is scoped strictly to the
         // runner's own session and never touches unrelated / parent processes.
-        let grace = recipe_runner_teardown_grace();
         let pgid = pid as libc::pid_t;
-        signal_process_group(pgid, libc::SIGTERM);
-        wait_until_exited(grace, || matches!(child.try_wait(), Ok(None)));
-        signal_process_group(pgid, libc::SIGKILL);
+        terminate_recipe_runner_with(
+            &SystemClock,
+            || matches!(child.try_wait(), Ok(None)),
+            |signal| signal_process_group(pgid, signal),
+        );
     }
     #[cfg(windows)]
     {
@@ -1530,6 +1533,20 @@ fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
     Ok(())
 }
 
+/// Apply the configured timeout teardown policy with injectable clock and
+/// process operations, so tests observe signals without real-time races.
+#[cfg(unix)]
+pub(super) fn terminate_recipe_runner_with(
+    clock: &dyn Clock,
+    still_running: impl FnMut() -> bool,
+    mut signal: impl FnMut(libc::c_int),
+) {
+    let grace = recipe_runner_teardown_grace();
+    signal(libc::SIGTERM);
+    wait_until_exited(grace, clock, still_running);
+    signal(libc::SIGKILL);
+}
+
 /// Resolve the SIGTERM -> SIGKILL grace window for recipe-runner teardown.
 ///
 /// Honors `AMPLIHACK_TEARDOWN_GRACE_SECS` (whole seconds, `0` allowed to mean
@@ -1546,23 +1563,23 @@ fn recipe_runner_teardown_grace() -> Duration {
 
 /// Poll `still_running` until it reports the target has exited or `grace`
 /// elapses; returns `true` if it exited within the window. Sleeps in short
-/// `RECIPE_RUNNER_POLL_INTERVAL` steps (floored at 1ms, never past the remaining
-/// grace) so a zero grace escalates almost immediately. Shared by both teardown
+/// `RECIPE_RUNNER_POLL_INTERVAL` steps (never past the remaining grace), so a
+/// zero grace escalates immediately. Shared by both teardown
 /// paths so the SIGTERM -> grace -> SIGKILL timing policy lives in one place.
 #[cfg(unix)]
-fn wait_until_exited(grace: Duration, mut still_running: impl FnMut() -> bool) -> bool {
-    let started = Instant::now();
+fn wait_until_exited(
+    grace: Duration,
+    clock: &dyn Clock,
+    mut still_running: impl FnMut() -> bool,
+) -> bool {
+    let started = clock.now();
     while still_running() {
-        let elapsed = started.elapsed();
+        let elapsed = clock.now().saturating_duration_since(started);
         if elapsed >= grace {
             return false;
         }
         let remaining = grace.saturating_sub(elapsed);
-        thread::sleep(
-            RECIPE_RUNNER_POLL_INTERVAL
-                .min(remaining)
-                .max(Duration::from_millis(1)),
-        );
+        clock.sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
     }
     true
 }
@@ -1595,7 +1612,7 @@ fn reap_recipe_runner_group(pgid_pid: u32, grace: Duration) {
         return;
     }
     signal_process_group(pgid, libc::SIGTERM);
-    if !wait_until_exited(grace, group_alive) {
+    if !wait_until_exited(grace, &SystemClock, group_alive) {
         signal_process_group(pgid, libc::SIGKILL);
     }
 }

@@ -1686,9 +1686,10 @@ fn the_refresh_counter_covers_a_refresh_in_progress() {
 
 /// SR-9: `read` counts its refresh on the process-wide counter that
 /// `refreshes_in_progress` and `wait_for_refreshes` read, so the rotator's
-/// wait still covers it. Other tests may also count, so only `>= 1` holds.
+/// wait still covers it. The shared lock excludes other process-wide refreshes.
 #[test]
 fn read_uses_the_process_wide_counter() {
+    let _serial = crate::test_support::refresh_count_lock();
     let (arrived, posted) = mpsc::sync_channel(8);
     let gate = Gate::new();
     let fake = refreshing_held(arrived, &gate);
