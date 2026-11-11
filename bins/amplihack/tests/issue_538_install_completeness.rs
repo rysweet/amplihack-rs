@@ -169,6 +169,12 @@ fn amplihack_install_command_with_binary(
         .arg("--local")
         .arg(source)
         .env("HOME", home)
+        // This contract stages generic assets; ambient provider installs and
+        // launcher context must not trigger a real Codex inventory probe.
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", hooks_bin.parent().unwrap().display()),
+        )
         .env("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", hooks_bin)
         .env("RECIPE_RUNNER_RS_PATH", recipe_runner)
         // This contract checks staged framework assets. Keep provider discovery
