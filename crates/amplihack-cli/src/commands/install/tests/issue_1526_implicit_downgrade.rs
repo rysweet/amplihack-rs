@@ -74,6 +74,8 @@ impl IsolatedHome {
             _lock: lock,
         };
         env.put("HOME", Some(home.as_os_str()));
+        env.set("AMPLIHACK_AGENT_BINARY", "claude");
+        env.set("AMPLIHACK_SKIP_MMDC", "1");
         for name in [
             "AMPLIHACK_SKIP_AUTO_INSTALL",
             "AMPLIHACK_HOME",
