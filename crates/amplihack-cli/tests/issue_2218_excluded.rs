@@ -463,6 +463,14 @@ fn usage_naming_an_excluded_profile_refuses_it_and_reports_the_others() {
         "extra still reported: {}",
         describe(&out)
     );
+    // The refused name is still listed, as not probed.
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.starts_with("spare") && l.contains("excluded (not probed)")),
+        "spare listed as not probed: {}",
+        describe(&out)
+    );
     assert_no_request_for(&ep, "spare");
     assert_eq!(f.usage_probes("spare"), 0);
     assert_eq!(stamp(&f.slot("spare")), before);
@@ -774,6 +782,45 @@ fn usage_home_row_is_not_read_when_only_claude_json_names_the_excluded_profile()
     let out = usage(&f, &ep, &[]);
     assert!(out.status.success(), "{}", describe(&out));
     assert_no_request_for(&ep, "work");
+    assert_eq!(stamp(&f.home_login()), before);
+}
+
+#[test]
+fn usage_marks_an_excluded_live_login_live_without_reading_it() {
+    // Rule 3 only: no ledger `live`, no ~/.claude.json, and ~/.claude holds
+    // a byte-for-byte copy of extra's login. The excluded row is the one
+    // marked live, and nothing is read for it.
+    let (f, ep) = fixture();
+    exclude(&f, &["extra"]);
+    drop_ledger_live(&f);
+    fs::remove_file(f.home.join(".claude.json")).unwrap();
+    let bytes = fs::read(f.slot("extra")).unwrap();
+    fs::remove_file(f.home_login()).unwrap();
+    fs::write(f.home_login(), &bytes).unwrap();
+    fs::set_permissions(f.home_login(), fs::Permissions::from_mode(0o600)).unwrap();
+    let before = stamp(&f.home_login());
+    let out = usage(&f, &ep, &["--json"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    let rows: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let extra = json_row(&rows, "extra");
+    assert_eq!(extra["state"], "excluded", "{rows}");
+    assert_eq!(extra["live_in"], "~/.claude", "{rows}");
+    let others_live = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["profile"] != "extra" && !r["live_in"].is_null())
+        .count();
+    assert_eq!(others_live, 0, "only extra is live: {rows}");
+    let bar = usage(&f, &ep, &[]);
+    assert!(
+        text(&bar.stdout)
+            .lines()
+            .any(|l| l.starts_with("extra (live)") && l.contains("excluded (not probed)")),
+        "{}",
+        describe(&bar)
+    );
+    assert_no_request_for(&ep, "extra");
     assert_eq!(stamp(&f.home_login()), before);
 }
 

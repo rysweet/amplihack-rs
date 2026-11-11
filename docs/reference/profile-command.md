@@ -1243,9 +1243,10 @@ rows.
 The login in `~/.claude` is not read either when local files show that it
 belongs to an excluded profile, by the rules under
 [Local proof of an excluded live login](#local-proof-of-an-excluded-live-login).
-That profile's row is the `excluded (not probed)` row, marked `(live)`, and
-`live_in` is `null`. A profile that is both live and excluded is always
-treated as excluded.
+That profile's row is the `excluded (not probed)` row, marked `(live)` in
+the bar view and `live in ~/.claude` in `--table`, and its `live_in` is
+`"~/.claude"`. No other row is marked live. A profile that is both live
+and excluded is always treated as excluded.
 
 With names, each excluded name is refused on stderr, and the other names are
 probed, recorded and reported as usual:

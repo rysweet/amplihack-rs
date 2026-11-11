@@ -287,13 +287,18 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     }
     let profiles = selected_profiles(store, names)?;
     // Issue #2218: an excluded profile is never read. Named, it is refused
-    // and the others are still reported; with no names it is listed as not
-    // probed. An unknown name has already failed above.
+    // on stderr, still listed as not probed, and the others are reported;
+    // with no names it is listed as not probed. An unknown name has already
+    // failed above.
     let excluded = exclude_list(store.root(), |w| eprintln!("{w}"));
-    let (refused, profiles): (Vec<ProfileName>, Vec<ProfileName>) = if names.is_empty() {
-        (Vec::new(), profiles)
+    let refused: Vec<ProfileName> = if names.is_empty() {
+        Vec::new()
     } else {
-        profiles.into_iter().partition(|p| excluded.contains(p))
+        profiles
+            .iter()
+            .filter(|p| excluded.contains(p))
+            .cloned()
+            .collect()
     };
     for p in &refused {
         eprintln!("{}", excluded_refusal(p));
@@ -312,7 +317,8 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     let live = detect_live(store, home.as_deref(), &profiles);
     // Issue #2218: when `~/.claude` holds an excluded profile's login, by
     // the rotator's local proof, no other profile is read against it.
-    let live = live.filter(|l| !home_holds_other_excluded(store, home.as_deref(), &l.name));
+    let excluded_live = excluded_live(store, home.as_deref());
+    let live = live.filter(|l| excluded_live.as_ref().is_none_or(|b| b == &l.name));
     // Issue #1700: API-key profiles are never probed; a probe costs tokens
     // or times out, and there are no plan limits to read. Issue #2218: an
     // excluded API-key profile shows as excluded, so it is not loaded here.
@@ -395,7 +401,10 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
             claude_bound,
         );
     }
-    let mut rows = build_rows(&marks, &profiles, probes, live_name.as_ref());
+    // Issue #2218: an excluded live login proven from local files only is
+    // marked live, though nothing was read from it.
+    let live_mark = live_name.as_ref().or(excluded_live.as_ref());
+    let mut rows = build_rows(&marks, &profiles, probes, live_mark);
     rows.extend(keys.rows(&marks, &keyed));
     order(&mut rows, at);
     // Issue #1797: the capacity summary, from these rows only; no probe.
@@ -471,28 +480,17 @@ pub(super) fn exclude_list(_: &std::path::Path, _: impl FnOnce(&str)) -> Vec<Pro
     Vec::new()
 }
 
-/// Issue #2218: whether a rule of the local proof names an excluded
-/// profile other than `name` in `<home>/.claude`; read from local files.
+/// Issue #2218: the excluded profile a rule of the local proof names as
+/// the login in `<home>/.claude`; read from local files only.
 #[cfg(unix)]
-fn home_holds_other_excluded(
-    store: &ProfileStore,
-    home: Option<&std::path::Path>,
-    name: &ProfileName,
-) -> bool {
-    let Some(home) = home else {
-        return false;
-    };
+fn excluded_live(store: &ProfileStore, home: Option<&std::path::Path>) -> Option<ProfileName> {
     let rs = super::rotate::ledger::RotateState::new(store.root());
-    super::rotate::live_excluded_offline(store, &rs, home).is_some_and(|(b, _)| &b != name)
+    super::rotate::live_excluded_offline(store, &rs, home?).map(|(b, _)| b)
 }
 
 #[cfg(not(unix))]
-fn home_holds_other_excluded(
-    _: &ProfileStore,
-    _: Option<&std::path::Path>,
-    _: &ProfileName,
-) -> bool {
-    false
+fn excluded_live(_: &ProfileStore, _: Option<&std::path::Path>) -> Option<ProfileName> {
+    None
 }
 
 /// The stderr line for a named profile that is excluded (issue #2218).
