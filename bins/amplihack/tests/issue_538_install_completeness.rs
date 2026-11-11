@@ -145,6 +145,7 @@ fn write_install_tooling(home: &Path) -> PathBuf {
     let bin_dir = home.join("test-bin");
     let hooks_bin = write_success_executable(&bin_dir, "amplihack-hooks");
     write_success_executable(&bin_dir, "recipe-runner-rs");
+    write_success_executable(&bin_dir, "codex");
     hooks_bin
 }
 
@@ -170,6 +171,13 @@ fn amplihack_install_command_with_binary(
         .env("HOME", home)
         .env("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", hooks_bin)
         .env("RECIPE_RUNNER_RS_PATH", recipe_runner)
+        // This contract checks staged framework assets. Keep provider discovery
+        // off the host's Codex installation and the enclosing agent session.
+        .env("AMPLIHACK_AGENT_BINARY", "claude")
+        .env(
+            "AMPLIHACK_CODEX_BINARY_PATH",
+            hooks_bin.parent().unwrap().join("codex"),
+        )
         .env_remove("AMPLIHACK_HOME")
         .env_remove("CLAUDECODE");
     cmd
