@@ -4,6 +4,521 @@ use crate::commands::pr::{GhOutput, GhRunner};
 use serde_json::{Value, json};
 use std::{cell::RefCell, path::PathBuf};
 
+// FR-156 contract tests. Access new fields through JSON so the baseline builds
+// and fails assertions for missing behavior rather than failing to compile.
+mod fr156 {
+    use super::*;
+
+    fn usage(input: Value) -> Value {
+        json!({"input_tokens":input,"output_tokens":9,
+            "cache_read_input_tokens":20,"cache_creation_input_tokens":10,
+            "cache_creation":{"ephemeral_5m_input_tokens":4,"ephemeral_1h_input_tokens":6}})
+    }
+
+    fn codex_usage(input: u64, read: u64, write: u64) -> Value {
+        json!({"input_tokens":input,"cached_input_tokens":read,
+            "cache_write_input_tokens":write,"output_tokens":50,"reasoning_output_tokens":8})
+    }
+
+    fn write(dir: &std::path::Path, name: &str, rows: &[Value]) {
+        std::fs::write(
+            dir.join(name),
+            rows.iter().map(|v| format!("{v}\n")).collect::<String>(),
+        )
+        .unwrap();
+    }
+
+    fn report(provider: &str, rows: &[Value]) -> Report {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "log", rows);
+        collect(
+            &manifest(json!([session("s", provider, json!(["log"]))])),
+            dir.path(),
+        )
+        .unwrap()
+    }
+
+    fn public(r: &Report) -> Value {
+        serde_json::to_value(r).unwrap()
+    }
+
+    fn context(r: &Value, index: usize) -> &Value {
+        let c = &r["sessions"][index]["context_per_request"];
+        for field in [
+            "input_tokens",
+            "observed_attempts",
+            "tokens_per_observed_attempt",
+            "unit",
+            "attempt_basis",
+            "unknown_reasons",
+        ] {
+            assert!(
+                c.get(field).is_some(),
+                "context_per_request.{field} must be present: {c}"
+            );
+        }
+        assert_eq!(c["unit"], "tokens per observed attempt");
+        let reasons = c["unknown_reasons"].as_array().unwrap();
+        let mut sorted = reasons.clone();
+        sorted.sort_by_key(Value::to_string);
+        sorted.dedup();
+        assert_eq!(*reasons, sorted, "reason codes must be sorted and unique");
+        c
+    }
+
+    fn unknown(c: &Value, reason: &str) {
+        assert!(c["tokens_per_observed_attempt"].is_null(), "{c}");
+        assert!(
+            c["unknown_reasons"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(reason)),
+            "missing {reason}: {c}"
+        );
+    }
+
+    #[test]
+    fn direct_context_deduplicates_streams_copies_and_excludes_children_and_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = native_usage("claude", "s", "a", usage(json!(100)));
+        let mut streamed = a.clone();
+        streamed["message"]["usage"]["output_tokens"] = json!(999);
+        let mut b = native_usage("claude", "s", "b", usage(json!(50)));
+        b["message"]["usage"]["cache_read_input_tokens"] = json!(0);
+        b["message"]["usage"]["cache_creation_input_tokens"] = json!(0);
+        b["message"]["usage"]["cache_creation"] =
+            json!({"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0});
+        let child = native_usage("claude", "child", "c", usage(json!(1000)));
+        write(dir.path(), "start", &[a.clone(), streamed]);
+        write(dir.path(), "resume", &[a, b]);
+        write(dir.path(), "child", &[child]);
+        let mut child_session = session("child", "claude", json!(["child"]));
+        child_session["parent"] = json!("s");
+        let r = collect(
+            &manifest(json!([
+                session("s", "claude", json!(["start", "resume"])),
+                child_session
+            ])),
+            dir.path(),
+        )
+        .unwrap();
+        let v = public(&r);
+        let c = context(&v, 0);
+        assert_eq!(c["input_tokens"], 180);
+        assert_eq!(c["observed_attempts"], 2);
+        assert_eq!(c["tokens_per_observed_attempt"], 90.0);
+        assert_eq!(c["attempt_basis"], "identifier_backed_responses");
+        assert_eq!(c["unknown_reasons"], json!([]));
+        assert_eq!(v["identifier_backed_response_count"], 3);
+        assert_eq!(v["sessions"][0]["identifier_backed_response_count"], 2);
+        assert!(r.sessions[0].inclusive.unwrap().total() > r.sessions[0].direct.unwrap().total());
+    }
+
+    #[test]
+    fn explicit_zero_is_numeric_while_missing_and_invalid_input_remain_unknown() {
+        for (value, reason) in [
+            (json!(0), None),
+            (Value::Null, Some("missing_input_fields")),
+            (json!(-1), Some("invalid_input_fields")),
+            (json!("0"), Some("invalid_input_fields")),
+            (json!(1.5), Some("invalid_input_fields")),
+            (json!(true), Some("invalid_input_fields")),
+        ] {
+            let mut u = usage(value.clone());
+            u["cache_read_input_tokens"] = json!(0);
+            u["cache_creation_input_tokens"] = json!(0);
+            u["cache_creation"] =
+                json!({"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0});
+            if value.is_null() {
+                u.as_object_mut().unwrap().remove("input_tokens");
+            }
+            let r = report("claude", &[native_usage("claude", "s", "a", u)]);
+            let v = public(&r);
+            let c = context(&v, 0);
+            assert_eq!(c["observed_attempts"], 1, "{value}");
+            assert_eq!(r.total.unwrap().output, 9, "retain known totals: {value}");
+            if let Some(reason) = reason {
+                assert!(c["input_tokens"].is_null(), "{value}: {c}");
+                unknown(c, reason);
+            } else {
+                assert_eq!(c["input_tokens"], 0);
+                assert_eq!(c["tokens_per_observed_attempt"], 0.0);
+                assert_eq!(c["unknown_reasons"], json!([]));
+            }
+        }
+    }
+
+    #[test]
+    fn each_missing_input_bucket_taints_context_even_with_other_known_counters() {
+        for field in [
+            "input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+        ] {
+            let mut u = usage(json!(100));
+            u.as_object_mut().unwrap().remove(field);
+            let r = public(&report("claude", &[native_usage("claude", "s", "a", u)]));
+            let c = context(&r, 0);
+            assert!(c["input_tokens"].is_null(), "missing {field}");
+            unknown(c, "missing_input_fields");
+        }
+    }
+
+    #[test]
+    fn one_unknown_contributor_taints_context_without_discarding_known_totals() {
+        let rows = [
+            native_usage("claude", "s", "known", usage(json!(100))),
+            native_usage("claude", "s", "unknown", json!({"output_tokens":5})),
+        ];
+        let r = report("claude", &rows);
+        let v = public(&r);
+        let c = context(&v, 0);
+        assert_eq!(v["identifier_backed_response_count"], 2);
+        assert_eq!(c["observed_attempts"], 2);
+        assert!(c["input_tokens"].is_null());
+        unknown(c, "missing_input_fields");
+        assert_eq!(r.total.unwrap().input, 100);
+        assert_eq!(r.total.unwrap().output, 14);
+    }
+
+    #[test]
+    fn zero_cumulative_attempts_never_substitute_one_or_divide_by_zero() {
+        let mut zero = codex_record(0, 0, 0, 0, 1);
+        zero["payload"]["model"] = json!("model");
+        let r = public(&report(
+            "codex",
+            &[json!({"type":"session_meta","payload":{"id":"s"}}), zero],
+        ));
+        let c = context(&r, 0);
+        assert_eq!(c["observed_attempts"], 0);
+        unknown(c, "zero_observed_attempts");
+    }
+
+    #[test]
+    fn codex_inclusive_input_is_not_added_to_its_cache_subsets() {
+        let r = public(&report(
+            "codex",
+            &[native_usage("codex", "s", "a", codex_usage(120, 20, 10))],
+        ));
+        let c = context(&r, 0);
+        assert_eq!(c["input_tokens"], 120);
+        assert_eq!(c["observed_attempts"], 1);
+        assert_eq!(c["tokens_per_observed_attempt"], 120.0);
+    }
+
+    #[test]
+    fn impossible_codex_cache_subsets_keep_context_unknown() {
+        let r = report(
+            "codex",
+            &[native_usage("codex", "s", "a", codex_usage(10, 8, 8))],
+        );
+        let v = public(&r);
+        unknown(context(&v, 0), "overlapping_input_subsets");
+        assert!(!r.complete);
+        assert_eq!(
+            r.total.unwrap().output,
+            42,
+            "known output survives invalid input"
+        );
+    }
+
+    #[test]
+    fn cumulative_only_transitions_deduplicate_replays_across_models_and_resumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = json!({"type":"session_meta","payload":{"id":"s"}});
+        let turn = |m: &str| json!({"type":"turn_context","payload":{"model":m}});
+        let a = codex_record(100, 20, 30, 10, 1);
+        let b = codex_record(180, 50, 50, 15, 2);
+        write(
+            dir.path(),
+            "start",
+            &[meta.clone(), turn("first"), a.clone()],
+        );
+        write(
+            dir.path(),
+            "resume",
+            &[meta, turn("second"), a, b.clone(), b],
+        );
+        let r = public(
+            &collect(
+                &manifest(json!([session("s", "codex", json!(["start", "resume"]))])),
+                dir.path(),
+            )
+            .unwrap(),
+        );
+        let c = context(&r, 0);
+        assert_eq!(r["identifier_backed_response_count"], 0);
+        assert_eq!(c["input_tokens"], 180);
+        assert_eq!(c["observed_attempts"], 2);
+        assert_eq!(c["tokens_per_observed_attempt"], 90.0);
+        assert_eq!(c["attempt_basis"], "cumulative_only_transitions");
+    }
+
+    #[test]
+    fn identified_response_with_missing_cumulative_prefix_retains_input_but_unknown_attempts() {
+        let mut row = native_usage("codex", "s", "a", codex_usage(40, 5, 0));
+        row["payload"]["thread_token_usage"] = codex_usage(100, 20, 0);
+        let r = report("codex", &[row]);
+        let v = public(&r);
+        let c = context(&v, 0);
+        assert_eq!(c["input_tokens"], 100);
+        assert!(c["observed_attempts"].is_null());
+        unknown(c, "unknown_attempts_for_input");
+        assert_eq!(c["attempt_basis"], "unknown");
+        assert_eq!(v["identifier_backed_response_count"], 1);
+        assert_eq!(r.total.unwrap().input + r.total.unwrap().cache_read, 100);
+    }
+
+    #[test]
+    fn contradictory_cumulative_and_response_input_cannot_supply_a_compatible_ratio() {
+        let mut row = native_usage("codex", "s", "a", codex_usage(100, 0, 0));
+        row["payload"]["thread_token_usage"] = codex_usage(40, 0, 0);
+        let r = public(&report("codex", &[row]));
+        let c = context(&r, 0);
+        unknown(c, "incompatible_attempt_basis");
+        assert_eq!(c["attempt_basis"], "incompatible");
+        assert_eq!(r["complete"], false);
+    }
+
+    #[test]
+    fn provider_scoped_response_count_includes_missing_usage_but_excludes_unidentified() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = native_usage("claude", "s", "same-id", usage(json!(10)));
+        let mut no_usage = native_usage("claude", "s", "without-usage", Value::Null);
+        no_usage["message"].as_object_mut().unwrap().remove("usage");
+        let mut unidentified = native_usage("claude", "s", "ignored", usage(json!(999)));
+        unidentified["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("id");
+        write(
+            dir.path(),
+            "claude",
+            &[a.clone(), a, no_usage.clone(), no_usage, unidentified],
+        );
+        write(
+            dir.path(),
+            "codex",
+            &[native_usage("codex", "c", "same-id", codex_usage(10, 0, 0))],
+        );
+        let r = collect(
+            &manifest(json!([
+                session("s", "claude", json!(["claude"])),
+                session("c", "codex", json!(["codex"]))
+            ])),
+            dir.path(),
+        )
+        .unwrap();
+        let v = public(&r);
+        assert_eq!(v["identifier_backed_response_count"], 3);
+        assert_eq!(v["sessions"][0]["identifier_backed_response_count"], 2);
+        assert_eq!(v["sessions"][1]["identifier_backed_response_count"], 1);
+        unknown(context(&v, 0), "missing_input_fields");
+        assert!(!r.unresolved.is_empty());
+    }
+
+    #[test]
+    fn conflicting_native_owners_count_once_globally_and_neither_owns_context() {
+        let dir = tempfile::tempdir().unwrap();
+        for id in ["a", "b"] {
+            write(
+                dir.path(),
+                id,
+                &[native_usage("claude", id, "shared", usage(json!(100)))],
+            );
+        }
+        let r = collect(
+            &manifest(json!([
+                session("a", "claude", json!(["a"])),
+                session("b", "claude", json!(["b"]))
+            ])),
+            dir.path(),
+        )
+        .unwrap();
+        let v = public(&r);
+        assert_eq!(v["identifier_backed_response_count"], 1);
+        assert_eq!(r.unattributed, r.total);
+        for i in 0..2 {
+            assert_eq!(v["sessions"][i]["identifier_backed_response_count"], 0);
+            assert!(r.sessions[i].direct.is_none());
+            unknown(context(&v, i), "ambiguous_session_ownership");
+        }
+    }
+
+    #[test]
+    fn unsupported_provider_preserves_spelling_and_never_selects_another_adapter() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "log",
+            &[native_usage("claude", "s", "a", usage(json!(100)))],
+        );
+        let value = json!({"version":1,"workstream":"issue-1810","repository":"example/repo",
+            "branch":"feat/usage","prs":[42],"completed":true,
+            "sessions":[session("s","OtherProvider-v2",json!(["log"]))]});
+        let parsed = serde_json::from_value::<Manifest>(value);
+        assert!(
+            parsed.is_ok(),
+            "safe unsupported providers must be representable"
+        );
+        let r = collect(&parsed.unwrap(), dir.path()).unwrap();
+        let v = public(&r);
+        assert_eq!(v["sessions"][0]["provider"], "OtherProvider-v2");
+        assert_eq!(v["identifier_backed_response_count"], 0);
+        assert!(r.total.is_none());
+        assert!(!r.complete);
+        unknown(context(&v, 0), "unsupported_provider");
+    }
+
+    #[test]
+    fn unsupported_accounting_schema_cannot_turn_unknown_usage_into_zero() {
+        let row = json!({"type":"token_usage_record","timestamp":"2026-01-01T00:00:00Z",
+            "payload":{"thread_id":"s","response_id":"a","model":"model",
+            "usage":{"future_input_tokens":100}}});
+        let r = report("codex", &[row]);
+        let v = public(&r);
+        assert_eq!(v["identifier_backed_response_count"], 1);
+        assert!(r.total.is_none());
+        unknown(context(&v, 0), "unsupported_schema");
+    }
+
+    #[test]
+    fn checked_context_accumulation_refuses_overflow_within_or_between_responses() {
+        for rows in [
+            vec![native_usage("claude", "s", "a", usage(json!(u64::MAX)))],
+            vec![
+                native_usage("claude", "s", "a", usage(json!(u64::MAX - 40))),
+                native_usage("claude", "s", "b", usage(json!(50))),
+            ],
+        ] {
+            let r = report("claude", &rows);
+            let v = public(&r);
+            let c = context(&v, 0);
+            assert!(c["input_tokens"].is_null());
+            unknown(c, "arithmetic_overflow");
+            assert!(!r.complete);
+        }
+    }
+
+    #[test]
+    fn merged_response_copies_cannot_establish_overlapping_codex_input() {
+        let rows = [
+            native_usage("codex", "s", "a", codex_usage(10, 8, 0)),
+            native_usage("codex", "s", "a", codex_usage(10, 0, 8)),
+        ];
+        let r = public(&report("codex", &rows));
+        assert_eq!(r["identifier_backed_response_count"], 1);
+        unknown(context(&r, 0), "overlapping_input_subsets");
+    }
+
+    #[test]
+    fn merged_claude_buckets_are_checked_after_component_maxima() {
+        let mut first = usage(json!(u64::MAX - 10));
+        first["cache_creation_input_tokens"] = json!(0);
+        first["cache_read_input_tokens"] = json!(0);
+        first["cache_creation"] =
+            json!({"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0});
+        let second = usage(json!(0));
+        let rows = [
+            native_usage("claude", "s", "a", first),
+            native_usage("claude", "s", "a", second),
+        ];
+        let r = public(&report("claude", &rows));
+        unknown(context(&r, 0), "arithmetic_overflow");
+        assert!(context(&r, 0)["input_tokens"].is_null());
+    }
+
+    #[test]
+    fn unsupported_cumulative_contributor_taints_known_response_context() {
+        let rows = [
+            native_usage("codex", "s", "a", codex_usage(10, 0, 0)),
+            json!({"type":"token_usage_record","timestamp":"2026-01-01T00:00:01Z",
+                "payload":{"thread_id":"s","model":"model",
+                    "thread_token_usage":{"future_input_tokens":100}}}),
+        ];
+        let r = public(&report("codex", &rows));
+        unknown(context(&r, 0), "unsupported_schema");
+        assert!(context(&r, 0)["input_tokens"].is_null());
+    }
+
+    #[test]
+    fn contradictory_cache_partitions_cannot_inflate_context() {
+        let mut u = usage(json!(100));
+        u["cache_creation"] =
+            json!({"ephemeral_5m_input_tokens":10,"ephemeral_1h_input_tokens":10});
+        let r = public(&report("claude", &[native_usage("claude", "s", "a", u)]));
+        unknown(context(&r, 0), "overlapping_input_subsets");
+        assert_eq!(r["total"]["output"], 9);
+    }
+
+    #[test]
+    fn native_cumulative_only_thread_snapshots_supply_compatible_attempts() {
+        let row = json!({"type":"token_usage_record","timestamp":"2026-01-01T00:00:00Z",
+            "payload":{"thread_id":"s","model":"model","thread_token_usage":codex_usage(120,20,0)}});
+        let r = public(&report("codex", &[row.clone(), row]));
+        let c = context(&r, 0);
+        assert_eq!(r["identifier_backed_response_count"], 0);
+        assert_eq!(c["input_tokens"], 120);
+        assert_eq!(c["observed_attempts"], 1);
+        assert_eq!(c["tokens_per_observed_attempt"], 120.0);
+        assert_eq!(c["attempt_basis"], "cumulative_only_transitions");
+    }
+
+    #[test]
+    fn canonical_renderer_and_publication_include_every_context_and_preserve_one_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let known = native_usage("claude", "s", "a", usage(json!(100)));
+        let missing = native_usage("claude", "review", "b", json!({"output_tokens":5}));
+        write(dir.path(), "first", &[known]);
+        write(dir.path(), "review", &[missing]);
+        let mut m = manifest(json!([
+            session("s", "claude", json!(["first"])),
+            session("review", "claude", json!(["review"]))
+        ]));
+        m.prs.push(43);
+        let r = collect(&m, dir.path()).unwrap();
+        let rendered = summary(&r);
+        let lower = rendered.to_lowercase();
+        for phrase in [
+            "tokens per observed attempt",
+            "observational",
+            "context-window",
+            "missing_input_fields",
+            "unknown",
+            "identifier",
+            "shared non-additive",
+            "inclusive",
+            "informational",
+        ] {
+            assert!(lower.contains(phrase), "renderer must explain {phrase}");
+        }
+        assert!(rendered.contains("130"));
+        assert_eq!(summary(&r), rendered, "rendering is deterministic");
+        let host = Hosting::default();
+        assert_eq!(publish::publish(&m, &r, 42, &host).unwrap(), "created");
+        let original = host.comments.borrow()[0].clone();
+        let (marker, body) = original["body"].as_str().unwrap().split_once('\n').unwrap();
+        assert_eq!(body, rendered, "publication uses the canonical renderer");
+        assert!(marker.starts_with("<!-- amplihack-usage:v1:"));
+        assert_eq!(publish::publish(&m, &r, 42, &host).unwrap(), "unchanged");
+        assert_eq!(*host.methods.borrow(), vec!["POST"]);
+        // A successor input snapshot supplies late review usage; the old bytes stay untouched.
+        write(
+            dir.path(),
+            "late",
+            &[native_usage("claude", "review", "late", usage(json!(25)))],
+        );
+        m.sessions[1].files.push("late".into());
+        let late = collect(&m, dir.path()).unwrap();
+        assert_eq!(publish::publish(&m, &late, 42, &host).unwrap(), "updated");
+        let comments = host.comments.borrow();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0]["id"], original["id"]);
+        assert!(comments[0]["body"].as_str().unwrap().starts_with(marker));
+        assert_eq!(*host.methods.borrow(), vec!["POST", "PATCH"]);
+    }
+}
+
 fn fixture_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/commands/usage/fixtures")
 }
@@ -157,6 +672,9 @@ fn ancestry_cycles_duplicate_identities_and_unsafe_labels_rejected() {
     );
     let mut m = manifest(json!([session("s", "codex", json!([]))]));
     m.workstream = Some("secret\n<!-- injected -->".into());
+    assert!(collect(&m, &fixture_dir()).is_err());
+    m.workstream = Some("safe".into());
+    m.sessions[0].provider = Provider::Unsupported("secret\n<!-- injected -->".into());
     assert!(collect(&m, &fixture_dir()).is_err());
 }
 

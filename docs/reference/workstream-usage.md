@@ -79,7 +79,8 @@ prove that a log is exhaustive. Report completeness means complete **for those
 declared inputs**, not that every provider request or billed attempt was logged.
 Missing logs, unrecorded failed requests and future adapter schemas cannot be
 reconstructed. Keep `complete: false` while late reviews or retries are expected.
-`completed` authorizes publication of the finished workstream; it does not change
+`completed: true` means the existing engineering completion checks succeeded.
+It permits publication on an eligible open PR and does not assert GitHub merge
 or certify accounting completeness.
 
 ## Counting contract
@@ -135,6 +136,67 @@ or certify accounting completeness.
   a copied response without applicable context keeps unknown model attribution.
   Conflicting model names for one response permanently place its deduplicated
   tokens under `unknown`, even if later copies repeat one of those names.
+
+## Response counts and context per request
+
+Report version 1 adds `identifier_backed_response_count` globally and on every
+session. Count provider-scoped stable response IDs once, including records with
+missing usage. Unidentified observations and cumulative-only transitions do not
+contribute. Conflicting native ownership counts once globally, remains unattributed,
+and contributes to neither session's count. Direct counts can sum to less than the
+global count. These fields differ from model `observed_attempts`.
+
+Every session has a `context_per_request` object:
+
+```json
+{
+  "input_tokens": 130,
+  "observed_attempts": 1,
+  "tokens_per_observed_attempt": 130.0,
+  "unit": "tokens per observed attempt",
+  "attempt_basis": "identifier_backed_responses",
+  "unknown_reasons": []
+}
+```
+
+Context is direct session input divided by compatible observed attempts, in
+**tokens per observed attempt**. It is an observational estimate of context per
+request, not a measurement of context-window occupancy. Claude input adds disjoint
+new, cache-read and cache-write buckets after response deduplication. Codex input
+already includes cache subsets and is counted once. Output, reasoning, duration
+partitions and inclusive child totals are excluded.
+
+Operands and the ratio are nullable; an explicit observed zero input remains
+numeric with a compatible positive denominator. A zero or unknown denominator
+never becomes one. Checked arithmetic refuses overflow. Unknown contributors
+invalidate the ratio while known token lower bounds remain in the usage fields.
+Unknown reasons are sorted and unique:
+
+- `zero_observed_attempts`: known denominator is zero.
+- `missing_input_fields`: a required input bucket is absent.
+- `invalid_input_fields`: an input bucket is not an unsigned integer.
+- `overlapping_input_subsets`: cache subsets cannot be disjoint within input.
+- `unknown_attempts_for_input`: retained input has no corresponding known attempts.
+- `incompatible_attempt_basis`: response and cumulative observations disagree.
+- `unsupported_provider`: validated provider label has no adapter.
+- `unsupported_schema`: accounting semantics cannot be established.
+- `ambiguous_session_ownership`: conflicting native owners prevent assignment.
+- `arithmetic_overflow`: exact input or attempt accumulation exceeds `u64`.
+
+The attempt basis is `identifier_backed_responses`, `cumulative_only_transitions`,
+`unknown`, or `incompatible`. Corroborating cumulative snapshots add no attempts;
+a missing cumulative prefix retains input with unknown attempts. Cumulative-only
+positive high-water transitions can supply a compatible denominator. Replayed
+snapshots add nothing. Missing, malformed and incompatible observations are never
+silently dropped from context validity.
+
+Provider labels are validated, preserving spelling for unsupported providers.
+Only exact `claude` and `codex` select adapters. An unsupported provider retains
+its session, unknown usage and context, and incomplete coverage. The manifest,
+report and publication marker remain version 1; no manifest fields were added.
+The canonical Markdown renderer used by both report and publish includes every
+session's operands, count, estimate or specific unknown reasons. It retains
+coverage, unattributed usage and non-additive evidence.
 
 ## Explicit completion publication
 

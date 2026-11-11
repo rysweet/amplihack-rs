@@ -39,6 +39,10 @@ pub fn collect(m: &Manifest, base: &Path) -> Result<Report> {
     let mut ds = BTreeSet::new();
     let mut observations = Vec::new();
     for (si, s) in m.sessions.iter().enumerate() {
+        if matches!(s.provider, Provider::Unsupported(_)) {
+            diagnostic(&mut ds, Some(si), None, None, "unsupported_provider");
+            continue;
+        }
         if !s.complete {
             diagnostic(
                 &mut ds,
@@ -95,7 +99,7 @@ pub fn collect(m: &Manifest, base: &Path) -> Result<Report> {
                     );
                     continue;
                 };
-                let parsed = adapters::parse(s.provider, &v);
+                let parsed = adapters::parse(&s.provider, &v);
                 let incomplete = !parsed.diagnostics.is_empty();
                 for code in parsed.diagnostics {
                     diagnostic(&mut ds, Some(si), Some(fi), Some(li + 1), code);

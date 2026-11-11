@@ -19,6 +19,12 @@ fn add_optional(total: &mut Option<Tokens>, other: Option<Tokens>) {
     }
 }
 
+pub(super) struct Accounting {
+    pub contexts: Vec<ContextPerRequest>,
+    pub counts: Vec<u64>,
+    pub identifier_backed_response_count: u64,
+}
+
 pub(super) fn assemble(
     m: &Manifest,
     buckets: Vec<ModelMap>,
@@ -26,13 +32,14 @@ pub(super) fn assemble(
     mut ds: BTreeSet<Diagnostic>,
     first: Vec<Option<String>>,
     last: Vec<Option<String>>,
+    accounting: Accounting,
 ) -> Report {
     let mut all = ModelMap::new();
     for bucket in &buckets {
         for b in bucket.values() {
             add(
                 &mut all,
-                b.provider,
+                b.provider.clone(),
                 b.model.clone(),
                 b.tokens,
                 b.observed_attempts,
@@ -42,8 +49,9 @@ pub(super) fn assemble(
     let mut sessions: Vec<_> = m
         .sessions
         .iter()
+        .zip(accounting.contexts)
         .enumerate()
-        .map(|(si, s)| {
+        .map(|(si, (s, context_per_request))| {
             let direct = sum(&buckets[si]);
             if direct.is_none() {
                 diagnostic(&mut ds, Some(si), None, None, "no_usage_observed");
@@ -52,7 +60,9 @@ pub(super) fn assemble(
                 id: s.id.clone(),
                 run_id: s.run_id.clone(),
                 parent: s.parent.clone(),
-                provider: s.provider,
+                provider: s.provider.clone(),
+                identifier_backed_response_count: accounting.counts[si],
+                context_per_request,
                 direct,
                 inclusive: direct,
                 models: buckets[si].values().cloned().collect(),
@@ -105,6 +115,7 @@ pub(super) fn assemble(
         } else {
             "exclusive"
         },
+        identifier_backed_response_count: accounting.identifier_backed_response_count,
         total,
         unattributed,
         unresolved,
