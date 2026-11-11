@@ -143,17 +143,40 @@ fn the_override_outranks_the_variable() {
     let tree = private_tree();
     let canonical = tree.path().canonicalize().unwrap();
     let other = private_tree();
-    let guard = crate::user_config::TEST_HOME_GUARD_ENV;
-    crate::test_support::with_env(
-        &[
-            (VAR, Some(other.path().as_os_str())),
-            (guard, Some(OsStr::new("1"))),
-        ],
-        || {
+    // The environment belongs to the child alone. Other lib tests read the
+    // shared default concurrently without taking the environment lock.
+    const CHILD: &str = "AMPLIHACK_PROC_ROOT_PRECEDENCE_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let variable = std::env::var_os(VAR).expect("parent sets the variable");
+        let expected = Path::new(&variable).canonicalize().unwrap();
+        assert_ne!(expected, canonical);
+        {
             let _scope = override_proc_root(tree.path());
             assert_eq!(proc_root(), canonical);
-        },
+        }
+        assert_eq!(
+            proc_root(),
+            expected,
+            "dropping the override reveals the variable"
+        );
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "commands::agent::procfs::root::tests::the_override_outranks_the_variable",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .env(VAR, other.path())
+        .env(crate::user_config::TEST_HOME_GUARD_ENV, "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "precedence child failed: {output:?}"
     );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
 }
 
 #[test]
@@ -179,8 +202,7 @@ use std::os::unix::fs::MetadataExt;
 
 #[test]
 fn with_no_override_lib_tests_read_the_shared_default() {
-    let guard = crate::user_config::TEST_HOME_GUARD_ENV;
-    let root = crate::test_support::with_env(&[(VAR, None), (guard, None)], proc_root);
+    let root = proc_root();
     assert_ne!(root, PathBuf::from("/proc"), "a lib test never reads /proc");
     assert_eq!(root, shared_default_root());
     assert_eq!(fs::read(root.join("self/environ")).unwrap(), SELF_ENVIRON);

@@ -415,3 +415,6 @@ mod exec_stub;
 pub(crate) fn write_executable(path: &Path, body: &str) {
     exec_stub::write_executable(path, body, 0o755);
 }
+
+#[path = "test_support_proc_guard.rs"]
+mod proc_guard;

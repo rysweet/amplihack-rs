@@ -1021,33 +1021,49 @@ mod opaque_process {
     }
 
     #[test]
-    fn this_hosts_opaque_processes_never_force_an_unknown_scan() {
-        // Every same-user process whose fd table is unreadable must be
-        // classified from status and stat, so cleanup is not blocked.
-        let me = std::fs::metadata("/proc/self").map(|m| {
-            use std::os::unix::fs::MetadataExt;
-            m.uid()
-        });
-        let Ok(me) = me else { return };
-        for entry in std::fs::read_dir("/proc").unwrap().flatten() {
-            let Some(pid) = entry
-                .file_name()
-                .to_str()
-                .and_then(|n| n.parse::<u32>().ok())
-            else {
-                continue;
-            };
-            use std::os::unix::fs::MetadataExt;
-            let Ok(meta) = entry.metadata() else { continue };
-            if meta.uid() != me || std::fs::read_dir(entry.path().join("fd")).is_ok() {
-                continue;
-            }
-            assert_ne!(
-                proc_scan::classify_opaque(pid),
-                proc_scan::Opaque::Unknown,
-                "pid {pid}"
+    fn opaque_processes_are_classified_from_a_synthetic_table() {
+        use crate::test_support::proc::{FAKE_PID_BASE, fake_proc_scope};
+
+        let scope = fake_proc_scope();
+        let classify = |pid| proc_scan::classify_opaque_at(scope.path(), pid);
+        let boot = 1_000_000;
+        std::fs::write(scope.path().join("stat"), format!("btime {boot}\n")).unwrap();
+        // SAFETY: sysconf has no preconditions; its result is checked below.
+        let ticks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        assert!(ticks_per_sec > 0);
+        for (offset, state) in [(0, 'S'), (1, 'Z')] {
+            let pid = FAKE_PID_BASE + offset;
+            let entry = scope.fake.process(pid);
+            entry.status(state);
+            let stat = format!(
+                "{pid} ((sd-pam) x) {state} 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {} 1 2 3\n",
+                ticks_per_sec * 10
+            );
+            std::fs::write(entry.path().join("stat"), stat).unwrap();
+            assert!(std::fs::read_dir(entry.path().join("fd")).is_err());
+            assert_eq!(
+                classify(pid),
+                proc_scan::Opaque::StartedAt(UNIX_EPOCH + Duration::from_secs(boot + 10)),
+                "an opaque {state} process still has a readable start time"
             );
         }
+        let manager_pid = FAKE_PID_BASE + 2;
+        let manager = scope.fake.process(manager_pid);
+        let uid = super::release_layout::euid();
+        std::fs::write(
+            manager.path().join("cgroup"),
+            format!("0::/user.slice/user-{uid}.slice/user@{uid}.service/init.scope\n"),
+        )
+        .unwrap();
+        assert_eq!(classify(manager_pid), proc_scan::Opaque::UserManager);
+        assert_eq!(classify(FAKE_PID_BASE + 3), proc_scan::Opaque::Gone);
+
+        let malformed_pid = FAKE_PID_BASE + 4;
+        let malformed = scope.fake.process(malformed_pid);
+        std::fs::write(malformed.path().join("stat"), "garbage").unwrap();
+        assert_eq!(classify(malformed_pid), proc_scan::Opaque::Unknown);
+        std::fs::remove_file(scope.path().join("stat")).unwrap();
+        assert_eq!(classify(FAKE_PID_BASE), proc_scan::Opaque::Unknown);
     }
 }
 

@@ -1,7 +1,7 @@
 ---
 title: Keep Tests off the Host Process Table
 type: howto
-updated: 2026-11-10
+updated: 2026-11-11
 related: issue #2196, issue #2042, issue #2040, issue #1760, issue #1690
 ---
 
@@ -558,6 +558,36 @@ calls the internal `override_proc_root(&Path)` directly. Tests of the refused
 variable call `procfs::resolve()` and never set the process-wide variable,
 since under `cfg(test)` `proc_root()` would hide the refusal behind the
 shared default.
+
+The precedence test runs a single lib test in a child process with the
+variable set on `Command`, checks that the thread override wins, then drops
+it and checks that the variable wins. It never changes the parent process's
+environment: other lib tests read the shared default without an environment
+lock.
+
+### Guard against bypassing the resolver
+
+`src/test_support_proc_guard.rs` runs as part of `cargo test --lib`. It
+parses every Rust source under `src/`, checks inline `#[cfg(test)]` modules
+and `#[test]` functions, and checks helpers in `tests/`, `tests*.rs`,
+`*_tests.rs` and `test_support*.rs` files. It rejects filesystem reads that
+enumerate a literal `/proc` root or name a literal numeric host pid, even
+when the path is passed through local bindings, `Path` constructors,
+`format!`, raw strings or an assertion. Pure validation inputs and diagnostic
+strings do not count as reads. The guard's negative samples include
+`fs::read_to_string("/proc/1/stat")` in both inline and separate test code.
+
+This source guard complements the integration guard; its coverage does not
+depend on whether a particular lib test happened to run during a trace.
+It permits `/proc/self/*` and global kernel files such as `loadavg` and
+`meminfo`. Dynamic pid paths still require an ownership review: only the
+test itself or a child it holds may be read. Arbitrarily computed paths and
+interprocedural data flow need the strace check below.
+
+The release-layout opaque-process test uses `fake_proc_scope()` and the real
+`classify_opaque_at(root, pid)` classifier. It supplies process `stat` and `cgroup` files and a synthetic
+boot-time file, then checks exact classifications, including malformed and
+missing data. It never enumerates the host table.
 
 ### Run the lib tests
 
