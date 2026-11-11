@@ -274,9 +274,11 @@ contains `gate`. `tests_usage_direct` and `rotate::tests_daemon` share it.
 its own thread and sends each chunk on an `mpsc` channel. When the read
 reports EOF or EIO, because the child closed its side, the thread sends an
 explicit end-of-stream message. `reader.wait_for(predicate)` blocks on
-`recv()` until the output so far satisfies `predicate` and returns it, or
-returns `Closed` with the captured output once the stream has ended. It has
-no deadline of its own. See [Fleet TUI tests](#fleet-tui-tests).
+`recv_timeout()` until the output so far satisfies `predicate` and returns
+it, or returns `Closed` with the captured output once the stream has ended.
+Each call uses one absolute `CEILING` deadline; incoming chunks do not reset
+it. Reaching the deadline fails as hung and includes the output tail. See
+[Fleet TUI tests](#fleet-tui-tests).
 
 ### `wait_pid_gone` and `KillOnDrop`
 
@@ -288,7 +290,7 @@ not spawn, such as an orphan left behind by a recipe step:
 | `parse_pid(text)` | Accepts ASCII digits only. Rejects `0`, `1` and the test's own pid. A missing or bad pid file fails the test. |
 | `PidFd::open(pid)` | Opens a pidfd. Call it while the process is known to be alive, so a later reuse of the pid cannot point it at another process. |
 | `wait_pid_gone(&pidfd, what)` | Blocks until the process exits, bounded by `CEILING`. |
-| `KillOnDrop(pidfd)` | Sends `SIGKILL` through the pidfd when dropped, so a failing test leaves nothing behind. |
+| `KillOnDrop(pidfd)` | Sends `SIGKILL` to that one process through the pidfd when dropped. Descendants require separate ownership. |
 
 `ESRCH` from `PidFd::open` counts as "gone" only after the teardown under
 test has run. Before that it is a failure. These helpers need Linux 5.3 or
@@ -842,26 +844,42 @@ directory behind.
 
 ### A runner that hangs
 
-The pipe-hang tests run the runner on a worker thread that sends its result
-over a channel. The test receives it with `recv_timeout(CEILING)`. The stub
-writes a `done` file when it finishes, and the test asserts that file, the
-"timed out" error, and that the stub's process tree is gone. The `< 25 s`
-assertions are gone.
+The timeout fixtures block on shell builtin FIFO reads. Their
+`unix_process::FifoWorker` runs the executor on a worker thread and receives
+its result with `recv_timeout(CEILING)`, independently of the product's
+one-second timeout. Passing requires a "timed out" error; the process-tree
+test also waits for every process carrying its unique exec-time environment
+token to disappear and asserts that the orphan marker is absent.
+
+The supervisor opens nonblocking read and write handles before starting the
+worker, and writes nothing until drop. It stays alive through the descendant
+assertions, so releasing a survivor cannot hide broken termination. On
+success or panic, drop writes one newline per builtin read, allowing blocked
+shells to exit without product termination code. A tree fixture opens its
+FIFO descriptor before forking, so late descendants retain the release.
+Worker-held handles also retain buffered release lines if cleanup starts
+before the runner does. Drop waits up to `CEILING` for an outstanding worker
+to return before restoring the test's environment and removing its tempdir;
+a worker still stuck after cleanup is reported without an unbounded join.
+There is no `done` file or elapsed-time pass threshold.
 
 ### Teardown leaves no orphan
 
 `tests_teardown.rs` proves that teardown kills a step's orphans:
 
-1. The step's stub starts a sibling `/bin/cat` that blocks reading a FIFO,
-   and writes the orphan's pid to a pid file.
+1. The runner starts an orphan shell that writes its own pid and blocks on
+   a builtin `read` opening a FIFO. There is no separate `cat` descendant.
 2. The test waits for the pid file, parses it with `parse_pid`, opens a
    pidfd while the orphan is alive, and wraps it in `KillOnDrop`.
 3. Teardown runs.
 4. The test calls `wait_pid_gone` and asserts the orphan's marker file does
    not exist.
 
-A drop guard reaps the `cat` sibling on every path. The orphan stub has no
-fallback writer. The 2.3 s sleep and the `< 8 s` assertion are gone.
+The orphan's `KillOnDrop` signals the same shell that owns the blocked FIFO
+open, so failure cleanup cannot leave a separate reader behind. The scoped
+teardown test also owns an unrelated sibling `cat` directly and reaps it on
+every path. The orphan stub has no fallback writer. The 2.3 s sleep and the
+`< 8 s` assertion are gone.
 
 ## Fleet TUI tests
 
@@ -892,8 +910,9 @@ let cleaned = probe.finish();                       // q, read to EOF, reap
 - `finish` sends `q`, reads to the end of the stream and reaps the child.
 
 The probe holds its child in `KillOnDrop`: a failed test kills the TUI, the
-PTY closes and the reader thread ends. No wait in these tests has a deadline.
-A hung TUI is ended by the test harness's own timeout.
+PTY closes and the reader thread ends. Each output or EOF wait has an
+absolute `CEILING` deadline; a hung TUI fails that wait and is killed by the
+probe's drop guard.
 
 `read_until_quiet`, `drain(duration)`, `poll_until_output_contains`,
 `poll_file_for_content`, `wait_for_exit` and their 20 ms and 50 ms sleeps are

@@ -1716,14 +1716,14 @@ fn test_execute_recipe_via_rust_times_out_hung_runner() {
     let mut fixture_env = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
-    // The runner blocks on a FIFO nobody opens for writing: it never ends on
-    // its own, so only the 1 s product timeout can end it, however slow the
+    // The runner blocks on a FIFO read: the supervisor writes only on drop,
+    // so only the 1 s product timeout can make the test pass, however slow the
     // host is (#1998: a `sleep 5` could finish first on a loaded host).
     let hold = temp.path().join("hold");
     mkfifo(&hold);
     crate::test_support::write_executable(
         &runner,
-        &format!("#!/bin/sh\n/bin/cat '{}' >/dev/null\n", hold.display()),
+        &format!("#!/bin/sh\nread _hold < '{}'\n", hold.display()),
     );
 
     let recipe = temp.path().join("recipe.yaml");
@@ -1732,15 +1732,8 @@ fn test_execute_recipe_via_rust_times_out_hung_runner() {
     fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
     fixture_env.assign("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", "1");
 
-    let result = execute::execute_recipe_via_rust(
-        &recipe,
-        &BTreeMap::new(),
-        false,
-        true,
-        temp.path(),
-        &[],
-        None,
-    );
+    let mut worker = timeout_fixture_worker(&recipe, temp.path(), &hold);
+    let result = worker.wait();
 
     let err = result.expect_err("hung recipe-runner must time out");
     let msg = format!("{err:#}");
@@ -1750,7 +1743,8 @@ fn test_execute_recipe_via_rust_times_out_hung_runner() {
     );
     // The parent timeout (1s, set above) firing is proven by the "timed out"
     // error: the runner never ends on its own, so returning at all means the
-    // timeout path killed and reaped it. No elapsed-time ceiling (#1998).
+    // timeout path killed and reaped it. The independent CEILING above only
+    // fails hangs (#1998).
 }
 
 #[test]
@@ -1766,8 +1760,8 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
     let hold = temp.path().join("hold");
     mkfifo(&hold);
     // Every process of the runner's tree carries a token of this test in its
-    // environment. The orphan blocks on a FIFO nobody opens for writing, so
-    // it ends only by a signal; the runner itself blocks the same way, so
+    // environment. Both shells block on builtin FIFO reads. The supervisor
+    // writes only on drop, after the assertions (or on failure), so
     // only the 1 s product timeout ends the run (#1998: no sleeps).
     let token = format!(
         "{}-{}",
@@ -1777,9 +1771,10 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
     crate::test_support::write_executable(
         &runner,
         &format!(
-            "#!/bin/sh\nexport {ORPHAN_TOKEN_ENV}='{token}'\n\
-             (/bin/cat '{hold}' >/dev/null; echo orphan > '{marker}') &\n\
-             /bin/cat '{hold}' >/dev/null\n",
+            "#!/bin/sh\n\
+             exec 3< '{hold}'\n\
+             (read _hold <&3; echo orphan > '{marker}') &\n\
+             read _hold <&3\n",
             hold = hold.display(),
             marker = marker.display(),
         ),
@@ -1789,18 +1784,13 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
     std::fs::write(&recipe, "name: timeout-tree-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
+    // /proc/environ sees the exec-time environment, not a later shell export.
+    fixture_env.assign(ORPHAN_TOKEN_ENV, &token);
     fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
     fixture_env.assign("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", "1");
 
-    let result = execute::execute_recipe_via_rust(
-        &recipe,
-        &BTreeMap::new(),
-        false,
-        true,
-        temp.path(),
-        &[],
-        None,
-    );
+    let mut worker = timeout_fixture_worker(&recipe, temp.path(), &hold);
+    let result = worker.wait();
 
     let err = result.expect_err("hung recipe-runner must time out");
     assert!(format!("{err:#}").contains("timed out"), "{err:#}");
@@ -1816,6 +1806,22 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
         !marker.exists(),
         "timeout cleanup must terminate recipe-runner descendants"
     );
+}
+
+/// Keep the FIFO supervisor alive through the descendant assertions: releasing
+/// it earlier would hide a process-tree teardown regression.
+#[cfg(unix)]
+fn timeout_fixture_worker(
+    recipe: &Path,
+    dir: &Path,
+    hold: &Path,
+) -> crate::test_support::unix_process::FifoWorker<Result<(), String>> {
+    let (recipe, dir) = (recipe.to_path_buf(), dir.to_path_buf());
+    crate::test_support::unix_process::FifoWorker::spawn(hold, 2, move || {
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &dir, &[], None)
+            .map(|_| ())
+            .map_err(|err| format!("{err:#}"))
+    })
 }
 
 /// The variable that marks the processes of one test's runner tree.

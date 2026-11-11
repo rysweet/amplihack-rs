@@ -3,10 +3,100 @@
 #![allow(dead_code)]
 
 use std::fs::OpenOptions;
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::{fs::OpenOptionsExt, process::CommandExt};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::thread::JoinHandle;
+
+/// Supervise work whose fixture blocks on builtin FIFO reads. Only drop
+/// releases the reads, so cleanup cannot turn a timeout regression into a
+/// passing test. Keep this guard through assertions about surviving children.
+pub struct FifoWorker<T> {
+    result: mpsc::Receiver<T>,
+    worker: Option<JoinHandle<()>>,
+    writer: std::fs::File,
+    _reader: std::fs::File,
+    readers: usize,
+}
+
+impl<T: Send + 'static> FifoWorker<T> {
+    pub fn spawn(path: &Path, readers: usize, work: impl FnOnce() -> T + Send + 'static) -> Self {
+        assert!((1..=512).contains(&readers), "invalid FIFO reader count");
+        // Separate nonblocking opens are portable Unix FIFO semantics; no
+        // O_RDWR assumption and no blocking open before the worker starts.
+        let reader = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .expect("open supervisor FIFO reader");
+        let writer = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .expect("open supervisor FIFO writer");
+        let keepalive = (
+            reader.try_clone().expect("clone supervisor FIFO reader"),
+            writer.try_clone().expect("clone supervisor FIFO writer"),
+        );
+        let (tx, result) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            // Preserve buffered release lines even if unwinding releases the
+            // FIFO before this worker has started its fixture's first read.
+            let _keepalive = keepalive;
+            let _ = tx.send(work());
+        });
+        Self {
+            result,
+            worker: Some(worker),
+            writer,
+            _reader: reader,
+            readers,
+        }
+    }
+
+    pub fn wait(&mut self) -> T {
+        self.wait_with_ceiling(super::wait::CEILING)
+    }
+
+    fn wait_with_ceiling(&mut self, ceiling: std::time::Duration) -> T {
+        let result = self
+            .result
+            .recv_timeout(ceiling)
+            .expect("hung: FIFO fixture worker did not return before the ceiling");
+        self.worker
+            .take()
+            .unwrap()
+            .join()
+            .expect("fixture worker panicked");
+        result
+    }
+}
+
+impl<T> Drop for FifoWorker<T> {
+    fn drop(&mut self) {
+        // One line per builtin read. Tree fixtures must open their FIFO fd
+        // before spawning descendants, so late readers retain the release.
+        // The private FIFO is empty until this write, well below PIPE_BUF.
+        if let Err(e) = self.writer.write_all(&vec![b'\n'; self.readers]) {
+            eprintln!("releasing a test's FIFO readers failed: {e}");
+        }
+        if let Some(worker) = self.worker.take() {
+            // Cleanup is independent of product timeout/termination: released
+            // shells exit naturally. Wait before the caller restores its env
+            // or removes its tempdir. Never panic again during unwinding.
+            match self.result.recv_timeout(super::wait::CEILING) {
+                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let _ = worker.join();
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    eprintln!("hung: FIFO worker did not return after fixture cleanup");
+                }
+            }
+        }
+    }
+}
 
 /// Release a FIFO reader without ever blocking inside `open(2)`. A reader
 /// that has exited is a fixture failure, rather than a wait for a new reader.
@@ -110,6 +200,67 @@ mod tests {
                 .success()
         );
         path
+    }
+
+    #[test]
+    fn fifo_worker_ceiling_releases_runner_and_descendant_before_restoring_env() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = fifo(dir.path());
+        let runner_marker = dir.path().join("runner-done");
+        let child_marker = dir.path().join("child-done");
+        let failure = catch_unwind(|| {
+            let (worker_path, runner_marker, child_marker) =
+                (path.clone(), runner_marker.clone(), child_marker.clone());
+            let mut worker = FifoWorker::spawn(&path, 2, move || {
+                let group = ProcessGroup::new();
+                let mut runner = Command::new("/bin/sh")
+                    .args([
+                        "-c",
+                        "exec 3<\"$1\"; (read _hold <&3; : >\"$2\") & read _hold <&3; wait; : >\"$3\"",
+                        "fixture",
+                    ])
+                    .args([worker_path, child_marker, runner_marker])
+                    .process_group(group.id())
+                    .spawn()
+                    .unwrap();
+                assert!(
+                    super::super::wait::wait_child("released runner tree", &mut runner).success()
+                );
+            });
+            // No product timeout or termination code runs in this worker.
+            // Even release before its first open must reach both reads.
+            worker.wait_with_ceiling(Duration::ZERO);
+        });
+        let message = failure.unwrap_err().downcast::<String>().unwrap();
+        assert!(message.contains("hung: FIFO fixture worker"), "{message}");
+        assert!(
+            runner_marker.exists(),
+            "cleanup must finish before unwinding returns"
+        );
+        assert!(
+            child_marker.exists(),
+            "cleanup must also release the descendant"
+        );
+    }
+
+    #[test]
+    fn fifo_worker_drop_releases_a_survivor_after_worker_returned() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = fifo(dir.path());
+        let ready = dir.path().join("ready");
+        let group = ProcessGroup::new();
+        let mut worker = FifoWorker::spawn(&path, 1, || ());
+        let mut survivor = Command::new("/bin/sh")
+            .args(["-c", "exec 3<\"$1\"; : >\"$2\"; read _hold <&3", "survivor"])
+            .args([&path, &ready])
+            .process_group(group.id())
+            .spawn()
+            .unwrap();
+        super::super::wait::wait_until("survivor to open its FIFO", || ready.exists());
+        worker.wait();
+        assert!(survivor.try_wait().unwrap().is_none());
+        drop(worker);
+        assert!(super::super::wait::wait_child("released survivor", &mut survivor).success());
     }
 
     #[test]

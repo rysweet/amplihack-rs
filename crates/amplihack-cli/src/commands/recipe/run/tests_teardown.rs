@@ -129,7 +129,8 @@ fn execute_on_worker(recipe: &Path, working_dir: &Path) -> mpsc::Receiver<bool> 
 
 /// A runner that starts an orphan in its own process group and then exits 1
 /// once the test opens `go`. The orphan writes its pid to `pid` and blocks
-/// opening the FIFO `hold`, which nothing ever opens for writing, so it ends
+/// in a shell builtin read opening `hold` (no external reader process).
+/// Nothing ever opens the FIFO for writing, so the orphan ends
 /// only by a signal; it would write `marker` only if released. Its lifetime
 /// is observed through a Linux pidfd; portable signal and grace coverage lives
 /// in the tests below without this probe.
@@ -159,7 +160,7 @@ impl OrphanProbe {
             &probe.runner,
             &format!(
                 "#!/bin/sh
-                 /bin/sh -c 'echo $$ > \"$1\"; /bin/cat \"$2\" >/dev/null; echo leaked > \"$3\"'                  orphan '{}' '{}' '{}' &
+                 /bin/sh -c 'echo $$ > \"$1\"; read _hold < \"$2\"; echo leaked > \"$3\"'                  orphan '{}' '{}' '{}' &
                  read _go < '{}'
                  exit 1
 ",
@@ -266,14 +267,14 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("graceful-marker");
 
-    // The runner blocks on a FIFO nobody opens for writing, so only the
-    // timeout's teardown ends it, however slow the host is.
+    // The runner blocks on a builtin FIFO read. The supervisor releases it
+    // only during drop, so passing still requires the timeout teardown.
     let hold = temp.path().join("hold");
     mkfifo(&hold);
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\ntrap 'echo graceful > \"{}\"; exit 0' TERM\n/bin/cat \"{}\" >/dev/null\n",
+            "#!/bin/sh\ntrap 'echo graceful > \"{}\"; exit 0' TERM\nread _hold < \"{}\"\n",
             marker.display(),
             hold.display()
         ),
@@ -288,17 +289,12 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     // Explicit, generous grace so the trapped child can finish cleanly.
     let _grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "5");
 
-    let result = execute::execute_recipe_via_rust(
-        &recipe,
-        &BTreeMap::new(),
-        false,
-        true,
-        temp.path(),
-        &[],
-        None,
-    );
-
-    result.expect_err("hung recipe-runner must time out");
+    let dir = temp.path().to_path_buf();
+    let mut worker = crate::test_support::unix_process::FifoWorker::spawn(&hold, 1, move || {
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &dir, &[], None)
+            .is_err()
+    });
+    assert!(worker.wait(), "hung recipe-runner must time out");
 
     // The teardown reaps the runner before it returns, and the runner writes
     // the marker in its SIGTERM trap before it exits: no wait is needed.
