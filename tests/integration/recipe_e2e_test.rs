@@ -442,6 +442,7 @@ fn recipe_run_forwards_runner_stderr_by_default_without_polluting_stdout_json() 
     std::fs::write(
         &runner,
         r#"#!/bin/sh
+if [ "$1" = --capabilities ]; then printf '%s\n' '{"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]}'; exit 0; fi
 echo '[step 01/02 setup] started' >&2
 echo '[step 01/02 setup] heartbeat elapsed=60s status=running phase=bash' >&2
 echo '[agent builder stderr] compiling generated tests' >&2

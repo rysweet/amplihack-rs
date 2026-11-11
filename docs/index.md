@@ -308,6 +308,12 @@ Document-Driven Development is a systematic methodology where documentation come
 
 Code-enforced workflow execution engine with declarative YAML recipes.
 
+- [Resume After a Usage Limit](howto/resume-recipe-after-usage-limit.md) - **Planned:** relaunch the same issue, inspect the restart step, or use `--fresh`
+- [Recovery after a Recipe Usage Limit](concepts/recipe-usage-limit-recovery.md) - **Planned:** latest-attempt eligibility, nested replay, and compatibility
+- [Recipe Recovery Reference](reference/recipe-recovery.md) - **Planned:** persistence policies, resources, durable storage, and runner contracts
+- [Recipe Runner Architecture](concepts/recipe-runner-architecture.md) - Execution and recovery ownership across the CLI and runner
+- [Recipe Command Reference](reference/recipe-command.md) - Launch flags, detached execution, and recovery decisions
+
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
 - [UltraThink Recipe Runner Integration](recipes/RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution
 - [Recipe CLI Commands How-To](howto/recipe-cli-commands.md) - Task-oriented guide for using recipe commands

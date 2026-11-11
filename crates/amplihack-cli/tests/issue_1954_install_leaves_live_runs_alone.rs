@@ -165,7 +165,7 @@ impl Host {
             &stubs.join("recipe-runner-rs"),
             format!(
                 "#!/bin/sh\nprintf '%s\\n' '{{\"schema_version\":1,\"version\":\"fixture\",\
-                 \"capabilities\":[\"codex_exec\"]}}'\nexit 0\n# {padding}\n"
+                 \"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}}'\nexit 0\n# {padding}\n"
             ),
             0o755,
         );

@@ -1,3 +1,10 @@
+---
+title: Recipe runner architecture
+description: Execution, supervision, and durable recovery ownership across Amplihack and the Rust runner.
+doc_type: explanation
+last_updated: 2026-11-11
+---
+
 # Recipe Runner Architecture
 
 Why the recipe runner is an external binary, how amplihack locates and invokes
@@ -10,6 +17,7 @@ it, and how recipe execution stays predictable.
 - [Invocation contract](#invocation-contract)
 - [Data flow](#data-flow)
 - [Logging responsibility split](#logging-responsibility-split)
+- [Durable recovery ownership](#durable-recovery-ownership)
 - [What amplihack does NOT do](#what-amplihack-does-not-do)
 - [Operational contract](#operational-contract)
 
@@ -30,24 +38,16 @@ exists because:
 
 ## Binary resolution
 
-amplihack resolves the runner binary at launch time using `freshness.rs`:
+Amplihack resolves the selected runner through the
+[shared binary lookup](../reference/recipe-command.md#recipe-runner-binary).
+Managed installation and freshness use the immutable upstream revision in
+`claude-plugin/recipe-runner.rev`, with the existing ancestry/downgrade
+guard. They do not select the remote `main` tip at launch.
 
-```
-$PATH lookup for `recipe-runner-rs`
-       │
-       ├── found → check freshness against GitHub HEAD
-       │              │
-       │              ├── up-to-date → use it
-       │              └── stale → `cargo install --git` to upgrade
-       │
-       └── not found → `cargo install --git` to install
-```
-
-The freshness check compares the locally installed commit SHA against the
-remote `main` branch HEAD, throttled by a cooldown file at
-`~/.amplihack/state/recipe_runner.json`.
-
-Source: `crates/amplihack-cli/src/freshness.rs`, lines 108–176.
+Capability validation is separate from managed source provenance. An
+explicit compatible custom runner need not match the managed SHA, but it
+must satisfy the required provider capabilities. Every provider must also advertise `durable_recovery_v1`. See
+[runner validation](../reference/recipe-runner-validation.md).
 
 ## Invocation contract
 
@@ -103,6 +103,44 @@ state. It forwards the runner's stderr progress, captures stdout for the final
 the runner emits additive diagnostic fields, the CLI must not drop them while
 formatting JSON or YAML output.
 
+## Durable recovery ownership
+
+Durable relaunch recording and replay live in the external Rust runner; the
+CLI integrates its upstream library contracts and supported executable pin.
+See the [recovery reference](../reference/recipe-recovery.md).
+
+Durable recovery uses the same external Rust executor. Amplihack supplies
+the canonical repository/work identity, durable run storage, effective
+launch settings, and recognized failure causes. Under an identity lock it
+selects the latest predecessor, registers the new attempt, and publishes
+the latest marker before execution. Only the executing process admits an
+attempt; detached launchers do not. Dry runs do not change recovery state.
+
+The runner owns versioned completion records, typed context deltas,
+compatibility checks, resource validation, and replay. Its single durable
+writer preserves completed children beneath incomplete parents. Trusted
+delegated runners attach through inherited private local IPC scoped to
+their attempt, invocation subtree, operations, and generation. The CLI
+does not reconstruct or reorder steps.
+
+Recognized usage-limit blockage is published before waiting or unwinding.
+Synchronized status revisions and generations prevent stale child reports
+from overriding a newer enclosing outcome. Current session ownership,
+governor admission, recursion accounting, and authorization are established
+before dependent replay. Existing same-process wait/retry remains intact.
+
+The selected runner must advertise `durable_recovery_v1`, even for
+`--fresh`. Support is delivered upstream before Amplihack's supported
+runner pin advances; existing ancestry validation remains required. A
+second execution engine or vendored runner copy is not part of recovery.
+
+Private state and required artifact copies live under the run's
+`recovery/` directory, outside `runtime/`. Latest-attempt markers survive
+retirement of detailed history. Each recovering attempt imports its own
+inherited state, allowing repeated recovery without retaining every
+ancestor. See [recovery behavior](recipe-usage-limit-recovery.md) and the
+[versioned recovery contract](../reference/recipe-recovery.md).
+
 ## What amplihack does NOT do
 
 - **Does not parse recipes** — YAML parsing is the runner's responsibility.
@@ -113,8 +151,11 @@ formatting JSON or YAML output.
 - **Does not embed the runner** — There is no compiled-in recipe execution
   engine.
 
-amplihack is responsible for: binary resolution, freshness checks, argument
-forwarding, and exit code propagation.
+amplihack is responsible for binary resolution, freshness and capability
+checks, argument forwarding, and exit code propagation. The recovery
+feature adds admission/storage and launch/failure integration to those
+responsibilities. General recipe recording and replay will remain runner
+responsibilities.
 
 ## Operational contract
 
