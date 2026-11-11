@@ -105,42 +105,12 @@ fn run_refuses_group_writable_profile_before_spawn() {
     assert!(build_profile_command(&bin, &s, &name, &[]).is_err());
 }
 
-struct DockerEnvGuard {
-    _env: crate::test_support::EnvGuard,
-    _tools: tempfile::TempDir,
-}
-impl DockerEnvGuard {
-    fn set(v: &str) -> Self {
-        // Env activation requires a running daemon. Supply that boundary here
-        // instead of depending on Docker being installed on the test host.
-        let tools = tempfile::tempdir().unwrap();
-        let docker = tools.path().join("docker");
-        fs::write(&docker, "#!/bin/sh\n[ \"$1\" = info ]\n").unwrap();
-        fs::set_permissions(&docker, fs::Permissions::from_mode(0o755)).unwrap();
-        let env = crate::test_support::EnvGuard::capture(&[
-            "AMPLIHACK_USE_DOCKER",
-            "AMPLIHACK_IN_DOCKER",
-            "PATH",
-        ]);
-        unsafe {
-            std::env::set_var("AMPLIHACK_USE_DOCKER", v);
-            std::env::remove_var("AMPLIHACK_IN_DOCKER");
-            std::env::set_var("PATH", tools.path());
-        }
-        Self {
-            _env: env,
-            _tools: tools,
-        }
-    }
-}
-
 #[test]
 fn reject_docker_env_errors_when_env_active() {
     let _l = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let _g = DockerEnvGuard::set("1");
-    let err = super::reject_docker_env()
+    let err = super::reject_docker_mode(true)
         .unwrap_err()
         .to_string()
         .to_lowercase();
@@ -152,12 +122,11 @@ fn profile_run_fails_closed_under_docker_env_before_touching_disk() {
     let _l = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let _g = DockerEnvGuard::set("1");
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("root");
     let s = ProfileStore::new(root.clone());
     let missing = ProfileName::parse("ghost").unwrap();
-    let err = super::run::run(&s, &missing, vec![])
+    let err = super::run::run_in_mode(&s, &missing, vec![], true)
         .unwrap_err()
         .to_string()
         .to_lowercase();

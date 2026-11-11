@@ -76,6 +76,7 @@ impl IsolatedHome {
         env.put("HOME", Some(home.as_os_str()));
         // Asset-restaging tests must not select the enclosing agent's provider.
         env.set("AMPLIHACK_AGENT_BINARY", "claude");
+        env.set("AMPLIHACK_SKIP_MMDC", "1");
         for name in [
             "AMPLIHACK_SKIP_AUTO_INSTALL",
             "AMPLIHACK_HOME",
