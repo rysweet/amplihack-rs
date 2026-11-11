@@ -20,6 +20,8 @@
 //! so this file never starts the real binary and needs no `isolated(..)`.
 
 use serde_yaml::Value;
+use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -336,20 +338,52 @@ fn hook_rejection_repair_shell_contract_passes() {
         root.join("amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh");
     assert!(script.is_file(), "missing {}", script.display());
 
+    // Repository selectors exported by an enclosing hook override even an
+    // absolute `git init <fixture>` target. A failed init can leave an empty
+    // .git outside TMPDIR (#1937). Both poisoned paths belong to this test.
+    let fixture = tempfile::Builder::new()
+        .prefix("issue-1937-hook-repair-")
+        .tempdir()
+        .expect("create owned fixture parent");
+    for name in ["tmp", "home", "cwd"] {
+        fs::create_dir(fixture.path().join(name)).expect("create owned fixture directory");
+    }
+    let common = fixture.path().join("common-file");
+    fs::write(&common, b"owned common-directory blocker\n").expect("write owned blocker");
+    let names = |path: &Path| -> BTreeSet<OsString> {
+        fs::read_dir(path)
+            .expect("list owned fixture")
+            .map(|entry| entry.expect("fixture entry").file_name())
+            .collect()
+    };
+    let before = names(fixture.path());
     let out = Command::new("bash")
         .arg(&script)
-        .current_dir(&root)
-        // The shell test points the steps at the repository's own helpers
-        // and its own stub; an inherited override would test something else.
-        .env_remove("WORKFLOW_HOOK_REPAIR_HELPER")
-        .env_remove("WORKFLOW_STAGE_CHANGES_HELPER")
-        .env_remove("HOOK_REPAIR_ROUND_RECIPE")
-        .env_remove("HOOK_REPAIR_HEALTH_RECIPE")
-        .env_remove("AMPLIHACK_BIN")
-        .env_remove("SKIP")
+        .current_dir(fixture.path().join("cwd"))
+        // Keep all real user configuration and harness overrides out. Then
+        // deliberately inject owned repository selectors the harness must drop.
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").expect("host tool PATH"))
+        .env("HOME", fixture.path().join("home"))
+        .env("XDG_CONFIG_HOME", fixture.path().join("home/.config"))
+        .env("TMPDIR", fixture.path().join("tmp"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_DIR", fixture.path().join(".git"))
+        .env("GIT_COMMON_DIR", &common)
         .output()
         .expect("run the #1671 shell contract");
 
+    assert_eq!(
+        names(fixture.path()),
+        before,
+        "#1937: the harness wrote beside TMPDIR (including an escaped .git)"
+    );
+    for name in ["tmp", "home", "cwd"] {
+        assert!(
+            names(&fixture.path().join(name)).is_empty(),
+            "#1937: the harness left data in its caller's {name}"
+        );
+    }
     assert!(
         out.status.success(),
         "test-issue-1671-hook-rejection-repair.sh failed ({:?})\n--- stdout ---\n{}\n--- stderr ---\n{}",

@@ -114,6 +114,9 @@ fn fx() -> Fx {
     rs.save_ledger(&RotateLedger {
         live: Some(WORK.into()),
         account: Some("u-work".into()),
+        login_identity: Some(super::login_identity::Identity::new(
+            &(super::cred_identity::DEFAULT_READ)(&home.join(".claude")).unwrap(),
+        )),
         since: Some(now() - 7200),
         swapped_at: Some(now() - 7200),
         ..RotateLedger::default()
@@ -180,6 +183,8 @@ fn all_plan_logins_out(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
+        passive: false,
     };
     decide_measured(ctx, snap, out, vec![(n(KEY), Probed::platform())], now())
 }
@@ -231,6 +236,8 @@ fn plenty_of_room(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
+        passive: false,
     };
     decide_measured(ctx, snap, live, vec![(n(KEY), Probed::platform())], now())
 }
@@ -310,6 +317,8 @@ fn live_probe_fails(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError>
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
+        passive: false,
     };
     let spare = Probed {
         reading: Reading::Measured {
@@ -321,6 +330,8 @@ fn live_probe_fails(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError>
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
+        passive: false,
     };
     decide_measured(ctx, snap, failed, vec![(n("spare"), spare)], now())
 }
@@ -368,10 +379,11 @@ fn a_home_key_stops_failed_probe_swaps_for_good() {
     let f = fx();
     private(&f.home.join(".claude.json"), HOME_WITH_KEY);
     let mut c = failing(&f);
+    // Issue #1907: the live probe failed, so the stay is not capacity.
     for _ in 0..4 {
         assert_eq!(
             run_cycle(&mut c, Mode::Watch).unwrap(),
-            CycleOutcome::Stayed
+            CycleOutcome::StayedUnread
         );
     }
     assert_eq!(f.home_login(), Some(f.live), "work's login stays live");
@@ -748,6 +760,8 @@ fn plan_out_credits_usable(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profil
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
+        passive: false,
     };
     let credits = Probed {
         reading: Reading::Measured {
@@ -763,6 +777,8 @@ fn plan_out_credits_usable(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profil
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
+        passive: false,
     };
     decide_measured(
         ctx,

@@ -367,7 +367,8 @@ fn identity_keys_are_read_only_in_identify() {
     walk(&base, &mut files);
     let mut offenders = Vec::new();
     for f in &files {
-        if f.ends_with("rotate/identify.rs") {
+        // `Account` moved from `identify` to `account` (issue #1886).
+        if f.ends_with("rotate/identify.rs") || f.ends_with("rotate/account.rs") {
             continue;
         }
         let src = fs::read_to_string(f).unwrap();

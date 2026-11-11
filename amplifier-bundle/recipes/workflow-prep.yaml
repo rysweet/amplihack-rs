@@ -9,12 +9,18 @@ tags: ["development", "prep", "requirements"]
 recursion:
   max_depth: 6
   max_total_steps: 80
-context: { issue_number: "" }
+context: { issue_number: "", create_issue: "false" } # create_issue: opt in to GitHub issue creation (#1881)
+recovery:
+  version: 1
+  persist:
+    context: ["adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
+    outputs: ["step-00-workflow-preparation", "step-00a-identity-preflight", "step-01-prepare-workspace", "step-02-clarify-requirements", "step-02b-analyze-codebase", "step-02c-resolve-ambiguity", "step-02d-detect-host-type", "step-03-create-issue", "step-03b-extract-issue-number", "step-03c-issue-claim-check"]
 steps:
   # STEP 0: WORKFLOW PREPARATION (MANDATORY - DO NOT SKIP)
   # Creates tracking structure. Must complete before ANY implementation work.
   # Prevents "completion bias" - ensures mandatory review steps not skipped.
   - id: "step-00-workflow-preparation"
+    recovery: {"replay": "rebind"}
     type: "bash"
     command: |
       # The 23-step plan banner lives in amplifier-bundle/tools/workflow_plan_banner.sh.
@@ -27,7 +33,6 @@ steps:
       printf 'Task: %s\n' "$TASK_DESC"
       printf 'Repository: %s\n' "$REPO_PATH"
     output: "workflow_init"
-
   # STEP 00a: IDENTITY PREFLIGHT (issue #1290)
   # Resolve the acting `gh` login once and verify it can write to the repository this
   # run is about to write to, BEFORE any step does real work. The run that motivated
@@ -37,6 +42,7 @@ steps:
   # construction: only a readable "this identity cannot act here" stops the run, while
   # a check that could not be made warns and continues (the lesson of #1268).
   - id: "step-00a-identity-preflight"
+    recovery: {"replay": "rebind"}
     type: "bash"
     command: |
       P=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_identity_preflight.sh" ] && { P="$c/amplifier-bundle/tools/workflow_identity_preflight.sh"; break; }; done
@@ -44,9 +50,9 @@ steps:
       [ -n "$P" ] || { echo "WARNING: identity preflight helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — continuing without an identity check" >&2; printf 'identity_preflight: unknown reason=helper-not-found\n'; exit 0; }
       bash "$P" "${REPO_PATH:-.}"
     output: "identity_preflight"
-
   # STEP 1: PREPARE THE WORKSPACE
   - id: "step-01-prepare-workspace"
+    recovery: {"replay": "rebind"}
     type: "bash"
     command: |
       # Fail closed: a failed `cd` must NOT fall through to the auto-init path
@@ -112,9 +118,9 @@ steps:
         echo "--- Pre-agent Validation: SKIPPED (SKIP_PRE_AGENT_VALIDATION=$SKIP_PRE_AGENT_VALIDATION) ---"
       fi
     output: "workspace_status"
-
   # STEP 2: REWRITE AND CLARIFY REQUIREMENTS
   - id: "step-02-clarify-requirements"
+    recovery: {"replay": "reuse"}
     agent: "amplihack:prompt-writer"
     prompt: |
       # Step 2: Rewrite and Clarify Requirements
@@ -143,8 +149,8 @@ steps:
       Answer the requires_* flags "false" only when confident the task involves no such work at all (a CLI flag, a CI edit, a pure refactor); when in doubt answer "true". Use your best judgment to work autonomously. Pass explicit requirements to ALL subsequent agents. **no_merge:** {{no_merge}}. When it is "true", the requirements and acceptance criteria end at "PR open, merge-ready" and never include merging the PR.
     output: "clarified_requirements"
     parse_json: true
-
   - id: "step-02b-analyze-codebase"
+    recovery: {"replay": "reuse"}
     agent: "amplihack:architect"
     prompt: |
       # Step 2b: Analyze Existing Codebase Context
@@ -185,8 +191,8 @@ steps:
       4. Potential conflicts or considerations
       Use glob and grep to explore the codebase. Avoid web searches.
     output: "codebase_analysis"
-
   - id: "step-02c-resolve-ambiguity"
+    recovery: {"replay": "reuse"}
     agent: "amplihack:ambiguity"
     prompt: |
       # Step 2c: Resolve Any Remaining Ambiguity
@@ -209,6 +215,7 @@ steps:
   # Output propagates via parent context to all downstream sub-recipes.
   # ==========================================================================
   - id: "step-02d-detect-host-type"
+    recovery: {"replay": "reuse"}
     type: "bash"
     command: |
       set -euo pipefail; cd "$REPO_PATH"
@@ -238,13 +245,15 @@ steps:
     output: "remote_host_type"
 
   - id: "step-03-create-issue"
+    recovery: {"replay": "reuse"}
     type: "bash"
     command: |
       set -euo pipefail
       cd "$REPO_PATH"
       echo "=== Step 3: Creating Tracking Issue ===" >&2
       TASK_DESC="$TASK_DESCRIPTION"
-      ISSUE_TITLE="${TASK_DESC//$'\n'/ }"; ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"; ISSUE_TITLE="${ISSUE_TITLE:0:200}"
+      ISSUE_TITLE="${TASK_DESC//$'\n'/ }"; ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"; ISSUE_TITLE="${ISSUE_TITLE//[[:cntrl:]]/}"; ISSUE_TITLE="${ISSUE_TITLE:0:200}"
+      ISSUE_TITLE="${ISSUE_TITLE#"${ISSUE_TITLE%%[![:space:]]*}"}"; ISSUE_TITLE="${ISSUE_TITLE%"${ISSUE_TITLE##*[![:space:]]}"}"  # trimmed: GitHub trims stored titles (#1881)
       SANITIZED_ISSUE_REQS="$(printf '%s\n' "${RECIPE_VAR_final_requirements:-}" | awk '/^ℹ NODE_OPTIONS=--max-old-space-size=[0-9]+ \(saved preference\)(\. To change: .+)?$/ { next } { print }')"  # sanitize only launcher "ℹ NODE_OPTIONS=--max-old-space-size=N (saved preference). To change: ~/.amplihack/config" notices; preserve legitimate NODE_OPTIONS task text such as "Ensure the workflow rejects unsafe NODE_OPTIONS values"
       HOST_TYPE="${RECIPE_VAR_remote_host_type:-other}"; EXISTING_ISSUE_NUMBER="${RECIPE_VAR_issue_number:-}"
       case "$HOST_TYPE" in github|azdo|other) ;; azure-devops) HOST_TYPE="azdo" ;; *) echo "WARN: Unexpected REMOTE_HOST_TYPE — using local tracking" >&2; HOST_TYPE="other" ;; esac
@@ -256,6 +265,8 @@ steps:
       T=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_tracking.sh" ] && { T="$c/amplifier-bundle/tools/workflow_issue_tracking.sh"; break; }; done
       [ -n "$T" ] || { echo "ERROR: issue tracking helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): amplifier-bundle/tools/workflow_issue_tracking.sh" >&2; exit 2; }
       . "$T"; . "$(dirname "$T")/workflow_body_file.sh"  # write_body_file: body to a file for --body-file (#1570)
+      # Opt-in, exact-title reuse and bounded creation (#1881) live in workflow_issue_create.sh.
+      C="$(dirname "$T")/workflow_issue_create.sh"; [ -f "$C" ] || { echo "ERROR: issue creation helper not found: $C" >&2; exit 2; }; . "$C"
       REF_ISSUE_NUM=""  # AzDO only; GitHub: select_github_tracking_issue (#1595)
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"; fi
@@ -269,28 +280,15 @@ steps:
       case "$HOST_TYPE" in
       github)
         GH_TRACKING=$(select_github_tracking_issue) && { printf '%s\n' "$GH_TRACKING"; exit 0; }
-        SEARCH_Q="${ISSUE_TITLE:0:100}"; if [ -n "$SEARCH_Q" ]; then FOUND_URL=$(timeout 60 gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo ''); [ -n "$FOUND_URL" ] && { printf '%s\n' "$FOUND_URL"; exit 0; }; fi
+        # #1881: GitHub issue creation is opt-in; only RECIPE_VAR_create_issue counts, never the task text.
+        issue_creation_opted_in "${RECIPE_VAR_create_issue:-}" || { echo "INFO: no tracking issue selected and create_issue is not set; using local tracking (pass -c create_issue=true to create a GitHub issue)" >&2; emit_local_metadata; exit 0; }
+        load_issue_identity || true  # once per run; lookups reuse ISSUE_REPO_NWO
+        rc=0; FOUND_URL=$(find_open_issue_before_create "$ISSUE_TITLE") || rc=$?; [ "$rc" -eq 0 ] && { echo "INFO: reusing open issue with identical title: $FOUND_URL" >&2; printf '%s\n' "$FOUND_URL"; exit 0; }
+        [ "$rc" -eq 1 ] || { echo "WARNING: could not check for an open issue with this title; not creating one blind (a duplicate is worse than local tracking); using local tracking" >&2; emit_local_metadata; exit 0; }
         ISSUE_BODY_FILE=$(umask 077; mktemp); trap 'rm -f -- "$ISSUE_BODY_FILE"' EXIT
         printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$SANITIZED_ISSUE_REQS" | write_body_file "$ISSUE_BODY_FILE"
-        LABEL_NAME="workflow:default"
-        timeout 30 gh label create "$LABEL_NAME" --color "0366d6" --description "Created by default-workflow recipe" 2>/dev/null || true
-        gh_create_issue() { timeout 60 gh issue create --title "$ISSUE_TITLE" --body-file "$ISSUE_BODY_FILE" "$@" 2>&1; }
-        try_gh_create() { GH_ISSUE_RC=0; GH_ISSUE_OUTPUT=$(gh_create_issue --label "$LABEL_NAME") || GH_ISSUE_OUTPUT=$(gh_create_issue) || GH_ISSUE_RC=$?; }
-        # Rate-limit-aware issue creation: a temporarily-exhausted GraphQL quota must not abort the run. On a
-        # rate limit (not auth error) wait for the AUTHORITATIVE `gh api rate_limit` reset (adaptive, no fixed cap), then retry; 401s never retried.
-        _issue_is_rate_limit() { printf '%s' "$1" | grep -Eiq 'api rate limit|rate limit already exceeded|secondary rate limit|abuse detection|(^|[^0-9])429([^0-9]|$)|retry-after|x-ratelimit-reset|rate limit'; }
-        _issue_is_auth() { printf '%s' "$1" | grep -Eiq 'bad credentials|HTTP 401|(^|[^0-9])401([^0-9]|$)|requires authentication|not logged in'; }
-        _issue_wait_for_reset() { local now epoch waitfor floor=5 buffer=3; now=$(date +%s); epoch=$(timeout 30 gh api rate_limit 2>/dev/null | jq -r '.resources.graphql.reset // empty' 2>/dev/null || true); case "$epoch" in ''|*[!0-9]*) epoch="" ;; esac; if [ -z "$epoch" ]; then waitfor=$floor; else waitfor=$((epoch - now + buffer)); [ "$waitfor" -lt "$floor" ] && waitfor=$floor; fi; echo "WARNING: GitHub GraphQL rate limit hit during issue creation; waiting ${waitfor}s for authoritative reset (adaptive, bounded by reset window)." >&2; sleep "$waitfor"; }
-        try_gh_create; RL_WINDOWS=0
-        while [ "$GH_ISSUE_RC" -ne 0 ] && _issue_is_rate_limit "$GH_ISSUE_OUTPUT" && ! _issue_is_auth "$GH_ISSUE_OUTPUT"; do RL_WINDOWS=$((RL_WINDOWS + 1)); echo "WARNING: gh issue create hit a GitHub rate limit (reset window ${RL_WINDOWS}, no arbitrary cap); waiting for reset before retrying." >&2; _issue_wait_for_reset; try_gh_create; done
-        [ "$GH_ISSUE_RC" -eq 0 ] && { printf '%s\n' "$GH_ISSUE_OUTPUT"; exit 0; }
-        if [[ "$GH_ISSUE_OUTPUT" =~ Could\ not\ resolve\ to\ a\ Repository|[Rr]epository\ not\ found|[Rr]epository.*inaccessible|HTTP\ 404 ]]; then
-          echo "WARNING: GitHub issue creation failed because the repository could not be resolved or accessed; using local tracking metadata instead." >&2
-          emit_local_metadata; exit 0
-        fi
-        echo "ERROR: GitHub issue creation failed." >&2
-        sanitize_cli_output "$GH_ISSUE_OUTPUT" >&2
-        exit 1
+        # Bounded, jittered backoff with a lookup before every retry; gives up to local tracking.
+        rc=0; create_github_issue_bounded "$ISSUE_TITLE" "$ISSUE_BODY_FILE" "workflow:default" || rc=$?; exit "$rc"
         ;;
       azdo|azure-devops)
         REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
@@ -344,6 +342,7 @@ steps:
     output: "issue_creation"
     parse_json: false
   - id: "step-03b-extract-issue-number"
+    recovery: {"replay": "reuse"}
     type: "bash"
     command: |
       # Extract issue number — GitHub/AzDO numeric; local tracking propagates its ref, never coercing to a number, but fails loud on malformed metadata (#815, #804).
@@ -381,6 +380,7 @@ steps:
   # `-c allow_existing_pr=true` when the worktree cannot be on that branch).
   # Advisory: an un-runnable check warns and continues (the lesson of #1268).
   - id: "step-03c-issue-claim-check"
+    recovery: {"replay": "rebind"}
     type: "bash"
     command: |
       [ -n "${EXISTING_BRANCH:-}${PR_NUMBER:-}" ] && { echo "INFO: issue claim check skipped: the run explicitly targets an existing branch or PR" >&2; printf 'issue_claim_check: skipped reason=explicit-existing-branch-or-pr\n'; exit 0; }

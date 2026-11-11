@@ -9,12 +9,12 @@
 
 use super::cycle::Ctx;
 use super::decide::Decision;
+use super::fresh::{self, Reread};
 use super::identify::{Account, Skip};
 use super::observe::{Measurement, Snap, decide_measured, snapshot};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, exists};
 use crate::commands::profile::name::ProfileName;
-use crate::commands::profile::store::ProfileStore;
 use std::time::Duration;
 
 /// How long step 6 waits, holding the lock, before it reads the state again
@@ -39,8 +39,8 @@ pub enum Changed {
     /// A swap's target is no longer a candidate: why it is skipped, or
     /// `None` when it is in neither list.
     Target(Option<Skip>),
-    /// A swap's target is still a candidate, but the account in its
-    /// `.claude.json` is not the one it had when it was measured.
+    /// A swap's target is still a candidate, but its trusted account
+    /// is not the one it had when it was measured.
     TargetIdentity,
 }
 
@@ -72,20 +72,32 @@ fn target_reason(why: Option<Skip>) -> &'static str {
     why.map_or("gone", Skip::as_str)
 }
 
-/// The account in each candidate's `.claude.json`, for
-/// [`Snap::candidate_accounts`]. Compared, never logged.
-pub fn accounts(
-    store: &ProfileStore,
-    candidates: &[ProfileName],
-) -> Vec<(ProfileName, Option<Account>)> {
-    let of = |c: &ProfileName| {
-        store
-            .verify_profile_dir(c)
-            .ok()
-            .as_deref()
-            .and_then(Account::of_dir)
-    };
-    candidates.iter().map(|c| (c.clone(), of(c))).collect()
+/// The accounts of [`Snap::candidate_accounts`], and why a read failed.
+type CandidateReads = (
+    Vec<(ProfileName, Option<Account>)>,
+    Vec<(ProfileName, &'static str)>,
+);
+
+/// The trusted account bound to each candidate's login, for
+/// [`Snap::candidate_accounts`], and the cause of each failed read, for
+/// [`Snap::candidate_refusals`]. Compared and logged by cause, never by account.
+pub fn accounts_with(ctx: &Ctx, candidates: &[ProfileName]) -> CandidateReads {
+    let mut accounts = Vec::with_capacity(candidates.len());
+    let mut refusals = Vec::new();
+    for n in candidates {
+        let read = match ctx.store.verify_profile_dir(n) {
+            Ok(dir) => ctx.identity_reader().oauth(&dir),
+            Err(_) => Err(super::login_identity::DIR_NOT_PRIVATE),
+        };
+        match read {
+            Ok(account) => accounts.push((n.clone(), Some(account))),
+            Err(cause) => {
+                accounts.push((n.clone(), None));
+                refusals.push((n.clone(), cause));
+            }
+        }
+    }
+    (accounts, refusals)
 }
 
 /// Whether `name` is a candidate in `fresh` and holds the account it held
@@ -104,6 +116,14 @@ fn still_eligible(first: &Snap, fresh: &Snap, name: &ProfileName) -> bool {
     fresh.candidates.contains(name) && same
 }
 
+fn same_account(a: Option<&Account>, b: Option<&Account>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a.same(b),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 /// What changed between `first` and `fresh` that `decision` depends on.
 /// Other profiles joining or leaving the candidates, their accounts, and
 /// whether sessions can be seen, are not compared: losing sight of sessions
@@ -116,6 +136,11 @@ pub fn changed(first: &Snap, fresh: &Snap, decision: &Decision, journal: bool) -
         live,
         proto,
         account,
+        trusted_live,
+        identity_refusal,
+        // Only say why a reading above is missing, and only log.
+        identity_cause: _,
+        candidate_refusals: _,
         candidates: _,
         skips: _,
         sees_sessions: _,
@@ -136,6 +161,8 @@ pub fn changed(first: &Snap, fresh: &Snap, decision: &Decision, journal: bool) -
     if *live != fresh.live
         || *proto != fresh.proto
         || *account != fresh.account
+        || *identity_refusal != fresh.identity_refusal
+        || !same_account(trusted_live.as_ref(), fresh.trusted_live.as_ref())
         || *home_no_oauth != fresh.home_no_oauth
     {
         why.push(Changed::Live);
@@ -199,7 +226,8 @@ fn compare(
 /// a journal, a pin or an overflow change is never read again.
 fn home_blinked(first: &Snap, fresh: &Snap, why: &[Changed]) -> bool {
     first.account.is_some()
-        && fresh.account.is_none()
+        && (fresh.account.is_none()
+            || matches!(fresh.live, super::identify::LiveId::HomeUnreadable(_)))
         && why
             .iter()
             .all(|c| *c == Changed::Live || c.retry_reason().is_some())
@@ -260,6 +288,8 @@ fn reconsider(
     // already stored; `cycle.rs` relies on this (see the `Reconsidered` arm).
     let counted = std::mem::replace(&mut ctx.failed_live, failed_before);
     let retry = decide_measured(ctx, &fresh, probe.clone(), probes, m.measured_at);
+    // Issue #1870: no read under the lock; a stale retry target is unknown.
+    let retry = retry.and_then(|r| fresh::gate(ctx, &fresh, r, Reread::Never));
     ctx.failed_live = counted;
     let retry = retry?;
     debug_assert_eq!(

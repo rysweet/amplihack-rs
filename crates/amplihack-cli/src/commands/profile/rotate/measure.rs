@@ -64,8 +64,10 @@ pub(super) fn reading(who: &str, p: &Probe) -> Probed {
 }
 
 /// The probe method, as `profile usage` resolves it. A bad variable falls
-/// back to the default order and warns on stderr, once per cycle.
-fn mode() -> ProbeMode {
+/// back to the default order and warns on stderr. Only [`measure_ordered`]
+/// calls this, once per cycle, so the warning is printed once per cycle;
+/// anything else in the cycle uses [`mode_quiet`].
+pub(super) fn mode() -> ProbeMode {
     let (mode, warning) = probe_limits::probe_mode_from_env();
     if let Some(w) = warning {
         eprintln!("{w}");
@@ -73,15 +75,30 @@ fn mode() -> ProbeMode {
     mode
 }
 
+/// [`mode`] with no warning: for a read later in a cycle whose
+/// [`measure_ordered`] has already warned about the same variable (the
+/// freshness gate's re-read, issue #1870 review round 4).
+pub(super) fn mode_quiet() -> ProbeMode {
+    probe_limits::probe_mode_from_env().0
+}
+
 /// The probe deadline, as `profile usage` resolves it without a flag. A bad
-/// variable falls back to the default and warns on stderr, once per cycle,
-/// as a bad parallelism variable does.
-fn timeout() -> Duration {
+/// variable falls back to the default and warns on stderr, as a bad
+/// parallelism variable does. Only [`measure_ordered`] calls this, once per
+/// cycle, so the warning is printed once per cycle; anything else in the
+/// cycle uses [`timeout_quiet`].
+pub(super) fn timeout() -> Duration {
     let (secs, warning) = probe_limits::timeout_from_env(None);
     if let Some(w) = warning {
         eprintln!("{w}");
     }
     Duration::from_secs(secs)
+}
+
+/// [`timeout`] with no warning: for the freshness gate's time limit, set
+/// after [`measure_ordered`] has already warned this cycle.
+pub(super) fn timeout_quiet() -> Duration {
+    Duration::from_secs(probe_limits::timeout_from_env(None).0)
 }
 
 /// The live probe and each candidate's by `claude` only, in the order of
@@ -161,6 +178,9 @@ pub(super) fn measure_with(
 // Issue #1844: reading in order, with reads that may outlast the cycle
 // ---------------------------------------------------------------------------
 
+/// The reads a watching rotator keeps across cycles (issue #1844).
+pub type Reads = super::inflight::InFlight<Key, crate::commands::profile::usage_cmd::Probe>;
+
 /// Which login a read is for. The live login is its own key, so a read
 /// started while a profile was live is never used once it is not.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -171,13 +191,16 @@ pub enum Key {
     Unowned,
     /// A candidate in its own directory.
     Candidate(ProfileName),
+    /// A structurally eligible login whose identity is not yet readable.
+    /// Its usage read may refresh expired credentials, but cannot select it.
+    UnboundCandidate(ProfileName),
 }
 
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Live(_) | Self::Unowned => f.write_str("~/.claude"),
-            Self::Candidate(n) => f.write_str(n.as_str()),
+            Self::Candidate(n) | Self::UnboundCandidate(n) => f.write_str(n.as_str()),
         }
     }
 }
@@ -223,6 +246,9 @@ where
         .filter(|k| !got.contains_key(*k) && !fl.busy(k))
         .map(|k| (k.clone(), make(k)))
         .collect();
+    // Issue #1870: a result for a key not started now was started by an
+    // earlier cycle, so it is `carried` and has no reading time.
+    let started: Vec<K> = jobs.iter().map(|(k, _)| k.clone()).collect();
     let bound = fl.bound();
     fl.start_all(jobs, bound);
     let more = match wait {
@@ -236,7 +262,11 @@ where
     keys.iter()
         .map(|k| {
             let probed = match got.remove(k) {
-                Some(p) => reading(&k.to_string(), &p),
+                Some(p) => {
+                    let mut probed = reading(&k.to_string(), &p);
+                    probed.carried = !started.contains(k);
+                    probed
+                }
                 None if fl.busy(k) => {
                     let mut p = Probed::failed();
                     p.still_running = true;
@@ -257,12 +287,13 @@ pub fn measure_ordered(
     ctx: &Ctx,
     live: Live<'_>,
     candidates: &[ProfileName],
+    unbound: &[ProfileName],
     now: i64,
 ) -> (Probed, Vec<(ProfileName, Probed)>) {
     let start = Instant::now();
-    let mode = mode();
+    let mode = ctx.read_only_mode().unwrap_or_else(mode);
     let timeout = timeout();
-    let n = candidates.len() + usize::from(live.probed());
+    let n = candidates.len() + unbound.len() + usize::from(live.probed());
     let (claude_bound, warning) = probe_limits::parallel_from_host(n);
     if let Some(w) = warning {
         eprintln!("{w}");
@@ -278,17 +309,12 @@ pub fn measure_ordered(
         ProbeMode::Auto | ProbeMode::Text => claude_bound,
         ProbeMode::Ordered | ProbeMode::Direct => direct_bound,
     };
-    let reader = Arc::new(RowReader {
-        store: ctx.store.clone(),
-        env: SourceEnv::from_env(mode, timeout),
-        binary: LazyBinary::claude(),
-        gate: ClaudeGate::new(claude_bound),
-        home: Some(ctx.home.clone()),
-        no_refresh: usage_cmd::no_refresh_dirs(&ctx.store),
-        overflow: crate::commands::profile::overflow::overflow_names(ctx.store.root()),
+    let reader = Arc::new(reader(
+        ctx,
+        SourceEnv::from_env(mode, timeout),
+        claude_bound,
         now,
-        keep_raw: false,
-    });
+    ));
     let mut keys = Vec::with_capacity(n);
     match live {
         Live::Profile(name) => keys.push(Key::Live(name.clone())),
@@ -296,18 +322,21 @@ pub fn measure_ordered(
         Live::Platform => {}
     }
     keys.extend(candidates.iter().cloned().map(Key::Candidate));
+    keys.extend(unbound.iter().cloned().map(Key::UnboundCandidate));
     let make = |k: &Key| -> Job<Probe> {
         let reader = Arc::clone(&reader);
         let k = k.clone();
         Box::new(move || match &k {
             Key::Live(name) => reader.profile(name, true),
             Key::Unowned => reader.home(),
-            Key::Candidate(name) => reader.profile(name, false),
+            Key::Candidate(name) | Key::UnboundCandidate(name) => reader.profile(name, false),
         })
     };
     let mut read = match &ctx.in_flight {
         Some(fl) => {
             let mut fl = fl.lock().unwrap_or_else(PoisonError::into_inner);
+            // Join outstanding refresh reads without trusting their results.
+            join_pending(&fl, &mut keys);
             fl.set_bound(bound);
             let until = cycle_deadline(start, Duration::from_secs(ctx.settings.interval));
             gather(&mut fl, &keys, make, Wait::Until(until))
@@ -326,7 +355,45 @@ pub fn measure_ordered(
     let others = candidates
         .iter()
         .cloned()
-        .zip(read.into_iter().map(|(_, p)| p))
+        .zip(read.into_iter().map(|(key, p)| {
+            if matches!(key, Key::Candidate(_)) {
+                p
+            } else {
+                Probed::failed()
+            }
+        }))
         .collect();
     (live, others)
+}
+
+/// A trust change does not permit two reads of one stored login at once.
+/// Results retain the key (and trust class) they had when started.
+pub(super) fn join_pending(fl: &Reads, keys: &mut [Key]) {
+    for key in keys {
+        let other = match key {
+            Key::Candidate(name) => Key::UnboundCandidate(name.clone()),
+            Key::UnboundCandidate(name) => Key::Candidate(name.clone()),
+            _ => continue,
+        };
+        if fl.busy(&other) {
+            *key = other;
+        }
+    }
+}
+
+/// The row reader of one cycle, with `env` and at most `claude_bound`
+/// `claude` reads at once. Shared by [`measure_ordered`] and the freshness
+/// gate's re-read (`fresh::reread_as_configured`); [`Ctx`] makes it read-only.
+pub(super) fn reader(ctx: &Ctx, env: SourceEnv, claude_bound: usize, now: i64) -> RowReader {
+    RowReader {
+        store: ctx.store.clone(),
+        env: ctx.read_env(env),
+        binary: LazyBinary::claude(),
+        gate: ClaudeGate::new(claude_bound),
+        home: Some(ctx.home.clone()),
+        no_refresh: ctx.no_refresh_dirs(),
+        overflow: crate::commands::profile::overflow::overflow_names(ctx.store.root()),
+        now,
+        keep_raw: false,
+    }
 }

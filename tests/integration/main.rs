@@ -17,12 +17,19 @@
 
 #[path = "amplihack_path.rs"]
 mod amplihack_path;
+#[path = "../../crates/amplihack-cli/tests/support/exec_stub.rs"]
+#[allow(dead_code)]
+mod exec_stub;
 #[path = "investigation_workflow_decomposition_test.rs"]
 mod investigation_workflow_decomposition;
 #[path = "../support/isolated_amplihack.rs"]
 mod isolated_amplihack;
 #[path = "isolated_amplihack_scan.rs"]
 mod isolated_amplihack_scan;
+
+// Issue #1973: condition waits with one ceiling, shared with cli_integration.
+#[path = "../../crates/amplihack-cli/tests/support/wait.rs"]
+mod wait;
 
 #[path = "smart_orchestrator_decomposition_test.rs"]
 mod smart_orchestrator_decomposition;
@@ -65,6 +72,11 @@ mod test_harness_binary_path_contract;
 // resolve for it, so it can locate the binary robustly.
 #[path = "skip_update_check_flag_test.rs"]
 mod skip_update_check_flag;
+
+// Issue #1971: pins the AMPLIHACK_SKIP_AUTO_INSTALL bypass and --skip-update-check
+// by recording stub git/npm/curl, with no timing assertion.
+#[path = "issue_1971_skip_guard_test.rs"]
+mod issue_1971_skip_guard;
 
 // WS3: Recipe runner E2E integration tests
 // These tests verify the full recipe delegation chain:
@@ -125,6 +137,10 @@ mod workflow_publish_pr_metadata;
 
 #[path = "workflow_publish_resilience.rs"]
 mod workflow_publish_resilience;
+
+// Issue #1976: step-16 publishes a local tracking reference as no linked issue.
+#[path = "issue_1976_publish_local_issue.rs"]
+mod issue_1976_publish_local_issue;
 
 #[path = "issue_978_step15_rebase_base_test.rs"]
 mod issue_978_step15_rebase_base;
@@ -364,6 +380,11 @@ mod issue_684_host_aware_workflow;
 #[path = "issue_1595_tracking_issue_selection_test.rs"]
 mod issue_1595_tracking_issue_selection;
 
+// Issue #1881: step-03 uses local tracking unless create_issue=true, reuses an
+// open issue with exactly the same title, and bounds creation retries.
+#[path = "issue_1881_local_default_tracking_test.rs"]
+mod issue_1881_local_default_tracking;
+
 // Issues #815/#804: default-workflow local tracking issue-number extraction.
 // step-03b must accept hash-based `local-<hash>` references (propagate them),
 // never surface a bare number for a local fallback, and never abort the workflow.
@@ -494,3 +515,11 @@ mod issue_1764_git_never_prompts;
 // `cargo test --workspace` covers the shell change as well as CI's lint job.
 #[path = "issue_1771_precommit_symlinked_caches_test.rs"]
 mod issue_1771_precommit_symlinked_caches;
+
+// Issue #1966: is_critical_code is a required caller input. consensus-workflow
+// step 0 and consensus-tdd-impl reject a missing or malformed value before any
+// route, and the route gate fails unless exactly one route completed. Static
+// checks, helper unit tests in bash, and the real recipes through
+// recipe-runner-rs with agent steps stubbed, all under isolated(..).
+#[path = "issue_1966_consensus_criticality.rs"]
+mod issue_1966_consensus_criticality;

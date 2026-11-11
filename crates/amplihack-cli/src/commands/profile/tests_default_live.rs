@@ -489,140 +489,68 @@ fn a_prototype_iso_since_is_compared_as_a_time() {
     assert_eq!(e.live(), (Some("b".into()), None), "rotate is later");
 }
 
+/// Issue #1886: running sessions rewrite `~/.claude.json` from memory, so
+/// after a swap it can still name the previous account. The rotate ledger
+/// is taken at its word; `.claude.json` no longer overrides it.
 #[test]
-fn a_rotate_ledger_for_another_account_is_ignored_after_a_hand_change() {
+fn a_rotate_ledger_is_taken_at_its_word_whatever_claude_json_names() {
     let e = env();
     e.claude_json("a", &account("u1", "me@example.com"));
     e.rotate_ledger(r#"{"version":1,"live":"b","account":"u-other","since":10}"#);
-    assert_eq!(
-        e.live(),
-        (Some("a".into()), None),
-        "the account match decides"
-    );
+    assert_eq!(e.live(), (Some("b".into()), None), "the ledger decides");
 }
 
 // ---------------------------------------------------------------------------
-// Issue #1693: `profile usage` reports the account actually in `~/.claude`
-// while the rotate ledger names a profile whose account is not there.
-//
-// Contract: `default_live::detect_for_usage(&ProfileStore, Option<&Path>) ->
-// UsageLive`, with `UsageLive::Profile(ProfileName)` (exactly one profile
-// holds the account, with or without its own login), `UsageLive::Home` (no
-// profile holds it) and a fallback to `detect` otherwise. `detect` and
-// `live_name` are unchanged.
+// `still_live` (`profile usage`): the same detection repeated after the
+// probes. Issue #1886: by the ledgers only, with no holder evidence from
+// `.claude.json`.
 // ---------------------------------------------------------------------------
 
 mod usage_live {
-    use super::super::default_live::{UsageLive, detect_for_usage, live_name};
+    use super::super::default_live::{detect, live_name};
     use super::*;
 
-    /// The rotate ledger names `a`, whose account is not the one in
-    /// `~/.claude.json` (u1).
-    fn hand_changed() -> Env {
+    fn detected(e: &Env) -> super::super::default_live::Live {
+        detect(&e.store, Some(&e.home)).0.expect("a live profile")
+    }
+
+    #[test]
+    fn the_ledgers_profile_is_still_live_until_the_ledger_changes() {
         let e = env();
-        e.claude_json("a", &account("u-a", "a@example.com"));
+        e.rotate_ledger(r#"{"version":1,"live":"a","since":10}"#);
+        let live = detected(&e);
+        assert_eq!(live.name.as_str(), "a");
+        assert!(still_live(&e.store, Some(&e.home), &live));
+        e.rotate_ledger(r#"{"version":1,"live":"b","since":20}"#);
+        assert!(!still_live(&e.store, Some(&e.home), &live));
+    }
+
+    #[test]
+    fn claude_json_naming_another_account_is_not_a_swap() {
+        let e = env();
+        e.claude_json("b", &account("u1", "me@example.com"));
         e.rotate_ledger(r#"{"version":1,"live":"a","account":"u-a","since":10}"#);
-        e
-    }
-
-    fn usage(e: &Env) -> UsageLive {
-        detect_for_usage(&e.store, Some(&e.home))
-    }
-
-    #[test]
-    fn the_one_holder_is_live_even_with_its_own_login() {
-        let e = hand_changed();
-        e.claude_json("b", &account("u1", "me@example.com"));
-        private(&e.store.root().join("b/.credentials.json"), "{}");
-        assert!(matches!(usage(&e), UsageLive::Profile(n) if n.as_str() == "b"));
-        // The `profile login` refusal and the duplicate warning still go by
-        // the ledger: in this state nobody is live for them.
-        assert_eq!(live_name(&e.store, Some(&e.home)), None);
+        let live = detected(&e);
+        assert_eq!(live.name.as_str(), "a");
+        assert_eq!(live_name(&e.store, Some(&e.home)), Some(live.name.clone()));
+        assert!(still_live(&e.store, Some(&e.home), &live));
     }
 
     #[test]
-    fn the_one_holder_without_a_login_is_live() {
-        let e = hand_changed();
-        e.claude_json("b", &account("u1", "me@example.com"));
-        assert!(matches!(usage(&e), UsageLive::Profile(n) if n.as_str() == "b"));
-    }
-
-    #[test]
-    fn no_holder_gives_the_home_row() {
-        let e = hand_changed();
-        assert!(matches!(usage(&e), UsageLive::Home));
-    }
-
-    #[test]
-    fn several_holders_mark_nothing_new() {
-        let e = hand_changed();
-        e.store.add(&ProfileName::parse("c").unwrap()).unwrap();
-        e.claude_json("b", &account("u1", "me@example.com"));
-        e.claude_json("c", &account("u1", "me@example.com"));
-        assert!(!matches!(
-            usage(&e),
-            UsageLive::Profile(_) | UsageLive::Home
-        ));
-    }
-
-    #[test]
-    fn a_matching_or_missing_rotate_ledger_falls_back_to_detect() {
+    fn no_home_is_never_still_live() {
         let e = env();
-        e.claude_json("b", &account("u1", "me@example.com"));
-        assert!(!matches!(usage(&e), UsageLive::Home), "no rotate ledger");
-        e.rotate_ledger(&rotate_ledger("b", Some(10)));
-        assert!(!matches!(usage(&e), UsageLive::Home), "the ledger matches");
-        assert!(!matches!(
-            detect_for_usage(&e.store, None),
-            UsageLive::Profile(_) | UsageLive::Home
-        ));
-    }
-
-    fn holder(e: &Env) -> super::super::default_live::Live {
-        match usage(e) {
-            UsageLive::Profile(name) => super::super::default_live::Live::holder(name),
-            other => panic!("not a holder: {other:?}"),
-        }
-    }
-
-    /// `usage` starts with `b` as the holder; a rotate cycle then recovers
-    /// and records `b` as live. Same profile, new evidence: not a swap.
-    #[test]
-    fn the_holder_recorded_as_live_meanwhile_is_still_live() {
-        let e = hand_changed();
-        e.claude_json("b", &account("u1", "me@example.com"));
-        let live = holder(&e);
-        assert!(still_live(&e.store, Some(&e.home), &live));
-        e.rotate_ledger(r#"{"version":1,"live":"b","account":"u1","since":20}"#);
-        assert!(!matches!(usage(&e), UsageLive::Profile(_)));
-        assert!(still_live(&e.store, Some(&e.home), &live));
+        e.rotate_ledger(r#"{"version":1,"live":"a","since":10}"#);
+        let live = detected(&e);
+        assert!(!still_live(&e.store, None, &live));
     }
 
     #[test]
-    fn the_holder_against_another_recorded_profile_is_a_swap() {
-        let e = hand_changed();
-        e.claude_json("b", &account("u1", "me@example.com"));
-        let live = holder(&e);
-        e.rotate_ledger(r#"{"version":1,"live":"a","account":"u1","since":20}"#);
-        assert!(!still_live(&e.store, Some(&e.home), &live));
-    }
-
-    #[test]
-    fn the_holder_gone_is_a_swap() {
-        let e = hand_changed();
-        e.claude_json("b", &account("u1", "me@example.com"));
-        let live = holder(&e);
-        e.claude_json("b", &account("u-b", "b@example.com"));
-        assert!(matches!(usage(&e), UsageLive::Home));
-        assert!(!still_live(&e.store, Some(&e.home), &live));
-    }
-
-    #[test]
-    fn detecting_for_usage_writes_nothing() {
-        let e = hand_changed();
+    fn detecting_writes_nothing() {
+        let e = env();
+        e.rotate_ledger(r#"{"version":1,"live":"a","account":"u-a","since":10}"#);
         let p = e.store.root().join(".auto-switch.d/rotate/ledger.json");
         let before = fs::read(&p).unwrap();
-        let _ = usage(&e);
+        let _ = detect(&e.store, Some(&e.home));
         assert_eq!(fs::read(&p).unwrap(), before);
         assert_eq!(fs::read_dir(p.parent().unwrap()).unwrap().count(), 1);
     }
@@ -702,9 +630,9 @@ fn ledger_live_skips_a_ledger_that_names_nobody_or_is_damaged() {
 
 #[test]
 fn ledger_live_never_compares_accounts_or_matches_them() {
-    // `detect` matches profile a by account and refuses a rotate ledger
-    // whose account differs from `~/.claude.json`; the status line does
-    // neither, because it reads no `.claude.json` at all.
+    // Without a ledger `detect` matches profile a by account; the status
+    // line does not, because it reads no `.claude.json` at all. With a
+    // rotate ledger both take it at its word (issue #1886).
     let e = env();
     e.claude_json("a", &account("u1", "me@example.com"));
     assert_eq!(
@@ -715,6 +643,7 @@ fn ledger_live_never_compares_accounts_or_matches_them() {
     assert_eq!(e.ledger_live(), None, "the status line does not");
     e.rotate_ledger(r#"{"version":1,"live":"b","account":"someone-else","since":10}"#);
     assert_eq!(e.ledger_live_name(), Some("b".into()));
+    assert_eq!(e.live(), (Some("b".into()), None));
 }
 
 #[test]

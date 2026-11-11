@@ -106,6 +106,14 @@ fn all_plan_logins_out(f: &Fixture) {
     f.usage_resetting("extra", 100, 100, 3);
 }
 
+/// Issue #1962: a dry run reads the usage endpoint only, so its decision needs the
+/// same figures there.
+fn all_plan_logins_out_direct(f: &Fixture) {
+    f.usage_direct("work", 100, 40);
+    f.usage_direct("spare", 100, 100);
+    f.usage_direct("extra", 100, 100);
+}
+
 // --- list, kind, show ------------------------------------------------------------
 
 #[test]
@@ -477,6 +485,7 @@ fn a_dry_run_onto_the_api_key_moves_nothing_and_probes_nothing() {
     add_console(&f);
     mark_console(&f);
     all_plan_logins_out(&f);
+    all_plan_logins_out_direct(&f);
     let s = stdout(&f.ok(&["profile", "rotate", "--dry-run"]));
     assert!(s.contains("console"), "{s}");
     assert!(s.contains("overflow-in"), "{s}");

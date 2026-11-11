@@ -5484,24 +5484,20 @@ reads again or reconsiders.
 The liveness scan behind `live`, `session running` and the target's
 eligibility reads the system process table, `/proc`. In the test suite, a
 fixture can supply a synthetic process table instead, so that sessions
-running elsewhere on the host do not change a test's result. The table is
-the one named by `AMPLIHACK_TEST_PROC_ROOT`, selected through
+running elsewhere on the host do not change a test's result (#1860). The
+table is the one named by `AMPLIHACK_TEST_PROC_ROOT`, selected through
 `procfs::proc_root()`. The override is honored only when
 `AMPLIHACK_TEST_HOME_GUARD` is non-empty and the canonical path is a
 directory strictly inside the canonical temporary directory, owned by the
 current user and not writable by group or others. Otherwise the scan uses
 `/proc`. The shared rotate fixture
 (`tests/support/profile_rotate.rs`) gives every fixture an empty synthetic
-table by default, so every suite built on it is covered. A test that starts
-a real process as a session stand-in opts out with `host_sessions()` and
-reads the host's table; at present that is one test in
-`issue_1691_switch_live.rs`. The table covers the session liveness scan
-only: the checks for a running rotator and the rotation owner read `/proc`
-directly. The rotation-owner tests
-(#1803) already set it to a synthetic cgroup table, so a liveness scan in
-those tests reads that table too. It has no `self/environ`, which makes the
-scan unsupported and counts every profile as live; those tests run with
-automatic switching paused, so their results do not depend on it.
+table by default. Tests add sessions with `FakeProc` and select their tree
+with `with_proc()` (#2042), including the session-running case in
+`issue_1691_switch_live.rs`; they do not read the host's sessions. The
+rotation-owner tests (#1803) use synthetic process tables too. Checks that
+precede signalling a rotator still read the real `/proc`, so a synthetic
+table cannot select a host process to signal.
 
 Revalidation and swap completion use trusted identity; later session
 rewrites cannot restore the previous account in the ledger. These checks

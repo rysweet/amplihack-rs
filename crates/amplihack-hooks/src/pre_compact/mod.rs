@@ -4,6 +4,10 @@
 //! 1. Exports the current conversation to a JSONL transcript file
 //! 2. Extracts the original request for context preservation
 //! 3. Saves compaction metadata
+//!
+//! Everything is written under `<state root>/runtime/sessions/<key>/logs/`
+//! (#1963), never the working directory. With no state root the hook writes
+//! nothing and still reports success.
 
 mod export;
 mod request;
@@ -11,8 +15,12 @@ mod request;
 mod tests;
 
 use crate::protocol::{FailurePolicy, Hook};
-use amplihack_types::{HookInput, ProjectDirs};
+use amplihack_types::HookInput;
 use serde_json::Value;
+
+/// Reported when no amplihack state root resolves (R5).
+const NO_STATE_ROOT_MESSAGE: &str =
+    "Pre-compact state not saved: no amplihack state root (set HOME or AMPLIHACK_HOME)";
 
 pub struct PreCompactHook;
 
@@ -40,10 +48,21 @@ impl Hook for PreCompactHook {
         };
 
         let session_id = session_id.unwrap_or_else(export::generate_session_id);
-        let dirs = ProjectDirs::from_cwd();
+        let Some(session_dir) = amplihack_types::session_state_dir(Some(&session_id)) else {
+            tracing::warn!("{}", NO_STATE_ROOT_MESSAGE);
+            return Ok(serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "PreCompact",
+                    "status": "success",
+                    "message": NO_STATE_ROOT_MESSAGE,
+                    "transcript_path": Value::Null,
+                    "metadata": Value::Null,
+                }
+            }));
+        };
 
         let exported_path = match transcript_path.as_deref() {
-            Some(path) => match export::export_transcript(path, &session_id) {
+            Some(path) => match export::export_transcript(&session_dir, path) {
                 Ok(path) => path,
                 Err(error) => {
                     return Ok(export::error_response(
@@ -55,24 +74,15 @@ impl Hook for PreCompactHook {
             None => None,
         };
 
-        let original_request_preserved = match request::preserve_original_request(
-            &dirs,
+        let original_request_preserved = request::preserve_original_request(
+            &session_dir,
             &session_id,
             transcript_path.as_deref(),
             &extra,
-        ) {
-            Ok(preserved) => preserved,
-            Err(error) => {
-                tracing::warn!(
-                    session_id,
-                    error = %error,
-                    "failed to preserve original request during pre-compact"
-                );
-                false
-            }
-        };
+        );
 
         let metadata = match export::save_compaction_metadata(
+            &session_dir,
             &session_id,
             exported_path.as_deref(),
             &extra,

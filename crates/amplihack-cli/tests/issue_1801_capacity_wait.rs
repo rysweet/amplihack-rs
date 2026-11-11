@@ -19,17 +19,17 @@
 #![cfg(unix)]
 
 use crate::issue_1618_fixture::{
-    Fixture, LIMIT_TEXT, SPEND_TEXT, SPEND_WEEKLY_TEXT, TEST_NOW, WEEKLY_TEXT, claude_stdout,
-    describe, events, private_file, text, wait_lines,
+    Fixture, LIMIT_TEXT, SPEND_TEXT, SPEND_WEEKLY_TEXT, TEST_NOW, WAIT_PREFIX, WEEKLY_TEXT,
+    claude_stdout, describe, events, private_file, text, wait_lines,
 };
 use crate::issue_1618_wait_profiles::{switch_on, with_profiles};
 use crate::support::profile_default::set_default;
+use crate::support::wait::{CEILING, wait_until};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
 const MAX_WAIT_ENV: &str = "AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS";
@@ -128,36 +128,53 @@ fn nested_x(f: &Fixture) -> Command {
     c
 }
 
-/// Runs on the real clock, sped up: a 30 s poll takes 30 ms, and the longest
-/// wait here, the default six hours, 21.6 s.
+/// Runs on the real clock, sped up: a 30 s poll takes 3 s, and the
+/// longest wait here, the default six hours, 36 minutes. Issue #1973: a
+/// faster clock could end a wait at its maximum before a loaded host ran
+/// the test's change; every wait here ends on that change instead. The
+/// scale does not bound a failing run: if the change never ends the wait,
+/// `run_watching` kills the step at the shared 10-minute ceiling and the
+/// test fails there.
 fn real_clock(c: &mut Command) {
     c.env_remove("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW")
-        .env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "1000");
+        .env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "10");
 }
 
-/// Runs `then` once the stub has been called `calls` times and the second
-/// has turned over, so what it stamps is after the wait's start.
-fn during_wait(f: &Fixture, calls: u32, then: impl FnOnce() + Send + 'static) -> JoinHandle<()> {
-    let count = f.records.join("count.0");
-    std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while Instant::now() < deadline {
-            let seen = fs::read_to_string(&count)
-                .ok()
-                .and_then(|s| s.trim().parse::<u32>().ok());
-            if seen == Some(calls) {
-                std::thread::sleep(Duration::from_millis(1200));
-                then();
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
+/// Runs the step `c` and, once its usage-limit wait has started, runs
+/// `then` on another thread, in a later second than the wait's `start`
+/// line, so what it stamps is after the wait's start. Waits on the line,
+/// not on a delay (issue #1973). A wait that never starts fails the test;
+/// the writer's panic is propagated.
+fn run_during_wait(f: &Fixture, c: &mut Command, then: impl FnOnce() + Send + 'static) -> Output {
+    use std::sync::mpsc;
+    let (started_tx, started_rx) = mpsc::channel::<i64>();
+    let writer = std::thread::spawn(move || {
+        let start = started_rx
+            .recv_timeout(CEILING)
+            .unwrap_or_else(|e| panic!("the wait never started within {CEILING:?}: {e}"));
+        wait_until("the second after the wait's start", || real_now() > start);
+        then();
+    });
+    let start_line = format!("{WAIT_PREFIX}start reason=usage_limit");
+    let mut started_tx = Some(started_tx);
+    let out = f.run_watching(c, |line| {
+        if line.starts_with(&start_line)
+            && let Some(tx) = started_tx.take()
+        {
+            tx.send(real_now()).expect("the writer is waiting");
         }
-    })
+    });
+    // Without a start line the writer fails on its own ceiling.
+    drop(started_tx);
+    if let Err(panic) = writer.join() {
+        std::panic::resume_unwind(panic);
+    }
+    out
 }
 
-fn rotator_cycle_during_wait(f: &Fixture) -> JoinHandle<()> {
+fn run_with_rotator_cycle_during_wait(f: &Fixture, c: &mut Command) -> Output {
     let profiles = f.profiles.clone();
-    during_wait(f, 1, move || {
+    run_during_wait(f, c, move || {
         write_cycle(&profiles, "Y", real_now());
     })
 }
@@ -192,9 +209,7 @@ fn ac1_a_home_step_waits_on_a_weekly_limit_and_the_rotator_ends_the_wait() {
     let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     real_clock(&mut c);
-    let writer = rotator_cycle_during_wait(&f);
-    let out = f.run(&mut c);
-    writer.join().unwrap();
+    let out = run_with_rotator_cycle_during_wait(&f, &mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 2, "one retry");
     let ev = events(&out);
@@ -240,7 +255,12 @@ fn ac13_an_inherited_profile_step_retries_on_the_login_with_capacity() {
     c.env("LIMIT_CALLS", "2");
     real_clock(&mut c);
     let usage = f.profiles.join(".auto-switch.d").join("usage.json");
-    let writer = during_wait(&f, 2, move || {
+    let count = f.records.join("count.0");
+    let out = run_during_wait(&f, &mut c, move || {
+        // The reading must change during the wait that follows Y's limit
+        // hit (call 2), not during one after X's. Checked after the write,
+        // so a wrong order fails here rather than at the ceiling.
+        let calls = fs::read_to_string(&count).unwrap_or_default();
         let now = real_now();
         let reading = |pct: f64, source: &str| {
             serde_json::json!({
@@ -255,9 +275,12 @@ fn ac13_an_inherited_profile_step_retries_on_the_login_with_capacity() {
             "accounts": {"X": reading(100.0, "statusline"), "Y": reading(10.0, "statusline")},
         });
         replace(&usage, &body.to_string());
+        assert_eq!(
+            calls.trim(),
+            "2",
+            "the wait started after call {calls:?}; expected X, then Y, then the retry"
+        );
     });
-    let out = f.run(&mut c);
-    writer.join().unwrap();
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 3, "{}", describe(&out));
     assert_eq!(f.call("0", 1)["PROFILE"], "X");
@@ -483,9 +506,7 @@ fn ac15_a_retry_that_hits_the_limit_again_gets_no_second_wait() {
     let mut c = home_step(&f);
     c.env("LIMIT_CALLS", "5");
     real_clock(&mut c);
-    let writer = rotator_cycle_during_wait(&f);
-    let out = f.run(&mut c);
-    writer.join().unwrap();
+    let out = run_with_rotator_cycle_during_wait(&f, &mut c);
     assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
     assert_eq!(f.count("0"), 2, "one wait, one retry, then give up");
     let ev = events(&out);

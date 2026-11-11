@@ -3,13 +3,7 @@
 use amplihack_utils::rotator_status::LIMIT_RESUME_TIMEOUT_SECS;
 use serde::{Deserialize, Serialize};
 
-/// Upstream archive URL — only used as a network fallback when the
-/// bundled framework root cannot be resolved locally (issue #254).
-/// Points to amplihack-rs (current canonical repo) per #249.
-pub(super) const REPO_ARCHIVE_URL: &str =
-    "https://github.com/rysweet/amplihack-rs/archive/refs/heads/main.tar.gz";
-/// Upstream git URL — only used as a network fallback (issue #254).
-/// Points to amplihack-rs (current canonical repo) per #249.
+/// The repository a release tag is fetched from (issues #254, #249, #1955).
 pub(super) const REPO_GIT_URL: &str = "https://github.com/rysweet/amplihack-rs";
 /// Identifies which framework-asset source layout was found in the
 /// caller-supplied repository root.
@@ -91,7 +85,7 @@ pub(super) fn dir_mapping(layout: SourceLayout) -> &'static [(&'static str, &'st
 }
 
 /// Destination-relative essential dirs that the layout actually stages.
-/// Used by `missing_framework_paths` and the network-fallback hard-error
+/// Used by `missing_framework_paths` and the release-tag install's hard-error
 /// check to verify the staged tree contains every dir the install path
 /// promised to copy.
 pub(super) fn essential_destinations(layout: SourceLayout) -> &'static [&'static str] {
@@ -150,8 +144,13 @@ pub(super) fn essential_destinations(layout: SourceLayout) -> &'static [&'static
 /// The fragment is now `include_str!`d into the binary
 /// (`launch::system_prompt_append::FRAGMENT`), so the feature reaches every
 /// install with no restage at all and this list keeps its pre-existing
-/// contents. Before adding an entry here, check that the file being added is
-/// not also *read* as an instruction to the agent.
+/// contents. Since issue #2030 the launch writes those compiled-in bytes to
+/// `<amplihack home>/private/system-prompt-append.md` (0600) and passes the
+/// path with `--append-system-prompt-file`, so the text never reaches argv.
+/// That file is generated at launch from the binary, never read back as a
+/// source of content, and deliberately not listed here or in the bundle
+/// staging tree. Before adding an entry here, check that the file being added
+/// is not also *read* as an instruction to the agent.
 pub(super) fn essential_files(layout: SourceLayout) -> &'static [&'static str] {
     match layout {
         SourceLayout::Bundle => &["tools/statusline.sh"],

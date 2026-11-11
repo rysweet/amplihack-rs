@@ -131,8 +131,17 @@ pub struct Probed {
     /// for it. Read only by the log (`log::Shown`); always with `unknown`.
     pub still_running: bool,
     /// Issue #1797: when a passive reading was taken, if before the read
-    /// (`UsageReport::observed_at`); `None` for every other probe.
+    /// (`UsageReport::observed_at`), or when the #1870 re-read
+    /// finished (`fresh::fresh_probe`); `None` for every other probe.
     pub observed_at: Option<i64>,
+    /// Issue #1870: the result of a read started in an earlier cycle, so it
+    /// has no reading time (`fresh::read_at`).
+    pub carried: bool,
+    /// Issue #1970: the figure Claude's status line stored (a passive
+    /// reading, `usage_passive`), not one read by this cycle. Set from the
+    /// source in [`Probed::from_report`]; `observed_at` cannot stand in for
+    /// it, because a #1870 re-read is a direct read that also carries one.
+    pub passive: bool,
 }
 
 impl Probed {
@@ -146,6 +155,9 @@ impl Probed {
             unknown: matches!(r.state, UsageState::Timeout | UsageState::Error),
             still_running: false,
             observed_at: r.observed_at,
+            carried: false,
+            // `UsageReport::observed_at` is set only by the passive reader.
+            passive: r.observed_at.is_some(),
         }
     }
 
@@ -164,6 +176,8 @@ impl Probed {
             unknown: false,
             still_running: false,
             observed_at: None,
+            carried: false,
+            passive: false,
         }
     }
 
@@ -176,6 +190,8 @@ impl Probed {
             unknown: true,
             still_running: false,
             observed_at: None,
+            carried: false,
+            passive: false,
         }
     }
 }

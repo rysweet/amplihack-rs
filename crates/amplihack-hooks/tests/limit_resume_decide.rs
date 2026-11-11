@@ -1,39 +1,51 @@
-//! Issue #1658 (C): decision logic of `amplihack-hooks limit-resume`, the
-//! `StopFailure` hook that wakes a session stopped by a usage limit once the
-//! rotator has recorded a fresh cycle with capacity.
+//! Issues #1658 and #2085: decision logic of `amplihack-hooks limit-resume`,
+//! the `StopFailure` hook that resumes a session stopped by a usage limit
+//! once the rotator has swapped to a login with room.
 //!
-//! Everything here runs against an in-memory guard and a fake clock: no real
-//! waiting, no files. Filesystem behaviour is in `limit_resume_fs.rs`.
+//! Since #2085 the hook does not poll. It snapshots `swap.json`, arms its
+//! watches, checks the record once, then blocks in `Deps::wait_event` until
+//! the rotator writes a new swap record, the user prompts, the session
+//! exits, a watch is lost or the lifetime cap (`MAX_WAIT`) passes. Here the
+//! events are scripted: no real waiting, no files, no clock windows.
+//! Filesystem behaviour is in `limit_resume_fs.rs`.
 //!
-//! Required tests from the issue:
-//! (a) limit + auto-switch on + fresh swapped/stayed cycle → resume once
-//! (b) no capacity / stale cycle / alert → no resume
+//! Resume paths (D7): with a verified tmux pane the hook commits, sends
+//! Escape, C-u, `continue` (literal) and Enter, and exits 0
+//! (`resumed-keys`); without one it commits and exits 2 with `RESUME_MSG`
+//! (`resumed`). Never both. A key that fails after the commit is
+//! `resume-keys-failed` and stops the rest; it never falls back to exit 2.
+//!
+//! Required tests from the issues:
+//! (a) a swap record newer than the stop, with room → resume once
+//! (b) a stale, unchanged or full record → no resume
 //! (c) repeated distinct limit events → bounded by the per-session cap
 //! (d) non-limit error → no action
-//! (e) auto-switch off → exit 0, no output, ledger never read
+//! (e) auto-switch off → exit 0, no output, nothing read
 //! loop: 50 invocations on one event → at most 1 resume
 //! moved-on: the user sent a prompt while waiting → no resume
 //! one wake per session: concurrent waiters with distinct events → 1 resume
 
 use amplihack_hooks::limit_resume::decide::{
-    Facts, Gate, event_key, fresh_capacity, gate, is_limit, session_id_ok, session_key,
+    Facts, Gate, event_key, gate, is_limit, session_id_ok, session_key,
 };
 use amplihack_hooks::limit_resume::guard::{CommitError, GuardStore};
+use amplihack_hooks::limit_resume::keys::{Key, Pane, RESUME_KEYS};
 use amplihack_hooks::limit_resume::log::LogEntry;
 use amplihack_hooks::limit_resume::{
-    Deps, MAX_RESUMES_PER_SESSION, Outcome, RESUME_MSG, run_with, run_with_io,
+    Deps, Event, MAX_RESUMES_PER_SESSION, Outcome, RESUME_MSG, run_with, run_with_io, send_resume,
 };
 use amplihack_types::HookInput;
-use amplihack_utils::rotator_status::{
-    CycleStatus, FRESH_MARGIN_SECS, MAX_WAIT, POLL_INTERVAL, SLOW_POLL_AFTER, SLOW_POLL_INTERVAL,
-    parse_cycle,
-};
+use amplihack_utils::rotator_status::swap_record::{SwapReading, SwapRecord};
+use amplihack_utils::rotator_status::{CycleStatus, MAX_WAIT};
 use serde_json::json;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
-use std::time::Duration;
 
 const START: i64 = 1_792_592_000;
+const DEADLINE: i64 = START + MAX_WAIT.as_secs() as i64;
+/// Seconds the fake clock moves for each scripted event.
+const STEP: i64 = 60;
+const TMUX: &str = "/tmp/tmux-1000/default,4242,0";
 
 // ── Test doubles ────────────────────────────────────────────────────────────
 
@@ -42,18 +54,17 @@ const START: i64 = 1_792_592_000;
 struct MemGuard {
     events: HashSet<String>,
     sessions: HashMap<String, Vec<i64>>,
-    /// Last prompt per session, given seconds since START.
+    /// Last prompt per session, as an absolute time.
     prompted: HashMap<String, i64>,
     fail_seen: bool,
     fail_prompted: bool,
     fail_prepare: bool,
     prepared: u32,
-    /// From this `prompted_at` call on, report a prompt at START + 75.
-    prompt_from_call: Option<u32>,
-    prompted_calls: u32,
     fail_resumes: bool,
     force_commit: Option<CommitError>,
     calls: u32,
+    /// What happened, in order: `commit`, `key:<Key>`, `arm`, `wait`.
+    order: Vec<String>,
 }
 
 impl GuardStore for MemGuard {
@@ -75,6 +86,16 @@ impl GuardStore for MemGuard {
         }))
     }
 
+    fn last_resume(&mut self, session: &str) -> io::Result<Option<i64>> {
+        if self.fail_resumes {
+            return Err(io::Error::other("injected"));
+        }
+        Ok(self
+            .sessions
+            .get(session)
+            .and_then(|v| v.iter().copied().max()))
+    }
+
     fn prepare(&mut self, _now: i64) -> io::Result<()> {
         self.prepared += 1;
         if self.fail_prepare {
@@ -87,14 +108,7 @@ impl GuardStore for MemGuard {
         if self.fail_prompted {
             return Err(io::Error::other("injected"));
         }
-        self.prompted_calls += 1;
-        if self
-            .prompt_from_call
-            .is_some_and(|n| self.prompted_calls >= n)
-        {
-            return Ok(Some(START + 75));
-        }
-        Ok(self.prompted.get(session).map(|t| START + t))
+        Ok(self.prompted.get(session).copied())
     }
 
     fn commit(
@@ -120,76 +134,136 @@ impl GuardStore for MemGuard {
         }
         self.events.insert(event.to_string());
         v.push(now);
+        self.order.push("commit".into());
         Ok(())
     }
 }
 
-type CycleFn = Box<dyn Fn(i64) -> Option<CycleStatus>>;
+/// One scripted wake-up of `wait_event`. The clock moves `STEP` first.
+#[derive(Clone)]
+enum Act {
+    /// The rotator writes this record: `Event::Swap`.
+    Swap(SwapRecord),
+    /// `swap.json` changes nothing (a rewrite, or an overflow): `Event::Swap`.
+    Touch,
+    /// The user prompts in `session` now: `Event::Prompted`.
+    Prompt(&'static str),
+    /// Auto-switch is turned off, then the rotator writes this record.
+    OffThenSwap(SwapRecord),
+    /// The user prompts in session `s`, then the rotator writes this record
+    /// before the hook wakes: one `Event::Swap`.
+    PromptThenSwap(SwapRecord),
+    SessionGone,
+    WatchLost,
+}
 
 struct Fake {
     on: bool,
-    /// Auto-switch turns off this many seconds into the wait.
-    off_at: Option<i64>,
     clock: i64,
-    /// What the ledger shows, given seconds since START.
-    cycle: CycleFn,
+    /// What the ledger shows (for the event key's live login).
+    cycle: Option<CycleStatus>,
+    /// The current `swap.json`, as `read_swap` returns it.
+    swap: Option<SwapRecord>,
+    /// Replaces `swap` right after the first `read_swap` (the snapshot):
+    /// the rotator writing between the snapshot and the arm check.
+    swap_race: Option<SwapRecord>,
+    swap_reads: u32,
+    script: VecDeque<Act>,
     guard: MemGuard,
     reads: Vec<i64>,
-    sleeps: Vec<Duration>,
     logs: Vec<LogEntry>,
     panic_on_now: bool,
-    /// The user sends a prompt at this many seconds since START.
-    prompt_at: Option<i64>,
-    /// The Claude Code session exits at this many seconds since START.
-    gone_at: Option<i64>,
-    /// No rotator can record a cycle.
     rotator_down: bool,
+    arm_err: bool,
+    armed: bool,
+    arms: u32,
+    /// Deadlines passed to `wait_event`.
+    waits: Vec<i64>,
+    /// `$TMUX_PANE` of a verified pane, or none.
+    pane_id: Option<&'static str>,
+    pane_calls: u32,
+    /// Keys sent successfully, in order.
+    keys: Vec<Key>,
+    key_attempts: usize,
+    /// The send of this attempt (1-based) fails.
+    fail_key: Option<usize>,
+    /// The session exits once this many keys were sent.
+    gone_after_keys: Option<usize>,
 }
 
 impl Fake {
-    fn new(on: bool, cycle: CycleFn) -> Self {
+    fn new() -> Self {
         Self {
-            on,
-            off_at: None,
+            on: true,
             clock: START,
-            cycle,
+            cycle: Some(ledger("work")),
+            swap: None,
+            swap_race: None,
+            swap_reads: 0,
+            script: VecDeque::new(),
             guard: MemGuard::default(),
             reads: Vec::new(),
-            sleeps: Vec::new(),
             logs: Vec::new(),
             panic_on_now: false,
-            prompt_at: None,
-            gone_at: None,
             rotator_down: false,
+            arm_err: false,
+            armed: false,
+            arms: 0,
+            waits: Vec::new(),
+            pane_id: None,
+            pane_calls: 0,
+            keys: Vec::new(),
+            key_attempts: 0,
+            fail_key: None,
+            gone_after_keys: None,
         }
     }
 
-    fn elapsed_reads(&self) -> Vec<i64> {
-        self.reads.iter().map(|t| t - START).collect()
+    fn off() -> Self {
+        Self {
+            on: false,
+            ..Self::new()
+        }
+    }
+
+    fn with_pane() -> Self {
+        Self {
+            pane_id: Some("%5"),
+            ..Self::new()
+        }
+    }
+
+    fn then(mut self, act: Act) -> Self {
+        self.script.push_back(act);
+        self
+    }
+
+    fn outcomes(&self) -> Vec<Outcome> {
+        self.logs.iter().map(|l| l.outcome).collect()
+    }
+
+    fn last_log(&self) -> &LogEntry {
+        self.logs.last().expect("a log entry")
+    }
+
+    /// The hook starts again later, as a new `StopFailure` does.
+    fn restart_at(&mut self, t: i64) {
+        self.clock = t;
+        self.armed = false;
     }
 }
 
 impl Deps for Fake {
     fn auto_switch_on(&mut self) -> bool {
-        self.on && self.off_at.is_none_or(|t| self.clock - START < t)
+        self.on
     }
     fn now(&mut self) -> i64 {
         assert!(!self.panic_on_now, "injected panic");
         self.clock
     }
-    fn sleep(&mut self, d: Duration) {
-        self.sleeps.push(d);
-        self.clock += d.as_secs() as i64;
-        if let Some(t) = self.prompt_at
-            && self.clock - START >= t
-        {
-            // What the UserPromptSubmit hook records for every session here.
-            self.guard.prompted.insert(session_key("s"), t);
-        }
-    }
     fn read_cycle(&mut self, now: i64) -> Option<CycleStatus> {
         self.reads.push(now);
-        (self.cycle)(now - START)
+        self.cycle.clone()
     }
     fn guard(&mut self) -> &mut dyn GuardStore {
         &mut self.guard
@@ -197,40 +271,119 @@ impl Deps for Fake {
     fn log(&mut self, _now: i64, entry: &LogEntry) {
         self.logs.push(entry.clone());
     }
-    fn session_alive(&mut self) -> bool {
-        self.gone_at.is_none_or(|t| self.clock - START < t)
-    }
     fn rotator_down(&mut self, _now: i64) -> bool {
         self.rotator_down
     }
+    fn arm(&mut self) -> io::Result<()> {
+        self.arms += 1;
+        self.guard.order.push("arm".into());
+        if self.arm_err {
+            return Err(io::Error::other("injected"));
+        }
+        self.armed = true;
+        Ok(())
+    }
+    fn wait_event(&mut self, deadline: i64) -> Event {
+        assert!(self.armed, "wait_event before a successful arm");
+        self.waits.push(deadline);
+        self.guard.order.push("wait".into());
+        assert!(
+            self.waits.len() < 100,
+            "the hook keeps waiting on a script that has ended"
+        );
+        let Some(act) = self.script.pop_front() else {
+            self.clock = deadline;
+            return Event::Deadline;
+        };
+        self.clock += STEP;
+        match act {
+            Act::Swap(r) => {
+                self.swap = Some(r);
+                Event::Swap
+            }
+            Act::Touch => Event::Swap,
+            Act::Prompt(session) => {
+                self.guard.prompted.insert(session_key(session), self.clock);
+                Event::Prompted
+            }
+            Act::OffThenSwap(r) => {
+                self.on = false;
+                self.swap = Some(r);
+                Event::Swap
+            }
+            Act::PromptThenSwap(r) => {
+                self.guard.prompted.insert(session_key("s"), self.clock);
+                self.swap = Some(r);
+                Event::Swap
+            }
+            Act::SessionGone => Event::SessionGone,
+            Act::WatchLost => Event::WatchLost,
+        }
+    }
+    fn read_swap(&mut self, _now: i64) -> Option<SwapRecord> {
+        self.swap_reads += 1;
+        let r = self.swap.clone();
+        if self.swap_reads == 1
+            && let Some(next) = self.swap_race.take()
+        {
+            self.swap = Some(next);
+        }
+        r
+    }
+    fn pane(&mut self) -> Option<Pane> {
+        self.pane_calls += 1;
+        self.pane_id
+            .and_then(|id| Pane::parse(Some(TMUX), Some(id)))
+    }
+    fn send_keys(&mut self, _pane: &Pane, key: Key) -> io::Result<()> {
+        self.key_attempts += 1;
+        self.guard.order.push(format!("key:{key:?}"));
+        if self.fail_key == Some(self.key_attempts) {
+            return Err(io::Error::other("injected"));
+        }
+        self.keys.push(key);
+        Ok(())
+    }
+    fn session_alive_now(&mut self) -> bool {
+        self.gone_after_keys.is_none_or(|n| self.keys.len() < n)
+    }
 }
 
-/// A cycle measured and recorded `at_offset` seconds after START.
-fn cycle(outcome: &str, at_offset: i64, alert: bool) -> CycleStatus {
+fn ledger(live: &str) -> CycleStatus {
     CycleStatus {
-        at: Some(START + at_offset),
-        measured_at: Some(START + at_offset),
-        outcome: Some(outcome.into()),
-        alert,
-        live: Some("spare".into()),
+        at: Some(START - 120),
+        measured_at: Some(START - 150),
+        outcome: Some("stayed".into()),
+        alert: false,
+        live: Some(live.into()),
         overflow: None,
         platform_live: false,
     }
 }
 
-/// A ledger whose last cycle is recorded `after` seconds into the wait.
-fn appears_at(outcome: &'static str, after: i64, alert: bool) -> CycleFn {
-    Box::new(move |elapsed| {
-        if elapsed >= after {
-            Some(cycle(outcome, after, alert))
-        } else {
-            Some(cycle("stayed", -600, false))
-        }
-    })
+/// A swap record `after` seconds past `START`, measured 30 s earlier.
+fn record_at(seq: u64, after: i64, session: u8, week: u8) -> SwapRecord {
+    SwapRecord {
+        seq,
+        live_login: "spare".into(),
+        from_login: "work".into(),
+        swapped_at: START + after,
+        reading: SwapReading {
+            session,
+            week,
+            measured_at: START + after - 30,
+        },
+    }
 }
 
-fn never() -> CycleFn {
-    Box::new(|_| None)
+/// A swap after the stop, onto a login with room.
+fn fresh(seq: u64) -> SwapRecord {
+    record_at(seq, 600, 12, 40)
+}
+
+/// A swap from before the stop.
+fn old(seq: u64) -> SwapRecord {
+    record_at(seq, -600, 12, 40)
 }
 
 fn limit_input(session: &str, msg: &str) -> HookInput {
@@ -245,6 +398,23 @@ fn limit_input(session: &str, msg: &str) -> HookInput {
 
 fn input(v: serde_json::Value) -> HookInput {
     serde_json::from_value(v).unwrap()
+}
+
+fn limit_payload() -> String {
+    json!({
+        "hook_event_name": "StopFailure",
+        "session_id": "s",
+        "error": "rate_limit",
+        "last_assistant_message": "You've hit your session limit"
+    })
+    .to_string()
+}
+
+/// Nothing was resumed: no commit, no key.
+fn assert_no_resume(d: &Fake) {
+    assert!(d.guard.events.is_empty(), "no marker without a resume");
+    assert!(d.guard.sessions.is_empty(), "no session resume recorded");
+    assert_eq!(d.key_attempts, 0, "no key sent");
 }
 
 // ── Message and outcome strings ─────────────────────────────────────────────
@@ -263,6 +433,11 @@ fn resume_message_is_the_documented_text() {
 fn outcome_strings_and_exit_codes() {
     let table = [
         (Outcome::Resumed, "resumed", 2),
+        (Outcome::ResumedKeys, "resumed-keys", 0),
+        (Outcome::ResumeKeysFailed, "resume-keys-failed", 0),
+        (Outcome::WatchLost, "watch-lost", 0),
+        (Outcome::SwapStale, "swap-stale", 0),
+        (Outcome::SwapNoRoom, "swap-no-room", 0),
         (Outcome::NoCapacityTimeout, "no-capacity-timeout", 0),
         (Outcome::MovedOn, "moved-on", 0),
         (Outcome::Duplicate, "duplicate", 0),
@@ -307,7 +482,7 @@ fn is_limit_is_exactly_rate_limit() {
 #[test]
 fn limit_text_without_rate_limit_error_is_not_a_limit() {
     for error in [json!(null), json!(""), json!("unknown")] {
-        let mut d = Fake::new(true, appears_at("swapped", 61, false));
+        let mut d = Fake::new().then(Act::Swap(fresh(1)));
         let out = run_with(
             &input(json!({
                 "hook_event_name": "StopFailure",
@@ -428,84 +603,67 @@ fn gate_order_is_disabled_notlimit_stopactive_duplicate_cap_proceed() {
     assert_eq!(gate(&f), Gate::Proceed);
 }
 
-// ── fresh_capacity ──────────────────────────────────────────────────────────
+// ── (a) A swap record after the stop resumes once ───────────────────────────
 
 #[test]
-fn fresh_capacity_needs_a_cycle_measured_after_the_hook_started() {
-    let measured = |m: i64| CycleStatus {
-        measured_at: Some(START + m),
-        ..cycle("swapped", 600, false)
-    };
-    assert!(
-        !fresh_capacity(Some(&measured(-30)), START),
-        "measured before"
-    );
-    assert!(!fresh_capacity(Some(&measured(0)), START), "strictly after");
-    assert!(fresh_capacity(Some(&measured(1)), START));
-    assert!(fresh_capacity(Some(&cycle("stayed", 1, false)), START));
-}
-
-#[test]
-fn without_measured_at_a_cycle_must_be_recorded_after_the_margin() {
-    // A ledger from a rotator older than #1659.
-    assert_eq!(FRESH_MARGIN_SECS, 60);
-    let at = |o| CycleStatus {
-        measured_at: None,
-        ..cycle("swapped", o, false)
-    };
-    assert!(!fresh_capacity(Some(&at(60)), START), "margin is strict");
-    assert!(fresh_capacity(Some(&at(61)), START));
-}
-
-#[test]
-fn fresh_capacity_refuses_no_capacity_states() {
-    assert!(!fresh_capacity(None, START));
-    assert!(!fresh_capacity(Some(&cycle("swapped", 120, true)), START));
-    for o in ["alerted", "skipped", "stopped", "idle", "mystery"] {
-        assert!(!fresh_capacity(Some(&cycle(o, 120, false)), START), "{o}");
-    }
-    let no_at = CycleStatus {
-        at: None,
-        measured_at: None,
-        outcome: Some("swapped".into()),
-        alert: false,
-        live: None,
-        overflow: None,
-        platform_live: false,
-    };
-    assert!(!fresh_capacity(Some(&no_at), START));
-}
-
-// ── (a) resume once ─────────────────────────────────────────────────────────
-
-#[test]
-fn a_limit_with_fresh_swapped_cycle_resumes_once() {
-    let mut d = Fake::new(true, appears_at("swapped", 75, false));
+fn a_without_a_pane_a_swap_record_resumes_with_exit_2() {
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
     let out = run_with(&limit_input("s1", "You've hit your weekly limit"), &mut d);
     assert_eq!(out, Outcome::Resumed);
     assert_eq!(out.exit_code(), 2);
     assert_eq!(d.guard.events.len(), 1, "event marker committed");
     assert_eq!(d.guard.sessions.values().map(Vec::len).sum::<usize>(), 1);
-    assert_eq!(d.logs.len(), 1);
-    assert_eq!(d.logs[0].outcome, Outcome::Resumed);
-    assert_eq!(d.logs[0].live.as_deref(), Some("spare"));
-    assert!(d.clock - START < 75 + POLL_INTERVAL.as_secs() as i64 + 1);
-}
-
-#[test]
-fn a_prime_stayed_cycle_also_resumes() {
-    let mut d = Fake::new(true, appears_at("stayed", 90, false));
+    assert_eq!(d.key_attempts, 0, "exit 2 only: no keys");
+    assert_eq!(d.outcomes(), [Outcome::Resumed]);
     assert_eq!(
-        run_with(&limit_input("s1", "hit your limit"), &mut d),
-        Outcome::Resumed
+        d.reads.len(),
+        1,
+        "the ledger is read once, for the event key"
     );
 }
 
 #[test]
-fn a_log_entry_holds_hash_prefixes_only() {
-    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+fn a_with_a_pane_a_swap_record_resumes_with_the_four_keys_and_exit_0() {
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+    let out = run_with(&limit_input("s1", "You've hit your weekly limit"), &mut d);
+    assert_eq!(out, Outcome::ResumedKeys);
+    assert_eq!(out.exit_code(), 0);
+    assert_eq!(d.keys, RESUME_KEYS);
+    assert_eq!(d.key_attempts, 4);
+    assert_eq!(d.guard.events.len(), 1, "committed");
+}
+
+#[test]
+fn a_the_resume_is_committed_before_the_first_key() {
+    // S6: commit runs under the lock before anything reaches the pane.
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+    run_with(&limit_input("s", "hit your limit"), &mut d);
+    let commit = d.guard.order.iter().position(|o| o == "commit").unwrap();
+    let first_key = d
+        .guard
+        .order
+        .iter()
+        .position(|o| o.starts_with("key:"))
+        .unwrap();
+    assert!(commit < first_key, "{:?}", d.guard.order);
+    let arm = d.guard.order.iter().position(|o| o == "arm").unwrap();
+    let wait = d.guard.order.iter().position(|o| o == "wait").unwrap();
+    assert!(arm < wait, "{:?}", d.guard.order);
+}
+
+#[test]
+fn a_the_wait_is_for_the_lifetime_cap() {
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(d.waits, [DEADLINE], "one wait, until START + MAX_WAIT");
+}
+
+#[test]
+fn a_resumed_keys_log_entry_names_the_swap_pane_and_keys() {
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(7)));
     run_with(&limit_input("secret-session-id", "msg"), &mut d);
-    let e = &d.logs[0];
+    let e = d.last_log();
+    assert_eq!(e.outcome, Outcome::ResumedKeys);
     assert_eq!(e.session, session_key("secret-session-id")[..12]);
     assert_eq!(
         e.event,
@@ -514,115 +672,357 @@ fn a_log_entry_holds_hash_prefixes_only() {
             Some("rate_limit"),
             None,
             Some("msg"),
-            Some("spare")
+            Some("work")
         )[..12]
     );
-    assert_eq!(e.cycle.as_deref(), Some("swapped"));
-}
-
-// ── (b) no capacity → no resume ─────────────────────────────────────────────
-
-fn assert_timeout(d: &Fake, out: Outcome) {
-    assert_eq!(out, Outcome::NoCapacityTimeout);
-    assert_eq!(out.exit_code(), 0);
-    assert!(d.guard.events.is_empty(), "no marker without a resume");
-    let total: Duration = d.sleeps.iter().sum();
-    assert!(total <= MAX_WAIT, "slept {total:?}");
-    assert_eq!(
-        d.elapsed_reads().last().copied(),
-        Some(MAX_WAIT.as_secs() as i64),
-        "one final read exactly at the deadline"
+    assert_eq!(e.swap_seq, Some(7));
+    assert_eq!(e.swap_live.as_deref(), Some("spare"));
+    assert_eq!(e.keys_sent, Some(4));
+    let tag = Pane::parse(Some(TMUX), Some("%5")).unwrap().log_tag();
+    assert_eq!(e.pane.as_deref(), Some(tag.as_str()));
+    assert!(
+        !e.pane.as_deref().unwrap().contains('%'),
+        "the tag, not the id"
     );
-    for s in &d.sleeps {
-        assert!(*s <= SLOW_POLL_INTERVAL && !s.is_zero(), "sleep {s:?}");
-    }
-    assert_eq!(d.logs.len(), 1);
-    assert_eq!(d.logs[0].outcome, Outcome::NoCapacityTimeout);
-    assert!(d.guard.sessions.is_empty(), "no resume recorded");
 }
 
 #[test]
-fn b1_alerted_cycle_never_resumes() {
-    let mut d = Fake::new(true, appears_at("alerted", 30, false));
+fn a_resumed_exit_2_log_entry_has_no_pane_or_keys() {
+    let mut d = Fake::new().then(Act::Swap(fresh(3)));
+    run_with(&limit_input("s", "hit your limit"), &mut d);
+    let e = d.last_log();
+    assert_eq!(e.outcome, Outcome::Resumed);
+    assert_eq!(e.swap_seq, Some(3));
+    assert_eq!(e.pane, None);
+    assert_eq!(e.keys_sent, None);
+}
+
+#[test]
+fn a_record_written_between_the_snapshot_and_the_wait_resumes_without_an_event() {
+    // D10: the hook reads swap.json once after arming, so a swap that
+    // landed before the watch existed is not missed.
+    let mut d = Fake::new();
+    d.swap = Some(old(4));
+    d.swap_race = Some(fresh(5));
     let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_timeout(&d, out);
+    assert_eq!(out, Outcome::Resumed);
+    assert!(d.waits.is_empty(), "no wait: {:?}", d.waits);
+    assert_eq!(d.arms, 1, "armed before the check");
 }
 
 #[test]
-fn b2_alert_set_never_resumes_even_if_swapped() {
-    let mut d = Fake::new(true, appears_at("swapped", 90, true));
+fn a_swap_between_the_stop_and_the_hook_start_resumes_at_once() {
+    // Crusty round 1 on #2141: the rotator finishes a swap after the
+    // session stopped but before the hook took its snapshot, in the same
+    // second. The snapshot is that swap, and the session stopped on the
+    // login swapped away from, so the hook resumes without waiting.
+    let mut d = Fake::new();
+    d.swap = Some(record_at(6, 0, 12, 40));
     let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_timeout(&d, out);
+    assert_eq!(out, Outcome::Resumed);
+    assert!(d.waits.is_empty(), "no wait: {:?}", d.waits);
 }
 
 #[test]
-fn b3_cycle_older_than_the_hook_never_resumes() {
-    let mut d = Fake::new(true, Box::new(|_| Some(cycle("swapped", -5, false))));
+fn a_snapshot_from_before_the_stop_waits_for_the_next_swap() {
+    let mut d = Fake::new();
+    d.swap = Some(record_at(6, -2, 12, 40));
     let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_timeout(&d, out);
+    assert_eq!(out, Outcome::NoCapacityTimeout);
+    assert_eq!(d.waits, [DEADLINE]);
 }
 
 #[test]
-fn b4_cycle_measured_before_the_limit_never_resumes() {
-    // A long probe: measured before the hook started, recorded well after.
-    let measured_early = CycleStatus {
-        measured_at: Some(START - 1),
-        ..cycle("swapped", 300, false)
-    };
-    let mut d = Fake::new(true, Box::new(move |_| Some(measured_early.clone())));
-    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_timeout(&d, out);
-}
-
-#[test]
-fn b5_missing_ledger_never_resumes() {
-    let mut d = Fake::new(true, never());
-    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_timeout(&d, out);
-}
-
-#[test]
-fn b6_idle_and_unknown_outcomes_never_resume() {
-    for o in ["idle", "skipped", "stopped", "something-new"] {
-        let mut d = Fake::new(true, appears_at(o, 61, false));
-        let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-        assert_timeout(&d, out);
-    }
-}
-
-#[test]
-fn capacity_exactly_at_the_deadline_is_seen_by_the_final_read() {
-    let deadline = MAX_WAIT.as_secs() as i64;
-    let mut d = Fake::new(true, appears_at("swapped", deadline, false));
+fn a_a_reset_seq_with_fresh_times_resumes() {
+    // D4: seq is not trusted to only go up.
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    d.swap = Some(old(41));
     assert_eq!(
         run_with(&limit_input("s", "hit your limit"), &mut d),
         Outcome::Resumed
     );
 }
 
+// ── (b) Records that never resume ───────────────────────────────────────────
+
 #[test]
-fn capacity_after_the_deadline_is_not_waited_for() {
-    let deadline = MAX_WAIT.as_secs() as i64;
-    let mut d = Fake::new(true, appears_at("swapped", deadline + 1, false));
+fn b_no_record_before_the_deadline_is_no_capacity_timeout() {
+    let mut d = Fake::with_pane();
     let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_timeout(&d, out);
+    assert_eq!(out, Outcome::NoCapacityTimeout);
+    assert_eq!(out.exit_code(), 0);
+    assert_no_resume(&d);
+    assert_eq!(d.waits, [DEADLINE]);
+    assert_eq!(d.outcomes(), [Outcome::NoCapacityTimeout]);
+}
+
+#[test]
+fn b_a_record_from_before_the_stop_never_resumes() {
+    // D5: a stop on the new login waits for the next swap.
+    let mut d = Fake::with_pane();
+    d.swap = Some(old(9));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::NoCapacityTimeout);
+    assert_no_resume(&d);
+}
+
+#[test]
+fn b_an_unchanged_record_on_an_event_keeps_waiting() {
+    let mut d = Fake::with_pane()
+        .then(Act::Touch)
+        .then(Act::Touch)
+        .then(Act::Swap(fresh(10)));
+    d.swap = Some(old(9));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::ResumedKeys);
+    assert_eq!(d.waits.len(), 3, "woke three times, resumed on the third");
+}
+
+#[test]
+fn b_a_new_record_swapped_before_the_stop_is_stale_and_logged() {
+    let mut d = Fake::with_pane().then(Act::Swap(old(2)));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::NoCapacityTimeout, "the wait went on");
+    assert_no_resume(&d);
+    assert_eq!(
+        d.outcomes(),
+        [Outcome::SwapStale, Outcome::NoCapacityTimeout]
+    );
+    assert_eq!(d.logs[0].swap_seq, Some(2));
+}
+
+#[test]
+fn b_a_stop_between_measurement_and_swap_is_resumed() {
+    // The rotator measured before the stop and swapped after it: the session
+    // stopped on the login swapped away from, so the swap resumes it.
+    let mut r = fresh(2);
+    r.reading.measured_at = START - 30;
+    let mut d = Fake::new().then(Act::Swap(r));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::Resumed);
+    assert!(!d.outcomes().contains(&Outcome::SwapStale));
+}
+
+#[test]
+fn b_a_swap_onto_a_full_login_is_no_room_and_the_wait_goes_on() {
+    let mut d = Fake::with_pane()
+        .then(Act::Swap(record_at(2, 300, 100, 20)))
+        .then(Act::Swap(record_at(3, 900, 20, 100)))
+        .then(Act::Swap(record_at(4, 1500, 99, 99)));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::ResumedKeys);
+    assert_eq!(
+        d.outcomes(),
+        [
+            Outcome::SwapNoRoom,
+            Outcome::SwapNoRoom,
+            Outcome::ResumedKeys
+        ]
+    );
+    assert_eq!(d.last_log().swap_seq, Some(4));
+}
+
+#[test]
+fn b_run_with_never_returns_a_log_only_outcome() {
+    for act in [
+        Act::Swap(old(2)),
+        Act::Swap(record_at(2, 300, 100, 100)),
+        Act::Touch,
+    ] {
+        let mut d = Fake::new().then(act);
+        let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+        assert!(
+            !matches!(out, Outcome::SwapStale | Outcome::SwapNoRoom),
+            "{out:?}"
+        );
+    }
+}
+
+#[test]
+fn b_a_ledger_with_capacity_but_no_swap_record_never_resumes() {
+    // #2085: the trigger is the swap record alone; a stayed or switched
+    // ledger after the stop is not one (D2).
+    for outcome in ["stayed", "swapped", "switched"] {
+        let mut d = Fake::new();
+        d.cycle = Some(CycleStatus {
+            at: Some(START + 120),
+            measured_at: Some(START + 90),
+            outcome: Some(outcome.into()),
+            ..ledger("spare")
+        });
+        let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+        assert_eq!(out, Outcome::NoCapacityTimeout, "{outcome}");
+        assert_no_resume(&d);
+    }
+}
+
+// ── D7: exactly one resume path ─────────────────────────────────────────────
+
+#[test]
+fn run_with_io_resumed_keys_exits_0_with_nothing_on_stderr() {
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+    let mut stderr = Vec::new();
+    let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
+    assert_eq!(code, 0);
+    assert!(stderr.is_empty(), "no exit-2 wake after keys");
+    assert_eq!(d.keys, RESUME_KEYS);
+}
+
+#[test]
+fn run_with_io_without_a_pane_exits_2_with_the_message_and_sends_nothing() {
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    let mut stderr = Vec::new();
+    let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
+    assert_eq!(code, 2);
+    assert_eq!(stderr, format!("{RESUME_MSG}\n").as_bytes());
+    assert_eq!(d.key_attempts, 0);
+}
+
+#[test]
+fn a_pane_that_fails_verification_takes_the_exit_2_path() {
+    // `pane()` returns only a verified pane; none means exit 2, no keys.
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    d.pane_id = None;
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::Resumed);
+    assert!(d.pane_calls >= 1, "the pane is checked before the commit");
+    assert_eq!(d.key_attempts, 0);
+}
+
+#[test]
+fn the_pane_is_checked_before_the_commit() {
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+    d.guard.force_commit = Some(CommitError::Duplicate);
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::Duplicate);
+    assert_eq!(d.key_attempts, 0, "a lost commit sends nothing");
+}
+
+// ── D8: a failure part-way through the keys stops the rest ──────────────────
+
+#[test]
+fn a_key_that_fails_stops_the_rest_and_never_falls_back_to_exit_2() {
+    for k in 1..=4 {
+        let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+        d.fail_key = Some(k);
+        let mut stderr = Vec::new();
+        let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
+        assert_eq!(code, 0, "key {k}");
+        assert!(stderr.is_empty(), "key {k}: no fallback to exit 2");
+        assert_eq!(d.key_attempts, k, "key {k}: nothing after the failure");
+        assert_eq!(d.keys, RESUME_KEYS[..k - 1], "key {k}");
+        assert_eq!(d.guard.events.len(), 1, "key {k}: the commit stands");
+        let e = d.last_log();
+        assert_eq!(e.outcome, Outcome::ResumeKeysFailed, "key {k}");
+        assert_eq!(e.keys_sent, Some((k - 1) as u8), "key {k}");
+        assert!(e.detail.is_some(), "key {k}: the error kind is logged");
+    }
+}
+
+#[test]
+fn the_session_exiting_mid_keys_stops_the_rest() {
+    // S4: liveness is checked before each key.
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+    d.gone_after_keys = Some(2);
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::ResumeKeysFailed);
+    assert_eq!(d.keys, RESUME_KEYS[..2]);
+    assert_eq!(d.key_attempts, 2, "no third key once the session is gone");
+    let e = d.last_log();
+    assert_eq!(e.keys_sent, Some(2));
+    assert_eq!(e.detail.as_deref(), Some("session-gone"));
+}
+
+#[test]
+fn send_resume_sends_the_four_keys_in_order() {
+    let mut d = Fake::new();
+    let pane = Pane::parse(Some(TMUX), Some("%9")).unwrap();
+    assert!(send_resume(&mut d, &pane).is_ok());
+    assert_eq!(d.keys, RESUME_KEYS);
+}
+
+#[test]
+fn send_resume_reports_how_many_keys_were_sent() {
+    let mut d = Fake::new();
+    d.fail_key = Some(3);
+    let pane = Pane::parse(Some(TMUX), Some("%9")).unwrap();
+    let err = send_resume(&mut d, &pane).unwrap_err();
+    assert_eq!(err.sent, 2);
+    assert_eq!(err.err.kind(), io::ErrorKind::Other);
+    assert_eq!(d.key_attempts, 3);
+}
+
+#[test]
+fn send_resume_sends_nothing_to_a_session_that_is_gone() {
+    let mut d = Fake::new();
+    d.gone_after_keys = Some(0);
+    let pane = Pane::parse(Some(TMUX), Some("%9")).unwrap();
+    let err = send_resume(&mut d, &pane).unwrap_err();
+    assert_eq!(err.sent, 0);
+    assert_eq!(d.key_attempts, 0);
+}
+
+// ── D10: watches ────────────────────────────────────────────────────────────
+
+#[test]
+fn a_watch_that_cannot_be_armed_is_watch_lost_and_never_resumes() {
+    let mut d = Fake::with_pane();
+    d.arm_err = true;
+    // Even a record that would resume is not acted on without a watch.
+    d.swap_race = Some(fresh(5));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::WatchLost);
+    assert_eq!(out.exit_code(), 0);
+    assert!(d.waits.is_empty(), "no wait without a watch");
+    assert_no_resume(&d);
+    assert_eq!(d.outcomes(), [Outcome::WatchLost]);
+}
+
+#[test]
+fn a_watch_lost_mid_wait_ends_the_wait_without_a_resume() {
+    let mut d = Fake::with_pane()
+        .then(Act::Touch)
+        .then(Act::WatchLost)
+        .then(Act::Swap(fresh(1)));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::WatchLost);
+    assert_no_resume(&d);
+    assert_eq!(d.waits.len(), 2, "nothing after the lost watch");
+}
+
+#[test]
+fn the_wait_ends_when_its_session_exits() {
+    let mut d = Fake::with_pane()
+        .then(Act::SessionGone)
+        .then(Act::Swap(fresh(1)));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::SessionGone);
+    assert_eq!(out.exit_code(), 0);
+    assert_no_resume(&d);
+    assert_eq!(d.outcomes(), [Outcome::SessionGone]);
 }
 
 // ── (c) repeated distinct events are capped per session ─────────────────────
 
 #[test]
 fn c_distinct_limit_events_stop_at_the_session_cap() {
-    let mut d = Fake::new(true, never());
+    let mut d = Fake::new();
     let mut resumed = 0;
-    for i in 0..6 {
-        // Each event: a fresh cycle 61 s after this hook's start.
-        let t0 = d.clock - START;
-        d.cycle = appears_at("swapped", t0 + 61, false);
+    for i in 0..6u64 {
+        // Each stop is met by a new swap after it.
+        let t0 = d.clock;
+        d.restart_at(t0);
+        d.swap_race = None;
+        let mut r = fresh(i + 1);
+        r.swapped_at = t0 + 600;
+        r.reading.measured_at = t0 + 570;
+        d.script.push_back(Act::Swap(r));
         let out = run_with(&limit_input("s1", &format!("hit your limit #{i}")), &mut d);
         if out == Outcome::Resumed {
             resumed += 1;
         } else {
             assert_eq!(out, Outcome::Cap, "event {i}");
+            d.script.clear();
         }
     }
     assert_eq!(resumed, MAX_RESUMES_PER_SESSION);
@@ -630,24 +1030,21 @@ fn c_distinct_limit_events_stop_at_the_session_cap() {
 
 #[test]
 fn c_capped_session_exits_without_waiting() {
-    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
     d.guard
         .sessions
         .insert(session_key("s1"), vec![START - 10, START - 20, START - 30]);
     let out = run_with(&limit_input("s1", "hit your limit"), &mut d);
     assert_eq!(out, Outcome::Cap);
-    assert_eq!(
-        d.reads.len(),
-        1,
-        "a capped session reads the ledger once, at start, and never polls"
-    );
-    assert!(d.sleeps.is_empty());
-    assert_eq!(d.logs[0].outcome, Outcome::Cap);
+    assert_eq!(d.arms, 0, "no watch is armed");
+    assert!(d.waits.is_empty());
+    assert_eq!(d.key_attempts, 0);
+    assert_eq!(d.outcomes(), [Outcome::Cap]);
 }
 
 #[test]
 fn c_other_sessions_are_not_capped_by_this_one() {
-    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
     d.guard
         .sessions
         .insert(session_key("s1"), vec![START - 10, START - 20, START - 30]);
@@ -661,14 +1058,17 @@ fn c_other_sessions_are_not_capped_by_this_one() {
 
 fn assert_untouched(d: &Fake) {
     assert!(d.reads.is_empty(), "ledger read");
-    assert!(d.sleeps.is_empty(), "slept");
+    assert_eq!(d.swap_reads, 0, "swap record read");
+    assert_eq!(d.arms, 0, "armed");
+    assert!(d.waits.is_empty(), "waited");
     assert_eq!(d.guard.calls, 0, "guard touched");
     assert!(d.logs.is_empty(), "logged");
+    assert_eq!(d.key_attempts, 0, "keys sent");
 }
 
 #[test]
 fn d_non_limit_error_is_ignored_even_with_matching_text() {
-    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
     let out = run_with(
         &input(json!({
             "hook_event_name": "StopFailure",
@@ -684,7 +1084,7 @@ fn d_non_limit_error_is_ignored_even_with_matching_text() {
 
 #[test]
 fn d_prime_no_error_is_ignored() {
-    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
     let out = run_with(
         &input(json!({
             "hook_event_name": "StopFailure",
@@ -700,7 +1100,7 @@ fn d_prime_no_error_is_ignored() {
 #[test]
 fn d_missing_or_oversized_session_id_is_ignored() {
     for session in [json!(null), json!(""), json!("x".repeat(257))] {
-        let mut d = Fake::new(true, appears_at("swapped", 61, false));
+        let mut d = Fake::new().then(Act::Swap(fresh(1)));
         let out = run_with(
             &input(json!({
                 "hook_event_name": "StopFailure",
@@ -720,7 +1120,7 @@ fn d_other_hook_events_are_ignored() {
         json!({"hook_event_name": "Stop", "session_id": "s", "error": "rate_limit"}),
         json!({"hook_event_name": "Notification", "session_id": "s"}),
     ] {
-        let mut d = Fake::new(true, appears_at("swapped", 61, false));
+        let mut d = Fake::new().then(Act::Swap(fresh(1)));
         assert_eq!(run_with(&input(v), &mut d), Outcome::NotLimit);
         assert_untouched(&d);
     }
@@ -730,7 +1130,7 @@ fn d_other_hook_events_are_ignored() {
 
 #[test]
 fn e_auto_switch_off_does_nothing() {
-    let mut d = Fake::new(false, appears_at("swapped", 0, false));
+    let mut d = Fake::off().then(Act::Swap(fresh(1)));
     let out = run_with(&limit_input("s", "hit your limit"), &mut d);
     assert_eq!(out, Outcome::Disabled);
     assert_eq!(out.exit_code(), 0);
@@ -739,25 +1139,29 @@ fn e_auto_switch_off_does_nothing() {
 
 #[test]
 fn e_auto_switch_off_prints_nothing() {
-    let mut d = Fake::new(false, appears_at("swapped", 0, false));
-    let payload = json!({
-        "hook_event_name": "StopFailure",
-        "session_id": "s",
-        "error": "rate_limit"
-    })
-    .to_string();
+    let mut d = Fake::off().then(Act::Swap(fresh(1)));
     let mut stderr = Vec::new();
-    let code = run_with_io(payload.as_bytes(), &mut stderr, &mut d);
+    let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
     assert_eq!(code, 0);
     assert!(stderr.is_empty());
     assert_untouched(&d);
+}
+
+#[test]
+fn auto_switch_turned_off_while_waiting_stops_without_keys() {
+    let mut d = Fake::with_pane().then(Act::OffThenSwap(fresh(1)));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::Disabled);
+    assert_eq!(out.exit_code(), 0);
+    assert_no_resume(&d);
+    assert_eq!(d.outcomes(), [Outcome::Disabled]);
 }
 
 // ── stop_hook_active, duplicate, guard failures ─────────────────────────────
 
 #[test]
 fn stop_hook_active_never_resumes_and_touches_no_guard_state() {
-    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
     let out = run_with(
         &input(json!({
             "hook_event_name": "StopFailure",
@@ -769,38 +1173,39 @@ fn stop_hook_active_never_resumes_and_touches_no_guard_state() {
     );
     assert_eq!(out, Outcome::StopHookActive);
     assert_eq!(d.guard.calls, 0, "checked before any guard I/O");
-    assert_eq!(d.reads.len(), 1, "start read only, no polling");
-    assert_eq!(d.logs.len(), 1);
-    assert_eq!(d.logs[0].outcome, Outcome::StopHookActive);
+    assert_eq!(d.arms, 0);
+    assert_eq!(d.key_attempts, 0);
+    assert_eq!(d.outcomes(), [Outcome::StopHookActive]);
 }
 
 #[test]
 fn duplicate_event_exits_without_waiting() {
-    let mut d = Fake::new(true, appears_at("swapped", 61, false));
-    let first = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_eq!(first, Outcome::Resumed);
-    let reads_before = d.reads.len();
-    let second = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_eq!(second, Outcome::Duplicate);
-    assert_eq!(d.reads.len(), reads_before + 1, "duplicate must not poll");
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    let input = limit_input("s", "hit your limit");
+    assert_eq!(run_with(&input, &mut d), Outcome::Resumed);
+    let (arms, waits) = (d.arms, d.waits.len());
+    d.restart_at(d.clock);
+    d.script.push_back(Act::Swap(fresh(2)));
+    assert_eq!(run_with(&input, &mut d), Outcome::Duplicate);
+    assert_eq!(d.arms, arms, "a duplicate arms nothing");
+    assert_eq!(d.waits.len(), waits, "a duplicate does not wait");
 }
 
 #[test]
 fn guard_failure_before_waiting_is_guard_failed() {
-    for which in ["seen", "resumes"] {
-        let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    for which in ["seen", "resumes", "prepare"] {
+        let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
         match which {
             "seen" => d.guard.fail_seen = true,
-            _ => d.guard.fail_resumes = true,
+            "resumes" => d.guard.fail_resumes = true,
+            _ => d.guard.fail_prepare = true,
         }
         let out = run_with(&limit_input("s", "hit your limit"), &mut d);
         assert_eq!(out, Outcome::GuardFailed, "{which}");
         assert_eq!(out.exit_code(), 0);
-        assert_eq!(
-            d.reads.len(),
-            1,
-            "{which}: must not poll after a guard failure"
-        );
+        assert_eq!(d.arms, 0, "{which}: no watch after a guard failure");
+        assert!(d.waits.is_empty(), "{which}");
+        assert_eq!(d.key_attempts, 0, "{which}");
     }
 }
 
@@ -811,24 +1216,65 @@ fn losing_the_commit_race_never_resumes() {
         (CommitError::Cap, Outcome::Cap),
         (CommitError::Io, Outcome::GuardFailed),
     ] {
-        let mut d = Fake::new(true, appears_at("swapped", 61, false));
+        let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
         d.guard.force_commit = Some(err);
-        let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-        assert_eq!(out, want);
-        assert_eq!(out.exit_code(), 0);
-        assert_eq!(d.logs.last().unwrap().outcome, want);
+        let mut stderr = Vec::new();
+        let code = run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d);
+        assert_eq!(code, 0, "{want:?}");
+        assert!(stderr.is_empty(), "{want:?}");
+        assert_eq!(d.key_attempts, 0, "{want:?}");
+        assert_eq!(d.last_log().outcome, want);
     }
 }
 
 // ── No infinite continue loop ───────────────────────────────────────────────
 
 #[test]
+fn loop_one_swap_record_resumes_at_most_once() {
+    // The woken session hits a limit again before any new swap: the record
+    // it was resumed on is its snapshot now, so it waits for the next swap.
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    assert_eq!(
+        run_with(&limit_input("s", "first limit"), &mut d),
+        Outcome::Resumed
+    );
+    for i in 0..10 {
+        d.restart_at(d.clock + 1);
+        d.script.push_back(Act::Touch);
+        let out = run_with(&limit_input("s", &format!("limit again {i}")), &mut d);
+        assert_eq!(out, Outcome::NoCapacityTimeout, "invocation {i}");
+    }
+    assert_eq!(d.guard.events.len(), 1);
+}
+
+#[test]
+fn loop_a_limit_again_within_a_second_of_the_swap_does_not_resume_twice() {
+    // The swap is written in the second the hook resumes the session, and
+    // the session hits a limit again in the next second. That swap is within
+    // the stop allowance, but the session was resumed on it, so it waits.
+    let mut d = Fake::new().then(Act::Swap(record_at(1, STEP, 12, 40)));
+    assert_eq!(
+        run_with(&limit_input("s", "first limit"), &mut d),
+        Outcome::Resumed
+    );
+    assert_eq!(d.clock, START + STEP, "resumed in the swap's second");
+    d.restart_at(d.clock + 1);
+    let out = run_with(&limit_input("s", "limit again"), &mut d);
+    assert_eq!(out, Outcome::NoCapacityTimeout);
+    assert_eq!(d.guard.events.len(), 1);
+}
+
+#[test]
 fn loop_fifty_invocations_on_one_event_resume_at_most_once() {
-    let mut d = Fake::new(true, never());
+    let mut d = Fake::new();
     let mut resumed = 0;
-    for _ in 0..50 {
-        let t0 = d.clock - START;
-        d.cycle = appears_at("swapped", t0 + 61, false);
+    for i in 0..50u64 {
+        d.restart_at(d.clock + 1);
+        let mut r = fresh(i + 1);
+        r.swapped_at = d.clock + 600;
+        r.reading.measured_at = d.clock + 570;
+        d.script.clear();
+        d.script.push_back(Act::Swap(r));
         if run_with(&limit_input("s", "You've hit your weekly limit"), &mut d) == Outcome::Resumed {
             resumed += 1;
         }
@@ -838,7 +1284,7 @@ fn loop_fifty_invocations_on_one_event_resume_at_most_once() {
 
 #[test]
 fn loop_stop_hook_active_invocations_never_resume() {
-    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
     for i in 0..50 {
         let out = run_with(
             &input(json!({
@@ -851,110 +1297,32 @@ fn loop_stop_hook_active_invocations_never_resume() {
             &mut d,
         );
         assert_ne!(out, Outcome::Resumed);
+        assert_ne!(out, Outcome::ResumedKeys);
     }
     assert!(d.guard.events.is_empty());
+    assert_eq!(d.key_attempts, 0);
 }
 
-#[test]
-fn loop_resume_then_same_limit_again_is_not_resumed() {
-    // The model is woken, the next request hits the same limit with the same
-    // text: same key, so no second wake.
-    let mut d = Fake::new(true, never());
-    let mut outcomes = Vec::new();
-    for _ in 0..5 {
-        let t0 = d.clock - START;
-        d.cycle = appears_at("stayed", t0 + 61, false);
-        outcomes.push(run_with(
-            &limit_input("s", "You've hit your session limit"),
-            &mut d,
-        ));
-    }
-    assert_eq!(outcomes[0], Outcome::Resumed);
-    assert!(outcomes[1..].iter().all(|o| *o == Outcome::Duplicate));
-}
-
-// ── issue #1691: a `profile switch` during the wait ────────────────────────
-
-/// The ledger bytes the rotator and `profile switch` write, read through
-/// the hook's own parser. Before `switch_after` seconds: the rotator found
-/// no capacity. From then on: the switch's record, which held cycles leave
-/// in place, or (`held_overwrites`) the bare `held` record an older build
-/// wrote over it.
-fn switch_during_wait(switch_after: i64, held_overwrites: bool) -> CycleFn {
-    Box::new(move |elapsed| {
-        let now = START + elapsed;
-        let raw = if elapsed < switch_after {
-            format!(
-                r#"{{"version":1,"live":"work","alert":"no-capacity:work",
-                    "last_cycle":{{"at":{t},"measured_at":{t},"outcome":"alerted"}}}}"#,
-                t = START - 30
-            )
-        } else if held_overwrites {
-            format!(
-                r#"{{"version":1,"live":"spare",
-                    "last_cycle":{{"at":{now},"outcome":"held"}}}}"#
-            )
-        } else {
-            format!(
-                r#"{{"version":1,"live":"spare","previous":"work",
-                    "last_cycle":{{"at":{t},"measured_at":{t},"outcome":"switched"}}}}"#,
-                t = START + switch_after
-            )
-        };
-        parse_cycle(raw.as_bytes(), now)
-    })
-}
-
-#[test]
-fn a_switch_after_the_limit_resumes_through_held_cycles() {
-    // Limit at START; switch at START + 120; the rotator keeps cycling
-    // under the hold, which leaves the switch's record in place.
-    let mut d = Fake::new(true, switch_during_wait(120, false));
-    let out = run_with(&limit_input("s", "You've hit your weekly limit"), &mut d);
-    assert_eq!(out, Outcome::Resumed);
-    assert!(d.clock - START >= 120, "not before the switch");
-    assert!(d.clock - START < 120 + POLL_INTERVAL.as_secs() as i64 + 1);
-    assert_eq!(d.logs[0].cycle.as_deref(), Some("switched"));
-    assert_eq!(d.logs[0].live.as_deref(), Some("spare"));
-}
-
-#[test]
-fn a_bare_held_record_after_a_switch_never_resumes() {
-    // What the hook saw before the fix: held cycles overwrote the switch.
-    let mut d = Fake::new(true, switch_during_wait(120, true));
-    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_timeout(&d, out);
-}
-
-#[test]
-fn a_switch_before_the_limit_does_not_resume() {
-    // The session stopped on the login the person switched to: the switch
-    // is older than the limit, so it is no evidence of capacity.
-    let mut d = Fake::new(true, Box::new(|_| Some(cycle("switched", -60, false))));
-    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_timeout(&d, out);
-}
-
-// ── rotator down ────────────────────────────────────────────────────────────
+// ── Rotator down ────────────────────────────────────────────────────────────
 
 #[test]
 fn rotator_down_at_the_start_ends_without_waiting() {
-    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
     d.rotator_down = true;
     let out = run_with(&limit_input("s", "hit your limit"), &mut d);
     assert_eq!(out, Outcome::RotatorDown);
     assert_eq!(out.exit_code(), 0);
-    assert!(d.sleeps.is_empty(), "no wait");
-    assert!(d.guard.events.is_empty() && d.guard.sessions.is_empty());
-    assert_eq!(d.logs.len(), 1);
-    assert_eq!(d.logs[0].outcome, Outcome::RotatorDown);
+    assert_eq!(d.arms, 0);
+    assert_no_resume(&d);
+    assert_eq!(d.outcomes(), [Outcome::RotatorDown]);
 }
 
 #[test]
 fn a_duplicate_event_is_reported_before_a_down_rotator() {
-    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
     let input = limit_input("s", "hit your limit");
     assert_eq!(run_with(&input, &mut d), Outcome::Resumed);
+    d.restart_at(d.clock);
     d.rotator_down = true;
     assert_eq!(run_with(&input, &mut d), Outcome::Duplicate);
 }
@@ -963,7 +1331,7 @@ fn a_duplicate_event_is_reported_before_a_down_rotator() {
 
 #[test]
 fn run_with_io_resumes_despite_an_unexpected_field_type() {
-    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
     let payload = json!({
         "hook_event_name": "StopFailure",
         "session_id": "s",
@@ -977,17 +1345,14 @@ fn run_with_io_resumes_despite_an_unexpected_field_type() {
 }
 
 /// Crusty #1687 round 2: the loop guard is the one field that fails closed.
-/// The same payload with capacity waiting, plus a `stop_hook_active` that is
-/// present but not a boolean, stops the hook instead of resuming it.
 #[test]
 fn run_with_io_stops_on_a_wrongly_typed_stop_hook_active() {
     for value in [json!("no"), json!("true"), json!(0), json!([])] {
-        let mut d = Fake::new(true, appears_at("swapped", 61, false));
+        let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
         let payload = json!({
             "hook_event_name": "StopFailure",
             "session_id": "s",
             "error": "rate_limit",
-            "error_details": {"type": "rate_limit_error", "code": 429},
             "stop_hook_active": value.clone()
         })
         .to_string();
@@ -998,12 +1363,13 @@ fn run_with_io_stops_on_a_wrongly_typed_stop_hook_active() {
             "{value}"
         );
         assert!(stderr.is_empty(), "{value}");
+        assert_eq!(d.key_attempts, 0, "{value}");
     }
 }
 
 #[test]
 fn run_with_io_resume_writes_exactly_the_message_to_stderr() {
-    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
     let payload = json!({
         "hook_event_name": "StopFailure",
         "session_id": "s",
@@ -1025,7 +1391,7 @@ fn run_with_io_garbage_and_bad_types_exit_zero_silently() {
         "[]".to_string(),
         json!({"hook_event_name": "StopFailure", "session_id": "s", "error": 429}).to_string(),
     ] {
-        let mut d = Fake::new(true, appears_at("swapped", 61, false));
+        let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
         let mut stderr = Vec::new();
         assert_eq!(run_with_io(payload.as_bytes(), &mut stderr, &mut d), 0);
         assert!(stderr.is_empty(), "{payload:?}");
@@ -1035,20 +1401,15 @@ fn run_with_io_garbage_and_bad_types_exit_zero_silently() {
 
 #[test]
 fn run_with_io_refuses_more_than_one_mib_of_stdin() {
-    let mut d = Fake::new(true, appears_at("swapped", 61, false));
-    let mut payload = json!({
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
+    let pad = "x".repeat(1024 * 1024);
+    let payload = json!({
         "hook_event_name": "StopFailure",
         "session_id": "s",
         "error": "rate_limit",
-        "error_details": ""
+        "error_details": pad
     })
     .to_string();
-    // Pad inside the JSON so the payload would otherwise be valid.
-    let pad = "x".repeat(1024 * 1024);
-    payload = payload.replace(
-        "\"error_details\":\"\"",
-        &format!("\"error_details\":\"{pad}\""),
-    );
     let mut stderr = Vec::new();
     assert_eq!(run_with_io(payload.as_bytes(), &mut stderr, &mut d), 0);
     assert!(stderr.is_empty());
@@ -1057,17 +1418,15 @@ fn run_with_io_refuses_more_than_one_mib_of_stdin() {
 
 #[test]
 fn run_with_io_turns_a_panic_into_a_silent_exit_zero() {
-    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
     d.panic_on_now = true;
-    let payload = json!({
-        "hook_event_name": "StopFailure",
-        "session_id": "s",
-        "error": "rate_limit"
-    })
-    .to_string();
     let mut stderr = Vec::new();
-    assert_eq!(run_with_io(payload.as_bytes(), &mut stderr, &mut d), 0);
+    assert_eq!(
+        run_with_io(limit_payload().as_bytes(), &mut stderr, &mut d),
+        0
+    );
     assert!(stderr.is_empty());
+    assert_eq!(d.key_attempts, 0);
 }
 
 // ── Moved on: the user sent a prompt while waiting ──────────────────────────
@@ -1076,7 +1435,7 @@ fn run_with_io_turns_a_panic_into_a_silent_exit_zero() {
 fn no_prompt_marker_resumes() {
     // Transcript or background-task activity is not looked at: only a
     // recorded user prompt counts.
-    let mut d = Fake::new(true, appears_at("swapped", 300, false));
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
     let out = run_with(
         &input(json!({
             "hook_event_name": "StopFailure",
@@ -1090,23 +1449,42 @@ fn no_prompt_marker_resumes() {
 }
 
 #[test]
-fn prompt_after_the_start_is_moved_on() {
-    let mut d = Fake::new(true, appears_at("swapped", 300, false));
-    d.prompt_at = Some(120);
+fn a_prompt_while_waiting_is_moved_on() {
+    let mut d = Fake::with_pane()
+        .then(Act::Prompt("s"))
+        .then(Act::Swap(fresh(1)));
     let out = run_with(&limit_input("s", "hit your limit"), &mut d);
     assert_eq!(out, Outcome::MovedOn);
     assert_eq!(out.exit_code(), 0);
-    assert!(d.guard.events.is_empty() && d.guard.sessions.is_empty());
-    assert_eq!(d.logs.len(), 1);
-    assert_eq!(d.logs[0].outcome, Outcome::MovedOn);
-    assert_eq!(d.clock - START, 120, "stops at the first poll that sees it");
+    assert_no_resume(&d);
+    assert_eq!(d.outcomes(), [Outcome::MovedOn]);
+    assert_eq!(d.waits.len(), 1, "ends on the prompt event");
+}
+
+#[test]
+fn a_prompt_in_another_session_keeps_waiting() {
+    let mut d = Fake::new()
+        .then(Act::Prompt("other"))
+        .then(Act::Swap(fresh(1)));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::Resumed);
+    assert_eq!(d.waits.len(), 2);
+}
+
+#[test]
+fn a_prompt_just_before_the_swap_is_moved_on() {
+    // Moved-on is checked again after a swap event, before the commit.
+    let mut d = Fake::with_pane().then(Act::PromptThenSwap(fresh(1)));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::MovedOn);
+    assert_no_resume(&d);
 }
 
 #[test]
 fn prompt_before_the_start_still_resumes() {
     // The prompt that started the limited turn is older than the hook.
-    let mut d = Fake::new(true, appears_at("swapped", 75, false));
-    d.guard.prompted.insert(session_key("s"), -30);
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    d.guard.prompted.insert(session_key("s"), START - 30);
     assert_eq!(
         run_with(&limit_input("s", "hit your limit"), &mut d),
         Outcome::Resumed
@@ -1115,8 +1493,8 @@ fn prompt_before_the_start_still_resumes() {
 
 #[test]
 fn prompt_in_the_start_second_is_not_moved_on() {
-    let mut d = Fake::new(true, appears_at("swapped", 75, false));
-    d.guard.prompted.insert(session_key("s"), 0);
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
+    d.guard.prompted.insert(session_key("s"), START);
     assert_eq!(
         run_with(&limit_input("s", "hit your limit"), &mut d),
         Outcome::Resumed
@@ -1124,101 +1502,51 @@ fn prompt_in_the_start_second_is_not_moved_on() {
 }
 
 #[test]
-fn prompt_marker_of_another_session_is_ignored() {
-    let mut d = Fake::new(true, appears_at("swapped", 75, false));
-    d.guard.prompted.insert(session_key("other"), 30);
-    assert_eq!(
-        run_with(&limit_input("s", "hit your limit"), &mut d),
-        Outcome::Resumed
-    );
-}
-
-#[test]
-fn prompt_just_before_the_commit_is_moved_on() {
-    // Polls at 0, 15, 30, 45, 60, 75 (capacity); the seventh check is the
-    // one right before the commit.
-    let mut d = Fake::new(true, appears_at("swapped", 75, false));
-    d.guard.prompt_from_call = Some(7);
-    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_eq!(out, Outcome::MovedOn);
-    assert_eq!(d.guard.prompted_calls, 7);
-    assert!(d.guard.events.is_empty());
-    assert_eq!(d.logs[0].cycle.as_deref(), Some("swapped"));
-}
-
-#[test]
-fn resume_state_is_prepared_once_before_waiting() {
-    let mut d = Fake::new(true, appears_at("swapped", 75, false));
+fn resume_state_is_prepared_once_before_arming() {
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
     assert_eq!(
         run_with(&limit_input("s", "hit your limit"), &mut d),
         Outcome::Resumed
     );
     assert_eq!(d.guard.prepared, 1);
-}
-
-#[test]
-fn failing_to_prepare_resume_state_is_guard_failed_without_waiting() {
-    let mut d = Fake::new(true, appears_at("swapped", 75, false));
-    d.guard.fail_prepare = true;
-    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_eq!(out, Outcome::GuardFailed);
-    assert_eq!(d.reads.len(), 1, "start read only, no polling");
-    assert!(d.sleeps.is_empty());
-    assert_eq!(d.logs[0].outcome, Outcome::GuardFailed);
+    assert_eq!(d.arms, 1);
 }
 
 #[test]
 fn unreadable_prompt_marker_is_guard_failed() {
-    let mut d = Fake::new(true, appears_at("swapped", 75, false));
+    let mut d = Fake::with_pane().then(Act::Swap(fresh(1)));
     d.guard.fail_prompted = true;
     let out = run_with(&limit_input("s", "hit your limit"), &mut d);
     assert_eq!(out, Outcome::GuardFailed);
-    assert!(d.guard.events.is_empty());
-}
-
-// ── Auto-switch turned off while waiting ────────────────────────────────────
-
-#[test]
-fn auto_switch_turned_off_while_waiting_stops_and_is_logged() {
-    let mut d = Fake::new(true, appears_at("swapped", 600, false));
-    d.off_at = Some(150);
-    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_eq!(out, Outcome::Disabled);
-    assert_eq!(out.exit_code(), 0);
-    assert_eq!(d.clock - START, 150);
-    assert!(d.guard.events.is_empty());
-    assert_eq!(d.logs.len(), 1);
-    assert_eq!(d.logs[0].outcome, Outcome::Disabled);
+    assert_no_resume(&d);
 }
 
 // ── Event key: the live login at the limit ──────────────────────────────────
 
-fn on_login(live: &'static str, at: i64) -> CycleFn {
-    Box::new(move |elapsed| {
-        let mut c = cycle("swapped", if elapsed >= at { at } else { at - 600 }, false);
-        c.live = Some(live.into());
-        Some(c)
-    })
-}
-
 #[test]
 fn same_login_limited_again_is_the_same_event() {
-    let mut d = Fake::new(true, on_login("spare", 61));
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
     let msg = "You've hit your session limit";
     assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
-    let t0 = d.clock - START;
-    d.cycle = on_login("spare", t0 + 61);
+    d.restart_at(d.clock);
+    d.script.push_back(Act::Swap(fresh(2)));
     assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Duplicate);
 }
 
 #[test]
 fn limit_after_a_swap_is_a_new_event() {
-    let mut d = Fake::new(true, on_login("spare", 61));
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
     let msg = "You've hit your session limit";
     assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
-    // The rotator swapped to `work`; the same text again is a new limit.
-    let t0 = d.clock - START;
-    d.cycle = on_login("work", t0 + 61);
+    // The ledger now names `spare`: the same text again is a new limit,
+    // resumed by the next swap.
+    d.cycle = Some(ledger("spare"));
+    let t0 = d.clock + 1;
+    d.restart_at(t0);
+    let mut r = fresh(2);
+    r.swapped_at = t0 + 600;
+    r.reading.measured_at = t0 + 570;
+    d.script.push_back(Act::Swap(r));
     assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
     assert_eq!(d.guard.events.len(), 2);
 }
@@ -1227,125 +1555,18 @@ fn limit_after_a_swap_is_a_new_event() {
 
 #[test]
 fn two_waiters_for_one_session_with_distinct_events_resume_once() {
-    // Waiter A starts at START, waiter B ten seconds later with a different
-    // event; both see capacity. B commits first, then A.
-    let mut d = Fake::new(true, appears_at("swapped", 120, false));
+    // Waiter B (started at START + 10) is woken first and commits; waiter A
+    // (started at START) sees the next swap and loses: the session already
+    // resumed after A started.
+    let mut d = Fake::new().then(Act::Swap(fresh(1)));
     d.clock = START + 10;
     let b = run_with(&limit_input("s", "first limit text"), &mut d);
-    d.clock = START;
+    d.restart_at(START);
+    d.swap = None;
+    d.script.push_back(Act::Swap(fresh(2)));
     let a = run_with(&limit_input("s", "second limit text"), &mut d);
     let outs = [a, b];
     assert_eq!(outs.iter().filter(|o| **o == Outcome::Resumed).count(), 1);
     assert!(outs.contains(&Outcome::Duplicate), "{outs:?}");
     assert_eq!(d.guard.sessions[&session_key("s")].len(), 1);
-}
-
-// ── Long waits (issue #1659) ────────────────────────────────────────────────
-
-#[test]
-fn polling_slows_after_the_first_hour() {
-    let mut d = Fake::new(true, appears_at("swapped", 3 * 3600, false));
-    assert_eq!(
-        run_with(&limit_input("s", "hit your limit"), &mut d),
-        Outcome::Resumed
-    );
-    let slow_after = SLOW_POLL_AFTER.as_secs() as i64;
-    let mut elapsed = 0;
-    for s in &d.sleeps {
-        let want = if elapsed < slow_after {
-            POLL_INTERVAL
-        } else {
-            SLOW_POLL_INTERVAL
-        };
-        assert_eq!(*s, want, "sleep at {elapsed}s");
-        elapsed += s.as_secs() as i64;
-    }
-    assert!(
-        d.sleeps.len() < 300,
-        "three hours is {} reads, not one every 15 s",
-        d.sleeps.len()
-    );
-}
-
-#[test]
-fn a_session_stopped_while_every_login_is_spent_resumes_days_later() {
-    let three_days = 3 * 24 * 3600;
-    let mut d = Fake::new(true, appears_at("swapped", three_days, false));
-    assert_eq!(
-        run_with(&limit_input("s", "hit your limit"), &mut d),
-        Outcome::Resumed
-    );
-    assert!(d.clock - START >= three_days);
-    assert!(d.clock - START < three_days + SLOW_POLL_INTERVAL.as_secs() as i64 + 1);
-}
-
-#[test]
-fn the_wait_ends_when_its_session_exits() {
-    let mut d = Fake::new(true, appears_at("swapped", 2 * 24 * 3600, false));
-    d.gone_at = Some(5 * 3600);
-    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_eq!(out, Outcome::SessionGone);
-    assert_eq!(out.exit_code(), 0);
-    assert!(d.clock - START < 5 * 3600 + SLOW_POLL_INTERVAL.as_secs() as i64 + 1);
-    assert!(d.guard.sessions.is_empty(), "no resume recorded");
-    assert_eq!(d.logs.len(), 1);
-    assert_eq!(d.logs[0].outcome, Outcome::SessionGone);
-}
-
-// ── fresh_capacity on credits (issue #1606) ─────────────────────────────────
-
-fn overflow_cycle(outcome: &str, tag: &str, at_offset: i64, alert: bool) -> CycleStatus {
-    CycleStatus {
-        overflow: Some(tag.into()),
-        platform_live: false,
-        live: Some("cred".into()),
-        ..cycle(outcome, at_offset, alert)
-    }
-}
-
-#[test]
-fn fresh_capacity_counts_a_move_onto_or_a_stay_on_overflow() {
-    assert!(fresh_capacity(
-        Some(&overflow_cycle("swapped", "in", 61, false)),
-        START
-    ));
-    assert!(fresh_capacity(
-        Some(&overflow_cycle("stayed", "on", 61, false)),
-        START
-    ));
-    assert!(fresh_capacity(
-        Some(&overflow_cycle("swapped", "out", 61, false)),
-        START
-    ));
-}
-
-/// An overflow cycle gets no exemption from the #1687 freshness rule:
-/// `measured_at` must be strictly after the wait started, and a ledger
-/// without `measured_at` (a rotator older than #1659) must have `at` past
-/// the strict `FRESH_MARGIN_SECS` margin.
-#[test]
-fn fresh_capacity_on_credits_still_needs_a_fresh_cycle_and_no_alert() {
-    let measured = |m: i64| CycleStatus {
-        measured_at: Some(START + m),
-        ..overflow_cycle("swapped", "in", 600, false)
-    };
-    assert!(!fresh_capacity(Some(&measured(0)), START), "strictly after");
-    assert!(fresh_capacity(Some(&measured(1)), START));
-    let unmeasured = |o: i64| CycleStatus {
-        measured_at: None,
-        ..overflow_cycle("swapped", "in", o, false)
-    };
-    assert!(
-        !fresh_capacity(Some(&unmeasured(60)), START),
-        "margin is strict"
-    );
-    assert!(fresh_capacity(Some(&unmeasured(61)), START));
-    assert!(!fresh_capacity(
-        Some(&overflow_cycle("stayed", "on", 120, true)),
-        START
-    ));
-    assert!(!fresh_capacity(
-        Some(&overflow_cycle("alerted", "on", 120, false)),
-        START
-    ));
 }

@@ -11,6 +11,8 @@ use super::log::{Sink, msg, open_or_warn};
 use super::owner;
 use super::settings::Settings;
 use super::swap::{self, RecoverOutcome};
+/// The process table root (issue #2042), for the rotate readers.
+pub(super) use crate::commands::agent::procfs::proc_root;
 use crate::commands::profile::auto_switch::kit::{
     State, check_root_private, now, read_bounded_nofollow, recover_auto_switch,
     write_private_atomic,
@@ -27,6 +29,7 @@ use std::time::{Duration, Instant};
 const MAX_PID_FILE: usize = 32;
 
 pub use amplihack_utils::rotator_status::DaemonState;
+pub(super) use amplihack_utils::rotator_status::running_on_host;
 
 pub(super) fn daemon_err(msg: impl Into<String>) -> ProfileError {
     ProfileError::RotateDaemon(msg.into())
@@ -46,7 +49,7 @@ pub(super) fn exe_name() -> Option<std::ffi::OsString> {
 
 pub(super) fn current_state(rs: &RotateState) -> DaemonState {
     match exe_name() {
-        Some(name) => state_at(rs, Path::new("/proc"), &name),
+        Some(name) => state_at(rs, &proc_root(), &name),
         None => DaemonState::Unverifiable,
     }
 }
@@ -274,7 +277,7 @@ pub fn watch(
             format!("{}\n", std::process::id()).as_bytes(),
         )?;
         let env = |k: &str| std::env::var_os(k);
-        let proc_root = crate::commands::agent::procfs::proc_root();
+        let proc_root = proc_root();
         if owner::supervised(&supervised, &env, &proc_root) {
             let flag = supervised.as_ref().and_then(|f| f.as_deref());
             let m = owner::Marker {
@@ -300,6 +303,7 @@ pub fn watch(
     }
     let archive_home = home.clone();
     let mut ctx = Ctx::new(store.clone(), home, s);
+    ctx.reread = Some(super::fresh::reread_as_configured);
     ctx.stop = Some(stop.clone());
     // Issue #1844: reads that outlast a cycle are used by the next one.
     let (probe_secs, _) = crate::commands::profile::probe_limits::timeout_from_env(None);

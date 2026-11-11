@@ -872,13 +872,25 @@ pub fn build_workstreams_config_with_override(
             .unwrap_or(&name)
             .to_string();
         let recipe = normalise_workstream_recipe(ws, top_level_task_type, override_workflow);
-        entries.push(serde_json::json!({
+        let mut entry = serde_json::json!({
             "issue": "TBD",
             "branch": format!("feat/orch-{idx}-{slug}"),
             "description": name,
             "task": task,
             "recipe": recipe,
-        }));
+        });
+        // Issue #1966: copy is_critical_code through for the consensus
+        // workflow to validate. A string is kept as is and a Boolean becomes
+        // "true" or "false"; any other type is left out.
+        let criticality = match ws.get("is_critical_code") {
+            Some(serde_json::Value::String(s)) => Some(s.clone()),
+            Some(serde_json::Value::Bool(b)) => Some(b.to_string()),
+            _ => None,
+        };
+        if let Some(v) = criticality {
+            entry["is_critical_code"] = serde_json::Value::String(v);
+        }
+        entries.push(entry);
     }
 
     let dir = std::env::temp_dir();

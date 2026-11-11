@@ -224,6 +224,9 @@ fn run_as_root_outside_a_sandbox(
     let _guard = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
+    // The run folder goes under a private work root, not the caller's
+    // (issue #2067).
+    let _work_root = crate::test_support::IsolatedWorkRoot::new();
     let _agent_env = crate::test_support::AgentBinaryEnv::set(None, None);
     // These runs reach the #964 recursion guard. Run from inside a recipe
     // workflow, the test would inherit that workflow's depth, the guard would
@@ -242,7 +245,7 @@ fn run_as_root_outside_a_sandbox(
     std::fs::write(
         &runner,
         format!(
-            "#!/bin/sh\nprintf '%s' \"$AMPLIHACK_AGENT_BINARY\" > '{}'\n\
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nprintf '%s' \"$AMPLIHACK_AGENT_BINARY\" > '{}'\n\
              printf '%s' '{{\"recipe_name\":\"probe\",\"success\":true,\"step_results\":[],\"context\":{{}}}}'\n",
             handed.display()
         ),

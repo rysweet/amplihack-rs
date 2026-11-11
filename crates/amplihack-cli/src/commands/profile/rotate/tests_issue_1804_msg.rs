@@ -210,6 +210,10 @@ fn snap_on_unmarked_key() -> Snap {
         live: LiveId::Known(n("api-key")),
         proto: None,
         account: None,
+        trusted_live: None,
+        identity_refusal: None,
+        identity_cause: None,
+        candidate_refusals: Vec::new(),
         candidates: vec![n("work"), n("spare")],
         skips: Vec::new(),
         sees_sessions: true,
@@ -274,6 +278,8 @@ fn measured(session: f64, week: f64) -> Probed {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
+        passive: false,
     }
 }
 
@@ -295,6 +301,8 @@ fn exhausted() -> Probed {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
+        passive: false,
     }
 }
 

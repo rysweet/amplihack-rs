@@ -21,6 +21,77 @@ pub(crate) fn cwd_env_lock() -> &'static Mutex<()> {
     env_lock()
 }
 
+/// One lock for tests that start a token refresh or read the refresh count
+/// (issue #2036). The count (`usage_direct::refreshes_in_progress`) covers the
+/// whole process, and the rotator's stop waits for it to reach zero, so a test
+/// that checks it must not run beside another test's refresh. Poisoning is
+/// ignored: a failed test must not fail the others.
+pub(crate) fn refresh_count_lock() -> std::sync::MutexGuard<'static, ()> {
+    static REFRESH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    REFRESH_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[path = "../tests/support/scratch_base.rs"]
+#[allow(dead_code)]
+mod scratch_base;
+
+/// A temporary directory that no framework lookup can see past: no
+/// `amplifier-bundle/`, `.claude/` or `src/amplihack/.claude/` above it, and
+/// not under the real `~/.claude` or `~/.amplihack`. Panics when no candidate
+/// base qualifies. The rule, and the lookups that need it, are in
+/// `tests/support/scratch_base.rs`, shared with `amplihack-hooks`,
+/// `amplihack-types` and `cli_integration`.
+pub(crate) fn tempdir_outside_framework_roots() -> tempfile::TempDir {
+    tempfile::tempdir_in(scratch_base::scratch_base()).unwrap()
+}
+
+#[cfg(test)]
+mod scratch_base_tests {
+    use super::scratch_base::{FRAMEWORK_MARKERS, scratch_base_rejection};
+    use std::fs;
+
+    #[test]
+    fn a_base_below_any_framework_marker_is_rejected_by_name() {
+        for marker in FRAMEWORK_MARKERS {
+            let root = tempfile::tempdir().unwrap();
+            fs::create_dir_all(root.path().join(marker)).unwrap();
+            let base = root.path().join("runtime/tmp");
+            fs::create_dir_all(&base).unwrap();
+            let reason = scratch_base_rejection(&base, None)
+                .unwrap_or_else(|| panic!("{marker} above the base was not rejected"));
+            assert!(
+                reason.contains(&root.path().join(marker).display().to_string()),
+                "the rejection must name the offending ancestor: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_base_under_the_real_home_dirs_is_rejected_without_any_marker() {
+        let home = tempfile::tempdir().unwrap();
+        for dir in [".claude", ".amplihack"] {
+            let base = home.path().join(dir).join("work");
+            fs::create_dir_all(&base).unwrap();
+            let reason = scratch_base_rejection(&base, Some(home.path()));
+            assert!(
+                reason.as_deref().is_some_and(|r| r.contains(dir)),
+                "{}: {reason:?}",
+                base.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_base_is_rejected_and_a_clean_one_accepted() {
+        let root = super::tempdir_outside_framework_roots();
+        assert_eq!(scratch_base_rejection(root.path(), None), None);
+        assert!(scratch_base_rejection(&root.path().join("absent"), None).is_some());
+    }
+}
+
 /// RAII guard for process environment variables mutated by tests.
 ///
 /// Tests must acquire `env_lock()` before constructing this guard.
@@ -91,6 +162,58 @@ impl Drop for EnvGuard {
                 }
             }
         }
+    }
+}
+
+/// A private work root for tests that run a recipe (issue #2067).
+///
+/// `amplihack recipe run` creates its run folder under the work root, which
+/// it takes from `AMPLIHACK_WORK_ROOT` (`cleanup::work_root::resolve_from_env`;
+/// nothing reads an inherited `AMPLIHACK_RUN_ID` or `AMPLIHACK_RUN_DIR`). A
+/// test run under a recipe inherits the caller's root, normally the real
+/// `~/.amplihack/work`, so without this guard each test leaves a run folder
+/// there. This guard points `AMPLIHACK_WORK_ROOT` at `<temp>/work`, removes
+/// `AMPLIHACK_WORK_ROOT_EXPLICIT`, and turns the end-of-run sweep off: the
+/// sweep also lists hook build folders under `$XDG_CACHE_HOME/amplihack` or
+/// `~/.cache/amplihack`, which are outside the work root and are not
+/// isolated here. On drop the variables are restored and then the folder is
+/// removed.
+///
+/// This guard is the only owner of these three variables in any fixture that
+/// uses it. Do not also capture or set them in another `EnvGuard` in the same
+/// fixture: two guards saving one variable restore it in the wrong order.
+/// For example, in a `(EnvGuard, IsolatedWorkRoot)` tuple the first element
+/// drops first, so this guard would then write back the value the other guard
+/// had set, and that value would leak into later tests.
+///
+/// Tests must hold `env_lock()` until this guard drops.
+pub(crate) struct IsolatedWorkRoot {
+    // Field order is drop order: restore the variables before removing the
+    // folder they point at.
+    _env: EnvGuard,
+    dir: tempfile::TempDir,
+}
+
+impl IsolatedWorkRoot {
+    pub(crate) fn new() -> Self {
+        let dir = tempdir_outside_framework_roots();
+        let env = EnvGuard::capture(&[
+            "AMPLIHACK_WORK_ROOT",
+            "AMPLIHACK_WORK_ROOT_EXPLICIT",
+            "AMPLIHACK_CLEANUP_ON_EXIT",
+        ]);
+        unsafe {
+            std::env::set_var("AMPLIHACK_WORK_ROOT", dir.path().join("work"));
+            std::env::remove_var("AMPLIHACK_WORK_ROOT_EXPLICIT");
+            std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0");
+        }
+        Self { _env: env, dir }
+    }
+
+    /// The work root this guard set, `<temp>/work`. It is created by the
+    /// first run, not by the guard.
+    pub(crate) fn path(&self) -> PathBuf {
+        self.dir.path().join("work")
     }
 }
 
@@ -273,4 +396,17 @@ impl Drop for ClearedGraphDbEnv {
             }
         }
     }
+}
+
+#[cfg(unix)]
+#[path = "../tests/support/exec_stub.rs"]
+#[allow(dead_code)]
+mod exec_stub;
+
+/// Writes an executable stub at `path` (mode 0755) through a short-lived
+/// `sh`, so no fork of this process can inherit a write descriptor to it and
+/// make a concurrent exec fail with `ETXTBSY` (issue #1973).
+#[cfg(unix)]
+pub(crate) fn write_executable(path: &Path, body: &str) {
+    exec_stub::write_executable(path, body, 0o755);
 }

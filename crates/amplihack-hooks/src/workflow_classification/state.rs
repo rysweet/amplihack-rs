@@ -1,11 +1,15 @@
 //! The per-session state file of the workflow classification reminder.
 //!
 //! One JSON file per session at
-//! `<project>/.claude/runtime/classification_state/<session>.json`. Writes are
+//! `<state root>/runtime/sessions/<key>/classification_state.json`, under the
+//! amplihack state root rather than the project (#1963). Writes are
 //! best-effort and no prompt text is ever written. See
 //! `docs/reference/coordination-messages.md#state-file`.
+//!
+//! Every function takes the session state directory as `Option<&Path>`; `None`
+//! means no state root resolved, and nothing is read or written.
 
-use amplihack_types::{ProjectDirs, sanitize_session_id};
+use crate::state_dir::create_private_dir_all;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -39,10 +43,18 @@ pub(super) struct ClassificationState {
     pub(super) last_rule: Option<String>,
 }
 
-pub(super) fn state_file(dirs: &ProjectDirs, session_id: &str) -> PathBuf {
-    dirs.runtime
-        .join("classification_state")
-        .join(format!("{}.json", sanitize_session_id(session_id)))
+/// `<session_dir>/classification_state.json`.
+pub(super) fn state_file(session_dir: &Path) -> PathBuf {
+    session_dir.join("classification_state.json")
+}
+
+/// Write `state` to `path`, creating its directory with mode `0700` on Unix.
+fn write_state(path: &Path, state: &ClassificationState) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        create_private_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_vec(state)?)?;
+    Ok(())
 }
 
 /// Load this session's state, or the defaults when it is missing or unreadable.
@@ -68,16 +80,22 @@ pub(super) fn load_state(path: &Path, session_id: &str) -> ClassificationState {
 /// hook. While writes keep failing, every prompt gets the same turn number, and
 /// [`record_outcome`] fails as well, so the hook emits no routing prompt. A
 /// single failed write costs at most one extra reminder.
-pub(super) fn next_observed_turn(dirs: &ProjectDirs, session_id: &str) -> u64 {
-    let path = state_file(dirs, session_id);
+///
+/// With no session directory (no state root) the count stays at 0.
+pub(super) fn next_observed_turn(session_dir: Option<&Path>, session_id: &str) -> u64 {
+    let Some(session_dir) = session_dir else {
+        tracing::debug!("workflow classification: no amplihack state root, turn counter not kept");
+        return 0;
+    };
+    let path = state_file(session_dir);
     let mut state = load_state(&path, session_id);
     let current = state.observed_turns;
     state.observed_turns = current.saturating_add(1);
-    if let Some(parent) = path.parent()
-        && fs::create_dir_all(parent).is_ok()
-        && let Ok(body) = serde_json::to_vec(&state)
-    {
-        let _ = fs::write(&path, body);
+    if let Err(err) = write_state(&path, &state) {
+        tracing::debug!(
+            "workflow classification: could not record turn at {}: {err}",
+            path.display()
+        );
     }
     current
 }
@@ -92,29 +110,27 @@ pub(super) fn next_observed_turn(dirs: &ProjectDirs, session_id: &str) -> u64 {
 /// The caller must not emit the routing prompt after a failed write: the
 /// throttle cannot see a classification that was never written, and while
 /// writes keep failing [`next_observed_turn`] cannot advance either, so every
-/// later prompt would be a new topic and would be routed.
+/// later prompt would be a new topic and would be routed. With no session
+/// directory (no state root) nothing is written and this returns `false`.
 pub(super) fn record_outcome(
-    dirs: &ProjectDirs,
+    session_dir: Option<&Path>,
     session_id: &str,
     turn_count: u64,
     rule: &str,
     mark_classified: bool,
 ) -> bool {
-    let path = state_file(dirs, session_id);
+    let Some(session_dir) = session_dir else {
+        tracing::debug!("workflow classification: no amplihack state root, outcome not recorded");
+        return false;
+    };
+    let path = state_file(session_dir);
     let mut state = load_state(&path, session_id);
     state.last_rule = Some(rule.to_string());
     if mark_classified {
         state.last_classified_turn = Some(turn_count);
     }
 
-    let write = || -> anyhow::Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::write(&path, serde_json::to_vec(&state)?)?;
-        Ok(())
-    };
-    match write() {
+    match write_state(&path, &state) {
         Ok(()) => true,
         Err(err) => {
             tracing::debug!(

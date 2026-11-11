@@ -4,15 +4,15 @@
 //! `HOME_UNREADABLE_GRACE` seconds the ALERT names the file's problem and
 //! gives fix lines that keep L's login, `rotate status` shows them, and they
 //! stay until the file has an account again. Fixture: `tests_handfix.rs`
-//! (the ledger names L; L has no login file, its login is in `~/.claude`).
+//! (the ledger names L, whose login is in `~/.claude`).
 
 use super::cycle::{CycleOutcome, Mode, run_cycle};
 use super::guide::home_stuck_head;
-use super::handfix::{Step, preview};
+use super::hand_fields::HOME_UNREADABLE_GRACE;
+use super::handfix::Step;
 use super::identify::{LiveId, home_problem, live};
-use super::ledger::HOME_UNREADABLE_GRACE;
 use super::log::{msg, sh_quote};
-use super::tests_handfix::{C, Fx, L, T, acct, fx, seam};
+use super::tests_handfix::{C, Fx, L, T, acct, fx, fx_no_l, seam};
 use super::tests_handfix_cycle::{ctx, m_spent, never};
 use super::tests_swap::{ino_at, n, private};
 use std::fs;
@@ -128,7 +128,7 @@ fn a_home_account_that_stays_unreadable_escalates_to_fix_lines() {
 #[cfg(target_os = "linux")]
 #[test]
 fn a_readable_account_in_between_starts_the_spell_again() {
-    let f = fx(true, false);
+    let f = fx(false, false);
     let json = f.home.join(".claude.json");
     spoil(&f, Some("{"));
     assert_eq!(f.step(&seam(), T), Step::Clear);
@@ -149,7 +149,7 @@ fn a_readable_account_in_between_starts_the_spell_again() {
 }
 
 /// Escalated guidance goes away by itself once the file has an account
-/// again; with the 27 Oct hand change behind it, that cycle recovers.
+/// again; the credential readings then find nothing to recover (#1886).
 #[cfg(target_os = "linux")]
 #[test]
 fn escalated_guidance_clears_once_the_file_is_readable() {
@@ -159,7 +159,7 @@ fn escalated_guidance_clears_once_the_file_is_readable() {
     f.step(&seam(), T);
     assert_eq!(f.step(&seam(), T + G), Step::Guided);
     private(&f.home.join(".claude.json"), &good);
-    assert_eq!(f.step(&seam(), T + G + 600), Step::Recovered);
+    assert_eq!(f.step(&seam(), T + G + 600), Step::Clear);
     let l = f.ledger();
     assert_eq!(l.home_unreadable_since, None);
     assert_eq!(l.guidance, None);
@@ -174,12 +174,8 @@ fn dry_run_previews_the_escalated_guidance() {
     spoil(&f, None);
     f.step(&seam(), T);
     let before = fs::read(&f.rs.ledger).unwrap();
-    assert!(
-        preview(&f.store, &f.rs, &f.home, seam, T + G - 1)
-            .unwrap()
-            .is_empty()
-    );
-    let got = preview(&f.store, &f.rs, &f.home, seam, T + G).unwrap();
+    assert!(f.preview_with(seam, T + G - 1).is_empty());
+    let got = f.preview_with(seam, T + G);
     let want = stuck_lines(&f, "it does not exist");
     let head = want[0].strip_prefix("ALERT: ").unwrap();
     assert_eq!(got[0], format!("would alert: {head}"));
@@ -193,7 +189,7 @@ fn dry_run_previews_the_escalated_guidance() {
 #[cfg(target_os = "linux")]
 #[test]
 fn fix_two_gives_l_its_login_back_and_never_replaces_one() {
-    let f = fx(true, false);
+    let f = fx_no_l(true, false);
     spoil(&f, Some("{"));
     f.step(&seam(), T);
     f.step(&seam(), T + G);
@@ -252,6 +248,8 @@ fn run_cycle_escalates_a_home_account_that_stays_unreadable() {
     f.assert_nothing_moved();
 
     private(&f.home.join(".claude.json"), &good);
+    // The first reading of M was on record before the file went bad.
+    f.suspected();
     c.measure = Some(m_spent);
     assert_eq!(
         run_cycle(&mut c, Mode::Watch).unwrap(),

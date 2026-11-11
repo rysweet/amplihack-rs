@@ -23,15 +23,15 @@ context:
   terminal_state: ""
   terminal_reason: ""
   publish_status: ""
-  should_publish: "true"
   should_finalize: "true"
   should_run_ci_wait: "true"
   should_merge: "true"
-  # #1561/#1684: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
+  # #1561/#1684/#1968: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
   repo_path: ""
   version_bump: ""
   local_testing_gate: ""
   precommit_results: ""
+  task_description: ""
 
 steps:
   - id: "publish-terminal-state"
@@ -330,12 +330,13 @@ steps:
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true' && commit_result.pushed == 'true'"
     command: |
       set -euo pipefail
+      trap '_publish_status=$?; [ "$_publish_status" -eq 0 ] || printf "ERROR: step-16-create-draft-pr prerequisites failed (exit %s)\n" "$_publish_status" >&2' EXIT
       export GIT_PAGER=cat PAGER=cat LESS=FRX
       WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
       WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-16-create-draft-pr)" || { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-16 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "ERROR: step-16-create-draft-pr requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2; exit 1; }
-      _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
+      if _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null); then :; else _publish_status=$?; printf 'ERROR: git branch --show-current failed (exit %s)\n' "$_publish_status" >&2; trap - EXIT; exit "$_publish_status"; fi
       if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; then echo "ERROR: step-16 landed on protected branch '$_CURRENT_BRANCH' — refusing to create PR. Worktree setup likely failed." >&2; exit 1; fi
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
@@ -352,10 +353,9 @@ steps:
       # PUBLISH_STATE="no-diff"; PUBLISH_STATE="existing-open-pr"; PUBLISH_STATE="already-merged"; PUBLISH_STATE="closed-after-merge"; PUBLISH_STATE="closed-unmerged-with-diff".
       # Provider-aware states: GitHub preserves existing scoped PR behavior; AzDO uses REMOTE_HOST_TYPE=azdo with az repos pr list/create.
       # Terminal vocabulary: MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED, EXISTING_OPEN_PR, BLOCKED_CI, BLOCKED_PROVIDER.
-      # gh pr create is called by the helper only after PUBLISH_STATE classification.
-      # gh pr create failed is surfaced by workflow_publish_pr.sh as FAILED_PR_CREATE.
+      # gh pr create is called by the helper only after PUBLISH_STATE classification; gh pr create failed is surfaced by workflow_publish_pr.sh as FAILED_PR_CREATE.
       PUBLISH_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="$(pwd)/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || PUBLISH_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_publish_pr.sh"; [ -f "$PUBLISH_HELPER" ] || { echo "ERROR: workflow publish helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $PUBLISH_HELPER; cwd=$(pwd)" >&2; exit 1; }
-      bash "$PUBLISH_HELPER"
+      trap - EXIT; exec bash "$PUBLISH_HELPER"
     output: "pr_publish_result"
     parse_json: true
 

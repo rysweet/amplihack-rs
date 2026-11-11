@@ -23,6 +23,8 @@ pub(crate) mod governor_view;
 mod kind;
 #[cfg(unix)]
 mod limit_wait;
+/// Issue #2030: Commander option arity, for the `amplihack claude` passthrough rewrite.
+pub(crate) use limit_wait::claude_args::option_end as claude_option_end;
 #[cfg(unix)]
 mod login_check;
 mod name;
@@ -34,11 +36,14 @@ mod root_config;
 mod rotate;
 mod rotate_args;
 mod run;
+#[cfg(unix)]
+mod seed_cmd;
 mod settings_refresh;
 mod shared_dirs;
 mod store;
 mod supervise_gate;
 mod usage_cmd;
+mod usage_codex;
 #[cfg(unix)]
 mod usage_direct;
 mod usage_history;
@@ -48,6 +53,8 @@ mod usage_passive;
 mod usage_request;
 mod usage_source;
 mod usage_view;
+#[cfg(unix)]
+mod verify_cmd;
 
 #[cfg(test)]
 mod tests_capacity_summary;
@@ -95,6 +102,8 @@ mod tests_shared_dirs;
 mod tests_store;
 #[cfg(test)]
 mod tests_usage_cmd;
+#[cfg(test)]
+mod tests_usage_codex;
 #[cfg(all(test, unix))]
 mod tests_usage_direct;
 #[cfg(all(test, unix))]
@@ -115,6 +124,8 @@ mod tests_usage_source;
 mod tests_usage_view;
 #[cfg(test)]
 mod tests_verify;
+#[cfg(all(test, unix))]
+mod tests_verify_cmd;
 
 use anyhow::Result;
 /// For `amplihack sessions` (issue #1746): the live check and profile root.
@@ -211,8 +222,15 @@ pub enum ProfileError {
     RotatePrototypeRunning,
     #[error("swap refused: {0}")]
     RotateRefused(String),
+    #[error("profile verify: {0}")]
+    Verify(String),
+    /// `profile seed-record` refused: the whole line, reason included.
+    #[error("{0}")]
+    SeedRefused(String),
     #[error("rotate state is inconsistent: {0}")]
     RotateInconsistent(String),
+    #[error("rotation gate did not settle")]
+    GateUnsettled,
     #[error("profile rotate is not available on this platform")]
     RotateUnsupported,
     #[error("rotate: {0}")]
@@ -299,10 +317,17 @@ impl ProfileError {
             Self::RotateRefused(_) => {
                 "nothing was moved; see \"Swap refused\" in docs/howto/claude-profile-rotation.md"
             }
+            Self::Verify(_) => {
+                "nothing was moved; see \"profile verify\" in docs/reference/profile-command.md"
+            }
+            Self::SeedRefused(_) => {
+                "nothing was moved; see \"profile seed-record\" in docs/reference/profile-command.md"
+            }
             Self::RotateInconsistent(_) => {
                 "see the Recovery section of docs/howto/claude-profile-rotation.md"
             }
             Self::RotateUnsupported => "rotate needs Linux or another Unix",
+            Self::GateUnsettled => "nothing was moved; the next cycle decides again",
             Self::RotateDaemon(_) => "run `amplihack profile rotate status`",
             Self::SubscriptionNoLogin(_) => {
                 "amplihack profile login <name>, or: amplihack profile kind set <name> api-key"
@@ -416,11 +441,23 @@ pub enum ProfileCommands {
         args: Vec<String>,
     },
     /// Show each profile's weekly and session usage as a bar view, in the
-    /// order the rotator ranks headroom
+    /// order the rotator ranks headroom, then each Codex account's live
+    /// rate limits
+    ///
+    /// Rate: the capacity summary's rate covers the last 6 h. It starts at
+    /// the oldest history entry in that window written by `profile usage`
+    /// (which tried every login; one it could not read is left out of the
+    /// rate), or written by the rotator and holding every login read now.
+    /// That start entry must itself be at least 4.5 h old, or the rate and
+    /// runway are unknown. Only logins read at both ends count. Each login
+    /// counts its net rise within each week, and a week resets when its
+    /// reset time passes or its figure falls by more than 10 points, so a
+    /// smaller fall adds nothing and the rate is never negative. Each
+    /// login's use is weighted by its capacity weight.
     Usage {
-        /// Profiles to probe (default: all)
+        /// Profiles to probe (default: all, and the Codex accounts)
         names: Vec<String>,
-        /// Print a JSON array instead of the bar view
+        /// Print the profile rows as one JSON array (Claude only; the Codex rows are in --summary-json)
         #[arg(long)]
         json: bool,
         /// Print the previous 7-column table instead of the bar view
@@ -429,7 +466,12 @@ pub enum ProfileCommands {
         /// Show reset times in UTC instead of local time (bar view only)
         #[arg(long, conflicts_with_all = ["json", "table", "summary_json"])]
         utc: bool,
-        /// Print one JSON object: the --json rows and the capacity summary
+        /// Print one JSON object: the --json Claude rows, the capacity summary
+        /// and the Codex rows.
+        /// Its rate covers the last 6 h, starts at the oldest entry in that
+        /// window from `profile usage` or from a rotator cycle holding every
+        /// login read now, needs that entry to be at least 4.5 h old, and is
+        /// weighted
         #[arg(long, conflicts_with_all = ["json", "raw"])]
         summary_json: bool,
         /// Also print what `claude` wrote to stdout and stderr
@@ -458,6 +500,24 @@ pub enum ProfileCommands {
     Overflow {
         #[command(subcommand)]
         command: overflow::OverflowCommand,
+    },
+    /// Print the account the server reports for ~/.claude and each profile's
+    /// login, against the account recorded for it; --fix moves crossed logins
+    #[cfg(unix)]
+    Verify {
+        /// Move each profile login that is another profile's recorded account
+        /// into that profile's empty folder (moves only; lists the moves first)
+        #[arg(long)]
+        fix: bool,
+    },
+    /// Show the account a profile with no record would be recorded with, from one
+    /// fresh reading; --write records it. Moves no login
+    #[cfg(unix)]
+    SeedRecord {
+        name: String,
+        /// Write the record, under the rotate lock; never replaces a record
+        #[arg(long)]
+        write: bool,
     },
     /// Show or override each profile's kind: subscription or api-key (billed per token)
     #[cfg(unix)]
@@ -616,6 +676,18 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
         ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
         ProfileCommands::Overflow { command } => overflow::run(&store, command)?,
+        #[cfg(unix)]
+        ProfileCommands::SeedRecord { name, write } => seed_cmd::run(&store, &name, write)?,
+        #[cfg(unix)]
+        ProfileCommands::Verify { fix } => {
+            let s = verify_cmd::run(&store, fix)?;
+            if s.mismatches > s.moved {
+                anyhow::bail!(
+                    "{} folder(s) do not hold the account recorded for them",
+                    s.mismatches - s.moved
+                );
+            }
+        }
         #[cfg(unix)]
         ProfileCommands::Kind { command } => {
             kind::run(&store, command, usage_cmd::home_dir().as_deref())?

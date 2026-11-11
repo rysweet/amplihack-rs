@@ -415,12 +415,17 @@ for a new `dist/package.json` the same way you watch allowlist edits.
 
 ### Built-in `.claude/runtime/` exemption
 
-The amplihack launcher, session tracker, and every agent's PostToolUse metrics
-hook write bookkeeping into `<repo>/.claude/runtime/` continuously as a normal,
-unavoidable part of launching and running an agent: launcher context, session
-logs, metrics (`metrics/post_tool_use_metrics.jsonl`, appended on every tool
-call), locks, and power-steering state all land here while a recipe runs. This
-subtree is `.gitignore`d, tool-generated runtime state.
+The amplihack launcher and session tracker write bookkeeping into
+`<repo>/.claude/runtime/` as a normal part of launching and running an agent:
+launcher context, the session log, locks, and power-steering state can land
+here while a recipe runs. This subtree is `.gitignore`d, tool-generated runtime
+state. The `amplihack-hooks` binary no longer writes its tool metrics,
+transcripts or session state here; they go to the hook state root under
+`${AMPLIHACK_HOME:-~/.amplihack}/runtime/` (see
+[Hook State Root Reference](reference/hook-state-root.md)). Files left at the
+old locations by earlier versions, such as
+`.claude/runtime/metrics/post_tool_use_metrics.jsonl`, are still covered by
+this exemption.
 
 The guard exempts the whole `.claude/runtime/` subtree **when it appears as
 untracked or ignored-present output** — the form this unavoidable runtime state
@@ -447,7 +452,8 @@ is not actionable pollution.
 
 Before this exemption, files under
 `.claude/runtime/` (originally the launcher's own `launcher_context.json`, and
-later the metrics file that agents append to on every tool call) failed the
+later the metrics file that the PostToolUse hook appended to on every tool call
+before #1963 moved it to the hook state root) failed the
 end-of-run `pre-publish` guard, which left `recipe-runner-rs` and its child
 agents hung after the work was already committed and pushed (issue #807).
 

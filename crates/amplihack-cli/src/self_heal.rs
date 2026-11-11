@@ -28,18 +28,23 @@
 //! and are surfaced loudly by the binary entrypoint. There is no silent
 //! fallback to "continue with stale assets" — the user gets a clear error
 //! and a non-zero exit.
+//!
+//! The one exception is issue #1955 D1: when only the release tag fetch failed
+//! and the installed bundle passes the compatibility check, the command runs
+//! with a warning, because otherwise every command on an offline upgraded host
+//! would exit 1. The stamp stays as it was, so a later launch retries; the
+//! fetch itself backs off for 10 minutes after a failure (`fetch_backoff`).
 
 use std::ffi::OsString;
-use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use anyhow::{Context, Result};
-use fs4::fs_std::FileExt;
 
 use crate::commands::install::bundle_compat_cache;
-use crate::commands::install::paths::{home_dir, sanitize_path};
+use crate::commands::install::paths::{home_dir, sanitize_path, sanitize_text};
+use crate::commands::install::tag_fetch::SourceFetchFailed;
 use crate::commands::install::version_stamp::{self, VersionRelation};
 
 /// Env var that fully disables the auto-restage check.
@@ -83,11 +88,6 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
 /// Top-level flags that short-circuit clap and should not pay for an
 /// install check.
 const SKIP_FLAGS: &[&str] = &["--help", "-h", "--version", "-V"];
-
-/// Filename of the inter-process advisory lock guarding the installer
-/// critical section (issue #502 R5). Sits next to the install stamp under
-/// `~/.amplihack/`.
-const INSTALL_LOCK_FILE: &str = ".install.lock";
 
 /// Issue #1526: set once this process has emitted the implicit-downgrade
 /// warning, so the launch bootstrap does not print it a second time.
@@ -152,12 +152,6 @@ pub fn resolve_startup_client(command: &crate::Commands) -> Result<()> {
         )?;
     }
     Ok(())
-}
-
-/// Resolve the path to the install advisory lock file. Mirrors
-/// `version_stamp::installed_version_path` so both files live side-by-side.
-fn install_lock_path() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".amplihack").join(INSTALL_LOCK_FILE))
 }
 
 /// The five-line implicit-downgrade warning (issue #1526).
@@ -251,34 +245,10 @@ pub(crate) fn set_downgrade_warned(warned: bool) {
     DOWNGRADE_WARNED.store(warned, AtomicOrdering::Relaxed);
 }
 
-/// Run `body` while holding an exclusive advisory `flock` on the install
-/// lock file (issue #502 R5). The lock serialises concurrent
-/// `ensure_assets_match_binary_version` callers within a host so two
-/// processes never run the installer body at the same time.
-///
-/// The lock file is created with default permissions if missing — its
-/// contents are never inspected, only its inode is used as the lock token,
-/// so it does not need 0o600 like the stamp.
-fn with_install_lock<T, F: FnOnce() -> Result<T>>(body: F) -> Result<T> {
-    let lock_path = install_lock_path()?;
-    if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let lock_file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-        .with_context(|| format!("failed to open install lock {}", lock_path.display()))?;
-    FileExt::lock_exclusive(&lock_file)
-        .with_context(|| format!("failed to acquire install lock {}", lock_path.display()))?;
-    let result = body();
-    // Best-effort unlock; the kernel will release on drop regardless.
-    let _ = FileExt::unlock(&lock_file);
-    result
-}
+/// The install lock (issues #502 R5 and #1954), shared with `amplihack
+/// install`, `update` and `uninstall`. Re-entrant on the owning thread, so the
+/// install this calls takes it again without deadlocking.
+pub(crate) use crate::install_lock::with_install_lock;
 
 /// Decision-logic core, factored out for testability.
 ///
@@ -418,7 +388,25 @@ where
         }
         // The install writes the stamp itself (issue #1526: not after a
         // refused binary deploy, which only it knows about).
-        install_fn().context("running install during startup self-heal")?;
+        if let Err(error) = install_fn() {
+            let error = error.context("running install during startup self-heal");
+            let Some(failed) = error.downcast_ref::<SourceFetchFailed>() else {
+                return Err(error);
+            };
+            if let Some(issue) = installed_bundle_compatibility_issue_uncached()
+                .context("checking the installed bundle after a failed fetch")?
+            {
+                tracing::debug!("self_heal: installed bundle can't be kept: {issue}");
+                return Err(error);
+            }
+            // Best effort: the command runs whether or not the warning is written.
+            if let Err(e) =
+                notice.write_all(format_kept_bundle_warning(failed, expected).as_bytes())
+            {
+                tracing::debug!("self_heal: failed to emit kept-bundle warning: {e}");
+            }
+            return Ok(());
+        }
         // The bundle just changed under us; drop the memoised verdict so the
         // next invocation revalidates once and re-primes the cache.
         if let Ok(path) = bundle_compat_cache_path() {
@@ -431,6 +419,23 @@ where
         .context("emitting self-heal notice")?;
         Ok(())
     })
+}
+
+/// The one-line warning for a bundle kept after a failed fetch (issue #1955 D1).
+/// The reason can hold text a remote controlled, so control characters go.
+fn format_kept_bundle_warning(failed: &SourceFetchFailed, running: &str) -> String {
+    match failed {
+        SourceFetchFailed::Failed { reason, .. } => format!(
+            "amplihack: warning: could not fetch the framework bundle for v{running} ({}); \
+             keeping the installed bundle. A later launch will retry.\n",
+            sanitize_text(reason)
+        ),
+        SourceFetchFailed::NotAllowed { .. } => format!(
+            "amplihack: warning: this build ({running}) cannot fetch a release tag, and no local \
+             source matches it; keeping the installed bundle. Run `amplihack install --local \
+             <PATH>` to replace it.\n"
+        ),
+    }
 }
 
 /// Absolute path of the installed bundle staged under `~/.amplihack`.

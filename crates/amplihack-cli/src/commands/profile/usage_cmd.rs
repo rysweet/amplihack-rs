@@ -12,6 +12,15 @@
 //! reason. The parent environment is never changed: each child gets
 //! `CLAUDE_CONFIG_DIR` on its own `Command`, or, for the profile whose login
 //! is live in `~/.claude` (see `default_live`), has it removed.
+//!
+//! Issue #2001: with no names given, every Codex account is also read live
+//! (`amplihack_utils::codex_capacity`) on a thread started before the Claude
+//! probes, and printed after the Claude output (`usage_codex`). Codex rows
+//! never reach the recording, the history, the summary or the exit status.
+//! `--json` stays the bare array of Claude rows it has always been, and does
+//! not read Codex at all: scripts on the owner's host index it with `.[]` and
+//! `.[0]`. The Codex rows are in `--summary-json`, which was already an
+//! object, under `codex`.
 
 use super::auto_switch::{self, Observation, ObservedWindow, RecordOutcome};
 use super::capacity_summary::{self, Summary};
@@ -19,14 +28,15 @@ use super::capacity_weight;
 use super::name::ProfileName;
 use super::probe_limits::ProbeMode;
 use super::rotate::decide::Reading;
-use super::rotate::identify::Account;
 use super::store::ProfileStore;
+use super::usage_codex::{self, CodexJsonRow, CodexView};
 use super::usage_parse::{UsageReport, UsageState, UsageWindow, parse_usage};
 use super::usage_request::ExtraUsageShape;
 use super::usage_source::{self, ClaudeGate, LazyBinary, Plan, Source, SourceEnv, Spend};
 use super::usage_view::{self, TimeView};
 use super::{ProfileError, default_live, pointer, probe_limits, run, usage_history, usage_request};
 use crate::binary_finder::BinaryInfo;
+use amplihack_utils::codex_capacity;
 use anyhow::Result;
 use serde::Serialize;
 use std::ffi::OsString;
@@ -178,9 +188,6 @@ pub(super) struct Row {
     /// The end of the rotator's active spend block on this overflow
     /// profile, epoch seconds.
     pub(super) overflow_blocked_until: Option<i64>,
-    /// The `~/.claude` row: a login no profile holds (issue #1693). Shown,
-    /// never recorded.
-    pub(super) live_in_home: bool,
     /// An API-key profile (issue #1700): not probed, billed per token.
     pub(super) api_key: bool,
     /// The API-key block on an API-key row: its reason and end.
@@ -207,9 +214,9 @@ pub(super) enum Output {
     Bars,
     /// The `--table` text table, then the capacity summary.
     Table,
-    /// The `--json` array, unchanged.
+    /// The `--json` array of Claude rows. It never holds Codex rows (#2001).
     Json,
-    /// One object: the `--json` array and the capacity summary.
+    /// One object: the Claude rows, the capacity summary and the Codex rows.
     SummaryJson,
 }
 
@@ -251,18 +258,18 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         eprintln!("{}", env_credential_warning(var));
     }
     let profiles = selected_profiles(store, names)?;
+    // Issue #2001: names select Claude profiles only; with none, every
+    // Codex account is read alongside the Claude probes. `--json` keeps its
+    // array of Claude rows, so it has no place for Codex rows and skips the
+    // read.
+    let codex = (names.is_empty() && output != Output::Json).then(CodexRead::start);
     if profiles.is_empty() {
-        print_empty(output);
+        let codex = codex.map(CodexRead::finish);
+        print_empty(output, &time, codex.as_ref());
         return Ok(());
     }
     let home = home_dir();
-    let (live, home_row) = detect_live(store, home.as_deref(), &profiles);
-    // The account in `~/.claude` when its row is built, read before any
-    // probe: the `~/.claude` row's spend is kept only while this account is
-    // still the one there (crusty round 6).
-    let home_account = home_row
-        .then(|| home.as_deref().and_then(Account::of_dir))
-        .flatten();
+    let live = detect_live(store, home.as_deref(), &profiles);
     // Issue #1700: API-key profiles are never probed; a probe costs tokens
     // or times out, and there are no plan limits to read.
     let keys = ApiKeys::load(store, home.as_deref(), &profiles);
@@ -304,8 +311,6 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         let name = &profiles[i];
         reader.profile(name, live_name.as_ref() == Some(name))
     });
-    // Only when every profile is listed: naming profiles asks about those.
-    let mut home_probe = (home_row && names.is_empty()).then(|| reader.home());
     // The login in `~/.claude` may have been swapped during the probe; its
     // numbers are shown but not recorded against the profile. Checked
     // before any spend probe, so that a long `--spend` pass cannot widen
@@ -331,34 +336,17 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
                     .as_ref()
                     .is_some_and(|l| default_live::still_live(store, home.as_deref(), l))
         };
-        // The `~/.claude` row's spend probe reads `~/.claude` too, so its
-        // result is kept only while the account read before the windows is
-        // still the one there. With no account to compare, it is dropped.
-        let still_home = || {
-            home_account.as_ref().is_some_and(|before| {
-                home.as_deref()
-                    .and_then(Account::of_dir)
-                    .is_some_and(|now| now.same(before))
-            })
-        };
         spend_pass(
             &reader,
             &profiles,
             live_name.as_ref(),
-            Guards {
-                live: &still_live,
-                home: &still_home,
-            },
+            &still_live,
             &mut probes,
-            home_probe.as_mut(),
             claude_bound,
         );
     }
     let mut rows = build_rows(&marks, &profiles, probes, live_name.as_ref());
     rows.extend(keys.rows(&marks, &keyed));
-    if let Some(p) = home_probe {
-        rows.push(home_row_of(p));
-    }
     order(&mut rows, at);
     // Issue #1797: the capacity summary, from these rows only; no probe.
     // `--raw` is diagnostic output and gets neither summary nor history.
@@ -368,7 +356,16 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         .as_ref()
         .filter(|_| !raw && output != Output::Json)
         .map(|c| capacity_of(store, c, usable_session_pct, at));
-    print_output(&rows, output, &time, summary.as_ref(), at, swapped.as_ref());
+    let codex = codex.map(CodexRead::finish);
+    print_output(
+        &rows,
+        output,
+        &time,
+        summary.as_ref(),
+        at,
+        swapped.as_ref(),
+        codex.as_ref(),
+    );
     // SR-10: in every mode, with or without `--raw`.
     for warning in not_saved_warnings(&rows) {
         eprintln!("{warning}");
@@ -396,14 +393,10 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     Ok(())
 }
 
-/// Which login a spend probe reads.
+/// Which login a spend probe reads: a profile, against `~/.claude` when
+/// the flag is set.
 #[derive(Debug, Clone, Copy)]
-enum SpendTarget<'a> {
-    /// A profile, against `~/.claude` when the flag is set.
-    Profile(&'a ProfileName, bool),
-    /// The `~/.claude` row of a login no profile holds.
-    Home,
-}
+struct SpendTarget<'a>(&'a ProfileName, bool);
 
 /// Issue #1856: with `--spend`, one spend-only `/usage` probe per
 /// credits-on direct row, at most `bound` at once, each under the normal
@@ -411,60 +404,36 @@ enum SpendTarget<'a> {
 /// `spend` changes: its windows, state, error and source stay as the
 /// direct read gave them.
 ///
-/// Two probes read `~/.claude`: the live profile's and the `~/.claude`
-/// row's. Each is started only while its guard holds, and its result is
-/// dropped for `Unknown` unless the guard holds again once it has finished,
-/// so a swap before or during the pass never shows another login's spend
-/// on either row.
+/// The live profile's probe reads `~/.claude`. It is started only while
+/// `still_live` holds, and its result is dropped for `Unknown` unless it
+/// holds again once it has finished, so a swap before or during the pass
+/// never shows another login's spend on that row.
 fn spend_pass(
     reader: &RowReader,
     profiles: &[ProfileName],
     live: Option<&ProfileName>,
-    guards: Guards<'_>,
+    still_live: &(dyn Fn() -> bool + Sync),
     probes: &mut [Probe],
-    mut home: Option<&mut Probe>,
     bound: usize,
 ) {
     let needs = |p: &Probe| p.source == Some(Source::Direct) && p.extra_shape.is_some();
-    // A profile's index, or `None` for the `~/.claude` row.
-    let mut slots: Vec<Option<usize>> = (0..probes.len())
-        .filter(|&i| needs(&probes[i]))
-        .map(Some)
-        .collect();
-    if home.as_deref().is_some_and(needs) {
-        slots.push(None);
-    }
+    let slots: Vec<usize> = (0..probes.len()).filter(|&i| needs(&probes[i])).collect();
     if slots.is_empty() {
         return;
     }
-    let spends = pooled(slots.len(), bound, |j| match slots[j] {
-        Some(i) if live == Some(&profiles[i]) => guarded_spend(
-            reader,
-            SpendTarget::Profile(&profiles[i], true),
-            guards.live,
-            || spend_swap_note(&profiles[i]),
-        ),
-        Some(i) => reader.spend(SpendTarget::Profile(&profiles[i], false)),
-        None => guarded_spend(reader, SpendTarget::Home, guards.home, home_spend_swap_note),
-    });
-    for (slot, spend) in slots.into_iter().zip(spends) {
-        match slot {
-            Some(i) => probes[i].spend = spend,
-            None => {
-                home.as_deref_mut()
-                    .expect("the home slot is only queued when home is Some")
-                    .spend = spend;
-            }
+    let spends = pooled(slots.len(), bound, |j| {
+        let i = slots[j];
+        if live == Some(&profiles[i]) {
+            guarded_spend(reader, SpendTarget(&profiles[i], true), still_live, || {
+                spend_swap_note(&profiles[i])
+            })
+        } else {
+            reader.spend(SpendTarget(&profiles[i], false))
         }
+    });
+    for (i, spend) in slots.into_iter().zip(spends) {
+        probes[i].spend = spend;
     }
-}
-
-/// Whether `~/.claude` still holds the login a row's windows were read
-/// from: `live` for the live profile's row, `home` for the `~/.claude` row.
-#[derive(Clone, Copy)]
-struct Guards<'a> {
-    live: &'a (dyn Fn() -> bool + Sync),
-    home: &'a (dyn Fn() -> bool + Sync),
 }
 
 /// A spend read in `~/.claude`, kept only while `still()` holds before and
@@ -533,13 +502,105 @@ pub(super) fn home_dir() -> Option<std::path::PathBuf> {
         .filter(|h| h.is_absolute())
 }
 
-fn print_empty(output: Output) {
-    match output {
-        Output::Json => println!("[]"),
-        Output::SummaryJson => println!("{}", render_summary_json(now_secs(), &[], None)),
-        Output::Bars | Output::Table => {
-            println!("no profiles; create one with `amplihack profile add <name>`")
+/// The Codex read of one `profile usage` run (issue #2001), running on its
+/// own thread from before the Claude probes until [`CodexRead::finish`].
+struct CodexRead {
+    root: std::path::PathBuf,
+    timeout_secs: u64,
+    handle: std::thread::JoinHandle<std::io::Result<Vec<codex_capacity::AccountResult>>>,
+}
+
+impl CodexRead {
+    /// Prints the deadline warning, if any, and starts reading every Codex
+    /// account under the profiles root, and `~/.codex`.
+    fn start() -> Self {
+        let (timeout_secs, warning) = codex_capacity::timeout_from_env();
+        if let Some(w) = warning {
+            eprintln!("{w}");
         }
+        let home = home_dir();
+        let root = codex_capacity::profiles_root(home.as_deref());
+        let shown = root
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("~/.codex-profiles"));
+        let bin = codex_capacity::codex_bin();
+        let handle = std::thread::spawn(move || {
+            let accounts = match root.as_deref() {
+                Some(r) => codex_capacity::list_accounts(r, home.as_deref())?,
+                None => Vec::new(),
+            };
+            Ok(codex_capacity::read_all(
+                &bin,
+                &accounts,
+                Duration::from_secs(timeout_secs),
+            ))
+        });
+        Self {
+            root: shown,
+            timeout_secs,
+            handle,
+        }
+    }
+
+    /// Waits for the read. A root that could not be listed, or a read
+    /// thread that panicked, gives no rows and one warning.
+    fn finish(self) -> CodexView {
+        let rows = match self.handle.join() {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(e)) => {
+                eprintln!(
+                    "warning: cannot list Codex accounts under {}: {}",
+                    sanitize_display(&self.root.to_string_lossy(), false),
+                    sanitize_display(&e.to_string(), false)
+                );
+                Vec::new()
+            }
+            Err(_) => {
+                eprintln!("warning: the Codex read failed");
+                Vec::new()
+            }
+        };
+        usage_codex::view(self.root, rows, self.timeout_secs)
+    }
+}
+
+/// The `codex` rows of the JSON outputs: none when Codex was not read.
+fn codex_json(codex: Option<&CodexView>) -> Vec<CodexJsonRow> {
+    codex.map(usage_codex::json_rows).unwrap_or_default()
+}
+
+fn print_empty(output: Output, time: &TimeView, codex: Option<&CodexView>) {
+    let rows = codex_json(codex);
+    match output {
+        Output::Json => println!("{}", render_json(&[])),
+        Output::SummaryJson => {
+            println!("{}", render_summary_json(now_secs(), &[], None, &rows))
+        }
+        Output::Bars | Output::Table => {
+            println!("no profiles; create one with `amplihack profile add <name>`");
+            print_codex_text(output, codex, time);
+        }
+    }
+}
+
+/// The Codex block after the Claude text output, in the bar or table form.
+fn print_codex_text(output: Output, codex: Option<&CodexView>, time: &TimeView) {
+    let Some(v) = codex else {
+        return;
+    };
+    // One empty line between the Claude output and the Codex block.
+    println!();
+    match output {
+        Output::Bars => {
+            use std::io::IsTerminal;
+            let colour = usage_view::colour_enabled(
+                std::io::stdout().is_terminal(),
+                std::env::var_os("NO_COLOR").as_deref(),
+            );
+            print!("{}", usage_codex::bars_block(v, time, colour));
+        }
+        Output::Table => print!("{}", usage_codex::table_block(v, time)),
+        Output::Json | Output::SummaryJson => {}
     }
 }
 
@@ -552,46 +613,18 @@ fn record(store: &ProfileStore, rows: &[Row], swapped: Option<&ProfileName>, jso
 
 /// The selected profile whose login is live in `~/.claude`, printing at
 /// most one warning, and none when every selected profile has its own login
-/// (so none of them could be live); and whether `~/.claude` holds a login no
-/// profile has, after a manual `/login` (issue #1693).
+/// (so none of them could be live). Issue #1886: by the ledgers only; no
+/// identity read and no account comparison.
 fn detect_live(
     store: &ProfileStore,
     home: Option<&std::path::Path>,
     profiles: &[ProfileName],
-) -> (Option<default_live::Live>, bool) {
-    let (live, warning) = match default_live::detect_for_usage(store, home) {
-        default_live::UsageLive::Profile(name) => (Some(default_live::Live::holder(name)), None),
-        default_live::UsageLive::Home => return (None, true),
-        default_live::UsageLive::Detected(live, warning) => (live, warning),
-    };
+) -> Option<default_live::Live> {
+    let (live, warning) = default_live::detect(store, home);
     if let Some(w) = warning.filter(|w| live_warning_applies(store, profiles, w)) {
         eprintln!("{w}");
     }
-    (live.filter(|l| profiles.contains(&l.name)), false)
-}
-
-/// The `~/.claude` row, probed with no `CLAUDE_CONFIG_DIR`.
-fn home_row_of(p: Probe) -> Row {
-    Row {
-        profile: default_live::LABEL.to_string(),
-        account: default_live::LABEL.to_string(),
-        default: false,
-        leased_to: None,
-        live_in: true,
-        // A login no profile holds is never marked overflow.
-        overflow: false,
-        overflow_blocked_until: None,
-        live_in_home: true,
-        api_key: false,
-        api_key_blocked: None,
-        report: p.report,
-        error: p.error,
-        raw: p.raw,
-        source: p.source,
-        direct_failure: p.direct_failure,
-        spend: p.spend,
-        extra_shape: p.extra_shape,
-    }
+    live.filter(|l| profiles.contains(&l.name))
 }
 
 /// Whether a live-detection warning can concern any selected profile. The
@@ -736,7 +769,6 @@ impl ApiKeys {
                     overflow_blocked_until: None,
                     api_key: true,
                     api_key_blocked: self.block.clone(),
-                    live_in_home: false,
                     report: UsageReport::empty(UsageState::Ok),
                     error: None,
                     raw: None,
@@ -782,7 +814,6 @@ fn build_rows(
                     .contains(name)
                     .then(|| blocked.get(n).copied())
                     .flatten(),
-                live_in_home: false,
                 api_key: false,
                 api_key_blocked: None,
                 report: p.report,
@@ -807,7 +838,9 @@ fn print_output(
     summary: Option<&Summary>,
     at: i64,
     swapped: Option<&ProfileName>,
+    codex: Option<&CodexView>,
 ) {
+    let codex_rows = codex_json(codex);
     match output {
         Output::Bars => {
             use std::io::IsTerminal;
@@ -819,15 +852,19 @@ fn print_output(
             if let Some(s) = summary {
                 print!("{}", summary_block(s));
             }
+            print_codex_text(output, codex, time);
         }
         Output::Table => {
             print!("{}", render_table(rows));
             if let Some(s) = summary {
                 print!("{}", summary_block(s));
             }
+            print_codex_text(output, codex, time);
         }
         Output::Json => println!("{}", render_json(rows)),
-        Output::SummaryJson => println!("{}", render_summary_json(at, rows, summary)),
+        Output::SummaryJson => {
+            println!("{}", render_summary_json(at, rows, summary, &codex_rows))
+        }
     }
     for w in error_warnings(rows) {
         eprintln!("{w}");
@@ -854,13 +891,6 @@ pub(super) fn spend_swap_note(name: &ProfileName) -> String {
         "note: the login in ~/.claude changed while profile \"{}\" was probed for its spend; its spend is unknown this run",
         sanitize_display(name.as_str(), false)
     )
-}
-
-/// Crusty round 6: the note for the `~/.claude` row (a login no profile
-/// holds) whose `--spend` probe was not started, or was dropped, because
-/// the account in `~/.claude` changed or could not be read. Fixed text.
-pub(super) fn home_spend_swap_note() -> String {
-    "note: the login in ~/.claude changed while the ~/.claude row was probed for its spend; its spend is unknown this run".to_string()
 }
 
 /// Named profiles (validated, deduplicated, each must exist), or every
@@ -977,7 +1007,8 @@ impl RowReader {
             creds_dir: creds_dir
                 .unwrap_or_else(|| self.store.root().join(name.as_str()).join(".no-home")),
             passive: Some(name.clone()),
-            // SR-3(d): never the live login's token.
+            // SR-3(d): never the live login's token in a usage read. Only the
+            // rotate prelude refreshes it, once, when it has expired (#1753).
             allow_refresh: refresh_ok && !live,
             overflow: self.overflow.contains(name),
         })
@@ -1025,19 +1056,17 @@ impl RowReader {
         };
         self.gate.run(|| {
             let timeout = self.env.timeout;
-            let p = match target {
-                SpendTarget::Profile(name, live) => probe_profile(
-                    &self.store,
-                    bin,
-                    name,
-                    live,
-                    ProbeMode::Text,
-                    timeout,
-                    self.now,
-                    false,
-                ),
-                SpendTarget::Home => probe_home(bin, ProbeMode::Text, timeout, self.now, false),
-            };
+            let SpendTarget(name, live) = target;
+            let p = probe_profile(
+                &self.store,
+                bin,
+                name,
+                live,
+                ProbeMode::Text,
+                timeout,
+                self.now,
+                false,
+            );
             p.spend
         })
     }
@@ -1481,7 +1510,8 @@ fn exited(child: &mut std::process::Child) -> std::io::Result<bool> {
 /// another process group.
 #[cfg(unix)]
 fn kill_group(child: &std::process::Child) {
-    let Ok(pid) = i32::try_from(child.id()) else {
+    // Never pid 0 (our own group) or 1 (`kill(-1)` is every process).
+    let Some(pid) = i32::try_from(child.id()).ok().filter(|p| *p > 1) else {
         return;
     };
     // SAFETY: `kill` has no memory-safety preconditions. A negative pid
@@ -1875,8 +1905,12 @@ struct JsonRow<'a> {
     raw: Option<&'a Raw>,
 }
 
-/// The stable interface: a JSON array of rows in display order. Strings use
-/// JSON escaping and are not otherwise cleaned.
+/// The stable interface: one array of Claude rows in display order. Issue
+/// #2001 leaves it an array, with no Codex rows: host scripts read it with
+/// `.[]` and `.[0]`, and send stderr to `/dev/null`, so an object here would
+/// make them report no capacity without a message. Codex rows are in
+/// `--summary-json` only. Strings use JSON escaping and are not otherwise
+/// cleaned.
 pub(super) fn render_json(rows: &[Row]) -> String {
     // Plain structs of strings, numbers and options always serialise.
     serde_json::to_string_pretty(&json_rows(rows)).expect("usage rows serialise to JSON")
@@ -1897,15 +1931,23 @@ struct SummaryOutput<'a> {
     at: String,
     profiles: Vec<JsonRow<'a>>,
     summary: Option<&'a Summary>,
+    codex: &'a [CodexJsonRow],
 }
 
 /// `--summary-json` (issue #1797): `at` as ISO UTC, `profiles` exactly the
-/// `--json` array, and the summary, `null` when there is none.
-pub(super) fn render_summary_json(at: i64, rows: &[Row], summary: Option<&Summary>) -> String {
+/// array of `--json`, the summary, `null` when there is none, and (issue
+/// #2001) `codex`, the Codex rows, which `--json` does not hold.
+pub(super) fn render_summary_json(
+    at: i64,
+    rows: &[Row],
+    summary: Option<&Summary>,
+    codex: &[CodexJsonRow],
+) -> String {
     let out = SummaryOutput {
         at: utc_time(at),
         profiles: json_rows(rows),
         summary,
+        codex,
     };
     serde_json::to_string_pretty(&out).expect("usage summary serialises to JSON")
 }
@@ -2030,11 +2072,10 @@ pub(super) fn observations(rows: &[Row]) -> Vec<Observation> {
         // would keep it fresh for ever.
         .filter(|r| r.source != Some(Source::Passive))
         .filter(|r| {
-            !r.live_in_home
-                && matches!(
-                    r.report.state,
-                    UsageState::Ok | UsageState::SessionExhausted | UsageState::WeeklyExhausted
-                )
+            matches!(
+                r.report.state,
+                UsageState::Ok | UsageState::SessionExhausted | UsageState::WeeklyExhausted
+            )
         })
         .map(|r| Observation {
             profile: r.profile.clone(),

@@ -14,7 +14,9 @@
 
 #![cfg(target_os = "linux")]
 
-use crate::issue_1760_fixture::{CONV_A, CONV_B, Fx, expect_code, now, stdout};
+use crate::issue_1760_fixture::{
+    AGENT_CHILD_TIMEOUT_ENV, CONV_A, CONV_B, Fx, expect_code, now, stdout,
+};
 use serde_json::{Value, json};
 
 const UNIT_PREFIX: &str = "--unit=amplihack-tmux-server-";
@@ -177,14 +179,18 @@ fn a_refused_systemd_run_starts_tmux_once_more_with_a_warning() {
 }
 
 /// Case 4: a `systemd-run` that does not finish within 10 s is treated as a
-/// failure, and the session it made is not launched again.
+/// failure, and the session it made is not launched again. This test needs
+/// the product's 10 s limit, so it removes the knob that raises it; the
+/// fake sleeps 30 s, so the limit still ends first on a loaded host.
 #[test]
 fn a_systemd_run_timeout_is_treated_as_a_failure() {
     let fx = Fx::new();
     fx.systemd_run_mode("hang");
     write(&fx, vec![lost(&fx, "coord", CONV_A)]);
     let started = std::time::Instant::now();
-    pass(&fx);
+    let mut c = fx.cmd(&["agent", "supervise", "--once", "--gap", "0"]);
+    c.env_remove(AGENT_CHILD_TIMEOUT_ENV);
+    expect_code(&fx.output(&mut c), 0);
     assert!(started.elapsed().as_secs() >= 10, "waited for the timeout");
     assert_eq!(fx.new_sessions().len(), 1, "no second new-session");
     assert_eq!(results(&fx), ["resumed"]);

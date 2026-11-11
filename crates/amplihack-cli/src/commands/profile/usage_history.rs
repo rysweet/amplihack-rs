@@ -12,6 +12,11 @@
 //! credential variable is set, lock `usage-history.lock`, append one line in
 //! one write, trim entries older than eight days, and never create
 //! `.auto-switch.d`. No failure here ever fails a command.
+//!
+//! Issue #1970: before a line is written, each passive reading is checked
+//! with [`stale`] against its login's newest reading in the history; a stale
+//! one is replaced by that recorded reading, so the login stays in the line
+//! ([`stale_replaced`]).
 
 use super::name::ProfileName;
 use super::usage_cmd::{Row, utc_time};
@@ -56,6 +61,13 @@ const MAX_SKEW: i64 = 100 * 31_557_600;
 /// (4.5 h). An older reading is unknown in the snapshot, so it is in no
 /// figure, no rate and no history point; the line lists it as unknown.
 pub(super) const READING_MAX_AGE: i64 = 300;
+/// Issue #1970: two weekly reset times this close are the same week. A
+/// reading's reset time can move by a few seconds between reads.
+pub(super) const SAME_WEEK_SLACK: i64 = 3600;
+/// Issue #1970: a writer compares passive readings with the newest readings
+/// in at most this many bytes from the end of the history.
+#[cfg(unix)]
+pub(super) const STALE_LOOKBACK: u64 = 256 * 1024;
 #[cfg(unix)]
 const LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(50);
 #[cfg(unix)]
@@ -78,6 +90,12 @@ pub(super) struct Point {
     /// `true` with `s` `None`; a session that was simply not read is
     /// `false`. Written to the history as `"session_limit": false`.
     pub(super) no_session_limit: bool,
+    /// Issue #1970: a passive reading, the figure Claude's status line
+    /// stored rather than one read during the cycle. It may be a cached
+    /// figure older than the history's newest, so [`append_with`] checks it
+    /// with [`stale`] before writing it. Never written to the history: a
+    /// parsed point is always `false`.
+    pub(super) passive: bool,
 }
 
 /// Which command wrote a history line. `profile usage` reads every
@@ -214,6 +232,9 @@ pub(super) fn entry_of(r: &UsageReport) -> Option<Point> {
     // Issue #1818: positive evidence only; the parser never sets it with a
     // session window, and the check keeps that true here.
     let no_session_limit = !r.session_limit && session.is_none();
+    // Issue #1970: a reading with a capture time was stored earlier by
+    // Claude's status line, not read during this run.
+    let passive = r.observed_at.is_some();
     match r.state {
         UsageState::Ok => Some(Point {
             s: pct_of(session),
@@ -221,6 +242,7 @@ pub(super) fn entry_of(r: &UsageReport) -> Option<Point> {
             w_reset,
             s_reset,
             no_session_limit,
+            passive,
         }),
         UsageState::SessionExhausted => Some(Point {
             s: Some(100),
@@ -228,6 +250,7 @@ pub(super) fn entry_of(r: &UsageReport) -> Option<Point> {
             w_reset,
             s_reset,
             no_session_limit: false,
+            passive,
         }),
         UsageState::WeeklyExhausted => Some(Point {
             s: pct_of(session),
@@ -235,6 +258,7 @@ pub(super) fn entry_of(r: &UsageReport) -> Option<Point> {
             w_reset,
             s_reset,
             no_session_limit,
+            passive,
         }),
         _ => None,
     }
@@ -262,7 +286,7 @@ pub(super) fn from_rows(
 ) -> Option<Snapshot> {
     let mut points = BTreeMap::new();
     let mut unknown = Vec::new();
-    let logins = rows.iter().filter(|r| !r.api_key && !r.live_in_home);
+    let logins = rows.iter().filter(|r| !r.api_key);
     let mut any = false;
     for r in logins {
         any = true;
@@ -344,6 +368,9 @@ fn point_of_probe(p: &super::rotate::decide::Probed) -> Option<Point> {
     // counts a missing session as 0% used; the point keeps it unread and
     // says why.
     let no_session_limit = p.windows.no_session_limit && session.is_none();
+    // Issue #1970: the probe says whether it is a passive reading. Its
+    // capture time cannot: a #1870 re-read is a direct read that has one.
+    let passive = p.passive;
     match p.reading {
         Reading::Failed => None,
         Reading::Measured { week: used, .. } => Some(Point {
@@ -352,6 +379,7 @@ fn point_of_probe(p: &super::rotate::decide::Probed) -> Option<Point> {
             w_reset,
             s_reset,
             no_session_limit,
+            passive,
         }),
         Reading::Exhausted { .. } => match week.map(|w| whole_pct(w.used)) {
             Some(Some(100)) => Some(Point {
@@ -360,6 +388,7 @@ fn point_of_probe(p: &super::rotate::decide::Probed) -> Option<Point> {
                 w_reset,
                 s_reset,
                 no_session_limit,
+                passive,
             }),
             Some(Some(w)) => Some(Point {
                 s: Some(100),
@@ -367,10 +396,105 @@ fn point_of_probe(p: &super::rotate::decide::Probed) -> Option<Point> {
                 w_reset,
                 s_reset,
                 no_session_limit: false,
+                passive,
             }),
             Some(None) | None => None,
         },
     }
+}
+
+// ---------------------------------------------------------------------------
+// Stale passive readings (issue #1970)
+// ---------------------------------------------------------------------------
+
+/// Whether `new`, a passive reading for a line taken at `at`, is stale
+/// against `prev`, that login's newest reading in the history, if any.
+///
+/// Claude's status line can hand back a figure it cached earlier, so a
+/// lower figure can reappear between rising ones. A passive reading is
+/// stale when:
+///
+/// 1. its week has ended: its `w_reset` is at or before `at`, whatever the
+///    history holds;
+/// 2. its week is the recorded one (reset times within [`SAME_WEEK_SLACK`])
+///    and its `w` is lower than the recorded `w`; or
+/// 3. its week is more than [`SAME_WEEK_SLACK`] earlier than the recorded
+///    one.
+///
+/// A reading whose own reset time is unknown is never stale, and with no
+/// recorded reset time only rule 1 applies; the reset rule of the rate
+/// covers those cases. The caller decides which readings are passive.
+pub(super) fn stale(prev: Option<&Point>, new: &Point, at: i64) -> bool {
+    let Some(reset) = new.w_reset else {
+        return false;
+    };
+    if reset <= at {
+        return true;
+    }
+    let Some((prev_w, prev_reset)) = prev.and_then(|p| p.w_reset.map(|r| (p.w, r))) else {
+        return false;
+    };
+    if reset.abs_diff(prev_reset) <= SAME_WEEK_SLACK.unsigned_abs() {
+        new.w < prev_w
+    } else {
+        reset < prev_reset
+    }
+}
+
+/// Each login's newest reading in `bytes`, read only through
+/// [`parse_line`]. Of two readings taken at the same time, the later line
+/// wins.
+#[cfg(unix)]
+fn newest_points(bytes: &[u8], now: i64) -> BTreeMap<String, (i64, Point)> {
+    let mut newest: BTreeMap<String, (i64, Point)> = BTreeMap::new();
+    for e in lines(bytes).filter_map(|l| parse_line(l, now)) {
+        for (name, p) in e.profiles {
+            if newest.get(&name).is_none_or(|(at, _)| *at <= e.at) {
+                newest.insert(name, (e.at, p));
+            }
+        }
+    }
+    newest
+}
+
+/// `entry` with each stale passive reading ([`stale`] against `newest`)
+/// replaced by that login's newest recorded reading.
+///
+/// The login stays in the line. Passive readings come from Claude's status
+/// line, so a stale one belongs to a login in use, and a line without it
+/// would leave the busiest login out: a `profile usage` start would drop it
+/// from the rate, and `rotate status` would report a rotator line as having
+/// left a login out (`capacity_summary::status_line`). The recorded figure
+/// adds nothing to the rate, because the week has not risen above it, and
+/// it is a lower bound of the true figure, which only rises within a week,
+/// so headroom is never overstated by the cached figure.
+///
+/// A recorded reading is used only while its own week has not ended at
+/// `entry.at`. Without one (a reading from an ended week, with no newer
+/// recorded figure of the current week) nothing known is left to write:
+/// the login is listed as unknown, as a failed reading would be.
+#[cfg(unix)]
+fn stale_replaced(entry: &Entry, newest: &BTreeMap<String, (i64, Point)>) -> Entry {
+    let mut out = entry.clone();
+    for (name, p) in &entry.profiles {
+        let recorded = newest.get(name).map(|(_, q)| q);
+        if !p.passive || !stale(recorded, p, entry.at) {
+            continue;
+        }
+        let current_week = recorded.filter(|q| q.w_reset.is_some_and(|r| r > entry.at));
+        match current_week {
+            Some(q) => {
+                out.profiles.insert(name.clone(), q.clone());
+            }
+            None => {
+                out.profiles.remove(name);
+                out.unknown.push(name.clone());
+            }
+        }
+    }
+    out.unknown.sort();
+    out.unknown.dedup();
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -458,6 +582,8 @@ fn point_in(v: &serde_json::Value, now: i64) -> Option<Point> {
         w_reset,
         s_reset: None,
         no_session_limit,
+        // A line never says how a reading was taken.
+        passive: false,
     })
 }
 
@@ -539,12 +665,19 @@ pub(super) fn skipped_warning(n: usize) -> String {
 /// The last 4 MiB of `file`, from the first whole line when cut.
 #[cfg(unix)]
 fn read_tail(file: &std::fs::File, len: u64) -> std::io::Result<Vec<u8>> {
+    read_last(file, len, TAIL)
+}
+
+/// The last `max` bytes of `file`, whose length is `len`, from the first
+/// whole line when cut.
+#[cfg(unix)]
+fn read_last(file: &std::fs::File, len: u64, max: u64) -> std::io::Result<Vec<u8>> {
     use std::io::{Read, Seek, SeekFrom};
-    let start = len.saturating_sub(TAIL);
+    let start = len.saturating_sub(max);
     let mut f = file;
     f.seek(SeekFrom::Start(start))?;
     let mut buf = Vec::new();
-    f.take(TAIL).read_to_end(&mut buf)?;
+    f.take(max).read_to_end(&mut buf)?;
     if start > 0 {
         // The first line was cut: start after it.
         let cut = buf
@@ -737,7 +870,9 @@ pub(super) fn append(root: &Path, entry: &Entry, now: i64) -> Result<(), History
 /// trusted or `.auto-switch.d` is missing or not private
 /// ([`HistoryError::NoStateDir`]); neither prints anything. Never creates
 /// `.auto-switch.d`. A line appended after a failed trim gives
-/// [`HistoryError::TrimFailed`].
+/// [`HistoryError::TrimFailed`]. A passive reading that is [`stale`]
+/// against its login's newest reading in the last 256 KiB is replaced by
+/// that reading ([`stale_replaced`], issue #1970).
 #[cfg(unix)]
 pub(super) fn append_with(
     root: &Path,
@@ -763,6 +898,20 @@ pub(super) fn append_with(
         .metadata()
         .map_err(|_| HistoryError::WriteFailed)?
         .len();
+    // Issue #1970: a passive reading lower than the recorded one for its
+    // week, or from an ended week, is a stale cached figure and is not
+    // written as new history; the recorded figure is written instead. Read
+    // from the handle already checked, under the lock, and before the line
+    // is made, so a rewrite writes the filtered line too. A failed read
+    // writes nothing rather than the unfiltered line.
+    let filtered;
+    let entry = if entry.profiles.values().any(|p| p.passive) {
+        let tail = read_last(&file, len, STALE_LOOKBACK).map_err(|_| HistoryError::WriteFailed)?;
+        filtered = stale_replaced(entry, &newest_points(&tail, now));
+        &filtered
+    } else {
+        entry
+    };
     let line = to_line(entry);
     let mut trim_failed = false;
     if needs_rewrite(&file, len, now)? {

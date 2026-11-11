@@ -214,6 +214,8 @@ fn a_timed_out_candidate_does_not_hide_a_usable_one() {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
+        passive: false,
     };
     // "a-slow" sorts first, so a tie-break bug would pick it.
     let cands = [measured("a-slow", &slow), measured("b-spare", &spare)];
@@ -503,6 +505,48 @@ fn direct_probe(session: f64, week: f64) -> Probe {
         direct_failure: None,
         spend: crate::commands::profile::usage_source::Spend::NotApplicable,
         extra_shape: None,
+    }
+}
+
+#[test]
+fn identity_trust_changes_join_the_original_read_without_reclassifying_it() {
+    use super::measure::{Key, Reads, join_pending};
+    for (started, next) in [
+        (
+            Key::UnboundCandidate(name("spare")),
+            Key::Candidate(name("spare")),
+        ),
+        (
+            Key::Candidate(name("spare")),
+            Key::UnboundCandidate(name("spare")),
+        ),
+    ] {
+        let mut reads = Reads::with_cancel(
+            Duration::from_secs(30),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let (send, recv) = std::sync::mpsc::channel();
+        reads.start_all(
+            vec![(
+                started.clone(),
+                Box::new(move || {
+                    recv.recv().unwrap();
+                    direct_probe(10.0, 20.0)
+                }),
+            )],
+            1,
+        );
+        let mut keys = [next];
+        join_pending(&reads, &mut keys);
+        assert_eq!(keys[0], started);
+        send.send(()).unwrap();
+        let results = gather(
+            &mut reads,
+            &keys,
+            |_| panic!("no duplicate read"),
+            Wait::Full,
+        );
+        assert_eq!(results[0].0, started);
     }
 }
 
@@ -877,4 +921,33 @@ fn a_stop_with_jobs_queued_lets_wait_all_return() {
     assert_eq!(left, 0, "no key is left busy");
     assert!(panicked.is_empty(), "a cancelled job is not a panic");
     assert_eq!(ran.load(AtomicOrdering::SeqCst), 1);
+}
+
+// Issue #1870: a result collected from a read started in an earlier cycle is
+// `carried`, so the freshness gate gives it no reading time; a result read
+// in this cycle is not.
+#[test]
+fn a_result_collected_from_an_earlier_cycle_is_carried() {
+    let jobs = Jobs::default();
+    jobs.set("spare", Duration::from_millis(800));
+    let mut fl: InFlight<&'static str, Probe> = InFlight::new(Duration::from_secs(60));
+    let keys = ["work", "spare"];
+    let got = by_key(gather(
+        &mut fl,
+        &keys,
+        jobs.make(),
+        Wait::Until(Instant::now() + Duration::from_millis(200)),
+    ));
+    assert!(got["spare"].still_running);
+    assert!(!got["work"].carried, "read in this cycle");
+    std::thread::sleep(Duration::from_millis(900));
+    let got = by_key(gather(
+        &mut fl,
+        &keys,
+        jobs.make(),
+        Wait::Until(Instant::now() + Duration::from_millis(200)),
+    ));
+    assert!(!got["spare"].still_running);
+    assert!(got["spare"].carried, "started in the earlier cycle");
+    assert!(!got["work"].carried, "work was read again in this cycle");
 }

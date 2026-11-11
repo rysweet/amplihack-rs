@@ -7,16 +7,17 @@
 //! credits would otherwise be spent by accident: to plain `decide` an
 //! overflow profile with headroom looks like a good place to stay.
 //!
-//! The fixture is `tests_handfix::fx`: the ledger names L (no login), the
-//! manual login in `~/.claude` is M's account and M has its own copy, C is
-//! a plan login. Here M is marked overflow. The stubs replace only probing;
-//! the decision is the real one ([`decide_measured`]).
+//! The fixture is `tests_handfix::fx`: the ledger names L (which keeps its
+//! own login), the manual login in `~/.claude` answers as M and M has its
+//! own copy, C is a plan login; the suspicion of M is on record, so the
+//! cycle confirms it (issue #1886). Here M is marked overflow. The stubs
+//! replace only probing; the decision is the real one ([`decide_measured`]).
 
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::decide::{Probed, Reading, Windows};
 use super::identify::LiveId;
 use super::observe::{Measurement, Snap, decide_measured};
-use super::tests_handfix::{C, L, M, fx, lost_l};
+use super::tests_handfix::{C, L, M, fx};
 use super::tests_handfix_cycle::ctx;
 use super::tests_swap::{ino_at, n};
 use crate::commands::profile::ProfileError;
@@ -45,6 +46,8 @@ fn roomy() -> Probed {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
+        passive: false,
     }
 }
 
@@ -60,6 +63,8 @@ fn plan_ok() -> Probed {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
+        passive: false,
     }
 }
 
@@ -67,7 +72,7 @@ fn plan_ok() -> Probed {
 /// headroom and C, a plan login, has capacity.
 fn m_live_on_overflow(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     assert_eq!(snap.live, LiveId::Known(n(M)), "snapshot after recovery");
-    assert_eq!(snap.candidates, vec![n(C)], "L has no login, M is live");
+    assert_eq!(snap.candidates, vec![n(C), n(L)], "M is live");
     assert!(
         snap.overflow.iter().any(|e| e.name == n(M)),
         "the snapshot knows M is overflow"
@@ -79,7 +84,11 @@ fn m_live_on_overflow(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErro
 /// candidate with headroom.
 fn c_live_with_capacity(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     assert_eq!(snap.live, LiveId::Known(n(C)));
-    assert_eq!(snap.candidates, vec![n(M)], "M keeps the manual login");
+    assert_eq!(
+        snap.candidates,
+        vec![n(M), n(L)],
+        "M keeps the manual login"
+    );
     decide_measured(ctx, snap, plan_ok(), vec![(n(M), roomy())], now())
 }
 
@@ -87,6 +96,7 @@ fn c_live_with_capacity(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileEr
 #[test]
 fn a_manual_login_onto_the_overflow_account_is_moved_off_while_a_plan_login_has_capacity() {
     let f = fx(true, true);
+    f.suspected();
     mark_overflow(&f.root, M);
     let mut c = ctx(&f, m_live_on_overflow);
     assert_eq!(
@@ -113,9 +123,8 @@ fn a_manual_login_onto_the_overflow_account_is_moved_off_while_a_plan_login_has_
         "the overflow profile still has its login: {:?}",
         l.lost_login
     );
-    assert_eq!(l.lost_login, vec![L.to_string()], "only L lost its login");
+    assert!(l.lost_login.is_empty(), "L keeps its own login");
     let log = f.logged();
-    assert!(log.contains(&lost_l()), "{log:?}");
     assert!(
         log.iter().any(|x| x.starts_with(&format!("swap {M}->{C}"))),
         "{log:?}"

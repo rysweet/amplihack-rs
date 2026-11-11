@@ -23,7 +23,9 @@ use super::ledger::{RotateLedger, RotateState};
 ///   measured. Without it auto-switch counts the rotator's live login as
 ///   unread and holds the API key back, which fails safe. Unlike
 ///   `platform_block` and `live_kind`, nothing is gained by keeping it for a
-///   rotator that would refuse the whole ledger.
+///   rotator that would refuse the whole ledger;
+/// - `advisory_alert` (issue #1907). Without it an older rotator logs the
+///   advisory ALERT once more; `alert` stays empty, so no hook is blocked.
 pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
     let mut out = l.clone();
     if older {
@@ -36,6 +38,11 @@ pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
         out.home_unreadable_since = None;
         out.lost_login.clear();
         out.no_room = None;
+        // Full identity provenance is optional; legacy strict readers reject it.
+        out.login_identity = None;
+        // Issue #1870: only this binary's freshness gate reads it.
+        out.swapped_away.clear();
+        out.advisory_alert = None;
     }
     out
 }
