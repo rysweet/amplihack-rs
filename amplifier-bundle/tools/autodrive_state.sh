@@ -8,7 +8,6 @@
 #   Local — ${AMPLIHACK_STATE_DIR:-$HOME/.amplihack/state}/auto-drive/<key>/
 #   Fast, always available, survives a crashed run on the same host.
 #
-#
 # The authoritative answer to "is this already merged?" is not that store: it
 # is the platform (`gh pr view --json state`). State files record what THIS
 # workflow did; they never assert a merge that GitHub does not confirm.
@@ -218,7 +217,6 @@ autodrive_clear_phase() {
   rm -f -- "$tmp"
   return 1
 }
-
 
 # autodrive_blob_hash <dir> < file -> the git blob hash of stdin. git runs with
 # <dir> as its working directory, so the config of whatever checkout the caller
