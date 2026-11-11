@@ -354,6 +354,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             )
         }
         Commands::Codex {
+            reset_recovery: _, // Consumed by startup before client resolution/self-heal.
             no_reflection,
             subprocess_safe,
             docker,

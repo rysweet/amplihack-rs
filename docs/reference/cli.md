@@ -61,7 +61,7 @@ The version string comes from the `__version__` attribute in `amplihack/__init__
 | `launch`     | Compatibility alias for `claude`; `amplihack` with no subcommand also launches Claude Code. |
 | `RustyClawd` | Launch RustyClawd (Rust implementation).                                                    |
 | `copilot`    | Launch GitHub Copilot CLI.                                                                  |
-| `codex`      | Launch OpenAI Codex CLI.                                                                    |
+| `codex`      | Launch OpenAI Codex CLI; `--reset-recovery` preserves a pending recovery journal before startup. |
 | `amplifier`  | Launch Microsoft Amplifier with amplihack bundle.                                           |
 | `uvx-help`   | Get help with UVX deployment.                                                               |
 | `plugin`     | Install, uninstall, and list amplihack plugins.                                             |
@@ -78,6 +78,46 @@ See the documentation for each subcommand:
 - [Recipe CLI Reference](./recipe-cli-reference.md)
 - [Memory CLI Reference](./memory-cli-reference.md)
 - [Plugin CLI Reference](#)
+
+### `codex`
+
+Launches Codex after reconciling Amplihack's native plugin and hooks.
+
+```text
+amplihack codex [--reset-recovery] [other amplihack options] [-- <codex arguments>]
+```
+
+| Flag | Description |
+| --- | --- |
+| `--reset-recovery` | Archive a pending Codex recovery journal, then continue launch. |
+
+The reset flag must precede native arguments and the explicit `--` separator.
+Amplihack consumes it immediately after parsing, before client resolution,
+startup updates, self-healing or reconciliation. A reset failure stops before
+updates can install assets. It is not forwarded to native Codex,
+auto-mode or Docker launches. A token after `--` belongs to Codex and does not
+reset recovery.
+
+Reset preserves `$HOME/.amplihack/codex/pending.json` byte for byte as
+`pending.json.stale-<UTC stamp>` in the same directory, using a collision suffix
+when necessary. It accepts safely accessible malformed journals. It changes
+recovery metadata only; normal launch still enforces configuration, package and
+ownership checks. `CODEX_HOME` selects Codex targets, defaulting to `$HOME/.codex`,
+and does not change the metadata location.
+
+Successful archival emits one recovery status line:
+`amplihack: preserved Codex recovery journal: ` followed by the preserved path.
+With nothing to archive or resume, reset reports
+`amplihack: no pending Codex recovery journal`. Both cases continue normal launch.
+Archival errors stop launch and identify the affected path and corrective action.
+
+```bash
+amplihack codex --reset-recovery -- exec "Summarize the public interfaces without changing files"
+```
+
+The recovery status appears before the unattended task starts; the task returns
+the repository summary. See [recovery steps](../howto/install-codex-plugin.md#recover-an-interrupted-installation)
+and [ownership and archival guarantees](../concepts/codex-installation-ownership.md#journal-archival-and-explicit-reset).
 
 ### `update`
 

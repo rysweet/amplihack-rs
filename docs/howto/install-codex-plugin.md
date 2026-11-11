@@ -1,8 +1,8 @@
 ---
 title: Use Amplihack with Codex
-description: Install native Codex assets, preserve configuration and run recipes.
+description: Install native Codex assets, preserve configuration, recover interrupted installs and run recipes.
 type: howto
-updated: 2026-11-06
+updated: 2026-11-10
 ---
 
 # Use Amplihack with Codex
@@ -18,6 +18,7 @@ Amplihack supports interactive Codex sessions and unattended Codex recipe steps 
 - [Skills, commands, and personas](#skills-commands-and-personas)
 - [Hook behavior and limitations](#hook-behavior-and-limitations)
 - [Runner delivery and removal](#runner-delivery-and-removal)
+- [Recover an interrupted installation](#recover-an-interrupted-installation)
 - [Migration and troubleshooting](#migration-and-troubleshooting)
 
 ## Install and launch
@@ -273,11 +274,91 @@ Managed delivery requires both semantic validation and exact Cargo provenance: p
 
 `amplihack uninstall` unregisters the owned Codex identity before removing owned package files. It retains user configuration, authentication, unrelated plugins, and shared marketplaces with other consumers. Unknown ownership-ledger versions or identity conflicts prevent destructive cleanup. Partial registration does not publish a new ownership ledger. Before ledger commit, the installer attempts rollback; recovery failures before journal deletion retain the pending journal and available prior state for another install or uninstall attempt. Modified owned package files are preserved and require manual reconciliation.
 
+## Recover an interrupted installation
+
+If launch repeatedly stops with:
+
+```text
+failed native Codex reconciliation: foreign Codex config changed; reconcile manually; recovery record retained
+```
+
+inspect the retained `$HOME/.amplihack/codex/pending.json` and the current
+configuration in the selected `CODEX_HOME`. The journal records an interrupted
+installation. Deleting `~/.codex` or `~/.codex-profiles` does not remove it.
+
+First retry normally with the same `HOME` and intended `CODEX_HOME`:
+
+```bash
+amplihack codex
+```
+
+Startup automatically archives a journal only when both recorded Codex targets
+(`config.toml` and `hooks.json`) have disappeared in a way no permitted transaction
+state explains, or when verified completion records prove a later reconciliation
+superseded it. Newer timestamps alone, foreign edits, partial disappearance and
+mixed old/new state keep recovery protection. See the
+[automatic recovery rules](../concepts/codex-installation-ownership.md#automatic-stale-journal-recovery)
+for the exact boundaries.
+
+If the journal still blocks launch and you have decided to abandon its recovery,
+archive it explicitly:
+
+```bash
+amplihack codex --reset-recovery
+```
+
+Reset runs before startup self-healing, client resolution or native
+reconciliation. It accepts a safely accessible regular journal even when its
+contents cannot be parsed. It preserves the original bytes and reports the
+archive path in one status line, then continues normal Codex launch. For example,
+with `HOME=/Users/ryan`, the recovery status line is:
+
+```text
+amplihack: preserved Codex recovery journal: /Users/ryan/.amplihack/codex/pending.json.stale-20261110T180000Z
+```
+
+The UTC timestamp varies. Existing destinations are preserved; collisions use a
+numeric suffix such as `.1`. Automatic archival uses the same preservation and
+reporting rules. If there is nothing to archive or resume, reset reports
+`amplihack: no pending Codex recovery journal` and continues normally.
+
+If another installer holds the package lock, reset waits up to ten seconds before
+reporting the affected lock path. Retry after the other installer finishes; a
+timeout leaves the journal protected.
+
+Place `--reset-recovery` before the explicit `--` separator. Native Codex
+arguments follow the separator:
+
+```bash
+amplihack codex --reset-recovery -- exec "Summarize the public interfaces without changing files"
+```
+
+This archives any pending journal before starting the unattended task; the task's
+final response is the repository summary. Amplihack consumes the reset flag,
+including for auto-mode and Docker launches. A flag after the separator is passed
+to Codex and does not request recovery reset. See the
+[CLI option reference](../reference/cli.md#codex).
+
+Recovery metadata always lives under `$HOME/.amplihack/codex`. `CODEX_HOME`
+selects Codex configuration targets and does not relocate that metadata. Keep
+the same intended `CODEX_HOME` when retrying or resetting.
+
+Reset moves recovery metadata only. It does not remove configuration,
+authentication, packages, ownership records or profiles. Normal reconciliation
+afterward still checks package ownership, marketplace registration, hooks and
+leftover backups; it can refuse those conflicts independently. Preserve the
+archive and any `previous-package` directory when resolving such a refusal.
+
+If archival fails, launch stops with the affected path and corrective action.
+Resolve the reported access, path-safety or filesystem error and retry. Do not
+delete retained evidence: a failed rename or synchronization can leave a pending
+journal or an archive with a recovery intent that the next attempt must finish.
+
 ## Migration and troubleshooting
 
 Legacy `config.yaml` with `approval_mode: auto` and legacy JSON are not current Codex configuration. Only positively identified Amplihack-generated files are automatically migrated or removed. Ambiguous files remain for manual review: back them up, translate intended settings into TOML using the official configuration reference, and remove obsolete files yourself after verification. Never replace your TOML wholesale.
 
-If `amplihack codex` stops with `failed native Codex reconciliation`, or `amplihack install` or `amplihack update` stops with `failed native Codex installation`, the rest of the message names the cause: a probe timeout, a non-zero exit, output that is not JSON, or a Codex without plugin support. Only the last case asks you to update Codex. See the [native plugin probe reference](../reference/codex-native-plugin-probe.md) for each message and its fix.
+If `amplihack codex` stops with `failed native Codex reconciliation`, or `amplihack install` or `amplihack update` stops with `failed native Codex installation`, read the rest of the message for the cause. For a retained recovery record, use [Recover an interrupted installation](#recover-an-interrupted-installation). Probe failures include a timeout, a non-zero exit, output that is not JSON, or a Codex without plugin support. Only the last case asks you to update Codex. See the [native plugin probe reference](../reference/codex-native-plugin-probe.md) for those messages and their fixes.
 
 If hooks do not run, inspect plugin enablement, `/hooks` trust, and managed hook policy. If a recipe fails compatibility checks, inspect `RECIPE_RUNNER_RS_PATH` and the capability probe before reinstalling the managed runner. If configuration cannot be edited, repair its syntax or explicitly edit the resolved symlink target; Amplihack preserves the original. Unsupported fresh/resume option combinations fail rather than silently discarding requested settings. See the [mode-specific flag matrix](../reference/flag-matrix.md).
 
@@ -317,12 +398,15 @@ See [native installer ownership](../concepts/codex-installation-ownership.md) fo
 Interrupted installation recovery uses a versioned journal containing exact
 original and planned file bytes and package digests. Before rollback or cleanup,
 the installer checks every affected config, hook, marketplace, ownership record,
-package and backup against those states. Foreign edits, disallowed symlinks in
-managed resources, modified backups, and older journals without ownership proof
+package and backup against those states. Except for the
+[proven stale journals](#recover-an-interrupted-installation) archived at startup,
+foreign edits, disallowed symlinks in managed resources, modified backups, and
+older journals without ownership proof
 stop recovery and retain `~/.amplihack/codex/pending.json` and any
 `previous-package` directory. Preserve
-those files and reconcile the reported conflict manually before retrying; do not
-delete the journal to force replacement. Native-client configuration changes
+those files and reconcile the reported conflict manually before retrying. To
+abandon journal recovery explicitly, use `--reset-recovery` to preserve it rather
+than deleting it. Native-client configuration changes
 that cannot be proven transaction-owned also require manual reconciliation.
 
 Committed backup cleanup records a durable inventory before deleting entries.
