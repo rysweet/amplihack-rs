@@ -186,6 +186,10 @@ impl Sandbox {
             .env_remove("AMPLIHACK_WORK_ROOT")
             .env_remove("AMPLIHACK_WORK_ROOT_EXPLICIT")
             .env_remove("REPO_PATH")
+            // A recipe run exports these, and workflow_worktree_root.sh then
+            // places worktrees under the run's work root, outside the sandbox.
+            .env_remove("AMPLIHACK_WORK_ROOT")
+            .env_remove("AMPLIHACK_WORK_ROOT_EXPLICIT")
     }
 
     fn git_output(&self, dir: &Path, args: &[&str]) -> Output {
