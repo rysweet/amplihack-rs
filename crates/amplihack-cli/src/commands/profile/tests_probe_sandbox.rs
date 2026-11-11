@@ -32,7 +32,9 @@
 //!
 //! Every fake lives in its own `0700` temp dir and is passed in as
 //! `Bwrap(path)`; no test changes `PATH` or the process environment, and
-//! nothing outside the temp dirs is read or written.
+//! nothing outside the temp dirs is read or written. Each `Host` holds the
+//! shared `env_lock` while it lives: the stubs are written by `sh` with the
+//! inherited `PATH`, which other tests change under that lock.
 
 use super::probe_limits::ProbeMode;
 use super::probe_sandbox::{Fallback, NO_PERSIST, Notice, ProbeSandbox, Unavailable, wrap};
@@ -59,10 +61,15 @@ struct Host {
     home: PathBuf,
     profile: PathBuf,
     shared: PathBuf,
+    // Declared last so it is dropped last, after the temp dir is removed.
+    _env: std::sync::MutexGuard<'static, ()>,
 }
 
 impl Host {
     fn new() -> Self {
+        let env = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let base = tmp.path().canonicalize().unwrap();
@@ -82,6 +89,7 @@ impl Host {
             home,
             profile,
             shared,
+            _env: env,
         }
     }
 
