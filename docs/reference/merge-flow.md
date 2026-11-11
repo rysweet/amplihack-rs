@@ -1,97 +1,64 @@
----
-title: Merge Flow Reference
-last_updated: 2026-11-11
-review_schedule: quarterly
-owner: workflow-team
----
-
-# Merge flow reference
+# Merge Flow Reference
 
 > [Home](../index.md) > Reference > Merge Flow
 
-> **[PLANNED — Implementation Pending] Proposed, runtime-unverified flow for
-> [#2342](https://github.com/rysweet/amplihack-rs/issues/2342).** The flow below
-> specifies the feature to be built. Current recipes synchronise behind
-> branches unconditionally, run QA before CI, and lack final-gate `no_merge`
-> enforcement. Conditional sync, CI-first QA, freshness, protected QA and
-> persistent open PR delivery are proposed guarantees, not runtime assurances.
+> **Superseded in part, 9 Nov 2026:** the "require branches to be up to date
+> before merging" setting (strict) on `main` is now **off**, on purpose. The
+> current policy is in [Branch protection on main](../contributing/branch-protection.md).
+> Merge `main` into a pull request only to resolve a real conflict. The serial,
+> up-to-date flow and the strict policy described below are kept as history.
 
-A PR is ready when current-head CI and QA evidence, review requirements and
-applicable base policy all agree. Being behind the base alone is not a
-reason to update the branch.
+`main` is protected by 7 required status checks (see [CI Pipeline](ci-pipeline.md)):
+`Lint & Format`, `Test`, `Install Smoke Test`, and the four `Build <target>` legs.
 
-## Base updates follow applicable policy
+Until 9 Nov 2026, `main` also required that a branch be **up to date** with
+`main` before it could merge (the "strict" policy). Strict is now off; the 7
+required checks stay on.
 
-Read the PR's actual base, mergeability, classic branch protection and
-effective rulesets. The repository's documented policy is in
-[Branch protection on main](../contributing/branch-protection.md); the drive
-verifies applicable authoritative platform state for each PR.
+## Why not a GitHub merge queue?
 
-| PR state | Base action |
-| --- | --- |
-| Clean, with no applicable update requirement | Preserve the published head. Do not merge or push merely because the base moved. |
-| Conflicting | Resolve conflicts in the owned PR worktree and verify publication. |
-| Subject to an unmet base-update requirement | Perform the necessary update and verify publication. |
-| Policy unreadable or ambiguous | Retry or obtain equivalent authoritative evidence; keep readiness blocked until resolved. |
+A GitHub merge queue would let several PRs line up and merge in order without each
+one needing a manual update first, but it is **not available for this repository**.
+Merge queue is offered only for repositories owned by an **organization**;
+`rysweet/amplihack-rs` is owned by a personal user account, so the REST API rejects
+a `merge_queue` ruleset rule regardless of plan or visibility. See
+[Managing a merge queue](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue)
+("available for public repositories … owned by an organization").
 
-A `BEHIND` state does not itself prove that an update is required. Missing
-classic protection information does not establish exemption from rulesets.
-Never change protection or request bypass privileges to satisfy readiness.
+If this repository is ever transferred to an organization, a merge queue can be
+enabled then. The CI workflow already triggers on the `merge_group` event, so no
+workflow change would be needed at that point.
 
-## CI precedes QA
+## Merge flow for contributors and agents
 
-After any necessary update, the merge-ready agent observes CI associated
-with the current published PR head. Pending or running work is an event to
-await inside preparation. It does not fail a criterion, spend a corrective
-round or establish that the loop is stuck.
+Because there is no merge queue, PRs are merged **one at a time (serially)**. Each
+PR is merged only after it is both green and up to date with `main`:
 
-Once complete green CI is verified, run repository suites and applicable
-qa-team scenarios, then assess every remaining merge-ready criterion.
-Completed failures require corrective action. Unreadable or incomplete CI
-blocks readiness; missing checks require assessment against repository
-requirements and trigger configuration, never automatic success.
+1. Wait until every required check on the PR is green.
+2. Make sure the PR branch is up to date with `main`. If `main` has moved ahead,
+   update the branch (merge or rebase `main` into it) and let the required checks
+   run again on the updated branch.
+3. When the PR is green **and** up to date with the latest `main`, squash-merge it:
 
-QA uses a protected execution boundary without GitHub write credentials,
-credential stores or authoritative evidence manifests. If that separation is
-unavailable, report a security blocker. Head and tested-content identity are
-checked before and after QA.
+   ```bash
+   gh pr merge <number> --squash
+   ```
 
-## Readiness follows the current revision
+4. Merge the next PR only after the previous one has landed, repeating the same
+   steps so each merge is preceded by an up-to-date CI run.
 
-CI head, QA head, assessed head and current published PR head must agree.
-Recheck freshness before declaring readiness and at the final action
-boundary. A head change refreshes affected CI, QA and reviews; a same-head CI
-rerun or relevant base/policy change also requires reassessment. When only
-refresh is needed, skip corrective building.
+Do **not** use `gh pr merge --admin`, and do **not** use `--no-verify`. Every PR
+goes through the same required checks with the strict up-to-date policy in place.
 
-A clean PR with running CI therefore keeps its head and awaits that run.
-Updating it unnecessarily would restart CI and invalidate the evidence the
-drive is waiting for.
+## Keeping the strict policy on (superseded)
 
-## Delivery and merge gate
+> Superseded on 9 Nov 2026: strict is off on purpose. Do not turn it back on.
+> Retiring or inverting the guard is tracked in
+> [#2203](https://github.com/rysweet/amplihack-rs/issues/2203).
 
-Use `no_merge=true` to deliver an open, merge-ready PR. The restriction
-persists on resume and is checked at every merge-capable boundary. Automatic
-merging stays disabled. Green CI and a `MERGE_READY` verdict do not override
-the restriction.
-
-An already-merged PR, whether observed at entry or during phase 3, violates
-open PR delivery under `no_merge=true`; report the platform state and the
-delivery violation without redoing merged work. Already-merged success
-remains valid for merge-enabled runs.
-
-For an authorized merge-enabled drive, the evidence gate revalidates all
-criteria, records its evidence and binds the merge to the assessed head.
-Hooks and protection remain enforced. A race that changes the head causes
-refresh rather than a merge based on stale results.
-
-When earlier work must be recovered, unresolved recovery blocks both
-implementation and delivery. Record search findings, retained work and gaps
-on [issue #2342](https://github.com/rysweet/amplihack-rs/issues/2342); design
-and documentation may proceed. See the
-[recovery prerequisite](autodrive-evidence.md#recovery-prerequisite).
-
-See [Auto Drive To Merge](auto-drive-to-merge.md#open-pr-delivery) for usage
-and configuration, [Readiness evidence](autodrive-evidence.md) for evidence
-interfaces, and [Loop health](loop-health-evaluator.md#ci-waiting-and-evidence-refresh)
-for progress during waiting and refresh.
+The strict up-to-date policy above is enforced automatically by the
+[Branch Protection Guard](branch-protection-guard.md): an in-repo check that
+reads the live `required_status_checks.strict` setting and fails within one CI
+cycle if it is ever turned off. That guard is detection, not prevention — it
+makes the change loud so it can be reverted; only an org- or enterprise-level
+ruleset can prevent the change outright.

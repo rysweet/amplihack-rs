@@ -3,22 +3,12 @@
 # the auto-drive-to-merge merge loop. step-02-qa-team-scenarios of
 # autodrive-merge-evidence.yaml runs this file (moved out of the step, PR #1520).
 #
-# Criterion 1 follows qa-team's repo-type table: one or two measurements,
-# both always run so the evidence lists every cause at once. (1) The suite
-# command from the first source present (#1763): env, .amplihack/qa.toml, one
-# clean CI step, or `cargo test`, `npm test` or `pytest` detected in the
-# project the changed paths pick (QA_UNRESOLVED when they pick none, and
-# nothing runs). (2) Only where autodrive_gadugi_required says true (a Node
-# project, or AUTODRIVE_QA_SCENARIO_DIR set): the qa-team scenarios, validated
-# with `gadugi-test validate` and run one `gadugi-test run --scenario` per
-# file. Elsewhere gadugi_status is NOT_REQUIRED and gadugi-test is never
-# called: qa-team's Rust CLI rule substitutes `cargo test`, and a measured docs_only drops (2) in a Node project too (#2219).
-#
 # Input comes from the environment only:
 #   REPO_PATH              the repository to measure (default: the working directory)
 #   AUTODRIVE_QA_EVIDENCE  file the evidence is written to, private (optional)
 #   AUTODRIVE_ROUND_LABEL  recorded as qa_round
 #   AUTODRIVE_QA_BASE      the base branch name, for the changed paths
+#   AUTODRIVE_REQUIRE_CI, RECIPE_VAR_ci_evidence  merge preparation: QA needs completed GREEN CI (#2342)
 #   AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR, AUTODRIVE_QA_COMMANDS and
 #   AUTODRIVE_QA_SCENARIO_DIR, described where they are read below.
 # Output: one JSON line on stdout, and the same line in AUTODRIVE_QA_EVIDENCE.
@@ -112,6 +102,14 @@ else
   echo "[skip] not a git repo; the qa evidence records no head sha, so the merge gate refuses it rather than merging unbound evidence" >&2
 fi
 res() { printf '%s\t%s\n' "${1##*/}" "$2" >> "$RES"; } # res <file> <PASS|FAIL|INVALID>
+# #2342: with AUTODRIVE_REQUIRE_CI=true or CI evidence set, nothing runs unless the evidence is completed GREEN
+# CI for this script's own HEAD_SHA (empty blocks). No re-read after the suite: the merge gate refuses a
+# head_sha that is not the head it merges, and blocks when it cannot read that head.
+CI_BLOCKED=""; if [ "${AUTODRIVE_REQUIRE_CI:-false}" = "true" ] || [ -n "${RECIPE_VAR_ci_evidence:-}" ]; then
+  printf '%s' "${RECIPE_VAR_ci_evidence:-}" | amplihack orch helper extract-json --require-field ci_status \
+    | amplihack orch helper ci-evidence-ready --head "$HEAD_SHA" >/dev/null \
+    || { CI_BLOCKED="true"; cause "completed green CI for the current head is required before QA"; }
+fi
 # --- suite commands --------------------------------------------------
 # The first source present wins, even when it gives no usable command: env,
 # repo-file (an invalid qa.toml is BLOCKED, qa-config-invalid), ci (when it
@@ -125,7 +123,7 @@ res() { printf '%s\t%s\n' "${1##*/}" "$2" >> "$RES"; } # res <file> <PASS|FAIL|I
 # qa_dir records where the word or detected command ran, else `.`.
 QA_DIR="$TDIR"; QD="."; SRC=""; CFGBAD=""; QUNRES=""
 TYPE="unknown"; KINDS=(); TEXTS=()
-if [ -n "$NOSCOPE" ]; then
+if [ -n "$CI_BLOCKED" ]; then :; elif [ -n "$NOSCOPE" ]; then
   echo "ERROR: autodrive_qa_scope.sh or autodrive_qa_sources.sh did not load; no QA command source can be read." >&2
   cause "the QA scope helper autodrive_qa_scope.sh or autodrive_qa_sources.sh is missing"
 elif [ -n "${AUTODRIVE_QA_COMMAND+x}" ] || [ -n "${AUTODRIVE_QA_COMMANDS+x}" ]; then
@@ -260,7 +258,7 @@ RES="$(mktemp "${TMPDIR:-/tmp}/autodrive-results.XXXXXX" 2>/dev/null)" || { echo
 # applies; nothing here adds one.
 G_STATUS=""; G_VRC=""; G_RRC=""; RUN_NZ=""; VALIDATED=0; RUNS=0; PASSED=0; FAILED=0
 UNNAMED=""; RUNFAIL=""; STAGEFAIL=""; SYMFAIL=""
-if [ "$GREQ" = "false" ]; then
+if [ -n "$CI_BLOCKED" ]; then G_STATUS="BLOCKED"; elif [ "$GREQ" = "false" ]; then
   G_STATUS="NOT_REQUIRED"
   echo "INFO: gadugi-test is not part of criterion 1 in a ${KIND} repository (qa-team's repo-type table); AUTODRIVE_QA_SCENARIO_DIR asks for it" >&2
 elif ! command -v gadugi-test >/dev/null 2>&1; then
@@ -347,6 +345,7 @@ rm -f -- "$RES"
 # FAIL tokens come first because the merge round can act on them.
 REASON=""
 pick() { [ -n "$REASON" ] || REASON="$1"; }
+[ -z "$CI_BLOCKED" ] || pick "ci-not-ready"
 # A missing scope helper, QA_UNRESOLVED and an invalid qa.toml come first: no
 # suite ran, an operator must act, and gadugi is then named in qa_summary only.
 [ -n "$NOSCOPE" ] && pick "qa-command-missing"
@@ -371,7 +370,7 @@ fi
 case "$REASON" in
   '') STATUS="PASS" ;;
   qa-command-failed|no-scenarios|gadugi-validate-failed|gadugi-scenario-unnamed|gadugi-run-failed) STATUS="FAIL" ;;
-  qa-config-invalid|qa-command-missing|qa-command-not-installed|gadugi-test-missing) STATUS="BLOCKED" ;;
+  ci-not-ready|qa-config-invalid|qa-command-missing|qa-command-not-installed|gadugi-test-missing) STATUS="BLOCKED" ;;
   qa-unresolved) STATUS="QA_UNRESOLVED" ;;
   *) echo "ERROR: unknown qa_reason '${REASON}'; reporting FAIL." >&2; STATUS="FAIL"; REASON="gadugi-run-failed" ;;
 esac

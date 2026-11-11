@@ -1740,10 +1740,12 @@ const STATE_DIR_SENTENCE: &str = "Do not create, edit, move, rename, delete or a
 /// Words the state directory must never be named by in an agent prompt.
 const STATE_DIR_LEAKS: [&str; 3] = ["STATE_DIR", "autodrive_state_dir", "AUTODRIVE_STATE_DIR"];
 
-/// The five agent steps of the auto-drive workflow, by recipe.
-const AUTODRIVE_AGENT_STEPS: [(&str, &str); 5] = [
+/// The guarded agent steps of the auto-drive workflow, by recipe.
+const AUTODRIVE_AGENT_STEPS: [(&str, &str); 7] = [
     ("autodrive-crusty-round", "step-02-crusty-review"),
     ("autodrive-crusty-round", "step-04-address-concerns"),
+    ("autodrive-merge-evidence", "step-01-sync-with-base"),
+    ("autodrive-merge-evidence", "step-03-wait-for-ci"),
     ("autodrive-merge-round", "step-02-merge-ready-assessment"),
     ("autodrive-merge-round", "step-04-address-blockers"),
     ("loop-health-evaluator", "step-02-evaluate-loop-health"),

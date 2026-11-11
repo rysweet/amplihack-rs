@@ -3559,6 +3559,8 @@ ev_run() { # ev_run <stub-dir> [VAR=value ...] -> runs the step; EV_OUT = last s
   # autodrive_trust.sh under test, as in a real run.
   env -i HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" PATH="${stubs}:${EV_AMP}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" \
     REPO_PATH="${EV_REPO}" AUTODRIVE_ROUND_LABEL="round-7" AUTODRIVE_QA_EVIDENCE="${EV_REPO}.evidence.json" \
+    RECIPE_VAR_ci_evidence="$(jq -cn --arg head "$(git -C "$EV_REPO" rev-parse HEAD)" \
+      '{ci_status:"GREEN",ci_total:"1",ci_pending:"0",ci_failing:"0",head_sha:$head}')" \
     EV_CALLS="${EV_CALLS}" RECIPE_VAR_merge_sync='{"base":"main","conflict":"false"}' "$@" \
     "${BASH}" -c "${EV_BODY}" >"${EV_REPO}.out" 2>"${EV_REPO}.err"
   EV_OUT="$(tail -n 1 "${EV_REPO}.out")"
@@ -5032,11 +5034,23 @@ if ! grep -qE '^[[:space:]]*(timeout|timeout_seconds|default_step_timeout):' \
 else
   fail "NO-SHORT-TIMEOUT" "a step timeout is declared in an auto-drive recipe"
 fi
-if grep -qE 'sleep 60' "${RECIPES}/autodrive-merge-evidence.yaml" \
-   && ! grep -qE 'sleep [1-9]$|sleep [1-5]?[0-9]$' "${RECIPES}/autodrive-merge-evidence.yaml"; then
-  pass "NO-SHORT-POLL" "CI polling uses a 60-second interval, not a seconds-scale stopwatch"
+# #2342: the CI wait is an agent watching one run to completion, not a clock.
+EVID="${RECIPES}/autodrive-merge-evidence.yaml"
+if ! grep -qiwE 'sleep|backoff|retry|retries|interval' "${EVID}"; then
+  pass "NO-SLEEP" "autodrive-merge-evidence.yaml has no sleep, backoff, retry or interval"
 else
-  fail "NO-SHORT-POLL" "CI polling interval is not the documented 60 seconds"
+  fail "NO-SLEEP" "clock-driven waiting in ${EVID}: $(grep -niwE 'sleep|backoff|retry|retries|interval' "${EVID}" | head -3 | tr '\n' '|')"
+fi
+CI_WAIT_STEP="$(awk 'index($0, "id: \"step-03-wait-for-ci\"") { s=1; print; next } s && /^  - id:/ { exit } s && /^[^ #]/ { exit } s { print }' "${EVID}")"
+if printf '%s\n' "${CI_WAIT_STEP}" | grep -qE '^    prompt:' && ! printf '%s\n' "${CI_WAIT_STEP}" | grep -qE '^    command:'; then
+  pass "CI-WAIT-AGENT" "step-03-wait-for-ci is an agent prompt, not a command"
+else
+  fail "CI-WAIT-AGENT" "step-03-wait-for-ci must have a prompt and no command"
+fi
+if printf '%s\n' "${CI_WAIT_STEP}" | grep -qF 'gh run watch' && printf '%s\n' "${CI_WAIT_STEP}" | grep -qF -- '--exit-status'; then
+  pass "CI-WAIT-WATCH" "step-03 waits on the run itself with gh run watch --exit-status"
+else
+  fail "CI-WAIT-WATCH" "step-03 does not tell the agent to gh run watch the in-progress run"
 fi
 
 # ---------------------------------------------------------------------------
@@ -6743,6 +6757,49 @@ ev_expect "1763-unresolved" qa_status=QA_UNRESOLVED qa_reason=qa-unresolved qa_c
   qa_command="" qa_command_source="" qa_suite_commands_count=0
 if ev_called "cargo "; then fail "1763-unresolved-no-suite" "a suite ran: $(tr '\n' '|' < "${EV_CALLS}")"
 else pass "1763-unresolved-no-suite" "no suite runs when the project is unresolved"; fi
+
+# 2342. A clean PR whose CI is in progress, then green (#2342). The step-02
+# body under test, with recording cargo and git stubs: a pending record for the
+# head blocks QA and runs no suite; the green record for the same head runs it;
+# no push or merge happens at any point and HEAD does not move. The stubs live
+# under WORK_PHYS, which the harness's own trap removes; HOME is TEST_HOME and
+# ev_run passes no token variables (env -i).
+EV_2342="${WORK_PHYS}/ev-stubs-2342"; mkdir -p "${EV_2342}"; cp "${EV_FULL}"/* "${EV_2342}/"
+EV_REAL_GIT="$(PATH=/usr/bin:/bin command -v git)"
+cat > "${EV_2342}/git" <<STUB
+#!/bin/sh
+for a in "\$@"; do case "\$a" in push|merge) echo "git \$*" >> "\${EV_CALLS:-/dev/null}"; break ;; esac; done
+exec "${EV_REAL_GIT}" "\$@"
+STUB
+chmod 700 "${EV_2342}/git"
+ev_repo Cargo.toml
+EV_2342_HEAD="$(git -C "${EV_REPO}" rev-parse HEAD)"
+ev_2342_ci() { jq -cn --arg s "$1" --arg t "$2" --arg p "$3" --arg h "${EV_2342_HEAD}" \
+  '{ci_status:$s,ci_total:$t,ci_pending:$p,ci_failing:"0",head_sha:$h,reason:"run 1"}'; }
+ev_run "${EV_2342}" AUTODRIVE_QA_COMMAND="cargo test --locked" RECIPE_VAR_ci_evidence="$(ev_2342_ci PENDING 3 2)"
+if [ "$(evf qa_status)/$(evf qa_reason)" = "BLOCKED/ci-not-ready" ] && [ "$(evf head_sha)" = "${EV_2342_HEAD}" ] \
+   && ! ev_called "cargo " && grep -qF 'CI is still pending' "${EV_ERR}" && ! grep -qF 'CI contains failures' "${EV_ERR}"; then
+  pass "2342-pending-blocks" "CI in progress for the head: BLOCKED/ci-not-ready, no suite run, reason 'still pending'"
+else
+  fail "2342-pending-blocks" "${EV_OUT} | calls: $(tr '\n' '|' < "${EV_CALLS}") | stderr: $(tail -n 3 "${EV_ERR}" | tr '\n' ' ')"
+fi
+if grep -q '^git ' "${EV_CALLS}"; then fail "2342-pending-no-push" "$(grep '^git ' "${EV_CALLS}" | tr '\n' '|')"
+else pass "2342-pending-no-push" "no push or merge while CI is pending"; fi
+ev_run "${EV_2342}" AUTODRIVE_QA_COMMAND="cargo test --locked" RECIPE_VAR_ci_evidence="$(ev_2342_ci GREEN 3 0)"
+ev_expect "2342-green-runs-qa" qa_status=PASS
+if ev_called "cargo test --locked"; then pass "2342-green-runs-suite" "the suite runs once CI is green for the head"
+else fail "2342-green-runs-suite" "calls: $(tr '\n' '|' < "${EV_CALLS}")"; fi
+if grep -q '^git ' "${EV_CALLS}"; then fail "2342-green-no-push" "$(grep '^git ' "${EV_CALLS}" | tr '\n' '|')"
+else pass "2342-green-no-push" "no push or merge on the way to merge-ready"; fi
+if [ "$(git -C "${EV_REPO}" rev-parse HEAD)" = "${EV_2342_HEAD}" ] && [ -z "$(git -C "${EV_REPO}" remote)" ]; then
+  pass "2342-head-unchanged" "HEAD did not move and the repository has no remote"
+else fail "2342-head-unchanged" "HEAD moved or a remote was added"; fi
+# The no-push checks above mean something only if the stub records a push.
+: > "${EV_CALLS}"
+( cd "${EV_REPO}" && env -i PATH="${EV_2342}:/usr/bin:/bin" HOME="${TEST_HOME}" EV_CALLS="${EV_CALLS}" \
+    GIT_TERMINAL_PROMPT=0 git push origin HEAD:main ) >/dev/null 2>&1 || true
+if grep -q '^git push' "${EV_CALLS}"; then pass "2342-git-stub-records" "the git stub records push attempts"
+else fail "2342-git-stub-records" "the git stub did not record a push"; fi
 echo
 echo "═══════════════════════════════"
 echo "Results: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"

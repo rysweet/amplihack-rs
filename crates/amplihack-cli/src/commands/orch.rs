@@ -21,6 +21,7 @@ use std::path::PathBuf;
 
 use crate::commands::multitask;
 
+mod ci_evidence;
 mod named_branch;
 mod select_workflow;
 mod workflow_log_inventory;
@@ -47,6 +48,13 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
+    /// Validate extracted CI JSON on stdin before QA runs on --head.
+    /// Does not observe CI, judge policy or wait; preparation agents do that.
+    /// Input over 64 KiB is refused; on failure the reason goes to stderr.
+    CiEvidenceReady {
+        #[arg(long)]
+        head: String,
+    },
     /// Read stdin, print the first complete JSON object found in it.
     ///
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
@@ -578,6 +586,10 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
             print!("{}", selection.workflow);
             std::io::Write::flush(&mut std::io::stdout()).context("failed to flush stdout")?;
             Ok(())
+        }
+        OrchHelperCommands::CiEvidenceReady { head } => {
+            // Exit status is the whole answer; the reason goes to stderr.
+            ci_evidence::validate(&ci_evidence::read_capped(std::io::stdin())?, &head)
         }
         OrchHelperCommands::ExtractField { field, default } => {
             let input = read_stdin()?;

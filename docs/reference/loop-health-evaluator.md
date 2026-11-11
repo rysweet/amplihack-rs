@@ -1,6 +1,6 @@
 ---
 title: Loop-Health Evaluator Reference
-last_updated: 2026-11-11
+last_updated: 2026-10-19
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -22,7 +22,6 @@ It is deliberately **not** an iteration counter. See
 - [The verdict contract](#the-verdict-contract)
 - [How step-03 resolves the verdict](#how-step-03-resolves-the-verdict)
 - [`amplihack orch helper normalise-loop-verdict`](#amplihack-orch-helper-normalise-loop-verdict)
-- [CI waiting and evidence refresh](#ci-waiting-and-evidence-refresh)
 - [Evidence the evaluator receives](#evidence-the-evaluator-receives)
 - [Context inputs](#context-inputs)
 - [Outputs](#outputs)
@@ -578,46 +577,6 @@ echo "DISCONTINUE"    | amplihack orch helper normalise-loop-verdict   # STUCK
 printf ''             | amplihack orch helper normalise-loop-verdict   # STUCK
 ```
 
-## CI waiting and evidence refresh
-
-> **[PLANNED — Implementation Pending] Proposed, runtime-unverified
-> extension for [#2342](https://github.com/rysweet/amplihack-rs/issues/2342).**
-> Current merge-evidence recipes run QA before CI. CI-first preparation and
-> verified remote-revision refresh progress below still require implementation
-> in both the loop driver and evaluator.
-
-In the auto-drive merge-ready loop, CI preparation awaits pending or running
-checks before QA. Waiting stays inside that step: it does not create a failed
-acceptance criterion or spend corrective rounds. Pending CI alone is never
-proof of `STUCK`. Rate-limited observation, backoff and liveness messages
-continue without a short per-step timeout. Existing usage budgets and
-terminal protections remain effective; budget exhaustion is a separate
-outcome.
-
-A verified change to the published PR head is progress toward refreshing
-readiness evidence, even when there is no local commit or changed finding.
-Both the mechanical no-progress check and this evaluator receive observed
-revision-change evidence, so neither stops a legitimate refresh solely
-because local diff and finding counts stayed constant. A stale record or
-repeated claim of movement without a new verified observation is not
-progress.
-
-The evaluator distinguishes these cases:
-
-| Evidence | Meaning for loop health |
-| --- | --- |
-| CI is still running for the verified current head | Await completion in preparation; do not fail the round solely for waiting. |
-| Published head changed during CI, QA or review | Refresh affected evidence and reviews; `CONTINUE` when another round is required. Skip corrective building when refresh is the only work. |
-| A same-head rerun or relevant base/policy change invalidates evidence | Reobserve and reassess affected evidence; no premature `DONE`. |
-| Completed failed CI | Corrective work is needed; judge movement from actual findings and actions. |
-| CI unreadable or observations incomplete | Readiness is blocked; judge retries and new authoritative observations separately from test failures. |
-| Fresh `MERGE_READY` and all required evidence | `DONE` is permitted under the existing clean-verdict contract. |
-
-`DONE` still requires this round's clean verdict. Refresh does not waive any
-merge-ready criterion or measured downgrade. See
-[Readiness evidence](autodrive-evidence.md#freshness-and-refresh) for head,
-attempt and policy freshness requirements.
-
 ## Evidence the evaluator receives
 
 `step-01-collect-loop-evidence` computes these **deterministically in bash**
@@ -641,13 +600,8 @@ caller that wants the numbers alone can invoke the collector directly. Its
 | `findings_new`, `findings_recurring`, `findings_resolved` | Set difference over `loop_findings_current` / `loop_findings_previous`. A round that resolves nothing and re-raises the same findings has not moved. |
 | `tests_observed`, `tests_moved` | Whether the test signal changed at all. Unobserved is **not** progress. |
 | `ci_observed`, `ci_moved` | Same, for CI. |
-| `waiting_on_output` | A report that the loop awaits output. Under the proposed #2342 contract, authoritative pending CI alone does not prove a stalled loop. |
+| `waiting_on_output` | The loop reporting it is waiting on output that never arrives. |
 | `git_observed` | Whether diff evidence was available at all (a non-git path reports unobserved, never "progress"). |
-
-Under the proposed, runtime-unverified auto-drive readiness contract, the
-round will also supply verified published head identities and the reason
-affected evidence needs refreshing. Local
-commit counts alone cannot describe a remote revision change.
 
 ## Context inputs
 
