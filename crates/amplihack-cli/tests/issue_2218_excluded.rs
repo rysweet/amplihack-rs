@@ -1001,7 +1001,11 @@ fn rotate_status_names_an_excluded_live_login_from_claude_json_without_a_request
     let out = run(&f, &ep, &["profile", "rotate", "status"]);
     assert!(out.status.success(), "{}", describe(&out));
     assert_no_request_for(&ep, "work");
-    assert!(text(&out.stdout).contains("work"), "{}", describe(&out));
+    assert!(
+        text(&out.stdout).lines().any(|l| l == "live: work"),
+        "{}",
+        describe(&out)
+    );
     assert_eq!(stamp(&f.home_login()), before);
 }
 

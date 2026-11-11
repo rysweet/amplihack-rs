@@ -88,6 +88,19 @@ pub fn live_excluded_offline(
     })
 }
 
+/// The `live:` value of `rotate status`: the ledger's `live`, else (issue
+/// #2218) the excluded profile a local rule names, with no request, else `-`.
+pub fn status_live(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: Option<&Path>,
+    ledger_live: Option<String>,
+) -> String {
+    ledger_live
+        .or_else(|| live_excluded_offline(store, rs, home?).map(|(n, _)| n.as_str().to_string()))
+        .unwrap_or_else(|| "-".into())
+}
+
 /// Whether moving the excluded live login `name` out may write it into
 /// `name`'s folder (S4): the ledger named it with no hand change suspected
 /// and `~/.claude.json` agrees with its record, or the login in `~/.claude`
