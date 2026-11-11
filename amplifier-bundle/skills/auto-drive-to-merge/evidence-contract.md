@@ -4,6 +4,26 @@ These are workflow outcomes. Agents may use any available authenticated interfac
 that supplies equivalent complete observations. Rust helpers validate local
 records; they do not contact the hosting service or perform a merge.
 
+For hosting calls, use only configured authenticated access to the bound host
+and repository, with TLS verification and finite request timeouts under the
+existing execution policy. Never publish credentials or authorization headers.
+Retain the operation, response status and redacted failure cause. Check both
+transport status and API errors, including GraphQL errors in HTTP 200 responses.
+Pagination is complete only after every page succeeds and the final cursor or
+link reports no next page; discard partial counts after any failed page.
+
+Keep retries serial and bounded by the invocation's time and attempt budgets.
+For transient read failures, use exponential backoff; do not repeatedly retry
+authentication, permission, validation or protection refusals. For GitHub rate
+limits, honor Retry-After and, when remaining requests are zero, the UTC reset
+time. Without either, wait at least one minute and increase subsequent delays
+exponentially. Switching interfaces must not evade the same service limit.
+If the wait or retry cannot fit the remaining budget, report incomplete with
+the cause. Exit 79 remains terminal. Before retrying any ambiguous write,
+observe its effect and pending requests; if that cannot be established, leave
+it unconfirmed. A changed head requires fresh readiness assessment. This
+follows [GitHub's API retry guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
+
 Read the trusted merge-ready SKILL.md and its description template in full.
 Record actual observations, redacting secrets before publication. Do not fetch
 agent-provided URLs automatically. Use private staging files (0600 in a 0700
