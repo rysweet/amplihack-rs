@@ -960,7 +960,11 @@ fn an_excluded_live_login_named_only_by_claude_json_is_not_moved_and_sends_no_re
     );
     assert_eq!(live(&f), "", "nothing recorded live: {log}");
     assert_eq!(stamp(&f.home_login()), home, "~/.claude untouched");
-    assert_eq!(fs::read(f.slot("work")).ok(), slot, "work's folder untouched");
+    assert_eq!(
+        fs::read(f.slot("work")).ok(),
+        slot,
+        "work's folder untouched"
+    );
 }
 
 #[test]
@@ -983,9 +987,14 @@ fn a_session_still_on_a_moved_off_excluded_login_does_not_stall_rotation() {
     let log = f.log();
     assert!(out.status.success(), "{}\nlog:\n{log}", describe(&out));
     assert_no_request_for(&ep, "work");
-    assert!(!log.contains("not moved, as only ~/.claude.json names it"), "{log}");
     assert!(
-        ep.requests().iter().any(|r| r.is_usage() && r.for_profile("spare")),
+        !log.contains("not moved, as only ~/.claude.json names it"),
+        "{log}"
+    );
+    assert!(
+        ep.requests()
+            .iter()
+            .any(|r| r.is_usage() && r.for_profile("spare")),
         "the live login is measured: {:?}\n{log}",
         ep.requests()
     );

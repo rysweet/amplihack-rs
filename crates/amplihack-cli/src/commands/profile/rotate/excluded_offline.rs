@@ -26,13 +26,13 @@ use super::super::identity_claims;
 use super::super::ledger::RotateState;
 use super::Account;
 // Its own line: `tests_source_scan` refuses a read next to the login name.
-use super::super::login_identity::Budget;
 use super::super::handfix_plan::ino_ctime;
-use crate::commands::profile::auto_switch::kit::{CREDS, now};
+use super::super::login_identity::Budget;
 use crate::commands::profile::auto_switch::kit::{
     CLAUDE_JSON, MAX_CLAUDE_JSON, State, euid, read_bounded_nofollow, same_private_bytes,
     writable_by_others,
 };
+use crate::commands::profile::auto_switch::kit::{CREDS, now};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd::exclude_list;
@@ -87,12 +87,15 @@ pub fn live_excluded_offline(
         && ledger
             .as_ref()
             .is_some_and(|l| l.hand_suspect.is_none() && untouched_since(home, l.swapped_at));
-    let by_account = (!installed).then(|| local_account(home)).flatten().and_then(|account| {
-        excluded
-            .iter()
-            .find(|p| record_names(store, p, &account))
-            .map(|p| (p.clone(), Match::LocalAccount))
-    });
+    let by_account = (!installed)
+        .then(|| local_account(home))
+        .flatten()
+        .and_then(|account| {
+            excluded
+                .iter()
+                .find(|p| record_names(store, p, &account))
+                .map(|p| (p.clone(), Match::LocalAccount))
+        });
     by_account.or_else(|| {
         excluded
             .into_iter()
