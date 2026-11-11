@@ -24,14 +24,6 @@ use amplihack_utils::launch_target::{
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-
-/// Head-room added to a configured limit before a wall-clock assertion
-/// fails (issue #1860). Load only slows a probe, so a bound is always
-/// `<configured limit> + LOAD_SLACK`, never a bare literal. Every fixture
-/// that hangs sleeps for 600 s, so each bound stays at least 15 times
-/// smaller than the hang it guards against.
-const LOAD_SLACK: Duration = Duration::from_secs(30);
 
 /// The placeholder `@anthropic-ai/claude-code` leaves at `bin/claude.exe` when
 /// its postinstall is suppressed: 500 bytes, ASCII, no shebang. Verified byte
@@ -81,27 +73,107 @@ fn write_unparseable(dir: &Path, name: &str) -> PathBuf {
 
 /// Hangs on `--version` for far longer than any probe timeout.
 ///
-/// `exec` makes the probed process the `sleep` itself, so the probe's kill on
-/// timeout ends it and no orphan is left behind for ten minutes.
+/// The script records its pid in `<name>.pid` and only then becomes the
+/// `sleep` through `exec`, so the probed process is the `sleep` itself: the
+/// probe's kill on timeout ends it, and a test can check from the pid that it
+/// did. If the pid cannot be written, `&&` stops the script before the sleep
+/// starts, so a hang is never left running without a record of it.
 fn write_hanging(dir: &Path, name: &str) -> PathBuf {
     let path = dir.join(name);
-    fs::write(&path, "#!/bin/sh\nexec sleep 600\n").unwrap();
+    let pid_file = pid_file_for(&path);
+    fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\necho $$ > '{}' && exec sleep 600\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
     make_executable(&path);
     path
 }
 
-/// Kills the process whose pid is recorded in the file, when dropped.
+/// Where a fixture from [`write_hanging`] records its pid.
+fn pid_file_for(path: &Path) -> PathBuf {
+    path.with_extension("pid")
+}
+
+/// The pid a fixture recorded, or `None` if it never ran far enough to write
+/// one. A probe can kill the script between creating the file and writing
+/// to it, so an empty file also means no pid was recorded.
+fn recorded_pid(pid_file: &Path) -> Option<libc::pid_t> {
+    let text = fs::read_to_string(pid_file).ok()?;
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(
+        text.trim()
+            .parse()
+            .unwrap_or_else(|e| panic!("{} holds {text:?}, not a pid: {e}", pid_file.display())),
+    )
+}
+
+/// Whether a process with this pid still exists. Signal 0 checks for the
+/// process without sending anything.
+fn is_running(pid: libc::pid_t) -> bool {
+    // SAFETY: kill(2) with signal 0 only checks that `pid` exists and may be
+    // signalled; it touches no memory.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(libc::ESRCH) => false,
+        // The process exists but belongs to someone else: pid reuse, not ours.
+        Some(libc::EPERM) => true,
+        _ => panic!("kill({pid}, 0) failed: {err}"),
+    }
+}
+
+/// Ends the grandchild whose pid a fixture recorded, when dropped, and says
+/// so if it cannot.
 ///
 /// The probe cannot reach a grandchild its candidate left running, so a test
 /// that starts one must end it itself, including when an assertion fails.
+/// The fixture kills the grandchild itself if it cannot write the pid (see
+/// the drain test), so a missing pid file means no grandchild is running.
+/// Any other failure is reported: as a panic when the test has otherwise
+/// passed, and on stderr when it is already failing, so that a 600 s sleep is
+/// never left behind unnoticed.
 struct KillOnDrop(PathBuf);
+
+impl KillOnDrop {
+    fn kill(&self) -> Result<(), String> {
+        let text = match fs::read_to_string(&self.0) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(format!("cannot read {}: {e}", self.0.display())),
+        };
+        let pid: libc::pid_t = text
+            .trim()
+            .parse()
+            .map_err(|e| format!("{} holds {text:?}, not a pid: {e}", self.0.display()))?;
+        // SAFETY: kill(2) on a pid this test's fixture recorded; no memory is
+        // shared.
+        if unsafe { libc::kill(pid, libc::SIGKILL) } == 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() == Some(libc::ESRCH) {
+            // Already gone, which is the state wanted.
+            return Ok(());
+        }
+        Err(format!("could not kill grandchild {pid}: {err}"))
+    }
+}
 
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
-        if let Ok(pid) = fs::read_to_string(&self.0) {
-            let pid = pid.trim();
-            if !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()) {
-                let _ = std::process::Command::new("kill").arg(pid).status();
+        if let Err(problem) = self.kill() {
+            if std::thread::panicking() {
+                eprintln!("KillOnDrop: {problem}; a 600 s sleep may still be running");
+            } else {
+                panic!("KillOnDrop: {problem}; a 600 s sleep may still be running");
             }
         }
     }
@@ -325,33 +397,39 @@ fn a_candidate_that_leaves_a_grandchild_holding_its_pipe_still_resolves_promptly
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("claude");
     let pid_file = dir.path().join("grandchild.pid");
-    // The grandchild sleeps for 600 s, far beyond the bound below, so an
-    // unbounded drain fails this test instead of finishing inside the slack.
-    // It records its pid so the guard can end it however the test finishes.
+    // Issue #1860: the proof is an event, not a stopwatch. The shim starts a
+    // 600 s `sleep` that inherits its stdout, writes the sleep's pid before it
+    // prints its version and exits, and kills the sleep if it cannot write
+    // the pid, so no grandchild runs unrecorded. The probe returns only after
+    // the shim has exited, so the pid file is complete by then. If the
+    // grandchild is still running when resolution returns, resolution did not
+    // wait for the pipe to close, however slow the host was. An unbounded
+    // drain returns only after the sleep has ended, and the check below then
+    // fails.
     fs::write(
         &path,
         format!(
-            "#!/bin/sh\n/bin/sleep 600 &\necho $! > '{}'\necho '2.1.238'\nexit 0\n",
+            "#!/bin/sh\n/bin/sleep 600 &\necho $! > '{}' || {{ kill $!; exit 1; }}\n\
+             echo '2.1.238'\nexit 0\n",
             pid_file.display()
         ),
     )
     .unwrap();
     make_executable(&path);
-    let _reaper = KillOnDrop(pid_file);
+    let _reaper = KillOnDrop(pid_file.clone());
 
-    let started = std::time::Instant::now();
     let resolution = resolve_from_candidates("claude", &[(path.clone(), TargetSource::Path)]);
-    let elapsed = started.elapsed();
 
     assert_eq!(
         resolution.target.map(|t| t.version),
         Some("2.1.238".to_string()),
         "the child exited cleanly and printed a version; that is a healthy binary"
     );
+    let grandchild = recorded_pid(&pid_file).expect("the grandchild recorded its pid");
     assert!(
-        elapsed < TOTAL_PROBE_BUDGET + LOAD_SLACK,
-        "the drain must be bounded: the grandchild holds the pipe for 600 s, \
-         and resolution took {elapsed:?}"
+        is_running(grandchild),
+        "the drain must be bounded: resolution returned only after the \
+         grandchild {grandchild} holding the pipe had ended"
     );
 }
 
@@ -471,7 +549,13 @@ fn a_hanging_candidate_times_out_and_the_next_one_is_still_reached() {
     let hang = write_hanging(dir.path(), "claude-hang");
     let good = write_healthy(dir.path(), "claude-good", "2.1.238");
 
-    let started = std::time::Instant::now();
+    // Issue #1860: the proof is the outcome, not a stopwatch. The hung
+    // candidate sleeps for 600 s. `ProbeTimedOut` is reported only when the
+    // probe gave up on it, the healthy candidate after it is reached only
+    // because the probe moved on, and the hung process is gone afterwards
+    // only because the probe killed it. A probe without a timeout would wait
+    // out the sleep and see it exit with no version, which is a different
+    // rejection. None of these depend on how fast the host is.
     let resolution = resolve_from_candidates(
         "claude",
         &[
@@ -479,17 +563,20 @@ fn a_hanging_candidate_times_out_and_the_next_one_is_still_reached() {
             (good.clone(), TargetSource::FallbackDir),
         ],
     );
-    let elapsed = started.elapsed();
 
     assert_eq!(resolution.target.expect("must fall through").path, good);
     assert_eq!(
         rejection_for(&resolution.rejected, &hang),
         Some(&Rejection::ProbeTimedOut)
     );
-    assert!(
-        elapsed < TOTAL_PROBE_BUDGET + LOAD_SLACK,
-        "one hung candidate must not stall the launch; took {elapsed:?}"
-    );
+    // On a slow enough host the probe can give up before the script writes
+    // its pid; then the sleep never started and there is nothing to check.
+    if let Some(hung) = recorded_pid(&pid_file_for(&hang)) {
+        assert!(
+            !is_running(hung),
+            "the probe must kill a candidate it gave up on; {hung} is still running"
+        );
+    }
 }
 
 #[test]
@@ -502,8 +589,9 @@ fn the_total_probe_budget_bounds_a_path_full_of_hanging_binaries() {
     // each probe, so it can lower the number of probes that start before the
     // budget runs out but never raise it. Without the budget check the count
     // rises to the cap (8). A wall-clock bound tight enough to tell 10 s from
-    // 24 s cannot survive a loaded host, so time is only a loose backstop
-    // here, against a missing per-probe timeout or an unbounded drain.
+    // 24 s cannot survive a loaded host, so this test has none. A missing
+    // per-probe timeout shows up as no `ProbeTimedOut` at all, and every
+    // candidate that started must have been killed.
     let dir = tempfile::tempdir().unwrap();
     let candidates: Vec<_> = (0..12)
         .map(|i| {
@@ -514,9 +602,7 @@ fn the_total_probe_budget_bounds_a_path_full_of_hanging_binaries() {
         })
         .collect();
 
-    let started = std::time::Instant::now();
     let resolution = resolve_from_candidates("claude", &candidates);
-    let elapsed = started.elapsed();
 
     assert!(resolution.target.is_none());
     let rejected = &resolution.rejected;
@@ -564,10 +650,17 @@ fn the_total_probe_budget_bounds_a_path_full_of_hanging_binaries() {
         "the total budget allows at most {most} probes of {PER_CANDIDATE_PROBE_TIMEOUT:?} \
          to time out within {TOTAL_PROBE_BUDGET:?}; {timed_out} did: {rejected:?}"
     );
-    assert!(
-        elapsed < TOTAL_PROBE_BUDGET + LOAD_SLACK,
-        "the pass must end soon after the total budget; took {elapsed:?}"
-    );
+    // Every candidate that started was killed, so a PATH full of hanging
+    // binaries leaves nothing running behind the launch.
+    for (path, reason) in rejected {
+        if let Some(pid) = recorded_pid(&pid_file_for(path)) {
+            assert!(
+                !is_running(pid),
+                "{} ({reason:?}) is still running as {pid}",
+                path.display()
+            );
+        }
+    }
 }
 
 #[test]

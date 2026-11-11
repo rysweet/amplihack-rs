@@ -486,14 +486,14 @@ slows each probe; it does not change which bounds the code enforces. The tests
 are therefore written so that load cannot make them fail and a removed bound
 still does.
 
-Every bound is computed from the public constants plus one named allowance,
-`LOAD_SLACK`. No test compares elapsed time with a hand-written figure.
+None of these tests reads a clock. Each proves its bound by a count or by an
+event that a slow host cannot change (issue #1860).
 
-| Test | Purpose |
-| --- | --- |
-| `the_total_probe_budget_bounds_a_path_full_of_hanging_binaries` | Proves the total budget by counting timed-out probes. |
-| `a_hanging_candidate_times_out_and_the_next_one_is_still_reached` | Proves a hanging candidate does not stop the walk. |
-| `a_candidate_that_leaves_a_grandchild_holding_its_pipe_still_resolves_promptly` | Proves the output drain is bounded. |
+| Test | Purpose | Proof |
+| --- | --- | --- |
+| `the_total_probe_budget_bounds_a_path_full_of_hanging_binaries` | The total budget ends the walk. | The number of timed-out probes. |
+| `a_hanging_candidate_times_out_and_the_next_one_is_still_reached` | A hanging candidate does not stop the walk. | The hung candidate is `ProbeTimedOut`, the next one is chosen, and the hung process has been killed. |
+| `a_candidate_that_leaves_a_grandchild_holding_its_pipe_still_resolves_promptly` | The output drain is bounded. | The grandchild holding the pipe is still running when resolution returns. |
 
 #### The total budget is proved by a count
 
@@ -519,28 +519,42 @@ A host that is short of processes rejects a probe as `ResourceExhausted`
 instead. That probe can return at once without using the budget, so the test
 accepts it and leaves it out of the count.
 
-The elapsed-time assertion, at `TOTAL_PROBE_BUDGET + LOAD_SLACK`, stays as a
-backstop. It catches a probe that ignores its own timeout or a drain that
-waits without a limit, both of which would run for the full length of the
-fixture's `sleep`.
+A probe that ignored its own timeout would report no `ProbeTimedOut` at all,
+and the test requires at least one timeout unless the host refused every
+fork. The test also checks that every candidate that started has been killed.
+
+#### The hung candidate and the drain are proved by events
+
+The hanging-candidate test does not time the walk. `ProbeTimedOut` is
+reported only when the probe gave up on a candidate; a probe without a
+timeout would wait for the fixture's `sleep` to end and report a different
+rejection. The test also checks, from the pid the fixture recorded, that the
+hung process is no longer running, which only the probe's kill can cause.
+
+The drain test does not time the walk either. Its shim starts a 600 s `sleep`
+that inherits the shim's stdout, records that `sleep`'s pid, prints a version
+and exits. If the `sleep` is still running when resolution returns,
+resolution did not wait for the pipe to close. A drain without a limit would
+return only after the `sleep` had ended, and the test would then fail.
 
 #### Hanging fixtures sleep for 600 s
 
-Each fixture that hangs runs `sleep 600`, far longer than any bound it is
-tested against. A regression therefore shows as a failure, not as a test that
-happens to finish inside its allowance.
+Each fixture that hangs runs `sleep 600`, far longer than any probe timeout,
+so a regression cannot pass by finishing early.
 
 The probe kills the child, not its process group (see [Probe budget](#probe-budget)),
-so the fixtures end their own sleeps. A hanging script runs `exec sleep 600`,
-which makes the probed process the `sleep` itself, and the probe's kill on
-timeout ends it. The grandchild fixture writes its `sleep`'s pid to a file in
-the test's temporary directory, and the test kills that pid when it finishes,
-whether it passes or fails.
+so the fixtures end their own sleeps. A hanging script writes its pid to a
+file and then runs `exec sleep 600`, which makes the probed process the
+`sleep` itself, and the probe's kill on timeout ends it. If the pid cannot be
+written, the script stops before the `sleep` starts.
 
-The unit test `version_probe_does_not_expose_litellm_configuration` in
-`crates/amplihack-utils/src/launch_target.rs` probes a healthy binary with
-`PER_CANDIDATE_PROBE_TIMEOUT` rather than a shorter timeout of its own, so a
-slow host cannot turn it into a false timeout.
+The drain fixture's shim kills its `sleep` itself if it cannot record the
+pid, so a `sleep` never runs without a record. The test's `KillOnDrop` guard
+sends `SIGKILL` to the recorded pid when the test ends, whether it passes or
+fails. A missing pid file means no `sleep` is running. Any other failure, to
+read the file, parse the pid or send the signal, is reported: the guard
+panics if the test has otherwise passed, and writes to stderr if the test is
+already failing.
 
 ## The install decision
 
