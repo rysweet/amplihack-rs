@@ -50,7 +50,7 @@ steps:
        **Task:** {{task_description}}
 
        Required:
-       1. Review `git diff main...HEAD`.
+       1. Review `git diff ${RECIPE_VAR_base_branch:-main}...HEAD`.
        2. Classify as PATCH (fix/docs/refactor), MINOR (backward-compatible feature/API), or MAJOR (breaking).
        3. Update `[workspace.package].version` ONLY when warranted:
           - **PATCH (fix/docs/refactor): DO NOT modify the `version` line.** Set
@@ -61,7 +61,7 @@ steps:
        Useful commands:
        ```bash
        cd {{repo_path}}
-       git diff main...HEAD --stat
+       git diff "${RECIPE_VAR_base_branch:-main}...HEAD" --stat
        CURRENT_VERSION=$(grep -E '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
        echo "Current version: $CURRENT_VERSION"
        # MINOR/MAJOR only (PATCH: no sed): sed -i 's/version = "X.Y.Z"/version = "NEW.VERSION"/' Cargo.toml
@@ -143,7 +143,7 @@ steps:
       { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || { echo "ERROR: step-15-commit-push: $(pwd -P) is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)" >&2; exit 1; }
       # Security: refuse to commit/push on protected branches, even inside a linked worktree.
       _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
-      if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; then echo "ERROR: step-15 landed on protected branch '$_CURRENT_BRANCH' — refusing to commit. Worktree setup likely failed." >&2; exit 1; fi
+      if { [ -n "${RECIPE_VAR_base_branch:-}" ] && [ "$_CURRENT_BRANCH" = "$RECIPE_VAR_base_branch" ]; } || { [ -z "${RECIPE_VAR_base_branch:-}" ] && { [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; }; }; then echo "ERROR: step-15 landed on protected branch '$_CURRENT_BRANCH' — refusing to commit. Worktree setup likely failed." >&2; exit 1; fi
       echo "=== Step 15: Commit and Push ===" >&2
       # FIX (#495): commit_result MUST be emitted on every exit path so step-16
       # (PR creation) can be gated on the actual push outcome. Trap installed
@@ -337,7 +337,7 @@ steps:
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-16 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "ERROR: step-16-create-draft-pr requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2; exit 1; }
       if _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null); then :; else _publish_status=$?; printf 'ERROR: git branch --show-current failed (exit %s)\n' "$_publish_status" >&2; trap - EXIT; exit "$_publish_status"; fi
-      if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; then echo "ERROR: step-16 landed on protected branch '$_CURRENT_BRANCH' — refusing to create PR. Worktree setup likely failed." >&2; exit 1; fi
+      if { [ -n "${RECIPE_VAR_base_branch:-}" ] && [ "$_CURRENT_BRANCH" = "$RECIPE_VAR_base_branch" ]; } || { [ -z "${RECIPE_VAR_base_branch:-}" ] && { [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; }; }; then echo "ERROR: step-16 landed on protected branch '$_CURRENT_BRANCH' — refusing to create PR. Worktree setup likely failed." >&2; exit 1; fi
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"

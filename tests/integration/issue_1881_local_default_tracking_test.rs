@@ -174,6 +174,9 @@ case "$1:$2" in
     if [ -n "${GH_API_USER_EXIT:-}" ]; then echo "HTTP 401: Bad credentials token ghp_USERFAKEUSERFAKE" >&2; exit "$GH_API_USER_EXIT"; fi
     printf '%s\n' "${GH_USER_LOGIN:-example-user}"
     exit 0 ;;
+  api:--hostname)
+    [ "${FACTORY_ASSOCIATION_URL:-}" != "" ] || exit 1
+    printf '%s\n' "$FACTORY_ASSOCIATION_URL"; exit 0 ;;
   api:*) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
   repo:view)
     if [ -n "${GH_REPO_VIEW_EXIT:-}" ]; then echo "gh: could not determine repository" >&2; exit "$GH_REPO_VIEW_EXIT"; fi
@@ -262,6 +265,21 @@ impl Sandbox {
         write_executable(&bin.join("git"), FAKE_GIT);
         write_executable(&bin.join("sleep"), FAKE_SLEEP);
         write_executable(&bin.join("az"), FAKE_AZ);
+        // Keep the sandbox PATH private while finding the installed prerequisite
+        // on macOS, where Homebrew tools are outside /usr/local/bin.
+        for (name, lookup) in [
+            ("timeout", "command -v timeout"),
+            ("sha256sum", "command -v sha256sum || command -v gsha256sum"),
+            ("stat", "command -v gstat || command -v stat"),
+        ] {
+            let output = Command::new("bash").args(["-c", lookup]).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{name} must be installed for process fixtures"
+            );
+            let tool = String::from_utf8(output.stdout).unwrap();
+            std::os::unix::fs::symlink(tool.trim(), bin.join(name)).unwrap();
+        }
         Sandbox { temp }
     }
 
@@ -2215,4 +2233,23 @@ fn parallel_launch_forwards_create_issue_to_workstreams() {
         step.contains("AMPLIHACK_CREATE_ISSUE=\"${RECIPE_VAR_create_issue:-}\""),
         "launch-parallel-round-1 must pass create_issue to `orch run`"
     );
+}
+
+#[test]
+fn factory_dispatch_reuses_the_owning_repository_issue_without_creation_or_local_fallback() {
+    let url = "https://github.com/plan/tasks/issues/42";
+    let run = run_step(
+        "42",
+        "Create another issue #999",
+        &[
+            ("RECIPE_VAR_base_branch", "dev"),
+            ("RECIPE_VAR_repository", "plan/tasks"),
+            ("RECIPE_VAR_github_host", "github.com"),
+            ("RECIPE_VAR_create_issue", "false"),
+            ("FACTORY_ASSOCIATION_URL", url),
+        ],
+    );
+    run.assert_exit(0);
+    assert_eq!(run.stdout().trim(), url);
+    run.assert_no_gh_write_or_search();
 }

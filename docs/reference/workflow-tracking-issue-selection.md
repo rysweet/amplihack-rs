@@ -847,3 +847,31 @@ scripts/check-brick-budget.sh
 - [Issue Deduplication Reference](issue-dedup.md) - how recipes avoid duplicate issues
 - [Workflow Issue Extraction Reference](workflow-issue-extraction.md) - how step-03b turns the step-03 output into `issue_number`
 - [Local Tracking Issue-Number Extraction](../recipes/issue-815-804-local-tracking-issue-number.md) - the local metadata format used when an explicit lookup fails
+
+
+## Factory plan-task delivery inputs
+
+Factory dispatch supplies a verified owning-repository issue and explicit delivery
+policy: `issue_number`, `create_issue=false`, `repository`, `github_host`,
+`pr_repository`, `base_branch`, `closing_reference`, `repo_path`,
+`existing_branch`, `should_merge=false` and `no_merge=true`. The default recipe
+forwards these into nested preparation. When `base_branch` is set, preparation
+reobserves the exact issue through the supplied host and owning repository; an
+unavailable association fails instead of creating or substituting a local issue.
+The requirements agent carries these protected inputs into downstream handoffs.
+
+The existing-branch worktree receipt preserves that base. Publication resolves
+its exact remote-tracking ref without using the remote default as a fallback,
+passes `--base` to GitHub creation, and uses the repository-qualified closing
+reference when issue and PR repositories differ. Ordinary callers without an
+explicit factory base retain their existing base-discovery and issue policy.
+GitHub closing-relationship verification remains the factory's independent job;
+a phrase in the PR body alone does not certify delivery on a nondefault branch.
+See [software-factory issue 13](https://github.com/mistt-repo/software-factory/issues/13).
+
+Candidate validation on macOS: 47 publishing process/native-runner tests and 78
+tracking/preparation tests pass. The 38 workflow-decomposition tests outside the
+unaffected `zero_bs_transport` module pass. That module's existing Linux-specific
+`/usr/bin/cat` fixture is not portable to this host; full Linux CI is separate.
+Native-runner tests use a private Cargo installation from pin
+`90286bc50b84ded773795d2c8301b689f680db0b`; the shared installation is unchanged.

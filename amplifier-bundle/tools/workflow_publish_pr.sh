@@ -147,7 +147,13 @@ load_pr_fields() {
 }
 
 resolve_pr_base_ref() {
-  local candidate
+  local candidate authorized="${RECIPE_VAR_base_branch:-}"
+  if [ -n "$authorized" ]; then
+    git check-ref-format --branch "$authorized" >/dev/null || return 1
+    case "$authorized" in refs/*|coordination/*|@|"$CURRENT_BRANCH") echo "ERROR: invalid factory delivery base" >&2; return 1 ;; esac
+    git show-ref --verify --quiet "refs/remotes/origin/$authorized" || { echo "ERROR: authorized factory base is absent locally; fetch that branch without retargeting" >&2; return 1; }
+    printf 'origin/%s\n' "$authorized"; return 0
+  fi
   candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "$candidate"; return 0; fi
   git remote set-head origin -a >/dev/null 2>&1 || true
@@ -217,7 +223,7 @@ gh_pr_create_with_retry() (
     return "$status"
   fi
   # WRITE path: no REST fallback (never blind-create); rate limits wait for reset.
-  gh_start_owned _gh_retry_core "pr create" pr create --draft ${PR_HEAD_ARG:+--head="$PR_HEAD_ARG"} --title "$PR_TITLE" --body-file "$body_file"
+  gh_start_owned _gh_retry_core "pr create" pr create --draft --base "$BASE_BRANCH" ${PR_HEAD_ARG:+--head="$PR_HEAD_ARG"} --title "$PR_TITLE" --body-file "$body_file"
   wait "$GH_OWNED_PID" || status=$?
   GH_OWNED_PID=""
   gh_remove_capture "$body_file"
@@ -901,7 +907,7 @@ derive_pr_title() {
   PR_TITLE_SOURCE="template"
   raw=""
   if $HAS_ISSUE_LINK; then
-    raw="$(lookup_issue_title "$ISSUE_NUM" "$REPO_IDENTITY")" || return $?
+    raw="$(lookup_issue_title "$ISSUE_NUM" "${RECIPE_VAR_repository:-$REPO_IDENTITY}")" || return $?
   fi
   METADATA_OPERATION="normalise_pr_title_text (title normalization)"
   text="$(normalise_pr_title_text "$raw")" || return $?
@@ -935,7 +941,7 @@ recover_pr_title() {
   local raw branch suffix="" limit
   PR_TITLE_SOURCE="recovery-issue"
   if $HAS_ISSUE_LINK; then
-    if raw="$(lookup_issue_title "$ISSUE_NUM" "$REPO_IDENTITY")" && prepare_title_text "$raw"; then
+    if raw="$(lookup_issue_title "$ISSUE_NUM" "${RECIPE_VAR_repository:-$REPO_IDENTITY}")" && prepare_title_text "$raw"; then
       return 0
     fi
     suffix=" (#${ISSUE_NUM})"
@@ -1018,6 +1024,12 @@ else
     ISSUE_KEYWORD="Refs"
   fi
   ISSUE_LINK="${ISSUE_KEYWORD:-Refs} #${ISSUE_NUM}"
+  if [ -n "${RECIPE_VAR_base_branch:-}" ]; then
+    expected="#${ISSUE_NUM}"
+    [ "${RECIPE_VAR_repository:?}" = "${RECIPE_VAR_pr_repository:?}" ] || expected="$RECIPE_VAR_repository#${ISSUE_NUM}"
+    [ "${RECIPE_VAR_closing_reference:?}" = "$expected" ] || { echo "ERROR: factory closing reference disagrees with issue association" >&2; exit 2; }
+    ISSUE_LINK="Closes $expected"
+  fi
 fi
 # Treat evidence as untrusted multiline text; generated issue links stay outside
 # this boundary so the diff-based closing policy remains unchanged.

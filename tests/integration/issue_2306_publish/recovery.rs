@@ -1,5 +1,6 @@
 //! #2306 metadata contracts. Fault injection proves recovery, not a macOS cause.
 use super::fixture::{BRANCH, ISSUE_TITLE, PublishFixture, describe, json};
+use std::fs;
 
 #[test]
 fn successful_title_precedence_remains_issue_then_task_then_changed_file_template() {
@@ -499,4 +500,43 @@ fn malformed_creation_output_reports_identity_failure_without_recreating() {
             1
         );
     }
+}
+
+#[test]
+fn factory_delivery_uses_the_authorized_base_and_qualified_closing_reference() {
+    let f = PublishFixture::new();
+    f.git(&[
+        "update-ref",
+        "refs/remotes/origin/dev",
+        "refs/remotes/origin/main",
+    ]);
+    let output = f
+        .publish_command()
+        .env("RECIPE_VAR_base_branch", "dev")
+        .env("RECIPE_VAR_repository", "plan/tasks")
+        .env("RECIPE_VAR_pr_repository", "owner/repo")
+        .env("RECIPE_VAR_closing_reference", "plan/tasks#2306")
+        .output()
+        .unwrap();
+    f.assert_created(&output);
+    let args = fs::read(f.tmp.path().join("create.argv")).unwrap();
+    let args: Vec<_> = args.split(|b| *b == 0).collect();
+    assert!(
+        args.windows(2)
+            .any(|p| p == [b"--base".as_slice(), b"dev".as_slice()])
+    );
+    assert!(f.read("body.md").contains("Closes plan/tasks#2306"));
+}
+
+#[test]
+fn factory_delivery_never_falls_back_when_its_authorized_base_is_absent() {
+    let f = PublishFixture::new();
+    let output = f
+        .publish_command()
+        .env("RECIPE_VAR_base_branch", "dev")
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{}", describe(&output));
+    assert!(!f.tmp.path().join("create.argv").exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("authorized factory base"));
 }

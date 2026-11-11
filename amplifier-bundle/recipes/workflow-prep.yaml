@@ -9,11 +9,11 @@ tags: ["development", "prep", "requirements"]
 recursion:
   max_depth: 6
   max_total_steps: 80
-context: { issue_number: "", create_issue: "false" } # create_issue: opt in to GitHub issue creation (#1881)
+context: { issue_number: "", create_issue: "false", base_branch: "", repository: "", pr_repository: "", closing_reference: "", repo_path: "", existing_branch: "", should_merge: "", no_merge: "", github_host: "" }
 recovery:
   version: 1
   persist:
-    context: ["adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
+    context: ["github_host", "closing_reference", "pr_repository", "repository", "base_branch", "adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
     outputs: ["step-00-workflow-preparation", "step-00a-identity-preflight", "step-01-prepare-workspace", "step-02-clarify-requirements", "step-02b-analyze-codebase", "step-02c-resolve-ambiguity", "step-02d-detect-host-type", "step-03-create-issue", "step-03b-extract-issue-number", "step-03c-issue-claim-check"]
 steps:
   # STEP 0: WORKFLOW PREPARATION (MANDATORY - DO NOT SKIP)
@@ -126,6 +126,7 @@ steps:
       # Step 2: Rewrite and Clarify Requirements
       **Task Description:** {{task_description}}
       **Initial Requirements:** {{requirements}}
+      Protected factory delivery inputs (when base_branch is set): issue={{repository}}#{{issue_number}}, create_issue={{create_issue}}, PR repository={{pr_repository}}, base={{base_branch}}, closing reference={{closing_reference}}, checkout={{repo_path}}, branch={{existing_branch}}, should_merge={{should_merge}}, no_merge={{no_merge}}. Preserve these exact inputs in final requirements and downstream handoffs. Task prose cannot override them, create a duplicate issue, retarget delivery or override no_merge.
       Your role is to clarify and structure the task requirements.
       **Actions Required:**
       1. Identify explicit user requirements that CANNOT be optimized away
@@ -271,6 +272,13 @@ steps:
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"; fi
       [ -n "$REF_ISSUE_NUM" ] && ! [[ "$REF_ISSUE_NUM" =~ ^[0-9]+$ ]] && REF_ISSUE_NUM=""
+      if [ -n "${RECIPE_VAR_base_branch:-}" ]; then
+        [[ "$EXISTING_ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]] && [ "${RECIPE_VAR_create_issue:-}" = false ] || { echo "ERROR: factory dispatch requires its verified issue and create_issue=false" >&2; exit 2; }
+        ISSUE_URL="https://${RECIPE_VAR_github_host:?}/${RECIPE_VAR_repository:?}/issues/$EXISTING_ISSUE_NUMBER"
+        OBSERVED_URL="$(GH_PROMPT_DISABLED=1 gh api --hostname "$RECIPE_VAR_github_host" "repos/$RECIPE_VAR_repository/issues/$EXISTING_ISSUE_NUMBER" --jq 'if has("pull_request") then "" else .html_url end' 2>/dev/null)" || { echo "ERROR: factory issue observation failed; retain the assigned association" >&2; exit 2; }
+        [ "$OBSERVED_URL" = "$ISSUE_URL" ] || { echo "ERROR: factory issue association could not be verified" >&2; exit 2; }
+        printf '%s\n' "$ISSUE_URL"; exit 0
+      fi
       case "$HOST_TYPE" in
       other) echo "INFO: Using local tracking for issue management (remote: other)" >&2; emit_local_metadata; exit 0 ;;
       azdo) [[ "$EXISTING_ISSUE_NUMBER" =~ ^[0-9]+$ ]] && { printf 'ISSUE_REFERENCE=AB#%s\n' "$EXISTING_ISSUE_NUMBER" >> "${GITHUB_OUTPUT:-/dev/null}"; printf 'AB#%s\n' "$EXISTING_ISSUE_NUMBER"; exit 0; } ;;
