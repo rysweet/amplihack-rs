@@ -134,7 +134,7 @@ esac"#
         );
         executable(
             &tools.join("recipe-runner-rs"),
-            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'",
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'",
         );
         for name in [
             ".cargo",

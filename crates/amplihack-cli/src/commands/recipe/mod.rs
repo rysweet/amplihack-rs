@@ -26,7 +26,7 @@ pub mod stop;
 
 pub use list::run_list;
 pub(crate) use run::reject_removed_context_keys;
-pub use run::{resolve_context_args, run_recipe};
+pub use run::{resolve_context_args, run_recipe, run_recipe_fresh};
 pub use show_validate::{run_show, run_validate};
 
 #[cfg(test)]

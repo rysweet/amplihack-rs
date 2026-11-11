@@ -112,24 +112,30 @@ fn run_refuses_group_writable_profile_before_spawn() {
 
 #[test]
 fn reject_docker_env_errors_when_env_active() {
-    let err = super::reject_docker_env_when(true)
+    let _l = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let err = super::reject_docker_mode(true)
         .unwrap_err()
         .to_string()
         .to_lowercase();
     assert!(err.contains("docker"), "{err}");
     assert!(
-        super::reject_docker_env_when(false).is_ok(),
+        super::reject_docker_mode(false).is_ok(),
         "without Docker activation nothing is refused"
     );
 }
 
 #[test]
 fn profile_run_fails_closed_under_docker_env_before_touching_disk() {
+    let _l = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("root");
     let s = ProfileStore::new(root.clone());
     let missing = ProfileName::parse("ghost").unwrap();
-    let err = super::run::run_when(true, &s, &missing, vec![])
+    let err = super::run::run_in_mode(&s, &missing, vec![], true)
         .unwrap_err()
         .to_string()
         .to_lowercase();

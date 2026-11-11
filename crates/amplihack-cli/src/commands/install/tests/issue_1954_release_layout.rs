@@ -952,6 +952,65 @@ mod opaque_process {
         assert!(!report.unknown);
     }
 
+    // #2024: one release and two non-dumpable same-user processes. Only the
+    // process that started after the release existed may have inherited a
+    // working directory, descriptor or environment value inside it, so only
+    // that process keeps it. The one that started before the release existed
+    // must not keep it, or no release would ever be removed while a
+    // long-running non-dumpable process is alive.
+    const BORN_SECS: u64 = 1_000_000;
+    const BEFORE_PID: u32 = 101;
+    const AFTER_PID: u32 = 202;
+
+    fn started_at(pid: u32) -> proc_scan::Opaque {
+        let born = UNIX_EPOCH + Duration::from_secs(BORN_SECS);
+        match pid {
+            BEFORE_PID => proc_scan::Opaque::StartedAt(born - Duration::from_secs(3600)),
+            AFTER_PID => proc_scan::Opaque::StartedAt(born + Duration::from_secs(3600)),
+            other => unreachable!("the scan asked about pid {other}, which the test never listed"),
+        }
+    }
+
+    #[test]
+    fn a_non_dumpable_process_started_after_a_release_keeps_it_and_one_started_before_does_not() {
+        let fx = Fixture::new();
+        let candidate = fx.release("0.9.40");
+        let born = UNIX_EPOCH + Duration::from_secs(BORN_SECS);
+        let report = cleanup_unused_with(&fx.amp, &[], |candidates| {
+            assert_eq!(candidates, std::slice::from_ref(&candidate));
+            scan_with(candidates, &[Some(born)], &[BEFORE_PID, AFTER_PID], |pid| {
+                Err(started_at(pid))
+            })
+        })
+        .unwrap();
+        assert!(candidate.exists(), "the later process may be inside it");
+        assert!(report.removed.is_empty(), "{:?}", report.removed);
+        assert_eq!(
+            report.kept_in_use,
+            vec![(candidate, vec![AFTER_PID])],
+            "only the process started after the release keeps it"
+        );
+        assert!(!report.unknown);
+    }
+
+    #[test]
+    fn a_non_dumpable_process_started_before_a_release_does_not_keep_it() {
+        let fx = Fixture::new();
+        let candidate = fx.release("0.9.40");
+        let born = UNIX_EPOCH + Duration::from_secs(BORN_SECS);
+        let report = cleanup_unused_with(&fx.amp, &[], |candidates| {
+            assert_eq!(candidates, std::slice::from_ref(&candidate));
+            scan_with(candidates, &[Some(born)], &[BEFORE_PID], |pid| {
+                Err(started_at(pid))
+            })
+        })
+        .unwrap();
+        assert!(!candidate.exists(), "the process predates the release");
+        assert_eq!(report.removed, vec![candidate]);
+        assert!(report.kept_in_use.is_empty(), "{:?}", report.kept_in_use);
+        assert!(!report.unknown);
+    }
+
     #[test]
     fn the_user_manager_keeps_no_release() {
         // systemd --user (linger on) started at boot, before both releases.

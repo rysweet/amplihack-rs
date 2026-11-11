@@ -140,6 +140,27 @@ impl EnvGuard {
     }
 }
 
+/// The variables that name an outer recipe run (#1984): the shell helper's five
+/// run-identity names (amplifier-bundle/tools/git-repo-env.sh) plus the two
+/// depth variables. A test started inside a recipe-run session inherits them,
+/// and a runner it starts then joins the outer tree or is refused by its depth
+/// guard instead of starting a fresh top-level run. Sorted.
+pub(crate) const OUTER_RUN_IDENTITY_VARS: [&str; 7] = [
+    "AMPLIHACK_MAX_DEPTH",
+    "AMPLIHACK_RECIPE_RUN_ID",
+    "AMPLIHACK_RUN_DIR",
+    "AMPLIHACK_RUN_ID",
+    "AMPLIHACK_SESSION_DEPTH",
+    "AMPLIHACK_SESSION_TREE_DIR",
+    "AMPLIHACK_TREE_ID",
+];
+
+/// Remove every [`OUTER_RUN_IDENTITY_VARS`] entry until the guard drops. The
+/// caller must hold `env_lock()` (or `home_env_lock()`), as for any `EnvGuard`.
+pub(crate) fn clear_outer_run_env() -> EnvGuard {
+    EnvGuard::unset(OUTER_RUN_IDENTITY_VARS)
+}
+
 /// Runs `f` under the shared env lock with each variable set (or removed when
 /// `None`). The previous values are restored on return and on panic.
 pub(crate) fn with_env<T>(vars: &[(&str, Option<&OsStr>)], f: impl FnOnce() -> T) -> T {

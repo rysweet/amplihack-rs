@@ -1,3 +1,10 @@
+---
+title: amplihack recipe reference
+description: Commands and options for inspecting and executing recipes.
+doc_type: reference
+last_updated: 2026-11-11
+---
+
 # amplihack recipe — Reference
 
 Full CLI reference for the `amplihack recipe` subcommand, which lists,
@@ -11,6 +18,7 @@ inspects, validates, and runs YAML recipe files.
   - [recipe show](#recipe-show)
   - [recipe validate](#recipe-validate)
   - [recipe run](#recipe-run)
+  - [Usage-limit relaunch recovery](#usage-limit-relaunch-recovery)
   - [Detached runs](#detached-runs)
   - [recipe stop](#recipe-stop)
 - [Output formats](#output-formats)
@@ -197,7 +205,7 @@ Exit code is 1 on validation failure; 0 on success.
 Execute a recipe by delegating to the `recipe-runner-rs` binary.
 
 ```
-amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
+amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--fresh] [--verbose]
   [--format <FORMAT>] [--working-dir <DIR>] [--step-timeout <SECONDS>]
   [--detach | --no-detach] [--governor-wait <DURATION>]
   [--governor-class <CLASS>] [--workstream <ID>]
@@ -208,6 +216,7 @@ amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
 | `<FILE>` | (required) | Path to the recipe YAML file |
 | `-c KEY=VALUE` | (none) | Set a context variable; repeat for multiple values |
 | `--dry-run` | false | Print the execution plan without running any steps |
+| `--fresh` | false | Bypass historical recovery for this launch and its delegated execution; preserve existing history |
 | `--verbose` | false, or [`recipe.verbose`](./user-config.md#recipeverbose) | Increase progress detail on stderr; basic step progress is emitted by default. On when either the flag or `recipe.verbose = true` is set |
 | `--format <FORMAT>` | `table` | Output format for results: `table`, `json`, or `yaml` |
 | `--working-dir <DIR>` | `.` | Working directory for step execution |
@@ -316,6 +325,48 @@ SIGKILL cannot be caught. If `recipe run` is killed that way, on Linux the
 kernel sends the runner SIGTERM (`PR_SET_PDEATHSIG`); agents the runner started
 can outlive it. Use `amplihack recipe stop <run_id>` to end them.
 
+### Usage-limit relaunch recovery
+
+Durable relaunch recovery is supported by the pinned Rust runner. Use
+`--fresh` to bypass historical replay for one launch. See the
+[recovery reference](recipe-recovery.md) for persistence policies and resources.
+
+An identified launch selects the latest matching recipe/work attempt.
+For `smart-orchestrator`, supply the same repository and a positive
+`issue_number` or validated matching `issue_url`. Canonical Git worktrees
+share a repository identity; independent clones remain separate. An
+unidentified launch runs fresh outside shared recovery namespaces.
+
+Recovery requires a durable usage-limit stop in that latest attempt and
+an owner that is no longer active. A newer success, non-limit failure, or
+unknown termination prevents recovery from older history. Current live
+session ownership, authorization, governor admission, and recursion
+accounting are established before dependent replay.
+
+The runner restores compatible completed results and typed context changes
+in order, including children beneath incomplete parent steps. It executes
+the first incomplete or invalidated step. Compatibility covers effective
+inputs, execution definitions and settings, cumulative repository state,
+and required files/artifacts. Workflow-produced branch changes are checked
+against recorded progression. Missing or unverifiable history causes a
+logged fresh fallback; unsafe current storage or failed durable publication
+stops execution.
+
+`--fresh` bypasses this historical replay throughout the tree, including
+detached and delegated execution. It preserves earlier records and records
+the current attempt, which can support a later recovery. It does not reset
+Git or clear an explicit `resume_checkpoint`.
+
+`--dry-run` admits no recovery attempt, writes no recovery records, and
+does not advance the latest marker, including when combined with `--fresh`.
+The existing same-process usage-limit wait/retry behavior remains in place.
+
+Stderr identifies the source run and actual restart step with its nested
+invocation path, or explains the fresh fallback. JSON/YAML preserve the
+additive [recovery metadata](recipe-result.md#recovery-metadata).
+See [relaunch commands](../howto/resume-recipe-after-usage-limit.md) and
+[the recovery contract](recipe-recovery.md) for policies and storage rules.
+
 ### Detached runs
 
 `recipe run --detach` (or every `recipe run` once
@@ -356,6 +407,10 @@ log: /home/alice/.amplihack/recipe-logs/amp-smart-orchestrator-myapp-20261020-10
 - **Stopping** — `amplihack recipe stop <session>`, or `tmux kill-session`.
 
 Needs `tmux` on `PATH`.
+
+Recovery settings, including `--fresh`, travel in the
+private launch payload. The detaching process does not register a recovery
+attempt or advance its latest marker; admission happens once in the executing pane.
 
 ### recipe stop
 
@@ -505,6 +560,10 @@ A recipe is a YAML file. The top-level document must be a mapping.
 | `mode`        | string  | no       | Step execution mode |
 | `auto_stage`  | bool    | no       | Auto-stage git changes after step completes |
 
+Recipe-level and step-level `recovery` mappings opt into durable recording.
+See [persistence policies](recipe-recovery.md#recipe-persistence-policy)
+and [step resources](recipe-recovery.md#step-replay-policy-and-resources).
+
 ### Step types
 
 | Type     | Description |
@@ -644,6 +703,13 @@ This allows local overrides of bundled recipes.
 
 The same lookup is used by `amplihack install` and the launch-time freshness
 refresh, so all three agree on which binary is in use.
+
+The recovery integration requires the selected binary to
+advertise `durable_recovery_v1`, including when `--fresh` is requested.
+Validation enforces that capability. Supported runner
+delivery retains the pinned upstream revision and ancestry validation.
+A binary with partial recovery support does not satisfy this requirement; see
+[the capability contract](recipe-recovery.md#capability-and-dependency-contract).
 
 If no binary is found, `recipe run` fails with:
 
