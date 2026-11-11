@@ -1014,7 +1014,7 @@ impl ReportingFixture {
             "implementation",
         ]);
         let head = git(&["rev-parse", "HEAD"]);
-        let auth = authorization(no_merge, "false");
+        let mut auth = authorization(no_merge, "false");
         let mut envelope = json!({"candidate":candidate(&auth), "finalization":finalization(&auth), "completion":completion()});
         fn replace(value: &mut Value, head: &str, base: &str) {
             match value {
@@ -1037,6 +1037,8 @@ impl ReportingFixture {
         replace(&mut envelope, &head, &base);
         let directory = temp.path().join("state");
         let store = EvidenceStore::create(&directory).unwrap();
+        // The runner, not the child context, assigns and binds the directory.
+        auth.bind_state_dir(directory.clone());
         let accepted = store
             .snapshot(&serde_json::to_vec(&envelope["candidate"]).unwrap())
             .unwrap();

@@ -87,12 +87,23 @@ fn accepted_outcome(
     // The reducer's output carries pointers, never authority by itself. Replay
     // its complete checks and compare the private outcome from successful
     // reduction before reporting any readiness or action.
-    let directory = context
-        .get("autodrive_state_dir")
-        .and_then(Value::as_str)
-        .context("private state directory missing from finalization")?;
-    let directory = working_dir.join(directory);
-    let directory = directory.as_path();
+    // #2329: evidence is opened only from the directory the runner assigned
+    // and bound. A directory named by the child is compared lexically and
+    // never joined onto the working directory or resolved.
+    let directory = auth
+        .state_dir()
+        .context("no runner-assigned state directory is bound to this invocation")?;
+    let preparation = context.get("build_result").map(context_value).transpose()?;
+    require_assigned_state_dir(
+        "autodrive_state_dir",
+        context.get("autodrive_state_dir"),
+        directory,
+    )?;
+    require_assigned_state_dir(
+        "build_result.state_dir",
+        preparation.as_ref().and_then(|v| v.get("state_dir")),
+        directory,
+    )?;
     let store = EvidenceStore::create(directory)?;
     let receipt = context
         .get("autodrive_finalization")
@@ -112,7 +123,6 @@ fn accepted_outcome(
                 .and_then(|v| v["accepted_snapshot"].as_str())
         })
         .context("deterministic reduction has no accepted snapshot")?;
-    let preparation = context.get("build_result").map(context_value).transpose()?;
     let repo = receipt
         .as_ref()
         .and_then(|v| v["repo"].as_str())
@@ -222,4 +232,24 @@ fn already_merged(
         .context("invalid preparation attempts")?,
         failure_cause: None,
     }))
+}
+
+/// #2329 (V2): a state directory reported by the child must equal the
+/// runner-assigned one by `Path` equality: no join, canonicalisation or
+/// symlink resolution. An absent value or an empty string counts as absent;
+/// any other JSON type is a mismatch. The message names only the runner's own
+/// path, escaped, never the child's value.
+fn require_assigned_state_dir(
+    key: &str,
+    reported: Option<&Value>,
+    assigned: &std::path::Path,
+) -> Result<()> {
+    match reported {
+        None => Ok(()),
+        Some(Value::String(text)) if text.is_empty() => Ok(()),
+        Some(Value::String(text)) if std::path::Path::new(text) == assigned => Ok(()),
+        Some(_) => {
+            anyhow::bail!("{key} differs from the runner-assigned state directory {assigned:?}")
+        }
+    }
 }

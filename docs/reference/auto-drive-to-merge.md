@@ -99,7 +99,7 @@ commands and expected outcomes.
 | `plan_task_id` | empty | Follow-up task: issue `N` or `#N`, or 1–64 characters from `A-Za-z0-9._:/-`. Otherwise resolve `Closes #N`, `Fixes #N`, or `Resolves #N` from the PR body, then task description. |
 | `no_merge` | `false` in the full composer | Prevent merging throughout the invocation when `true`. Build always receives `true`, independently of this outer value. |
 | `autodrive_dry_run` | `false` | Prevent merging and follow-up issue creation. Still assesses readiness and reports missing obligations. |
-| `autodrive_state_dir` | derived | Private durable state keyed by repository and PR identity. A supplied path must be absolute, without traversal or control characters. |
+| `autodrive_state_dir` | runner-assigned | Private state for this run's records, budgets and receipts. Omitted: the runner assigns a directory inside the run's durable folder. Supplied: must be non-empty, absolute and free of `..` components. See [state directory](#state-directory). |
 
 The runner's CLI `--dry-run` previews recipe execution; it is distinct from
 `autodrive_dry_run`, which executes verification with action restrictions.
@@ -120,12 +120,37 @@ invocation state outside child-mutable context and agent candidate records.
 | Any invocation with `no_merge=true` | No merge request, including during finalization or escalation. |
 | Any invocation with `autodrive_dry_run=true` | No merge request or follow-up issue creation, even with `no_merge=false`. |
 | Direct merge-loop or finalization invocation | Disabled without explicit fresh invocation authorization. |
-| Resume | Fresh authorization; historical records cannot grant permission. |
+| Resume, `recipe run --fresh`, or durable recovery | Fresh authorization from this invocation's explicit inputs; stored or recovered context cannot grant permission. |
 
 Child context overwrite, candidate output, inherited environment, PR comments,
 and old records cannot grant merge permission. Build-phase `no_merge=true`
 cannot overwrite a captured outer action either. Light-to-full escalation,
 shared loops, and re-review preserve caller restrictions.
+
+### Authority on resume and recovery
+
+Every invocation gets a new `run_id` and captures authority once, from the
+raw `-c` inputs, before recipe defaults are expanded and before durable
+[recovery admission](recipe-recovery.md#identity-and-admission). This holds
+for a plain rerun, for `recipe run --fresh` and for a recovery-descriptor
+resume. Recovery normalisation applies to the merged context only, never to
+the explicit inputs from which authority is captured.
+
+After admission returns, and immediately before the child starts, the runner
+writes these keys itself, replacing any stored, recovered or defaulted value:
+
+| Runner-owned key | Value |
+| --- | --- |
+| `no_merge` | Captured restriction for this invocation. |
+| `autodrive_dry_run` | Captured restriction for this invocation. |
+| `autodrive_authorization` | Serialised authority for this `run_id`, including the bound state directory. |
+| `autodrive_invocation_file` | Private copy of the captured invocation. |
+| `autodrive_state_dir` | State directory bound for this run: the validated operator path, or the default directory the runner created. |
+
+The recovery settings fingerprint records only whether authority applies to
+the recipe, not its value or any per-run path. A resume therefore cannot
+switch an auto-drive recipe between authorised and unauthorised execution,
+and the fingerprint is not itself an authority check.
 
 ### Step outputs ignore inherited bare variables
 
@@ -211,6 +236,29 @@ a successful server action. Command success and queue admission do not prove
 a merge. With merging disabled, readiness can be complete while the PR stays
 open. See the [result contract](auto-drive-evidence.md#result-contract).
 
+### Hosting calls and rate limits
+
+The bundled [evidence contract](../../amplifier-bundle/skills/auto-drive-to-merge/evidence-contract.md)
+governs calls to the hosting service:
+
+- Use only configured authenticated access to the bound host and repository,
+  with TLS verification.
+- Check both transport status and API errors, including GraphQL errors in
+  HTTP 200 responses.
+- Pagination is complete only when every page succeeds and the final page
+  reports no next page. Discard partial counts after any failed page.
+- On a rate limit, a transient read failure or a refused call, the step does
+  not wait or retry. It reports `incomplete` and records the cause, the
+  response status, and any `Retry-After` or reset time as observations. A
+  later drive picks the work up.
+- Authentication, permission, validation and protection refusals are not
+  retried.
+- Rate-limit observations are limited to the response status, `Retry-After`,
+  `x-ratelimit-remaining` and `x-ratelimit-reset`. Request headers, tokens and
+  credential-bearing bodies are never recorded.
+- Before retrying an ambiguous write, observe its effect. A changed head
+  requires a fresh readiness assessment. Exit `79` remains terminal.
+
 ### Two absolute prohibitions
 
 Never skip commit hooks or bypass branch protection. Fix failures and satisfy
@@ -250,7 +298,7 @@ checked before starting more work. Budgets limit cost, not convergence.
 
 | Key | Default | Counts |
 | --- | --- | --- |
-| `autodrive_budget_loop_rounds` | `12` | Rounds per loop across runs using the same state. |
+| `autodrive_budget_loop_rounds` | `12` | Rounds per loop across runs using the same [state directory](#state-directory). |
 | `autodrive_budget_total_rounds` | `20` | Rounds across both loops. |
 | `autodrive_budget_wall_seconds` | `14400` | Child work time across rounds, before-round work, and evaluation, excluding recorded usage-limit waits. |
 
@@ -259,17 +307,28 @@ resetting consumed usage or making old evidence current.
 
 ### Resuming after BUDGET_EXHAUSTED
 
-Retain consumed usage and pass the original task along with the explicit merge restriction:
+Retain consumed usage by passing the same explicit state directory as the
+exhausted run, the original task and the explicit merge restriction:
 
 ```bash
-amplihack recipe run auto-drive-to-merge -c task_description="<the original task>" -c no_merge=true -c autodrive_budget_loop_rounds=20
+amplihack recipe run auto-drive-to-merge \
+  -c task_description="<the original task>" \
+  -c autodrive_state_dir="$HOME/.amplihack/state/auto-drive/pr-2340" \
+  -c no_merge=true \
+  -c autodrive_budget_loop_rounds=20
 ```
+
+Without the same explicit `autodrive_state_dir`, the new run gets its own
+state directory and starts its budget count from zero.
 
 ### Usage limits are not STUCK
 
-A usage limit surviving runtime wait/retry stops as `USAGE_LIMIT`. It is
-neither a readiness judgment nor lack of progress. Recorded usage-limit
-waiting time is excluded from the wall budget.
+A model-service usage limit surviving runtime wait/retry stops as
+`USAGE_LIMIT`. It is neither a readiness judgment nor lack of progress.
+Recorded usage-limit waiting time is excluded from the wall budget. Hosting
+service rate limits are handled differently: the drive does not wait or retry
+and stops as `incomplete` (see
+[hosting calls and rate limits](#hosting-calls-and-rate-limits)).
 
 ### Orphaned rounds
 
@@ -291,9 +350,7 @@ Usage budgets remain separate from tool timeouts.
 
 ## Resumability
 
-Local state under `${AMPLIHACK_STATE_DIR:-~/.amplihack/state}/auto-drive/`
-caches progress by repository and PR identity. Reuse completed work only
-after validation. A fresh host repeats work whose provenance it cannot
+Reuse completed work only after validation. A fresh host repeats work whose provenance it cannot
 establish. PR comments never restore workflow authority.
 
 Staging, accepted evidence, and loop completion are distinct. Rust filesystem
@@ -301,6 +358,47 @@ handling creates private state and immutable snapshots. Unsafe historical
 entries are rejected or quarantined. Hashes do not make historical or
 same-user edits trustworthy. Every resume captures authorization afresh and
 refreshes mutable facts before finalization.
+
+State is kept in a per-run directory by default, so a later drive reuses round
+history and budget usage only when every drive passes the same explicit
+absolute `autodrive_state_dir`; see [state directory](#state-directory).
+
+### State directory
+
+The runner decides where auto-drive state lives and binds that path into the
+captured authorization before any child starts.
+
+| Invocation | State directory |
+| --- | --- |
+| `-c autodrive_state_dir=/abs/path` | That path, unchanged; validated and bound, created only if it does not exist. |
+| Omitted, normal run | `<durable run folder>/autodrive-state`, inside the run folder admitted by [recipe recovery](recipe-recovery.md#private-storage-and-publication). |
+| Omitted, `autodrive_dry_run=true` | `autodrive-state` inside the private launch bundle; removed with the bundle after the report is produced. |
+
+A supplied value that is empty, relative, contains a `..` component or
+contains a control character stops the run before the runner probe or any
+child starts, with the message `autodrive_state_dir must be an absolute path`.
+When `auto-drive-light` is run directly, the recipe repeats these checks with
+its own messages. An existing directory that is
+a symbolic link, not a directory, owned by another user, or accessible to
+group or others is refused; it is never re-permissioned to make it pass. The
+runner creates the directory `0700` and evidence files `0600`. The durable run
+folder must be owned by the current user and not writable by group or others.
+
+The runner binds the absolute path it passes to the evidence store, before any
+canonicalisation, and gives the child the same string. When the run ends, the
+report opens the store only from that bound path. It compares the child's
+`autodrive_state_dir` and the reducer's `state_dir` with the bound path
+lexically: nothing is joined onto the working directory, canonicalised or
+resolved through links. An empty string counts as absent. Any other value,
+including a relative path, a sibling directory, a different absolute path or a
+non-string JSON value, gives readiness `incomplete`, action `not_requested`
+and a fixed `failure_cause` naming the state directory mismatch.
+
+Because the default directory is per run, round history and budget usage are
+shared across drives only when each drive passes the same explicit absolute
+`autodrive_state_dir`. Records stay bound to the `run_id` that produced them,
+so a shared directory cannot replay an earlier run's finalisation
+observations or completion receipt into a merge-ready result.
 
 ## Trusted execution and portability
 

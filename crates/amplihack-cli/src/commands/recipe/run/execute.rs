@@ -536,6 +536,41 @@ pub(super) fn context_env_pairs(
     pairs
 }
 
+/// #2329: the private auto-drive state directory for one invocation.
+///
+/// Resolution order: the operator's explicit `autodrive_state_dir` (already
+/// validated by `InvocationAuthorization::capture`), then `autodrive-state`
+/// in this run's durable folder, then `autodrive-state` in the dry run's
+/// private launch copy. The directory is created 0700, or an existing one is
+/// checked for a non-symlink leaf, ownership and private modes; it is never
+/// chmodded to pass. The returned path is the absolute path before
+/// canonicalisation: the runner binds it, passes the same string to the child
+/// and the report compares against it lexically.
+fn assign_autodrive_state_dir(
+    explicit_inputs: &BTreeMap<String, String>,
+    workspace: &crate::commands::cleanup::run_dir::RunWorkspace,
+    launch_home: &Path,
+) -> Result<PathBuf> {
+    let directory = match explicit_inputs.get("autodrive_state_dir") {
+        Some(value) => PathBuf::from(value),
+        None => match workspace.durable_run_dir()? {
+            Some(run_dir) => run_dir.join("autodrive-state"),
+            None => launch_home.join("autodrive-state"),
+        },
+    };
+    anyhow::ensure!(
+        directory.is_absolute(),
+        "autodrive_state_dir must be an absolute path"
+    );
+    anyhow::ensure!(
+        directory.to_str().is_some(),
+        "auto-drive state directory {directory:?} is not valid UTF-8"
+    );
+    crate::commands::orch::autodrive::state::EvidenceStore::create(&directory)
+        .with_context(|| format!("cannot prepare auto-drive state directory {directory:?}"))?;
+    Ok(directory)
+}
+
 // The resolved agent binary is an extra argument on purpose: the caller
 // decided it once, for the pre-flight and the steps alike (issue #1481).
 #[allow(clippy::too_many_arguments)]
@@ -720,11 +755,15 @@ pub(super) fn execute_recipe_via_rust_fresh(
     };
     // #2329 (S2): the runner writes its own keys last, after admission and
     // immediately before launch, so no stored, recovered or operator-supplied
-    // value for them reaches the child.
-    if let Some(auth) = &authorization {
+    // value for them reaches the child. The private state directory is
+    // assigned and bound here too: the report opens evidence only from it.
+    if let Some(auth) = &mut authorization {
         let launch = launch
             .as_ref()
             .context("trusted launch bundle missing for auto-drive")?;
+        let state_dir =
+            assign_autodrive_state_dir(explicit_inputs, &workspace.borrow(), &launch.home)?;
+        auth.bind_state_dir(state_dir.clone());
         invocation_context.insert("no_merge".into(), auth.no_merge().to_string());
         invocation_context.insert("autodrive_dry_run".into(), auth.dry_run().to_string());
         invocation_context.insert(
@@ -739,7 +778,12 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 .to_string_lossy()
                 .into_owned(),
         );
+        invocation_context.insert(
+            "autodrive_state_dir".into(),
+            state_dir.to_string_lossy().into_owned(),
+        );
     }
+    let authorization = authorization;
     let context = &invocation_context;
 
     // Issue #964: snapshot the caller checkout's git state BEFORE spawning so a

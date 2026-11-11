@@ -76,26 +76,35 @@ blocked and the report lists those obligations. Dry-run does not waive them.
 Correct the reported cause and rerun with `no_merge=true`
 again. The full-composer default is `false`; omitting the restriction
 on a new invocation permits merging once ready. Historical authorization does
-not carry over.
+not carry over, including through `recipe run --fresh` or a durable recovery
+resume.
 
-If the run exhausted its per-loop budget and continued work is appropriate:
+Each run keeps its records in its own state directory unless you pass one.
+To continue a run that exhausted its per-loop budget, pass the same absolute
+`autodrive_state_dir` that the exhausted run used:
 
 ```bash
 # Explicitly restrict this invocation to readiness verification.
 amplihack recipe run auto-drive-to-merge \
   -c repo_path=. \
   -c existing_branch="$(git branch --show-current)" \
+  -c autodrive_state_dir="$HOME/.amplihack/state/auto-drive/pr-2340" \
   -c no_merge=true \
   -c autodrive_budget_loop_rounds=20
 ```
 
 Expected behavior: reuse validated progress for the same PR, retain consumed
 usage, and start additional work only if every applicable budget permits it.
+A relative path, or one containing `..` or a control character, stops the run
+at once with `autodrive_state_dir must be an absolute path`. See
+[state directory](../reference/auto-drive-to-merge.md#state-directory).
 Raise another exhausted budget separately; a higher limit is not readiness.
 
 A failed GraphQL command or missing client may be recovered through a complete
 alternative interface. If recovery cannot supply all facts, the run reports
-the cause and stops incomplete. Pending approvals require the authorized
+the cause and stops incomplete. A rate limit is not waited out: the run
+records the status and any `Retry-After` or reset time, stops incomplete, and
+a later invocation continues the work. Pending approvals require the authorized
 reviewer; policy bypasses and hook skipping are prohibited.
 
 ## Inspect readiness and publish evidence

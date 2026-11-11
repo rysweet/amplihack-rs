@@ -1,6 +1,9 @@
 use anyhow::{Result, bail};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    path::{Component, Path, PathBuf},
+};
 
 /// Captured before executing children; never deserialized from agent output.
 #[derive(Debug, Clone, Serialize)]
@@ -14,6 +17,10 @@ pub struct InvocationAuthorization {
     no_merge: bool,
     dry_run: bool,
     requested_action: &'static str,
+    /// #2329: the private state directory the runner assigned and created for
+    /// this invocation. Bound after admission, never taken from child output.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    state_dir: Option<PathBuf>,
 }
 impl InvocationAuthorization {
     /// Capture explicit operator inputs, before recipe defaults or inference.
@@ -47,6 +54,9 @@ impl InvocationAuthorization {
             .cloned();
         let no_merge = flag(inputs, "no_merge", recipe != "auto-drive-to-merge")?;
         let dry_run = flag(inputs, "autodrive_dry_run", false)?;
+        if let Some(directory) = inputs.get("autodrive_state_dir") {
+            validate_state_dir(directory)?;
+        }
         Ok(Self {
             schema_version: 1,
             selected_pr,
@@ -61,6 +71,7 @@ impl InvocationAuthorization {
             } else {
                 "merge"
             },
+            state_dir: None,
         })
     }
     pub(crate) fn validate_selection(&self, binding: &super::records::Binding) -> Result<()> {
@@ -88,6 +99,12 @@ impl InvocationAuthorization {
     }
     pub(crate) fn bind_policy(&mut self, provenance: String) {
         self.policy_provenance = Some(provenance);
+    }
+    pub(crate) fn bind_state_dir(&mut self, directory: PathBuf) {
+        self.state_dir = Some(directory);
+    }
+    pub(crate) fn state_dir(&self) -> Option<&Path> {
+        self.state_dir.as_deref()
     }
     pub(crate) fn policy_provenance(&self) -> Option<&str> {
         self.policy_provenance.as_deref()
@@ -126,6 +143,8 @@ impl InvocationAuthorization {
             no_merge: bool,
             dry_run: bool,
             requested_action: String,
+            #[serde(default)]
+            state_dir: Option<PathBuf>,
         }
         let store = EvidenceStore::create(
             path.parent()
@@ -169,6 +188,22 @@ impl InvocationAuthorization {
             no_merge: stored.no_merge,
             dry_run: stored.dry_run,
             requested_action,
+            state_dir: stored.state_dir,
         })
     }
+}
+
+/// #2329 (V1): an operator-chosen state directory must be a non-empty absolute
+/// path with no `..` component and no control character. The refusal is a
+/// fixed message, so no operator value is echoed to the terminal.
+fn validate_state_dir(value: &str) -> Result<()> {
+    let path = Path::new(value);
+    if value.is_empty()
+        || !path.is_absolute()
+        || path.components().any(|c| matches!(c, Component::ParentDir))
+        || value.chars().any(char::is_control)
+    {
+        bail!("autodrive_state_dir must be an absolute path");
+    }
+    Ok(())
 }

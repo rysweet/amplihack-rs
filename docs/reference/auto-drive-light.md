@@ -52,7 +52,7 @@ recipe name when the change is eligible.
 | `light_max_public_api` | `0` | Public API line-change limit. |
 | `light_max_schema` | `0` | Schema-file limit. |
 | `light_max_recipe_contract` | `0` | Recipe context-key-set-change limit. |
-| `autodrive_state_dir` | derived | Same private state contract as full auto-drive. |
+| `autodrive_state_dir` | runner-assigned | Same [state directory](auto-drive-to-merge.md#state-directory) contract as full auto-drive. |
 | `autodrive_dry_run` | `false` | Suppress merging and follow-up creation, including after escalation. |
 | `no_merge` | `true` | Prevent merging throughout the invocation. Build always prohibits merging; explicit `false` allows finalization only after readiness. |
 
