@@ -105,21 +105,31 @@ fn run_refuses_group_writable_profile_before_spawn() {
     assert!(build_profile_command(&bin, &s, &name, &[]).is_err());
 }
 
-struct DockerEnvGuard(Option<std::ffi::OsString>);
-impl DockerEnvGuard {
-    fn set(v: &str) -> Self {
-        let prev = std::env::var_os("AMPLIHACK_USE_DOCKER");
-        unsafe { std::env::set_var("AMPLIHACK_USE_DOCKER", v) };
-        Self(prev)
-    }
+struct DockerEnvGuard {
+    _env: crate::test_support::EnvGuard,
+    _tools: tempfile::TempDir,
 }
-impl Drop for DockerEnvGuard {
-    fn drop(&mut self) {
-        unsafe {
-            match &self.0 {
-                Some(v) => std::env::set_var("AMPLIHACK_USE_DOCKER", v),
-                None => std::env::remove_var("AMPLIHACK_USE_DOCKER"),
-            }
+
+impl DockerEnvGuard {
+    fn set(value: &str) -> Self {
+        let tools = tempfile::tempdir().unwrap();
+        // Activation requires a running daemon. Keep that input explicit,
+        // without depending on a Docker installation on the test host.
+        crate::test_support::write_executable(
+            &tools.path().join("docker"),
+            "#!/bin/sh\n[ \"$1\" = info ]\n",
+        );
+        let mut paths = vec![tools.path().to_path_buf()];
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        let mut env = crate::test_support::EnvGuard::capture(&[]);
+        env.assign("AMPLIHACK_USE_DOCKER", value);
+        env.clear("AMPLIHACK_IN_DOCKER");
+        env.assign("PATH", std::env::join_paths(paths).unwrap());
+        Self {
+            _env: env,
+            _tools: tools,
         }
     }
 }
