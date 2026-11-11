@@ -100,7 +100,7 @@ impl Stage {
 
 /// Bounded diagnostic fields. Dispositions are fixed strings at call sites.
 pub struct Diagnostic {
-    /// Bounded, payload-independent identifier shared by this invocation’s stages.
+    /// Bounded, payload-independent identifier shared by this invocation's stages.
     pub invocation: String,
     pub session: Option<String>,
     pub event: Option<String>,

@@ -110,7 +110,8 @@ pub enum Outcome {
     /// Auto-switch is off. Outcome records are written when turned off while
     /// waiting.
     Disabled,
-    /// Not a usage-limit stop, or no usable session id. Receipt/filter records only.
+    /// Not a usage-limit stop, or no usable session id. Recorded on receipt and
+    /// filter lines only; never written after a decision.
     NotLimit,
 }
 
@@ -274,13 +275,11 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     let start = deps.now();
     let invocation = invocation_key();
     let enabled = deps.auto_switch_on();
-    let error = match input {
-        HookInput::StopFailure { error, .. } => error.as_deref(),
-        _ => None,
-    };
-    let session = match input {
-        HookInput::StopFailure { session_id, .. } => session_hash(session_id.as_deref()),
-        _ => None,
+    let (error, session) = match input {
+        HookInput::StopFailure {
+            error, session_id, ..
+        } => (error.as_deref(), session_hash(session_id.as_deref())),
+        _ => (None, None),
     };
     let receipt = Receipt {
         start,
@@ -677,8 +676,7 @@ pub fn run_with_io<D: Deps + ?Sized>(
         if let Some(outcome) = receipt.stop_if_disabled(deps) {
             return Some(outcome);
         }
-        let parsed = serde_json::from_value::<HookInput>(value);
-        let Ok(input) = parsed else {
+        let Ok(input) = serde_json::from_value::<HookInput>(value) else {
             receipt.filtered(deps, "malformed-input");
             return None;
         };
