@@ -13,6 +13,8 @@
 use crate::support::test_path::test_path;
 use std::process::Command;
 
+const PROBE_RESULT: &str = "ACTIVE_AGENT_BINARY=";
+
 /// Spawn the current test binary to run a single child probe test in a
 /// subprocess with full env isolation.  `env_override` sets
 /// AMPLIHACK_AGENT_BINARY when `Some`; `None` removes it entirely.
@@ -52,19 +54,14 @@ fn run_probe(test_name: &str, env_override: Option<&str>) -> String {
         cmd.env("AMPLIHACK_AGENT_BINARY", val);
     }
     let output = cmd.output().expect("failed to spawn child probe");
-    // stdout contains test harness lines plus the printed value; find the
-    // one line that is just the binary name (no spaces, not a harness line).
+    assert!(output.status.success(), "child probe failed: {output:?}");
+    // With one test thread libtest writes its test-name prefix on the
+    // same line as the result. Find our explicit marker in either format.
     let stdout = String::from_utf8_lossy(&output.stdout);
     stdout
         .lines()
-        .find(|l| {
-            let t = l.trim();
-            !t.is_empty()
-                && !t.starts_with("running")
-                && !t.starts_with("test ")
-                && !t.starts_with("test result")
-        })
-        .unwrap_or("")
+        .find_map(|line| line.split_once(PROBE_RESULT).map(|(_, value)| value))
+        .expect("child probe printed its result")
         .trim()
         .to_string()
 }
@@ -78,19 +75,19 @@ fn run_probe(test_name: &str, env_override: Option<&str>) -> String {
 #[test]
 fn probe_default_no_env() {
     let v = amplihack_cli::env_builder::helpers::active_agent_binary();
-    println!("{v}");
+    println!("{PROBE_RESULT}{v}");
 }
 
 #[test]
 fn probe_claude_override() {
     let v = amplihack_cli::env_builder::helpers::active_agent_binary();
-    println!("{v}");
+    println!("{PROBE_RESULT}{v}");
 }
 
 #[test]
 fn probe_invalid_override() {
     let v = amplihack_cli::env_builder::helpers::active_agent_binary();
-    println!("{v}");
+    println!("{PROBE_RESULT}{v}");
 }
 
 // ── Contract tests (each spawns a subprocess with isolated env) ──────────────

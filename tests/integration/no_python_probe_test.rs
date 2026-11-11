@@ -2132,6 +2132,7 @@ fn tc32_fleet_tui_up_down_cursor_navigation_updates_preview_without_python() {
         "Selected session: vm-2/copilot-9",
         Duration::from_secs(3),
     );
+    assert!(probe.wait_for_output_containing("Working outside fleet", Duration::from_secs(3)));
     let down_frame = strip_ansi(&String::from_utf8_lossy(&probe.output));
     assert!(
         down_frame.contains("Working outside fleet")
@@ -2145,6 +2146,11 @@ fn tc32_fleet_tui_up_down_cursor_navigation_updates_preview_without_python() {
         b"\x1b[A",
         "Selected session: vm-1/claude-1",
         Duration::from_secs(3),
+    );
+    // PTY reads may stop partway through a frame, after the selection and
+    // repository lines but before the preview text being asserted below.
+    assert!(
+        probe.wait_for_output_containing("Awaiting operator confirmation", Duration::from_secs(3))
     );
     let up_frame = strip_ansi(&String::from_utf8_lossy(&probe.output));
     probe.send(b"q", Duration::from_millis(200));
