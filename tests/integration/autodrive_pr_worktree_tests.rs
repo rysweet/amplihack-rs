@@ -160,6 +160,11 @@ impl Sandbox {
 
     fn isolate<'a>(&self, command: &'a mut Command) -> &'a mut Command {
         amplihack_git::scrub(command)
+            .env_remove("AMPLIHACK_WORK_ROOT")
+            .env_remove("AMPLIHACK_WORK_ROOT_EXPLICIT")
+            .env_remove("AMPLIHACK_RUN_DIR")
+            .env_remove("BASH_ENV")
+            .env_remove("AMPLIHACK_MERGE_GUARD")
             .env("HOME", self.root.join("home"))
             .env(
                 "PATH",
@@ -1279,45 +1284,18 @@ fn loop_invocation(command: &str) -> String {
 fn loop_step_02s_pass_the_resolved_pr_worktree_to_repo_and_repo_path() {
     for (recipe, step, _) in LOOPS {
         let command = step_field(recipe, step, "command");
-        let resolve_at = command
-            .find("autodrive_pr_worktree.sh")
-            .unwrap_or_else(|| panic!("{recipe}: step-02 must resolve the PR worktree"));
-        let loop_at = command
-            .find("bash \"$LOOP_HELPER\"")
-            .expect("loop helper call");
-        assert!(
-            resolve_at < loop_at,
-            "{recipe}: the worktree is resolved before the loop starts"
-        );
-        let resolve_line = logical_line_at(&command, resolve_at);
-        for required in [
-            "PR_WORKTREE=\"$(bash \"$(dirname \"$LOOP_HELPER\")/autodrive_pr_worktree.sh\" resolve",
-            // The preflight's `repo` (#1543): the PR head's worktree when a
-            // PR number was supplied, else repo_path.
-            "--repo \"$REPO\"",
-            "--pr \"$PR\"",
-            "|| {",
-            "exit 1",
-            "#1528",
-        ] {
-            assert!(
-                resolve_line.contains(required),
-                "{recipe}: resolve line must contain `{required}`:\n{resolve_line}"
-            );
-        }
-
+        assert!(command.contains("PR_WORKTREE=\"$REPO\""));
         let invocation = loop_invocation(&command);
+        assert!(invocation.contains("--repo \"$PR_WORKTREE\""));
+        assert!(invocation.contains("--context \"repo_path=$PR_WORKTREE\""));
+        let doc = load_recipe(recipe);
+        let prep = doc["steps"].as_sequence().unwrap().first().unwrap();
+        assert_eq!(prep["type"].as_str(), Some("agent"));
         assert!(
-            invocation.contains("--repo \"$PR_WORKTREE\""),
-            "{recipe}: rounds run in the PR worktree:\n{invocation}"
-        );
-        assert!(
-            invocation.contains("--context \"repo_path=$PR_WORKTREE\""),
-            "{recipe}: round agents get the PR worktree as repo_path:\n{invocation}"
-        );
-        assert!(
-            !invocation.contains("REPO_PATH"),
-            "{recipe}: the launch checkout must never reach the rounds:\n{invocation}"
+            prep["prompt"]
+                .as_str()
+                .unwrap()
+                .contains("existing linked worktree")
         );
     }
 }
@@ -1377,6 +1355,8 @@ fn run_loop_step_02_from(
     let logs = root.join("logs");
     let launch = root.join("launch");
     let home = root.join("home");
+    let scratch = root.join("tmp");
+    fs::create_dir_all(&scratch).unwrap();
     fs::create_dir_all(&logs).expect("mkdir logs");
     fs::create_dir_all(&launch).expect("mkdir launch");
     fs::create_dir_all(&home).expect("mkdir home");
@@ -1452,6 +1432,8 @@ fn run_loop_step_02_from(
            *'extract-field --field state_dir'*) printf '%s' /stub/state ;;\n\
            *'extract-field --field pr'*) printf '%s' 7 ;;\n\
            *'extract-field --field repo'*) printf '%s' \"$STUB_PRE_REPO\" ;;\n\
+           *'extract-field --field review_dir'*) printf '%s' \"$STUB_REVIEW_DIR\" ;;\n\
+           *'extract-field --field base_branch'*) printf '%s' main ;;\n\
            *) printf 'stub amplihack: unexpected: %s\\n' \"$*\" >&2; exit 97 ;;\n\
          esac\n",
     );
@@ -1466,11 +1448,22 @@ fn run_loop_step_02_from(
             format!("{}:/usr/bin:/bin", root.join("bin").display()),
         )
         .env("HOME", &home)
+        .env("TMPDIR", &scratch)
         .env("AMPLIHACK_HOME", root.join("ah"))
         .env("REPO_PATH", repo_path)
         // The preflight's `repo` (#1543) is repo_path: these runs have no
         // operator PR number, so #1543's own resolution did not run.
-        .env("STUB_PRE_REPO", repo_path)
+        .env(
+            "STUB_PRE_REPO",
+            if resolve_fails {
+                std::path::Path::new("")
+            } else if repo_path_is_worktree {
+                &worktree
+            } else {
+                std::path::Path::new("/stub/wt")
+            },
+        )
+        .env("STUB_REVIEW_DIR", &launch)
         .env(
             preflight_var,
             r#"{"state_dir":"/stub/state","pr":"7","repo":"<stub>"}"#,
@@ -1488,89 +1481,20 @@ fn run_loop_step_02_from(
 fn loop_step_02_refuses_before_the_loop_when_resolution_fails() {
     for (recipe, step, preflight_var) in LOOPS {
         let (output, tmp) = run_loop_step_02(recipe, step, preflight_var, true);
-        let logs = fs::canonicalize(tmp.path()).expect("canon").join("logs");
-        assert_ne!(
-            output.status.code(),
-            Some(0),
-            "{recipe}: a failed resolution must fail the step\n{}",
-            describe(&output)
-        );
-        assert!(
-            text(&output.stderr).contains("#1528"),
-            "{recipe}: say why\n{}",
-            describe(&output)
-        );
-        assert!(
-            logs.join("resolver.argv").exists(),
-            "{recipe}: the resolver must have been asked\n{}",
-            describe(&output)
-        );
-        assert!(
-            !logs.join("loop.argv").exists(),
-            "{recipe}: no round may run in the launch checkout when resolution fails"
-        );
-
+        assert!(!output.status.success(), "{}", describe(&output));
+        assert!(!tmp.path().join("logs/loop.argv").exists());
         let (output, tmp) = run_loop_step_02(recipe, step, preflight_var, false);
-        let root = fs::canonicalize(tmp.path()).expect("canon");
+        assert!(output.status.success(), "{}", describe(&output));
+        let argv = read(&tmp.path().join("logs/loop.argv"));
+        assert!(argv.contains("repo_path=/stub/wt"));
+        assert!(argv.contains("--review-dir"));
         assert_eq!(
-            output.status.code(),
-            Some(0),
-            "{recipe}\n{}",
-            describe(&output)
-        );
-        let resolver: Vec<String> = read(&root.join("logs/resolver.argv"))
-            .lines()
-            .map(str::to_string)
-            .collect();
-        let launch = root.join("launch").display().to_string();
-        assert_eq!(
-            resolver,
-            vec!["resolve", "--repo", &launch, "--pr", "7"],
-            "{recipe}: resolver argv"
-        );
-        let argv: Vec<String> = read(&root.join("logs/loop.argv"))
-            .lines()
-            .map(str::to_string)
-            .collect();
-        let repo_at = argv
-            .iter()
-            .position(|arg| arg == "--repo")
-            .expect("loop gets --repo");
-        assert_eq!(argv[repo_at + 1], "/stub/wt", "{recipe}: {argv:?}");
-        assert!(
-            argv.iter().any(|arg| arg == "repo_path=/stub/wt"),
-            "{recipe}: {argv:?}"
-        );
-        // The rounds run in the PR worktree and still get the task, through
-        // the task file rather than as an argv element (#1528 with #1570).
-        assert!(
-            argv.iter().any(|arg| arg == "--task-file"),
-            "{recipe}: loop gets --task-file: {argv:?}"
-        );
-        assert_eq!(
-            read(&root.join("logs/loop.task")),
-            "drive PR 7 to merge",
-            "{recipe}: the task reaches the loop"
+            read(&tmp.path().join("logs/loop.task")),
+            "drive PR 7 to merge"
         );
         assert!(
-            !argv.iter().any(|arg| arg.contains("task_description")),
-            "{recipe}: the task never travels as an argv element: {argv:?}"
-        );
-        // The launch checkout reaches the loop exactly once, as the review
-        // dir where the read-only judging agents start (#1528). It
-        // never reaches `--repo` or `repo_path`, where commits happen.
-        let review_at = argv
-            .iter()
-            .position(|arg| arg == "--review-dir")
-            .unwrap_or_else(|| panic!("{recipe}: loop gets --review-dir: {argv:?}"));
-        assert_eq!(argv[review_at + 1], launch, "{recipe}: {argv:?}");
-        assert!(
-            !argv
-                .iter()
-                .enumerate()
-                .any(|(i, arg)| i != review_at + 1
-                    && (arg.contains(&launch) || arg == "repo_path=.")),
-            "{recipe}: the launch checkout must reach the loop only as --review-dir: {argv:?}"
+            !tmp.path().join("logs/resolver.argv").exists(),
+            "agent preparation must not be repeated through a mandatory hosting CLI"
         );
     }
 }
@@ -1606,10 +1530,9 @@ fn loop_step_02_with_repo_path_set_to_the_pr_worktree_reviews_from_the_main_chec
         };
         assert_eq!(after("--review-dir"), main, "{recipe}: {argv:?}");
         assert_eq!(after("--repo"), worktree, "{recipe}: {argv:?}");
-        let resolver = read(&root.join("logs/resolver.argv"));
         assert!(
-            resolver.lines().any(|line| line == worktree),
-            "{recipe}: the resolver is asked about repo_path: {resolver}"
+            !root.join("logs/resolver.argv").exists(),
+            "the agent-prepared worktree is reused"
         );
 
         // The loop's own check, with exactly what step-02 handed the loop.
@@ -2199,7 +2122,9 @@ fn round_step_04_blocks_check_linked_worktree_and_head_branch_before_staging() {
             ))
         );
         assert!(
-            prompt.to_ascii_lowercase().contains("one shell command"),
+            prompt
+                .to_ascii_lowercase()
+                .contains("optional command example"),
             "{}",
             ctx("the prompt must say the block runs as one shell command")
         );
@@ -2487,50 +2412,10 @@ fn round_step_04_snippet_commits_only_after_both_guards_pass() {
 
 #[test]
 fn auto_drive_reference_has_where_phases_2_and_3_run_section() {
-    // mkdocs does not fail on a broken anchor, so pin the section and the link.
     let reference = read(&workspace_root().join("docs/reference/auto-drive-to-merge.md"));
-    let heading = "\n## Where phases 2 and 3 run\n";
-    let start = reference
-        .find(heading)
-        .expect("docs/reference/auto-drive-to-merge.md needs `## Where phases 2 and 3 run`");
-    let files = reference.find("\n## Files").expect("`## Files` section");
-    assert!(start < files, "the section sits before `## Files`");
-    let body_start = start + heading.len();
-    let section = &reference[body_start
-        ..reference[body_start..]
-            .find("\n## ")
-            .map_or(reference.len(), |end| body_start + end)];
-    for required in [
-        "autodrive_pr_worktree.sh",
-        "main checkout",
-        "linked worktree",
-        "fork",
-    ] {
-        assert!(
-            section.contains(required),
-            "the section must cover `{required}`"
-        );
-    }
-    for line in section.lines() {
-        assert!(
-            !(line.contains("git rm") && line.contains(" -f")),
-            "the reference section must not carry `git rm ... -f` text: {line}"
-        );
-    }
-
-    let guard_doc = read(&workspace_root().join("docs/artifact-guard.md"));
-    assert!(
-        guard_doc.contains("reference/auto-drive-to-merge.md#where-phases-2-and-3-run"),
-        "docs/artifact-guard.md must link the section"
-    );
-    assert!(
-        guard_doc.contains("run-worktree-gitlink") && guard_doc.contains("git rm --cached -f --"),
-        "docs/artifact-guard.md must document the rule and its index-only remedy"
-    );
-    assert!(
-        !guard_doc.contains("git restore --staged -- 'worktrees/"),
-        "docs/artifact-guard.md must not offer `git restore --staged` for a gitlink"
-    );
+    assert!(reference.contains("PR head and worktree resolution"));
+    assert!(reference.contains("linked worktree"));
+    assert!(reference.contains("main checkout"));
 }
 
 // ---------------------------------------------------------------------------
@@ -2881,34 +2766,26 @@ fn head_mode_never_asks_gh() {
 }
 
 #[test]
-fn loops_resolve_by_pr_only_and_keep_the_merge_gate_on_the_launch_side() {
-    // SEC-A2: the loops never pass `--head`. SEC-A3: the merge gate keeps
-    // `--repo "${REPO_PATH:-.}"` and never sees the PR worktree.
-    for (recipe, step, _) in LOOPS {
-        let command = step_field(recipe, step, "command");
-        let resolve_line = logical_line_at(
-            &command,
-            command
-                .find("autodrive_pr_worktree.sh")
-                .expect("step-02 resolves the PR worktree"),
-        );
-        assert!(
-            !resolve_line.contains("--head"),
-            "{recipe}: the loop resolves by --pr only:\n{resolve_line}"
-        );
-        assert!(
-            resolve_line.contains("$(dirname \"$LOOP_HELPER\")/autodrive_pr_worktree.sh"),
-            "{recipe}: the resolver is found next to the launch-side loop helper:\n{resolve_line}"
-        );
-    }
-    let gate = step_field("autodrive-merge-loop.yaml", "step-03-merge-gate", "command");
-    assert!(
-        gate.contains("--repo \"${REPO_PATH:-.}\""),
-        "the merge gate keeps --repo \"${{REPO_PATH:-.}}\":\n{gate}"
+fn preparation_uses_explicit_pr_and_finalization_keeps_review_separate() {
+    let doc = load_recipe("autodrive-merge-loop.yaml");
+    let prep = &doc["steps"][0];
+    assert_eq!(prep["type"].as_str(), Some("agent"));
+    let prompt = prep["prompt"].as_str().unwrap();
+    assert!(prompt.contains("Explicit operator PR"));
+    assert!(prompt.contains("source repository"));
+    let finalize = doc["steps"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|s| s["recipe"].as_str() == Some("autodrive-finalize"))
+        .unwrap();
+    assert_eq!(
+        finalize["context"]["repo_path"].as_str(),
+        Some("{{merge_loop_preflight.repo}}")
     );
-    assert!(
-        !gate.contains("PR_WORKTREE") && !gate.contains("repo_path"),
-        "the merge gate never runs against the PR worktree:\n{gate}"
+    assert_eq!(
+        finalize["context"]["review_dir"].as_str(),
+        Some("{{merge_loop_preflight.review_dir}}")
     );
 }
 

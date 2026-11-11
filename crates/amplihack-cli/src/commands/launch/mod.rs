@@ -123,6 +123,7 @@ fn apply_launch_environment(
     root_sandbox: Option<&amplihack_utils::root_sandbox::SkipPermissionsEnv>,
 ) -> Result<()> {
     env_builder.apply_to_command(command);
+    crate::commands::orch::autodrive::trusted::clean_retired_environment(command)?;
     if let Some((config, target)) = proxy {
         config.apply_to_command(command, target);
     }
@@ -532,15 +533,6 @@ fn run_launch_core(
         let env_builder = augment_claude_launch_env(env_builder, tool, Some(binary.path.as_path()))
             .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1")
             .set_if(no_reflection, "AMPLIHACK_SKIP_REFLECTION", "1"); // WS2: propagate flags
-        // Issue #1551: inside an auto-drive run the gh merge guard stays first
-        // on PATH, ahead of the agent binary's directory prepended above.
-        let env_builder = crate::commands::recipe::run::merge_guard::keep_guard_first(
-            env_builder,
-            std::env::var(crate::commands::recipe::run::merge_guard::MERGE_GUARD_ENV)
-                .ok()
-                .as_deref(),
-        )?;
-
         maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), Some(&execution_dir))?;
 
         // Register before the final executable check so revalidation, command

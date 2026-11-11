@@ -548,14 +548,61 @@ pub(super) fn execute_recipe_via_rust(
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
     agent_binary: amplihack_utils::agent_binary::Resolution,
-    merge_guard: bool,
 ) -> Result<RecipeRunResult> {
+    use crate::commands::orch::autodrive::{authorization::InvocationAuthorization, trusted};
+    let invocation_name = recipe_name_for_correlation(recipe_path);
+    let mut authorization = trusted::applies(&invocation_name)
+        .then(|| InvocationAuthorization::capture(&invocation_name, context))
+        .transpose()?;
+    if dry_run && let Some(auth) = &mut authorization {
+        auth.restrict_dry_run();
+    }
+    // Policy refusal remains terminal before bundle copies or child setup.
+    let guard = enforce_recursion_depth_guard(working_dir)?;
+    let launch = if let Some(auth) = &mut authorization {
+        let env = EnvBuilder::new().with_amplihack_home_from(working_dir);
+        let home = env
+            .var("AMPLIHACK_HOME")
+            .context("trusted AMPLIHACK_HOME missing for auto-drive")?;
+        Some(trusted::LaunchBundle::prepare(Path::new(home), auth)?)
+    } else {
+        None
+    };
+    let pinned_recipe = launch.as_ref().map(|l| {
+        l.home
+            .join("amplifier-bundle/recipes")
+            .join(format!("{invocation_name}.yaml"))
+    });
+    let recipe_path = pinned_recipe.as_deref().unwrap_or(recipe_path);
+    let pinned_search = launch
+        .as_ref()
+        .map(|l| vec![l.home.join("amplifier-bundle/recipes")]);
+    let search_dirs = pinned_search.as_deref().unwrap_or(search_dirs);
+    let mut invocation_context = context.clone();
+    if let Some(auth) = &authorization {
+        invocation_context.insert("no_merge".into(), auth.no_merge().to_string());
+        invocation_context.insert("autodrive_dry_run".into(), auth.dry_run().to_string());
+        invocation_context.insert(
+            "autodrive_authorization".into(),
+            serde_json::to_string(auth)?,
+        );
+        invocation_context.insert(
+            "autodrive_invocation_file".into(),
+            launch
+                .as_ref()
+                .unwrap()
+                .home
+                .join("invocation.json")
+                .to_string_lossy()
+                .into(),
+        );
+    }
+    let context = &invocation_context;
     // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
     // recipe-runner once the session has reached the configured maximum depth,
     // so a failing / misbehaving orchestration can never recursively re-enter
     // the orchestrator and fork-bomb the host. Runs BEFORE any work (binary
     // lookup, temp dirs, spawn) so no descendant is ever created past the limit.
-    let guard = enforce_recursion_depth_guard(working_dir)?;
     // Issue #1606: from here on a SIGHUP/SIGINT/SIGTERM stops the run, at any
     // point: setup, a running attempt, or retry backoff.
     super::stop_signal::arm();
@@ -692,36 +739,21 @@ pub(super) fn execute_recipe_via_rust(
             .set("AMPLIHACK_NONINTERACTIVE", "1")
             .with_project_graph_db(working_dir)?;
 
-        // Issue #1551: put the `gh` merge guard from this run's own bundle
-        // first on PATH, and its BASH_ENV file to put it back there after a
-        // login shell's profile, so a merge outside autodrive_merge_gate.sh
-        // is refused in every step. Fails closed, before the runner starts, when
-        // the shim is missing.
-        //
-        // Issue #1954 D5: the guard comes from the bundle pinned once here, at
-        // run start. A link into a release is resolved now and never again, so
-        // an install that switches the link mid-run cannot make the guard's
-        // PATH entry, BASH_ENV and their de-duplication straddle two releases.
-        let env_builder = if merge_guard {
-            let guard_dir =
-                super::merge_guard::guard_dir_for_home(env_builder.var("AMPLIHACK_HOME"))?;
-            let pinned_bundle = guard_dir
-                .parent()
-                .and_then(Path::parent)
-                .map(Path::to_path_buf);
-            let env_builder =
-                super::merge_guard::apply_guard(env_builder.prepend_path(&guard_dir), &guard_dir);
-            match pinned_bundle {
-                Some(bundle) => env_builder.set(
-                    super::merge_guard::BUNDLE_DIR_ENV,
-                    bundle.to_string_lossy().into_owned(),
-                ),
-                None => env_builder,
+        let env_builder = match &launch {
+            Some(launch) => {
+                let executable = std::env::current_exe()
+                    .context("resolve current auto-drive helper executable")?;
+                env_builder
+                    .prepend_path(
+                        executable
+                            .parent()
+                            .context("auto-drive helper executable has no parent")?,
+                    )
+                    .set("AMPLIHACK_BIN", executable.to_string_lossy().into_owned())
+                    .set("AMPLIHACK_HOME", launch.home.to_string_lossy().into_owned())
             }
-        } else {
-            env_builder
+            None => env_builder,
         };
-
         // Issue #439: propagate --step-timeout as AMPLIHACK_STEP_TIMEOUT env var.
         // When Some(n), the child process sees AMPLIHACK_STEP_TIMEOUT=n (0 = disable).
         // When None, the env var is not injected (parent-inherited values flow through).
@@ -731,6 +763,7 @@ pub(super) fn execute_recipe_via_rust(
         };
 
         env_builder.apply_to_command(&mut command);
+        crate::commands::orch::autodrive::trusted::clean_retired_environment(&mut command)?;
         // Issue #1326: pin the session-tree directory for every descendant. Without
         // this each level re-derives it, and the previous derivation was based on
         // TMPDIR -- which we replace below with a fresh per-run tempdir, giving every
@@ -916,6 +949,33 @@ pub(super) fn execute_recipe_via_rust(
     // reads it as DATA (issue #1337's evaluator) instead of scraping prose.
     let final_result = match result {
         Ok(mut run_result) => {
+            if let Some(auth) = &authorization {
+                let outcome = crate::commands::orch::autodrive::report::report(
+                    auth,
+                    &run_result.context,
+                    context.get("pr_number").map(String::as_str),
+                );
+                run_result
+                    .extra
+                    .insert("autodrive_outcome".into(), outcome.clone());
+                run_result
+                    .context
+                    .insert("autodrive_summary".into(), outcome);
+                let value = serde_json::to_value(auth)?;
+                run_result
+                    .extra
+                    .insert("autodrive_authorization".into(), value.clone());
+                run_result
+                    .context
+                    .insert("autodrive_authorization".into(), value);
+                run_result
+                    .context
+                    .insert("no_merge".into(), auth.no_merge().to_string().into());
+                run_result.context.insert(
+                    "autodrive_dry_run".into(),
+                    auth.dry_run().to_string().into(),
+                );
+            }
             if !run_result.success
                 && let Some(verdict) = last_verdict.borrow().as_ref()
             {

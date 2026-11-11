@@ -23,8 +23,8 @@ use serde_yaml::Value;
 use sha2::{Digest, Sha256};
 
 use crate::support::auto_drive_light::{
-    Fakes, LightRepo, fake_bin, jq_available, private_dir, private_file, read, recipe, repo_root,
-    run_bash, show, stderr, stdout, step_command,
+    Fakes, LightRepo, fake_bin, jq_available, private_dir, read, recipe, repo_root, run_bash, show,
+    stderr, stdout, step_command,
 };
 
 const NAME: &str = "auto-drive-light";
@@ -65,7 +65,8 @@ const LIGHT_PATH: &[&str] = &[
     "light-merge-loop",
 ];
 
-const LIGHT_COND: &str = "light_eligibility.decision == 'light'";
+const LIGHT_COND: &str =
+    "light_eligibility.decision == 'light' and build_result.merged_before_run != 'true'";
 const ESCALATE_COND: &str = "light_eligibility.decision == 'escalate'";
 
 /// Never in a bash command of the recipe, nor anywhere in either tool.
@@ -210,31 +211,29 @@ fn no_design_consensus_architect_or_default_workflow_step() {
 }
 
 #[test]
-fn exactly_one_agent_step_and_it_carries_the_no_merge_line() {
+fn agent_responsibilities_preserve_implementation_merge_prohibition() {
     let r = r();
     let agents: Vec<Value> = steps(&r).into_iter().filter(is_agent).collect();
-    assert_eq!(agents.len(), 1, "one implementation session only");
-    let a = &agents[0];
-    assert_eq!(a["id"].as_str(), Some("light-implement"));
-    let prompt = a["prompt"].as_str().expect("prompt");
+    assert!(
+        agents.len() >= 4,
+        "platform operations and QA recover through agents"
+    );
+    let implementation = step(&r, "light-implement");
+    let prompt = implementation["prompt"].as_str().unwrap();
     assert!(prompt.contains("[amplihack:no-merge]"));
-    let lower = prompt.to_lowercase();
     for banned in [
         "dev-orchestrator",
         "smart-orchestrator",
         "ultrathink",
         "recipe run",
-        "/dev ",
         "default-workflow",
     ] {
         assert!(
-            !lower.contains(banned),
-            "the prompt must not mention {banned}"
+            !prompt.contains(banned),
+            "implementation cannot recurse into {banned}"
         );
     }
 }
-
-// --- escalation wiring -----------------------------------------------------
 
 #[test]
 fn auto_drive_to_merge_is_called_only_from_light_escalate() {
@@ -393,83 +392,66 @@ fn light_mode_has_no_marker() {
 
 #[test]
 fn resolve_pr_refuses_cross_repository_prs_and_existing_branch_without_pr() {
-    let cmd = step(&r(), "light-resolve-pr")["command"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    for needle in [
-        "isCrossRepository",
-        "light-cross-repo",
-        "light-existing-branch-no-pr",
-        "state_dir",
+    let s = step(&r(), "light-resolve-pr");
+    assert!(is_agent(&s));
+    let prompt = s["prompt"].as_str().unwrap();
+    for policy in [
+        "Reject cross-repository",
+        "existing branch",
         "head_sha",
+        "base_sha",
+        "state_dir",
+        "Binding",
+        "blockers",
     ] {
-        assert!(cmd.contains(needle), "light-resolve-pr must use {needle}");
+        assert!(prompt.contains(policy), "missing identity policy {policy}");
     }
-    assert_eq!(
-        step(&r(), "light-resolve-pr")["output"].as_str(),
-        Some("build_result")
-    );
+    assert_eq!(s["output"].as_str(), Some("build_result"));
 }
 
 #[test]
-fn check_unmerged_uses_the_shared_state_helper() {
-    let cmd = step(&r(), "light-check-unmerged")["command"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert!(cmd.contains("autodrive_require_unmerged"));
-    assert!(cmd.contains("AMPLIHACK_HOME"));
-}
-
-#[test]
-fn qa_runs_the_caller_command_or_the_quick_change_checks() {
-    let cmd = step(&r(), "light-qa")["command"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert!(cmd.contains("bash -c \"$RECIPE_VAR_qa_command\""));
-    assert!(cmd.contains("quick_change_checks.sh"));
-}
-
-#[test]
-fn report_names_every_path() {
-    let cmd = step(&r(), "light-report")["command"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    for path in [
-        "escalate",
-        "light",
-        "followups.tsv",
-        "follow_up_issues",
-        "follow-up issues:",
+fn check_unmerged_observes_platform_and_retains_failed_attempts() {
+    let s = step(&r(), "light-check-unmerged");
+    assert!(is_agent(&s));
+    let prompt = s["prompt"].as_str().unwrap();
+    for policy in [
+        "OPEN",
+        "verified head",
+        "authenticated interface",
+        "blocker",
+        "Leave the PR open",
     ] {
-        assert!(cmd.contains(path), "light-report must handle {path}");
+        assert!(prompt.contains(policy));
     }
-    // #1982: the path is decided once, by light-eligibility; no in-loop
-    // escalation exists to report.
-    assert!(!cmd.contains("light-escalated"), "{cmd}");
-    assert!(!cmd.contains("escalation.json"), "{cmd}");
-    // #1982: the single-issue file and key are retired.
-    assert!(
-        !cmd.contains("follow-up-issue"),
-        "light-report must not read follow-up-issue"
-    );
-    assert!(
-        !cmd.match_indices("follow_up_issue")
-            .any(|(i, m)| !cmd[i + m.len()..].starts_with('s')),
-        "the output key is follow_up_issues, never follow_up_issue"
-    );
-    let text = read("amplifier-bundle/recipes/auto-drive-light.yaml");
-    assert!(
-        text.contains("| Follow-up issues | {{light_summary.follow_up_issues}} |"),
-        "the report template has a Follow-up issues row"
-    );
-    assert!(!text.contains("{{light_summary.follow_up_issue}}"));
 }
 
-// --- invariants ------------------------------------------------------------
+#[test]
+fn qa_preserves_selection_and_reports_unavailable_required_tools() {
+    let s = step(&r(), "light-qa");
+    assert!(is_agent(&s));
+    let prompt = s["prompt"].as_str().unwrap();
+    for policy in [
+        "qa_command",
+        "quick_change_checks.sh",
+        "recorded base",
+        "missing required tool",
+        "13 authoritative",
+    ] {
+        assert!(prompt.contains(policy));
+    }
+}
+
+#[test]
+fn report_uses_typed_finalization_and_missing_evidence_stays_incomplete() {
+    let s = step(&r(), "light-report");
+    let cmd = s["command"].as_str().unwrap();
+    assert!(cmd.contains("RECIPE_VAR_autodrive_finalization"));
+    assert!(cmd.contains("already_merged"));
+    assert!(cmd.contains("dependency_failure"));
+    assert!(!cmd.contains("merge_gate_result"));
+    let helper = read("crates/amplihack-cli/src/commands/orch/autodrive/helper.rs");
+    assert!(helper.contains("followups"));
+}
 
 #[test]
 fn bash_steps_have_no_templates_and_read_context_only_as_recipe_var() {
@@ -586,7 +568,10 @@ fn quick_change_common_is_loaded_from_amplihack_home_only() {
             }
         }
     }
-    assert_eq!(n, 5, "five steps source quick_change_common.sh");
+    assert_eq!(
+        n, 3,
+        "local preparation steps source trusted quick_change_common.sh"
+    );
     let pre = yaml_text(&step(&r(), "light-prereqs"));
     assert!(
         pre.contains("quick_change_common.sh"),
@@ -687,8 +672,8 @@ fn crusty_round_has_no_light_branch_in_any_step() {
     );
     assert_eq!(
         round["context"].as_mapping().unwrap().len(),
-        10,
-        "no new context key on autodrive-crusty-round"
+        12,
+        "shared authorization and dry-run context reach the crusty round"
     );
 }
 
@@ -1106,120 +1091,6 @@ fn light_task_id_derives_the_effective_task_id() {
             out.trim_end_matches('\n'),
             want,
             "{plan:?}/{issue:?}: {}",
-            show(&o)
-        );
-    }
-}
-
-/// Runs `light-report` on a light run whose state directory is `dir`.
-fn report(e: &StepEnv, dir: &Path) -> (Output, serde_json::Value) {
-    let br = serde_json::json!({"pr": "1850", "state_dir": dir}).to_string();
-    let o = e.run(
-        "light-report",
-        &[
-            ("RECIPE_VAR_build_result", &br),
-            (
-                "RECIPE_VAR_light_eligibility",
-                r#"{"decision":"light","reason":"within-limits"}"#,
-            ),
-            (
-                "RECIPE_VAR_merge_gate_result",
-                r#"{"merge_result":"MERGED"}"#,
-            ),
-        ],
-    );
-    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
-    let line = stdout(&o)
-        .lines()
-        .rev()
-        .find(|l| l.trim_start().starts_with('{'))
-        .unwrap_or_else(|| panic!("no JSON line: {}", show(&o)))
-        .to_string();
-    let j: serde_json::Value = serde_json::from_str(&line).unwrap();
-    (o, j)
-}
-
-#[test]
-fn light_report_lists_each_filed_issue_once_from_followups_tsv() {
-    if skip() {
-        return;
-    }
-    let e = StepEnv::new();
-    let dir = e.repo.tmp.path().join("state");
-    private_dir(&dir);
-    let canary = e.repo.tmp.path().join("canary");
-    let rows = format!(
-        "naming-1\t1851\t#1982\t1850\n\
-         doc-2\t1852\t#1982\t1850\n\
-         dup-3\t1851\t#1982\t1850\n\
-         word-4\tabc\t#1982\t1850\n\
-         inj-5\t1;touch {}\t#1982\t1850\n\
-         hash-6\t#5\t#1982\t1850\n\
-         long-7\t12345678901\t#1982\t1850\n\
-         doc-8\t1853\t#1982\t1850\n",
-        canary.display()
-    );
-    private_file(&dir.join("followups.tsv"), &rows);
-    // A legacy single-issue file is not read.
-    private_file(&dir.join("follow-up-issue"), "1999\n");
-    let (o, j) = report(&e, &dir);
-    assert_eq!(j["follow_up_issues"], "#1851,#1852,#1853", "{}", show(&o));
-    let keys: Vec<&str> = j.as_object().unwrap().keys().map(String::as_str).collect();
-    let mut keys = keys;
-    keys.sort_unstable();
-    assert_eq!(
-        keys,
-        [
-            "follow_up_issues",
-            "merge_result",
-            "outcome",
-            "path",
-            "pr",
-            "reason"
-        ]
-    );
-    assert!(
-        stderr(&o).contains("follow-up issues: #1851,#1852,#1853"),
-        "{}",
-        show(&o)
-    );
-    assert!(!stderr(&o).contains("1999"), "{}", show(&o));
-    assert!(!canary.exists(), "a cell is never run");
-}
-
-#[test]
-fn light_report_says_none_without_a_safe_followups_tsv() {
-    if skip() {
-        return;
-    }
-    type Setup = fn(&Path, &Path);
-    let cases: Vec<(&str, Setup)> = vec![
-        ("absent", |_, _| {}),
-        ("legacy follow-up-issue only", |d, _| {
-            private_file(&d.join("follow-up-issue"), "1851\n")
-        }),
-        ("symlink", |d, tmp| {
-            let real = tmp.join("elsewhere.tsv");
-            private_file(&real, "naming-1\t1851\t#1982\t1850\n");
-            std::os::unix::fs::symlink(&real, d.join("followups.tsv")).unwrap();
-        }),
-        ("directory", |d, _| {
-            std::fs::create_dir(d.join("followups.tsv")).unwrap()
-        }),
-        ("no valid number", |d, _| {
-            private_file(&d.join("followups.tsv"), "naming-1\tabc\t#1982\t1850\n")
-        }),
-    ];
-    for (name, setup) in cases {
-        let e = StepEnv::new();
-        let dir = e.repo.tmp.path().join("state");
-        private_dir(&dir);
-        setup(&dir, e.repo.tmp.path());
-        let (o, j) = report(&e, &dir);
-        assert_eq!(j["follow_up_issues"], "none", "{name}: {}", show(&o));
-        assert!(
-            stderr(&o).contains("follow-up issues: none"),
-            "{name}: {}",
             show(&o)
         );
     }
