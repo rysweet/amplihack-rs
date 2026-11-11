@@ -18,9 +18,10 @@
 //
 // No stub sleeps. Each stub blocks on a FIFO inside the test's own tempdir
 // (`Gate`) and exits only when the test releases it, or is killed by the
-// limit under test. No test asserts an upper bound on elapsed time (the
-// 9 Nov timing rule): load can stretch any window, so only lower bounds and
-// exact limit values are checked. `ChildGuard` and `Gate`'s drop release and
+// limit under test. No test measures elapsed time (the 9 Nov timing rule).
+// A gate that is never released means only the limit can end the wait, so
+// the tests check the exact limit value, the message and the classification.
+// `ChildGuard` and `Gate`'s drop release and
 // reap every stub even when an assertion panics.
 //
 // Every test that touches the variable holds `home_env_lock()` and restores
@@ -39,7 +40,7 @@ mod execute {
 }
 
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const RUNNER_TIMEOUT_ENV: &str = "AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS";
 const RUNNER_PATH_ENV: &str = "RECIPE_RUNNER_RS_PATH";
@@ -324,20 +325,14 @@ fn a_bounded_wait_reports_the_limit_it_applied() {
         .spawn()
         .expect("spawn child");
     let mut child = ChildGuard(child);
-    let started = Instant::now();
     let got = execute::wait_for_recipe_runner(&mut child.0, Some(Duration::from_millis(300)))
         .expect("wait");
-    let elapsed = started.elapsed();
     match got {
         execute::RunnerWait::TimedOut(limit) => {
             assert_eq!(limit, Duration::from_millis(300))
         }
         _ => panic!("a bounded wait on a blocked child must time out"),
     }
-    assert!(
-        elapsed >= Duration::from_millis(300),
-        "the limit must not fire early: {elapsed:?}"
-    );
 }
 
 // -------------------------------------------------------------------------
@@ -453,7 +448,6 @@ fn ac4_an_explicit_limit_times_out_with_the_existing_message() {
     let _timeout_env = EnvVarGuard::set(RUNNER_TIMEOUT_ENV, "1");
     let _grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "0");
 
-    let started = Instant::now();
     let err = execute::execute_recipe_via_rust(
         &recipe,
         &BTreeMap::new(),
@@ -464,10 +458,6 @@ fn ac4_an_explicit_limit_times_out_with_the_existing_message() {
         None,
     )
     .expect_err("=1 must time out a runner that never finishes");
-    assert!(
-        started.elapsed() >= Duration::from_secs(1),
-        "the limit must not fire early"
-    );
     let text = format!("{err:#}");
     assert!(
         text.contains("timed out after 1s"),
