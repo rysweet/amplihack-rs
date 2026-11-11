@@ -7014,9 +7014,21 @@ first of these rules that matches:
 
 Rules 2 and 3 apply whatever profile the ledger names, because a `claude
 login` or a copy made by hand leaves the ledger naming the profile that was
-live before it. A stale `~/.claude.json` that still names `C` after a swap
-off `C` therefore also marks `~/.claude`: its identity is then taken from
-local files and the check fails closed. A match by rule 2 alone is never
+live before it. There is one exception to rule 2. After a swap off `C`,
+sessions still running on `C` keep writing `C`'s account into
+`~/.claude.json`. Rule 2 is therefore skipped while all of these hold:
+
+- the ledger's `live` names a profile that is not excluded;
+- the ledger has no `hand_suspect`;
+- the change time of `~/.claude/.credentials.json`, read by `lstat`, is no
+  later than the ledger's `swapped_at`, and `swapped_at` is not in the
+  future.
+
+Any write to the login file after the swap, by a token refresh or a
+`claude login`, ends the exception, and rule 2 applies again. Rule 3 is
+never skipped. Outside the exception, a stale `~/.claude.json` that still
+names `C` also marks `~/.claude`: its identity is then taken from local
+files and the check fails closed. A match by rule 2 alone is never
 proof enough to [write `~/.claude` back](#write-back-into-an-excluded-folder)
 into `C`'s folder, so nothing is moved and the cycle raises the ALERT shown
 under [Write-back into an excluded folder](#write-back-into-an-excluded-folder)
