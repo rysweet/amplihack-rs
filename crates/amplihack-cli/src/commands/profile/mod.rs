@@ -445,9 +445,10 @@ fn unsupported_mode(docker: bool, docker_env: bool, auto: bool) -> Option<Profil
 }
 
 fn docker_env_active() -> bool {
-    crate::docker::DockerDetector
-        .activation_source(false)
-        .is_some()
+    // Profile compatibility follows the requested mode, even when the Docker
+    // daemon is unavailable. Checking activation makes this guard depend on
+    // the host and can silently allow an unsupported profile/Docker request.
+    crate::docker::DockerDetector.requested_outside_container(false)
 }
 
 /// Profiles are not applied in Docker; fail closed rather than drop the profile.
