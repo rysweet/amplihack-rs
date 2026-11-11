@@ -2025,7 +2025,7 @@ fn yaml_str(v: &serde_yaml::Value) -> Option<String> {
 #[test]
 fn composer_declares_defaults_and_forwards_them_to_both_loops() {
     let r = recipe("auto-drive-to-merge");
-    for (key, default) in BUDGET_KEYS.iter().zip(["12", "20", "14400"]) {
+    for (key, default) in BUDGET_KEYS.iter().zip(["12", "20", "0"]) {
         assert_eq!(
             yaml_str(&r["context"][*key]).as_deref(),
             Some(default),
