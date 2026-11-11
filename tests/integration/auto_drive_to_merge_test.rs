@@ -3574,6 +3574,11 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
             .env("HOME", &home)
             .env("TMPDIR", &tmpdir)
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+            // The test's temp dir may sit under a directory whose
+            // `.claude/runtime/launcher_context.json` names codex, which would
+            // make the guard probe the stub runner for codex_exec. Pin the
+            // built-in default so only the depth guard is under test.
+            .env("AMPLIHACK_AGENT_BINARY", "copilot")
             .env("AMPLIHACK_SESSION_TREE_DIR", &trees)
             .env("AMPLIHACK_TREE_ID", TREE)
             .env("AMPLIHACK_SESSION_DEPTH", depth.to_string())
