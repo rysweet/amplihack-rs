@@ -1213,3 +1213,231 @@ fn reporting_requires_successful_reduction_and_matching_private_outcome() {
         );
     }
 }
+
+// #2329 Crusty round 2, finding runner-report-bypasses-reducer (C7(b)).
+// The runner assigns and binds the private state directory. The report opens
+// evidence only from that binding and compares any child-reported directory
+// lexically; it never joins a child value onto the working directory.
+
+const STATE_DIR_REFUSAL: &str = "autodrive_state_dir must be an absolute path";
+const STATE_DIR_MISMATCH: &str = "runner-assigned state directory";
+
+fn capture_with_state_dir(value: &str) -> anyhow::Result<InvocationAuthorization> {
+    InvocationAuthorization::capture(
+        "auto-drive-to-merge",
+        &BTreeMap::from([
+            ("no_merge".into(), "true".into()),
+            ("autodrive_state_dir".into(), value.into()),
+        ]),
+    )
+}
+
+fn assert_state_dir_rejected(fixture: &ReportingFixture, label: &str) {
+    let report = fixture.report();
+    assert_eq!(report["readiness"], "incomplete", "{label}: {report}");
+    assert_eq!(report["action"], "not_requested", "{label}: {report}");
+    assert_ne!(report["action"], "merged", "{label}: {report}");
+    assert_ne!(report["stop_reason"], "completed", "{label}: {report}");
+    let cause = report["failure_cause"].as_str().unwrap_or_default();
+    assert!(
+        cause.contains(STATE_DIR_MISMATCH),
+        "{label}: failure_cause must name the state directory mismatch: {report}"
+    );
+}
+
+#[test]
+fn explicit_state_directory_must_be_absolute_and_free_of_traversal() {
+    for value in [
+        "",
+        "state",
+        "./state",
+        "../x",
+        "/srv/autodrive/../escape",
+        "/srv/auto\ndrive",
+        "/srv/auto\u{1b}[0mdrive",
+    ] {
+        let error = format!(
+            "{:#}",
+            capture_with_state_dir(value).expect_err(&format!("accepted {value:?}"))
+        );
+        assert!(error.contains(STATE_DIR_REFUSAL), "{value:?}: {error}");
+        // Control characters must not reach the operator's terminal raw.
+        assert!(
+            !error.contains('\n') && !error.contains('\u{1b}'),
+            "{value:?}: refusal echoed raw control characters: {error:?}"
+        );
+    }
+    let accepted = capture_with_state_dir("/srv/autodrive/state").unwrap();
+    assert!(accepted.no_merge());
+}
+
+#[test]
+fn bound_state_directory_is_serialised_and_survives_private_invocation_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let store_root = dir.path().join("invocation");
+    let store = EvidenceStore::create(&store_root).unwrap();
+    let mut auth = authorization("true", "false");
+    assert_eq!(
+        auth.state_dir(),
+        None,
+        "capture must not invent a directory"
+    );
+    let assigned = dir.path().join("autodrive-state");
+    auth.bind_state_dir(assigned.clone());
+    auth.bind_policy(format!("trusted-launch-bundle:sha256:{}", "a".repeat(64)));
+    assert_eq!(auth.state_dir(), Some(assigned.as_path()));
+    let bytes = serde_json::to_vec(&auth).unwrap();
+    let raw: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(raw["state_dir"], json!(assigned));
+    store.write_new("invocation.json", &bytes).unwrap();
+    let read = InvocationAuthorization::read_private(&store_root.join("invocation.json")).unwrap();
+    assert_eq!(read.state_dir(), Some(assigned.as_path()));
+    assert_eq!(read.run_id(), auth.run_id());
+}
+
+#[test]
+fn reporting_reads_runner_assigned_state_directory_when_context_omits_it() {
+    for omitted in [None, Some(json!(""))] {
+        let mut fixture = ReportingFixture::new();
+        fixture.seal_reduction();
+        let context = fixture.context.as_object_mut().unwrap();
+        match &omitted {
+            None => {
+                context.remove("autodrive_state_dir");
+            }
+            Some(value) => {
+                context.insert("autodrive_state_dir".into(), value.clone());
+            }
+        }
+        let report = fixture.report();
+        assert_eq!(report["readiness"], "merge_ready", "{omitted:?}: {report}");
+        assert_eq!(report["stop_reason"], "completed", "{omitted:?}: {report}");
+    }
+}
+
+#[test]
+fn reporting_without_a_bound_state_directory_is_incomplete() {
+    let mut fixture = ReportingFixture::new();
+    fixture.seal_reduction();
+    // A resumed authority that the runner never bound to a directory: the
+    // context still names the correct directory, which must not be enough.
+    fixture.auth = authorization("true", "false");
+    let report = fixture.report();
+    assert_eq!(report["readiness"], "incomplete", "{report}");
+    assert_eq!(report["action"], "not_requested", "{report}");
+    assert!(
+        report["failure_cause"]
+            .as_str()
+            .is_some_and(|c| c.contains("state directory")),
+        "{report}"
+    );
+}
+
+#[test]
+fn reporting_rejects_state_directory_outside_runner_assignment() {
+    // The outside directory is itself a complete, valid evidence store for
+    // another drive; pointing the child context at it must still fail.
+    let mut fixture = ReportingFixture::with_action("false");
+    fixture.seal_reduction();
+    let mut outside = ReportingFixture::with_action("false");
+    outside.seal_reduction();
+    fixture.context["autodrive_state_dir"] = json!(outside.directory);
+    assert_state_dir_rejected(&fixture, "outside store");
+    let report = fixture.report();
+    assert_ne!(report["action"], "merged", "{report}");
+}
+
+#[test]
+fn reporting_rejects_relative_or_altered_state_directory() {
+    type Case = fn(&std::path::Path) -> Value;
+    let cases: [(&str, Case); 7] = [
+        ("parent traversal", |_| json!("../x")),
+        // Joined onto the working directory this would resolve to the right
+        // store; a relative name is still refused.
+        ("relative name", |_| json!("state")),
+        ("parent component in absolute path", |dir| {
+            json!(dir.join("..").join("state"))
+        }),
+        ("sibling directory", |dir| {
+            let sibling = dir.with_file_name("state-sibling");
+            std::fs::create_dir(&sibling).unwrap();
+            json!(sibling)
+        }),
+        ("json object", |dir| json!({"path": dir})),
+        ("json number", |_| json!(7)),
+        ("json array", |dir| json!([dir])),
+    ];
+    for (label, value) in cases {
+        let mut fixture = ReportingFixture::new();
+        fixture.seal_reduction();
+        fixture.context["autodrive_state_dir"] = value(&fixture.directory);
+        assert_state_dir_rejected(&fixture, label);
+    }
+}
+
+#[test]
+fn reporting_rejects_mismatched_build_result_state_directory() {
+    for (label, value) in [
+        ("relative", json!("state")),
+        ("other absolute", json!("/nonexistent/autodrive-state")),
+        ("non-string", json!({"dir": "state"})),
+    ] {
+        let mut fixture = ReportingFixture::new();
+        fixture.seal_reduction();
+        fixture.context["build_result"] = json!({"repo": fixture.repo, "state_dir": value});
+        assert_state_dir_rejected(&fixture, label);
+    }
+    // A matching or empty build_result.state_dir does not block readiness.
+    for value in [None, Some(json!(""))] {
+        let mut fixture = ReportingFixture::new();
+        fixture.seal_reduction();
+        let value = value.unwrap_or_else(|| json!(fixture.directory));
+        fixture.context["build_result"] = json!({"repo": fixture.repo, "state_dir": value});
+        let report = fixture.report();
+        assert_eq!(report["readiness"], "merge_ready", "{report}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn reporting_refuses_a_symlinked_state_directory_leaf() {
+    let mut fixture = ReportingFixture::new();
+    fixture.seal_reduction();
+    let alias = fixture.directory.with_file_name("state-alias");
+    std::os::unix::fs::symlink(&fixture.directory, &alias).unwrap();
+    // Even when runner binding and context agree, a symlinked leaf is refused
+    // rather than followed.
+    fixture.auth.bind_state_dir(alias.clone());
+    fixture.context["autodrive_state_dir"] = json!(alias);
+    let report = fixture.report();
+    assert_eq!(report["readiness"], "incomplete", "{report}");
+    assert_eq!(report["action"], "not_requested", "{report}");
+}
+
+#[test]
+fn resumed_run_cannot_replay_prior_finalization_or_receipt() {
+    let mut fixture = ReportingFixture::with_action("false");
+    fixture.seal_reduction();
+    let original = fixture.report();
+    assert_eq!(original["readiness"], "merge_ready", "{original}");
+    assert_eq!(original["action"], "merged", "{original}");
+    // A resume captures new authority (new run_id) and, with an operator's
+    // shared directory, is bound to the same store. The prior run's
+    // finalization observations, completion receipt and outcome snapshot are
+    // all still present and self-consistent.
+    let mut resumed = authorization("false", "false");
+    assert_ne!(resumed.run_id(), fixture.auth.run_id());
+    resumed.bind_state_dir(fixture.directory.clone());
+    fixture.auth = resumed;
+    let report = fixture.report();
+    assert_eq!(report["readiness"], "incomplete", "{report}");
+    assert_eq!(report["action"], "not_requested", "{report}");
+    assert_ne!(report["stop_reason"], "completed", "{report}");
+    assert_eq!(report["run_id"], json!(fixture.auth.run_id()), "{report}");
+    assert!(
+        report["failure_cause"]
+            .as_str()
+            .is_some_and(|c| !c.trim().is_empty()),
+        "replay rejection must keep its cause: {report}"
+    );
+}

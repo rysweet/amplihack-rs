@@ -278,7 +278,7 @@ mod runner {
                 "context":{"no_merge":"false", "autodrive_dry_run":"false",
                     "autodrive_authorization":{"requested_action":"merge"}}});
             let body = format!(
-                "#!/bin/sh\nif [ \"${{1:-}}\" = --capabilities ]; then\n  printf '%s\\n' '{{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}}'\n  exit 0\nfi\nprintf started > \"$RECORD_FILE\"\nprintf '%s\\n' \"${{NO_MERGE:-}}\" \"${{TASK_DESCRIPTION:-}}\" \"${{PR_NUMBER:-}}\" > \"$CONTEXT_RECORD\"\nprintf '%s' \"$PATH\" > \"$PATH_RECORD\"\nprintf '%s' \"${{BASH_ENV:-}}\" > \"$BASH_RECORD\"\nprintf '%s\\n' '{}'\n",
+                "#!/bin/sh\nif [ \"${{1:-}}\" = --capabilities ]; then\n  printf '%s\\n' '{{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}}'\n  exit 0\nfi\nprintf started > \"$RECORD_FILE\"\nprintf '%s\\n' \"${{NO_MERGE:-}}\" \"${{TASK_DESCRIPTION:-}}\" \"${{PR_NUMBER:-}}\" \"${{AUTODRIVE_STATE_DIR:-}}\" > \"$CONTEXT_RECORD\"\nprintf '%s' \"$PATH\" > \"$PATH_RECORD\"\nprintf '%s' \"${{BASH_ENV:-}}\" > \"$BASH_RECORD\"\nprintf '%s\\n' '{}'\n",
                 forged
             );
             crate::support::exec_stub::write_executable(&runner, &body, 0o755);
@@ -523,5 +523,148 @@ mod runner {
             text.contains("merge-ready") && text.contains("trusted"),
             "failure must name missing trusted criteria: {text}"
         );
+    }
+
+    // #2329 Crusty round 2 (C7): authority and the private state directory
+    // are assigned by the runner at each invocation, never inherited.
+
+    fn recorded_inputs(fixture: &Fixture) -> Vec<String> {
+        fs::read_to_string(fixture.root.join("context-inputs"))
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn explicit_state_directory_must_be_absolute() {
+        for value in ["", "relative-state", "../escape", "/srv/state/../other"] {
+            let fixture = Fixture::new();
+            let arg = format!("autodrive_state_dir={value}");
+            let output = fixture.run(
+                "auto-drive-to-merge",
+                &["-c", "no_merge=true", "-c", &arg],
+                false,
+            );
+            assert!(
+                !fixture.record.exists(),
+                "runner started with {value:?}: {}",
+                details(&output)
+            );
+            assert!(!output.status.success(), "{value:?}: {}", details(&output));
+            let text = details(&output);
+            assert!(
+                text.contains("autodrive_state_dir must be an absolute path"),
+                "{value:?}: refusal must name the state directory: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_absolute_state_directory_is_bound_and_passed_to_the_child() {
+        let fixture = Fixture::new();
+        let state = fixture.root.join("operator-state");
+        let arg = format!("autodrive_state_dir={}", state.display());
+        let output = fixture.run(
+            "auto-drive-to-merge",
+            &["-c", "no_merge=true", "-c", &arg],
+            false,
+        );
+        assert!(output.status.success(), "{}", details(&output));
+        let inputs = recorded_inputs(&fixture);
+        assert_eq!(inputs[3], state.to_string_lossy(), "{}", details(&output));
+        let result: Json = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            result["autodrive_authorization"]["state_dir"],
+            json!(state),
+            "{}",
+            details(&output)
+        );
+        assert!(
+            state.is_dir(),
+            "runner did not create the operator directory"
+        );
+    }
+
+    #[test]
+    fn default_state_directory_is_runner_created_private_and_per_run() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut seen = BTreeSet::new();
+        for _ in 0..2 {
+            let fixture = Fixture::new();
+            let output = fixture.run("auto-drive-to-merge", &["-c", "no_merge=true"], false);
+            assert!(output.status.success(), "{}", details(&output));
+            let assigned = PathBuf::from(&recorded_inputs(&fixture)[3]);
+            assert!(assigned.is_absolute(), "{}", assigned.display());
+            let result: Json = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(
+                result["autodrive_authorization"]["state_dir"],
+                json!(assigned),
+                "child and authority must receive the same string"
+            );
+            let meta = fs::symlink_metadata(&assigned).unwrap();
+            assert!(meta.is_dir(), "{}", assigned.display());
+            assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+            // Isolated: the run folder lies under the fixture root, never the
+            // operator's real home or profile roots.
+            assert!(
+                assigned.starts_with(&fixture.root),
+                "{}",
+                assigned.display()
+            );
+            seen.insert(assigned);
+        }
+        assert_eq!(seen.len(), 2, "default directory must be per run");
+    }
+
+    #[test]
+    fn fresh_and_recovery_resume_do_not_inherit_stored_authority() {
+        // A stored or crafted context that claims merge authority, as a
+        // recovery descriptor or an earlier run would hold it. The runner
+        // stubs write no real recovery descriptor, so the resume is exercised
+        // with --fresh plus a crafted -c context.
+        let stored = json!({"schema_version":1, "run_id":"stored-run",
+            "no_merge":false, "dry_run":false, "requested_action":"merge",
+            "state_dir":"/stored/state"})
+        .to_string();
+        let mut run_ids = BTreeSet::new();
+        for fresh in [false, true] {
+            let fixture = Fixture::new();
+            let auth_arg = format!("autodrive_authorization={stored}");
+            let mut args = vec![
+                "-c",
+                auth_arg.as_str(),
+                "-c",
+                "requested_action=merge",
+                "-c",
+                "autodrive_invocation_file=/stored/invocation.json",
+            ];
+            if fresh {
+                args.push("--fresh");
+            }
+            let output = fixture.run_with_defaults(
+                "auto-drive-light",
+                &args,
+                false,
+                "{no_merge: 'false', autodrive_dry_run: 'false', autodrive_state_dir: '/stored/state'}",
+            );
+            assert!(
+                output.status.success(),
+                "fresh={fresh}: {}",
+                details(&output)
+            );
+            let result: Json = serde_json::from_slice(&output.stdout).unwrap();
+            let auth = &result["autodrive_authorization"];
+            assert_eq!(auth["no_merge"], true, "fresh={fresh}: {auth}");
+            assert_eq!(auth["requested_action"], "verify_readiness", "{auth}");
+            assert_ne!(auth["run_id"], "stored-run", "{auth}");
+            assert_ne!(auth["run_id"], "child-forged", "{auth}");
+            assert_ne!(auth["state_dir"], "/stored/state", "{auth}");
+            let inputs = recorded_inputs(&fixture);
+            assert_eq!(inputs[0], "true", "child NO_MERGE fresh={fresh}");
+            assert_ne!(inputs[3], "/stored/state", "child state dir fresh={fresh}");
+            run_ids.insert(auth["run_id"].as_str().unwrap().to_owned());
+        }
+        assert_eq!(run_ids.len(), 2, "each invocation needs a new run_id");
     }
 }
