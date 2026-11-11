@@ -183,6 +183,8 @@ impl Sandbox {
             .env_remove("GH_HOST")
             .env_remove("GH_REPO")
             .env_remove("AMPLIHACK_HOME")
+            .env_remove("AMPLIHACK_WORK_ROOT")
+            .env_remove("AMPLIHACK_WORK_ROOT_EXPLICIT")
             .env_remove("REPO_PATH")
     }
 

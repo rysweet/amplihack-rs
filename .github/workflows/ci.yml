@@ -771,9 +771,10 @@ jobs:
             cross: false
             gnu_cross_toolchain: false
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
+            # Build on ARM directly; no apt mirror or GNU cross-toolchain install.
+            runner: ubuntu-24.04-arm
             cross: false
-            gnu_cross_toolchain: true
+            gnu_cross_toolchain: false
           - target: x86_64-apple-darwin
             runner: macos-latest
             cross: false
