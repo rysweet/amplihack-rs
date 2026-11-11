@@ -310,8 +310,8 @@ steps:
       ```
 
       The artifact guard runs before and after staging; if it objects, remove the artifact rather than silencing it. Stage only through the block:
-      never stage ignored files or anything under `worktrees/` (other checkouts; staging one records a gitlink to another checkout, #1528), and never
-      force a path past `.gitignore` or past a guard refusal.
+      never stage ignored files or anything under `worktrees/` (other checkouts; staging one records a gitlink to another checkout, #1528), and
+      never force a path past `.gitignore` or past a guard refusal.
 
       The hooks are the point. If a hook fails, **fix what it is complaining about**. Never reach for a flag that skips them — the pre-tool-use hook
       blocks it, CI would catch it later, and it is prohibited by this workflow. The same goes for the merge later: no bypass, ever.
