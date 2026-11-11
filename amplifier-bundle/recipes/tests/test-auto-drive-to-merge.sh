@@ -5883,7 +5883,7 @@ done
 echo '{"before_round_result":"crusty-rereview-not-needed","range":"none","crusty_loop_result":""}'
 REREVIEW
 int_run() { # int_run <body> <preflight-var> <round-record>
-  local sd="${WORK_PHYS}/int-state-${BODY_N}"; mkdir -p "${sd}"
+  local sd="${WORK_PHYS}/int-state-${BODY_N}"; mkdir -p "${sd}"; chmod 0700 "${sd}"
   local pre="{\"should_run\":\"true\",\"pr\":\"42\",\"pr_state\":\"OPEN\",\"state_dir\":\"${sd}\",\"repo\":\"${INT_WT}\",\"reason\":\"r\"}"
   set_stub "$3" 0 "$H_DONE"
   BODY_N=$((BODY_N + 1)); CALLS="${WORK_PHYS}/body-${BODY_N}"; mkdir -p "${CALLS}"
