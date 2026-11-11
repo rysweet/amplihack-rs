@@ -108,7 +108,15 @@ pub(super) fn ensure_settings_json_for(
             "failed to parse JSON in {shown} ({reason}). The original file was left unchanged; \
              fix the malformed settings.json or move it aside before running install"
         ),
-        FileMerge::Refused(reason) => bail!("refused to write {shown}: {reason}"),
+        FileMerge::Refused(reason) => {
+            // A symlinked, hard-linked or foreign-owned file is reported and
+            // left as it is; the rest of the install still runs.
+            eprintln!(
+                "  ⚠️  {shown} was not changed ({reason}); hooks were not registered there. \
+                 Replace it with a regular file you own, then run `amplihack install` again"
+            );
+            return Ok((false, Vec::new()));
+        }
     }
     println!("  ✅ settings.json configured");
     if let Some(message) = status.get().and_then(StatusLineOutcome::message) {

@@ -410,6 +410,44 @@ fn ensure_settings_json_writes_to_repo_local_path_and_leaves_global_untouched() 
     );
 }
 
+/// Issue #2279: a symlinked settings.json is reported and left as it is,
+/// and install goes on with its other steps instead of stopping.
+#[cfg(unix)]
+#[test]
+fn ensure_settings_json_reports_a_symlinked_file_without_failing() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    let real = temp.path().join("dotfiles/settings.json");
+    fs::create_dir_all(real.parent().unwrap()).unwrap();
+    fs::write(&real, b"{}\n").unwrap();
+    let settings_path = temp.path().join(".claude/settings.json");
+    fs::create_dir_all(settings_path.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&real, &settings_path).unwrap();
+    let staging_dir = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(&staging_dir).unwrap();
+    let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
+
+    let result =
+        settings::ensure_settings_json(&settings_path, &staging_dir, 99999, &hooks_bin, None);
+
+    crate::test_support::restore_home(previous);
+
+    let (ok, events) = result.expect("a refused file must not fail the install");
+    assert!(!ok, "a refused file is reported as a settings issue");
+    assert!(events.is_empty());
+    assert_eq!(fs::read(&real).unwrap(), b"{}\n");
+    assert!(
+        fs::symlink_metadata(&settings_path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn ensure_settings_json_repo_local_backup_is_owner_only() {

@@ -214,6 +214,37 @@ fn heal_on_current_files_writes_nothing() {
     );
 }
 
+/// A file current for the other `StopFailure` answer is left alone, so the
+/// rotator and the launch repair cannot take turns rewriting it when they
+/// read different `claude` versions.
+#[test]
+fn heal_leaves_a_file_current_for_the_other_stop_failure_answer() {
+    let without = HookTarget {
+        limit_resume: false,
+        ..target()
+    };
+    let mut s = json!({"env": {"XPIA_ENABLED": "false"}});
+    hook_block::merge(&mut s, &without);
+    let body = serde_json::to_vec_pretty(&s).unwrap();
+    let p = paths(&body, Some(&body));
+    let t = target();
+    let backups_before = fs::read_dir(p.home_settings.parent().unwrap())
+        .unwrap()
+        .count();
+    for outcome in [CycleOutcome::Stayed, CycleOutcome::Swapped] {
+        assert!(hook_heal::heal(outcome, &ctx(&p, Some(&t))).is_empty());
+        assert!(hook_heal::heal(outcome, &ctx(&p, Some(&without))).is_empty());
+    }
+    assert_eq!(fs::read(&p.home_settings).unwrap(), body);
+    assert_eq!(fs::read(p.live.join("settings.json")).unwrap(), body);
+    assert_eq!(
+        fs::read_dir(p.home_settings.parent().unwrap())
+            .unwrap()
+            .count(),
+        backups_before
+    );
+}
+
 #[test]
 fn heal_never_creates_an_absent_live_settings_file() {
     let t = target();

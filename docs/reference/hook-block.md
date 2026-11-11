@@ -102,7 +102,7 @@ hook list.
 
 | Writer                         | When it runs                                        | Target                                                     | Skipped when                                                                                           |
 | ------------------------------ | --------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `amplihack install` / `update` | On request                                          | `~/.claude/settings.json` (created as `{}` if absent)      | Never                                                                                                  |
+| `amplihack install` / `update` | On request                                          | `~/.claude/settings.json` (created as `{}` if absent)      | The file is refused; install reports it and finishes its other steps                                   |
 | Launch repair                  | Each `amplihack launch` / `amplihack claude`        | `$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/...`   | The running binary is older than the install stamp; `AMPLIHACK_SKIP_AUTO_INSTALL` is set; no drift     |
 | Profile refresh                | `amplihack profile` refresh paths                   | Each `<profile root>/<name>/settings.json`                 | The profile root is refused by `hook_path_refusal`; the file is absent                                 |
 | Profile seeding                | After `settings.json` is copied into a new profile  | The new profile's `settings.json`                          | Older binary; no hooks binary; the profile root is refused. Seeding still succeeds                     |
@@ -144,7 +144,11 @@ reacts to the cycle finishing.
 The live profile's directory comes from the profile store and `root_config`,
 never from the ledger, a status file or the environment. Profiles other than
 the live one are not checked by the cycle; they are repaired only by profile
-refresh. The heal never
+refresh. A file that is current either with or without `StopFailure` is
+left alone. The rotator decides whether to register `StopFailure` from the
+`claude` on its own `PATH` and keeps that answer until it restarts, so it
+may disagree with the launch repair; accepting either answer stops the two
+from taking turns rewriting the file and leaving a backup each time. The heal never
 touches `.claude.json`, `.credentials.json` or any login, and it never changes
 the cycle outcome or the exit code. It logs one line per file it writes. The
 wording below is an example; the path and the event names are fixed:
@@ -362,6 +366,7 @@ Every read and write of a settings file in this module follows these rules.
 | Owner                  | A file not owned by the effective uid is refused                                      |
 | Hard links             | A file with more than one link is refused at replace time                             |
 | Root must be an object | A file whose JSON root is not an object is refused and left unchanged                 |
+| Well-formed `hooks`    | A `hooks` value that is not an object, or an event value that is not an array, is `unparseable` and left unchanged; it is never replaced |
 | Atomic write           | Temp file with `O_EXCL` and mode `0600`, `fsync`, `rename`                            |
 | Write only on change   | An unchanged file keeps its bytes and modification time                               |
 | No creation            | Only `amplihack install` creates a settings file; every other writer reports `Absent` |
@@ -373,7 +378,10 @@ The first write by this module sets the file mode to `0600`. A home
 
 A `settings.json` that is a symlink (for example one managed by GNU Stow or
 another dotfile manager) or has more than one hard link is refused by every
-writer, including `amplihack install`, which fails. Replace the link with a
+writer, including `amplihack install`. Before this change install wrote
+through the link; now it prints a warning naming the file and the reason,
+reports "Settings.json configuration had issues" and finishes its other
+steps. `amplihack doctor` reports the file as refused. Replace the link with a
 regular file to let amplihack manage its hooks.
 
 Before any profile file is written, `hook_path_refusal` checks the profile

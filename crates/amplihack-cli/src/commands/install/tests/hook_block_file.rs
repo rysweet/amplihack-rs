@@ -218,6 +218,30 @@ fn a_non_object_root_is_unparseable_and_unchanged() {
     assert_eq!(fs::read(&path).unwrap(), b"[1, 2]\n");
 }
 
+#[test]
+fn malformed_hooks_values_are_unparseable_and_unchanged() {
+    for body in [
+        json!({"hooks": "not an object", "env": {"SENTINEL_SECRET": SECRET}}),
+        json!({"hooks": {"Stop": {"command": SECRET}}}),
+    ] {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("settings.json");
+        let bytes = serde_json::to_vec_pretty(&body).unwrap();
+        private(&path, &bytes);
+        let result = hook_block::merge_file(&path, &target());
+        let FileMerge::Unparseable(reason) = result else {
+            panic!("expected Unparseable, got {result:?}");
+        };
+        assert_no_content(&reason);
+        assert!(!reason.contains("Stop"), "reason names an event: {reason}");
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(matches!(
+            hook_block::drift_file(&path, &target()),
+            FileDrift::Unparseable(_)
+        ));
+    }
+}
+
 // ── update_file ───────────────────────────────────────────────────────────
 
 #[test]

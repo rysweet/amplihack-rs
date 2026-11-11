@@ -59,8 +59,20 @@ fn applies(outcome: CycleOutcome, read_only: bool, newer_stamp: bool) -> bool {
     matches!(outcome, CycleOutcome::Swapped | CycleOutcome::Stayed) && !read_only && !newer_stamp
 }
 
-/// Writes `path` only when it exists and has drifted. Whether it wrote.
+/// Writes `path` only when it exists and has drifted from both answers to
+/// whether `StopFailure` is registered. The rotator reads `claude --version`
+/// from its own PATH and keeps that answer until it restarts, so it may
+/// disagree with the launch repair; a file current for either answer is
+/// left alone, as the launch repair does for a non-Claude launch, so the two
+/// never take turns rewriting the file and leaving backups. Whether it wrote.
 fn heal_one(path: &Path, target: &HookTarget) -> bool {
+    let other = HookTarget {
+        limit_resume: !target.limit_resume,
+        ..target.clone()
+    };
+    if drift_file(path, &other) == FileDrift::Clean {
+        return false;
+    }
     match drift_file(path, target) {
         FileDrift::Clean | FileDrift::Absent => false,
         FileDrift::Unparseable(reason) | FileDrift::Refused(reason) => {
@@ -95,21 +107,24 @@ pub(super) fn after_cycle(outcome: CycleOutcome, ctx: &Ctx) {
     let live_dir = match identify::live(&ctx.store, &ctx.rs, &ctx.home) {
         Ok((LiveId::Known(name), _)) => match ctx.store.resolve(&name) {
             Ok(dir) => Some(dir),
-            Err(_) => {
+            Err(error) => {
                 log_line(
                     &ctx.rs,
                     &format!(
-                        "hooks: live profile {name} not resolved; its settings.json not checked"
+                        "hooks: live profile {name} not resolved ({error}); its settings.json \
+                         not checked"
                     ),
                 );
                 None
             }
         },
         Ok(_) => None,
-        Err(_) => {
+        Err(error) => {
             log_line(
                 &ctx.rs,
-                "hooks: live profile not identified; its settings.json not checked",
+                &format!(
+                    "hooks: live profile not identified ({error}); its settings.json not checked"
+                ),
             );
             None
         }

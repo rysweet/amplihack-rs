@@ -95,7 +95,7 @@ pub(super) fn prepare_with(i: &Inputs<'_>) -> Inject {
     if user_passed_settings(i.extra_args) {
         eprintln!(
             "amplihack: you passed --settings, so amplihack does not add its hooks settings \
-             file; ~/.claude/settings.json still carries the hooks."
+             file; ~/.claude/settings.json still holds the hooks."
         );
         return Inject::Skip("user passed --settings");
     }

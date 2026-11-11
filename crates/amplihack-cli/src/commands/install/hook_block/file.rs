@@ -89,7 +89,10 @@ fn load(path: &Path) -> Result<(Vec<u8>, Value), Failure> {
         return Err(Failure::Refused("has more than one hard link".into()));
     }
     match serde_json::from_slice::<Value>(&raw) {
-        Ok(value @ Value::Object(_)) => Ok((raw, value)),
+        Ok(value @ Value::Object(_)) => match malformed_hooks(&value) {
+            Some(why) => Err(Failure::Unparseable(why.into())),
+            None => Ok((raw, value)),
+        },
         Ok(_) => Err(Failure::Unparseable("not a JSON object".into())),
         Err(error) => Err(Failure::Unparseable(parse_reason(&error))),
     }
@@ -98,6 +101,21 @@ fn load(path: &Path) -> Result<(Vec<u8>, Value), Failure> {
 #[cfg(not(unix))]
 fn load(_path: &Path) -> Result<(Vec<u8>, Value), Failure> {
     Err(Failure::Refused("unix-only".into()))
+}
+
+/// Why `settings["hooks"]` cannot be merged without discarding the user's
+/// value: it is not an object, or one of its events is not an array. Such a
+/// file is reported and left unchanged, never silently replaced. The reason
+/// names no event, since event names come from the file.
+fn malformed_hooks(settings: &Value) -> Option<&'static str> {
+    match settings.get("hooks") {
+        None => None,
+        Some(Value::Object(events)) => events
+            .values()
+            .any(|value| !value.is_array())
+            .then_some("a hooks event value is not a JSON array"),
+        Some(_) => Some("hooks is not a JSON object"),
+    }
 }
 
 fn pretty(value: &Value) -> Result<Vec<u8>, String> {
