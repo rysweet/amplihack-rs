@@ -52,6 +52,8 @@ mod issue_1962_seed_cmd;
 mod issue_1962_seed_output;
 #[path = "issue_1962_seed_scan.rs"]
 mod issue_1962_seed_scan;
+#[path = "issue_1974_probe_sandbox.rs"]
+mod issue_1974_probe_sandbox;
 #[path = "issue_1976_orphaned_nested_run.rs"]
 mod issue_1976_orphaned_nested_run;
 #[path = "issue_1976_real_runner_nested_run.rs"]
