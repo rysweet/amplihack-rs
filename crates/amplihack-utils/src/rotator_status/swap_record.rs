@@ -2,8 +2,9 @@
 //!
 //! The rotator (`amplihack profile rotate`) writes one after each swap it
 //! makes, under its lock, with mode 0600 through a temp file and a rename.
-//! The limit-resume hook waits for a new one and decides with [`judge`]
-//! whether it resumes a session stopped by a usage limit.
+//! The limit-resume hook waits for a new one and decides with [`judge_at`]
+//! whether it resumes a session stopped by a usage limit. The stop time it
+//! passes comes from [`read_stop_time`], the only transcript read here.
 //!
 //! The record holds login names, percentages and epoch seconds only:
 //!
@@ -111,10 +112,14 @@ pub fn read_swap(_root: &Path, _now: i64) -> Option<SwapRecord> {
 }
 
 /// How many whole seconds before the hook's start a swap may have finished
-/// and still be after the stop.
+/// and still be after the stop, when the stop time is not known.
 ///
-/// The hook does not know when the session stopped, only when it started
-/// (`start`), a moment later. Both `start` and `swapped_at` are whole epoch
+/// This is the fallback. When [`read_stop_time`] gives the stop time, the
+/// threshold is the lower of the stop and `start - STOP_SLACK_SECS` (see
+/// [`after_stop_at`]), so a known stop only ever widens the window.
+///
+/// Without a stop time the hook knows only when it started (`start`), a
+/// moment after the stop. Both `start` and `swapped_at` are whole epoch
 /// seconds, truncated, and the rotator takes `swapped_at` after the swap
 /// has finished. A swap that finished after the stop therefore has
 /// `swapped_at >= floor(stop) >= start - 1` whenever the hook started less
@@ -129,40 +134,137 @@ pub fn read_swap(_root: &Path, _now: i64) -> Option<SwapRecord> {
 /// hook's 7-day limit, with nothing to show why.
 pub const STOP_SLACK_SECS: i64 = 1;
 
-/// Whether a swap at `swapped_at` may have finished after a stop whose hook
-/// started at `start`, in a session last resumed at `resumed_at`.
+/// The most bytes [`read_stop_time`] reads from the end of a transcript.
+pub const STOP_TAIL_BYTES: u64 = 65_536;
+
+/// The only field read from a transcript entry.
+#[derive(Deserialize)]
+struct LastEntry {
+    timestamp: String,
+}
+
+/// When the session stopped, in whole epoch seconds (rounded down): the
+/// `timestamp` of the last complete entry in the session's transcript.
+///
+/// Only the last [`STOP_TAIL_BYTES`] of the file are read. A partial last
+/// line (no newline yet) is ignored, and so is a partial first line when the
+/// read starts inside the file. Only the last non-empty complete line is
+/// looked at; there is no fallback to an earlier one.
+///
+/// `None` when the file is missing, a symlink, not a regular file, not
+/// owned by the current user or writable by the group or others, when the
+/// last entry is not JSON with an RFC 3339 `timestamp` string, or when the
+/// time is not within `0 < t <= start`. Nothing is logged and no error is
+/// returned, so no byte of the transcript can reach a log or a message.
+/// Symlinks in parent directories are followed; the checks apply to the
+/// opened file. A FIFO never blocks the open.
+#[cfg(unix)]
+pub fn read_stop_time(transcript: &Path, start: i64) -> Option<i64> {
+    use crate::secure_files::{owned_by_euid, read_bounded};
+    use std::io::{Seek, SeekFrom};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(transcript)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || !owned_by_euid(&meta) || meta.mode() & 0o022 != 0 {
+        return None;
+    }
+    let off = meta.len().saturating_sub(STOP_TAIL_BYTES);
+    file.seek(SeekFrom::Start(off)).ok()?;
+    let mut raw = read_bounded(file, STOP_TAIL_BYTES).ok()?;
+    // The file may have grown since the size was read.
+    raw.truncate(STOP_TAIL_BYTES as usize);
+    // Everything after the last newline is a line still being written.
+    let end = raw.iter().rposition(|&b| b == b'\n')?;
+    let mut complete = raw.get(..end)?;
+    if off > 0 {
+        // The read began inside a line: drop it.
+        let first = complete.iter().position(|&b| b == b'\n')?;
+        complete = complete.get(first + 1..)?;
+    }
+    let last = complete
+        .split(|&b| b == b'\n')
+        .rev()
+        .find(|l| !l.iter().all(u8::is_ascii_whitespace))?;
+    let entry: LastEntry = serde_json::from_slice(last).ok()?;
+    let t = chrono::DateTime::parse_from_rfc3339(&entry.timestamp)
+        .ok()?
+        .timestamp();
+    (t > 0 && t <= start).then_some(t)
+}
+
+/// Off Unix there is no rotator, so no stop time is needed.
+#[cfg(not(unix))]
+pub fn read_stop_time(_transcript: &Path, _start: i64) -> Option<i64> {
+    None
+}
+
+/// [`after_stop_at`] with no stop time.
+pub fn after_stop(swapped_at: i64, start: i64, resumed_at: Option<i64>) -> bool {
+    after_stop_at(swapped_at, start, None, resumed_at)
+}
+
+/// Whether a swap at `swapped_at` may have finished after a stop at `stop`
+/// (from [`read_stop_time`]; `None` when unknown) whose hook started at
+/// `start`, in a session last resumed at `resumed_at`.
+///
+/// The swap must be at or after `min(stop, start - STOP_SLACK_SECS)`, or
+/// `start - STOP_SLACK_SECS` with no stop (see [`STOP_SLACK_SECS`]). Taking
+/// the lower of the two means a known stop never makes the rule stricter
+/// than the fallback; it only lets a hook that started late still see a
+/// swap made between the stop and its start.
 ///
 /// A swap at or before the session's last resume is always before the
 /// stop: the session ran again after that resume, so it stopped later. This
-/// is what keeps the [`STOP_SLACK_SECS`] allowance from waking a session
-/// twice on one swap when, once resumed, it hits a limit again within a
-/// second. Otherwise see [`STOP_SLACK_SECS`].
-pub fn after_stop(swapped_at: i64, start: i64, resumed_at: Option<i64>) -> bool {
-    swapped_at >= start.saturating_sub(STOP_SLACK_SECS) && resumed_at.is_none_or(|r| swapped_at > r)
+/// is what keeps the allowance from waking a session twice on one swap
+/// when, once resumed, it hits a limit again soon after.
+pub fn after_stop_at(
+    swapped_at: i64,
+    start: i64,
+    stop: Option<i64>,
+    resumed_at: Option<i64>,
+) -> bool {
+    let fallback = start.saturating_sub(STOP_SLACK_SECS);
+    let threshold = stop.map_or(fallback, |s| s.min(fallback));
+    swapped_at >= threshold && resumed_at.is_none_or(|r| swapped_at > r)
 }
 
-/// Whether `record` resumes a session stopped at `start` whose hook saw
-/// `snapshot` when it started, for a session last resumed at `resumed_at`
-/// (from the hook's guard; `None` when it was never resumed). Checked in
-/// the order Same, Stale, NoRoom, then Resume. `seq` is never compared for
-/// order: a record that differs from the snapshot and is newer than the
-/// stop is a new swap, so a reset `seq` still resumes and a replayed old
-/// record is stale.
-///
-/// A snapshot that may itself be after the stop ([`after_stop`]) and is not
-/// later than `start` is not `Same`: a swap can finish between the stop and
-/// the hook's start, and the hook then notes it at once. That record is
-/// judged on room like any other, so the session stopped on the outgoing
-/// login still resumes. A snapshot dated after `start` cannot be such a
-/// swap (it was already on disk when the hook started), so a clock that
-/// runs ahead never makes a noted record resume.
+/// [`judge_at`] with no stop time.
 pub fn judge(
     snapshot: Option<&SwapRecord>,
     record: &SwapRecord,
     start: i64,
     resumed_at: Option<i64>,
 ) -> Judgement {
-    let after = after_stop(record.swapped_at, start, resumed_at);
+    judge_at(snapshot, record, start, None, resumed_at)
+}
+
+/// Whether `record` resumes a session stopped at `stop` (`None` when
+/// unknown) whose hook started at `start` and saw `snapshot` then, for a
+/// session last resumed at `resumed_at` (from the hook's guard; `None` when
+/// it was never resumed). Checked in the order Same, Stale, NoRoom, then
+/// Resume. `seq` is never compared for order: a record that differs from
+/// the snapshot and is newer than the stop is a new swap, so a reset `seq`
+/// still resumes and a replayed old record is stale.
+///
+/// A snapshot that may itself be after the stop ([`after_stop_at`]) and is
+/// not later than `start` is not `Same`: a swap can finish between the stop
+/// and the hook's start, and the hook then notes it at once. That record is
+/// judged on room like any other, so the session stopped on the outgoing
+/// login still resumes. A snapshot dated after `start` cannot be such a
+/// swap (it was already on disk when the hook started), so a clock that
+/// runs ahead never makes a noted record resume.
+pub fn judge_at(
+    snapshot: Option<&SwapRecord>,
+    record: &SwapRecord,
+    start: i64,
+    stop: Option<i64>,
+    resumed_at: Option<i64>,
+) -> Judgement {
+    let after = after_stop_at(record.swapped_at, start, stop, resumed_at);
     if snapshot == Some(record) && !(after && record.swapped_at <= start) {
         Judgement::Same
     } else if !after {

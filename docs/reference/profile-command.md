@@ -8789,9 +8789,11 @@ see [StopFailure in the hook reference](hook-specifications.md#8-stopfailure--li
 The [how-to](../howto/claude-profile-rotation.md#resume-sessions-stopped-by-a-usage-limit)
 shows how to use it. The hook reads the rotate ledger, the
 [swap record](#swap-record) and its own [resume state](#resume-state-directory),
-and may run `tmux` against the session's own pane. It never moves a login,
-never reads the session's transcript, and never opens `.credentials.json`, a
-token file or anything under a profile directory.
+and may run `tmux` against the session's own pane. From the session's
+transcript it reads only the `timestamp` of the last entry (see
+[Stop time](#stop-time)). It never moves a login, never reads any other part
+of the transcript, and never opens `.credentials.json`, a token file or
+anything under a profile directory.
 
 The hook resumes a session in one of two ways, never both:
 
@@ -8857,12 +8859,12 @@ The checks run in this order. The first one that fails decides the outcome.
 |------|-------|---------------|
 | 1 | The [profile root](#profile-root) resolves (`AMPLIHACK_CLAUDE_PROFILE_ROOT`, then `~/.amplihack/profile-root`, then `~/.amplihack/claude-profiles`) to an absolute path with no `..` component. The pointer file must not be writable by group or others, and auto-switch is on by the same rule as `auto-switch status`. The pointer file is read with no-follow and at most 4 KiB. | Exit `0`. Nothing under the root is created or written, and nothing but the toggle and the pointer file is read. Nothing is logged. |
 | 2 | The stop was a usage limit (see [Limit detection](#limit-detection)), and `session_id` is present and at most 256 bytes. | Exit `0`. Nothing is logged. |
-| 3 | `stop_hook_active` is absent, `null` or `false` (any other non-boolean value counts as `true`). The ledger is read once here, for the `live` profile that goes into the [event key](#resume-state-directory). | Exit `0`, outcome `stop-hook-active`. |
+| 3 | `stop_hook_active` is absent, `null` or `false` (any other non-boolean value counts as `true`). Before this check the hook reads the ledger once, for its `live` profile, and the [stop time](#stop-time). When the check passes, it notes the current swap record and the session's last resume, and works out the login the session stopped on for the [event key](#resume-state-directory). When it fails, neither the swap record nor the resume state is read. | Exit `0`, outcome `stop-hook-active`. |
 | 4 | No marker exists for this limit event. | Exit `0`, outcome `duplicate`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe (see [Resume state directory](#resume-state-directory)). |
 | 5 | This session has resumed fewer than 3 times in the last 24 hours. | Exit `0`, outcome `cap`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe. |
 | 6 | The rotator is running: `<root>/.auto-switch.d/rotate/rotate.pid` names a running `amplihack profile rotate watch` process of yours (checked in `/proc`; skipped where there is none), and the ledger, if present, can be read by the trust rules in [Rotator capacity rule](#rotator-capacity-rule). | Exit `0` without waiting, outcome `rotator-down`. |
 | 7 | `resume/` and `resume/prompted/` exist or can be created safely, so a prompt during the wait can be recorded; prompt markers older than 7 days and 1 hour are removed. | Exit `0`, outcome `guard-failed`. |
-| 8 | The hook notes the current swap record (or that there is none), sets up the [event wait](#event-wait), and reads the swap record once. Then it waits for a record that passes [Capacity for a resume](#capacity-for-a-resume), for at most 7 days from its start. A record that fails is logged (`swap-stale` or `swap-no-room`) and the wait goes on. | Exit `0`, outcome `watch-lost` if the wait cannot be set up or a watch is lost; `moved-on` if you sent a prompt in that session; `session-gone` if the session exited; `no-capacity-timeout` at the 7-day deadline; `guard-failed` if a prompt marker cannot be read safely. |
+| 8 | The hook keeps the swap record it noted in step 3 (or that there was none), sets up the [event wait](#event-wait), and reads the swap record once. Then it waits for a record that passes [Capacity for a resume](#capacity-for-a-resume), for at most 7 days from its start. A record that fails is logged (`swap-stale` or `swap-no-room`) and the wait goes on. | Exit `0`, outcome `watch-lost` if the wait cannot be set up or a watch is lost; `moved-on` if you sent a prompt in that session; `session-gone` if the session exited; `no-capacity-timeout` at the 7-day deadline; `guard-failed` if a prompt marker cannot be read safely. |
 | 9 | Auto-switch is still on, no prompt was sent in the session since the hook started, and, if the hook noted a pane, the pane still [passes its check](#resume-keys); a pane that fails now is dropped and the wake is used instead. Then, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `disabled` if auto-switch was turned off; `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `cap` if the session reached its cap; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
 | 10 | With a pane: send the [resume keys](#resume-keys). | Exit `0`, outcome `resume-keys-failed`, with the number of keys sent. The resume stays recorded and the hook does not exit `2`. |
 | 11 | — | Exit `0`, outcome `resumed-keys`, when keys were sent; exit `2` with the resume message, outcome `resumed`, when there was no pane. |
@@ -8925,20 +8927,30 @@ record it reads afterwards is judged in this order:
 | Order | Check | Result when it holds |
 |-------|-------|----------------------|
 | 1 | The file is missing or unreadable, or the record equals the noted one in every field and is stale by the rule in order 2. | Nothing logged; keep waiting. |
-| 2 | `swapped_at` is more than 1 second before the hook's start (`swapped_at < start - 1`), or at or before the session's last resume. `reading.measured_at` is not checked: the rotator measures before it swaps, so a session that stops between the two stopped on the login being swapped away from. | Log `swap-stale`; keep waiting. |
+| 2 | `swapped_at` is before the threshold (`swapped_at < min(stop, start - 1)`, or `swapped_at < start - 1` when there is no [stop time](#stop-time)), or at or before the session's last resume. `reading.measured_at` is not checked: the rotator measures before it swaps, so a session that stops between the two stopped on the login being swapped away from. | Log `swap-stale`; keep waiting. |
 | 3 | `reading.session` or `reading.week` is 100 or more. | Log `swap-no-room`; keep waiting. |
 | 4 | — | Resume (step 9 of [Resume decision](#resume-decision)). |
 
-The hook does not know when the session stopped, only when it started, a
-moment later; both times are whole seconds. The rotator takes `swapped_at`
-when the swap has finished. So a swap in the hook's start second, or in the
-second before it, may have finished after the stop and is not stale. That
-holds for the noted record too: a swap that lands between the stop and the
-hook's start is the record the hook notes, and it resumes the session at
-once when the new login has room. The cost of this one-second allowance is
-that a swap made just before the stop can send the session one `continue`
-it did not need; without it, a session stopped on the outgoing login would
-wait for the next swap, up to 7 days.
+The threshold is the earlier of two times, both whole seconds:
+
+- the [stop time](#stop-time), the `timestamp` of the last entry in the
+  session's transcript, rounded down;
+- one second before the hook's start (`STOP_SLACK_SECS`, 1 second).
+
+The rotator takes `swapped_at` when the swap has finished. A swap in the
+hook's start second, or in the second before it, may have finished after
+the stop and is not stale, whether or not a stop time was read. When the
+hook starts some seconds after the stop, the stop time lowers the
+threshold, so a swap between the stop and the hook's start still counts.
+With stop `T` and start `T+10`, a swap at `T+3` resumes the session and a
+swap at `T-5` does not. The stop time never raises the threshold above
+`start - 1`, so a swap that counts without a stop time also counts with
+one. The same rule applies to the noted record: a swap that finishes
+between the stop and the hook's start is the record the hook notes, and it
+resumes the session at once when the new login has room. The cost of the
+allowance is that a swap made just before the stop can send the session one
+`continue` it did not need; without it, a session stopped on the outgoing
+login would wait for the next swap, up to 7 days.
 
 A swap at or before the session's last recorded resume is never treated as
 after the stop, whatever the times: the session ran again after that resume,
@@ -8956,6 +8968,35 @@ A stay, an ALERT, a [`profile switch`](#rotate-switch) and the passing of
 time never resume a session, because none of them writes a swap record. The
 hook does not read the target login or apply the rotator's thresholds; it
 trusts the reading in the record.
+
+#### Stop time
+
+The stop time is the `timestamp` of the last complete entry in the
+transcript named by the payload's `transcript_path`, as whole epoch seconds,
+rounded down. It is read once, just after the hook's start, by
+`swap_record::read_stop_time` in `amplihack_utils::rotator_status`:
+
+| Rule | Detail |
+|------|--------|
+| Open | `O_NOFOLLOW`, `O_NONBLOCK` and `O_CLOEXEC`. A symlink as the last path component is refused; symlinks in parent directories are allowed, because the checks below apply to the opened file. A FIFO does not block the open. |
+| File | A regular file owned by you and not writable by group or others (`mode & 0o022 == 0`), checked on the open file. A transcript need not be `0600` or have a single link. |
+| Size | At most the last 65 536 bytes (`STOP_TAIL_BYTES`) are read. A partial last line is ignored, and so is a partial first line when the read did not start at the beginning of the file. A last entry longer than 65 536 bytes gives no stop time. |
+| Entry | Only the `timestamp` field of the last non-empty complete line is read. It must be an RFC 3339 string; a number, a missing field or a line that is not JSON gives no stop time. |
+| Range | Accepted only when it is after 1970 and not after the hook's start (`0 < stop <= start`). |
+
+When `transcript_path` is absent, or any rule fails, there is no stop time
+and the hook decides exactly as it would without one. The stop time is
+never logged and never reaches `resume.log`, stderr, stdout, the resume
+message or the event key, and is never hashed. It only decides whether the
+noted swap counts as after the stop, and so which login goes into the event
+key. The reader returns only a number of seconds or nothing, with no error
+to report. It does not retry or wait.
+
+Claude Code may write the error entry after the hook starts, or not at all.
+The last entry is then older than the stop, which can only lower the
+threshold, so the session may get one `continue` it did not need; it never
+waits for a swap it should have taken. The resume cap, the last-resume rule
+and the room check still apply.
 
 #### Swap record
 
@@ -9022,7 +9063,10 @@ interval. It watches:
 Both directories must be real directories, not symlinks, owned by you and
 not writable by group or others. The hook's parent pid must not be 1, and
 must still be the hook's parent once the pidfd is open, so a reused pid
-cannot stand in for the session. If any of this fails, or inotify or
+cannot stand in for the session. If the pidfd is missing when the hook
+checks the session before sending a key, the session counts as not running
+and no key is sent; this check does not replace the `watch-lost` outcome
+below. If any of this fails, or inotify or
 `pidfd_open` is unavailable (a kernel older than 5.3, or a system other
 than Linux), the hook ends as `watch-lost`. It does not fall back to
 polling.
@@ -9092,8 +9136,9 @@ its `rotator capacity` check (`CycleStatus::fresh_capacity` in
 `amplihack_utils::rotator_status`). The limit-resume hook does not resume on
 it; it resumes only on a [swap record](#capacity-for-a-resume). The hook
 still reads the ledger, by the trust rules at the end of this section, for
-the `live` profile in the [event key](#resume-state-directory) and for the
-`rotator-down` check.
+the `live` profile and for the `rotator-down` check. The `live` profile is
+the login in the [event key](#resume-state-directory) unless a noted swap
+record shows that the session stopped on the outgoing login.
 
 The rule reads `<root>/.auto-switch.d/rotate/ledger.json` (see
 [Rotate state directory](#rotate-state-directory)) and uses only `live`,
@@ -9194,7 +9239,7 @@ and epoch seconds. No pane id is stored.
 | Path | Contents |
 |------|----------|
 | `lock` | Lock file for steps 4, 5 and 9. Waited on for at most 5 seconds. |
-| `events/<sha256 hex>` | One empty marker per limit event. The name is the SHA-256 of a fixed prefix followed by `session_id`, `error`, `error_details`, `last_assistant_message` and the ledger's `live` profile when the hook started, each written with its length, so no two different payloads share a name. The same login hitting its limit again is the same event; a limit after the rotator swapped to another login is a new one. Markers older than 7 days are removed. |
+| `events/<sha256 hex>` | One empty marker per limit event. The name is the SHA-256 of a fixed prefix followed by `session_id`, `error`, `error_details`, `last_assistant_message` and the login the session stopped on, each written with its length, so no two different payloads share a name. The login the session stopped on is the noted swap record's `from_login` when that record is after the stop by the rule in [Capacity for a resume](#capacity-for-a-resume) and not later than the hook's start; otherwise it is the ledger's `live` profile when the hook started. A session that stops on the outgoing login while the rotator swaps, is resumed, and stops again on the new login therefore gets a new event, not `duplicate`. The same login hitting its limit again is the same event; a limit after the rotator swapped to another login is a new one. Markers older than 7 days are removed. |
 | `sessions/<sha256 hex>` | One file per session, named by the SHA-256 of a different fixed prefix and its `session_id`, with one epoch-seconds line per resume in the last 24 hours. A file that cannot be parsed counts as the cap being reached and is left unchanged. |
 | `prompted/<sha256 hex>` | One file per session, named like `sessions/`, holding the epoch seconds of your last prompt in it. Written by the `UserPromptSubmit` hook, replaced atomically. Removed after 7 days and 1 hour (the longest wait plus 1 hour) when a hook starts waiting or commits. A file that cannot be parsed or is not private makes a waiting hook end as `guard-failed`. |
 | `resume.log` | One line per decision from step 3 on, and one per swap record judged stale or without room. |

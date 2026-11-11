@@ -1011,12 +1011,27 @@ Full rules: [Rotate session resume](profile-command.md#rotate-session-resume).
 a rotator is running, the hook waits up to 7 days for the rotator to write a
 [swap record](profile-command.md#swap-record),
 `<root>/.auto-switch.d/rotate/swap.json`, that differs from the one present
-at the stop, was swapped after the stop (a swap in the hook's start second
-or the second before it counts, and so does the record present at the stop
-when it was written then), and shows the new
+at the stop, was swapped after the stop, and shows the new
 login below 100% on both windows. Only a swap writes that file; a stay, an
 ALERT and `profile switch` do not. It does not wait at all when no rotator is
 running.
+
+**When the session stopped.** The hook reads the stop time from the
+transcript: only the `timestamp` of the last complete entry in
+`transcript_path`, rounded down to whole seconds, from at most the last
+65 536 bytes of a regular file you own that is not writable by group or
+others (see [Stop time](profile-command.md#stop-time)). A swap counts as
+after the stop when `swapped_at` is at or after the earlier of the stop time
+and one second before the hook's start (`STOP_SLACK_SECS`). With no usable
+stop time, the threshold is one second before the hook's start. So a swap in
+the hook's start second or the second before it always counts, and so does a
+swap between the stop and a late hook start, including the record present
+when the hook starts. Nothing read from the transcript is logged.
+
+**Which event it is.** The event key includes the login the session stopped
+on: the noted swap record's `from_login` when that swap counts as after the
+stop and is not later than the hook's start, otherwise the ledger's live
+login at the hook's start.
 
 **How it waits.** One blocking `poll(2)`, with nothing read on an interval,
 on:
@@ -1038,10 +1053,13 @@ other system, or when a watch cannot be set up or is lost, the hook ends as
 
 In the code, the wait sits behind the hook's `Deps` trait: `arm()` sets up
 the watches, `wait_event(deadline)` returns one of `Swap`, `Prompted`,
-`SessionGone`, `WatchLost` or `Deadline`, `read_swap()` reads the record,
+`SessionGone`, `WatchLost` or `Deadline` (`WatchLost` also when the
+deadline cannot be represented as a clock time), `read_swap()` reads the
+record, `stop_time(transcript, start)` returns the stop time or nothing,
 `pane()` returns the verified pane, `send_keys(pane, key)` sends one key,
 and `session_alive_now()` checks the pidfd and the foreground process
-group without blocking. Tests replace
+group without blocking; with no pidfd it reports the session as not
+running, so the check before each key fails and no key is sent. Tests replace
 `Deps` with a fake that scripts the events.
 
 **How it resumes.** It records the resume under its lock first, then takes
@@ -1078,15 +1096,16 @@ both are trusted because they belong to the same user as the session.
 nothing. stdout is always empty.
 
 It resumes at most once per limit event, once per session per wait, and 3
-times per session in 24 hours, and never reads a credentials or token file
-or the transcript. The 608400-second timeout covers the 7-day wait plus a
-300-second margin; Claude Code 2.1.307 accepts it. Requires Claude Code
-2.1.306 or later: `amplihack install` runs `claude --version` and leaves this
-entry out (removing an earlier one) for an older version, because Claude Code
-before 2.1.78 ignores a settings file that names `StopFailure`. An entry an
-earlier release wrote is also removed by the next launch when that `claude`
-is too old, and an automatic re-stage after an upgrade, which never edits
-`settings.json`, prints a warning naming `amplihack install`.
+times per session in 24 hours, never reads a credentials or token file, and
+reads nothing from the transcript but the last entry's `timestamp`. The
+608400-second timeout covers the 7-day wait plus a 300-second margin; Claude
+Code 2.1.307 accepts it. Requires Claude Code 2.1.306 or later:
+`amplihack install` runs `claude --version` and leaves this entry out (removing an
+earlier one) for an older version, because Claude Code before 2.1.78 ignores
+a settings file that names `StopFailure`. An entry an earlier release wrote
+is also removed by the next launch when that `claude` is too old, and an
+automatic re-stage after an upgrade, which never edits `settings.json`,
+prints a warning naming `amplihack install`.
 
 ## Capacity notice in hooks
 
