@@ -5,8 +5,9 @@
 //! HOME and profile root (`tests_swap::env()`: `work` live, `spare` stored).
 //! The credential files there are fakes that hold no real token. Probing is
 //! stubbed with `Ctx::measure`, which calls the real decision
-//! (`decide_measured`); the live re-read is stubbed with `Ctx::reread`, which
-//! records each name it is asked to read. No test reads a real login,
+//! (`decide_measured`); the live re-read is stubbed with `Ctx::reread_live`
+//! (and the target re-read with `Ctx::reread`), which records each name it
+//! is asked to read. No test reads a real login,
 //! starts `claude`, uses the network or touches the developer's HOME.
 //!
 //! Time is synthetic: `Ctx::now` is set to a per-test static clock, seeded
@@ -20,6 +21,7 @@
 
 use super::super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::super::decide::Probed;
+use super::super::fresh::live::FROZEN_CYCLES;
 use super::super::tests_issue_1870::{exh, rd};
 use super::super::tests_revalidate_cause::{ctx_with, log_of};
 use super::super::tests_swap::{Env, env, ino_at};
@@ -123,7 +125,8 @@ macro_rules! lane {
 
 /// A context for `e` on the synthetic `clock`, with `--interval 120
 /// --session-at 70 --margin 5`, the stubbed measurement and, when `reread`
-/// is set, the stubbed re-read.
+/// is set, the stubbed re-read, as both the live re-read
+/// (`Ctx::reread_live`) and the target re-read (`Ctx::reread`).
 fn ctx(
     e: &Env,
     clock: fn() -> i64,
@@ -132,6 +135,7 @@ fn ctx(
 ) -> Ctx {
     let mut c = ctx_with(e, measure);
     c.reread = reread;
+    c.reread_live = reread;
     c.now = clock;
     c.settings.interval = INTERVAL as u64;
     c.settings.session_at = 70;
@@ -509,12 +513,12 @@ fn e2c_a_failed_probe_after_90_percent_is_decided_on_90_not_the_threshold() {
     assert!(log.contains("reason=projected"), "{log}");
 }
 
-// --- A live re-read is timed at the cycle's clock ---------------------------
+// --- A live re-read preserves an explicit evidence timestamp ----------------
 
 lane!(lst);
 
 #[test]
-fn e2d_a_live_reread_is_timed_at_the_cycle_clock() {
+fn e2d_a_live_reread_preserves_its_evidence_timestamp() {
     let e = env();
     seed(&lst::CLOCK);
     let t2 = lst::clock() + INTERVAL;
@@ -526,16 +530,16 @@ fn e2d_a_live_reread_is_timed_at_the_cycle_clock() {
         ],
     );
     set(&lst::OTHERS, &spare_room());
-    // Stamped 100 s back, 58% would rise 8 points in 20 s and project to
-    // 100; timed at the clock it rises 8 in 120 s and projects to 66.
+    // Stamped 100 s back, 58% rises 8 points in 20 s and projects to 100%.
     set(&lst::REREAD, &[rd(58.0, 41.0, Some(t2 - 100))]);
     let mut c = ctx(&e, lst::clock, lst::measure, Some(lst::reread));
     assert_eq!(step(&mut c, &lst::CLOCK), CycleOutcome::Stayed);
     let got = step(&mut c, &lst::CLOCK);
     let log = log_of(&e);
     assert_eq!(lst::live_calls(), 1, "{log}");
-    assert_eq!(got, CycleOutcome::Stayed, "58 + 8 = 66 < 70: {log}");
-    assert_eq!(swaps(&log), 0, "{log}");
+    assert_eq!(got, CycleOutcome::Swapped, "58 + 48 >= 70: {log}");
+    assert_eq!(swaps(&log), 1, "{log}");
+    assert!(log.contains("reason=projected"), "{log}");
 }
 
 // --- A live reading from the future is read again ---------------------------
@@ -572,9 +576,9 @@ fn e3_an_old_reading_with_no_reread_hook_and_far_from_the_threshold_stays() {
     assert_eq!(swaps(&log), 0, "{log}");
 }
 
-// --- The 9 Nov kkane history -----------------------------------------------
+// --- A login rising 10 points a cycle -----------------------------------------------
 
-fn kkane() -> Vec<Live> {
+fn rising() -> Vec<Live> {
     [22.0, 32.0, 42.0, 50.0, 63.0]
         .into_iter()
         .map(|s| Live::Direct(s, 41.0))
@@ -584,10 +588,10 @@ fn kkane() -> Vec<Live> {
 lane!(lk);
 
 #[test]
-fn kkane_replay_stays_until_63_then_swaps_with_reason_projected() {
+fn rising_replay_stays_until_63_then_swaps_with_reason_projected() {
     let e = env();
     seed(&lk::CLOCK);
-    set(&lk::LIVE, &kkane());
+    set(&lk::LIVE, &rising());
     set(&lk::OTHERS, &spare_room());
     let mut c = ctx(&e, lk::clock, lk::measure, Some(lk::reread));
     for s in [22, 32, 42, 50] {
@@ -608,10 +612,10 @@ fn kkane_replay_stays_until_63_then_swaps_with_reason_projected() {
 lane!(lkn);
 
 #[test]
-fn kkane_with_no_candidate_alerts_at_63_and_rereads_the_third_identical_reading() {
+fn rising_with_no_candidate_alerts_at_63_and_rereads_the_third_identical_reading() {
     let e = env();
     seed(&lkn::CLOCK);
-    let mut script = kkane();
+    let mut script = rising();
     script.push(Live::Direct(63.0, 41.0)); // cycle 6: unchanged once
     script.push(Live::Direct(63.0, 41.0)); // cycle 7: unchanged twice
     set(&lkn::LIVE, &script);
@@ -699,4 +703,185 @@ fn a_dry_run_rereads_an_old_live_reading_and_writes_nothing() {
     );
     assert_eq!(std::fs::read(&e.rs.ledger).unwrap(), before, "no write");
     assert_eq!(ino_at(&e.live()), Some(e.l), "work's login stays live");
+}
+
+// --- The live re-read goes through `Ctx::reread_live` only ------------------
+
+lane!(lhk);
+
+#[test]
+fn the_live_reread_uses_the_live_hook_and_never_the_target_hook() {
+    let e = env();
+    seed(&lhk::CLOCK);
+    set(&lhk::LIVE, &[Live::Direct(40.0, 20.0)]);
+    set(&lhk::OTHERS, &spare_room());
+    set(&lhk::REREAD, &[rd(40.0, 20.0, None)]);
+    let mut c = ctx(&e, lhk::clock, lhk::measure, None);
+    // The target hook reads profile directories with refresh allowed; the
+    // live login must never be read through it.
+    c.reread = Some(lhk::reread);
+    for _ in 0..3 {
+        assert_eq!(step(&mut c, &lhk::CLOCK), CycleOutcome::Stayed);
+    }
+    let log = log_of(&e);
+    assert_eq!(
+        lhk::live_calls(),
+        0,
+        "no live read by the target hook: {log}"
+    );
+    assert_eq!(stale_lines(&log), 0, "no live hook, no re-read: {log}");
+
+    c.reread = None;
+    c.reread_live = Some(lhk::reread);
+    // With no hook, the failed attempt on cycle 3 restarted the counter.
+    // Two further unchanged cycles reach the frozen threshold again.
+    step(&mut c, &lhk::CLOCK);
+    assert_eq!(lhk::live_calls(), 0, "one unchanged cycle after the reset");
+    step(&mut c, &lhk::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(lhk::live_calls(), 1, "frozen, read by the live hook: {log}");
+    assert_eq!(stale_lines(&log), 1, "{log}");
+}
+
+// --- A cache that stays frozen below a re-read is read again every cycle ---
+
+lane!(lfz);
+
+#[test]
+fn a_cache_frozen_below_a_disagreeing_reread_is_read_again_every_cycle() {
+    let e = env();
+    seed(&lfz::CLOCK);
+    // The status-line cache stays at 63% while the login climbs.
+    set(&lfz::LIVE, &[Live::Direct(63.0, 20.0)]);
+    set(&lfz::OTHERS, &spare_room());
+    set(
+        &lfz::REREAD,
+        &[
+            rd(65.0, 20.0, None),
+            rd(68.0, 20.0, None),
+            rd(71.0, 20.0, None),
+        ],
+    );
+    let mut c = ctx(&e, lfz::clock, lfz::measure, Some(lfz::reread));
+    assert_eq!(step(&mut c, &lfz::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(step(&mut c, &lfz::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(lfz::live_calls(), 0);
+    // Cycle 3: frozen, re-read at 65%.
+    assert_eq!(step(&mut c, &lfz::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(lfz::live_calls(), 1);
+    // The re-read disagreed: the cache is behind, and the frozen count is
+    // kept on the cached 63%, not restarted by the re-read figure.
+    assert!(c.live_series.behind(), "cache marked behind after cycle 3");
+    let unchanged3 = c.live_series.unchanged();
+    assert!(
+        unchanged3 >= FROZEN_CYCLES,
+        "frozen count after cycle 3: {unchanged3}"
+    );
+    let len3 = c.live_series.len();
+    // Cycle 4: the cache still says 63%. It is not a new session window and
+    // not a fresh change: it is read again, at 68%.
+    assert_eq!(step(&mut c, &lfz::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(lfz::live_calls(), 2, "{}", log_of(&e));
+    assert!(c.live_series.behind(), "cache still behind after cycle 4");
+    let unchanged4 = c.live_series.unchanged();
+    assert_eq!(
+        unchanged4,
+        unchanged3 + 1,
+        "the frozen count keeps rising while the cache stays at 63%"
+    );
+    assert!(
+        c.live_series.len() >= len3,
+        "the series was cleared as a new window: {} points after cycle 4, {len3} after cycle 3",
+        c.live_series.len()
+    );
+    let r = c.live_series.rate();
+    assert!(
+        r.is_some_and(|r| r > 0.0),
+        "rate from the re-read figures: {r:?}"
+    );
+    // Cycle 5: read again at 71%, over --session-at.
+    let got = step(&mut c, &lfz::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(lfz::live_calls(), 3, "{log}");
+    assert_eq!(stale_lines(&log), 3, "{log}");
+    assert_eq!(got, CycleOutcome::Swapped, "decided on s=71%: {log}");
+    assert!(log.contains("reason=threshold"), "{log}");
+    assert_eq!(swaps(&log), 1, "{log}");
+    // The swap hands the series to the new live login: the old login's
+    // frozen count and behind mark do not follow it.
+    assert_eq!(
+        (
+            c.live_series.unchanged(),
+            c.live_series.behind(),
+            c.live_series.len()
+        ),
+        (0, false, 0),
+        "series reset by the swap (cycle 4 count was {unchanged4})"
+    );
+}
+
+lane!(llg);
+
+#[test]
+fn a_moving_cache_still_below_a_disagreeing_reread_is_read_again() {
+    let e = env();
+    seed(&llg::CLOCK);
+    set(
+        &llg::LIVE,
+        &[
+            Live::Direct(63.0, 20.0),
+            Live::Direct(63.0, 20.0),
+            Live::Direct(63.0, 20.0),
+            Live::Direct(64.0, 20.0),
+            Live::Direct(69.0, 20.0),
+        ],
+    );
+    set(&llg::OTHERS, &spare_room());
+    set(&llg::REREAD, &[rd(65.0, 20.0, None), rd(66.0, 20.0, None)]);
+    let mut c = ctx(&e, llg::clock, llg::measure, Some(llg::reread));
+    for _ in 0..3 {
+        assert_eq!(step(&mut c, &llg::CLOCK), CycleOutcome::Stayed);
+    }
+    assert_eq!(llg::live_calls(), 1, "frozen on cycle 3");
+    // Cycle 4: the cache moved to 64%, still below the 65% re-read.
+    assert_eq!(step(&mut c, &llg::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(llg::live_calls(), 2, "{}", log_of(&e));
+    // Cycle 5: the cache is past the last re-read (66%), so it is current
+    // again and is not read.
+    step(&mut c, &llg::CLOCK);
+    assert_eq!(llg::live_calls(), 2, "{}", log_of(&e));
+}
+
+// Issue comment: 100% -> 90%, then an older 0%/0% for the login just left.
+lane!(bounce);
+
+#[test]
+fn a_hundred_to_ninety_swap_never_bounces_back_on_older_zero_capacity() {
+    use std::sync::atomic::Ordering;
+    let e = env();
+    seed(&bounce::CLOCK);
+    let before_use = bounce::CLOCK.load(Ordering::SeqCst) - 1;
+    set(&bounce::LIVE, &[Live::Direct(100.0, 20.0)]);
+    set(&bounce::OTHERS, &[("spare", rd(90.0, 20.0, None))]);
+    set(&bounce::REREAD, &[exh(100.0, 20.0)]);
+    let mut c = ctx(&e, bounce::clock, bounce::measure, Some(bounce::reread));
+    assert_eq!(step(&mut c, &bounce::CLOCK), CycleOutcome::Swapped);
+    assert_eq!(ino_at(&e.live()), Some(e.t), "90% spare becomes live");
+    // Its next measured value is 100%. Work looks completely unused, but
+    // that measurement predates its most recent use.
+    set(&bounce::OTHERS, &[("work", rd(0.0, 0.0, Some(before_use)))]);
+    let got = step(&mut c, &bounce::CLOCK);
+    let log = log_of(&e);
+    assert_ne!(got, CycleOutcome::Swapped, "{log}");
+    assert_eq!(swaps(&log), 1, "{log}");
+    assert_eq!(
+        ino_at(&e.live()),
+        Some(e.t),
+        "exhausted work is not restored"
+    );
+    assert_eq!(bounce::calls(), ["work"], "required target reread");
+    assert!(
+        log.contains("reading stale s=0% w=0%; fresh s=100% w=20%"),
+        "{log}"
+    );
 }

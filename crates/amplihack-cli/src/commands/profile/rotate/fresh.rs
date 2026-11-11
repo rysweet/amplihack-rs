@@ -1,8 +1,9 @@
 //! Issue #1870: the freshness gate. A swap target chosen by its reading is
 //! accepted only when that reading is fresh: taken no more than
 //! [`MAX_READING_AGE_SECS`] ago, not earlier than the live login's reading,
-//! and, for a login in the ledger's `swapped_away`, strictly after the swap
-//! away from it. A stale target is read again, by the user's probe method
+//! and, for a login in the ledger's `swapped_away` or the ledger's
+//! `previous` (the login the last swap left, issue #2211), strictly after the
+//! swap away from it. A stale target is read again, by the user's probe method
 //! (`AMPLIHACK_PROFILE_USAGE_PROBE`) with passive readings off, and the
 //! decision is made again on the new figures. See "Rotate reading freshness and
 //! swap-back damping" in docs/reference/profile-command.md.
@@ -158,14 +159,20 @@ pub(super) fn settle(
     let Some((live, mut probes)) = m.probed.clone() else {
         return Ok(m);
     };
-    let damped = ctx
-        .rs
-        .load_ledger()?
-        .map(|l| l.swapped_away)
-        .unwrap_or_default();
+    let ledger = ctx.rs.load_ledger()?;
+    // Issue #2211: the login the last swap left, and when. Its reading must
+    // be taken after it stopped being used, whether or not it was full.
+    let left = ledger
+        .as_ref()
+        .and_then(|l| Some((l.previous.clone()?, l.swapped_at?)));
+    let damped = ledger.map(|l| l.swapped_away).unwrap_or_default();
     let live_at = read_at(&live, m.measured_at);
     let mut lines = std::mem::take(&mut m.fresh_lines);
     let mut done: Vec<ProfileName> = Vec::new();
+    // Targets whose re-read logged new figures. If such a reading is still
+    // stale on the next pass, the target is made unknown with its own line,
+    // so the log does not read as if the re-read had been accepted.
+    let mut accepted: Vec<ProfileName> = Vec::new();
     let mut reads = 0;
     let started = Instant::now();
     // Each name is handled at most twice: read (or made unknown), then made
@@ -177,8 +184,13 @@ pub(super) fn settle(
             break;
         };
         let damped_at = damped.get(to.as_str()).copied();
+        let left_at = left
+            .as_ref()
+            .filter(|(from, _)| from == to.as_str())
+            .map(|(_, at)| *at);
         let t = (ctx.now)();
-        if !stale(read_at(&probes[i].1, m.measured_at), live_at, damped_at, t) {
+        let after = damped_at.max(left_at);
+        if !stale(read_at(&probes[i].1, m.measured_at), live_at, after, t) {
             break;
         }
         if handled >= max_handled {
@@ -188,6 +200,9 @@ pub(super) fn settle(
         let new = if done.contains(&to) || mode == Reread::Never {
             // Under the lock, or a re-read that is still not strictly later
             // than the damping time (a clock step): unknown, with no read.
+            if accepted.contains(&to) {
+                lines.push(fresh_msg::failed(&to));
+            }
             Probed::failed()
         } else if reads >= MAX_REREADS_PER_CYCLE {
             lines.push(fresh_msg::limit(&to));
@@ -206,7 +221,11 @@ pub(super) fn settle(
             } else {
                 reads += 1;
                 let p = reread(ctx, &to, left);
-                fresh_probe(ctx, &to, &probes[i].1, p, damped_at.is_some(), &mut lines)
+                let p = fresh_probe(ctx, &to, &probes[i].1, p, damped_at.is_some(), &mut lines);
+                if p != Probed::failed() {
+                    accepted.push(to.clone());
+                }
+                p
             }
         } else {
             // No hook: nothing may be read, so the target is unknown.
@@ -237,12 +256,13 @@ fn fresh_probe(
     damped: bool,
     lines: &mut Vec<String>,
 ) -> Probed {
-    if p.reading == Reading::Failed || p.unknown || p.still_running {
+    if p.reading == Reading::Failed || p.unknown || p.still_running || p.carried {
         lines.push(fresh_msg::failed(to));
         return Probed::failed();
     }
-    // The reading time of a re-read is when it finished.
-    p.observed_at = Some((ctx.now)());
+    // Preserve the evidence time. Only an undated direct result receives
+    // the completion time; the next gate pass validates dated results.
+    p.observed_at.get_or_insert_with(ctx.now);
     p.carried = false;
     // Issue #1970: a re-read is made with passive readings off, so it is a
     // direct reading and never checked as a stale cached one.
@@ -284,4 +304,17 @@ pub fn reread_as_configured(ctx: &Ctx, name: &ProfileName, left: Duration) -> Pr
     let env = reread_env(measure::mode_quiet(), left);
     let reader = measure::reader(ctx, env, 1, now());
     measure::reading(name.as_str(), &reader.profile(name, false))
+}
+
+/// Issue #2211: the production re-read of the live login `name`. Like
+/// [`reread_as_configured`], but it reads the login in `~/.claude` (under
+/// `ctx.home`), as the cycle's measurement reads the live login, never the
+/// profile directory's copy, which is stale or missing while the login is
+/// live. A live read never refreshes the token (SR-3(d) in
+/// `usage_cmd::RowReader::plan`; only the rotate prelude does, #1753) and
+/// writes nothing.
+pub fn reread_live_as_configured(ctx: &Ctx, name: &ProfileName, left: Duration) -> Probed {
+    let env = reread_env(measure::mode_quiet(), left);
+    let reader = measure::reader(ctx, env, 1, now());
+    measure::reading(name.as_str(), &reader.profile(name, true))
 }

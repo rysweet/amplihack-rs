@@ -5395,6 +5395,27 @@ Material records and duplicate claims are revalidated when they support
 the selected placement, adoption or backfill; unrelated profile changes
 remain irrelevant.
 
+Every usage-based swap also passes the
+[freshness gate](#rotate-reading-freshness-and-swap-back-damping) under the
+lock, using the current clock and ledger, even when none of the snapshot
+dependencies changed. Unchanged identity and eligibility do not prove that
+usage evidence is still fresh. This check uses `Reread::Never`: it makes
+stale targets unknown and decides again on the retained readings. Any
+replacement target must pass the same freshness, identity and eligibility
+checks. No external usage read runs under the lock. The unchanged-state
+path applies this gate before proceeding, as does target-change reconsideration.
+
+When the snapshot is unchanged but the swap target's reading is no longer
+fresh under the lock, for example because it has aged past the age limit
+while the cycle measured, the cycle decides once again from the retained
+readings, with no read, as in steps 1 to 3 below. If that gives the same
+swap, the cycle proceeds. If it gives a swap to a different target that is
+a candidate in the fresh state with its step 3 account, the cycle logs
+`revalidate: target <old> no longer eligible (stale reading); reconsidered`
+and swaps to the new target. Any other result, including a stay or an
+ALERT, ends the cycle with the bare `skip: state changed during measurement`,
+with no labels, since nothing in the snapshot changed.
+
 Exclusion is checked for the target only. The live profile is always
 skipped as `live` before the `exclude` list is read, so adding the live
 profile to `exclude` while a cycle measures has no effect on a swap away
@@ -5414,7 +5435,8 @@ If that evidence is unavailable or conflicting, the operation refuses
 before movement and remains visible on subsequent affected attempts.
 
 When the only changes are to the target's eligibility or identity, the
-cycle reconsiders once:
+cycle reconsiders once. The unchanged-state case above follows the same
+steps:
 
 1. The failed-live-probe count is put back to its value before this cycle,
    so a failed live probe is not counted twice (see
@@ -5437,8 +5459,9 @@ cycle reconsiders once:
    with its step 3 account, the cycle logs
    `revalidate: target <old> no longer eligible (<reason>); reconsidered`,
    where `<reason>` is the old target's bare skip reason, such as
-   `session running`, `gone`, or `account changed` for a
-   `target identity` change, without the `target eligibility: ` text used
+   `session running`, `gone`, `account changed` for a
+   `target identity` change, or `stale reading` for the unchanged-state
+   case, without the `target eligibility: ` text used
    in the skip line. It then swaps to the new target and records the cycle
    from the fresh state and the new decision. Any other result, including
    a stay or an ALERT, ends the cycle with
@@ -5730,10 +5753,19 @@ a stay or an ALERT. It checks only the target the decision chose, after
 | Reading | Reading time |
 |---------|--------------|
 | [Passive](#passive-readings) | Its `observed_at`. |
-| A direct or `claude` read started and finished in this cycle | When this cycle started measuring (`last_cycle.measured_at`). |
-| A re-read by the gate | When the re-read finished. |
+| A direct or `claude` read started and finished in this cycle | Its evidence timestamp when supplied; otherwise when this cycle started measuring (`last_cycle.measured_at`). |
+| A target re-read by the gate | Its evidence timestamp when supplied; otherwise when the re-read finished. |
+| A live re-read | Its evidence timestamp when supplied; otherwise the cycle clock captured before the re-read. |
 | A result collected from a read started in an earlier cycle | None. |
 | `unknown, still running` or failed | None. |
+
+A re-read preserves a supplied `observed_at`, including an older
+timestamp. Completion or collection alone cannot turn old evidence into a
+new observation. Only a re-read without an evidence timestamp receives the
+fallback time in the table. Target and live re-reads retain supplied timestamps.
+The replacement evidence must then
+pass the applicable target or live freshness checks. A failed, unknown,
+still-running or carried result has no usable reading time.
 
 A target's reading is *fresh* when all of these hold:
 
@@ -5741,11 +5773,25 @@ A target's reading is *fresh* when all of these hold:
 - the reading time is no more than 300 seconds before now;
 - the reading time is not earlier than the live login's reading time. Equal
   times count as fresh. When the live probe failed, the live login has no
-  reading time and only the age test applies;
-- when the target has a [`swapped_away`](#swap-back-damping) entry, the
-  reading time is strictly later than that entry.
+  reading time, so this comparison is omitted; the other checks still apply;
+- when the target is the ledger's `previous` login, the reading time is
+  strictly later than `swapped_at`, whether or not that login was exhausted;
+- when the target has a retained [`swapped_away`](#swap-back-damping) entry,
+  the reading time is strictly later than that entry. This applies even
+  when the target is no longer `previous`.
 
 Otherwise the reading is *stale*.
+
+When both recorded swap times apply, the later one is used. A reading from
+the current cycle still has to pass these checks; collecting an older
+cached result in this cycle does not give it a new reading time. These
+checks use the existing ledger and its retained damping entries, not a
+complete history of every login's use.
+
+Freshness and eligibility are separate checks. A fresh exhausted reading
+cannot authorize a swap to that plan login. A fresh reading showing room
+remains subject to the existing margin, hold, plan-room and overflow rules;
+freshness adds no new exhaustion threshold or candidate ordering.
 
 The 300-second limit is fixed; there is no flag or environment variable for
 it. It equals the default of
@@ -5790,22 +5836,26 @@ runs again from the start on the new figures, and the target it chooses
 passes the same gate. A re-read showing the target still has the most room
 lets the swap go ahead.
 
-A cycle makes at most 3 re-reads. A re-read gives the target a reading time
-later than every other reading in the cycle, so a profile read again is
-fresh for the rest of the cycle and is never read a second time. A target
+A cycle makes at most 3 target re-reads. A successful re-read is checked
+against the same freshness requirements. A result still stale, including
+one not strictly after the applicable swap time, becomes unknown; the old
+figures are not restored. Each target is read at most once. A target
 that is stale once 3 re-reads have been made is treated as unknown, with
 `reread: <name> limit reached; treated as unknown`, and the decision runs
 once more.
 
-All re-reads of one cycle share one time limit: a single
-[probe deadline](#probe-deadline), 120 seconds by default. The re-reads run
-one after another, and each gets only the time the earlier ones left, not a
-deadline of its own. A target chosen once the limit is spent is not read: it
+All target re-reads of one cycle share one time limit: a single
+[probe deadline](#probe-deadline), 120 seconds by default. The target re-reads
+run one after another, and each gets only the time the earlier targets left.
+A target chosen once the limit is spent is not read: it
 is treated as unknown, with
 `reread: <name> time limit reached; treated as unknown`, and the decision
-runs once more. So a slow usage endpoint delays a swap by at most one probe
-deadline after the measurement, however many re-reads the cycle needs; with
-`--interval 120` and the default deadline, that is about one interval.
+runs once more. The optional [live re-read](#stale-live-reading) runs before
+the target gate and has a separate budget of one probe deadline; it uses
+neither the target budget nor the three-target-read allowance. Re-reads can
+therefore add up to two probe deadlines after measurement: one for the live
+login and one shared by all targets. With `--interval 120` and the default
+deadline, that is about two intervals, excluding other cycle work.
 
 Each candidate is read again at most once and made unknown at most once, so
 for `n` candidates the decision runs at most `2n` more times. The decision
@@ -5829,19 +5879,37 @@ candidate, which is gated in turn, or to a stay or an ALERT under the
 re-read, by the limit or by the time limit counts as failed, in `F`, in the
 `(candidates: <F> failed, <E> exhausted)` suffix of the
 [no-capacity ALERT](#rotate-log). A failed live probe is counted once per
-cycle however many times the decision runs.
+cycle however many times the decision runs. A successful re-read that
+remains stale is also replaced with unknown evidence before deciding again;
+it cannot leave the rejected figures selectable.
 
 `--dry-run` makes the same re-reads, since they write no rotate state, and
 prints their `reread:` lines and any
 `damp: <name> swapped away exhausted; no later reading shows room` line. It
 never prints `damp: <name> later reading shows room; swap-back allowed`,
 because that line is written when the ledger is updated, and it never
-changes `swapped_away` or any other part of the ledger. Like every direct
-read, a re-read may refresh a login's OAuth token when it is close to
-expiry, and Claude saves that token under its own `.oauth_refresh.lock`; a
-dry run did this before re-reads existed, and it writes nothing else.
+changes `swapped_away` or any other part of the ledger. Dry runs use direct
+reads only, never refresh tokens and never start `claude`. Outside a dry
+run, a stored target's direct re-read may refresh its token under the
+existing [token-refresh rules](#token-refresh). A live usage re-read never
+refreshes a token.
 [Usage revalidation](#rotate-revalidation) under the lock never measures
-usage: a stale target there counts as unknown.
+usage. A stale target there counts as unknown. The
+[unchanged-state check](#rotate-revalidation) applies the target-change
+gate to every usage-based swap, using the current clock and ledger. Any
+replacement target must pass the same freshness, identity and eligibility
+checks without an external usage re-read under the lock.
+
+For example, live `work` reaches 100% session use and the rotator swaps
+from `work` to `spare`, which reads 90%. On a later cycle the stored
+reading for `work` is `s=0%,w=0%`, taken before the swap. That reading
+cannot authorize a swap back to `work`: it is not strictly later than
+`swapped_at`, so the gate reads `work` again first. If the re-read reports
+exhaustion, `work` is not eligible. If it fails or is still stale, `work`
+is unknown for this cycle and is not chosen. Only a reading taken after
+the swap away can make `work` a target again, under the existing decision
+rules. A different target that the decision chooses passes the same gate,
+within the same limits.
 
 For example, live `ryan-ryansweet`
 is past `--week-at`, and `ggrant` has a stored reading from before it was
@@ -5940,9 +6008,19 @@ it holds no lock.
 `rotate watch` keeps, in memory, a short series of the live login's
 readings: up to 4 points, each a reading time and a session figure. A point
 is added only when its reading time is later than the last point's and not
-later than now. The series is cleared when:
+later than now. Accepted evidence is kept separately from the measured
+cache figures used to count frozen cycles:
 
-- the session figure falls (a new session window);
+- the *frozen count* is kept on the measured (cached) figures only, and
+  rises by one on each cycle in which they equal the previous cycle's;
+- while a live re-read has established that the cache is behind, the
+  series takes only the re-read figures. A cached figure below the last
+  point is neither added to the series nor treated as a new session window.
+
+The series is cleared when:
+
+- a newer accepted reading establishes a lower session figure (a new
+  session window); an older cache figure cannot establish that reset;
 - a different login becomes live, or a swap completes;
 - the live login cannot be identified.
 
@@ -5951,7 +6029,7 @@ starts it empty.
 
 ##### Stale live reading
 
-The live reading is *stale* when either holds:
+The live reading is *stale* when any of these holds:
 
 - **Frozen.** Its session and week figures are the same as on the previous
   two cycles for the same live login, with no swap in between, and its
@@ -5960,21 +6038,58 @@ The live reading is *stale* when either holds:
   use in its window reads `0` truthfully.
 - **Old.** Its [reading time](#reading-time) is more than one `--interval`
   before now.
+- **Lagging cache.** A live re-read has established that
+  the cache is behind, and the cached observation is older than the accepted direct
+  evidence. Changing cached percentages or resetting the frozen count
+  does not make that observation current.
 
-A stale live reading is read once more, directly, in the same way as a
+A stale live reading is read once more in the same way as a
 [re-read](#re-reads) of a target: by the [probe method](#probe-method),
-passive readings off, within the existing
-[probe deadline](#probe-deadline). The log gets:
+passive readings off, within its own
+[probe deadline](#probe-deadline), separate from the target gate's shared
+deadline. Under `auto` or `text`, this uses the
+configured `claude` fallback, without a direct read. The log gets:
 
 ```
 2026-11-09T14:12:05Z stale live reading; re-read
 ```
 
-The decision is then made on the new figures, with the reading time set to
-the cycle's clock. A re-read that returns the same figures is taken as
-true, and the frozen count starts again from `0`. A cycle makes at most
-one live re-read. None is made once `rotate stop` has arrived, or when the
-reading is moving and recent. A reading time later than now counts as old.
+The direct live re-read loads credentials from the supplied home's
+`.claude` directory, even when the named profile's stored credentials are
+different or absent. It never reads that stored copy as a substitute and
+never refreshes a token or changes credential bytes. The separate
+[expired-live-login prelude](#an-expired-live-login) retains its existing
+behavior. Target re-reads continue to use stored-profile credentials.
+
+The decision is then made on the new figures, with the reading time given
+by the [reading-time rules](#reading-time). A re-read that confirms the
+measured figures restarts the frozen count from `0` and clears the lag. A
+failed re-read also restarts the frozen count from `0`. A disagreeing
+re-read marks the cache as behind and leaves the frozen count running, so
+the distinction between the cache baseline and accepted evidence is kept:
+
+| Re-read result | Frozen count | Cache behind | Series |
+|----------------|--------------|--------------|--------|
+| Agrees with the cached figures | Restarts from `0` | Cleared | Takes the re-read figure (equal to the cached one) |
+| Disagrees | Kept; rises on the next identical cycle | Set | Takes the re-read figure |
+| Fails | Restarts from `0` | Unchanged | Unchanged (no point added) |
+
+The count saturates at its maximum value rather than wrapping, so a cache
+frozen for a very long run cannot return to a count below the frozen limit.
+
+Once lag is established, a cached observation must have a usable reading
+time, no later than now and no more than one interval old, to clear it.
+Its time must be at least that of the latest accepted live evidence, and
+its session figure must have caught up to that evidence. A lower session
+figure can instead establish a new session window only with a strictly
+later explicit observation timestamp. That reset clears the old series. An older observation
+cannot clear lag, overwrite accepted evidence or establish a reset, even
+when its percentages change or equal the accepted figures.
+
+A cycle makes at most one live re-read, separately from the target gate's
+three-read limit. None is made once `rotate stop` has arrived, or when the
+reading is current and neither frozen nor lagging. A reading time later
+than now counts as old.
 
 When the re-read fails, or its reading is itself more than one interval
 old or later than now, the log gets
@@ -5982,6 +6097,33 @@ old or later than now, the log gets
 line, and the rules in
 [Failed or stale reading near the threshold](#failed-or-stale-reading-near-the-threshold)
 apply.
+
+Failure does not make a known lagging cache trustworthy again. The accepted
+history remains available for the near-threshold rule, and the next cycle
+retries while the cache remains behind. A successful later re-read replaces
+the failed attempt with current evidence.
+
+Under the recovery rule, a cache can remain at 63% while successive
+live re-reads return 65%, 68% and 71%. Each successful re-read supplies that cycle's live
+evidence while the login remains live. The cached 63% cannot replace 65%
+or 68%, including after a failed re-read; an older cache moving to 64%
+does not prove recovery either. Projection can trigger a swap before 71%;
+otherwise 71% reaches `--session-at 70`. A login change clears this series
+and lag tracking, so the new login inherits neither.
+
+Cycle by cycle, with `--session-at 70` and the cache frozen at 63%:
+
+| Cycle | Cached session | Frozen count | Re-read | Cache behind | Decision input |
+|-------|----------------|--------------|---------|--------------|----------------|
+| 1 | 63% | 0 | none | no | 63% |
+| 2 | 63% | 1 | none | no | 63% |
+| 3 | 63% | 2 (frozen) | 65% | yes | 65% |
+| 4 | 63% | 3 | 68% | yes | 68% |
+| 5 | 63% | 4 | 71% | yes | 71%: swap, `reason=threshold` |
+
+On cycles 3 to 5 the series never shortens, the decision never uses the
+cached 63%, and by cycle 4 the rate is positive. Each of those cycles
+writes one `stale live reading; re-read` line, three in all.
 
 ##### Projected swap
 
@@ -6036,11 +6178,11 @@ just after a swap is damped as usual.
 
 ##### Example: a login rising 10 points a cycle
 
-With `--interval 120 --session-at 70 --margin 5`, live `kkane` reads one
+With `--interval 120 --session-at 70 --margin 5`, live `work` reads one
 point every two minutes:
 
-| Cycle | `kkane` session | Points used | Projected | Outcome |
-|-------|-----------------|-------------|-----------|---------|
+| Cycle | `work` session | Points used | Projected | Outcome |
+|-------|----------------|-------------|-----------|---------|
 | 1 | 22% | 22 | none | Stay |
 | 2 | 32% | 22, 32 | 42.0 | Stay |
 | 3 | 42% | 22, 32, 42 | 52.0 | Stay |
@@ -6048,14 +6190,14 @@ point every two minutes:
 | 5 | 63% | 32, 42, 50, 63 | 73.3 | Swap, `reason=projected` |
 
 ```
-2026-11-09T14:10:05Z cycle live=kkane kkane:s=63%,w=41% llowe:s=0%,w=30%
-2026-11-09T14:10:06Z swap kkane->llowe live s=63% w=41% target s=0% w=30% reason=projected
+2026-11-09T14:10:05Z cycle live=work work:s=63%,w=41% spare:s=0%,w=30%
+2026-11-09T14:10:06Z swap work->spare live s=63% w=41% target s=0% w=30% reason=projected
 ```
 
-Without the projection the rotator would stay at 63% and find `kkane` at its
+Without the projection the rotator would stay at 63% and find `work` at its
 limit on the next cycle. With no candidate that meets the margin, cycle 5
-writes `ALERT: no profile has capacity live=kkane s=63% w=41%` instead. If
-`kkane` then reads `s=63%,w=41%` on two more cycles, the third identical
+writes `ALERT: no profile has capacity live=work s=63% w=41%` instead. If
+`work` then reads `s=63%,w=41%` on two more cycles, the third identical
 reading is re-read with `stale live reading; re-read`.
 
 A login rising slowly, from 20% to 22% in one interval, projects to 24% and
@@ -6068,8 +6210,18 @@ start with an empty series and run one cycle, so neither ever sees a frozen
 reading or makes a projection. Only the old-reading rule applies. Neither
 takes `--interval`, so the limit is `AMPLIHACK_ROTATE_INTERVAL` when it is
 set, and 600 seconds otherwise.
-`--dry-run` makes the live re-read as it makes target re-reads, writing no
-rotate state.
+`--dry-run` makes the live re-read as it makes target re-reads: direct only,
+without token refresh, `claude` fallback or rotate-state writes.
+
+The one-shot command, `--dry-run` and `rotate watch` (including a watch
+started with `start`) build their cycle with the same two re-read paths:
+the live re-read, which reads the home's `.claude` directory with token
+refresh off, and the target re-read described in [Re-reads](#re-reads).
+Both build their reader through the cycle's own measurement settings, so a
+dry run stays read-only and direct-only after the re-read paths are added,
+and no mode has a second way to read usage. These
+freshness and projection rules need no additional configuration or public
+API; they use the existing interval, thresholds, margin and probe settings.
 
 #### Rotate plan-room swap
 
@@ -8050,10 +8202,10 @@ run and prints their `reread:` lines; see
 | `stay: live probe failed (<k>/3)` | The live probe failed for the `k`th cycle in a row; no swap yet. |
 | `stay: live probe failed; held after last swap (<N>s left)` | The live probe has failed three or more times in a row, but the last swap was less than `--hold` seconds ago. |
 | `reread: <name> reading stale s=<n>% w=<n>%; fresh s=<n>% w=<n>%` | The chosen swap target's reading failed the [freshness gate](#rotate-reading-freshness-and-swap-back-damping) and was read again by the [probe method](#probe-method), with passive readings off. The first figures are those the decision used, the second those of the new read, formatted as in the `swap` line (`w=?` when no weekly window was read). The decision was then made again on the new figures. |
-| `stale live reading; re-read` | The live login's reading was [frozen or old](#stale-live-reading) and was read again directly, with passive readings off. Written at most once per cycle, before the decision. The line holds no name or figures. |
-| `reread: <name> failed; treated as unknown` | The re-read timed out or failed. `<name>` is unknown for this cycle: not chosen, not recorded as exhausted, and counted in `F` of the no-capacity ALERT's suffix. After a [`stale live reading; re-read`](#stale-live-reading) line, `<name>` is the live login: its re-read failed or was still stale, and the cycle is decided by the [near-threshold rule](#failed-or-stale-reading-near-the-threshold). |
-| `reread: <name> limit reached; treated as unknown` | The chosen target was stale, but this cycle had already made 3 re-reads. `<name>` is unknown for this cycle. |
-| `reread: <name> time limit reached; treated as unknown` | The chosen target was stale, but this cycle's re-reads had already used their shared time limit of one [probe deadline](#probe-deadline). `<name>` is not read and is unknown for this cycle. |
+| `stale live reading; re-read` | The live login's reading was [frozen, old or lagging](#stale-live-reading) and was read again by the configured probe method, with passive readings off. A direct read uses the supplied home's live credentials and never refreshes them. Written at most once per cycle, before the decision. The line holds no name or figures. |
+| `reread: <name> failed; treated as unknown` | The re-read timed out or failed, or the re-read returned a reading that is itself still stale. `<name>` is unknown for this cycle: not chosen, not recorded as exhausted, and counted in `F` of the no-capacity ALERT's suffix. After a [`stale live reading; re-read`](#stale-live-reading) line, `<name>` is the live login: its re-read failed or was still stale, and the cycle is decided by the [near-threshold rule](#failed-or-stale-reading-near-the-threshold). |
+| `reread: <name> limit reached; treated as unknown` | The chosen target was stale, but this cycle had already made 3 target re-reads. The separate live re-read does not count toward this limit. `<name>` is unknown for this cycle. |
+| `reread: <name> time limit reached; treated as unknown` | The chosen target was stale, but this cycle's target re-reads had already used their shared time limit of one [probe deadline](#probe-deadline). The live re-read has a separate budget. `<name>` is not read and is unknown for this cycle. |
 | `damp: <name> swapped away exhausted; no later reading shows room` | `<name>` is in the ledger's `swapped_away`, and its re-read shows it still at or above `--session-at` or `--week-at`, or exhausted. It stays damped. See [Swap-back damping](#swap-back-damping). |
 | `damp: <name> later reading shows room; swap-back allowed` | A reading of `<name>` taken after the rotator swapped away from it shows room, so its `swapped_away` entry was removed. Written in the [record step](#rotate-cycle), after the cycle's `swap`, stay or ALERT line, and never by `--dry-run`. |
 | `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` / `ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)` | A threshold is reached and no candidate meets the margin. The suffix is added only when `F + E > 0`: `F` candidates had a failed probe and `E` were exhausted, whatever figures each exhausted candidate read. When every candidate failed, the probes are at fault rather than the accounts. The suffix holds no profile names, and the ALERT key stays `no-capacity`, so a change in the counts does not repeat the ALERT. `--dry-run` prints it as `would alert: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`, without the `ALERT: ` prefix, and with the same rule for the suffix. |
@@ -8081,8 +8233,8 @@ run and prints their `reread:` lines; see
 | `ALERT: auto-switch recovery is inconsistent; no swap` | Auto-switch state needs `auto-switch repair`. |
 | `recovery: rolled back an interrupted swap <from>-><to>` / `recovery: finished an interrupted swap <from>-><to>` | Recovery acted. |
 | `skip: state lock busy` / `skip: <name> (<reason>)` / `skip: cannot see running sessions; no candidates` | The cycle or a candidate was skipped. |
-| `skip: state changed during measurement (<labels>)` | Step 6 found a change that affects the decision; see [Rotate revalidation](#rotate-revalidation). `<labels>` lists one or more of `journal`, `live`, `pin`, `overflow`, `target eligibility: <reason>` and `target identity`, separated by `, `. The labels are fixed text and [skip reasons](#rotate-candidates) only. Older readers that match the prefix `skip: state changed during measurement` still match. |
-| `revalidate: target <name> no longer eligible (<reason>); reconsidered` | The swap target became ineligible, or its account changed, while the cycle measured, and the cycle decided again under the lock. `<reason>` is the target's bare [skip reason](#rotate-candidates), such as `session running`, `gone`, or `account changed`; it never begins with `target eligibility: `. The next line is the new `swap` line, or `ALERT: swap refused: <reason>` when a [pre-swap check](#rotate-swap) refuses the new target. |
+| `skip: state changed during measurement (<labels>)` | Step 6 found a change that affects the decision; see [Rotate revalidation](#rotate-revalidation). `<labels>` lists one or more of `journal`, `live`, `pin`, `overflow`, `target eligibility: <reason>` and `target identity`, separated by `, `. The labels are fixed text and [skip reasons](#rotate-candidates) only. Older readers that match the prefix `skip: state changed during measurement` still match. The bare form, with no labels, is also written when nothing in the snapshot changed but the target's reading went stale under the lock and no fresh target remains. |
+| `revalidate: target <name> no longer eligible (<reason>); reconsidered` | The swap target became ineligible, or its account changed, while the cycle measured, and the cycle decided again under the lock. `<reason>` is the target's bare [skip reason](#rotate-candidates), such as `session running`, `gone`, or `account changed`, or `stale reading` when the snapshot is unchanged and the target's reading went stale under the lock; it never begins with `target eligibility: `. The next line is the new `swap` line, or `ALERT: swap refused: <reason>` when a [pre-swap check](#rotate-swap) refuses the new target. |
 | `revalidate: ~/.claude.json held no account; read again` | Retained diagnostic wording for the bounded retry of trusted credential identity. Session JSON supplies no identity evidence. |
 | `skip: the external rotator is running` / `skip: <error>` | `watch` only: the cycle failed with that error and the rotator carries on. |
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |

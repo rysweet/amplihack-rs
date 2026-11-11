@@ -8,7 +8,10 @@
 //!
 //! - reads the live login again when its reading is frozen (the same session
 //!   and week figures on [`FROZEN_CYCLES`] cycles after the first, with a
-//!   session above 0) or older than one `--interval` (R1, R1b);
+//!   session above 0), older than one `--interval` (R1, R1b), or below the
+//!   last re-read after a re-read that disagreed with it (the cached source
+//!   is behind); the re-read reads `~/.claude` with no token refresh
+//!   (`Ctx::reread_live`);
 //! - projects the session use one interval ahead from a short in-memory
 //!   [`Series`], and decides on the projection when it reaches
 //!   `--session-at` (R2);
@@ -54,10 +57,19 @@ pub struct Point {
 pub struct Series {
     name: Option<ProfileName>,
     points: VecDeque<Point>,
-    /// The last cycle's session and week figures, for the frozen count.
+    /// The last cycle's measured session and week figures, for the frozen
+    /// count. Always the cached source's own figures, never a re-read's.
     prev: Option<(f64, f64)>,
     unchanged: u32,
+    /// The last re-read disagreed with the measured figures: the cached
+    /// source is behind, so a measured figure below the last point is stale,
+    /// not a new session window.
+    behind: bool,
 }
+
+#[cfg(test)]
+#[path = "tests_live_fresh_access.rs"]
+mod access;
 
 impl Series {
     /// Starts afresh for `name` when another login owned the series.
@@ -94,11 +106,6 @@ impl Series {
         *self = Self::default();
     }
 
-    #[cfg(test)]
-    pub fn len(&self) -> usize {
-        self.points.len()
-    }
-
     /// Session points per second from the first point to the last.
     pub fn rate(&self) -> Option<f64> {
         let (first, last) = (self.points.front()?, self.points.back()?);
@@ -128,13 +135,46 @@ impl Series {
         self.unchanged
     }
 
-    /// After a live re-read: its figures, when it read any, and a frozen
-    /// count from 0.
-    fn restart_count(&mut self, figures: Option<(f64, f64)>) {
-        if figures.is_some() {
-            self.prev = figures;
+    /// After a live re-read that read `figures` (`None` when it failed or
+    /// read no figures) of a measurement that read `measured`. A re-read that
+    /// agrees restarts the frozen count: the source is idle, not frozen. One
+    /// that disagrees marks the source as behind and keeps the count, so the
+    /// next identical measurement is read again. A failed one restarts the
+    /// count and leaves the mark as it was. The count stays on the measured
+    /// figures either way.
+    fn after_reread(&mut self, measured: (f64, f64), figures: Option<(f64, f64)>) {
+        match figures {
+            Some(f) if f == measured => {
+                self.unchanged = 0;
+                self.behind = false;
+            }
+            Some(_) => self.behind = true,
+            None => self.unchanged = 0,
         }
-        self.unchanged = 0;
+    }
+
+    /// Lag ends only when current evidence catches up, or an explicitly
+    /// newer observation establishes a session reset. An implicit cycle
+    /// timestamp alone cannot turn a lower cached figure into a reset.
+    fn still_behind(
+        &mut self,
+        name: &ProfileName,
+        probe: &Probed,
+        measured_at: i64,
+        t: i64,
+        interval: i64,
+    ) -> bool {
+        if self.behind
+            && let Some(last) = self.last_for(name)
+            && let Reading::Measured { session, .. } = probe.reading
+            && let Some(at) = read_at(probe, measured_at)
+            && !stale_at(at, t, interval)
+            && at >= last.at
+            && (session >= last.session || probe.observed_at.is_some_and(|a| a > last.at))
+        {
+            self.behind = false;
+        }
+        self.behind
     }
 }
 
@@ -240,18 +280,24 @@ pub(in crate::commands::profile::rotate) fn step(
         let unchanged = ctx.live_series.seen(&name, session, week);
         let frozen = session > 0.0 && unchanged >= FROZEN_CYCLES;
         let old = read_at(&probe, m.measured_at).is_none_or(|a| stale_at(a, t, interval));
-        if frozen || old {
+        let behind = ctx
+            .live_series
+            .still_behind(&name, &probe, m.measured_at, t, interval);
+        let regressed = read_at(&probe, m.measured_at)
+            .zip(ctx.live_series.last_for(&name))
+            .is_some_and(|(at, last)| at < last.at);
+        if frozen || old || behind || regressed {
             match reread_live(ctx, &name, t, interval, &mut m.fresh_lines) {
                 Some(p) => {
                     let figures = match p.reading {
                         Reading::Measured { session, week } => Some((session, week)),
                         _ => None,
                     };
-                    ctx.live_series.restart_count(figures);
+                    ctx.live_series.after_reread((session, week), figures);
                     live = p;
                 }
                 None => {
-                    ctx.live_series.restart_count(None);
+                    ctx.live_series.after_reread((session, week), None);
                     still_stale = true;
                 }
             }
@@ -311,7 +357,9 @@ fn stale_at(a: i64, t: i64, interval: i64) -> bool {
     a < t.saturating_sub(interval) || a > t
 }
 
-/// One direct re-read of the live login `name`, after the
+/// One direct re-read of the live login `name` in `~/.claude`, by
+/// `ctx.reread_live` (never the profile directory's copy, and never a token
+/// refresh), after the
 /// [`fresh_msg::STALE_LIVE`] line, timed at `t`. `None` when no read may be
 /// made (no hook, or `rotate stop`), or, after a [`fresh_msg::failed`] line,
 /// when the read failed or is still stale at `t`.
@@ -322,19 +370,25 @@ fn reread_live(
     interval: i64,
     lines: &mut Vec<String>,
 ) -> Option<Probed> {
-    let reread = ctx.reread?;
+    let reread = ctx.reread_live?;
     if ctx.stopping() {
         return None;
     }
     lines.push(fresh_msg::STALE_LIVE.to_string());
     let mut p = reread(ctx, name, measure::timeout_quiet());
-    let failed = p.reading == Reading::Failed || p.unknown || p.still_running;
-    if failed || p.observed_at.is_some_and(|a| stale_at(a, t, interval)) {
+    let failed = p.reading == Reading::Failed || p.unknown || p.still_running || p.carried;
+    // The re-read has just run, so a missing observation time means now.
+    let at = p.observed_at.unwrap_or(t);
+    let older = ctx
+        .live_series
+        .last_for(name)
+        .is_some_and(|last| at < last.at);
+    if failed || stale_at(at, t, interval) || older {
         lines.push(fresh_msg::failed(name));
         return None;
     }
     // A re-read is a direct read made in this cycle.
-    p.observed_at = Some(t);
+    p.observed_at = Some(at);
     p.carried = false;
     p.passive = false;
     Some(p)
