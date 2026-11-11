@@ -598,14 +598,15 @@ pub fn swap_check(
     };
     release_refresh_lock(state, owner.as_str(), Some(ino));
     result?;
-    if let Some(warning) = amplihack_utils::organisation_affinity::Affinity::between(
+    super::affinity::record_swap(
+        state,
+        owner.as_str(),
+        &current,
+        target.as_str(),
         source_org.as_deref(),
         target_org.as_deref(),
-    )
-    .warning()
-    {
-        eprintln!("auto-switch: {warning}");
-    }
+        now,
+    );
     let why = if !leaving_overflow {
         "reached the auto-switch threshold"
     } else if !candidate::overflow_usable(&current, &overflow.blocked) {

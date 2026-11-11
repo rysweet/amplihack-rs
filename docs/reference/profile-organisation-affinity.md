@@ -124,14 +124,28 @@ The existing operator commands remain the entry points:
 | `amplihack profile rotate --dry-run` | Previews selection under the affinity policy without moving a login or writing a swap record |
 | `amplihack profile rotate` | Applies the policy, writes the warning to the rotate log and records the organisation outcome in the swap record |
 | `amplihack profile rotate status` | Prints the last swap's warning (`last swap: ...`) when that swap was a crossing or unresolved |
-| `amplihack profile auto-switch` | Applies the policy and prints the warning on its stderr when a swap it makes is a crossing or unresolved |
+| `amplihack profile auto-switch status` | Prints the last auto-switch crossing (`last crossing: ...`), with both profiles, both organisations and the warning |
+
+Auto-switch makes its swaps inside the status-line wrapper that Claude Code
+runs after each status-line update, not in any `profile auto-switch`
+subcommand. When such a swap is a crossing or unresolved, the wrapper:
+
+- appends `auto-switch in <dir> from <profile> to <profile>: <warning>` to
+  the rotate log;
+- writes `<profile-root>/.auto-switch.d/affinity/last-crossing.json` with
+  `at`, `dir`, `from`, `to`, `from_org`, `to_org` and `affinity`, replacing
+  any earlier record;
+- writes the same line on its own stderr. Claude Code does not display a
+  status-line command's stderr, so this copy is for manual runs only.
+
+A swap within one organisation writes none of these.
 
 For setup and command examples, see [Rotate Claude Logins](../howto/claude-profile-rotation.md)
 and [Switch Accounts Automatically](../howto/claude-profiles.md#switch-accounts-automatically).
 
 ## Warnings
 
-Rotate logs, `rotate status` and session delivery use the same text:
+Rotate logs, `rotate status`, `auto-switch status` and session delivery use the same text:
 
 | Outcome | Warning text |
 | --- | --- |
@@ -139,8 +153,9 @@ Rotate logs, `rotate status` and session delivery use the same text:
 | Unresolved | Organisation affinity is unresolved: earlier thinking may become unavailable on the next turn. The visible conversation remains and the session can continue. |
 | Same | None |
 
-Warnings contain no credentials, tokens, organisation IDs or conversation
-content.
+The warning text contains no credentials, tokens, organisation IDs or
+conversation content. The swap record and the `last crossing` line of
+`auto-switch status` show organisation IDs; neither reaches a session.
 
 ## Swap record
 
@@ -173,9 +188,10 @@ it, and from nothing else:
 
 A stop that does not end in a resume (rotator down, auto-switch off, no swap
 with room, the session moved on) gets no warning. A session that keeps
-running through a swap is not told by the hook; the swap is in the rotate log
-and `rotate status`, and Claude Code shows its own notice when it cannot use
-thinking from another organisation.
+running through a swap is not told by the hook; the swap is in the rotate log,
+`rotate status` and, for an auto-switch swap, `auto-switch status`, and
+Claude Code shows its own notice when it cannot use thinking from another
+organisation.
 
 The hook keeps no per-session warning state. Each call decides from the swap
 record alone, so delivery does not depend on which process is the hook's

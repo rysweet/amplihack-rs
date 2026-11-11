@@ -3,12 +3,17 @@
 //! ([`super::rerun`]) restrict their candidates. The rotator applies the
 //! same pure policy (`amplihack_utils::organisation_affinity::pools`) in
 //! `rotate/observe.rs`, on its trusted identity reads.
+//!
+//! Reporting: [`record_swap`] records a swap auto-switch made across or into
+//! an unknown organisation in the rotate log and in
+//! `.auto-switch.d/affinity/last-crossing.json`; [`status_line`] prints it
+//! in `auto-switch status`.
 use super::candidate::{self, Pool};
 use super::overflow_inputs::OverflowInputs;
 use super::state::{Ledger, State};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::organisation;
-use amplihack_utils::organisation_affinity::{Candidate, pools};
+use amplihack_utils::organisation_affinity::{Affinity, Candidate, pools, valid_id};
 
 /// The pools one auto-switch decision may select from, and the
 /// organisations it read to work them out.
@@ -92,4 +97,75 @@ pub fn restrict(
         source_org,
         orgs,
     }
+}
+
+/// State subdirectory and name of the last-crossing record.
+const RECORD: (&str, &str) = ("affinity", "last-crossing");
+
+/// Records a swap auto-switch has just made, when it is not within one
+/// organisation: the warning goes to the rotate log, to the status-line
+/// command's stderr (which Claude Code does not show) and into
+/// `.auto-switch.d/affinity/last-crossing.json`, which `auto-switch status`
+/// prints. Swaps within one organisation record nothing. Nothing here can
+/// stop or undo the swap; a failed write is reported on stderr.
+pub fn record_swap(
+    state: &State,
+    dir: &str,
+    from: &str,
+    to: &str,
+    from_org: Option<&str>,
+    to_org: Option<&str>,
+    at: i64,
+) {
+    let affinity = Affinity::between(from_org, to_org);
+    let Some(warning) = affinity.warning() else {
+        return;
+    };
+    let line = format!("auto-switch in {dir} from {from} to {to}: {warning}");
+    eprintln!("amplihack: {line}");
+    crate::commands::profile::rotate::append_to_log(&state.root, &line);
+    let valid = |o: Option<&str>| o.filter(|v| valid_id(v)).map(str::to_owned);
+    let record = serde_json::json!({
+        "at": at,
+        "dir": dir,
+        "from": from,
+        "to": to,
+        "from_org": valid(from_org),
+        "to_org": valid(to_org),
+        "affinity": affinity,
+    });
+    if let Err(e) = state.write_sub_json(RECORD.0, RECORD.1, &record) {
+        eprintln!("warning: auto-switch could not record the organisation crossing: {e}");
+    }
+}
+
+/// `auto-switch status`: the last swap auto-switch made across or into an
+/// unknown organisation, from [`record_swap`]'s record. `None` when there
+/// is none; a damaged record is named, not hidden.
+pub fn status_line(state: &State, ago: impl Fn(i64) -> String) -> Option<String> {
+    let v = match state.read_sub_json(RECORD.0, RECORD.1) {
+        Ok(Some(v)) => v,
+        Ok(None) => return None,
+        Err(e) => return Some(format!("last crossing: unreadable ({e})")),
+    };
+    let text = |k: &str| v.get(k).and_then(|x| x.as_str());
+    let affinity: Option<Affinity> = v
+        .get("affinity")
+        .and_then(|a| serde_json::from_value(a.clone()).ok());
+    let (Some(dir), Some(from), Some(to), Some(warning)) = (
+        text("dir"),
+        text("from"),
+        text("to"),
+        affinity.and_then(Affinity::warning),
+    ) else {
+        return Some("last crossing: unreadable (missing fields)".into());
+    };
+    let org = |k: &str| text(k).unwrap_or("unknown").to_string();
+    let when = v.get("at").and_then(|a| a.as_i64()).map(ago);
+    Some(format!(
+        "last crossing: in {dir} from {from} (organisation {}) to {to} (organisation {}){}: {warning}",
+        org("from_org"),
+        org("to_org"),
+        when.map(|w| format!(", {w}")).unwrap_or_default(),
+    ))
 }
