@@ -875,8 +875,16 @@ fn fixture_environment() -> (
     crate::test_support::EnvGuard,
     crate::test_support::IsolatedWorkRoot,
 ) {
-    let saved = crate::test_support::EnvGuard::capture(&["AMPLIHACK_AGENT_BINARY", "HOME"]);
+    let mut keys = vec!["AMPLIHACK_AGENT_BINARY", "HOME"];
+    keys.extend(crate::test_support::OUTER_RUN_IDENTITY_VARS);
+    let saved = crate::test_support::EnvGuard::capture(&keys);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    // Issue #1984: inside a recipe-run session the outer run's identity and
+    // depth would reach the runner, which then joins or is refused by the outer
+    // tree. Tests that need a value set it after this fixture.
+    for key in crate::test_support::OUTER_RUN_IDENTITY_VARS {
+        unsafe { std::env::remove_var(key) };
+    }
     (saved, crate::test_support::IsolatedWorkRoot::new())
 }

@@ -2943,7 +2943,7 @@ SENTINEL_1607="DECOY-1607-SENTINEL"
 # and exits 0, so a step that sourced it ends "successfully": only the marker
 # shows which tools directory was used, whatever the step prints.
 R1607_MARK="${WORK_PHYS}/1607-decoy.ran"
-for t in "${AUTODRIVE_TOOLS[@]}" git-identity.sh; do
+for t in "${AUTODRIVE_TOOLS[@]}" git-identity.sh git-repo-env.sh; do
   cat > "${DECOY_1607}/${t}" <<EOF
 printf '%s\n' "${t}" >> "${R1607_MARK}"
 printf '%s\n' "${SENTINEL_1607}" >&2
@@ -3123,6 +3123,20 @@ if printf '%s' "${STEP02_PROMPT}" | grep -qF '{{merge_ready_files.skill_md}}' \
 else
   fail "MERGEREADY-reads-files" "step-02 does not use {{merge_ready_files.skill_md}} and {{merge_ready_files.template}}"
 fi
+# Issue #2033: step-04's agent runs the repository's tests while it fixes
+# blockers. Each of its shell calls inherits the agent's environment, so the
+# "Running tests or hooks" instruction itself must tell it to clear the
+# repository-selecting and run-identity variables, not only the commit block.
+STEP04_TESTS_LINE="$(awk '
+  index($0, "id: \"step-04-address-blockers\"") { on=1; next }
+  on && /^  - id:/ { exit }
+  on && index($0, "**Running tests or hooks**") { print }' "${ROUND_YAML}")"
+R2033_CLEAR='[ ! -L "{{autodrive_tools_dir}}/git-repo-env.sh" ] && . "{{autodrive_tools_dir}}/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env'
+if [ -n "${STEP04_TESTS_LINE}" ] && printf '%s' "${STEP04_TESTS_LINE}" | grep -qF "${R2033_CLEAR}"; then
+  pass "2033-step04-tests-clear-env" "step-04 tells the agent to load git-repo-env.sh and clear both lists before each test or hook run"
+else
+  fail "2033-step04-tests-clear-env" "step-04's 'Running tests or hooks' instruction does not load git-repo-env.sh and clear both lists"
+fi
 if ! printf '%s' "${STEP02_PROMPT}" | grep -qF 'Skill('; then
   pass "MERGEREADY-no-skill-call" "step-02 contains no Skill( at all"
 else
@@ -3285,7 +3299,7 @@ else
   td_root() { # td_root <dir> [tool to leave out]: a root whose amplifier-bundle/tools copies the round's tools
     mkdir -p "$1/amplifier-bundle/tools"
     for t in autodrive_merge_ready_files.sh autodrive_platform_facts.sh autodrive_round_evidence.sh \
-             autodrive_state.sh autodrive_trust.sh git-identity.sh; do
+             autodrive_state.sh autodrive_trust.sh git-identity.sh git-repo-env.sh; do
       [ "$t" = "${2:-}" ] || cp "${TOOLS}/$t" "$1/amplifier-bundle/tools/"
     done
   }
@@ -3704,7 +3718,9 @@ if [ "$(printf '%s' "${EV_REL_OUT}" | jq -r '.qa_status' 2>/dev/null)" = "PASS" 
 else
   fail "QA-relative-repo-path" "got: ${EV_REL_OUT}"
 fi
-EV_NO_TOOLS="${WORK_PHYS}/ev-no-tools"; mkdir -p "${EV_NO_TOOLS}/home" "${EV_NO_TOOLS}/ah"
+EV_NO_TOOLS="${WORK_PHYS}/ev-no-tools"; mkdir -p "${EV_NO_TOOLS}/home" "${EV_NO_TOOLS}/ah/amplifier-bundle/tools"
+# Only the QA tool is missing: the #2033 helper the step loads first is there.
+cp "${REPO_ROOT}/amplifier-bundle/tools/git-repo-env.sh" "${EV_NO_TOOLS}/ah/amplifier-bundle/tools/"
 EV_MISS_OUT="$(env -i HOME="${EV_NO_TOOLS}/home" TMPDIR="${WORK_PHYS}" PATH="${EV_FULL}:/usr/bin:/bin" \
   AMPLIHACK_HOME="${EV_NO_TOOLS}/ah" REPO_PATH="${EV_REPO}" EV_CALLS=/dev/null \
   "${BASH}" -c "${EV_BODY}" 2>"${EV_NO_TOOLS}.err")"; EV_MISS_RC=$?
@@ -4245,7 +4261,7 @@ fi
 # The tool needs autodrive_trust.sh beside it to know which measurements
 # apply; alone, it fails by name and writes no evidence.
 EV_ALONE="${WORK_PHYS}/ev-alone/amplifier-bundle/tools"; mkdir -p "${EV_ALONE}"
-cp "${REPO_ROOT}/amplifier-bundle/tools/autodrive_qa_evidence.sh" "${EV_ALONE}/"
+cp "${REPO_ROOT}/amplifier-bundle/tools/autodrive_qa_evidence.sh" "${REPO_ROOT}/amplifier-bundle/tools/git-repo-env.sh" "${EV_ALONE}/"
 ev_repo Cargo.toml
 rm -f "${EV_REPO}.evidence.json"
 ev_run "${EV_FULL}" AMPLIHACK_HOME="${WORK_PHYS}/ev-alone"

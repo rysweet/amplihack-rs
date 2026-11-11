@@ -171,10 +171,10 @@ fn install_stages_amplifier_bundle_from_local_checkout_not_stale_source() {
                 0o700,
             );
             child_set_var("RECIPE_RUNNER_RS_PATH", &runner);
-            child_set_var("AMPLIHACK_AGENT_BINARY", "claude");
             child_set_var("AMPLIHACK_SKIP_MMDC", "1");
             child_set_var("PATH", format!("{}:/usr/bin:/bin", bin_dir.display()));
             child_set_var("HOME", home.path());
+            child_set_var("AMPLIHACK_AGENT_BINARY", "claude");
             child_remove_var("AMPLIHACK_HOME");
             // Issue #1699: `run_install` refreshes every profile under this
             // root; an inherited value would point at the real profiles.
