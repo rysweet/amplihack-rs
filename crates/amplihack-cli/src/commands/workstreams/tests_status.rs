@@ -21,7 +21,7 @@
 //!   about and gives no runs.
 //! - `snapshot(&StatusInput, &Sources) -> anyhow::Result<Snapshot>`; the
 //!   source runs on a worker thread, and at the deadline the cancel flag is
-//!   set and the snapshot is built at most 1 s later, with the logins
+//!   set and the snapshot is built at most 4 s later, with the logins
 //!   section saying no reading came in time.
 
 use super::bars::Reading;
@@ -833,7 +833,7 @@ fn the_logins_probe_runs_while_github_is_asked() {
 }
 
 #[test]
-fn a_stalled_source_returns_within_the_deadline_plus_one_second() {
+fn a_stalled_source_returns_within_the_deadline_and_bounded_cleanup_grace() {
     let fx = Fx::new();
     let usage = Arc::new(FakeUsage::new(
         json(&[ok_row("a", "subscription")]),
@@ -847,7 +847,12 @@ fn a_stalled_source_returns_within_the_deadline_plus_one_second() {
     let start = Instant::now();
     let snap = snapshot(&input, &src).unwrap();
     let took = start.elapsed();
-    assert!(took < Duration::from_millis(2_500), "took {took:?}");
+    // Probe owners now get time to cancel and reap their separate groups.
+    // An uncooperative source still cannot hold the table indefinitely.
+    assert!(
+        took < input.logins_deadline + super::CANCEL_GRACE + Duration::from_millis(500),
+        "took {took:?}"
+    );
     assert_eq!(
         snap.logins,
         Some(LoginsSection::Refused(

@@ -344,3 +344,134 @@ fn the_command_never_changes_the_log_directory_mode() {
         0o750
     );
 }
+
+#[test]
+fn deadline_cancels_and_reaps_usage_probes_in_later_batches() {
+    let fx = Fx::new();
+    // The first eight probes time out at 2s; the second batch is still
+    // running at the command's 3s deadline.
+    for n in 0..17 {
+        fx.add_profile(&format!("spare-{n:02}"));
+    }
+    let pids = fx.marks.join("usage-pids");
+    fx.stub("claude", &format!(
+        "case \"$1\" in\n --version) echo '2.1.301 (Claude Code)'; exit 0 ;;\nesac\nsleep 30 &\necho \"$$ $!\" >> '{}'\nwait",
+        pids.display(),
+    ));
+    let (out, took) = fx.run(
+        &["workstreams", "status", "--logins-deadline", "3"],
+        &[("AMPLIHACK_SESSION_ID", "me")],
+    );
+    let owners = assert_usage_probes_reaped(&pids);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(owners > 8, "a second batch must have started: {owners}");
+    assert_eq!(owners, 16, "the queued third batch must be skipped");
+    assert!(took < Duration::from_secs(10), "took {took:?}");
+    assert!(
+        stdout(&out).contains("no reading within 3s"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn deadline_cancels_and_reaps_the_sequential_home_login_probe() {
+    let fx = Fx::new();
+    fx.add_profile("spare");
+    // A manual home login differs from the account in the rotate ledger,
+    // so usage probes it after the profile batch has finished.
+    fs::create_dir_all(fx.home.join(".claude")).unwrap();
+    let rotate = fx.profiles.join(".auto-switch.d/rotate");
+    fs::create_dir_all(&rotate).unwrap();
+    for path in [
+        fx.home.join(".claude"),
+        fx.profiles.join(".auto-switch.d"),
+        rotate.clone(),
+    ] {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    for (path, body) in [
+        (
+            fx.home.join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"test-only"}}"#,
+        ),
+        (
+            fx.home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"home-account","emailAddress":"home@example.com"}}"#,
+        ),
+        (
+            rotate.join("ledger.json"),
+            r#"{"version":1,"live":"spare","account":"old-account","since":10}"#,
+        ),
+    ] {
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let pids = fx.marks.join("usage-pids");
+    let order = fx.marks.join("probe-order");
+    fx.stub("claude", &format!(
+        "case \"$1\" in\n --version) echo '2.1.301 (Claude Code)'; exit 0 ;;\nesac\nif [ -n \"${{CLAUDE_CONFIG_DIR:-}}\" ]; then\n echo profile >> '{}'\nelse\n echo home >> '{}'\nfi\nsleep 30 &\necho \"$$ $!\" >> '{}'\nwait",
+        order.display(), order.display(), pids.display(),
+    ));
+    let (out, took) = fx.run(
+        &["workstreams", "status", "--logins-deadline", "3"],
+        &[("AMPLIHACK_SESSION_ID", "me")],
+    );
+    assert_eq!(
+        assert_usage_probes_reaped(&pids),
+        2,
+        "order: {:?}; stdout: {}; stderr: {}",
+        fs::read_to_string(&order),
+        stdout(&out),
+        stderr(&out)
+    );
+    assert_eq!(fs::read_to_string(order).unwrap(), "profile\nhome\n");
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(took < Duration::from_secs(10), "took {took:?}");
+    assert!(
+        stdout(&out).contains("no reading within 3s"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+/// Check direct children were reaped and their descendants stopped before
+/// status returned. Clean up leaked helpers even when the regression fails.
+fn assert_usage_probes_reaped(pids: &Path) -> usize {
+    let started = fs::read_to_string(pids).expect("usage probes ran");
+    let owners: Vec<_> = started
+        .lines()
+        .map(|line| line.split_whitespace().next().unwrap())
+        .collect();
+    // A killed but unreaped supervisor is also a failure: profile usage
+    // must join the workers that reap these direct children before exit.
+    let unreaped: Vec<_> = owners
+        .iter()
+        .copied()
+        .filter(|pid| Path::new(&format!("/proc/{pid}")).exists())
+        .collect();
+    let pids: Vec<_> = started.split_whitespace().collect();
+    let left: Vec<_> = pids
+        .iter()
+        .copied()
+        .filter(|pid| {
+            fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| {
+                s.rsplit(')')
+                    .next()
+                    .is_some_and(|r| !r.trim_start().starts_with('Z'))
+            })
+        })
+        .collect();
+    // Clean up on failure, too, so the regression never leaks test helpers.
+    for pid in &left {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", pid])
+            .status();
+    }
+    assert!(unreaped.is_empty(), "probes not reaped: {unreaped:?}");
+    assert!(
+        left.is_empty(),
+        "probes alive after status returned: {left:?}"
+    );
+    owners.len()
+}

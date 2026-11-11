@@ -48,6 +48,13 @@ pub(crate) enum Reading {
         state: String,
     },
     ApiKey,
+    /// A blocked or failed API-key/overflow login. This takes precedence
+    /// over the normal no-plan-limits label.
+    Unavailable {
+        kind: &'static str,
+        state: String,
+        blocked_until: Option<i64>,
+    },
     /// A credit-backed overflow profile (#1695): its plan numbers do not
     /// limit it, so no bars.
     Overflow,
@@ -156,6 +163,24 @@ pub(crate) fn render_login_lines(rows: &[LoginRow]) -> Vec<String> {
         let rest = match &row.reading {
             Reading::ApiKey => API_KEY_TEXT.to_string(),
             Reading::Overflow => OVERFLOW_TEXT.to_string(),
+            Reading::Unavailable {
+                kind,
+                state,
+                blocked_until,
+            } => {
+                let until = blocked_until.map(|t| {
+                    chrono::DateTime::from_timestamp(t, 0).map_or_else(
+                        || t.to_string(),
+                        |d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+                    )
+                });
+                // Show expiry before a possibly long, untrusted reason,
+                // so line clipping cannot hide when capacity returns.
+                match until {
+                    Some(t) => format!("{kind}, blocked until {t} ({})", sanitize(state)),
+                    None => format!("{kind}, unavailable ({})", sanitize(state)),
+                }
+            }
             Reading::NoReading { state } => format!("no reading ({})", sanitize(state)),
             Reading::Bars {
                 session,

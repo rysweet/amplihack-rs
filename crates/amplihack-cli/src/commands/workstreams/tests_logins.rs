@@ -128,3 +128,81 @@ fn output_that_is_not_a_row_list_gives_fixed_text() {
         assert_eq!(parse(bad).unwrap_err(), UNREADABLE);
     }
 }
+
+#[test]
+fn blocked_logins_show_reasons_and_expiry_instead_of_available_capacity() {
+    let rows = parse(
+        br#"[
+        {"profile":"platform","kind":"api-key","state":"api_key",
+         "api_key_blocked":{"reason":"credit_balance","until":1793300000}},
+        {"profile":"spare","overflow":true,"state":"spend_limit",
+         "overflow_blocked_until":1793300000}
+    ]"#,
+    )
+    .unwrap();
+    let lines = super::bars::render_login_lines(&rows);
+    for (line, reason) in lines[1..].iter().zip(["credit_balance", "spend_limit"]) {
+        assert!(
+            line.contains("blocked until 2026-10-29T18:53:20Z"),
+            "{line}"
+        );
+        assert!(line.contains(reason), "{line}");
+        assert!(!line.contains("no plan limits"), "{line}");
+    }
+}
+
+#[test]
+fn overflow_failures_are_visible_even_with_plan_numbers() {
+    for state in [
+        "timeout",
+        "unparsed",
+        "not_logged_in",
+        "error",
+        "spend_limit",
+    ] {
+        let json = row("spare", "subscription", state, 1.0, 2.0)
+            .replace(r#""overflow": false"#, r#""overflow": true"#);
+        let lines = super::bars::render_login_lines(&parse_rows(&[json]));
+        assert!(
+            lines[1].contains(&format!("overflow, unavailable ({state})")),
+            "{lines:?}"
+        );
+        assert!(!lines[1].contains("no plan limits"));
+    }
+}
+
+#[test]
+fn overflow_ledger_block_is_visible_even_when_the_probe_succeeds() {
+    let rows = parse(
+        br#"[{"profile":"spare","overflow":true,"state":"ok",
+                         "overflow_blocked_until":1793300000}]"#,
+    )
+    .unwrap();
+    let lines = super::bars::render_login_lines(&rows);
+    assert!(lines[1].contains("blocked until"), "{lines:?}");
+    assert!(lines[1].contains("spend limit"), "{lines:?}");
+}
+
+#[test]
+fn block_reasons_are_sanitized_and_cannot_clip_the_expiry() {
+    let json = serde_json::json!([{
+        "profile": "platform", "kind": "api-key", "state": "api_key",
+        "api_key_blocked": {"reason": format!("bad\u{1b}\n{}", "x".repeat(200)), "until": 1793300000}
+    }]);
+    let lines = super::bars::render_login_lines(&parse(json.to_string().as_bytes()).unwrap());
+    assert!(
+        lines[1].contains("blocked until 2026-10-29T18:53:20Z"),
+        "{lines:?}"
+    );
+    assert!(!lines[1].contains('\x1b') && !lines[1].contains('\n'));
+    assert!(lines[1].chars().count() <= super::bars::MAX_WIDTH);
+}
+
+#[test]
+fn overflow_plan_exhaustion_still_allows_paid_credits() {
+    for state in ["session_exhausted", "weekly_exhausted"] {
+        let json = row("spare", "subscription", state, 100.0, 100.0)
+            .replace(r#""overflow": false"#, r#""overflow": true"#);
+        assert_eq!(parse_rows(&[json])[0].reading, Reading::Overflow);
+    }
+}

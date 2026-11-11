@@ -31,11 +31,22 @@ pub(crate) struct UsageRow {
     /// `subscription` or `api-key`.
     #[serde(default)]
     pub kind: String,
+    #[serde(default)]
+    pub api_key_blocked: Option<ApiKeyBlock>,
+    #[serde(default)]
+    pub overflow_blocked_until: Option<i64>,
     pub state: String,
     #[serde(default)]
     pub session: Option<Window>,
     #[serde(default)]
     pub week_all: Option<Window>,
+}
+
+/// An active API-key block from the rotator.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct ApiKeyBlock {
+    pub reason: String,
+    pub until: i64,
 }
 
 /// A usage window as `profile usage --json` prints it.
@@ -65,10 +76,44 @@ pub(crate) fn login_row(row: &UsageRow) -> LoginRow {
 
 fn reading(row: &UsageRow) -> Reading {
     if row.kind == API_KEY_KIND {
-        return Reading::ApiKey;
+        return match &row.api_key_blocked {
+            Some(block) => Reading::Unavailable {
+                kind: "API key",
+                state: block.reason.clone(),
+                blocked_until: Some(block.until),
+            },
+            None if !matches!(row.state.as_str(), "ok" | "api_key") => Reading::Unavailable {
+                kind: "API key",
+                state: row.state.clone(),
+                blocked_until: None,
+            },
+            None => Reading::ApiKey,
+        };
     }
     if row.overflow {
-        return Reading::Overflow;
+        return match row.overflow_blocked_until {
+            Some(until) => Reading::Unavailable {
+                kind: "overflow",
+                state: if row.state == "ok" {
+                    "spend limit".into()
+                } else {
+                    row.state.clone()
+                },
+                blocked_until: Some(until),
+            },
+            None if !matches!(
+                row.state.as_str(),
+                "ok" | "session_exhausted" | "weekly_exhausted"
+            ) =>
+            {
+                Reading::Unavailable {
+                    kind: "overflow",
+                    state: row.state.clone(),
+                    blocked_until: None,
+                }
+            }
+            None => Reading::Overflow,
+        };
     }
     let no_numbers = row.session.is_none() && row.week_all.is_none();
     if matches!(row.state.as_str(), "timeout" | "unparsed") || no_numbers {

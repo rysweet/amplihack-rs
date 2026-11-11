@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::commands::recipe::run_record::{self, RunRecord, valid_session};
 
-/// Run files (records and logs) read from the log directory, newest run
+/// Run files (records and logs) displayed from the log directory, newest run
 /// first.
 const MAX_ENTRIES: usize = 2_000;
 /// Directory entries listed, by name and metadata only, to find the newest
@@ -31,8 +31,6 @@ pub(crate) const TRUNCATED: &str =
 /// include recent runs, and the runs shown are not necessarily the newest.
 pub(crate) const TOO_MANY_ENTRIES: &str = "warning: more than 20000 entries in the recipe log directory; some runs, possibly recent ones, are not shown";
 
-/// Runs a walk selects at most.
-const MAX_SELECTED: usize = 2_000;
 /// Levels of descendants a walk follows at most.
 const MAX_DEPTH: usize = 32;
 
@@ -46,31 +44,21 @@ pub(crate) struct Discovered {
     pub log: Option<PathBuf>,
 }
 
-/// One entry per session that has a `<session>.run.json` or a
-/// `<session>.log` owned by this user, and the warning to print, if any.
-/// Temporary files and the secret spec and context files are skipped.
-///
-/// At most [`MAX_NAMES`] entries are listed, by name and metadata only.
-/// Runs are then taken newest first, by the latest modification time of
-/// their files, until [`MAX_ENTRIES`] files are taken; only those records
-/// are read. Runs come back ordered by session name.
-///
-/// While the directory has at most [`MAX_NAMES`] entries, every run is
-/// listed, so the runs left out are the oldest and a live run, which writes
-/// to its log, is kept. Past [`MAX_NAMES`] entries this does not hold:
-/// `read_dir` returns entries in no particular order, so the cut at
-/// [`MAX_NAMES`] happens before the sort by age and may drop any run,
-/// including a live one. That case has its own warning,
-/// [`TOO_MANY_ENTRIES`], instead of [`TRUNCATED`].
-///
-/// A missing directory has no runs and no warning. One that cannot be read,
-/// or that is not owned by this user or is writable by others, has no runs
-/// and a fixed warning that names neither the path nor the OS error. One
-/// with more than [`MAX_ENTRIES`] run files gives the newest runs and
-/// [`TRUNCATED`]; one with more than [`MAX_NAMES`] entries gives
-/// [`TOO_MANY_ENTRIES`].
+/// The newest runs across all callers, bounded by the display file cap.
+#[cfg(test)]
 pub(crate) fn scan(log_dir: &Path) -> (Vec<Discovered>, Option<&'static str>) {
     scan_capped(log_dir, MAX_NAMES, MAX_ENTRIES)
+}
+
+/// Resolve caller membership before the display cap. At most MAX_NAMES
+/// directory entries and their bounded records are read. Old ancestors
+/// participate in membership even when their rows fall outside the cap.
+pub(crate) fn scan_selected(
+    log_dir: &Path,
+    identity: Option<&str>,
+    all: bool,
+) -> (Vec<Discovered>, Option<&'static str>) {
+    scan_selected_capped(log_dir, MAX_NAMES, MAX_ENTRIES, identity, all)
 }
 
 /// The files of one session, found by name.
@@ -87,12 +75,24 @@ impl Files {
     }
 }
 
-/// [`scan`] listing at most `names` entries and taking at most `cap` run
+/// List at most `names` entries and display at most `cap` run
 /// files.
+#[cfg(test)]
 pub(super) fn scan_capped(
     log_dir: &Path,
     names: usize,
     cap: usize,
+) -> (Vec<Discovered>, Option<&'static str>) {
+    scan_selected_capped(log_dir, names, cap, None, true)
+}
+
+/// List and resolve membership, then take the newest matching run files.
+pub(super) fn scan_selected_capped(
+    log_dir: &Path,
+    names: usize,
+    cap: usize,
+    identity: Option<&str>,
+    all: bool,
 ) -> (Vec<Discovered>, Option<&'static str>) {
     let meta = match fs::metadata(log_dir) {
         Ok(meta) => meta,
@@ -148,27 +148,37 @@ pub(super) fn scan_capped(
     let mut truncated = false;
     let mut sessions: Vec<(String, Files)> = by_session.into_iter().collect();
     sessions.sort_by(|(a, fa), (b, fb)| fb.newest.cmp(&fa.newest).then_with(|| a.cmp(b)));
+    // Read records before pruning: a recent child may need an old parent
+    // to connect it to the caller. The directory-entry bound also bounds
+    // this graph, and run_record::read bounds each record's bytes.
+    let candidates: Vec<Discovered> = sessions
+        .iter()
+        .map(|(session, files)| Discovered {
+            session: session.clone(),
+            record: files
+                .record
+                .as_deref()
+                .and_then(run_record::read)
+                .filter(|r| r.session == *session),
+            log: files.log.clone(),
+        })
+        .collect();
+    let mut selected: HashMap<String, Discovered> = select(candidates, identity, all)
+        .into_iter()
+        .map(|r| (r.session.clone(), r))
+        .collect();
     let mut taken = 0;
     let mut found: BTreeMap<String, Discovered> = BTreeMap::new();
     for (session, files) in sessions {
+        let Some(run) = selected.remove(&session) else {
+            continue;
+        };
         if taken + files.count() > cap {
             truncated = true;
             break;
         }
         taken += files.count();
-        let record = files
-            .record
-            .as_deref()
-            .and_then(run_record::read)
-            .filter(|r| r.session == session);
-        found.insert(
-            session.clone(),
-            Discovered {
-                session,
-                record,
-                log: files.log,
-            },
-        );
+        found.insert(session, run);
     }
     (
         found.into_values().collect(),
@@ -192,8 +202,9 @@ fn euid() -> u32 {
 
 /// With `all`, every run. Otherwise the runs whose `parent` is `identity`,
 /// then, level by level, the runs whose `parent` is `run:<session>` of a run
-/// already selected: each run once, at most [`MAX_SELECTED`] runs and
-/// [`MAX_DEPTH`] levels. Nothing without an identity.
+/// already selected: each run once, at most [`MAX_DEPTH`] levels. The
+/// directory listing bounds the graph; the display cap is applied after
+/// membership is resolved. Nothing without an identity.
 pub(crate) fn select(runs: Vec<Discovered>, identity: Option<&str>, all: bool) -> Vec<Discovered> {
     if all {
         return runs;
@@ -210,13 +221,10 @@ pub(crate) fn select(runs: Vec<Discovered>, identity: Option<&str>, all: bool) -
     let mut picked: Vec<usize> = Vec::new();
     let mut seen: HashSet<usize> = HashSet::new();
     let mut frontier: Vec<String> = vec![identity.to_string()];
-    'walk: for _ in 0..MAX_DEPTH {
+    for _ in 0..MAX_DEPTH {
         let mut next = Vec::new();
         for parent in &frontier {
             for &i in children.get(parent.as_str()).into_iter().flatten() {
-                if picked.len() >= MAX_SELECTED {
-                    break 'walk;
-                }
                 if seen.insert(i) {
                     picked.push(i);
                     next.push(format!("run:{}", runs[i].session));

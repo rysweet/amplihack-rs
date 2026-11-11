@@ -70,10 +70,19 @@ impl Output {
 
 /// Runs `cmd` as described in the module comment. `cancel`, when given, is
 /// polled with the clock and stops the command as [`Ended::Stopped`].
-pub fn run(
+pub fn run(cmd: Command, limits: Limits, cancel: Option<&AtomicBool>) -> Result<Output, Failure> {
+    run_with_shutdown(cmd, limits, cancel, Duration::ZERO)
+}
+
+/// Like [`run`], but on cancellation or timeout first sends SIGTERM to the
+/// child itself and waits up to `shutdown_grace` for it to clean up nested
+/// process groups. The child's original group is then killed and reaped.
+/// Use only for commands with a cooperative SIGTERM handler.
+pub fn run_with_shutdown(
     mut cmd: Command,
     limits: Limits,
     cancel: Option<&AtomicBool>,
+    shutdown_grace: Duration,
 ) -> Result<Output, Failure> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -111,7 +120,7 @@ pub fn run(
                 break child.wait().ok();
             }
             Ok(false) if start.elapsed() >= limits.timeout || cancelled() => {
-                stop(&mut child);
+                shutdown(&mut child, shutdown_grace);
                 return Ok(stopped(Ended::Stopped));
             }
             Ok(false) => std::thread::sleep(POLL),
@@ -198,6 +207,26 @@ impl Stream {
     fn take(&self) -> Vec<u8> {
         std::mem::take(&mut *self.kept.lock().unwrap_or_else(PoisonError::into_inner))
     }
+}
+
+/// Lets a cooperative owner stop and reap its own children before killing
+/// its group. Never reap the owner before the final group kill.
+fn shutdown(child: &mut Child, grace: Duration) {
+    #[cfg(unix)]
+    if !grace.is_zero() {
+        if let Ok(pid) = i32::try_from(child.id()) {
+            // SAFETY: this is our unreaped child's pid. Signal only the
+            // owner, leaving it responsible for its nested groups.
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+        }
+        let started = Instant::now();
+        while matches!(exited(child), Ok(false)) && started.elapsed() < grace {
+            std::thread::sleep(POLL);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = grace;
+    stop(child);
 }
 
 /// Kills the child's process group, then kills and reaps the child. These
@@ -323,6 +352,55 @@ mod tests {
         assert_eq!(out.stdout, b"ok");
         assert!(run_helper(sh("sleep 30"), Duration::from_millis(200)).is_none());
         assert!(run_helper(Command::new("/nonexistent/x"), Duration::from_secs(1)).is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shutdown_waits_for_the_owner_to_reap_a_separate_probe_group() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("reaped");
+        let mut cmd = sh(r#"setsid sleep 30 &
+probe=$!
+trap '/bin/kill -KILL -- -"$probe"; wait "$probe"; echo reaped > "$MARKER"; exit 0' TERM
+echo "$probe"
+wait "$probe"
+"#);
+        cmd.env("MARKER", &marker);
+        let out = run_with_shutdown(cmd, limits(1000, 1024), None, Duration::from_secs(2)).unwrap();
+        // If cleanup failed, remove the fixture's separate group as well.
+        let pid = String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+        // SAFETY: kill has no memory-safety preconditions. This pid is
+        // the fixture's group, which cannot be reused while alive.
+        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        if alive {
+            unsafe { libc::kill(-pid, libc::SIGKILL) };
+        }
+        assert_eq!(out.ended, Ended::Stopped);
+        assert!(
+            marker.exists(),
+            "the owner must finish cleanup before returning"
+        );
+        assert!(
+            !alive,
+            "the nested probe must have been reaped by its owner"
+        );
+    }
+
+    #[test]
+    fn shutdown_is_bounded_when_the_owner_ignores_sigterm() {
+        let start = Instant::now();
+        let out = run_with_shutdown(
+            sh("trap '' TERM; exec sleep 30"),
+            limits(200, 1024),
+            None,
+            Duration::from_millis(200),
+        )
+        .unwrap();
+        assert_eq!(out.ended, Ended::Stopped);
+        assert!(start.elapsed() < Duration::from_secs(3));
     }
 
     #[test]

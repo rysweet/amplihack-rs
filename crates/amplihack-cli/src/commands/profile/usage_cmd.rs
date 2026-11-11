@@ -35,7 +35,7 @@ const STREAM_CAP: usize = 64 * 1024;
 const READ_GRACE: Duration = Duration::from_secs(2);
 /// Reset text and labels are cut to this many characters in the table.
 const MAX_TEXT: usize = 64;
-/// Set by `profile rotate watch` on SIGTERM or SIGINT: running probes stop.
+/// Set on SIGTERM or SIGINT: running probes stop and their owners join.
 pub(super) static PROBE_CANCEL: std::sync::LazyLock<Arc<AtomicBool>> =
     std::sync::LazyLock::new(Arc::default);
 /// With one of these set, `claude` may report that credential's usage rather
@@ -45,6 +45,32 @@ const ENV_CREDENTIAL_VARS: [&str; 3] = [
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
 ];
+
+/// Scoped signal registrations for the standalone usage command.
+#[cfg(unix)]
+struct ProbeSignals(Vec<signal_hook::SigId>);
+
+#[cfg(unix)]
+impl ProbeSignals {
+    fn register() -> std::io::Result<Self> {
+        let mut signals = Self(Vec::new());
+        for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
+            signals
+                .0
+                .push(signal_hook::flag::register(sig, PROBE_CANCEL.clone())?);
+        }
+        Ok(signals)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ProbeSignals {
+    fn drop(&mut self) {
+        for id in self.0.drain(..) {
+            signal_hook::low_level::unregister(id);
+        }
+    }
+}
 
 /// Why a probe could not run. Fixed text: never an I/O error or a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +152,10 @@ pub(super) fn run(
     raw: bool,
     timeout_flag: Option<u64>,
 ) -> Result<()> {
+    // Install before binary resolution as well as probing. Keep the
+    // handler until every probe owner has joined.
+    #[cfg(unix)]
+    let _signals = ProbeSignals::register()?;
     super::reject_docker_env()?;
     let (secs, warning) = timeout_secs(timeout_flag, std::env::var_os(TIMEOUT_ENV).as_deref());
     if let Some(w) = warning {
@@ -165,6 +195,9 @@ pub(super) fn run(
         now,
         raw,
     );
+    if PROBE_CANCEL.load(Ordering::Relaxed) {
+        return Ok(());
+    }
     // The login in `~/.claude` may have been swapped during the probe; its
     // numbers are shown but not recorded against the profile.
     let swapped = swapped_live(store, home.as_deref(), live);
@@ -174,6 +207,9 @@ pub(super) fn run(
     if home_row && names.is_empty() {
         let cmd = run::build_home_command(&binary, &["-p".into(), "/usage".into()]);
         rows.push(home_row_of(probe(cmd, Duration::from_secs(secs), now, raw)));
+    }
+    if PROBE_CANCEL.load(Ordering::Relaxed) {
+        return Ok(());
     }
     order(&mut rows, now_secs());
     print_output(&rows, json, swapped.as_ref());
@@ -560,11 +596,19 @@ pub(super) fn probe_all(
                     } else {
                         run::build_profile_command
                     };
-                    let p = match build(binary, store, name, &args) {
-                        Ok(cmd) => probe(cmd, timeout, now, keep_raw),
-                        // Reported as its fixed reason (and a stderr
-                        // warning); the detail can name paths.
-                        Err(_) => Probe::failed(ErrorReason::ProfileRefused, None),
+                    let p = if PROBE_CANCEL.load(Ordering::Relaxed) {
+                        Probe {
+                            report: UsageReport::empty(UsageState::Timeout),
+                            error: None,
+                            raw: None,
+                        }
+                    } else {
+                        match build(binary, store, name, &args) {
+                            Ok(cmd) => probe(cmd, timeout, now, keep_raw),
+                            // Reported as its fixed reason (and a stderr
+                            // warning); the detail can name paths.
+                            Err(_) => Probe::failed(ErrorReason::ProfileRefused, None),
+                        }
                     };
                     results.lock().unwrap_or_else(PoisonError::into_inner)[i] = Some(p);
                 }
@@ -589,6 +633,13 @@ pub(super) fn probe_all(
 /// killed when the probe ends, so processes `claude` started (MCP servers,
 /// for example) do not outlive it.
 pub(super) fn probe(cmd: Command, timeout: Duration, now: i64, keep_raw: bool) -> Probe {
+    if PROBE_CANCEL.load(Ordering::Relaxed) {
+        return Probe {
+            report: UsageReport::empty(UsageState::Timeout),
+            error: None,
+            raw: None,
+        };
+    }
     let limits = bounded_process::Limits {
         timeout,
         cap: STREAM_CAP,

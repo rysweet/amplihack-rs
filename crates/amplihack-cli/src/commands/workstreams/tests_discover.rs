@@ -2,21 +2,23 @@
 //! the caller's descendants.
 //!
 //! Contract (`discover`):
-//! - `scan(log_dir) -> (Vec<Discovered>, Option<&'static str>)`: one entry
+//! - `scan_selected(log_dir, identity, all) -> (Vec<Discovered>, Option<&'static str>)`: one entry
 //!   per session found as a readable `<session>.run.json` or a
 //!   `<session>.log` owned by this user; names containing `.tmp.` and
 //!   `*.context.json` / `*.spec.json` are skipped; at most 20,000 directory
-//!   entries are listed and at most 2,000 run files, newest first, are read. `Discovered { session, record, log }`. The second
+//!   entries and their bounded records are read; at most 2,000 run files,
+//!   newest first, are displayed. Caller membership is resolved before
+//!   the display cap. `Discovered { session, record, log }`. The second
 //!   value is a fixed warning: `UNREADABLE` for a directory that cannot be
 //!   listed, `NOT_PRIVATE` (and no runs) for one not owned by this user or
 //!   writable by group or others, `TRUNCATED` when older run files were left
-//!   unread, `TOO_MANY_ENTRIES` when entries were left unlisted (then the
+//!   undisplayed, `TOO_MANY_ENTRIES` when entries were left unlisted (then the
 //!   runs shown are not necessarily the newest).
 //!   A missing directory gives no runs and no warning.
 //! - `select(runs, identity, all) -> Vec<Discovered>`: with `all`, every
 //!   run; otherwise runs whose `parent` is `identity`, then repeatedly runs
 //!   whose `parent` is `run:<session>` of a selected run. A cycle is visited
-//!   once; at most 2,000 runs and 32 levels. No identity and not `all`
+//!   once; at most 32 levels within the bounded listing. No identity and not `all`
 //!   gives nothing. Runs without a record appear only under `all`.
 
 use super::discover::{
@@ -157,15 +159,15 @@ fn the_walk_stops_after_32_levels() {
 }
 
 #[test]
-fn the_walk_stops_after_2000_runs() {
+fn the_walk_preserves_more_than_2000_candidates_for_display_selection() {
     let mut runs: Vec<Discovered> = (0..2_600)
         .map(|n| run(&format!("w{n}"), Some(ME)))
         .collect();
-    // And a cycle hanging off the tree.
-    runs.push(run("loop-a", Some("run:loop-b")));
-    runs.push(run("loop-b", Some("run:w0")));
+    runs.push(run("grandchild", Some("run:w0")));
+    runs.push(run("great-grandchild", Some("run:grandchild")));
     let picked = select(runs, Some(ME), false);
-    assert!(picked.len() <= 2_000, "{}", picked.len());
+    assert_eq!(picked.len(), 2_602);
+    assert!(sessions(&picked).contains("great-grandchild"));
 }
 
 // ---------------------------------------------------------------------------
@@ -395,4 +397,57 @@ fn scan_never_changes_the_log_directory() {
         0o755,
         "the status command never chmods"
     );
+}
+
+#[test]
+fn recent_descendant_keeps_membership_when_ancestors_are_older_than_the_display_cap() {
+    let d = private_log_dir();
+    write_record(d.path(), "old-parent", Some(ME));
+    write_record(d.path(), "old-middle", Some("run:old-parent"));
+    for session in ["old-parent", "old-middle"] {
+        set_mtime(&record_path(d.path(), session), 1);
+        set_mtime(&d.path().join(format!("{session}.log")), 1);
+    }
+    for n in 0..1_000 {
+        write_record(d.path(), &format!("unrelated-{n}"), Some("session:other"));
+    }
+    write_record(d.path(), "live-child", Some("run:old-middle"));
+    set_mtime(&d.path().join("live-child.log"), 2_000_000_000);
+
+    // Both ancestors are outside the production 2,000-file global cap.
+    let (global, warning) = scan(d.path());
+    assert_eq!(warning, Some(TRUNCATED));
+    assert!(sessions(&global).contains("live-child"));
+    assert!(!sessions(&global).contains("old-parent"));
+    assert!(!sessions(&global).contains("old-middle"));
+
+    let (selected, warning) = super::discover::scan_selected(d.path(), Some(ME), false);
+    assert_eq!(
+        sessions(&selected),
+        set(&["old-parent", "old-middle", "live-child"])
+    );
+    assert_eq!(
+        warning, None,
+        "only matching files count against the display cap"
+    );
+
+    // Even when matching ancestors themselves exceed the display cap,
+    // membership was already resolved, so the newest child still appears.
+    let (selected, warning) =
+        super::discover::scan_selected_capped(d.path(), 20_000, 2, Some(ME), false);
+    assert_eq!(sessions(&selected), set(&["live-child"]));
+    assert_eq!(warning, Some(TRUNCATED));
+}
+
+#[test]
+fn membership_walk_does_not_apply_a_selection_cap_before_recency() {
+    let d = private_log_dir();
+    for n in 0..2_001 {
+        write_record(d.path(), &format!("child-{n:04}"), Some(ME));
+    }
+    set_mtime(&d.path().join("child-2000.log"), 2_000_000_000);
+    let (selected, warning) = super::discover::scan_selected(d.path(), Some(ME), false);
+    assert_eq!(selected.len(), 1_000);
+    assert!(sessions(&selected).contains("child-2000"));
+    assert_eq!(warning, Some(TRUNCATED));
 }

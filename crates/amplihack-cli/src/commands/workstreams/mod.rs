@@ -64,7 +64,8 @@ pub(crate) const MIN_DEADLINE_SECS: u64 = 2;
 /// Default `--logins-deadline`, in seconds.
 const DEFAULT_DEADLINE_SECS: u64 = 8;
 /// How long a probe has to stop after its cancel flag is set.
-const CANCEL_GRACE: Duration = Duration::from_secs(1);
+// Includes profile usage's bounded shutdown and one runner poll.
+const CANCEL_GRACE: Duration = Duration::from_secs(4);
 /// `recipe.log_dir` is unset and so is HOME.
 pub(crate) const LOG_DIR_UNAVAILABLE: &str =
     "warning: recipe log directory unavailable (HOME not set)";
@@ -206,13 +207,13 @@ pub(crate) fn snapshot(input: &StatusInput, sources: &Sources) -> Result<Snapsho
         .as_ref()
         .map(|usage| PendingLogins::start(usage, input.logins_deadline));
     let (found, warning) = match &input.log_dir {
-        Ok(dir) => discover::scan(dir),
+        Ok(dir) => discover::scan_selected(dir, input.identity.as_deref(), input.all),
         Err(warning) => (Vec::new(), Some(*warning)),
     };
     if let Some(warning) = warning {
         (sources.warn)(warning);
     }
-    let runs = discover::select(found, input.identity.as_deref(), input.all);
+    let runs = found;
     let live: HashMap<String, i64> = sources.live.list().into_iter().collect();
     let prs = pr_lists(&runs, sources.prs.as_ref());
 

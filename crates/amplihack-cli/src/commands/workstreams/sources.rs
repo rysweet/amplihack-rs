@@ -174,8 +174,11 @@ impl UsageSource for ProfileUsage {
             cap: USAGE_CAP,
             read_grace: USAGE_READ_GRACE,
         };
-        let out = bounded_process::run(cmd, limits, Some(cancel))
-            .map_err(|_| USAGE_FAILED.to_string())?;
+        // profile usage owns probes in separate groups. Let its signal
+        // handler cancel and join those owners before reaping it.
+        let out =
+            bounded_process::run_with_shutdown(cmd, limits, Some(cancel), Duration::from_secs(3))
+                .map_err(|_| USAGE_FAILED.to_string())?;
         match out.ended {
             Ended::Exited(_) if out.success() && out.complete => Ok(out.stdout),
             Ended::Stopped => Err(no_reading_by(self.deadline)),

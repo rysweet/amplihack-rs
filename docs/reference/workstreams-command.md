@@ -51,7 +51,7 @@ wording and order may change. Scripts should read
 | `--manifest <PATH>` | `~/.amplihack/work/workstreams.tsv` | Read labels and queued items from this file. See [Manifest](#manifest). |
 | `--logins-deadline <SECS>` | `8` | Seconds the logins section may take, from `2` to `60`. Each probe gets one second less, so a slow login shows as `no reading (timeout)` rather than cutting off the whole section. |
 
-A deadline outside `1` to `60`, or `--manifest` without a value, is a usage
+A deadline outside `2` to `60`, or `--manifest` without a value, is a usage
 error.
 
 ## Output
@@ -164,6 +164,12 @@ capacity):
 - Percentages are formatted as in `profile usage`: whole numbers without a
   decimal, others with one. A value over 100 is printed as read, with a full
   bar.
+- Active API-key blocks show their reason and UTC expiry. Overflow spend
+  blocks show their UTC expiry, even when the probe succeeds. Overflow probe
+  failures (`timeout`, `unparsed`, `error`, `not_logged_in`, or
+  `spend_limit`) show as unavailable. These statuses take precedence over
+  the normal no-plan-limits label. Exhausted subscription windows still
+  allow an unblocked overflow login to use paid credits.
 
 ### Width and characters
 
@@ -225,7 +231,10 @@ directory can see every record in it.
 The default view starts with the runs whose `parent` is the caller's
 identity, then adds every run whose `parent` is `run:<session>` of a run
 already selected, and so on. Finished runs are included. A cycle in the
-records is visited once. The walk stops after 2,000 runs or 32 levels.
+records is visited once. The walk stops after 32 levels within the bounded
+directory listing. Caller membership is resolved before the display cap:
+an older ancestor can connect a recent child even when the ancestor's row
+falls outside the newest 2,000 run files shown.
 
 ### Runs without a record
 
@@ -248,11 +257,13 @@ that drives the PR.
 
 The log directory is read only when it is a directory owned by you and not
 writable by group or others (mode `& 0o022` is `0`). Up to 20,000 entries
-are listed by name and modification time. Runs are then taken newest first,
-by the latest change to either of their files, until 2,000 run files are
-taken, and only those records are read. While the directory holds at most
-20,000 entries, the runs left out are the oldest, and a live run, which
-writes to its log, is among the newest and is kept. Past 20,000 entries this
+are listed by name and modification time, and their records are read with a
+64 KiB limit per record. Caller membership is resolved across those records
+before taking the newest matching runs, by the latest change to either file,
+up to 2,000 run files. Older ancestors still establish membership even when
+their rows are omitted. While the directory holds at most 20,000 entries,
+the matching runs left out are the oldest, and a live run, which writes to
+its log, is among the newest and is kept. Past 20,000 entries this
 no longer holds: the directory lists its entries in no particular order, and
 the limit applies before the sort by age, so any run, including a live one,
 may be left out. That case has its own warning. In each case below the command prints
@@ -264,7 +275,7 @@ table:
 | `recipe.log_dir` and HOME are both unset | `warning: recipe log directory unavailable (HOME not set)` | None. |
 | The directory cannot be listed, or is not a directory | `warning: recipe log directory unreadable` | None. |
 | The directory is not owned by you, or group or others may write to it | `warning: recipe log directory is not private; ignoring it` | None. |
-| The directory has more than 2,000 run files and at most 20,000 entries | `warning: more than 2000 run files in the recipe log directory; older runs are not shown` | The newest runs, up to 2,000 files. |
+| The selected runs have more than 2,000 run files and the directory has at most 20,000 entries | `warning: more than 2000 run files in the recipe log directory; older runs are not shown` | The newest matching runs, up to 2,000 files. |
 | The directory has more than 20,000 entries | `warning: more than 20000 entries in the recipe log directory; some runs, possibly recent ones, are not shown` | Up to 2,000 files, newest first, from the first 20,000 entries listed. These are not necessarily the newest runs. |
 
 A directory that does not exist yet gives no warning and no runs.
@@ -356,11 +367,15 @@ itself) therefore has one implementation, in `profile usage`, and the two
 commands cannot disagree about a login.
 
 - Each probe gets `--timeout-secs` one second under the
-  [deadline](#time-limits) (at least 1), so a slow login gives a `timeout`
-  row while the others still arrive in time.
-- At the deadline the subprocess and its process group are stopped, and the
-  section shows `no reading within <N>s (raise --logins-deadline)` in place
-  of rows.
+  [deadline](#time-limits) (at least 1), so a slow login can give a `timeout`
+  row. Profiles run eight at a time; later batches and the sequential
+  `~/.claude` probe share the command's overall deadline.
+- At the deadline, SIGTERM asks `profile usage` to cancel its running probes,
+  kill and reap their separate process groups, and join the probe workers.
+  Queued probes are skipped. The runner waits up to 3 seconds for this cleanup
+  before killing and reaping the command's own group. The table allows up to
+  4 seconds after the deadline for cancellation to finish, and shows
+  `no reading within <N>s (raise --logins-deadline)` in place of rows.
 - `profile usage` records the readings it takes for auto-switch and the
   rotator, as it does when run on its own. `--no-logins` starts no probe and
   records nothing.
@@ -424,7 +439,7 @@ Every outside call has a limit, so the command does not hang:
 |------|-------|------------------|
 | `tmux ls -F '#{session_name} #{session_created}'` | 3 s | No session counts as live. |
 | `gh pr list`, per repository | 10 s | PR fields show `?`. |
-| `amplihack profile usage --json` | `--logins-deadline`, default 8 s, plus 1 s to stop; each probe gets 1 s less | A slow probe shows `no reading (timeout)`; a run past the deadline shows `no reading within <N>s`. |
+| `amplihack profile usage --json` | `--logins-deadline`, default 8 s, plus up to 4 s for probe cleanup; each probe gets 1 s less | A slow probe shows `no reading (timeout)`; a run past the deadline shows `no reading within <N>s`. |
 
 A missing `tmux`, `gh` or `claude` binary is treated like a call that ran out.
 Subprocesses run without a shell, with stdin from `/dev/null`, in their own
