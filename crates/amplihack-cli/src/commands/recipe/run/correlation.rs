@@ -180,9 +180,8 @@ impl RecipeRunCorrelation {
         self.emit_final_with(status, child_pid, exit_code, log_paths, None)
     }
 
-    pub(super) fn with_preflight_refusal(mut self, envelope: JsonValue) -> Self {
+    pub(super) fn set_preflight_refusal(&mut self, envelope: JsonValue) {
         self.preflight_refusal = Some(envelope);
-        self
     }
 
     /// Issue #1976: the final record of an orphaned nested run. It has no

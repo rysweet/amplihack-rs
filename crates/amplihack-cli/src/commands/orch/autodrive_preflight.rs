@@ -58,6 +58,11 @@ pub(crate) enum RefusalOutcome {
     Ambiguous,
     #[serde(rename = "pr-worktree-branch-mismatch")]
     BranchMismatch,
+    /// The drive's state directory is a symlink, belongs to someone else or
+    /// cannot be made private. Checked before anything else, and never
+    /// published as a PR comment: it is a fault of this host, not of the PR.
+    #[serde(rename = "state-dir-not-private")]
+    StateDirNotPrivate,
 }
 
 impl RefusalOutcome {
@@ -72,6 +77,7 @@ impl RefusalOutcome {
             Self::NotFound => "pr-worktree-not-found",
             Self::Ambiguous => "pr-worktree-ambiguous",
             Self::BranchMismatch => "pr-worktree-branch-mismatch",
+            Self::StateDirNotPrivate => "state-dir-not-private",
         }
     }
 }
@@ -337,6 +343,100 @@ fn clean(at: &Path) -> Result<bool> {
     )?
     .is_empty())
 }
+struct WorktreeRecord {
+    path: PathBuf,
+    branch: Option<Vec<u8>>,
+    prunable: bool,
+}
+/// Parse `git worktree list --porcelain -z`: attribute lines end in NUL and a
+/// record ends with an empty line.
+fn worktree_records(listing: &[u8]) -> Vec<WorktreeRecord> {
+    let mut records: Vec<WorktreeRecord> = Vec::new();
+    for line in listing.split(|b| *b == 0) {
+        if let Some(path) = line.strip_prefix(b"worktree ") {
+            #[cfg(unix)]
+            let path = {
+                use std::os::unix::ffi::OsStrExt;
+                PathBuf::from(std::ffi::OsStr::from_bytes(path))
+            };
+            #[cfg(not(unix))]
+            let path = PathBuf::from(String::from_utf8_lossy(path).into_owned());
+            records.push(WorktreeRecord {
+                path,
+                branch: None,
+                prunable: false,
+            });
+        } else if let Some(record) = records.last_mut() {
+            if let Some(branch) = line.strip_prefix(b"branch ") {
+                record.branch = Some(branch.to_vec());
+            } else if line == b"prunable" || line.starts_with(b"prunable ") {
+                record.prunable = true;
+            }
+        }
+    }
+    records
+}
+/// The canonical worktree path when it has the PR branch checked out, or is
+/// rebasing it.
+fn worktree_matches(path: &Path, common: &Path, source_ref: &str) -> Result<Option<PathBuf>> {
+    let path = fs::canonicalize(path)?;
+    if fs::canonicalize(path.join(git(&path, &["rev-parse", "--git-common-dir"])?))? != common {
+        bail!("worktree belongs to another repository");
+    }
+    let symbolic = amplihack_git::command()
+        .current_dir(&path)
+        .args(["symbolic-ref", "-q", "HEAD"])
+        .output()?;
+    let checked = match symbolic.status.code() {
+        Some(0) => String::from_utf8(symbolic.stdout)?.trim().to_owned(),
+        Some(1) => String::new(),
+        _ => bail!("cannot inspect worktree branch"),
+    };
+    if checked == source_ref {
+        return Ok(Some(path));
+    }
+    for op in ["rebase-merge", "rebase-apply"] {
+        let p = git(
+            &path,
+            &["rev-parse", "--git-path", &format!("{op}/head-name")],
+        )?;
+        match read_operation_file(&path.join(p)) {
+            Ok(head) if String::from_utf8_lossy(&head).trim() == source_ref => {
+                return Ok(Some(path));
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(None)
+}
+/// The push runs from an isolated Git directory (transport.rs), so Git does
+/// not move the worktree's remote-tracking ref. Once the source repository
+/// has been verified at `local`, record that for every configured remote
+/// whose URL is the source repository, so `git status` in the worktree no
+/// longer reports the pushed commits as ahead.
+fn record_verified_push(at: &Path, url: &str, branch: &str, local: &str) -> Result<()> {
+    let bare = url.trim_end_matches(".git");
+    for remote in git(at, &["remote"])?.lines() {
+        let configured =
+            git(at, &["config", "--get", &format!("remote.{remote}.url")]).unwrap_or_default();
+        if configured.trim_end_matches('/').trim_end_matches(".git") != bare {
+            continue;
+        }
+        git(
+            at,
+            &[
+                "update-ref",
+                "-m",
+                "amplihack auto-drive preflight: verified push",
+                &format!("refs/remotes/{remote}/{branch}"),
+                local,
+            ],
+        )?;
+    }
+    Ok(())
+}
 fn evaluate(r: &PreflightRequest, cwd: &Path) -> Result<Value> {
     let bytes = output(
         cwd,
@@ -390,50 +490,26 @@ fn evaluate(r: &PreflightRequest, cwd: &Path) -> Result<Value> {
     }
     let listing = output(cwd, "git", &["worktree", "list", "--porcelain", "-z"])?;
     let common = fs::canonicalize(cwd.join(git(cwd, &["rev-parse", "--git-common-dir"])?))?;
+    let source_ref = format!("refs/heads/{branch}");
     let mut candidates = Vec::new();
-    for entry in listing
-        .split(|b| *b == 0)
-        .filter(|s| s.starts_with(b"worktree "))
-    {
-        #[cfg(unix)]
-        let path = {
-            use std::os::unix::ffi::OsStrExt;
-            PathBuf::from(std::ffi::OsStr::from_bytes(&entry[9..]))
-        };
-        #[cfg(not(unix))]
-        let path = PathBuf::from(std::str::from_utf8(&entry[9..])?);
-        let path = fs::canonicalize(path)?;
-        if fs::canonicalize(path.join(git(&path, &["rev-parse", "--git-common-dir"])?))? != common {
-            bail!("worktree belongs to another repository");
+    for record in worktree_records(&listing) {
+        // git-worktree(1): a "prunable" record names a worktree whose
+        // directory is gone. It cannot be the PR worktree, and one stale
+        // record must not stop every drive in the repository.
+        if record.prunable {
+            continue;
         }
-        let symbolic = amplihack_git::command()
-            .current_dir(&path)
-            .args(["symbolic-ref", "-q", "HEAD"])
-            .output()?;
-        let checked = match symbolic.status.code() {
-            Some(0) => String::from_utf8(symbolic.stdout)?.trim().to_owned(),
-            Some(1) => String::new(),
-            _ => bail!("cannot inspect worktree branch"),
-        };
-        let mut matches = checked == format!("refs/heads/{branch}");
-        for op in ["rebase-merge", "rebase-apply"] {
-            if matches {
-                break;
-            }
-            let p = git(
-                &path,
-                &["rev-parse", "--git-path", &format!("{op}/head-name")],
-            )?;
-            match read_operation_file(&path.join(p)) {
-                Ok(head) => {
-                    matches |= String::from_utf8(head)?.trim() == format!("refs/heads/{branch}")
+        match worktree_matches(&record.path, &common, &source_ref) {
+            Ok(Some(path)) => {
+                if !candidates.contains(&path) {
+                    candidates.push(path);
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
             }
-        }
-        if matches && !candidates.contains(&path) {
-            candidates.push(path);
+            Ok(None) => {}
+            // A worktree on another branch that cannot be read is not ours to
+            // judge. One listed on the PR branch is: its failure is reported.
+            Err(_) if record.branch.as_deref() != Some(source_ref.as_bytes()) => {}
+            Err(error) => return Err(error),
         }
     }
     if candidates.len() != 1 {
@@ -464,7 +540,7 @@ fn evaluate(r: &PreflightRequest, cwd: &Path) -> Result<Value> {
         ));
     }
     let local = git(at, &["rev-parse", "HEAD"])?;
-    let source_ref = format!("refs/heads/{branch}");
+    let mut tracking_error = None;
     git(
         at,
         &[
@@ -545,6 +621,11 @@ fn evaluate(r: &PreflightRequest, cwd: &Path) -> Result<Value> {
                 json!({"stage":stage,"diagnostic":e.to_string(),"local":local}),
             ));
         }
+        // The push itself is verified; a tracking ref that cannot be moved
+        // is reported in the ready envelope, not turned into a push failure.
+        tracking_error = record_verified_push(at, &url, branch, &local)
+            .err()
+            .map(|e| diagnostic::sanitize(&e.to_string()));
     }
     if operation(at)? != op
         || !clean(at)?
@@ -553,7 +634,7 @@ fn evaluate(r: &PreflightRequest, cwd: &Path) -> Result<Value> {
     {
         bail!("local worktree changed before continuation");
     }
-    Ok(serde_json::to_value(Ready {
+    let mut ready = serde_json::to_value(Ready {
         schema_version: SCHEMA_VERSION,
         outcome: "ready",
         terminal_refusal: false,
@@ -565,12 +646,32 @@ fn evaluate(r: &PreflightRequest, cwd: &Path) -> Result<Value> {
         worktree: at,
         head_sha: &local,
         head_matches: true,
-    })?)
+    })?;
+    if let Some(error) = tracking_error {
+        ready["tracking_ref_error"] = json!(error);
+    }
+    Ok(ready)
 }
 /// Evaluate once, finalize refusals, and emit one versioned envelope.
 pub(crate) fn inspect(mut r: PreflightRequest, cwd: &Path) -> Result<Value> {
     if r.pr == 0 || (r.repo != "." && !identity(&r.repo)) {
         bail!("invalid PR number or repository identity");
+    }
+    // The state directory comes first: a drive that cannot keep its records
+    // privately must stop before it pushes or comments on anything. The rule
+    // is the one autodrive_private_dir and the merge gate apply.
+    if let Err(error) = validate_state_directory(&r.state_dir) {
+        let mut v = refusal(
+            RefusalOutcome::StateDirNotPrivate,
+            json!({
+                "state_dir": git_path(r.state_dir.as_os_str().as_encoded_bytes()),
+                "diagnostic": diagnostic::sanitize(&error.to_string()),
+                "remedy": "Inspect the state directory; it must be a real directory owned by this user with no group or world write bit, or choose another AUTODRIVE_STATE_DIR.",
+            }),
+        );
+        v["pr"] = json!(r.pr);
+        v["repository"] = json!(r.repo);
+        return Ok(v);
     }
     let decision = (|| -> Result<Value> {
         if r.repo == "." {
@@ -602,16 +703,6 @@ pub(crate) fn inspect(mut r: PreflightRequest, cwd: &Path) -> Result<Value> {
     });
     v["pr"] = json!(r.pr);
     v["repository"] = json!(r.repo);
-    if v["outcome"] == "ready"
-        && let Err(error) = validate_state_directory(&r.state_dir)
-    {
-        v = refusal(
-            RefusalOutcome::ComparisonFailed,
-            json!({"diagnostic":format!("state persistence unavailable: {error}")}),
-        );
-        v["pr"] = json!(r.pr);
-        v["repository"] = json!(r.repo);
-    }
     if v["outcome"] != "ready" {
         let v = finalize_refusal(FinalizationContext { request: &r, cwd }, v)?;
         return Ok(v.envelope);
@@ -620,10 +711,26 @@ pub(crate) fn inspect(mut r: PreflightRequest, cwd: &Path) -> Result<Value> {
 }
 
 /// CLI adapter; the runner uses the same in-process decision directly.
+///
+/// A refusal is also handed to the `recipe run` that started this step, so
+/// its final event names the outcome even when the loop ran as a sub-recipe
+/// of auto-drive-to-merge (see `autodrive_runner::read_handoff`).
 pub fn run(r: PreflightRequest) -> Result<()> {
     let v = inspect(r, &std::env::current_dir()?)?;
     println!("{v}");
     if v["terminal_refusal"] == true {
+        if v["outcome"] == RefusalOutcome::StateDirNotPrivate.as_str() {
+            eprintln!(
+                "ERROR: state-dir-not-private: {}",
+                v["evidence"]["diagnostic"].as_str().unwrap_or("")
+            );
+        }
+        if let Err(error) = super::autodrive_runner::write_handoff(&v) {
+            eprintln!(
+                "WARNING: the preflight refusal could not be handed to the recipe run: {}",
+                diagnostic::sanitize(&error.to_string())
+            );
+        }
         std::process::exit(1);
     }
     Ok(())

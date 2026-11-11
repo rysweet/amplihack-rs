@@ -819,45 +819,12 @@ pub(super) fn execute_recipe_via_rust(
             )
             .with_settings(run_settings.clone());
             workspace.borrow_mut().record_attempt(correlation.run_id());
-            let mut preflight_ready = String::new();
-            if !dry_run {
-                match crate::commands::orch::autodrive_runner::inspect(
-                    &recipe_name,
-                    context,
-                    working_dir,
-                ) {
-                    Ok(Some(envelope)) if envelope["terminal_refusal"] != true => {
-                        preflight_ready = envelope.to_string();
-                    }
-                    Ok(Some(envelope)) => {
-                        let outcome = serde_json::from_value(envelope["outcome"].clone())
-                            .expect("runner preflight returns a known refusal");
-                        correlation.emit_early();
-                        let summary = correlation
-                            .with_preflight_refusal(envelope.clone())
-                            .emit_final(
-                                RecipeRunFinalStatus::PreflightRefusal(outcome),
-                                None,
-                                None,
-                                known_log_paths(None),
-                            );
-                        return AttemptOutcome::Final(serde_json::from_value(serde_json::json!({
-                            "recipe_name":recipe_name, "success":false, "status":outcome.as_str(),
-                            "run_id":summary.run_id, "log_pointer":summary,
-                            "autodrive_preflight_refusal":envelope,
-                        })).map_err(Into::into));
-                    }
-                    Ok(None) => {}
-                    Err(error) => return AttemptOutcome::Final(Err(error)),
-                }
-            }
-            let mut command = match build_command(correlation.run_id()) {
+            let command = match build_command(correlation.run_id()) {
                 Ok(built) => built,
                 // Failing to BUILD the invocation (temp file, project graph db)
                 // has nothing transport-level about it. Terminal.
                 Err(error) => return AttemptOutcome::Final(Err(error)),
             };
-            command.env("AMPLIHACK_AUTODRIVE_READY", preflight_ready);
             let mut stderr_tail = String::new();
             let attempt_result = spawn_with_streaming_stderr(
                 command,
@@ -1047,12 +1014,19 @@ fn terminal_action(summary: &RetrySummary) -> &'static str {
 /// stderr tail. (#357)
 fn spawn_with_streaming_stderr(
     mut command: Command,
-    correlation: RecipeRunCorrelation,
+    mut correlation: RecipeRunCorrelation,
     recipe_path: &Path,
     timeout: Duration,
     tree_id: &str,
     stderr_sink: &mut String,
 ) -> Result<RecipeRunResult> {
+    // #2188: where an `autodrive-preflight` helper run by this child hands
+    // its refusal back (autodrive_runner::read_handoff).
+    let handoff_dir = command.get_envs().find_map(|(key, value)| {
+        (key == "AMPLIHACK_WORKFLOW_RUNTIME_DIR")
+            .then(|| value.map(std::path::PathBuf::from))
+            .flatten()
+    });
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
     {
@@ -1308,7 +1282,26 @@ fn spawn_with_streaming_stderr(
                 result.status = Some("failure".into());
                 result.success = false;
             }
-            let final_status = if status.success() && result.success {
+            // #2188: a refusal the helper handed to this run, in this run's
+            // private runtime directory and stamped with this attempt's run
+            // id, names the final event. This is how a loop run as a
+            // sub-recipe of auto-drive-to-merge reports its outcome.
+            let handed = if status.success() && result.success {
+                None
+            } else {
+                handoff_dir.as_deref().and_then(|dir| {
+                    crate::commands::orch::autodrive_runner::read_handoff(dir, correlation.run_id())
+                })
+            };
+            let final_status = if let Some((outcome, envelope)) = handed {
+                result.status = Some(outcome.as_str().into());
+                result.success = false;
+                result
+                    .extra
+                    .insert("autodrive_preflight_refusal".into(), envelope.clone());
+                correlation.set_preflight_refusal(envelope);
+                RecipeRunFinalStatus::PreflightRefusal(outcome)
+            } else if status.success() && result.success {
                 RecipeRunFinalStatus::Success
             } else {
                 RecipeRunFinalStatus::Failure

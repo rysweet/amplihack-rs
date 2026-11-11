@@ -1,104 +1,91 @@
-//! Runner-owned execution authority. Child output and persisted files are diagnostics only.
-use super::autodrive_preflight::{self, PreflightRequest, RefusalOutcome};
-use anyhow::{Context, Result};
+//! How a preflight refusal reaches the final event of the `recipe run` that
+//! started it. The PR worktree decision is made once, by the loop recipe's
+//! own preflight step calling `amplihack orch helper autodrive-preflight`
+//! after that step has made the state directory private and applied its
+//! merged and phase-done skips (autodrive_state.sh). The runner makes no
+//! decision of its own: it only reads the refusal the helper handed back.
+//! Child stdout and persisted state files never assert a refusal.
+use super::autodrive_preflight::RefusalOutcome;
+use anyhow::Result;
 use serde_json::Value;
-use std::{collections::BTreeMap, path::Path};
+use std::path::Path;
 
 pub(crate) fn known(outcome: &str) -> bool {
     serde_json::from_value::<RefusalOutcome>(Value::String(outcome.into())).is_ok()
 }
 
-pub(crate) fn inspect(
-    recipe: &str,
-    context: &BTreeMap<String, String>,
-    cwd: &Path,
-) -> Result<Option<Value>> {
-    if !matches!(recipe, "autodrive-crusty-loop" | "autodrive-merge-loop") {
-        return Ok(None);
-    }
-    let pr = context
-        .get("pr_number")
-        .filter(|p| p.parse::<u64>().is_ok())
-        .or_else(|| context.get("autodrive_pr_input"));
-    let Some(pr) = pr.filter(|p| !p.is_empty()) else {
-        return Ok(None);
+/// File in the run's private runtime directory through which the
+/// `autodrive-preflight` helper hands a refusal to the `recipe run` that
+/// started it, whether the loop ran directly or as a sub-recipe of
+/// `auto-drive-to-merge` inside one recipe-runner child. Without it the
+/// final event would read `failure`.
+pub(crate) const HANDOFF_FILE: &str = "autodrive-preflight-refusal.json";
+const RUNTIME_DIR_ENV: &str = "AMPLIHACK_WORKFLOW_RUNTIME_DIR";
+const RUN_ID_ENV: &str = "AMPLIHACK_RECIPE_RUN_ID";
+
+/// Helper side: write `envelope`, stamped with this process's recipe run id,
+/// to the run's runtime directory. Does nothing outside a `recipe run`.
+pub(crate) fn write_handoff(envelope: &Value) -> Result<()> {
+    let (Some(dir), Some(run_id)) = (
+        std::env::var_os(RUNTIME_DIR_ENV),
+        std::env::var(RUN_ID_ENV).ok(),
+    ) else {
+        return Ok(());
     };
-    let pr = pr.parse::<u64>().context("invalid auto-drive PR number")?;
-    let cwd = context
-        .get("repo_path")
-        .filter(|p| !p.is_empty())
-        .map(|p| cwd.join(p))
-        .unwrap_or_else(|| cwd.to_path_buf());
-    let platform = autodrive_preflight::output(
-        &cwd,
-        "gh",
-        &["pr", "view", &pr.to_string(), "--json", "state,mergedAt"],
-    )
-    .ok()
-    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
-    if platform.as_ref().is_some_and(|p| {
-        p["state"] == "MERGED" || p["mergedAt"].as_str().is_some_and(|m| !m.is_empty())
-    }) {
-        return Ok(None);
+    let dir = std::path::PathBuf::from(dir);
+    if dir.as_os_str().is_empty() || run_id.is_empty() {
+        return Ok(());
     }
-    let slug = autodrive_preflight::git(&cwd, &["remote", "get-url", "origin"])
-        .unwrap_or_else(|_| "local".into());
-    let key: String = format!("{}/{pr}", slug.strip_suffix(".git").unwrap_or(&slug))
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || "._-".contains(c) {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let root = std::env::var_os("AMPLIHACK_STATE_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| "/tmp".into()))
-                .join(".amplihack/state")
-        });
-    let state_dir = context
-        .get("autodrive_state_dir")
-        .filter(|p| !p.is_empty())
-        .map(|p| cwd.join(p))
-        .unwrap_or_else(|| root.join("auto-drive").join(key));
-    if recipe == "autodrive-crusty-loop"
-        && state_dir.exists()
-        && autodrive_preflight::validate_state_directory(&state_dir).is_ok()
+    let mut stamped = envelope.clone();
+    stamped["run_id"] = Value::String(run_id);
+    // NamedTempFile is created 0600 and renamed into place atomically.
+    let mut tmp = tempfile::NamedTempFile::new_in(&dir)?;
+    serde_json::to_writer(&mut tmp, &stamped)?;
+    std::io::Write::write_all(&mut tmp, b"\n")?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(dir.join(HANDOFF_FILE))?;
+    Ok(())
+}
+
+/// Runner side: the refusal a helper handed to this run, if any. Accepted
+/// only from a regular file (not a symlink) owned by this user with mode
+/// 0600 in the run's own runtime directory, stamped with this attempt's run
+/// id, carrying a known refusal outcome. Anything else is ignored, and the
+/// run ends as it otherwise would.
+pub(crate) fn read_handoff(runtime_dir: &Path, run_id: &str) -> Option<(RefusalOutcome, Value)> {
+    use std::io::Read;
+    let path = runtime_dir.join(HANDOFF_FILE);
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
     {
-        // Resume markers can skip a completed phase, but never assert a refusal.
-        let marker = state_dir.join("phases.tsv");
-        let safe = std::fs::symlink_metadata(&marker).is_ok_and(|m| {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                m.is_file()
-                    && !m.file_type().is_symlink()
-                    && m.mode() & 0o077 == 0
-                    && m.uid() == unsafe { libc::geteuid() }
-            }
-            #[cfg(not(unix))]
-            {
-                m.is_file() && !m.file_type().is_symlink()
-            }
-        });
-        if safe
-            && std::fs::read_to_string(marker)
-                .is_ok_and(|s| s.lines().any(|l| l.starts_with("crusty-loop\t")))
-        {
-            return Ok(None);
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(&path).ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o777 != 0o600 {
+            return None;
         }
     }
-    let result = autodrive_preflight::inspect(
-        PreflightRequest {
-            pr,
-            repo: ".".into(),
-            branch: context.get("existing_branch").cloned().unwrap_or_default(),
-            state_dir,
-        },
-        &cwd,
-    )?;
-    Ok(Some(result))
+    let mut bytes = Vec::new();
+    file.take(1024 * 1024 + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > 1024 * 1024 {
+        return None;
+    }
+    let mut envelope: Value = serde_json::from_slice(&bytes).ok()?;
+    if envelope["run_id"].as_str() != Some(run_id) || envelope["terminal_refusal"] != true {
+        return None;
+    }
+    let outcome = serde_json::from_value::<RefusalOutcome>(envelope["outcome"].clone()).ok()?;
+    if let Some(map) = envelope.as_object_mut() {
+        map.remove("run_id");
+    }
+    Some((outcome, envelope))
 }

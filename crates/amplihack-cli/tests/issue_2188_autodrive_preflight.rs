@@ -427,24 +427,42 @@ fn missing_branch_worktree_is_named_refusal() {
 }
 
 #[test]
-fn symlinked_state_keeps_primary_refusal_without_writing_target() {
+fn symlinked_state_dir_is_a_local_refusal_before_any_push_or_comment() {
     let f = Fixture::new();
     let target = f.tmp.path().join("protected-target");
     fs::create_dir(&target).unwrap();
     std::os::unix::fs::symlink(&target, f.tmp.path().join("state")).unwrap();
-    fs::write(f.repo.join("dirty"), "preserve").unwrap();
-    let v = f.envelope(1, "pr-worktree-dirty");
-    assert!(
-        v.to_string().contains("persist"),
-        "persistence failure must be visible: {v}"
+    let next = f.commit(&f.base, "ahead");
+    f.git(&["update-ref", "HEAD", &next]);
+    f.script(
+        "repo/.git/hooks/pre-push",
+        "#!/bin/sh\nprintf 'hook\\n' >> \"$FIXTURE/hook\"\n",
     );
+    let o = f.run();
+    assert_eq!(o.status.code(), Some(1));
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["outcome"], "state-dir-not-private", "{v}");
+    assert!(
+        v["evidence"]["diagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("symlink"),
+        "the refusal names the real cause: {v}"
+    );
+    assert!(String::from_utf8_lossy(&o.stderr).contains("ERROR: state-dir-not-private:"));
     assert_eq!(fs::read_dir(target).unwrap().count(), 0);
+    assert!(!f.tmp.path().join("comments").exists(), "no PR comment");
+    assert!(!f.tmp.path().join("hook").exists(), "nothing was pushed");
     assert_eq!(
-        fs::read_to_string(f.tmp.path().join("comments")).unwrap(),
-        "comment\n"
+        f.git(&[
+            "--git-dir",
+            f.remote.to_str().unwrap(),
+            "rev-parse",
+            "refs/heads/feature"
+        ]),
+        f.base
     );
 }
-
 impl Fixture {
     fn install_loop_tools(&self) {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -458,6 +476,27 @@ impl Fixture {
             tools.join("autodrive_state.sh"),
         )
         .unwrap();
+        // Every auto-drive `recipe run` refuses to start without the merge
+        // guard (#1551); install the real one so those runs reach the child.
+        let guard = tools.join("gh-merge-guard");
+        fs::create_dir_all(&guard).unwrap();
+        for file in ["gh", "bash-env"] {
+            fs::copy(
+                root.join("amplifier-bundle/tools/gh-merge-guard")
+                    .join(file),
+                guard.join(file),
+            )
+            .unwrap();
+            fs::set_permissions(guard.join(file), fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::set_permissions(
+            tools.join("autodrive_state.sh"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        for dir in [&guard, &tools] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         std::os::unix::fs::symlink(
             super::support::amplihack_bin::amplihack_bin(),
             self.tmp.path().join("bin/amplihack"),
@@ -484,33 +523,10 @@ esac
             .unwrap(),
         )
         .unwrap();
-        // Model the runner's single decision before invoking the shell consumer.
-        let platform = self
-            .command("gh")
-            .args(["pr", "view", "7", "--json", "state,mergedAt"])
-            .output()
-            .unwrap();
-        let merged = serde_json::from_slice::<Value>(&platform.stdout)
-            .ok()
-            .is_some_and(|v| v["state"] == "MERGED");
-        let completed = name == "crusty"
-            && fs::read_to_string(self.tmp.path().join("state/phases.tsv"))
-                .is_ok_and(|s| s.starts_with("crusty-loop\t"));
-        let ready = if merged || completed {
-            Vec::new()
-        } else {
-            let decision = self.run();
-            if !decision.status.success() {
-                return decision;
-            }
-            decision.stdout
-        };
+        // The loop's own preflight step is the one decision: it makes the
+        // state directory private, applies its skips, then calls the helper.
         self.command("bash")
             .args(["-c", yaml["steps"][0]["command"].as_str().unwrap()])
-            .env(
-                "AMPLIHACK_AUTODRIVE_READY",
-                String::from_utf8(ready).unwrap(),
-            )
             .env("PR_NUMBER", "7")
             .env("REPO_PATH", &self.repo)
             .env("AUTODRIVE_STATE_DIR", self.tmp.path().join("state"))
@@ -653,7 +669,7 @@ fn rename_keeps_both_endpoints() {
 }
 
 #[test]
-fn both_loops_keep_primary_refusal_when_state_is_a_symlink() {
+fn both_loops_refuse_a_symlinked_state_dir_locally_without_comment() {
     for name in ["crusty", "merge"] {
         let f = Fixture::new();
         f.install_loop_tools();
@@ -661,22 +677,30 @@ fn both_loops_keep_primary_refusal_when_state_is_a_symlink() {
         fs::create_dir(&target).unwrap();
         std::os::unix::fs::symlink(&target, f.tmp.path().join("state")).unwrap();
         fs::write(f.repo.join("dirty"), "preserve").unwrap();
+        // The helper called directly checks the state directory before it
+        // inspects the worktree, so it names this refusal, not the dirt.
+        let o = f.run();
+        assert_eq!(o.status.code(), Some(1));
+        let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+        assert_eq!(v["outcome"], "state-dir-not-private");
+        // The loop's preflight stops in autodrive_private_dir, before the
+        // helper runs at all.
         let o = f.loop_preflight(name);
-        assert_eq!(
-            o.status.code(),
-            Some(1),
-            "stderr={} stdout={}",
-            String::from_utf8_lossy(&o.stderr),
+        assert_eq!(o.status.code(), Some(1));
+        assert!(
+            o.stdout.is_empty(),
+            "{}",
             String::from_utf8_lossy(&o.stdout)
         );
-        let v: Value = serde_json::from_slice(&o.stdout).unwrap();
-        assert_eq!(v["outcome"], "pr-worktree-dirty");
-        assert!(v.get("persistence_error").is_some());
+        assert!(
+            String::from_utf8_lossy(&o.stderr).contains("ERROR: state-dir-not-private:"),
+            "{}",
+            String::from_utf8_lossy(&o.stderr)
+        );
         assert_eq!(fs::read_dir(target).unwrap().count(), 0);
-        assert!(f.tmp.path().join("comments").exists());
+        assert!(!f.tmp.path().join("comments").exists(), "no PR comment");
     }
 }
-
 #[test]
 fn fork_source_is_used_even_when_origin_is_unrelated() {
     let f = Fixture::new();
@@ -956,19 +980,22 @@ esac
 }
 
 #[test]
-fn synchronized_existing_public_state_directory_is_refused_without_chmod() {
-    let f = Fixture::new();
-    let state = f.tmp.path().join("state");
-    fs::create_dir(&state).unwrap();
-    fs::set_permissions(&state, fs::Permissions::from_mode(0o755)).unwrap();
-    f.envelope(1, "pr-worktree-comparison-failed");
-    assert_eq!(
-        fs::metadata(&state).unwrap().permissions().mode() & 0o777,
-        0o755
-    );
-    assert_eq!(fs::read_dir(state).unwrap().count(), 0);
+fn existing_state_directories_follow_the_autodrive_private_dir_rule() {
+    // 0755 is what autodrive_private_dir leaves; 0775 is what drives created
+    // under umask 0002 before it existed. Both continue, and the second
+    // loses its group write bit exactly as `chmod go-w` would remove it.
+    for (mode, expected) in [(0o755, 0o755), (0o775, 0o755), (0o700, 0o700)] {
+        let f = Fixture::new();
+        let state = f.tmp.path().join("state");
+        fs::create_dir(&state).unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(mode)).unwrap();
+        f.envelope(0, "ready");
+        assert_eq!(
+            fs::metadata(&state).unwrap().permissions().mode() & 0o777,
+            expected
+        );
+    }
 }
-
 #[test]
 fn executable_remote_transport_is_rejected_even_if_enabled_in_configuration() {
     let f = Fixture::new();
@@ -1177,4 +1204,72 @@ fi
         ]),
         secret
     );
+}
+
+#[test]
+fn deleted_unpruned_worktree_does_not_stop_the_drive() {
+    let f = Fixture::new();
+    let gone = f.tmp.path().join("gone");
+    f.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "other",
+        gone.to_str().unwrap(),
+    ]);
+    fs::remove_dir_all(&gone).unwrap();
+    assert!(
+        f.git(&["worktree", "list", "--porcelain"])
+            .contains("prunable"),
+        "fixture must leave a prunable record"
+    );
+    let next = f.commit(&f.base, "ahead");
+    f.git(&["update-ref", "HEAD", &next]);
+    f.envelope(0, "ready");
+    assert_eq!(
+        f.git(&[
+            "--git-dir",
+            f.remote.to_str().unwrap(),
+            "rev-parse",
+            "refs/heads/feature"
+        ]),
+        next
+    );
+}
+
+#[test]
+fn unreadable_worktree_on_another_branch_does_not_stop_the_drive() {
+    let f = Fixture::new();
+    let other = f.tmp.path().join("other");
+    f.git(&[
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "other",
+        other.to_str().unwrap(),
+    ]);
+    // Break the worktree's link to its administrative directory without
+    // deleting it, so the record is listed but Git cannot inspect it.
+    fs::write(other.join(".git"), "gitdir: /nonexistent/admin\n").unwrap();
+    f.envelope(0, "ready");
+}
+
+#[test]
+fn verified_push_moves_the_remote_tracking_ref() {
+    let f = Fixture::new();
+    f.git(&[
+        "remote",
+        "set-url",
+        "origin",
+        "https://github.com/source/project.git",
+    ]);
+    f.git(&["update-ref", "refs/remotes/origin/feature", &f.base]);
+    let next = f.commit(&f.base, "ahead");
+    f.git(&["update-ref", "HEAD", &next]);
+    let v = f.envelope(0, "ready");
+    assert_eq!(v["disposition"], "pushed");
+    assert!(v.get("tracking_ref_error").is_none(), "{v}");
+    assert_eq!(f.git(&["rev-parse", "refs/remotes/origin/feature"]), next);
 }

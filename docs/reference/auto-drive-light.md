@@ -67,7 +67,7 @@ A different QA command and a higher line limit:
 
 ```bash
 amplihack recipe run auto-drive-light \
-  -c task_description="Add the missing --end-of-options to the rev-parse calls in autodrive_pr_head.sh" \
+  -c task_description="Add the missing --end-of-options to the rev-parse calls in autodrive_state.sh" \
   -c repo_path=. \
   -c qa_command="cargo test -p amplihack-cli --test main issue_1570" \
   -c light_max_lines=400

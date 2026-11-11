@@ -100,7 +100,7 @@ AUTODRIVE_RECIPES=(
   autodrive-merge-loop
 )
 AUTODRIVE_TOOLS=(autodrive_budget.sh autodrive_progress.sh autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_escalate.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh
-  autodrive_platform_facts.sh autodrive_pr_head.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh
+  autodrive_platform_facts.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh
   autodrive_trust.sh autodrive_unmerged.sh autodrive_worktree_guard.sh)
 # merge-round step-00-tools-dir finds the tools once and every later step of
 # the round reads the directory from its output. A scalar output reaches bash
@@ -182,6 +182,15 @@ STUB_BIN="${WORK}/bin"; mkdir -p "${STUB_BIN}"
 # under test must be the real one. `recipe run ...` is scripted per scenario.
 cat > "${STUB_BIN}/amplihack" <<'STUB'
 #!/usr/bin/env bash
+# #2188: the loops' PR worktree decision compares against the source
+# repository over HTTPS; its own offline suite is
+# crates/amplihack-cli/tests/issue_2188_autodrive_preflight.rs. Sections that
+# test something else hand the loop the helper's ready decision here, and
+# record the call so they can show the helper ran after the state dir check.
+if [ "${1:-} ${2:-} ${3:-}" = "orch helper autodrive-preflight" ] && [ -n "${STUB_AUTODRIVE_PREFLIGHT:-}" ]; then
+  echo "$*" >> "${STUB_PREFLIGHT_CALLS:-/dev/null}"
+  printf '%s\n' "${STUB_AUTODRIVE_PREFLIGHT}"; exit 0
+fi
 if [ "${1:-}" = "orch" ]; then exec "$REAL_AMPLIHACK" "$@"; fi
 # The loop passes recipes by absolute path from its own tree (#1528, #1543).
 # `show` and `run` below key on the recipe's basename and record the path as
@@ -5503,6 +5512,13 @@ PF_ENV=(HOME="${TEST_HOME}" PATH="${STUB_BIN}:/usr/bin:/bin" AMPLIHACK_HOME="${R
 # env applies assignments in order, so these override PF_ENV's for 13c only;
 # the end-to-end section below keeps PF_ENV as it is.
 PF_PREFLIGHT_ENV=("${PF_ENV[@]}" REPO_PATH="${PF_FX}" GH_HEAD="$(git -C "${PF_FX}" rev-parse HEAD)" GH_HEAD_REF=feat/pf)
+# #2188: this section tests state-dir privacy, so the amplihack stub answers
+# the PR worktree helper with a ready decision for PF_FX.
+ready_decision() { # ready_decision <worktree> <sha>
+  jq -cn --arg wt "$1" --arg sha "$2" \
+    '{schema_version:1,outcome:"ready",terminal_refusal:false,disposition:"synchronized",worktree:$wt,head_sha:$sha,head_matches:true}'
+}
+PF_PREFLIGHT_ENV+=(STUB_AUTODRIVE_PREFLIGHT="$(ready_decision "${PF_FX}" "$(git -C "${PF_FX}" rev-parse HEAD)")")
 for spec in autodrive-build:step-01-build-preflight autodrive-crusty-loop:step-01-crusty-loop-preflight \
             autodrive-merge-loop:step-01-merge-loop-preflight; do
   r="${spec%%:*}"; body="$(extract_step_command "${RECIPES}/${r}.yaml" "${spec#*:}")"
@@ -5515,9 +5531,11 @@ for spec in autodrive-build:step-01-build-preflight autodrive-crusty-loop:step-0
   else
     fail "PRIVATE-PREFLIGHT-${r}" "rc=${rc} dir='${dir}' untrusted: $(untrusted_in "${root}" | tr '\n' ' ') err=$(tr '\n' ' ' < "${root}.err")"
   fi
-  out="$(env -i "${PF_PREFLIGHT_ENV[@]}" AUTODRIVE_STATE_DIR="${PD}/link" bash -c "umask 0002; ${body}" 2>"${root}.link.err")"; rc=$?
-  if [ "${rc}" -ne 0 ] && [ -z "${out}" ] && grep -qF 'ERROR: state-dir-not-private:' "${root}.link.err"; then
-    pass "PRIVATE-PREFLIGHT-${r}-symlink" "${r} stops by name on a symlinked AUTODRIVE_STATE_DIR"
+  : > "${root}.link.calls"
+  out="$(env -i "${PF_PREFLIGHT_ENV[@]}" STUB_PREFLIGHT_CALLS="${root}.link.calls" AUTODRIVE_STATE_DIR="${PD}/link" bash -c "umask 0002; ${body}" 2>"${root}.link.err")"; rc=$?
+  if [ "${rc}" -ne 0 ] && [ -z "${out}" ] && grep -qF 'ERROR: state-dir-not-private:' "${root}.link.err" \
+     && [ ! -s "${root}.link.calls" ]; then
+    pass "PRIVATE-PREFLIGHT-${r}-symlink" "${r} stops by name on a symlinked AUTODRIVE_STATE_DIR, locally, before the PR preflight"
   else
     fail "PRIVATE-PREFLIGHT-${r}-symlink" "rc=${rc} out='${out}' err=$(tr '\n' ' ' < "${root}.link.err")"
   fi
@@ -5539,7 +5557,8 @@ git -C "$FX" update-ref refs/heads/pr-42 "${CR_SHA2}" && git -C "$FX" symbolic-r
   || { echo "HARNESS-ERROR: cannot put FX on the PR #42 branch" >&2; exit 2; }
 E2E="${WORK_PHYS}/umask-e2e"; mkdir -p "${E2E}.tmp"; chmod 0700 "${E2E}.tmp"
 printf 'drive the PR to merge' > "${E2E}.task"
-E2E_ENV=("${PF_ENV[@]}" GH_HEAD_REF=pr-42 AMPLIHACK_STATE_DIR="${E2E}" STUB_UMASK_LOG="${E2E}.umask" STUB_CALLS=/dev/null STUB_SHOW_CALLS=/dev/null
+E2E_ENV=("${PF_ENV[@]}" GH_HEAD_REF=pr-42 AMPLIHACK_STATE_DIR="${E2E}"
+  STUB_AUTODRIVE_PREFLIGHT="$(ready_decision "${FX}" "${CR_SHA2}")" STUB_UMASK_LOG="${E2E}.umask" STUB_CALLS=/dev/null STUB_SHOW_CALLS=/dev/null
   STUB_HEALTH_STDOUT="${H_DONE}" STUB_HEALTH_RC=0 STUB_HEALTH_RESOLVES=0 AMPLIHACK_BIN="${STUB_BIN}/amplihack")
 e2e_loop() { # e2e_loop <loop-name> <round-recipe> <clean-token> <verdict-field> <step body> [VAR=value ...]
   local name="$1" recipe="$2" token="$3" vfield="$4" body="$5"; shift 5

@@ -138,12 +138,14 @@ they never replace the primary refusal. A comment is not execution authority.
 | `pr-worktree-not-found` | Check repository identity and establish the intended PR branch worktree deliberately. No other checkout is selected as a fallback. |
 | `pr-worktree-ambiguous` | Inspect the candidate paths, including detached rebase candidates. Leave one uniquely identifiable worktree for the PR branch; preserve recovery state in every candidate. |
 | `pr-worktree-branch-mismatch` | Correct `existing_branch` to the PR source branch or omit it. Never switch a different worktree to satisfy the drive. |
+| `state-dir-not-private` | The drive's state directory is a symlink, not a directory, owned by another user, or could not be made private. Inspect it, then fix it or set another `AUTODRIVE_STATE_DIR`. Nothing was pushed or published; this refusal is reported locally only. |
 
-Inspect the chosen worktree before recovery:
+Inspect the chosen worktree before recovery. `<pr-worktree>` is the path in
+the refusal's `evidence.worktree`:
 
 ```bash
-git -C worktrees/feat/issue-2188-auto-drive-dies-silently status
-git -C worktrees/feat/issue-2188-auto-drive-dies-silently diff --name-only --diff-filter=U
+git -C <pr-worktree> status
+git -C <pr-worktree> diff --name-only --diff-filter=U
 ```
 
 `status` reports pending operations and changes; the second command lists

@@ -102,7 +102,9 @@ steps:
       [ -n "$DIR" ] || DIR="$(autodrive_state_root)/$(autodrive_state_key "$PWD" "$IDENT")"
       # Private whatever the caller's umask: the merge gate refuses state
       # that anyone else could have written (autodrive_state.sh).
-      STATE_PRIVATE=1; autodrive_private_dir "$DIR" || STATE_PRIVATE=0
+      # A symlinked or foreign state directory stops here, locally and with
+      # no PR comment, before the PR preflight can push or publish anything.
+      autodrive_private_dir "$DIR" || exit 1
       STATE="$(autodrive_pr_state "$PR")"
       RUN="true"; WHY="merge-ready loop not yet completed for this PR"
       if [ "$STATE" = "MERGED" ]; then
@@ -121,21 +123,23 @@ steps:
       REPO="${REPO_PATH:-.}"
       if [ "$RUN" = "true" ] && [ -n "$PR_GIVEN" ]; then
         [ "$REPO_CD_OK" = 1 ] || { echo "ERROR: cannot cd to REPO_PATH='${REPO_PATH:-.}'" >&2; exit 1; }
-        # The runner owns the only preflight and its named terminal event.
-        # Consume its ready decision rather than running a second inspection.
-        RES="${AMPLIHACK_AUTODRIVE_READY:-}"
-        if [ -z "$RES" ]; then
-          # Embedded recipe engines do not enter the CLI's loop runner. Keep
-          # their existing standalone helper path when no handoff was supplied.
-          RES="$(amplihack orch helper autodrive-preflight --pr "$PR" --repo . --branch "${EXISTING_BRANCH:-}" --state-dir "$DIR")"
-          PRC=$?
-          if [ "$PRC" -ne 0 ]; then printf '%s\n' "$RES"; exit "$PRC"; fi
-        fi
+        # #2188: the one PR worktree decision. The state directory was made
+        # private above and the merged/phase-done skips were applied, so the
+        # helper runs only for a drive this loop will enter. Its refusal is
+        # named on stdout and handed to the enclosing `recipe run`, whose
+        # final event carries the outcome (autodrive_runner::read_handoff).
+        RES="$(amplihack orch helper autodrive-preflight --pr "$PR" --repo . --branch "${EXISTING_BRANCH:-}" --state-dir "$DIR")"
+        PRC=$?
+        if [ "$PRC" -ne 0 ]; then printf '%s\n' "$RES"; exit "$PRC"; fi
         REPO="$(printf '%s' "$RES" | amplihack orch helper extract-field --field worktree)"
         HEAD_SHA="$(printf '%s' "$RES" | amplihack orch helper extract-field --field head_sha)"
+        MATCH="$(printf '%s' "$RES" | amplihack orch helper extract-field --field head_matches --default '')"
+        if [ "$MATCH" != "true" ] || [ -z "$REPO" ] || [ ! -d "$REPO" ]; then
+          echo "ERROR: PR #${PR}: the preflight returned no ready decision (head_matches=${MATCH:-<missing>}); refusing to enter the loop (#2188)" >&2
+          exit 1
+        fi
         echo "INFO: PR #${PR} head ${HEAD_SHA} resolved to worktree ${REPO}" >&2
       fi
-      [ "$STATE_PRIVATE" = 1 ] || { echo "ERROR: state directory is unavailable" >&2; exit 1; }
       E_DIR="$(json_esc "$DIR")" && E_REPO="$(json_esc "$REPO")" \
         || { echo "ERROR: state_dir or repo contains control characters; refusing to enter the merge loop" >&2; exit 1; }
       echo "INFO: merge-loop preflight: pr=${PR:-<none>} pr_state=${STATE} run=${RUN} (${WHY}) state_dir=${DIR}" >&2

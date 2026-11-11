@@ -1,5 +1,30 @@
 //! Freeze publication policy before network access; repository rewrites never
 //! reach execution. Only HTTPS to the exact PR source repository is supported.
+//!
+//! Why not a plain `git push <url> <sha>:refs/heads/<branch>` from the
+//! worktree (PR #2298 review): the preflight pushes without a person in the
+//! loop, to a destination named by PR metadata, from a worktree whose Git
+//! configuration anyone with access to the checkout or to ~/.gitconfig can
+//! change. A plain push rereads that configuration when it runs, so
+//!
+//! * `url.<x>.insteadOf` / `pushInsteadOf` can send the commit to another
+//!   repository, and `git ls-remote --get-url` reports only `insteadOf`;
+//! * a rewrite to `<helper>::...` runs an arbitrary `git-remote-<helper>`;
+//! * a pre-push hook (which must run) can rewrite that configuration between
+//!   any check and the network operation.
+//!
+//! Each of these is covered by a test in
+//! crates/amplihack-cli/tests/issue_2188_autodrive_preflight.rs
+//! (`destination_policy_rejects_*`, `executable_remote_transport_*`,
+//! `rewritten_destination_after_validation_*`). Running the network command
+//! with a scratch Git directory whose configuration was fixed before the
+//! push is what makes those tests pass: the destination is checked once,
+//! from a copy, and execution never reads the mutable configuration again.
+//! The object store is shared by symlink so no objects are copied, and the
+//! worktree's own pre-push hook still runs, with the worktree's GIT_DIR, cwd
+//! and arguments. The one side effect a plain push would have had, moving
+//! `refs/remotes/<remote>/<branch>`, is done after remote verification by
+//! `record_verified_push` in the parent module.
 use super::{git, output};
 use anyhow::{Result, bail};
 use std::{path::Path, process::Command};

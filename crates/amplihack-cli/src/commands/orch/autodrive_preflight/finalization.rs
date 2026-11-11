@@ -2,62 +2,53 @@
 use super::{PreflightRequest, RefusalOutcome, identity, output};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use std::{
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::{fs, io::Write, path::Path};
 
 pub(super) struct FinalizedRefusal {
     pub(super) envelope: Value,
 }
 
+/// Make `dir` a state directory the merge gate accepts, by the rule
+/// `autodrive_private_dir` in autodrive_state.sh applies: created under umask
+/// 077 when missing; refused when it is a symlink, not a directory or not
+/// owned by this user; otherwise its group and world write bits are removed
+/// (chmod go-w). Read bits are left alone: records are written 0600, and the
+/// merge gate only refuses entries others could write.
 pub(crate) fn validate_state_directory(dir: &Path) -> Result<()> {
-    let absolute = if dir.is_absolute() {
-        dir.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(dir)
-    };
-    let mut prefix = PathBuf::new();
-    for component in absolute.components() {
-        prefix.push(component);
-        match fs::symlink_metadata(&prefix) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                // macOS exposes these system-owned aliases in TMPDIR.
-                #[cfg(target_os = "macos")]
-                if metadata.uid() == 0
-                    && ((prefix == Path::new("/var")
-                        && fs::canonicalize(&prefix)? == Path::new("/private/var"))
-                        || (prefix == Path::new("/tmp")
-                            && fs::canonicalize(&prefix)? == Path::new("/private/tmp")))
-                {
-                    continue;
-                }
-                bail!("state directory has a symlink component")
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-            Err(error) => return Err(error.into()),
-        }
-    }
     #[cfg(unix)]
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-    if !dir.exists() {
-        let mut builder = fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        builder.mode(0o700);
-        builder.create(dir)?;
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    let display = dir.display();
+    match fs::symlink_metadata(dir) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut builder = fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            builder.mode(0o700);
+            builder
+                .create(dir)
+                .with_context(|| format!("{display} could not be created as a directory"))?;
+        }
+        Err(error) => return Err(error).with_context(|| format!("{display} cannot be read")),
     }
     let m = fs::symlink_metadata(dir)?;
-    if !m.is_dir() || m.file_type().is_symlink() {
-        bail!("unsafe state directory");
+    if m.file_type().is_symlink() {
+        bail!("{display} is a symlink; the merge gate never reads evidence through one");
+    }
+    if !m.is_dir() {
+        bail!("{display} is not a directory");
     }
     #[cfg(unix)]
-    if m.mode() & 0o077 != 0 || m.uid() != unsafe { libc::geteuid() } {
-        bail!(
-            "state directory must be owned by current user with owner-only permissions (chmod 700 after inspecting the directory)"
-        );
+    {
+        if m.uid() != unsafe { libc::geteuid() } {
+            bail!("{display} is not owned by this user, so others may write in it");
+        }
+        if m.mode() & 0o022 != 0 {
+            fs::set_permissions(dir, fs::Permissions::from_mode(m.mode() & 0o7777 & !0o022))
+                .with_context(|| {
+                    format!("could not remove the group and world write bits from {display}")
+                })?;
+        }
     }
     Ok(())
 }
@@ -76,7 +67,7 @@ fn persist(dir: &Path, value: &Value) -> Result<()> {
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
             .open(dir)?;
         let m = directory.metadata()?;
-        if m.mode() & 0o077 != 0 || m.uid() != unsafe { libc::geteuid() } {
+        if m.mode() & 0o022 != 0 || m.uid() != unsafe { libc::geteuid() } {
             bail!("state directory changed ownership or permissions");
         }
         let name = std::ffi::CString::new(format!(".preflight-{}", uuid::Uuid::new_v4()))?;
@@ -203,6 +194,9 @@ pub(super) fn finalize_refusal(
         RefusalOutcome::BranchMismatch => {
             "Correct existing_branch to the PR source branch or omit it."
         }
+        RefusalOutcome::StateDirNotPrivate => {
+            "Inspect the drive's state directory: it must be a real directory owned by this user with no group or world write bit."
+        }
     };
     let mut body = format!(
         "Auto-drive stopped: {}. {remedy} Detailed evidence is in the protected preflight result. No history was reconciled.",
@@ -254,24 +248,56 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
-    fn issue_2188_only_owner_private_directories_preserve_recovery_records() {
+    fn issue_2188_state_directory_rule_matches_autodrive_private_dir() {
         let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("state");
-        fs::create_dir(&dir).unwrap();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
-        persist(&dir, &json!({"recovery":"preserve"})).unwrap();
-        let original = fs::read(dir.join("preflight-result.json")).unwrap();
-        for mode in [0o755, 0o750, 0o770, 0o777, 0o707] {
+        // Read bits are accepted and left alone; write bits for group or
+        // world are removed, as `chmod go-w` in autodrive_private_dir does.
+        for (mode, expected) in [
+            (0o700, 0o700),
+            (0o750, 0o750),
+            (0o755, 0o755),
+            (0o775, 0o755),
+            (0o770, 0o750),
+            (0o777, 0o755),
+            (0o707, 0o705),
+        ] {
+            let dir = root.path().join(format!("state-{mode:o}"));
+            fs::create_dir(&dir).unwrap();
             fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
-            assert!(persist(&dir, &json!({"replacement":true})).is_err());
-            assert_eq!(
-                fs::read(dir.join("preflight-result.json")).unwrap(),
-                original
-            );
+            persist(&dir, &json!({"recovery":"preserve"})).unwrap();
             assert_eq!(
                 fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
-                mode
+                expected,
+                "mode {mode:o}"
+            );
+            let record = dir.join("preflight-result.json");
+            assert_eq!(
+                fs::metadata(&record).unwrap().permissions().mode() & 0o777,
+                0o600
             );
         }
+        let missing = root.path().join("new/nested/state");
+        validate_state_directory(&missing).unwrap();
+        assert_eq!(
+            fs::metadata(&missing).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn issue_2188_symlinked_state_directory_is_refused_and_target_untouched() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o775)).unwrap();
+        let link = root.path().join("state");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let error = persist(&link, &json!({"replacement":true})).unwrap_err();
+        assert!(error.to_string().contains("symlink"), "{error}");
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+        assert_eq!(
+            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o775
+        );
     }
 }

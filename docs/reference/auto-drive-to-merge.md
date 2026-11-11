@@ -125,7 +125,7 @@ non-numeric operator `pr_number` a refusal rather than a silent fallback.
 
 When resolution does run, `REPO_PATH` may be absolute or relative to the
 directory the run started in. The preflight changes into `REPO_PATH` and
-passes the resulting `$PWD` to the resolver. A `REPO_PATH` the preflight
+passes the resulting `$PWD` to the preflight helper. A `REPO_PATH` the preflight
 cannot enter is refused before resolution; the loop never falls back to the
 current directory:
 
@@ -133,91 +133,24 @@ current directory:
 ERROR: cannot cd to REPO_PATH='sub'; refusing to enter the crusty loop (#1543)
 ```
 
-### The resolver
+### The preflight helper
 
-`amplifier-bundle/tools/autodrive_pr_head.sh` is read-only. It never creates,
-fetches into, checks out, commits in, or otherwise changes any worktree.
+Both loops resolve the PR worktree with the shared Rust preflight. The
+recipe step calls it as:
 
 ```bash
-amplifier-bundle/tools/autodrive_pr_head.sh --pr 1543 --branch feat/x --repo .
+amplihack orch helper autodrive-preflight --pr 1543 --repo . --branch feat/x --state-dir <state-dir>
 ```
 
-On success it prints one JSON line on stdout. Values in angle brackets are
-placeholders:
-
-```json
-{"pr":"1543","head_sha":"<40-hex headRefOid>","head_ref":"feat/x","worktree":"<repo>/worktrees/feat/x","worktree_head":"<40-hex HEAD>","head_matches":"true","worktree_relation":"same","remedy":"","reason":"ok"}
-```
-
-| Argument | Required | Meaning |
-| --- | --- | --- |
-| `--pr N` | yes | PR number. Must match `^[1-9][0-9]*$`. |
-| `--branch B` | no | The run's `existing_branch`. When given it must equal the PR's `headRefName`, or the tool refuses with exit `5`. |
-| `--repo R` | no | Repository to search. Defaults to `.`. |
-
-The tool reads `headRefOid`, `headRefName` and `state` with one
-`gh pr view N --json` call, then checks and picks the worktree in this order:
-
-1. If `B` is given and is not `headRefName`, refuse (`branch-mismatch`). A
-   worktree on another branch would be measured, and the round would push
-   from it.
-2. `R` itself, if `git branch --show-current` there equals `headRefName`.
-   This covers a main checkout that has the PR branch checked out.
-3. The `git -C R worktree list --porcelain` entry whose branch is
-   `refs/heads/<headRefName>`. Prunable and bare entries are skipped, and so
-   is any entry whose git common dir is not `R`'s.
-4. Otherwise, refuse.
-
-Branch names are compared as literal strings. A branch called `--force` is
-compared, not passed to `git` as an option.
-
-On success the tool prints exactly one JSON line on stdout and exits `0`.
-On failure, stdout is **empty**. The tool writes one line to stderr in the form
-`autodrive_pr_head: <reason>: <detail>`, sometimes followed by more lines, and
-exits non-zero. Standalone read-only callers of this shell resolver use its
-exit code to detect failure; there is no failure JSON to parse. This is the
-legacy shell interface, not the shared Rust preflight envelope consumed by
-the loop recipe adapter.
-
-| Field | Meaning |
-| --- | --- |
-| `head_sha` | The PR's `headRefOid` on GitHub. |
-| `head_ref` | The PR's `headRefName`. |
-| `worktree` | Absolute, symlink-resolved path of the chosen worktree. |
-| `worktree_head` | `git rev-parse HEAD` in that worktree. |
-| `head_matches` | `"true"` when `worktree_head` equals `head_sha`, else `"false"`. |
-| `worktree_relation` | `same`, `behind`, `ahead`, `diverged` or `unfetched`; see [Standalone resolver relations and remedies](#standalone-resolver-relations-and-remedies). |
-| `remedy` | The command that brings the worktree to the PR head for that relation, with the worktree path and branch shell-quoted (`printf %q`) so it can be pasted as printed even when the path contains a space. Empty when `head_matches` is `"true"`. |
-
-| Exit | `reason` | Cause |
-| --- | --- | --- |
-| `0` | `ok` (in the JSON) | Worktree found. |
-| `2` | `usage` (on stderr) | Bad or missing arguments. |
-| `3` | `no-pr-worktree` (on stderr) | No worktree has the PR branch checked out. |
-| `3` | `ambiguous-pr-worktree` (on stderr) | More than one worktree matches. Each matching path follows on its own stderr line. |
-| `4` | `pr-lookup-failed` (on stderr) | `gh pr view` failed, or returned an empty `headRefName` or a `headRefOid` that is not 40 or 64 hex characters. A `gh` failure is summarised as `gh pr view failed (rc=N)`. `gh`'s own output is never echoed, so auth errors and tokens do not reach the log. |
-| `5` | `branch-mismatch` (on stderr) | `--branch` is not the PR's `headRefName`. |
-
-### Standalone resolver relations and remedies
-
-These fields describe the read-only shell resolver's comparison against the
-advertised PR head using locally available objects. They are advisory output
-for standalone callers, not the shared Rust preflight's validated decisions
-or worker recovery instructions. The resolver never runs a remedy.
-
-| `worktree_relation` | Meaning | `remedy` output |
-| --- | --- | --- |
-| `same` | Local HEAD equals the advertised PR head. | Empty. |
-| `behind` | Local HEAD is an ancestor of the PR head. | `git -C <quoted-worktree> pull --ff-only` |
-| `ahead` | The PR head is an ancestor of local HEAD. | Push to `origin` with the quoted head branch; explains that pulling changes nothing. |
-| `diverged` | Neither ancestry check succeeds with the PR head available locally. | Pull with `--no-rebase`, then push to `origin` with the quoted head branch; explains that resetting would discard local commits. |
-| `unfetched` | The PR head commit is unavailable locally. | Pull with `--ff-only`, with guidance to merge and push if the histories have diverged. |
-
-The resolver shell-quotes worktree paths and branch names with `printf %q`.
-Its `origin` and upstream assumptions and its ancestry classification do not
-provide the source-repository validation, comparison-failure detection or
-verified push guarantees of shared preflight. For loop refusals, use
+It prints one versioned JSON envelope on stdout. A ready decision has
+`"outcome":"ready"`, the canonical `worktree`, its `head_sha` and
+`"head_matches":true`; the loop enters only on that. Any other outcome is a
+named refusal with `"terminal_refusal":true` and exit status `1`; the outcomes
+and the worker's recovery for each are listed under
 [worker recovery](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md#preflight-refusals-and-worker-recovery).
+Invalid arguments exit `2` with no envelope. The read-only shell resolver
+`autodrive_pr_head.sh` that earlier releases shipped has been removed: no
+loop called it once the helper replaced it.
 
 ### Refusal
 
@@ -225,8 +158,6 @@ When given an explicit PR number and scheduled to run, both loop recipes use
 the shared Rust `autodrive-preflight` decision path. Standalone loops without
 an explicit PR number retain the compatibility bypass described in
 [When resolution runs](#when-resolution-runs).
-The read-only `autodrive_pr_head.sh` interface above remains available to
-other callers; its relation and remedy fields do not control loop recovery.
 
 Preflight validates authenticated PR identity, its actual source repository
 and branch, and any explicit branch constraint. It enumerates canonical
@@ -307,16 +238,22 @@ Comments sanitize control characters and redact credentials and sensitive
 path prefixes. Necessary detailed evidence stays in protected local state.
 PR comments never control execution or mark phases complete.
 
-Before launching either loop with an explicit PR, the CLI runner calls the
-shared preflight directly and observes its returned decision. Only that
-runner-owned result can terminate retries. Child-written files, inherited
-channel variables, stdout and claimed helper exit codes carry no authority.
-A refusal is persisted and included in the runner's final correlation event
-and workspace report before any child starts. Unrelated child failures retain
-ordinary transport retry behavior. The runner hands its ready envelope to the
-recipe in `AMPLIHACK_AUTODRIVE_READY`, replacing any inherited value. The
-recipe consumes that decision without a second child-owned preflight. Embedded
-recipe engines without a CLI handoff retain the standalone helper path.
+Each loop's preflight step makes the decision once. It first makes the state
+directory private with `autodrive_private_dir`; a symlinked, foreign or
+unwritable state directory stops the step with `state-dir-not-private`, before
+anything is pushed or published. It then applies the merged-PR and
+phase-done skips, and only then calls `amplihack orch helper
+autodrive-preflight`. The helper checks the state directory again before it
+inspects the worktree, so a direct call cannot push first either.
+
+A refusal is handed to the `recipe run` that started the step through a file
+in that run's private runtime directory, stamped with the run's id. The final
+correlation event and the JSON result then carry the named outcome, whether
+the loop ran directly or as a sub-recipe of `auto-drive-to-merge`. Child
+stdout, inherited variables and state files carry no authority: a handoff
+that is not a regular 0600 file owned by this user, or that names another
+run, is ignored and the run ends as `failure`. Unrelated child failures keep
+ordinary transport retry behaviour.
 
 Every fetch, push and remote verification resolves both effective fetch and
 push destinations, including Git URL rewrites and all configured destinations.
@@ -4738,7 +4675,6 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/tools/autodrive_qa_scope.sh` | tool | Defines functions only: the changed paths, the candidate search and the project choice (`autodrive_qa_changed_paths`, `autodrive_qa_target`), computed once per shell. Runs nothing it reads. A gate file, so the install mode check covers it. |
 | `amplifier-bundle/tools/autodrive_qa_sources.sh` | tool | Defines functions only: the `.amplihack/qa.toml` parser `autodrive_qa_config`, the CI reader `autodrive_qa_ci` and `autodrive_qa_report`, which gives the evidence tool every answer from one scan. Loaded by the evidence tool only. |
 | `amplifier-bundle/tools/autodrive_scenario_name.sh` | tool | Prints the `name:` of one qa-team scenario file for `gadugi-test run --scenario`. Run by the evidence tool. |
-| `amplifier-bundle/tools/autodrive_pr_head.sh` | tool | Read-only PR head and worktree resolver. |
 | `amplifier-bundle/tools/workflow_finalization_handoff.sh` | tool | The [#1714 hand-off](#finalization-hand-off-from-phase-1-1714): the allow-list, the exact-match flag, `finalization_fail_or_handoff` and `finalization_fail_or_handoff_open_pr` for the validator and `autodrive_build_handoff` for step-03. No top-level side effects; safe to source twice. |
 | `amplifier-bundle/skills/auto-drive-to-merge/SKILL.md` | skill | Invocable entry point. |
 | `amplifier-bundle/skills/merge-ready/SKILL.md` | skill | The criteria the merge round reads. |
