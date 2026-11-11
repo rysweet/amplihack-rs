@@ -83,6 +83,7 @@ const TOOLS: &[&str] = &[
 /// Only the single-argument `--head=<branch>` form is understood, as the
 /// design requires.
 const FAKE_GH: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 printf '%s\n' "$*" >> "$FAKE_GH_DIR/calls.log"
 head=
 for a in "$@"; do

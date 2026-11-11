@@ -205,6 +205,18 @@ mod issue_1740_routing_recipes;
 mod issue_1740_select_workflow;
 #[path = "issue_1740_state_gates.rs"]
 mod issue_1740_state_gates;
+#[path = "issue_1741_fixture.rs"]
+mod issue_1741_fixture;
+#[path = "issue_1741_recipe_recovery.rs"]
+mod issue_1741_recipe_recovery;
+#[path = "issue_1741_recovery_admission.rs"]
+mod issue_1741_recovery_admission;
+#[path = "issue_1741_recovery_compatibility.rs"]
+mod issue_1741_recovery_compatibility;
+#[path = "issue_1741_recovery_security.rs"]
+mod issue_1741_recovery_security;
+#[path = "issue_1741_runner_contract.rs"]
+mod issue_1741_runner_contract;
 #[path = "issue_1743_autodrive_budget.rs"]
 mod issue_1743_autodrive_budget;
 #[path = "issue_1745_home_statusline.rs"]
