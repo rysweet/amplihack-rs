@@ -153,7 +153,7 @@ impl LightRepo {
         );
         r.write("crates/foo/src/existing.rs", "fn helper() {}\n");
         r.write("amplifier-bundle/recipes/demo.yaml", BASE_RECIPE);
-        r.write("amplifier-bundle/tools/existing.sh", "#!/bin/sh\necho hi\n");
+        r.write("amplifier-bundle/tools/existing.sh", "#!/bin/sh\ncase \"$*\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\necho hi\n");
         r.write("docs/guide.md", "# guide\n");
         r.commit_all("base");
         git(&r.wt, &["push", "-q", "-u", "origin", "main"]);
@@ -267,6 +267,7 @@ pub fn fault(o: &Output, token: &str) {
 /// prints `HTTP 404: Not Found` on stderr and exits `$FAKE_GH_EXIT_CODE`
 /// (default 1; a 404 is not retried).
 pub const FAKE_GH: &str = r#"#!/usr/bin/env bash
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 set -u
 log="${FAKE_LOG:?}"
 n=$(( $(wc -l < "$log/gh.log" 2>/dev/null || echo 0) + 1 ))
@@ -315,6 +316,7 @@ exit 0
 /// --field F --default D` prints `.F` (strings raw, anything else as compact
 /// JSON) or D.
 pub const FAKE_AMPLIHACK: &str = r#"#!/usr/bin/env bash
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 ( IFS=$'\x1f'; printf '%s\n' "$*" ) >> "${FAKE_LOG:?}/amplihack.log"
 if [ "${1:-} ${2:-}" != "orch helper" ]; then exit 0; fi
 case "${3:-}" in

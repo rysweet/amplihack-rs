@@ -53,7 +53,7 @@ pub(super) fn cold_client_install_registers_hooks_and_launches_with_fresh_or_sta
         executable(&tools.join("amplihack-hooks"), "#!/bin/sh\necho '{}'\n");
         executable(
             &tools.join("recipe-runner-rs"),
-            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n",
         );
         // npm installs into the fixture PATH, which production resolves again.
         executable(
