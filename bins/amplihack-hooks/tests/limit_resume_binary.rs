@@ -10,10 +10,17 @@
 //! [`StandInRotator`]. Tests for a branch decided earlier start one as well,
 //! so that their exit 0 comes from the branch they are named for and not from
 //! a missing rotator; where that branch logs, the logged outcome is asserted.
+//!
+//! Since #2085 a resume needs a swap record (`rotate/swap.json`) that differs
+//! from the one the hook read when it started. [`run_with_swap`] writes it
+//! only after the hook has read its snapshot, which the test learns from the
+//! kernel (an inotify `IN_CLOSE_NOWRITE` on the file), not from a delay.
 
 #![cfg(unix)]
 
 use amplihack_hooks::limit_resume::RESUME_MSG;
+#[cfg(target_os = "linux")]
+use amplihack_utils::file_event::{Waiter, Watch, Woke};
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Write;
@@ -151,7 +158,7 @@ fn limit_payload(session: &str) -> String {
     .to_string()
 }
 
-fn run(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (Output, Duration) {
+fn spawn(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (std::process::Child, Instant) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_amplihack-hooks"));
     cmd.arg("limit-resume")
         .current_dir(&e.home)
@@ -159,6 +166,10 @@ fn run(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (Output, Duration) {
         .env("AMPLIHACK_HOME", e.home.join(".amplihack"))
         .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &e.root)
         .env_remove("AMPLIHACK_CLAUDE_AUTO_SWITCH")
+        // No pane: a resume takes the exit-2 path and never sends keys to
+        // the terminal the tests run in.
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -172,6 +183,10 @@ fn run(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (Output, Duration) {
         // The hook may stop reading at its 1 MiB cap; a broken pipe is fine.
         let _ = sin.write_all(stdin);
     }
+    (child, start)
+}
+
+fn finish(mut child: std::process::Child, start: Instant) -> (Output, Duration) {
     loop {
         if child.try_wait().unwrap().is_some() {
             break;
@@ -183,6 +198,58 @@ fn run(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (Output, Duration) {
         std::thread::sleep(Duration::from_millis(20));
     }
     (child.wait_with_output().unwrap(), start.elapsed())
+}
+
+fn run(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (Output, Duration) {
+    let (child, start) = spawn(e, toggle, stdin);
+    finish(child, start)
+}
+
+/// `IN_CLOSE_NOWRITE`: a file opened for reading was closed.
+#[cfg(target_os = "linux")]
+const IN_CLOSE_NOWRITE: u32 = 0x0000_0010;
+
+/// Runs the hook and, once it has read its snapshot of the swap record,
+/// writes a new record onto a login with room, swapped and measured after
+/// the stop, the way the rotator does (temp file, mode 0600, rename).
+///
+/// Before the hook starts, `swap.json` holds `{}`, which is no record: the
+/// hook's snapshot is "none", and its read of the file closes it without a
+/// write. That close is the only one the watch counts, and only the
+/// snapshot read opens the file before the hook waits. Linux only: off
+/// Linux the hook cannot wait for a swap at all.
+#[cfg(target_os = "linux")]
+fn run_with_swap(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (Output, Duration) {
+    let rotate = e.root.join(".auto-switch.d/rotate");
+    private_dir(&e.root.join(".auto-switch.d"));
+    private_dir(&rotate);
+    private_file(&rotate.join("swap.json"), b"{}");
+    // The pidfd is the test's own, so only the file event ends this wait;
+    // a hook that exits first is caught by the deadline and `finish`.
+    let mut watch = Waiter::new(
+        &[Watch {
+            dir: rotate.clone(),
+            name: Some("swap.json"),
+            mask: IN_CLOSE_NOWRITE,
+        }],
+        std::process::id(),
+    )
+    .unwrap();
+    let (child, start) = spawn(e, toggle, stdin);
+    let woke = watch.wait(start + CHILD_LIMIT).unwrap();
+    assert_eq!(woke, Woke::File(0), "the hook never read swap.json");
+    let at = now() + 120;
+    let record = json!({
+        "seq": 1,
+        "live_login": "spare",
+        "from_login": "work",
+        "swapped_at": at,
+        "reading": {"session": 10, "week": 20, "measured_at": at}
+    });
+    let tmp = rotate.join(".swap.json.tmp");
+    private_file(&tmp, record.to_string().as_bytes());
+    fs::rename(&tmp, rotate.join("swap.json")).unwrap();
+    finish(child, start)
 }
 
 fn assert_silent_zero(out: &Output) {
@@ -205,11 +272,12 @@ fn assert_silent_zero(out: &Output) {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn resumes_when_a_fresh_cycle_has_capacity() {
     let e = env();
     let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
-    let (out, took) = run(&e, Some("1"), limit_payload("sess-1").as_bytes());
+    let (out, took) = run_with_swap(&e, Some("1"), limit_payload("sess-1").as_bytes());
     assert_eq!(out.status.code(), Some(2));
     assert!(out.stdout.is_empty());
     assert_eq!(out.stderr, format!("{RESUME_MSG}\n").into_bytes());
@@ -221,11 +289,12 @@ fn resumes_when_a_fresh_cycle_has_capacity() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn second_run_on_the_same_event_is_a_silent_duplicate() {
     let e = env();
     let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
-    let (first, _) = run(&e, Some("1"), limit_payload("sess-1").as_bytes());
+    let (first, _) = run_with_swap(&e, Some("1"), limit_payload("sess-1").as_bytes());
     assert_eq!(first.status.code(), Some(2));
     let (second, took) = run(&e, Some("1"), limit_payload("sess-1").as_bytes());
     assert_silent_zero(&second);
@@ -239,12 +308,13 @@ fn second_run_on_the_same_event_is_a_silent_duplicate() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn toggle_file_turns_it_on_too() {
     let e = env();
     private_file(&e.root.join(".auto-switch"), b"enabled=on\n");
     let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "stayed", 120, false);
-    let (out, _) = run(&e, None, limit_payload("sess-1").as_bytes());
+    let (out, _) = run_with_swap(&e, None, limit_payload("sess-1").as_bytes());
     assert_eq!(out.status.code(), Some(2));
 }
 
