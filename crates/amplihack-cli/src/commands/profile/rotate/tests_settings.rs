@@ -690,6 +690,15 @@ mod config_2007 {
     }
 
     #[test]
+    fn a_key_the_reader_did_not_load_is_an_error_not_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().canonicalize().unwrap();
+        let cfg = UserConfig::at(&home);
+        let e = cfg.get("rotator.no_such_key").unwrap_err();
+        assert!(e.contains("not a rotator key"), "{e}");
+    }
+
+    #[test]
     fn an_absent_user_file_sets_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().canonicalize().unwrap();
@@ -713,5 +722,142 @@ mod config_2007 {
         };
         assert_eq!(after("--session-at").as_deref(), Some("70"));
         assert_eq!(after("--interval").as_deref(), Some("120"));
+    }
+
+    // --- Whole-file problems (D2 and the documented whole-file hint) -------
+    //
+    // docs/reference/user-config.md: when the whole user file is at fault,
+    // `config set` and `config unset` cannot help, so the message names the
+    // key and the reason and points at the file instead. It never contains
+    // the file's path.
+
+    const WHOLE_FILE_FIX: &str = "; fix the user config file first (`amplihack config list --show-origin` shows its path and the problem)";
+
+    fn whole_file_msg(key: &str, why: &str) -> String {
+        format!("invalid rotate setting {key}: {why}{WHOLE_FILE_FIX}")
+    }
+
+    /// The message for a whole-file problem: the documented hint, the
+    /// reason, no `config set` advice and no path.
+    fn assert_whole_file(e: &str, home: &Path) {
+        assert!(e.starts_with("invalid rotate setting rotator."), "{e}");
+        assert!(e.ends_with(WHOLE_FILE_FIX), "whole-file hint expected: {e}");
+        assert!(
+            !e.contains("amplihack config set") && !e.contains("amplihack config unset"),
+            "config set cannot fix a whole-file problem: {e}"
+        );
+        assert!(
+            !e.contains(&home.display().to_string()),
+            "the message never contains the path: {e}"
+        );
+        assert!(!e.contains("config.toml"), "no file name either: {e}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_group_writable_file_gives_the_documented_whole_file_message() {
+        let h = home_with("[rotator]\nweek_at = 80\n", 0o664);
+        let cfg = UserConfig::at(&h.home);
+        let why = "ignored because the file is writable by group or others";
+        // Each key's own message, exactly as documented.
+        for key in [
+            "rotator.session_at",
+            "rotator.week_at",
+            "rotator.interval",
+            "rotator.codex_floor",
+        ] {
+            let raw = cfg.get(key).unwrap_err();
+            assert!(raw.contains(why), "{key}: {raw}");
+            assert!(!raw.contains(&h.home.display().to_string()), "{key}: {raw}");
+        }
+        let t = thresholds(&no_env(), &|k| cfg.get(k));
+        let week = t.week_at.unwrap_err().to_string();
+        assert_eq!(week, whole_file_msg("rotator.week_at", why));
+        let floor = t.codex_floor.unwrap_err().to_string();
+        assert_eq!(floor, whole_file_msg("rotator.codex_floor", why));
+        // The commands that act fail closed with the same hint.
+        let e = err(resolve(&flags(), None, &no_env(), &|k| cfg.get(k)));
+        assert_whole_file(&e, &h.home);
+        let g = gate_from_env(&no_env(), &|k| cfg.get(k))
+            .unwrap_err()
+            .to_string();
+        assert_whole_file(&g, &h.home);
+    }
+
+    #[test]
+    fn an_unparseable_file_gives_the_whole_file_message_without_the_path() {
+        let h = home_with("[rotator\nweek_at = = 80\n", 0o600);
+        let cfg = UserConfig::at(&h.home);
+        for key in [
+            "rotator.session_at",
+            "rotator.week_at",
+            "rotator.interval",
+            "rotator.codex_floor",
+        ] {
+            let raw = cfg.get(key).unwrap_err();
+            assert!(
+                !raw.contains(&h.home.display().to_string()),
+                "{key}: the reason is path-free: {raw}"
+            );
+            assert!(!raw.is_empty(), "{key}");
+        }
+        let e = err(resolve(&flags(), None, &no_env(), &|k| cfg.get(k)));
+        assert_whole_file(&e, &h.home);
+        let floor = codex_floor(&|k| cfg.get(k)).unwrap_err().to_string();
+        assert!(
+            floor.starts_with("invalid rotate setting rotator.codex_floor: "),
+            "{floor}"
+        );
+        assert_whole_file(&floor, &h.home);
+    }
+
+    #[test]
+    fn a_problem_with_one_key_keeps_the_config_set_hint() {
+        // Only whole-file problems change the hint; a bad value in a sound
+        // file is fixed with `config set` or `config unset`.
+        let h = home_with("[rotator]\nweek_at = 0\n", 0o600);
+        let cfg = UserConfig::at(&h.home);
+        let e = thresholds(&no_env(), &|k| cfg.get(k))
+            .week_at
+            .unwrap_err()
+            .to_string();
+        assert!(!e.ends_with(WHOLE_FILE_FIX), "{e}");
+        assert!(
+            e.ends_with(
+                "fix it with `amplihack config set rotator.week_at <value>` or `amplihack config unset rotator.week_at`"
+            ),
+            "{e}"
+        );
+        // The other keys in the same file are still read.
+        let s = thresholds(&no_env(), &|k| cfg.get(k));
+        assert_eq!(s.session_at.unwrap().value, 85);
+    }
+
+    // --- S1: a project file cannot move the rotator ------------------------
+
+    #[test]
+    fn a_project_file_cannot_change_week_at() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let home = root.join("home");
+        fs::create_dir_all(home.join(".amplihack")).unwrap();
+        // A repository with its own config, as a cloned project would have.
+        let project = root.join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        fs::write(project.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::create_dir_all(project.join(".amplihack")).unwrap();
+        fs::write(
+            project.join(".amplihack").join("config.toml"),
+            "[rotator]\nweek_at = 100\nsession_at = 1\ncodex_floor = 0\n",
+        )
+        .unwrap();
+        let cfg = UserConfig::at(&home);
+        assert_eq!(cfg.get("rotator.week_at"), Ok(None));
+        assert_eq!(cfg.get("rotator.session_at"), Ok(None));
+        assert_eq!(cfg.get("rotator.codex_floor"), Ok(None));
+        let s = resolve(&flags(), None, &no_env(), &|k| cfg.get(k)).unwrap();
+        assert_eq!((s.session_at, s.week_at), (85, 90));
+        let floor = codex_floor(&|k| cfg.get(k)).unwrap();
+        assert_eq!((floor.value, floor.origin), (3000, Origin::Default));
     }
 }

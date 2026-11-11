@@ -475,7 +475,7 @@ range or of the wrong type in the file, a file that cannot be read or parsed,
 or a user file that group or others can write:
 
 - stops `profile rotate` (once, `start` and `watch`) with exit status 1 and
-  a message naming the key and the fix:
+  a message naming the key and how to fix it:
 
   ```text
   error: invalid rotate setting rotator.session_at: must be an integer from 1 to 100; fix it with `amplihack config set rotator.session_at <value>` or `amplihack config unset rotator.session_at`
@@ -488,6 +488,32 @@ or a user file that group or others can write:
 - does not stop `profile usage`, which prints the message in place of that
   key's value. A bad `rotator.codex_floor` means no Codex account is marked
   `<- next`.
+
+These messages, including the `error` field of `profile usage --summary-json`,
+name the key and the reason only. They never contain the file's path or its
+contents.
+
+When the whole file is at fault (it cannot be read or parsed, it is owned by
+another user, or group or others can write it), `config set` and
+`config unset` cannot help, so the message gives a different fix. The reason
+says what is wrong with the file. Every `rotator.*` key then fails in the
+same way, including keys the file does not set, so the rotator never falls
+back to a default while the file is at fault:
+
+```text
+error: invalid rotate setting rotator.week_at: ignored because the file is writable by group or others; fix the user config file first (`amplihack config list --show-origin` shows its path and the problem)
+```
+
+For a group-writable file, `chmod go-w` on that path is the fix. For a file
+that cannot be parsed, run `amplihack config edit`. `amplihack doctor` also
+prints the path.
+
+An invalid `AMPLIHACK_ROTATE_*` variable is handled in the same way as an
+invalid key: `profile rotate` stops and names the variable. `config get` and
+`config list` follow their usual rule for an
+[invalid environment value](#config-list). They mark the variable as
+`# env (invalid: ...)` and show the value from the file or the default, so
+`config get` can show a value that `profile rotate` would not use.
 
 `config set` checks the range before it writes, so the file only holds a bad
 value when it was edited by hand:

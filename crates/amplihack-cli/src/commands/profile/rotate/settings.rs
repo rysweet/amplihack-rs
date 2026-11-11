@@ -181,9 +181,21 @@ pub struct Thresholds {
     pub codex_floor: Result<Threshold<u64>, ProfileError>,
 }
 
+/// How to fix a problem with the whole user file. `config set` and
+/// `config unset` cannot help, so the message points at the file; the path
+/// itself is left to `config list --show-origin`.
+pub const WHOLE_FILE_FIX: &str = "; fix the user config file first \
+     (`amplihack config list --show-origin` shows its path and the problem)";
+
 /// The error for a `rotator.*` value that cannot be used: the key, the
-/// reason and how to fix it. It never quotes the file's path or lines.
+/// reason and how to fix it. A reason from [`UserConfig`] for a problem
+/// with the whole file already ends with [`WHOLE_FILE_FIX`] and is used as
+/// it is; any other reason gets the `config set`/`config unset` advice. It
+/// never quotes the file's path or lines.
 fn config_error(key: &str, why: &str) -> ProfileError {
+    if why.ends_with(WHOLE_FILE_FIX) {
+        return ProfileError::RotateConfig(format!("invalid rotate setting {key}: {why}"));
+    }
     ProfileError::RotateConfig(format!(
         "invalid rotate setting {key}: {why}; fix it with `amplihack config set {key} <value>` \
          or `amplihack config unset {key}`"
@@ -363,17 +375,12 @@ pub fn thresholds(env: &Env<'_>, cfg: &Cfg<'_>) -> Thresholds {
 /// default [`DEFAULT_FLOOR`]. It has no flag and no variable. An account
 /// whose rate limits are used up counts only with a balance above it.
 pub fn codex_floor(cfg: &Cfg<'_>) -> Result<Threshold<u64>, ProfileError> {
+    let at = |value, origin| Threshold { value, origin };
     Ok(
-        match from_config(CODEX_FLOOR_KEY, CODEX_FLOOR_MIN, CODEX_FLOOR_MAX, cfg)? {
-            Some(value) => Threshold {
-                value,
-                origin: Origin::Config,
-            },
-            None => Threshold {
-                value: CODEX_FLOOR_DEFAULT,
-                origin: Origin::Default,
-            },
-        },
+        from_config(CODEX_FLOOR_KEY, CODEX_FLOOR_MIN, CODEX_FLOOR_MAX, cfg)?
+            .map_or(at(CODEX_FLOOR_DEFAULT, Origin::Default), |v| {
+                at(v, Origin::Config)
+            }),
     )
 }
 
@@ -411,15 +418,22 @@ impl UserConfig {
     /// The user file under `home`.
     pub fn at(home: &Path) -> Self {
         let read = user_config::user_keys_detail(home, &CONFIG_KEYS);
+        // A fault with the whole file makes every key from it unusable,
+        // including keys the file does not set: fail closed, never default.
+        let whole_file = read.iter().find_map(|r| match r {
+            Err(p) if p.whole_file => Some(format!("{}{WHOLE_FILE_FIX}", p.reason)),
+            _ => None,
+        });
         let values = CONFIG_KEYS
             .iter()
             .zip(read)
             .map(|(key, r)| {
-                let v = match r {
-                    Ok(None) => Ok(None),
-                    Ok(Some(Value::Int(n))) => Ok(Some(n)),
-                    Ok(Some(_)) => Err("is not an integer".to_string()),
-                    Err(p) => Err(p.reason),
+                let v = match (&whole_file, r) {
+                    (Some(why), _) => Err(why.clone()),
+                    (None, Ok(None)) => Ok(None),
+                    (None, Ok(Some(Value::Int(n)))) => Ok(Some(n)),
+                    (None, Ok(Some(_))) => Err("is not an integer".to_string()),
+                    (None, Err(p)) => Err(p.reason),
                 };
                 (*key, v)
             })
@@ -427,12 +441,13 @@ impl UserConfig {
         Self { values }
     }
 
-    /// The value of `key`, a [`Cfg`]. A key this reader does not hold is
-    /// unset.
+    /// The value of `key`, a [`Cfg`]. Asking for a key this reader did not
+    /// load is a programming error and is reported, never treated as unset.
     pub fn get(&self, key: &str) -> Result<Option<u64>, String> {
-        let found = self.values.iter().find(|(k, _)| *k == key);
-        debug_assert!(found.is_some(), "{key} is not a rotator key");
-        found.map_or(Ok(None), |(_, v)| v.clone())
+        match self.values.iter().find(|(k, _)| *k == key) {
+            Some((_, v)) => v.clone(),
+            None => Err(format!("{key} is not a rotator key")),
+        }
     }
 }
 

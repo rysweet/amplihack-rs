@@ -752,3 +752,36 @@ fn agreement_holds_with_non_default_rotator_thresholds() {
         }
     }
 }
+
+// --- Issue #2007: a group-writable user file closes the gate ----------------
+
+#[test]
+fn a_group_writable_user_file_closes_the_gate_with_the_whole_file_fix() {
+    use super::settings::UserConfig;
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().canonicalize().unwrap().join("home");
+    let dir = home.join(".amplihack");
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let file = dir.join("config.toml");
+    fs::write(&file, "[rotator]\nweek_at = 80\n").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o664)).unwrap();
+    let user = UserConfig::at(&home);
+
+    let f = fake();
+    let (g, src) = f.gate_cfg(&[], &|k| user.get(k));
+    assert_eq!(g, None, "fails closed");
+    let line = gate_record::status_line(g, &src);
+    assert!(
+        line.starts_with("overflow gate: closed (invalid rotate setting rotator."),
+        "{line}"
+    );
+    assert!(
+        line.ends_with(
+            ": ignored because the file is writable by group or others; fix the user config file first (`amplihack config list --show-origin` shows its path and the problem))"
+        ),
+        "{line}"
+    );
+    assert!(!line.contains(&home.display().to_string()), "{line}");
+    assert!(!line.contains("amplihack config set"), "{line}");
+}

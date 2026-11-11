@@ -316,3 +316,63 @@ fn the_object_always_has_all_four_keys() {
         );
     }
 }
+
+// --- Whole-file problems (issue #2007, docs/reference/user-config.md) -------
+
+#[cfg(unix)]
+fn group_writable_home(body: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().canonicalize().unwrap().join("home");
+    let dir = home.join(".amplihack");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let file = dir.join("config.toml");
+    std::fs::write(&file, body).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o664)).unwrap();
+    (tmp, home)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_group_writable_file_shows_the_whole_file_fix_and_no_path() {
+    use super::rotate::settings::UserConfig;
+    let (_tmp, home) = group_writable_home("[rotator]\nweek_at = 80\n");
+    let cfg = UserConfig::at(&home);
+    let t = resolve(None, &no_env, &|k| cfg.get(k));
+    let v = json(&t);
+    let want = "invalid rotate setting rotator.week_at: ignored because the file is writable by group or others; fix the user config file first (`amplihack config list --show-origin` shows its path and the problem)";
+    assert_eq!(v["week_at"]["error"], want, "{}", v["week_at"]);
+    assert!(v["week_at"]["value"].is_null());
+    let text = serde_json::to_string(&v).unwrap();
+    assert!(!text.contains(&home.display().to_string()), "{text}");
+    assert!(!text.contains("amplihack config set"), "{text}");
+    let line = text_line(&t);
+    assert!(!line.contains(&home.display().to_string()), "{line}");
+    assert!(line.contains("fix the user config file first"), "{line}");
+    assert!(line.is_ascii(), "{line}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_running_rotator_still_wins_over_a_group_writable_file() {
+    use super::rotate::settings::UserConfig;
+    let (_tmp, home) = group_writable_home("[rotator]\nweek_at = 80\n");
+    let cfg = UserConfig::at(&home);
+    let t = resolve(Some(gate(70, 80)), &no_env, &|k| cfg.get(k));
+    let v = json(&t);
+    assert_eq!(v["session_at"]["value"], 70);
+    assert_eq!(v["session_at"]["origin"], "rotator");
+    assert_eq!(v["week_at"]["value"], 80);
+    assert!(v["week_at"].get("error").is_none(), "{}", v["week_at"]);
+    // The keys the rotator does not record still show the problem.
+    assert!(v["interval"]["value"].is_null(), "{}", v["interval"]);
+    assert!(
+        v["interval"]["error"]
+            .as_str()
+            .unwrap()
+            .ends_with("shows its path and the problem)"),
+        "{}",
+        v["interval"]
+    );
+}

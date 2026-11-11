@@ -408,3 +408,58 @@ fn sessions_key_still_reads_through_user_keys() {
         Ok(None)
     );
 }
+
+// --- Issue #2007 D2: `KeyProblem.reason` never contains the path -------------
+
+#[test]
+fn a_whole_file_problem_gives_a_path_free_reason_and_keeps_the_path_in_full() {
+    let fx = Fx::new();
+    fx.user("[rotator\nweek_at = = 80\n");
+    let path = super::display_path(&user_file(&fx.home));
+    let read = super::user_keys_detail(&fx.home, &["rotator.week_at", "rotator.interval"]);
+    assert_eq!(read.len(), 2);
+    for r in read {
+        let p = r.expect_err("an unparseable file is an error for every key");
+        assert!(!p.reason.is_empty());
+        assert!(!p.reason.contains(&path), "reason: {}", p.reason);
+        assert!(
+            !p.reason.contains(&fx.home.display().to_string()),
+            "reason: {}",
+            p.reason
+        );
+        assert!(p.full.contains(&path), "full keeps the path: {}", p.full);
+        assert!(
+            p.full.contains(&p.reason),
+            "full: {} / {}",
+            p.full,
+            p.reason
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_group_writable_user_file_gives_the_safe_rs_reason_for_each_key() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new();
+    fx.user("[rotator]\nweek_at = 80\n");
+    fs::set_permissions(user_file(&fx.home), fs::Permissions::from_mode(0o664)).unwrap();
+    for r in super::user_keys_detail(&fx.home, &["rotator.week_at", "rotator.codex_floor"]) {
+        let p = r.expect_err("fails closed, never unset");
+        assert_eq!(
+            p.reason,
+            "ignored because the file is writable by group or others"
+        );
+    }
+}
+
+#[test]
+fn a_bad_key_in_a_sound_file_fails_only_that_key() {
+    let fx = Fx::new();
+    fx.user("[rotator]\nweek_at = 0\ninterval = 900\n");
+    let read = super::user_keys_detail(&fx.home, &["rotator.week_at", "rotator.interval"]);
+    let p = read[0].clone().expect_err("0 is below the range");
+    assert!(p.reason.contains("from 1 to 100"), "{}", p.reason);
+    assert!(!p.reason.contains("config.toml"), "{}", p.reason);
+    assert_eq!(read[1], Ok(Some(Value::Int(900))));
+}
