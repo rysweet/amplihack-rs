@@ -215,17 +215,15 @@ steps:
         export AMPLIHACK_HOME
       fi
 
-      # The review dir is the main checkout of the repository that holds the
-      # preflight's repo ($REPO, #1543): the PR head's worktree when a PR
-      # number was supplied, else repo_path. The read-only judging agents
-      # (review, merge-ready assessment, loop-health analyzer) start there,
-      # never in the PR worktree, so the branch under review does not supply
-      # their AGENTS.md, CLAUDE.md or .claude hooks; it is never `pwd`, which
-      # may be the PR worktree. The PR worktree is resolved from the same
-      # $REPO: the #1528 resolver refuses the main checkout and returns the
-      # PR's one linked worktree, where only each round's commit step works.
-      REVIEW_DIR="$(bash "$(dirname "$LOOP_HELPER")/autodrive_worktree_guard.sh" review-dir "$REPO")" || { echo "STOP: cannot resolve the review dir from the preflight repo ($REPO) [autodrive-crusty-loop/step-02] (#1528)" >&2; exit 1; }
+      # Resolve the PR's durable fix worktree, then let Rust allocate private
+      # review state at that PR commit. Reviewed instruction files remain data;
+      # judging starts from separate trusted launch material (#1528/#2096).
+      # The loop owns an independent generation, including nested re-reviews.
+      GUARD="$(dirname "$LOOP_HELPER")/autodrive_worktree_guard.sh"
       PR_WORKTREE="$(bash "$(dirname "$LOOP_HELPER")/autodrive_pr_worktree.sh" resolve --repo "$REPO" --pr "$PR")" || { echo "STOP: cannot resolve the PR's linked worktree; rounds never run in the launch checkout (#1528)" >&2; exit 1; }
+      REVIEW_DIR="$(amplihack internal review-allocate "$PR_WORKTREE" "$DIR")" || exit 1
+      release_review_dir() { amplihack internal review-release "$REVIEW_DIR"; }
+      trap 'rc=$?; release_review_dir || rc=1; rm -f -- "${TASK_IN:-}"; exit "$rc"' EXIT
       # Issue #1570: task_description is read with write_context_value
       # (RECIPE_VAR_* or AMPLIHACK_CONTEXT_FILE) into a private file that the
       # loop copies to its state directory. The uppercase TASK_DESCRIPTION
@@ -234,7 +232,7 @@ steps:
       [ -n "$H" ] || { echo "ERROR: amplifier-bundle/tools/recipe_context_value.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
       . "$H/recipe_context_value.sh" || exit 1
       TASK_IN="$(umask 077; mktemp)" || exit 1
-      trap 'rm -f -- "$TASK_IN"' EXIT
+      trap 'rc=$?; release_review_dir || rc=1; rm -f -- "$TASK_IN"; exit "$rc"' EXIT
       write_context_value task_description "$TASK_IN" || { echo "ERROR: task_description unavailable" >&2; exit 1; }
       bash "$LOOP_HELPER" --task-file "$TASK_IN" \
         --loop-name "crusty" \

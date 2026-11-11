@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub(crate) const RUN_JSON: &str = "run.json";
@@ -54,43 +54,58 @@ pub(crate) fn short_id(run_id: &str) -> String {
 #[derive(Debug)]
 pub(crate) struct RuntimeGuard {
     path: Option<PathBuf>,
+    identity: (u64, u64),
 }
 
 impl RuntimeGuard {
-    pub(crate) fn new(path: PathBuf) -> Self {
-        Self { path: Some(path) }
+    pub(crate) fn new(path: PathBuf) -> Result<Self> {
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            bail!("runtime resource is not a private directory");
+        }
+        Ok(Self {
+            path: Some(path),
+            identity: (metadata.dev(), metadata.ino()),
+        })
     }
 
     pub(crate) fn path(&self) -> &Path {
         self.path.as_deref().unwrap_or(Path::new(""))
     }
 
-    /// Removes the folder now and reports a failure as a warning.
-    pub(crate) fn remove(mut self) {
-        self.remove_inner();
+    /// Explicit release is fallible and never deletes a substituted path.
+    pub(crate) fn remove(mut self) -> Result<()> {
+        self.release()
     }
 
-    fn remove_inner(&mut self) {
+    fn release(&mut self) -> Result<()> {
         let Some(path) = self.path.take() else {
-            return;
+            return Ok(());
         };
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error).context("inspect runtime ownership before release"),
+        };
+        if !metadata.is_dir() || (metadata.dev(), metadata.ino()) != self.identity {
+            bail!(
+                "runtime resource identity changed; replacement retained at {}",
+                path.display()
+            );
+        }
         match fs::remove_dir_all(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => {
-                tracing::warn!(path = %path.display(), %error, "could not remove the run's runtime folder");
-                eprintln!(
-                    "amplihack: warning: could not remove the run's runtime folder {}: {error}",
-                    path.display()
-                );
-            }
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).context("release owned runtime directory"),
         }
     }
 }
 
 impl Drop for RuntimeGuard {
     fn drop(&mut self) {
-        self.remove_inner();
+        if let Err(error) = self.release() {
+            eprintln!("amplihack: runtime retained: {error:#}");
+        }
     }
 }
 
@@ -318,7 +333,9 @@ pub(crate) fn write_atomic_0600(path: &Path, bytes: &[u8]) -> Result<()> {
         let _ = fs::remove_file(&tmp);
         bail!("refusing to replace symbolic link {}", path.display());
     }
-    fs::rename(&tmp, path).with_context(|| format!("cannot replace {}", path.display()))
+    fs::rename(&tmp, path).with_context(|| format!("cannot replace {}", path.display()))?;
+    fs::File::open(path.parent().context("atomic write parent")?)?.sync_all()?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -357,6 +374,8 @@ pub(crate) struct RunReport {
     pub steps: Vec<StepStatus>,
     #[serde(default)]
     pub log_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_recording: Option<serde_json::Value>,
 }
 
 impl RunReport {
@@ -433,6 +452,7 @@ impl RunScope {
             attempts: Vec::new(),
             steps: Vec::new(),
             log_path: None,
+            git_recording: None,
         };
         let runtime_dir = runtime_dir_for(&work_root.path, &run_id);
         let scope = Self {
@@ -442,7 +462,9 @@ impl RunScope {
             report,
         };
         scope.write_report()?;
-        let guard = RuntimeGuard::new(runtime_dir.clone());
+        create_private_dir_all(runtime_dir.parent().context("runtime parent")?)?;
+        fs::DirBuilder::new().mode(0o700).create(&runtime_dir)?;
+        let guard = RuntimeGuard::new(runtime_dir.clone())?;
         create_private_dir_all(&runtime_dir.join("tmp"))?;
         create_private_dir_all(&runtime_dir.join("artifacts"))?;
         Ok((scope, guard))
@@ -452,33 +474,6 @@ impl RunScope {
         let mut bytes = serde_json::to_vec_pretty(&self.report)?;
         bytes.push(b'\n');
         write_atomic_0600(&self.run_dir.join(RUN_JSON), &bytes)
-    }
-
-    /// Records the correlation id of a new attempt; also refreshes the mtime
-    /// of `run.json`, which dates a killed run.
-    pub(crate) fn record_attempt(&mut self, correlation_id: &str) {
-        self.report.attempts.push(Attempt {
-            correlation_id: correlation_id.to_string(),
-        });
-        if let Err(error) = self.write_report() {
-            eprintln!("amplihack: warning: could not update the run report: {error:#}");
-        }
-    }
-
-    /// Finalises `run.json` with the end time, outcome and step summary.
-    pub(crate) fn finish(
-        &mut self,
-        outcome: Outcome,
-        steps: Vec<StepStatus>,
-        log_path: Option<String>,
-    ) {
-        self.report.ended_at = Some(now_rfc3339());
-        self.report.outcome = outcome.as_str().to_string();
-        self.report.steps = steps;
-        self.report.log_path = log_path;
-        if let Err(error) = self.write_report() {
-            eprintln!("amplihack: warning: could not finalise the run report: {error:#}");
-        }
     }
 }
 
@@ -497,6 +492,60 @@ pub(crate) enum RunWorkspace {
 }
 
 impl RunWorkspace {
+    pub(crate) fn record_attempt_checked(&mut self, correlation_id: &str) -> Result<()> {
+        let Self::Scoped { scope, .. } = self else {
+            bail!("required attempt recording has no durable run folder");
+        };
+        scope.report.attempts.push(Attempt {
+            correlation_id: correlation_id.to_string(),
+        });
+        scope.write_report()
+    }
+    /// Production finalization propagates report publication failures.
+    pub(crate) fn finish_checked(
+        self,
+        outcome: Outcome,
+        steps: Vec<StepStatus>,
+        log_path: Option<String>,
+        sweep: bool,
+    ) -> Result<()> {
+        match self {
+            Self::Scoped { mut scope, guard } => {
+                let recording = scope.run_dir.join("git-recording.json");
+                match read_capped_nofollow(&recording, 4096) {
+                    Ok(bytes) => scope.report.git_recording = Some(serde_json::from_slice(&bytes)?),
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).context("read required recording finalization");
+                    }
+                }
+                let runtime = guard.remove();
+                scope.report.ended_at = Some(now_rfc3339());
+                scope.report.outcome = if runtime.is_err() {
+                    Outcome::Failure
+                } else {
+                    outcome
+                }
+                .as_str()
+                .to_string();
+                scope.report.steps = steps;
+                scope.report.log_path = log_path;
+                let report = scope.write_report();
+                match (runtime, report) {
+                    (Err(runtime), Err(report)) => {
+                        return Err(runtime).context(format!("run report also failed: {report:#}"));
+                    }
+                    (Err(error), _) | (_, Err(error)) => return Err(error),
+                    (Ok(()), Ok(())) => {}
+                }
+                if sweep && super::cleanup_on_exit_enabled() {
+                    super::sweep::end_of_run(&scope.work_root);
+                }
+                Ok(())
+            }
+            Self::Legacy { dir } => dir.close().context("release legacy recipe runtime"),
+        }
+    }
     /// Creates the run folder, or falls back to a temp folder with a warning.
     pub(crate) fn begin(recipe: &str, cwd: &Path) -> Result<Self> {
         let scoped = super::work_root::resolve_from_env()
@@ -526,6 +575,15 @@ impl RunWorkspace {
         match self {
             Self::Scoped { guard, .. } => guard.path(),
             Self::Legacy { dir } => dir.path(),
+        }
+    }
+
+    /// The durable run folder `<work root>/runs/<run id>/`, or `None` for a
+    /// legacy run that has only a temporary folder (issue #2096).
+    pub(crate) fn run_dir(&self) -> Option<&Path> {
+        match self {
+            Self::Scoped { scope, .. } => Some(&scope.run_dir),
+            Self::Legacy { .. } => None,
         }
     }
 
@@ -568,37 +626,6 @@ impl RunWorkspace {
             vars.push(("AMPLIHACK_RUN_DIR", "".into()));
         }
         vars
-    }
-
-    pub(crate) fn record_attempt(&mut self, correlation_id: &str) {
-        if let Self::Scoped { scope, .. } = self {
-            scope.record_attempt(correlation_id);
-        }
-    }
-
-    /// Removes `runtime/`, finalises `run.json` and, when `sweep` is true and
-    /// `AMPLIHACK_CLEANUP_ON_EXIT` is not `0`, runs the end-of-run sweep.
-    pub(crate) fn finish(
-        self,
-        outcome: Outcome,
-        steps: Vec<StepStatus>,
-        log_path: Option<String>,
-        sweep: bool,
-    ) {
-        match self {
-            Self::Scoped { mut scope, guard } => {
-                guard.remove();
-                scope.finish(outcome, steps, log_path);
-                if sweep && super::cleanup_on_exit_enabled() {
-                    super::sweep::end_of_run(&scope.work_root);
-                }
-            }
-            Self::Legacy { dir } => {
-                if let Err(error) = dir.close() {
-                    eprintln!("amplihack: warning: could not remove the runtime folder: {error}");
-                }
-            }
-        }
     }
 }
 

@@ -16,8 +16,6 @@ amplihack is a development framework for popular coding agent systems (Claude Co
 
 **Looking for something specific?**
 
-- [Recipe checkout isolation](reference/recipe-checkout-isolation.md) - Planned contract (implementation pending): execution inputs, private review generations, command evidence and lifecycle
-
 - [Code Atlas](atlas/index.md) - Architecture diagrams, dependency maps, and bug hunt results
 - [Commands & Operations](#%EF%B8%8F-commands--operations) - Execute complex tasks
 - [Workflows](#-workflows) - Structured development processes
@@ -382,6 +380,9 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [AppendHandler](reference/append-handler.md) - `AppendResult` class, timestamp filename format, atomic file writes
 - [Rust Runner Execution Reference](reference/rust-runner-execution.md) - Wrapper contract, stderr/stdout streams, JSONL events, environment variables, and security model
 - [Rust Runner Execution Architecture](concepts/rust-runner-execution-architecture.md) - CLI/runner responsibility split, stream ownership, progress events, and additive JSON preservation
+- [Recipe Run and Auto-Drive Checkout Isolation](reference/recipe-checkout-isolation.md) - Planned local-input preservation, independent ownership, mandatory recording, exact PR-head review, and requirement/review dispositions
+- [Inspect a Local-Input Snapshot](tutorials/recipe-checkout-isolation.md) - Future acceptance exercise for staged, unstaged and untracked input preservation; runtime guarantees pending
+- [Trace2 Recording Investigation](operations/issue-2096-recording-probe.md) - Retained diagnostic evidence and the limits of cooperative recording
 - [Recipe Runner Logging Reference](reference/recipe-runner-logging.md) - stderr progress, heartbeats, bounded snippets, JSONL events, and additive result fields
 - [Recipe Run Correlation Reference](reference/recipe-run-correlation.md) - Stable run IDs, `AMPLIHACK_RECIPE_RUN_ID`, pointer event schema, and final result fields
 - [Observe Recipe Progress Tutorial](tutorials/recipe-progress-transparency.md) - Watch live workflow progress, capture JSON, and debug failed steps

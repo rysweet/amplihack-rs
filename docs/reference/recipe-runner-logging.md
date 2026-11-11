@@ -1,26 +1,25 @@
+---
+title: Recipe Runner Logging Reference
+description: Progress output, correlation, current cooperative Trace2 recording, and planned mandatory recording.
+doc_type: reference
+last_updated: 2026-11-10
+---
+
 # Recipe Runner Logging Reference
+
+**[CANDIDATE - acceptance pending]** Progress and result formats below remain
+operational. The working-tree implementation requires Linux descendant
+observation and durable per-attempt evidence; collector and publication errors
+fail the run. Trace2 is retained for diagnostics only. Current native coverage
+is successful execution of named Git executables in the runner's descendant
+tree. Preparation, release, arbitrary non-Git writes and unrelated host activity
+are outside that demonstrated coverage. The [target recording contract](recipe-checkout-isolation.md#required-recording)
+and [review ledger](recipe-checkout-isolation.md#requirement-and-review-disposition-ledger)
+identify the outstanding requirements.
 
 Reference for live recipe progress, heartbeat events, bounded subprocess output
 snippets, run correlation pointers, and additive JSON fields emitted by
 `amplihack recipe run`.
-
-## Durable Git command evidence [PLANNED]
-
-> **Implementation pending.** This section describes intended behavior and
-> planned artifact paths; these guarantees are not yet implemented or validated.
-
-Git-backed runs record index-writing commands across shell steps, agent
-descendants and hooks, including absolute executable invocations. These records
-are separate from progress lines and bounded output snippets. They include run
-identity, timestamp, command and executable evidence, effective cwd, resolved
-index path and Git routing environment. Required recorder initialization,
-collection or finalization failure prevents run success.
-
-Records live at `<work root>/runs/<run-id>/diagnostics/git/commands.jsonl`, with
-restricted raw evidence, capability reports and finalization state alongside
-them. The run ownership record supplies the diagnostics pointer. Runtime-folder
-cleanup does not remove this evidence. See [command records](recipe-checkout-isolation.md#command-records)
-for the storage contract, redaction rules and demonstrated-coverage limits.
 
 ## Contents
 
@@ -32,6 +31,7 @@ for the storage contract, redaction rules and demonstrated-coverage limits.
 - [Failure context](#failure-context)
 - [JSON result fields](#json-result-fields)
 - [JSONL log events](#jsonl-log-events)
+- [Git command record](#git-command-record)
 - [Configuration](#configuration)
 - [Examples](#examples)
 
@@ -310,6 +310,199 @@ Output snippet event:
 }
 ```
 
+## Git command record
+
+The candidate production path requires Linux native observation. Each attempt
+writes a private journal under `git-trace2/` (the directory retains its legacy
+name). Successful executable stops provide executable identity, cwd, launch
+routing, run and attempt identity, and UTC time. Repository/index attribution
+uses the observed Git options and routing. Cleared-environment absolute Git
+and Rust hook descendants are covered by production-boundary tests. Independent
+nested runs receive separate journals and an acknowledgement after their
+observed scope has ended and evidence is synchronized.
+
+After successful collection, the run publishes `git-commands.jsonl`,
+`diagnostics/git/commands.jsonl`, and `git-recording.json`; `run.json` includes
+the recording receipt. Command records have schema version `1`, `run_id`,
+`attempt_id`, `executable`, `argv`, `cwd`, `git_dir`, `index_file`,
+`git_environment`, `time`, `sid` and `pid`. Compatibility aliases are
+`command` for `argv`, `index_path` for `index_file`, and `timestamp` for `time`.
+The receipt's scope is explicitly `runner-descendants`.
+
+Required storage, collector loss, incomplete receipts, bounds, and publication
+failures prevent success. Raw evidence is retained when final publication
+fails. A successful empty journal requires a completed observer receipt.
+The mechanism does not establish observation of preparation/release processes,
+arbitrary non-Git index writes, renamed Git executables, unrelated processes,
+or tamper resistance against the same user. See the
+[acceptance ledger](recipe-checkout-isolation.md#requirement-and-review-disposition-ledger).
+
+### Diagnostic Trace2 compatibility
+
+The following retained description concerns the cooperative diagnostic API and
+older installs. It does **not** describe the candidate production coverage or
+failure policy. The historical probe remains useful evidence of why Trace2
+cannot implement required recording.
+
+When recording is available, a run writes a cooperative summary of reported
+Git commands capable of changing an index:
+`<run dir>/git-commands.jsonl`, next to `run.json`. The run dir is
+`AMPLIHACK_RUN_DIR`, normally `<work root>/runs/<run id>`. Use the file to
+investigate reported activity after a run (issue #2096). Command presence
+does not prove an index write; absence does not prove that no command ran.
+Missing routing fields do not establish the effective index.
+
+### How it is recorded
+
+Before the runner starts, amplihack creates `<run dir>/git-trace2/` (mode
+`0700`) and adds two variables to the runner's environment. Children can
+inherit them, but reduced environments can drop them:
+
+| Variable | Value |
+| --- | --- |
+| `GIT_TRACE2_EVENT` | `<run dir>/git-trace2/`. A directory, so each git process writes its own event file. |
+| `GIT_TRACE2_ENV_VARS` | `GIT_DIR,GIT_INDEX_FILE,GIT_WORK_TREE,PWD` |
+
+These values replace any `GIT_TRACE2_EVENT` or `GIT_TRACE2_ENV_VARS` set by
+the caller. The caller's `GIT_TRACE2`, `GIT_TRACE2_PERF`,
+`GIT_TRACE2_CONFIG_PARAMS` and `GIT_TRACE2_REDACT` are removed, so a run never
+writes trace output to a place the caller chose.
+
+When the runner exits, on success or failure, amplihack reads the event files,
+writes `git-commands.jsonl`, and deletes `git-trace2/`. A run in which no step
+ran a matching command still gets `git-commands.jsonl`, with no lines. The
+record never changes the run's exit code.
+
+### Fields
+
+One JSON object per line, sorted by `time` and then `sid`. A line with no
+`time` sorts first.
+
+| Field | Type | Value |
+| --- | --- | --- |
+| `time` | string or `null` | UTC start time of the git process, from its Trace2 `start` event. |
+| `argv` | array of strings | The command line, with secrets removed (see [Redaction](#redaction)). |
+| `cwd` | string or `null` | `PWD` of the git process; when that is missing, the worktree git reported for the repository. |
+| `git_dir` | string or `null` | `GIT_DIR` of the git process, or `null` when it was not set. |
+| `index_file` | string or `null` | `GIT_INDEX_FILE` of the git process, or `null` when it was not set. |
+| `sid` | string | The Trace2 session id. A child git process's `sid` starts with its parent's. |
+
+Example line, from a step that ran `git add notes.md` in the run's checkout:
+
+```json
+{"time":"2026-11-10T09:14:03.512877Z","argv":["git","add","notes.md"],"cwd":"/home/user/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/runtime/checkout","git_dir":null,"index_file":null,"sid":"20261110T091403.512877Z-H1c2d3e4f-P0000a1b2"}
+```
+
+This `cwd` assumes the run's checkout is at `<run dir>/runtime/checkout`, the
+usual place. When that path is too long, the checkout is at
+`<work root>/r/<short id>/checkout` instead, as described in
+[Recipe run and auto-drive checkout isolation](./recipe-checkout-isolation.md).
+
+A non-null `index_file` naming another repository's index is a diagnostic
+lead. It does not by itself prove a write, resolve relative routing, or
+establish ownership.
+
+### Commands recorded
+
+A git process is recorded when its subcommand is one of: `add`, `am`,
+`apply`, `checkout`, `cherry-pick`, `commit`, `merge`, `mv`, `pull`,
+`read-tree`, `rebase`, `reset`, `restore`, `revert`, `rm`, `stash`,
+`switch`, `update-index`, `worktree`. The subcommand is found after git's
+global options, such as `-C <dir>` and `-c <key>=<value>`. Read-only commands such as
+`status`, `diff` and `log` are not recorded.
+
+### Redaction
+
+`argv` is written with:
+
+- each `-c <key>=<value>` value replaced: `-c http.extraHeader=<redacted>`;
+- the user part of a URL replaced: `https://<redacted>@git.example.com/team/app.git`.
+
+Matching uses the command line as git saw it; only the written copy is
+redacted. Warnings printed while recording name a path and an error kind,
+never a command line or an environment value.
+
+Redaction is not complete. It does not cover `--config-env`, a `-c` given
+after the subcommand, or a secret passed in any other argument. The record
+can therefore contain command lines with secrets in them, so
+`git-commands.jsonl` is written with mode `0600` and `git-trace2/` is made
+with mode `0700`. Quote digests or commit ids from it, not raw lines.
+
+### When there is no record
+
+| Case | What happens |
+| --- | --- |
+| The work root cannot be used, so the run has no run dir and uses a private temporary folder | No record. The runner gets no `GIT_TRACE2_EVENT` or `GIT_TRACE2_ENV_VARS`; any the caller set are removed, along with the other caller trace variables listed above. |
+| `git-trace2/` cannot be created, or something already exists at that path | A warning on stderr. The run continues without a record and the variables are removed. |
+| `git-commands.jsonl` cannot be written | A warning on stderr. `git-trace2/` is kept for inspection; it may contain full command lines, so treat it as private. |
+
+The summariser treats the event files as untrusted: it reads only regular
+files at the top of `git-trace2/`, does not follow symbolic links, skips lines
+longer than 1 MiB and files larger than 64 MiB, and ignores lines it cannot
+parse. Symbolic links, folders and other files that are not regular are
+skipped silently. Each file skipped for its size or a read error prints one
+warning on stderr that names the file's path and the error kind, never its
+contents.
+
+### Limits
+
+The record is cooperative. It shows what git processes reported, not
+everything that happened:
+
+- A step can unset `GIT_TRACE2_EVENT` or set it elsewhere, and its git
+  commands then go unrecorded.
+- A step that starts its children with a reduced environment drops the
+  variables for those children. The runner's own `bounded_env`, used for
+  steps that run with a bounded environment, is one such case.
+- A step can write files into `git-trace2/` that look like git events.
+- A nested `amplihack recipe run` records into its own run dir, not its
+  parent's.
+
+Use the record to trace an incident afterwards. Do not use it as a merge
+gate or as proof that a command did not run. What protects the caller's
+checkout is the run's own checkout, described in
+[Recipe run and auto-drive checkout isolation](./recipe-checkout-isolation.md).
+
+### Read the record
+
+List every command that set its own index:
+
+```sh
+jq -c 'select(.index_file != null) | {time, argv, cwd, index_file}' \
+  ~/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3/git-commands.jsonl
+```
+
+List the commands run outside the run's own checkout. Set `co` to the
+checkout the run used: `$run/runtime/checkout`, or
+`<work root>/r/<short id>/checkout` for a run whose path was too long.
+With the wrong value, every command is listed as outside:
+
+```sh
+run=~/.amplihack/work/runs/3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3
+co="$run/runtime/checkout"
+jq -c --arg co "$co" \
+  'select(.cwd != null and (.cwd | startswith($co) | not)) | {argv, cwd}' \
+  "$run/git-commands.jsonl"
+```
+
+### Planned mandatory recording
+
+**[PLANNED - Implementation Pending]** A supported Linux observer must
+establish descendant coverage before provisioning and runner launch, remain
+active through teardown and release, and attribute executable, argv, launch
+cwd, repository, effective index, run and attempt identity. Initialization,
+live collection, bounds, attribution, persistence, synchronization and final
+publication failures must prevent complete success and retain available
+evidence. Unsupported capability must stop launch. Trace2 can supplement
+that observer; it cannot replace it.
+
+The current six-field Trace2 summary is not the proposed versioned provenance
+schema. An empty journal is acceptable under the target only with established
+coverage and no relevant activity. Current empty journals make no such claim.
+See the [required recording specification](recipe-checkout-isolation.md#required-recording),
+[production acceptance requirements](recipe-checkout-isolation.md#validation-contract),
+and [historical Trace2 evidence](../operations/issue-2096-recording-probe.md).
+
 ## Configuration
 
 Defaults are conservative and bounded. Configure them through environment
@@ -381,3 +574,4 @@ jq '.step_results[]
 - [RecipeResult Reference](./recipe-result.md) - Final result schema
 - [amplihack recipe Reference](./recipe-command.md) - Command-line flags
 - [Recipe Runner Architecture](../concepts/recipe-runner-architecture.md) - CLI and runner responsibility split
+- [Recipe Run and Auto-Drive Checkout Isolation](./recipe-checkout-isolation.md) - The run's own checkout and the auto-drive review directory

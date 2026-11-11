@@ -1,27 +1,20 @@
+---
+title: Run a Recipe End-to-End
+description: Launch a recipe, inspect its result, and distinguish current checkout behavior from planned isolation.
+doc_type: howto
+last_updated: 2026-11-10
+---
+
 # Run a Recipe End-to-End
+
+**[CANDIDATE - acceptance pending]** The working-tree implementation preserves
+staged and working contents in private repository-backed checkouts. Independent
+launches get fresh ownership. Required Linux recording and finalization errors
+fail execution. Broader input compatibility and acceptance remain pending. See
+[current limitations and requirement dispositions](../reference/recipe-checkout-isolation.md#requirement-and-review-disposition-ledger).
 
 How to use `amplihack recipe run` to execute a YAML recipe through the Rust CLI
 — from finding the right recipe to inspecting results.
-
-## Account for the private checkout [PLANNED]
-
-> **Implementation pending.** This section describes intended behavior and
-> planned artifact paths; these guarantees are not yet implemented or validated.
-
-Launch from the repository and pass repository-local inputs as usual. Before
-the first shell or agent step, the run gets a private checkout at your resolved
-HEAD, with staged edits, unstaged edits and untracked inputs reproduced. Your
-files, index and HEAD stay unchanged. Paths such as `repo_path=.` and local cwd
-overrides map into the private checkout. A nested run gets another checkout.
-
-Inspect the run's ownership record to locate its checkout and durable
-`diagnostics/git/commands.jsonl` evidence. Changes made by the run remain there
-for recovery until eligible for cleanup; they do not appear automatically in
-your launch checkout. Fix input-capture or recording errors before relaunching;
-there is no fallback to running in your checkout. Outside Git, existing recipe
-execution is preserved and isolation is recorded as inapplicable. See
-[checkout isolation](../reference/recipe-checkout-isolation.md) for supported
-inputs, path restrictions, record locations and lifecycle behavior.
 
 ## Before you start
 
@@ -153,6 +146,37 @@ the terminal status:
 ```text
 amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","status":"success","child_pid":41822,"exit_code":0,"runner_path":"/home/user/.local/bin/recipe-runner-rs"}
 ```
+
+---
+
+## Know where the run works
+
+The candidate `RunCheckout` gives each Git-based invocation a detached
+checkout backed by private Git metadata and object storage. Staged blobs,
+working contents, and ordinary untracked inputs are preserved independently.
+An explicitly selected ignored recipe is included. Unsupported index states
+and escaping symlinks reject execution. Independently launched nested runs
+receive fresh resources, regardless of inherited checkout markers.
+
+`-w` selects the source and matching relative execution directory. Exact
+caller-local absolute context paths are mapped into execution. Embedded
+caller paths in opaque prose are rejected. External recipe dependencies,
+other required ignored inputs, and broader typed path semantics still need
+acceptance; do not assume automatic discovery of arbitrary path dependencies.
+
+A dry run creates no execution checkout. A confirmed nonrepository directory
+is used as requested; corrupt metadata and unavailable Git reject execution.
+Required recording currently needs Linux. Recording and explicit release
+failures prevent success, and incomplete evidence is retained.
+
+**[PLANNED - schema not implemented]** Broader recipes need declarations for
+required ignored files and path-bearing context according
+to the [proposed input-selection contract](../reference/recipe-checkout-isolation.md#required-local-input-declarations).
+That schema is not supported yet. Do not rely on it for current runs.
+
+See the [target isolation reference](../reference/recipe-checkout-isolation.md),
+[current recording behavior](../reference/recipe-runner-logging.md#git-command-record),
+and [future acceptance exercise](../tutorials/recipe-checkout-isolation.md).
 
 ---
 
@@ -472,3 +496,4 @@ amplihack recipe run recipe.yaml -c task_description="..." --verbose
 - [Environment Variables](../reference/environment-variables.md) — `AMPLIHACK_CONTEXT_*` and `RECIPE_RUNNER_RS_PATH`
 - [Run amplihack in Non-interactive Mode](./run-in-noninteractive-mode.md) — CI configuration
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — How agents are located during recipe execution
+- [Recipe Run and Auto-Drive Checkout Isolation](../reference/recipe-checkout-isolation.md) — The run's own checkout, nested runs and the git command record

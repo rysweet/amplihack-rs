@@ -1,11 +1,31 @@
-# Issue #2096: recording capability probe
+---
+title: Trace2 Recording Investigation
+description: Retained diagnostic evidence explaining why cooperative Trace2 cannot certify descendant coverage.
+doc_type: reference
+last_updated: 2026-11-10
+---
+
+# Trace2 recording investigation
+
+This document preserves an earlier diagnostic and its limitations. Its
+implementation-status statements and host-specific results below describe
+that experiment, not the execution contract. For the feature contract, see
+[checkout isolation](../reference/recipe-checkout-isolation.md#required-recording).
+For current requirement dispositions, see the
+[requirement/review ledger](../reference/recipe-checkout-isolation.md#requirement-and-review-disposition-ledger).
+Statements below that production integration was unchanged refer to the
+diagnostic revision; later linked-worktree/Trace2 code does not satisfy the
+stronger target contract.
+The [recording review](evidence/issue-2096-recording-review.txt) and
+[review follow-up](evidence/issue-2096-step17e-review.md) remain historical
+evidence; neither certifies production behavior or identifies a historical writer.
 
 This is prerequisite investigation evidence, not an implemented isolation feature
 or the complete candidate-1 reproduction. No fix or historical attribution is
 claimed.
 
 The Rust example at
-[`issue_2096_trace2_probe.rs`](../../crates/amplihack-git/examples/issue_2096_trace2_probe.rs)
+[`issue_2096_trace2_probe.rs` at the diagnostic revision](https://github.com/rysweet/amplihack-rs/blob/60ecbe573b60ff30f47273510e48a90341ffd217/crates/amplihack-git/examples/issue_2096_trace2_probe.rs)
 creates a disposable caller repository, detached linked checkout, and profile
 directories. It invokes absolute Git, stages private files, exercises relative
 `GIT_INDEX_FILE` from two subdirectories, and attempts staging with an invalid
@@ -26,7 +46,8 @@ The probe also attempts the platform observer without privilege escalation:
 successfully. Tool presence and successful initialization are insufficient to
 establish recording coverage or failure supervision.
 
-Run it with a fresh destination under a trusted parent:
+At that revision, the diagnostic was invoked with a fresh destination under a
+trusted parent:
 
 ```sh
 cargo run --locked -p amplihack-git --example issue_2096_trace2_probe -- /private/tmp/issue-2096-probe-new

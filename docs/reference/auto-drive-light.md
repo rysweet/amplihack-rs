@@ -1,13 +1,24 @@
 ---
 title: Auto-Drive-Light Recipe
 description: The smaller drive-to-merge recipe for small pull requests, its eligibility rules, escalation to auto-drive-to-merge, the task id its follow-up issues name, and how it shares auto-drive-to-merge's per-finding follow-up model.
-last_updated: 2026-11-08
+last_updated: 2026-11-10
 review_schedule: quarterly
 owner: workflow-team
 doc_type: reference
 ---
 
 # Auto-Drive-Light Recipe
+
+**[PLANNED - Implementation Pending: SHA-bound review isolation]** The
+current shell helpers create detached linked review worktrees at the main
+checkout's `HEAD`, with shared common metadata. They do not implement
+Rust-owned exact-PR-head generations or enforce trusted instruction discovery
+through the agent adapter. Recipe execution still copies committed content
+only and may reuse ancestor checkouts; Git recording remains cooperative
+Trace2 with warning-only failures. The
+[planned review contract](recipe-checkout-isolation.md#private-review-generations)
+and [requirement/review ledger](recipe-checkout-isolation.md#requirement-and-review-disposition-ledger)
+remain requirements to build and validate, not delivered guarantees.
 
 > [Home](../index.md) > Reference > Auto-Drive-Light
 
@@ -16,14 +27,6 @@ doc_type: reference
 A bash step measures the PR after it is opened. If the change exceeds any eligibility rule, the run hands the same PR to `auto-drive-to-merge`. Minor review findings are handled exactly as in `auto-drive-to-merge`: a crusty round whose findings are all minor ends the crusty loop, and each finding is filed as its own follow-up issue, linked to the task, before the PR can merge.
 
 The recipe is `amplifier-bundle/recipes/auto-drive-light.yaml`. It was added for issue #1802. Issue #1982 moved its minor findings to the follow-up model of #1979.
-
-**[PLANNED - Implementation Pending]** The following isolation behavior is
-unimplemented and awaits validation. The build will run in a unique private
-execution checkout from its first step.
-Its judging agents use private detached review generations at the recorded PR
-head SHA, with trusted launch-side instructions and the existing mutation
-guard. See [checkout isolation](recipe-checkout-isolation.md) for boundaries,
-command records and recovery behavior.
 
 ## Contents
 
@@ -355,7 +358,7 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 - `plan_task_id` is validated by `light-task-id` through `autodrive_followups.sh resolve-task`, and `file` applies the same function to the forwarded value. Its character set contains no quote, brace, newline or `$`, so it cannot inject template or YAML text into the context of the three child recipes.
 - The light steps make no GitHub call of their own beyond `light-open-pr` and `light-resolve-pr`; the eligibility tool is offline. `autodrive_followups.sh file` is the only code that writes follow-up issues and parent comments.
 - Agent text reaches `gh` only through files (`--body-file`), after `cell()`; see [Cell sanitising](auto-drive-to-merge.md#cell-sanitising).
-- Judging agents run from the review directory. Round and loop recipes are loaded from the tool root. `auto-drive-light.yaml` loads every tool, including `quick_change_common.sh`, only from `$AMPLIHACK_HOME/amplifier-bundle/tools`; `light-prereqs` checks that each one exists there, and a missing file stops the step rather than falling back to the worktree or another install.
+- Judging agents run from the review directory: a detached worktree made for the drive at the `HEAD` of the main checkout, never at the PR head, so the PR under review cannot supply the `AGENTS.md`, `CLAUDE.md` or `.claude/` files its judges load (issue #2096; see [Recipe run and auto-drive checkout isolation](recipe-checkout-isolation.md#private-review-generations)). The build itself runs in the recipe run's own checkout, and the PR's commits are made in its PR worktree, passed as `repo_path`. Round and loop recipes are loaded from the tool root. `auto-drive-light.yaml` loads every tool, including `quick_change_common.sh`, only from `$AMPLIHACK_HOME/amplifier-bundle/tools`; `light-prereqs` checks that each one exists there, and a missing file stops the step rather than falling back to the worktree or another install.
 - Exit code 79 is final at every level and is never retried.
 - `light-implement` and the crusty loop agents carry `[amplihack:no-merge]` in their prompts.
 

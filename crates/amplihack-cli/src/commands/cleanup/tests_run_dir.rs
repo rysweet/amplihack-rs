@@ -67,13 +67,13 @@ fn runtime_guard_removes_folder_on_drop_and_on_panic() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path().join("runtime");
     std::fs::create_dir_all(dir.join("tmp/nested")).unwrap();
-    drop(RuntimeGuard::new(dir.clone()));
+    drop(RuntimeGuard::new(dir.clone()).unwrap());
     assert!(!dir.exists());
 
     std::fs::create_dir_all(dir.join("tmp")).unwrap();
     let d = dir.clone();
     let result = std::panic::catch_unwind(move || {
-        let _guard = RuntimeGuard::new(d);
+        let _guard = RuntimeGuard::new(d).unwrap();
         panic!("step blew up");
     });
     assert!(result.is_err());

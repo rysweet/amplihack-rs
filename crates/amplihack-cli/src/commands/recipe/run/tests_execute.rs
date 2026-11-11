@@ -2743,6 +2743,28 @@ fn test_context_env_pairs_drops_oversized_values() {
 // -------------------------------------------------------------------------
 
 #[test]
+fn context_cannot_restore_git_routing_after_command_scrubbing() {
+    for name in amplihack_git::REPOSITORY_ENV_VARS.iter().copied().chain([
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+        "GIT_EXEC_PATH",
+        "GIT_TEMPLATE_DIR",
+    ]) {
+        let context = BTreeMap::from([(name.to_ascii_lowercase(), "hostile".to_string())]);
+        let mut command = std::process::Command::new("recipe-runner-rs");
+        let error = execute::pass_context(&mut command, &context).unwrap_err();
+        assert!(error.to_string().contains("reserved"), "{name}: {error:#}");
+        assert_eq!(command.get_args().count(), 0, "{name}");
+        assert!(
+            execute::context_env_pairs(&context, usize::MAX).is_empty(),
+            "{name}"
+        );
+    }
+}
+
+#[test]
 fn test_context_env_pairs_drops_reserved_and_dangerous_names() {
     // Each of these context keys uppercases to a name that must be dropped.
     // Coverage spans: path/identity, dynamic-linker, shell-startup RCE

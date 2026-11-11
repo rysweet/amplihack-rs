@@ -9,6 +9,8 @@ pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.
 mod failure_class;
 mod format;
+/// Issue #2096 — the record of index-writing git commands a run's steps ran.
+pub(crate) mod git_record;
 /// Issue #1618: the usage-limit patterns of every agent harness, in one place.
 pub(crate) mod limit_patterns;
 mod limit_reset;
@@ -21,6 +23,8 @@ pub(crate) mod parent_watch;
 pub(crate) mod removed_keys;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
+/// Issue #2096 — each recipe run works in a checkout of its own.
+pub(crate) mod run_checkout;
 /// Issue #1606: SIGHUP/SIGINT/SIGTERM stop the whole recipe tree.
 pub(crate) mod stop_signal;
 
@@ -449,6 +453,8 @@ mod tests_execute;
 mod tests_failure_class;
 #[cfg(test)]
 mod tests_format;
+#[cfg(all(test, unix))]
+mod tests_git_record;
 #[cfg(test)]
 mod tests_limit_patterns;
 #[cfg(test)]

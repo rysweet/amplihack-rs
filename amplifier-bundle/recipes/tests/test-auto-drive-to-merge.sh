@@ -175,6 +175,9 @@ if git -C "${WORK_PHYS}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 # Every step body runs with HOME here, never the real one (issue #1517).
 TEST_HOME="${WORK_PHYS}/home"; mkdir -p "${TEST_HOME}"
+# Native compatibility helpers must never allocate in an enclosing recipe's
+# real run folder. This harness owns only its disposable fixture storage.
+unset AMPLIHACK_RUN_DIR AMPLIHACK_RUN_ID AMPLIHACK_RUN_CHECKOUT
 STUB_BIN="${WORK}/bin"; mkdir -p "${STUB_BIN}"
 
 # --- amplihack stub --------------------------------------------------------
@@ -182,7 +185,7 @@ STUB_BIN="${WORK}/bin"; mkdir -p "${STUB_BIN}"
 # under test must be the real one. `recipe run ...` is scripted per scenario.
 cat > "${STUB_BIN}/amplihack" <<'STUB'
 #!/usr/bin/env bash
-if [ "${1:-}" = "orch" ]; then exec "$REAL_AMPLIHACK" "$@"; fi
+if [ "${1:-}" = "orch" ] || [ "${1:-}" = "internal" ]; then exec "$REAL_AMPLIHACK" "$@"; fi
 # The loop passes recipes by absolute path from its own tree (#1528, #1543).
 # `show` and `run` below key on the recipe's basename and record the path as
 # passed, so a test can still see which copy would have been loaded.
@@ -199,6 +202,11 @@ if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
   # `calls.paths` keeps exactly what was passed, so a test can see WHICH copy
   # of a recipe would have been loaded.
   RECIPE="$(basename "${3:-}" .yaml)"
+  for a in "$@"; do case "$a" in
+    review_dir=*) export REVIEW_DIR="${a#*=}" ;;
+    review_launch_dir=*) export REVIEW_LAUNCH_DIR="${a#*=}" ;;
+    reviewed_head_sha=*) export REVIEWED_HEAD_SHA="${a#*=}" ;;
+  esac; done
   echo "$RECIPE" >> "${STUB_CALLS:-/dev/null}"
   echo "${3:-}" >> "${STUB_CALLS:-/dev/null}.paths"
   # Full argv, one call per line, so a test can see where each recipe's
@@ -222,6 +230,7 @@ if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
     loop-health-evaluator)
       for a in "$@"; do case "$a" in loop_history=*) printf '%s\n---\n' "${a#*=}" >> "${STUB_HISTORY_LOG:-/dev/null}" ;; esac; done
       # STUB_HEALTH_BODY: what a misbehaving evaluator agent does in its working dir.
+      for a in "$@"; do case "$a" in loop_review_dir=*) export REVIEW_DIR="${a#*=}" ;; esac; done
       [ -z "${STUB_HEALTH_BODY:-}" ] || bash -c "$STUB_HEALTH_BODY"
       # Snapshot a state file at the moment the evaluator (an agent) starts,
       # so a test can show what the loop had already written by then.
@@ -711,10 +720,13 @@ export STUB_CALLS="${LOOP_DIR}.calls" STUB_SHOW_CALLS="${LOOP_DIR}.shows"
 ROUND_ARGV="$(grep -F 'autodrive-crusty-round.yaml' "${LOOP_DIR}.calls.argv" 2>/dev/null | head -n1)"
 HEALTH_ARGV="$(grep -F 'loop-health-evaluator.yaml' "${LOOP_DIR}.calls.argv" 2>/dev/null | head -n1)"
 REVIEWS="$(printf '%s\n' "${ROUND_ARGV}" | tr ' ' '\n' | grep '^review_dir=')"
+PRIVATE_REVIEW="${REVIEWS#review_dir=}"
+TRUSTED_LAUNCH="$(printf '%s\n' "${ROUND_ARGV}" | tr ' ' '\n' | sed -n 's/^review_launch_dir=//p')"
 if [ "$rc" -eq 0 ] && [ -n "${ROUND_ARGV}" ] && [ -n "${HEALTH_ARGV}" ] \
-   && [ "${REVIEWS}" = "review_dir=${LAUNCH_REAL}" ] \
-   && printf '%s' "${HEALTH_ARGV}" | grep -qF -- "--working-dir ${LAUNCH_REAL} " \
-   && printf '%s' "${HEALTH_ARGV}" | grep -qF "loop_agent_working_dir=${LAUNCH_REAL}" \
+   && [ -n "${PRIVATE_REVIEW}" ] && [ "${PRIVATE_REVIEW}" != "${LAUNCH_REAL}" ] \
+   && [ -n "${TRUSTED_LAUNCH}" ] && [ "${TRUSTED_LAUNCH}" != "${PRIVATE_REVIEW}" ] \
+   && printf '%s' "${HEALTH_ARGV}" | grep -qF -- "--working-dir ${TRUSTED_LAUNCH} " \
+   && printf '%s' "${HEALTH_ARGV}" | grep -qF "loop_agent_working_dir=${TRUSTED_LAUNCH}" \
    && printf '%s' "${HEALTH_ARGV}" | grep -qF "loop_repo_path=${TAMPERED}" \
    && ! printf '%s' "${HEALTH_ARGV}" | grep -qE -- "--working-dir (${TAMPERED}|${TAMPERED_REAL}) |loop_agent_working_dir=(${TAMPERED}|${TAMPERED_REAL})"; then
   pass "1528-judging-agents-launch-side" "review and evaluator agents start in the launch checkout, not the PR worktree"
@@ -725,7 +737,8 @@ fi
 # #1570): the loop copies --task-file into its state dir and hands the copy to
 # the round as --context-from-file, whatever --repo is.
 if [ "$rc" -eq 0 ] \
-   && printf '%s' "${ROUND_ARGV}" | grep -qE -- "--working-dir (${TAMPERED}|${TAMPERED_REAL}) " \
+   && printf '%s' "${ROUND_ARGV}" | grep -qF -- "--working-dir ${TRUSTED_LAUNCH} " \
+   && printf '%s' "${ROUND_ARGV}" | grep -qF "repo_path=${TAMPERED}" \
    && printf '%s' "${ROUND_ARGV}" | grep -qF -- "--context-from-file task_description=${LOOP_DIR}/crusty-task_description.txt" \
    && [ "$(grep '^autodrive-crusty-round ' "${LOOP_DIR}.calls.task" 2>/dev/null | head -n1)" = "autodrive-crusty-round drive the PR to merge" ]; then
   pass "1528-1570-task-reaches-worktree-round" "a round launched in the PR worktree receives task_description through the loop's task file"
@@ -739,10 +752,14 @@ fi
 # not the main checkout of the PR's repository (crusty round 3 on PR #1586):
 # a checkout of another repository, whose `gh pr diff N` reads another pull
 # request; a directory that is no checkout, as a bare repository's neighbour
-# is; and another linked worktree of the same repository.
+# is; and another linked worktree of the same repository at a commit the
+# main checkout does not have (a drive's private review checkout, #2096, is a
+# detached worktree at a commit the main checkout's HEAD contains).
 mkdir -p "${TAMPERED}/sub" "${WORK}/not-a-checkout"
 main_and_worktree "${WORK}/other-repo" "${WORK}/other-repo-wt"
 git -C "${LAUNCH}" worktree add -q --detach "${WORK}/sibling-wt" >/dev/null 2>&1
+git -C "${WORK}/sibling-wt" update-ref HEAD \
+  "$(git -C "${WORK}/sibling-wt" commit-tree "$(git -C "${WORK}/sibling-wt" write-tree)" -p HEAD -m untrusted)"
 for case_ in explicit inside default context other-repo not-a-checkout sibling-worktree; do
   LOOP_DIR="${WORK}/loop-review-refused-${case_}"; mkdir -p "${LOOP_DIR}"
   export STUB_CALLS="${LOOP_DIR}.calls" STUB_SHOW_CALLS="${LOOP_DIR}.shows"
@@ -865,7 +882,7 @@ printf 'LOOP_HEALTH: CONTINUE — confirm once more\nLOOP_HEALTH: DONE — conve
 export STUB_HEALTH_SEQ="${WORK}/health-seq-before"
 run_loop_before before-ok; rc=$?
 unset STUB_HEALTH_SEQ
-BR_REVIEW="${LOOP_MAIN}"
+BR_REVIEW="$(head -n1 "${LOOP_LOGS}/calls" | sed -E 's/.*--review-dir ([^ ]+).*/\1/')"
 BR_TASK="--context-from-file task_description=${LOOP_DIR}/crusty-task_description.txt"
 BR_WANT="before --repo ${LOOP_WT} --review-dir ${BR_REVIEW} --state-dir ${LOOP_DIR} -c pr_number=42 ${BR_TASK} depth=2
 autodrive-crusty-round
@@ -2313,7 +2330,7 @@ fi
 # The loop-health evaluator starts in the review dir too: the loop stamps it
 # before the evaluator and stops with REVIEW_DIR_CHANGED when it moved.
 set_stub '{"crusty_verdict":"CLEAN"}' 0 "$H_DONE"
-export STUB_HEALTH_BODY="printf 'x\n' > '${LOOP_MAIN}/evaluator.txt' && git -C '${LOOP_MAIN}' add -f evaluator.txt"
+export STUB_HEALTH_BODY='printf "x\n" > "$REVIEW_DIR/evaluator.txt" && git -C "$REVIEW_DIR" add -f evaluator.txt'
 run_loop evaluator-stages; rc=$?
 unset STUB_HEALTH_BODY
 git -C "${LOOP_MAIN}" rm -q --cached -- evaluator.txt >/dev/null 2>&1; rm -f -- "${LOOP_MAIN}/evaluator.txt"
@@ -2327,7 +2344,7 @@ fi
 # evaluator never runs, and nothing claims the review dir changed.
 set_stub '{"crusty_verdict":"CLEAN"}' 0 "$H_DONE"
 cp -p -- "${LOOP_MAIN}/.git/index" "${WORK}/loop-main-index.bak"
-export STUB_ROUND_BODY="printf 'not an index' > '${LOOP_MAIN}/.git/index' && printf '%s' '{\"crusty_verdict\":\"CLEAN\"}' > \"\$AUTODRIVE_ROUND_RECORD\""
+export STUB_ROUND_BODY='printf "not an index" > "$(git -C "$REVIEW_DIR" rev-parse --path-format=absolute --git-path index)" && printf "%s" "{\"crusty_verdict\":\"CLEAN\"}" > "$AUTODRIVE_ROUND_RECORD"'
 run_loop evaluator-unstamped; rc=$?
 unset STUB_ROUND_BODY
 cp -p -- "${WORK}/loop-main-index.bak" "${LOOP_MAIN}/.git/index"
@@ -2345,7 +2362,7 @@ fi
 # round, which would stamp the polluted index as its baseline, never run
 # (crusty round 5 on PR #1586).
 set_stub '' 0 "$H_CONTINUE"; export STUB_HEALTH_STDOUT_LATER=""
-export STUB_ROUND_BODY="printf 'x\n' > '${LOOP_MAIN}/round.txt' && git -C '${LOOP_MAIN}' add -f round.txt && exit 1"
+export STUB_ROUND_BODY='printf "x\n" > "$REVIEW_DIR/round.txt" && git -C "$REVIEW_DIR" add -f round.txt && exit 1'
 run_loop round-stages-and-fails; rc=$?
 unset STUB_ROUND_BODY STUB_HEALTH_STDOUT_LATER
 git -C "${LOOP_MAIN}" rm -q --cached -- round.txt >/dev/null 2>&1; rm -f -- "${LOOP_MAIN}/round.txt"
@@ -4392,6 +4409,7 @@ cf_expect "CRUSTY-FINAL-replayed-row" 1 "crusty-record-modified" \
 S6_BODY="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" "step-06-write-round-record")"
 [[ -n "${S6_BODY}" ]] || { echo "HARNESS-ERROR: could not extract the crusty step-06 body" >&2; exit 2; }
 S6_N=0; S6_RC=0; S6_REC=""; S6_ERR=""
+S6_REVIEW="$("$REAL_AMPLIHACK" internal review-checkout "$FX" "$WORK_PHYS/s6-review" "$CR_SHA")" || exit 2
 s6_run() { # s6_run <round-context-json> <fix-evidence-json> <verdict-json> [label]
   S6_N=$((S6_N + 1)); local d="${WORK_PHYS}/s6-${S6_N}"; mkdir -p "$d"
   S6_REC="${d}/crusty-round-1.json"
@@ -4399,7 +4417,7 @@ s6_run() { # s6_run <round-context-json> <fix-evidence-json> <verdict-json> [lab
   # that is all this sets; the upper-case names are removed from the environment.
   env -u CRUSTY_ROUND_CONTEXT -u CRUSTY_FIX_EVIDENCE -u CRUSTY_VERDICT \
     PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" RECIPE_VAR_crusty_round_context="$1" RECIPE_VAR_crusty_fix_evidence="$2" RECIPE_VAR_crusty_verdict="$3" \
-    AUTODRIVE_ROUND_RECORD="${S6_REC}" AUTODRIVE_ROUND_LABEL="${4:-round-1}" \
+    AUTODRIVE_ROUND_RECORD="${S6_REC}" AUTODRIVE_ROUND_LABEL="${4:-round-1}" REVIEW_DIR="${S6_REVIEW}" \
     bash -c "${S6_BODY}" >"${d}.out" 2>"${d}.err"; S6_RC=$?
   S6_ERR="${d}.err"
 }
@@ -4419,7 +4437,7 @@ if [ "${S6_RC}" -eq 0 ] && [ -f "${S6_REC}" ]; then
   RT="${WORK_PHYS}/s6-roundtrip"; seed_crusty "${RT}" none
   printf 'crusty-loop\t2026-10-03T00:00:00Z\n' > "${RT}/phases.tsv"
   loop_writes_round "${RT}" round-1 "$(cat "${S6_REC}")"
-  out="$(env -i PATH="/usr/bin:/bin" bash -uc '. "$1" && autodrive_crusty_final "$2"' _ "${STATE_HELPER}" "${RT}" 2>/dev/null)"
+  out="$(env -i PATH="/usr/bin:/bin" HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 bash -uc '. "$1" && autodrive_crusty_final "$2"' _ "${STATE_HELPER}" "${RT}" 2>/dev/null)"
   if [ "$out" = "${CR_SHA}" ]; then
     pass "CRUSTY-STEP06-roundtrip" "a CLEAN record written by step-06 is accepted by autodrive_crusty_final"
   else
@@ -4850,7 +4868,7 @@ loop-health-evaluator 2" ]; then
   else
     fail "RRTOOL-same-depth" "depths: $(tr '\n' '|' < "${RRT_LOGS}/depths" 2>/dev/null)"
   fi
-  if [ "$(env -i PATH="/usr/bin:/bin" bash -c '. "$1"; . "$2"; autodrive_crusty_final "$3"' _ "${STATE_HELPER}" "${TRUST_HELPER}" "${RRT_DIR}" 2>/dev/null)" = "${FX_CODE}" ]; then
+  if [ "$(env -i PATH="/usr/bin:/bin" HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 bash -c '. "$1"; . "$2"; autodrive_crusty_final "$3"' _ "${STATE_HELPER}" "${TRUST_HELPER}" "${RRT_DIR}" 2>/dev/null)" = "${FX_CODE}" ]; then
     pass "RRTOOL-reviewed-head" "after the re-review, criterion 3 reads the head crusty just reviewed"
   else
     fail "RRTOOL-reviewed-head" "autodrive_crusty_final did not return the re-reviewed head ${FX_CODE}"
@@ -4968,6 +4986,7 @@ else
 fi
 
 S5_BODY="$(extract_step_command "${RECIPES}/autodrive-merge-round.yaml" "step-05-write-round-record")"
+S5_REVIEW="$("$REAL_AMPLIHACK" internal review-checkout "$FX" "$WORK_PHYS/s5-review")" || exit 2
 [[ -n "${S5_BODY}" ]] || { echo "HARNESS-ERROR: could not extract the merge round step-05 body" >&2; exit 2; }
 S5_N=0; S5_REC=""
 s5_run() { # s5_run <qa_evidence_hash json> -> S5_REC
@@ -4975,7 +4994,7 @@ s5_run() { # s5_run <qa_evidence_hash json> -> S5_REC
   ( umask 022
     # As the runner exports object outputs: RECIPE_VAR_<name> only.
     env -u MERGE_READY_VERDICT -u QA_EVIDENCE -u CI_EVIDENCE -u QA_EVIDENCE_HASH \
-      PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" REPO_PATH="${FX}" AUTODRIVE_ROUND_RECORD="${S5_REC}" AUTODRIVE_ROUND_LABEL=round-1 \
+      PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" REPO_PATH="${FX}" AUTODRIVE_ROUND_RECORD="${S5_REC}" AUTODRIVE_ROUND_LABEL=round-1 REVIEW_DIR="${S5_REVIEW}" \
       RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"MERGE_READY","verdict_source":"merge_ready","blocker_count":0}' \
       RECIPE_VAR_qa_evidence='{"qa_status":"PASS"}' RECIPE_VAR_ci_evidence='{"ci_status":"GREEN","ci_signal":"green"}' RECIPE_VAR_qa_evidence_hash="$1" \
       bash -c "${S5_BODY}" >/dev/null 2>"${S5_REC}.err" )
@@ -5360,7 +5379,7 @@ CTX_OUT=""; CTX_RC=0; CTX_ERR="${WORK_PHYS}/ctx.err"
 ctx_run() { # ctx_run <gh-mode> <gh-head> [VAR=value ...]: FX's HEAD is wherever fx_head left it
   local mode="$1" head="$2"; shift 2
   CTX_OUT="$(env -i HOME="${TEST_HOME}" PATH="${STUB_BIN}:/usr/bin:/bin" REPO_PATH="${FX}" PR_NUMBER=42 \
-    GH_MODE="$mode" GH_HEAD="$head" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@" \
+    GH_MODE="$mode" GH_HEAD="$head" REVIEWED_HEAD_SHA="$(git -C "$FX" rev-parse HEAD)" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@" \
     bash -c "${CTX_BODY}" 2>"${CTX_ERR}")"; CTX_RC=$?
 }
 ctx_expect_error() { # ctx_expect_error <label> <ERROR text> <reason text> <why>
@@ -5498,7 +5517,7 @@ PF_FX="${WORK_PHYS}/umask-pf-fx"
 git init -q -b feat/pf "${PF_FX}" \
   && git -C "${PF_FX}" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m pf \
   || { echo "HARNESS-ERROR: 13c: cannot create the preflight checkout" >&2; exit 2; }
-PF_ENV=(HOME="${TEST_HOME}" PATH="${STUB_BIN}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${FX}" PR_NUMBER=42
+PF_ENV=(HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" PATH="${STUB_BIN}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${FX}" PR_NUMBER=42
   GH_MODE=green GH_HEAD="${CR_SHA2}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 REAL_AMPLIHACK="${REAL_AMPLIHACK}")
 # env applies assignments in order, so these override PF_ENV's for 13c only;
 # the end-to-end section below keeps PF_ENV as it is.
@@ -5745,6 +5764,7 @@ BODY_N=0; BODY_RC=0; BODY_OUT=""; BODY_ERR=""; CALLS=""
 run_body() { # run_body <body> [VAR=value ...]
   local body="$1"; shift
   BODY_N=$((BODY_N + 1)); CALLS="${WORK}/body-${BODY_N}"; mkdir -p "${CALLS}"
+  git init -q "${CALLS}/pr-worktree" && git -C "${CALLS}/pr-worktree" update-ref HEAD "$(git -C "${CALLS}/pr-worktree" commit-tree "$(git -C "${CALLS}/pr-worktree" write-tree)" -m fixture)" || exit 2
   env "${UNSET_ALIASES[@]}" \
     PATH="${STUB_BIN}:${PATH}" AMPLIHACK_HOME="${FAKE_HOME}" REPO_PATH="${WORK}/notgit" \
     HOME="${WORK}/nohome" FAKE_CALLS_DIR="${CALLS}" "$@" \
@@ -5861,10 +5881,14 @@ int_run() { # int_run <body> <preflight-var> <round-record>
 int_round_ok() { # int_round_ok <round-recipe>: the round ran in INT_WT and got the task
   local argv
   argv="$(grep -F "/$1.yaml" "${CALLS}/calls.argv" 2>/dev/null | head -n1)"
+  local launch review
+  launch="$(printf '%s\n' "$argv" | tr ' ' '\n' | sed -n 's/^review_launch_dir=//p')"
+  review="$(printf '%s\n' "$argv" | tr ' ' '\n' | sed -n 's/^review_dir=//p')"
   [ "$(arg_after --pr "${CALLS}/resolver-args")" = "42" ] \
-    && printf '%s' "${argv}" | grep -qF -- "--working-dir ${INT_WT} " \
+    && [ -n "$launch" ] && [ -n "$review" ] && [ "$launch" != "$review" ] \
+    && [ "$review" != "$INT_MAIN" ] && [ "$review" != "$INT_WT" ] \
+    && printf '%s' "${argv}" | grep -qF -- "--working-dir ${launch} " \
     && printf '%s' "${argv}" | grep -qF "repo_path=${INT_WT}" \
-    && printf '%s' "${argv}" | grep -qF "review_dir=${INT_MAIN} " \
     && [ "$(grep "^$1 " "${CALLS}/calls.task" 2>/dev/null | head -n1)" = "$1 drive PR 42 to merge" ] \
     && ! grep -qF 'task_description=drive' "${CALLS}/calls.argv"
 }

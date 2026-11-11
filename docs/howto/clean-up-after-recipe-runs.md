@@ -1,4 +1,19 @@
+---
+title: Clean Up After Recipe Runs
+description: Inspect managed storage and safely release owned run resources.
+doc_type: howto
+last_updated: 2026-11-10
+---
+
 # Clean Up After Recipe Runs
+
+**[CANDIDATE - lifecycle acceptance pending]** `RunCheckout` validates its
+private manifest and filesystem identities before explicit release. Release
+and required recording failures fail execution. Private repository metadata
+is retained when durable child worktrees depend on it; automated metadata
+reclamation and descriptor-relative recovery remain
+[planned requirements](../reference/recipe-checkout-isolation.md#ownership-and-lifecycle);
+see the [review ledger](../reference/recipe-checkout-isolation.md#requirement-and-review-disposition-ledger).
 
 Use this guide to find what a recipe run leaves on disk, to choose where it
 goes, and to remove or archive it with `amplihack cleanup`.
@@ -8,24 +23,6 @@ run the runner removes the run's temporary folder and clears out earlier runs
 whose pull request was merged or closed more than a day ago. The
 `amplihack cleanup` command does the same on demand, and also archives old
 logs and removes temporary folders left by killed runs.
-
-## Preserve isolated execution and review work [PLANNED]
-
-> **Implementation pending.** This section describes intended behavior and
-> planned artifact paths; these guarantees are not yet implemented or validated.
-
-Each Git-backed recipe owns a unique execution checkout; each drive owns its
-private detached review generations. These are registered before execution and
-use the existing cleanup eligibility checks. A matching branch or PR does not
-make another run's checkout disposable. Dirty files, live descendants and
-unpublished commits keep recovery work; detached commits must be reachable
-from retained published refs before removal. Unreadable ownership metadata
-also keeps the checkout.
-
-Command evidence under `runs/<run-id>/diagnostics/git/` survives removal of
-`runtime`, short temporary folders and eligible checkouts. Keep restricted raw
-evidence private when sharing a sanitized report. See [checkout ownership and
-lifecycle](../reference/recipe-checkout-isolation.md#ownership-and-lifecycle).
 
 ## Contents
 
@@ -120,7 +117,10 @@ The runner creates one folder per run:
 │       ├── run.json              # the run report (kept)
 │       ├── owned-paths           # worktrees and targets this run created
 │       ├── cleanup-record.json   # written only when cleanup removed something
+│       ├── git-commands.jsonl    # index-writing git commands the run made (kept)
+│       ├── git-trace2/           # raw git events; deleted once summarised
 │       └── runtime/              # removed when the run ends
+│           ├── checkout/         # the run's detached worktree (git runs only)
 │           ├── tmp/              # TMPDIR, TMP and TEMP for every step
 │           └── artifacts/        # AMPLIHACK_WORKFLOW_ARTIFACT_DIR
 ├── targets/                      # one cargo target per checkout, from git-hook-cargo.sh
@@ -322,10 +322,20 @@ worktrees need the variable set explicitly.
 When `amplihack recipe run` finishes, whether the run succeeded, failed or
 panicked, the runner:
 
-1. Removes `<run dir>/runtime/`, including everything steps wrote to
+1. Validates and removes the run's checkout from its private repository.
+   It does not alter the caller's worktree registry. Substituted resources
+   are retained and release fails. Metadata with durable worktree dependencies
+   is retained outside disposable runtime storage.
+2. Publishes `git-commands.jsonl` from completed native observer journals and
+   removes `git-trace2/` only after successful publication;
+   see [Git command record](../reference/recipe-runner-logging.md#git-command-record).
+   `runs/<id>/git-commands.jsonl` stays in the run folder; the run's
+   execution checkout has its own owned storage. See
+   [Recipe run and auto-drive checkout isolation](../reference/recipe-checkout-isolation.md).
+3. Removes `<run dir>/runtime/`, including everything steps wrote to
    `TMPDIR` and `artifacts/`.
-2. Finalises `run.json` with the end time, outcome and step summary.
-3. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root for
+4. Finalises `run.json` with the end time, outcome and step summary.
+5. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root for
    run-owned items that are now eligible (the categories `run-tmp`,
    `run-worktree` and `run-target`), and removes them. This includes items
    from earlier runs, and from the current run if it is already eligible.
@@ -966,6 +976,11 @@ expects:
 - the `tmp-leftover` folders described above;
 - log originals, after their archive is verified.
 
+The current `owned-paths` checks below are not the planned versioned ownership
+lease. They do not establish generation or filesystem-identity ownership for
+private execution/review resources. That stronger validation and dependency
+retention must be implemented before adopting the target lifecycle.
+
 An entry in `owned-paths` is a request, not a permission. A recorded path
 outside these folders is reported as skipped.
 
@@ -1088,6 +1103,20 @@ Actions in the output are `would-remove`, `removed`, `would-archive`,
 output stay as described in [Hygiene Cleanup](../operations/hygiene-cleanup.md).
 
 ## Troubleshooting
+
+**`git worktree list` shows a `prunable` entry under `runs/`.** A run was
+killed with `SIGKILL`, so it could not remove its own checkout. The
+end-of-run sweep deleted the folder later, but the worktree record is still in
+the repository's `.git/worktrees/`. It does no harm. `amplihack cleanup` never
+prunes records, so remove it from the repository yourself:
+
+```bash
+git -C ~/src/myapp worktree prune --dry-run --verbose
+git -C ~/src/myapp worktree prune
+```
+
+Check the dry-run list first: `prune` also drops records of worktrees on a
+disk that is not mounted.
 
 **`work root ... is writable by group or others`.** An existing
 `~/.amplihack/work` created with a permissive umask is refused. Fix it with:

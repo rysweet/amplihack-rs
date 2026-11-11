@@ -66,7 +66,7 @@ while [ $# -gt 0 ]; do
     --review-dir)    REVIEW_DIR="${2:-}"; shift 2 ;;
     --state-dir)     STATE_DIR="${2:-}"; shift 2 ;;
     --task-file)     TASK_FILE_IN="${2:-}"; shift 2 ;;
-    --context)       case "${2:-}" in review_dir=*|autodrive_launch_tools=*) CTX_REFUSED="${2%%=*}" ;; pr_number=*) AD_PR="${2#*=}" ;; esac
+    --context)       case "${2:-}" in review_dir=*|review_launch_dir=*|reviewed_head_sha=*|autodrive_launch_tools=*) CTX_REFUSED="${2%%=*}" ;; pr_number=*) AD_PR="${2#*=}" ;; esac
                      case "${2:-}" in autodrive_budget_*) BUDGET_CTX+=("${2:-}"); BEFORE_CTX+=("-c" "${2:-}") ;; *) ROUND_CTX+=("-c" "${2:-}") ;; esac; shift 2 ;;
     --before-round)  BEFORE_ROUND="${2:-}"; shift 2 ;;
     *) echo "ERROR: autodrive_loop.sh: unknown argument '$1'" >&2; exit 2 ;;
@@ -145,7 +145,7 @@ terminal_refusal() {
   return 1
 }
 
-# #1528: the review dir (the main checkout) is stamped before each round and
+# #1528: the owned PR-head review checkout is stamped before each round and
 # compared after it and after the evaluator. Any change stops the loop: the
 # evaluator may continue a failed round, and the next would take it as baseline.
 stamp_review_dir() { # stamp_review_dir: sets REVIEW_STAMP, or stops as REVIEW_DIR_UNSTAMPED
@@ -168,6 +168,12 @@ check_review_dir() { # check_review_dir <who>: stops the loop unless REVIEW_STAM
 PRE="$(bash "${LOOP_HOME}/autodrive_worktree_guard.sh" loop-preflight \
   "$LOOP_NAME" "$REPO" "$REVIEW_DIR" "$(basename "$ROUND_RECIPE" .yaml)" "$CTX_REFUSED")" || { printf '%s\n' "$PRE"; exit 1; }
 { read -r REVIEW_REAL; read -r ROUND_RECIPE_PATH; read -r HEALTH_RECIPE_PATH; } <<<"$PRE"
+# Every independently launched loop owns its generation, including a nested
+# re-review using the same evidence directory. A child never releases the
+# parent's generation or its registry.
+REVIEW_OWNED="$("$AMPLIHACK_BIN" internal review-allocate "$REPO" "$STATE_DIR")" || exit 1
+trap 'rc=$?; "$AMPLIHACK_BIN" internal review-release "$REVIEW_OWNED" || rc=1; exit "$rc"' EXIT
+REVIEW_REAL="$REVIEW_OWNED"
 # --- preflight: the terminator must resolve BEFORE round 1 (why: see the ERROR)
 if [ -z "$HEALTH_RECIPE_PATH" ] || ! "$AMPLIHACK_BIN" recipe show "$HEALTH_RECIPE_PATH" >/dev/null 2>&1; then
   echo "ERROR: loop '${LOOP_NAME}' cannot start: the required recipe 'loop-health-evaluator' does not resolve in ${LOOP_HOME%/tools}/recipes." >&2
@@ -230,13 +236,18 @@ while :; do
   fi
 
   echo "=== auto-drive loop '${LOOP_NAME}': ${ROUND_LABEL} ===" >&2
+  check_review_dir before-round
+  REVIEW_REAL="$("$AMPLIHACK_BIN" internal review-next "$REPO" "$REVIEW_REAL")" || exit 1
+  REVIEW_LAUNCH="$("$AMPLIHACK_BIN" internal review-launch "$REVIEW_REAL")" || exit 1
+  REVIEWED_SHA="$("$AMPLIHACK_BIN" internal review-head "$REVIEW_REAL")" || exit 1
+  stamp_review_dir
   T0=$SECONDS # the log is created under umask 077; the round runs with the caller's umask
   ( umask "$CALLER_UMASK" && AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger round)" AMPLIHACK_AUTODRIVE_STATE_DIR="$STATE_DIR" exec "$AMPLIHACK_BIN" recipe run "$ROUND_RECIPE_PATH" \
-      --working-dir "$REPO" \
+      --working-dir "$REVIEW_LAUNCH" \
       -c "autodrive_round_record=${RECORD}" \
       -c "autodrive_round_label=${ROUND_LABEL}" \
       -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" \
-      "${ROUND_CTX[@]}" -c "review_dir=${REVIEW_REAL}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
+      "${ROUND_CTX[@]}" -c "review_dir=${REVIEW_REAL}" -c "review_launch_dir=${REVIEW_LAUNCH}" -c "reviewed_head_sha=${REVIEWED_SHA}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
   ROUND_RC=$?; usage_add round "$T0"
   tail -n 200 "$LOG" >&2 || true; orphan_stop "$ROUND_RC" "round ${ROUND_LABEL}" # exit 75 (#1976)
 
@@ -309,12 +320,13 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
   assert_ceiling_untouched
   HEALTH_LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-health.log"; T0=$SECONDS
   ( umask "$CALLER_UMASK" && AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger evaluator)" exec "$AMPLIHACK_BIN" recipe run "$HEALTH_RECIPE_PATH" \
-      --working-dir "$REVIEW_REAL" \
+      --working-dir "$REVIEW_LAUNCH" \
       -c "loop_name=auto-drive:${LOOP_NAME}" \
       -c "loop_round_label=${ROUND_LABEL}" \
       -c "loop_history=${HISTORY}" \
       -c "loop_last_round_output=$(bash "${LOOP_HOME}/autodrive_round_tail.sh" "$LOG")" \
-      -c "loop_repo_path=${REPO}" -c "loop_agent_working_dir=${REVIEW_REAL}" \
+      -c "loop_repo_path=${REPO}" -c "loop_agent_working_dir=${REVIEW_LAUNCH}" \
+      -c "loop_review_dir=${REVIEW_REAL}" -c "loop_reviewed_head_sha=${REVIEWED_SHA}" \
       -c "loop_baseline_ref=${BASELINE}" \
       -c "loop_child_exit_code=${ROUND_RC}" \
       -c "loop_findings_current=${FINDINGS}" \
