@@ -31,8 +31,8 @@
 
 use super::super::RecipeRunResult;
 use super::failure_evidence::{
-    EVIDENCE_TAIL_LINES, is_completed_status, repo_selection_repo_hint, step_evidence,
-    structural_refusal_in, tail_lines, truncate_evidence,
+    EVIDENCE_TAIL_LINES, is_completed_status, repo_selection_repo_hint, step_evidence, tail_lines,
+    truncate_evidence,
 };
 use super::failure_markers::{
     AGENT_API_MARKERS, ENVIRONMENTAL_MARKERS, REPO_SELECTION_MARKERS, STRUCTURAL_REFUSAL_MARKER,
@@ -125,12 +125,15 @@ impl FailureClass {
 #[derive(Debug, Clone)]
 pub(crate) struct FailureVerdict {
     pub(crate) class: FailureClass,
-    /// The literal marker that decided the class. `None` for `Indeterminate`.
+    /// The deciding marker (or the guard signal when diagnostics are elided).
+    /// `None` for `Indeterminate`.
     pub(crate) signal: Option<&'static str>,
-    /// The tail of output the decision was made from.
+    /// Bounded diagnostic output; structural termination is retained separately.
     pub(crate) evidence: String,
     pub(crate) failed_steps: Vec<String>,
     pub(crate) completed_steps: Vec<String>,
+    /// A failed step reported a structural guard refusal before evidence truncation.
+    pub(crate) structural_refusal: bool,
 }
 
 impl FailureVerdict {
@@ -144,12 +147,11 @@ impl FailureVerdict {
     /// that knows, instead of grepping a whole transcript for a word that also
     /// appears in refusals a descendant already handled (issue #1437).
     ///
-    /// It follows the guard's whole phrase in a FAILED step's own evidence, not
-    /// the deciding signal: a failing test printed in the same tail does not
-    /// hide the refusal. With no failed step (`classify_error`) it is `false`;
-    /// the exit code is what says 79 there.
+    /// Computed from each failed step's own evidence and terminating status
+    /// before combined diagnostics are truncated. Runner stderr and run status
+    /// cannot set this flag.
     pub(crate) fn is_structural_refusal(&self) -> bool {
-        !self.failed_steps.is_empty() && structural_refusal_in(&self.evidence, &self.failed_steps)
+        self.structural_refusal
     }
 
     /// One-line human summary naming the class and the deciding marker.
@@ -299,6 +301,7 @@ pub(crate) fn classify_run_failure(result: &RecipeRunResult, stderr_tail: &str) 
     let mut failed_steps = Vec::new();
     let mut completed_steps = Vec::new();
     let mut evidence_parts: Vec<String> = Vec::new();
+    let mut structural_refusal = false;
 
     for step in &result.step_results {
         if is_completed_status(&step.status) {
@@ -307,6 +310,12 @@ pub(crate) fn classify_run_failure(result: &RecipeRunResult, stderr_tail: &str) 
         }
         failed_steps.push(step.step_id.clone());
         let evidence = step_evidence(step);
+        // Preserve step provenance before truncation can remove its header or
+        // runner stderr can displace the step's entire diagnostic evidence.
+        structural_refusal |= step.termination_exit_code() == Some(79)
+            || evidence
+                .to_ascii_lowercase()
+                .contains(STRUCTURAL_REFUSAL_MARKER);
         if !evidence.trim().is_empty() {
             evidence_parts.push(format!("[{}] {evidence}", step.step_id));
         }
@@ -325,13 +334,18 @@ pub(crate) fn classify_run_failure(result: &RecipeRunResult, stderr_tail: &str) 
     }
 
     let evidence = truncate_evidence(evidence_parts.join("\n"));
-    let (class, signal) = classify_failure_text(&evidence);
+    let (mut class, mut signal) = classify_failure_text(&evidence);
+    if structural_refusal && class != FailureClass::Work {
+        class = FailureClass::Work;
+        signal = Some(STRUCTURAL_REFUSAL_MARKER);
+    }
     FailureVerdict {
         class,
         signal,
         evidence,
         failed_steps,
         completed_steps,
+        structural_refusal,
     }
 }
 
@@ -347,6 +361,7 @@ pub(crate) fn classify_error(error: &anyhow::Error) -> FailureVerdict {
         evidence,
         failed_steps: Vec::new(),
         completed_steps: Vec::new(),
+        structural_refusal: false,
     }
 }
 

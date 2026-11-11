@@ -10,6 +10,7 @@
 # The loop end to end is tests/issue_1437_autodrive_loop.sh.
 #
 # Usage: bash tests/issue_1437_autodrive_refusal.sh
+# Set ISSUE_1437_JSON_HELPER=fallback to exercise the POSIX stand-in.
 # Exit codes: 0 = pass, 1 = fail, 2 = harness error.
 
 set -uo pipefail
@@ -39,6 +40,7 @@ export STUB_STATE="${WORK}/state"
 # The helper reads JSON through the loop's own field(); take it from the loop.
 REAL_AMPLIHACK=""
 for c in "${ROOT}/target/debug/amplihack" "${ROOT}/target/release/amplihack" "$(command -v amplihack 2>/dev/null || true)"; do
+  [ "${ISSUE_1437_JSON_HELPER:-}" = fallback ] && break
   [ -n "$c" ] && [ -x "$c" ] && printf '{"a":"b"}' | "$c" orch helper extract-json --require-field a >/dev/null 2>&1 \
     && { REAL_AMPLIHACK="$c"; break; }
 done
@@ -118,7 +120,7 @@ expect LAST-WINS-REAL-TRUE yes 1 "$(marker agent_api false)"$'\n'"$(marker work 
 expect INDENTED no 1 "  $(marker work true)"
 expect QUOTED-IN-LINE no 1 "agent said: $(marker work true)"
 expect DOT-IS-LITERAL no 1 "$(marker work true | sed 's/^amplihack\.recipe/amplihackXrecipe/')"
-for v in '"TRUE"' '"True"' 1 '"yes"' '"true "' null; do
+for v in '"true"' '"TRUE"' '"True"' 1 '"yes"' '"true "' null; do
   expect "STRUCTURAL-NOT-TRUE[${v}]" no 1 "${MARK}{\"class\":\"work\",\"structural_refusal\":${v}}"
 done
 check MISSING-LOG "a missing log is not terminal and prints nothing" test "$(terminal 1 "${WORK}/nope.log")" = no

@@ -11,8 +11,8 @@
 //! 1. an agent-endpoint rejection is classified `agent_api`, below `Work`,
 //!    `Environmental` and `UsageLimit`; a 404 for an unknown model stays
 //!    `Environmental` (#1421);
-//! 2. `structural_refusal` is set only by the guard's whole refusal phrase in a
-//!    FAILED step's own evidence, never by the bare words, the runner's stderr,
+//! 2. `structural_refusal` is set by a FAILED step's guard exit or whole refusal
+//!    phrase, never by the bare words, the runner's stderr,
 //!    a completed step, or a run with no structured result;
 //! 3. the marker JSON only gains a key: nothing existing is renamed.
 
@@ -417,4 +417,126 @@ fn the_marker_only_gains_structural_refusal() {
     assert_eq!(payload["attempt"], 2);
     assert_eq!(payload["action"], "terminal");
     assert_eq!(payload["structural_refusal"], true);
+}
+
+/// The exit status is authoritative, regardless of diagnostic wording.
+#[test]
+fn a_guard_exit_without_a_guard_phrase_is_still_a_refusal() {
+    for error in [
+        "Command failed (exit 79): ",
+        "amplihack copilot failed (exit 79)",
+        "amplihack claude failed (exit 79)\nAPI Error: 529 Overloaded",
+    ] {
+        let verdict = classify_run_failure(&run(vec![failed("step-02", error, &[])]), "");
+        assert_eq!(verdict.class, FailureClass::Work);
+        assert!(
+            structural(&verdict),
+            "{error:?} must set structural_refusal"
+        );
+        assert!(!verdict.class.is_mechanically_retryable());
+    }
+}
+
+#[test]
+fn truncation_cannot_hide_a_failed_steps_guard_refusal() {
+    // Guard provenance must survive for every supported structured evidence
+    // field, even when the child recipe reports the overall failure as exit 1.
+    for field in ["error", "output", "recent_stdout", "recent_stderr"] {
+        for preceding in ["".to_string(), "x".repeat(2100)] {
+            let evidence = format!("{preceding}{GUARD_LINE}");
+            let mut step = failed("step-02", "amplihack copilot failed (exit 1)", &[]);
+            match field {
+                "error" => step.error = evidence,
+                "output" => step.output = evidence,
+                "recent_stdout" => step.recent_stdout = vec![evidence],
+                "recent_stderr" => step.recent_stderr = vec![evidence],
+                _ => unreachable!(),
+            }
+            let result = run(vec![step]);
+            // Runner stderr may preserve the guard but displace its header,
+            // or displace all of the refused step's evidence with a retryable
+            // transport error. Neither can change the structural decision.
+            for stderr in [
+                String::new(),
+                "x".repeat(1800),
+                "API Error: 529 Overloaded".repeat(120),
+            ] {
+                let verdict = classify_run_failure(&result, &stderr);
+                assert!(
+                    structural(&verdict),
+                    "{field}, stderr length {}",
+                    stderr.len()
+                );
+                assert_eq!(verdict.class, FailureClass::Work);
+                assert!(!verdict.class.is_mechanically_retryable());
+                assert!(verdict.reasoning().contains("FINAL"));
+                if !preceding.is_empty() || stderr.len() > 2000 {
+                    assert!(!verdict.evidence.contains("[step-02]"));
+                    assert!(verdict.evidence.starts_with("…(earlier evidence elided)…"));
+                }
+                assert_eq!(verdict.evidence.contains(GUARD_LINE), stderr.len() < 2000);
+            }
+        }
+    }
+}
+
+#[test]
+fn termination_status_is_read_only_from_the_runners_error_envelope() {
+    for (error, code) in [
+        ("Command failed (exit 79): refused", Some(79)),
+        (
+            "Step 'step-02' failed: bash step failed: Command failed (exit 79): refused",
+            Some(79),
+        ),
+        (
+            "Step 'step-02' failed: agent step failed: amplihack copilot failed (exit 79)\nquoted output",
+            Some(79),
+        ),
+        (
+            "Step 'step-02' failed: bash step failed: Command failed (exit 1): Command failed (exit 79): quoted",
+            Some(1),
+        ),
+        (
+            "Step 'other-step' failed: bash step failed: Command failed (exit 79): quoted",
+            None,
+        ),
+        (
+            "Command failed (exit 1): Command failed (exit 79): quoted",
+            Some(1),
+        ),
+        (
+            "amplihack copilot failed (exit 79)\nquoted output",
+            Some(79),
+        ),
+        (
+            "amplihack claude failed (exit 1)\namplihack copilot failed (exit 79)",
+            Some(1),
+        ),
+        ("source.rs:42: Command failed (exit 79): quoted", None),
+        (
+            "Execution failed: 400\nCommand failed (exit 79): quoted",
+            None,
+        ),
+        (GUARD_LINE, None),
+        ("Command failed (exit 179): refused", Some(179)),
+        ("Command failed (exit nope): refused", None),
+        ("amplihack copilot failed (exit 79) quoted", None),
+    ] {
+        assert_eq!(
+            failed("step-02", error, &[]).termination_exit_code(),
+            code,
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn a_completed_step_with_exit_79_does_not_refuse_the_run() {
+    let mut done = completed("step-01", GUARD_LINE);
+    done.error = "Command failed (exit 79): handled".into();
+    let verdict = classify_run_failure(
+        &run(vec![done, failed("step-02", "Execution failed: 400", &[])]),
+        "",
+    );
+    assert!(!structural(&verdict));
 }

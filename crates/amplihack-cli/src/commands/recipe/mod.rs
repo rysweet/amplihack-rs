@@ -207,6 +207,38 @@ pub(crate) struct RecipeRunStepResult {
     pub(crate) extra: JsonMap<String, JsonValue>,
 }
 
+impl RecipeRunStepResult {
+    /// Decode the terminating process status from the pinned runner's error envelope.
+    ///
+    /// recipe-runner-rs 4d5187e emits `Command failed (exit N): <stderr>` for
+    /// bash steps and `amplihack <cli> failed (exit N)\n<diagnostics>` for agents.
+    /// The runner wraps those headers in `Step '<id>' failed: <kind> step failed: `.
+    /// Only this envelope is authoritative; captured output can quote any status.
+    /// Keep this compatibility decoder at the subprocess result boundary until
+    /// the runner exposes a separate numeric exit-code field.
+    pub(crate) fn termination_exit_code(&self) -> Option<i32> {
+        let step_prefix = format!("Step '{}' failed: ", self.step_id);
+        let error = if let Some(message) = self.error.strip_prefix(&step_prefix) {
+            message
+                .strip_prefix("bash step failed: ")
+                .or_else(|| message.strip_prefix("agent step failed: "))?
+        } else {
+            self.error.as_str()
+        };
+        if let Some(rest) = error.strip_prefix("Command failed (exit ") {
+            let (code, _) = rest.split_once("): ")?;
+            return code.parse().ok();
+        }
+        let header = error.lines().next()?;
+        let rest = header.strip_prefix("amplihack ")?;
+        let (cli, rest) = rest.split_once(" failed (exit ")?;
+        if cli.is_empty() || cli.chars().any(char::is_whitespace) {
+            return None;
+        }
+        rest.strip_suffix(')')?.parse().ok()
+    }
+}
+
 pub(crate) fn default_version() -> String {
     "1.0.0".to_string()
 }

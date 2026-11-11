@@ -6,7 +6,8 @@
 #   orch helper   exec $REAL_AMPLIHACK when it is set; otherwise a POSIX
 #                 stand-in for `extract-json --require-field F` (pass the blob
 #                 through when it names F) and `extract-field --field F
-#                 --default D` (a string or bare value; JSON \n and \t decoded).
+#                 --default D [--require-boolean]` (a string or bare value;
+#                 JSON \n and \t decoded, boolean types checked when required).
 #   recipe show   exit 0.
 #   recipe run    the loop names recipes by absolute launch-side path (#1543),
 #                 so the recipe is keyed on its base name. Every call is logged
@@ -37,12 +38,13 @@ knob() { # knob <prefix> <n> <default>
 
 if [ "${1:-} ${2:-}" = "orch helper" ]; then
   if [ -n "${REAL_AMPLIHACK:-}" ]; then exec "$REAL_AMPLIHACK" "$@"; fi
-  MODE="${3:-}"; FIELD=""; DEFAULT=""
+  MODE="${3:-}"; FIELD=""; DEFAULT=""; REQUIRE_BOOLEAN=false
   shift 3 || true
   while [ $# -gt 0 ]; do
     case "$1" in
       --require-field|--field) FIELD="${2:-}"; shift 2 ;;
       --default) DEFAULT="${2:-}"; shift 2 ;;
+      --require-boolean) REQUIRE_BOOLEAN=true; shift ;;
       *) shift ;;
     esac
   done
@@ -52,6 +54,11 @@ if [ "${1:-} ${2:-}" = "orch helper" ]; then
       case "$BLOB" in *"\"${FIELD}\""*) printf '%s' "$BLOB" ;; esac
       exit 0 ;;
     extract-field)
+      if [ "$REQUIRE_BOOLEAN" = true ]; then
+        V="$(printf '%s' "$BLOB" | sed -n "s/.*\"${FIELD}\"[[:space:]]*:[[:space:]]*\(true\|false\)[[:space:]]*[,}].*/\1/p" | head -n 1)"
+        printf '%s' "${V:-$DEFAULT}"
+        exit 0
+      fi
       V="$(printf '%s' "$BLOB" | sed -n "s/.*\"${FIELD}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -n 1)"
       if [ -z "$V" ]; then
         V="$(printf '%s' "$BLOB" | sed -n "s/.*\"${FIELD}\"[[:space:]]*:[[:space:]]*\([A-Za-z0-9._-]*\).*/\1/p" | head -n 1)"

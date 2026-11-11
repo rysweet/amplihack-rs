@@ -152,13 +152,14 @@ grep amplihack.recipe.failure_class run.log | jq -r '.class + " " + .action'
 
 ### The `structural_refusal` field
 
-`structural_refusal` is a JSON boolean, never a string. It is `true` only when
+`structural_refusal` is a JSON boolean, never a string. It is `true` when
 the failed step's own evidence contains the guard's full phrase,
 `BLOCKED_TERMINAL orchestration_unavailable`, matched without regard to case.
-The class is then `work`. Neither word on its own sets it: `blocked_terminal`
-and `orchestration_unavailable` appear in transcripts whenever a descendant
-was refused and the agent then did what the refusal told it to do. Every other
-failure, `agent_api` included, has `false`.
+A failed step's terminating error header recording the reserved exit code `79`
+also sets it, even without the phrase. The class is then `work`. Neither word
+on its own sets it: `blocked_terminal` and `orchestration_unavailable` appear
+in transcripts whenever a descendant was refused and the agent then did what
+the refusal told it to do. Every other failure, `agent_api` included, has `false`.
 
 ```text
 BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3   -> true,  work
@@ -172,10 +173,11 @@ also reads the run status and the last 40 lines of the runner's stderr, and
 that stderr tail can hold the transcripts of runs the runner started.
 `structural_refusal` reads only the failed steps' own evidence: their `error`
 and their captured stdout and stderr. The runner's other steps, its stderr
-tail, its run status and earlier output cannot set the field. When the
-evidence is longer than its 2,000-character bound and its start was elided,
-the lines ahead of the first surviving failed-step header have no known
-origin, so they do not count either.
+tail, its run status and earlier output cannot set the field. The decision is
+stored before combining and truncating diagnostic evidence to its
+2,000-character bound. Eliding a failed step's header, or even its entire
+diagnostic when later runner stderr displaces it, cannot clear the refusal or
+make it mechanically retryable.
 
 When the runner produced no structured result (a spawn failure, unparseable
 stdout, a runner that died before writing its JSON), the class comes from the

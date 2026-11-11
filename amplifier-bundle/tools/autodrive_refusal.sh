@@ -32,11 +32,13 @@
 #
 # Docs: docs/reference/auto-drive-to-merge.md#autodrive_refusalsh
 
-# autodrive_marker_field <json> <name>: one field of the marker, or nothing.
+# autodrive_marker_field <json> <name> [extract-field options]: one field, or nothing.
 autodrive_marker_field() {
-  printf '%s' "${1:-}" \
-    | "${AMPLIHACK_BIN:-amplihack}" orch helper extract-json --require-field "$2" 2>/dev/null \
-    | "${AMPLIHACK_BIN:-amplihack}" orch helper extract-field --field "$2" --default "" 2>/dev/null
+  local json="${1:-}" field="$2"
+  shift 2
+  printf '%s' "$json" \
+    | "${AMPLIHACK_BIN:-amplihack}" orch helper extract-json --require-field "$field" 2>/dev/null \
+    | "${AMPLIHACK_BIN:-amplihack}" orch helper extract-field --field "$field" --default "" "$@" 2>/dev/null
   return 0
 }
 
@@ -57,9 +59,10 @@ classify_child() { # classify_child <log>
 
   value="$(autodrive_marker_field "$json" class)"
   if printf '%s' "$value" | LC_ALL=C grep -qxE '[a-z_]{1,32}'; then CHILD_FAILURE_CLASS="$value"; fi
-  value="$(autodrive_marker_field "$json" retryable)"
+  value="$(autodrive_marker_field "$json" retryable --require-boolean)"
   case "$value" in true|false) CHILD_FAILURE_RETRYABLE="$value" ;; esac
-  value="$(autodrive_marker_field "$json" structural_refusal)"
+  # Check the JSON type before rendering: the string "true" is not a refusal.
+  value="$(autodrive_marker_field "$json" structural_refusal --require-boolean)"
   case "$value" in true|false) CHILD_STRUCTURAL_REFUSAL="$value" ;; esac
   value="$(autodrive_marker_field "$json" signal | LC_ALL=C tr -d '\000-\037\177' | head -c 120)"
   [ "$value" = "null" ] || CHILD_FAILURE_SIGNAL="$value"

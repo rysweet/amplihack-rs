@@ -1544,13 +1544,16 @@ non-numeric `<rc>` is not `79`, never reaches shell arithmetic and never reads
 the marker.
 
 The recipe runner sets [`structural_refusal`](transient-failure-retry.md#the-structural_refusal-field)
-only when the failed step's own evidence contains the guard's full phrase,
-`BLOCKED_TERMINAL orchestration_unavailable`. Its stderr tail and run status
+when the failed step's own evidence contains the guard's full phrase,
+`BLOCKED_TERMINAL orchestration_unavailable`, or its terminating error header
+records exit `79`. This decision is retained before diagnostic evidence is
+truncated. The runner's stderr tail and run status
 never set it, and a run that produced no structured result always has
-`false`. The runner writes its marker when the run fails, prints its result
-table to stdout, and then writes the same marker again as its last line. The
-table shows each step's output, and a multi-line output can put any text at
-the start of a line, so the second copy is what makes the runner's own marker
+`false`. The shell parser requires a JSON boolean: the string `"true"` does
+not set the refusal flag. The runner writes its marker when the run fails,
+prints its result table to stdout, and then writes the same marker again as
+its last line. The table shows each step's output, and a multi-line output
+can put any text at the start of a line, so the second copy makes the runner's own marker
 the last one. In a log that holds several markers (a nested run writes its
 own) the last one is therefore the outermost runner's. Exit-79 paths in the
 runner write no marker; condition 1 covers them. A run that succeeds writes no

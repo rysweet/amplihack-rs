@@ -4,7 +4,6 @@
 //! what the text means is made in `failure_class`.
 
 use super::super::RecipeRunStepResult;
-use super::failure_markers::STRUCTURAL_REFUSAL_MARKER;
 
 /// Trailing lines of a failed step's captured output that count as evidence.
 /// The terminating error lives at the tail; earlier output describes work that
@@ -104,47 +103,4 @@ pub(super) fn truncate_evidence(mut text: String) -> String {
         .collect();
     text = format!("…(earlier evidence elided)…\n{keep}");
     text
-}
-
-/// Prefixes `classify_run_failure` puts on the evidence that is NOT a failed
-/// step's own output. Both come after every step part.
-const RUN_STATUS_HEADER: &str = "[run status] ";
-const RUNNER_STDERR_HEADER: &str = "[runner stderr] ";
-
-/// Does the guard's whole refusal phrase appear in a FAILED step's own part of
-/// `evidence` (issue #1437)?
-///
-/// `classify_run_failure` writes each failed step's part as `[<step id>] …`,
-/// then `[run status] …`, then `[runner stderr] …`. Only lines inside a step
-/// part count. The runner's stderr tail holds the transcripts of every run it
-/// started, so a refusal a descendant already handled lands there, and it is
-/// skipped for good once its header is seen. Lines ahead of the first step
-/// header — what is left when `truncate_evidence` elided the start — have no
-/// known origin and do not count either. Matching is case-insensitive.
-pub(super) fn structural_refusal_in(evidence: &str, failed_steps: &[String]) -> bool {
-    let headers: Vec<String> = failed_steps.iter().map(|id| format!("[{id}] ")).collect();
-    let mut in_step = false;
-    for line in evidence.lines() {
-        if line.starts_with(RUNNER_STDERR_HEADER) {
-            return false;
-        }
-        if line.starts_with(RUN_STATUS_HEADER) {
-            in_step = false;
-            continue;
-        }
-        if headers
-            .iter()
-            .any(|header| line.starts_with(header.as_str()))
-        {
-            in_step = true;
-        }
-        if in_step
-            && line
-                .to_ascii_lowercase()
-                .contains(STRUCTURAL_REFUSAL_MARKER)
-        {
-            return true;
-        }
-    }
-    false
 }

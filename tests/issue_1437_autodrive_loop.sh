@@ -13,6 +13,7 @@
 # The helpers alone are tests/issue_1437_autodrive_refusal.sh.
 #
 # Usage: bash tests/issue_1437_autodrive_loop.sh
+# Set ISSUE_1437_JSON_HELPER=fallback to exercise the POSIX stand-in.
 # Exit codes: 0 = pass, 1 = fail, 2 = harness error.
 
 set -uo pipefail
@@ -37,6 +38,7 @@ cp "${ROOT}/tests/issue_1437_amplihack_stub.sh" "${WORK}/bin/amplihack" || exit 
 chmod 0755 "${WORK}/bin/amplihack"
 REAL_AMPLIHACK=""
 for c in "${ROOT}/target/debug/amplihack" "${ROOT}/target/release/amplihack" "$(command -v amplihack 2>/dev/null || true)"; do
+  [ "${ISSUE_1437_JSON_HELPER:-}" = fallback ] && break
   [ -n "$c" ] && [ -x "$c" ] && printf '{"a":"b"}' | "$c" orch helper extract-json --require-field a >/dev/null 2>&1 \
     && { REAL_AMPLIHACK="$c"; break; }
 done
@@ -131,6 +133,13 @@ run marker-true
 ok MARKER-TRUE "rc=${RC}: the runner's structural_refusal must stop the loop with 79" test "$RC" -eq 79
 ok MARKER-WHY "the reason must name the marker: ${OUT}" has "$OUT" 'structural_refusal in failure_class marker'
 ok MARKER-NO-EVAL "no evaluator call after a refusal" test "$(calls loop-health-evaluator)" -eq 0
+
+# A string with the same spelling must not manufacture a terminal refusal.
+stub STUB_RC_1=1 "STUB_OUT_1=$(marker agent_api '"true"')"
+run marker-string-true
+ok STRING-TRUE-CONTINUES "a JSON string must allow another round" test "$(calls autodrive-crusty-round)" -eq 2
+ok STRING-TRUE-NO-REFUSAL "a JSON string must not claim a policy refusal" lacks "$OUT$ERR" TERMINAL_POLICY_REFUSAL
+ok STRING-TRUE-DONE "a JSON string must reach DONE" has "$OUT" '"loop_result":"DONE"'
 
 # --- 4. the before-round call site -------------------------------------------------
 BEFORE="${WORK}/before.sh"
