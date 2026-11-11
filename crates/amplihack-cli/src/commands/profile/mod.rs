@@ -224,10 +224,6 @@ pub enum ProfileError {
     RotateRefused(String),
     #[error("profile verify: {0}")]
     Verify(String),
-    /// Issue #2218: `profile usage` named profiles in the auto-switch
-    /// `exclude` list; they were refused and the others reported.
-    #[error("not probed, in the auto-switch exclude list: {0}")]
-    Excluded(String),
     /// `profile seed-record` refused: the whole line, reason included.
     #[error("{0}")]
     SeedRefused(String),
@@ -323,9 +319,6 @@ impl ProfileError {
             }
             Self::Verify(_) => {
                 "nothing was moved; see \"profile verify\" in docs/reference/profile-command.md"
-            }
-            Self::Excluded(_) => {
-                "the other profiles were reported; to probe it, set the list without it with `amplihack profile auto-switch exclude`"
             }
             Self::SeedRefused(_) => {
                 "nothing was moved; see \"profile seed-record\" in docs/reference/profile-command.md"

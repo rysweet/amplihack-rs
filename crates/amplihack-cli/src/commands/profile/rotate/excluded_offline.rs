@@ -5,12 +5,15 @@
 //!
 //! - Rule 1 (`Match::Ledger`): the rotate ledger's `live` is excluded. That
 //!   is enough on its own.
-//! - Rule 2 (`Match::LocalAccount`): the ledger has no `live`, cannot be
-//!   read, or suspects a hand change, and the account in `~/.claude.json`
+//! - Rule 2 (`Match::LocalAccount`): the account in `~/.claude.json`
 //!   matches an excluded profile's record.
-//! - Rule 3 (`Match::SameBytes`): as rule 2, but `~/.claude.json` gives no
-//!   account, and `~/.claude/.credentials.json` is byte-identical to an
-//!   excluded profile's stored login.
+//! - Rule 3 (`Match::SameBytes`): `~/.claude/.credentials.json` is
+//!   byte-identical to an excluded profile's stored login.
+//!
+//! Rules 2 and 3 run whatever the ledger names, since a hand login leaves
+//! the ledger stale. A stale `~/.claude.json` that names an excluded profile
+//! therefore makes `~/.claude` local-only: the check fails closed, and
+//! [`may_write_back`] refuses the move-out.
 //!
 //! A read that fails gives no match for that rule; nothing is written.
 
@@ -18,6 +21,7 @@ use super::super::identity_claims;
 use super::super::ledger::RotateState;
 use super::Account;
 // Its own line: `tests_source_scan` refuses a read next to the login name.
+use super::super::login_identity::Budget;
 use crate::commands::profile::auto_switch::kit::CREDS;
 use crate::commands::profile::auto_switch::kit::{
     CLAUDE_JSON, MAX_CLAUDE_JSON, State, euid, read_bounded_nofollow, same_private_bytes,
@@ -28,6 +32,11 @@ use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd::exclude_list;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+
+// Declared here, not in rotate/mod.rs, for the same line budget.
+#[cfg(all(test, target_os = "linux"))]
+#[path = "tests_issue_2218.rs"]
+mod tests_issue_2218;
 
 /// The largest login file compared byte for byte (rule 3).
 const MAX_LOGIN_BYTES: u64 = 64 * 1024;
@@ -52,43 +61,31 @@ pub fn live_excluded_offline(
     if excluded.is_empty() {
         return None;
     }
-    let ledger = rs.load_ledger();
-    let (live, suspect) = match &ledger {
-        Ok(Some(l)) => (
-            l.live.as_deref().and_then(|s| ProfileName::parse(s).ok()),
-            l.hand_suspect.is_some(),
-        ),
-        Ok(None) => (None, false),
-        // An unreadable ledger proves nothing either way; rules 2 and 3
-        // still apply, so the check fails closed.
-        Err(_) => (None, true),
-    };
-    if let Some(name) = &live
-        && excluded.contains(name)
+    // An unreadable ledger proves nothing either way; rules 2 and 3 still
+    // apply, so the check fails closed.
+    let live = rs
+        .load_ledger()
+        .ok()
+        .flatten()
+        .and_then(|l| l.live)
+        .and_then(|s| ProfileName::parse(&s).ok());
+    if let Some(name) = live
+        && excluded.contains(&name)
     {
-        return Some((name.clone(), Match::Ledger));
+        return Some((name, Match::Ledger));
     }
-    if live.is_some() && !suspect {
-        return None;
-    }
-    match local_account(home) {
-        Some(account) => {
-            let state = State::new(store.root()).ok()?;
-            excluded
-                .into_iter()
-                .find(|p| {
-                    identity_claims::record(&state, p)
-                        .ok()
-                        .flatten()
-                        .is_some_and(|rec| rec.names(&account))
-                })
-                .map(|p| (p, Match::LocalAccount))
-        }
-        None => excluded
+    let by_account = local_account(home).and_then(|account| {
+        excluded
+            .iter()
+            .find(|p| record_names(store, p, &account))
+            .map(|p| (p.clone(), Match::LocalAccount))
+    });
+    by_account.or_else(|| {
+        excluded
             .into_iter()
             .find(|p| same_login(&home.join(".claude"), &slot(store, p)))
-            .map(|p| (p, Match::SameBytes)),
-    }
+            .map(|p| (p, Match::SameBytes))
+    })
 }
 
 /// Whether moving the excluded live login `name` out may write it into
@@ -110,16 +107,8 @@ pub fn may_write_back(
                 .ok()
                 .flatten()
                 .is_some_and(|l| l.hand_suspect.is_none());
-            let agrees = || {
-                let (Some(account), Ok(state)) = (local_account(home), State::new(store.root()))
-                else {
-                    return false;
-                };
-                identity_claims::record(&state, name)
-                    .ok()
-                    .flatten()
-                    .is_some_and(|rec| rec.names(&account))
-            };
+            let agrees =
+                || local_account(home).is_some_and(|account| record_names(store, name, &account));
             let same = || same_login(&home.join(".claude"), &slot(store, name));
             (calm && agrees()) || same()
         }
@@ -132,10 +121,22 @@ pub fn may_write_back(
 /// For `~/.claude` the file is `<home>/.claude.json`.
 pub(in crate::commands::profile::rotate) fn local_account(dir: &Path) -> Option<Account> {
     let (raw, meta) = read_bounded_nofollow(&dir.join(CLAUDE_JSON), MAX_CLAUDE_JSON).ok()??;
+    // `writable_by_others` accepts group write for the user's private
+    // group; evidence for trusting a login refuses any group write.
     if meta.uid() != euid() || writable_by_others(&meta) || meta.mode() & 0o020 != 0 {
         return None;
     }
     Account::from_value(&serde_json::from_slice(&raw).ok()?)
+}
+
+/// Whether `name`'s stored identity record names `account`.
+fn record_names(store: &ProfileStore, name: &ProfileName, account: &Account) -> bool {
+    State::new(store.root()).is_ok_and(|state| {
+        identity_claims::record(&state, name)
+            .ok()
+            .flatten()
+            .is_some_and(|rec| rec.names(account))
+    })
 }
 
 /// Whether the login files of two folders are byte-identical (rule 3). The
@@ -163,4 +164,24 @@ pub(in crate::commands::profile::rotate) fn local_only_dirs(
         dirs.push(home.join(".claude"));
     }
     dirs
+}
+
+/// A budget whose local-only folders are [`local_only_dirs`], for the
+/// readers outside a cycle: `profile seed-record` and start-up recovery.
+pub(in crate::commands::profile::rotate) fn gated_budget(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+) -> Budget {
+    let budget = Budget::new();
+    budget.set_local_only(home, local_only_dirs(store, rs, home));
+    budget
+}
+
+/// Whether `name` is in the exclude list, read quietly.
+pub(in crate::commands::profile::rotate) fn is_excluded(
+    store: &ProfileStore,
+    name: &ProfileName,
+) -> bool {
+    exclude_list(store.root(), |_| {}).contains(name)
 }

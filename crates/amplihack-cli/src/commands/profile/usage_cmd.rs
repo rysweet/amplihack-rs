@@ -504,17 +504,14 @@ pub(super) fn excluded_refusal(name: &ProfileName) -> String {
     )
 }
 
-/// The exit of a run in which every named profile was excluded: an error,
-/// so the exit status is non-zero.
+/// The exit of a run that named an excluded profile: status 1 with no
+/// further message, since [`excluded_refusal`] already printed a line for
+/// each refused name.
 fn refusal_result(refused: &[ProfileName]) -> Result<()> {
     if refused.is_empty() {
         return Ok(());
     }
-    let names: Vec<String> = refused
-        .iter()
-        .map(|p| sanitize_display(p.as_str(), false))
-        .collect();
-    Err(ProfileError::Excluded(names.join(", ")).into())
+    Err(crate::command_error::exit_error(1))
 }
 
 /// Which login a spend probe reads: a profile, against `~/.claude` when

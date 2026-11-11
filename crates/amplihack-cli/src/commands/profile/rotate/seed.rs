@@ -15,7 +15,7 @@ use super::identify::{Account, LiveId, LoginKind, login_kind};
 use super::identity_claims::{self, Claim, Claims};
 use super::ledger::{RotateLedger, RotateState};
 use super::log::{Sink, open_or_warn};
-use super::login_identity::{Bound, Budget, Reader, default_read};
+use super::login_identity::{Bound, Reader, default_read};
 use super::observe::{Snap, live_name};
 use super::swap_authorize::ledger_owns;
 use crate::commands::profile::ProfileError;
@@ -341,7 +341,8 @@ pub fn explicit(
 ) -> Result<Explicit, ProfileError> {
     let rs = RotateState::new(store.root());
     let state = State::new(store.root())?;
-    let budget = Budget::new();
+    // Issue #2218: an excluded profile's identity comes from local files.
+    let budget = super::identify::excluded_offline::gated_budget(store, &rs, home);
     let read = default_read();
     let scope = Scope {
         store,

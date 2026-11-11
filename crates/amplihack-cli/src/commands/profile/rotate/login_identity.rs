@@ -172,23 +172,49 @@ impl Budget {
     }
     /// Issue #2218: replaces the local-only folders. `home` is `$HOME`, so
     /// that `~/.claude`'s account is read from `~/.claude.json`.
+    ///
+    /// Paths are kept as given and canonicalised, so a caller passing the
+    /// resolved path of a folder under a symlinked ancestor still matches.
     pub fn set_local_only(&self, home: &Path, dirs: Vec<PathBuf>) {
         *self.home.borrow_mut() = Some(home.to_path_buf());
-        *self.local_only.borrow_mut() = dirs;
+        *self.local_only.borrow_mut() = dirs.iter().flat_map(|d| both_forms(d)).collect();
+    }
+    /// Issue #2218: adds `dir` to the local-only folders.
+    pub fn add_local_only(&self, dir: &Path) {
+        self.local_only.borrow_mut().extend(both_forms(dir));
     }
     fn is_local_only(&self, dir: &Path) -> bool {
-        self.local_only.borrow().iter().any(|d| d == dir)
+        let forms = both_forms(dir);
+        self.local_only.borrow().iter().any(|d| forms.contains(d))
     }
     /// The account of a local-only folder, from its `.claude.json`, or
     /// `~/.claude.json` for `~/.claude`. No request is made.
     fn local_account(&self, dir: &Path) -> Result<Account, &'static str> {
         let home = self.home.borrow();
         let source = match home.as_deref() {
-            Some(h) if dir == h.join(".claude") => h,
+            Some(h) if same_dir(dir, &h.join(".claude")) => h,
             _ => dir,
         };
         super::identify::excluded_offline::local_account(source).ok_or(UNAVAILABLE)
     }
+}
+
+/// `dir` as given and, when it resolves, canonicalised. A path that does
+/// not resolve names no folder holding a login, so its raw form is enough.
+fn both_forms(dir: &Path) -> Vec<PathBuf> {
+    let mut forms = vec![dir.to_path_buf()];
+    if let Ok(c) = fs::canonicalize(dir)
+        && c != dir
+    {
+        forms.push(c);
+    }
+    forms
+}
+
+/// Whether `a` and `b` name the same folder, by raw or canonical path.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    let b = both_forms(b);
+    both_forms(a).iter().any(|x| b.contains(x))
 }
 
 /// The bounded reader and the budget shared by all of its callers.

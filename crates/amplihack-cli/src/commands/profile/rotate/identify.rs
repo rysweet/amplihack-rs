@@ -25,7 +25,8 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 pub use super::account::Account;
-
+// Declared here, not in rotate/mod.rs: that file is at the 400-line budget
+// of `tests_source_scan::rotate_files_stay_within_the_line_budget`.
 #[path = "excluded_offline.rs"]
 pub(super) mod excluded_offline;
 pub use super::candidates::{CandidateInput, Skip, candidates, refused_dirs};

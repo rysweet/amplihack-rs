@@ -163,8 +163,6 @@ mod tests_issue_1870_probe;
 mod tests_issue_1886;
 #[cfg(all(test, unix))]
 mod tests_issue_1886_cycle;
-#[cfg(all(test, target_os = "linux"))]
-mod tests_issue_2218;
 #[cfg(all(test, unix))]
 mod tests_key_check;
 #[cfg(all(test, unix))]
@@ -223,8 +221,9 @@ pub(super) use gate_record::{GateSource, effective as overflow_gate, line as ove
 const FOREIGN_IGNORES_HOLD: &str = "runs another amplihack binary and ignores the switch \
     hold; restart it: amplihack profile rotate stop && amplihack profile rotate start";
 
-/// The switch-hold warning for the rotator of `rs`, judged against `proc_root` and this
-/// process's executable `exe`; `None` when no rotator runs or it runs this binary.
+/// The switch-hold warning for the rotator of `rs`, judged against
+/// `proc_root` and this process's executable `exe`; `None` when no rotator
+/// runs or it runs this binary.
 #[cfg(unix)]
 fn foreign_note_for(
     rs: &ledger::RotateState,
@@ -236,8 +235,9 @@ fn foreign_note_for(
     })
 }
 
-/// After a successful `profile switch NAME`: one line on stderr when the running rotator
-/// would ignore the hold. The switch itself succeeded, so this never changes the exit code.
+/// After a successful `profile switch NAME`: one line on stderr when the
+/// running rotator would ignore the hold. The switch itself succeeded, so
+/// this never changes the exit code.
 #[cfg(unix)]
 fn warn_switch_hold(root: &std::path::Path) {
     let exe = std::env::current_exe().ok();

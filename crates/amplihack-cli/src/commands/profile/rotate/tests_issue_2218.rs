@@ -8,19 +8,20 @@
 //! end-to-end rotator, `profile usage` and `profile verify` cases are in
 //! `tests/issue_2218_excluded.rs`.
 
-use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
-use super::observe::Measurement;
-use super::pin::{self, PinState};
-use super::settings;
-use super::switch::{Switched, switch_live};
-use super::tests_swap::{Env, env, ino_at, n};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::config::{self, ReadMode};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::OverflowEntry;
+use crate::commands::profile::rotate::TuneFlags;
+use crate::commands::profile::rotate::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
+use crate::commands::profile::rotate::observe::{Measurement, Snap};
+use crate::commands::profile::rotate::pin::{self, PinState};
+use crate::commands::profile::rotate::settings;
+use crate::commands::profile::rotate::switch::{Switched, switch_live};
+use crate::commands::profile::rotate::tests_swap::{Env, env, ino_at, n};
 use std::fs;
 
-fn never_measured(_: &Ctx, _: &super::observe::Snap) -> Result<Measurement, ProfileError> {
+fn never_measured(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
     panic!("a held cycle measured")
 }
 
@@ -29,7 +30,7 @@ fn never_probed(_: &Ctx, name: &ProfileName) -> Result<bool, ProfileError> {
 }
 
 fn ctx(e: &Env) -> Ctx {
-    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
+    let s = settings::resolve(&TuneFlags::default(), None, &|_| None).unwrap();
     let mut c = Ctx::new(e.store.clone(), e.home.clone(), s);
     c.measure = Some(never_measured);
     c.probe_held = Some(never_probed);
@@ -87,9 +88,9 @@ fn a_pinned_excluded_overflow_profile_is_held_without_a_spend_probe() {
 // ---------------------------------------------------------------------------
 
 mod status_history {
-    use super::super::history::capacity_line;
-    use super::super::tests_swap::{Env, env, n};
     use crate::commands::profile::auto_switch::config::{self, ReadMode};
+    use crate::commands::profile::rotate::history::capacity_line;
+    use crate::commands::profile::rotate::tests_swap::{Env, env, n};
     use crate::commands::profile::usage_history::{self, Entry, Point, Writer, to_line};
     use std::collections::BTreeMap;
     use std::fs;
@@ -204,26 +205,25 @@ mod status_history {
 ///   -> Option<(ProfileName, Match)>` names the excluded profile in
 ///   `~/.claude` from local files only. `Match` is `Ledger` (rule 1: the
 ///   ledger's `live` is excluded; enough on its own), `LocalAccount` (rule 2:
-///   no ledger `live`, or a hand change suspected, and `~/.claude.json`
-///   matches the excluded profile's record) or `SameBytes` (rule 3: as rule
-///   2, `~/.claude.json` gives no account, and `~/.claude/.credentials.json`
-///   is byte-identical to the excluded slot's).
+///   `~/.claude.json` matches the excluded profile's record) or `SameBytes`
+///   (rule 3: `~/.claude/.credentials.json` is byte-identical to the
+///   excluded slot's). Rules 2 and 3 run whatever the ledger names.
 /// - `Ctx::set_excluded_dirs(Vec<PathBuf>)` writes the local-only set held
 ///   on `login_identity::Budget`. For a dir in the set, `Reader::bound` takes
 ///   the account from the local `.claude.json` (`~/.claude.json` for
 ///   `~/.claude`) in place of the injected read, and keeps the budget, stamp
 ///   and login-kind checks. No local account gives `UNAVAILABLE`.
 mod local_proof {
-    use super::super::cycle::Ctx;
-    use super::super::hand_fields::HandSuspect;
-    use super::super::identify::Account;
-    use super::super::ledger::RotateLedger;
-    use super::super::login_identity::UNAVAILABLE;
-    use super::super::tests_swap::{CREDS, Env, env, login, n, private};
-    use super::super::{Match, live_excluded_offline, settings};
     use crate::commands::profile::auto_switch::config::{self, ReadMode};
     use crate::commands::profile::auto_switch::kit::State;
     use crate::commands::profile::expected;
+    use crate::commands::profile::rotate::cycle::Ctx;
+    use crate::commands::profile::rotate::hand_fields::HandSuspect;
+    use crate::commands::profile::rotate::identify::Account;
+    use crate::commands::profile::rotate::ledger::RotateLedger;
+    use crate::commands::profile::rotate::login_identity::UNAVAILABLE;
+    use crate::commands::profile::rotate::tests_swap::{CREDS, Env, env, login, n, private};
+    use crate::commands::profile::rotate::{Match, live_excluded_offline, settings};
     use std::cell::Cell;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -328,15 +328,68 @@ mod local_proof {
         assert_eq!(proof(&e), Some((n("work"), Match::Ledger)));
     }
 
+    // --- a ledger naming a profile that is not excluded --------------------
+    //
+    // A hand login leaves the ledger stale, so rules 2 and 3 run whatever
+    // it names, and `~/.claude` is local-only when either matches.
+
+    use crate::commands::profile::rotate::identify::excluded_offline::{
+        local_only_dirs, may_write_back,
+    };
+
+    /// `~/.claude` read through a cycle's gate with a counting reader: the
+    /// number of requests it sent.
+    fn requests_for_home(e: &Env) -> usize {
+        CALLS.with(|c| c.set(0));
+        let mut c = ctx(e);
+        c.identity = counting;
+        c.set_excluded_dirs(local_only_dirs(&e.store, &e.rs, &e.home));
+        let _ = c.identity_reader().oauth(&home_dir(e));
+        calls()
+    }
+
     #[test]
-    fn a_ledger_naming_a_profile_that_is_not_excluded_with_no_hand_change_matches_nothing() {
-        // The documented limit of the rule: only `~/.claude.json` points at
-        // the excluded profile, and no hand change is suspected.
+    fn a_ledger_naming_another_profile_with_the_excluded_login_s_bytes_matches_rule_3() {
+        let (e, _) = fx();
+        exclude(&e, &["extra"]);
+        set_ledger(&e, Some("work"), None);
+        // `~/.claude.json` still names work: only the bytes say extra.
+        copy_slot_to_live(&e, "extra");
+        assert_eq!(proof(&e), Some((n("extra"), Match::SameBytes)));
+        assert!(local_only_dirs(&e.store, &e.rs, &e.home).contains(&home_dir(&e)));
+        assert_eq!(requests_for_home(&e), 0, "no request with extra's token");
+    }
+
+    #[test]
+    fn a_ledger_naming_another_profile_with_claude_json_naming_the_excluded_one_matches_rule_2() {
+        // A fresh `claude login` as work writes new tokens and work's
+        // account into `~/.claude.json`; the ledger still says spare.
         let (e, _) = fx();
         exclude(&e, &["work"]);
         set_ledger(&e, Some("spare"), None);
         set_home_json(&e, "u-work");
+        assert_eq!(proof(&e), Some((n("work"), Match::LocalAccount)));
+        assert_eq!(requests_for_home(&e), 0, "no request with work's token");
+        assert!(
+            !may_write_back(&e.store, &e.rs, &e.home, &n("work")),
+            "a match by the local account alone never moves the login out (S4)"
+        );
+    }
+
+    #[test]
+    fn a_ledger_naming_another_profile_with_nothing_naming_the_excluded_one_matches_nothing() {
+        // The regression guard against over-matching.
+        let (e, _) = fx();
+        exclude(&e, &["extra"]);
+        set_ledger(&e, Some("work"), None);
+        set_home_json(&e, "u-work");
+        assert_ne!(
+            fs::read(e.live()).unwrap(),
+            fs::read(e.slot("extra")).unwrap()
+        );
         assert_eq!(proof(&e), None);
+        assert!(!local_only_dirs(&e.store, &e.rs, &e.home).contains(&home_dir(&e)));
+        assert_eq!(requests_for_home(&e), 1, "~/.claude is read as before");
     }
 
     // --- rule 2: the local account ----------------------------------------
@@ -495,7 +548,12 @@ mod local_proof {
     }
 
     fn ctx(e: &Env) -> Ctx {
-        let s = settings::resolve(&super::super::TuneFlags::default(), None, &|_| None).unwrap();
+        let s = settings::resolve(
+            &crate::commands::profile::rotate::TuneFlags::default(),
+            None,
+            &|_| None,
+        )
+        .unwrap();
         Ctx::new(e.store.clone(), e.home.clone(), s)
     }
 
@@ -590,6 +648,60 @@ mod local_proof {
     }
 
     #[test]
+    fn a_folder_marked_through_a_symlinked_ancestor_matches_its_resolved_path() {
+        // Callers such as `identity_claims::scan` pass the resolved slot
+        // path; the local-only set may hold the path through the link.
+        let (e, _) = fx();
+        let link = e.root.parent().unwrap().join("root-link");
+        std::os::unix::fs::symlink(&e.root, &link).unwrap();
+        let resolved = fs::canonicalize(e.root.join("extra")).unwrap();
+        for (marked, asked) in [
+            (link.join("extra"), resolved.clone()),
+            (resolved.clone(), link.join("extra")),
+        ] {
+            CALLS.with(|c| c.set(0));
+            let mut c = ctx(&e);
+            c.identity = counting;
+            c.set_excluded_dirs(vec![marked.clone()]);
+            let got = c.identity_reader().oauth(&asked).unwrap();
+            assert!(got.same(&acct("u-extra")), "{marked:?} / {asked:?}");
+            assert_eq!(calls(), 0, "{marked:?} / {asked:?}: no request");
+        }
+    }
+
+    #[test]
+    fn recovery_of_a_swap_moving_an_excluded_login_out_sends_no_request() {
+        // The swap stopped after the exchange: work's login waits in spare's
+        // folder and spare's in `~/.claude`. Start-up recovery's budget, and
+        // the outgoing folder wherever it is, are local-only.
+        use crate::commands::profile::rotate::identify::excluded_offline::gated_budget;
+        use crate::commands::profile::rotate::ledger::Phase;
+        use crate::commands::profile::rotate::login_identity::Reader;
+        use crate::commands::profile::rotate::recover::{RecoverOutcome, recover_with};
+        let (e, _) = fx();
+        exclude(&e, &["work"]);
+        e.rs.save_journal(&e.journal(Phase::S1)).unwrap();
+        e.exchanged();
+        CALLS.with(|c| c.set(0));
+        let budget = gated_budget(&e.store, &e.rs, &e.home);
+        let outcome = recover_with(
+            &e.store,
+            &e.rs,
+            &e.home,
+            Reader {
+                read: &counting,
+                budget: &budget,
+            },
+        )
+        .unwrap();
+        assert_eq!(calls(), 0, "no request with work's token: {outcome:?}");
+        assert!(
+            !matches!(outcome, RecoverOutcome::RolledForward { .. }),
+            "no move on local evidence that does not match: {outcome:?}"
+        );
+    }
+
+    #[test]
     fn a_marked_home_keeps_the_trust_checks() {
         let (e, _) = fx();
         CALLS.with(|c| c.set(0));
@@ -625,8 +737,8 @@ mod local_proof {
 // ---------------------------------------------------------------------------
 
 mod failed_count {
-    use super::super::damp::next_failed;
-    use super::super::decide::{Probed, Reading};
+    use crate::commands::profile::rotate::damp::next_failed;
+    use crate::commands::profile::rotate::decide::{Probed, Reading};
 
     #[test]
     fn an_excluded_live_reading_does_not_advance_the_failed_count() {

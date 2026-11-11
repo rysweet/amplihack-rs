@@ -1761,7 +1761,7 @@ mod stale_file {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #2218: excluded profiles in lines written before the fix
+// Issue #2218 (D7): history of an excluded profile is kept as written
 // ---------------------------------------------------------------------------
 
 #[cfg(unix)]
@@ -1821,71 +1821,19 @@ mod excluded {
     }
 
     #[test]
-    fn read_all_drops_an_excluded_profile_from_the_readings_of_every_line() {
+    fn read_all_returns_old_entries_for_an_excluded_profile_unchanged() {
+        // D7: history is neither removed nor filtered for an excluded
+        // profile; the readers that build figures leave it out themselves.
         let r = Root::with(&[old_line(T - 2 * HOUR), old_line(T - HOUR)]);
-        r.exclude(&["spare"]);
-        let (all, warning) = read_all(&r.root, T);
-        assert_eq!(warning, None);
-        assert_eq!(all.len(), 2, "no line is dropped: {all:?}");
-        for e in &all {
-            assert!(!e.profiles.contains_key("spare"), "{e:?}");
-            assert!(e.profiles.contains_key("work"), "{e:?}");
-            assert_eq!(e.unknown, ["extra"], "{e:?}");
-        }
-    }
-
-    #[test]
-    fn read_all_drops_an_excluded_profile_from_the_unknown_logins() {
-        let r = Root::with(&[old_line(T - HOUR)]);
-        r.exclude(&["extra"]);
-        let (all, _) = read_all(&r.root, T);
-        let e = all.last().unwrap();
-        assert!(
-            e.unknown.is_empty(),
-            "an excluded login is not unknown: {e:?}"
-        );
-        assert!(e.profiles.contains_key("spare"), "{e:?}");
-    }
-
-    #[test]
-    fn read_recent_drops_an_excluded_profile_too() {
-        let r = Root::with(&[old_line(T - HOUR)]);
         r.exclude(&["spare", "extra"]);
-        let (recent, _) = read_recent(&r.root, T, 6 * HOUR);
-        let e = recent.last().expect("the line is still recent");
-        assert_eq!(e.profiles.keys().collect::<Vec<_>>(), ["work"]);
-        assert!(e.unknown.is_empty(), "{e:?}");
-    }
-
-    #[test]
-    fn the_filter_is_on_read_only_and_never_rewrites_the_history() {
-        let r = Root::with(&[old_line(T - HOUR)]);
-        r.exclude(&["spare"]);
         let before = r.bytes();
-        let _ = read_all(&r.root, T);
-        let _ = read_recent(&r.root, T, 6 * HOUR);
-        assert_eq!(r.bytes(), before, "the file keeps the old line as written");
-    }
-
-    #[test]
-    fn with_no_exclusions_every_profile_is_read_as_before() {
-        let r = Root::with(&[old_line(T - HOUR)]);
-        assert_eq!(read_all(&r.root, T), (vec![old_line(T - HOUR)], None));
-    }
-
-    #[test]
-    fn a_corrupt_config_excludes_nothing_and_adds_no_history_warning() {
-        let r = Root::with(&[old_line(T - HOUR)]);
-        r.exclude(&["spare"]);
-        // Group-writable: read as corrupt, so nothing is excluded. The
-        // "exclude list not applied" warning is the caller's, printed once;
-        // the history read does not return it a second time.
-        fs::set_permissions(
-            r.root.join(".auto-switch"),
-            fs::Permissions::from_mode(0o666),
-        )
-        .unwrap();
-        assert_eq!(read_all(&r.root, T), (vec![old_line(T - HOUR)], None));
+        assert_eq!(
+            read_all(&r.root, T),
+            (vec![old_line(T - 2 * HOUR), old_line(T - HOUR)], None)
+        );
+        let (recent, _) = read_recent(&r.root, T, 6 * HOUR);
+        assert_eq!(recent, vec![old_line(T - 2 * HOUR), old_line(T - HOUR)]);
+        assert_eq!(r.bytes(), before, "the file keeps the old lines as written");
     }
 }
 

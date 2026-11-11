@@ -658,6 +658,41 @@ fn a_corrupt_config_warns_that_the_exclude_list_is_not_applied() {
     );
 }
 
+// --- profile seed-record -------------------------------------------------------
+
+#[test]
+fn seed_record_for_an_excluded_profile_with_no_record_sends_no_request() {
+    let (f, ep) = fixture();
+    exclude(&f, &["spare"]);
+    let record = f.root.join(".auto-switch.d/expected/spare.json");
+    if record.exists() {
+        fs::remove_file(&record).unwrap();
+    }
+    let before = stamp(&f.slot("spare"));
+    let out = run(&f, &ep, &["profile", "seed-record", "spare"]);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    // The identity comes from spare's local `.claude.json` only; whatever
+    // it lacks, the outcome is an existing refusal and nothing is written.
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("seed-record spare: refused: ") && stderr.contains("nothing written"),
+        "{}",
+        describe(&out)
+    );
+    assert_no_request_for(&ep, "spare");
+    assert_eq!(stamp(&f.slot("spare")), before);
+}
+
+#[test]
+fn seed_record_for_an_excluded_live_profile_sends_no_request() {
+    let (f, ep) = fixture();
+    exclude(&f, &["work"]);
+    let before = stamp(&f.home_login());
+    let out = run(&f, &ep, &["profile", "seed-record", "work"]);
+    assert_no_request_for(&ep, "work");
+    assert_eq!(stamp(&f.home_login()), before, "{}", describe(&out));
+}
+
 // --- profile verify (R3) ------------------------------------------------------
 
 #[test]

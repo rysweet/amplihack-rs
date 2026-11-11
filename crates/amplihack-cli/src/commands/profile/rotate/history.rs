@@ -7,7 +7,7 @@ use super::identify::LiveId;
 use super::log::Sink;
 use super::observe::{Probes, Snap};
 use crate::commands::profile::auto_switch::kit::now;
-use crate::commands::profile::{capacity_summary, capacity_weight, usage_history};
+use crate::commands::profile::{capacity_summary, capacity_weight, usage_cmd, usage_history};
 use std::path::Path;
 
 #[cfg(test)]
@@ -45,9 +45,21 @@ pub fn record(root: &Path, out: &mut Sink, first: &Snap, probes: &Probes, at: i6
 /// and the weights from the weights file. The age is measured at `now`.
 /// With no readable entry the line is `capacity: no recorded cycle`, with
 /// the history's warning when it exists but was refused.
+///
+/// Issue #2218: profiles in the current exclude list are left out of the
+/// figures, even where an older entry holds a reading for them. The entries
+/// are read unchanged (D7); only the summary's copy leaves them out.
 pub fn capacity(root: &Path, now: i64) -> (String, Vec<String>) {
     // One read: the newest entry is "now", the rest are the history.
     let (mut entries, refused) = usage_history::read_all(root, now);
+    let excluded = usage_cmd::exclude_list(root, |_| {});
+    if !excluded.is_empty() {
+        let is_excluded = |n: &str| excluded.iter().any(|x| x.as_str() == n);
+        for e in &mut entries {
+            e.profiles.retain(|n, _| !is_excluded(n));
+            e.unknown.retain(|n| !is_excluded(n));
+        }
+    }
     let Some(newest) = entries.pop() else {
         return (
             "capacity: no recorded cycle".to_string(),

@@ -1217,11 +1217,13 @@ excluded profile as a login that could take over.
 The same holds for the [usage history](#usage-history). Lines written before
 the profile was excluded, or before
 [#2218](https://github.com/rysweet/amplihack-rs/issues/2218), can still hold
-a reading for it. Every reader of the history drops the excluded names from
-each line as it reads it, so the [capacity summary](#capacity-summary) of
-`profile usage` and the capacity line of [`rotate status`](#rotate-status)
-never count them in `usable now`, `login-weeks of N` or `unknown`. The file
-itself is not rewritten.
+a reading for it. Those lines are neither removed nor filtered: the history
+is read as written. The figures leave the profile out instead. The
+[capacity summary](#capacity-summary) of `profile usage` is built from this
+run's rows, which never hold a reading for it, and the capacity line of
+[`rotate status`](#rotate-status) leaves the profiles in the current
+`exclude` list out of `usable now`, `login-weeks of N` and `unknown` when it
+builds its figures.
 
 With no names, the excluded profile is still listed, so that the table
 shows every profile under the root:
@@ -6759,8 +6761,18 @@ first of these rules that matches:
 | Rule | Condition | Match |
 |------|-----------|-------|
 | 1 | The rotate ledger's `live` field names `C`, and `C` is in the `exclude` list. This rule is enough on its own. | `ledger` |
-| 2 | The ledger has no `live` field, or a [hand change](#two-readings) is suspected, and the `oauthAccount` in `~/.claude.json` matches `C`'s [recorded account](#recorded-account) by full [account identity](#account-identity), organisation included. | `local account` |
-| 3 | As rule 2, but `~/.claude.json` gives no account, and `~/.claude/.credentials.json` is byte for byte the same as `<root>/C/.credentials.json`. | `same bytes` |
+| 2 | The `oauthAccount` in `~/.claude.json` matches `C`'s [recorded account](#recorded-account) by full [account identity](#account-identity), organisation included. | `local account` |
+| 3 | `~/.claude/.credentials.json` is byte for byte the same as `<root>/C/.credentials.json`. | `same bytes` |
+
+Rules 2 and 3 apply whatever profile the ledger names, because a `claude
+login` or a copy made by hand leaves the ledger naming the profile that was
+live before it. A stale `~/.claude.json` that still names `C` after a swap
+off `C` therefore also marks `~/.claude`: its identity is then taken from
+local files and the check fails closed. A match by rule 2 alone is never
+proof enough to [write `~/.claude` back](#write-back-into-an-excluded-folder)
+into `C`'s folder, so nothing is moved and the cycle raises the ALERT shown
+under [Write-back into an excluded folder](#write-back-into-an-excluded-folder)
+until the file is corrected or the ledger names `C`.
 
 An e-mail or a prefix alone never matches in rule 2. `~/.claude.json` is
 read without following a symlink, up to the usual size limit, and must be
@@ -6779,6 +6791,13 @@ reading needs still apply: the shared identity-work budget, the
 metadata of `.credentials.json` before and after the read. A `/login`, or
 any other change to that file between the proof and its use, gives
 `login changed during read` and nothing is moved.
+
+Paths are compared both as given and after resolving symlinks, so a
+profile root reached through a symlinked parent folder is still marked.
+[`profile seed-record`](#profile-seed-record) and the swap recovery run when
+the rotator starts use the same marked set. Swap recovery also marks the
+folder that holds the outgoing login of an interrupted swap when the
+outgoing profile is excluded, wherever the swap left it.
 
 The marked set is rebuilt at the start of every cycle from parsed profile
 names and `~/.claude` only. A change to `exclude` made while a cycle runs

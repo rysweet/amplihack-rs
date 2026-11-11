@@ -691,12 +691,27 @@ mod issue_2218 {
     }
 
     #[test]
-    fn a_ledger_naming_a_profile_that_is_not_excluded_with_no_hand_change_reads_home() {
-        // The documented limit of the local proof: only ~/.claude.json points
-        // at excluded alpha, the ledger names bravo and no hand change is
-        // suspected, so the login is taken to be bravo's.
+    fn a_ledger_naming_a_profile_that_is_not_excluded_does_not_read_home_when_claude_json_names_an_excluded_one()
+     {
+        // A hand login leaves the ledger stale: it names bravo, but
+        // ~/.claude.json names excluded alpha, so ~/.claude is not read.
         let f = fixture();
         home_json(&f, "u-alpha");
+        exclude(&f, &["alpha"]);
+        let (asked, lines) = run_counting(&f, false);
+        assert!(!asked.contains(&f.place("~/.claude")), "{asked:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "~/.claude: excluded (not probed), live profile alpha"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_ledger_naming_a_profile_that_is_not_excluded_reads_home_when_nothing_names_an_excluded_one()
+     {
+        let f = fixture();
         exclude(&f, &["alpha"]);
         let (asked, _) = run_counting(&f, false);
         assert!(asked.contains(&f.place("~/.claude")), "{asked:?}");
