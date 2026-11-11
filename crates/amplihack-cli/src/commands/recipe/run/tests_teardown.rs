@@ -36,14 +36,10 @@ mod execute {
     };
     pub(super) use super::execute_recipe_via_rust_for_test as execute_recipe_via_rust;
 }
-#[cfg(target_os = "linux")]
-use crate::test_support::wait::CEILING;
 use std::collections::BTreeMap;
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
-#[cfg(target_os = "linux")]
-use std::sync::mpsc;
 
 /// Environment-variable name the deterministic-teardown feature must honour to
 /// configure the SIGTERM -> SIGKILL grace window (in whole seconds).
@@ -105,40 +101,51 @@ fn mkfifo(path: &Path) {
     assert!(status.success(), "mkfifo {} failed", path.display());
 }
 
-/// Runs `execute_recipe_via_rust` for `recipe` on a worker thread and hands
-/// back a receiver for whether it failed, so the test can act while the
-/// runner is still running. The receive is bounded by `CEILING` only.
+/// Owns both FIFO participants and joins the executor before the caller's
+/// environment guards or temporary directory can drop. Constructed before
+/// readiness checks, including pidfd setup, can fail.
 #[cfg(target_os = "linux")]
-fn execute_on_worker(recipe: &Path, working_dir: &Path) -> mpsc::Receiver<bool> {
-    let (tx, rx) = mpsc::channel();
-    let (recipe, working_dir) = (recipe.to_path_buf(), working_dir.to_path_buf());
-    std::thread::spawn(move || {
-        let result = execute::execute_recipe_via_rust(
-            &recipe,
-            &BTreeMap::new(),
-            false,
-            true,
-            &working_dir,
-            &[],
-            None,
-        );
-        let _ = tx.send(result.is_err());
-    });
-    rx
+struct OrphanExecution {
+    // Drop joins the worker while the `go` descriptors below are still open.
+    worker: crate::test_support::unix_process::FifoWorker<bool>,
+    go_writer: std::fs::File,
+    _go_reader: std::fs::File,
+}
+
+#[cfg(target_os = "linux")]
+impl OrphanExecution {
+    fn release_runner(&mut self) {
+        use std::io::Write;
+        self.go_writer.write_all(b"run\n").expect("release runner");
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for OrphanExecution {
+    fn drop(&mut self) {
+        use std::io::Write;
+        // A blank release takes the shell's cleanup path. The worker guard
+        // then releases `hold` and joins; the shell waits for its child first.
+        // These writes also work if neither shell has reached its read yet.
+        if let Err(e) = self.go_writer.write_all(b"\n") {
+            eprintln!("releasing the orphan probe runner failed: {e}");
+        }
+    }
 }
 
 /// A runner that starts an orphan in its own process group and then exits 1
-/// once the test opens `go`. The orphan writes its pid to `pid` and blocks
-/// in a shell builtin read opening `hold` (no external reader process).
-/// Nothing ever opens the FIFO for writing, so the orphan ends
-/// only by a signal; it would write `marker` only if released. Its lifetime
-/// is observed through a Linux pidfd; portable signal and grace coverage lives
-/// in the tests below without this probe.
+/// once the test writes `run` to `go`. The orphan writes its pid to `pid`
+/// and blocks in a shell builtin read on `hold` (no external reader process).
+/// Until the execution guard drops, no release is written to `hold`, so the
+/// orphan ends only by a signal; it writes `marker` only during cleanup.
+/// Its lifetime is observed through a Linux pidfd; portable signal and grace
+/// coverage lives in the tests below without this probe.
 #[cfg(target_os = "linux")]
 struct OrphanProbe {
     runner: PathBuf,
     recipe: PathBuf,
     pid: PathBuf,
+    hold: PathBuf,
     go: PathBuf,
     marker: PathBuf,
 }
@@ -150,22 +157,25 @@ impl OrphanProbe {
             runner: dir.join("recipe-runner-rs"),
             recipe: dir.join("recipe.yaml"),
             pid: dir.join("orphan.pid"),
+            hold: dir.join("hold"),
             go: dir.join("go"),
             marker: dir.join("orphan-marker"),
         };
-        let hold = dir.join("hold");
-        mkfifo(&hold);
+        mkfifo(&probe.hold);
         mkfifo(&probe.go);
         write_stub(
             &probe.runner,
             &format!(
                 "#!/bin/sh
+                 echo $$ > '{}'
                  /bin/sh -c 'echo $$ > \"$1\"; read _hold < \"$2\"; echo leaked > \"$3\"'                  orphan '{}' '{}' '{}' &
                  read _go < '{}'
+                 if [ \"$_go\" != run ]; then wait; fi
                  exit 1
 ",
+                dir.join("runner.pid").display(),
                 probe.pid.display(),
-                hold.display(),
+                probe.hold.display(),
                 probe.marker.display(),
                 probe.go.display(),
             ),
@@ -175,25 +185,123 @@ impl OrphanProbe {
         probe
     }
 
+    fn execute(&self, working_dir: &Path) -> OrphanExecution {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::OpenOptionsExt;
+        // Establish both ends before starting the executor: its runner may
+        // not have spawned yet when a failed readiness check unwinds.
+        let go_reader = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&self.go)
+            .expect("open go reader");
+        let go_writer = OpenOptions::new()
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&self.go)
+            .expect("open go writer");
+        let (recipe, working_dir) = (self.recipe.clone(), working_dir.to_path_buf());
+        let worker =
+            crate::test_support::unix_process::FifoWorker::spawn(&self.hold, 1, move || {
+                execute::execute_recipe_via_rust(
+                    &recipe,
+                    &BTreeMap::new(),
+                    false,
+                    true,
+                    &working_dir,
+                    &[],
+                    None,
+                )
+                .is_err()
+            });
+        OrphanExecution {
+            worker,
+            go_writer,
+            _go_reader: go_reader,
+        }
+    }
+
     /// Opens a pidfd for the orphan while it is known to be alive: the
     /// runner is still blocked on `go`, so no teardown has run yet.
     fn orphan(&self) -> crate::test_support::pidfd_wait::PidFd {
+        self.orphan_with_ceiling(crate::test_support::wait::CEILING)
+    }
+
+    fn orphan_with_ceiling(
+        &self,
+        ceiling: std::time::Duration,
+    ) -> crate::test_support::pidfd_wait::PidFd {
         use crate::test_support::pidfd_wait::{PidFd, parse_pid};
-        crate::test_support::wait::wait_until("the orphan to write its pid", || {
-            std::fs::read_to_string(&self.pid)
-                .ok()
-                .is_some_and(|raw| parse_pid(&raw).is_ok())
-        });
+        crate::test_support::wait::wait_until_with_ceiling(
+            "the orphan to write its pid",
+            ceiling,
+            || {
+                std::fs::read_to_string(&self.pid)
+                    .ok()
+                    .is_some_and(|raw| parse_pid(&raw).is_ok())
+            },
+        );
         let raw = std::fs::read_to_string(&self.pid).expect("orphan pid file");
         let pid = parse_pid(&raw).expect("orphan pid");
         PidFd::open(pid).expect("pidfd of the live orphan")
     }
+}
 
-    /// Lets the runner exit 1, which starts the teardown.
-    fn release_runner(&self, done: &mpsc::Receiver<bool>) {
-        crate::test_support::unix_process::release_fifo(&self.go, || {
-            matches!(done.try_recv(), Err(mpsc::TryRecvError::Empty))
-        });
+/// Exercise a real readiness timeout before release_runner(), and also drop
+/// immediately after spawning (before either participant need be ready).
+/// Cleanup must release both shells without help from product termination.
+#[cfg(target_os = "linux")]
+#[test]
+fn test_orphan_probe_readiness_failure_cleans_up_runner_and_worker() {
+    use crate::test_support::pidfd_wait::{PidFd, parse_pid, wait_pid_gone};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::time::Duration;
+
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
+    for wait_for_readiness in [true, false] {
+        let temp = tempfile::tempdir().expect("create probe directory");
+        let mut probe = OrphanProbe::new(temp.path());
+        let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &probe.runner);
+        let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+        let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
+        let mut observed = None;
+        let failure = catch_unwind(AssertUnwindSafe(|| {
+            let _execution = probe.execute(temp.path());
+            if wait_for_readiness {
+                // Retain observations only; cleanup must work without a
+                // KillOnDrop and before readiness gives the caller a pidfd.
+                let orphan = probe.orphan();
+                let raw = std::fs::read_to_string(temp.path().join("runner.pid")).unwrap();
+                let runner = PidFd::open(parse_pid(&raw).unwrap()).unwrap();
+                observed = Some((runner, orphan));
+            }
+            // This nonexistent path forces the actual readiness wait to fail
+            // deterministically, even if the shells have already started.
+            probe.pid = temp.path().join("missing.pid");
+            probe.orphan_with_ceiling(Duration::ZERO);
+        }));
+        let message = failure.expect_err("readiness must fail");
+        let message = message.downcast_ref::<String>().expect("timeout message");
+        assert!(
+            message.contains("the orphan to write its pid: timed out"),
+            "{message}"
+        );
+        assert!(
+            probe.marker.exists(),
+            "unwinding must release the orphan and join the executor before returning"
+        );
+        if let Some((runner, orphan)) = observed {
+            wait_pid_gone(&runner, "readiness cleanup to reap the runner");
+            wait_pid_gone(&orphan, "readiness cleanup to release the orphan");
+        }
+        // Environment guards and tempdir remain alive until after cleanup.
+        assert_eq!(
+            std::env::var_os(RUNNER_PATH_ENV).as_deref(),
+            Some(probe.runner.as_os_str())
+        );
     }
 }
 
@@ -223,12 +331,10 @@ fn test_failure_path_reaps_orphaned_descendants() {
     // Ensure a fast failure is not misread as a timeout.
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
-    let done = execute_on_worker(&probe.recipe, temp.path());
+    let mut execution = probe.execute(temp.path());
     let orphan = KillOnDrop(probe.orphan());
-    probe.release_runner(&done);
-    let failed = done
-        .recv_timeout(CEILING)
-        .expect("hung: execute_recipe_via_rust did not return");
+    execution.release_runner();
+    let failed = execution.worker.wait();
     assert!(failed, "non-zero runner exit must surface as an error");
 
     // The orphan blocks until signalled, so it ends only if the teardown
@@ -434,12 +540,10 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
-    let done = execute_on_worker(&probe.recipe, temp.path());
+    let mut execution = probe.execute(temp.path());
     let orphan = KillOnDrop(probe.orphan());
-    probe.release_runner(&done);
-    let failed = done
-        .recv_timeout(CEILING)
-        .expect("hung: execute_recipe_via_rust did not return");
+    execution.release_runner();
+    let failed = execution.worker.wait();
     assert!(failed, "non-zero runner exit must surface as an error");
 
     // Runner's own orphan must be reaped.
