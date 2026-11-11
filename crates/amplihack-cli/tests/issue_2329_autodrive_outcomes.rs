@@ -270,7 +270,7 @@ mod runner {
                 "context":{"no_merge":"false", "autodrive_dry_run":"false",
                     "autodrive_authorization":{"requested_action":"merge"}}});
             let body = format!(
-                "#!/bin/sh\nif [ \"${{1:-}}\" = --capabilities ]; then\n  printf '%s\\n' '{{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}}'\n  exit 0\nfi\nprintf started > \"$RECORD_FILE\"\nprintf '%s' \"$PATH\" > \"$PATH_RECORD\"\nprintf '%s' \"${{BASH_ENV:-}}\" > \"$BASH_RECORD\"\nprintf '%s\\n' '{}'\n",
+                "#!/bin/sh\nif [ \"${{1:-}}\" = --capabilities ]; then\n  printf '%s\\n' '{{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}}'\n  exit 0\nfi\nprintf started > \"$RECORD_FILE\"\nprintf '%s\\n' \"${{NO_MERGE:-}}\" \"${{TASK_DESCRIPTION:-}}\" \"${{PR_NUMBER:-}}\" > \"$CONTEXT_RECORD\"\nprintf '%s' \"$PATH\" > \"$PATH_RECORD\"\nprintf '%s' \"${{BASH_ENV:-}}\" > \"$BASH_RECORD\"\nprintf '%s\\n' '{}'\n",
                 forged
             );
             crate::support::exec_stub::write_executable(&runner, &body, 0o755);
@@ -285,10 +285,20 @@ mod runner {
         }
 
         fn run(&self, recipe_name: &str, args: &[&str], retired_env: bool) -> Output {
+            self.run_with_defaults(recipe_name, args, retired_env, "{}")
+        }
+
+        fn run_with_defaults(
+            &self,
+            recipe_name: &str,
+            args: &[&str],
+            retired_env: bool,
+            defaults: &str,
+        ) -> Output {
             let path = self.root.join("invocation.yaml");
             fs::write(
                 &path,
-                format!("name: {recipe_name}\ndescription: controlled runner boundary fixture\nversion: 1.0.0\ncontext: {{}}\nsteps:\n  - id: probe\n    type: bash\n    command: 'true'\n"),
+                format!("name: {recipe_name}\ndescription: controlled runner boundary fixture\nversion: 1.0.0\ncontext: {defaults}\nsteps:\n  - id: probe\n    type: bash\n    command: 'true'\n"),
             )
             .unwrap();
             let mut command =
@@ -304,6 +314,7 @@ mod runner {
                 .env("AMPLIHACK_HOME", &self.bundle)
                 .env("RECIPE_RUNNER_RS_PATH", &self.runner)
                 .env("RECORD_FILE", &self.record)
+                .env("CONTEXT_RECORD", self.root.join("context-inputs"))
                 .env("PATH_RECORD", self.root.join("path"))
                 .env("BASH_RECORD", self.root.join("bash-env"))
                 .env("AMPLIHACK_AGENT_BINARY", "codex")
@@ -350,6 +361,60 @@ mod runner {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         )
+    }
+
+    #[test]
+    fn local_recipe_defaults_cannot_grant_authority_or_replace_trusted_defaults() {
+        for (name, args, no_merge, dry_run) in [
+            ("auto-drive-light", vec![], true, false),
+            ("autodrive-finalize", vec![], true, false),
+            ("auto-drive-to-merge", vec![], false, false),
+            (
+                "auto-drive-light",
+                vec!["-c", "no_merge=false"],
+                false,
+                false,
+            ),
+            (
+                "auto-drive-to-merge",
+                vec!["-c", "no_merge=true"],
+                true,
+                false,
+            ),
+            (
+                "auto-drive-light",
+                vec!["-c", "autodrive_dry_run=true"],
+                true,
+                true,
+            ),
+        ] {
+            let fixture = Fixture::new();
+            let output = fixture.run_with_defaults(name, &args, false,
+                "{no_merge: 'false', autodrive_dry_run: 'true', pr_number: '999', task_description: 'untrusted-default'}");
+            assert!(output.status.success(), "{}", details(&output));
+            let result: Json = serde_json::from_slice(&output.stdout).unwrap();
+            let inputs = fs::read_to_string(fixture.root.join("context-inputs")).unwrap();
+            let inputs: Vec<_> = inputs.lines().collect();
+            assert_eq!(inputs[0], no_merge.to_string());
+            assert_ne!(inputs[1], "untrusted-default");
+            assert_ne!(inputs[2], "999");
+            let auth = &result["autodrive_authorization"];
+            assert_eq!(auth["no_merge"], no_merge, "{name}");
+            assert_eq!(auth["dry_run"], dry_run, "{name}");
+            assert_eq!(
+                auth["selected_pr"],
+                Json::Null,
+                "local default selected the PR"
+            );
+            assert_eq!(
+                auth["requested_action"],
+                if no_merge || dry_run {
+                    "verify_readiness"
+                } else {
+                    "merge"
+                }
+            );
+        }
     }
 
     #[test]

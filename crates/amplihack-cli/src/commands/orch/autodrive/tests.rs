@@ -702,8 +702,12 @@ fn oversized_records_cannot_be_silently_truncated_into_accepted_evidence() {
 fn missing_final_records_cannot_become_ready_from_child_summary() {
     let auth = authorization("true", "false");
     let context = json!({"autodrive_finalization":{"readiness":"merge_ready","action":"merged"},"merge_loop_result":{"loop_result":"BUDGET_EXHAUSTED"}});
-    let result =
-        crate::commands::orch::autodrive::report::report(&auth, context.as_object().unwrap(), None);
+    let result = crate::commands::orch::autodrive::report::report(
+        &auth,
+        context.as_object().unwrap(),
+        None,
+        std::path::Path::new("."),
+    );
     assert_eq!(result["readiness"], "incomplete");
     assert_eq!(result["action"], "not_requested");
     assert_eq!(result["stop_reason"], "budget_exhausted");
@@ -797,6 +801,7 @@ fn already_merged_preparation_requires_fresh_bound_platform_confirmation() {
         &auth,
         context.as_object().unwrap(),
         Some("2329"),
+        std::path::Path::new("."),
     );
     assert_eq!(result["action"], "already_merged");
     assert_eq!(result["readiness"], "incomplete");
@@ -805,6 +810,7 @@ fn already_merged_preparation_requires_fresh_bound_platform_confirmation() {
         &auth,
         context.as_object().unwrap(),
         Some("2329"),
+        std::path::Path::new("."),
     );
     assert_ne!(result["action"], "already_merged");
 }
@@ -813,8 +819,12 @@ fn already_merged_preparation_requires_fresh_bound_platform_confirmation() {
 fn complete_agent_labels_without_a_fresh_loop_receipt_cannot_establish_readiness() {
     let auth = authorization("true", "false");
     let context = json!({"finalization_observations":{"candidate":candidate(&auth),"finalization":finalization(&auth),"completion":completion()}});
-    let result =
-        crate::commands::orch::autodrive::report::report(&auth, context.as_object().unwrap(), None);
+    let result = crate::commands::orch::autodrive::report::report(
+        &auth,
+        context.as_object().unwrap(),
+        None,
+        std::path::Path::new("."),
+    );
     assert_eq!(result["readiness"], "incomplete");
     assert_eq!(result["action"], "not_requested");
 }
@@ -957,4 +967,247 @@ fn retired_environment_cleanup_respects_explicit_command_configuration() {
             .1,
         Some(OsStr::new("/explicit/config.sh"))
     );
+}
+
+/// A real local Git history and private evidence store exercise the same
+/// reduction boundary as the helper, without hosting or workflow execution.
+struct ReportingFixture {
+    _temp: tempfile::TempDir,
+    repo: std::path::PathBuf,
+    directory: std::path::PathBuf,
+    auth: InvocationAuthorization,
+    envelope: Value,
+    context: Value,
+}
+impl ReportingFixture {
+    fn new() -> Self {
+        Self::with_action("true")
+    }
+    fn with_action(no_merge: &str) -> Self {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let git =
+            |args: &[&str]| crate::commands::orch::autodrive::trusted::git(&repo, args).unwrap();
+        git(&["init", "-b", "feature"]);
+        git(&[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "base",
+        ]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["update-ref", "refs/remotes/origin/main", &base]);
+        std::fs::write(repo.join("code.rs"), "fn implemented() {}\n").unwrap();
+        git(&["add", "code.rs"]);
+        git(&[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "-m",
+            "implementation",
+        ]);
+        let head = git(&["rev-parse", "HEAD"]);
+        let auth = authorization(no_merge, "false");
+        let mut envelope = json!({"candidate":candidate(&auth), "finalization":finalization(&auth), "completion":completion()});
+        fn replace(value: &mut Value, head: &str, base: &str) {
+            match value {
+                Value::String(s) if s == HEAD => *s = head.into(),
+                Value::String(s) if s == BASE => *s = base.into(),
+                Value::Array(a) => a.iter_mut().for_each(|v| replace(v, head, base)),
+                Value::Object(o) => o.values_mut().for_each(|v| replace(v, head, base)),
+                _ => (),
+            }
+        }
+        if no_merge == "false" {
+            envelope["finalization"]["requested_action"] = json!("merge");
+            envelope["finalization"]["request_expected_head_sha"] = json!(HEAD);
+            envelope["finalization"]["merge_requests"] = json!(1);
+            envelope["finalization"]["request_outcome"] = json!("accepted");
+            envelope["finalization"]["platform_state"] = json!("merged");
+            envelope["finalization"]["confirmation_evidence"] =
+                json!("Observed merged=true on the exact PR");
+        }
+        replace(&mut envelope, &head, &base);
+        let directory = temp.path().join("state");
+        let store = EvidenceStore::create(&directory).unwrap();
+        let accepted = store
+            .snapshot(&serde_json::to_vec(&envelope["candidate"]).unwrap())
+            .unwrap();
+        store
+            .write_new(
+                "merge-ready-round-1.json",
+                &serde_json::to_vec(
+                    &json!({"merge_ready_verdict":"MERGE_READY", "accepted_evidence":accepted}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        store.write_new("merge-ready-result.json", &serde_json::to_vec(&json!({"loop_result":"DONE", "round_label":"round-1", "round_verdict":"MERGE_READY"})).unwrap()).unwrap();
+        crate::commands::orch::autodrive::completion::record(&auth, &directory, "round-1").unwrap();
+        let context = json!({"autodrive_state_dir":directory, "repo_path":repo, "accepted_readiness":{"accepted":accepted}, "finalization_observations":envelope});
+        Self {
+            _temp: temp,
+            repo,
+            directory,
+            auth,
+            envelope,
+            context,
+        }
+    }
+    fn reduce(&self) -> anyhow::Result<crate::commands::orch::autodrive::records::Outcome> {
+        let store = EvidenceStore::create(&self.directory)?;
+        crate::commands::orch::autodrive::helper::validate_reduction(
+            &self.auth,
+            &store,
+            &self.directory,
+            &self.repo,
+            std::path::Path::new(
+                self.context["accepted_readiness"]["accepted"]
+                    .as_str()
+                    .unwrap(),
+            ),
+            &serde_json::from_value(self.envelope.clone())?,
+        )
+    }
+    fn report(&self) -> Value {
+        let mut context = self.context.clone();
+        // Exercise the raw agent string path used by the actual recipe.
+        context["finalization_observations"] = json!(self.envelope.to_string());
+        crate::commands::orch::autodrive::report::report(
+            &self.auth,
+            context.as_object().unwrap(),
+            None,
+            self._temp.path(),
+        )
+    }
+    fn accept_current(&mut self) {
+        let store = EvidenceStore::create(&self.directory).unwrap();
+        let path = store
+            .snapshot(&serde_json::to_vec(&self.envelope["candidate"]).unwrap())
+            .unwrap();
+        self.context["accepted_readiness"]["accepted"] = json!(path);
+    }
+    fn seal_reduction(&mut self) {
+        let outcome = self.reduce().unwrap();
+        let store = EvidenceStore::create(&self.directory).unwrap();
+        let path = store
+            .snapshot(&serde_json::to_vec(&outcome).unwrap())
+            .unwrap();
+        self.context["autodrive_finalization"] = json!({"outcome":outcome, "outcome_snapshot":path, "accepted_snapshot":self.context["accepted_readiness"]["accepted"], "repo":self.repo});
+    }
+    fn assert_rejected(&self, cause: &str) {
+        let error = format!("{:#}", self.reduce().unwrap_err());
+        assert!(error.contains(cause), "{error}");
+        let report = self.report();
+        assert_eq!(report["readiness"], "incomplete", "{report}");
+        assert_eq!(report["action"], "not_requested", "{report}");
+        assert_ne!(report["stop_reason"], "completed", "{report}");
+        assert!(report["blockers"].to_string().contains(cause), "{report}");
+    }
+}
+
+#[test]
+fn reporting_preserves_reducer_missing_and_altered_artifact_rejections() {
+    use sha2::{Digest, Sha256};
+    for no_merge in ["true", "false"] {
+        let mut fixture = ReportingFixture::with_action(no_merge);
+        fixture.envelope["candidate"]["criteria"][0]["evidence"][0]["reference"] =
+            json!({"file":"qa.log", "sha256":format!("{:x}", Sha256::digest(b"passed"))});
+        fixture.accept_current();
+        // A failed reducer leaves the recipe's empty output default intact.
+        fixture.context["autodrive_finalization"] = json!("");
+        fixture.assert_rejected("unreadable evidence artifact qa.log");
+        let store = EvidenceStore::create(&fixture.directory).unwrap();
+        store.write_new("qa.log", b"altered").unwrap();
+        fixture.assert_rejected("missing, stale, or altered evidence artifact qa.log");
+    }
+}
+
+#[test]
+fn reporting_cannot_replace_the_accepted_readiness_snapshot() {
+    let mut fixture = ReportingFixture::new();
+    fixture.seal_reduction();
+    fixture.envelope["candidate"]["criteria"][0]["evidence"][0]["observation"] =
+        json!("Changed after acceptance");
+    fixture.assert_rejected("finalization changed accepted readiness after the action");
+}
+
+#[test]
+fn reporting_enforces_local_head_and_post_review_coverage() {
+    let mut fixture = ReportingFixture::new();
+    let base = fixture.envelope["candidate"]["binding"]["base_sha"].clone();
+    fixture.envelope["candidate"]["reviewed_head_sha"] = base.clone();
+    fixture.envelope["candidate"]["review_range"] = json!({
+        "reviewed_head_sha":base, "verified_head_sha":fixture.envelope["candidate"]["binding"]["head_sha"],
+        "base_sha":base, "observation":"Agent claims post-review changes are allowed"
+    });
+    fixture.accept_current();
+    fixture.assert_rejected("crusty-review-required");
+
+    let fixture = ReportingFixture::new();
+    crate::commands::orch::autodrive::trusted::git(
+        &fixture.repo,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.test",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "moved head",
+        ],
+    )
+    .unwrap();
+    fixture.assert_rejected("evidence head differs from current worktree");
+}
+
+#[test]
+fn reporting_requires_successful_reduction_and_matching_private_outcome() {
+    for no_merge in ["true", "false"] {
+        let mut fixture = ReportingFixture::with_action(no_merge);
+        fixture.reduce().unwrap();
+        let missing = fixture.report();
+        assert_eq!(missing["readiness"], "incomplete");
+        assert!(
+            missing["blockers"]
+                .to_string()
+                .contains("successful deterministic reduction missing")
+        );
+        fixture.seal_reduction();
+        let report = fixture.report();
+        assert_eq!(report["readiness"], "merge_ready", "{report}");
+        assert_eq!(
+            report["action"],
+            if no_merge == "true" {
+                "not_requested"
+            } else {
+                "merged"
+            },
+            "{report}"
+        );
+        assert_eq!(report["stop_reason"], "completed", "{report}");
+        let mut outcome = fixture.reduce().unwrap();
+        outcome.blockers.push("Unrelated reduction".into());
+        let store = EvidenceStore::create(&fixture.directory).unwrap();
+        fixture.context["autodrive_finalization"]["outcome_snapshot"] = json!(
+            store
+                .snapshot(&serde_json::to_vec(&outcome).unwrap())
+                .unwrap()
+        );
+        let report = fixture.report();
+        assert_eq!(report["readiness"], "incomplete");
+        assert!(
+            report["blockers"]
+                .to_string()
+                .contains("reported outcome differs from deterministic reduction")
+        );
+    }
 }

@@ -87,7 +87,9 @@ impl EvidenceStore {
                     );
                     continue;
                 }
-                let bytes = self.read_private(&reference.file)?;
+                let bytes = self
+                    .read_private(&reference.file)
+                    .with_context(|| format!("unreadable evidence artifact {}", reference.file))?;
                 ensure!(
                     format!("{:x}", Sha256::digest(&bytes)) == reference.sha256,
                     "missing, stale, or altered evidence artifact {}",

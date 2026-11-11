@@ -101,6 +101,7 @@ fn execute_recipe_via_rust_for_test(
     execute_recipe_via_rust(
         recipe_path,
         context,
+        context,
         dry_run,
         verbose,
         working_dir,
@@ -229,7 +230,14 @@ pub(crate) fn run_recipe_with(
     });
     let validated_path = resolve_recipe_path(recipe_path, &abs_working_dir)?;
     let recipe = parse_recipe_from_path(&validated_path)?;
-    let (merged_context, inferred) = infer_missing_context(&recipe.context, &context);
+    // Keep operator inputs separate from defaults for authorization. Auto-drive
+    // expands context only after selecting its pinned trusted entrypoint.
+    let (merged_context, inferred) =
+        if crate::commands::orch::autodrive::trusted::applies(&recipe.name) {
+            (context.clone(), Vec::new())
+        } else {
+            infer_missing_context(&recipe.context, &context)
+        };
     if verbose {
         writeln!(io::stderr(), "Executing recipe: {}", recipe.name)?;
         if dry_run {
@@ -272,6 +280,7 @@ pub(crate) fn run_recipe_with(
     let result = match execute_recipe_via_rust(
         &validated_path,
         &merged_context,
+        &context,
         dry_run,
         verbose,
         &abs_working_dir,

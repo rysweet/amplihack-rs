@@ -170,39 +170,8 @@ pub fn run(op: Operations) -> Result<()> {
             let store = EvidenceStore::create(&directory)?;
             let envelope: Envelope = serde_json::from_slice(&stdin_bytes()?)
                 .context("invalid finalization evidence envelope")?;
-            ensure!(
-                accepted_path
-                    .parent()
-                    .context("accepted candidate has no parent")?
-                    .canonicalize()?
-                    == directory.canonicalize()?,
-                "accepted candidate lies outside state"
-            );
-            let accepted_name = accepted_path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .context("invalid accepted candidate name")?;
-            let before_action: CandidateRecord =
-                serde_json::from_slice(&store.read_private(accepted_name)?)?;
-            ensure!(
-                before_action == envelope.candidate,
-                "finalization changed accepted readiness after the action; refresh and assess again"
-            );
-
-            local_binding(&repo, &envelope.candidate.binding)?;
-            super::review::verify(&repo, &envelope.candidate)?;
-            let accepted =
-                validate_candidate(&auth, &envelope.candidate.binding, &envelope.candidate)?;
-            store.snapshot_references(accepted.record())?;
-            if envelope.candidate.readiness == Readiness::MergeReady {
-                super::completion::verify(&auth, &directory, &envelope.candidate)?;
-            }
-            let result = reduce_outcome(
-                &auth,
-                &accepted,
-                &envelope.finalization,
-                &envelope.completion,
-            )?;
+            let result =
+                validate_reduction(&auth, &store, &directory, &repo, &accepted_path, &envelope)?;
             let snapshot = store.snapshot(&serde_json::to_vec(&envelope.candidate)?)?;
             let observation_snapshot =
                 store.snapshot(&serde_json::to_vec(&envelope.finalization)?)?;
@@ -212,7 +181,7 @@ pub fn run(op: Operations) -> Result<()> {
             let outcome_snapshot = store.snapshot(&serde_json::to_vec(&result)?)?;
             println!(
                 "{}",
-                serde_json::json!({"outcome":result,"evidence_snapshot":snapshot,"observation_snapshot":observation_snapshot,"completion_snapshot":completion_snapshot,"outcome_snapshot":outcome_snapshot,"followups":followups})
+                serde_json::json!({"outcome":result,"accepted_snapshot":accepted_path,"repo":repo.canonicalize()?,"evidence_snapshot":snapshot,"observation_snapshot":observation_snapshot,"completion_snapshot":completion_snapshot,"outcome_snapshot":outcome_snapshot,"followups":followups})
             );
         }
         Operations::State { directory } => {
@@ -297,11 +266,56 @@ pub fn run(op: Operations) -> Result<()> {
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Envelope {
-    candidate: CandidateRecord,
-    finalization: FinalizationObservation,
-    completion: LoopCompletion,
+pub(crate) struct Envelope {
+    pub(crate) candidate: CandidateRecord,
+    pub(crate) finalization: FinalizationObservation,
+    pub(crate) completion: LoopCompletion,
 }
+
+/// The CLI reducer and runner reporting share this complete acceptance boundary.
+/// Neither an agent envelope nor a child success flag is accepted readiness.
+pub(crate) fn validate_reduction(
+    auth: &InvocationAuthorization,
+    store: &EvidenceStore,
+    directory: &std::path::Path,
+    repo: &std::path::Path,
+    accepted_path: &std::path::Path,
+    envelope: &Envelope,
+) -> Result<Outcome> {
+    ensure!(
+        accepted_path
+            .parent()
+            .context("accepted candidate has no parent")?
+            .canonicalize()?
+            == directory.canonicalize()?,
+        "accepted candidate lies outside state"
+    );
+    let accepted_name = accepted_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .context("invalid accepted candidate name")?;
+    let before_action: CandidateRecord =
+        serde_json::from_slice(&store.read_private(accepted_name)?)?;
+    ensure!(
+        before_action == envelope.candidate,
+        "finalization changed accepted readiness after the action; refresh and assess again"
+    );
+
+    local_binding(repo, &envelope.candidate.binding)?;
+    super::review::verify(repo, &envelope.candidate)?;
+    let accepted = validate_candidate(auth, &envelope.candidate.binding, &envelope.candidate)?;
+    store.snapshot_references(accepted.record())?;
+    if envelope.candidate.readiness == Readiness::MergeReady {
+        super::completion::verify(auth, directory, &envelope.candidate)?;
+    }
+    reduce_outcome(
+        auth,
+        &accepted,
+        &envelope.finalization,
+        &envelope.completion,
+    )
+}
+
 fn stdin_bytes() -> Result<Vec<u8>> {
     use std::io::Read;
     let mut bytes = Vec::new();

@@ -1,7 +1,9 @@
 //! Runner-side result authority is independent of child-authored summaries.
 use super::{
-    authorization::InvocationAuthorization, outcome::reduce_outcome, records::*,
-    validation::validate_candidate,
+    authorization::InvocationAuthorization,
+    helper::{Envelope, validate_reduction},
+    records::*,
+    state::EvidenceStore,
 };
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -12,18 +14,20 @@ pub(crate) fn report(
     auth: &InvocationAuthorization,
     context: &serde_json::Map<String, Value>,
     expected_pr: Option<&str>,
+    working_dir: &std::path::Path,
 ) -> Value {
     match already_merged(auth, context, expected_pr).and_then(|entry| match entry {
         Some(outcome) => Ok(outcome),
-        None => accepted_outcome(auth, context, expected_pr),
+        None => accepted_outcome(auth, context, expected_pr, working_dir),
     }) {
         Ok(outcome) => {
             serde_json::to_value(outcome).expect("serializable typed auto-drive outcome")
         }
         Err(error) => {
             let mut stop_reason = "dependency_failure";
+            let failure_cause = format!("{error:#}");
             let mut blockers = vec![format!(
-                "accepted finalization evidence unavailable: {error:#}"
+                "accepted finalization evidence unavailable: {failure_cause}"
             )];
             for key in ["crusty_loop_result", "merge_loop_result"] {
                 if let Some(value) = context.get(key) {
@@ -50,7 +54,7 @@ pub(crate) fn report(
                     }
                 }
             }
-            json!({"schema_version":1,"run_id":auth.run_id(),"readiness":"incomplete","action":"not_requested","platform_state":"unknown","stop_reason":stop_reason,"blockers":blockers})
+            json!({"schema_version":1,"run_id":auth.run_id(),"readiness":"incomplete","action":"not_requested","platform_state":"unknown","stop_reason":stop_reason,"blockers":blockers,"failure_cause":failure_cause})
         }
     }
 }
@@ -58,17 +62,11 @@ fn accepted_outcome(
     auth: &InvocationAuthorization,
     context: &serde_json::Map<String, Value>,
     expected_pr: Option<&str>,
+    working_dir: &std::path::Path,
 ) -> Result<Outcome> {
     let raw = context
         .get("finalization_observations")
         .context("no finalization observations")?;
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Envelope {
-        candidate: CandidateRecord,
-        finalization: FinalizationObservation,
-        completion: LoopCompletion,
-    }
     // Deserialize raw strings directly: duplicate fields must remain visible to serde.
     let envelope: Envelope = match raw {
         Value::String(text) => {
@@ -86,20 +84,88 @@ fn accepted_outcome(
             "finalization changed the explicitly selected PR"
         );
     }
-    if envelope.candidate.readiness == Readiness::MergeReady {
-        let directory = context
-            .get("autodrive_state_dir")
-            .and_then(Value::as_str)
-            .context("private state directory missing from finalization")?;
-        super::completion::verify(auth, std::path::Path::new(directory), &envelope.candidate)?;
-    }
-    let accepted = validate_candidate(auth, &envelope.candidate.binding, &envelope.candidate)?;
-    reduce_outcome(
+    // The reducer's output carries pointers, never authority by itself. Replay
+    // its complete checks and compare the private outcome from successful
+    // reduction before reporting any readiness or action.
+    let directory = context
+        .get("autodrive_state_dir")
+        .and_then(Value::as_str)
+        .context("private state directory missing from finalization")?;
+    let directory = working_dir.join(directory);
+    let directory = directory.as_path();
+    let store = EvidenceStore::create(directory)?;
+    let receipt = context
+        .get("autodrive_finalization")
+        .filter(|v| !matches!(v, Value::String(s) if s.is_empty()))
+        .map(context_value)
+        .transpose()?;
+    let assessment = context
+        .get("accepted_readiness")
+        .map(context_value)
+        .transpose()?;
+    let accepted_path = assessment
+        .as_ref()
+        .and_then(|v| v["accepted"].as_str())
+        .or_else(|| {
+            receipt
+                .as_ref()
+                .and_then(|v| v["accepted_snapshot"].as_str())
+        })
+        .context("deterministic reduction has no accepted snapshot")?;
+    let preparation = context.get("build_result").map(context_value).transpose()?;
+    let repo = receipt
+        .as_ref()
+        .and_then(|v| v["repo"].as_str())
+        .or_else(|| preparation.as_ref().and_then(|v| v["repo"].as_str()))
+        .or_else(|| context.get("repo_path").and_then(Value::as_str))
+        .context("deterministic reduction has no local worktree")?;
+    let outcome = validate_reduction(
         auth,
-        &accepted,
-        &envelope.finalization,
-        &envelope.completion,
-    )
+        &store,
+        directory,
+        &working_dir.join(repo),
+        std::path::Path::new(accepted_path),
+        &envelope,
+    )?;
+    // Validate first even when the child reducer failed: retain its concrete
+    // rejection (for example a missing QA artifact), not just absent output.
+    let receipt = receipt.context("successful deterministic reduction missing")?;
+    let path = receipt["outcome_snapshot"]
+        .as_str()
+        .context("successful deterministic reduction has no outcome snapshot")?;
+    let path = std::path::Path::new(path);
+    ensure!(
+        path.parent()
+            .context("outcome snapshot has no parent")?
+            .canonicalize()?
+            == directory.canonicalize()?,
+        "outcome snapshot lies outside state"
+    );
+    let stored: Outcome = serde_json::from_slice(
+        &store.read_private(
+            path.file_name()
+                .and_then(|s| s.to_str())
+                .context("invalid outcome snapshot name")?,
+        )?,
+    )?;
+    ensure!(
+        stored == outcome,
+        "reported outcome differs from deterministic reduction"
+    );
+    Ok(outcome)
+}
+
+fn context_value(raw: &Value) -> Result<Value> {
+    match raw {
+        Value::String(text) => {
+            ensure!(
+                text.len() <= super::validation::MAX_RECORD_BYTES,
+                "reduction receipt exceeds size limit"
+            );
+            Ok(serde_json::from_str(text)?)
+        }
+        value => Ok(value.clone()),
+    }
 }
 
 fn already_merged(

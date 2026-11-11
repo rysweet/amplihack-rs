@@ -4,7 +4,9 @@ This module implements local workflow safeguards for issue #2329. It never
 contacts a hosting service, decides semantic readiness, or performs a merge.
 Agents observe and assess facts under trusted merge-ready policy.
 
-- `authorization`: strictly capture invocation booleans before child execution.
+- `authorization`: strictly capture explicit invocation inputs before expanding
+  defaults. Local recipe defaults cannot select a PR or grant action authority.
+  Context defaults are expanded only from the pinned trusted entrypoint.
   The full composer defaults to merge authorization; direct consumers and
   light mode default to verification. Dry-run suppresses follow-ups as well.
   Resume captures fresh authority; no candidate or inherited marker grants it.
@@ -26,6 +28,10 @@ Agents observe and assess facts under trusted merge-ready policy.
 - `completion`: seal accepted round bytes only after the existing loop engine
   observes both completion signals; reject receipts from an older invocation.
 - `followups`: validate private MINOR_ONLY issue mappings for reporting.
+- `report`: replay the same complete reduction boundary as `helper reduce`,
+  including the pre-action accepted snapshot, local Git/review coverage, artifact
+  bytes and loop receipt. Require a matching private outcome snapshot from
+  successful reduction; retain concrete rejection causes in incomplete reports.
 - `helper`: optional local CLI operations under `amplihack orch helper
   autodrive`. Required record validation in the recipe uses these local
   operations; platform access and recovery have no prescribed interface.

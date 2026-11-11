@@ -16,6 +16,8 @@ pub struct InvocationAuthorization {
     requested_action: &'static str,
 }
 impl InvocationAuthorization {
+    /// Capture explicit operator inputs, before recipe defaults or inference.
+    /// Omitted flags use runner policy: only the full composer defaults to action.
     pub fn capture(recipe: &str, inputs: &BTreeMap<String, String>) -> Result<Self> {
         fn flag(inputs: &BTreeMap<String, String>, key: &str, default: bool) -> Result<bool> {
             match inputs.get(key).map(String::as_str) {

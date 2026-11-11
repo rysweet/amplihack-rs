@@ -542,8 +542,9 @@ pub(super) fn context_env_pairs(
 pub(super) fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
+    explicit_inputs: &BTreeMap<String, String>,
     dry_run: bool,
-    _verbose: bool,
+    verbose: bool,
     working_dir: &Path,
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
@@ -552,7 +553,7 @@ pub(super) fn execute_recipe_via_rust(
     use crate::commands::orch::autodrive::{authorization::InvocationAuthorization, trusted};
     let invocation_name = recipe_name_for_correlation(recipe_path);
     let mut authorization = trusted::applies(&invocation_name)
-        .then(|| InvocationAuthorization::capture(&invocation_name, context))
+        .then(|| InvocationAuthorization::capture(&invocation_name, explicit_inputs))
         .transpose()?;
     if dry_run && let Some(auth) = &mut authorization {
         auth.restrict_dry_run();
@@ -578,7 +579,21 @@ pub(super) fn execute_recipe_via_rust(
         .as_ref()
         .map(|l| vec![l.home.join("amplifier-bundle/recipes")]);
     let search_dirs = pinned_search.as_deref().unwrap_or(search_dirs);
-    let mut invocation_context = context.clone();
+    // Expand auto-drive defaults only after trusted entrypoint selection.
+    // Neither requested recipe defaults nor inferred values grant authority.
+    let (mut invocation_context, inferred) = if launch.is_some() {
+        let recipe = super::parse_recipe_from_path(recipe_path)?;
+        super::infer_missing_context(&recipe.context, explicit_inputs)
+    } else {
+        (context.clone(), Vec::new())
+    };
+    if verbose && !inferred.is_empty() {
+        eprintln!(
+            "[context] Inferred {} variable(s): {}",
+            inferred.len(),
+            inferred.join(", ")
+        );
+    }
     if let Some(auth) = &authorization {
         invocation_context.insert("no_merge".into(), auth.no_merge().to_string());
         invocation_context.insert("autodrive_dry_run".into(), auth.dry_run().to_string());
@@ -954,6 +969,7 @@ pub(super) fn execute_recipe_via_rust(
                     auth,
                     &run_result.context,
                     context.get("pr_number").map(String::as_str),
+                    working_dir,
                 );
                 run_result
                     .extra
