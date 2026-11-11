@@ -2,7 +2,7 @@
 title: Recipe runner validation
 description: Runner capability schema, provider rules and managed source provenance.
 type: reference
-updated: 2026-10-18
+updated: 2026-11-11
 ---
 
 # Recipe runner validation
@@ -43,6 +43,14 @@ names, trailing data, invalid UTF-8, malformed JSON, wrong types, failed probes
 and unsupported schemas fail validation. Probes have bounded duration and output.
 Unsupported Codex platforms advertise an empty array rather than claiming support.
 Python and Node are optional; semantic parsing uses existing native JSON support.
+
+### Recovery capability enforcement
+
+Every provider requires `durable_recovery_v1`, including `--fresh`. Codex also
+requires `codex_exec`. A version string or partial recovery implementation is
+insufficient. The native validator and shell delivery path enforce the same
+contract; `--require-capability` prevents an older validator silently accepting
+an incomplete runner. See [durable recovery](recipe-recovery.md).
 
 ## Managed provenance
 
@@ -175,6 +183,7 @@ Public CLI errors remain human-readable.
 | `INVALID_VALIDATION_REQUEST` | Invalid argument combination. |
 | `RUNNER_PROBE_FAILED` | Probe failed or exceeded its bounds. |
 | `RUNNER_REPORT_INVALID` | Capability report is malformed, ambiguous or uses an unsupported schema. |
+| `RUNNER_RECOVERY_CAPABILITY_MISSING: durable_recovery_v1` | Required durable recovery contract is absent. |
 | `RUNNER_CAPABILITY_MISSING` | Required provider capability is absent. |
 | `RUNNER_RECEIPT_MISSING` | Managed receipt is absent. |
 | `RUNNER_PROVENANCE_MISMATCH` | Receipt is invalid or same-entry package/source/revision/binary identity does not match. |

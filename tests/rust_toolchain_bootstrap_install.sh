@@ -86,7 +86,7 @@ done
 printf '{"installs":{"recipe-runner-rs 0.4.0 (git+%s#%s)":{"bins":["recipe-runner-rs"]}}}' "$repo" "$rev" > "$dir/../.crates2.json"
 cat > "$dir/recipe-runner-rs" <<'RUNNER'
 #!/bin/sh
-printf '%s\n' '{"capabilities":["codex_exec"],"schema_version":1,"version":"0.4.0"}'
+printf '%s\n' '{"capabilities":["codex_exec","durable_recovery_v1"],"schema_version":1,"version":"0.4.0"}'
 RUNNER
 chmod +x "$dir/recipe-runner-rs"
 CARGO

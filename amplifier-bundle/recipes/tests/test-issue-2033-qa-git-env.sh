@@ -179,6 +179,8 @@ CLEAN_RC="$RC"
 CLEAN_STATUS="$(printf '%s' "$OUT" | field_of qa_status 2>/dev/null || echo '<invalid>')"
 [[ "$CLEAN_RC" == 0 ]] || { ok=0; fail clean "exit $CLEAN_RC: $(tail -n 3 "$WORK/ev1.json.err" | tr '\n' '|')"; }
 [[ "$CLEAN_STATUS" == PASS ]] || { ok=0; fail clean "qa_status=$CLEAN_STATUS (the scratch-repository suite should pass)"; }
+got="$(printf '%s' "$OUT" | field_of docs_only 2>/dev/null || echo '<invalid>')"
+[[ "$got" == unknown ]] || { ok=0; fail clean "docs_only=$got, want unknown without a base ref in the scratch repository"; }
 same clean "the caller repository" "$caller_before" "$(snapshot "$CALLER" objects)" || ok=0
 for f in git_env_cleared run_env_cleared; do
     got="$(printf '%s' "$OUT" | field_of "$f" 2>/dev/null || echo '<invalid>')"

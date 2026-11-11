@@ -12,7 +12,7 @@ const VERSION: u64 = 1;
 const MAX_LEDGER_BYTES: u64 = 64 * 1024;
 /// A cycle time this far past `now` is accepted as clock skew; later ones
 /// are ignored.
-const MAX_SKEW_SECS: i64 = 300;
+pub(crate) const MAX_SKEW_SECS: i64 = 300;
 
 /// What the hook needs from the ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -96,7 +96,10 @@ fn a_runner_that_dies_without_a_result_still_names_the_run() {
     let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
-    write_stub(&runner, "#!/bin/sh\necho 'not json at all'\nexit 1\n");
+    write_stub(
+        &runner,
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\necho 'not json at all'\nexit 1\n",
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: dies-silently\nsteps: []\n").expect("failed to write recipe");
@@ -138,7 +141,10 @@ fn a_runner_that_times_out_still_names_the_run() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     // Sleeps well past the timeout below, so the wait returns None.
-    write_stub(&runner, "#!/bin/sh\n/bin/sleep 120\n");
+    write_stub(
+        &runner,
+        "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n/bin/sleep 120\n",
+    );
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: hangs\nsteps: []\n").expect("failed to write recipe");

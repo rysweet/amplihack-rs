@@ -1,7 +1,21 @@
+---
+title: Smart-orchestrator recovery
+description: Adaptive routing recovery and the entry point for durable usage-limit relaunch recovery.
+doc_type: explanation
+last_updated: 2026-11-11
+---
+
 # Smart-Orchestrator Recovery
 
 How the smart-orchestrator detects failures, recovers via adaptive
 strategies, and avoids false positives through hollow-success detection.
+
+For a new launch after a usage-limit stop, see
+[Recovery after a recipe usage limit](recipe-usage-limit-recovery.md).
+This mechanism restores compatible completed work across process launches,
+including delegated `default-workflow` steps. Use
+[the relaunch guide](../howto/resume-recipe-after-usage-limit.md) for commands
+and `--fresh`; the adaptive routing behavior below remains separate.
 
 ## Contents
 

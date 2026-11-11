@@ -205,6 +205,18 @@ mod issue_1740_routing_recipes;
 mod issue_1740_select_workflow;
 #[path = "issue_1740_state_gates.rs"]
 mod issue_1740_state_gates;
+#[path = "issue_1741_fixture.rs"]
+mod issue_1741_fixture;
+#[path = "issue_1741_recipe_recovery.rs"]
+mod issue_1741_recipe_recovery;
+#[path = "issue_1741_recovery_admission.rs"]
+mod issue_1741_recovery_admission;
+#[path = "issue_1741_recovery_compatibility.rs"]
+mod issue_1741_recovery_compatibility;
+#[path = "issue_1741_recovery_security.rs"]
+mod issue_1741_recovery_security;
+#[path = "issue_1741_runner_contract.rs"]
+mod issue_1741_runner_contract;
 #[path = "issue_1743_autodrive_budget.rs"]
 mod issue_1743_autodrive_budget;
 #[path = "issue_1745_home_statusline.rs"]
@@ -295,6 +307,12 @@ mod issue_1818_no_session_limit;
 mod issue_1846_exhausted_reading;
 #[path = "issue_1870_reread_probe_mode.rs"]
 mod issue_1870_reread_probe_mode;
+#[path = "issue_1954_first_install_restager.rs"]
+mod issue_1954_first_install_restager;
+#[path = "issue_1954_install_leaves_live_runs_alone.rs"]
+mod issue_1954_install_leaves_live_runs_alone;
+#[path = "issue_1954_no_foreign_signals.rs"]
+mod issue_1954_no_foreign_signals;
 #[path = "issue_1955_install_cli.rs"]
 mod issue_1955_install_cli;
 #[path = "issue_1973_rotate_fixture.rs"]
@@ -317,6 +335,8 @@ mod issue_2042_host_proc_strace;
 mod issue_2042_proc_root_guard;
 #[path = "issue_2042_seam_dry_run_and_refusal.rs"]
 mod issue_2042_seam_dry_run_and_refusal;
+#[path = "issue_2317_codex_step_commits_in_worktree.rs"]
+mod issue_2317_codex_step_commits_in_worktree;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -395,3 +415,6 @@ mod signal_validator_parity;
 mod spec_conformance;
 #[path = "system_prompt_append_fragment.rs"]
 mod system_prompt_append_fragment;
+
+#[path = "issue_2297_codex_installation.rs"]
+mod issue_2297_codex_installation;

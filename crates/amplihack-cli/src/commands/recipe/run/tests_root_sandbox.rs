@@ -239,7 +239,7 @@ fn run_as_root_outside_a_sandbox(
     std::fs::write(
         &runner,
         format!(
-            "#!/bin/sh\nprintf '%s' \"$AMPLIHACK_AGENT_BINARY\" > '{}'\n\
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nprintf '%s' \"$AMPLIHACK_AGENT_BINARY\" > '{}'\n\
              printf '%s' '{{\"recipe_name\":\"probe\",\"success\":true,\"step_results\":[],\"context\":{{}}}}'\n",
             handed.display()
         ),

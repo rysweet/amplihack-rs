@@ -2,7 +2,8 @@
 //! profile down to the nested `amplihack` launch.
 
 use super::command_builder::{
-    classic_run_script, profile_exports, recipe_run_script, sh_single_quote,
+    CREATE_ISSUE_ENV, build_resume_context_with, classic_run_script, profile_exports,
+    recipe_run_script, sh_single_quote,
 };
 use super::models::Workstream;
 use std::collections::HashMap;
@@ -280,4 +281,21 @@ fn profile_exports_quotes_the_substituted_name() {
         out.contains("export AMPLIHACK_CLAUDE_PROFILE='it'\\''s'\n"),
         "{out}"
     );
+}
+
+/// Issue #1881: the parent's create_issue opt-in reaches each workstream's
+/// recipe context; without it the workstream keeps the local default.
+#[test]
+fn resume_context_forwards_create_issue_only_when_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = workstream(dir.path());
+    let ctx =
+        build_resume_context_with(&ws, |k| (k == CREATE_ISSUE_ENV).then(|| "true".to_string()));
+    assert_eq!(ctx.get("create_issue"), Some(&serde_json::json!("true")));
+    assert_eq!(ctx.get("issue_number"), Some(&serde_json::json!(1567)));
+
+    let ctx = build_resume_context_with(&ws, |_| None);
+    assert!(!ctx.contains_key("create_issue"));
+    let ctx = build_resume_context_with(&ws, |_| Some("  ".to_string()));
+    assert!(!ctx.contains_key("create_issue"));
 }

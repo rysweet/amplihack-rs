@@ -444,14 +444,22 @@ printf 'WT=%s\nTGT=%s\n' "$wt" "$tgt" >> "$RECORD_DIR/env"
         names.contains("run.json") && names.contains("cleanup-record.json"),
         "{names:?}"
     );
-    let allowed: BTreeSet<String> = ["run.json", "cleanup-record.json"]
+    let allowed: BTreeSet<String> = ["run.json", "cleanup-record.json", "recovery"]
         .into_iter()
         .map(String::from)
         .collect();
     assert!(
         names.is_subset(&allowed),
-        "only the report and record remain: {names:?}"
+        "only the reports and durable recovery state remain: {names:?}"
     );
+
+    let recovery: serde_json::Value = serde_json::from_slice(
+        &fs::read(run_dir.join("recovery/tree.json")).expect("cleanup preserves durable recovery"),
+    )
+    .unwrap();
+    assert_eq!(recovery["schema_version"], 1);
+    assert_eq!(recovery["run_id"], env["AMPLIHACK_RUN_ID"]);
+    assert_eq!(recovery["outcome"], "success");
 
     let record: serde_json::Value =
         serde_json::from_slice(&fs::read(run_dir.join("cleanup-record.json")).unwrap()).unwrap();

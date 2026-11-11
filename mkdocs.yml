@@ -86,6 +86,7 @@ nav:
       - Trust & Anti-Sycophancy: claude/context/TRUST.md
       - Rust Runner Execution Architecture: concepts/rust-runner-execution-architecture.md
       - Agent Binary Routing: concepts/agent-binary-routing.md
+      - Versioned Install Layout: concepts/versioned-install-layout.md
       - Launch Target Resolution: LAUNCH_TARGET_RESOLUTION.md
       - System Prompt Append: SYSTEM_PROMPT_APPEND.md
       - Memory Architecture: concepts/memory-backend-architecture.md
