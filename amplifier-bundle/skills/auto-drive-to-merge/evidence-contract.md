@@ -12,17 +12,18 @@ transport status and API errors, including GraphQL errors in HTTP 200 responses.
 Pagination is complete only after every page succeeds and the final cursor or
 link reports no next page; discard partial counts after any failed page.
 
-Keep retries serial and bounded by the invocation's time and attempt budgets.
-For transient read failures, use exponential backoff; do not repeatedly retry
-authentication, permission, validation or protection refusals. For GitHub rate
-limits, honor Retry-After and, when remaining requests are zero, the UTC reset
-time. Without either, wait at least one minute and increase subsequent delays
-exponentially. Switching interfaces must not evade the same service limit.
-If the wait or retry cannot fit the remaining budget, report incomplete with
-the cause. Exit 79 remains terminal. Before retrying any ambiguous write,
-observe its effect and pending requests; if that cannot be established, leave
-it unconfirmed. A changed head requires fresh readiness assessment. This
-follows [GitHub's API retry guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
+On a rate limit, a transient read failure or a refused call, the step does not
+wait or retry. It reports incomplete and records the cause, the response
+status, and any Retry-After or reset time as observations; a later drive picks
+the work up. Authentication, permission, validation and protection refusals
+are never retried. Switching interfaces must not evade the same service limit.
+Exit 79 remains terminal. Before retrying any ambiguous write, observe its
+effect and pending requests; if that cannot be established, leave it
+unconfirmed. A changed head requires fresh readiness assessment. Rate-limit
+observations are limited to the response status and the Retry-After,
+x-ratelimit-remaining and x-ratelimit-reset headers; never record request
+headers, tokens or credential-bearing bodies. For reading those headers, see
+[GitHub's rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
 
 Read the trusted merge-ready SKILL.md and its description template in full.
 Record actual observations, redacting secrets before publication. Do not fetch
