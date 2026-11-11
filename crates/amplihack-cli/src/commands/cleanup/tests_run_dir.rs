@@ -311,3 +311,40 @@ fn schema_version_stays_1() {
 fn runtime_tmp_limit_is_shared_and_80_bytes() {
     assert_eq!(MAX_RUNTIME_TMP_BYTES, 80);
 }
+
+/// Issue #2291: `begin_with` takes explicit inputs, so a run can be started
+/// under an external root without touching the process environment. The
+/// root is recorded in `run.json` and the per-run folder is removed when the
+/// guard drops.
+#[test]
+fn begin_with_explicit_root_records_and_removes_the_external_folder() {
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let base = fs::canonicalize(tmp.path()).unwrap();
+    let ext = base.join("ext");
+    let work = WorkRoot {
+        path: base.join("work"),
+        explicit: false,
+    };
+    let inputs = TmpRootInputs {
+        run_tmp_root: Some(ext.clone().into_os_string()),
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        euid: unsafe { libc::geteuid() },
+        ..TmpRootInputs::default()
+    };
+
+    let (scope, guard) = RunScope::begin_with(work, "test", &base, &inputs).unwrap();
+
+    assert_eq!(scope.runtime_root.as_deref(), Some(ext.as_path()));
+    let runtime = guard.path().to_path_buf();
+    assert_eq!(runtime.parent(), Some(ext.as_path()));
+    assert!(runtime.join("tmp").is_dir());
+    let report = RunReport::read(&scope.run_dir).unwrap();
+    assert_eq!(
+        report.runtime_dir.as_deref(),
+        Some(runtime.to_str().unwrap())
+    );
+
+    drop(guard);
+    assert!(!runtime.exists(), "the guard removes the external folder");
+    assert!(ext.is_dir(), "the root itself is kept");
+}

@@ -939,6 +939,28 @@ fn missing_recorded_folder_produces_no_item() {
     );
 }
 
+/// D9: only a missing path is dropped silently. A path that cannot be
+/// inspected for another reason (here ENOTDIR) is reported as refused.
+#[test]
+fn uninspectable_recorded_folder_is_reported_and_kept() {
+    let fx = Fx::new();
+    let file = fx.root.join("plain");
+    fs::write(&file, "x").unwrap();
+    let recorded = file.join(EXT_NAME);
+    seed_ext(&fx, false, Some(&recorded));
+    let settings = fx.settings(&[Category::RunTmp]);
+
+    let entries = run_sweep(&settings, true).unwrap();
+
+    let e = entry(&entries, &recorded);
+    assert_eq!(e.action, Action::Skipped, "{e:?}");
+    assert!(
+        e.reason.starts_with("recorded temp folder refused: "),
+        "{e:?}"
+    );
+    assert!(file.exists(), "the file in the path survives");
+}
+
 /// D10, S12: a `run.json` rewritten between collection and apply, to name
 /// another folder or none, means the collected folder is refused.
 #[test]

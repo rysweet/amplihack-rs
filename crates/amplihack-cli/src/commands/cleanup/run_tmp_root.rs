@@ -118,46 +118,35 @@ pub(crate) fn external_dir_name(run_id: &str) -> Option<String> {
 /// created non-recursively with mode 0700; `tmp/` and `artifacts/` are left
 /// to the caller.
 pub(crate) fn choose_runtime_dir(work_root: &Path, run_id: &str, inputs: &TmpRootInputs) -> Chosen {
-    let default = || RuntimeChoice::Default(runtime_dir_for(work_root, run_id));
-    let Some(name) = external_dir_name(run_id) else {
-        return Chosen {
-            choice: default(),
-            warning: None,
-        };
+    let candidate = match (inputs.explicit_root(), inputs.tmpdir.as_ref()) {
+        (Some(root), _) => Some((Rule::Explicit, root)),
+        (None, Some(tmpdir)) => Some((Rule::CallerTmpdir, tmpdir)),
+        (None, None) => None,
     };
-    let (rule, value) = match (inputs.explicit_root(), inputs.tmpdir.as_ref()) {
-        (Some(root), _) => (Rule::Explicit, root),
-        (None, Some(tmpdir)) => (Rule::CallerTmpdir, tmpdir),
-        (None, None) => {
-            return Chosen {
-                choice: default(),
-                warning: None,
-            };
-        }
-    };
-    let value = Path::new(value);
-    let refused = match usable_root(work_root, rule, value, inputs) {
-        Ok(root) => match create_run_dir(&root, &name, inputs.euid) {
-            Ok(dir) => {
+    let mut warning = None;
+    if let (Some(name), Some((rule, value))) = (external_dir_name(run_id), candidate) {
+        let value = Path::new(value);
+        let attempt = usable_root(work_root, rule, value, inputs).and_then(|root| {
+            create_run_dir(&root, &name, inputs.euid)
+                .map(|dir| RuntimeChoice::External { dir, root })
+                .map_err(Refused::Warn)
+        });
+        match attempt {
+            Ok(choice) => {
                 return Chosen {
-                    choice: RuntimeChoice::External { dir, root },
+                    choice,
                     warning: None,
                 };
             }
-            Err(reason) => Refused::Warn(reason),
-        },
-        Err(refused) => refused,
-    };
-    let warning = match refused {
-        Refused::Silent => None,
-        Refused::Warn(reason) => {
-            let line = warning_line(rule, value, &reason);
-            tracing::warn!(variable = rule.var(), path = ?value, %reason, "run temp root refused");
-            Some(line)
+            Err(Refused::Warn(reason)) => {
+                tracing::warn!(variable = rule.var(), path = ?value, %reason, "run temp root refused");
+                warning = Some(warning_line(rule, value, &reason));
+            }
+            Err(Refused::Silent) => {}
         }
-    };
+    }
     Chosen {
-        choice: default(),
+        choice: RuntimeChoice::Default(runtime_dir_for(work_root, run_id)),
         warning,
     }
 }
@@ -200,16 +189,30 @@ fn usable_root(
     if !value.is_absolute() {
         return Err(warn_or_silent("is not an absolute path".into()));
     }
-    if fs::metadata(value).is_err() {
-        if !explicit {
-            return Err(Refused::Silent);
-        }
-        if let Err(error) = create_private_dir_all(value) {
-            return Err(Refused::Warn(format!("could not be created: {error:#}")));
-        }
-    }
     let meta = match fs::metadata(value) {
-        Ok(meta) if meta.is_dir() => meta,
+        Ok(meta) => Some(meta),
+        Err(_) if !explicit => return Err(Refused::Silent),
+        Err(_) => {
+            // Only the I/O cause: the anyhow context repeats the path
+            // unescaped, which would let a crafted value forge stderr lines.
+            if let Err(error) = create_private_dir_all(value) {
+                return Err(Refused::Warn(format!(
+                    "could not be created: {}",
+                    error.root_cause()
+                )));
+            }
+            match fs::metadata(value) {
+                Ok(meta) => Some(meta),
+                Err(error) => {
+                    return Err(Refused::Warn(format!(
+                        "could not be inspected after creation: {error}"
+                    )));
+                }
+            }
+        }
+    };
+    let meta = match meta {
+        Some(meta) if meta.is_dir() => meta,
         _ => return Err(warn_or_silent("is not a folder".into())),
     };
     let root = match fs::canonicalize(value) {
@@ -218,6 +221,7 @@ fn usable_root(
     };
 
     let work = fs::canonicalize(work_root).unwrap_or_else(|_| work_root.to_path_buf());
+    // An empty work root means neither HOME nor AMPLIHACK_WORK_ROOT is set, so there is no work root to protect.
     if !work.as_os_str().is_empty() && root.starts_with(&work) {
         return Err(warn_or_silent("is inside the work root".into()));
     }

@@ -689,6 +689,25 @@ fn control_characters_in_the_path_cannot_forge_lines() {
     assert!(w.contains("is not an absolute path"), "{w:?}");
 }
 
+#[test]
+fn root_that_cannot_be_created_does_not_repeat_the_raw_path() {
+    let fx = Fx::new();
+    let file = fx.base.join("plain");
+    fs::write(&file, "x").unwrap();
+    // Absolute, so creation is reached; it fails with ENOTDIR even as root.
+    let chosen = fx.choose(&fx.with_root(file.join("evil\namplihack: forged\x1b[31m")));
+    assert_eq!(default_of(&chosen), fx.default_dir());
+    assert_warns(&chosen, "AMPLIHACK_RUN_TMP_ROOT", "could not be created");
+    let w = warning(&chosen);
+    assert!(!w.contains('\x1b'), "{w:?}");
+    assert!(w.contains("\\n"), "the newline is escaped: {w:?}");
+    assert_eq!(
+        w.matches("amplihack: forged").count(),
+        1,
+        "the path appears once, escaped: {w:?}"
+    );
+}
+
 // ----- legacy mode (D12) ------------------------------------------------
 
 #[test]

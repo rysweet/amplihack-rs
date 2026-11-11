@@ -875,7 +875,10 @@ impl Collector<'_> {
             // `run.json` records it. A missing path produces no item.
             if want_tmp
                 && let Some(recorded) = report.runtime_dir.as_deref().map(PathBuf::from)
-                && fs::symlink_metadata(&recorded).is_ok()
+                && !matches!(
+                    fs::symlink_metadata(&recorded),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound
+                )
             {
                 match external_runtime_check(&recorded, id, &root.path, euid()) {
                     Ok(()) => runtime_dirs.push(recorded),
