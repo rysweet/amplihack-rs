@@ -1412,27 +1412,62 @@ fn conflicting_output_flags_exit_non_zero_before_probing() {
 // Issue #2271: a login with no token starts no `claude`
 //
 // `tl` has a login file with no access token, holding only a canary
-// refresh token; `nf` is a real profile directory with no login file. The
-// fake `claude` records a file for every start, so a start for either one
-// would be visible. Neither stream may hold the canary or the path of the
-// login file.
+// refresh token. `xr` has an expired access token (a sentinel) and no
+// refresh token. `nf` is a real profile directory with no login file: on
+// Linux it is not signed in, elsewhere it falls back (D1). `rr` has an
+// expired token and a refresh token; it still goes to `claude` (D3), and
+// the test guard makes the endpoints unusable, which also checks that the
+// login is judged before the endpoints (D4). The fake `claude` records a
+// file for every start, so a start for any of them would be visible. No
+// stream and no record file may hold the canary, a sentinel or the path
+// of a login file.
 // ---------------------------------------------------------------------------
 
 const CANARY_2271: &str = "sk-ant-oat01-TEST-2271-CANARY";
+const ACCESS_SENTINEL_2271: &str = "sk-ant-oat01-FAKE2271SENTINEL";
+const REFRESH_SENTINEL_2271: &str = "sk-ant-ort01-FAKE2271REFRESH";
 
-/// The `Fixture::new(false)` profiles plus `tl` and `nf`.
+fn expired_ms() -> i64 {
+    now() * 1000 - 60_000
+}
+
+/// The `Fixture::new(false)` profiles plus `tl`, `xr`, `nf` and `rr`.
 fn token_less() -> Fixture {
     let f = Fixture::new(false);
-    for p in ["tl", "nf"] {
+    for p in ["tl", "xr", "nf", "rr"] {
         f.ok(&["profile", "add", p]);
-        // Canned text that would show up if `claude` were started.
+        // Canned text that shows up only if `claude` is started.
         f.canned(p, "Not logged in · Please run /login\n");
     }
     private_file(
         &f.root.join("tl").join(".credentials.json"),
         &format!("{{\"claudeAiOauth\":{{\"refreshToken\":\"{CANARY_2271}\"}}}}"),
     );
+    private_file(
+        &f.root.join("xr").join(".credentials.json"),
+        &format!(
+            "{{\"claudeAiOauth\":{{\"accessToken\":\"{ACCESS_SENTINEL_2271}\",\"expiresAt\":{}}}}}",
+            expired_ms()
+        ),
+    );
+    private_file(
+        &f.root.join("rr").join(".credentials.json"),
+        &format!(
+            "{{\"claudeAiOauth\":{{\"accessToken\":\"{ACCESS_SENTINEL_2271}\",\
+             \"refreshToken\":\"{REFRESH_SENTINEL_2271}\",\"expiresAt\":{}}}}}",
+            expired_ms()
+        ),
+    );
     f
+}
+
+/// The profiles that are not signed in on this platform, with the reason.
+fn not_signed_in_cases() -> Vec<(&'static str, &'static str)> {
+    let mut v = vec![("tl", "no oauth token"), ("xr", "no refresh token")];
+    if cfg!(target_os = "linux") {
+        v.push(("nf", "no credentials file"));
+    }
+    v
 }
 
 /// No start of any kind was recorded for `p`: neither `/usage` nor the
@@ -1443,14 +1478,28 @@ fn assert_never_started(f: &Fixture, p: &str) {
     assert_eq!(f.recorded(&format!("env.{p}")), None, "{p}");
 }
 
-/// Neither the canary nor any login file's path reaches the user.
+/// Neither the canary, a sentinel nor any login file's path reaches the
+/// user or the fake `claude`'s record files.
 fn assert_no_canary(f: &Fixture, out: &Output) {
     assert_no_secrets(out);
-    for s in [text(&out.stdout), text(&out.stderr)] {
-        assert!(!s.contains(CANARY_2271), "canary printed: {s}");
-        assert!(!s.contains("TEST-2271"), "canary printed: {s}");
+    let mut seen = vec![text(&out.stdout), text(&out.stderr)];
+    for e in fs::read_dir(&f.records).unwrap() {
+        seen.push(fs::read_to_string(e.unwrap().path()).unwrap_or_default());
+    }
+    for s in seen {
+        for secret in [
+            CANARY_2271,
+            "TEST-2271",
+            ACCESS_SENTINEL_2271,
+            REFRESH_SENTINEL_2271,
+            "FAKE2271",
+        ] {
+            assert!(!s.contains(secret), "{secret:?} printed: {s}");
+        }
         assert!(!s.contains(".credentials.json"), "login path printed: {s}");
-        for p in ["tl", "nf"] {
+    }
+    for s in [text(&out.stdout), text(&out.stderr)] {
+        for p in ["tl", "xr", "nf"] {
             let dir = f.root.join(p);
             assert!(
                 !s.contains(dir.to_str().unwrap()),
@@ -1463,21 +1512,27 @@ fn assert_no_canary(f: &Fixture, out: &Output) {
 #[test]
 fn a_token_less_profile_starts_no_claude_and_reads_not_signed_in() {
     let f = token_less();
-    let (rows, stderr) = f.json(&["profile", "usage", "--json"]);
+    let out = f.ok(&["profile", "usage", "--json"]);
+    assert_no_canary(&f, &out);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let stderr = text(&out.stderr);
     let row = |p: &str| {
         rows.iter()
             .find(|r| r["profile"] == p)
             .unwrap_or_else(|| panic!("no row for {p}: {rows:?}"))
+            .clone()
     };
-    for (p, why) in [("tl", "no oauth token"), ("nf", "no credentials file")] {
+    for (p, why) in not_signed_in_cases() {
         let r = row(p);
         assert_eq!(r["state"], "not_logged_in", "{r}");
         assert_eq!(r["source"], "direct", "{r}");
         assert_eq!(r["spend"], "unknown", "{r}");
-        assert_eq!(r["error"], format!("not signed in ({why})"), "{r}");
+        assert_eq!(r["error"], format!("direct read: {why}"), "{r}");
+        assert!(r["raw"].is_null(), "{r}");
         assert!(r["session"].is_null() && r["week_all"].is_null(), "{r}");
+        // D7: the reason is in the row; no stderr warning repeats it.
         assert!(
-            stderr.contains(&format!("warning: profile \"{p}\": not signed in ({why})")),
+            !stderr.contains(&format!("warning: profile \"{p}\"")),
             "{stderr}"
         );
         assert_never_started(&f, p);
@@ -1488,6 +1543,29 @@ fn a_token_less_profile_starts_no_claude_and_reads_not_signed_in() {
     }
     assert_eq!(row("d")["state"], "not_logged_in");
     assert_eq!(row("d")["source"], "fallback", "d has a token");
+}
+
+/// D3: an expired token that has a refresh token still goes to `claude`.
+#[test]
+fn an_expired_login_with_a_refresh_token_still_starts_claude() {
+    let f = token_less();
+    let out = f.ok(&["profile", "usage", "--json", "rr"]);
+    assert_no_canary(&f, &out);
+    assert!(f.probed().contains("rr"), "{:?}", f.probed());
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows[0]["source"], "fallback", "{}", rows[0]);
+}
+
+/// D1: off Linux a missing login file may mean the login is in the
+/// Keychain, so `nf` still goes to `claude`.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn off_linux_a_missing_login_file_still_starts_claude() {
+    let f = token_less();
+    let out = f.ok(&["profile", "usage", "--json", "nf"]);
+    assert!(f.probed().contains("nf"), "{:?}", f.probed());
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows[0]["source"], "fallback", "{}", rows[0]);
 }
 
 #[test]
@@ -1508,26 +1586,41 @@ fn a_token_less_profile_in_the_table_and_bar_view() {
     let out = f.ok(&["profile", "usage"]);
     assert_no_canary(&f, &out);
     let stdout = text(&out.stdout);
+    let xr = stdout
+        .lines()
+        .find(|l| first_word(l) == "xr")
+        .unwrap_or_else(|| panic!("{stdout}"));
+    assert!(xr.contains("not signed in (no refresh token)"), "{xr}");
+    assert_eq!(xr.matches("not signed in").count(), 1, "{xr}");
+    assert!(
+        !xr.contains("no reading") && !xr.contains("fallback"),
+        "{xr}"
+    );
+    assert!(xr.contains("spend:unknown"), "{xr}");
+    for (p, _) in not_signed_in_cases() {
+        assert_never_started(&f, p);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_missing_login_file_on_linux_shows_not_signed_in_in_the_bar_view() {
+    let f = token_less();
+    let out = f.ok(&["profile", "usage", "nf"]);
+    assert_no_canary(&f, &out);
+    let stdout = text(&out.stdout);
     let nf = stdout
         .lines()
         .find(|l| first_word(l) == "nf")
         .unwrap_or_else(|| panic!("{stdout}"));
     assert!(nf.contains("not signed in (no credentials file)"), "{nf}");
-    assert_eq!(nf.matches("not signed in").count(), 1, "{nf}");
-    assert!(
-        !nf.contains("no reading") && !nf.contains("fallback"),
-        "{nf}"
-    );
-    assert!(nf.contains("spend:unknown"), "{nf}");
-    for p in ["tl", "nf"] {
-        assert_never_started(&f, p);
-    }
+    assert_never_started(&f, "nf");
 }
 
 #[test]
 fn raw_adds_no_line_and_no_note_for_a_token_less_profile() {
     let f = token_less();
-    let out = f.ok(&["profile", "usage", "--table", "--raw", "tl", "nf", "a"]);
+    let out = f.ok(&["profile", "usage", "--table", "--raw", "tl", "xr", "a"]);
     assert_no_canary(&f, &out);
     let stdout = text(&out.stdout);
     assert!(!stdout.contains("no claude output"), "{stdout}");
@@ -1536,9 +1629,13 @@ fn raw_adds_no_line_and_no_note_for_a_token_less_profile() {
         "a's text is kept: {stdout}"
     );
     let stderr = text(&out.stderr);
-    for p in ["tl", "nf"] {
+    for p in ["tl", "xr"] {
         assert!(
             !stderr.contains(&format!("note: profile \"{p}\"")),
+            "{stderr}"
+        );
+        assert!(
+            !stderr.contains(&format!("warning: profile \"{p}\"")),
             "{stderr}"
         );
         assert_never_started(&f, p);
@@ -1548,20 +1645,26 @@ fn raw_adds_no_line_and_no_note_for_a_token_less_profile() {
 #[test]
 fn direct_mode_gives_a_token_less_profile_the_same_row() {
     let f = token_less();
+    let names: Vec<&str> = not_signed_in_cases().iter().map(|(p, _)| *p).collect();
+    let mut args = vec!["profile", "usage", "--json"];
+    args.extend(&names);
     let out = f
-        .cmd(&["profile", "usage", "--json", "tl", "nf"])
+        .cmd(&args)
         .env("AMPLIHACK_PROFILE_USAGE_PROBE", "direct")
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_no_canary(&f, &out);
     let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows.len(), names.len());
     for r in &rows {
+        let (_, why) = not_signed_in_cases()
+            .into_iter()
+            .find(|(p, _)| r["profile"] == *p)
+            .unwrap();
         assert_eq!(r["state"], "not_logged_in", "{r}");
-        assert!(
-            r["error"].as_str().unwrap().starts_with("not signed in ("),
-            "{r}"
-        );
+        assert_eq!(r["source"], "direct", "{r}");
+        assert_eq!(r["error"], format!("direct read: {why}"), "{r}");
     }
     assert!(f.probed().is_empty(), "{:?}", f.probed());
 }
@@ -1572,12 +1675,12 @@ fn direct_mode_gives_a_token_less_profile_the_same_row() {
 fn auto_mode_still_starts_claude_for_a_token_less_profile() {
     let f = token_less();
     let out = f
-        .cmd(&["profile", "usage", "--json", "nf"])
+        .cmd(&["profile", "usage", "--json", "tl"])
         .env("AMPLIHACK_PROFILE_USAGE_PROBE", "auto")
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", text(&out.stderr));
-    assert!(f.probed().contains("nf"), "{:?}", f.probed());
+    assert!(f.probed().contains("tl"), "{:?}", f.probed());
 }
 
 /// A token-less profile alone needs no `claude` at all, so a missing binary
@@ -1586,7 +1689,7 @@ fn auto_mode_still_starts_claude_for_a_token_less_profile() {
 fn a_token_less_profile_needs_no_claude_binary() {
     let f = token_less();
     let out = f
-        .cmd(&["profile", "usage", "--json", "tl", "nf"])
+        .cmd(&["profile", "usage", "--json", "tl", "xr"])
         .env(
             "AMPLIHACK_CLAUDE_BINARY_PATH",
             f.tools.join("no-such-claude"),
@@ -1594,9 +1697,31 @@ fn a_token_less_profile_needs_no_claude_binary() {
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_no_canary(&f, &out);
     let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(rows.len(), 2);
     for r in &rows {
         assert_eq!(r["state"], "not_logged_in", "{r}");
         assert_ne!(r["error"], "claude not found", "{r}");
+    }
+}
+
+/// `--summary-json` holds the same rows as `--json`.
+#[test]
+fn summary_json_gives_a_token_less_profile_the_same_row() {
+    let f = token_less();
+    let out = f.ok(&["profile", "usage", "--summary-json", "tl", "xr"]);
+    assert_no_canary(&f, &out);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    for r in v["profiles"].as_array().unwrap() {
+        assert_eq!(r["state"], "not_logged_in", "{r}");
+        assert_eq!(r["source"], "direct", "{r}");
+        assert!(
+            r["error"].as_str().unwrap().starts_with("direct read: "),
+            "{r}"
+        );
+    }
+    for p in ["tl", "xr"] {
+        assert_never_started(&f, p);
     }
 }

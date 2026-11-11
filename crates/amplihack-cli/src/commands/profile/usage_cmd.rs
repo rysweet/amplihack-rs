@@ -15,12 +15,17 @@
 //!
 //! Issue #2001: with no names given, every Codex account is also read live
 //! (`amplihack_utils::codex_capacity`) on a thread started before the Claude
-//! probes, and printed after the Claude output (`usage_codex`). Codex rows
-//! never reach the recording, the history, the summary or the exit status.
-//! `--json` stays the bare array of Claude rows it has always been, and does
-//! not read Codex at all: scripts on the owner's host index it with `.[]` and
-//! `.[0]`. The Codex rows are in `--summary-json`, which was already an
-//! object, under `codex`.
+//! probes (`usage_codex`). Codex rows never reach the recording, the
+//! history, the summary or the exit status. `--json` stays the bare array of
+//! Claude rows it has always been, and does not read Codex at all: scripts on
+//! the owner's host index it with `.[]` and `.[0]`. The Codex rows are in
+//! `--summary-json`, which was already an object, under `codex`, so that
+//! output waits for the Codex read before it prints.
+//!
+//! Issue #2271: the bar view and the table do not wait for Codex. They print
+//! the Claude rows and the capacity summary and flush stdout, then print the
+//! Claude warnings on stderr and write the recording and the history. Only
+//! then is the Codex read joined, and its block printed last.
 
 use super::auto_switch::{self, Observation, ObservedWindow, RecordOutcome};
 use super::capacity_summary::{self, Summary};
@@ -96,6 +101,16 @@ impl ErrorReason {
             Self::NoClaude => "claude not found".into(),
             Self::Direct(why) => format!("direct read: {why}").into(),
             Self::NotSignedIn(why) => format!("not signed in ({why})").into(),
+        }
+    }
+
+    /// The `error` text in `--json` and `--summary-json`. Issue #2271: a
+    /// not-signed-in row names the direct read that found it, as a failed
+    /// direct read does; every other reason is [`Self::as_str`].
+    pub(super) fn json_str(self) -> std::borrow::Cow<'static, str> {
+        match self {
+            Self::NotSignedIn(why) => format!("direct read: {why}").into(),
+            other => other.as_str(),
         }
     }
 }
@@ -181,10 +196,9 @@ impl Probe {
     /// Issue #2271: a login the direct read found signed out. The row is
     /// final: `not_logged_in`, from the direct read, with no `claude`.
     pub(super) fn not_signed_in(why: &'static str) -> Self {
-        let mut p = Self::failed(ErrorReason::NotSignedIn(why), None);
+        let mut p = Self::direct_error(why);
+        p.error = Some(ErrorReason::NotSignedIn(why));
         p.report = UsageReport::empty(UsageState::NotLoggedIn);
-        p.source = Some(Source::Direct);
-        p.direct_failure = Some(why);
         p
     }
 }
@@ -279,7 +293,7 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     // Codex account is read alongside the Claude probes. `--json` keeps its
     // array of Claude rows, so it has no place for Codex rows and skips the
     // read.
-    let codex = (names.is_empty() && output != Output::Json).then(CodexRead::start);
+    let mut codex = (names.is_empty() && output != Output::Json).then(CodexRead::start);
     if profiles.is_empty() {
         print_empty(output, &time, codex);
         return Ok(());
@@ -375,7 +389,6 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     // Issue #2271: only `--summary-json` waits for Codex before printing,
     // because its one document holds both. The text outputs print the
     // Claude block first and the Codex block last, below.
-    let mut codex = codex;
     let summary_codex = match output {
         Output::SummaryJson => codex.take().map(CodexRead::finish),
         Output::Bars | Output::Table | Output::Json => None,
@@ -614,12 +627,7 @@ fn print_empty(output: Output, time: &TimeView, codex: Option<CodexRead>) {
 /// its block after everything else. Used by the text outputs only; the
 /// Claude output is already on stdout by then.
 fn print_codex_last(output: Output, codex: Option<CodexRead>, time: &TimeView) {
-    let Some(read) = codex else {
-        return;
-    };
-    let view = read.finish();
-    print_codex_text(output, Some(&view), time);
-    flush_stdout();
+    print_codex_text(output, codex.map(CodexRead::finish).as_ref(), time);
 }
 
 /// Flushes stdout so that its lines are out before anything that follows
@@ -2079,15 +2087,17 @@ fn json_rows(rows: &[Row]) -> Vec<JsonRow<'_>> {
             session_limit: r.report.session_limit,
             week_all: r.report.week_all.as_ref(),
             week_models: &r.report.week_models,
-            error: r.error.map(|e| e.to_string()),
+            error: r.error.map(|e| e.json_str().into_owned()),
             raw: r.raw.as_ref(),
         })
         .collect()
 }
 
-/// One stderr line per error row.
+/// One stderr line per error row. Issue #2271: a not-signed-in row gets
+/// none; its reason is already in the row and in the JSON.
 pub(super) fn error_warnings(rows: &[Row]) -> Vec<String> {
     rows.iter()
+        .filter(|r| !matches!(r.error, Some(ErrorReason::NotSignedIn(_))))
         .filter_map(|r| {
             r.error.map(|e| {
                 format!(

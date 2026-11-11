@@ -8,13 +8,15 @@
 //! | `auto` / `text` | fallback only | as named |
 //! | overflow, not `direct` | fallback only | `text` |
 //! | overflow, `direct` | none: error `direct read: overflow needs /usage` | - |
-//! | unset | passive, direct, fallback | `auto`; `text` when credits are on and no window is read |
-//! | `direct` | passive, direct; a failure is an error row | - |
+//! | unset | passive, direct, fallback; no fallback when not signed in | `auto`; `text` when credits are on and no window is read |
+//! | `direct` | passive, direct; a failure is an error row, or a not-signed-in row | - |
 //!
 //! Issue #2271: in `unset` and `direct`, a direct read that finds no login
-//! is final ([`final_reason`]): the row is `not_logged_in`, `not signed in
-//! (<reason>)`, and no `claude` is looked up or started. `claude` would find
-//! the same empty login.
+//! to use is final ([`not_signed_in`]): `no oauth token`, `no refresh token`,
+//! and on Linux `no credentials file`. The row is `not_logged_in` from the
+//! direct read, shown as `not signed in (<reason>)`, and no `claude` is
+//! looked up or started; `claude` would find the same empty login. Every
+//! other failure, `credentials refused` included, falls back as before.
 //!
 //! Issue #1856: a direct read with usage credits on and a readable window
 //! is a `direct` row with the direct windows, the redacted `extra_usage`
@@ -208,7 +210,7 @@ pub(super) fn read(
     }
     match read_without_claude(env, plan, root, now) {
         Ok(p) => p,
-        Err(why) if final_reason(why, plan) => Probe::not_signed_in(why),
+        Err(why) if not_signed_in(why, plan) => Probe::not_signed_in(why),
         Err(why) if direct_only => Probe::direct_error(why),
         Err(why) => {
             let mode = if credits_on(why) {
@@ -233,34 +235,6 @@ pub(super) fn not_saved(_why: &str) -> bool {
     false
 }
 
-/// Issue #2271: a direct-read failure that `claude` could not do better
-/// on, because there is no login to use: no token, no refresh token, or no
-/// credentials file in a directory that really exists (not a symlink, and
-/// not the stand-in path for a missing `$HOME`, and never on macOS, where the
-/// keychain may hold it). Only the fixed reasons are
-/// matched; everything else falls back as before. The one check on disk
-/// reads the directory's own metadata, never the credentials file.
-#[cfg(unix)]
-fn final_reason(why: &'static str, plan: &Plan) -> bool {
-    use usage_direct::reason;
-    match why {
-        reason::NO_TOKEN | reason::NO_REFRESH_TOKEN => true,
-        // On macOS the login may be in the keychain, so a missing file is
-        // not final there.
-        reason::NO_FILE => {
-            !cfg!(target_os = "macos")
-                && std::fs::symlink_metadata(&plan.creds_dir).is_ok_and(|m| m.is_dir())
-        }
-        _ => false,
-    }
-}
-
-/// Off Unix a keychain may hold the login, so no reason is final.
-#[cfg(not(unix))]
-fn final_reason(_why: &'static str, _plan: &Plan) -> bool {
-    false
-}
-
 #[cfg(unix)]
 fn credits_on(why: &str) -> bool {
     why == usage_direct::reason::CREDITS_ON
@@ -268,6 +242,32 @@ fn credits_on(why: &str) -> bool {
 
 #[cfg(not(unix))]
 fn credits_on(_why: &str) -> bool {
+    false
+}
+
+/// Issue #2271: a direct-read failure that `claude` could not do better on,
+/// because the login has nothing to use: no token (`no oauth token`), or an
+/// expired token and no refresh token (`no refresh token`). On Linux a
+/// missing credentials file (`no credentials file`) counts too, but only in
+/// a directory that exists as one (not a symlink, and not the stand-in path
+/// for a missing `$HOME`); elsewhere a keychain may hold the login, so it
+/// still falls back. `credentials refused` never counts: it would hide a
+/// foreign-owned, writable or symlinked file. The one check on disk reads the
+/// directory's own metadata, never the credentials file or its listing.
+#[cfg(unix)]
+#[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
+fn not_signed_in(why: &'static str, plan: &Plan) -> bool {
+    use usage_direct::reason;
+    match why {
+        reason::NO_TOKEN | reason::NO_REFRESH_TOKEN => true,
+        #[cfg(target_os = "linux")]
+        reason::NO_FILE => std::fs::symlink_metadata(&plan.creds_dir).is_ok_and(|m| m.is_dir()),
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn not_signed_in(_why: &'static str, _plan: &Plan) -> bool {
     false
 }
 

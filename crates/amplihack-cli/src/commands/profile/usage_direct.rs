@@ -87,8 +87,9 @@ pub(super) mod reason {
     pub const REFRESH_REFUSED: &str = "refresh refused";
     pub const REFRESH_FAILED: &str = "refresh failed";
     pub const REFRESH_NOT_SAVED: &str = "refresh not saved";
-    /// Issue #2271: the login has no usable refresh token, so nothing can
-    /// renew it; no request was sent.
+    /// Issue #2271: the token is at or past its `expiresAt` and the login
+    /// holds no usable refresh token, so nothing can renew it. [`read`]
+    /// returns it before any request, whether or not refresh is allowed.
     pub const NO_REFRESH_TOKEN: &str = "no refresh token";
     pub const HTTP_401: &str = "http 401";
     pub const HTTP_403: &str = "http 403";
@@ -563,12 +564,22 @@ pub(super) struct Direct {
 /// The usage of the login in `req.creds_dir`. At most two GETs and one
 /// refresh POST, all within `req.timeout` from the start of the read; a 429
 /// is not retried and a redirect is not followed.
+///
+/// Issue #2271: the login is read before the endpoints are checked, so a
+/// login with no token, or with an expired token and no refresh token, gets
+/// that verdict (`no oauth token`, `no credentials file`, `no refresh token`)
+/// even when the endpoints are unusable. Nothing is sent for any of them.
 pub(super) fn read(ep: &Endpoints, req: &Request<'_>) -> Result<Direct, &'static str> {
     let deadline = Deadline::after(req.timeout);
+    let creds = load(req.creds_dir)?;
+    // A plain comparison: a missing or non-integer `expiresAt` is `None` and
+    // never counts as expired here.
+    if creds.refresh.is_none() && creds.expires_at_ms.is_some_and(|at| at <= req.now_ms) {
+        return Err(reason::NO_REFRESH_TOKEN);
+    }
     if !ep.usable() {
         return Err(reason::TRANSPORT);
     }
-    let creds = load(req.creds_dir)?;
     let agent = agent(ep, req.timeout, deadline);
     let now_s = req.now_ms.div_euclid(1000);
     let margin_ms = REFRESH_MARGIN_SECS * 1000;
@@ -836,7 +847,7 @@ fn refresh(
         return Ok(current.access);
     }
     let Some(old_refresh) = current.refresh.as_ref() else {
-        return Err(reason::NO_REFRESH_TOKEN);
+        return Err(reason::REFRESH_FAILED);
     };
     // SR-10: a refresh can retire the old refresh token, so it is sent only
     // when the result can be saved.

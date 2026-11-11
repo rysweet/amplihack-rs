@@ -330,9 +330,10 @@ fn ordered_falls_back_to_text_when_credits_are_on_and_no_window_is_read() {
     assert_eq!(p.direct_failure, Some("usage credits on"));
 }
 
-/// Issue #2271: a profile directory with no login file is final. `claude`
-/// would find the same empty directory, so none is started.
-#[cfg(not(target_os = "macos"))]
+/// Issue #2271 (D1): on Linux the file is the login, so a profile directory
+/// with no login file is final. `claude` would find the same empty
+/// directory, so none is started.
+#[cfg(target_os = "linux")]
 #[test]
 fn ordered_gives_not_signed_in_when_there_is_no_login_file() {
     let s = setup();
@@ -351,11 +352,12 @@ fn ordered_gives_not_signed_in_when_there_is_no_login_file() {
     assert!(fake.seen().is_empty());
 }
 
-/// Issue #2271: on macOS the login may be in the keychain, so a profile
-/// directory with no login file still falls back to `claude`.
-#[cfg(target_os = "macos")]
+/// Issue #2271 (D1): off Linux the login may live in the Keychain, so a
+/// missing file is not a sign that the profile is signed out. It falls
+/// back to `claude`, as before.
+#[cfg(not(target_os = "linux"))]
 #[test]
-fn ordered_falls_back_when_there_is_no_login_file_on_macos() {
+fn ordered_falls_back_when_there_is_no_login_file() {
     let s = setup();
     fs::remove_file(s.dir().join(".credentials.json")).unwrap();
     let fake = ok_server();
@@ -370,6 +372,7 @@ fn ordered_falls_back_when_there_is_no_login_file_on_macos() {
     assert_eq!(fb.calls(), [ProbeMode::Auto]);
     assert_eq!(p.source, Some(Source::Fallback));
     assert_eq!(p.direct_failure, Some("no credentials file"));
+    assert!(p.error.is_none(), "{:?}", p.error);
 }
 
 #[test]
@@ -990,17 +993,20 @@ fn one_stale_reading_starts_one_fallback_for_that_login_only() {
 //
 // Contract:
 // - In `Ordered` and `Direct`, a direct read that fails with `no oauth
-//   token`, `no refresh token`, or `no credentials file` in a creds_dir
-//   that is a real directory (not a symlink, and not the `.no-home` stand-in
-//   for a missing `$HOME`) gives `Probe::not_signed_in(why)`, and the
-//   fallback closure is never called:
+//   token` or `no refresh token`, or (on Linux only) `no credentials file`
+//   in a creds_dir that is a real directory (not a symlink, not a regular
+//   file, and not the `.no-home` stand-in for a missing `$HOME`), gives
+//   `Probe::not_signed_in(why)`, and the fallback closure is never called:
 //   - `report.state` `NotLoggedIn`, no windows;
 //   - `error` `Some(ErrorReason::NotSignedIn(why))`, shown as
 //     `not signed in (<why>)`;
 //   - `source` `Direct`, `direct_failure` `Some(why)`, spend `Unknown`, no
 //     shape, no raw.
 // - Every other reason behaves as before: a fallback in `Ordered`, an
-//   error row in `Direct`.
+//   error row in `Direct`. `credentials refused` is never final.
+// - An expired token that has a refresh token, with refresh not allowed,
+//   is `token expired` and falls back (D3).
+// - The verdict holds even when the endpoints are unusable (D4).
 // - `Auto` and `Text` do no direct read and are unchanged.
 // ---------------------------------------------------------------------------
 
@@ -1112,15 +1118,17 @@ fn an_expired_login_with_no_refresh_token_is_final_and_never_posts() {
 
 #[test]
 fn direct_mode_gives_not_signed_in_not_a_direct_error() {
-    for (doc, why) in [
-        #[cfg(not(target_os = "macos"))]
-        (None, reason::NO_FILE),
+    let mut cases = vec![
         (Some("{}".to_string()), reason::NO_TOKEN),
         (
             Some(expired_without_refresh_token()),
             reason::NO_REFRESH_TOKEN,
         ),
-    ] {
+    ];
+    if cfg!(target_os = "linux") {
+        cases.push((None, reason::NO_FILE));
+    }
+    for (doc, why) in cases {
         let _serial = crate::test_support::refresh_count_lock();
         let s = setup();
         match &doc {
@@ -1213,7 +1221,7 @@ fn no_file_in_a_symlinked_directory_still_falls_back() {
 
 /// A `.no-home` path that exists as a directory is a real directory: the
 /// rule looks only at what is on disk.
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
 #[test]
 fn a_real_no_home_directory_with_no_file_is_final() {
     let s = setup();
@@ -1246,7 +1254,7 @@ fn a_not_signed_in_row_never_resolves_the_binary() {
         Some(fake_binary())
     });
     let s = setup();
-    fs::remove_file(s.dir().join(".credentials.json")).unwrap();
+    write_creds(&s, "{}");
     let fake = ok_server();
     let p = read(
         &env_for(&fake, ProbeMode::Ordered),
@@ -1255,7 +1263,7 @@ fn a_not_signed_in_row_never_resolves_the_binary() {
         now(),
         |m| fallback_with(&lazy, |_bin| Fallback::new().run(m)),
     );
-    assert_not_signed_in(&p, reason::NO_FILE);
+    assert_not_signed_in(&p, reason::NO_TOKEN);
     assert_eq!(n.load(Ordering::SeqCst), 0);
 }
 
@@ -1407,10 +1415,44 @@ fn a_directory_others_can_write_refresh_refused_still_falls_back() {
     assert_falls_back_once(&p, &fb, reason::REFRESH_REFUSED);
 }
 
+/// D2: with refresh not allowed (the live `~/.claude` row), an expired
+/// login with no refresh token is still final: `claude` cannot renew it
+/// either.
+#[test]
+fn an_expired_login_with_no_refresh_token_is_final_without_permission_to_refresh() {
+    let s = setup();
+    write_creds(&s, &expired_without_refresh_token());
+    let fake = token_server();
+    let fb = Fallback::new();
+    let mut plan = s.plan();
+    plan.allow_refresh = false;
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &plan,
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert!(fb.calls().is_empty(), "{:?}", fb.calls());
+    assert_not_signed_in(&p, reason::NO_REFRESH_TOKEN);
+    assert!(fake.seen().is_empty());
+}
+
+/// D3: an expired token that has a refresh token, with refresh not
+/// allowed, is `token expired` and still falls back: `claude` can renew it,
+/// so the row is not "not signed in".
 #[test]
 fn token_expired_without_permission_to_refresh_still_falls_back() {
     let s = setup();
-    write_creds(&s, &expired_without_refresh_token());
+    write_creds(
+        &s,
+        &json!({"claudeAiOauth": {
+            "accessToken": ACCESS,
+            "refreshToken": "FAKE-REFRESH-2271",
+            "expiresAt": chrono::Utc::now().timestamp_millis() - 1000
+        }})
+        .to_string(),
+    );
     let fake = token_server();
     let fb = Fallback::new();
     let mut plan = s.plan();
@@ -1442,4 +1484,183 @@ fn a_refused_login_file_still_falls_back() {
         |m| fb.run(m),
     );
     assert_falls_back_once(&p, &fb, reason::REFUSED);
+}
+
+/// S1: a symlinked login file is `credentials refused` and falls back: it
+/// may point at a login `claude` can use, so it is never "not signed in".
+#[test]
+fn a_symlinked_login_file_still_falls_back() {
+    let s = setup();
+    let creds = s.dir().join(".credentials.json");
+    let real = s.root.join("elsewhere.json");
+    fs::rename(&creds, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &creds).unwrap();
+    let fake = ok_server();
+    let fb = Fallback::new();
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &s.plan(),
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert_falls_back_once(&p, &fb, reason::REFUSED);
+}
+
+/// A refused file that holds no token is still refused, never final: the
+/// verdict is not taken from a file that was not read.
+#[test]
+fn a_refused_file_with_no_token_still_falls_back() {
+    let s = setup();
+    write_creds(&s, "{}");
+    let creds = s.dir().join(".credentials.json");
+    fs::set_permissions(&creds, fs::Permissions::from_mode(0o620)).unwrap();
+    let fake = ok_server();
+    let fb = Fallback::new();
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &s.plan(),
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert_falls_back_once(&p, &fb, reason::REFUSED);
+}
+
+/// S6: a creds_dir that is a regular file is not a real directory, so a
+/// missing login inside it is not final.
+#[test]
+fn no_file_under_a_path_that_is_a_regular_file_still_falls_back() {
+    let s = setup();
+    let not_a_dir = s.root.join("plain-file");
+    fs::write(&not_a_dir, "").unwrap();
+    let fake = ok_server();
+    let fb = Fallback::new();
+    let mut plan = s.plan();
+    plan.creds_dir = not_a_dir;
+    let p = read(
+        &env_for(&fake, ProbeMode::Ordered),
+        &plan,
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert_eq!(fb.calls(), [ProbeMode::Auto]);
+    assert_eq!(p.source, Some(Source::Fallback));
+    assert!(p.error.is_none(), "{:?}", p.error);
+}
+
+/// `Endpoints` the test guard refuses: `usable()` is false.
+fn env_unusable(mode: ProbeMode) -> SourceEnv {
+    let (endpoints, _) = Endpoints::resolve_with(|k| {
+        (k == "AMPLIHACK_TEST_HOME_GUARD").then(|| std::ffi::OsString::from("1"))
+    });
+    assert!(!endpoints.usable());
+    SourceEnv {
+        mode,
+        passive_max_age: 300,
+        endpoints,
+        timeout: Duration::from_secs(5),
+    }
+}
+
+/// D4: a token-less profile is never sent to `claude` just because the
+/// endpoints are refused; the login is judged first.
+#[test]
+fn unusable_endpoints_do_not_hide_a_token_less_profile() {
+    for (doc, why) in [
+        ("{}".to_string(), reason::NO_TOKEN),
+        (expired_without_refresh_token(), reason::NO_REFRESH_TOKEN),
+    ] {
+        for mode in [ProbeMode::Ordered, ProbeMode::Direct] {
+            let s = setup();
+            write_creds(&s, &doc);
+            let fb = Fallback::new();
+            let p = read(&env_unusable(mode), &s.plan(), &s.root, now(), |m| {
+                fb.run(m)
+            });
+            assert!(fb.calls().is_empty(), "{why} {mode:?}: {:?}", fb.calls());
+            assert_not_signed_in(&p, why);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unusable_endpoints_with_no_login_file_is_not_signed_in_on_linux() {
+    let s = setup();
+    fs::remove_file(s.dir().join(".credentials.json")).unwrap();
+    let fb = Fallback::new();
+    let p = read(
+        &env_unusable(ProbeMode::Ordered),
+        &s.plan(),
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert!(fb.calls().is_empty());
+    assert_not_signed_in(&p, reason::NO_FILE);
+}
+
+/// With a usable token and refused endpoints the row still falls back
+/// with `transport`, as before.
+#[test]
+fn unusable_endpoints_with_a_token_still_fall_back_with_transport() {
+    let s = setup();
+    let fb = Fallback::new();
+    let p = read(
+        &env_unusable(ProbeMode::Ordered),
+        &s.plan(),
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert_falls_back_once(&p, &fb, reason::TRANSPORT);
+}
+
+/// D1 off Linux: in `Direct` a missing file keeps the old error row.
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn direct_mode_keeps_the_error_for_a_missing_file_off_linux() {
+    let s = setup();
+    fs::remove_file(s.dir().join(".credentials.json")).unwrap();
+    let fake = ok_server();
+    let fb = Fallback::new();
+    let p = read(
+        &env_for(&fake, ProbeMode::Direct),
+        &s.plan(),
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert!(fb.calls().is_empty());
+    assert_eq!(p.error, Some(ErrorReason::Direct(reason::NO_FILE)));
+}
+
+/// No not-signed-in row ever holds the token it found or did not find.
+#[test]
+fn a_not_signed_in_row_never_holds_a_token() {
+    for doc in [
+        r#"{"claudeAiOauth": {"refreshToken": "sk-ant-oat01-TEST-2271-CANARY"}}"#.to_string(),
+        expired_without_refresh_token(),
+    ] {
+        let s = setup();
+        write_creds(&s, &doc);
+        let fake = ok_server();
+        let p = read(
+            &env_for(&fake, ProbeMode::Ordered),
+            &s.plan(),
+            &s.root,
+            now(),
+            |m| Fallback::new().run(m),
+        );
+        let shown = format!(
+            "{p:?} {}",
+            p.error.map(|e| e.to_string()).unwrap_or_default()
+        );
+        assert!(
+            !shown.contains("CANARY") && !shown.contains(ACCESS),
+            "{shown}"
+        );
+    }
 }
