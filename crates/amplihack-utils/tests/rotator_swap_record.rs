@@ -33,8 +33,8 @@
 
 use amplihack_utils::rotator_status::swap_record::{
     Judgement, MAX_SWAP_BYTES, STOP_SLACK_SECS, STOP_TAIL_BYTES, SWAP_FILE, SwapReading,
-    SwapRecord, after_stop, after_stop_at, judge, judge_at, parse_swap, read_stop_time, read_swap,
-    rotate_dir, swap_path,
+    SwapRecord, after_stop, after_stop_at, judge, judge_at, noted_after_stop, parse_swap,
+    read_stop_time, read_swap, rotate_dir, stopped_on_outgoing, swap_path,
 };
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -843,4 +843,65 @@ fn a_swap_the_session_was_resumed_on_is_same_even_with_a_stop() {
         judge_at(None, &r, START, Some(STOP), Some(STOP + 3)),
         Judgement::Stale
     );
+}
+
+// ── Issue #2235: the login the session stopped on, for the event key ────────
+
+#[test]
+fn with_a_stop_a_swap_between_the_stop_and_the_start_is_the_outgoing_login() {
+    let r = record(6, START - 10, START - 40, 12, 40);
+    assert!(stopped_on_outgoing(&r, START, Some(START - 30), None));
+    // The stop and the swap in the same second, and the swap in the start
+    // second, both count.
+    assert!(stopped_on_outgoing(&r, START, Some(START - 10), None));
+    assert!(stopped_on_outgoing(&r, START - 10, Some(START - 30), None));
+}
+
+#[test]
+fn with_a_stop_the_last_resume_never_changes_the_login() {
+    // The same stop delivered again after its resume was recorded: the
+    // resume is later than the swap, yet the key must not change.
+    let r = record(6, START - 10, START - 40, 12, 40);
+    let stop = Some(START - 30);
+    assert!(!noted_after_stop(&r, START + 60, stop, Some(START)));
+    assert!(stopped_on_outgoing(&r, START + 60, stop, Some(START)));
+    assert_eq!(
+        stopped_on_outgoing(&r, START, stop, None),
+        stopped_on_outgoing(&r, START + 60, stop, Some(START + 1))
+    );
+}
+
+#[test]
+fn with_a_stop_a_swap_before_the_stop_is_the_live_login() {
+    // A limit on the new login after the swap: the session stopped on it.
+    let r = record(6, START - 10, START - 40, 12, 40);
+    assert!(!stopped_on_outgoing(&r, START, Some(START - 9), None));
+    // Even inside the slack second, where `noted_after_stop` says yes.
+    let r = record(6, START - 1, START - 40, 12, 40);
+    assert!(noted_after_stop(&r, START, Some(START), None));
+    assert!(!stopped_on_outgoing(&r, START, Some(START), None));
+}
+
+#[test]
+fn with_a_stop_a_swap_dated_after_the_start_is_the_live_login() {
+    let r = record(6, START + 5, START - 40, 12, 40);
+    assert!(!stopped_on_outgoing(&r, START, Some(START - 30), None));
+}
+
+#[test]
+fn without_a_stop_it_is_noted_after_stop() {
+    for (at, resumed) in [
+        (START - 2, None),
+        (START - 1, None),
+        (START, None),
+        (START, Some(START)),
+        (START + 1, None),
+    ] {
+        let r = record(6, at, START - 40, 12, 40);
+        assert_eq!(
+            stopped_on_outgoing(&r, START, None, resumed),
+            noted_after_stop(&r, START, None, resumed),
+            "swapped_at {at}, resumed {resumed:?}"
+        );
+    }
 }

@@ -1801,10 +1801,11 @@ fn issue_2235_a_snapshot_dated_after_the_start_keys_on_the_live_login() {
 }
 
 #[test]
-fn issue_2235_a_second_hook_after_the_resume_never_resumes_twice() {
-    // Once resumed on the swap, the swap is at or before the last resume,
-    // so it is never after a later stop: the next hook keys on the live
-    // login and waits for the next swap.
+fn issue_2235_a_second_hook_for_the_same_stop_after_the_resume_is_a_duplicate() {
+    // The resume is recorded under the outgoing login. A second delivery
+    // of the same stop (same transcript, same snapshot) must key on that
+    // login too, although its last resume is now later than the swap, and
+    // exit as a duplicate rather than wait for the next swap.
     let mut d = Fake::new();
     d.cycle = Some(ledger("spare"));
     d.stop = Some(START - 5);
@@ -1813,10 +1814,7 @@ fn issue_2235_a_second_hook_after_the_resume_never_resumes_twice() {
     assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
     // A second copy of the same hook, started in the same second.
     d.restart_at(START);
-    assert_eq!(
-        run_with(&limit_input("s", msg), &mut d),
-        Outcome::NoCapacityTimeout
-    );
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Duplicate);
     assert_eq!(d.guard.events.len(), 1, "one resume");
 }
 
@@ -1837,4 +1835,19 @@ fn issue_2235_stop_hook_active_still_touches_no_guard_state_with_a_snapshot() {
     assert_eq!(out, Outcome::StopHookActive);
     assert_eq!(d.guard.calls, 0);
     assert_eq!(d.arms, 0);
+}
+
+#[test]
+fn issue_2235_a_later_copy_of_the_same_stop_is_a_duplicate() {
+    // As above, but the copy starts well after the resume: the key still
+    // comes from the stop and the snapshot alone.
+    let mut d = Fake::new();
+    d.cycle = Some(ledger("spare"));
+    d.stop = Some(START - 30);
+    d.swap = Some(record_at(6, -10, 12, 40));
+    let msg = "hit your limit";
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+    d.restart_at(START + 60);
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Duplicate);
+    assert_eq!(d.guard.events.len(), 1, "one resume");
 }

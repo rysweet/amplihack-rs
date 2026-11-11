@@ -41,7 +41,7 @@ pub mod log;
 use amplihack_types::HookInput;
 use amplihack_utils::file_event::{PROMPT_MASK, SWAP_MASK, Waiter, Watch, Woke};
 use amplihack_utils::rotator_status::swap_record::{
-    self, Judgement, SWAP_FILE, SwapRecord, judge_at, noted_after_stop, rotate_dir,
+    self, Judgement, SWAP_FILE, SwapRecord, judge_at, rotate_dir, stopped_on_outgoing,
 };
 use amplihack_utils::rotator_status::{self, CycleStatus, MAX_WAIT};
 use amplihack_utils::secure_files::{euid, read_bounded};
@@ -302,10 +302,9 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     let stop_hook = gate(&facts) == Gate::StopHookActive;
     // D4: the record seen at the stop resumes only when it may itself be
     // after the stop (a swap between the stop and this read); otherwise only
-    // a different one, newer than the stop, does. See `noted_after_stop`,
-    // which `judge_at` and `key_login` below share. With
-    // `stop_hook_active` the hook never waits, so it reads neither the
-    // transcript nor any guard state.
+    // a different one, newer than the stop, does. See `noted_after_stop`.
+    // With `stop_hook_active` the hook never waits, so it reads neither
+    // the transcript nor any guard state.
     let (stop, snapshot, resumed) = if stop_hook {
         (None, None, Ok(None))
     } else {
@@ -318,10 +317,11 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     // The login the session stopped on is part of the event: the same login
     // limited again is the same event, a limit after a swap is a new one.
     // When a swap noted at the start falls after the stop, the session
-    // stopped on its outgoing login, not on the live one (#2235). The
-    // condition is `noted_after_stop`, the same one `judge_at` uses.
+    // stopped on its outgoing login, not on the live one (#2235). With a
+    // stop time the rule ignores past resumes, so a second delivery of the
+    // same stop gets the same key (see `stopped_on_outgoing`).
     let key_login = match (&snapshot, &resumed) {
-        (Some(r), Ok(resumed_at)) if noted_after_stop(r, start, stop, *resumed_at) => {
+        (Some(r), Ok(resumed_at)) if stopped_on_outgoing(r, start, stop, *resumed_at) => {
             Some(r.from_login.as_str())
         }
         _ => live_at_start,

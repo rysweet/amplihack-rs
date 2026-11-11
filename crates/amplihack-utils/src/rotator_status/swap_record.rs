@@ -235,9 +235,8 @@ pub fn after_stop_at(
 /// Whether `record`, seen when the hook started at `start`, may be a swap
 /// made between the stop and that start: dated no later than `start` and
 /// after the stop by [`after_stop_at`]. Such a snapshot is not `Same`
-/// ([`judge_at`]), and the session stopped on its `from_login` (#2235).
-/// This is the single definition of that rule; the hook's event key and
-/// [`judge_at`] both call it so they cannot disagree.
+/// ([`judge_at`]). Without a stop time, [`stopped_on_outgoing`] uses this
+/// rule for the event key.
 pub fn noted_after_stop(
     record: &SwapRecord,
     start: i64,
@@ -245,6 +244,32 @@ pub fn noted_after_stop(
     resumed_at: Option<i64>,
 ) -> bool {
     record.swapped_at <= start && after_stop_at(record.swapped_at, start, stop, resumed_at)
+}
+
+/// Whether a session stopped at `stop` (`None` when unknown), whose hook
+/// started at `start` and noted `record`, stopped on `record.from_login`
+/// rather than on the live login (#2235). The hook's event key names that
+/// login.
+///
+/// With a stop time the swap must fall between the stop and the start:
+/// `stop <= swapped_at <= start`. The session's resumes play no part, so
+/// every delivery of one stop gets the same key, before and after its
+/// resume is recorded, and a second copy of the hook is a `duplicate`. A
+/// later stop on the new login is after the swap, so it keys on the live
+/// login and is a new event.
+///
+/// Without a stop time this is [`noted_after_stop`], whose
+/// [`STOP_SLACK_SECS`] window and last-resume bound are all the hook has.
+pub fn stopped_on_outgoing(
+    record: &SwapRecord,
+    start: i64,
+    stop: Option<i64>,
+    resumed_at: Option<i64>,
+) -> bool {
+    match stop {
+        Some(s) => s <= record.swapped_at && record.swapped_at <= start,
+        None => noted_after_stop(record, start, None, resumed_at),
+    }
 }
 
 /// [`judge_at`] with no stop time.

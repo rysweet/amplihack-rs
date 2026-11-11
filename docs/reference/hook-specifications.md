@@ -1029,9 +1029,13 @@ swap between the stop and a late hook start, including the record present
 when the hook starts. Nothing read from the transcript is logged.
 
 **Which event it is.** The event key includes the login the session stopped
-on: the noted swap record's `from_login` when that swap counts as after the
-stop and is not later than the hook's start, otherwise the ledger's live
-login at the hook's start.
+on: the noted swap record's `from_login` when the swap falls between the stop
+and the hook's start (`stop <= swapped_at <= start`), otherwise the ledger's
+live login at the hook's start. With a stop time the session's past resumes
+play no part, so a second hook run for the same stop gets the same key, even
+after the first has resumed it, and logs `duplicate`. Without a stop time the
+swap must count as after the stop by the one-second rule above and not be
+later than the hook's start.
 
 **How it waits.** One blocking `poll(2)`, with nothing read on an interval,
 on:
