@@ -119,17 +119,14 @@ fn fail(state: &State, j: &mut Journal, e: MoveError, undo: &[(&Path, &Path)]) -
         MoveError::Other(msg) => msg,
         MoveError::Exists => unreachable!("handled above"),
     };
-    if let Err(err) = abort_warning(state, j) {
-        msg.push_str(&format!("; warning intent retained: {err}"));
-        return invariant(msg);
-    }
+    abort_warning(state, j);
     if let Err(err) = state.delete_journal() {
         msg.push_str(&format!("; could not delete the journal: {err}"));
     }
     invariant(msg)
 }
 
-fn abort_warning(state: &State, j: &Journal) -> Result<(), ProfileError> {
+fn abort_warning(state: &State, j: &Journal) {
     if let Some(tx) = &j.warning_transaction {
         super::super::swap_warning::abort(
             &state.root,
@@ -138,9 +135,8 @@ fn abort_warning(state: &State, j: &Journal) -> Result<(), ProfileError> {
             &format!("profile:{}", j.dir),
             &j.from,
             &j.to,
-        )?;
+        );
     }
-    Ok(())
 }
 
 fn mark_disabled(state: &State, dir: &str) -> Result<(), ProfileError> {
@@ -178,7 +174,7 @@ fn finish(state: &State, ledger: &mut Ledger, j: &Journal) -> Result<(), Profile
             &format!("profile:{}", j.dir),
             &j.from,
             &j.to,
-        )?;
+        );
     }
     Ok(())
 }
@@ -375,7 +371,7 @@ fn resolve_journal(state: &State, ledger: &mut Ledger, j: &Journal) -> Result<bo
     }
     release_refresh_lock(state, &j.dir, j.refresh_lock_ino);
     if !forward {
-        abort_warning(state, j)?;
+        abort_warning(state, j);
     }
     state.delete_journal()?;
     Ok(forward)
@@ -563,53 +559,22 @@ pub fn swap_check(
             && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))
             && (ledger.hosts.contains_key(n) || n == owner.as_str() || !live.is_live(c))
     };
-    let paid_allowed = candidate::select_with_overflow(&pool, &overflow.pool(), &current, eligible)
-        .is_some_and(|p| overflow.order.contains(p));
-    let affinity_eligible =
-        |p: &ProfileName| eligible(p) && (paid_allowed || !overflow.order.contains(p));
-    let allowed = super::super::organisation::allowed(
+    let restriction = super::affinity::restrict(
         state,
         &ledger,
-        profiles,
+        &pool,
+        &overflow,
         owner.as_str(),
         &current,
         necessary,
-        |p| {
-            candidate::select_restricted(
-                &pool,
-                &overflow.pool(),
-                &current,
-                |q| q == p && affinity_eligible(q),
-                |_| false,
-            )
-            .is_some()
-        },
-        |p| {
-            affinity_eligible(p)
-                && !cfg.exclude.contains(p)
-                && candidate::overflow_usable(p.as_str(), &overflow.blocked)
-        },
-    )?;
-    let same = super::super::organisation::allowed(
-        state,
-        &ledger,
-        profiles,
-        owner.as_str(),
-        &current,
-        false,
-        |_| true,
-        |p| {
-            affinity_eligible(p)
-                && !cfg.exclude.contains(p)
-                && candidate::overflow_usable(p.as_str(), &overflow.blocked)
-        },
-    )?;
+        eligible,
+    );
     let Some(target) = candidate::select_restricted(
         &pool,
         &overflow.pool(),
         &current,
-        |p| eligible(p) && allowed.contains(p),
-        |p| same.contains(p),
+        |p| eligible(p) && restriction.allowed.contains(p),
+        |p| restriction.plan_room.contains(p),
     )
     .cloned() else {
         return Ok(());
@@ -620,8 +585,8 @@ pub fn swap_check(
     if current == owner.as_str() {
         snapshot_account(state, owner.as_str());
     }
-    let source_org = super::super::organisation::resolve(state, &ledger, owner.as_str())?;
-    let target_org = super::super::organisation::resolve_login(state, target.as_str())?;
+    let source_org = restriction.source_org.clone();
+    let target_org = restriction.org_of(&target).map(str::to_owned);
     let Some(ino) = take_refresh_lock(state, owner.as_str()) else {
         return Ok(());
     };
@@ -651,38 +616,17 @@ pub fn swap_check(
     };
     let transaction =
         super::super::swap_warning::auto_key(j.pid, j.started_at, &j.dir, &j.from, &j.to);
-    j.warning_transaction = Some(transaction.clone());
-    let prepared = (|| {
-        let refreshed = super::super::organisation::allowed(
-            state,
-            &ledger,
-            profiles,
-            owner.as_str(),
-            &current,
-            necessary,
-            |p| {
-                candidate::select_restricted(
-                    &pool,
-                    &overflow.pool(),
-                    &current,
-                    |q| q == p && affinity_eligible(q),
-                    |_| false,
-                )
-                .is_some()
-            },
-            |p| {
-                affinity_eligible(p)
-                    && !cfg.exclude.contains(p)
-                    && candidate::overflow_usable(p.as_str(), &overflow.blocked)
-            },
-        )?;
-        if (!refreshed.contains(&target) && !same.contains(&target))
-            || super::super::organisation::resolve(state, &ledger, owner.as_str())? != source_org
-            || super::super::organisation::resolve_login(state, target.as_str())? != target_org
-        {
-            return Err(invariant("organisation affinity changed before swap"));
-        }
-        super::super::swap_warning::prepare(
+    // The organisations this decision used must still hold before the
+    // move: a record rewritten in between could turn the swap into a
+    // crossing the policy refused. Two record reads, not a fresh selection.
+    let unchanged = super::super::organisation::resolve(state, &ledger, owner.as_str())
+        == source_org
+        && super::super::organisation::resolve_login(state, target.as_str()) == target_org;
+    let mut prepared = false;
+    let result = if unchanged {
+        // Advisory (#2136): a warning journal that cannot take the intent
+        // never stops the swap; `prepare` reports why and returns `None`.
+        j.warning_transaction = super::super::swap_warning::prepare(
             &state.root,
             &transaction,
             "auto-switch",
@@ -700,12 +644,14 @@ pub fn swap_check(
             &j.to,
             source_org.as_deref(),
             target_org.as_deref(),
-        )?;
-        Ok(())
-    })();
-    let result = prepared.and_then(|()| transfer(state, &mut ledger, j));
+        );
+        prepared = j.warning_transaction.is_some();
+        transfer(state, &mut ledger, j)
+    } else {
+        Err(invariant("organisation affinity changed before swap"))
+    };
     release_refresh_lock(state, owner.as_str(), Some(ino));
-    if result.is_err() && state.load_journal()?.is_none() {
+    if prepared && result.is_err() && state.load_journal()?.is_none() {
         super::super::swap_warning::abort(
             &state.root,
             &transaction,
@@ -713,7 +659,7 @@ pub fn swap_check(
             &format!("profile:{}", owner),
             &current,
             target.as_str(),
-        )?;
+        );
     }
     result?;
     if let Some(warning) = amplihack_utils::organisation_affinity::Affinity::between(

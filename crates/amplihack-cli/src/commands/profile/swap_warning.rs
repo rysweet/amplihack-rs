@@ -1,6 +1,5 @@
 //! Warning publication follows the existing transaction journal, rather than
 //! the latest resume signal. Lock order: swap lock, then history lock.
-use super::ProfileError;
 use amplihack_utils::{organisation_affinity::Affinity, swap_warning_history::WarningHistory};
 use std::path::Path;
 
@@ -10,6 +9,19 @@ pub fn rotator_key(pid: u32, started: i64, live: u64, target: u64) -> String {
 pub fn auto_key(pid: u32, started: i64, host: &str, from: &str, to: &str) -> String {
     format!("auto-{pid}-{started}-{host}-{from}-{to}")
 }
+/// Advisory: the warning journal never decides whether a swap happens.
+/// The swap was the job; the warning tells live sessions about it. A
+/// failure here is reported on stderr and the swap goes ahead (or, after
+/// the move, finishes) without the warning. The swap record and the rotate
+/// log still record the organisation outcome.
+fn report(producer: &str, step: &str, error: &dyn std::fmt::Display) {
+    eprintln!("{producer}: session warning {step} skipped; the swap is unaffected: {error}");
+}
+
+/// Write the durable warning intent for `tx` before the credential move.
+/// Returns `Some(tx)` when the intent was written, so the swap journal
+/// references it, or `None` (reported) when the warning journal could not
+/// take it: full, unsafe, or an unreadable transaction journal.
 #[allow(clippy::too_many_arguments)]
 pub fn prepare(
     root: &Path,
@@ -21,56 +33,51 @@ pub fn prepare(
     to: &str,
     source: Option<&str>,
     target: Option<&str>,
-) -> Result<(), ProfileError> {
+) -> Option<String> {
     let source = source.filter(|id| amplihack_utils::organisation_affinity::valid_id(id));
     let target = target.filter(|id| amplihack_utils::organisation_affinity::valid_id(id));
-    let mut history = WarningHistory::open(root)?;
-    retire_unreferenced(root, &mut history)?;
-    history.prepare(&serde_json::json!({
-        "version": 1, "transaction_id": tx, "producer": producer,
-        "reason": reason, "host": host, "from_login": from, "to_login": to,
-        "from_org": source, "to_org": target,
-        "affinity": Affinity::between(source, target),
-    }))?;
-    Ok(())
-}
-pub fn complete(
-    root: &Path,
-    tx: &str,
-    producer: &str,
-    host: &str,
-    from: &str,
-    to: &str,
-) -> Result<(), ProfileError> {
-    WarningHistory::open(root)
-        .and_then(|mut history| history.complete_transaction(tx, producer, host, from, to))
-        .and_then(|present| {
-            if present {
-                Ok(())
-            } else {
-                Err(std::io::Error::other(
-                    "completed swap has no durable warning intent",
-                ))
-            }
-        })
-        .map_err(|error| {
-            ProfileError::Io(std::io::Error::other(format!(
-                "swap completed; warning publication pending; transaction journal retained: {error}"
-            )))
-        })?;
-    Ok(())
+    let written = (|| -> std::io::Result<()> {
+        let mut history = WarningHistory::open(root)?;
+        retire_unreferenced(root, &mut history)?;
+        history.prepare(&serde_json::json!({
+            "version": 1, "transaction_id": tx, "producer": producer,
+            "reason": reason, "host": host, "from_login": from, "to_login": to,
+            "from_org": source, "to_org": target,
+            "affinity": Affinity::between(source, target),
+        }))?;
+        Ok(())
+    })();
+    match written {
+        Ok(()) => Some(tx.to_owned()),
+        Err(e) => {
+            report(producer, "intent", &e);
+            None
+        }
+    }
 }
 
-pub fn abort(
-    root: &Path,
-    tx: &str,
-    producer: &str,
-    host: &str,
-    from: &str,
-    to: &str,
-) -> Result<(), ProfileError> {
-    WarningHistory::open(root)?.abort_transaction(tx, producer, host, from, to)?;
-    Ok(())
+/// Publish the warning for a completed swap. Called after credentials
+/// moved: a failure is reported and the transaction journal is still
+/// removed, because the swap itself is complete.
+pub fn complete(root: &Path, tx: &str, producer: &str, host: &str, from: &str, to: &str) {
+    let published = WarningHistory::open(root)
+        .and_then(|mut history| history.complete_transaction(tx, producer, host, from, to));
+    match published {
+        Ok(true) => {}
+        Ok(false) => report(producer, "publication", &"no durable warning intent"),
+        Err(e) => report(producer, "publication", &e),
+    }
+}
+
+/// Drop the warning intent of a swap that did not happen. Reported only on
+/// failure: a stale intent is never delivered, since only completed
+/// transactions publish events.
+pub fn abort(root: &Path, tx: &str, producer: &str, host: &str, from: &str, to: &str) {
+    if let Err(e) = WarningHistory::open(root)
+        .and_then(|mut history| history.abort_transaction(tx, producer, host, from, to))
+    {
+        report(producer, "abort", &e);
+    }
 }
 
 /// Called under the producer swap lock before creating a new intent. Both

@@ -44,25 +44,80 @@ pub struct Candidate<'a> {
     pub eligible: bool,
     pub capacity: bool,
 }
-/// Preserve the existing ranking order within the permitted pool.
+/// The permitted pool, in the existing ranking order.
+///
+/// Only a confirmed crossing (both organisations known and different) is
+/// restricted. An unknown organisation on either side is not a crossing, so
+/// missing metadata never keeps a session on a login it would otherwise
+/// leave, such as a paid overflow login once a plan login recovers. Such a
+/// swap still publishes the "unresolved" warning.
+///
+/// - With a known source and an eligible same-organisation target with
+///   capacity, only same-organisation targets are permitted.
+/// - Otherwise every target that is not a confirmed crossing is permitted.
+/// - A confirmed crossing is permitted only for necessary capacity relief
+///   when no same-organisation target has capacity.
 pub fn allowed_indices(
     source: Option<&str>,
     purpose: Purpose,
     necessary: bool,
     candidates: &[Candidate<'_>],
 ) -> Vec<usize> {
+    let affinity = |c: &Candidate<'_>| Affinity::between(source, c.org);
+    let usable = |c: &Candidate<'_>| c.eligible && c.capacity;
     let same = candidates
         .iter()
-        .any(|c| c.eligible && c.capacity && Affinity::between(source, c.org) == Affinity::Same);
+        .any(|c| usable(c) && affinity(c) == Affinity::Same);
+    let crossing_allowed = !same && purpose == Purpose::CapacityRelief && necessary;
     candidates
         .iter()
         .enumerate()
         .filter(|(_, c)| {
-            c.eligible
-                && c.capacity
-                && (Affinity::between(source, c.org) == Affinity::Same
-                    || (!same && purpose == Purpose::CapacityRelief && necessary))
+            usable(c)
+                && match affinity(c) {
+                    Affinity::Same => true,
+                    Affinity::Unresolved => !same,
+                    Affinity::Crossing => crossing_allowed,
+                }
         })
         .map(|(i, _)| i)
         .collect()
+}
+
+/// Whether a preference-only move (plan room or upgrade) may go ahead:
+/// it never makes a confirmed crossing.
+pub fn preference_permitted(source: Option<&str>, target: Option<&str>) -> bool {
+    Affinity::between(source, target) != Affinity::Crossing
+}
+
+/// Both pools one swap decision needs, from one set of candidates.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Pools {
+    /// Targets the selector may rank for this decision's purpose.
+    pub allowed: Vec<usize>,
+    /// Targets the plan-room fallback may use. Room is checked by the
+    /// selector, so `capacity` is ignored here.
+    pub plan_room: Vec<usize>,
+}
+
+/// Work out [`Pools`] once per decision. `necessary` is whether the swap is
+/// capacity relief the session needs; otherwise it is an upgrade.
+pub fn pools(source: Option<&str>, necessary: bool, candidates: &[Candidate<'_>]) -> Pools {
+    let purpose = if necessary {
+        Purpose::CapacityRelief
+    } else {
+        Purpose::Upgrade
+    };
+    let room: Vec<_> = candidates
+        .iter()
+        .map(|c| Candidate {
+            org: c.org,
+            eligible: c.eligible,
+            capacity: true,
+        })
+        .collect();
+    Pools {
+        allowed: allowed_indices(source, purpose, necessary, candidates),
+        plan_room: allowed_indices(source, Purpose::PlanRoom, false, &room),
+    }
 }

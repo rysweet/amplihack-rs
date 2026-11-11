@@ -236,44 +236,9 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 LiveId::Known(n) => Source::Profile(n.clone()),
                 _ => Source::Adopt,
             };
-            let outgoing = match &source {
-                Source::Profile(n) => n.clone(),
-                Source::Adopt => swap::adoption_name(&ctx.store)?,
-            };
-            let live_ino =
-                swap::ino_at(&ctx.home.join(".claude/.credentials.json")).ok_or_else(|| {
-                    ProfileError::RotateRefused("live login changed before warning intent".into())
-                })?;
-            let target_ino =
-                swap::ino_at(&ctx.store.root().join(to.as_str()).join(".credentials.json"))
-                    .ok_or_else(|| {
-                        ProfileError::RotateRefused(
-                            "target login changed before warning intent".into(),
-                        )
-                    })?;
-            let transaction = super::super::swap_warning::rotator_key(
-                std::process::id(),
-                t,
-                live_ino,
-                target_ino,
-            );
-            super::super::swap_warning::prepare(
-                ctx.store.root(),
-                &transaction,
-                "rotator",
-                reason.as_str(),
-                "home",
-                outgoing.as_str(),
-                to.as_str(),
-                first.trusted_live.as_ref().and_then(|a| a.org()),
-                first
-                    .candidate_accounts
-                    .iter()
-                    .find(|(n, _)| n == &to)
-                    .and_then(|(_, a)| a.as_ref())
-                    .and_then(|a| a.org()),
-            )?;
-            let attempted = swap::swap_with_warning(
+            let warning =
+                super::observe::affinity::prepare_warning(ctx, &first, &source, &to, reason, t);
+            let attempted = swap::swap_with(
                 &ctx.store,
                 &ctx.rs,
                 &ctx.home,
@@ -282,17 +247,10 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 t,
                 ctx.identity_reader(),
                 Some(&first),
-                Some(&transaction),
+                warning.as_ref().map(|w| w.transaction.as_str()),
             );
             if attempted.is_err() && ctx.rs.load_journal()?.is_none() {
-                super::super::swap_warning::abort(
-                    ctx.store.root(),
-                    &transaction,
-                    "rotator",
-                    "home",
-                    outgoing.as_str(),
-                    to.as_str(),
-                )?;
+                super::observe::affinity::abort_prepared(ctx, warning.as_ref(), &to);
             }
             let from = match attempted {
                 Ok(from) => from,
@@ -322,16 +280,11 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             let seen = (next_plan_reset, unknown_plan.len());
             note_per_token(&mut out, &first, tag, &to, seen, check);
             out.emit(now(), &msg::swap(&from, &to, &live_shown, &target, reason));
-            let source_org = first.trusted_live.as_ref().and_then(|a| a.org());
-            let target_org = first
-                .candidate_accounts
-                .iter()
-                .find(|(n, _)| n == &to)
-                .and_then(|(_, a)| a.as_ref())
-                .and_then(|a| a.org());
-            if let Some(warning) =
-                amplihack_utils::organisation_affinity::Affinity::between(source_org, target_org)
-                    .warning()
+            if let Some(warning) = amplihack_utils::organisation_affinity::Affinity::between(
+                first.source_org(),
+                first.org_of(&to),
+            )
+            .warning()
             {
                 out.emit(now(), warning);
             }
@@ -402,15 +355,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             &others,
             measured_at,
             swapped_at,
-            (
-                first.trusted_live.as_ref().and_then(|a| a.org()),
-                first
-                    .candidate_accounts
-                    .iter()
-                    .find(|(n, _)| n == to)
-                    .and_then(|(_, a)| a.as_ref())
-                    .and_then(|a| a.org()),
-            ),
+            (first.source_org(), first.org_of(to)),
         );
     }
     // Issue #1634: link the session dirs of both profiles swapped, after the

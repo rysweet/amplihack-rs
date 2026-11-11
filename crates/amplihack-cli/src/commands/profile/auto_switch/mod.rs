@@ -10,6 +10,8 @@
 //! touches the filesystem is Unix-only; other platforms get no-ops.
 
 #[cfg(unix)]
+mod affinity;
+#[cfg(unix)]
 mod candidate;
 #[cfg(unix)]
 pub(super) mod capacity;

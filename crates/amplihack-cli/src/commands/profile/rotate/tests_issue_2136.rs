@@ -8,7 +8,10 @@ use crate::commands::profile::ProfileError;
 use serde_json::{Value, json};
 use std::fs;
 
-const AT: i64 = 1_792_592_000;
+/// Measured as the cycle runs: a fixed past instant reads as stale.
+fn at() -> i64 {
+    crate::commands::profile::auto_switch::kit::now()
+}
 
 fn run(e: &Env, measure: MeasureFn) {
     let _lock = crate::test_support::env_lock()
@@ -53,7 +56,7 @@ fn fixture(source: Value, spare: Value, third: Value) -> Env {
 
 fn measured(ctx: &Ctx, snap: &Snap, live: f64) -> Result<Measurement, ProfileError> {
     let probes = probes_for(snap, &[("spare", ok(40.0, 40.0)), ("third", ok(1.0, 1.0))]);
-    decide_measured(ctx, snap, ok(live, live), probes, AT)
+    decide_measured(ctx, snap, ok(live, live), probes, at())
 }
 fn threshold(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     measured(ctx, snap, 95.0)
@@ -66,7 +69,7 @@ fn plan_room(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
         snap,
         &[("spare", ok(84.0, 89.0)), ("third", ok(84.0, 89.0))],
     );
-    decide_measured(ctx, snap, ok(85.0, 90.0), probes, AT)
+    decide_measured(ctx, snap, ok(85.0, 90.0), probes, at())
 }
 
 #[test]
@@ -91,18 +94,28 @@ fn same_organisation_candidates_keep_existing_headroom_ranking() {
 }
 
 #[test]
-fn upgrade_never_crosses_or_treats_unknown_as_same() {
-    for org in [json!("org-b"), Value::Null] {
-        let e = fixture(json!("org-a"), org.clone(), org);
-        let before = ino_at(&e.home.join(".claude").join(CREDS));
-        run(&e, upgrade);
-        assert_eq!(
-            ino_at(&e.home.join(".claude").join(CREDS)),
-            before,
-            "{}",
-            log_of(&e)
-        );
-    }
+fn upgrade_never_crosses() {
+    let e = fixture(json!("org-a"), json!("org-b"), json!("org-b"));
+    let before = ino_at(&e.home.join(".claude").join(CREDS));
+    run(&e, upgrade);
+    assert_eq!(
+        ino_at(&e.home.join(".claude").join(CREDS)),
+        before,
+        "{}",
+        log_of(&e)
+    );
+}
+
+/// Unknown is not crossing: missing metadata does not stop an upgrade, and
+/// the swap carries the "unresolved" warning.
+#[test]
+fn upgrade_onto_an_unknown_organisation_goes_ahead_with_a_risk_warning() {
+    let e = fixture(json!("org-a"), Value::Null, Value::Null);
+    let before = ino_at(&e.home.join(".claude").join(CREDS));
+    run(&e, upgrade);
+    let log = log_of(&e);
+    assert_ne!(ino_at(&e.home.join(".claude").join(CREDS)), before, "{log}");
+    assert!(log.contains("unresolved"), "{log}");
 }
 
 #[test]
@@ -119,26 +132,106 @@ fn same_organisation_plan_room_survives_an_empty_capacity_pool() {
 }
 
 #[test]
-fn plan_room_and_its_fallback_require_confirmed_affinity() {
-    for org in [json!("org-b"), Value::Null] {
-        let e = fixture(json!("org-a"), org.clone(), org);
-        let before = ino_at(&e.home.join(".claude").join(CREDS));
-        run(&e, plan_room);
-        assert_eq!(
-            ino_at(&e.home.join(".claude").join(CREDS)),
-            before,
-            "{}",
+fn plan_room_and_its_fallback_never_cross() {
+    let e = fixture(json!("org-a"), json!("org-b"), json!("org-b"));
+    let before = ino_at(&e.home.join(".claude").join(CREDS));
+    run(&e, plan_room);
+    assert_eq!(
+        ino_at(&e.home.join(".claude").join(CREDS)),
+        before,
+        "{}",
+        log_of(&e)
+    );
+}
+
+#[test]
+fn plan_room_onto_an_unknown_organisation_is_not_a_crossing() {
+    let e = fixture(json!("org-a"), Value::Null, Value::Null);
+    let before = ino_at(&e.home.join(".claude").join(CREDS));
+    run(&e, plan_room);
+    assert_ne!(
+        ino_at(&e.home.join(".claude").join(CREDS)),
+        before,
+        "{}",
+        log_of(&e)
+    );
+}
+
+#[test]
+fn unknown_source_upgrades_like_before_organisation_affinity() {
+    let e = fixture(Value::Null, Value::Null, Value::Null);
+    let before = ino_at(&e.home.join(".claude").join(CREDS));
+    run(&e, upgrade);
+    assert_ne!(
+        ino_at(&e.home.join(".claude").join(CREDS)),
+        before,
+        "{}",
+        log_of(&e)
+    );
+}
+
+fn mark_overflow(e: &Env, name: &str) {
+    use crate::commands::profile::auto_switch::config::{self, ReadMode};
+    config::update(&e.root, ReadMode::Editable, |c| {
+        c.overflow
+            .push(crate::commands::profile::overflow::OverflowEntry::new(
+                super::super::tests_swap::n(name),
+                1,
+            ));
+        Ok(())
+    })
+    .unwrap();
+}
+
+/// The live overflow login has headroom; a plan login has capacity again.
+fn plan_recovers(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    measured(ctx, snap, 10.0)
+}
+
+/// Crusty round 1 on #2295: a session on a paid overflow login whose
+/// organisation was never recorded must still go back to a plan login once
+/// one recovers. Before the fix it stayed on overflow until blocked.
+#[test]
+fn unknown_organisation_on_overflow_returns_to_the_recovered_plan_login() {
+    for plan_org in [Value::Null, json!("org-a")] {
+        let e = fixture(Value::Null, plan_org.clone(), plan_org);
+        mark_overflow(&e, "work");
+        let plan = [
+            ino_at(&e.root.join("spare").join(CREDS)),
+            ino_at(&e.root.join("third").join(CREDS)),
+        ];
+        run(&e, plan_recovers);
+        let after = ino_at(&e.home.join(".claude").join(CREDS));
+        assert!(
+            plan.contains(&after),
+            "a plan login is live: {}",
             log_of(&e)
         );
     }
 }
 
+/// Crusty round 1 on #2295: the warning journal is advisory. A journal
+/// that cannot be read never stops capacity relief off an exhausted login.
 #[test]
-fn unknown_source_cannot_upgrade_even_to_another_unknown() {
-    let e = fixture(Value::Null, Value::Null, Value::Null);
-    let before = ino_at(&e.home.join(".claude").join(CREDS));
-    run(&e, upgrade);
-    assert_eq!(ino_at(&e.home.join(".claude").join(CREDS)), before);
+fn a_corrupt_warning_journal_does_not_stop_capacity_relief() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = fixture(json!("org-a"), json!("org-a"), json!("org-b"));
+    let history = e.root.join(".swap-warning-history");
+    fs::create_dir_all(&history).unwrap();
+    fs::set_permissions(&history, fs::Permissions::from_mode(0o700)).unwrap();
+    private(&history.join("journal.json"), "not a journal");
+    let wanted = ino_at(&e.root.join("spare").join(CREDS));
+    run(&e, threshold);
+    assert_eq!(
+        ino_at(&e.home.join(".claude").join(CREDS)),
+        wanted,
+        "{}",
+        log_of(&e)
+    );
+    assert!(
+        e.rs.load_journal().unwrap().is_none(),
+        "no transaction journal is retained for the warning"
+    );
 }
 
 #[test]
@@ -211,7 +304,7 @@ fn threshold_boundary(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErro
         snap,
         &[("spare", ok(95.0, 95.0)), ("third", ok(10.0, 10.0))],
     );
-    decide_measured(ctx, snap, ok(100.0, 100.0), probes, AT)
+    decide_measured(ctx, snap, ok(100.0, 100.0), probes, at())
 }
 
 #[test]

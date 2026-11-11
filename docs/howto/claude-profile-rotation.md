@@ -19,8 +19,10 @@ profile it came from.
 [Organisation affinity](../reference/profile-organisation-affinity.md) restricts
 selection before capacity ranking: crossing is allowed only for necessary
 capacity relief without an eligible same-organisation target with capacity.
-Plan-room and upgrade moves require confirmed equal organisation IDs, including
-fallbacks. Logs and status distinguish confirmed crossings from unresolved
+Plan-room and upgrade moves never make a confirmed crossing, including
+fallbacks; an unknown organisation is not a crossing, so missing metadata never
+keeps a session on an overflow login. Session warnings are advisory: a warning
+journal failure is reported and the swap still happens. Logs and status distinguish confirmed crossings from unresolved
 affinity. Affected sessions receive pending warnings at their next applicable
 limit-resume handling, even if another swap intervenes.
 

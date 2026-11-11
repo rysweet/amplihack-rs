@@ -80,68 +80,28 @@ pub fn nested_candidate(
             && ledger.leased_to(n).is_none()
             && login_ready(state, &overflow, c)
     };
-    let paid_allowed = candidate::select_with_overflow(&pool, &overflow.pool(), current, eligible)
-        .is_some_and(|p| overflow.order.contains(p));
-    let affinity_eligible =
-        |p: &ProfileName| eligible(p) && (paid_allowed || !overflow.order.contains(p));
     let necessary = if overflow.order.iter().any(|p| p.as_str() == current) {
         !candidate::overflow_usable(current, &overflow.blocked)
     } else {
         candidate::is_exhausted(readings.get(current), cfg.threshold, now)
     };
-    let allowed = match super::super::organisation::allowed(
+    let restriction = super::affinity::restrict(
         state,
         ledger,
-        profiles,
+        &pool,
+        &overflow,
         source_host,
         current,
         necessary,
-        |p| {
-            candidate::select_restricted(
-                &pool,
-                &overflow.pool(),
-                current,
-                |q| q == p && affinity_eligible(q),
-                |_| false,
-            )
-            .is_some()
-        },
-        |p| {
-            affinity_eligible(p)
-                && !cfg.exclude.contains(p)
-                && candidate::overflow_usable(p.as_str(), &overflow.blocked)
-        },
-    ) {
-        Ok(allowed) => allowed,
-        Err(e) => {
-            eprintln!("auto-switch: organisation metadata unreadable: {e}");
-            return None;
-        }
-    };
-    let restricted = |p: &ProfileName| eligible(p) && allowed.contains(p);
-    let same = match super::super::organisation::allowed(
-        state,
-        ledger,
-        profiles,
-        source_host,
+        eligible,
+    );
+    let picked = candidate::select_restricted(
+        &pool,
+        &overflow.pool(),
         current,
-        false,
-        |_| true,
-        |p| {
-            affinity_eligible(p)
-                && !cfg.exclude.contains(p)
-                && candidate::overflow_usable(p.as_str(), &overflow.blocked)
-        },
-    ) {
-        Ok(same) => same,
-        Err(e) => {
-            eprintln!("auto-switch: organisation metadata unreadable: {e}");
-            return None;
-        }
-    };
-    let picked = candidate::select_restricted(&pool, &overflow.pool(), current, restricted, |p| {
-        same.contains(p)
-    });
+        |p| eligible(p) && restriction.allowed.contains(p),
+        |p| restriction.plan_room.contains(p),
+    );
     if picked.is_none_or(|p| overflow.platform.as_ref() != Some(p)) {
         let held = per_token::key_held(&pool, &overflow, current, eligible);
         per_token::record_key_held(state, &held);

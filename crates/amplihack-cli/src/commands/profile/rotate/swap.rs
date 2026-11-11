@@ -104,26 +104,15 @@ pub fn swap(
             budget: &budget,
         },
         None,
+        None,
     )
 }
 
-/// Shared swap checked against the accepted snapshot (None in legacy unit primitives).
+/// Shared swap checked against the accepted snapshot (None in legacy unit
+/// primitives). `warning_transaction` links an advisory warning intent
+/// (#2136) from the journal; `None` when there is none.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn swap_with(
-    store: &ProfileStore,
-    rs: &RotateState,
-    home: &Path,
-    from: Source,
-    to: &ProfileName,
-    now: i64,
-    reader: Reader<'_>,
-    basis: Option<&super::observe::Snap>,
-) -> Result<ProfileName, ProfileError> {
-    swap_with_warning(store, rs, home, from, to, now, reader, basis, None)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn swap_with_warning(
     store: &ProfileStore,
     rs: &RotateState,
     home: &Path,
@@ -342,23 +331,13 @@ fn abandon(
         eprintln!("warning: the abandoned swap's journal was not updated: {e}");
         release_locks(store, home, &held);
     }
-    if let Err(e) = abort_warning(store, j) {
-        eprintln!("warning: the abandoned swap's warning intent was retained: {e}");
-        return err;
-    }
+    super::observe::affinity::abort_warning(store, j);
     if let Err(e) = rs.delete_journal() {
         eprintln!("warning: the abandoned swap's journal was not removed: {e}");
         return err;
     }
     remove_unused_adoption(store, j);
     err
-}
-
-pub(super) fn abort_warning(store: &ProfileStore, j: &RotateJournal) -> Result<(), ProfileError> {
-    if let Some(tx) = &j.warning_transaction {
-        super::super::swap_warning::abort(store.root(), tx, "rotator", "home", &j.from, &j.to)?;
-    }
-    Ok(())
 }
 
 /// Rewrites the journal at `phase`, then stops there in a test run.

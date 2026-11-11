@@ -49,7 +49,7 @@ pub(super) fn finish(
             "home",
             &j.from,
             &j.to,
-        )?;
+        );
     }
     Ok(())
 }

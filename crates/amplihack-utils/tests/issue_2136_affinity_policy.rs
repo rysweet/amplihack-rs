@@ -1,8 +1,10 @@
 //! Proposed pure policy contract. Inputs have already passed existing identity,
 //! lease, exclusion, pin, spend, freshness and authorization checks. Returned
 //! indices preserve input order so the existing ranking remains authoritative.
-//! Intentionally red until the shared organisation_affinity module exists.
-use amplihack_utils::organisation_affinity::{Affinity, Candidate, Purpose, allowed_indices};
+//! Only a confirmed crossing is restricted: unknown is not crossing.
+use amplihack_utils::organisation_affinity::{
+    Affinity, Candidate, Purpose, allowed_indices, pools, preference_permitted,
+};
 
 #[test]
 fn affinity_requires_present_valid_exactly_equal_ids() {
@@ -60,10 +62,14 @@ fn crossing_requires_necessary_capacity_relief_and_no_eligible_same_org_room() {
         allowed_indices(Some("org-a"), Purpose::CapacityRelief, true, &candidates),
         vec![2, 3]
     );
-    assert!(allowed_indices(Some("org-a"), Purpose::CapacityRelief, false, &candidates).is_empty());
+    // Not necessary: the crossing is refused, the unknown target is not.
+    assert_eq!(
+        allowed_indices(Some("org-a"), Purpose::CapacityRelief, false, &candidates),
+        vec![3]
+    );
 }
 #[test]
-fn preference_only_purposes_require_confirmed_affinity_even_in_fallbacks() {
+fn preference_only_purposes_never_cross_but_unknown_is_not_crossing() {
     let candidates = [
         c(Some("org-b"), true, true),
         c(None, true, true),
@@ -75,9 +81,43 @@ fn preference_only_purposes_require_confirmed_affinity_even_in_fallbacks() {
                 allowed_indices(Some("org-a"), purpose, necessary, &candidates),
                 vec![2]
             );
-            assert!(allowed_indices(None, purpose, necessary, &candidates).is_empty());
+            // Unknown source: nothing is a confirmed crossing.
+            assert_eq!(
+                allowed_indices(None, purpose, necessary, &candidates),
+                vec![0, 1, 2]
+            );
         }
+        // Known source, no same-organisation target: only the crossing goes.
+        assert_eq!(
+            allowed_indices(Some("org-a"), purpose, false, &candidates[..2]),
+            vec![1]
+        );
     }
+}
+#[test]
+fn unknown_source_still_returns_from_overflow_to_a_recovered_plan_login() {
+    // A session on a paid overflow login whose organisation was never
+    // recorded: the recovered plan login must stay reachable (an upgrade).
+    let candidates = [c(None, true, true), c(Some("org-a"), true, true)];
+    assert_eq!(
+        pools(None, false, &candidates).allowed,
+        vec![0, 1],
+        "missing metadata must not keep a session on overflow"
+    );
+    assert!(preference_permitted(None, Some("org-a")));
+    assert!(preference_permitted(Some("org-a"), None));
+    assert!(!preference_permitted(Some("org-a"), Some("org-b")));
+}
+#[test]
+fn pools_give_the_plan_room_fallback_its_own_non_crossing_pool() {
+    let candidates = [
+        c(Some("org-b"), true, true),
+        c(Some("org-a"), true, false),
+        c(Some("org-a"), false, true),
+    ];
+    let p = pools(Some("org-a"), true, &candidates);
+    assert_eq!(p.allowed, vec![0], "necessary relief may cross");
+    assert_eq!(p.plan_room, vec![1], "room fallback never crosses");
 }
 #[test]
 fn warnings_distinguish_evidence_from_risk_without_claiming_the_session_is_broken() {

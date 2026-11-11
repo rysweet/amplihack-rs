@@ -47,6 +47,8 @@ mod tests {
     fn named_profile_home_cannot_share_the_default_home_scope() {
         let _lock = crate::test_serial::acquire();
         let tmp = tempfile::tempdir().unwrap();
+        // Private whatever the umask: the warning root's parents are checked.
+        fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let root = tmp.path().join("profiles");
         let home = tmp.path().join("user");
         let config = root.join("home");

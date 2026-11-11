@@ -7,8 +7,9 @@ review_schedule: as-needed
 
 # Profile organisation affinity
 
-Automatic login swaps prefer capacity in the live login's organisation.
-Crossing organisations can make earlier thinking unavailable on the next
+Automatic login swaps prefer capacity in the live login's organisation, and
+make a confirmed crossing only when capacity forces it. Crossing
+organisations can make earlier thinking unavailable on the next
 turn. The visible conversation remains available and the session can continue.
 Swapping back does not restore earlier thinking.
 
@@ -35,8 +36,16 @@ does not establish its organisation. Account identity comparison, including
 `Account::same()`, does not establish organisation affinity either.
 
 Organisation discovery does not inspect credentials. Existing credential
-ownership checks remain separate and authoritative. Operational metadata read
-errors remain errors; they do not relax selection restrictions.
+ownership checks remain separate and authoritative.
+
+Auto-switch reads a login's organisation from its expected record
+(`.auto-switch.d/expected/<profile>.json`) through the same reader the swap
+guard uses. A record that is missing, unsafe, malformed or without an `org`
+entry reads as no record, so the organisation is unknown. The rotator takes
+the organisation from its trusted identity reads; its swap guard compares
+each read with the same expected record, organisation included, and refuses
+the swap on a mismatch. Wherever a record exists, the two producers therefore
+agree for every swap that goes ahead.
 
 | Source ID | Destination ID | Affinity |
 | --- | --- | --- |
@@ -57,29 +66,38 @@ follow account metadata and selection behavior, without credential inspection.
 
 First apply existing eligibility and capacity checks. Then restrict candidates
 by affinity, before applying the existing ranking within the permitted set.
+Only a confirmed crossing, where both organisations are known and differ, is
+restricted. An unknown organisation on either side is not a crossing.
 
 | Final swap purpose | Permitted candidates |
 | --- | --- |
-| Necessary capacity relief, with an eligible Same target that has capacity | Same targets with capacity only |
-| Necessary capacity relief, with no eligible Same target that has capacity | Crossing or Unresolved targets may be considered under existing policy |
-| Upgrade | Same only |
-| Plan-room | Same only |
-| Preference alone | Cannot justify Crossing or Unresolved |
+| Any, with a known source and an eligible Same target that has capacity | Same targets only |
+| Any, otherwise | Same and Unresolved targets |
+| Necessary capacity relief, with no eligible Same target that has capacity | Crossing targets as well |
+| Upgrade or plan-room | Never a Crossing target |
 
 A better headroom score in another organisation does not override available
-same-organisation capacity. Unknown source identity blocks upgrades and
-plan-room moves, even if the destination has a known ID.
+same-organisation capacity. Missing metadata never keeps a session where it
+is: a session on a paid overflow login whose organisation is unknown still
+returns to a plan login once one recovers. Before this policy existed it did,
+and an unknown organisation does not change that. Such a swap carries the
+Unresolved warning.
 
 Overflow and fallback selection use the final purpose of the move. A fallback
-cannot turn a preference-only move into capacity necessity or bypass confirmed
-affinity requirements. Unread auto-switch candidates receive the same checks;
-absence of a reading does not establish capacity or affinity.
+cannot turn a preference-only move into capacity necessity or into a
+confirmed crossing. Unread auto-switch candidates receive the same checks;
+absence of a reading does not establish capacity.
 
 Authorisation, exclusions, leases, spend limits, pins, freshness, gain and
 capacity rules still apply. Organisation affinity cannot make an otherwise
-ineligible target eligible. Before completing a swap, execution revalidates
-identities, organisation affinity and existing target checks under the execution
-locks, including whether same-organisation capacity has become available.
+ineligible target eligible. Before completing a swap, execution re-reads the
+source and target organisations under the execution locks and refuses the
+swap if either changed since selection.
+
+The rotator, auto-switch swap and nested rerun share one policy function
+(`organisation_affinity::pools`), called once per decision, which returns both
+the selection pool and the plan-room pool. Auto-switch reaches it through one
+helper (`auto_switch/affinity.rs`).
 
 ### Selection examples
 
@@ -89,9 +107,10 @@ These are policy examples, using profile names from the rotation guide:
 | --- | --- |
 | `work` needs capacity; `spare` is Same and eligible; `personal` is Crossing with more headroom | Select within Same capacity, preserving its existing ranking |
 | `work` needs capacity; no Same target has capacity; `personal` passes all relief checks | Crossing may proceed, with a confirmed-crossing warning |
-| `work` requests an upgrade; `personal` is the only better target and its ID is unknown | No upgrade |
+| `work` requests an upgrade; `personal` is the only better target and is Crossing | No upgrade |
+| `work` requests an upgrade; `personal` is the only better target and its ID is unknown | Upgrade, with a risk warning |
+| `work` is a paid overflow login with no recorded organisation; plan login `spare` recovers | Back to `spare`, with a risk warning |
 | Plan-room fallback finds only Crossing targets | No plan-room swap |
-| Both source and target organisations are unknown during necessary relief | Unresolved may proceed only under the relief rules, with a risk warning |
 
 ## Configuration and operator commands
 
@@ -198,8 +217,9 @@ identity with the session ID. macOS reads process birth metadata through
 does not inherit a previous process's cursor. The canonical configuration
 directory distinguishes home sessions from sessions in a named profile.
 
-The journal is bounded to 8 MiB. Reaching that bound fails explicitly before
-an unrecordable swap rather than discarding warnings. Required history and
+The journal is bounded to 8 MiB. Reaching that bound refuses the new warning
+intent rather than discarding warnings already recorded; the swap itself goes
+ahead (see [Warnings are advisory](#warnings-are-advisory)). Required history and
 ambiguous intents are retained; long-lived unconsumed sessions can therefore
 require operator attention. Completion identities are retained while authoritative recovery journals can reference them for idempotence.
 
@@ -209,16 +229,26 @@ symlink traversal, unexpected file types and unsafe parent directories are
 rejected. One consistent lock order coordinates execution, registration,
 event allocation, publication, cursor updates and retention.
 
-A private durable intent is written before login mutation. Failure to persist
-the intent aborts the swap before mutation. Pending intents are not deliverable
-events. Recovery publishes them only when authoritative transaction evidence
+A private durable intent is written before login mutation. Pending intents
+are not deliverable events. Recovery publishes them only when authoritative transaction evidence
 proves completion; ambiguous recovery retains evidence and reports the
 inconsistency.
 
-If a swap completes but event publication fails, the operation reports that
-completion has publication pending and retains recovery evidence. It does not
-claim the login mutation was undone. Recovery finishes publication without
-losing the affected session scope.
+### Warnings are advisory
+
+The swap is the job; the warning tells live sessions about it. No failure of
+the warning journal stops or undoes a swap:
+
+- If the intent cannot be written before the move (journal full, unsafe
+  directory, unreadable transaction journal), the producer reports it on
+  stderr and swaps without a session warning. The swap record and the rotate
+  log still record the organisation outcome.
+- If publication fails after the move, the producer reports it and finishes
+  the swap normally; the transaction journal is removed as for any completed
+  swap.
+- If an aborted swap's intent cannot be dropped, the producer reports it.
+  The intent is never delivered, since only completed transactions publish
+  events.
 
 ## Compatibility and platform limits
 

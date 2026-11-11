@@ -102,29 +102,9 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     };
     let auto = super::autostart_line(store.root());
     // Issue #1803: read only under a private root; never echoes the marker.
-    let exe = exe_name();
-    let owner = super::owner::describe(store.root(), &proc_root(), exe.as_deref());
+    let owner = super::owner::describe(store.root(), &proc_root(), exe_name().as_deref());
     println!("rotate: {word}\n{auto}\n{owner}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
-    if store.root().join(".swap-warning-history").exists() {
-        match amplihack_utils::swap_warning_history::WarningHistory::open(store.root())
-            .and_then(|h| h.unconsumed())
-        {
-            Ok(events) => {
-                for event in events {
-                    if let Some(warning) = event.affinity.warning() {
-                        println!("pending swap warning #{}: {warning}", event.id);
-                    }
-                }
-            }
-            Err(e) => eprintln!("warning: swap warning history unreadable: {e}"),
-        }
-    }
-    if let Some(record) =
-        amplihack_utils::rotator_status::swap_record::read_swap(store.root(), now())
-        && let Some(warning) = record.affinity.and_then(|a| a.warning())
-    {
-        println!("last swap: {warning}");
-    }
+    super::observe::affinity::print_status(store.root());
     // Issue #1797: from the usage history only; no probe and no `claude`.
     let (capacity, warnings) = history::capacity(store.root(), now());
     for w in warnings {
