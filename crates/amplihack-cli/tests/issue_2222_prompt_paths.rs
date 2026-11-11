@@ -1466,7 +1466,14 @@ fn light_prompt_uses_main_checkout_from_deterministic_setup_when_caller_is_linke
         assert!(out.status.success(), "{id}\n{}", show(&out));
         if let Some(key) = step["output"].as_str() {
             let text = stdout(&out).trim().to_string();
-            ctx[key] = serde_json::from_str(&text).unwrap_or_else(|_| json!(text));
+            // Honor the producer's declared output contract. Automatically
+            // parsing every output would mask a missing parse_json declaration.
+            ctx[key] = if step["parse_json"].as_bool() == Some(true) {
+                serde_json::from_str(&text)
+                    .unwrap_or_else(|e| panic!("{id}: declared JSON output is invalid: {e}"))
+            } else {
+                json!(text)
+            };
         }
     }
     let p = render(&prompt(LIGHT, "light-implement"), &ctx);

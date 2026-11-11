@@ -99,6 +99,7 @@ steps:
   # auto-drive-to-merge checks it (autodrive_gadugi_required).
   - id: "light-prereqs"
     type: "bash"
+    parse_json: true
     command: |
       set -uo pipefail
       die() { echo "ERROR: auto-drive-light/light-prereqs: $1" >&2; exit "${2:-1}"; }
