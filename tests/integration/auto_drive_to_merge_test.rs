@@ -3467,8 +3467,8 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
 
     let tmp = tempfile::tempdir().expect("tempdir");
     let trees = tmp.path().join("trees");
-    let home = tmp.path().join("home");
     let tmpdir = tmp.path().join("tmp");
+    let home = tmpdir.join("home");
     for d in [&trees, &home, &tmpdir] {
         fs::create_dir_all(d).expect("mkdir");
     }
@@ -3505,7 +3505,7 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
     let log = tmp.path().join("runner.log");
     fs::write(
         &runner,
-        "#!/bin/sh\nprintf 'depth=%s\\n' \"${AMPLIHACK_SESSION_DEPTH:-}\" >> \"$RUNNER_LOG\"\nprintf '{}\\n'\n",
+        "#!/bin/sh\nif [ \"$1\" = capabilities ]; then\n printf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'\n exit 0\nfi\nprintf 'depth=%s\\n' \"${AMPLIHACK_SESSION_DEPTH:-}\" >> \"$RUNNER_LOG\"\nprintf '{}\\n'\n",
     )
     .expect("write the runner stub");
     #[cfg(unix)]

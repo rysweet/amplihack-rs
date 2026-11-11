@@ -506,7 +506,9 @@ fn a_damaged_ledger_never_moves_onto_overflow() {
     fs::create_dir_all(f.rotate_dir()).unwrap();
     private_file(
         &f.rotate_dir().join("ledger.json"),
-        "{\"version\":1,\"surprise\":1}",
+        // Unknown fields are forward compatible; a wrong field type is
+        // corrupt under the current ledger contract.
+        "{\"version\":1,\"overflow_blocked\":42}",
     );
     let _ = f.run(&["profile", "rotate"]);
     assert_eq!(

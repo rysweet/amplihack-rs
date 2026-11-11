@@ -95,6 +95,11 @@ fn task(prompt: &str, mode: &str, max_turns: u32) -> FleetTask {
 
 /// Run `start_agent` once and return its result and the task's final status.
 fn start(stub: &StubAzlin, task: FleetTask) -> (Result<String>, TaskStatus) {
+    // The shell stub uses cat from PATH; protect it from concurrent tests
+    // that temporarily replace the process environment.
+    let _env = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let logs = stub.temp.path().join("logs");
     let mut admiral = FleetAdmiral::new(
         stub.path(),
