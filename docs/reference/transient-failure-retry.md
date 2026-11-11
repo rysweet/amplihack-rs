@@ -2,26 +2,24 @@
 title: Transient Failure Classification and Retry
 description: Recipe failure classes, retry bounds, reset hints, and recovery ownership.
 doc_type: reference
-last_updated: 2026-11-10
+last_updated: 2026-11-11
 ---
 
 # Transient Failure Classification and Retry — Reference
 
-_Issue [#1267](https://github.com/rysweet/amplihack-rs/issues/1267)._
-
-`amplihack recipe run` used to treat every non-zero exit from `recipe-runner-rs`
-as terminal. A single `API Error: 529 Overloaded` — a server-side blip the error
-text itself calls "usually temporary" — unwound a six-hour workstream and
-discarded five completed phases.
-
-This page describes what the runner does now, and, more importantly, what it
-deliberately does **not** decide for itself.
+`amplihack recipe run` classifies failed runner results, preserves bounded
+failure evidence, and automatically retries only transient transport failures.
+Usage limits receive a separate `usage_limit` verdict with the supplied reset
+hint. This reference covers classification, diagnostics, configuration, and
+the boundary between transport retry and recovery.
 
 ## Contents
 
 - [Classification](#classification)
 - [Usage-limit markers](#usage-limit-markers)
 - [Session-limit verdict and recovery ownership](#session-limit-verdict-and-recovery-ownership)
+- [Recovery mechanisms](#recovery-mechanisms)
+- [Durable recipe recovery](#durable-recipe-recovery)
 - [Retry bounds](#retry-bounds)
 - [Observability](#observability)
 - [Where the judgement lives](#where-the-judgement-lives)
@@ -81,8 +79,8 @@ The markers are `session limit`, `usage limit`, `usage_limit_reached`,
 They are Claude Code's, and are kept in one
 table per harness in `limit_patterns.rs`, together with the patterns that
 read the reset time. The classifier, the auto-switch supervisor and the
-usage-limit wait all read that table; no other source file holds a Claude
-limit message. `failure_class::usage_limit_reset_hint` is a thin wrapper
+usage-limit wait all read that table. Test fixtures supply synthetic limit
+messages separately. `failure_class::usage_limit_reset_hint` is a thin wrapper
 over the table's reset reader, and the classifier's precedence is
 unchanged: work, then repo-selection and environmental, then usage limit,
 then transient. To support another harness, add a `Harness` variant and
@@ -100,7 +98,7 @@ its table there.
   Code's `monthly spend limit` message, so both are markers (#1546).
 - **Reset hint.** The reset time the message states is quoted in the verdict:
   `You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)`
-  gives `it resets Oct 8, 12am (America/Los_Angeles)`.
+  gives `it resets Oct 8, 12am (America/Los_Angeles)` in `reasoning`.
 - **Two markers in one message.** The `signal` is the marker that appears
   earliest in the text, not the one listed first. This message:
 
@@ -165,8 +163,9 @@ the command exits with code `1`. For a usage limit on the first runner attempt:
 
 For a result with a completed `setup` step and a failed `limited-agent` step,
 the arrays are `["setup"]` and `["limited-agent"]`. These identities describe
-the reported run; they do not promise that completed steps will be skipped on
-a later invocation.
+the reported run. A completed-step ID alone does not make that step eligible
+for replay on a later invocation. The [planned durable recovery](#planned-durable-recovery--integration-and-validation-pending)
+requires separately validated records.
 
 Here **terminal** means the recipe transport mechanism stops automatic retries.
 If the first attempt reports this limit, the runner executes exactly once,
@@ -180,23 +179,61 @@ authentication errors, retain higher precedence. Bare HTTP 429 errors retain
 their transport classification. An unrelated failure without a recognized
 marker remains `indeterminate`.
 
-Classification identifies the failure and preserves its supplied reset hint.
-It does not automatically pause or resume a session, retain its transcript, or
-supervise its children. The separate [usage-limit wait](./profile-command.md#usage-limit-wait)
-can act before a failure reaches this classifier; its behavior is not a
-guarantee of recovery for Claude Code's internal subagents.
-That wait has its own [`recipe.usage_limit_wait` and
-`recipe.usage_limit_max_wait_secs` settings](./user-config.md#recipeusage_limit_wait).
+### Recovery mechanisms
 
-Claude Code owns termination, transcript preservation, and child recovery for
-its internal subagents. Amplihack's launcher and fork policy do not provide a
-control point for that failure path. The upstream runtime requirement is to
-preserve reasoning context across involuntary faults, including flushing the
-transcript before termination, and deliberately reap or record in-flight
-children when terminating a session. Durable worktree changes alone do not
-preserve the reasoning behind them. Any future amplihack session supervisor
-must preserve that context too; this classification path implements no such
-supervisor.
+`retryable: false` and `action: "terminal"` describe the transport retry
+decision for this invocation. A usage limit can still be temporary. The
+same-process wait is implemented; durable recipe recovery remains a planned
+integration requirement.
+
+| Mechanism | Trigger and behavior | State retained or reused |
+| --- | --- | --- |
+| Transport retry | Only `transient_transport`; repeats the invocation within the [retry bounds](#retry-bounds) | Bounded failure diagnostics and the run's existing scratch space |
+| Usage-limit wait | A recognized Claude limit inside an `amplihack claude -p` step; waits and retries within that launch when enabled | The active step's process-local execution; see [usage-limit wait](./profile-command.md#usage-limit-wait) |
+| Durable recipe recovery | A later compatible launch after the latest matching attempt durably stopped on a usage limit and its owner is no longer active | Reuses validated, finalized step results and declared context and artifacts under the [recovery contract](./recipe-recovery.md) |
+| Claude Code internal session lifecycle (upstream ownership) | The runtime terminates or resumes one of its own subagents | Transcript retention, reasoning context, and deliberate child cleanup belong to Claude Code; this classifier does not implement or validate them |
+
+Classification requires no configuration. The implemented same-process wait
+has its own
+[`recipe.usage_limit_wait` and `recipe.usage_limit_max_wait_secs`
+settings](./user-config.md#recipeusage_limit_wait), overridden by
+`AMPLIHACK_USAGE_LIMIT_WAIT` and `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS`.
+Disabling that wait allows the failure to reach classification directly;
+increasing the transport retry budget does not make `usage_limit` retryable.
+
+### Durable recipe recovery
+
+Current main supplies repository-owned durable recipe recovery through the
+pinned Rust runner. The CLI records the trusted `usage_limit` outcome without
+adding a transport retry or reset timer, or changing the existing wait policy.
+Replay requires compatible work identity, execution definitions, inputs,
+persisted results, and resources. A later ordinary failure or success prevents
+falling back to an older usage-limit attempt. An active predecessor cannot be
+taken over. Completed-step IDs in the verdict remain diagnostic metadata,
+not recovery checkpoints.
+
+Every provider requires `durable_recovery_v1`; Codex additionally requires
+`codex_exec`. The CLI durably admits a top-level launch before execution and
+passes its recovery descriptor; delegated runners attach through the inherited
+recovery channel. A capability string alone does not establish admission or
+permit replay. See [runner validation](./recipe-runner-validation.md#recovery-capability-enforcement),
+[runner execution](./rust-runner-execution.md), and the full
+[recovery reference](./recipe-recovery.md).
+
+The issue #1390 regression fixture uses the pinned runner's descriptor and
+private store to reach classification through this boundary. It verifies a
+finalized durable `usage_limit` outcome. It supplies controlled step results;
+it does not exercise replay, real agent scheduling, or a session lifecycle.
+Those recipe recovery contracts have their own `issue_1741_*` scenarios.
+
+Classification and durable recipe records do not preserve a
+Claude Code internal subagent's transcript or recover its in-flight children. The
+[maintainer's scope clarification](https://github.com/rysweet/amplihack-rs/issues/1390#issuecomment-5449708778)
+assigns that lifecycle to the upstream runtime. The upstream requirements are
+to preserve reasoning context across involuntary faults, flush transcripts before
+termination, and deliberately reap or record in-flight children. Durable
+worktree changes alone do not preserve the reasoning behind them. These are
+upstream requirements, not guarantees implemented by this change.
 
 ## Retry bounds
 
@@ -268,6 +305,7 @@ undifferentiated `exit 1` is the point of this change.
 
 ## Source
 
+- [Issue #1390 validation and delivery evidence](../bugfixes/bugfix-1390-validation-status.md) — current verification, limitations, and historical results.
 - `crates/amplihack-cli/src/commands/recipe/run/failure_class.rs`
 - `crates/amplihack-cli/src/commands/recipe/run/limit_patterns.rs`
 - `crates/amplihack-cli/src/commands/recipe/run/retry.rs`

@@ -142,6 +142,13 @@ fn write_success_executable(dir: &Path, name: &str) -> PathBuf {
 }
 
 fn write_install_tooling(home: &Path) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(home, fs::Permissions::from_mode(0o700))
+            .expect("make fixture HOME private");
+    }
+    fs::create_dir(home.join(".git")).expect("create fixture launcher boundary");
     let bin_dir = home.join("test-bin");
     let hooks_bin = write_success_executable(&bin_dir, "amplihack-hooks");
     write_success_executable(&bin_dir, "recipe-runner-rs");
@@ -163,15 +170,29 @@ fn amplihack_install_command_with_binary(
         .parent()
         .expect("hooks binary has parent")
         .join("recipe-runner-rs");
-    cmd.current_dir(workspace_root())
+    cmd.current_dir(home)
         .arg("install")
         .arg("--local")
         .arg(source)
         .env("HOME", home)
         .env("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", hooks_bin)
         .env("RECIPE_RUNNER_RS_PATH", recipe_runner)
+        // Asset completeness must not select the enclosing Codex session or
+        // probe account-dependent native plugins from the host's PATH.
+        .env("AMPLIHACK_AGENT_BINARY", "claude")
         .env_remove("AMPLIHACK_HOME")
         .env_remove("CLAUDECODE");
+    #[cfg(unix)]
+    cmd.env(
+        "PATH",
+        format!(
+            "{}:/usr/bin:/bin",
+            hooks_bin
+                .parent()
+                .expect("fixture tooling directory")
+                .display()
+        ),
+    );
     cmd
 }
 

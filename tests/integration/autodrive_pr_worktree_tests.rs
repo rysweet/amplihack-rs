@@ -183,6 +183,10 @@ impl Sandbox {
             .env_remove("GH_HOST")
             .env_remove("GH_REPO")
             .env_remove("AMPLIHACK_HOME")
+            // The resolver contract below uses this sandbox's repository
+            // worktrees, not the enclosing recipe's external work root.
+            .env_remove("AMPLIHACK_WORK_ROOT")
+            .env_remove("AMPLIHACK_WORK_ROOT_EXPLICIT")
             .env_remove("REPO_PATH")
     }
 
