@@ -127,7 +127,10 @@ fn resolve_amplihack_binary_from(
 fn write_success_executable(dir: &Path, name: &str) -> PathBuf {
     fs::create_dir_all(dir).expect("create test executable dir");
     let path = dir.join(name);
-    let content = format!("#!/bin/sh\nexit 0\n{}\n", "x".repeat(1100));
+    let content = format!(
+        "#!/bin/sh\nif [ \"$1\" = --capabilities ]; then printf '%s\\n' '{{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}}'; exit 0; fi\nexit 0\n{}\n",
+        "x".repeat(1100)
+    );
     fs::write(&path, content).expect("write test executable");
     #[cfg(unix)]
     {

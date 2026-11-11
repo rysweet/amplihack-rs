@@ -110,6 +110,11 @@ impl Fixture {
         for name in ["claude", "copilot", "codex"] {
             crate::support::exec_stub::write_executable(&tools.join(name), STUB, 0o755);
         }
+        crate::support::exec_stub::write_executable(
+            &tools.join("codex-code-mode-host"),
+            "#!/bin/sh\nexit 0\n",
+            0o755,
+        );
         Self {
             _tmp: tmp,
             root,
@@ -131,7 +136,14 @@ impl Fixture {
             .env("HOME", &self.home)
             .env("RECORD_DIR", &self.records)
             .env("FILE_REFERENCE_PREFIX", FILE_REFERENCE_PREFIX)
-            .env("STUB_VERSION", "2.1.319 (Claude Code)")
+            .env(
+                "STUB_VERSION",
+                if args.first() == Some(&"codex") {
+                    "codex-cli 0.166.0"
+                } else {
+                    "2.1.319 (Claude Code)"
+                },
+            )
             .env("AMPLIHACK_CLAUDE_BINARY_PATH", self.tools.join("claude"))
             .env("AMPLIHACK_COPILOT_BINARY_PATH", self.tools.join("copilot"))
             .env("AMPLIHACK_CODEX_BINARY_PATH", self.tools.join("codex"))
