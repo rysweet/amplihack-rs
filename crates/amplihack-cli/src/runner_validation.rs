@@ -56,6 +56,16 @@ pub(crate) fn probe(binary: &Path, provider: &str) -> Result<Value> {
     {
         return Err(error("RUNNER_REPORT_INVALID"));
     }
+    if !report["capabilities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v == "durable_recovery_v1")
+    {
+        return Err(error(
+            "RUNNER_RECOVERY_CAPABILITY_MISSING: durable_recovery_v1",
+        ));
+    }
     if provider == "codex"
         && !report["capabilities"]
             .as_array()
@@ -167,6 +177,9 @@ pub enum InternalCommands {
 pub struct ValidationArgs {
     #[arg(long, value_parser = ["claude", "copilot", "codex"])]
     provider: String,
+    /// Additional execution contracts required by the delivery caller.
+    #[arg(long = "require-capability")]
+    required_capabilities: Vec<String>,
     #[arg(long)]
     binary: std::path::PathBuf,
     #[arg(long)]
@@ -194,6 +207,23 @@ pub(crate) fn run(command: InternalCommands) -> Result<()> {
             _ => return Err(error("INVALID_VALIDATION_REQUEST")),
         };
         let runner = probe(&args.binary, &args.provider)?;
+        for capability in &args.required_capabilities {
+            if capability.len() > 64
+                || !capability
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            {
+                return Err(error("INVALID_VALIDATION_REQUEST"));
+            }
+            if !runner["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c == capability)
+            {
+                return Err(anyhow!("RUNNER_CAPABILITY_MISSING {capability}"));
+            }
+        }
         let provenance = if managed {
             json!({"kind":"managed", "package":"recipe-runner-rs", "repository":args.repository,
                 "revision":args.revision, "cargo_home":args.cargo_home})
@@ -213,6 +243,9 @@ pub(crate) fn run(command: InternalCommands) -> Result<()> {
         Err(error) => {
             let code = error.to_string();
             let message = match code.as_str() {
+                "RUNNER_RECOVERY_CAPABILITY_MISSING: durable_recovery_v1" => {
+                    "runner must advertise durable_recovery_v1; install the supported pinned runner"
+                }
                 "RUNNER_CAPABILITY_MISSING" => {
                     "runner must advertise codex_exec; fix or unset the override"
                 }
