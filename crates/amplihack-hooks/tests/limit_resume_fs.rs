@@ -12,6 +12,9 @@
 
 #![cfg(unix)]
 
+#[path = "../../amplihack-cli/tests/support/wait.rs"]
+mod wait;
+
 use amplihack_hooks::limit_resume::decide::{event_key, session_key};
 use amplihack_hooks::limit_resume::guard::{
     CommitError, FsGuard, GuardStore, LOCK_TIMEOUT, PROMPTED_RETENTION_SECS,
@@ -398,10 +401,6 @@ fn stuck_lock_times_out_as_io_error() {
 // an injected clock (`FsGuard::with_clock`); the fakes below keep virtual
 // time as a base `Instant` plus an offset.
 
-/// The longest a racing test waits for a thread's result. A hang cap only:
-/// no test asserts on it, and a correct run never comes near it.
-const HANG_GUARD: Duration = Duration::from_secs(120);
-
 /// Virtual time that moves only when something sleeps on it, and records
 /// the virtual start and length of each sleep. Never sleeps for real.
 struct AdvancingClock {
@@ -611,7 +610,7 @@ fn a_guard_debug_does_not_show_its_clock() {
 /// Runs `commit` on eight threads released together by a barrier, each
 /// with a frozen clock so a loser waiting for the lock cannot time out.
 /// Results come back over a channel; a thread that hangs fails the test at
-/// `HANG_GUARD` instead of hanging it.
+/// the shared `CEILING` instead of hanging it.
 fn race_eight(
     root: &Path,
     commit: impl Fn(&mut FsGuard, u32) -> Result<(), CommitError> + Send + Sync + 'static,
@@ -633,7 +632,7 @@ fn race_eight(
     drop(tx);
     (0..8)
         .map(|n| {
-            rx.recv_timeout(HANG_GUARD)
+            rx.recv_timeout(wait::CEILING)
                 .unwrap_or_else(|e| panic!("racer {n} gave no result: {e}"))
         })
         .collect()

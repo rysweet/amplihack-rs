@@ -102,7 +102,7 @@ One helper nests the ceiling: [`stop_until_gone`](#stop_until_gone) calls
 minutes to fail. It still uses only `CEILING`. Do not add another nesting.
 
 `limit_resume_fs` is in `amplihack-hooks`, so it reaches `CEILING` by
-including `wait.rs` with `#[path]` through `crates/amplihack-hooks/src/test_support.rs`.
+including `wait.rs` directly with `#[path]` in its integration test.
 It does not define a local guard.
 
 ## Assert the final state

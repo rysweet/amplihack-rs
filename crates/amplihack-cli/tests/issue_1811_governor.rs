@@ -6,8 +6,53 @@
 
 use crate::issue_1811_fixture::{Fixture, describe, now, text};
 use std::fs;
+use std::os::unix::process::CommandExt;
+use std::process::{Child, Command, Output, Stdio};
 
 const DENIED: i32 = 80;
+
+/// Owns the wrapper and its FIFO-blocked shell/cat descendants from spawn
+/// onward, including while an assertion or readiness wait unwinds.
+struct GovernedChild(Option<Child>);
+
+impl GovernedChild {
+    fn spawn(cmd: &mut Command) -> Self {
+        Self(Some(
+            cmd.process_group(0)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn governed claude"),
+        ))
+    }
+
+    fn try_output(&mut self) -> Option<Output> {
+        self.0.as_mut()?.try_wait().expect("poll governed claude")?;
+        Some(self.0.take().unwrap().wait_with_output().unwrap())
+    }
+
+    fn output(mut self) -> Output {
+        // Leave timeout cleanup to Drop so the group is killed before its
+        // leader is reaped and the PID can be reused.
+        let mut output = None;
+        crate::support::wait::wait_until("a governed claude to exit", || {
+            output = self.try_output();
+            output.is_some()
+        });
+        output.unwrap()
+    }
+}
+
+impl Drop for GovernedChild {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            // SAFETY: spawn put this child in its own process group. The
+            // negative PID targets only that group, including blocked stubs.
+            unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+            let _ = child.wait();
+        }
+    }
+}
 
 #[test]
 fn no_readings_fails_open_and_status_names_the_reason() {
@@ -89,28 +134,37 @@ fn concurrent_starts_never_exceed_the_limit() {
     // overlap for real however slow the host is (issue #1977: no sleep).
     let mut children: Vec<_> = (0..4)
         .map(|i| {
-            f.cmd(&[
-                "claude",
-                "--workstream",
-                &format!("ws-{i}"),
-                "--",
-                "-p",
-                "x",
-            ])
-            .env("AMPLIHACK_GOVERNOR_WAIT", "120")
-            .env("STUB_HOLD", "1")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .unwrap()
+            GovernedChild::spawn(
+                f.cmd(&[
+                    "claude",
+                    "--workstream",
+                    &format!("ws-{i}"),
+                    "--",
+                    "-p",
+                    "x",
+                ])
+                .env("AMPLIHACK_GOVERNOR_WAIT", "120")
+                .env("STUB_HOLD", "1"),
+            )
         })
         .collect();
     let mut released = std::collections::HashSet::new();
+    let mut outputs = Vec::new();
     while released.len() < 4 {
         // Wait until as many stubs are held as the limit allows; release
         // them only then, so a governor that admitted more is seen.
         let want = (4 - released.len()).min(2);
         crate::support::wait::wait_until("the admitted stubs to be held", || {
+            // A slot release may miss its lock on a loaded host. Reap
+            // exited wrappers so their PIDs cannot keep those slots live.
+            children.retain_mut(|child| {
+                if let Some(output) = child.try_output() {
+                    outputs.push(output);
+                    false
+                } else {
+                    true
+                }
+            });
             f.held(&released).len() >= want
         });
         let held = f.held(&released);
@@ -120,11 +174,8 @@ fn concurrent_starts_never_exceed_the_limit() {
             released.insert(pid);
         }
     }
-    for c in &mut children {
-        crate::support::wait::wait_child("a governed claude", c);
-    }
-    for c in children {
-        let out = c.wait_with_output().unwrap();
+    outputs.extend(children.into_iter().map(GovernedChild::output));
+    for out in outputs {
         assert!(out.status.success(), "{}", describe(&out));
     }
     assert_eq!(f.claude_runs(), 4);
@@ -136,6 +187,76 @@ fn concurrent_starts_never_exceed_the_limit() {
         serde_json::json!([]),
         "every slot is released: {v}"
     );
+}
+
+#[test]
+fn governor_failures_kill_and_reap_wrappers_and_blocked_descendants() {
+    use std::io::Read;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    for timeout in [false, true] {
+        let f = Fixture::new();
+        f.readings(&[("alpha", 10.0, 20.0)]);
+        f.governor_config("max_concurrency = 2");
+        let (tx, rx) = mpsc::channel();
+        let mut pids = Vec::new();
+        let mut held_before_failure = false;
+        let failed = catch_unwind(AssertUnwindSafe(|| {
+            let children: Vec<_> = (0..3)
+                .map(|_| {
+                    let mut child = GovernedChild::spawn(
+                        f.cmd(&["claude", "--", "-p", "x"])
+                            .env("AMPLIHACK_GOVERNOR_WAIT", "120")
+                            .env("STUB_HOLD", "1"),
+                    );
+                    let wrapper = child.0.as_mut().unwrap();
+                    pids.push(wrapper.id());
+                    let mut pipe = wrapper.stdout.take().unwrap();
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        let result = pipe.read_to_end(&mut Vec::new());
+                        let _ = tx.send(result);
+                    });
+                    child
+                })
+                .collect();
+            crate::support::wait::wait_until("FIFO-held stubs before a fixture failure", || {
+                f.held(&Default::default()).len() >= 2
+            });
+            held_before_failure = true;
+            if timeout {
+                crate::support::wait::wait_until_with_ceiling(
+                    "an intentionally missing readiness event",
+                    Duration::ZERO,
+                    || false,
+                );
+            } else {
+                assert!(
+                    children.is_empty(),
+                    "intentional admission assertion failure"
+                );
+            }
+        }));
+        assert!(failed.is_err(), "the failure path must unwind");
+        assert!(held_before_failure, "the stubs must be held before failing");
+        for pid in pids {
+            // SAFETY: waitpid writes nothing with a null status pointer.
+            let waited =
+                unsafe { libc::waitpid(pid as libc::pid_t, std::ptr::null_mut(), libc::WNOHANG) };
+            assert_eq!(waited, -1, "wrapper {pid} was not reaped");
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::ECHILD)
+            );
+            // EOF requires every inherited writer (wrapper, shell and cat)
+            // to close, so killing just the wrapper cannot pass this check.
+            rx.recv_timeout(crate::support::wait::CEILING)
+                .expect("waiting for killed governor descendants to close stdout")
+                .expect("read governor stdout");
+        }
+    }
 }
 
 #[test]
