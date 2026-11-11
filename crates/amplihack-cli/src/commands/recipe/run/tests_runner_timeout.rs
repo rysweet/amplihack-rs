@@ -339,10 +339,20 @@ fn a_bounded_wait_reports_the_limit_it_applied() {
 // AC3 / AC4: end to end through `execute_recipe_via_rust`
 // -------------------------------------------------------------------------
 
+/// The `--capabilities` report `execute_recipe_via_rust` probes for before it
+/// spawns the runner (`runner_validation::probe`). The probe call exits here,
+/// before the stub writes its pid file or opens its gate.
+#[cfg(unix)]
+const CAPABILITIES_ARM: &str = "case \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n";
+
+/// Writes an executable stub runner. `body` must start with a `#!` line; the
+/// capability arm is inserted straight after it.
 #[cfg(unix)]
 fn write_stub(path: &std::path::Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, body).expect("write stub");
+    let (shebang, rest) = body.split_once('\n').expect("stub has a #! line");
+    assert!(shebang.starts_with("#!"), "stub must start with #!");
+    std::fs::write(path, format!("{shebang}\n{CAPABILITIES_ARM}{rest}")).expect("write stub");
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod stub");
 }
 
