@@ -272,7 +272,13 @@ fn the_real_git_route_gets_the_tag_even_when_a_branch_has_the_same_name() {
             .unwrap_or_else(|e| e.into_inner());
         which_git_in(&std::env::var_os("PATH").unwrap()).unwrap()
     };
+    // Spawn under the same lock: tests in this module set hostile `GIT_*`
+    // values (`GIT_COMMON_DIR` among them) process-wide via `with_env`, and a
+    // child spawned meanwhile would inherit them.
     let git = |dir: &Path, args: &[&str]| {
+        let _env = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let output = Command::new(&git_path)
             .args(args)
             .current_dir(dir)

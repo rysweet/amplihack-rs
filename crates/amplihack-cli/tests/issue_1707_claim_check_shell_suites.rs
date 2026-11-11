@@ -41,8 +41,8 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::isolated_amplihack::{
-    HOME_GUARD_ENV, NO_GIT_PROMPT_ENV, PROBE_WAIT_ENV, ROTATE_AUTOSTART_ENV, isolated,
-    shared_temp_home,
+    HOME_GUARD_ENV, NO_GIT_PROMPT_ENV, PROBE_WAIT_ENV, PROC_ROOT_ENV, ROTATE_AUTOSTART_ENV,
+    isolated, shared_empty_proc_root, shared_temp_home,
 };
 
 fn repo_root() -> PathBuf {
@@ -155,11 +155,12 @@ fn run_suite(script: &str) {
 /// nothing from the developer's or an auto-drive shell beyond that helper's
 /// keep-list: no `BASH_ENV` (which would source the merge guard's `gh` shim
 /// into every bash child), no `AMPLIHACK_*` other than the helper's two
-/// safeguards and its debug probe knob (issue #2019), no `CLAUDE_CONFIG_DIR`,
-/// no `GH_*`, no `GIT_*` beyond the helper's prompt suppressors, no
-/// `PR_NUMBER`, and a `HOME` under the test's temp dir. The safeguards, the
-/// knob and the suppressors (issue #1764) must be set, with their exact
-/// values, which shows the command came from the shared helper and not a copy.
+/// safeguards, its debug probe knob and its empty fake process table (issue #2042), no
+/// `CLAUDE_CONFIG_DIR`, no `GH_*`, no `GIT_*` beyond the helper's prompt
+/// suppressors, no `PR_NUMBER`, and a `HOME` under the test's temp dir. The
+/// safeguards and the suppressors (issue #1764) must be set,
+/// with their exact values, which shows the command came from the shared
+/// helper and not a copy.
 #[test]
 fn issue_1707_suite_environment_is_isolated() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -179,7 +180,8 @@ fn issue_1707_suite_environment_is_isolated() {
             (!name.starts_with("AMPLIHACK_")
                 || *name == HOME_GUARD_ENV
                 || *name == ROTATE_AUTOSTART_ENV
-                || *name == PROBE_WAIT_ENV)
+                || *name == PROBE_WAIT_ENV
+                || *name == PROC_ROOT_ENV)
                 && (!name.starts_with("GIT_")
                     || NO_GIT_PROMPT_ENV.iter().any(|(allowed, _)| allowed == name))
                 && !name.starts_with("GH_")
@@ -197,6 +199,8 @@ fn issue_1707_suite_environment_is_isolated() {
     assert_eq!(value_of(HOME_GUARD_ENV), Some("1"), "{env}");
     assert_eq!(value_of(ROTATE_AUTOSTART_ENV), Some("0"), "{env}");
     assert_eq!(value_of(PROBE_WAIT_ENV), Some("exit"), "{env}");
+    let proc_root = shared_empty_proc_root().to_str().unwrap();
+    assert_eq!(value_of(PROC_ROOT_ENV), Some(proc_root), "{env}");
     for (name, value) in NO_GIT_PROMPT_ENV {
         assert_eq!(value_of(name), Some(value), "{env}");
     }

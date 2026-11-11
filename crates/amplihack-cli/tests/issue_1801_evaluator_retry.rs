@@ -37,6 +37,7 @@ const VERDICT: &str = "LOOP_HEALTH: CONTINUE — the round made progress";
 const STEP: &str = "2";
 
 const STUB_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 case "$1" in
   --version) echo 'recipe-runner-rs 0.0.0 (stub)'; exit 0 ;;
 esac

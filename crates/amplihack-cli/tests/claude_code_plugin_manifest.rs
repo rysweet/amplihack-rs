@@ -1180,7 +1180,7 @@ mkdir -p "$HOME/.cargo/bin"
 printf '{"installs":{"recipe-runner-rs 0.4.0 (git+https://github.com/rysweet/amplihack-recipe-runner#%s)":{"bins":["recipe-runner-rs"]}}}' "$5" > "$HOME/.cargo/.crates2.json"
 cat > "$HOME/.cargo/bin/recipe-runner-rs" <<'RUNNER'
 #!/bin/sh
-printf '%s\n' '{"capabilities":["codex_exec","future"],"schema_version":1,"version":"0.4.0"}'
+printf '%s\n' '{"capabilities":["codex_exec","durable_recovery_v1","future"],"schema_version":1,"version":"0.4.0"}'
 RUNNER
 chmod +x "$HOME/.cargo/bin/recipe-runner-rs"
 "#
@@ -1211,7 +1211,7 @@ chmod +x "$HOME/.cargo/bin/recipe-runner-rs"
     fn cargo_only_claude_install_needs_no_json_runtime() {
         for (report, accepted) in [
             (
-                r#"{"capabilities":[],"version":"0.4.0","schema_version":1}"#,
+                r#"{"capabilities":["durable_recovery_v1"],"version":"0.4.0","schema_version":1}"#,
                 true,
             ),
             (
@@ -1338,11 +1338,11 @@ fi
         let runner = tools.path().join("runner");
         for (report, accepted) in [
             (
-                r#"{"capabilities":[],"schema_version":1,"version":"custom","extra":true}"#,
+                r#"{"capabilities":["durable_recovery_v1"],"schema_version":1,"version":"custom","extra":true}"#,
                 true,
             ),
             (
-                r#"{"capabilities":["future","codex_exec"],"version":"v","schema_version":1}"#,
+                r#"{"capabilities":["future","codex_exec","durable_recovery_v1"],"version":"v","schema_version":1}"#,
                 true,
             ),
             (
@@ -1350,15 +1350,15 @@ fi
                 false,
             ),
             (
-                r#"{"capabilities":[],"schema_version":true,"version":"v"}"#,
+                r#"{"capabilities":["durable_recovery_v1"],"schema_version":true,"version":"v"}"#,
                 false,
             ),
             (
-                r#"{"capabilities":[],"schema_version":1,"version":" "}"#,
+                r#"{"capabilities":["durable_recovery_v1"],"schema_version":1,"version":" "}"#,
                 false,
             ),
             (
-                r#"{"capabilities":[],"schema_version":1,"version":"v"} {}"#,
+                r#"{"capabilities":["durable_recovery_v1"],"schema_version":1,"version":"v"} {}"#,
                 false,
             ),
         ] {

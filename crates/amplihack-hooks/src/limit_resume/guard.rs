@@ -68,6 +68,10 @@ pub trait GuardStore {
     fn seen(&mut self, event: &str) -> io::Result<bool>;
     /// Resumes recorded for `session` in the 24 hours before `now`.
     fn resumes(&mut self, session: &str, now: i64) -> io::Result<u32>;
+    /// The latest resume recorded for `session`, at any age; `None` when it
+    /// has none or its record is malformed (which [`Self::resumes`] already
+    /// reads as the cap).
+    fn last_resume(&mut self, session: &str) -> io::Result<Option<i64>>;
     /// Creates `resume/` and `resume/prompted/` before a wait, so a prompt
     /// sent during the first-ever wait is recorded, and prunes old prompt
     /// markers.
@@ -302,6 +306,17 @@ impl GuardStore for FsGuard {
             None => 0,
             Some(None) => MAX_RESUMES_PER_SESSION,
             Some(Some(times)) => recent(&times, now).len() as u32,
+        })
+    }
+
+    fn last_resume(&mut self, session: &str) -> io::Result<Option<i64>> {
+        check_key(session)?;
+        let Some(sessions) = self.existing_subdir("sessions")? else {
+            return Ok(None);
+        };
+        Ok(match self.read_session(&sessions.join(session))? {
+            Some(Some(times)) => times.into_iter().max(),
+            _ => None,
         })
     }
 

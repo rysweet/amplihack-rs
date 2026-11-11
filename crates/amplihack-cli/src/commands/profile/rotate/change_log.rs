@@ -308,6 +308,11 @@ pub fn record(root: &Path, setting: &str, old: &str, new: &str) {
         return;
     }
     let env = |k: &str| std::env::var_os(k);
-    let msg = line(setting, old, new, &caller(&env, Path::new("/proc")));
+    let msg = line(
+        setting,
+        old,
+        new,
+        &caller(&env, &super::daemon::proc_root()),
+    );
     Sink::new(open_or_warn(&rs.log, &rs.log1), false, true).emit(now(), &msg);
 }

@@ -179,7 +179,9 @@ fn amplifier_auto_mode_uses_documented_run_positional_prompt_contract() {
             "amp-test".to_string(),
         ],
         prompt: prompt.clone(),
-        requested_delivery: PromptDelivery::Auto,
+        // Issue #2030 R1.2: an explicit Argv request is treated as Auto, so
+        // the positional slot holds the pointer sentence, not the prompt.
+        requested_delivery: PromptDelivery::Argv,
     })
     .expect("amplifier auto-mode delivery-aware command should build");
 
@@ -189,17 +191,18 @@ fn amplifier_auto_mode_uses_documented_run_positional_prompt_contract() {
         .position(|arg| arg == "--")
         .expect("nested amplihack command must separate wrapper and Amplifier args")
         + 1;
+    let tail = &args[passthrough_start..];
     assert_eq!(
-        &args[passthrough_start..],
-        &[
-            "run".to_string(),
-            "--provider".to_string(),
-            "openai".to_string(),
-            "--model".to_string(),
-            "amp-test".to_string(),
-            prompt,
-        ],
+        &tail[..5],
+        &["run", "--provider", "openai", "--model", "amp-test"],
         "Amplifier auto-mode must use `amplifier run [OPTIONS] [PROMPT]` without a synthetic prompt flag"
+    );
+    assert_eq!(tail.len(), 6, "{tail:?}");
+    assert!(tail[5].starts_with(FILE_REFERENCE_PREFIX), "{tail:?}");
+    assert_eq!(delivered.selected_mode, DeliveryMode::FileReference);
+    assert!(
+        args.iter().all(|a| !a.contains("issue #709")),
+        "prompt text must not appear in argv: {args:?}"
     );
 }
 
@@ -281,7 +284,7 @@ fn claude_auto_mode_large_prompt_goes_to_stdin_with_noninteractive() {
 }
 
 #[test]
-fn claude_auto_mode_small_prompt_stays_on_argv_without_stdin_payload() {
+fn claude_auto_mode_small_prompt_goes_to_stdin_not_argv() {
     let dir = tempfile::tempdir().unwrap();
     let prompt = "short prompt for issue 1570";
 
@@ -293,12 +296,12 @@ fn claude_auto_mode_small_prompt_stays_on_argv_without_stdin_payload() {
     ))
     .expect("claude auto-mode command should build");
 
-    assert_eq!(delivered.selected_mode, DeliveryMode::Argv);
-    assert!(delivered.stdin_payload.is_none());
-    assert_eq!(
-        argv(&delivered.command).last().map(String::as_str),
-        Some(prompt)
-    );
+    // Issue #2030: the 4 KiB argv threshold is gone.
+    assert_eq!(delivered.selected_mode, DeliveryMode::Stdin);
+    assert_eq!(delivered.stdin_payload.as_deref(), Some(prompt.as_bytes()));
+    let args = argv(&delivered.command);
+    assert_eq!(args.last().map(String::as_str), Some("-p"));
+    assert!(!args.iter().any(|a| a.contains(prompt)), "{args:?}");
 }
 
 #[test]
@@ -334,7 +337,7 @@ mod end_to_end {
     /// environment and its stdin.
     const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.0 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 n=$(ls "$RECORD_DIR" | grep -c '^argv\.')
 n=$((n+1))

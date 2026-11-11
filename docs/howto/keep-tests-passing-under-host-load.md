@@ -536,26 +536,21 @@ needs no slow server. Tests about the deadline move time only through the
 fake clock, for example by calling `clock.advance(300 ms)` from a fake handler
 instead of sleeping, and assert the outcome, never the elapsed time.
 
-A stalled server is a `Gate` that the test never opens before the deadline.
-The test advances the fake clock past the deadline, then opens the gate. The
-real ureq socket timeouts are derived from the time left on the injected
-clock and bounded by `HANG_GUARD`, so they act only as triggers and cannot
-change the outcome. `RETURN_SLACK`, `COUNTER_WAIT` and the old real
-`SEND_MARGIN` are gone; the virtual margins are named `V_SEND_MARGIN` and
-`V_REFRESH_T`.
+Logical deadline tests use `FakeHttp::scripted` through `Ctx::with_transport`.
+The script records the same requests and returns HTTP responses directly,
+without a listener, DNS lookup, socket, or worker scheduling. It advances
+`FakeClock` at each response. The late refresh test injects a transport timeout
+after recording the POST, proving that an abandoned rotation leaves credentials
+untouched and releases the lock. The shared deadline test still saves the
+rotation and refuses the retry GET once the logical budget is spent.
 
-These tests run on virtual time and gates or channels only:
-
-- `a_held_lock_is_refresh_busy_and_left_alone`
-- `a_set_stop_flag_takes_no_lock_and_sends_no_post`
-- `a_401_refreshes_once_writes_back_and_reads_again`
-- `a_second_401_after_the_refresh_is_not_refreshed_again`
-- `a_401_refresh_and_retry_share_one_deadline`
-- `a_refresh_with_the_budget_left_saves_the_rotated_token`
-- `a_refresh_answer_with_no_refresh_token_keeps_the_old_one`
-- `a_slow_refresh_within_the_deadline_still_reads`
-- `a_token_expiring_within_60_seconds_is_refreshed_before_the_first_get`
-- `the_refresh_counter_covers_a_refresh_in_progress`
+Loopback HTTP tests use `Ctx::new(clock, counter, HANG_GUARD)`. That independent
+real guard covers DNS, connect, read, write, agent and per-request timeouts;
+it never comes from a small virtual budget. Every request still checks the
+logical deadline before starting. Production `Ctx::system()` keeps the original
+`get_step`/`post_step` limits and remaining-budget timeouts. Pure policy tests
+verify those limits. A larger logical deadline alone would leave the short
+socket steps in force and would not separate these two clocks.
 
 ### A counter per test
 
@@ -571,7 +566,7 @@ let counter = AtomicUsize::new(0);
 let clock = FakeClock::new(); // moves only through advance()
 let req = request_guarded(&login, &[], true);
 
-let r = read_with(&endpoints(&fake), &req, &Ctx::new(&*clock, &counter));
+let r = read_with(&endpoints(&fake), &req, &Ctx::new(&*clock, &counter, HANG_GUARD));
 
 assert_eq!(counter.load(Ordering::SeqCst), 0);
 ```

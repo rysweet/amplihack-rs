@@ -116,7 +116,7 @@ fn run(claude_version: &str) -> (Value, String) {
     executable(&tools.join("amplihack-hooks"), "#!/bin/sh\necho '{}'\n");
     executable(
         &tools.join("recipe-runner-rs"),
-        "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[]}'\n",
+        "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"durable_recovery_v1\"]}'\n",
     );
     executable(
         &tools.join("claude"),

@@ -78,21 +78,19 @@ fn copilot_gets_a_file_reference_and_add_dir_for_its_directory() {
         granted
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("simard-prompt-dir-")),
+            .is_some_and(|n| n.starts_with("amplihack-prompt-")),
         "--add-dir must name the private prompt directory, got {}",
         granted.display()
     );
 }
 
 #[test]
-fn an_unknown_launcher_receives_the_prompt_in_argv() {
+fn an_unknown_launcher_is_refused_instead_of_receiving_argv() {
+    // Issue #2030: an unknown launcher may ignore a file reference and has no
+    // known stdin contract, so there is no safe channel; never fall back to argv.
     let dir = tempfile::tempdir().unwrap();
-    let prompt = large_prompt();
-    let args = args_of(&stub(dir.path(), "other-launcher"), &prompt);
-    assert!(!args.iter().any(|a| a == "--add-dir"));
-    let joined = args.join("\n");
-    assert!(
-        joined.contains(prompt.trim_end()),
-        "an unknown launcher must receive the prompt in argv"
-    );
+    let err = run_launcher(&stub(dir.path(), "other-launcher"), &large_prompt())
+        .expect_err("an unknown launcher has no safe channel");
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(!err.to_string().contains("launcher prompt line"));
 }

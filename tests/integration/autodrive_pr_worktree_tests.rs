@@ -186,6 +186,7 @@ impl Sandbox {
             // The sandbox asserts the default worktrees/ layout, without
             // redirecting temporary repositories into the caller's work root.
             .env_remove("AMPLIHACK_WORK_ROOT")
+            .env_remove("AMPLIHACK_WORK_ROOT_EXPLICIT")
             .env_remove("REPO_PATH")
     }
 
@@ -2303,6 +2304,12 @@ fn run_round_block_env(
         &ah.join("amplifier-bundle/tools/git-identity.sh"),
         "amplihack_prepare_git_commit_identity() { :; }\n",
     );
+    // The block loads the real #2033 helper from the same tools dir.
+    fs::copy(
+        launch_tools().join("git-repo-env.sh"),
+        ah.join("amplifier-bundle/tools/git-repo-env.sh"),
+    )
+    .expect("copy git-repo-env.sh");
     write_exec(
         &repo.sb.bin().join("amplihack"),
         "#!/usr/bin/env bash\n\
@@ -2918,11 +2925,18 @@ fn loops_resolve_by_pr_only_and_keep_the_merge_gate_on_the_launch_side() {
 #[test]
 fn round_step_04_blocks_unset_inherited_repository_variables_after_cd() {
     // SEC-D2, as written.
+    // The merge round loads the full #2033 list from git-repo-env.sh; the
+    // crusty round keeps its partial unset.
     for (recipe, step) in ROUNDS {
         let lines = logical_lines(&commit_block(&step_field(recipe, step, "prompt")));
+        let expected = if recipe == "autodrive-merge-round.yaml" {
+            "unset GH_REPO; [ ! -L \"{{autodrive_tools_dir}}/git-repo-env.sh\" ] && . \"{{autodrive_tools_dir}}/git-repo-env.sh\" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo \"STOP: cannot load git-repo-env.sh from the tools directory (#2033)\" >&2; exit 1; }"
+        } else {
+            "unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO"
+        };
         assert_eq!(
             lines.get(1).map(String::as_str),
-            Some("unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO"),
+            Some(expected),
             "{recipe} {step}: the line right after `cd` unsets the repository variables:\n{}",
             lines.join("\n")
         );

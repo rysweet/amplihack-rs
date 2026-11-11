@@ -540,6 +540,7 @@ pub(super) fn context_env_pairs(
 // The resolved agent binary is an extra argument on purpose: the caller
 // decided it once, for the pre-flight and the steps alike (issue #1481).
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(super) fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
@@ -551,6 +552,33 @@ pub(super) fn execute_recipe_via_rust(
     agent_binary: amplihack_utils::agent_binary::Resolution,
     merge_guard: bool,
 ) -> Result<RecipeRunResult> {
+    execute_recipe_via_rust_fresh(
+        recipe_path,
+        context,
+        dry_run,
+        _verbose,
+        working_dir,
+        search_dirs,
+        step_timeout,
+        agent_binary,
+        merge_guard,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn execute_recipe_via_rust_fresh(
+    recipe_path: &Path,
+    context: &BTreeMap<String, String>,
+    dry_run: bool,
+    _verbose: bool,
+    working_dir: &Path,
+    search_dirs: &[PathBuf],
+    step_timeout: Option<u64>,
+    agent_binary: amplihack_utils::agent_binary::Resolution,
+    merge_guard: bool,
+    fresh: bool,
+) -> Result<RecipeRunResult> {
     // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
     // recipe-runner once the session has reached the configured maximum depth,
     // so a failing / misbehaving orchestration can never recursively re-enter
@@ -560,9 +588,29 @@ pub(super) fn execute_recipe_via_rust(
     // Issue #1606: from here on a SIGHUP/SIGINT/SIGTERM stops the run, at any
     // point: setup, a running attempt, or retry backoff.
     super::stop_signal::arm();
+    // Issue #1976: a nested run stops when its parent `recipe run` exits. A
+    // parent already gone sets the stop here, before the runner is spawned.
+    super::parent_watch::start();
 
     let binary = super::binary::find_recipe_runner_binary()?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
+    if let Err(error) = crate::runner_validation::probe(&binary, &agent_binary.binary) {
+        let correlation = RecipeRunCorrelation::new(
+            recipe_name.clone(),
+            working_dir,
+            &BTreeMap::new(),
+            binary.as_path(),
+        );
+        correlation.emit_early();
+        eprintln!("amplihack: runner capability check failed: {error}");
+        return Err(fail_with_final_record(
+            &correlation,
+            RecipeRunFinalStatus::SpawnFailure,
+            None,
+            None,
+            error,
+        ));
+    }
 
     // Issue #1481: the caller resolved the agent binary once, from
     // `working_dir`, while this process could still see the session markers of
@@ -590,10 +638,31 @@ pub(super) fn execute_recipe_via_rust(
     // Issue #1808: the run's folder under the work root holds run.json and
     // owned-paths; its runtime/ (TMPDIR, TMP, TEMP and artifacts) is removed
     // when the run ends, on every exit path including a panic.
-    let workspace = RefCell::new(crate::commands::cleanup::run_dir::RunWorkspace::begin(
-        &recipe_name,
-        working_dir,
-    )?);
+    let workspace = RefCell::new(if dry_run {
+        crate::commands::cleanup::run_dir::RunWorkspace::dry_runtime()?
+    } else {
+        crate::commands::cleanup::run_dir::RunWorkspace::begin_durable(&recipe_name, working_dir)?
+    });
+    let delegated = recipe_runner_rs::recovery::ipc::Client::from_environment()?;
+    let admission = if !dry_run && delegated.is_none() {
+        let settings = recipe_runner_rs::recovery::model::fingerprint(&(
+            &agent_binary.binary,
+            step_timeout,
+            merge_guard,
+            env!("CARGO_PKG_VERSION"),
+        ))?;
+        Some(super::recovery::admit(
+            &workspace.borrow(),
+            recipe_path,
+            &recipe_name,
+            working_dir,
+            context,
+            fresh,
+            settings,
+        )?)
+    } else {
+        None
+    };
 
     // Issue #964: snapshot the caller checkout's git state BEFORE spawning so a
     // runner that corrupts it (e.g. flips `core.bare=true`, which breaks
@@ -627,6 +696,14 @@ pub(super) fn execute_recipe_via_rust(
             .arg("-C")
             .arg(working_dir);
 
+        if fresh {
+            command.arg("--fresh");
+        }
+        if let Some(admission) = &admission {
+            command
+                .arg("--recovery-descriptor")
+                .arg(admission.descriptor_path());
+        }
         // Issue #494: forward sub-recipe search dirs as -R flags so
         // recipe-runner-rs can resolve sub-recipes the same way amplihack
         // resolves top-level recipes. One -R per non-empty entry, in order.
@@ -695,10 +772,27 @@ pub(super) fn execute_recipe_via_rust(
         // login shell's profile, so a merge outside autodrive_merge_gate.sh
         // is refused in every step. Fails closed, before the runner starts, when
         // the shim is missing.
+        //
+        // Issue #1954 D5: the guard comes from the bundle pinned once here, at
+        // run start. A link into a release is resolved now and never again, so
+        // an install that switches the link mid-run cannot make the guard's
+        // PATH entry, BASH_ENV and their de-duplication straddle two releases.
         let env_builder = if merge_guard {
             let guard_dir =
                 super::merge_guard::guard_dir_for_home(env_builder.var("AMPLIHACK_HOME"))?;
-            super::merge_guard::apply_guard(env_builder.prepend_path(&guard_dir), &guard_dir)
+            let pinned_bundle = guard_dir
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf);
+            let env_builder =
+                super::merge_guard::apply_guard(env_builder.prepend_path(&guard_dir), &guard_dir);
+            match pinned_bundle {
+                Some(bundle) => env_builder.set(
+                    super::merge_guard::BUNDLE_DIR_ENV,
+                    bundle.to_string_lossy().into_owned(),
+                ),
+                None => env_builder,
+            }
         } else {
             env_builder
         };
@@ -728,6 +822,33 @@ pub(super) fn execute_recipe_via_rust(
         command.env(MAX_DEPTH_ENV, guard.max_depth.to_string());
         command.env("AMPLIHACK_RECIPE_RUN_ID", run_id);
         command.envs(workspace.borrow().env());
+        if dry_run {
+            command.env("AMPLIHACK_RUN_ID", run_id);
+        }
+        // Issue #1976: name this `recipe run` as the parent of any nested run
+        // a step starts, on the child only (never set_var). Without a start
+        // time the pair is omitted: a pid alone could be reused.
+        match super::parent_watch::own_starttime() {
+            Some(starttime) => {
+                command.env(
+                    super::parent_watch::PARENT_PID_ENV,
+                    std::process::id().to_string(),
+                );
+                command.env(
+                    super::parent_watch::PARENT_STARTTIME_ENV,
+                    starttime.to_string(),
+                );
+            }
+            None => {
+                command.env_remove(super::parent_watch::PARENT_PID_ENV);
+                command.env_remove(super::parent_watch::PARENT_STARTTIME_ENV);
+            }
+        }
+        // Issue #1976: only the round's own `recipe run` may write the drive's
+        // orphaned.json; nested runs below it must not overwrite it. This
+        // level reads the variable from its own environment, so removing it
+        // on the child does not affect this run.
+        command.env_remove(super::orphan_record::AUTODRIVE_STATE_DIR_ENV);
 
         Ok(command)
     };
@@ -748,6 +869,22 @@ pub(super) fn execute_recipe_via_rust(
             // Issue #1606: never start an attempt after a stop signal, e.g.
             // one that arrived during retry backoff.
             if let Some(signal) = super::stop_signal::pending() {
+                // Issue #1976: an orphan stop before any runner started still
+                // leaves its final record and orphaned.json.
+                // The captured value alone decides the status (C-S6).
+                if signal == super::stop_signal::ORPHANED as i32 {
+                    let correlation = RecipeRunCorrelation::new(
+                        recipe_name.clone(),
+                        working_dir,
+                        context,
+                        binary.as_path(),
+                    )
+                    .with_settings(run_settings.clone());
+                    // The pointer contract is one `early` then one `final`
+                    // per run_id, even when no runner is spawned.
+                    correlation.emit_early();
+                    record_orphan(&correlation, None, &guard.tree_id);
+                }
                 return AttemptOutcome::Final(Err(anyhow::Error::new(
                     super::stop_signal::StoppedBySignal(signal),
                 )));
@@ -772,6 +909,7 @@ pub(super) fn execute_recipe_via_rust(
                 correlation,
                 recipe_path,
                 timeout,
+                &guard.tree_id,
                 &mut stderr_tail,
             );
 
@@ -868,6 +1006,31 @@ pub(super) fn execute_recipe_via_rust(
         }
         Err(error) => Err(error),
     };
+    if let Some(admission) = &admission {
+        use recipe_runner_rs::recovery::model::Outcome;
+        let outcome = match &final_result {
+            Ok(result) if result.success => Some(Outcome::Success),
+            Ok(_)
+                if last_verdict
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|v| v.class == super::FailureClass::UsageLimit) =>
+            {
+                Some(Outcome::UsageLimit)
+            }
+            Err(error)
+                if error
+                    .downcast_ref::<super::stop_signal::StoppedBySignal>()
+                    .is_some() =>
+            {
+                None
+            }
+            _ => Some(Outcome::Failure),
+        };
+        if let Some(outcome) = outcome {
+            admission.finish(outcome)?;
+        }
+    }
     finish_workspace(workspace.into_inner(), &final_result, dry_run);
     final_result
 }
@@ -930,6 +1093,7 @@ fn spawn_with_streaming_stderr(
     correlation: RecipeRunCorrelation,
     recipe_path: &Path,
     timeout: Duration,
+    tree_id: &str,
     stderr_sink: &mut String,
 ) -> Result<RecipeRunResult> {
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -1047,12 +1211,19 @@ fn spawn_with_streaming_stderr(
                 reap_recipe_runner_group(child.id(), recipe_runner_teardown_grace());
                 crate::commands::recipe::stop::terminate(&tree);
                 crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
-                correlation.emit_final(
-                    RecipeRunFinalStatus::Failure,
-                    child_pid,
-                    status.code(),
-                    known_log_paths(None),
-                );
+                // Issue #1976: the captured signal value alone decides the
+                // status; a signal stored after an orphan request replaces it
+                // and is a Failure.
+                if signal == super::stop_signal::ORPHANED as i32 {
+                    record_orphan(&correlation, child_pid, tree_id);
+                } else {
+                    correlation.emit_final(
+                        RecipeRunFinalStatus::Failure,
+                        child_pid,
+                        status.code(),
+                        known_log_paths(None),
+                    );
+                }
                 return Err(anyhow::Error::new(super::stop_signal::StoppedBySignal(
                     signal,
                 )));
@@ -1068,12 +1239,18 @@ fn spawn_with_streaming_stderr(
                 crate::commands::recipe::stop::snapshot_tree(&std::collections::BTreeSet::from([
                     child.id() as i32,
                 ]));
-            let summary = correlation.emit_final(
-                RecipeRunFinalStatus::Failure,
-                child_pid,
-                None,
-                known_log_paths(None),
-            );
+            // Issue #1976: the flag value alone decides the status; a signal
+            // stored after an orphan request replaces it and is a Failure.
+            let summary = if signal == super::stop_signal::ORPHANED as i32 {
+                record_orphan(&correlation, child_pid, tree_id)
+            } else {
+                correlation.emit_final(
+                    RecipeRunFinalStatus::Failure,
+                    child_pid,
+                    None,
+                    known_log_paths(None),
+                )
+            };
             let detail = super::format::format_log_pointer_summary(&summary);
             // The sweep runs whatever the group teardown reports: a runner
             // that could not be reaped must not leave its descendants behind.
@@ -1372,6 +1549,29 @@ fn fail_with_final_record(
     let summary = correlation.emit_final(status, child_pid, exit_code, known_log_paths(None));
     let detail = super::format::format_log_pointer_summary(&summary);
     error.context(format!("recipe run {} ended: {detail}", summary.run_id))
+}
+
+/// Issue #1976: the final record and `orphaned.json` of an orphan stop. The
+/// existing teardown runs unchanged around it.
+fn record_orphan(
+    correlation: &RecipeRunCorrelation,
+    child_pid: Option<u32>,
+    tree_id: &str,
+) -> crate::commands::recipe::RecipeLogPointerSummary {
+    let parent_pid = super::stop_signal::orphan_info().map_or(0, |info| info.parent_pid);
+    let summary = correlation.emit_orphaned(
+        child_pid,
+        super::correlation::OrphanFields {
+            parent_pid,
+            tree_id,
+        },
+    );
+    super::orphan_record::write_to_state_dir(&super::orphan_record::OrphanRecord {
+        parent_pid,
+        tree_id: tree_id.to_string(),
+        run_id: correlation.run_id().to_string(),
+    });
+    summary
 }
 
 fn exit_status_label(status: &std::process::ExitStatus) -> String {

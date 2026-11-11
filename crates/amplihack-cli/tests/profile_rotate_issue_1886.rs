@@ -47,7 +47,7 @@ const RECORDING_CLAUDE: &str = r#"#!/bin/sh
 n="$RECORD_DIR/claude-run.$$"
 { printf 'ARGV:'; for a in "$@"; do printf ' %s' "$a"; done; printf '\n'; env; } > "$n"
 case "$1" in
-  --version) echo '2.1.316 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 exit 1
 "#;
@@ -307,6 +307,10 @@ impl Fx {
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
             // `env_clear` dropped the probe knob `isolated` set (issue #2019).
             .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
+            .env(
+                crate::isolated_amplihack::PROC_ROOT_ENV,
+                crate::isolated_amplihack::shared_empty_proc_root(),
+            )
             .env("HOME", &self.home)
             .env("TMPDIR", std::env::temp_dir())
             .env(

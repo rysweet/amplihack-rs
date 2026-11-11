@@ -1,4 +1,4 @@
-//! A loopback HTTP/1.1 fake for the issue #1844 direct-read tests. It binds
+//! HTTP fixtures for the issue #1844 direct-read tests. The loopback mode binds
 //! `127.0.0.1:0`, records every request (method, path, headers, body) and
 //! answers with whatever the route closure returns. It never reaches the
 //! network beyond loopback and never sees a real credential: the tests give
@@ -35,6 +35,7 @@ pub(super) struct Reply {
     pub(super) body: Vec<u8>,
     /// Waited before the status line is written.
     pub(super) delay: Duration,
+    timeout: bool,
 }
 
 impl Reply {
@@ -44,6 +45,7 @@ impl Reply {
             headers: vec![("Content-Type".into(), "application/json".into())],
             body: body.to_string().into_bytes(),
             delay: Duration::ZERO,
+            timeout: false,
         }
     }
 
@@ -53,6 +55,15 @@ impl Reply {
             headers: Vec::new(),
             body: body.into(),
             delay: Duration::ZERO,
+            timeout: false,
+        }
+    }
+
+    /// A transport failure after a scripted handler receives the request.
+    pub(super) fn timed_out() -> Self {
+        Self {
+            timeout: true,
+            ..Self::raw(200, Vec::new())
         }
     }
 
@@ -69,11 +80,12 @@ impl Reply {
 
 type Route = dyn Fn(&Seen, usize) -> Reply + Send + Sync + 'static;
 
-/// A running fake. The accept thread lives for the rest of the test
-/// process; each test starts its own fake on its own port.
+/// A recorded script, optionally served over loopback HTTP. In loopback mode
+/// the accept thread lives for the rest of the test process on its own port.
 pub(super) struct FakeHttp {
     port: u16,
     seen: Arc<Mutex<Vec<Seen>>>,
+    scripted: Option<Box<Route>>,
 }
 
 impl FakeHttp {
@@ -92,7 +104,21 @@ impl FakeHttp {
                 std::thread::spawn(move || serve(stream, &log, &*route));
             }
         });
-        Self { port, seen }
+        Self {
+            port,
+            seen,
+            scripted: None,
+        }
+    }
+
+    /// No listener or worker: the injected transport answers synchronously.
+    /// Logical deadline tests can advance their clock without real I/O deadlines.
+    pub(super) fn scripted(route: impl Fn(&Seen, usize) -> Reply + Send + Sync + 'static) -> Self {
+        Self {
+            port: 1,
+            seen: Arc::default(),
+            scripted: Some(Box::new(route)),
+        }
     }
 
     pub(super) fn base(&self) -> String {
@@ -112,6 +138,62 @@ impl FakeHttp {
             .iter()
             .filter(|s| s.method == method && s.path == path)
             .count()
+    }
+}
+
+impl super::usage_direct::TestTransport for FakeHttp {
+    fn send(
+        &self,
+        request: ureq::Request,
+        payload: Option<&str>,
+    ) -> Result<ureq::Response, Box<ureq::Error>> {
+        let route = self.scripted.as_ref().expect("scripted transport required");
+        let seen = Seen {
+            method: request.method().to_owned(),
+            path: request
+                .url()
+                .strip_prefix(&self.base())
+                .expect("loopback URL")
+                .to_owned(),
+            headers: request
+                .header_names()
+                .into_iter()
+                .map(|name| {
+                    let value = request.header(&name).unwrap().to_owned();
+                    (name.to_ascii_lowercase(), value)
+                })
+                .collect(),
+            body: payload.unwrap_or_default().to_owned(),
+        };
+        let n = {
+            let mut log = self.seen.lock().unwrap();
+            let n = log.iter().filter(|s| s.path == seen.path).count();
+            log.push(seen.clone());
+            n
+        };
+        let reply = route(&seen, n);
+        assert!(
+            reply.delay.is_zero(),
+            "scripted time must use the injected clock"
+        );
+        if reply.timeout {
+            // A scripted transport timeout, after the handler saw the request.
+            return Err(Box::new(ureq::Error::from(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "scripted timeout",
+            ))));
+        }
+        let mut wire = format!(
+            "HTTP/1.1 {} X\r\nContent-Length: {}\r\n",
+            reply.status,
+            reply.body.len()
+        );
+        for (name, value) in reply.headers {
+            wire.push_str(&format!("{name}: {value}\r\n"));
+        }
+        wire.push_str("\r\n");
+        wire.push_str(std::str::from_utf8(&reply.body).expect("scripted UTF-8 body"));
+        wire.parse().map_err(Box::new)
     }
 }
 

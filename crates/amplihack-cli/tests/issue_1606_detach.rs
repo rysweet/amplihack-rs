@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 
 /// Records its pid, its environment and its child's pid, then waits.
 const STUB_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 env > "$RECORD_DIR/env.tmp" && mv "$RECORD_DIR/env.tmp" "$RECORD_DIR/env.txt"
 echo $$ > "$RECORD_DIR/runner.tmp" && mv "$RECORD_DIR/runner.tmp" "$RECORD_DIR/runner.pid"
 sleep 300 &
@@ -477,6 +478,7 @@ fn stop_of_an_unknown_target_fails() {
 
 /// Fails every attempt with a transient (retryable) transport error.
 const TRANSIENT_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 echo $$ > "$RECORD_DIR/runner.tmp" && mv "$RECORD_DIR/runner.tmp" "$RECORD_DIR/runner.pid"
 echo attempt >> "$RECORD_DIR/attempts"
 echo "API Error: 529 overloaded_error" >&2
@@ -592,6 +594,7 @@ fn detach_without_tmux_fails_and_leaves_nothing_behind() {
 
 /// A tmux that accepts `new-session` but never starts the pane.
 const SILENT_TMUX: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 case "$1" in
   -V) echo "tmux 3.4" ;;
   new-session|kill-session) exit 0 ;;
@@ -677,6 +680,7 @@ fn a_sigkilled_recipe_run_takes_its_runner_with_it() {
 
 /// Starts a child that leaves the runner's process group and session.
 const SETSID_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 echo $$ > "$RECORD_DIR/runner.tmp" && mv "$RECORD_DIR/runner.tmp" "$RECORD_DIR/runner.pid"
 setsid sleep 300 &
 echo $! > "$RECORD_DIR/escaped.tmp" && mv "$RECORD_DIR/escaped.tmp" "$RECORD_DIR/escaped.pid"
@@ -716,6 +720,7 @@ fn a_stop_also_ends_a_descendant_that_left_the_group() {
 /// Reports success, then signals its parent (`recipe run`) and exits at once:
 /// the signal and the exit race.
 const SIGNAL_AT_EXIT_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 printf '%s\n' '{"recipe_name":"issue-1606-detach","success":true,"step_results":[],"context":{}}'
 kill -TERM $PPID
 exit 0
@@ -762,7 +767,7 @@ fn a_pane_start_up_error_is_reported_by_the_launch() {
     crate::support::exec_stub::write_executable(
         &fx.tools.join("tmux"),
         format!(
-            "#!/bin/sh\nif [ \"$1\" = new-session ]; then mv \"$CALLER_DIR\" \"$CALLER_DIR.moved\"; fi\nexec {real_tmux} \"$@\"\n"
+            "#!/bin/sh\ncase \"$*\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nif [ \"$1\" = new-session ]; then mv \"$CALLER_DIR\" \"$CALLER_DIR.moved\"; fi\nexec {real_tmux} \"$@\"\n"
         ),
         0o755,
     );

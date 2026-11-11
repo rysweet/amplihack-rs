@@ -13,14 +13,20 @@
 #![cfg(unix)]
 
 use crate::support::amplihack_bin::amplihack_bin;
+#[cfg(target_os = "linux")]
+use crate::support::fake_proc::{FAKE_PID_BASE, FakeProc};
 use crate::support::profile_default::set_default;
+#[cfg(target_os = "linux")]
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
+#[cfg(target_os = "linux")]
+use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
@@ -65,7 +71,7 @@ fn private_file(path: &Path, body: &str) {
 /// - otherwise prints `done as <profile>` and exits `$EXIT_CODE`.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 p="${AMPLIHACK_CLAUDE_PROFILE-<unset>}"
 echo "$p" >> "$RECORD_DIR/attempts"
@@ -110,13 +116,18 @@ echo "done as $p"
 exit "${EXIT_CODE:-0}"
 "#;
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux-only swap tests
-struct Holder(Child);
+/// A fake Claude session in the fixture's process table (issue #2042);
+/// dropping it removes the entry, as the session exiting would.
+#[cfg(target_os = "linux")]
+struct Holder {
+    proc: Rc<FakeProc>,
+    pid: u32,
+}
 
+#[cfg(target_os = "linux")]
 impl Drop for Holder {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        self.proc.remove(self.pid);
     }
 }
 
@@ -131,6 +142,12 @@ struct Fixture {
     printed: RefCell<Vec<u8>>,
     /// Sentinel credential contents, by profile.
     creds: BTreeMap<String, String>,
+    /// The process table every command reads instead of `/proc`.
+    #[cfg(target_os = "linux")]
+    proc: Rc<FakeProc>,
+    /// The pid the next [`Fixture::hold`] uses.
+    #[cfg(target_os = "linux")]
+    next_pid: Cell<u32>,
 }
 
 impl Fixture {
@@ -154,6 +171,10 @@ impl Fixture {
             tools,
             printed: RefCell::new(Vec::new()),
             creds: BTreeMap::new(),
+            #[cfg(target_os = "linux")]
+            proc: Rc::new(FakeProc::new()),
+            #[cfg(target_os = "linux")]
+            next_pid: Cell::new(FAKE_PID_BASE),
         };
         for name in PROFILES {
             f.ok(&["profile", "add", name]);
@@ -203,6 +224,10 @@ impl Fixture {
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
             // `env_clear` dropped the probe knob `isolated` set (issue #2019).
             .env(crate::isolated_amplihack::PROBE_WAIT_ENV, "exit")
+            .env(
+                crate::isolated_amplihack::PROC_ROOT_ENV,
+                crate::isolated_amplihack::shared_empty_proc_root(),
+            )
             .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
@@ -229,6 +254,8 @@ impl Fixture {
             .env("AMPLIHACK_GOVERNOR", "off")
             .env("AMPLIHACK_SKIP_REFLECTION", "1")
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
+        #[cfg(target_os = "linux")]
+        c.env(crate::isolated_amplihack::PROC_ROOT_ENV, self.proc.path());
         c
     }
 
@@ -278,27 +305,23 @@ impl Fixture {
         self.ok(&["profile", "auto-switch", "on"]);
     }
 
-    /// A process standing in for a Claude session running in `name`.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux-only swap tests
+    /// A static entry standing in for a Claude session running in `name`:
+    /// not a zombie, owned by this user, with `CLAUDE_CONFIG_DIR` set to the
+    /// profile's absolute directory. No process is started.
+    #[cfg(target_os = "linux")]
     fn hold(&self, name: &str) -> Holder {
-        let child = Command::new("sleep")
-            .arg("120")
-            .env_clear()
-            .env("CLAUDE_CONFIG_DIR", self.dir(name))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        // Make sure /proc/<pid>/environ is the child's, not the pre-exec copy.
-        for _ in 0..100 {
-            let exe = fs::read_link(format!("/proc/{}/exe", child.id())).unwrap_or_default();
-            if exe.file_name().is_some_and(|n| n == "sleep") {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+        let pid = self.next_pid.get();
+        self.next_pid.set(pid + 1);
+        let dir = self.dir(name);
+        self.proc
+            .process(pid)
+            .cmdline(&["sleep", "120"])
+            .status('S')
+            .environ(&[("CLAUDE_CONFIG_DIR", dir.to_str().unwrap())]);
+        Holder {
+            proc: Rc::clone(&self.proc),
+            pid,
         }
-        Holder(child)
     }
 
     /// Status-line input like Claude Code's, with the given usage.
@@ -1719,7 +1742,7 @@ mod swap {
         prime(&f);
         let _x = f.hold("X");
         let json = Fixture::statusline_json(95.0, 10.0);
-        let children: Vec<Child> = (0..8)
+        let children: Vec<std::process::Child> = (0..8)
             .map(|_| {
                 let mut c = f.tick_cmd("X");
                 let mut child = c.spawn().unwrap();

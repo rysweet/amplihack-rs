@@ -532,18 +532,69 @@ pub(super) struct Request<'a> {
 /// deadline is measured on and the count of refreshes holding a lock.
 /// [`read`] and [`refresh_expired`] use [`Ctx::system`]; tests pass their own
 /// clock and counter to [`read_with`] and [`refresh_expired_with`]. Real
-/// socket timeouts stay real: each request is still given the time left on
-/// this clock as its `ureq` timeout.
+/// socket timeouts stay real in production. Tests can supply an independent
+/// transport guard or an in-process transport so virtual budgets never become
+/// short real socket deadlines.
 pub(super) struct Ctx<'a> {
     clock: &'a dyn Clock,
     refreshing: &'a AtomicUsize,
+    #[cfg(test)]
+    transport_guard: Option<Duration>,
+    #[cfg(test)]
+    transport: Option<&'a dyn TestTransport>,
+}
+
+#[cfg(test)]
+pub(super) trait TestTransport {
+    fn send(
+        &self,
+        request: ureq::Request,
+        payload: Option<&str>,
+    ) -> Result<ureq::Response, Box<HttpError>>;
 }
 
 impl<'a> Ctx<'a> {
     /// A context with `clock` and the counter `refreshing`.
     #[cfg(test)]
-    pub(super) fn new(clock: &'a dyn Clock, refreshing: &'a AtomicUsize) -> Self {
-        Self { clock, refreshing }
+    pub(super) fn new(clock: &'a dyn Clock, refreshing: &'a AtomicUsize, guard: Duration) -> Self {
+        Self {
+            clock,
+            refreshing,
+            transport_guard: Some(guard),
+            transport: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_transport(mut self, transport: &'a dyn TestTransport) -> Self {
+        self.transport = Some(transport);
+        self
+    }
+
+    fn send(
+        &self,
+        request: ureq::Request,
+        payload: Option<&str>,
+    ) -> Result<ureq::Response, Box<HttpError>> {
+        #[cfg(test)]
+        if let Some(transport) = self.transport {
+            return transport.send(request, payload);
+        }
+        match payload {
+            Some(payload) => request.send_string(payload),
+            None => request.call(),
+        }
+        .map_err(Box::new)
+    }
+
+    fn deadline(&self, timeout: Duration) -> Deadline<'a> {
+        let deadline = Deadline::after(timeout, self.clock);
+        #[cfg(test)]
+        let deadline = Deadline {
+            transport_guard: self.transport_guard,
+            ..deadline
+        };
+        deadline
     }
 
     /// The real clock and the process-wide counter that
@@ -552,6 +603,10 @@ impl<'a> Ctx<'a> {
         Ctx {
             clock: &SystemClock,
             refreshing: &REFRESHING,
+            #[cfg(test)]
+            transport_guard: None,
+            #[cfg(test)]
+            transport: None,
         }
     }
 }
@@ -564,6 +619,8 @@ impl<'a> Ctx<'a> {
 struct Deadline<'a> {
     end: Instant,
     clock: &'a dyn Clock,
+    #[cfg(test)]
+    transport_guard: Option<Duration>,
 }
 
 impl<'a> Deadline<'a> {
@@ -573,6 +630,8 @@ impl<'a> Deadline<'a> {
         Self {
             end: now.checked_add(timeout).unwrap_or(now),
             clock,
+            #[cfg(test)]
+            transport_guard: None,
         }
     }
 
@@ -584,6 +643,21 @@ impl<'a> Deadline<'a> {
         } else {
             Ok(left)
         }
+    }
+
+    /// Check the logical deadline even when a test gives blocking I/O a
+    /// separate hang guard. Production always uses the remaining budget.
+    fn transport_timeout(self) -> Result<Duration, &'static str> {
+        let left = self.left()?;
+        Ok(self.transport_step(left))
+    }
+
+    fn transport_step(self, step: Duration) -> Duration {
+        #[cfg(test)]
+        if let Some(guard) = self.transport_guard {
+            return guard;
+        }
+        step
     }
 }
 
@@ -610,7 +684,7 @@ pub(super) fn read_with(
     req: &Request<'_>,
     ctx: &Ctx<'_>,
 ) -> Result<Direct, &'static str> {
-    let deadline = Deadline::after(req.timeout, ctx.clock);
+    let deadline = ctx.deadline(req.timeout);
     if !ep.usable() {
         return Err(reason::TRANSPORT);
     }
@@ -624,16 +698,16 @@ pub(super) fn read_with(
     if due {
         if req.allow_refresh {
             let fresh = refresh(ep, req, ctx, &creds.access, deadline)?;
-            return get_usage(&agent, ep, &fresh, now_s, deadline);
+            return get_usage(&agent, ep, &fresh, now_s, deadline, ctx);
         }
         if creds.expires_at_ms.is_some_and(|at| at <= req.now_ms) {
             return Err(reason::EXPIRED);
         }
     }
-    match get_usage(&agent, ep, &creds.access, now_s, deadline) {
+    match get_usage(&agent, ep, &creds.access, now_s, deadline, ctx) {
         Err(r) if r == reason::HTTP_401 && req.allow_refresh => {
             let fresh = refresh(ep, req, ctx, &creds.access, deadline)?;
-            get_usage(&agent, ep, &fresh, now_s, deadline)
+            get_usage(&agent, ep, &fresh, now_s, deadline, ctx)
         }
         other => other,
     }
@@ -700,7 +774,7 @@ pub(super) fn refresh_expired_with(
     req: &Request<'_>,
     ctx: &Ctx<'_>,
 ) -> Result<bool, &'static str> {
-    let deadline = Deadline::after(req.timeout, ctx.clock);
+    let deadline = ctx.deadline(req.timeout);
     let creds = load(req.creds_dir)?;
     // Expiry first: a token that has not expired needs no endpoint, so
     // unusable endpoints must not be reported as a failed refresh.
@@ -741,14 +815,18 @@ pub(super) fn post_step(left: Duration) -> Duration {
 /// read's deadline has passed in real time; with none left they end at once,
 /// and the caller's own check of [`Deadline::left`] sends no request then.
 fn agent(ep: &Endpoints, timeout: Duration, deadline: Deadline<'_>) -> ureq::Agent {
-    let left = deadline.left().unwrap_or_default();
+    let left = deadline.transport_timeout().unwrap_or_default();
     let now = Instant::now();
-    agent_builder(ep, timeout, get_step(timeout))
-        .resolver(bounded_lookup(
-            now.checked_add(left).unwrap_or(now),
-            system_lookup,
-        ))
-        .build()
+    agent_builder(
+        ep,
+        deadline.transport_step(timeout),
+        deadline.transport_step(get_step(timeout)),
+    )
+    .resolver(bounded_lookup(
+        now.checked_add(left).unwrap_or(now),
+        system_lookup,
+    ))
+    .build()
 }
 
 fn agent_builder(ep: &Endpoints, timeout: Duration, step: Duration) -> ureq::AgentBuilder {
@@ -779,18 +857,19 @@ fn get_usage(
     token: &Token,
     now_s: i64,
     deadline: Deadline<'_>,
+    ctx: &Ctx<'_>,
 ) -> Result<Direct, &'static str> {
     let url = ep.usage_url();
     let req = agent
         .get(&url)
-        .timeout(deadline.left()?)
+        .timeout(deadline.transport_timeout()?)
         .set("Authorization", &token.header())
         .set("anthropic-beta", BETA)
         .set("Accept", "application/json");
     if !parsed_agrees(&req, &url) {
         return Err(reason::TRANSPORT);
     }
-    let resp = match req.call() {
+    let resp = match ctx.send(req, None) {
         Ok(resp) => resp,
         Err(e) => return Err(map_err(&e)),
     };
@@ -964,16 +1043,17 @@ fn refresh(
     // which `ureq` fixes before the lookup starts, so a slow lookup is
     // `ErrorKind::Dns` (`refresh failed`, nothing sent) and never the
     // connect deadline's I/O timeout.
-    let step = post_step(left);
+    let step = deadline.transport_step(post_step(left));
     let dns = bounded_lookup(
         Instant::now() + step.saturating_sub(MIN_STEP),
         system_lookup,
     );
-    let post = agent_builder(ep, left, step)
+    let transport_timeout = deadline.transport_step(left);
+    let post = agent_builder(ep, transport_timeout, step)
         .resolver(dns)
         .build()
         .post(url)
-        .timeout(left)
+        .timeout(transport_timeout)
         .set("Content-Type", "application/json")
         .set("Accept", "application/json")
         .set("anthropic-beta", BETA);
@@ -992,8 +1072,8 @@ fn refresh(
     // `refresh not saved`, which tells the user to log in again; only a
     // failure that provably came before the request was written, or a 3xx or
     // 4xx status the server turned it away with, is `refresh failed`.
-    let resp = post
-        .send_string(&payload.to_string())
+    let resp = ctx
+        .send(post, Some(&payload.to_string()))
         .map_err(|e| post_failure(&e))?;
     if resp.status() != 200 {
         return Err(refresh_status(resp.status()));
@@ -1039,4 +1119,56 @@ fn refresh(
     let bytes = serde_json::to_vec_pretty(&whole).map_err(|_| reason::REFRESH_NOT_SAVED)?;
     temp.commit(&bytes).map_err(|_| reason::REFRESH_NOT_SAVED)?;
     Ok(fresh)
+}
+
+#[cfg(test)]
+mod transport_deadline_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct TestClock(Mutex<Instant>);
+
+    impl Clock for TestClock {
+        fn now(&self) -> Instant {
+            *self.0.lock().unwrap()
+        }
+
+        fn sleep(&self, duration: Duration) {
+            *self.0.lock().unwrap() += duration;
+        }
+    }
+
+    #[test]
+    fn transport_guard_is_independent_but_never_admits_a_spent_logical_budget() {
+        let clock = TestClock(Mutex::new(Instant::now()));
+        let counter = AtomicUsize::new(0);
+        let budget = Duration::from_secs(5);
+        let guard = Duration::from_secs(120);
+        let deadline = Ctx::new(&clock, &counter, guard).deadline(budget);
+        assert_eq!(deadline.transport_timeout(), Ok(guard));
+        assert_eq!(deadline.transport_step(get_step(budget)), guard);
+        assert_eq!(deadline.transport_step(post_step(budget)), guard);
+        clock.sleep(Duration::from_secs(4));
+        assert_eq!(deadline.left(), Ok(Duration::from_secs(1)));
+        assert_eq!(deadline.transport_timeout(), Ok(guard));
+        clock.sleep(Duration::from_secs(1));
+        assert_eq!(deadline.transport_timeout(), Err(reason::TIMEOUT));
+    }
+
+    #[test]
+    fn system_transport_keeps_production_steps_and_remaining_budget() {
+        let clock = TestClock(Mutex::new(Instant::now()));
+        let budget = Duration::from_secs(5);
+        // No test override: the same Deadline constructor account() and the
+        // system context use, with a controlled clock for exact assertions.
+        let deadline = Deadline::after(budget, &clock);
+        assert_eq!(Ctx::system().transport_guard, None);
+        assert_eq!(
+            deadline.transport_step(get_step(budget)),
+            Duration::from_secs(4)
+        );
+        assert_eq!(deadline.transport_step(post_step(budget)), budget);
+        clock.sleep(Duration::from_secs(4));
+        assert_eq!(deadline.transport_timeout(), Ok(Duration::from_secs(1)));
+    }
 }

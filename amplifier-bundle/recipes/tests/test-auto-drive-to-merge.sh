@@ -1109,7 +1109,9 @@ else
 fi
 
 # Two-argument escalate is byte-identical; only the third argument changes it.
-UL_FUNC="$(sed -n '/^escalate() {/,/^}/p; /^record_result() {/,/^}/p' "${ESCALATE}")" # record_result: #1743
+# held_by_lines comes too (#2219): escalate calls it, and with no round record
+# at RECORD it prints nothing, so the output below is unchanged by it.
+UL_FUNC="$(sed -n '/^escalate() {/,/^}/p; /^record_result() {/,/^}/p; /^held_by_lines() {/,/^}/p' "${ESCALATE}")" # record_result: #1743
 ul_escalate() { env -i PATH="/usr/bin:/bin" bash -c "LOOP_NAME=crusty ROUND_LABEL=round-1 RECORD=/r.json; ${UL_FUNC}"$'\n''escalate "$@"' _ "$@" 2>&1; }
 UL_GOT="$(ul_escalate STUCK 'it did not move')"
 UL_WANT="AUTO_DRIVE_LOOP: STUCK — loop 'crusty' stops at round label 'round-1'.
@@ -2913,7 +2915,7 @@ SENTINEL_1607="DECOY-1607-SENTINEL"
 # and exits 0, so a step that sourced it ends "successfully": only the marker
 # shows which tools directory was used, whatever the step prints.
 R1607_MARK="${WORK_PHYS}/1607-decoy.ran"
-for t in "${AUTODRIVE_TOOLS[@]}" git-identity.sh; do
+for t in "${AUTODRIVE_TOOLS[@]}" git-identity.sh git-repo-env.sh; do
   cat > "${DECOY_1607}/${t}" <<EOF
 printf '%s\n' "${t}" >> "${R1607_MARK}"
 printf '%s\n' "${SENTINEL_1607}" >&2
@@ -3093,6 +3095,20 @@ if printf '%s' "${STEP02_PROMPT}" | grep -qF '{{merge_ready_files.skill_md}}' \
 else
   fail "MERGEREADY-reads-files" "step-02 does not use {{merge_ready_files.skill_md}} and {{merge_ready_files.template}}"
 fi
+# Issue #2033: step-04's agent runs the repository's tests while it fixes
+# blockers. Each of its shell calls inherits the agent's environment, so the
+# "Running tests or hooks" instruction itself must tell it to clear the
+# repository-selecting and run-identity variables, not only the commit block.
+STEP04_TESTS_LINE="$(awk '
+  index($0, "id: \"step-04-address-blockers\"") { on=1; next }
+  on && /^  - id:/ { exit }
+  on && index($0, "**Running tests or hooks**") { print }' "${ROUND_YAML}")"
+R2033_CLEAR='[ ! -L "{{autodrive_tools_dir}}/git-repo-env.sh" ] && . "{{autodrive_tools_dir}}/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env'
+if [ -n "${STEP04_TESTS_LINE}" ] && printf '%s' "${STEP04_TESTS_LINE}" | grep -qF "${R2033_CLEAR}"; then
+  pass "2033-step04-tests-clear-env" "step-04 tells the agent to load git-repo-env.sh and clear both lists before each test or hook run"
+else
+  fail "2033-step04-tests-clear-env" "step-04's 'Running tests or hooks' instruction does not load git-repo-env.sh and clear both lists"
+fi
 if ! printf '%s' "${STEP02_PROMPT}" | grep -qF 'Skill('; then
   pass "MERGEREADY-no-skill-call" "step-02 contains no Skill( at all"
 else
@@ -3255,7 +3271,7 @@ else
   td_root() { # td_root <dir> [tool to leave out]: a root whose amplifier-bundle/tools copies the round's tools
     mkdir -p "$1/amplifier-bundle/tools"
     for t in autodrive_merge_ready_files.sh autodrive_platform_facts.sh autodrive_round_evidence.sh \
-             autodrive_state.sh autodrive_trust.sh git-identity.sh; do
+             autodrive_state.sh autodrive_trust.sh git-identity.sh git-repo-env.sh; do
       [ "$t" = "${2:-}" ] || cp "${TOOLS}/$t" "$1/amplifier-bundle/tools/"
     done
   }
@@ -3674,7 +3690,9 @@ if [ "$(printf '%s' "${EV_REL_OUT}" | jq -r '.qa_status' 2>/dev/null)" = "PASS" 
 else
   fail "QA-relative-repo-path" "got: ${EV_REL_OUT}"
 fi
-EV_NO_TOOLS="${WORK_PHYS}/ev-no-tools"; mkdir -p "${EV_NO_TOOLS}/home" "${EV_NO_TOOLS}/ah"
+EV_NO_TOOLS="${WORK_PHYS}/ev-no-tools"; mkdir -p "${EV_NO_TOOLS}/home" "${EV_NO_TOOLS}/ah/amplifier-bundle/tools"
+# Only the QA tool is missing: the #2033 helper the step loads first is there.
+cp "${REPO_ROOT}/amplifier-bundle/tools/git-repo-env.sh" "${EV_NO_TOOLS}/ah/amplifier-bundle/tools/"
 EV_MISS_OUT="$(env -i HOME="${EV_NO_TOOLS}/home" TMPDIR="${WORK_PHYS}" PATH="${EV_FULL}:/usr/bin:/bin" \
   AMPLIHACK_HOME="${EV_NO_TOOLS}/ah" REPO_PATH="${EV_REPO}" EV_CALLS=/dev/null \
   "${BASH}" -c "${EV_BODY}" 2>"${EV_NO_TOOLS}.err")"; EV_MISS_RC=$?
@@ -4215,7 +4233,7 @@ fi
 # The tool needs autodrive_trust.sh beside it to know which measurements
 # apply; alone, it fails by name and writes no evidence.
 EV_ALONE="${WORK_PHYS}/ev-alone/amplifier-bundle/tools"; mkdir -p "${EV_ALONE}"
-cp "${REPO_ROOT}/amplifier-bundle/tools/autodrive_qa_evidence.sh" "${EV_ALONE}/"
+cp "${REPO_ROOT}/amplifier-bundle/tools/autodrive_qa_evidence.sh" "${REPO_ROOT}/amplifier-bundle/tools/git-repo-env.sh" "${EV_ALONE}/"
 ev_repo Cargo.toml
 rm -f "${EV_REPO}.evidence.json"
 ev_run "${EV_FULL}" AMPLIHACK_HOME="${WORK_PHYS}/ev-alone"
@@ -5162,7 +5180,7 @@ fi
 exit 1
 GH
 chmod +x "${PF_BIN}/gh"
-PF_KEYS='["approval_source","approval_status","base_ref","head_sha","is_draft","merge_state","mergeable","pr","required_approvals","review_decision","state","unresolved_threads"]'
+PF_KEYS='["approval_blocker","approval_source","approval_status","base_ref","head_sha","is_draft","merge_state","mergeable","pr","required_approvals","review_decision","state","unresolved_threads"]'
 PF_OUT=""; PF_RC=0; PF_N=0; PF_CALLS=""
 pf_run() { # pf_run [PF_VAR=value ...]: runs the tool for PR 42 with nothing but the stub gh, jq and coreutils
   PF_N=$((PF_N + 1)); PF_CALLS="${WORK_PHYS}/pf-${PF_N}.calls"; : > "${PF_CALLS}"
@@ -5174,7 +5192,7 @@ pf_expect() { # pf_expect <label> <approval_status> <approval_source> <required_
   if [ "${PF_RC}" != 0 ] || [ "$(printf '%s\n' "${PF_OUT}" | grep -c .)" != 1 ] \
      || [ "$(printf '%s' "${PF_OUT}" | jq -c '[keys[]]' 2>/dev/null)" != "${PF_KEYS}" ] \
      || ! printf '%s' "${PF_OUT}" | jq -e '[.[] | type == "string"] | all' >/dev/null 2>&1; then
-    fail "$label" "not one JSON line of the 12 string fields (rc=${PF_RC}): ${PF_OUT} | $(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
+    fail "$label" "not one JSON line of the 13 string fields (rc=${PF_RC}): ${PF_OUT} | $(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
     return
   fi
   got="$(printf '%s' "${PF_OUT}" | jq -r '[.approval_status, .approval_source, .required_approvals] | join(" ")')"
@@ -5246,7 +5264,7 @@ else
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED PF_THREADS='{"message":"x"}'
   pf_expect "PF-threads-unreadable-not-pending" UNREADABLE unreadable "" "an unreadable thread count is not a thread: BLOCKED with every check passed still needs a person" unresolved_threads=unreadable
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=UNKNOWN PF_CHECKS="${PF_FAIL_RUN}"
-  pf_expect "PF-unknown-state-not-pending" UNREADABLE unreadable "" "a merge state GitHub has not computed is never read as pending"
+  pf_expect "PF-unknown-state-not-pending" UNREADABLE facts-unreadable "" "a merge state GitHub has not computed, beside an unreadable count, is a failed measurement, not a finding"
   pf_run PF_CLASSIC=1 PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED PF_CHECKS="${PF_FAIL_RUN}"
   pf_expect "PF-known-count-not-pending" NOT_MET required-count 1 "a known count decides whatever else blocks; PENDING is only for an unknown count"
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION=APPROVED PF_MSTATE=BLOCKED PF_CHECKS="${PF_FAIL_RUN}"
@@ -5264,7 +5282,7 @@ else
   pf_run PF_CLASSIC=0 PF_RULES='[]' PF_DECISION=CHANGES_REQUESTED PF_MSTATE=BLOCKED
   pf_expect "PF-changes-requested" NOT_MET review-decision 0 "requested changes are outstanding even when no approval is required"
   pf_run PF_VIEW=fail PF_CLASSIC=0 PF_RULES='[]'
-  pf_expect "PF-view-unreadable" UNREADABLE unreadable "" "an unreadable pull request is never an empty review decision" \
+  pf_expect "PF-view-unreadable" UNREADABLE facts-unreadable "" "an unreadable pull request is never an empty review decision; the failed read is reported as a failed measurement" \
     state=UNKNOWN head_sha= merge_state=UNKNOWN base_ref=
   pf_run PF_BASE='main"},"x":"y' PF_CLASSIC=0 PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
   pf_expect "PF-hostile-base-ref" UNREADABLE unreadable "" "a base ref outside [A-Za-z0-9._/-] is dropped and never reaches a URL" base_ref=
@@ -5275,7 +5293,7 @@ else
   # required-reviewer rule blocks the merge. Such a count is unknown, so the
   # merge state decides, and BLOCKED is never MET.
   pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_code_owner_reviews":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
-  pf_expect "PF-count-0-code-owner-blocked" UNREADABLE unreadable "" "protection requires code-owner review at a count of 0: a null decision with BLOCKED is not met"
+  pf_expect "PF-count-0-code-owner-blocked" NOT_MET review-rule "" "protection names code-owner review at a count of 0: BLOCKED with nothing an agent can clear means that review is missing"
   if grep -qF 'classic=unknown(code-owner-or-last-push)' "${WORK_PHYS}/pf-${PF_N}.err"; then
     pass "PF-count-0-code-owner-named" "the INFO line names the review rule that made the count unknown"
   else
@@ -5284,20 +5302,20 @@ else
   pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_code_owner_reviews":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN
   pf_expect "PF-count-0-code-owner-clean" MET merge-state "" "with code-owner review required at a count of 0, CLEAN is met through the merge state, never through a count of 0"
   pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_last_push_approval":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
-  pf_expect "PF-count-0-last-push-blocked" UNREADABLE unreadable "" "protection requires last-push approval at a count of 0: BLOCKED is not met"
+  pf_expect "PF-count-0-last-push-blocked" NOT_MET review-rule "" "protection names last-push approval at a count of 0: BLOCKED means that approval is missing"
   pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_code_owner_reviews":false,"require_last_push_approval":false' PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
   pf_expect "PF-count-0-flags-false" MET required-count 0 "flags that are present but false leave a count of 0 known"
   pf_run PF_CLASSIC=1 PF_CLASSIC_FLAGS='"require_code_owner_reviews":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN
   pf_expect "PF-count-1-code-owner" NOT_MET required-count 1 "a count above 0 is kept beside a code-owner rule"
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_DECISION= PF_MSTATE=BLOCKED \
     PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_code_owner_review":true}}]'
-  pf_expect "PF-ruleset-0-code-owner-blocked" UNREADABLE unreadable "" "a ruleset requiring code-owner review at a count of 0: BLOCKED is not met"
+  pf_expect "PF-ruleset-0-code-owner-blocked" NOT_MET review-rule "" "a ruleset names code-owner review at a count of 0: BLOCKED means that review is missing"
   pf_run PF_CLASSIC=0 PF_DECISION= PF_MSTATE=BLOCKED \
     PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_last_push_approval":true}}]'
-  pf_expect "PF-ruleset-0-last-push-blocked" UNREADABLE unreadable "" "a classic 0 beside a ruleset requiring last-push approval at a count of 0 is not the whole count"
+  pf_expect "PF-ruleset-0-last-push-blocked" NOT_MET review-rule "" "a classic 0 beside a ruleset naming last-push approval at a count of 0 is not the whole count; BLOCKED means that approval is missing"
   pf_run PF_CLASSIC=0 PF_DECISION= PF_MSTATE=BLOCKED \
     PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"required_reviewers":[{"minimum_approvals":1,"file_patterns":["*"],"reviewer":{"id":1,"type":"Team"}}]}}]'
-  pf_expect "PF-ruleset-0-required-reviewers-blocked" UNREADABLE unreadable "" "a ruleset listing required reviewers at a count of 0: BLOCKED is not met"
+  pf_expect "PF-ruleset-0-required-reviewers-blocked" NOT_MET review-rule "" "a ruleset listing required reviewers at a count of 0: BLOCKED means that review is missing"
   pf_run PF_CLASSIC=0 PF_DECISION= PF_MSTATE=CLEAN \
     PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_code_owner_review":true}}]'
   pf_expect "PF-ruleset-0-code-owner-clean" MET merge-state "" "with a ruleset code-owner rule at a count of 0, CLEAN is met through the merge state"

@@ -36,10 +36,18 @@
 //!   debug build's `--version` probe of a stub waits for the stub to exit
 //!   instead of giving up after 3 s on a busy host. Release builds never read
 //!   it.
+//! - `AMPLIHACK_TEST_PROC_ROOT` ([`PROC_ROOT_ENV`], issue #2042) set to
+//!   [`shared_empty_proc_root`], so `profile` and `sessions` commands read an
+//!   empty fake process table instead of the host's `/proc`. A test that
+//!   clears the environment calls [`reapply_proc_root`] after `env_clear()`;
+//!   a test with its own tree sets the variable again afterwards.
 
 #![allow(dead_code)]
 
 use std::ffi::OsStr;
+use std::fs::{DirBuilder, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -63,6 +71,12 @@ pub const PROBE_WAIT_ENV: &str = "AMPLIHACK_TEST_PROBE_WAIT";
 
 /// The variable naming the Claude login profile root.
 pub const PROFILE_ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
+
+/// The variable naming the process table the binary reads instead of
+/// `/proc` (issue #2042). The binary honours it only under the home guard,
+/// for a directory under the temp dir owned by this user and not writable by
+/// others.
+pub const PROC_ROOT_ENV: &str = "AMPLIHACK_TEST_PROC_ROOT";
 
 /// The variables that stop git from asking for a credential (issue #1764),
 /// with their values: the same three that `.cargo/config.toml` sets.
@@ -113,6 +127,68 @@ pub fn shared_temp_home() -> &'static Path {
     })
 }
 
+/// The constant `self/environ` of every fake process table.
+pub const SELF_ENVIRON: &[u8] = b"AMPLIHACK_FAKE=1\0";
+
+/// Fill an existing directory `root` with the files every fake process
+/// table holds: `self/` (mode 0700) and `self/environ` (mode 0600) with
+/// [`SELF_ENVIRON`]. `self/environ` must exist, or the liveness scan reports
+/// "unsupported" and counts every profile as live. The one builder for both
+/// [`shared_empty_proc_root`] and `FakeProc` (issue #2042); panics on any
+/// I/O failure.
+pub fn seed_proc_tree(root: &Path) {
+    let dir = root.join("self");
+    DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
+    let environ = dir.join("environ");
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&environ)
+        .and_then(|mut f| f.write_all(SELF_ENVIRON))
+        .unwrap_or_else(|e| panic!("write {}: {e}", environ.display()));
+}
+
+/// An empty fake process table shared by this test process:
+/// `<shared_temp_home>/fake-proc/`, mode 0700, seeded by [`seed_proc_tree`]
+/// and holding no pid entries, so the liveness scan sees no sessions and the
+/// rotator reads as stale or stopped. Written once and never again: parallel
+/// tests share it. Removed with the shared HOME at exit.
+pub fn shared_empty_proc_root() -> &'static Path {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = shared_temp_home().join("fake-proc");
+        DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .unwrap_or_else(|e| panic!("create {}: {e}", root.display()));
+        seed_proc_tree(&root);
+        root
+    })
+}
+
+/// The start of the stderr line a debug `amplihack` prints, once per
+/// process, when it refuses [`PROC_ROOT_ENV`] and reads the host `/proc`.
+pub const PROC_ROOT_REFUSED: &str = "AMPLIHACK_TEST_PROC_ROOT ignored";
+
+/// Panics if `stderr` shows the child refused its fake process table, for
+/// example because its `TMPDIR` or home guard was lost after `env_clear()`.
+pub fn assert_proc_root_honoured(stderr: &str) {
+    assert!(
+        !stderr.contains(PROC_ROOT_REFUSED),
+        "the child read the host /proc (issue #2042): {stderr}"
+    );
+}
+
+/// Set [`PROC_ROOT_ENV`] to [`shared_empty_proc_root`] on `command`, and
+/// return it. Call it after `env_clear()`; a later `.env()` call wins.
+pub fn reapply_proc_root(command: &mut Command) -> &mut Command {
+    command.env(PROC_ROOT_ENV, shared_empty_proc_root())
+}
+
 /// A `Command` for the `amplihack` binary at `bin`, isolated as described in
 /// the module docs.
 pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
@@ -145,5 +221,6 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
         .env(HOME_GUARD_ENV, "1")
         .env(ROTATE_AUTOSTART_ENV, "0")
         .env(PROBE_WAIT_ENV, "exit");
+    reapply_proc_root(&mut command);
     command
 }
