@@ -3554,6 +3554,8 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
             .env("HOME", &home)
             .env("TMPDIR", &tmpdir)
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+            // This generic runner stub has no Codex capability report.
+            .env("AMPLIHACK_AGENT_BINARY", "claude")
             .env("AMPLIHACK_SESSION_TREE_DIR", &trees)
             .env("AMPLIHACK_TREE_ID", TREE)
             .env("AMPLIHACK_SESSION_DEPTH", depth.to_string())

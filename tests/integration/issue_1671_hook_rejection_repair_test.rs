@@ -332,6 +332,7 @@ fn shell_test_is_wired_into_ci() {
 #[test]
 fn hook_rejection_repair_shell_contract_passes() {
     let root = workspace_root();
+    let home = tempfile::tempdir().expect("create isolated git configuration home");
     let script =
         root.join("amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh");
     assert!(script.is_file(), "missing {}", script.display());
@@ -339,6 +340,12 @@ fn hook_rejection_repair_shell_contract_passes() {
     let out = Command::new("bash")
         .arg(&script)
         .current_dir(&root)
+        // Personal global ignore rules must not hide the artifacts this
+        // fixture intentionally creates to exercise staging diagnostics.
+        .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         // The shell test points the steps at the repository's own helpers
         // and its own stub; an inherited override would test something else.
         .env_remove("WORKFLOW_HOOK_REPAIR_HELPER")

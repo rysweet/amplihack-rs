@@ -183,6 +183,10 @@ impl Sandbox {
             .env_remove("GH_HOST")
             .env_remove("GH_REPO")
             .env_remove("AMPLIHACK_HOME")
+            // These fixtures exercise the default checkout-local worktree
+            // layout, independently of a recipe caller's explicit work root.
+            .env_remove("AMPLIHACK_WORK_ROOT")
+            .env_remove("AMPLIHACK_WORK_ROOT_EXPLICIT")
             .env_remove("REPO_PATH")
     }
 

@@ -511,7 +511,9 @@ fn a_damaged_ledger_never_moves_onto_overflow() {
     fs::create_dir_all(f.rotate_dir()).unwrap();
     private_file(
         &f.rotate_dir().join("ledger.json"),
-        "{\"version\":1,\"surprise\":1}",
+        // Unknown metadata is valid for forward compatibility (#1659).
+        // A malformed known field must still prevent spending on overflow.
+        "{\"version\":1,\"overflow_blocked\":[]}",
     );
     let _ = f.run(&["profile", "rotate"]);
     assert_eq!(

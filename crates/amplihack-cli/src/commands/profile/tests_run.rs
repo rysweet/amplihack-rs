@@ -105,21 +105,31 @@ fn run_refuses_group_writable_profile_before_spawn() {
     assert!(build_profile_command(&bin, &s, &name, &[]).is_err());
 }
 
-struct DockerEnvGuard(Option<std::ffi::OsString>);
+struct DockerEnvGuard {
+    _env: crate::test_support::EnvGuard,
+    _bin: tempfile::TempDir,
+}
 impl DockerEnvGuard {
     fn set(v: &str) -> Self {
-        let prev = std::env::var_os("AMPLIHACK_USE_DOCKER");
-        unsafe { std::env::set_var("AMPLIHACK_USE_DOCKER", v) };
-        Self(prev)
-    }
-}
-impl Drop for DockerEnvGuard {
-    fn drop(&mut self) {
+        let saved = crate::test_support::EnvGuard::capture(&[
+            "AMPLIHACK_USE_DOCKER",
+            "AMPLIHACK_IN_DOCKER",
+            "PATH",
+        ]);
+        // Environment activation also requires a running Docker daemon.
+        // Model that prerequisite without depending on the host's daemon.
+        let bin = tempfile::tempdir().unwrap();
+        let docker = bin.path().join("docker");
+        fs::write(&docker, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&docker, fs::Permissions::from_mode(0o755)).unwrap();
         unsafe {
-            match &self.0 {
-                Some(v) => std::env::set_var("AMPLIHACK_USE_DOCKER", v),
-                None => std::env::remove_var("AMPLIHACK_USE_DOCKER"),
-            }
+            std::env::set_var("AMPLIHACK_USE_DOCKER", v);
+            std::env::remove_var("AMPLIHACK_IN_DOCKER");
+            std::env::set_var("PATH", bin.path());
+        }
+        Self {
+            _env: saved,
+            _bin: bin,
         }
     }
 }
