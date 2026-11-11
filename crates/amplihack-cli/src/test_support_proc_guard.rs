@@ -310,10 +310,10 @@ fn typed_bindings_and_constants_fail_the_lib_guard() {
 fn bindings_and_constants_respect_scopes() {
     assert_eq!(
         scan(
-            r#"const ROOT: &str = "/proc";
-               #[test] fn leaks() {
-                   { let ROOT: &str = "/tmp/fake"; let _ = fs::read_dir(ROOT); }
-                   let _ = fs::read_dir(ROOT);
+            r#"#[test] fn leaks() {
+                   let root: &str = "/proc";
+                   { let root: &str = "/tmp/fake"; let _ = fs::read_dir(root); }
+                   let _ = fs::read_dir(root);
                }"#,
             false
         ),
@@ -321,7 +321,7 @@ fn bindings_and_constants_respect_scopes() {
     );
     for src in [
         r#"const ROOT: &str = "/proc";
-           #[test] fn safe() { let ROOT: &str = "/tmp/fake"; let _ = fs::read_dir(ROOT); }"#,
+           #[test] fn safe() { const ROOT: &str = "/tmp/fake"; let _ = fs::read_dir(ROOT); }"#,
         r#"const ROOT: &str = "/proc";
            #[test] fn safe() { let _ = fs::read_dir(ROOT); const ROOT: &str = "/tmp/fake"; }"#,
         r#"#[test] fn unused() { let root: &str = "/proc"; }
