@@ -152,9 +152,9 @@ agent step or a recipe run.
 | Identity preflight | `AMPLIHACK_IDENTITY_PREFLIGHT_TIMEOUT` (default 30 s) in `workflow_identity_preflight.sh` | Bounds each `gh` identity query before a run starts |
 | `gh pr create` in `quick-change` | `timeout 1800` | Hang guard on one GitHub write |
 | Auto-drive stop comment | `timeout 900` around one `gh pr comment` in `tools/autodrive_budget.sh` | Bounds one comment post after a loop has already stopped; it does not limit the drive |
-| Start-up handshakes | Codex app-server and MCP handshakes | The peer is not answering |
+| Start-up handshakes | Codex app-server and MCP handshakes; the `amplihack-remote` tmux session launch in `execute_remote_tmux` (60 s) | The peer is not answering; the launch limit covers only starting the session, not the agent run inside it |
 | Lock acquisition and pipe draining | Recipe-run lock, child stdout and stderr drain after exit | Prevents a deadlock on a stuck peer |
-| Installer and network setup | `curl`, `tar`, `npm`, `apt` and self-upgrade steps (300 s); `git clone` (120 or 300 s); remote file transfer and provisioning | Network hang guard on one setup step; the remote agent run itself has no limit |
+| Installer and network setup | `curl`, `tar`, `npm`, `apt` and self-upgrade steps (300 s); `git clone` (120 or 300 s); in the `amplihack-remote` executor, the context archive upload (600 s per attempt, retried with backoff within a 60 s retry budget by default), the remote log archive, the git bundle and the file download after a run (300 s each); remote provisioning | Network hang guard on one setup or transfer step; the remote agent run itself (`execute_remote`, `execute_remote_tmux`) has no limit unless a timeout is configured |
 | Prompt text in bundled recipes | `setsid -w timeout <secs>` guidance in `autodrive-merge-round` and `workflow-precommit-test`; `primary_timeout` and `timeout_seconds` parameters in `cascade-workflow` | Text the agent reads; amplihack does not enforce it |
 
 ## Hook timeouts in settings.json
@@ -176,6 +176,12 @@ These are the values amplihack installs:
 
 The Claude login rotator waits at most 7 days (`MAX_WAIT`) for a login to
 regain capacity.
+
+The `limit-resume` hook ends its own wait early enough to leave
+`LIMIT_RESUME_TIMEOUT_MARGIN` (300 s) before the 608400 s timeout, so the
+hook always decides, logs and exits before Claude Code stops it. A
+compile-time check in `amplihack-utils` keeps `MAX_WAIT` plus the margin
+below the registered timeout. The margin bounds no work.
 
 ## Values that look like limits but are not
 
