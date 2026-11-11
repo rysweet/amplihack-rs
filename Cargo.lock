@@ -301,6 +301,7 @@ dependencies = [
 name = "amplihack-hooks-bin"
 version = "1.2.0"
 dependencies = [
+ "amplihack-git",
  "amplihack-hooks",
  "amplihack-state",
  "amplihack-types",

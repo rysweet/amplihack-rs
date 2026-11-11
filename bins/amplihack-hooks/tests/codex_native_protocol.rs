@@ -1,20 +1,23 @@
 //! Codex wire contract at the actual multicall protocol boundary.
+#[path = "../../../tests/support/isolated_hook.rs"]
+mod isolated_hook;
+
+use isolated_hook::HookSandbox;
 use serde_json::{Value, json};
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn hook(subcommand: &str, payload: Value) -> Value {
     hook_bytes(subcommand, &payload.to_string(), "codex")
 }
 fn hook_bytes(subcommand: &str, payload: &str, provider: &str) -> Value {
-    let home = tempfile::tempdir().unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack-hooks"));
+    // Isolated HOME, AMPLIHACK_HOME, profile root, CLAUDE_PROJECT_DIR and cwd
+    // (#2361).
+    let sandbox = HookSandbox::new();
+    let mut command = sandbox.command(env!("CARGO_BIN_EXE_amplihack-hooks"));
     command
         .arg(subcommand)
-        .current_dir(home.path())
-        .env("HOME", home.path())
-        .env("AMPLIHACK_HOME", home.path().join(".amplihack"))
-        .env("CODEX_HOME", home.path().join(".codex"))
+        .env("CODEX_HOME", sandbox.home().join(".codex"))
         .env("AMPLIHACK_AGENT_BINARY", provider)
         .env("AMPLIHACK_RECIPE_RUN_ID", "test-leaf-run");
     if provider == "codex" {

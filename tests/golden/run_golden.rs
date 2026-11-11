@@ -4,6 +4,9 @@
 //! and runs each through the corresponding hook's `process()` method, comparing
 //! the output semantically against the expected JSON.
 
+#[path = "../support/isolated_hook.rs"]
+mod isolated_hook;
+
 use amplihack_hooks::{
     Hook, PostToolUseHook, PreCompactHook, PreToolUseHook, SessionStartHook, SessionStopHook,
     StopHook, UserPromptSubmitHook,
@@ -252,6 +255,26 @@ fn run_golden_tests_for_hook(hook_type: &str) {
         golden_home.to_str().expect("golden temp home is UTF-8"),
     );
     let _amplihack_home = EnvVarGuard::unset("AMPLIHACK_HOME");
+    // #2361: the same isolation the spawned-hook tests get from
+    // `tests/support/isolated_hook.rs`. These hooks run in-process, so the
+    // variables are set on the test process under the golden lock: the
+    // profile root and project directory point into the temp tree, and the
+    // variables that can steer state into a checkout are removed.
+    let golden_profiles = cwd.path.join("profiles");
+    fs::create_dir_all(&golden_profiles).expect("golden temp profile root");
+    let _profile_root = EnvVarGuard::set(
+        "AMPLIHACK_CLAUDE_PROFILE_ROOT",
+        golden_profiles.to_str().expect("golden temp path is UTF-8"),
+    );
+    let _project_dir = EnvVarGuard::set(
+        "CLAUDE_PROJECT_DIR",
+        cwd.path.to_str().expect("golden temp path is UTF-8"),
+    );
+    let _steering: Vec<EnvVarGuard> = isolated_hook::REMOVED_VARS
+        .iter()
+        .copied()
+        .map(EnvVarGuard::unset)
+        .collect();
 
     let golden_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")

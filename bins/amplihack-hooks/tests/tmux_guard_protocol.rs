@@ -1,6 +1,10 @@
 //! Issue #1733: the tmux server guard denies the incident command through the
 //! real hook binary for every host protocol. tmux is never run: the command
 //! only reaches the hook as JSON on stdin.
+#[path = "../../../tests/support/isolated_hook.rs"]
+mod isolated_hook;
+
+use isolated_hook::HookSandbox;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -28,7 +32,8 @@ fn hook_bytes_with_env(
     provider: &str,
     extra_env: &[(&str, &str)],
 ) -> Value {
-    let home = tempfile::tempdir().unwrap();
+    // The directories of a HookSandbox (#2361), set again after env_clear.
+    let sandbox = HookSandbox::new();
     let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack-hooks"));
     command.env_clear();
     if let Some(path) = std::env::var_os("PATH") {
@@ -36,10 +41,12 @@ fn hook_bytes_with_env(
     }
     command
         .arg(subcommand)
-        .current_dir(home.path())
-        .env("HOME", home.path())
-        .env("AMPLIHACK_HOME", home.path().join(".amplihack"))
-        .env("CODEX_HOME", home.path().join(".codex"))
+        .current_dir(sandbox.project())
+        .env("HOME", sandbox.home())
+        .env("AMPLIHACK_HOME", sandbox.amplihack_home())
+        .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", sandbox.profiles())
+        .env("CLAUDE_PROJECT_DIR", sandbox.project())
+        .env("CODEX_HOME", sandbox.home().join(".codex"))
         .env("AMPLIHACK_AGENT_BINARY", provider)
         .env("AMPLIHACK_RECIPE_RUN_ID", "test-leaf-run");
     if provider == "codex" {
