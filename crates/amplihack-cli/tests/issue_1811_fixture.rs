@@ -19,7 +19,6 @@
 
 #![cfg(unix)]
 #![allow(dead_code)]
-
 use crate::support::amplihack_bin::amplihack_bin;
 use crate::support::exec_stub::write_executable;
 use crate::support::profile_default::{give_logins, set_default};
@@ -29,7 +28,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
-case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 case "$1" in
   --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac

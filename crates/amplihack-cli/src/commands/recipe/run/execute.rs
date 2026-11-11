@@ -593,7 +593,23 @@ pub(super) fn execute_recipe_via_rust_fresh(
 
     let binary = super::binary::find_recipe_runner_binary()?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
-    crate::runner_validation::probe(&binary, &agent_binary.binary)?;
+    if let Err(error) = crate::runner_validation::probe(&binary, &agent_binary.binary) {
+        let correlation = RecipeRunCorrelation::new(
+            recipe_name.clone(),
+            working_dir,
+            &BTreeMap::new(),
+            binary.as_path(),
+        );
+        correlation.emit_early();
+        eprintln!("amplihack: runner capability check failed: {error}");
+        return Err(fail_with_final_record(
+            &correlation,
+            RecipeRunFinalStatus::SpawnFailure,
+            None,
+            None,
+            error,
+        ));
+    }
 
     // Issue #1481: the caller resolved the agent binary once, from
     // `working_dir`, while this process could still see the session markers of

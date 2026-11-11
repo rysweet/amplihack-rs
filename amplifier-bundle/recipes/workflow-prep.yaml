@@ -15,7 +15,6 @@ recovery:
   persist:
     context: ["adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
     outputs: ["step-00-workflow-preparation", "step-00a-identity-preflight", "step-01-prepare-workspace", "step-02-clarify-requirements", "step-02b-analyze-codebase", "step-02c-resolve-ambiguity", "step-02d-detect-host-type", "step-03-create-issue", "step-03b-extract-issue-number", "step-03c-issue-claim-check"]
-
 steps:
   # STEP 0: WORKFLOW PREPARATION (MANDATORY - DO NOT SKIP)
   # Creates tracking structure. Must complete before ANY implementation work.
@@ -34,7 +33,6 @@ steps:
       printf 'Task: %s\n' "$TASK_DESC"
       printf 'Repository: %s\n' "$REPO_PATH"
     output: "workflow_init"
-
   # STEP 00a: IDENTITY PREFLIGHT (issue #1290)
   # Resolve the acting `gh` login once and verify it can write to the repository this
   # run is about to write to, BEFORE any step does real work. The run that motivated
@@ -52,7 +50,6 @@ steps:
       [ -n "$P" ] || { echo "WARNING: identity preflight helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — continuing without an identity check" >&2; printf 'identity_preflight: unknown reason=helper-not-found\n'; exit 0; }
       bash "$P" "${REPO_PATH:-.}"
     output: "identity_preflight"
-
   # STEP 1: PREPARE THE WORKSPACE
   - id: "step-01-prepare-workspace"
     recovery: {"replay": "rebind"}
@@ -121,7 +118,6 @@ steps:
         echo "--- Pre-agent Validation: SKIPPED (SKIP_PRE_AGENT_VALIDATION=$SKIP_PRE_AGENT_VALIDATION) ---"
       fi
     output: "workspace_status"
-
   # STEP 2: REWRITE AND CLARIFY REQUIREMENTS
   - id: "step-02-clarify-requirements"
     recovery: {"replay": "reuse"}
@@ -153,7 +149,6 @@ steps:
       Answer the requires_* flags "false" only when confident the task involves no such work at all (a CLI flag, a CI edit, a pure refactor); when in doubt answer "true". Use your best judgment to work autonomously. Pass explicit requirements to ALL subsequent agents. **no_merge:** {{no_merge}}. When it is "true", the requirements and acceptance criteria end at "PR open, merge-ready" and never include merging the PR.
     output: "clarified_requirements"
     parse_json: true
-
   - id: "step-02b-analyze-codebase"
     recovery: {"replay": "reuse"}
     agent: "amplihack:architect"
@@ -196,7 +191,6 @@ steps:
       4. Potential conflicts or considerations
       Use glob and grep to explore the codebase. Avoid web searches.
     output: "codebase_analysis"
-
   - id: "step-02c-resolve-ambiguity"
     recovery: {"replay": "reuse"}
     agent: "amplihack:ambiguity"

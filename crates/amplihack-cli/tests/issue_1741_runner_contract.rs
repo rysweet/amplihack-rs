@@ -69,6 +69,13 @@ printf '%s\n' '{"recipe_name":"smart-orchestrator","success":true,"step_results"
             "{}",
             describe(&output)
         );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("\"event\":\"final\""), "{stderr}");
+        assert!(stderr.contains("\"status\":\"spawn_failure\""), "{stderr}");
+        assert!(
+            !stderr.contains("recover issue"),
+            "probe diagnostics must omit task context"
+        );
         assert!(f.events().is_empty());
     }
 }

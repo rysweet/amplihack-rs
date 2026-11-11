@@ -3,11 +3,9 @@ description: "Phase 2a-2e: Q&A/Ops/dev routing (single + parallel + blocked-fall
 version: "1.0.0"
 author: "Amplihack Team"
 tags: ["smart-orchestrator", "routing", "execute", "fallback"]
-
 recursion:
   max_depth: 6
   max_total_steps: 80
-
 context:
   task_type: ""
   workstream_count: ""
@@ -25,18 +23,15 @@ context:
   existing_branch: ""
   pr_number: ""
   create_issue: "" # inherited from smart-orchestrator; passed to workstreams as AMPLIHACK_CREATE_ISSUE (#1881)
-
 recovery:
   version: 1
   persist:
     context: ["adaptive_recipe", "allow_no_op", "api_design", "architecture_design", "auto_init_repo", "blocking_issues_addressed", "branch_name", "branch_prefix", "ci_status", "clarified_requirements", "cleanup_status", "codebase_analysis", "create_issue", "database_design", "decomposition_json", "design_spec", "doc_review_checkpoint", "doc_review_feedback", "documentation", "existing_branch", "final_cleanup", "final_documentation", "final_requirements", "finalization_handoff", "force_single_workstream", "goal_already_met", "identity_preflight", "implementation", "implementation_terminal_evidence", "infra_error_details", "issue_claim_check", "issue_creation", "issue_number", "issue_url", "no_merge", "ops_modified_files", "philosophy_check", "pr_feedback_changes", "pr_number", "pr_philosophy_review", "pr_review", "pr_security_review", "pr_url", "pre_commit_review", "preflight_status", "publish_status", "quality_audit_results", "quick_change_verdict", "recursion_guard", "refactored_code", "reflection_1", "reflection_2", "reflection_final", "remote_host_type", "repo_path", "requirements", "resume_checkpoint", "review_feedback", "round_1_result", "round_2_result", "round_3_result", "security_requirements", "selected_workflow", "session_complete_status", "session_id", "session_info", "should_finalize", "should_merge", "should_run_ci_wait", "skip_pre_agent_validation", "summary", "task_description", "task_type", "terminal_reason", "terminal_state", "terminal_success", "test_spec", "tree_id", "verification_terminal_evidence", "workflow", "workflow_init", "workspace_status", "workstream", "workstream_count", "workstreams_file", "worktree_path", "worktree_setup"]
     outputs: ["handle-qa", "handle-ops-agent", "ops-file-change-check", "derive-recursion-guard", "execute-single-round-1-development", "execute-single-round-1-quick-change", "handover-reselect-workflow", "execute-single-round-1-investigation", "create-workstreams-config", "launch-parallel-round-1", "blocked-fallback-reselect-workflow", "execute-single-fallback-blocked-development", "execute-single-fallback-blocked-investigation", "detect-execution-gap", "file-routing-bug", "adaptive-reselect-workflow", "adaptive-execute-development", "adaptive-execute-investigation", "cleanup-helper"]
-
 steps:
   # ─────────────────────────────────────────────────────────────────────────
   # Phase 2a: Q&A -- route by intent (technical vs general)
   # ─────────────────────────────────────────────────────────────────────────
-
   - id: "handle-qa"
     recovery: {"replay": "reuse"}
     type: "agent"
@@ -53,11 +48,9 @@ steps:
 
       Do NOT invoke any workflow. Just answer concisely.
     output: "round_1_result"
-
   # ─────────────────────────────────────────────────────────────────────────
   # Phase 2b: Operations -- route to builder agent
   # ─────────────────────────────────────────────────────────────────────────
-
   - id: "handle-ops-agent"
     recovery: {"replay": "reuse"}
     type: "agent"
@@ -71,7 +64,6 @@ steps:
 
       Perform the operation, report what was done. End with "STATUS: COMPLETE".
     output: "round_1_result"
-
   # Detect if Operations modified tracked files (fix #227).
   # When files were changed, downstream review/cleanup/summarize steps
   # must still run so changes get reviewed and committed properly.
@@ -90,12 +82,10 @@ steps:
       UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null | head -1)
       if [ -n "$CHANGED" ] || [ -n "$UNTRACKED" ]; then echo "true"; else echo ""; fi
     output: "ops_modified_files"
-
   # ─────────────────────────────────────────────────────────────────────────
   # Recursion guard -- derive from session_info (registered atomically in setup-session)
   # Uses pure shell grep instead of subprocess for status extraction.
   # ─────────────────────────────────────────────────────────────────────────
-
   - id: "derive-recursion-guard"
     recovery: {"replay": "reuse"}
     type: "bash"
@@ -118,7 +108,6 @@ steps:
         echo "BLOCKED:unknown"
       fi
     output: "recursion_guard"
-
   # ─────────────────────────────────────────────────────────────────────────
   # Phase 2c: Single dev/investigation workstream -- round 1
   # Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
@@ -129,7 +118,6 @@ steps:
   # calling .strip() on non-string types (fix #3606, supersedes #3570).
   # If workstream_count is empty (step failed), we default to single workstream.
   # ─────────────────────────────────────────────────────────────────────────
-
   - id: "execute-single-round-1-development"
     recovery: {"replay": "reuse"}
     type: "recipe"
@@ -148,7 +136,6 @@ steps:
       skip_pre_agent_validation: "{{skip_pre_agent_validation}}"
       auto_init_repo: "{{auto_init_repo}}"
     output: "round_1_result"
-
   # Issue #1740: select-workflow chose quick-change (classifier or -c workflow=).
   # Same forwarded keys as the development step; see
   # docs/reference/quick-change-recipe.md.
@@ -164,7 +151,6 @@ steps:
       skip_pre_agent_validation: "{{skip_pre_agent_validation}}"
       auto_init_repo: "{{auto_init_repo}}"
     output: "round_1_result"
-
   # #1740: a hand-over ran default-workflow, so the selection follows it, as on
   # the fallback paths: the log says so and reflection and validation run.
   - id: "handover-reselect-workflow"
@@ -175,7 +161,6 @@ steps:
       echo '[dev-orchestrator] Workflow: default-workflow source=handover reason=quick-change handed over; default-workflow ran' >&2
       printf 'default-workflow'
     output: "selected_workflow"
-
   - id: "execute-single-round-1-investigation"
     recovery: {"replay": "reuse"}
     type: "recipe"
@@ -188,11 +173,9 @@ steps:
       investigation_question: "{{task_description}}"
       task_description: "{{task_description}}"
     output: "round_1_result"
-
   # ─────────────────────────────────────────────────────────────────────────
   # Phase 2d: Parallel workstreams -- round 1
   # ─────────────────────────────────────────────────────────────────────────
-
   - id: "create-workstreams-config"
     recovery: {"replay": "reuse", "resources": [{"kind": "artifact", "path": "{{workstreams_file}}", "context_key": "workstreams_file"}]}
     type: "bash"
@@ -208,7 +191,6 @@ steps:
       # RECIPE_VAR_task_description, which rule out quick-change.
       amplihack orch helper build-workstreams-config < "$_DECOMP_TMPFILE"
     output: "workstreams_file"
-
   - id: "launch-parallel-round-1"
     recovery: {"replay": "reuse"}
     type: "bash"
@@ -266,7 +248,6 @@ steps:
         "${AMPLIHACK_BIN:-amplihack}" orch run -- "$WS_FILE" 2>&1 | tee /dev/stderr || status=$?
       exit $status
     output: "round_1_result"
-
   # ─────────────────────────────────────────────────────────────────────────
   # Recursion depth limit: adapt to single-session execution
   # Uses the task-appropriate sub-recipe (default-workflow for Development,
@@ -275,7 +256,6 @@ steps:
   # This is an ADAPTIVE strategy (announced via recursion_guard), not a
   # degradation — the depth-limited banner makes the change visible.
   # ─────────────────────────────────────────────────────────────────────────
-
   # #1740: the fallback runs default-workflow even under -c workflow=quick-change,
   # so the selection follows it: the log says so and reflection is not skipped.
   - id: "blocked-fallback-reselect-workflow"
@@ -287,7 +267,6 @@ steps:
       echo '[dev-orchestrator] Workflow: default-workflow source=override reason=parallel launch blocked; the single-session fallback runs default-workflow' >&2
       printf 'default-workflow'
     output: "selected_workflow"
-
   - id: "execute-single-fallback-blocked-development"
     recovery: {"replay": "reuse"}
     type: "recipe"
@@ -301,7 +280,6 @@ steps:
       skip_pre_agent_validation: "{{skip_pre_agent_validation}}"
       auto_init_repo: "{{auto_init_repo}}"
     output: "round_1_result"
-
   - id: "execute-single-fallback-blocked-investigation"
     recovery: {"replay": "reuse"}
     type: "recipe"
@@ -313,7 +291,6 @@ steps:
       investigation_question: "{{task_description}}"
       task_description: "{{task_description}}"
     output: "round_1_result"
-
   # ─────────────────────────────────────────────────────────────────────────
   # Phase 2e: Adaptive error recovery (fix #3132)
   # When ALL execution paths are skipped (round_1_result is empty), this
@@ -321,7 +298,6 @@ steps:
   # no results, surface the error, file a bug, and attempt direct recipe
   # invocation as an ADAPTIVE STRATEGY (announced, not silent).
   # ─────────────────────────────────────────────────────────────────────────
-
   - id: "detect-execution-gap"
     recovery: {"replay": "reuse"}
     type: "bash"
@@ -360,7 +336,6 @@ steps:
       echo "[ADAPTIVE] Switching to direct $RECIPE invocation." >&2
       echo "$RECIPE"
     output: "adaptive_recipe"
-
   - id: "file-routing-bug"
     recovery: {"replay": "reuse"}
     type: "bash"
