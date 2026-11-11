@@ -86,30 +86,31 @@ fn private_copy(built_dir: &Path) -> io::Result<PathBuf> {
     Ok(bin)
 }
 
-/// Writes `src` to `dir/.name.tmp` (created new, mode 0755), then renames it
-/// to `dir/name`, so a caller never sees a partial file. There is no fsync:
-/// the copy is private and removed at exit, so it need not survive a crash,
-/// and on a loaded disk an fsync of the 100+ MB binary can take seconds.
+/// Copies through a child so sibling forks cannot inherit a writable
+/// executable descriptor. Publish by rename only after the copier exits.
+/// No fsync is needed for a private copy that need not survive a crash.
 fn copy_into(src: &Path, dir: &Path, name: &str) -> io::Result<PathBuf> {
     let tmp = dir.join(format!(".{name}.tmp"));
     let dest = dir.join(name);
-    let mut opts = fs::OpenOptions::new();
-    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o755);
-    }
-    let mut out = opts.open(&tmp)?;
-    let mut input = fs::File::open(src)?;
-    io::copy(&mut input, &mut out)?;
-    drop(out);
-    #[cfg(unix)]
-    {
+        let status = Command::new("/bin/cp")
+            .arg("--")
+            .arg(src)
+            .arg(&tmp)
+            .status()?;
+        if !status.success() {
+            return Err(io::Error::other(format!(
+                "copying {} failed: {status}",
+                src.display()
+            )));
+        }
         use std::os::unix::fs::PermissionsExt;
-        // The umask may have narrowed the mode given at creation.
         fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))?;
     }
+    // Windows has no sibling fork that could inherit a write descriptor.
+    #[cfg(not(unix))]
+    fs::copy(src, &tmp)?;
     fs::rename(&tmp, &dest)?;
     Ok(dest)
 }

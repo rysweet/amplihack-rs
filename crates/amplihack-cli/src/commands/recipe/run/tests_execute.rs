@@ -1680,31 +1680,108 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
     // child's stderr pipe fills (~64KB) and the child blocks on its write
     // forever. The run happens on a worker thread; its answer is awaited for
     // at most `CEILING`, a hang guard that never decides a pass (#1998).
-    let (tx, rx) = std::sync::mpsc::channel();
-    {
-        let (recipe, dir) = (recipe.clone(), temp.path().to_path_buf());
-        std::thread::spawn(move || {
-            let result = execute::execute_recipe_via_rust(
-                &recipe,
-                &BTreeMap::new(),
-                false, // dry_run
-                true,  // verbose
-                &dir,
-                &[],
-                None, // step_timeout
-            );
-            let _ = tx.send(result.map(|_| ()).map_err(|e| format!("{e:#}")));
-        });
-    }
-    let result = rx.recv_timeout(crate::test_support::wait::CEILING).expect(
-        "hung: non-UTF-8 stderr stopped the pump and the child blocked on a full stderr pipe",
-    );
+    let (recipe, dir) = (recipe.clone(), temp.path().to_path_buf());
+    let mut worker = super::test_runner::RunnerWorker::spawn(None, false, move || {
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &dir, &[], None)
+            .map(|_| ())
+            .map_err(|e| format!("{e:#}"))
+    });
+    let result = worker.wait();
 
     let error = result.expect_err("the fixture deliberately exits 1");
     assert!(
         error.contains("after-flood-marker"),
         "the pump did not capture stderr after invalid UTF-8 and the flood: {error}"
     );
+}
+
+// Exercise cleanup with the real six-hour default still in force. A test
+// ceiling (or any intervening assertion panic) must kill the runner group
+// and join its worker before environment restoration and tempdir removal.
+#[test]
+#[cfg(target_os = "linux")]
+fn runner_worker_failure_kills_group_and_joins_before_fixture_teardown() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut fixture_env = fixture_environment();
+    fixture_env.clear("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS");
+    let temp = tempfile::tempdir().unwrap();
+    let runner = temp.path().join("recipe-runner-rs");
+    let ready = temp.path().join("ready");
+    let recipe = temp.path().join("recipe.yaml");
+    std::fs::write(&recipe, "name: cancellation-probe\nsteps: []\n").unwrap();
+    // Neither process can finish naturally. There is no FIFO release path
+    // that could make this pass without killing the runner's entire group.
+    crate::test_support::write_executable(
+        &runner,
+        &format!(
+            "#!/bin/sh\nwhile :; do :; done &\necho ready > '{}'\nwait\n",
+            ready.display(),
+        ),
+    );
+    fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
+    let token = format!("cancel-{}-{}", std::process::id(), temp.path().display());
+    fixture_env.assign(ORPHAN_TOKEN_ENV, &token);
+
+    for panic_before_receive in [false, true] {
+        let _ = std::fs::remove_file(&ready);
+        let joined = Arc::new(AtomicBool::new(false));
+        let finished = joined.clone();
+        let (recipe, dir) = (recipe.clone(), temp.path().to_path_buf());
+        let failure = catch_unwind(AssertUnwindSafe(|| {
+            let mut worker = super::test_runner::RunnerWorker::spawn(None, false, move || {
+                let result = execute::execute_recipe_via_rust(
+                    &recipe,
+                    &BTreeMap::new(),
+                    false,
+                    true,
+                    &dir,
+                    &[],
+                    None,
+                );
+                finished.store(true, Ordering::SeqCst);
+                result.is_err()
+            });
+            crate::test_support::wait::wait_until("the cancellation fixture tree", || {
+                ready.exists() && processes_with_token(&token).len() >= 2
+            });
+            assert!(!panic_before_receive, "fixture readiness assertion failed");
+            worker.wait_with_ceiling(std::time::Duration::ZERO);
+        }));
+        let message = failure.unwrap_err();
+        let message = message
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| message.downcast_ref::<&str>().copied())
+            .unwrap();
+        assert!(
+            message.contains(if panic_before_receive {
+                "fixture readiness assertion failed"
+            } else {
+                "hung: recipe runner worker"
+            }),
+            "{message}"
+        );
+        assert!(
+            joined.load(Ordering::SeqCst),
+            "worker must finish before unwinding returns"
+        );
+        assert!(
+            processes_with_token(&token).is_empty(),
+            "runner group survived cleanup"
+        );
+        assert!(
+            temp.path().exists(),
+            "fixture is still owned during cleanup checks"
+        );
+    }
 }
 
 #[test]
@@ -1759,10 +1836,11 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
     let marker = temp.path().join("orphan-marker");
     let hold = temp.path().join("hold");
     mkfifo(&hold);
+    let ready = temp.path().join("descendant-ready");
     // Every process of the runner's tree carries a token of this test in its
     // environment. Both shells block on builtin FIFO reads. The supervisor
     // writes only on drop, after the assertions (or on failure), so
-    // only the 1 s product timeout ends the run (#1998: no sleeps).
+    // only the 1 s virtual product timeout ends the run (#1998: no sleeps).
     let token = format!(
         "{}-{}",
         std::process::id(),
@@ -1773,9 +1851,10 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
         &format!(
             "#!/bin/sh\n\
              exec 3< '{hold}'\n\
-             (read _hold <&3; echo orphan > '{marker}') &\n\
+             (echo ready > '{ready}'; read _hold <&3; echo orphan > '{marker}') &\n\
              read _hold <&3\n",
             hold = hold.display(),
+            ready = ready.display(),
             marker = marker.display(),
         ),
     );
@@ -1789,7 +1868,15 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
     fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
     fixture_env.assign("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", "1");
 
-    let mut worker = timeout_fixture_worker(&recipe, temp.path(), &hold);
+    let dir = temp.path().to_path_buf();
+    let mut worker = super::test_runner::RunnerWorker::spawn(Some((&hold, 2)), true, move || {
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &dir, &[], None)
+            .map(|_| ())
+            .map_err(|err| format!("{err:#}"))
+    });
+    worker.advance_after_ready("the runner descendant to start", || {
+        ready.exists() && processes_with_token(&token).len() >= 2
+    });
     let result = worker.wait();
 
     let err = result.expect_err("hung recipe-runner must time out");

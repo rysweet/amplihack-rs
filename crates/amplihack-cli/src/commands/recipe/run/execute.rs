@@ -11,7 +11,6 @@ use crate::env_builder::EnvBuilder;
 #[cfg(windows)]
 use crate::util::run_with_timeout;
 use crate::util::truncate_chars_with_notice;
-#[cfg(unix)]
 use amplihack_utils::clock::{Clock, SystemClock};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -20,7 +19,7 @@ use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::process::{Child, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const STDERR_TAIL_LINES: usize = 5;
 const CAPTURED_STDERR_LINES: usize = 200;
@@ -1468,8 +1467,20 @@ enum RunnerWait {
 }
 
 fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Result<RunnerWait> {
-    let started = Instant::now();
+    #[cfg(all(test, unix))]
+    let control = super::test_runner::current();
+    let clock: &dyn Clock = &SystemClock;
+    #[cfg(all(test, unix))]
+    let clock = control.as_deref().map_or(clock, |c| c as &dyn Clock);
+    let started = clock.now();
     loop {
+        #[cfg(all(test, unix))]
+        if control.as_ref().is_some_and(|c| c.cancelled()) {
+            // SAFETY: the worker owns the unreaped child, reserving its pid.
+            // Cancel only its runner group before joining the test worker.
+            unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+            return Ok(RunnerWait::TimedOut);
+        }
         if let Some(status) = child.try_wait()? {
             return Ok(RunnerWait::Exited(status));
         }
@@ -1479,11 +1490,11 @@ fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Resu
         // Single clock read per poll: derive the remaining budget once and reuse
         // it for both the deadline check and the sleep cap. A zero (or elapsed)
         // remaining is the timeout.
-        let remaining = match timeout.checked_sub(started.elapsed()) {
+        let remaining = match timeout.checked_sub(clock.now().saturating_duration_since(started)) {
             Some(remaining) if !remaining.is_zero() => remaining,
             _ => return Ok(RunnerWait::TimedOut),
         };
-        thread::sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
+        clock.sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
     }
 }
 

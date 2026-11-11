@@ -439,3 +439,6 @@ mod tests_root_sandbox;
 mod tests_teardown;
 #[cfg(test)]
 mod tests_terminal_record;
+
+#[cfg(all(test, unix))]
+mod test_runner;

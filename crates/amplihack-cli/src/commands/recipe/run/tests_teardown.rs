@@ -372,6 +372,7 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("graceful-marker");
+    let ready = temp.path().join("trap-ready");
 
     // The runner blocks on a builtin FIFO read. The supervisor releases it
     // only during drop, so passing still requires the timeout teardown.
@@ -380,8 +381,9 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\ntrap 'echo graceful > \"{}\"; exit 0' TERM\nread _hold < \"{}\"\n",
+            "#!/bin/sh\ntrap 'echo graceful > \"{}\"; exit 0' TERM\necho ready > \"{}\"\nread _hold < \"{}\"\n",
             marker.display(),
+            ready.display(),
             hold.display()
         ),
     );
@@ -396,10 +398,11 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     let _grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "5");
 
     let dir = temp.path().to_path_buf();
-    let mut worker = crate::test_support::unix_process::FifoWorker::spawn(&hold, 1, move || {
+    let mut worker = super::test_runner::RunnerWorker::spawn(Some((&hold, 1)), true, move || {
         execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &dir, &[], None)
             .is_err()
     });
+    worker.advance_after_ready("the runner to install its TERM trap", || ready.exists());
     assert!(worker.wait(), "hung recipe-runner must time out");
 
     // The teardown reaps the runner before it returns, and the runner writes
