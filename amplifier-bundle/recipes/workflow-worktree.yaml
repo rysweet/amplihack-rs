@@ -17,7 +17,7 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
-context: {}
+context: { base_branch: "" }
 
 steps:
   - id: "step-04-setup-worktree"

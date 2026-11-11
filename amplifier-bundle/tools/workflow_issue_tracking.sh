@@ -117,8 +117,18 @@ _github_open_issue_url() {
 
 # GitHub tracking issue for step-03. Returns 0 with a URL (or, for an explicit
 # number gh cannot resolve as an issue, local metadata) on stdout; returns 1
-# with empty stdout when nothing is selected. Diagnostics go to stderr only.
+# with empty stdout when nothing is selected. Optional factory arguments are
+# base, create flag, host and owning repository; observation failures return 2.
+# Diagnostics go to stderr only.
 select_github_tracking_issue() {
+  local factory_base="${1:-}" factory_create="${2:-}" factory_host="${3:-}" factory_repository="${4:-}"
+  if [ -n "$factory_base" ]; then
+    [[ "$EXISTING_ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]] && [ "$factory_create" = false ] || { echo "ERROR: factory dispatch requires its verified issue and create_issue=false" >&2; return 2; }
+    ISSUE_URL="https://${factory_host:?}/${factory_repository:?}/issues/$EXISTING_ISSUE_NUMBER"
+    OBSERVED_URL="$(GH_PROMPT_DISABLED=1 gh api --hostname "$factory_host" "repos/$factory_repository/issues/$EXISTING_ISSUE_NUMBER" --jq 'if has("pull_request") then "" else .html_url end' 2>/dev/null)" || { echo "ERROR: factory issue observation failed; retain the assigned association" >&2; return 2; }
+    [ "$OBSERVED_URL" = "$ISSUE_URL" ] || { echo "ERROR: factory issue association could not be verified" >&2; return 2; }
+    printf '%s\n' "$ISSUE_URL"; return 0
+  fi
   local explicit n kind url rc=0 checked=""
   explicit="${EXISTING_ISSUE_NUMBER:-}"; explicit="${explicit#\#}"
   if [[ "$explicit" =~ ^[0-9]{1,9}$ ]]; then

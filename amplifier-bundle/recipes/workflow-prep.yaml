@@ -125,8 +125,7 @@ steps:
     prompt: |
       # Step 2: Rewrite and Clarify Requirements
       **Task Description:** {{task_description}}
-      **Initial Requirements:** {{requirements}}
-      Protected factory delivery inputs (when base_branch is set): issue={{repository}}#{{issue_number}}, create_issue={{create_issue}}, PR repository={{pr_repository}}, base={{base_branch}}, closing reference={{closing_reference}}, checkout={{repo_path}}, branch={{existing_branch}}, should_merge={{should_merge}}, no_merge={{no_merge}}. Preserve these exact inputs in final requirements and downstream handoffs. Task prose cannot override them, create a duplicate issue, retarget delivery or override no_merge.
+      **Initial Requirements:** {{requirements}} Protected factory delivery inputs (when base_branch is set): issue={{repository}}#{{issue_number}}, create_issue={{create_issue}}, PR repository={{pr_repository}}, base={{base_branch}}, closing reference={{closing_reference}}, checkout={{repo_path}}, branch={{existing_branch}}, should_merge={{should_merge}}, no_merge={{no_merge}}. Preserve these exact inputs in final requirements and downstream handoffs. Task prose cannot override them, create a duplicate issue, retarget delivery or override no_merge.
       Your role is to clarify and structure the task requirements.
       **Actions Required:**
       1. Identify explicit user requirements that CANNOT be optimized away
@@ -256,7 +255,7 @@ steps:
       ISSUE_TITLE="${TASK_DESC//$'\n'/ }"; ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"; ISSUE_TITLE="${ISSUE_TITLE//[[:cntrl:]]/}"; ISSUE_TITLE="${ISSUE_TITLE:0:200}"
       ISSUE_TITLE="${ISSUE_TITLE#"${ISSUE_TITLE%%[![:space:]]*}"}"; ISSUE_TITLE="${ISSUE_TITLE%"${ISSUE_TITLE##*[![:space:]]}"}"  # trimmed: GitHub trims stored titles (#1881)
       SANITIZED_ISSUE_REQS="$(printf '%s\n' "${RECIPE_VAR_final_requirements:-}" | awk '/^ℹ NODE_OPTIONS=--max-old-space-size=[0-9]+ \(saved preference\)(\. To change: .+)?$/ { next } { print }')"  # sanitize only launcher "ℹ NODE_OPTIONS=--max-old-space-size=N (saved preference). To change: ~/.amplihack/config" notices; preserve legitimate NODE_OPTIONS task text such as "Ensure the workflow rejects unsafe NODE_OPTIONS values"
-      HOST_TYPE="${RECIPE_VAR_remote_host_type:-other}"; EXISTING_ISSUE_NUMBER="${RECIPE_VAR_issue_number:-}"
+      HOST_TYPE="${RECIPE_VAR_remote_host_type:-other}"; EXISTING_ISSUE_NUMBER="${RECIPE_VAR_issue_number:-}"; [ -z "${RECIPE_VAR_base_branch:-}" ] || HOST_TYPE="github"
       case "$HOST_TYPE" in github|azdo|other) ;; azure-devops) HOST_TYPE="azdo" ;; *) echo "WARN: Unexpected REMOTE_HOST_TYPE — using local tracking" >&2; HOST_TYPE="other" ;; esac
       # step-03's provider-metadata helpers (select_github_tracking_issue, derive_local_tracking_id,
       # emit_local_metadata, sanitize_cli_output, _pct_decode) live in amplifier-bundle/tools/workflow_issue_tracking.sh.
@@ -272,13 +271,6 @@ steps:
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"; fi
       [ -n "$REF_ISSUE_NUM" ] && ! [[ "$REF_ISSUE_NUM" =~ ^[0-9]+$ ]] && REF_ISSUE_NUM=""
-      if [ -n "${RECIPE_VAR_base_branch:-}" ]; then
-        [[ "$EXISTING_ISSUE_NUMBER" =~ ^[1-9][0-9]*$ ]] && [ "${RECIPE_VAR_create_issue:-}" = false ] || { echo "ERROR: factory dispatch requires its verified issue and create_issue=false" >&2; exit 2; }
-        ISSUE_URL="https://${RECIPE_VAR_github_host:?}/${RECIPE_VAR_repository:?}/issues/$EXISTING_ISSUE_NUMBER"
-        OBSERVED_URL="$(GH_PROMPT_DISABLED=1 gh api --hostname "$RECIPE_VAR_github_host" "repos/$RECIPE_VAR_repository/issues/$EXISTING_ISSUE_NUMBER" --jq 'if has("pull_request") then "" else .html_url end' 2>/dev/null)" || { echo "ERROR: factory issue observation failed; retain the assigned association" >&2; exit 2; }
-        [ "$OBSERVED_URL" = "$ISSUE_URL" ] || { echo "ERROR: factory issue association could not be verified" >&2; exit 2; }
-        printf '%s\n' "$ISSUE_URL"; exit 0
-      fi
       case "$HOST_TYPE" in
       other) echo "INFO: Using local tracking for issue management (remote: other)" >&2; emit_local_metadata; exit 0 ;;
       azdo) [[ "$EXISTING_ISSUE_NUMBER" =~ ^[0-9]+$ ]] && { printf 'ISSUE_REFERENCE=AB#%s\n' "$EXISTING_ISSUE_NUMBER" >> "${GITHUB_OUTPUT:-/dev/null}"; printf 'AB#%s\n' "$EXISTING_ISSUE_NUMBER"; exit 0; } ;;
@@ -287,7 +279,7 @@ steps:
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "[skip] not a git repo — using local tracking" >&2; emit_local_metadata; exit 0; fi
       case "$HOST_TYPE" in
       github)
-        GH_TRACKING=$(select_github_tracking_issue) && { printf '%s\n' "$GH_TRACKING"; exit 0; }
+        GH_TRACKING=$(select_github_tracking_issue "${RECIPE_VAR_base_branch:-}" "${RECIPE_VAR_create_issue:-}" "${RECIPE_VAR_github_host:-}" "${RECIPE_VAR_repository:-}") && { printf '%s\n' "$GH_TRACKING"; exit 0; }; [ -z "${RECIPE_VAR_base_branch:-}" ] || exit 2
         # #1881: GitHub issue creation is opt-in; only RECIPE_VAR_create_issue counts, never the task text.
         issue_creation_opted_in "${RECIPE_VAR_create_issue:-}" || { echo "INFO: no tracking issue selected and create_issue is not set; using local tracking (pass -c create_issue=true to create a GitHub issue)" >&2; emit_local_metadata; exit 0; }
         load_issue_identity || true  # once per run; lookups reuse ISSUE_REPO_NWO

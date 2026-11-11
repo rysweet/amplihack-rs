@@ -16,22 +16,8 @@ inputs:
   - name: repo_path
     description: "Absolute path to the repository root. Provided by parent recipe context."
 
-context:
-  worktree_setup: ""
-  allow_no_op: false
-  terminal_success: "false"
-  terminal_state: ""
-  terminal_reason: ""
-  publish_status: ""
-  should_finalize: "true"
-  should_run_ci_wait: "true"
-  should_merge: "true"
-  # #1561/#1684/#1968: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
-  repo_path: ""
-  version_bump: ""
-  local_testing_gate: ""
-  precommit_results: ""
-  task_description: ""
+# #1561/#1684/#1968: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
+context: { base_branch: "", repository: "", pr_repository: "", closing_reference: "", worktree_setup: "", allow_no_op: false, terminal_success: "false", terminal_state: "", terminal_reason: "", publish_status: "", should_finalize: "true", should_run_ci_wait: "true", should_merge: "true", repo_path: "", version_bump: "", local_testing_gate: "", precommit_results: "", task_description: "" }
 
 steps:
   - id: "publish-terminal-state"
