@@ -39,6 +39,10 @@
 //! pre-fix code (6b32c7e69's parent) names every acceptance criterion that
 //! does not hold.
 
+// Every test here and its one user, `issue_1954_first_install_restager`, read /proc,
+// so the helpers build on Linux only (#2286).
+#![cfg(target_os = "linux")]
+
 use crate::support::amplihack_bin::amplihack_bin;
 use crate::support::events::{SCRIPT_PREAMBLE, await_line, mkfifo, open_ready, release};
 use crate::support::exec_stub::write_executable;
