@@ -3667,11 +3667,13 @@ else
 fi
 
 # 1b. The step runs autodrive_qa_evidence.sh. A relative REPO_PATH is applied
-# once, not again inside the tool; a tool that cannot be found fails the step
-# by name and prints no evidence.
+# once, not again inside the tool (with green CI for its head, #2342); a tool
+# that cannot be found fails the step by name and prints no evidence.
 EV_REL="${EV_REPO##*/}"
-EV_REL_OUT="$(cd "${WORK_PHYS}" && env -i HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" PATH="${EV_FULL}:/usr/bin:/bin" \
+EV_REL_OUT="$(cd "${WORK_PHYS}" && env -i HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" PATH="${EV_FULL}:${EV_AMP}:/usr/bin:/bin" \
   AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${EV_REL}" AUTODRIVE_ROUND_LABEL="round-7" EV_CALLS=/dev/null \
+  RECIPE_VAR_ci_evidence="$(jq -cn --arg head "$(git -C "$EV_REPO" rev-parse HEAD)" \
+    '{ci_status:"GREEN",ci_total:"1",ci_pending:"0",ci_failing:"0",head_sha:$head}')" \
   "${BASH}" -c "${EV_BODY}" 2>/dev/null | tail -n 1)"
 if [ "$(printf '%s' "${EV_REL_OUT}" | jq -r '.qa_status' 2>/dev/null)" = "PASS" ]; then
   pass "QA-relative-repo-path" "a relative REPO_PATH reaches the tool as the same repository"
@@ -6783,6 +6785,9 @@ if [ "$(evf qa_status)/$(evf qa_reason)" = "BLOCKED/ci-not-ready" ] && [ "$(evf 
 else
   fail "2342-pending-blocks" "${EV_OUT} | calls: $(tr '\n' '|' < "${EV_CALLS}") | stderr: $(tail -n 3 "${EV_ERR}" | tr '\n' ' ')"
 fi
+if printf '%s' "$(evf qa_summary)" | grep -qF 'still pending'; then
+  pass "2342-pending-reason-in-evidence" "the helper's reason reaches qa_summary through san and ascii"
+else fail "2342-pending-reason-in-evidence" "qa_summary: $(evf qa_summary)"; fi
 if grep -q '^git ' "${EV_CALLS}"; then fail "2342-pending-no-push" "$(grep '^git ' "${EV_CALLS}" | tr '\n' '|')"
 else pass "2342-pending-no-push" "no push or merge while CI is pending"; fi
 ev_run "${EV_2342}" AUTODRIVE_QA_COMMAND="cargo test --locked" RECIPE_VAR_ci_evidence="$(ev_2342_ci GREEN 3 0)"
@@ -6794,6 +6799,15 @@ else pass "2342-green-no-push" "no push or merge on the way to merge-ready"; fi
 if [ "$(git -C "${EV_REPO}" rev-parse HEAD)" = "${EV_2342_HEAD}" ] && [ -z "$(git -C "${EV_REPO}" remote)" ]; then
   pass "2342-head-unchanged" "HEAD did not move and the repository has no remote"
 else fail "2342-head-unchanged" "HEAD moved or a remote was added"; fi
+# Only AUTODRIVE_REQUIRE_CI=true turns the gate on: a pending record alone
+# leaves QA to run as before for any other caller.
+EV_BODY_SAVED="${EV_BODY}"; EV_BODY="${EV_BODY//AUTODRIVE_REQUIRE_CI=true /}"
+if [ "${EV_BODY}" = "${EV_BODY_SAVED}" ]; then fail "2342-gate-off" "step-02 no longer sets AUTODRIVE_REQUIRE_CI=true"; fi
+ev_run "${EV_2342}" AUTODRIVE_QA_COMMAND="cargo test --locked" RECIPE_VAR_ci_evidence="$(ev_2342_ci PENDING 3 2)"
+EV_BODY="${EV_BODY_SAVED}"
+if [ "$(evf qa_reason)" != "ci-not-ready" ] && ev_called "cargo test --locked"; then
+  pass "2342-gate-off" "without AUTODRIVE_REQUIRE_CI=true a pending ci_evidence does not block QA"
+else fail "2342-gate-off" "${EV_OUT} | calls: $(tr '\n' '|' < "${EV_CALLS}")"; fi
 # The no-push checks above mean something only if the stub records a push.
 : > "${EV_CALLS}"
 ( cd "${EV_REPO}" && env -i PATH="${EV_2342}:/usr/bin:/bin" HOME="${TEST_HOME}" EV_CALLS="${EV_CALLS}" \

@@ -32,7 +32,7 @@ use serde_json::{Map, Value};
 use std::io::Read;
 
 /// Largest CI record, in bytes, that `ci-evidence-ready` reads from stdin.
-pub(super) const STDIN_MAX: u64 = 64 * 1024;
+const STDIN_MAX: u64 = 64 * 1024;
 
 /// Read the CI record from `reader`, refusing anything over [`STDIN_MAX`].
 pub(super) fn read_capped(reader: impl Read) -> Result<String> {

@@ -43,9 +43,9 @@ fn sh_quote(path: &Path) -> String {
 }
 
 /// An isolated QA consumer: a one-commit repository with no remote, a
-/// temporary HOME, AMPLIHACK_HOME and CLAUDE_CONFIG_DIR, git configuration
-/// off, no credential or toolchain variables, and recording `cargo` and `git`
-/// stubs ahead of the built `amplihack` on PATH.
+/// temporary HOME, AMPLIHACK_HOME, CLAUDE_CONFIG_DIR and XDG_CONFIG_HOME, git
+/// configuration off, no credential or toolchain variables, and recording
+/// `cargo` and `git` stubs ahead of the built `amplihack` on PATH.
 struct Fixture {
     tmp: tempfile::TempDir,
     repo: PathBuf,
@@ -73,6 +73,7 @@ impl Fixture {
             &root.join("home"),
             &root.join("claude"),
             &root.join("amplihack-home"),
+            &root.join("xdg"),
         ] {
             fs::create_dir_all(dir).unwrap();
         }
@@ -144,6 +145,7 @@ impl Fixture {
             .env("HOME", root.join("home"))
             .env("AMPLIHACK_HOME", root.join("amplihack-home"))
             .env("CLAUDE_CONFIG_DIR", root.join("claude"))
+            .env("XDG_CONFIG_HOME", root.join("xdg"))
             .env("TMPDIR", root)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
@@ -160,7 +162,33 @@ impl Fixture {
     /// Run the production step-02 command in `dir` with this CI record.
     fn qa(&self, dir: &Path, ci: &str, env: &[(&str, String)]) -> (Output, Value) {
         let recipe = recipe_yaml(RECIPE);
+        self.qa_command(
+            field(output_step(&recipe, "qa_evidence"), "command"),
+            dir,
+            ci,
+            env,
+        )
+    }
+
+    /// Run step-02 without its `AUTODRIVE_REQUIRE_CI=true`, as another caller would.
+    fn qa_gate_off(&self, dir: &Path, ci: &str) -> (Output, Value) {
+        let recipe = recipe_yaml(RECIPE);
         let command = field(output_step(&recipe, "qa_evidence"), "command");
+        assert!(
+            command.contains("AUTODRIVE_REQUIRE_CI=true "),
+            "step-02 no longer sets AUTODRIVE_REQUIRE_CI=true"
+        );
+        let command = command.replace("AUTODRIVE_REQUIRE_CI=true ", "");
+        self.qa_command(&command, dir, ci, &[])
+    }
+
+    fn qa_command(
+        &self,
+        command: &str,
+        dir: &Path,
+        ci: &str,
+        env: &[(&str, String)],
+    ) -> (Output, Value) {
         let evidence_file = self.root().join("qa.json");
         let _ = fs::remove_file(&evidence_file);
         let mut all = vec![
@@ -452,6 +480,12 @@ fn clean_pr_ci_in_progress_then_green_reaches_merge_ready_without_base_push() {
         "pending is not a failure: {}",
         diagnostic(&out)
     );
+    let summary = evidence["qa_summary"].as_str().unwrap_or_default();
+    assert!(
+        summary.contains("still pending"),
+        "the helper's reason reaches the evidence: {}",
+        diagnostic(&out)
+    );
 
     // (c) The same run completes green: QA runs the suite.
     let green = f.ci("GREEN", "3", "0", "0").to_string();
@@ -480,6 +514,44 @@ fn clean_pr_ci_in_progress_then_green_reaches_merge_ready_without_base_push() {
 
     // (e) The published head is the one CI and QA measured.
     assert_eq!(f.head_now(), f.head);
+}
+
+#[test]
+fn failing_ci_blocks_with_its_reason_in_the_evidence() {
+    let f = Fixture::new();
+    let (out, evidence) = f.qa(&f.repo, &f.ci("RED", "3", "0", "2").to_string(), &[]);
+    f.assert_blocked_without_running_code(&out, &evidence);
+    let summary = evidence["qa_summary"].as_str().unwrap_or_default();
+    assert!(
+        summary.contains("contains failures"),
+        "the helper's reason reaches the evidence: {}",
+        diagnostic(&out)
+    );
+    assert!(
+        !summary.contains("still pending"),
+        "a failure is not a wait: {}",
+        diagnostic(&out)
+    );
+}
+
+#[test]
+fn ci_evidence_alone_does_not_turn_the_gate_on() {
+    let f = Fixture::new();
+    let pending = f.ci("PENDING", "3", "2", "0").to_string();
+    let (out, evidence) = f.qa_gate_off(&f.repo, &pending);
+    assert_ne!(
+        evidence["qa_reason"],
+        "ci-not-ready",
+        "{}",
+        diagnostic(&out)
+    );
+    assert_eq!(evidence["qa_status"], "PASS", "{}", diagnostic(&out));
+    assert!(
+        f.log("cargo.log").contains("test --locked"),
+        "the suite did not run: {}",
+        diagnostic(&out)
+    );
+    assert!(f.marker(), "repository code never ran");
 }
 
 #[test]
@@ -592,6 +664,7 @@ fn helper(head: &str, input: Vec<u8>) -> Output {
         .env("HOME", home.path())
         .env("AMPLIHACK_HOME", home.path().join("amplihack"))
         .env("CLAUDE_CONFIG_DIR", home.path().join("claude"))
+        .env("XDG_CONFIG_HOME", home.path().join("xdg"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -656,5 +729,532 @@ fn helper_errors_go_to_stderr_without_the_record() {
     assert!(
         !stderr.contains(marker),
         "the error echoed the record: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// After merging main (#2033): the inherited repository environment is cleared
+// before any git command, and the CI gate is on only for `true`. These name
+// the tests listed in docs/reference/auto-drive-to-merge.md.
+// ---------------------------------------------------------------------------
+
+/// The loading line step-01's prompt tells the agent to run, as on the
+/// reference page, squashed.
+const STEP01_LOADING_LINE: [&str; 4] = [
+    "TOOLS_D=\"{{autodrive_tools_dir}}\"",
+    "[ -n \"$TOOLS_D\" ] || TOOLS_D=\"{{autodrive_launch_tools}}\"",
+    "[ ! -L \"$TOOLS_D/git-repo-env.sh\" ] && . \"$TOOLS_D/git-repo-env.sh\"",
+    "&& amplihack_clear_git_repo_env && amplihack_clear_run_identity_env",
+];
+
+/// The run line step-02 ends with: the gate, the quoted base, an absolute
+/// REPO_PATH, and the tool executed rather than sourced.
+const STEP02_RUN_LINE: &str =
+    "AUTODRIVE_REQUIRE_CI=true AUTODRIVE_QA_BASE=\"$B\" REPO_PATH=\"$PWD\" bash \"$T\"";
+
+fn index_of(haystack: &str, needle: &str, what: &str) -> usize {
+    haystack
+        .find(needle)
+        .unwrap_or_else(|| panic!("{what} must contain {needle:?}"))
+}
+
+/// True when a sentence that names `push`, `merge` or `rebase` as a word
+/// forbids it rather than asks for it.
+fn unnegated_write_sentences(prompt: &str) -> Vec<String> {
+    prompt
+        .split(['.', '\n'])
+        .map(str::trim)
+        .filter(|sentence| {
+            let lower = sentence.to_lowercase();
+            let words: Vec<&str> = lower
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
+                .collect();
+            let writes = ["push", "merge", "rebase"]
+                .iter()
+                .any(|w| words.contains(w));
+            let negated = ["do not", "never", "not ", "no "]
+                .iter()
+                .any(|n| lower.contains(n));
+            writes && !negated
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn base_sync_prompt_clears_git_env_before_any_git_write() {
+    let recipe = recipe_yaml(RECIPE);
+    // The helper's directory reaches step-01 from the parent, as it reaches
+    // step-02; an empty default keeps a nested round from inheriting one.
+    assert_eq!(
+        recipe["context"]["autodrive_tools_dir"].as_str(),
+        Some(""),
+        "{RECIPE} must declare autodrive_tools_dir with an empty default"
+    );
+    let parent = recipe_yaml("autodrive-merge-round");
+    let child = step(&parent, "merge-evidence");
+    for key in ["autodrive_tools_dir", "autodrive_launch_tools"] {
+        assert_eq!(
+            child["context"][key].as_str(),
+            Some(format!("{{{{{key}}}}}").as_str()),
+            "autodrive-merge-round must pass {key} to {RECIPE}"
+        );
+    }
+
+    let sync = output_step(&recipe, "merge_sync");
+    assert!(sync.get("agent").is_some(), "step-01 stays an agent step");
+    assert!(sync.get("command").is_none(), "step-01 has no bash body");
+    let prompt = squashed_prompt(&recipe, "merge_sync");
+    let mut last = 0;
+    for part in STEP01_LOADING_LINE {
+        let at = index_of(&prompt, &super::super::squash(part), "step-01");
+        assert!(
+            at >= last,
+            "step-01's loading line is out of order at {part:?}"
+        );
+        last = at;
+    }
+    // The clearing comes before the agent is told how to write.
+    let write = index_of(&prompt, "Merge the base", "step-01");
+    assert!(
+        last < write,
+        "step-01 must clear the inherited git environment before it describes any git write"
+    );
+    // A helper that cannot be loaded forbids every git write.
+    for needed in [
+        "git-repo-env-unavailable",
+        "no git write",
+        "\"decision\":\"no-update\"",
+    ] {
+        assert!(
+            prompt.contains(needed),
+            "step-01's fallback must contain {needed:?}"
+        );
+    }
+    // The clean-PR and unreadable-rules rules are kept.
+    for needed in [
+        "even when behind",
+        "verified conflict",
+        "\"policy_status\":\"read|unreadable\"",
+    ] {
+        assert!(
+            prompt.contains(needed),
+            "step-01 must still contain {needed:?}"
+        );
+    }
+    // No step of this recipe writes with git unconditionally from bash.
+    for s in steps(&recipe) {
+        if let Some(command) = s.get("command").and_then(|c| c.as_str()) {
+            for write in ["git merge", "git push", "git rebase", "gh pr merge"] {
+                assert!(
+                    !command.contains(write),
+                    "{} runs {write:?} from bash",
+                    s["id"].as_str().unwrap_or("?")
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn ci_wait_step_is_read_only() {
+    let recipe = recipe_yaml(RECIPE);
+    let wait = output_step(&recipe, "ci_evidence");
+    assert_eq!(wait["id"].as_str(), Some("step-03-wait-for-ci"));
+    assert!(wait.get("agent").is_some(), "step-03 stays an agent step");
+    assert!(
+        wait.get("command").is_none(),
+        "step-03 must not be a bash step: main's polling loop is not restored"
+    );
+    let prompt = squashed_prompt(&recipe, "ci_evidence");
+    for needed in [
+        "read-only",
+        "gh run watch",
+        "Use only",
+        "Never push just to restart CI",
+    ] {
+        assert!(prompt.contains(needed), "step-03 must contain {needed:?}");
+    }
+    let asks = unnegated_write_sentences(&prompt);
+    assert!(
+        asks.is_empty(),
+        "step-03 asks for a write that is not negated: {asks:?}"
+    );
+    let lower = prompt.to_lowercase();
+    for forbidden in [
+        "git push",
+        "git merge",
+        "gh pr merge",
+        "-x post",
+        "--method post",
+    ] {
+        assert!(
+            !lower.contains(forbidden),
+            "step-03 is read-only but names {forbidden:?}"
+        );
+    }
+}
+
+#[test]
+fn qa_step_requires_ci_after_the_2033_prelude() {
+    let recipe = recipe_yaml(RECIPE);
+    let qa = output_step(&recipe, "qa_evidence");
+    assert_eq!(qa["type"].as_str(), Some("bash"));
+    let command = field(qa, "command");
+    let clear = index_of(
+        command,
+        "amplihack_clear_git_repo_env && amplihack_clear_run_identity_env",
+        "step-02",
+    );
+    let refuse_link = index_of(command, "[ ! -L \"$TOOLS_D/git-repo-env.sh\" ]", "step-02");
+    let stop = index_of(
+        command,
+        "STOP: cannot load git-repo-env.sh from the tools directory (#2033)",
+        "step-02",
+    );
+    let cd = index_of(command, "cd \"${REPO_PATH:-.}\"", "step-02");
+    let base = index_of(command, "#1763", "step-02");
+    let run = index_of(command, STEP02_RUN_LINE, "step-02");
+    assert!(
+        refuse_link < clear && clear < stop && stop < cd,
+        "step-02 must load and clear before it changes directory"
+    );
+    assert!(
+        cd < base && base < run,
+        "step-02 must derive the base after the prelude and run the tool last"
+    );
+    assert!(
+        !command.contains("--show-toplevel"),
+        "step-02 must take main's tool search: no git toplevel (#2033)"
+    );
+    assert!(
+        command.contains("RECIPE_VAR_autodrive_tools_dir"),
+        "step-02 must load the helper from the parent's tools directory"
+    );
+    assert_eq!(
+        command.matches("AUTODRIVE_REQUIRE_CI=").count(),
+        1,
+        "step-02 sets the gate once, on the run line"
+    );
+}
+
+#[test]
+fn qa_tool_clears_env_before_binding_head_and_gating() {
+    let tool = fs::read_to_string(
+        super::super::workspace_root().join("amplifier-bundle/tools/autodrive_qa_evidence.sh"),
+    )
+    .unwrap();
+    let source = index_of(&tool, ". \"$H/git-repo-env.sh\"", "the QA tool");
+    let clear = index_of(&tool, "amplihack_clear_git_repo_env;", "the QA tool");
+    let head = index_of(&tool, "HEAD_SHA=\"$(git rev-parse HEAD", "the QA tool");
+    let gate = index_of(
+        &tool,
+        "[ \"${AUTODRIVE_REQUIRE_CI:-false}\" = \"true\" ]",
+        "the QA tool",
+    );
+    let helper = index_of(
+        &tool,
+        "ci-evidence-ready --head \"$HEAD_SHA\"",
+        "the QA tool",
+    );
+    let suite = index_of(&tool, "--- suite commands", "the QA tool");
+    assert!(
+        source < clear && clear < head && head < gate && gate < helper && helper < suite,
+        "the QA tool must source and clear, read HEAD, gate on CI, then run repository code"
+    );
+    for field in ["\"git_env_cleared\"", "\"run_env_cleared\""] {
+        assert!(
+            tool.contains(field),
+            "main's {field} is kept in the output line"
+        );
+    }
+    assert!(
+        !tool.contains("[ -n \"${RECIPE_VAR_ci_evidence:-}\" ]"),
+        "CI evidence alone must not turn the gate on"
+    );
+}
+
+#[test]
+fn only_exact_true_turns_the_ci_gate_on() {
+    let recipe = recipe_yaml(RECIPE);
+    let command = field(output_step(&recipe, "qa_evidence"), "command");
+    assert!(command.contains("AUTODRIVE_REQUIRE_CI=true "));
+    for value in ["", "1", "yes", "TRUE", "True", "true "] {
+        let f = Fixture::new();
+        let pending = f.ci("PENDING", "3", "2", "0").to_string();
+        let changed = command.replace(
+            "AUTODRIVE_REQUIRE_CI=true ",
+            &format!("AUTODRIVE_REQUIRE_CI='{value}' "),
+        );
+        let (out, evidence) = f.qa_command(&changed, &f.repo, &pending, &[]);
+        assert_ne!(
+            evidence["qa_reason"],
+            "ci-not-ready",
+            "AUTODRIVE_REQUIRE_CI={value:?} turned the gate on: {}",
+            diagnostic(&out)
+        );
+        assert_eq!(
+            evidence["qa_status"],
+            "PASS",
+            "{value:?}: {}",
+            diagnostic(&out)
+        );
+    }
+    // Unset, as another caller of the tool would run it.
+    let f = Fixture::new();
+    let (out, evidence) = f.qa_gate_off(&f.repo, &f.ci("PENDING", "3", "2", "0").to_string());
+    assert_ne!(
+        evidence["qa_reason"],
+        "ci-not-ready",
+        "{}",
+        diagnostic(&out)
+    );
+    // The exact value does.
+    let f = Fixture::new();
+    let (out, evidence) = f.qa(&f.repo, &f.ci("PENDING", "3", "2", "0").to_string(), &[]);
+    f.assert_blocked_without_running_code(&out, &evidence);
+}
+
+#[test]
+fn evidence_for_another_head_blocks_without_naming_it() {
+    let f = Fixture::new();
+    let other = "0123456789abcdef0123456789abcdef01234567";
+    assert_ne!(other, f.head);
+    let mut ci = f.ci("GREEN", "2", "0", "0");
+    ci["head_sha"] = json!(other);
+    let (out, evidence) = f.qa(&f.repo, &ci.to_string(), &[]);
+    f.assert_blocked_without_running_code(&out, &evidence);
+    assert_eq!(
+        evidence["head_sha"],
+        f.head.as_str(),
+        "{}",
+        diagnostic(&out)
+    );
+    let summary = evidence["qa_summary"].as_str().unwrap_or_default();
+    assert!(
+        summary.contains("another head"),
+        "the helper's reason reaches qa_summary: {}",
+        diagnostic(&out)
+    );
+    for (what, text) in [
+        ("the evidence", evidence.to_string()),
+        ("stderr", String::from_utf8_lossy(&out.stderr).into_owned()),
+    ] {
+        assert!(
+            !text.contains(other),
+            "{what} repeats the other head's SHA: {}",
+            diagnostic(&out)
+        );
+    }
+    assert!(
+        pushes_or_merges(&f.log("git.log")).is_empty(),
+        "{}",
+        f.log("git.log")
+    );
+}
+
+#[test]
+fn non_json_evidence_blocks() {
+    for ci in [
+        "GREEN",
+        "not json {",
+        "{\"ci_status\":\"GREEN\"",
+        "[]",
+        "{\"no_status\":\"GREEN\"}",
+        "ci_status=GREEN ci_total=1 ci_pending=0 ci_failing=0",
+    ] {
+        let f = Fixture::new();
+        let (out, evidence) = f.qa(&f.repo, ci, &[]);
+        f.assert_blocked_without_running_code(&out, &evidence);
+        assert!(
+            pushes_or_merges(&f.log("git.log")).is_empty(),
+            "{ci:?}: {}",
+            f.log("git.log")
+        );
+    }
+}
+
+#[test]
+fn inherited_git_dir_decoy_still_blocks() {
+    let f = Fixture::new();
+    // A second repository with its own commit, and green evidence for it.
+    let decoy = f.root().join("decoy");
+    fs::create_dir(&decoy).unwrap();
+    let init = f.bash(
+        "git init -q && printf decoy > DECOY && git add DECOY && tree=$(git write-tree) \
+         && head=$(git -c user.name=Decoy -c user.email=decoy@example.invalid commit-tree \"$tree\" -m decoy) \
+         && git update-ref HEAD \"$head\" && git update-ref refs/remotes/origin/main \"$head\" \
+         && git rev-parse HEAD",
+        &decoy,
+        &[],
+    );
+    assert!(init.status.success(), "{}", diagnostic(&init));
+    let decoy_head = String::from_utf8(init.stdout).unwrap().trim().to_string();
+    assert_ne!(decoy_head, f.head, "the decoy must have another head");
+    let mut ci = f.ci("GREEN", "2", "0", "0");
+    ci["head_sha"] = json!(decoy_head);
+
+    let (out, evidence) = f.qa(
+        &f.repo,
+        &ci.to_string(),
+        &[
+            ("GIT_DIR", decoy.join(".git").display().to_string()),
+            ("GIT_WORK_TREE", decoy.display().to_string()),
+            (
+                "GIT_INDEX_FILE",
+                decoy.join(".git/index").display().to_string(),
+            ),
+        ],
+    );
+    f.assert_blocked_without_running_code(&out, &evidence);
+    assert_eq!(
+        evidence["head_sha"],
+        f.head.as_str(),
+        "QA bound the evidence to the inherited repository: {}",
+        diagnostic(&out)
+    );
+    assert!(
+        evidence["qa_summary"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("another head"),
+        "{}",
+        diagnostic(&out)
+    );
+    assert!(
+        !decoy.join("repository-code-ran").exists(),
+        "repository code ran in the decoy"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("GIT_DIR") && stderr.contains("(#2033)"),
+        "step-02's prelude reports the names it cleared: {}",
+        diagnostic(&out)
+    );
+    assert!(
+        pushes_or_merges(&f.log("git.log")).is_empty(),
+        "{}",
+        f.log("git.log")
+    );
+}
+
+#[test]
+fn helper_message_with_control_characters_gives_one_json_line() {
+    let f = Fixture::new();
+    // A stand-in amplihack whose ci-evidence-ready refuses with a hostile
+    // message; every other helper call goes to the built binary.
+    let stub_dir = f.root().join("hostile-amplihack");
+    fs::create_dir(&stub_dir).unwrap();
+    write_stub(
+        &stub_dir.join("amplihack"),
+        &format!(
+            "#!/bin/sh\nfor a in \"$@\"; do if [ \"$a\" = ci-evidence-ready ]; then \
+             printf 'bad \"quote\" back\\\\slash \\033[31mred\\033[0m\\nsecond\\tline\\r\\n' >&2; exit 1; fi; done\n\
+             exec {} \"$@\"\n",
+            sh_quote(Path::new(env!("CARGO_BIN_EXE_amplihack")))
+        ),
+    );
+    let path = format!("{}:{}", stub_dir.display(), f.path);
+    let (out, evidence) = f.qa(
+        &f.repo,
+        &f.ci("GREEN", "1", "0", "0").to_string(),
+        &[("PATH", path)],
+    );
+    f.assert_blocked_without_running_code(&out, &evidence);
+    let lines: Vec<&str> = std::str::from_utf8(&out.stdout)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "stdout must be one evidence line: {}",
+        diagnostic(&out)
+    );
+    let summary = evidence["qa_summary"].as_str().unwrap_or_default();
+    assert!(
+        summary.contains("bad"),
+        "the helper's reason reaches qa_summary: {}",
+        diagnostic(&out)
+    );
+    assert!(
+        !summary.chars().any(|c| c.is_control() || !c.is_ascii()),
+        "qa_summary keeps a control or non-ASCII character: {summary:?}"
+    );
+    for value in evidence.as_object().unwrap().values() {
+        let text = value.as_str().unwrap_or_default();
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\n'),
+            "an evidence field keeps ESC or a newline: {text:?}"
+        );
+    }
+}
+
+#[test]
+fn cleared_run_identity_keeps_the_gate_on() {
+    // The gate's inputs are not run identity: clearing that list must leave
+    // them set.
+    let helper = fs::read_to_string(
+        super::super::workspace_root().join("amplifier-bundle/tools/git-repo-env.sh"),
+    )
+    .expect("git-repo-env.sh is in the bundle after merging main (#2033)");
+    let list = helper
+        .lines()
+        .find(|l| l.starts_with("AMPLIHACK_RUN_IDENTITY_VARS="))
+        .expect("AMPLIHACK_RUN_IDENTITY_VARS is assigned");
+    for gate_input in [
+        "AUTODRIVE_REQUIRE_CI",
+        "RECIPE_VAR_ci_evidence",
+        "AUTODRIVE_",
+    ] {
+        assert!(
+            !list.contains(gate_input),
+            "the run identity list clears a gate input: {list}"
+        );
+    }
+
+    let f = Fixture::new();
+    let outer = f.root().join("outer-run");
+    let (out, evidence) = f.qa(
+        &f.repo,
+        &f.ci("PENDING", "3", "2", "0").to_string(),
+        &[
+            ("AMPLIHACK_RUN_ID", "outer-run".into()),
+            ("AMPLIHACK_RECIPE_RUN_ID", "outer-recipe".into()),
+            ("AMPLIHACK_RUN_DIR", outer.display().to_string()),
+            (
+                "AMPLIHACK_SESSION_TREE_DIR",
+                outer.join("tree").display().to_string(),
+            ),
+            ("AMPLIHACK_TREE_ID", "outer-tree".into()),
+        ],
+    );
+    f.assert_blocked_without_running_code(&out, &evidence);
+    assert!(
+        evidence.get("run_env_cleared").is_some() && evidence.get("git_env_cleared").is_some(),
+        "main's cleared-names fields are kept: {}",
+        diagnostic(&out)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("AMPLIHACK_RUN_ID") && stderr.contains("(#2033)"),
+        "step-02's prelude cleared the outer run identity: {}",
+        diagnostic(&out)
+    );
+    assert!(!outer.exists(), "the outer run directory was written to");
+}
+
+#[test]
+fn green_evidence_exits_zero_with_no_output() {
+    let head = "a".repeat(40);
+    let ci = json!({"ci_status":"GREEN","ci_total":"2","ci_pending":"0","ci_failing":"0",
+                    "ci_signal":"GREEN:0/2","head_sha":head,"reason":"run 1, attempt 1"});
+    let out = helper(&head, ci.to_string().into_bytes());
+    assert!(out.status.success(), "{}", diagnostic(&out));
+    assert!(
+        out.stdout.is_empty(),
+        "the helper prints nothing on success: {}",
+        diagnostic(&out)
     );
 }

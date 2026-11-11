@@ -3,12 +3,24 @@
 # the auto-drive-to-merge merge loop. step-02-qa-team-scenarios of
 # autodrive-merge-evidence.yaml runs this file (moved out of the step, PR #1520).
 #
+# Criterion 1 follows qa-team's repo-type table: one or two measurements,
+# both always run so the evidence lists every cause at once. (1) The suite
+# command from the first source present (#1763): env, .amplihack/qa.toml, one
+# clean CI step, or `cargo test`, `npm test` or `pytest` detected in the
+# project the changed paths pick (QA_UNRESOLVED when they pick none, and
+# nothing runs). (2) Only where autodrive_gadugi_required says true (a Node
+# project, or AUTODRIVE_QA_SCENARIO_DIR set): the qa-team scenarios, validated
+# with `gadugi-test validate` and run one `gadugi-test run --scenario` per
+# file. Elsewhere gadugi_status is NOT_REQUIRED and gadugi-test is never
+# called: qa-team's Rust CLI rule substitutes `cargo test`, and a measured docs_only drops (2) in a Node project too (#2219).
+#
 # Input comes from the environment only:
 #   REPO_PATH              the repository to measure (default: the working directory)
 #   AUTODRIVE_QA_EVIDENCE  file the evidence is written to, private (optional)
 #   AUTODRIVE_ROUND_LABEL  recorded as qa_round
 #   AUTODRIVE_QA_BASE      the base branch name, for the changed paths
-#   AUTODRIVE_REQUIRE_CI, RECIPE_VAR_ci_evidence  merge preparation: QA needs completed GREEN CI (#2342)
+#   AUTODRIVE_REQUIRE_CI   true in merge preparation: QA needs completed GREEN CI (#2342),
+#                          read from RECIPE_VAR_ci_evidence
 #   AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR, AUTODRIVE_QA_COMMANDS and
 #   AUTODRIVE_QA_SCENARIO_DIR, described where they are read below.
 # Output: one JSON line on stdout, and the same line in AUTODRIVE_QA_EVIDENCE.
@@ -102,13 +114,21 @@ else
   echo "[skip] not a git repo; the qa evidence records no head sha, so the merge gate refuses it rather than merging unbound evidence" >&2
 fi
 res() { printf '%s\t%s\n' "${1##*/}" "$2" >> "$RES"; } # res <file> <PASS|FAIL|INVALID>
-# #2342: with AUTODRIVE_REQUIRE_CI=true or CI evidence set, nothing runs unless the evidence is completed GREEN
-# CI for this script's own HEAD_SHA (empty blocks). No re-read after the suite: the merge gate refuses a
-# head_sha that is not the head it merges, and blocks when it cannot read that head.
-CI_BLOCKED=""; if [ "${AUTODRIVE_REQUIRE_CI:-false}" = "true" ] || [ -n "${RECIPE_VAR_ci_evidence:-}" ]; then
-  printf '%s' "${RECIPE_VAR_ci_evidence:-}" | amplihack orch helper extract-json --require-field ci_status \
-    | amplihack orch helper ci-evidence-ready --head "$HEAD_SHA" >/dev/null \
-    || { CI_BLOCKED="true"; cause "completed green CI for the current head is required before QA"; }
+# #2342: with AUTODRIVE_REQUIRE_CI=true, nothing runs unless RECIPE_VAR_ci_evidence is completed GREEN CI
+# for this script's own HEAD_SHA (empty blocks). The helper's reason ("still pending", "contains failures",
+# "another head") is copied to stderr and, through san and ascii, into the cause; its messages name a field
+# and never its value. Its stdout is discarded, so stdout stays the one evidence line. No re-read after
+# the suite: the merge gate refuses a head_sha that is not the head it merges, and blocks when it cannot
+# read that head.
+CI_BLOCKED=""; if [ "${AUTODRIVE_REQUIRE_CI:-false}" = "true" ]; then
+  if ! CI_WHY="$(printf '%s' "${RECIPE_VAR_ci_evidence:-}" \
+      | amplihack orch helper extract-json --require-field ci_status \
+      | amplihack orch helper ci-evidence-ready --head "$HEAD_SHA" 2>&1 >/dev/null)"; then
+    CI_BLOCKED="true"
+    [ -z "$CI_WHY" ] || printf '%s\n' "$CI_WHY" >&2
+    CI_WHY="$(printf '%s' "$CI_WHY" | san | ascii | cut -c1-200)"
+    cause "completed green CI for the current head is required before QA${CI_WHY:+: $CI_WHY}"
+  fi
 fi
 # --- suite commands --------------------------------------------------
 # The first source present wins, even when it gives no usable command: env,
