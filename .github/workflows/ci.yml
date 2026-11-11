@@ -369,6 +369,9 @@ jobs:
       - name: Recipes — auto-drive QA evidence record is valid JSON (issue #1531)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1531-qa-evidence-json.sh
+      - name: Recipes — auto-drive QA clears inherited GIT_* and run identity (issue #2033)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2033-qa-git-env.sh
       - name: Recipes — #1551 no merge outside gate
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
@@ -768,9 +771,10 @@ jobs:
             cross: false
             gnu_cross_toolchain: false
           - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-latest
+            # Build on ARM directly; no apt mirror or GNU cross-toolchain install.
+            runner: ubuntu-24.04-arm
             cross: false
-            gnu_cross_toolchain: true
+            gnu_cross_toolchain: false
           - target: x86_64-apple-darwin
             runner: macos-latest
             cross: false

@@ -45,18 +45,6 @@ fn execute_recipe_via_rust_for_test(
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
 ) -> Result<RecipeRunResult> {
-    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            for (key, value) in self.0.drain(..) {
-                match value {
-                    Some(value) => unsafe { std::env::set_var(key, value) },
-                    None => unsafe { std::env::remove_var(key) },
-                }
-            }
-        }
-    }
-
     let inherited_identity = [
         (
             "AMPLIHACK_TREE_ID",
@@ -70,24 +58,8 @@ fn execute_recipe_via_rust_for_test(
     let is_outer_orchestration = inherited_identity
         .iter()
         .all(|(key, inherited)| std::env::var_os(key).as_deref() == *inherited);
-    let _restore = is_outer_orchestration.then(|| {
-        EnvRestore(
-            [
-                "AMPLIHACK_SESSION_TREE_DIR",
-                "AMPLIHACK_TREE_ID",
-                "AMPLIHACK_SESSION_DEPTH",
-                "AMPLIHACK_MAX_DEPTH",
-                "AMPLIHACK_RECIPE_RUN_ID",
-            ]
-            .into_iter()
-            .map(|key| {
-                let previous = std::env::var_os(key);
-                unsafe { std::env::remove_var(key) };
-                (key, previous)
-            })
-            .collect(),
-        )
-    });
+    // #1984: the one list of outer-run variables, RUN_DIR and RUN_ID included.
+    let _restore = is_outer_orchestration.then(crate::test_support::clear_outer_run_env);
 
     // A test that has not chosen otherwise must not run the end-of-run sweep:
     // it resolves the work root from the inherited `AMPLIHACK_WORK_ROOT` or
@@ -98,8 +70,10 @@ fn execute_recipe_via_rust_for_test(
     let _no_sweep = std::env::var_os(crate::commands::cleanup::CLEANUP_ON_EXIT_ENV)
         .is_none()
         .then(|| {
-            unsafe { std::env::set_var(crate::commands::cleanup::CLEANUP_ON_EXIT_ENV, "0") };
-            EnvRestore(vec![(crate::commands::cleanup::CLEANUP_ON_EXIT_ENV, None)])
+            crate::test_support::EnvGuard::set([(
+                crate::commands::cleanup::CLEANUP_ON_EXIT_ENV,
+                "0",
+            )])
         });
 
     execute_recipe_via_rust(
