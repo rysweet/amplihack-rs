@@ -13,6 +13,8 @@ mod failures;
 mod fixture;
 #[path = "issue_2336_autodrive_completion_live.rs"]
 mod live;
+#[path = "issue_2336_autodrive_completion_regressions.rs"]
+mod regressions;
 #[path = "issue_2336_autodrive_completion_security.rs"]
 mod security;
 

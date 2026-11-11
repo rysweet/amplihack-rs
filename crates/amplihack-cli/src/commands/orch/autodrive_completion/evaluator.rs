@@ -2,6 +2,8 @@ use super::{evidence, private_state::State, secure_fs};
 use anyhow::{Result, ensure};
 use std::collections::BTreeMap;
 use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 pub const FIELDS: &[&str] = &[
@@ -149,9 +151,11 @@ pub fn run(
             cmd.env_remove(key);
         }
     }
-    let context_dir = tempfile::Builder::new()
-        .prefix(".evaluator-context-")
-        .tempdir_in(&state.state_dir)?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".evaluator-context-");
+    #[cfg(unix)]
+    builder.permissions(std::fs::Permissions::from_mode(0o700));
+    let context_dir = builder.tempdir_in(&state.state_dir)?;
     for (key, value) in context {
         if matches!(key.as_str(), "loop_clean_token" | "loop_round_verdict") {
             cmd.arg("-c").arg(format!("{key}={value}"));

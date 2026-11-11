@@ -2,6 +2,8 @@ use super::{Prepare, evaluator, evidence, secure_fs};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize, Deserialize)]
@@ -91,21 +93,20 @@ pub fn prepare(args: Prepare) -> Result<()> {
             .is_file(),
         "trusted evaluator recipe missing"
     );
-    // tempfile creates an unpredictable owner-private directory, even with a
-    // permissive caller umask. Its two children separate authority and output.
-    let root = tempfile::Builder::new()
-        .prefix(".completion-")
-        .tempdir_in(&args.state_dir)?
-        .keep();
+    // Request owner-only access at creation; tempfile's default directory mode
+    // is 0777, filtered by the caller's umask. Children separate authority/output.
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".completion-");
+    #[cfg(unix)]
+    builder.permissions(std::fs::Permissions::from_mode(0o700));
+    let root = builder.tempdir_in(&args.state_dir)?.keep();
     let trusted = root.join("driver");
     let output = root.join("output");
     for path in [&trusted, &output] {
-        std::fs::create_dir(path)?;
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
-        }
+        std::fs::DirBuilder::new().mode(0o700).create(path)?;
+        #[cfg(not(unix))]
+        std::fs::create_dir(path)?;
     }
     let private_state = trusted.join("state.json");
     let decision_file = output.join("decision.json");

@@ -10,13 +10,13 @@ FU="$HERE/autodrive_followups.sh"
 [ -f "$FU" ] || { echo "ERROR: followups-unfiled: required follow-up helper missing" >&2; exit 1; }
 bash "$FU" collect --state-dir "$DIR" \
   || { echo "ERROR: followups-unfiled: collection failed; phase remains incomplete" >&2; exit 1; }
-[ "${AUTODRIVE_DRY_RUN:-false}" != true ] \
-  || { echo "ERROR: followups-unfiled: dry run cannot record phase completion" >&2; exit 1; }
 if [ -n "$PR" ]; then
-  bash "$FU" file --state-dir "$DIR" --pr "$PR" --task-id "$TASK_ID" --task-text-file "$TASK_FILE"
-  RC=$?
-  [ "$RC" -ne 79 ] || exit 79
-  [ "$RC" -eq 0 ] || { echo "ERROR: followups-unfiled: filing failed; phase remains incomplete" >&2; exit 1; }
+  if [ "${AUTODRIVE_DRY_RUN:-false}" != true ]; then
+    bash "$FU" file --state-dir "$DIR" --pr "$PR" --task-id "$TASK_ID" --task-text-file "$TASK_FILE"
+    RC=$?
+    [ "$RC" -ne 79 ] || exit 79
+    [ "$RC" -eq 0 ] || { echo "ERROR: followups-unfiled: filing failed; phase remains incomplete" >&2; exit 1; }
+  fi
   bash "$FU" check --state-dir "$DIR" --pr "$PR" \
     || { echo "ERROR: followups-unfiled: receipts invalid; phase remains incomplete" >&2; exit 1; }
 elif [ -s "$DIR/followups.jsonl" ]; then
