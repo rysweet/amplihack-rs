@@ -165,6 +165,7 @@ fn amplihack_install_command_with_binary(
         .arg("--local")
         .arg(source)
         .env("HOME", home)
+        .env("AMPLIHACK_AGENT_BINARY", "claude")
         .env("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", hooks_bin)
         .env("RECIPE_RUNNER_RS_PATH", recipe_runner)
         .env_remove("AMPLIHACK_HOME")

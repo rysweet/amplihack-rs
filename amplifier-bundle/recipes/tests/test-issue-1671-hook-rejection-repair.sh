@@ -244,6 +244,8 @@ new_repo() {
     git init -q --bare -b main "${dir}/origin.git"
     git init -q -b main "${dir}/main"
     configure_identity "${dir}/main"
+    # The staging cases must see fixture files even if the caller ignores them globally.
+    git -C "${dir}/main" config core.excludesFile /dev/null
     printf 'base\n' > "${dir}/main/README.md"
     git -C "${dir}/main" add README.md
     git -C "${dir}/main" commit -qm "seed"
