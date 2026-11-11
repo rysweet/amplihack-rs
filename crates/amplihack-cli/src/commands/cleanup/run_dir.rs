@@ -516,8 +516,7 @@ impl RunScope {
 }
 
 /// The runtime space of one `amplihack recipe run`: a run folder under the
-/// work root, or (when the work root cannot be used) a private temp folder as
-/// in earlier releases.
+/// work root, or, for a dry run, a private temp folder.
 #[derive(Debug)]
 pub(crate) enum RunWorkspace {
     Scoped {
@@ -533,43 +532,37 @@ pub(crate) enum RunWorkspace {
 }
 
 impl RunWorkspace {
-    /// Creates the run folder, or falls back to a temp folder with a warning.
-    pub(crate) fn begin(recipe: &str, cwd: &Path) -> Result<Self> {
-        let scoped = super::work_root::resolve_from_env()
-            .and_then(|root| RunScope::begin(root, recipe, cwd));
-        match scoped {
-            Ok((scope, guard)) => Ok(Self::Scoped {
-                scope: Box::new(scope),
-                guard,
-            }),
-            Err(error) => {
-                eprintln!(
-                    "amplihack: warning: cannot use the work root ({error:#}); this run uses a \
-                     private temporary folder and no run folder or cleanup"
-                );
-                let inputs = TmpRootInputs::from_env();
-                let explicit_root = match usable_explicit_root(&legacy_work_root(&inputs), &inputs)
-                {
-                    Ok(root) => root,
-                    Err(warning) => {
-                        eprintln!("{warning}");
-                        None
-                    }
-                };
-                let mut builder = tempfile::Builder::new();
-                builder.prefix("amplihack-workflow-");
-                let dir = match &explicit_root {
-                    Some(root) => builder.tempdir_in(root),
-                    None => builder.tempdir(),
-                }
-                .context("failed to create isolated workflow runtime directory")?;
-                create_private_dir_all(&dir.path().join("tmp"))?;
-                create_private_dir_all(&dir.path().join("artifacts"))?;
-                Ok(Self::Legacy { dir, explicit_root })
-            }
-        }
+    /// Recovery never silently executes without durable admission.
+    pub(crate) fn begin_durable(recipe: &str, cwd: &Path) -> Result<Self> {
+        let root = super::work_root::resolve_from_env()?;
+        recipe_runner_rs::recovery::private_fs::Directory::open(&root.path, true)?;
+        let (scope, guard) = RunScope::begin(root, recipe, cwd)?;
+        Ok(Self::Scoped {
+            scope: Box::new(scope),
+            guard,
+        })
     }
-
+    /// A dry run owns only temporary scratch space and never a run scope.
+    /// It still honours `AMPLIHACK_RUN_TMP_ROOT` (issue #2291, D12).
+    pub(crate) fn dry_runtime() -> Result<Self> {
+        let inputs = TmpRootInputs::from_env();
+        let explicit_root = match usable_explicit_root(&legacy_work_root(&inputs), &inputs) {
+            Ok(root) => root,
+            Err(warning) => {
+                eprintln!("{warning}");
+                None
+            }
+        };
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("amplihack-dry-");
+        let dir = match &explicit_root {
+            Some(root) => builder.tempdir_in(root),
+            None => builder.tempdir(),
+        }?;
+        create_private_dir_all(&dir.path().join("tmp"))?;
+        create_private_dir_all(&dir.path().join("artifacts"))?;
+        Ok(Self::Legacy { dir, explicit_root })
+    }
     pub(crate) fn runtime_dir(&self) -> &Path {
         match self {
             Self::Scoped { guard, .. } => guard.path(),

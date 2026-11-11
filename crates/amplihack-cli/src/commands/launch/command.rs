@@ -232,8 +232,9 @@ pub(super) fn build_command_for_dir(
     }
 
     // Issue #1985: a recipe agent step on Codex (`amplihack codex -- exec …`)
-    // gets workspace-write with network access and the hook-trust bypass,
-    // unless the caller chose otherwise. Interactive argv is unchanged.
+    // gets `--sandbox danger-full-access` and the hook-trust bypass, the same
+    // trust as Claude's `--dangerously-skip-permissions` (#2317), unless the
+    // caller chose a sandbox. Interactive argv is unchanged.
     // Issue #2010: one stderr line names what was added. As with
     // `model_args`, print what the module returns and add what it returns;
     // nothing here decides anything. Nothing is written to stdout.
