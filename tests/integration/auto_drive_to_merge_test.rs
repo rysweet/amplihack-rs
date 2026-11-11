@@ -5653,9 +5653,26 @@ fn issue_2033_step_04_loads_the_helper_instead_of_a_partial_unset() {
         !prompt.contains("unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE"),
         "step-04 must not keep the partial GIT_* unset (#2033)"
     );
-    let line = prompt
+    // The test-running instruction also loads this helper. Check the commit
+    // block independently so prose order cannot select that other call.
+    let commit_block = prompt
+        .split("```bash\n")
+        .skip(1)
+        .filter_map(|section| section.split_once("```").map(|(block, _)| block))
+        .find(|block| {
+            block
+                .lines()
+                .any(|line| line.trim_start().starts_with("git commit "))
+        })
+        .expect("step-04 must contain a fenced bash commit block");
+    let cd = commit_block
         .lines()
-        .find(|l| l.contains("git-repo-env.sh") && l.contains("amplihack_clear_git_repo_env"))
+        .position(|l| l.contains("cd \"{{repo_path}}\""))
+        .expect("step-04 enters the PR worktree");
+    let (load, line) = commit_block
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("git-repo-env.sh") && l.contains("amplihack_clear_git_repo_env"))
         .unwrap_or_else(|| panic!("step-04 must source git-repo-env.sh and clear (#2033)"));
     assert!(
         line.contains("unset GH_REPO"),
@@ -5670,18 +5687,17 @@ fn issue_2033_step_04_loads_the_helper_instead_of_a_partial_unset() {
             && line.contains("exit 1"),
         "step-04 must stop when the helper cannot be loaded:\n  {line}"
     );
-    let cd = prompt
+    let guard = commit_block
         .lines()
-        .position(|l| l.contains("cd \"{{repo_path}}\""))
-        .expect("step-04 enters the PR worktree");
-    let load = prompt
-        .lines()
-        .position(|l| l.contains(GIT_REPO_ENV_LOAD))
-        .expect("helper line");
-    let first_git = prompt
+        .position(|l| l.contains("autodrive_worktree_guard.sh"))
+        .expect("step-04 checks the PR worktree before committing");
+    assert!(
+        cd < load && load < guard,
+        "step-04 must clear after cd and before the worktree guard (#2033)"
+    );
+    let first_git = commit_block
         .lines()
         .enumerate()
-        .skip(cd + 1)
         .find(|(_, l)| {
             l.trim_start().starts_with("git ") || l.contains("autodrive_worktree_guard.sh")
         })
@@ -5690,6 +5706,30 @@ fn issue_2033_step_04_loads_the_helper_instead_of_a_partial_unset() {
     assert!(
         load < first_git,
         "step-04 must clear before its first git command (#2033)"
+    );
+}
+
+#[test]
+fn issue_2033_step_04_test_runs_load_the_helper_in_the_same_shell_call() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let prompt = field(step(&recipe, "step-04-address-blockers"), "prompt");
+    let instruction = prompt
+        .lines()
+        .find(|line| line.contains("**Running tests or hooks**"))
+        .expect("step-04 must instruct the agent how to isolate test and hook runs (#2033)");
+    assert!(
+        instruction.contains("every shell call") && instruction.contains("in that same call"),
+        "step-04 must clear the inherited environment in each shell call that runs tests or hooks:\n  {instruction}"
+    );
+    assert!(
+        instruction.contains(GIT_REPO_ENV_LOAD),
+        "test and hook runs must load the checked helper and clear both lists:\n  {instruction}"
+    );
+    assert!(
+        instruction.contains("[ ! -L \"{{autodrive_tools_dir}}/git-repo-env.sh\" ] &&")
+            && instruction
+                .contains("|| { echo \"STOP: cannot load git-repo-env.sh (#2033)\" >&2; exit 1; }"),
+        "test and hook runs must stop if the helper is a symlink or cannot be loaded:\n  {instruction}"
     );
 }
 
