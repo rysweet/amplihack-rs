@@ -413,12 +413,8 @@ fn no_short_timeouts_anywhere() {
             }
         }
     }
-    // The only wait in the workflow is the CI poll, and its interval is 60s.
-    let evidence = recipe_text("autodrive-merge-evidence");
-    assert!(
-        evidence.contains("sleep 60"),
-        "the CI wait must poll on a 60-second interval"
-    );
+    // #2342: request backoff is an agent implementation detail. Preserve the
+    // no-timeout protection without prescribing a polling interval.
     for path in control_path_files() {
         let text = read(&path);
         for (n, line) in text.lines().enumerate() {
@@ -427,10 +423,6 @@ fn no_short_timeouts_anywhere() {
                 continue;
             }
             for short in [
-                "sleep 1",
-                "sleep 2",
-                "sleep 3",
-                "sleep 5",
                 "timeout 5",
                 "timeout 10",
                 "timeout 30",
@@ -448,6 +440,9 @@ fn no_short_timeouts_anywhere() {
         }
     }
 }
+
+#[path = "issue_2342_evidence/mod.rs"]
+mod issue_2342;
 
 // ── Structured verdicts ──────────────────────────────────────────────────────
 

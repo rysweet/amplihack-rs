@@ -1,0 +1,40 @@
+Issue #2342 recovery prerequisite — 11 November 2026
+
+Status: BLOCKED. Earlier implementation work was not recovered.
+This records a prerequisite investigation, not an implemented fix.
+
+Evidence:
+- Local and remote feat/issue-2342-auto-drive-merge-ready both point to
+  c4935c8adee1b5e3c5ad597713d410f2bbce3aab, the main baseline.
+- git worktree list identifies this issue worktree and its main checkout
+  at /d0/src/cx-amplihack-rs-2342. Neither has issue-specific commits.
+- The branch reflog records creation from origin/main at 07:02:37 UTC
+  and publication of the baseline at 07:02:39 UTC on 11 November 2026.
+- git ls-remote --heads origin '*2342*' identifies only that baseline ref.
+- Reachable commit history and reflogs contain no issue-2342 changes.
+- git fsck --no-reflogs --unreachable identified 2,231 unreachable commits;
+  inspection of their subjects found no issue-2342 reference.
+- Nearby Amplihack clones under /d0/src contain no additional matching
+  local branches, worktrees, issue-specific history, or reflog entries.
+- GitHub PR searches for 2342 and the exact branch returned no PRs.
+- Issue #2342 contains no recovery commit, patch, or earlier PR reference.
+
+Preserved work:
+- Existing changes to docs/index.md, docs/reference/auto-drive-to-merge.md,
+  docs/reference/loop-health-evaluator.md, docs/reference/merge-flow.md,
+  and tests/integration/auto_drive_to_merge_test.rs remain untouched.
+- Existing untracked docs/reference/autodrive-evidence.md,
+  tests/integration/fixtures/issue_2342_ci_responses.json, and
+  tests/integration/issue_2342_evidence/ remain untouched.
+- These are the supplied design documentation and regression contracts.
+  They do not establish recovery of the earlier implementation.
+
+Disposition:
+- Requirement 1 and the first implementation-order item explicitly block
+  implementation and delivery when earlier work cannot be recovered.
+- No fresh implementation, commit, push, PR creation, or merge was performed.
+- Recovery needs the earlier checkout, commit, or patch, or an explicit
+  change to the recovery prerequisite. The baseline ref is insufficient.
+- The supplied failing-test counts are prior-step results, not new test
+  execution. Runtime behaviour and the proposed fix remain unverified.
+- The no_merge=true delivery restriction remains in force.

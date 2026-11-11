@@ -1,0 +1,66 @@
+{
+  "identity": {"host": "github.com", "repository": "acme/widgets", "pr": 1240},
+  "heads": {
+    "source": "1111111111111111111111111111111111111111",
+    "replacement": "2222222222222222222222222222222222222222",
+    "base": "3333333333333333333333333333333333333333",
+    "synthetic_merge": "4444444444444444444444444444444444444444",
+    "tree": "5555555555555555555555555555555555555555"
+  },
+  "pending": {
+    "source": "github-rest",
+    "complete": true,
+    "pages_expected": 1,
+    "pages_read": 1,
+    "checks": [{
+      "kind": "check_run", "id": 901, "run_id": 801, "attempt": 1,
+      "name": "build", "producer": {"app_id": 15368, "slug": "github-actions"},
+      "status": "in_progress", "conclusion": null,
+      "event": "pull_request", "repository": "acme/widgets", "pr": 1240,
+      "head_sha": "1111111111111111111111111111111111111111",
+      "source_head_sha": "1111111111111111111111111111111111111111",
+      "base_sha": "3333333333333333333333333333333333333333",
+      "started_at": "2026-11-11T10:00:00Z", "completed_at": null,
+      "observed_at": "2026-11-11T10:01:00Z"
+    }]
+  },
+  "green": {
+    "source": "github-rest",
+    "complete": true,
+    "pages_expected": 1,
+    "pages_read": 1,
+    "checks": [{
+      "kind": "check_run", "id": 901, "run_id": 801, "attempt": 1,
+      "name": "build", "producer": {"app_id": 15368, "slug": "github-actions"},
+      "status": "completed", "conclusion": "success",
+      "event": "pull_request", "repository": "acme/widgets", "pr": 1240,
+      "head_sha": "1111111111111111111111111111111111111111",
+      "source_head_sha": "1111111111111111111111111111111111111111",
+      "base_sha": "3333333333333333333333333333333333333333",
+      "started_at": "2026-11-11T10:00:00Z", "completed_at": "2026-11-11T10:02:00Z",
+      "observed_at": "2026-11-11T10:03:00Z"
+    }]
+  },
+  "failed": {
+    "source": "github-rest", "complete": true, "pages_expected": 1, "pages_read": 1,
+    "checks": [{
+      "kind": "check_run", "id": 901, "run_id": 801, "attempt": 1,
+      "name": "build", "producer": {"app_id": 15368, "slug": "github-actions"},
+      "status": "completed", "conclusion": "failure",
+      "event": "pull_request", "repository": "acme/widgets", "pr": 1240,
+      "head_sha": "1111111111111111111111111111111111111111",
+      "source_head_sha": "1111111111111111111111111111111111111111",
+      "base_sha": "3333333333333333333333333333333333333333",
+      "started_at": "2026-11-11T10:00:00Z", "completed_at": "2026-11-11T10:02:00Z",
+      "observed_at": "2026-11-11T10:03:00Z"
+    }]
+  },
+  "unreadable": {
+    "source": "github-rest", "complete": false, "pages_expected": 2, "pages_read": 1,
+    "checks": [], "error": "second page unavailable"
+  },
+  "no_checks": {
+    "source": "github-rest", "complete": true, "pages_expected": 1, "pages_read": 1,
+    "checks": []
+  }
+}

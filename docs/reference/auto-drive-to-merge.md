@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-11-05
+last_updated: 2026-11-11
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -9,13 +9,25 @@ owner: workflow-team
 
 > [Home](../index.md) > Reference > Auto Drive To Merge
 
+> **[PLANNED — Implementation Pending] #2342 refinements are proposed and
+> runtime-unverified.** Conditional base sync, CI before QA, expanded evidence
+> freshness, protected QA and persistent `no_merge=true` describe the feature
+> to be built in [Readiness evidence](autodrive-evidence.md). Current recipes
+> synchronise behind branches without checking applicable update policy, run
+> QA before CI, and lack final-gate `no_merge` enforcement. Passing
+> `no_merge=true` does **not** yet guarantee safe open PR delivery. Existing
+> runtime details below are distinguished from the proposed contract.
+
 `auto-drive-to-merge` wraps [`default-workflow`](../../amplifier-bundle/recipes/default-workflow.yaml)
-and drives the pull request it produces all the way to a merge. It encodes the
-method of using the `crusty-old-engineer` skill as the maintainer's proxy:
+and drives the pull request it produces through build, review and a merge
+gate. Under the proposed contract, merging is enabled only when authorized;
+`no_merge=true` must deliver an open PR with automatic merging disabled.
+The recipe uses the `crusty-old-engineer` skill as the maintainer's proxy:
 iterate on the PR until crusty's verdict is `CLEAN`, or lists minor findings
-only, then iterate until every merge-ready criterion holds, then merge behind
-an evidence gate. Each minor finding left at the end of the crusty loop is
-filed as a follow-up issue linked to the plan task before the PR can merge
+only, then iterate until every merge-ready criterion holds and apply the
+final evidence gate. The proposed gate must honor the delivery restriction.
+Each minor finding left at the end of the crusty loop is filed as a follow-up
+issue linked to the plan task before the PR can merge
 ([#1979](#minor-findings-end-the-crusty-loop-1979)).
 
 It is invocable as a recipe or as the [`auto-drive-to-merge`
@@ -28,6 +40,7 @@ PR to this recipe when the change exceeds its eligibility rules.
 ## Contents
 
 - [The three phases](#the-three-phases)
+- [Open PR delivery](#open-pr-delivery)
 - [PR head and worktree resolution](#pr-head-and-worktree-resolution)
 - [Finalization hand-off from phase 1 (#1714)](#finalization-hand-off-from-phase-1-1714)
 - [Why there is no iteration cap](#why-there-is-no-iteration-cap)
@@ -60,14 +73,63 @@ PR to this recipe when the change exceeds its eligibility rules.
 | 0. Prerequisites | `auto-drive-to-merge.yaml` step `autodrive-prerequisites` | Where criterion 1 needs `gadugi-test` (a Node repository, or `AUTODRIVE_QA_SCENARIO_DIR` set), stops the run with `ERROR: gadugi-test-not-installed` when it is not on `PATH`, before the build and the crusty loop spend hours. A Rust CLI or Python repository does not need it. |
 | 1. Build | `autodrive-build.yaml` | Runs `default-workflow` with `no_merge: "true"` to produce a PR. Never merges. A build that ends `BLOCKED_CI`, or `FAILED_IMPLEMENTATION` on a confirmed open PR, hands that PR to phases 2 and 3 instead of ending the run ([#1714](#finalization-hand-off-from-phase-1-1714)). |
 | 2. Crusty loop | `autodrive-crusty-loop.yaml` over `autodrive-crusty-round.yaml` | Runs `crusty-old-engineer` as the maintainer's proxy, addresses every concern, re-reviews, repeats until `crusty_verdict` is `CLEAN` or `MINOR_ONLY`. Then files one follow-up issue for each minor finding ([#1979](#minor-findings-end-the-crusty-loop-1979)). |
-| 3. Merge-ready loop | `autodrive-merge-loop.yaml` over `autodrive-merge-round.yaml` | Before each round, sends code commits made after the clean crusty round back to the crusty loop (`autodrive_crusty_rereview.sh`). Syncs the base, runs the repository tests and, where criterion 1 needs them, the `gadugi-test` scenarios, waits for CI, applies the `merge-ready` criteria read from the skill's files, clears blockers, repeats, then merges behind the gate. |
+| 3. Merge-ready loop | `autodrive-merge-loop.yaml` over `autodrive-merge-round.yaml` | **Proposed, runtime-unverified:** refresh affected Crusty review, judge whether conflicts or applicable policy require base synchronisation, await current-head CI, then run repository suites and applicable gadugi scenarios. Apply every merge-ready criterion and refresh stale evidence without corrective building. Merge behind the gate only when enabled. |
 
-Phase 1 is a no-op when an open PR already exists for the branch, and the whole
-workflow short-circuits when the PR is already merged.
+Phase 1 is a no-op when an open PR already exists for the branch. Current
+runtime short-circuits to success when the PR is already merged. Under the
+proposed contract this is success only for merge-enabled delivery;
+`no_merge=true` must report a delivery violation, without redoing merged work.
 
 Phases 2 and 3 resolve the pull request's linked worktree before their first
 round, and every round edits, commits and pushes there, never in the launch
 checkout. See [Where phases 2 and 3 run](#where-phases-2-and-3-run).
+
+## Open PR delivery
+
+> **Proposed, runtime-unverified.** This section specifies intended behaviour.
+> Current phase-1 suppression does not enforce `no_merge` at the final gate
+> or across resume, and does not guarantee automatic merging is disabled.
+
+`no_merge=true` applies throughout auto-drive, including the final gate and
+resumed runs. Phase 1 always suppresses merging independently. The composer
+defaults `no_merge` to `"true"`; pass `no_merge=false` only for an authorized
+merge-enabled drive. A saved no-merge restriction is retained on resume and
+cannot be cleared by an absent context value.
+
+| Context key | Proposed meaning |
+| --- | --- |
+| `no_merge` | With `true`, finish at an open, merge-ready PR. Check suppression at every merge-capable action and verify automatic merging is disabled. |
+| `pr_number` / `existing_branch` | Continue the existing PR/branch; skip a completed build. |
+| `autodrive_state_dir` | Optional durable state location; resumed execution retains the no-merge restriction and revalidates evidence. |
+| `autodrive_dry_run` | Verify without merging or filing follow-up issues. This differs from open PR delivery, which still files required follow-ups. |
+
+After implementation and runtime validation of the suppression contract,
+the intended invocation from the existing issue-2342 worktree is:
+
+```bash
+# [PLANNED] Do not rely on this invocation for open PR delivery yet.
+amplihack recipe run auto-drive-to-merge \
+  -c existing_branch=feat/issue-2342-auto-drive-merge-ready \
+  -c repo_path=. -c no_merge=true
+```
+
+Proposed result, after implementation and once all criteria pass: readiness
+`MERGE_READY`, merge result `NOT_MERGED`, the PR still open and automatic
+merging disabled. The invocation is runtime-unverified and can currently
+reach a merge despite `no_merge=true`. It performs workflow work; it is not
+a read-only status query. Resume with the same restriction is also proposed.
+
+If the task requires recovery of earlier work, search local and remote
+branches, worktrees, reflogs, history and relevant PRs before implementation.
+Review recovered commits and uncommitted changes, preserve correct work and
+record search findings, retained work and unresolved gaps on
+[issue #2342](https://github.com/rysweet/amplihack-rs/issues/2342). Finding
+only a baseline branch does not satisfy recovery. Unresolved recovery blocks
+both implementation and delivery; design and documentation may proceed.
+Do not silently start over while recovery remains unresolved.
+
+See [Readiness evidence](autodrive-evidence.md) for base-policy decisions,
+CI-first QA, evidence freshness and protected execution requirements.
 
 ## PR head and worktree resolution
 
@@ -281,10 +343,10 @@ The remedy depends on `worktree_relation`:
 | `diverged` | Each side has commits the other lacks. | `git -C <wt> pull --no-rebase`, then `git -C <wt> push origin <head_ref>` |
 | `unfetched` | The PR head is not in the local object store, so the worktree cannot be ahead of it; it is behind or diverged. | `git -C <wt> pull --ff-only`; if git refuses, follow the `diverged` remedy |
 
-`ahead` is the usual result of a previous run whose `git push` failed. The
-round treats a failed push as a warning (see below), and a push that fails on
-authentication or the network has the same effect: the round's fix commits
-stay in the worktree only. For that case `pull --ff-only` prints
+`ahead` is the usual result of a previous run whose `git push` failed. Under
+the proposed contract, a failed push must block readiness immediately;
+current base sync only warns. The round's fix commits stay in the worktree
+only. For that case `pull --ff-only` prints
 "Already up to date" and changes nothing, so the preflight tells the operator
 to push instead.
 
@@ -297,11 +359,12 @@ let it in.
 
 Evidence records the worktree's real `git rev-parse HEAD`, never `headRefOid`.
 
-Nothing in the run closes the gap. The round's base-sync step fetches and
-merges only the **base** branch and then runs `git push`. It never pulls the PR
-branch. On a stale worktree that push fails as a non-fast-forward, which is
-only a warning. Base-merge commits and crusty-fix commits then land on the
-stale head, so the worktree diverges further from the PR.
+Base synchronisation does not repair an unrelated local/remote divergence.
+**Proposed, runtime-unverified:** the base-sync agent verifies ownership,
+divergence and the explicit push destination before deciding whether a
+conflict or applicable policy needs an
+update. It does not merge the base merely because the PR is behind it. A
+failed push leaves the published head unverified and blocks readiness.
 
 The merge gate also refuses evidence whose `head_sha` is not the PR head it
 is about to merge (see [No silent merge](#no-silent-merge)). It is the last
@@ -328,7 +391,7 @@ The preflight adds `repo` (the worktree) to its JSON. It does not emit
 
 | Step | Uses `repo` for |
 | --- | --- |
-| step-02, both loops | The starting point of the [#1528 resolution](#where-phases-2-and-3-run): `review-dir "$REPO"` and `autodrive_pr_worktree.sh resolve --repo "$REPO"`, whose result is `autodrive_loop.sh --repo` and `--context repo_path=`. It reads `repo` as `${RECIPE_VAR_repo:-}`, the same way as `state_dir`. If `repo` is missing, the step refuses to run; it never falls back to `REPO_PATH`. Every round step therefore runs in the PR worktree: base sync, `qa-team` run and its `head_sha`, CI wait, crusty review and fixes, round records, loop baseline. |
+| step-02, both loops | The starting point of the [#1528 resolution](#where-phases-2-and-3-run): `review-dir "$REPO"` and `autodrive_pr_worktree.sh resolve --repo "$REPO"`, whose result is `autodrive_loop.sh --repo` and `--context repo_path=`. It reads `repo` as `${RECIPE_VAR_repo:-}`, the same way as `state_dir`. If `repo` is missing, the step refuses to run; it never falls back to `REPO_PATH`. Measurements target the PR worktree. **Proposed, runtime-unverified:** base-sync and CI judges start in the guarded review directory; necessary base updates target only the owned worktree, and QA uses a protected execution boundary. |
 | merge-loop step-04, crusty-loop step-03 | **Nothing.** These steps write only inside `state_dir`, so they do not depend on the working directory. |
 | merge-loop step-03 (merge gate) | **Nothing.** The gate stays on the launch side and binds to `headRefOid` from `gh`. Resolver output never reaches it. |
 
@@ -786,7 +849,7 @@ budget](#no-progress-stop-and-usage-budget)):
 
 | Condition | Result |
 | --- | --- |
-| Previous round not clean, same non-empty head SHA, same open items, same `ci_signal` with no `PENDING` | `STUCK` (decided in code), exit `1`. The evaluator does not run. |
+| Previous round not clean, same non-empty head SHA, same open items, same `ci_signal` with no `PENDING` | `STUCK` (decided in code), exit `1`. The evaluator does not run. **Proposed, runtime-unverified:** a verified revision change requiring refresh must prevent this stop. |
 | A budget limit is reached | `BUDGET_EXHAUSTED`, exit `1`. The evaluator does not run. |
 
 A non-clean `DONE` usually means the findings were addressed without a new
@@ -816,8 +879,13 @@ through `loop_clean_token` and `loop_round_verdict` (see
   repeated `DONE` stops as STUCK and fails safe. An unreadable baseline with a
   readable `HEAD` afterwards counts as changed.
 
-If any one differs, the loop keeps going, exactly as for `CONTINUE`. A
-`CONTINUE` or a clean round in between resets the override, so a `DONE` over
+If any one differs, the loop keeps going, exactly as for `CONTINUE`.
+**Proposed, runtime-unverified:** a verified remote head change requiring
+evidence refresh also counts as progress, even without a local commit.
+Pending CI stays inside preparation
+and never becomes a failed corrective round. See
+[Freshness and refresh](autodrive-evidence.md#freshness-and-refresh).
+A `CONTINUE` or a clean round in between resets the override, so a `DONE` over
 an unchanged non-clean round runs at most two rounds. That repeat stops
 with this on stderr (`<key>` is the run's state key):
 
@@ -870,6 +938,14 @@ took. A missing value never passes. The comparison is
 downgrades with `measured_evidence=unreadable`. A downgrade adds a
 `measured-evidence-disagrees` finding so the loop evaluator sees a round that
 did not converge.
+
+**Proposed, runtime-unverified:** validation also requires
+CI head = QA head = assessed head = current
+published PR head, complete observation provenance and fresh CI attempts,
+base and policy evidence. Stale evidence requires refresh, not a builder
+change when refresh is the only work needed. A correct `merge_sync` no-op
+with `synced="false"` is not a failed measurement. See the
+[evidence interfaces](autodrive-evidence.md#evidence-interfaces).
 
 ### How a step output reaches bash
 
@@ -1437,22 +1513,27 @@ reading that sentence: see
 
 ### Round steps
 
+> **Proposed, runtime-unverified changes:** the table includes agent-led base
+> decisions, CI before protected QA, refresh-only builder skipping and typed
+> record validation. Current recipes retain base-sync → QA → CI ordering.
+> Trusted-install-only resolution in the following paragraphs is also
+> proposed; current round tools and criteria can fall back to other roots.
+
 | Step of `autodrive-merge-round.yaml` | Type | Output | Role |
 | --- | --- | --- | --- |
 | `step-00-tools-dir` | bash | `autodrive_tools_dir` | Finds the round's tools once (see below). |
 | `step-00-merge-ready-files` | bash | `merge_ready_files` | Finds `SKILL.md` and its template; where criterion 1 needs `gadugi-test`, stops the round when it is not on `PATH`. |
-| `merge-evidence` | recipe | `merge_sync`, `qa_evidence`, `ci_evidence` | `autodrive-merge-evidence`: base sync, suite commands, gadugi scenarios where required, CI wait. |
-| `step-00d-qa-evidence-hash` | bash | `qa_evidence_hash` | `autodrive_round_evidence.sh qa-evidence-sha`: hashes `qa-evidence.json` before any agent runs. |
+| `merge-evidence` | recipe | `merge_sync`, `qa_evidence`, `ci_evidence` | `autodrive-merge-evidence`: agent judgement of base-update need, active CI wait for the published head, then protected suite/scenario execution after validated green CI. |
+| `step-00d-qa-evidence-hash` | bash | `qa_evidence_hash` | Hashes `qa-evidence.json` before readiness assessment or corrective agents run. |
 | `step-01-platform-facts` | bash | `platform_facts` | Runs `autodrive_platform_facts.sh`. |
 | `step-01b-crusty-evidence` | bash | `crusty_evidence` | `autodrive_round_evidence.sh crusty-evidence`: criterion 3. |
 | `step-02-merge-ready-assessment` | agent | `merge_ready_review` | Applies the criteria; emits `merge_ready_verdict`. |
 | `step-03-extract-merge-ready-verdict` | bash | `merge_ready_verdict` | Parses the verdict; applies the [measured downgrade](#measurement-outranks-the-model) (`measured-downgrade`) and writes the findings (`findings`). |
-| `step-04-address-blockers` | agent | `merge_ready_fixes` | On `NOT_MERGE_READY`: clears blockers, commits, pushes. |
-| `step-05-write-round-record` | bash | `merge_round_record_written` | `autodrive_round_evidence.sh round-record` writes the round record under `umask 077`: `merge_ready_verdict`, `blocker_count`, `head_sha`, `round_label`, `test_signal`, `ci_signal`, `qa_status`, `ci_status`, `held_by`, `qa_evidence_sha`. Every interpolated value is reduced to `[A-Za-z0-9_.:/-]` first, `round_label` included: the field reader is last-wins on duplicate JSON keys, so a value able to carry a `"` could append a second, winning `merge_ready_verdict` after the measured one and the gate would read the forged pair. |
+| `step-04-address-blockers` | agent | `merge_ready_fixes` | On actionable `NOT_MERGE_READY`: clears blockers, commits and pushes. Skipped when only evidence refresh is required; pending CI and merely being behind are not builder defects. |
+| `step-05-write-round-record` | bash | `merge_round_record_written` | Publishes trusted, serialized round evidence under `umask 077`, preserving existing fields and hashes and adding head identity and freshness evidence. Duplicate security-critical keys are rejected. |
 
-`step-00-tools-dir` finds the round's tools once: the first
-`amplifier-bundle/tools/` under `$AMPLIHACK_HOME`, `$REPO_PATH`, the git
-toplevel, `~/.copilot`, then `~/.amplihack` that holds every one of
+`step-00-tools-dir` resolves the round's tools once from the trusted launch
+installation's `amplifier-bundle/tools/`, which must hold every one of
 `autodrive_merge_ready_files.sh`, `autodrive_platform_facts.sh`,
 `autodrive_round_evidence.sh`, `autodrive_state.sh`, `autodrive_trust.sh` and
 `git-identity.sh`, so the tools never come from two installs. It prints the
@@ -1461,8 +1542,8 @@ physical path, which later bash steps read as
 `git-identity.sh`. Later steps check the value before use; see
 [The merge round's tools directory](#the-merge-rounds-tools-directory). A path holding a quote, backslash,
 `$`, backtick, control byte or template brace is skipped, because it reaches
-that prompt. No complete root fails the step with
-`ERROR: autodrive-tools-not-found: ... (searched <paths>)`, and a later step
+that prompt. An incomplete trusted installation fails the step with
+`ERROR: autodrive-tools-not-found`, and a later step
 whose tool is missing fails with `ERROR: autodrive-tools-not-found: <path>`.
 `step-01` also fails, with `ERROR: autodrive-platform-facts-failed`, when the
 tool prints no facts. The deterministic step bodies live in
@@ -1476,17 +1557,19 @@ never reported as a blocker.
 
 ### The merge-ready files
 
+**Proposed, runtime-unverified resolution:**
+
 `step-00-merge-ready-files` runs the read-only `autodrive_merge_ready_files.sh`.
-It takes the first `skills/merge-ready` directory with a regular `SKILL.md`
-from the same roots (`~/.copilot/skills` has no `amplifier-bundle/`) and
+It resolves `skills/merge-ready` with a regular `SKILL.md` from the trusted
+launch installation and
 prints `skill_dir`, `skill_md`, `template` and `skill_md_sha` (git blob hash).
 It fails with `ERROR: merge-ready-template-not-found: <path>` when that
 directory lacks `pr-description-template.md`, and with
 `ERROR: merge-ready-skill-files-not-found: searched <paths>` when no directory
 or no resolver is found. Paths holding `"`, `\`, a control byte, `{{` or `}}`
-are skipped. A `SKILL.md` from the branch that differs from `origin/HEAD`
-gives `WARNING: merge-ready criteria come from the branch under review`; such
-criteria are advisory, since the gate measures criteria 1 and 3 itself.
+are rejected. There is no fallback to branch-controlled criteria or helpers.
+Base-sync and CI-preparation agents start in the guarded review directory
+and treat the PR checkout and its instructions as data under review.
 
 `gadugi-test` belongs to the same install wherever criterion 1 needs it:
 a Node repository, or any repository where the operator sets
@@ -1519,16 +1602,24 @@ callable for step-04.
 
 ### Criterion 1: qa-team scenarios by repository type
 
+**Proposed, runtime-unverified execution order and boundary:** current QA
+runs before CI and has no protected execution boundary. Existing suite and
+scenario applicability rules below remain part of the proposed contract.
+
 `step-02-qa-team-scenarios` of `autodrive-merge-evidence.yaml` runs
-`amplifier-bundle/tools/autodrive_qa_evidence.sh`, found under the same roots.
-The tool runs the suite commands and, where they are required, the gadugi
+`amplifier-bundle/tools/autodrive_qa_evidence.sh` from the trusted installation,
+after the CI-preparation agent has awaited and validated current-head green
+CI. The tool runs the suite commands and, where they are required, the gadugi
 scenarios. A missing tool fails the step with
 `ERROR: autodrive-qa-evidence-tool-not-found`. The tool needs
 `autodrive_state.sh` and `autodrive_trust.sh` beside it, and without them
 fails with `ERROR: autodrive-qa-helpers-not-found` and writes no evidence.
 Step-02 reads `base` from `merge_sync` (step-01's output) and runs the tool as
 `AUTODRIVE_QA_BASE="$B" REPO_PATH="$PWD" bash "$T"`, so the changed paths are
-the pull request's. An empty base gives `(unknown)` paths.
+the pull request's. An empty base gives `(unknown)` paths. QA executes only
+inside the protected boundary described in
+[QA execution boundary](autodrive-evidence.md#qa-execution-boundary); the
+trusted runner checks head and content identity before and after execution.
 
 Criterion 1 follows the
 [`qa-team`](../../amplifier-bundle/skills/qa-team/SKILL.md) skill's
@@ -2177,15 +2268,15 @@ from the root. A command counts as installed when `command -v`, run in
 runs `sub/bin/check`. That is the way to use a repository-local wrapper:
 `AUTODRIVE_QA_COMMAND='./scripts/cargo-wrapper test'`.
 
-**This is not a sandbox, and the installed check is not a security control.**
-The suite runs code from the branch whichever binary starts it: `npm test`
-runs `package.json` `scripts.test`, pytest imports `conftest.py`, and
-`cargo test` compiles and runs `build.rs` and the tests. Refusing a `cargo`
-or `pytest` found inside the repository would contain nothing the suite does
-not already run, so the tool does not do it. The command alphabet of
-`.amplihack/qa.toml` and the CI reader stops shell and log injection; it does
-not limit what a command does once it runs. Run auto-drive only on branches
-whose code you are willing to execute.
+Command selection and the installed-program check are not an execution
+boundary. The suite runs branch code: `npm test` executes `scripts.test`,
+pytest imports `conftest.py`, and Cargo executes build scripts and tests.
+**Proposed, runtime-unverified:** the trusted runner must execute QA
+separately from GitHub write
+credentials, credential stores and authoritative manifests. Removing
+environment variables alone is insufficient. A host that cannot provide
+that separation reports a security blocker. See
+[QA execution boundary](autodrive-evidence.md#qa-execution-boundary).
 
 When `AUTODRIVE_QA_DIR` names a directory that does not exist, the command
 does not run and is not reported as missing from `PATH`:
@@ -2406,12 +2497,22 @@ one JSON line holds `pr`, `state`, `is_draft`, `mergeable`, `merge_state`,
 | empty | `required_approvals` is `0`, and no review rule makes it unknown | `MET` | `required-count` |
 | empty | `required_approvals` is above `0` | `NOT_MET` | `required-count` |
 | empty | count unreadable or unknown; `merge_state` is `CLEAN`, `HAS_HOOKS` or `UNSTABLE` | `MET`; `required_approvals` stays empty, never `0` | `merge-state` |
-| empty | count unreadable or unknown; `merge_state` is `DIRTY` or `BEHIND`, or `BLOCKED` with a check in the rollup that has not passed (or no checks), `mergeable` `CONFLICTING`, or an unresolved review thread, outdated or not | `PENDING` | `other-blockers` |
+| empty | count unreadable or unknown; `merge_state` is `DIRTY`, or `BEHIND` with an unmet applicable update requirement, or `BLOCKED` with a check in the rollup that has not passed (or no checks), `mergeable` `CONFLICTING`, or an unresolved review thread, outdated or not | `PENDING` | `other-blockers` |
 | empty | count unreadable or unknown; `merge_state` is `BLOCKED`, nothing an agent can clear is outstanding, and a review rule is named | `NOT_MET` | `review-rule` |
 | empty | count unreadable or unknown; `merge_state` is `UNKNOWN` | `UNREADABLE` | `facts-unreadable` |
 | empty | count unreadable or unknown; `merge_state` is `BLOCKED` with no review rule named, `DRAFT`, or any other value | `UNREADABLE` | `unreadable` |
 | anything outside the values above | none | `UNREADABLE` | `facts-unreadable` |
 | any, or none read at all | `gh pr view` failed | `UNREADABLE` | `facts-unreadable` |
+
+The policy-qualified `BEHIND` handling above is **proposed and
+runtime-unverified**; the current helper treats `BEHIND` as another blocker
+without establishing applicable update policy.
+
+These approval rows do not establish the separate base-policy criterion.
+Unknown update policy still blocks readiness, and `BEHIND` alone neither
+proves a missing approval nor mandates synchronisation. Obtain authoritative
+approval evidence for a clean, non-strict PR rather than treating its behind
+state as a corrective defect.
 
 The rows are read top-down and the first that matches decides, so the two
 axes do not interleave. A readable `required_approvals` settles the question
@@ -2428,7 +2529,7 @@ operator and decides nothing, and the implementation and its test key on
 A check has passed when its `conclusion` (a check run) or `state` (a status
 context) is `SUCCESS`, `NEUTRAL` or `SKIPPED`; a run that has not finished has
 not passed. GitHub folds every rule into the one `BLOCKED`, so while a
-failing check, a conflict, a stale branch or an unresolved review thread is
+failing check, a conflict, an unmet applicable update requirement or an unresolved review thread is
 present, whether a review is also missing cannot be read. A thread counts
 because a rule can require conversations to be resolved, and an agent answers
 and resolves threads; an unreadable thread count is not a thread. An outdated
@@ -2441,7 +2542,7 @@ alike. That is
 `PENDING`, which step-02 reports as `approval-pending-other-blockers` and
 step-04 treats as a reason to clear the other blockers first, not as a request
 for a person; the next round reads the approval again. `BLOCKED` with every
-check passed, no conflict, the branch up to date and no unresolved thread
+check passed, no conflict, applicable update requirements satisfied and no unresolved thread
 leaves only rules a person satisfies, a required review among them, and which
 status that is turns on whether the branch names one. With
 `require_code_owner_reviews` or `require_last_push_approval` in classic
@@ -2487,9 +2588,15 @@ Step-02 counts criterion 6 met only for `MET`, otherwise reporting
 `approval-pending-other-blockers`, `approval-facts-unreadable` or
 `approval-state-unreadable`, one per `approval_source` as the table in
 [A failed measurement is not a missing review](#a-failed-measurement-is-not-a-missing-review)
-sets out. It reads criterion 8 from `merge_state`: `CLEAN`,
-`HAS_HOOKS` or `UNSTABLE` means no protection rule blocks, and a protection-API
-404 is not a blocker. Step-03 downgrades with `approval_status=<value>`.
+sets out. **Proposed criterion 8 requirement, runtime-unverified:**
+`merge_state` alone cannot establish compliance with applicable classic
+protection and effective rulesets. `CLEAN`, `HAS_HOOKS` or `UNSTABLE` is not
+proof that policy has been resolved. A protection-API 404 is ambiguous; retry
+or obtain equivalent authoritative policy evidence. Unresolved applicable
+policy blocks readiness even when approval status is `MET`. The current
+merge-state fallback does not implement this guarantee.
+
+Step-03 downgrades with `approval_status=<value>`.
 Step-04 cannot approve; it answers requested changes and a person approves.
 Without the tool, or with a tool that prints no facts, step-01 fails by name.
 The gate's criterion 6 check is unchanged: it refuses `CHANGES_REQUESTED`,
@@ -2546,7 +2653,8 @@ Agents run after the evidence step as the same user, so the qa evidence counts
 only through a hash chain: `merge-ready-records.tsv`, the record its last row
 names, that record's `qa_evidence_sha`, `qa-evidence.json`, its `head_sha`.
 `step-00d-qa-evidence-hash` emits `{"qa_evidence_sha":"<hash>"}` from
-`autodrive_qa_evidence_sha` before any agent runs; step-03 re-hashes and
+`autodrive_qa_evidence_sha` before the readiness and corrective agents run;
+step-03 re-hashes and
 step-05 records it. The gate runs
 `autodrive_qa_trusted STATE_DIR RECORD_COPY QA_COPY HEAD_SHA` on its private
 copies; it prints `ok` or the first failing token:
@@ -2569,6 +2677,7 @@ Every agent step in the auto-drive recipes carries this sentence word for word:
 | Recipe | Agent steps |
 | --- | --- |
 | `autodrive-crusty-round.yaml` | `step-02-crusty-review`, `step-04-address-concerns` |
+| `autodrive-merge-evidence.yaml` | **Proposed, runtime-unverified:** base-sync and CI-preparation judging steps |
 | `autodrive-merge-round.yaml` | `step-02-merge-ready-assessment`, `step-04-address-blockers` |
 | `loop-health-evaluator.yaml` | `step-02-evaluate-loop-health` |
 
@@ -2616,11 +2725,16 @@ Section 13 of `test-auto-drive-to-merge.sh` runs these writers under
 
 ### Trust model
 
-The operator's environment, including the `AUTODRIVE_QA_*` variables, is
-trusted. Branch code, scenarios and agent output are untrusted; branch code
-still runs as the operator's user with no sandbox, so only run auto-drive on
-branches whose authors you would let run code on this host. The state
-directory is integrity-checked through the manifests, not authenticated.
+The operator's configuration, including the `AUTODRIVE_QA_*` variables, is
+trusted. Branch code, scenarios and agent output are untrusted.
+**Proposed, runtime-unverified:** QA executes
+inside a boundary that denies access to GitHub write credentials, credential
+stores and authoritative manifests; unavailable separation blocks readiness.
+Judging steps use guarded review directories and trusted installed helpers.
+The state directory is integrity-checked through manifests, not authenticated.
+Current QA runs as the operator's user without that execution boundary; the
+proposed separation cannot be assumed from existing environment filtering or
+hash checks.
 GitHub is authoritative for platform state. The hash checks catch an agent
 following instructions in branch text, an accidental edit, and a replayed
 record. **They are not a boundary against a deliberate forger running as the
@@ -2651,8 +2765,10 @@ commands run in `qa_dir` and are found through the operator's `PATH`; where
 the program resolves, inside or outside the repository, is not checked. That
 is deliberate: the suite runs the branch's code anyway (`build.rs`,
 `conftest.py`, `scripts.test`), so refusing an in-repository `cargo` or
-`pytest` would isolate nothing and would block a project `.venv`. Nothing here
-is a sandbox, and no part of the installed check should be cited as one.
+`pytest` would isolate nothing and would block a project `.venv`. The
+installed-program check is not a sandbox; the proposed, runtime-unverified
+[QA execution boundary](autodrive-evidence.md#qa-execution-boundary) protects
+credentials and authoritative manifests.
 `cargo` also reads the branch's `.cargo/config.toml` and
 `rust-toolchain.toml`. Both are accepted limits: the suite is the branch's own
 code, and running it is the point of criterion 1. The tool unsets `CDPATH`, so
@@ -3187,13 +3303,12 @@ still gives `STUCK`.
 1. **Never skip hooks on a commit.** No `--no-verify` and no `-n` shorthand on
    any commit this workflow makes.
 2. **Never bypass branch protection.** No `--admin` on `gh pr merge`, and no
-   other bypass of required checks, required reviews, or the strict
-   up-to-date policy.
+   other bypass of required checks, required reviews or an applicable
+   base-update requirement.
 
 If a hook or a check fails, the cause is fixed. This restates the repository
-policy in [Merge Flow](merge-flow.md), which already says these two are never
-used, and the pre-tool-use hook that blocks the hook-skipping commit flag
-outright.
+policy described in [Merge Flow](merge-flow.md). The pre-tool-use hook
+blocks the hook-skipping commit flag outright.
 
 They are enforced three ways, not just documented:
 
@@ -3210,23 +3325,27 @@ They are enforced three ways, not just documented:
 
 ## No silent merge
 
-The merge gate does not trust the loop that preceded it. In the run that
-merges, it re-verifies and records:
+The merge gate does not trust the loop that preceded it. The table includes
+**proposed, runtime-unverified #2342 requirements** for policy evidence,
+CI provenance, freshness and merge suppression alongside existing checks.
+Current runtime lacks those additions and accepts already-merged PRs as
+success regardless of `no_merge`.
 
 | Criterion | Source | Failure condition |
 | --- | --- | --- |
-| Already merged | `gh pr view --json state,mergedAt` | — (short-circuits to success; merged work is never redone) |
+| Already merged | `gh pr view --json state,mergedAt` | **Proposed:** delivery violation under `no_merge=true`, at entry or during phase 3. Short-circuit success only for merge-enabled runs; merged work is never redone. |
 | PR open, not draft | `gh pr view` | any other state; `isDraft: true` |
-| Merge conflicts | `mergeable`, `mergeStateStatus` | not `MERGEABLE`; a `mergeStateStatus` other than `CLEAN`, `HAS_HOOKS` or `UNSTABLE` (`BEHIND`, `BLOCKED`, `DIRTY`, `UNKNOWN` all block) |
+| Merge conflicts and update policy | Verified mergeability, applicable classic protection and effective rules | Conflicts, an unmet applicable update requirement, or unresolved policy/mergeability. `BEHIND` alone does not mandate synchronisation. Other blocking platform states require assessment. |
 | Reviews | `reviewDecision` | `CHANGES_REQUESTED` (a missing required review shows as `BLOCKED` above) |
 | Review threads | GraphQL `reviewThreads`, **paginated** | any unresolved thread on any page, outdated or not — **or an unreadable answer** |
-| CI | `gh pr checks --json name,state,bucket` | any pending or failing check, zero checks, **or an unreadable rollup** |
+| CI | Complete authoritative checks/status/run observations with current-head association, producers, attempts and timestamps | Completed failures or unreadable/incomplete evidence block readiness. Pending work returns to active waiting before QA; missing checks require requirements/trigger assessment and never automatically pass. |
 | qa-team scenarios | evidence file from this run | `qa_status` other than `PASS`, no evidence file, or evidence whose `head_sha` is missing or is not the SHA being merged |
 | qa evidence chain | `merge-ready-records.tsv`, `merge-ready-latest.json`, `qa-evidence.json` | any of them not private; `autodrive_qa_trusted` not `ok` (its token, or `qa-other`; see [The qa evidence hash chain](#the-qa-evidence-hash-chain)) |
 | gadugi scenarios | same evidence file, and `autodrive_gadugi_required .` on the checkout's own files, the same files the evidence step measured, with `AUTODRIVE_QA_BASE` set from the gate's own `baseRefName` so its changed paths match step-02's; an inherited value is replaced | Unless the gate's own `autodrive_gadugi_required` says `false` and `gadugi_status` is `NOT_REQUIRED`: `gadugi_status` other than `PASS`, or `gadugi_scenario_count` not a positive integer. An unreadable answer counts as required. |
 | Crusty loop | `phases.tsv`, `crusty-latest.json`, `crusty-records.tsv` and its record, in `--state-dir` | no `--state-dir`; the directory or a file not private; no `crusty-loop` marker; `crusty_verdict` neither `CLEAN` nor `MINOR_ONLY`; `autodrive_crusty_final` failing (its token, or `crusty-other`); `HEAD_SHA` not in the clone; `autodrive_crusty_range` not `ok` (its token, or `crusty-range-other`) |
 | Follow-up issues (#1979) | `followups.jsonl`, `followups.tsv`, `followups.error`, `followups.parent` in `--state-dir`, checked by `autodrive_followups.sh gate` from the gate's own directory | `ERROR: followups-unfiled: <token>`: a finding in the set with no issue row, no recorded comment on the parent task issue, a recorded filing error, a malformed or unsafe file, or `MINOR_ONLY` with an empty set. A missing tool blocks whatever the verdict. See [The follow-up check in the merge gate](#the-follow-up-check-in-the-merge-gate). |
-| merge-ready verdict | round record from this run | not `MERGE_READY`, or captured against a different head SHA |
+| merge-ready verdict and freshness | Trusted round record and fresh platform observations | Not `MERGE_READY`; CI, QA, assessed and current remote heads differ; changed CI attempts, tested content or relevant base/policy invalidate the evidence. |
+| Merge suppression | Recipe context and durable resume restriction, checked at the final boundary | `no_merge=true` leaves the PR open and automatic merging disabled even when readiness is satisfied. |
 
 The review-thread query pages. `reviewThreads(first:100)` with no `pageInfo`
 follow-up silently truncates: a PR with 101 threads whose only unresolved one
@@ -3258,7 +3377,10 @@ records the `head_sha` it measured, and the gate refuses evidence that carries
 none or carries a different one.
 
 Every criterion binds to **one** head SHA, the evidence bundle is written to
-disk **before** anything is merged, and the merge passes
+disk **before** any merge-enabled action. **Proposed, runtime-unverified:**
+with `no_merge=true`, the run
+reports readiness and leaves the PR open with automatic merging disabled.
+When merging is enabled, the merge passes
 `--match-head-commit "$HEAD_SHA"` so GitHub itself refuses the merge if the
 head moved after the evidence was captured. That closes the check-then-merge
 window without a cooperative lease.
@@ -3267,11 +3389,16 @@ window without a cooperative lease.
 platform must confirm `MERGED`; a `gh` success the platform does not confirm is
 reported as `NOT_MERGED`.
 
-Exit codes: `0` merged (or already merged), `1` not merged with the blocker
+Current runtime exit codes: `0` merged (or already merged), `1` not merged with the blocker
 list and the evidence bundle path, `79` terminal policy refusal. The `gh pr
 merge` status is captured on its own line rather than inside the `then` of an
 `if ! gh …`, where `$?` is the negation's status — always `0` — which would
 make the exit-79 branch dead code and report every failure as "exit 0".
+
+These current exit codes do not establish open PR delivery. Under the
+proposed contract an already-merged result cannot be treated as delivery
+success when `no_merge=true`, and readiness must be reported separately
+from merge outcome.
 
 ## Merges outside the gate are refused (#1551)
 
@@ -3477,6 +3604,10 @@ arguments, and exits `3`:
 REFUSED (amplihack #1551): gh pr merge is only allowed inside autodrive_merge_gate.sh; leave the PR open — auto-drive's merge gate merges after Crusty CLEAN and the merge-ready loop. Do not retry with another gh path, PATH, alias, API client or token.
 ```
 
+That is the current shim message. Its unconditional merge promise must be
+qualified by the proposed `no_merge` contract; it is not an assurance of
+safe open PR delivery.
+
 Every other call (`gh pr view`, `gh api repos/o/r/pulls/38/files`, a GraphQL
 query that reads `mergeable`) runs `exec "$REAL_GH" "$@"` unchanged. The shim
 (`#!/bin/bash -p`, bash 3.2 included, as on macOS) takes the first executable `gh` on an absolute `PATH`
@@ -3512,12 +3643,14 @@ exporting `which` (Fedora), Lmod's `module` or `LD_LIBRARY_PATH` still merges.
 
 ### What the agents are told
 
-The shim is the control; the directive saves agents a wasted round. Its
-fixed text is repeated in each prompt below, and the contract tests check
-every copy:
+The shim is the current control; the directive saves agents a wasted round.
+**Proposed directive, runtime-unverified:** the text below must replace the
+current promise that the gate will merge after review. Updating the prompts
+and their contract tests remains implementation work; the table identifies
+the existing directive locations.
 
 ```text
-[amplihack:no-merge] Do NOT run "gh pr merge" or call the pulls/<N>/merge API, and do not list merging in requirements or acceptance criteria. Leave the PR open. Auto-drive's merge gate merges it after a Crusty CLEAN and the merge-ready loop; any other merge attempt is refused.
+[amplihack:no-merge] Do NOT run "gh pr merge" or call the pulls/<N>/merge API, and do not list merging in requirements or acceptance criteria. Leave the PR open. Auto-drive's final gate must honor no_merge=true, keep automatic merging disabled and report readiness without merging. Only an authorized merge-enabled run may merge after Crusty review and the merge-ready loop; any other merge attempt is refused.
 ```
 
 | Where | How |
@@ -3568,7 +3701,7 @@ the run when the PR is merged outside the gate.
 | `git push` to the base branch, or `gh api -X PATCH …/git/refs/heads/<base>` | Pushes, not merges: branch protection is the boundary. In phases 1–2 the `MERGED` checks catch them. |
 | A same-user process that preloads a library into, or attaches a debugger to, a gate it launched itself | Not prevented. As deliberate as calling `gh` by absolute path. |
 | An agent running the installed gate itself, as `/bin/bash -p <gate> --pr N` | Refused by the shim: an agent shell carries the runner's `BASH_ENV`, so the gate's parent environment is not clean and the shim refuses its merge. The [hook check](#the-pre-tool-use-hook-check) does not read gate runs. Clearing the environment first (`env -i /bin/bash -p <gate>`) gets past the shim, which then trusts the gate like phase 3; that is deliberate evasion, the stated non-goal. The gate still re-reads CI, conflicts and review threads from GitHub, so it merges only a PR that passes them, but its Crusty and QA records are files and can be forged (below). |
-| A merge during phase 3 | The gate treats an already-`MERGED` PR as success, so it is not reported. |
+| A merge during phase 3 | Current runtime treats an already-`MERGED` PR as success. **Proposed, runtime-unverified:** with `no_merge=true`, report the actual merged state as a delivery violation, never successful open PR delivery. Already-merged success applies only to merge-enabled runs; merged work is not redone. |
 | An extension binary run directly from `~/.local/share/gh/extensions` | Not refused, like `gh` by absolute path. Caught by the `MERGED` checks. |
 | A fake `jq`, `git` or `gh` planted in a `PATH` entry ahead of the system one | The gate finds its tools through `PATH`, so it could misread CI. Not prevented; the gate's facts come from GitHub, and branch protection is the boundary. |
 | No `/proc` (macOS, BSDs) | `amplihack recipe run` stops the run at launch, before any step: the shim could never trust the gate's merge. Auto-drive does not run on macOS until [#1646](https://github.com/rysweet/amplihack-rs/issues/1646) adds a parent check that works there. |
@@ -3873,11 +4006,20 @@ loop as `STUCK` only when all of these hold:
 4. the round record's `ci_signal` is the same, and it does not contain
    `PENDING`.
 
+**Proposed, runtime-unverified addition:** stopping also requires that no
+verified revision change needs evidence refresh. The current driver does
+not yet check that fifth condition.
+
 In every other case the round goes to the evaluator as before. A round that
 makes progress, by a new commit, by a change in its open items or by a change
 in CI, is never stopped by this rule. CI that is still running is something to
 wait for, so it never stops the loop here. The merge round already waits for
-CI before it assesses the PR; condition 4 covers a race with that wait. The
+CI before readiness assessment, but currently runs QA first. Under the
+proposed, runtime-unverified contract it must wait before QA too. Pending
+work remains in preparation without spending a corrective round. An
+observed head change is refresh
+progress even if local `HEAD` has not moved; both this mechanical check and
+the health evaluator receive it. Condition 4 covers a race with the wait. The
 crusty loop records an empty `ci_signal`, so condition 4 always holds there.
 
 The head SHA is `git -C <repo> rev-parse HEAD` in the PR worktree, read once
@@ -4482,6 +4624,11 @@ step-03 switches to the PR's key, and every later phase uses that directory
 and a run resumed later with `pr_number=N` finds the same state. An explicit
 `autodrive_state_dir` is used as given.
 
+**Proposed, runtime-unverified:** durable state also retains `no_merge=true`;
+resuming cannot enable a merge merely because a caller omitted the flag.
+Cached readiness is refreshed
+when heads, CI attempts or relevant base/policy evidence change.
+
 Local state is a cache, never a claim: the merge gate re-verifies every
 criterion regardless of what any state file says, and `UNKNOWN` platform state
 is treated as a failure rather than as "not merged". The exception is the
@@ -4572,6 +4719,11 @@ or `unknown`. A `STUCK` or `BUDGET_EXHAUSTED` result in either loop overrides
 the table: the outcome is `NOT_MERGED` and the step exits `1` (see [How the
 run report shows these stops](#how-the-run-report-shows-these-stops)).
 
+**Proposed, runtime-unverified reporting:** with `no_merge=true`,
+`NOT_MERGED` is the expected merge outcome even when
+the readiness verdict is `MERGE_READY`; the report keeps those facts separate
+and confirms that the PR remains open with automatic merging disabled.
+
 The report's markdown output also shows how phase 1 ended, from the two
 [`build_result` fields](#the-build-result) (#1714):
 
@@ -4586,9 +4738,13 @@ Both values reach the template only after step-03 has bounded them:
 
 No step in any of these recipes declares `timeout` or `timeout_seconds`, and no
 recipe declares a `default_step_timeout` (issue #439 — the runner owns the
-ceiling). The CI wait polls on a 60-second interval and stops when CI reaches a
-terminal state or becomes unreadable; it is bounded by the build finishing, not
-by a stopwatch. Test suites, builds, and model calls run to their natural end.
+ceiling). Current CI waiting polls every 60 seconds, after QA, until terminal
+or unreadable. **Proposed, runtime-unverified:** the CI-preparation agent
+awaits completion before QA, with bounded request rates, backoff and liveness
+messages; no fixed polling interval is required.
+Unreadable observations require retry or equivalent authoritative evidence,
+not a successful empty result. Test suites, builds and model calls run to
+their natural end, subject to existing run budgets and terminal protections.
 The guard test `no_short_timeouts_anywhere` fails the build if a seconds-scale
 or single-digit-minute bound is introduced.
 
@@ -4602,8 +4758,8 @@ so the launch checkout's index is never touched (issue #1528).
 | --- | --- | --- |
 | Phase 1, `autodrive-build` | Launch checkout | Not there. `default-workflow` commits in its own task worktree (issue #858); its commit steps refuse to stage or commit anywhere other than the top of a linked worktree (issue #1528). |
 | Loop preflights, `autodrive_pr_worktree.sh resolve`, the merge gate, phase bookkeeping | Launch checkout | No. The resolver may run `git worktree add`; the merge happens on GitHub. |
-| The judging agents: `step-02-crusty-review`, `step-02-merge-ready-assessment`, and the `loop-health-evaluator` analyzer | Start in the main checkout of the preflight repo's repository (`review_dir`); read the pull request through `gh pr diff` and `git -C <worktree>` | No |
-| Round bash steps, the `step-04` fix agents, `autodrive-merge-evidence`, the evaluator's measurements (recipe files are always loaded from the launch-side bundle; see below) | Pull request worktree | Yes: the round fixes in `step-04`, and the base-branch merge and push in `autodrive-merge-evidence` |
+| The judging agents: `step-02-crusty-review`, `step-02-merge-ready-assessment`, and the `loop-health-evaluator` analyzer; **proposed:** base-sync and CI preparation | Start in the main checkout of the preflight repo's repository (`review_dir`); read the pull request through `gh pr diff` and `git -C <worktree>` | No |
+| Round measurements and the `step-04` fix agents (recipe files come from the trusted launch bundle) | Pull request worktree; **proposed, runtime-unverified:** QA executes matching content in the protected boundary | **Proposed:** only the fix agents and necessary, verified base updates commit or push. Clean non-strict PRs preserve their head. Current base sync updates behind branches without a policy decision. |
 
 The loop state directory stays keyed to the launch repository, so resuming is
 unchanged.
@@ -4696,11 +4852,12 @@ fix-up commit could change the instructions given to the next round's
 reviewer. That is the same self-approval path as loading the recipes from the
 worktree, so it is closed the same way.
 
-Only the commit step moves into the pull request worktree. The read-only
-judging agents — the crusty review, the merge-ready assessment and the
-loop-health analyzer, which together decide the Crusty `CLEAN`, `MERGE_READY`
-and when a loop stops — start in the **review dir**: the main checkout of
-the repository that the preflight repo belongs to.
+**Proposed, runtime-unverified extensions:** judging agents — base
+synchronisation, CI preparation, crusty review,
+merge-ready assessment and loop-health analysis — start in the **review
+dir**: the main checkout of the preflight repository. Tools target the owned
+PR worktree explicitly for approved edits and necessary base updates. QA
+executes matching content inside its separate protected execution boundary.
 
 - Each loop's `step-02` sets `REVIEW_DIR` with
   `autodrive_worktree_guard.sh review-dir "$REPO"`, which prints the
@@ -5015,7 +5172,7 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/recipes/autodrive-build.yaml` | phase 1 | `default-workflow`, resume-aware. |
 | `amplifier-bundle/recipes/autodrive-crusty-round.yaml` | round | Crusty review of the PR head, verdict, fixes, round record. |
 | `amplifier-bundle/recipes/autodrive-crusty-loop.yaml` | phase 2 | Loop driver + phase bookkeeping. |
-| `amplifier-bundle/recipes/autodrive-merge-evidence.yaml` | evidence | Base sync, suite commands, gadugi scenarios where required, CI wait. |
+| `amplifier-bundle/recipes/autodrive-merge-evidence.yaml` | evidence | Currently base sync, QA, then CI. **Proposed, runtime-unverified:** agent decisions on base updates and CI waiting, then protected suite/scenario execution after current-head green CI. |
 | `amplifier-bundle/recipes/autodrive-merge-round.yaml` | round | Merge-ready criteria from the skill's files, verdict, blocker fixes. |
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | phase 3 | Loop driver + merge gate + bookkeeping. |
 | `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict. |
@@ -5145,8 +5302,10 @@ tests here run and pass without #1347.
   both loops use (ships with PR #1347).
 - [Structured Verdict & Intent Parsing](structured-verdict-parsing.md) — the
   `extract-json | extract-field` pipeline every gate here uses.
-- [Merge Flow](merge-flow.md) — the repository's serial, strict-up-to-date
-  merge policy, and the prohibition this workflow enforces.
+- [Merge Flow](merge-flow.md) — proposed, runtime-unverified policy-driven base updates and current-head
+  readiness.
+- [Readiness evidence](autodrive-evidence.md) — proposed, runtime-unverified CI-first QA, evidence contracts,
+  refresh, protected execution and open PR delivery.
 - [Workflow Terminal State](workflow-terminal-state.md) — the `no_merge` flag
   phase 1 sets to keep `default-workflow` from merging.
 - [PR-Ownership Lease](pr-ownership-lease.md) — the cooperative alternative to
