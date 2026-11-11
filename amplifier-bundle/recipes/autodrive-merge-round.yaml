@@ -23,6 +23,7 @@ context:
   pr_number: ""
   pr_url: ""
   task_description: ""
+  autodrive_record_directory: ""
   autodrive_round_record: ""
   autodrive_round_label: "round"
   autodrive_qa_evidence: ""
@@ -175,7 +176,7 @@ steps:
       auto-drive state directory (the directory holding crusty-round-*.json,
       merge-ready-round-*.json and phases.tsv).
       ## Files you need (#2222)
-      The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the merge-ready criteria `{{merge_ready_files.skill_md}}` and the auto-drive-to-merge skill folder `{{merge_ready_files.auto_drive_skill_dir}}`. A path shown as empty was not given to you; do not look for it. If a named file is missing, report it by name and do not search for it. The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative.
+      The auto-drive state directory is `{{autodrive_record_directory}}`. The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the merge-ready criteria `{{merge_ready_files.skill_md}}` and the auto-drive-to-merge skill folder `{{merge_ready_files.auto_drive_skill_dir}}`. The state directory, round record and skill resource paths are required; if any is empty, stop and report the missing input by name. If a named file is missing, report it by name and do not search for it. The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative.
       Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~, /d0 or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
       Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by their literal path before the step ends.
 
@@ -348,7 +349,7 @@ steps:
       merge-ready-round-*.json and phases.tsv). Do not rewrite history,
       reset, force-push, or edit refs.
       ## Files you need (#2222)
-      The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the merge-ready criteria `{{merge_ready_files.skill_md}}` and the auto-drive-to-merge skill folder `{{merge_ready_files.auto_drive_skill_dir}}`. A path shown as empty was not given to you; do not look for it. If a named file is missing, report it by name and do not search for it. The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative.
+      The auto-drive state directory is `{{autodrive_record_directory}}`. The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the merge-ready criteria `{{merge_ready_files.skill_md}}` and the auto-drive-to-merge skill folder `{{merge_ready_files.auto_drive_skill_dir}}`. The state directory, round record and skill resource paths are required; if any is empty, stop and report the missing input by name. If a named file is missing, report it by name and do not search for it. The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative.
       Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~, /d0 or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
       Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by their literal path before the step ends.
 

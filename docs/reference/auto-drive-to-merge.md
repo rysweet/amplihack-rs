@@ -2635,8 +2635,8 @@ state files (#2222). The round prompts put these locations and resources under
 
 | Recipe | Agent steps | Required state files and resources |
 | --- | --- | --- |
-| `autodrive-crusty-round.yaml` | `step-02-crusty-review`, `step-04-address-concerns` | `{{autodrive_round_record}}`, `{{autodrive_resolved_concerns_file}}`, `{{crusty_round_context.merge_ready_skill_md}}`, `{{crusty_round_context.auto_drive_skill_dir}}` |
-| `autodrive-merge-round.yaml` | `step-02-merge-ready-assessment`, `step-04-address-blockers` | `{{autodrive_round_record}}`, `{{merge_ready_files.skill_md}}`, `{{merge_ready_files.auto_drive_skill_dir}}`; the assessment also receives `{{merge_ready_files.template}}` |
+| `autodrive-crusty-round.yaml` | `step-02-crusty-review`, `step-04-address-concerns` | `{{autodrive_record_directory}}`, `{{autodrive_round_record}}`, `{{autodrive_resolved_concerns_file}}`, `{{crusty_round_context.merge_ready_skill_md}}`, `{{crusty_round_context.auto_drive_skill_dir}}` |
+| `autodrive-merge-round.yaml` | `step-02-merge-ready-assessment`, `step-04-address-blockers` | `{{autodrive_record_directory}}`, `{{autodrive_round_record}}`, `{{merge_ready_files.skill_md}}`, `{{merge_ready_files.auto_drive_skill_dir}}`; the assessment also receives `{{merge_ready_files.template}}` |
 | `loop-health-evaluator.yaml` | `step-02-evaluate-loop-health` | No state files needed and no discovery required; evidence, history and recent round output arrive in context |
 | `auto-drive-light.yaml` | `light-implement` | No state files needed and no discovery required; task and checkout locations arrive in the prompt |
 
@@ -2675,8 +2675,11 @@ auto-drive state files.
 
 A round record may not exist yet: the deterministic writer creates it at the
 end of the round. Its exact path grants no permission to create, repair or
-replace it, or discover an alternative. An empty optional path means no file
-was supplied and must not trigger a search.
+replace it, or discover an alternative. An empty required path stops the
+step with a named missing-input report.
+The resolved-concerns file can be absent before any earlier findings exist;
+its absolute path is still supplied, and the inline context is authoritative.
+Neither case permits a replacement search.
 
 Crusty's resources come only from the trusted launch-side bundle.
 Merge-ready retains ordered candidates and same-installation relationships;
@@ -2688,7 +2691,11 @@ An absolute path identifies a location, not authenticity.
 
 Crusty's resolved concern ids arrive inline through
 `crusty_round_context.resolved_concerns`; the exact absolute
-`autodrive_resolved_concerns_file` path is also supplied. The concern-fixing
+`autodrive_resolved_concerns_file` path is also supplied. The producer uses
+`jq --arg` for scalar values and `jq --rawfile` for findings to preserve
+embedded and trailing newlines. The driver preserves trailing newlines
+with a non-newline sentinel around shell file reads. Findings never enter
+executable shell source or recursive template expansion. The concern-fixing
 step receives the preceding `crusty_review`; the blocker-fixing step receives
 `merge_ready_review`. Neither needs to locate an earlier record.
 
@@ -2711,14 +2718,18 @@ Relative input is resolved against the original invocation directory. For
 example, `--state-dir 'review state'` selects that directory beneath the
 invocation directory, regardless of child working directories. Task files,
 round records, resolved-concern files, manifests, logs and child context are
-derived only after normalization and use the same absolute root.
+derived only after normalization and use the same absolute root. The root
+is passed as `autodrive_record_directory` alongside the round record and
+resolved-concerns paths, after caller context, so caller values cannot
+replace these authoritative paths.
 
 This does not relax recipe input validation. [Auto-drive-light](auto-drive-light.md#context-variables)
 still requires an absolute `autodrive_state_dir` recipe input when set.
 
 ### File-discovery guidance in bundle resources
 
-The focused audit screened tracked Markdown and YAML instructions under
+The focused audit rechecked all 516 tracked Markdown and YAML instruction
+files under
 `amplifier-bundle/recipes/` and `amplifier-bundle/skills/` for state-file
 mentions, find/bfs/fd/locate commands, missing-file fallbacks and file-location
 guidance. Matching instructions and relevant resource references were
@@ -2734,6 +2745,7 @@ prompt-location audit, not a claim that every bundled example was executed.
 | `common/ooxml/README.md`, merge-ready and auto-drive skill references | Reviewed shared helper locations and criteria/state descriptions; these do not instruct an agent to discover an unknown installation or state directory. |
 | `code-atlas/examples.md`, `supply-chain-audit/reference/{rust,dotnet}.md`, `smart-test/SKILL.md` | Source enumeration is bounded by the checkout or named test directory; unchanged. |
 | `transcript-viewer/SKILL.md`, `session-to-agent/reference.md` | Transcript lookup is rooted in explicitly named projects/session directories; unchanged. |
+| `session-replay/SKILL.md` | Trace discovery uses the supplied trace directory (default `.claude-trace`) and only its JSONL children; unchanged. |
 | `quality-loop.yaml`, `markitdown/examples.md` | Review diff path is supplied directly; document conversion uses a named input directory; unchanged. |
 
 The PPTX helper is anchored to the absolute directory containing the loaded
@@ -2745,8 +2757,10 @@ by an auto-drive prompt.
 ### Prompt-path regression contract
 
 [`issue_2222_prompt_paths.rs`](../../crates/amplihack-cli/tests/issue_2222_prompt_paths.rs)
-contains 30 tests using local one-pass `{{key}}` / `{{key.field}}` substitution
-and real driver/helper subprocesses. It enumerates every agent step in all
+uses the production `recipe_runner_rs::context::RecipeContext::render` API
+from the Cargo.lock-pinned revision
+`90286bc50b84ded773795d2c8301b689f680db0b` and real driver/helper subprocesses.
+It enumerates every agent step in all
 four recipes and compares that inventory with the six covered prompts,
 including conditional and no-state steps. The restriction must be an exact
 rendered line; other prose assertions may collapse whitespace.
@@ -2772,9 +2786,10 @@ missing/unusable skills, missing templates and checkout-resource warnings.
 Affected manifest entries use the first 16 hexadecimal digits of each
 recipe's SHA-256, following the existing manifest test pattern.
 
-This is local rendering and driver/helper subprocess coverage. It does not
-execute an external `recipe-runner-rs` or establish runner parity. No runtime
-search interception, CI job, guard check, timer or dependency was added.
+This validates rendering with the pinned production API, including
+one-pass insertion of template-looking findings as data. It does not launch
+external recipe processes or agents. No runtime search interception, CI job,
+guard check, timer or dependency was added.
 
 ### The state directory is private
 

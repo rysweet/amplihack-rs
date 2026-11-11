@@ -143,7 +143,7 @@ The recipe also fills these values as it runs: `light_base`, `light_task_id`, `b
 
 **Prerequisites (steps 1 to 3).** `light-prereqs` checks that every tool the run loads exists under `$AMPLIHACK_HOME/amplifier-bundle/tools`. The list includes `autodrive_light_eligibility.sh`, `autodrive_finding_rules.sh`, and the follow-up tools `autodrive_followups.sh`, `autodrive_followups_check.sh` and `workflow_issue_tracking.sh`, which the loops load from the same root. `light-task-id` checks `plan_task_id` and works out the effective task id, before any work starts; see [The task id](#the-task-id).
 
-**Build (steps 4 to 10).** The worktree and branch come from `workflow-worktree` and `quick_change_common.sh`, so the branch is named `quick/<issue-or-slug>`. `light-base-pin` records the base commit before the agent runs; that commit is `light_base`. `light-implement` is a single agent session whose prompt carries the quick-change leaf-step constraints and the line `[amplihack:no-merge]`. It never tells the agent to start an orchestrator. Its prompt already says no auto-drive state files are needed. Naming both absolute checkout locations and using the exact shared search restriction remain planned requirements for #2222. See [Agent paths and state access](#agent-paths-and-state-access). `light-qa` runs `qa_command` or `quick_change_checks.sh`; `light-precommit` runs the repository's pre-commit hooks. A failing check stops the run before anything is pushed.
+**Build (steps 4 to 10).** The worktree and branch come from `workflow-worktree` and `quick_change_common.sh`, so the branch is named `quick/<issue-or-slug>`. `light-base-pin` records the base commit before the agent runs; that commit is `light_base`. `light-implement` is a single agent session whose prompt carries the quick-change leaf-step constraints and the line `[amplihack:no-merge]`. It never tells the agent to start an orchestrator. Its prompt says no auto-drive state files are needed, names both absolute checkout locations and contains the exact shared search restriction (#2222). See [Agent paths and state access](#agent-paths-and-state-access). `light-qa` runs `qa_command` or `quick_change_checks.sh`; `light-precommit` runs the repository's pre-commit hooks. A failing check stops the run before anything is pushed.
 
 **PR resolution (step 11).** `light-resolve-pr` writes `build_result` in the same shape as `autodrive-build`, with `pr`, `branch`, `head_sha`, `base_sha` and `state_dir`. For an existing PR it reads `gh pr view` and refuses a PR whose `isCrossRepository` is true (`light-cross-repo`). For an existing PR, `light_base` is the merge base of the PR head and `origin/<baseRefName>`. PR code fetched as `refs/pull/<N>/head` is not checked out, sourced or run before review.
 
@@ -194,11 +194,13 @@ absolute path.
 
 The [prompt-path regression contract](auto-drive-to-merge.md#prompt-path-regression-contract)
 enumerates all six affected agent steps, including conditional
-`light-implement`. Local tests execute light's deterministic producers from
+`light-implement`. Tests use the pinned production `RecipeContext::render`
+API and execute light's deterministic producers from
 a linked-worktree caller and verify both checkout locations, the exact
 restriction, explicit no-state/no-discovery guidance and state ownership.
 Driver/helper subprocess tests also verify actual context propagation.
-No external recipe runner is exercised by this coverage.
+The production rendering API is exercised directly; no agent or external
+recipe process is launched.
 
 ## Eligibility rules
 

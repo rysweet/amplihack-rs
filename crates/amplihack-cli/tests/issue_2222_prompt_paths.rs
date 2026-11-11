@@ -1,23 +1,16 @@
 //! Issue #2222: auto-drive agent prompts give every path the agent needs and
 //! forbid filesystem searches outside the named checkouts.
 //!
-//! The six agent prompts (the four round prompts, the loop-health evaluator
-//! and `light-implement`) are rendered from the recipe files with a minimal
-//! `{{key}}` / `{{key.field}}` substitution over a context built in a
-//! temporary directory. The step outputs the round prompts read
-//! (`crusty_round_context` and `merge_ready_files`) come from running the real
-//! bash step and the real resolver against a synthetic bundle tree.
-//!
-//! Also runs the real loop driver with only the external CLI boundary faked,
-//! to test relative state-directory and checkout-path propagation. The local
-//! renderer below performs one-pass key substitution; it does not execute
-//! recipe-runner-rs or establish external runner coverage. No runtime search
-//! interception, guard, sleeps, timers, retries or new dependencies.
+//! Retains the issue's real producer, resolver and linked-worktree fixtures.
+//! Prompts use the production RecipeContext::render API from the Cargo.lock
+//! pinned recipe-runner revision 90286bc50b84ded773795d2c8301b689f680db0b.
+//! Only external CLI boundaries are faked; no agent or network is started.
 
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+use recipe_runner_rs::context::RecipeContext;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -39,8 +32,6 @@ const R4: &str = "Write scratch files only under `$TMPDIR` \
 const NONE_NEEDED: &str = "You need none of the auto-drive state files (crusty-round-*.json, \
      merge-ready-round-*.json, phases.tsv); everything you need is in this prompt. If \
      something you expect is absent, report it by name.";
-
-const EMPTY_PATH_LINE: &str = "A path shown as empty was not given to you; do not look for it.";
 
 const FILES_HEADING: &str = "## Files you need (#2222)";
 
@@ -84,42 +75,16 @@ fn prompt(recipe_name: &str, step_id: &str) -> String {
         .to_string()
 }
 
-/// Local test renderer for `{{key}}` and `{{key.field}}`. Absent keys render
-/// empty to expose incomplete prompt context. Inserted values are never
-/// expanded recursively. This deliberately makes no runner parity claim.
+/// Production rendering, with no local substitution or recursive expansion.
 fn render(template: &str, ctx: &Value) -> String {
-    let mut out = String::new();
-    let mut rest = template;
-    while let Some(start) = rest.find("{{") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 2..];
-        let Some(end) = after.find("}}") else {
-            out.push_str(&rest[start..]);
-            return out;
-        };
-        let key = after[..end].trim();
-        let mut v = ctx;
-        let mut found = true;
-        for part in key.split('.') {
-            match v.get(part) {
-                Some(next) => v = next,
-                None => {
-                    found = false;
-                    break;
-                }
-            }
-        }
-        if found {
-            match v {
-                Value::String(s) => out.push_str(s),
-                Value::Null => {}
-                other => out.push_str(&other.to_string()),
-            }
-        }
-        rest = &after[end + 2..];
-    }
-    out.push_str(rest);
-    out
+    RecipeContext::new(
+        ctx.as_object()
+            .expect("object context")
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    )
+    .render(template)
 }
 
 fn bash_available() -> bool {
@@ -237,7 +202,13 @@ impl Fixture {
     }
 
     fn path_env(&self) -> String {
-        format!("{}:/usr/bin:/bin", self.fake_bin.display())
+        // Keep real jq available on macOS/Homebrew as well as Linux.
+        // The fake gh stays first, so the producer cannot reach the network.
+        format!(
+            "{}:{}",
+            self.fake_bin.display(),
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+        )
     }
 
     fn launch_tools(&self) -> String {
@@ -332,6 +303,7 @@ fn context(fx: &Fixture, round_record: &str) -> Value {
         "pr_url": "https://example.invalid/pr/42",
         "task_description": "synthetic task",
         "autodrive_round_record": round_record,
+        "autodrive_record_directory": fx.round_record.parent().unwrap().to_string_lossy(),
         "autodrive_round_label": "round 3",
         "autodrive_resolved_concerns_file": fx.resolved.to_string_lossy(),
         "crusty_round_context": crusty_round_context(fx),
@@ -378,12 +350,106 @@ fn fenced_blocks(s: &str) -> String {
 // ── The renderer itself ─────────────────────────────────────────────────────
 
 #[test]
-fn render_substitutes_keys_and_fields_and_blanks_absent_ones() {
+fn pinned_renderer_substitutes_keys_and_fields_and_blanks_absent_ones() {
     let ctx = json!({"a": "x", "b": {"c": "y", "n": 3}});
     assert_eq!(
-        render("{{a}}|{{ b.c }}|{{b.n}}|{{missing}}|{{b.none}}", &ctx),
+        render("{{a}}|{{b.c}}|{{b.n}}|{{missing}}|{{b.none}}", &ctx),
         "x|y|3||"
     );
+}
+
+#[test]
+fn round_recipes_declare_the_authoritative_record_directory_input() {
+    for name in [CRUSTY, MERGE] {
+        assert_eq!(
+            recipe(name)["context"]["autodrive_record_directory"].as_str(),
+            Some(""),
+            "{name}: declare the driver-owned directory so inherited context cannot supply it"
+        );
+    }
+}
+
+#[test]
+fn all_four_round_prompts_disclose_the_state_root_as_a_literal_path() {
+    require_bash!();
+    let fx = fixture();
+    let state = phys(fx.round_record.parent().unwrap());
+    for (name, step) in &SIX_PROMPTS[..4] {
+        let p = rendered(&fx, name, step);
+        // A full record filename contains its directory as a substring;
+        // that alone does not disclose which directory the ownership rule names.
+        assert!(
+            p.contains(&format!("`{state}`")),
+            "{name}/{step}: give the state directory as a standalone literal path\n{p}"
+        );
+        for path in [fx.round_record.to_str().unwrap(), &state] {
+            assert!(Path::new(path).is_absolute());
+            assert!(
+                !fenced_blocks(&p).contains(path),
+                "state paths belong in prose"
+            );
+        }
+        assert!(
+            !p.contains("{{") && !p.contains("}}"),
+            "{name}/{step}: unresolved template in a prompt with plain fixture findings\n{p}"
+        );
+        for key in [
+            "autodrive_record_directory",
+            "autodrive_round_record",
+            "autodrive_resolved_concerns_file",
+        ] {
+            assert!(
+                !p.contains(key),
+                "{name}/{step}: expose values, not internal key {key}"
+            );
+        }
+    }
+}
+
+#[test]
+fn resolved_findings_survive_the_real_producer_and_pinned_renderer_verbatim() {
+    require_bash!();
+    let fx = fixture();
+    // Covers both JSON escaping and command-substitution newline loss. Each
+    // case goes through the actual producer, never a fabricated step output.
+    for findings in [
+        "",
+        "ordinary finding\n\n",
+        "C1: \"quoted\"; C2: backslash \\ and tab\t\nsecond line\n",
+        "$(touch injected) `touch injected-too` ${HOME}; 'quoted'\n",
+        "{{repo_path}} {{missing.value}} remain data\n\n",
+        "Unicode: café — concern\n",
+    ] {
+        std::fs::write(&fx.resolved, findings).unwrap();
+        let output = run_step01(&fx, Some(&fx.launch_tools()));
+        assert!(
+            output.status.success(),
+            "findings={findings:?}\n{}",
+            show(&output)
+        );
+        let produced = json_line(&output);
+        assert_eq!(
+            produced["resolved_concerns"].as_str(),
+            Some(findings),
+            "the producer must preserve findings byte for byte"
+        );
+        let mut ctx = context(&fx, fx.round_record.to_str().unwrap());
+        ctx["crusty_round_context"] = produced;
+        let p = render(&prompt(CRUSTY, "step-02-crusty-review"), &ctx);
+        assert!(
+            p.contains(findings),
+            "renderer lost or expanded findings={findings:?}"
+        );
+        for dir in [&fx.plain, &fx.repo, &fx.home] {
+            for marker in ["injected", "injected-too"] {
+                assert!(
+                    !dir.join(marker).exists(),
+                    "findings executed in {}",
+                    dir.display()
+                );
+            }
+        }
+    }
 }
 
 // ── Rendered prompts ────────────────────────────────────────────────────────
@@ -415,10 +481,6 @@ fn crusty_prompts_give_round_record_resolved_file_and_skill_paths() {
                 "{step}: the rendered prompt must give the {what} path `{path}`\n{p}"
             );
         }
-        assert!(
-            has_line(&p, EMPTY_PATH_LINE),
-            "{step}: missing the empty-path line\n{p}"
-        );
     }
 }
 
@@ -445,10 +507,6 @@ fn merge_round_prompts_give_round_record_and_skill_paths() {
                 "{step}: the rendered prompt must give the {what} path `{path}`\n{p}"
             );
         }
-        assert!(
-            has_line(&p, EMPTY_PATH_LINE),
-            "{step}: missing the empty-path line\n{p}"
-        );
     }
 }
 
@@ -470,21 +528,6 @@ fn round_prompts_give_paths_in_prose_not_inside_shell_blocks() {
                 "{r}/{step}: `{path}` must appear in prose only, never inside a shell block"
             );
         }
-    }
-}
-
-#[test]
-fn round_prompts_with_an_empty_round_record_tell_the_agent_not_to_look() {
-    require_bash!();
-    let fx = fixture();
-    let ctx = context(&fx, "");
-    for (r, step) in &SIX_PROMPTS[..4] {
-        let p = render(&prompt(r, step), &ctx);
-        assert!(
-            has_line(&p, EMPTY_PATH_LINE),
-            "{r}/{step}: with no round record the prompt must say an empty path was not given\n{p}"
-        );
-        assert!(has_line(&p, R3), "{r}/{step}: missing R3\n{p}");
     }
 }
 
@@ -532,6 +575,10 @@ fn no_rendered_prompt_names_the_state_dir_key() {
     let fx = fixture();
     for (r, step) in SIX_PROMPTS {
         let p = rendered(&fx, r, step);
+        assert!(
+            !p.contains("{{") && !p.contains("}}"),
+            "{r}/{step}: unresolved placeholder with plain fixture data\n{p}"
+        );
         for leak in STATE_DIR_LEAKS {
             assert!(
                 !p.contains(leak),
@@ -682,8 +729,7 @@ fn named_round_records_preserve_deterministic_ownership_and_reviewer_isolation()
     );
 }
 
-const EARLIER_FINDINGS: &str =
-    "C1: \"quoted\" finding\nC2: {{repo_path}} stays data; $(touch injected) `touch injected-too`";
+const EARLIER_FINDINGS: &str = "C1: \"quoted\" finding\nC2: {{repo_path}} stays data; $(touch injected) `touch injected-too`\n\n";
 
 #[test]
 fn earlier_findings_are_supplied_as_data_without_recursive_template_expansion() {
@@ -1173,13 +1219,21 @@ impl DriverFixture {
     }
 
     fn run(&self, name: &str, state: &str) -> Output {
+        self.run_with_context(name, state, &[])
+    }
+
+    fn run_with_context(&self, name: &str, state: &str, extra: &[&str]) -> Output {
         let (round, token, field) = match name {
             "crusty" => (CRUSTY, "CLEAN", "crusty_verdict"),
             "merge-ready" => (MERGE, "MERGE_READY", "merge_ready_verdict"),
             _ => panic!("unknown loop"),
         };
-        crate::isolated_amplihack::isolated("bash")
-            .arg(tools_dir().join("autodrive_loop.sh"))
+        let mut command = crate::isolated_amplihack::isolated("bash");
+        command.arg(tools_dir().join("autodrive_loop.sh"));
+        for value in extra {
+            command.args(["--context", value]);
+        }
+        command
             .args(["--loop-name", name, "--round-recipe", round])
             .args(["--clean-token", token, "--verdict-field", field])
             .args(["--repo", "../repo", "--review-dir", "../main checkout"])
@@ -1246,6 +1300,11 @@ fn driver_resolves_relative_state_with_spaces_before_deriving_child_paths() {
             let argv = d.argv(round, label);
             let ctx = captured_context(&argv);
             assert_eq!(
+                ctx["autodrive_record_directory"],
+                json!(phys(&state)),
+                "the canonical validated state root must be explicit context"
+            );
+            assert_eq!(
                 ctx["autodrive_round_record"],
                 json!(state.join(format!("{name}-{label}.json"))),
                 "all child paths must derive from the physical absolute state directory"
@@ -1308,7 +1367,7 @@ fn driver_supplies_authoritative_absolute_checkout_context_to_rounds_and_evaluat
 }
 
 #[test]
-fn driver_captured_context_renders_prompt_contracts_and_keeps_prior_evidence() {
+fn caller_context_cannot_replace_the_validated_state_root_or_its_record_paths() {
     require_bash!();
     if !jq_available() {
         eprintln!("SKIP: driver CLI fixture requires jq");
@@ -1317,17 +1376,76 @@ fn driver_captured_context_renders_prompt_contracts_and_keeps_prior_evidence() {
     for name in ["crusty", "merge-ready"] {
         let d = DriverFixture::new();
         let state = d.physical_parent.join("records");
+        let forged = d.fx.root().join("caller supplied state");
+        private_dir(&forged);
+        let overrides = [
+            format!("autodrive_record_directory={}", forged.display()),
+            format!("autodrive_round_record={}/wrong.json", forged.display()),
+            format!(
+                "autodrive_resolved_concerns_file={}/wrong.txt",
+                forged.display()
+            ),
+        ];
+        let extra: Vec<&str> = overrides.iter().map(String::as_str).collect();
+        let out = d.run_with_context(name, state.to_str().unwrap(), &extra);
+        // Rejection before execution is also valid. It must neither be a
+        // missing-file failure after starting an agent nor a silent override.
+        if !out.status.success() {
+            assert_eq!(out.status.code(), Some(2), "{}", show(&out));
+            assert_eq!(
+                std::fs::read_dir(&d.capture).unwrap().count(),
+                0,
+                "reject caller-owned state context before starting recipes"
+            );
+            let error = stderr(&out);
+            assert!(
+                error.contains("context") && error.contains("autodrive_"),
+                "the refusal must identify the invalid context: {error}"
+            );
+            continue;
+        }
+        let round = if name == "crusty" { CRUSTY } else { MERGE };
+        for label in ["round-1", "round-2"] {
+            let ctx = captured_context(&d.argv(round, label));
+            assert_eq!(ctx["autodrive_record_directory"], json!(phys(&state)));
+            assert_eq!(
+                ctx["autodrive_round_record"],
+                json!(state.join(format!("{name}-{label}.json")))
+            );
+            assert_eq!(
+                ctx["autodrive_resolved_concerns_file"],
+                json!(state.join("resolved-concerns.txt"))
+            );
+        }
+    }
+}
+
+#[test]
+fn driver_captured_context_renders_prompt_contracts_and_keeps_prior_evidence() {
+    require_bash!();
+    if !jq_available() {
+        eprintln!("SKIP: driver CLI fixture requires jq");
+        return;
+    }
+    for name in ["crusty", "merge-ready"] {
+        let mut d = DriverFixture::new();
+        let state = d.physical_parent.join("records");
+        private_dir(&state);
+        d.fx.resolved = state.join("resolved-concerns.txt");
+        crate::support::auto_drive_light::private_file(&d.fx.resolved, EARLIER_FINDINGS);
         let out = d.run(name, state.to_str().unwrap());
         assert!(out.status.success(), "{}", show(&out));
         let round = if name == "crusty" { CRUSTY } else { MERGE };
         let mut eval_ctx = captured_context(&d.argv(EVALUATOR, "round-2"));
         assert_eq!(eval_ctx["loop_findings_previous"], EARLIER_FINDINGS);
         assert_eq!(eval_ctx["loop_findings_current"], EARLIER_FINDINGS);
+        // The bounded diagnostic log tail omits terminal newlines; the
+        // authoritative findings fields above must retain them verbatim.
         assert!(
             eval_ctx["loop_last_round_output"]
                 .as_str()
                 .unwrap()
-                .contains(EARLIER_FINDINGS)
+                .contains(EARLIER_FINDINGS.trim_end_matches('\n'))
         );
         assert!(
             eval_ctx["loop_history"]
@@ -1348,12 +1466,20 @@ fn driver_captured_context_renders_prompt_contracts_and_keeps_prior_evidence() {
         // These two outputs are produced by the real deterministic steps,
         // since the external recipe CLI is intentionally faked in this test.
         ctx["crusty_round_context"] = crusty_round_context(&d.fx);
+        assert_eq!(
+            ctx["crusty_round_context"]["resolved_concerns"],
+            EARLIER_FINDINGS
+        );
         ctx["merge_ready_files"] = merge_ready_files(&d.fx);
         ctx["crusty_review"] = json!(EARLIER_FINDINGS);
         ctx["merge_ready_review"] = json!(EARLIER_FINDINGS);
         for (r, step) in SIX_PROMPTS.iter().filter(|(r, _)| *r == round) {
             let p = render(&prompt(r, step), &ctx);
             assert_checkout_paths(&p, &phys(&d.fx.repo), &phys(&d.main), step);
+            assert!(
+                p.contains(&format!("`{}`", phys(&state))),
+                "{r}/{step}: give the authoritative directory as a literal value"
+            );
             assert!(p.contains(state.join(format!("{name}-round-2.json")).to_str().unwrap()));
             assert!(
                 p.lines().any(|l| l == R2),
@@ -1448,12 +1574,22 @@ fn light_prompt_uses_main_checkout_from_deterministic_setup_when_caller_is_linke
         }
         let id = step["id"].as_str().unwrap();
         let mut c = crate::isolated_amplihack::isolated("bash");
-        c.args(["-c", &render(step["command"].as_str().unwrap(), &ctx)])
-            .current_dir(&d.fx.plain)
-            .env("PATH", d.path_env())
-            .env("HOME", &d.fx.home)
-            .env("AMPLIHACK_HOME", repo_root())
-            .env("GIT_CONFIG_NOSYSTEM", "1");
+        let shell_context = RecipeContext::new(
+            ctx.as_object()
+                .unwrap()
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        );
+        c.args([
+            "-c",
+            &shell_context.render_shell(step["command"].as_str().unwrap()),
+        ])
+        .current_dir(&d.fx.plain)
+        .env("PATH", d.path_env())
+        .env("HOME", &d.fx.home)
+        .env("AMPLIHACK_HOME", repo_root())
+        .env("GIT_CONFIG_NOSYSTEM", "1");
         for (k, v) in ctx.as_object().unwrap() {
             let value = v
                 .as_str()

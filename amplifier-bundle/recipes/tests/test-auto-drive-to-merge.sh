@@ -421,6 +421,18 @@ else
   fail "PASSTHRU" "a converging loop was not allowed to finish (rc=${rc}): ${LOOP_OUT}"
 fi
 
+# Issue #2222: inspect the real driver's child argv, not its source. The
+# directory must be an explicit value, not something agents infer from the
+# record filename. Rust prompt tests also cover relative paths, parent
+# symlinks, spaces, attempted overrides and the pinned production renderer.
+STATE_2222_EXPECTED="$(cd "${LOOP_DIR}" && pwd -P)"
+if grep '^recipe run .*autodrive-crusty-round' "${LOOP_LOGS}/calls.argv" \
+     | grep -qF -- " -c autodrive_record_directory=${STATE_2222_EXPECTED} "; then
+  pass "2222-state-directory-context" "the driver gives round recipes the absolute state root"
+else
+  fail "2222-state-directory-context" "round context omits the authoritative state directory ${STATE_2222_EXPECTED}"
+fi
+
 # Issue #1979: with --also-clean-token MINOR_ONLY, a minor-only round ends the
 # crusty loop on DONE, and the result keeps the round's real verdict.
 set_stub '{"crusty_verdict":"MINOR_ONLY","concern_count":2}' 0 "$H_DONE"

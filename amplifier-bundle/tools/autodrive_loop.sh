@@ -233,10 +233,9 @@ while :; do
   T0=$SECONDS # the log is created under umask 077; the round runs with the caller's umask
   ( umask "$CALLER_UMASK" && AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger round)" AMPLIHACK_AUTODRIVE_STATE_DIR="$STATE_DIR" exec "$AMPLIHACK_BIN" recipe run "$ROUND_RECIPE_PATH" \
       --working-dir "$REPO" \
-      -c "autodrive_round_record=${RECORD}" \
       -c "autodrive_round_label=${ROUND_LABEL}" \
-      -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" \
-      "${ROUND_CTX[@]}" -c "repo_path=${REPO}" -c "review_dir=${REVIEW_REAL}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
+      "${ROUND_CTX[@]}" -c "autodrive_record_directory=${STATE_DIR}" -c "autodrive_round_record=${RECORD}" \
+      -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" -c "repo_path=${REPO}" -c "review_dir=${REVIEW_REAL}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
   ROUND_RC=$?; usage_add round "$T0"
   tail -n 200 "$LOG" >&2 || true; orphan_stop "$ROUND_RC" "round ${ROUND_LABEL}" # exit 75 (#1976)
 
@@ -265,7 +264,8 @@ while :; do
   # evaluator's loop_round_verdict, which its DONE rule compares with the clean token, reads it as clean.
   EVAL_VERDICT="$VERDICT_SAFE"; [ "$ROUND_CLEAN" != "true" ] || EVAL_VERDICT="$TOKEN_SAFE"
   FINDINGS=""
-  [ -f "${RECORD}.findings" ] && FINDINGS="$(cat "${RECORD}.findings")"
+  # A non-newline sentinel preserves trailing newlines through command substitution.
+  if [ -f "${RECORD}.findings" ]; then FINDINGS="$(cat -- "${RECORD}.findings" && printf x)" || { echo "ERROR: cannot read ${RECORD}.findings" >&2; exit 2; }; FINDINGS="${FINDINGS%x}"; fi
   # Stable path to the latest round record, so a later gate binds evidence to the round that made it.
   copy_private "$RECORD" "${STATE_DIR}/${LOOP_NAME}-latest.json"
   copy_private "${RECORD}.findings" "${STATE_DIR}/${LOOP_NAME}-latest.json.findings"

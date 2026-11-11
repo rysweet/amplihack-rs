@@ -34,6 +34,7 @@ context:
   pr_url: ""
   task_description: ""
   # Written by step-06. The loop driver reads this file, never this recipe's stdout, so a chatty agent cannot move the control flow.
+  autodrive_record_directory: ""
   autodrive_round_record: ""
   # A LABEL for reports. Nothing in this file compares it to a limit.
   autodrive_round_label: "round"
@@ -89,10 +90,7 @@ steps:
         fi
         SHA="$REMOTE"
       fi
-      RESOLVED=""
-      if [ -n "${AUTODRIVE_RESOLVED_CONCERNS_FILE:-}" ] && [ -f "${AUTODRIVE_RESOLVED_CONCERNS_FILE}" ]; then
-        RESOLVED="$(tr '\n' ' ' < "${AUTODRIVE_RESOLVED_CONCERNS_FILE}")"
-      fi
+      RESOLVED_FILE="${AUTODRIVE_RESOLVED_CONCERNS_FILE:-/dev/null}"; [ -f "$RESOLVED_FILE" ] || RESOLVED_FILE=/dev/null
       if [ -z "$PR" ]; then
         echo "WARNING: no pull request could be resolved; crusty will review the working diff instead." >&2
       fi
@@ -105,8 +103,10 @@ steps:
       for f in merge-ready/SKILL.md auto-drive-to-merge/SKILL.md; do [ -f "${SKILLS}/$f" ] || { echo "ERROR: crusty-skill-path-not-found: $(clean "${SKILLS}/$f")" >&2; exit 1; }; done
       MR="$(cd -- "${SKILLS}/merge-ready" 2>/dev/null && pwd -P)" && ADS="$(cd -- "${SKILLS}/auto-drive-to-merge" 2>/dev/null && pwd -P)" || { echo "ERROR: crusty-skill-path-unusable: $(clean "$SKILLS") cannot be entered" >&2; exit 1; }
       for d in "$MR" "$ADS"; do ! unsafe_path "$d" || { echo "ERROR: crusty-skill-path-unusable: $(clean "$d") holds a quote, backslash, control byte or template braces" >&2; exit 1; }; done
-      printf '{"pr":"%s","head_sha":"%s","resolved_concerns":"%s","round_label":"%s","merge_ready_skill_md":"%s","auto_drive_skill_dir":"%s"}\n' \
-        "$PR" "$SHA" "$RESOLVED" "${AUTODRIVE_ROUND_LABEL:-round}" "${MR}/SKILL.md" "$ADS"
+      # Values are data arguments to the existing JSON encoder, never executable shell or templates.
+      jq -nc --arg pr "$PR" --arg head_sha "$SHA" --rawfile resolved_concerns "$RESOLVED_FILE" \
+        --arg round_label "${AUTODRIVE_ROUND_LABEL:-round}" --arg merge_ready_skill_md "${MR}/SKILL.md" --arg auto_drive_skill_dir "$ADS" \
+        '{pr:$pr,head_sha:$head_sha,resolved_concerns:$resolved_concerns,round_label:$round_label,merge_ready_skill_md:$merge_ready_skill_md,auto_drive_skill_dir:$auto_drive_skill_dir}' || { echo "ERROR: cannot encode crusty round context (jq required)" >&2; exit 1; }
     output: "crusty_round_context"
 
   - id: "step-02-crusty-review"
@@ -129,7 +129,7 @@ steps:
       merge-ready-round-*.json and phases.tsv).
 
       ## Files you need (#2222)
-      The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the concern ids a previous run resolved `{{autodrive_resolved_concerns_file}}`, the merge-ready criteria `{{crusty_round_context.merge_ready_skill_md}}` and the auto-drive-to-merge skill folder `{{crusty_round_context.auto_drive_skill_dir}}`. A path shown as empty was not given to you; do not look for it. If a named file is missing, report it by name and do not search for it. The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative.
+      The auto-drive state directory is `{{autodrive_record_directory}}`. The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the concern ids a previous run resolved `{{autodrive_resolved_concerns_file}}`, the merge-ready criteria `{{crusty_round_context.merge_ready_skill_md}}` and the auto-drive-to-merge skill folder `{{crusty_round_context.auto_drive_skill_dir}}`. The state directory, round record, resolved-concerns path and skill resource paths are required; if any is empty, stop and report the missing input by name. The resolved-concerns file may be absent when no earlier findings exist; use the inline context and do not search for it. If a named file is missing, report it by name and do not search for it. The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative.
       Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~, /d0 or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
       Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by their literal path before the step ends.
 
@@ -281,7 +281,7 @@ steps:
       merge-ready-round-*.json and phases.tsv).
 
       ## Files you need (#2222)
-      The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the concern ids a previous run resolved `{{autodrive_resolved_concerns_file}}`, the merge-ready criteria `{{crusty_round_context.merge_ready_skill_md}}` and the auto-drive-to-merge skill folder `{{crusty_round_context.auto_drive_skill_dir}}`. A path shown as empty was not given to you; do not look for it. If a named file is missing, report it by name and do not search for it. The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative.
+      The auto-drive state directory is `{{autodrive_record_directory}}`. The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the concern ids a previous run resolved `{{autodrive_resolved_concerns_file}}`, the merge-ready criteria `{{crusty_round_context.merge_ready_skill_md}}` and the auto-drive-to-merge skill folder `{{crusty_round_context.auto_drive_skill_dir}}`. The state directory, round record, resolved-concerns path and skill resource paths are required; if any is empty, stop and report the missing input by name. The resolved-concerns file may be absent when no earlier findings exist; use the inline context and do not search for it. If a named file is missing, report it by name and do not search for it. The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative.
       Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~, /d0 or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
       Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by their literal path before the step ends.
 
