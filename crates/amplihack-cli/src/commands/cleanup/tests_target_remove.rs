@@ -182,13 +182,21 @@ fn exists_no_follow(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
 
-/// Holds an exclusive `flock` on `file` until the returned handle drops.
+/// Holds an exclusive `flock`; use `release` before asserting unlocked state.
 fn hold(file: &Path) -> fs::File {
     let handle = fs::OpenOptions::new().read(true).open(file).unwrap();
     // SAFETY: the fd is valid for the life of `handle`.
     let rc = unsafe { libc::flock(handle.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     assert_eq!(rc, 0, "{}", std::io::Error::last_os_error());
     handle
+}
+
+fn release(handle: fs::File) {
+    // A concurrent fork may still hold a duplicate of this open description.
+    // Unlock explicitly rather than waiting for every inherited fd to close.
+    // SAFETY: `handle` owns this valid descriptor.
+    let rc = unsafe { libc::flock(handle.as_raw_fd(), libc::LOCK_UN) };
+    assert_eq!(rc, 0, "{}", std::io::Error::last_os_error());
 }
 
 fn refusal_text(result: Result<(), RemoveError>) -> String {
@@ -515,7 +523,8 @@ fn held_cargo_lock_at_any_level_means_in_use_and_nothing_is_deleted() {
             "{lock}"
         );
         assert!(dir.join("debug/blob").exists(), "{lock}: nothing deleted");
-        drop(held);
+        let _inherited = held.try_clone().unwrap();
+        release(held);
         fx.remove(&dir, &Shape::Dir, &fx.no_links(), false).unwrap();
         assert!(!exists_no_follow(&dir), "{lock}: removed once released");
     }
@@ -533,7 +542,7 @@ fn held_cargo_lock_in_a_linked_destination_keeps_link_and_destination() {
     );
     assert!(dest.join("debug/blob").exists());
     assert!(exists_no_follow(&link));
-    drop(held);
+    release(held);
     fx.remove(&link, &shape, &fx.links(), false).unwrap();
     assert!(!exists_no_follow(&dest) && !exists_no_follow(&link));
 }

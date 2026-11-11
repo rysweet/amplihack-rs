@@ -605,9 +605,15 @@ fn new_format_target_with_held_cargo_lock_is_in_use() {
     assert_eq!(e.action, Action::Skipped, "{e:?}");
     assert_eq!(e.reason, "in use: .cargo-lock is held");
     assert!(t.join("debug/keep-me").exists());
+    // Model a descriptor inherited by a concurrently spawned child. Closing
+    // only our descriptor would leave its shared open-file-description locked.
+    let _inherited = lock.try_clone().unwrap();
+    // SAFETY: `lock` still owns this valid descriptor.
+    assert_eq!(unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_UN) }, 0);
     drop(lock);
     let entries = run_sweep(&far_keep(&fx), true).unwrap();
-    assert_eq!(entry(&entries, &t).action, Action::Removed);
+    let e = entry(&entries, &t);
+    assert_eq!(e.action, Action::Removed, "{e:?}");
 }
 
 /// D4: a target another active run records is kept, even when this run's

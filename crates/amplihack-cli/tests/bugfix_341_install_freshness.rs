@@ -163,6 +163,12 @@ fn install_stages_amplifier_bundle_from_local_checkout_not_stale_source() {
             let bin_dir = home.path().join("stub_bin");
             fs::create_dir_all(&bin_dir).unwrap();
             let hooks_stub = write_stub_hooks_binary(&bin_dir);
+            let runner_stub = bin_dir.join("recipe-runner-rs");
+            write_executable(
+                &runner_stub,
+                "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n",
+                0o700,
+            );
 
             child_set_var("HOME", home.path());
             child_remove_var("AMPLIHACK_HOME");
@@ -170,6 +176,11 @@ fn install_stages_amplifier_bundle_from_local_checkout_not_stale_source() {
             // root; an inherited value would point at the real profiles.
             child_remove_var("AMPLIHACK_CLAUDE_PROFILE_ROOT");
             child_set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+            // Asset provenance is independent of the invoking agent or host tools.
+            child_set_var("AMPLIHACK_AGENT_BINARY", "claude");
+            child_set_var("RECIPE_RUNNER_RS_PATH", &runner_stub);
+            child_set_var("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
+            child_set_var("AMPLIHACK_SKIP_MMDC", "1");
             child_set_current_dir(checkout.path());
 
             // ----- Act: install from the (CWD) checkout

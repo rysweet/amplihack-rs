@@ -74,6 +74,10 @@ impl IsolatedHome {
             _lock: lock,
         };
         env.put("HOME", Some(home.as_os_str()));
+        // Generic installer fixtures must not select the caller's live provider.
+        // Codex-specific cases select it explicitly with freshness::with_provider.
+        env.put("AMPLIHACK_AGENT_BINARY", Some(OsStr::new("claude")));
+        env.put("AMPLIHACK_SKIP_MMDC", Some(OsStr::new("1")));
         for name in [
             "AMPLIHACK_SKIP_AUTO_INSTALL",
             "AMPLIHACK_HOME",

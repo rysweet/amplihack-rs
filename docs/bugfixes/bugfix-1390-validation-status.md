@@ -14,7 +14,125 @@ filesystem limitations. They are not final verification. The ordinary push
 is the final delivery gate; its result and matching local/remote/PR head
 receipt are recorded in the [PR description](https://github.com/rysweet/amplihack-rs/pull/2289).
 
-## Renewed review integration — 2026-11-11
+## Step 13: Local Testing Results
+
+This run reviews the five staged Rust test-fixture corrections left after
+`68f8c5a16eba44fd6502570c918832d785d33664`. Freshly fetched main remains
+`2951181459e2a7958a4f2ec60aad2c42013982fc` and is already an ancestor; no
+additional merge is needed. Earlier review findings about launcher isolation
+and harness portability are addressed in the shared registered fixture.
+No separate Crusty review was available in the retrieved feedback collections.
+
+Detected toolchains:
+
+- Rust 2024 / Cargo: root `Cargo.toml` and `Cargo.lock`, with Rust 1.97.0
+  pinned by `rust-toolchain.toml`. The changed executable tests are `.rs`
+  files. `crates/amplihack-cli/Cargo.toml` registers `cli_integration` and
+  pins the Rust runner's Git revision; `bins/amplihack/Cargo.toml` declares
+  the actual CLI entry point. `CONTRIBUTING_RUST.md` documents Cargo build,
+  test, formatting and clippy commands. No additional language package
+  manager is required for these scenarios.
+
+Chosen validation strategy:
+
+- Apply the `qa-team` skill's native Rust strategy: execute each registered
+  usage-limit scenario through `cargo test --locked -p amplihack-cli --test
+  cli_integration`, with `AMPLIHACK_TEST_BINARY` absent. The shared helper
+  builds the current checkout's CLI. The compiled controlled Rust runner
+  uses the locked recovery library rather than an account or remote agent.
+- Check real CLI exit 1, JSON stdout and structured stderr agreement, the
+  complete reset hint, step identities, one execution and a finalized
+  durable `usage_limit`. Private home/config/profile/process roots and
+  paired synthetic ancestor probes verify isolation. Process completion and
+  an invocation ledger provide synchronization; no timed test windows are
+  introduced. External command timeouts are only hang guards.
+- Run classification, cleanup and affected installer fixtures, formatting
+  and whitespace checks, followed by the ordinary commit/push hooks.
+
+### Scenario 1 — single limited agent retains its reset hint
+
+Command: `/home/ryan/.cargo/bin/cargo test --locked -p amplihack-cli --test cli_integration issue_1390_usage_limit::a_single_limited_step_preserves_the_reset_hint -- --exact --nocapture`
+
+Result: **PASS**, exit **0**. Full output and numeric receipt:
+`simple.log`, `simple.exit`.
+
+```text
+test issue_1390_usage_limit::a_single_limited_step_preserves_the_reset_hint ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2080 filtered out
+```
+
+### Scenario 2 — completed setup survives a reported agent limit
+
+Command: `/home/ryan/.cargo/bin/cargo test --locked -p amplihack-cli --test cli_integration issue_1390_usage_limit::reported_limit_survives_the_cli_boundary_without_transport_retry -- --exact --nocapture`
+
+Result: **PASS**, exit **0**. Full output and numeric receipt:
+`complex.log`, `complex.exit`.
+
+```text
+test issue_1390_usage_limit::reported_limit_survives_the_cli_boundary_without_transport_retry ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2080 filtered out
+```
+
+Both scenarios passed every real CLI assertion, including private launcher
+boundaries, matching JSON diagnostics, the complete `9:20am (UTC)` hint,
+one runner execution and durable finalization. The complex scenario also
+checks the setup filesystem effect and completed/failed step IDs. These
+commands use four build jobs, an empty `RUSTC_WRAPPER`, a private writable
+`TMPDIR=/tmp/issue-1390-step13-scratch`, and
+`CARGO_TARGET_DIR=/d0/ryan/cargo-targets/fix-2289`. Commands run detached with
+`GIT_TERMINAL_PROMPT=0`, null stdin and an external 1,800-second hang guard.
+
+### Supporting regression results
+
+All affected regression commands passed with exit 0:
+
+| Filter / check | Passed | Full output and exit receipt |
+| --- | ---: | --- |
+| `issue_1390_usage_limit::runner_` | 2 | `fixture.{log,exit}` |
+| `commands::recipe::run::tests_failure_class::` | 52 | `classification.{log,exit}` |
+| `commands::cleanup::` | 100 | `cleanup.{log,exit}` |
+| `commands::install::tests::issue_1526_implicit_downgrade::` | 6 | `install.{log,exit}` |
+| `bugfix_341_install_freshness::` | 1 | `install-freshness.{log,exit}` |
+
+Each corresponding `.command` file retains the exact invocation. In
+particular, cleanup passes with the duplicate descriptor held across the
+post-unlock deletion assertion, including the original failing test and the
+sweep-level refusal/removal scenario. Formatting and whitespace receipts
+are `fmt.{log,exit}` and `whitespace.{log,exit}`. Commit and push outcomes
+are recorded separately in the linked PR description and
+`commit.{log,exit}`, `push.{log,exit}` and `delivery-revisions.log`; they
+are not inferred from these affected-test passes.
+
+### Cleanup diagnosis and fixture corrections
+
+- The exact original cleanup test passes on untouched main, exit 0, in
+  `baseline-cleanup.{log,exit}`. This does not reproduce the intermittent
+  original failure.
+- A separate main worktree, with only an injected `held.try_clone()` before
+  the original `drop(held)`, fails that same test with `Refused(InUse)`,
+  exit 101. `baseline-inherited.{patch,revision,log,exit}` retains the exact
+  diagnostic modification and result. This is a deterministic mechanism
+  reproduction on modified main, not a claim that untouched main failed.
+- `flock` belongs to the shared open file description. Dropping one handle
+  does not release it while an inherited or duplicated descriptor remains
+  open. The fixture corrections explicitly unlock before checking deletion
+  and retain a duplicate through the assertion, avoiding a fork race without
+  weakening production lock checks or adding waits. No production cleanup
+  code changes. The original failing child remains unidentified.
+- Installer fixtures now advertise `durable_recovery_v1`, select their
+  synthetic provider explicitly and skip unrelated Mermaid installation.
+  The install-freshness scenario supplies its own runner capability probe.
+  These corrections keep host tools and agent selection out of the tests.
+
+Fresh complete command output and numeric exit receipts are retained under
+`target/issue-1390-step13-current/`, separately from all historical evidence.
+`source-revisions.log`, `source.patch`, `source.sha256` and `binary.sha256`
+bind execution to the checkout and binary. The original push log and its
+SHA-256 `44718665b5e4f99ff186a82772a734e30f520a0f646600c494c30cf516549475`
+remain unchanged. The diagnostic worktree was removed after retaining its
+patch and results.
+
+## Earlier renewed review integration — 2026-11-11
 
 The step 11b review correction integrates freshly fetched main
 `2951181459e2a7958a4f2ec60aad2c42013982fc` into the existing branch at
