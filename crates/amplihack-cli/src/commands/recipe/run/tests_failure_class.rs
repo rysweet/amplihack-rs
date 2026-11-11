@@ -686,6 +686,8 @@ fn issue_1390_reset_hint_and_serialized_verdict_preserve_the_contract() {
     assert_eq!(payload["class"], "usage_limit");
     assert_eq!(payload["signal"], "session limit");
     assert_eq!(payload["retryable"], false);
+    assert_eq!(payload["attempt"], 1);
+    assert_eq!(payload["action"], "terminal");
     assert_eq!(payload["failed_steps"], serde_json::json!(["implement"]));
     assert_eq!(payload["completed_steps"], serde_json::json!(["design"]));
     assert!(
@@ -706,6 +708,8 @@ fn issue_1390_reset_hint_and_serialized_verdict_preserve_the_contract() {
 fn issue_1390_session_limit_preserves_classification_precedence() {
     for (prefix, expected) in [
         ("API Error: 429 too many requests", FailureClass::UsageLimit),
+        ("API Error: 529 Overloaded", FailureClass::UsageLimit),
+        ("connection reset by peer", FailureClass::UsageLimit),
         ("API Error: 401", FailureClass::Environmental),
         (
             "test result: FAILED. 1 failed\nAPI Error: 401",
@@ -723,9 +727,10 @@ fn issue_1390_session_limit_preserves_classification_precedence() {
 fn a_message_without_a_reset_time_still_classifies() {
     // Not every provider states a reset. Missing detail must degrade the
     // message, never the classification.
-    let (class, _) = classify_failure_text("Error: monthly limit reached for this account");
+    let message = "Error: monthly limit reached for this account";
+    let (class, _) = classify_failure_text(message);
     assert_eq!(class, FailureClass::UsageLimit);
-    assert_eq!(usage_limit_reset_hint("no reset stated here"), None);
+    assert_eq!(usage_limit_reset_hint(message), None);
 }
 
 #[test]

@@ -1,6 +1,8 @@
 ---
 title: Transient Failure Classification and Retry
 description: Recipe failure classes, retry bounds, reset hints, and recovery ownership.
+doc_type: reference
+last_updated: 2026-11-10
 ---
 
 # Transient Failure Classification and Retry — Reference
@@ -14,6 +16,16 @@ discarded five completed phases.
 
 This page describes what the runner does now, and, more importantly, what it
 deliberately does **not** decide for itself.
+
+## Contents
+
+- [Classification](#classification)
+- [Usage-limit markers](#usage-limit-markers)
+- [Session-limit verdict and recovery ownership](#session-limit-verdict-and-recovery-ownership)
+- [Retry bounds](#retry-bounds)
+- [Observability](#observability)
+- [Where the judgement lives](#where-the-judgement-lives)
+- [Source](#source)
 
 ## The split: mechanical facts vs. judgement
 
@@ -57,12 +69,16 @@ Evidence is drawn from the tail of the **failed** steps — their `error`, their
 captured stdout/stderr — plus the runner's own stderr tail. In the reported
 incident the step's `error` said only `agent step failed: amplihack claude
 failed (exit 1)`; the 529 was in the captured stdout, which is why both are read.
+Completed-step output does not contribute to classification. Each captured
+output source contributes at most its last 40 lines; combined evidence longer
+than 2,000 characters retains its last 2,000 characters with an elision notice.
+The verdict is a bounded diagnostic, not a transcript archive.
 
 ### Usage-limit markers
 
 The markers are `session limit`, `usage limit`, `usage_limit_reached`,
-`quota exceeded`, `monthly limit`, `weekly limit`, `spend limit` and
-`credit balance is too low`. They are Claude Code's, and are kept in one
+`quota exceeded`, `monthly limit`, `weekly limit` and `spend limit`.
+They are Claude Code's, and are kept in one
 table per harness in `limit_patterns.rs`, together with the patterns that
 read the reset time. The classifier, the auto-switch supervisor and the
 usage-limit wait all read that table; no other source file holds a Claude
@@ -113,8 +129,8 @@ its table there.
 - **A bare `rate limit` is not a marker**, so a provider rate limit is never
   filed as `usage_limit`. `rate limit exceeded`, `rate_limit_error`, a plain
   `API Error: 429` and `429 Too Many Requests` stay `transient_transport`.
-- **`credit balance is too low`** is also on the marker list, but the
-  environmental check runs first, so that message classifies `environmental`.
+- **`credit balance is too low`** is an environmental marker. That check runs
+  before usage-limit matching, so the message classifies `environmental`.
 
 ### Session-limit verdict and recovery ownership
 
@@ -131,18 +147,46 @@ calculated reset time or a scheduling instruction. A recognized usage limit
 without a reset hint still receives `usage_limit`.
 
 The structured run result's `failure_classification` object and the
-`amplihack.recipe.failure_class` stderr marker report `class: "usage_limit"`,
-`retryable: false`, and `action: "terminal"`. The recipe command reports
-failure. Usage limits do not enter the mechanical transport retry loop, even
-when wrapped in an HTTP 429 error. The transport retry settings below do not
-enable retries for this class. Work and environmental failures retain their
-higher precedence; bare HTTP 429 errors retain their transport classification.
+JSON object after the `amplihack.recipe.failure_class ` stderr prefix contain
+the same verdict. With `--format json`, stdout reports `success: false` and
+the command exits with code `1`. For a usage limit on the first runner attempt:
+
+| Verdict field | Value or meaning |
+| --- | --- |
+| `class` | `"usage_limit"` |
+| `signal` | `"session limit"` for the message above |
+| `retryable` | `false` |
+| `attempt` | `1` |
+| `action` | `"terminal"` |
+| `reasoning` | Names the class and signal and quotes `9:20am (UTC)` |
+| `evidence` | Retains the reported message above within the evidence bounds |
+| `completed_steps` | IDs of steps reported as completed, in result order |
+| `failed_steps` | IDs of steps reported as unsuccessful, in result order |
+
+For a result with a completed `setup` step and a failed `limited-agent` step,
+the arrays are `["setup"]` and `["limited-agent"]`. These identities describe
+the reported run; they do not promise that completed steps will be skipped on
+a later invocation.
+
+Here **terminal** means the recipe transport mechanism stops automatic retries.
+If the first attempt reports this limit, the runner executes exactly once,
+with one classification marker. Usage limits do not enter the mechanical
+transport retry loop, even when wrapped in an HTTP 429 error. No additional
+configuration is needed for classification, and the [transport retry settings](#retry-bounds)
+do not enable retries for this class.
+
+Work failures, including policy refusals, and environmental failures, including
+authentication errors, retain higher precedence. Bare HTTP 429 errors retain
+their transport classification. An unrelated failure without a recognized
+marker remains `indeterminate`.
 
 Classification identifies the failure and preserves its supplied reset hint.
 It does not automatically pause or resume a session, retain its transcript, or
 supervise its children. The separate [usage-limit wait](./profile-command.md#usage-limit-wait)
 can act before a failure reaches this classifier; its behavior is not a
 guarantee of recovery for Claude Code's internal subagents.
+That wait has its own [`recipe.usage_limit_wait` and
+`recipe.usage_limit_max_wait_secs` settings](./user-config.md#recipeusage_limit_wait).
 
 Claude Code owns termination, transcript preservation, and child recovery for
 its internal subagents. Amplihack's launcher and fork policy do not provide a
@@ -194,8 +238,12 @@ issue noted that a dead run and a quiet run were indistinguishable from the log
 alone; `action: "terminal"` / `"terminal_budget_exhausted"` is the unambiguous
 marker that a run ended abnormally.
 
+Strip the marker prefix before parsing its JSON payload:
+
 ```sh
-grep amplihack.recipe.failure_class run.log | jq -r '.class + " " + .action'
+sed -n 's/^amplihack\.recipe\.failure_class //p' run.log \
+  | jq -r '.class + " " + .action'
+# Output: transient_transport retry
 ```
 
 The same object is attached to the structured run result under
