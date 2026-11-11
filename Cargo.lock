@@ -2091,7 +2091,7 @@ dependencies = [
 [[package]]
 name = "recipe-runner-rs"
 version = "0.6.0"
-source = "git+https://github.com/rysweet/amplihack-recipe-runner?rev=7b8ae91f4d4b580075893d7a359f5b4dfb410450#7b8ae91f4d4b580075893d7a359f5b4dfb410450"
+source = "git+https://github.com/rysweet/amplihack-recipe-runner?rev=90286bc50b84ded773795d2c8301b689f680db0b#90286bc50b84ded773795d2c8301b689f680db0b"
 dependencies = [
  "anyhow",
  "clap",
