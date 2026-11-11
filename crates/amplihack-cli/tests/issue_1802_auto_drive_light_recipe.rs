@@ -685,10 +685,14 @@ fn crusty_round_has_no_light_branch_in_any_step() {
         !s6.contains("SUFFIX"),
         "#1982: the record has no light suffix"
     );
-    assert_eq!(
-        round["context"].as_mapping().unwrap().len(),
-        10,
-        "no new context key on autodrive-crusty-round"
+    // #2222 adds a driver-owned state directory for every round. The
+    // shared round must still have no context specific to the light lane.
+    let context = round["context"].as_mapping().unwrap();
+    assert!(
+        context
+            .keys()
+            .all(|key| !key.as_str().unwrap().contains("light")),
+        "autodrive-crusty-round must not gain light-specific context"
     );
 }
 
