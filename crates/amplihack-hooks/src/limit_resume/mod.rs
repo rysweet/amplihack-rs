@@ -520,7 +520,9 @@ fn run_with_warning<D: Deps + ?Sized>(
 }
 
 /// Reads at most `MAX_STDIN_BYTES` of payload from `stdin`, decides, and
-/// delivers scoped warnings independently of resume authorization and writes
+/// writes scoped warnings independently of resume authorization. Warnings are
+/// acknowledged only when the session receives them: tmux keys sent, or
+/// stderr on an exit-2 `Resumed` wake. It writes
 /// `RESUME_MSG` to `stderr` only on `Resumed`. Returns the exit code:
 /// 2 on `Resumed`, 0 otherwise, including after keys were sent, for an
 /// oversized or malformed payload and for a panic.
@@ -580,16 +582,22 @@ pub fn run_with_io<D: Deps + ?Sized>(
         Ok(Some(outcome)) => Some(outcome),
         _ => None,
     };
-    // A tmux success already delivered the warnings. All other outcomes
-    // can deliver advisory output without changing their resume decision.
-    let mut delivered = outcome == Some(Outcome::ResumedKeys);
-    if !delivered {
-        delivered = warning
+    // The session reads a warning only through tmux keys that were sent
+    // (`ResumedKeys`) or through hook stderr on an exit-2 wake (`Resumed`).
+    // Claude Code shows exit-0 stderr to the operator at most, never to the
+    // model, so every other outcome still writes the warning for the
+    // operator but leaves it pending for the next stop that reaches the
+    // session. Writing to stderr never changes the resume decision.
+    let keys_delivered = outcome == Some(Outcome::ResumedKeys);
+    let mut delivered = keys_delivered;
+    if !keys_delivered {
+        let written = warning
             .iter()
             .filter_map(|a| a.warning())
             .try_for_each(|text| writeln!(stderr, "{text}"))
             .and_then(|_| stderr.flush())
             .is_ok();
+        delivered = written && outcome == Some(Outcome::Resumed);
     }
     if outcome == Some(Outcome::Resumed) {
         let _ = writeln!(stderr, "{RESUME_MSG}").and_then(|_| stderr.flush());

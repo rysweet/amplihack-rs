@@ -261,7 +261,7 @@ fn completed_consumed_history_is_compacted_during_persistence() {
         h.complete(&intent, Completion::Committed).unwrap();
         let w = h.pending(&s).unwrap();
         h.acknowledge(&s, w[0].id).unwrap();
-        h.retire_completed_except(&[]).unwrap();
+        h.retire_unreferenced_except(&[]).unwrap();
     }
     let raw = fs::read(tmp.path().join(".swap-warning-history/journal.json")).unwrap();
     assert!(raw.len() < 1024);

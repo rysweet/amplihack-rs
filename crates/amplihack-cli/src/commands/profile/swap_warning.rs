@@ -80,12 +80,15 @@ pub fn abort(root: &Path, tx: &str, producer: &str, host: &str, from: &str, to: 
     }
 }
 
-/// Called under the producer swap lock before creating a new intent. Both
-/// authoritative journals are inspected, so a crash after journal deletion
-/// cannot leak completion evidence indefinitely. An unreadable journal holds
-/// retention rather than guessing that recovery has finished.
+/// Called under the swap lock (`.auto-switch.d/lock`, shared by the rotator
+/// and auto-switch) before creating a new intent. Both authoritative
+/// journals are inspected, so a crash after journal deletion cannot leak
+/// completion evidence, and a crash between writing an intent and writing
+/// its journal cannot leave a pending intent that nothing will ever settle.
+/// An unreadable journal holds retention rather than guessing that recovery
+/// has finished.
 fn retire_unreferenced(root: &Path, history: &mut WarningHistory) -> std::io::Result<()> {
-    history.retire_completed_with(|| {
+    history.retire_unreferenced_with(|| {
         let mut referenced = Vec::new();
         for path in [
             ".auto-switch.d/journal.json",
@@ -138,5 +141,49 @@ mod tests {
         retire_unreferenced(root, &mut h).unwrap();
         assert!(h.complete(&intent, Completion::Committed).is_err());
         assert_eq!(h.pending(&session).unwrap().len(), 1);
+    }
+
+    /// A producer killed after writing its intent but before writing its swap
+    /// journal leaves an intent no recovery path can reach. The next
+    /// `prepare` under the swap lock clears it, and a referenced intent (a
+    /// swap whose journal recovery will settle) is kept.
+    #[test]
+    fn issue_2136_orphaned_pending_intent_is_cleared_by_the_next_prepare() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root = tmp.path();
+        let intent = |tx: &str| {
+            prepare(
+                root,
+                tx,
+                "rotator",
+                "threshold",
+                "home",
+                "work",
+                "spare",
+                Some("a"),
+                Some("b"),
+            )
+        };
+        let settle = |tx: &str| {
+            WarningHistory::open(root)
+                .unwrap()
+                .complete_transaction(tx, "rotator", "home", "work", "spare")
+                .unwrap()
+        };
+        assert!(intent("orphan").is_some());
+        // Killed here: no swap journal refers to "orphan".
+        assert!(intent("next").is_some());
+        assert!(!settle("orphan"), "the orphaned intent was cleared");
+        // "next" is referenced by a swap journal, so recovery still owns it.
+        let dir = root.join(".auto-switch.d/rotate");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("journal.json"),
+            br#"{"warning_transaction":"next"}"#,
+        )
+        .unwrap();
+        assert!(intent("third").is_some());
+        assert!(settle("next"), "a referenced intent is kept");
     }
 }

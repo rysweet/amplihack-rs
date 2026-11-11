@@ -483,22 +483,30 @@ impl WarningHistory {
             Ok(())
         })
     }
-    /// Retire completion evidence only after the transaction owner confirms
-    /// that no authoritative recovery journal can reference it. Pending intents
-    /// and scoped warnings are unaffected.
-    pub fn retire_completed_except(&mut self, referenced: &[String]) -> io::Result<()> {
-        self.retire_completed_with(|| Ok(referenced.to_vec()))
+    /// Retire transaction state that no authoritative recovery journal
+    /// references: completion evidence, and pending intents whose producer
+    /// died between writing the intent and writing its swap journal. Such an
+    /// intent can never be completed or aborted, because recovery reaches a
+    /// transaction only through its journal; left in place it would keep its
+    /// scoped sessions from retirement for good. Published warnings are
+    /// unaffected.
+    ///
+    /// The caller must hold the swap lock shared by every producer, so no
+    /// live swap sits between its intent and its journal write.
+    pub fn retire_unreferenced_except(&mut self, referenced: &[String]) -> io::Result<()> {
+        self.retire_unreferenced_with(|| Ok(referenced.to_vec()))
     }
     /// Read authoritative references while holding the journal lock, so a
     /// concurrent publisher cannot appear between the reference snapshot and
     /// retirement. The callback must not acquire a swap or history lock.
-    pub fn retire_completed_with(
+    pub fn retire_unreferenced_with(
         &mut self,
         references: impl FnOnce() -> io::Result<Vec<String>>,
     ) -> io::Result<()> {
         self.access(|j| {
             let referenced = references()?;
             j.completed.retain(|tx, _| referenced.contains(tx));
+            j.pending.retain(|tx, _| referenced.contains(tx));
             Ok(())
         })
     }

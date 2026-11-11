@@ -172,8 +172,13 @@ profile root before a relevant swap can be missed. Registration coordinates
 its initial event position with publication. Caller-supplied identifiers alone
 cannot register a session, read another session's warnings or advance its cursor.
 
-At the next applicable limit-resume handling, each affected session receives
-pending warnings in event order through stderr or tmux resume keys. Immediate
+At the next limit-resume handling that reaches the session, each affected
+session receives pending warnings in event order, either in the tmux resume keys
+or in the hook's stderr on an exit-2 wake. Claude Code passes hook stderr to the
+session only on exit 2; on exit 0 it reaches the operator at most. Every other
+outcome (rotator down, auto-switch off, guard failure, no swap to resume onto,
+failed tmux keys) still writes the warnings to stderr for the operator and
+leaves them pending for a later stop. Immediate
 interruption of every running session is not required. Auto-switch scopes its
 events to affected sessions; it does not manufacture rotator resume records or
 wake unrelated sessions.
@@ -183,8 +188,9 @@ The tmux route preserves safe argument and key handling and never interpolates
 metadata into shell commands.
 
 Each session has an independent, monotonic consumption cursor. Only a
-successfully handled prefix can be acknowledged, after successful delivery.
-Failed delivery leaves warnings pending. If delivery succeeds but cursor
+successfully handled prefix can be acknowledged, after successful delivery to
+the session. Failed delivery, and output the session does not read, leaves
+warnings pending. If delivery succeeds but cursor
 persistence fails, delivery may repeat: the guarantee is at least once.
 
 History needed by an unconsumed registered session is retained. A later swap,
@@ -269,16 +275,20 @@ work quality are outside this feature's contract.
 Scoped warnings are delivered on limit handling even when the rotator is down.
 Warning registration, reading, delivery, and acknowledgement failures do not
 change resume authorization. A committed exit-2 wake remains exit 2 when stderr
-fails. Successful stderr or tmux delivery acknowledges only the captured warning
-prefix; failed delivery leaves warnings pending. Persisted-record parse errors
+fails. Sent tmux keys, or stderr written on an exit-2 wake, acknowledge only the
+captured warning prefix; failed delivery and exit-0 stderr leave warnings
+pending. Persisted-record parse errors
 use fixed diagnostics without record contents.
 
 Every journal write compacts consumed and non-warning events before enforcing
 the 8 MiB bound. Outstanding warnings and unresolved intents remain durable.
 Before a producer prepares its next intent, it retires completed identities
-that neither authoritative swap journal references. Unreadable recovery journals
-prevent retirement. This also reclaims evidence left by a crash after recovery
-journal deletion, without an age cutoff or a background service.
+and pending intents that neither authoritative swap journal references. It does
+this under the swap lock that the rotator and auto-switch share, so no live swap
+can be between writing its intent and writing its journal. Unreadable recovery
+journals prevent retirement. This reclaims evidence left by a crash after
+recovery journal deletion, and intents left by a crash before the journal was
+written, without an age cutoff or a background service.
 
 ### Lifecycle retention
 
@@ -313,8 +323,8 @@ such failures are not passing evidence for the affected checks. Hook validation
 must run without bypasses for the final revision before release.
 
 An abrupt process exit between persisting a warning intent and linking it from
-the producer's transaction journal can leave an orphan intent. Ordinary verified
-failure and rollback paths abort their scoped intent. Recovery conservatively
-retains an unlinked intent because missing references alone cannot prove the
-login was unchanged. Such retained intents count toward the storage bound;
-crash-safe reconciliation of this preparation window remains a limitation.
+the producer's transaction journal leaves an orphan intent. Ordinary verified
+failure and rollback paths abort their scoped intent. An orphan intent is never
+deliverable, because only recovery through a journal publishes an intent, so the
+next producer's preparation clears it under the shared swap lock, together with
+its hold on the sessions it scoped.

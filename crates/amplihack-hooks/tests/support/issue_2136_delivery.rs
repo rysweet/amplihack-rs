@@ -116,7 +116,7 @@ fn durable_warning_survives_latest_same_org_swap_and_is_acknowledged() {
 }
 
 #[test]
-fn failed_tmux_delivery_falls_back_to_stderr() {
+fn failed_tmux_delivery_writes_stderr_but_keeps_the_warning_pending() {
     use amplihack_utils::swap_warning_history::{Completion, WarningHistory};
     use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().unwrap();
@@ -133,10 +133,18 @@ fn failed_tmux_delivery_falls_back_to_stderr() {
     let mut d = Fake::with_pane().then(Act::Swap(fresh(2)));
     d.warning_root = Some(tmp.path().to_owned());
     d.fail_key = Some(3);
-    assert_eq!(
-        run_with_io(limit_payload().as_bytes(), &mut Vec::new(), &mut d),
-        0
-    );
+    let mut out = Vec::new();
+    assert_eq!(run_with_io(limit_payload().as_bytes(), &mut out, &mut d), 0);
+    // Exit-0 stderr reaches the operator at most, never the session, so the
+    // warning is written for the operator and stays pending.
+    assert!(String::from_utf8(out).unwrap().contains("earlier thinking"));
+    assert_eq!(history.pending(&session).unwrap().len(), 1);
+    // The next stop that does reach the session (exit-2 wake) delivers it.
+    let mut d = Fake::new().then(Act::Swap(fresh(3)));
+    d.warning_root = Some(tmp.path().to_owned());
+    let mut out = Vec::new();
+    assert_eq!(run_with_io(limit_payload().as_bytes(), &mut out, &mut d), 2);
+    assert!(String::from_utf8(out).unwrap().contains("earlier thinking"));
     assert!(history.pending(&session).unwrap().is_empty());
 }
 
@@ -208,7 +216,7 @@ fn unavailable_warning_registration_does_not_block_resume() {
 }
 
 #[test]
-fn rotator_down_delivers_scoped_warning_once_without_resume() {
+fn rotator_down_writes_scoped_warning_but_keeps_it_pending_until_a_wake() {
     use amplihack_utils::swap_warning_history::{Completion, WarningHistory};
     use std::os::unix::fs::PermissionsExt;
     let tmp = tempfile::tempdir().unwrap();
@@ -231,14 +239,27 @@ fn rotator_down_delivers_scoped_warning_once_without_resume() {
         0
     );
     assert_eq!(h.pending(&s).unwrap().len(), 1);
+    // The warning is written for the operator on every exit-0 stop, but the
+    // session never reads exit-0 stderr, so it is not acknowledged.
+    for _ in 0..2 {
+        let mut out = Vec::new();
+        assert_eq!(run_with_io(limit_payload().as_bytes(), &mut out, &mut d), 0);
+        assert!(String::from_utf8(out).unwrap().contains("earlier thinking"));
+        assert_eq!(h.pending(&s).unwrap().len(), 1);
+    }
+    assert!(h.pending(&other).unwrap().is_empty());
+    // Once the rotator is back, the exit-2 wake delivers it exactly once.
+    let mut d = Fake::new().then(Act::Swap(fresh(2)));
+    d.warning_root = Some(tmp.path().to_owned());
     let mut out = Vec::new();
-    assert_eq!(run_with_io(limit_payload().as_bytes(), &mut out, &mut d), 0);
+    assert_eq!(run_with_io(limit_payload().as_bytes(), &mut out, &mut d), 2);
     assert!(String::from_utf8(out).unwrap().contains("earlier thinking"));
     assert!(h.pending(&s).unwrap().is_empty());
-    assert!(h.pending(&other).unwrap().is_empty());
+    let mut d = Fake::new().then(Act::Swap(fresh(3)));
+    d.warning_root = Some(tmp.path().to_owned());
     let mut out = Vec::new();
-    assert_eq!(run_with_io(limit_payload().as_bytes(), &mut out, &mut d), 0);
-    assert!(out.is_empty());
+    assert_eq!(run_with_io(limit_payload().as_bytes(), &mut out, &mut d), 2);
+    assert!(!String::from_utf8(out).unwrap().contains("earlier thinking"));
 }
 
 #[test]
