@@ -215,7 +215,11 @@ fn a_small_shim_resolves_for_every_tool_including_claude() {
     // judging file size for ANY tool, present or future.
     for tool in ["claude", "copilot", "codex", "some-future-tool"] {
         let dir = tempfile::tempdir().unwrap();
-        let shim = write_small_node_shim(dir.path(), tool, "1.2.3");
+        let shim = write_small_node_shim(
+            dir.path(),
+            tool,
+            if tool == "codex" { "0.98.0" } else { "1.2.3" },
+        );
         let resolution = resolve_from_candidates(tool, &[(shim.clone(), TargetSource::Path)]);
         assert_eq!(
             resolution.target.map(|t| t.path),

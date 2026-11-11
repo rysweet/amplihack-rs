@@ -46,9 +46,69 @@ orphan_stop() {
   exit "$AUTODRIVE_EXIT_ORPHANED"
 }
 
+# held_by_lines: the `  held by:` lines of a stop (issue #2219). The reason is
+# the evaluator's sentence and names no measurement, so without these the
+# operator cannot see which criterion held the pull request up. Two sources:
+#
+#   the round record's held_by field  one condition line per disagreeing
+#       measurement, written by autodrive_round_evidence.sh round-record.
+#   ${RECORD}.findings                one `reported <id>` line per blocker
+#       the round reported.
+#
+# BOTH ARE FILTERED HERE, ON READ, and differently. The state directory is
+# already treated as possibly untrusted, and .findings holds unfiltered model
+# output.
+#   held_by   control characters become spaces and the entry is cut to 120
+#             bytes. NOT the token byte set: a condition line legitimately
+#             holds spaces, `=` and `:`, which that set would shred.
+#   findings  control characters become spaces, then only [A-Za-z0-9_.:/-]
+#             survives, then the entry is cut to 120 bytes. At most ten
+#             print, then `(+N more)` — the same cap as _autodrive_qa_list.
+#             The cap is a findings cap; every condition the record names is
+#             printed. The count is of lines that SURVIVE the filter, so a
+#             line that sanitises to nothing is neither printed nor counted
+#             and `(+N more)` names exactly the lines withheld. That costs
+#             the filter's two forks on a line past the cap, which is at
+#             most the tail of one small file, once per stop.
+# The two-space prefix is unconditional, so no attacker-influenced byte ever
+# begins a line at column 0 — the column usage_limit_failure greps.
+#
+# The record is read with parameter expansion and not with a helper binary:
+# the binary may itself be what failed. A record with no held_by field prints
+# no condition line, so a record written before this change still works.
+held_by_lines() {
+  local -x LC_ALL=C # so the 120-byte cuts below are bytes, not characters
+  local rec="${RECORD:-}" raw="" e="" n=0
+  [ -n "$rec" ] && [ -f "$rec" ] && [ ! -L "$rec" ] || rec=""
+  if [ -n "$rec" ]; then
+    raw="$(tr '\001-\037\177' ' ' < "$rec" 2>/dev/null)"
+    case "$raw" in
+      *'"held_by":"'*)
+        raw="${raw#*'"held_by":"'}"
+        raw="${raw%%'"'*}"
+        while [ -n "$raw" ]; do
+          e="${raw%%|*}"
+          case "$raw" in *'|'*) raw="${raw#*|}" ;; *) raw="" ;; esac
+          [ -n "$e" ] || continue
+          printf '  held by: %s\n' "${e:0:120}"
+        done ;;
+    esac
+  fi
+  [ -n "$rec" ] && [ -f "${rec}.findings" ] && [ ! -L "${rec}.findings" ] || return 0
+  while IFS= read -r e; do
+    e="$(printf '%s' "$e" | tr '\001-\037\177' ' ' | tr -cd 'A-Za-z0-9_.:/-')"
+    [ -n "$e" ] || continue
+    n=$((n + 1))
+    [ "$n" -le 10 ] || continue
+    printf '  held by: reported %s\n' "${e:0:120}"
+  done < "${rec}.findings"
+  [ "$n" -le 10 ] || printf '  held by: reported (+%s more)\n' "$((n - 10))"
+}
+
 escalate() { # escalate <verdict> <why> [usage_limit|budget|orphaned]
   echo "AUTO_DRIVE_LOOP: ${1} — loop '${LOOP_NAME}' stops at round label '${ROUND_LABEL:-?}'." >&2
   echo "  Reason: ${2}" >&2
+  held_by_lines >&2
   echo "  Round record: ${RECORD:-<none>}" >&2
   case "${3:-}" in
     usage_limit) echo "  This is a usage limit, not a judgement about progress. Run again when a login has capacity." >&2 ;;

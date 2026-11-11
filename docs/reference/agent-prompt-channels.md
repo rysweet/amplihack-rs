@@ -351,8 +351,8 @@ rather than pass the arguments through, because passing them through would
 put the prompt on Codex's argv: an option a later Codex added, followed by a
 word, and a plain-`exec` `--image` that took more than one value with no
 prompt left. Each error says how to write the command so it is unambiguous. The flags added for recipe agent steps
-(#1985) go directly after `exec`, so `exec <text>` reaches Codex as
-`exec --sandbox workspace-write ... --dangerously-bypass-hook-trust -`.
+(#1985, #2317) go directly after `exec`, so `exec <text>` reaches Codex as
+`exec --sandbox danger-full-access --dangerously-bypass-hook-trust -`.
 
 Interactive Codex is not rewritten. The first positional of a bare `codex` is
 either a prompt or a Codex subcommand, and the subcommand list changes

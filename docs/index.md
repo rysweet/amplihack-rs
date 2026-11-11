@@ -16,6 +16,8 @@ amplihack is a development framework for popular coding agent systems (Claude Co
 
 **Looking for something specific?**
 
+- [Repair a Codex installation](howto/repair-codex-installation.md) - Resolve incomplete packages and missing helpers
+- [Codex installation validation](reference/codex-installation-validation.md) - Startup checks, overrides, and recovery policy
 - [Code Atlas](atlas/index.md) - Architecture diagrams, dependency maps, and bug hunt results
 - [Commands & Operations](#%EF%B8%8F-commands--operations) - Execute complex tasks
 - [Workflows](#-workflows) - Structured development processes
@@ -305,6 +307,12 @@ Document-Driven Development is a systematic methodology where documentation come
 ### Recipe Runner
 
 Code-enforced workflow execution engine with declarative YAML recipes.
+
+- [Resume After a Usage Limit](howto/resume-recipe-after-usage-limit.md) - **Planned:** relaunch the same issue, inspect the restart step, or use `--fresh`
+- [Recovery after a Recipe Usage Limit](concepts/recipe-usage-limit-recovery.md) - **Planned:** latest-attempt eligibility, nested replay, and compatibility
+- [Recipe Recovery Reference](reference/recipe-recovery.md) - **Planned:** persistence policies, resources, durable storage, and runner contracts
+- [Recipe Runner Architecture](concepts/recipe-runner-architecture.md) - Execution and recovery ownership across the CLI and runner
+- [Recipe Command Reference](reference/recipe-command.md) - Launch flags, detached execution, and recovery decisions
 
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
 - [UltraThink Recipe Runner Integration](recipes/RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution
@@ -807,6 +815,7 @@ Testing strategies, quality assurance, and validation patterns.
 - [Load-Independent Deadline Tests for the Direct Usage Read](bugfixes/bugfix-1962-usage-direct-deadline-tests.md) - How the `tests_usage_direct` deadline tests derive their delays from `REFRESH_BUDGET` and `MAX_STEP` so that a loaded host cannot change their outcome
 - [Multitask Launcher Tests and the Profile Root Variable](bugfixes/bugfix-2014-multitask-launcher-env-race.md) - How the multitask launcher tests pass `AMPLIHACK_CLAUDE_PROFILE_ROOT` as an argument so that another test's non-UTF-8 value cannot fail them, and the regression test that races them against a mutator thread
 - [Merge-Base Diffs and Issue-Derived PR Titles in the Publish Step](bugfixes/bugfix-1968-publish-pr-merge-base-title.md) - How `workflow_publish_pr.sh` lists and counts changed files against the merge base and titles the PR from the issue, with the `Update <scope>` template as the last resort
+- [Draft PR Metadata Recovery and Diagnostics](bugfixes/bugfix-2306-publish-metadata-recovery-diagnostics.md) - GitHub title and body recovery, source-backed macOS temp-directory diagnosis, and verified runner-error propagation
 - [Honest PR Titles and Honoured No-Merge Directives](bugfixes/bugfix-929-pr-title-and-no-merge.md) - Lockfile-free scope selection for the template title and detection of no-merge directives in the task
 - [Keep the Pre-commit Hooks Portable to macOS](howto/keep-pre-commit-hooks-portable-to-macos.md) - POSIX sed, bash 3.2, Linux-only clippy allows, and libc type aliases
 
