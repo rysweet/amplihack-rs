@@ -48,12 +48,9 @@
 # protection bypass. See docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
 
 set -uo pipefail
-
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
-
 LOOP_NAME=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; ALSO_CLEAN=""; VERDICT_FIELD=""
 REPO="."; REVIEW_DIR=""; STATE_DIR=""; TASK_FILE_IN=""; ROUND_CTX=(); BEFORE_ROUND=""; CTX_REFUSED=""; BUDGET_CTX=(); BEFORE_CTX=(); AD_PR=""
-
 # shellcheck disable=SC2034 # AD_PR is read by the sourced autodrive_escalate.sh
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -92,10 +89,11 @@ LOOP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 # shellcheck source=autodrive_escalate.sh # escalate, usage_limit_stop (#1801)
 . "${LOOP_HOME}/autodrive_escalate.sh" 2>/dev/null || { echo "ERROR: autodrive_loop.sh: autodrive_escalate.sh is missing beside it (${LOOP_HOME:-<unknown>}); the loop cannot report how it stopped" >&2; exit 2; }
 stops_preflight && autodrive_private_dir "$STATE_DIR" || exit 2 # #1743: usage and progress files first
+# #2222: resolve only after validation, so a state-directory symlink remains a refusal.
+STATE_DIR="$(cd -- "$STATE_DIR" 2>/dev/null && pwd -P)" || { echo "ERROR: autodrive_loop.sh: cannot resolve --state-dir to an absolute directory" >&2; exit 2; }
 CALLER_UMASK="$(umask)"
 umask 077
 autodrive_use_task_file "$TASK_FILE_IN" "${STATE_DIR}/${LOOP_NAME}-task_description.txt" || exit 2 # issue #1570
-
 AMPLIHACK_BIN="${AMPLIHACK_BIN:-amplihack}"
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 # Recipes come from this driver's tree, never the PR worktree that is --repo,
@@ -168,6 +166,8 @@ check_review_dir() { # check_review_dir <who>: stops the loop unless REVIEW_STAM
 PRE="$(bash "${LOOP_HOME}/autodrive_worktree_guard.sh" loop-preflight \
   "$LOOP_NAME" "$REPO" "$REVIEW_DIR" "$(basename "$ROUND_RECIPE" .yaml)" "$CTX_REFUSED")" || { printf '%s\n' "$PRE"; exit 1; }
 { read -r REVIEW_REAL; read -r ROUND_RECIPE_PATH; read -r HEALTH_RECIPE_PATH; } <<<"$PRE"
+# #2222: use the invocation directory and override caller repo_path only after worktree validation.
+REPO="$(cd -- "$REPO" 2>/dev/null && pwd -P)" || { echo "ERROR: autodrive_loop.sh: cannot resolve --repo to an absolute directory" >&2; exit 2; }
 # --- preflight: the terminator must resolve BEFORE round 1 (why: see the ERROR)
 if [ -z "$HEALTH_RECIPE_PATH" ] || ! "$AMPLIHACK_BIN" recipe show "$HEALTH_RECIPE_PATH" >/dev/null 2>&1; then
   echo "ERROR: loop '${LOOP_NAME}' cannot start: the required recipe 'loop-health-evaluator' does not resolve in ${LOOP_HOME%/tools}/recipes." >&2
@@ -236,7 +236,7 @@ while :; do
       -c "autodrive_round_record=${RECORD}" \
       -c "autodrive_round_label=${ROUND_LABEL}" \
       -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" \
-      "${ROUND_CTX[@]}" -c "review_dir=${REVIEW_REAL}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
+      "${ROUND_CTX[@]}" -c "repo_path=${REPO}" -c "review_dir=${REVIEW_REAL}" -c "autodrive_launch_tools=${LOOP_HOME}" ) >"$LOG" 2>&1
   ROUND_RC=$?; usage_add round "$T0"
   tail -n 200 "$LOG" >&2 || true; orphan_stop "$ROUND_RC" "round ${ROUND_LABEL}" # exit 75 (#1976)
 

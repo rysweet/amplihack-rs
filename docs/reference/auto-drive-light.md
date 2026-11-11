@@ -165,46 +165,40 @@ The recipe's markdown report shows the list in a "Follow-up issues" row. The lis
 
 ## Agent paths and state access
 
-**[PLANNED - Implementation Pending]** The #2222 contract requires
-`light-implement` to name the absolute PR worktree and authoritative main
-checkout in its prompt. Currently it names neither location, although the
-session's `working_dir` is `worktree_setup.worktree_path`. The deterministic
-producer for the main-checkout path is not yet implemented. It must resolve
+`light-implement` names the absolute PR worktree from
+`worktree_setup.worktree_path` and the authoritative main checkout from
+`light_prereqs.main_checkout` (#2222). The existing deterministic
+`light-prereqs` step uses `autodrive_worktree_guard.sh review-dir` to resolve
 the main checkout even when the caller's `repo_path` names a linked worktree.
+It returns that path alongside its existing `gadugi_test` result.
 
-`light-implement` already says it needs none of the auto-drive state files
-(`crusty-round-*.json`, `merge-ready-round-*.json`, `phases.tsv`). Under the
-planned contract, its task and required checkout locations must all arrive in
-the prompt, with no state-file discovery. A missing input must be reported by
-name without searching for a replacement. Deterministic steps own state
-records; the agent must not create, edit, move, rename, delete or archive them.
+The agent explicitly needs none of the auto-drive state files
+(`crusty-round-*.json`, `merge-ready-round-*.json`, `phases.tsv`) and requires
+no state-file discovery. Its task and checkout locations arrive in the
+prompt. A missing input is reported by name without searching for a
+replacement. Deterministic steps own state records; the agent must not
+create, edit, move, rename, delete or archive them.
 
-The prompt must include the exact
-[shared search restriction](auto-drive-to-merge.md#paths-the-agent-prompts-give)
-on its own line. Its existing wording differs from that sentence. Source
-searches must remain bounded by the two named checkouts and the step's role.
-Scratch files must go under `$TMPDIR` and be removed by their literal paths
-before the step ends. This guidance is a prompt instruction, not a filesystem
-sandbox.
+The prompt includes the exact [shared search restriction](auto-drive-to-merge.md#paths-the-agent-prompts-give)
+on its own line. Source searches remain bounded by the two named checkouts
+and the step's role. Scratch files go under `$TMPDIR` and are removed by
+their literal paths before the step ends. This is prompt guidance, not a
+filesystem sandbox.
 
-The later Crusty and merge-ready agents must receive exact absolute state-file
-paths and earlier findings through the shared loop context. The evaluator
-must receive evidence in context and need no state files. The
-[driver's planned path-resolution contract](auto-drive-to-merge.md#state-directory-path-resolution)
-applies to those loops: canonicalization of relative `--state-dir` values is
-not implemented. The recipe's `autodrive_state_dir` input still requires an
+Later Crusty and merge-ready agents receive exact absolute state-file paths
+and earlier findings through the shared loop context. The evaluator receives
+evidence in context and needs no state files. The [driver's path-resolution contract](auto-drive-to-merge.md#state-directory-path-resolution)
+canonicalizes relative `--state-dir` values after validating the supplied
+directory. The recipe's `autodrive_state_dir` input still requires an
 absolute path.
 
-**[PLANNED - Validation Pending]** The
-[prompt-path regression contract](auto-drive-to-merge.md#prompt-path-regression-contract)
-must include `light-implement`, even though it is conditional and needs no
-state files. Existing tests use a fixed six-prompt inventory, synthetic
-absolute paths and whitespace-normalized assertions; they do not validate
-context captured from the actual driver. Required coverage must check both
-checkout locations, the exact restriction line, explicit no-state/no-discovery
-guidance and state ownership. Local prompt rendering and driver/helper
-subprocess checks do not establish external recipe-runner coverage. Reconcile
-this section with verified behavior once implementation and validation exist.
+The [prompt-path regression contract](auto-drive-to-merge.md#prompt-path-regression-contract)
+enumerates all six affected agent steps, including conditional
+`light-implement`. Local tests execute light's deterministic producers from
+a linked-worktree caller and verify both checkout locations, the exact
+restriction, explicit no-state/no-discovery guidance and state ownership.
+Driver/helper subprocess tests also verify actual context propagation.
+No external recipe runner is exercised by this coverage.
 
 ## Eligibility rules
 
@@ -422,7 +416,7 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 | `amplifier-bundle/tools/autodrive_followups.sh`, `autodrive_followups_check.sh` | tool | `classify`, `collect`, `file`, `check` and `gate`: the only follow-up path, shared with `auto-drive-to-merge` (#1979). `resolve-task`: the one task-id rule, called by `light-task-id`. Checked by `light-prereqs`. |
 | `amplifier-bundle/tools/autodrive_finding_rules.sh` | tool | Sourced only. The security word lists, `cell()` and the minor-finding predicate, used by `autodrive_followups.sh`. Checked by `light-prereqs`. |
 | `amplifier-bundle/recipes/autodrive-crusty-round.yaml` | recipe | Shared with `auto-drive-to-merge` and unchanged by light mode: step-03 runs `autodrive_followups.sh classify` on a crusty `CONCERNS` verdict. No step has a light branch. |
-| `amplifier-bundle/recipes/_recipe_manifest.json` | manifest | Hash entries for `auto-drive-light` and `autodrive-crusty-round`. |
+| `amplifier-bundle/recipes/_recipe_manifest.json` | manifest | Hash entries for light-build, both auto-drive rounds and the loop-health evaluator. |
 | `crates/amplihack-cli/tests/issue_1802_auto_drive_light_eligibility.rs` | test | Eligibility rules, boundaries and faults. |
 | `crates/amplihack-cli/tests/issue_1802_auto_drive_light_round.rs` | test | Byte-identical step-03 and step-06 output for a light state directory, with or without a leftover `light-mode` file; no light hook in the round and no in-loop light tool; a head grown past the limits classified with no `gh` call and no escalation; an end-to-end light round through the real follow-up tools with a `gh` stub that fails if step-03 calls it. |
 | `crates/amplihack-cli/tests/issue_1802_auto_drive_light_recipe.rs` | test | Recipe structure, conditions, `plan_task_id` validation through `resolve-task` and forwarding, no copy of the task-id rule, the report, and prohibited strings. |

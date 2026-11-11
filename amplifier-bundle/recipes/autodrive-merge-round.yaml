@@ -9,8 +9,7 @@ author: "Amplihack Team"
 tags: ["auto-drive", "merge-ready", "qa-team", "verdict", "loop"]
 
 # NO-TIMEOUT POLICY (issue #439): no step declares `timeout` or `timeout_seconds`.
-# PROHIBITIONS: a hook-skipping commit flag and a branch-protection bypass are
-# NEVER used; see docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
+# PROHIBITIONS: a hook-skipping commit flag and a branch-protection bypass are NEVER used; see docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
 
 recursion:
   max_depth: 6
@@ -178,10 +177,10 @@ steps:
       Do not create, edit, move, rename, delete or archive any file in the
       auto-drive state directory (the directory holding crusty-round-*.json,
       merge-ready-round-*.json and phases.tsv).
-
       ## Files you need (#2222)
-      The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the merge-ready criteria `{{merge_ready_files.skill_md}}` and the auto-drive-to-merge skill folder `{{merge_ready_files.auto_drive_skill_dir}}`. A path shown as empty was not given to you; do not look for it. If a named file is missing, report it by name and do not search for it.
-      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `ugrep -r`, `rg`, `du`) from /, ~, /d0, ~/.amplihack, ~/.claude or any directory outside the PR worktree and the main checkout named above. Every path you need is given here; read only the files named here outside those two checkouts. Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by their literal path before the step ends.
+      The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the merge-ready criteria `{{merge_ready_files.skill_md}}` and the auto-drive-to-merge skill folder `{{merge_ready_files.auto_drive_skill_dir}}`. A path shown as empty was not given to you; do not look for it. If a named file is missing, report it by name and do not search for it. The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative.
+      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~, /d0 or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
+      Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by their literal path before the step ends.
 
       ## Where you are (#1528)
 
@@ -340,21 +339,19 @@ steps:
         unresolved review threads (outdated ones included: `unresolved_threads` counts them). The next
         round reads the approval again, and only then can it say whether a review is missing; a failed
         measurement leaves nothing to act on at all.
-      - **`changes-requested`**, **`required-approval-missing`** and
-        **`approval-state-unreadable`**: an agent cannot approve. Fix and
-        answer any requested changes; the approval itself needs a person.
-      - **Merge conflicts, unresolved review threads (outdated ones too),
-        missing docs or evidence**: resolve, answer and resolve, or write them.
+      - **`changes-requested`**, **`required-approval-missing`** and **`approval-state-unreadable`**: an agent cannot approve. Fix and answer any
+        requested changes; the approval itself needs a person.
+      - **Merge conflicts, unresolved review threads (outdated ones too), missing docs or evidence**: resolve, answer and resolve, or write them.
       - **Running tests or hooks**: export `GIT_TERMINAL_PROMPT=0`, then run each long command as `setsid -w timeout --kill-after=60 <secs> <cmd> </dev/null`, or as `timeout --foreground --kill-after=60 <secs> <cmd> </dev/null` where `setsid` is missing. Plain `timeout` puts the command in a background process group, so a git credential prompt reads the terminal and `SIGTTIN` stops it: nothing fails, and the run waits until it is killed, indefinitely where `timeout` is stopped too (issue #1764).
 
       Do not create, edit, move, rename, delete or archive any file in the
       auto-drive state directory (the directory holding crusty-round-*.json,
       merge-ready-round-*.json and phases.tsv). Do not rewrite history,
       reset, force-push, or edit refs.
-
       ## Files you need (#2222)
-      The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the merge-ready criteria `{{merge_ready_files.skill_md}}` and the auto-drive-to-merge skill folder `{{merge_ready_files.auto_drive_skill_dir}}`. A path shown as empty was not given to you; do not look for it. If a named file is missing, report it by name and do not search for it.
-      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `ugrep -r`, `rg`, `du`) from /, ~, /d0, ~/.amplihack, ~/.claude or any directory outside the PR worktree and the main checkout named above. Every path you need is given here; read only the files named here outside those two checkouts. Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by their literal path before the step ends.
+      The PR worktree is `{{repo_path}}` and the main checkout is `{{review_dir}}`. Outside them you need only, by absolute path: this round's record (written at the end of the round; it may not exist yet) `{{autodrive_round_record}}`, the merge-ready criteria `{{merge_ready_files.skill_md}}` and the auto-drive-to-merge skill folder `{{merge_ready_files.auto_drive_skill_dir}}`. A path shown as empty was not given to you; do not look for it. If a named file is missing, report it by name and do not search for it. The deterministic writer owns the round record. Its path grants no permission to create, repair or replace it, or discover an alternative.
+      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~, /d0 or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
+      Write scratch files only under `$TMPDIR` (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and remove them by their literal path before the step ends.
 
       Commit normally so the repository's hooks run, then push. Run the block below as
       one shell command, exactly as written: each check ends in `exit 1` and stops the rest,

@@ -27,11 +27,6 @@ For a small change, [`auto-drive-light`](auto-drive-light.md) builds in one
 agent session and uses the same crusty loop, merge loop and gate. It hands the
 PR to this recipe when the change exceeds its eligibility rules.
 
-> **[PLANNED - Implementation Pending]** The issue #2222 prompt-path,
-> state-path normalization, resource-discovery and regression contracts below
-> describe intended behavior. Their implementation and validation remain
-> incomplete; the marked sections distinguish requirements from existing behavior.
-
 ## Contents
 
 - [The three phases](#the-three-phases)
@@ -2610,49 +2605,41 @@ instruction (wrapped here for readability):
 | `loop-health-evaluator.yaml` | `step-02-evaluate-loop-health` |
 | `auto-drive-light.yaml` | `light-implement` |
 
-Under the planned #2222 contract, agent prompts must name only the state
+Under the #2222 contract, agent prompts name only the state
 files they need, by absolute path, or explicitly say that no state files are
-needed. They must not expose the state-directory variable names `STATE_DIR`, `autodrive_state_dir` or
+needed. They do not expose the state-directory variable names `STATE_DIR`, `autodrive_state_dir` or
 `AUTODRIVE_STATE_DIR`
 (`every_autodrive_agent_prompt_forbids_touching_the_state_dir`). The sentence
 is an instruction; the manifest checks are the control.
 
 ### Paths the agent prompts give
 
-**[PLANNED - Implementation Pending]** All six agent steps in the four
-recipes below must name the PR worktree and main checkout by absolute path,
-including conditional steps and steps that need no state files. Each prompt
-must supply required files by absolute path or supply their contents directly,
-so no state-file discovery is required (#2222).
-
-The round prompts already interpolate `repo_path` and `review_dir`, but the
-driver does not yet guarantee absolute state-file paths for relative
-`--state-dir` inputs. The evaluator and `light-implement` do not yet name
-both checkout locations in their prompt text. All six prompts use search
-wording that differs from the exact sentence required below. These contracts
-must not be treated as implemented or validated.
+All six agent steps in these four recipes name the PR worktree and main
+checkout by absolute path, including conditional steps and steps that need no
+state files (#2222). The round prompts put these locations and resources under
+“Files you need (#2222)”.
 
 | Recipe | Agent steps | Required state files and resources |
 | --- | --- | --- |
 | `autodrive-crusty-round.yaml` | `step-02-crusty-review`, `step-04-address-concerns` | `{{autodrive_round_record}}`, `{{autodrive_resolved_concerns_file}}`, `{{crusty_round_context.merge_ready_skill_md}}`, `{{crusty_round_context.auto_drive_skill_dir}}` |
 | `autodrive-merge-round.yaml` | `step-02-merge-ready-assessment`, `step-04-address-blockers` | `{{autodrive_round_record}}`, `{{merge_ready_files.skill_md}}`, `{{merge_ready_files.auto_drive_skill_dir}}`; the assessment also receives `{{merge_ready_files.template}}` |
-| `loop-health-evaluator.yaml` | `step-02-evaluate-loop-health` | No state files needed; evidence, history and recent round output are supplied in context |
-| `auto-drive-light.yaml` | `light-implement` | No state files needed; the task and checkout locations are supplied in the prompt |
+| `loop-health-evaluator.yaml` | `step-02-evaluate-loop-health` | No state files needed and no discovery required; evidence, history and recent round output arrive in context |
+| `auto-drive-light.yaml` | `light-implement` | No state files needed and no discovery required; task and checkout locations arrive in the prompt |
 
-The round prompts must identify the checkouts through `repo_path` and
-`review_dir`. The auto-drive evaluator must name the same pair through
-`loop_repo_path` and `loop_agent_working_dir`. Light-build must resolve both
-locations deterministically before rendering `light-implement`; its
-authoritative main-checkout producer is not yet implemented. An input
-`repo_path` that names a linked worktree must not be labeled as the main
-checkout. Its PR worktree is `worktree_setup.worktree_path`. Setting an
-agent's working directory alone does not supply those locations in its prompt.
+The driver supplies authoritative absolute `repo_path` and `review_dir` to
+rounds, overriding a caller's relative `repo_path` context. The auto-drive
+evaluator receives that same pair through `loop_repo_path` and
+`loop_agent_working_dir`. Light-build's existing `light-prereqs` bash step
+uses `autodrive_worktree_guard.sh review-dir` to resolve the main checkout,
+even when the caller's `repo_path` names a linked worktree. It returns
+`light_prereqs.main_checkout`; the PR worktree remains
+`worktree_setup.worktree_path`.
 
-Every prompt must contain this exact sentence on its own line:
+Every prompt contains this exact sentence on its own line:
 
 > Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~, /d0 or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
 
-Each prompt must also carry this guidance separately from that sentence:
+Each also carries separate guidance:
 
 > If a named file is missing, report it by name and do not search for it.
 
@@ -2663,144 +2650,117 @@ Each prompt must also carry this guidance separately from that sentence:
 Ordinary source searches within the two named checkouts remain permitted,
 subject to the step's role. Reviewers stay in the main checkout and inspect
 PR content as data; naming the PR worktree does not authorize entering it or
-running its scripts. The search sentence is a prompt instruction, not a
-filesystem sandbox or a runtime search check.
+running its scripts. The sentence is a prompt instruction, not a filesystem
+sandbox or runtime search enforcement.
 
-The evaluator and `light-implement` must explicitly say they need none of the
-auto-drive state files (`crusty-round-*.json`, `merge-ready-round-*.json`,
-`phases.tsv`) and require no discovery. They report missing inputs by name.
-Both already carry no-state guidance; the checkout locations and exact shared
-search sentence still need implementation. Their exemption from reading state
-does not exempt them from the search restriction or the prohibition on
-modifying state.
+The evaluator and `light-implement` explicitly need none of
+`crusty-round-*.json`, `merge-ready-round-*.json` or `phases.tsv`, and require
+no state-file discovery. They report missing inputs by name. All steps retain
+the prohibition on creating, editing, moving, renaming, deleting or archiving
+auto-drive state files.
 
-A round record may be absent until the deterministic writer runs at the end
-of that round. Its path identifies the destination; it gives the agent no
-permission to create, repair or replace it, or to find an alternative. An
-empty optional path means no file was supplied and must not trigger a search.
-A missing required input is reported by its supplied name or path.
+A round record may not exist yet: the deterministic writer creates it at the
+end of the round. Its exact path grants no permission to create, repair or
+replace it, or discover an alternative. An empty optional path means no file
+was supplied and must not trigger a search.
 
-The resource paths come from [The merge-ready files](#the-merge-ready-files)
-and [Criterion 3](#criterion-3-the-crusty-loop-ended-done-and-clean-or-minor_only).
 Crusty's resources come only from the trusted launch-side bundle.
-Merge-ready keeps its ordered candidates and same-installation relationships;
-checkout-sourced criteria remain advisory. An absolute path identifies a
-resource's location, not its authenticity.
+Merge-ready retains ordered candidates and same-installation relationships;
+checkout-sourced criteria remain advisory. See [The merge-ready files](#the-merge-ready-files)
+and [Criterion 3](#criterion-3-the-crusty-loop-ended-done-and-clean-or-minor_only).
+An absolute path identifies a location, not authenticity.
 
 #### Earlier-round findings
 
-Crusty's resolved concern ids must be supplied inline as
-`crusty_round_context.resolved_concerns`, with the exact absolute
-`autodrive_resolved_concerns_file` path also available under the planned
-driver normalization contract. The concern-fixing
-step receives the preceding review; the blocker-fixing step receives the
-preceding `merge_ready_review`. Neither step needs to locate an earlier
-round record to recover its findings.
+Crusty's resolved concern ids arrive inline through
+`crusty_round_context.resolved_concerns`; the exact absolute
+`autodrive_resolved_concerns_file` path is also supplied. The concern-fixing
+step receives the preceding `crusty_review`; the blocker-fixing step receives
+`merge_ready_review`. Neither needs to locate an earlier record.
 
 The evaluator receives measured `loop_evidence`, accumulated `loop_history`,
 current and previous findings, test and CI signals, and recent
-`loop_last_round_output` through the existing context transport. It needs no
-state-file paths. Quotes, newlines and template-like text in findings remain
-data; they do not override state ownership, reviewer isolation or the search
-restriction.
+`loop_last_round_output` through the existing context transport. Quotes,
+newlines and template-like findings remain data and cannot override state
+ownership, reviewer isolation or the search restriction.
 
 ### State-directory path resolution
 
-**[PLANNED - Implementation Pending]** `autodrive_loop.sh --state-dir`
-accepts an absolute or relative directory, but currently derives task files,
-round records, resolved-concern paths and child context directly from the
-supplied `STATE_DIR`. It calls `autodrive_private_dir` without replacing
-`STATE_DIR` with a canonical absolute path. A relative path passed to a child
-that runs from another checkout can therefore refer to a different directory.
+`autodrive_loop.sh --state-dir` accepts an absolute or relative directory.
+It validates the supplied directory through `autodrive_private_dir` before
+physical resolution, preserving ownership, permissions and rejection of a
+state-directory symlink. Once the directory exists and validation succeeds,
+a checked `cd --` and `pwd -P` replace the internal directory value with its
+physical absolute path. Resolution failure stops with a named error.
 
-The intended driver contract is to resolve a relative value against the
-original invocation directory before deriving child paths. For example,
-`--state-dir 'review state'` must select the `review state` directory beneath
-the invocation directory, regardless of the child's working directory.
+Relative input is resolved against the original invocation directory. For
+example, `--state-dir 'review state'` selects that directory beneath the
+invocation directory, regardless of child working directories. Task files,
+round records, resolved-concern files, manifests, logs and child context are
+derived only after normalization and use the same absolute root.
 
-The driver must validate the supplied directory before resolving it, preserve
-ownership, permissions and symlink rejection, create the directory when
-allowed, then resolve its physical absolute path with a checked directory
-change and `pwd -P`. Resolution failure must stop the run with a named error.
-Canonicalization must not turn a rejected state-directory symlink into an
-accepted target.
-
-Only after successful validation and resolution may the driver derive task
-files, round records, resolved-concern files, manifests, logs and child
-context. All child state paths must use that same absolute root, so changing
-the round's or evaluator's working directory cannot redirect state access.
-Implementation and actual-driver context validation of this contract are pending.
-
-This planned driver contract does not relax recipe input validation.
-[`auto-drive-light`](auto-drive-light.md#context-variables) still requires an
-absolute `autodrive_state_dir` when the operator sets that recipe input.
+This does not relax recipe input validation. [Auto-drive-light](auto-drive-light.md#context-variables)
+still requires an absolute `autodrive_state_dir` recipe input when set.
 
 ### File-discovery guidance in bundle resources
 
-**[PLANNED - Implementation Pending]** The focused audit must cover tracked
-instructions in `amplifier-bundle/recipes/` and `amplifier-bundle/skills/`,
-following relevant referenced instructions for missing-location guidance.
-It must classify instructions by whether the agent has a location for a
-required file. It must preserve ordinary bounded source searches and
-deterministic resource resolution. The table records required contracts,
-not completed corrections.
+The focused audit screened tracked Markdown and YAML instructions under
+`amplifier-bundle/recipes/` and `amplifier-bundle/skills/` for state-file
+mentions, find/bfs/fd/locate commands, missing-file fallbacks and file-location
+guidance. Matching instructions and relevant resource references were
+reviewed to distinguish missing locations from bounded searches. This is a
+prompt-location audit, not a claim that every bundled example was executed.
 
-| Surface | Required contract |
+| Surface reviewed | Finding and disposition |
 | --- | --- |
-| Crusty and merge-round prompts | Each consumer receives exact absolute file paths and earlier findings in context; filenames alone must not invite discovery. |
-| Loop-health evaluator and light-build | Each explicitly needs no state files or discovery and names both absolute checkout locations. |
-| Round skill resources | Agents receive resolved absolute skill paths. A missing resource produces a named failure; agents do not search for another installation. |
-| `pptx/SKILL.md` unpack instructions | Replace the incorrect project-relative `skills/pptx/ooxml/scripts/unpack.sh` location and `find . -name "unpack.sh"` fallback with the loaded skill directory's sibling `common/ooxml/scripts/unpack.sh`. Use its quoted absolute path and report that exact path if missing. |
-| Repository analysis and transcript references | Preserve source enumeration within a supplied checkout and transcript lookup beneath an explicitly named projects directory; these do not justify a filesystem-wide search. |
+| Four round agent prompts | State filenames lacked locations; retained saved exact state/resource references and completed canonical driver propagation. Earlier review findings remain inline. |
+| Evaluator and light-build | Retained no-state exemptions; added explicit no-discovery guidance, absolute checkout names and the literal restriction sentence. |
+| Round skill resources | Retained deterministic resolvers, named missing-resource failures and same-installation relationships; no agent installation search. |
+| `pptx/SKILL.md` | Replaced nonexistent project-relative unpack location and `find` fallback with the loaded skill directory's sibling `../common/ooxml/scripts/unpack.sh`. Related pack invocation and shared OOXML guidance use that same known sibling directory. Missing inputs or helpers are reported by name. |
+| `common/ooxml/README.md`, merge-ready and auto-drive skill references | Reviewed shared helper locations and criteria/state descriptions; these do not instruct an agent to discover an unknown installation or state directory. |
+| `code-atlas/examples.md`, `supply-chain-audit/reference/{rust,dotnet}.md`, `smart-test/SKILL.md` | Source enumeration is bounded by the checkout or named test directory; unchanged. |
+| `transcript-viewer/SKILL.md`, `session-to-agent/reference.md` | Transcript lookup is rooted in explicitly named projects/session directories; unchanged. |
+| `quality-loop.yaml`, `markitdown/examples.md` | Review diff path is supplied directly; document conversion uses a named input directory; unchanged. |
 
-The PPTX correction is pending: `amplifier-bundle/skills/pptx/SKILL.md` still
-contains the incorrect project-relative path and `find` fallback. The intended
-path must be anchored to the directory containing the loaded `pptx/SKILL.md`,
-independently of the current project. The sibling helper is
-[`common/ooxml/scripts/unpack.sh`](../../amplifier-bundle/skills/common/ooxml/scripts/unpack.sh).
-Loading a skill must not grant permission to search outside the checkouts
-named by an auto-drive prompt.
+The PPTX helper is anchored to the absolute directory containing the loaded
+`pptx/SKILL.md`, supplied by the skill loader, independently of the project.
+Its shared helper is [common/ooxml/scripts/unpack.sh](../../amplifier-bundle/skills/common/ooxml/scripts/unpack.sh).
+Loading a skill does not authorize searches outside the checkouts permitted
+by an auto-drive prompt.
 
 ### Prompt-path regression contract
 
-**[PLANNED - Validation Pending]**
 [`issue_2222_prompt_paths.rs`](../../crates/amplihack-cli/tests/issue_2222_prompt_paths.rs)
-currently renders a fixed list of six prompts with a minimal local template
-substitution and synthetic absolute paths. Its `has_line` assertions collapse
-whitespace and test substring presence. They do not check the required search
-sentence as an exact rendered line, discover all agent steps from the YAML,
-or prove that both checkout locations reach every prompt.
+contains 30 tests using local one-pass `{{key}}` / `{{key.field}}` substitution
+and real driver/helper subprocesses. It enumerates every agent step in all
+four recipes and compares that inventory with the six covered prompts,
+including conditional and no-state steps. The restriction must be an exact
+rendered line; other prose assertions may collapse whitespace.
 
-The existing tests run `step-01-round-context` and
+Coverage checks both absolute checkout locations before the restriction,
+required absolute file/resource paths or explicit no-state/no-discovery
+exemptions, earlier findings, named failures, deterministic state ownership,
+reviewer isolation and absence of forbidden state-directory variable names.
+The actual light-build prerequisite producers are exercised from a linked
+worktree.
+
+Actual-driver subprocesses start `autodrive_loop.sh` from an isolated
+invocation directory with a relative state path containing spaces and a
+symlinked parent. Only external CLI boundaries are replaced. They capture
+round/evaluator context, render prompts from it, and use structured records
+to complete deterministically. Quotes, newlines and template-like findings
+exercise context transport. A state-directory symlink itself is rejected
+before a round or evaluator runs.
+
+Resource subprocess tests run `step-01-round-context` and
 `autodrive_merge_ready_files.sh` against synthetic bundle fixtures, including
-missing and unusable skill paths, missing templates and checkout-resource
-warnings. They do not start `autodrive_loop.sh` to capture actual round or
-evaluator context. Local rendering does not establish external
-`recipe-runner-rs` coverage. The intended behavioral contract is not yet
-fully validated by these tests or the existing recipe shell tests.
+missing/unusable skills, missing templates and checkout-resource warnings.
+Affected manifest entries use the first 16 hexadecimal digits of each
+recipe's SHA-256, following the existing manifest test pattern.
 
-Required regression coverage must enumerate agent steps from all four
-recipes and compare that inventory with the six steps above, including
-conditional and no-state steps. It must check the restriction as an exact
-rendered line without whitespace normalization, both absolute checkout
-locations, required absolute file paths or the explicit no-state/no-discovery
-exemption, earlier-findings access, state ownership, reviewer isolation and
-absence of the forbidden state-directory variable names.
-
-Pending driver subprocess coverage must start `autodrive_loop.sh` from an
-isolated invocation directory with a relative `--state-dir` containing spaces
-and capture round and evaluator context at the external CLI boundary.
-Prompts must render from that captured context, rather than only fixtures
-with prebuilt absolute paths. Structured round records must exercise
-deterministic completion; quotes, newlines and template-like findings must
-exercise context transport. State-directory symlinks must remain rejected.
-
-Resource subprocess coverage must preserve the existing ordered resolution
-behavior and same-installation relationships. Recipe manifest entries must
-track the final recipe content. After implementation and validation, reconcile
-both auto-drive references with the verified behavior and remove the matching
-planned markers. These requirements add no runtime search enforcement,
-CI job or timer.
+This is local rendering and driver/helper subprocess coverage. It does not
+execute an external `recipe-runner-rs` or establish runner parity. No runtime
+search interception, CI job, guard check, timer or dependency was added.
 
 ### The state directory is private
 

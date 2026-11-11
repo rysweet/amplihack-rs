@@ -348,6 +348,7 @@ fn context(fx: &Fixture, round_record: &str) -> Value {
         "loop_last_round_output": "",
         "loop_repo_path": fx.root().join("pr-worktree").to_string_lossy(),
         "loop_agent_working_dir": fx.root().join("main-checkout").to_string_lossy(),
+        "light_prereqs": {"main_checkout": fx.root().join("main-checkout").to_string_lossy()},
         "worktree_setup": {"worktree_path": fx.root().join("light-wt").to_string_lossy()},
     })
 }

@@ -107,7 +107,7 @@ steps:
       T="${AMPLIHACK_HOME}/amplifier-bundle/tools"
       for f in autodrive_light_eligibility.sh autodrive_finding_rules.sh \
                autodrive_followups.sh autodrive_followups_check.sh workflow_issue_tracking.sh \
-               autodrive_state.sh autodrive_trust.sh quick_change_common.sh; do
+               autodrive_state.sh autodrive_trust.sh quick_change_common.sh autodrive_worktree_guard.sh; do
         [ -f "$T/$f" ] || die "$f not found under AMPLIHACK_HOME"
       done
       cd "${RECIPE_VAR_repo_path:-.}" 2>/dev/null || die "cannot enter repo_path"
@@ -132,14 +132,17 @@ steps:
       if [ -z "$PRN" ] && [ -z "$BR" ] && [ -z "${RECIPE_VAR_task_description:-}" ]; then
         die "task_description is required unless pr_number or existing_branch is set" 2
       fi
+      # repo_path can be a linked worktree; reuse the round driver's resolver.
+      MAIN="$(bash "$T/autodrive_worktree_guard.sh" review-dir .)" \
+        || die "cannot resolve main checkout from repo_path"
       REQ="$(. "$T/autodrive_trust.sh" && autodrive_gadugi_required .)" || REQ=""
       if [ "$REQ" = "false" ]; then
         echo "INFO: auto-drive-light prerequisites: criterion 1 does not use gadugi-test in this repository" >&2
-        printf '{"gadugi_test":"not-required"}\n'
+        jq -nc --arg main "$MAIN" '{gadugi_test: "not-required", main_checkout: $main}'
         exit 0
       fi
       command -v gadugi-test >/dev/null 2>&1 || die "gadugi-test-not-installed: criterion 1 runs this repository's qa-team scenarios with gadugi-test, which is not on PATH; install it and run again"
-      printf '{"gadugi_test":"found"}\n'
+      jq -nc --arg main "$MAIN" '{gadugi_test: "found", main_checkout: $main}'
     output: "light_prereqs"
 
   # #1543: the operator's own pr_number, kept before any sub-recipe can change pr_number.
@@ -216,17 +219,18 @@ steps:
       merge-ready-round-*.json, phases.tsv); everything you need is in this
       prompt. If something you expect is absent, report it by name.
 
-      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`,
-      `ugrep -r`, `rg`, `du`) from /, ~, /d0, ~/.amplihack, ~/.claude or any
-      directory outside the PR worktree and the main checkout named above. Every
-      path you need is given here; read only the files named here outside those
-      two checkouts.
+      No state-file discovery is required.
+
+      The PR worktree is `{{worktree_setup.worktree_path}}` and the main checkout is `{{light_prereqs.main_checkout}}`.
+      Never search the filesystem (find, bfs, fd, locate, `ls -R`, `grep -r`, `du`) from /, ~, /d0 or any directory outside the PR worktree and the main checkout named above. Every path you need is given here.
 
       If a named file is missing, report it by name and do not search for it.
 
       Write scratch files only under `$TMPDIR`
       (`mktemp -d "${TMPDIR:-/tmp}/autodrive.XXXXXX"`), never loose in /tmp, and
       remove them by their literal path before the step ends.
+
+      Do not create, edit, move, rename, delete or archive any file in the auto-drive state directory.
 
       Constraints:
       - Do not start an orchestrator, a recipe, a workflow or another agent

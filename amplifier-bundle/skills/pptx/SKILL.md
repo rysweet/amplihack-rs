@@ -28,9 +28,9 @@ You need raw XML access for: comments, speaker notes, slide layouts, animations,
 
 #### Unpacking a file
 
-`bash ooxml/scripts/unpack.sh <office_file> <output_dir>`
+`bash "$PPTX_SKILL_DIR/../common/ooxml/scripts/unpack.sh" <office_file> <output_dir>`
 
-**Note**: The unpack.sh script is located at `skills/pptx/ooxml/scripts/unpack.sh` relative to the project root. If the script doesn't exist at this path, use `find . -name "unpack.sh"` to locate it.
+**Note**: Set `PPTX_SKILL_DIR` to the absolute directory containing this loaded `SKILL.md`, supplied by the skill loader. The helper is `../common/ooxml/scripts/unpack.sh` relative to that directory, independently of the current project. Use the quoted absolute invocation above. If the skill directory was not supplied, report that missing input; if the helper is absent, report its exact absolute path. Do not search for another copy.
 
 #### Key file structures
 
@@ -193,11 +193,11 @@ When edit slides in an existing PowerPoint presentation, you need to work with t
 
 ### Workflow
 
-1. **MANDATORY - READ ENTIRE FILE**: Read [`ooxml.md`](ooxml.md) (~500 lines) completely from start to finish. **NEVER set any range limits when reading this file.** Read the full file content for detailed guidance on OOXML structure and editing workflows before any presentation editing.
-2. Unpack the presentation: `bash ooxml/scripts/unpack.sh <office_file> <output_dir>`
+1. **MANDATORY - READ ENTIRE FILE**: Read [`../common/ooxml/README.md`](../common/ooxml/README.md) completely from start to finish, relative to the loaded skill directory. **NEVER set any range limits when reading this file.** Read the full file content for detailed guidance on OOXML structure and editing workflows before any presentation editing.
+2. Unpack the presentation: `bash "$PPTX_SKILL_DIR/../common/ooxml/scripts/unpack.sh" <office_file> <output_dir>`
 3. Edit the XML files (primarily `ppt/slides/slide{N}.xml` and related files)
 4. **CRITICAL**: Validate immediately after each edit and fix any validation errors before proceeding: `Open the file with LibreOffice or PowerPoint and fix any reported errors`
-5. Pack the final presentation: `bash ooxml/scripts/pack.sh <input_directory> <office_file>`
+5. Pack the final presentation: `bash "$PPTX_SKILL_DIR/../common/ooxml/scripts/pack.sh" <input_directory> <office_file>`
 
 ## Creating a new PowerPoint presentation **using a template**
 
