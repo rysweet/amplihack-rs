@@ -34,6 +34,11 @@ pub(crate) fn refresh_count_lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// A synthetic process table per test (issue #2196).
+#[cfg(unix)]
+#[path = "test_support_proc.rs"]
+pub(crate) mod proc;
+
 #[path = "../tests/support/scratch_base.rs"]
 #[allow(dead_code)]
 mod scratch_base;

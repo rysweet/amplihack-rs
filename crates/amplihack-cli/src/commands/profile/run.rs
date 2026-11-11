@@ -96,7 +96,19 @@ pub(super) fn login(store: &ProfileStore, name: &ProfileName) -> Result<()> {
 }
 
 pub(super) fn run(store: &ProfileStore, name: &ProfileName, args: Vec<String>) -> Result<()> {
-    super::reject_docker_env()?;
+    run_when(super::docker_env_active(), store, name, args)
+}
+
+/// [`run`] with the Docker probe's answer given, so a test can make the
+/// check refuse without a Docker daemon (issue #2196). The check comes
+/// before anything else.
+pub(super) fn run_when(
+    docker_env: bool,
+    store: &ProfileStore,
+    name: &ProfileName,
+    args: Vec<String>,
+) -> Result<()> {
+    super::reject_docker_env_when(docker_env)?;
     super::autostart_on_launch(false);
     let dir = store.resolve(name).map_err(super::with_hint)?;
     launch::run_launch_profiled(

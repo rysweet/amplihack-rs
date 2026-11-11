@@ -808,7 +808,13 @@ fn docker_env_active() -> bool {
 
 /// Profiles are not applied in Docker; fail closed rather than drop the profile.
 pub(super) fn reject_docker_env() -> Result<()> {
-    match unsupported_mode(false, docker_env_active(), false) {
+    reject_docker_env_when(docker_env_active())
+}
+
+/// [`reject_docker_env`] with the Docker probe's answer given, so a test
+/// needs no Docker daemon and reads nothing of the host (issue #2196).
+pub(super) fn reject_docker_env_when(docker_env: bool) -> Result<()> {
+    match unsupported_mode(false, docker_env, false) {
         Some(e) => Err(with_hint(e)),
         None => Ok(()),
     }
