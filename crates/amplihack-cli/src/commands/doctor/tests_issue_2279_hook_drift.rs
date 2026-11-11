@@ -3,19 +3,22 @@
 //!
 //! API this file pins (in `doctor::hook_drift`):
 //! - `struct FileReport { path: PathBuf, state: FileDrift }`
-//! - `report(home: &Path, profile_root: Option<&Path>, launch_file: Option<&Path>,
-//!    target: &HookTarget) -> Vec<FileReport>`: home, then profiles sorted by
-//!   name, then the launch file. Read-only.
-//! - `render(&[FileReport]) -> (bool, String)`: one line per file,
-//!   `<path>: clean|absent|unparseable (r)|refused (r)|drift missing=[..] differing=[..] extra=[..]`.
-//!   Fails when home is not clean, or any present profile or launch file is
-//!   not clean. Absent profile and launch files pass.
+//! - `report(home: &Path, repo_local: Option<&Path>, profiles: Source,
+//!    launch_file: Source, target: &HookTarget) -> Report`: home, then
+//!   profiles sorted by name, then the launch file, then one `Unlisted` per
+//!   source that cannot be located or listed. Read-only.
+//! - `render(&Report) -> (bool, String)`: one line per file,
+//!   `<path>: clean|absent|unparseable (r)|refused (r)|drift missing=[..] differing=[..] extra=[..]`,
+//!   and `<source>: cannot list (r)` per unlisted source. Fails when home is
+//!   not clean (an absent home beside a clean repo-local file passes, #1088),
+//!   when any present profile or launch file is not clean, or when a source
+//!   is unlisted. Absent profile and launch files pass.
 //!
 //! Every file lives in a temp directory.
 
 #![cfg(unix)]
 
-use super::hook_drift::{FileReport, render, report};
+use super::hook_drift::{FileReport, Source, render, report};
 use crate::commands::install::hook_block::{self, FileDrift, HookTarget};
 use serde_json::json;
 use std::fs;
@@ -71,6 +74,11 @@ fn layout() -> Layout {
     }
 }
 
+/// `report` with no repo-local file.
+fn check(home: &Path, profiles: Source<'_>, launch: Source<'_>) -> super::hook_drift::Report {
+    report(home, None, profiles, launch, &target())
+}
+
 fn paths(reports: &[FileReport]) -> Vec<PathBuf> {
     reports.iter().map(|r| r.path.clone()).collect()
 }
@@ -82,9 +90,9 @@ fn report_orders_home_then_profiles_by_name_then_launch_file() {
     private(&l.root.join("zeta/settings.json"), &full());
     private(&l.root.join("alpha/settings.json"), &full());
     private(&l.launch, &full());
-    let r = report(&l.home, Some(&l.root), Some(&l.launch), &target());
+    let r = check(&l.home, Source::At(&l.root), Source::At(&l.launch));
     assert_eq!(
-        paths(&r),
+        paths(&r.files),
         vec![
             l.home.join(".claude/settings.json"),
             l.root.join("alpha/settings.json"),
@@ -92,7 +100,7 @@ fn report_orders_home_then_profiles_by_name_then_launch_file() {
             l.launch.clone(),
         ]
     );
-    assert!(r.iter().all(|f| f.state == FileDrift::Clean));
+    assert!(r.files.iter().all(|f| f.state == FileDrift::Clean));
     let (ok, text) = render(&r);
     assert!(ok, "{text}");
     assert_eq!(text.lines().count(), 4, "{text}");
@@ -103,7 +111,7 @@ fn a_stripped_profile_fails_and_names_its_events_without_content() {
     let l = layout();
     private(&l.home.join(".claude/settings.json"), &full());
     private(&l.root.join("work/settings.json"), &stripped());
-    let r = report(&l.home, Some(&l.root), None, &target());
+    let r = check(&l.home, Source::At(&l.root), Source::At(&l.launch));
     let (ok, text) = render(&r);
     assert!(!ok, "{text}");
     let line = text
@@ -122,7 +130,7 @@ fn a_stripped_profile_fails_and_names_its_events_without_content() {
 fn a_stripped_home_fails() {
     let l = layout();
     private(&l.home.join(".claude/settings.json"), &stripped());
-    let (ok, text) = render(&report(&l.home, Some(&l.root), None, &target()));
+    let (ok, text) = render(&check(&l.home, Source::At(&l.root), Source::At(&l.launch)));
     assert!(!ok, "{text}");
 }
 
@@ -130,14 +138,14 @@ fn a_stripped_home_fails() {
 fn an_absent_home_fails_and_absent_profile_and_launch_files_pass() {
     let l = layout();
     fs::create_dir_all(l.root.join("bare")).unwrap();
-    let r = report(&l.home, Some(&l.root), Some(&l.launch), &target());
-    assert_eq!(r[0].state, FileDrift::Absent);
+    let r = check(&l.home, Source::At(&l.root), Source::At(&l.launch));
+    assert_eq!(r.files[0].state, FileDrift::Absent);
     let (ok, text) = render(&r);
     assert!(!ok, "an absent home file is not clean: {text}");
     assert!(text.contains(": absent"), "{text}");
 
     private(&l.home.join(".claude/settings.json"), &full());
-    let (ok, text) = render(&report(&l.home, Some(&l.root), Some(&l.launch), &target()));
+    let (ok, text) = render(&check(&l.home, Source::At(&l.root), Source::At(&l.launch)));
     assert!(ok, "absent profile and launch files pass: {text}");
 }
 
@@ -149,7 +157,7 @@ fn an_unparseable_profile_fails_with_a_reason_and_no_content() {
         &l.root.join("work/settings.json"),
         format!("{{\"k\":\"{SECRET}\", oops").as_bytes(),
     );
-    let (ok, text) = render(&report(&l.home, Some(&l.root), None, &target()));
+    let (ok, text) = render(&check(&l.home, Source::At(&l.root), Source::At(&l.launch)));
     assert!(!ok);
     assert!(text.contains(": unparseable ("), "{text}");
     assert!(!text.contains(SECRET), "{text}");
@@ -160,7 +168,7 @@ fn a_drifting_launch_file_fails() {
     let l = layout();
     private(&l.home.join(".claude/settings.json"), &full());
     private(&l.launch, &stripped());
-    let (ok, text) = render(&report(&l.home, None, Some(&l.launch), &target()));
+    let (ok, text) = render(&check(&l.home, Source::At(&l.root), Source::At(&l.launch)));
     assert!(!ok, "{text}");
 }
 
@@ -180,7 +188,7 @@ fn report_is_read_only() {
             (fs::read(p).unwrap(), m.mtime(), m.mtime_nsec())
         })
         .collect();
-    report(&l.home, Some(&l.root), Some(&l.launch), &target());
+    check(&l.home, Source::At(&l.root), Source::At(&l.launch));
     let after: Vec<(Vec<u8>, i64, i64)> = files
         .iter()
         .map(|p| {
@@ -190,4 +198,94 @@ fn report_is_read_only() {
         .collect();
     assert_eq!(after, before);
     assert!(!l.launch.exists());
+}
+
+#[test]
+fn an_unreadable_profile_root_is_a_failing_row_and_nothing_is_written() {
+    let l = layout();
+    let home_file = l.home.join(".claude/settings.json");
+    private(&home_file, &full());
+    private(&l.root.join("work/settings.json"), &stripped());
+    fs::set_permissions(&l.root, fs::Permissions::from_mode(0o000)).unwrap();
+    let readable = fs::read_dir(&l.root).is_ok();
+    let before = fs::read(&home_file).unwrap();
+    let r = check(&l.home, Source::At(&l.root), Source::At(&l.launch));
+    fs::set_permissions(&l.root, fs::Permissions::from_mode(0o700)).unwrap();
+    if readable {
+        // Running as root: mode 0000 does not stop the listing.
+        return;
+    }
+    let (ok, text) = render(&r);
+    assert!(!ok, "{text}");
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("profiles: cannot list (")),
+        "{text}"
+    );
+    assert!(!text.contains(SECRET), "{text}");
+    assert_eq!(fs::read(&home_file).unwrap(), before);
+    assert!(!l.launch.exists());
+}
+
+#[test]
+fn an_unknown_source_is_a_failing_row() {
+    let l = layout();
+    private(&l.home.join(".claude/settings.json"), &full());
+    let (ok, text) = render(&check(
+        &l.home,
+        Source::Unknown("not configured"),
+        Source::Unknown("amplihack home unknown or not absolute"),
+    ));
+    assert!(!ok, "{text}");
+    assert!(
+        text.contains("profiles: cannot list (not configured)"),
+        "{text}"
+    );
+    assert!(text.contains("launch file: cannot list ("), "{text}");
+}
+
+/// #1088, narrowed by #2279: an absent home file beside a clean repo-local
+/// file passes; a stale repo-local file does not.
+#[test]
+fn test_check_hooks_installed_passes_with_repo_local_hooks_only() {
+    let l = layout();
+    let repo = l.home.parent().unwrap().join("repo/.claude/settings.json");
+    private(&repo, &full());
+    let r = report(
+        &l.home,
+        Some(&repo),
+        Source::At(&l.root),
+        Source::At(&l.launch),
+        &target(),
+    );
+    let (ok, text) = render(&r);
+    assert!(ok, "a clean repo-local install passes: {text}");
+    assert!(
+        text.contains(": absent; repo-local install clean"),
+        "{text}"
+    );
+    assert_eq!(r.files.len(), 2, "the repo-local file has no row: {text}");
+
+    private(&repo, &stripped());
+    let r = report(
+        &l.home,
+        Some(&repo),
+        Source::At(&l.root),
+        Source::At(&l.launch),
+        &target(),
+    );
+    let (ok, text) = render(&r);
+    assert!(!ok, "a stale repo-local file does not pass: {text}");
+
+    // A present home file is judged on its own.
+    private(&repo, &full());
+    private(&l.home.join(".claude/settings.json"), &stripped());
+    let (ok, text) = render(&report(
+        &l.home,
+        Some(&repo),
+        Source::At(&l.root),
+        Source::At(&l.launch),
+        &target(),
+    ));
+    assert!(!ok, "{text}");
 }

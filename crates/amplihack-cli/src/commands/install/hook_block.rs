@@ -30,7 +30,7 @@ pub(super) use file::create_file;
 #[cfg(test)]
 pub(crate) use file::owner_refusal;
 pub(crate) use file::update_file_with_backup;
-pub(crate) use file::{FileDrift, FileMerge, drift_file, merge_file, update_file};
+pub(crate) use file::{FileDrift, FileMerge, drift_file, merge_file, reason, update_file};
 
 /// The hooks binary and whether the usage-limit resume hook is registered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,8 +182,10 @@ pub(crate) fn merge(settings: &mut Value, t: &HookTarget) -> Merge {
     }
 }
 
-/// Removes amplihack's hook entries from `wrappers`, and every wrapper left
-/// with an empty `hooks` list. Whether anything was removed.
+/// Removes amplihack's hook entries from `wrappers`, and every wrapper that
+/// this call left with an empty `hooks` list. A wrapper whose `hooks` list
+/// was already empty is foreign and is kept as it is (SR-9). Whether
+/// anything was removed.
 fn strip_own(wrappers: &mut Vec<Value>) -> bool {
     let before = wrappers.len();
     let mut removed = false;
@@ -194,7 +196,7 @@ fn strip_own(wrappers: &mut Vec<Value>) -> bool {
         let count = entries.len();
         entries.retain(|hook| command_of(hook).and_then(classify).is_none());
         removed |= entries.len() != count;
-        !entries.is_empty()
+        entries.len() == count || !entries.is_empty()
     });
     removed || wrappers.len() != before
 }

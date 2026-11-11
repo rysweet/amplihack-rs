@@ -260,12 +260,35 @@ fn merge_touches_only_the_hooks_key() {
 
 #[test]
 fn merge_removes_amplihack_wrappers_left_empty() {
-    // A stale own wrapper whose hooks array is empty is amplihack's leftover.
-    let mut settings = json!({
-        "hooks": {"Stop": [{"hooks": []}]}
-    });
+    // A wrapper that held only amplihack's entry is emptied, then dropped.
+    let stale = json!({"hooks": [{"type": "command", "command": "/opt/amplihack-old/bin/amplihack-hooks stop"}]});
+    let mut settings = json!({"hooks": {"Stop": [stale]}});
     hook_block::merge(&mut settings, &target(true));
     assert!(hook_block::drift(&settings, &target(true)).is_clean());
+    assert_eq!(settings["hooks"]["Stop"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn merge_keeps_a_foreign_wrapper_whose_hooks_list_was_already_empty() {
+    // SR-9: an empty `hooks` list that amplihack did not empty is foreign.
+    let t = target(true);
+    let a = json!({"hooks": [{"type": "command", "command": "/opt/foreign/a"}]});
+    let empty = json!({"matcher": "X", "hooks": []});
+    let b = json!({"hooks": [{"type": "command", "command": "/opt/foreign/b"}]});
+    let mut settings = json!({});
+    hook_block::merge(&mut settings, &t);
+    settings["hooks"]["PreToolUse"]
+        .as_array_mut()
+        .unwrap()
+        .extend([a.clone(), empty.clone(), b.clone()]);
+    assert!(hook_block::drift(&settings, &t).is_clean());
+    assert_eq!(hook_block::merge(&mut settings, &t), Merge::Unchanged);
+    let pre = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    let foreign: Vec<&Value> = pre
+        .iter()
+        .filter(|w| *w == &a || *w == &empty || *w == &b)
+        .collect();
+    assert_eq!(foreign, vec![&a, &empty, &b]);
 }
 
 #[test]

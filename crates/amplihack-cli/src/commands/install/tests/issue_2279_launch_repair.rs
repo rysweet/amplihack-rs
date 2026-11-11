@@ -199,17 +199,3 @@ fn an_unparseable_file_gets_one_warning_and_no_write() {
     assert!(!notice.contains("sk-test-do-not-print"), "{notice}");
     assert!(backups(path.parent().unwrap()).is_empty());
 }
-
-#[test]
-fn skip_home_merge_leaves_the_home_file_alone() {
-    // D5 fallback: with skip_home_merge the launch repair does not write the
-    // home file, which the --settings file covers for that session.
-    let f = fixture();
-    let path = f.home_settings();
-    f.write(&path, &json!({"hooks": {}}));
-    let before = fs::read(&path).unwrap();
-    crate::freshness::with_provider("claude", || {
-        ensure_framework_installed_opts(&mut Vec::new(), true).expect("repair with skip")
-    });
-    assert_eq!(fs::read(&path).unwrap(), before);
-}

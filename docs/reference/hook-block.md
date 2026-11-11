@@ -107,8 +107,8 @@ hook list.
 | `amplihack install` / `update` | On request                                          | `~/.claude/settings.json` (created as `{}` if absent)      | Never                                                                                                  |
 | Launch repair                  | Each `amplihack launch` / `amplihack claude`        | `$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/...`   | The running binary is older than the install stamp; `AMPLIHACK_SKIP_AUTO_INSTALL` is set; no drift     |
 | Profile refresh                | `amplihack profile` refresh paths                   | Each `<profile root>/<name>/settings.json`                 | The profile root is refused by `hook_path_refusal`; the file is absent                                 |
-| Profile seeding                | After `settings.json` is copied into a new profile  | The new profile's `settings.json`                          | No hooks binary; the profile root is refused. Seeding still succeeds                                   |
-| Rotator cycle                  | End of each `swapped`, `stayed` or `switched` cycle | `~/.claude/settings.json` and the live profile's file only | Read-only mode; older binary; no hooks binary; no drift. A refused profile does not stop the home heal |
+| Profile seeding                | After `settings.json` is copied into a new profile  | The new profile's `settings.json`                          | Older binary; no hooks binary; the profile root is refused. Seeding still succeeds                     |
+| Rotator cycle                  | End of each `swapped` or `stayed` cycle             | `~/.claude/settings.json` and the live profile's file only | Read-only mode; older binary; no hooks binary; no drift. A refused or unidentified live profile is logged and does not stop the home heal |
 | Launch settings file           | Each `claude` launch                                | `$AMPLIHACK_HOME/runtime/launch-hooks-settings.json`       | See [When the file is not used](#when-the-file-is-not-used)                                            |
 
 Nothing else in amplihack removes amplihack's hooks from a settings file. The
@@ -135,11 +135,6 @@ fixed:
 ```text
 warning: /home/you/.claude/settings.json: refused (symlink); hooks not repaired
 ```
-
-When the launch also passes the [launch settings file](#launch-settings-file)
-and Claude Code is not confirmed to run identical hook commands once, the
-launch repair skips the home file for that launch (`skip_home_merge`). See
-[Duplicate hook commands](#duplicate-hook-commands).
 
 ### Rotator cycle
 
@@ -170,7 +165,8 @@ The merge changes only `settings["hooks"]`.
 - **Removed:** amplihack's own wrappers that are stale (an old binary path, a
   duplicate, a `StopFailure` entry when `limit_resume` is off), any wrapper
   whose command contains `tools/xpia/hooks/`, and any wrapper left empty by
-  these removals.
+  these removals. A wrapper whose `hooks` list was already empty is not
+  amplihack's and is kept.
 - **Kept byte-equal and in order:** every wrapper that amplihack does not own.
   A wrapper is amplihack's only when `is_own_wrapper` matches it against a spec,
   or its command contains `tools/xpia/hooks/`. A foreign hook such as
@@ -200,6 +196,16 @@ backup over a settings file.
 
 Profile refresh, profile seeding and the rotator cycle call `merge_file` and
 make no backup.
+
+Profile refresh runs only inside `amplihack install`, which is the explicit
+installer; it does not consult the install stamp. Profile seeding is implicit
+and writes nothing from a binary older than the install stamp.
+
+There is no lock between amplihack's writers and other programs. If another
+process changes `hooks` between amplihack's read and its rename, that change
+is lost; changes to other keys made in the same window are lost too. This is
+accepted: the window is one read, merge and rename, and the next drift check
+reports any result.
 
 ## Drift
 
@@ -255,18 +261,9 @@ something has stripped `~/.claude/settings.json`.
 The commands in the launch file and the home file are built by the same code
 from the same binary path, so they are byte-identical.
 
-> **Unconfirmed.** That Claude Code runs a hook command once when the same
-> command string appears in two settings sources has not yet been checked
-> against the Claude Code hooks documentation. The pull request for #2279
-> cites the documentation URL if it confirms this.
-
-If the documentation does not confirm it, the injection is kept and the launch
-repair is called with `skip_home_merge` set for any launch that passes
-`--settings`. The home file is then not merged during that launch, so the
-session does not receive amplihack's hooks from two sources at once if the
-home file was missing them. The home file is still repaired by install,
-update, the rotator cycle and any launch that does not pass `--settings`. With
-de-duplication confirmed, `skip_home_merge` is always false.
+Claude Code runs a handler once when the same handler is defined in more than
+one settings file (<https://code.claude.com/docs/en/hooks>), so the session
+runs each amplihack hook once.
 
 ### When the file is not used
 
@@ -282,6 +279,10 @@ Checked in this order. In each case the launch continues without
 | No `amplihack-hooks` binary is found, or its path contains unsafe characters | Nothing written                                  |
 | `$AMPLIHACK_HOME` is not owned by you, or is writable by group or others     | Nothing written                                  |
 | `runtime/` is a symlink, is not owned by you, or cannot be made `0700`       | Nothing written                                  |
+
+When the skip is because `$AMPLIHACK_HOME` or `runtime/` is not private, the
+launch prints one warning that names the directory and says it must not be
+group- or other-writable. The other skips are logged at debug level only.
 | Writing the file fails                                                       | One warning line                                 |
 
 A `--settings` that appears after `--` is an argument to something else and
@@ -305,6 +306,16 @@ Each line has the form `<path>: <state>`, where the state is one of:
 | `unparseable (<reason>)`                       | Not valid JSON; the reason gives line and column only   |
 | `refused (<reason>)`                           | Not read, for a [file-safety](#file-safety) reason      |
 | `drift missing=[..] differing=[..] extra=[..]` | The file differs from the block; lists hold event names |
+| `absent; repo-local install clean`             | Home file only: absent, and `<cwd>/.claude/settings.json` matches the block |
+
+When the profile root cannot be resolved or listed, or the amplihack home is
+unknown or not absolute, doctor prints one line for that source instead of
+leaving its files out:
+
+```text
+profiles: cannot list (permission denied)
+launch file: cannot list (amplihack home unknown or not absolute)
+```
 
 Example with one stripped profile. The `<path>: <state>` lines are fixed; the
 `✗ hooks installed` heading and the indentation are an example of doctor's
@@ -319,9 +330,12 @@ $ amplihack doctor
     /home/you/.amplihack/runtime/launch-hooks-settings.json: clean
 ```
 
-The check fails when the home file is anything other than `clean`, or when a
-profile or launch file that exists shows drift, is unparseable or is refused.
-An absent profile or launch file passes. Failure uses doctor's existing exit
+The check fails when the home file is anything other than `clean`, when a
+profile or launch file that exists shows drift, is unparseable or is refused,
+or when a source cannot be listed. An absent profile or launch file passes.
+An absent home file passes only when the project-local
+`<cwd>/.claude/settings.json` is clean, which is a repo-local install (#1088).
+A project-local file is read only in that case and has no line of its own. Failure uses doctor's existing exit
 code; there is no new one.
 
 The check is read-only: it changes no bytes and no modification times. Its
@@ -330,7 +344,8 @@ output never contains file content, only paths, event names, fixed phrases,
 
 Doctor does not check:
 
-- the project-local `<cwd>/.claude/settings.json`;
+- the project-local `<cwd>/.claude/settings.json`, except as above when the
+  home file is absent;
 - `$CLAUDE_CONFIG_DIR/settings.json`. When `CLAUDE_CONFIG_DIR` is set, the
   file the session reads may differ from the home file doctor reports.
 
@@ -357,6 +372,11 @@ Every read and write of a settings file in this module follows these rules.
 
 The first write by this module sets the file mode to `0600`. A home
 `settings.json` that was `0644` becomes `0600` after its first repair.
+
+A `settings.json` that is a symlink (for example one managed by GNU Stow or
+another dotfile manager) or has more than one hard link is refused by every
+writer, including `amplihack install`, which fails. Replace the link with a
+regular file to let amplihack manage its hooks.
 
 Before any profile file is written, `hook_path_refusal` checks the profile
 root, so a test or tool running with a throwaway `HOME` cannot write a real
@@ -402,9 +422,6 @@ pub(crate) fn drift_file(path: &Path, t: &HookTarget) -> FileDrift;   // read-on
 `refused (r)` and `Drift(d)` to the `drift missing=[..] differing=[..]
 extra=[..]` line. A reason holds only a path, an event name, a fixed phrase or
 an `io::ErrorKind` name, never text from the file.
-
-The launch repair takes a `skip_home_merge: bool` argument, false by default;
-see [Duplicate hook commands](#duplicate-hook-commands).
 
 `Drift::is_clean()` is true when all three lists are empty; `Drift::lines()`
 gives the strings used by the install contract validation.

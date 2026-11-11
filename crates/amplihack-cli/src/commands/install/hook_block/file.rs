@@ -54,7 +54,7 @@ pub(crate) fn owner_refusal(file_uid: u32, euid: u32) -> Option<String> {
 
 /// An I/O error as a reason: the fixed phrase of a refusal raised by the
 /// secure-file helpers, or the error kind. Never the file's content.
-fn reason(error: &std::io::Error) -> String {
+pub(crate) fn reason(error: &std::io::Error) -> String {
     if error.kind() == std::io::ErrorKind::InvalidData {
         error.to_string()
     } else {

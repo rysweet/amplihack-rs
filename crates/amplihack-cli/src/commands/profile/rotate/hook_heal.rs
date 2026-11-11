@@ -33,10 +33,7 @@ pub(super) struct HealCtx<'a> {
 /// Heals the files `ctx` names after a cycle that ended in `outcome`.
 /// Returns the files written; each is logged by the caller.
 pub(super) fn heal(outcome: CycleOutcome, ctx: &HealCtx<'_>) -> Vec<PathBuf> {
-    if !matches!(outcome, CycleOutcome::Swapped | CycleOutcome::Stayed)
-        || ctx.read_only
-        || ctx.newer_stamp
-    {
+    if !applies(outcome, ctx.read_only, ctx.newer_stamp) {
         return Vec::new();
     }
     let Some(target) = ctx.target else {
@@ -54,6 +51,12 @@ pub(super) fn heal(outcome: CycleOutcome, ctx: &HealCtx<'_>) -> Vec<PathBuf> {
         .into_iter()
         .filter(|path| heal_one(path, target))
         .collect()
+}
+
+/// The heal's only gate: a cycle that kept or moved the live login, not a
+/// dry run, from a binary no older than the install stamp.
+fn applies(outcome: CycleOutcome, read_only: bool, newer_stamp: bool) -> bool {
+    matches!(outcome, CycleOutcome::Swapped | CycleOutcome::Stayed) && !read_only && !newer_stamp
 }
 
 /// Writes `path` only when it exists and has drifted. Whether it wrote.
@@ -76,23 +79,40 @@ fn heal_one(path: &Path, target: &HookTarget) -> bool {
 }
 
 /// The production heal after `run_cycle` returned `outcome`, outside the
-/// swap lock. The live profile comes from the rotator's own detection,
-/// never from the ledger or the environment. A stamp that cannot be read
-/// counts as newer.
+/// swap lock. [`heal`] applies the gate; this asks [`applies`] first only
+/// to avoid work: resolving the hooks binary (which may run
+/// `claude --version`) and identifying the live login (which may read the
+/// network). The live profile comes from the rotator's own detection, never from the
+/// ledger or the environment. A stamp that cannot be read counts as newer.
 pub(super) fn after_cycle(outcome: CycleOutcome, ctx: &Ctx) {
-    if !matches!(outcome, CycleOutcome::Swapped | CycleOutcome::Stayed) || ctx.read_only {
-        return;
-    }
     let newer_stamp = !matches!(crate::commands::install::newer_install_stamp(), Ok(None));
-    if newer_stamp {
+    if !applies(outcome, ctx.read_only, newer_stamp) {
         return;
     }
     let Some(target) = hook_target() else {
         return;
     };
     let live_dir = match identify::live(&ctx.store, &ctx.rs, &ctx.home) {
-        Ok((LiveId::Known(name), _)) => ctx.store.resolve(&name).ok(),
-        _ => None,
+        Ok((LiveId::Known(name), _)) => match ctx.store.resolve(&name) {
+            Ok(dir) => Some(dir),
+            Err(_) => {
+                log_line(
+                    &ctx.rs,
+                    &format!(
+                        "hooks: live profile {name} not resolved; its settings.json not checked"
+                    ),
+                );
+                None
+            }
+        },
+        Ok(_) => None,
+        Err(_) => {
+            log_line(
+                &ctx.rs,
+                "hooks: live profile not identified; its settings.json not checked",
+            );
+            None
+        }
     };
     let live_refusal = live_dir
         .as_ref()
@@ -106,11 +126,15 @@ pub(super) fn after_cycle(outcome: CycleOutcome, ctx: &Ctx) {
         newer_stamp,
         live_refusal,
     };
+    let written = heal(outcome, &heal_ctx);
+    if written.is_empty() {
+        return;
+    }
     let events = block(&target)
         .as_object()
         .map(|hooks| hooks.keys().cloned().collect::<Vec<_>>().join(", "))
         .unwrap_or_default();
-    for path in heal(outcome, &heal_ctx) {
+    for path in written {
         log_line(
             &ctx.rs,
             &format!(
@@ -120,3 +144,7 @@ pub(super) fn after_cycle(outcome: CycleOutcome, ctx: &Ctx) {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests_issue_2279_heal.rs"]
+mod tests;

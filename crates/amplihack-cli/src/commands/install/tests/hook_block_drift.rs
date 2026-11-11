@@ -205,11 +205,3 @@ fn lines_name_events_and_never_file_content() {
     assert!(!joined.contains('{'), "no JSON in drift lines: {joined}");
     assert!(!joined.contains("sk-test-do-not-print"));
 }
-
-#[test]
-fn drift_is_pure() {
-    let s = clean(false);
-    let before = s.clone();
-    let _ = hook_block::drift(&s, &target(true));
-    assert_eq!(s, before);
-}

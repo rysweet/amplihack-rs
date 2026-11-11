@@ -14,13 +14,13 @@
 //! Probing is stubbed with `Ctx::measure`; no login, `claude`, network or
 //! developer profile root is touched. No sleeps.
 
-use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
-use super::decide::Probed;
-use super::hook_heal::{self, HealCtx};
-use super::observe::{Measurement, Snap, decide_measured};
-use super::tests_issue_1870::rd;
-use super::tests_revalidate_cause::{ctx_with, log_of, probes_for};
-use super::tests_swap::{Env, env};
+use super::super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
+use super::super::decide::Probed;
+use super::super::hook_heal::{self, HealCtx};
+use super::super::observe::{Measurement, Snap, decide_measured};
+use super::super::tests_issue_1870::rd;
+use super::super::tests_revalidate_cause::{ctx_with, log_of, probes_for};
+use super::super::tests_swap::{Env, env};
 use crate::commands::install::hook_block::{self, HookTarget};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::now;
@@ -98,7 +98,7 @@ fn measure_stay_skipped_candidate(ctx: &Ctx, snap: &Snap) -> Result<Measurement,
     decide_measured(ctx, snap, rd(40.0, 30.0, None), probes, now())
 }
 
-fn run(e: &Env, measure: super::cycle::MeasureFn) -> CycleOutcome {
+fn run(e: &Env, measure: super::super::cycle::MeasureFn) -> CycleOutcome {
     let mut c = ctx_with(e, measure);
     run_cycle(&mut c, Mode::Watch).unwrap()
 }

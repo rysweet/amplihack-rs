@@ -55,7 +55,7 @@ impl ProfileStore {
         Self {
             root,
             shared_assets: None,
-            seed_hooks: None,
+            seed_hooks: default_seed_hooks(),
         }
     }
 
@@ -75,8 +75,6 @@ impl ProfileStore {
     fn seed_hooks_into(&self, profile_dir: &Path) {
         let target = match &self.seed_hooks {
             Some(decided) => decided.clone(),
-            // Unit tests never resolve the host's hooks binary.
-            None if cfg!(test) => return,
             None => production_seed_hooks(&self.root),
         };
         let target = match target {
@@ -1079,10 +1077,27 @@ fn copy_filtered_settings(source: &Path, destination: &Path) -> Result<(), Profi
     write_filtered_settings(&raw, destination)
 }
 
-/// This process's hooks block for profiles under `root`: none without a
-/// usable hooks binary, or when [`super::settings_refresh::hook_path_refusal`]
-/// refuses it (#1699).
+/// Production stores decide the seeding hooks block when seeding.
+#[cfg(not(test))]
+fn default_seed_hooks() -> Option<Result<HookTarget, String>> {
+    None
+}
+
+/// Unit tests never resolve the host's hooks binary: a store seeds no hooks
+/// block unless the test calls [`ProfileStore::with_seed_hooks`].
+#[cfg(test)]
+fn default_seed_hooks() -> Option<Result<HookTarget, String>> {
+    Some(Err("not configured".into()))
+}
+
+/// This process's hooks block for profiles under `root`: none from a binary
+/// older than the install stamp (R3; an unreadable stamp counts as newer),
+/// none without a usable hooks binary, and none when
+/// [`super::settings_refresh::hook_path_refusal`] refuses it (#1699).
 fn production_seed_hooks(root: &Path) -> Result<HookTarget, String> {
+    if !matches!(crate::commands::install::newer_install_stamp(), Ok(None)) {
+        return Err("older binary than the install stamp".into());
+    }
     let target = hook_target().ok_or_else(|| "no usable amplihack-hooks binary".to_string())?;
     match super::settings_refresh::hook_path_refusal_here(&target.bin, root) {
         Some(reason) => Err(reason),

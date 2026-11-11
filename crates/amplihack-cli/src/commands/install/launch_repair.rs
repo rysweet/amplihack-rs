@@ -1,7 +1,7 @@
 //! Issue #2279 (C5, D4): the launch repair of amplihack's hooks block.
 //!
 //! Runs after the #1526 install-stamp gate in
-//! `ensure_framework_installed_opts`, so an older binary never writes its
+//! `ensure_framework_installed_with`, so an older binary never writes its
 //! older block. Any drift is repaired, not only a file with no amplihack
 //! hook at all.
 

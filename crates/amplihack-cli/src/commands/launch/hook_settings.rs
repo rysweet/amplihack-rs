@@ -10,7 +10,7 @@
 //! home file and this file are both built by `hook_block::block`, so their
 //! commands are byte-identical.
 
-use crate::commands::install::hook_block::{HookTarget, block, hook_target};
+use crate::commands::install::hook_block::{HookTarget, block, hook_target, reason};
 use std::path::{Path, PathBuf};
 
 /// The launch file, relative to the amplihack home.
@@ -180,13 +180,7 @@ fn write_if_changed(path: &Path, target: &HookTarget) -> Result<(), WriteError> 
         .file_name()
         .and_then(|n| n.to_str())
         .ok_or(WriteError::NotPrivate)?;
-    write_private_atomic(dir, name, &bytes).map_err(|e| {
-        WriteError::Io(if e.kind() == std::io::ErrorKind::InvalidData {
-            e.to_string()
-        } else {
-            e.kind().to_string()
-        })
-    })
+    write_private_atomic(dir, name, &bytes).map_err(|e| WriteError::Io(reason(&e)))
 }
 
 #[cfg(not(unix))]

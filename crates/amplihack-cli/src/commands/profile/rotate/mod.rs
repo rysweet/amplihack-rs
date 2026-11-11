@@ -1,6 +1,5 @@
-//! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude` on
-//! the account with the most capacity left; `profile switch` uses the same swap.
-//! See docs/reference/profile-command.md.
+//! `amplihack profile rotate` (#1592): keeps the login in `~/.claude` on the account with the
+//! most capacity left; `profile switch` shares the swap. See docs/reference/profile-command.md.
 #[cfg(unix)]
 mod account;
 #[cfg(unix)]
@@ -166,8 +165,6 @@ mod tests_issue_1886;
 #[cfg(all(test, unix))]
 mod tests_issue_1886_cycle;
 #[cfg(all(test, unix))]
-mod tests_issue_2279_heal;
-#[cfg(all(test, unix))]
 mod tests_key_check;
 #[cfg(all(test, unix))]
 mod tests_log;
@@ -213,7 +210,6 @@ pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rota
 #[cfg(unix)]
 pub(super) use {control::clear_overflow_block, control::overflow_blocks, log::timestamp};
 
-// Auto-switch's overflow gate (`gate_record`): the running rotator's own
 #[cfg(all(test, unix))]
 pub(super) use gate_record::effective_at as overflow_gate_at;
 #[cfg(unix)]
@@ -274,9 +270,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                 }
                 let mut ctx = cycle::Ctx::new(store.clone(), home?, s);
                 ctx.reread = Some(fresh::reread_as_configured);
-                let outcome = cycle::run_cycle(&mut ctx, mode)?;
-                // Issue #2279 (D6): outside the swap lock; a dry run writes nothing.
-                hook_heal::after_cycle(outcome, &ctx);
+                hook_heal::after_cycle(cycle::run_cycle(&mut ctx, mode)?, &ctx);
             }
             Some(RotateAction::Start(w)) => {
                 if w.supervised.is_some() {

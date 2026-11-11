@@ -1,7 +1,7 @@
 //! Individual health check implementations for `amplihack doctor`.
 
-use super::hook_drift::{render, report};
-use super::{MAX_ERROR_LEN, MAX_VERSION_LEN, settings_json_path};
+use super::hook_drift::{Source, profile_error_reason, render, report};
+use super::{MAX_ERROR_LEN, MAX_VERSION_LEN, settings_json_path, settings_json_path_for};
 use crate::commands::install::hook_block::hook_target;
 use crate::commands::launch::hook_settings::launch_file_path;
 use crate::commands::profile::ProfileStore;
@@ -16,8 +16,11 @@ const DOCTOR_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 /// One line per settings file that carries amplihack's hooks block:
 /// `$HOME/.claude/settings.json`, each profile's `settings.json` under the
 /// configured profile root, and the launch `--settings` file. Fails when the
-/// home file is not clean, or when a present profile or launch file has
-/// drifted, cannot be parsed or is refused. Read-only.
+/// home file is not clean, when a present profile or launch file has
+/// drifted, cannot be parsed or is refused, or when the profiles or the
+/// launch file cannot be located. An absent home file passes when
+/// `<cwd>/.claude/settings.json` is clean, a repo-local install (#1088).
+/// Read-only.
 ///
 /// File contents are never printed; lines hold paths, event names and fixed
 /// phrases only (SEC-WS2-04).
@@ -35,10 +38,27 @@ pub fn check_hooks_installed() -> (bool, String) {
         );
     };
     let root = ProfileStore::from_env()
-        .ok()
-        .map(|store| store.root().to_path_buf());
+        .map(|store| store.root().to_path_buf())
+        .map_err(|error| profile_error_reason(&error));
+    let profiles = match &root {
+        Ok(root) => Source::At(root),
+        Err(why) => Source::Unknown(why),
+    };
     let launch = launch_file_path();
-    let reports = report(&home, root.as_deref(), launch.as_deref(), &target);
+    let launch_source = match &launch {
+        Some(path) => Source::At(path),
+        None => Source::Unknown("amplihack home unknown or not absolute"),
+    };
+    let repo_local = std::env::current_dir()
+        .ok()
+        .map(|cwd| settings_json_path_for(&cwd));
+    let reports = report(
+        &home,
+        repo_local.as_deref(),
+        profiles,
+        launch_source,
+        &target,
+    );
     let (ok, lines) = render(&reports);
     let head = if ok {
         "amplihack hooks installed"

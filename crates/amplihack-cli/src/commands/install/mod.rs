@@ -394,16 +394,6 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
 /// [`ensure_framework_installed`], writing the #1526 refusal warning to
 /// `notice` (stderr in the binary).
 pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W) -> Result<()> {
-    ensure_framework_installed_opts(notice, false)
-}
-
-/// [`ensure_framework_installed_with`]; with `skip_home_merge` the hooks
-/// repair of the settings file is left out, for a launch whose hooks reach
-/// Claude Code through its own `--settings` file (#2279, D5 fallback).
-pub(crate) fn ensure_framework_installed_opts<W: std::io::Write>(
-    notice: &mut W,
-    skip_home_merge: bool,
-) -> Result<()> {
     // Issue #1526: this bootstrap is an implicit installer too. A binary older
     // than the installed stamp must not stage, top up commands or repair
     // settings.json over the newer install.
@@ -474,9 +464,6 @@ pub(crate) fn ensure_framework_installed_opts<W: std::io::Write>(
                 crate::VERSION
             );
         }
-    }
-    if skip_home_merge {
-        return Ok(());
     }
     launch_repair::repair_settings_hooks(notice, &staging_dir, &hooks_bin)
 }

@@ -559,6 +559,18 @@ fn run_launch_core(
         // stronger guarantees of descriptor-based execution.
         let hook_settings = match hook_settings::prepare(&binary.name, &extra_args) {
             hook_settings::Inject::Path(path) => Some(path),
+            hook_settings::Inject::Skip(reason @ "runtime dir not private") => {
+                // SR-15: the one skip the user can fix, so say it once.
+                let dir = hook_settings::launch_file_path()
+                    .and_then(|file| file.parent().map(std::path::Path::to_path_buf));
+                eprintln!(
+                    "amplihack: warning: hooks settings file not passed ({reason}): {} and its \
+                     parent must be owned by you and must not be group- or other-writable.",
+                    dir.as_deref()
+                        .map_or_else(|| "the amplihack home".into(), |d| d.display().to_string())
+                );
+                None
+            }
             hook_settings::Inject::Skip(reason) => {
                 tracing::debug!("no hooks --settings file: {reason}");
                 None
