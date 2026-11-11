@@ -14,6 +14,74 @@ filesystem limitations. They are not final verification. The ordinary push
 is the final delivery gate; its result and matching local/remote/PR head
 receipt are recorded in the [PR description](https://github.com/rysweet/amplihack-rs/pull/2289).
 
+## Step 16b: Outside-In Testing Results
+
+Fresh verification on 2026-11-11 starts at `d9f3555e4dcd2a121020b10566e1a61e9080872e`.
+The worktree is clean and that commit is already pushed. Freshly fetched
+`origin/main` (`2951181459e2a7958a4f2ec60aad2c42013982fc`) is an ancestor;
+no additional merge is needed. Issue #1390, its maintainer clarification,
+the PR description, discussion reviews, and empty formal/inline review
+collections were read. No separate Crusty review was available.
+
+Detected toolchains: Rust 2024 with Cargo and `Cargo.lock`, pinned to Rust
+1.97.0 by `rust-toolchain.toml`. The changed executable fixtures are Rust;
+`crates/amplihack-cli/Cargo.toml` registers `cli_integration`, and
+`bins/amplihack/src/main.rs` is the CLI entry point. Documentation changes
+are Markdown. The repository also has npm and uv bootstrap manifests
+(`package.json`, `pyproject.toml`); neither wrapper is changed or needed
+for this Rust validation. `CONTRIBUTING_RUST.md` documents Cargo build,
+test, clippy and formatting commands. No manifest or lockfile changes.
+
+Strategy: apply the `qa-team` skill's native Cargo approach. Execute the
+registered tests through the current-checkout CLI, with
+`AMPLIHACK_TEST_BINARY` absent, a compiled controlled Rust runner using the
+pinned recovery library, and private HOME/config/profile/process roots.
+Synthetic ancestor probes verify repository boundaries. Process completion
+and the invocation ledger synchronize assertions, with no timed test windows.
+The scenarios verify classification and durable finalization; they do not
+exercise real agent scheduling, replay, or upstream transcript retention.
+
+Command prefix: `/home/ryan/.cargo/bin/cargo test --locked -p amplihack-cli`.
+Each command below appends `-- --nocapture`; the first two also use `--exact`.
+
+| Scenario | Command suffix | Result and key output |
+| --- | --- | --- |
+| Simple: single limited agent | `--test cli_integration issue_1390_usage_limit::a_single_limited_step_preserves_the_reset_hint` | PASS, exit 0; 1 passed. Exit 1 from the child CLI, matching stdout/stderr verdicts, full `9:20am (UTC)` hint, exactly one execution, durable `usage_limit`. |
+| Edge/integration: completed setup plus failed agent | `--test cli_integration issue_1390_usage_limit::reported_limit_survives_the_cli_boundary_without_transport_retry` | PASS, exit 0; 1 passed. Completed `setup` and failed `limited-agent` identities, setup effect, attempt 1, no transport retry, and finalized recovery artifacts. |
+| Fixture admission and probes | `--test cli_integration issue_1390_usage_limit::runner_` | PASS, exit 0; 2 passed. Probes perform no work; absent or malformed recovery descriptors fail before work. |
+| Classification precedence and reset evidence | `--lib commands::recipe::run::tests_failure_class::` | PASS, exit 0; 52 passed. |
+| Cleanup, including original failing test and duplicate descriptor | `--lib commands::cleanup::` | PASS, exit 0; 100 passed. |
+| Installer fixture isolation | `--lib commands::install::tests::issue_1526_implicit_downgrade::` | PASS, exit 0; 6 passed. |
+| Install freshness through local checkout | `--test cli_integration bugfix_341_install_freshness::` | PASS, exit 0; 1 passed. |
+
+`cargo fmt --all --check` and `git diff HEAD --check` pass. Complete logs,
+exact commands, exit receipts, source revisions and source/binary SHA-256
+records are retained in `target/issue-1390-step16b/`. This run uses
+`CARGO_TARGET_DIR=/d0/ryan/cargo-targets/fix-2289`, four build jobs, an empty
+`RUSTC_WRAPPER`, and writable private scratch outside the real config roots.
+
+Main comparison command (run from the main worktree):
+`cargo test --locked -p amplihack-cli --lib commands::cleanup::sweep::target_remove::tests::held_cargo_lock_at_any_level_means_in_use_and_nothing_is_deleted -- --exact --nocapture`.
+
+Fresh main comparison: the exact original cleanup test also passes on the
+untouched `origin/main` worktree, exit 0 (`baseline-cleanup.{command,log,exit}`
+and `baseline.revision`). A fresh duplicate-descriptor injection
+on main fails with `Refused(InUse)`, expected exit 101; its diagnostic
+patch/result is retained as `baseline-inherited.*` in the same evidence
+directory. The temporary diagnostic edit is restored after execution.
+This demonstrates the pre-existing lock-release fixture assumption, without
+identifying the process behind the original intermittent failure. The
+existing explicit-unlock correction is retained; production cleanup is unchanged.
+The original `/home/ryan/.amplihack/work/push-2289.log` remains intact with
+SHA-256 `44718665b5e4f99ff186a82772a734e30f520a0f646600c494c30cf516549475`.
+
+Fix count in this step: **0**. All fresh branch scenarios pass; the earlier
+fixture fixes remain committed. The full workspace pre-push hook already
+passed for `d9f3555e4` (retained `target/issue-1390-step13-current/push.log`,
+exit 0), with the repository's heavy-test skips and existing host exclusions.
+This step changes only the validation record; ordinary commit/push hooks
+remain enabled. Delivery receipts are separate from scenario results.
+
 ## Step 13: Local Testing Results
 
 This run reviews the five staged Rust test-fixture corrections left after
