@@ -1317,12 +1317,15 @@ fn step_18c_does_not_fall_back_to_repo_path() {
 fn workflow_publish_step_16_guards_non_github_remotes() {
     // step-16 hands PR creation to workflow_publish_pr.sh, and the host-type
     // decision is made there (#1684). Check the tool's code lines, not the
-    // step body: the step only mentions REMOTE_HOST_TYPE in a comment.
+    // step body: the step only mentions REMOTE_HOST_TYPE in a comment. The
+    // final exec hands cancellation to the helper after removing the step trap.
     let command = step_command("workflow-publish", "step-16-create-draft-pr");
     assert!(
-        command
-            .lines()
-            .any(|line| line.trim_start().starts_with("bash \"$PUBLISH_HELPER\"")),
+        command.split(';').any(|statement| {
+            statement
+                .trim_start()
+                .starts_with("exec bash \"$PUBLISH_HELPER\"")
+        }),
         "step-16 must create the PR by running workflow_publish_pr.sh"
     );
     assert!(
