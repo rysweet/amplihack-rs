@@ -6,6 +6,39 @@ use serde_json::json;
 
 #[cfg(unix)]
 #[test]
+fn shell_preflight_makes_existing_0755_state_usable_by_completion() {
+    use crate::support::auto_drive_light::tools_dir;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    let d = Drive::new();
+    let record = d.record(1);
+    let evidence = std::fs::read(&record).unwrap();
+    std::fs::set_permissions(&d.state, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let o = d
+        .cmd("bash")
+        .args([
+            "-c",
+            "source \"$1/autodrive_state.sh\" && autodrive_private_dir \"$2\"",
+            "state-preflight",
+        ])
+        .arg(tools_dir())
+        .arg(&d.state)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "shell preflight: {}", show(&o));
+
+    let prepared = d.prepare(1, "");
+    assert!(Path::new(prepared["private_state"].as_str().unwrap()).is_file());
+    assert_eq!(
+        std::fs::metadata(&d.state).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(std::fs::read(record).unwrap(), evidence);
+}
+
+#[cfg(unix)]
+#[test]
 fn completion_preparation_and_evaluation_are_private_under_caller_umasks() {
     use super::fixture::json_output;
     use crate::support::amplihack_bin::amplihack_bin;

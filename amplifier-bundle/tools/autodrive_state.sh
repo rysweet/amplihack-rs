@@ -67,16 +67,17 @@ autodrive_state_dir() {
   printf '%s\n' "$dir"
 }
 
-# autodrive_private_dir <dir> -> makes <dir> a state dir the merge gate accepts,
-# whatever the caller's umask, or prints a named ERROR and returns 1.
+# autodrive_private_dir <dir> -> makes <dir> a state dir the merge gate and
+# completion preparation accept, whatever the caller's umask, or prints a
+# named ERROR and returns 1.
 #
 #   ERROR: state-dir-not-private: <dir> is empty, a symlink, not a directory,
 #     not owned by this user, or cannot be created or changed. Nothing in it is
 #     touched.
 #
-# <dir> and any missing parent are created under umask 077, and <dir> loses its
-# group and world write bits (chmod go-w). Existing parents are left as they
-# are.
+# <dir> and any missing parent are created under umask 077, and <dir> is set
+# to mode 0700: completion preparation requires owner-only access, including
+# for existing state directories. Existing parents are left as they are.
 #
 # An entry directly in <dir> that the gate would refuse (a symlink, an entry
 # not owned by this user, or one with a group or world write bit) was written
@@ -103,8 +104,8 @@ autodrive_private_dir() {
   if [ ! -O "$dir" ]; then
     echo "ERROR: state-dir-not-private: ${dir} is not owned by this user, so others may write in it; choose another AUTODRIVE_STATE_DIR" >&2; return 1
   fi
-  if ! chmod go-w -- "$dir" 2>/dev/null; then
-    echo "ERROR: state-dir-not-private: could not remove the group and world write bits from ${dir}" >&2; return 1
+  if ! chmod 700 -- "$dir" 2>/dev/null; then
+    echo "ERROR: state-dir-not-private: could not set owner-only access on ${dir}" >&2; return 1
   fi
   me="$(id -u)" || { echo "ERROR: state-dir-not-private: the current user id cannot be read" >&2; return 1; }
   list="$(autodrive_untrusted_entries "$dir" "$me" -print)" \
