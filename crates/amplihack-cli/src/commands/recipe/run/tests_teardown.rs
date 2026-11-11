@@ -189,13 +189,10 @@ impl OrphanProbe {
     }
 
     /// Lets the runner exit 1, which starts the teardown.
-    fn release_runner(&self) {
-        drop(
-            std::fs::OpenOptions::new()
-                .write(true)
-                .open(&self.go)
-                .expect("open the runner's go FIFO"),
-        );
+    fn release_runner(&self, done: &mpsc::Receiver<bool>) {
+        crate::test_support::unix_process::release_fifo(&self.go, || {
+            matches!(done.try_recv(), Err(mpsc::TryRecvError::Empty))
+        });
     }
 }
 
@@ -227,7 +224,7 @@ fn test_failure_path_reaps_orphaned_descendants() {
 
     let done = execute_on_worker(&probe.recipe, temp.path());
     let orphan = KillOnDrop(probe.orphan());
-    probe.release_runner();
+    probe.release_runner(&done);
     let failed = done
         .recv_timeout(CEILING)
         .expect("hung: execute_recipe_via_rust did not return");
@@ -443,7 +440,7 @@ fn test_teardown_is_scoped_to_runner_process_group() {
 
     let done = execute_on_worker(&probe.recipe, temp.path());
     let orphan = KillOnDrop(probe.orphan());
-    probe.release_runner();
+    probe.release_runner(&done);
     let failed = done
         .recv_timeout(CEILING)
         .expect("hung: execute_recipe_via_rust did not return");

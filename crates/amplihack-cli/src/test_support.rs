@@ -435,6 +435,10 @@ pub(crate) fn write_executable(path: &Path, body: &str) {
 #[path = "../tests/support/wait.rs"]
 pub(crate) mod wait;
 
+#[cfg(unix)]
+#[path = "../tests/support/unix_process.rs"]
+pub(crate) mod unix_process;
+
 /// A gate that holds one side of a test at a known point (issue #2019).
 #[path = "test_support/test_gate.rs"]
 pub(crate) mod test_gate;

@@ -38,12 +38,11 @@ impl super::Fixture {
     /// Lets the held stub `pid` finish: opening its FIFO for writing and
     /// closing it ends the stub's read.
     pub fn release(&self, pid: &str) {
-        drop(
-            fs::OpenOptions::new()
-                .write(true)
-                .open(self.records.join(format!("hold.{pid}")))
-                .unwrap_or_else(|e| panic!("release stub {pid}: {e}")),
-        );
+        use crate::support::unix_process::{process_alive, release_fifo};
+        let consumer = pid.parse().expect("stub pid");
+        release_fifo(&self.records.join(format!("hold.{pid}")), || {
+            process_alive(consumer)
+        });
     }
 
     /// The largest number of stub `claude` processes running at once.

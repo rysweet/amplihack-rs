@@ -292,6 +292,7 @@ mod shell {
     use std::fs;
     use std::io::{Seek, Write};
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
     use std::path::Path;
     use std::process::{Child, Command, Output, Stdio};
 
@@ -337,6 +338,18 @@ mod shell {
         envs: &[(&str, &str)],
         input: &[u8],
     ) -> Output {
+        let mut cmd = script_command(script, home, stub, args, envs, input);
+        crate::support::wait::output_within(&format!("{}", script.display()), &mut cmd)
+    }
+
+    fn script_command(
+        script: &Path,
+        home: &Path,
+        stub: &Path,
+        args: &[&str],
+        envs: &[(&str, &str)],
+        input: &[u8],
+    ) -> Command {
         let mut cmd = Command::new(script);
         cmd.args(args)
             .env_clear()
@@ -358,7 +371,7 @@ mod shell {
         stdin.write_all(input).unwrap();
         stdin.seek(std::io::SeekFrom::Start(0)).unwrap();
         cmd.stdin(stdin);
-        crate::support::wait::output_within(&format!("{}", script.display()), &mut cmd)
+        cmd
     }
 
     /// A process whose command line names `install-runtime`, standing in for
@@ -683,6 +696,13 @@ mod shell {
 
     #[test]
     fn bootstrap_starts_the_installer_in_the_background_in_cloud_sessions() {
+        with_parked_installer(|_| {});
+    }
+
+    // The callback lets the regression test unwind with both installer and
+    // cat parked, at the same point the behavior assertions run.
+    fn with_parked_installer(check: impl FnOnce(&Path)) {
+        use crate::support::unix_process::{ProcessGroup, process_alive, release_fifo};
         let home = tempfile::tempdir().unwrap();
         let stub = tempfile::tempdir().unwrap();
         let data = tempfile::tempdir().unwrap();
@@ -700,9 +720,14 @@ mod shell {
         );
         write_exe(
             &bin.path().join("install-runtime"),
-            "#!/bin/sh\ntouch \"$HOME/installer-ran\"\ncat \"$HOME/hold\" >/dev/null\nrm -rf \"$AMPLIHACK_PLUGIN_INSTALL_LOCK\"\n",
+            "#!/bin/sh\necho $$ > \"$HOME/installer.pid\"\ncat \"$HOME/hold\" >/dev/null &\necho $! > \"$HOME/cat.pid\"\ntouch \"$HOME/installer-ran\"\nwait\nrm -rf \"$AMPLIHACK_PLUGIN_INSTALL_LOCK\"\n",
         );
-        let out = run(
+        // Keep the fixture installer in a group owned before bootstrap can
+        // spawn it. Production uses setsid; this test redirects that launch
+        // into our owned group so panic cleanup includes the installer/cat.
+        write_exe(&stub.path().join("setsid"), "#!/bin/sh\nexec \"$@\"\n");
+        let group = ProcessGroup::new();
+        let mut cmd = script_command(
             &bin.path().join("bootstrap"),
             home.path(),
             stub.path(),
@@ -711,7 +736,15 @@ mod shell {
                 ("CLAUDE_CODE_REMOTE", "true"),
                 ("CLAUDE_PLUGIN_DATA", data.path().to_str().unwrap()),
             ],
+            b"{\"hook\":\"payload\"}",
         );
+        cmd.process_group(group.id());
+        let out = crate::support::wait::output_within("bootstrap", &mut cmd);
+        assert!(
+            wait_for(&home.path().join("installer-ran")),
+            "install-runtime was not started"
+        );
+        check(home.path());
         assert!(out.status.success());
         let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         let context = json["hookSpecificOutput"]["additionalContext"]
@@ -719,10 +752,6 @@ mod shell {
             .unwrap();
         assert!(context.contains("being installed"), "{context}");
 
-        assert!(
-            wait_for(&home.path().join("installer-ran")),
-            "install-runtime was not started"
-        );
         // The forked child opens the log before it runs the installer, so
         // the log exists once the marker does.
         assert!(data.path().join("install-runtime.log").exists());
@@ -731,10 +760,42 @@ mod shell {
             "bootstrap must not block: it returned only after the install ended"
         );
         // Release the parked installer.
-        drop(fs::OpenOptions::new().write(true).open(&hold).unwrap());
+        let pid = fs::read_to_string(home.path().join("cat.pid"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        release_fifo(&hold, || process_alive(pid));
         crate::support::wait::wait_until("the installer to release its lock", || {
             !data.path().join("install.lock").exists()
         });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn background_installer_and_cat_are_killed_on_assertion_unwind() {
+        let mut pids = Vec::new();
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_parked_installer(|home| {
+                for name in ["installer.pid", "cat.pid"] {
+                    pids.push(
+                        fs::read_to_string(home.join(name))
+                            .unwrap()
+                            .trim()
+                            .parse()
+                            .unwrap(),
+                    );
+                }
+                panic!("intentional assertion failure while the installer is parked");
+            });
+        }));
+        assert!(failure.is_err());
+        assert_eq!(pids.len(), 2, "both parked processes must be observed");
+        for pid in pids {
+            crate::support::wait::wait_until("installer fixture process to exit on unwind", || {
+                !crate::support::unix_process::process_alive(pid)
+            });
+        }
     }
 
     /// Waits for `path` to appear, bounded only by the hang guard `CEILING`.

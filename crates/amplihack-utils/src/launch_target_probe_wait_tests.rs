@@ -26,6 +26,13 @@ use crate::binary_finder::{PROBE_CAPTURE_LIMIT, run_capped_output_to_exit};
 use std::process::Command;
 use std::time::Duration;
 
+#[cfg(unix)]
+#[path = "../../amplihack-cli/tests/support/unix_process.rs"]
+mod unix_process;
+#[cfg(unix)]
+#[path = "../../amplihack-cli/tests/support/wait.rs"]
+mod wait;
+
 #[test]
 fn the_knob_is_named_amplihack_test_probe_wait() {
     assert_eq!(PROBE_WAIT_ENV, "AMPLIHACK_TEST_PROBE_WAIT");
@@ -159,21 +166,31 @@ fn run_to_exit_reports_a_spawn_failure_as_an_error() {
 #[cfg(unix)]
 #[test]
 fn run_to_exit_returns_when_the_child_exits_even_if_a_grandchild_holds_the_pipe() {
+    with_held_grandchild(|out, _| assert!(out.status.success()));
+}
+
+#[cfg(unix)]
+fn with_held_grandchild(check: impl FnOnce(&std::process::Output, libc::pid_t)) {
     // SEC-4 still holds without a deadline: a candidate that backgrounds a
     // process holding stdout must not keep the probe waiting on the
     // grandchild. The grandchild blocks on a FIFO nobody opens for writing
-    // until the test is done, so the wait is an event, not a sleep.
+    // until the process-group guard kills it, on success or assertion unwind.
+    use std::os::unix::process::CommandExt;
     let dir = tempfile::tempdir().unwrap();
+    let group = unix_process::ProcessGroup::new();
     let fifo = dir.path().join("hold");
+    let pid_file = dir.path().join("grandchild.pid");
     let status = Command::new("mkfifo").arg(&fifo).status().unwrap();
     assert!(status.success());
     let mut cmd = Command::new("/bin/sh");
     cmd.args([
         "-c",
-        "cat \"$1\" >/dev/null & printf 'claude 1.2.3\\n'; exit 0",
+        "cat \"$1\" >/dev/null & echo $! >\"$2\"; printf 'claude 1.2.3\\n'; exit 0",
         "sh",
     ])
-    .arg(&fifo);
+    .arg(&fifo)
+    .arg(&pid_file)
+    .process_group(group.id());
     // CEILING (600 s, tests/support/wait.rs) is the only bound: it ends a
     // hung run and never decides a pass.
     let (tx, rx) = std::sync::mpsc::channel();
@@ -181,12 +198,36 @@ fn run_to_exit_returns_when_the_child_exits_even_if_a_grandchild_holds_the_pipe(
         let _ = tx.send(run_capped_output_to_exit(cmd, PROBE_CAPTURE_LIMIT));
     });
     let out = rx
-        .recv_timeout(Duration::from_secs(600))
+        .recv_timeout(wait::CEILING)
         .expect("hung: run_capped_output_to_exit waited on the grandchild's pipe")
         .expect("spawn sh");
-    assert!(out.status.success());
-    // Release the grandchild so nothing is left behind.
-    std::fs::OpenOptions::new().write(true).open(&fifo).unwrap();
+    let pid = std::fs::read_to_string(pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(
+        unix_process::process_alive(pid),
+        "the grandchild must still be held"
+    );
+    check(&out, pid);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn fifo_held_probe_grandchild_is_killed_on_assertion_unwind() {
+    let mut pid = None;
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        with_held_grandchild(|_, grandchild| {
+            pid = Some(grandchild);
+            panic!("intentional assertion failure while the grandchild is parked");
+        });
+    }));
+    assert!(failure.is_err());
+    let pid = pid.expect("the held grandchild must have started");
+    wait::wait_until("probe grandchild to exit on unwind", || {
+        !unix_process::process_alive(pid)
+    });
 }
 
 #[cfg(unix)]
@@ -195,34 +236,14 @@ fn run_to_exit_returns_when_a_grandchild_never_stops_writing() {
     // `yes` inherits stdout and writes without pause after `sh` has exited.
     // The drain reads one chunk per wake and, after the exit, only the bytes
     // already in the pipe, so the flood cannot keep the probe running. The
-    // test leaves nothing behind: `sh` leads its own process group, which the
-    // guard kills on drop (panics included), and `yes` also dies of SIGPIPE
+    // test leaves nothing behind: `sh` joins an owned process group, which
+    // the guard kills on drop (panics included), and `yes` also dies of SIGPIPE
     // once the capture closes its read end.
     use std::os::unix::process::CommandExt;
-    struct KillGroupOnDrop(std::path::PathBuf);
-    impl Drop for KillGroupOnDrop {
-        fn drop(&mut self) {
-            let pgid = std::fs::read_to_string(&self.0)
-                .ok()
-                .and_then(|s| s.trim().parse::<libc::pid_t>().ok())
-                .filter(|pid| *pid > 1);
-            if let Some(pgid) = pgid {
-                // SAFETY: signals only the process group `sh` created.
-                unsafe { libc::kill(-pgid, libc::SIGKILL) };
-            }
-        }
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let pid_file = dir.path().join("pgid");
-    let _group = KillGroupOnDrop(pid_file.clone());
+    let group = unix_process::ProcessGroup::new();
     let mut cmd = Command::new("/bin/sh");
-    cmd.args([
-        "-c",
-        "echo $$ >\"$1\"; yes & printf 'claude 1.2.3\\n' >&2; exit 0",
-        "sh",
-    ])
-    .arg(&pid_file)
-    .process_group(0);
+    cmd.args(["-c", "yes & printf 'claude 1.2.3\\n' >&2; exit 0", "sh"])
+        .process_group(group.id());
     // The test harness timeout is the only outer bound; nothing here waits
     // on a clock.
     let out = run_capped_output_to_exit(cmd, PROBE_CAPTURE_LIMIT).expect("spawn sh");

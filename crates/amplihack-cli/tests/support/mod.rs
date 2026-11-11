@@ -19,4 +19,6 @@ pub mod scratch_base;
 pub mod sessions_archive;
 pub mod socket_dir;
 pub mod test_path;
+#[cfg(unix)]
+pub mod unix_process;
 pub mod wait;
