@@ -301,7 +301,9 @@ impl Fx {
     /// `amplihack recipe run` with `runner_body` as the recipe runner.
     pub fn recipe_run(&self, runner_body: &str, tweak: impl FnOnce(&mut Command)) -> Output {
         let runner = self.bin.join("recipe-runner-rs");
-        write_executable(&runner, runner_body, 0o755);
+        let capability = r#"case "$1" in --capabilities) printf '%s\n' '{"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]}'; exit 0 ;; esac"#;
+        let body = runner_body.replacen('\n', &format!("\n{capability}\n"), 1);
+        write_executable(&runner, &body, 0o755);
         let mut c = self.amplihack();
         c.arg("recipe")
             .arg("run")

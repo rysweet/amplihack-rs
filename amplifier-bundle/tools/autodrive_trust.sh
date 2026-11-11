@@ -346,6 +346,9 @@ if [ -n "$_ad_scope" ] && [ -f "$_ad_scope" ] && [ ! -L "$_ad_scope" ] && . "$_a
   _AD_SCOPE_OK="1"
 else
   autodrive_qa_target() { printf 'unknown\t.\n'; }
+  # Nothing was measured, so nothing is documentation-only: `unknown` is not
+  # `true`, and autodrive_gadugi_required refuses before it asks in any case.
+  autodrive_qa_docs_only() { printf 'unknown\n'; }
 fi
 unset _ad_scope
 
@@ -363,9 +366,27 @@ autodrive_repo_type() {
 # the chosen project is Node, and when the choice is unresolved and any
 # candidate directory is a Node project (_autodrive_qa_needs_gadugi).
 # Otherwise it is false.
+#
+# One exception, issue #2219: a pull request that changes documentation and
+# nothing else does not need a gadugi scenario, because it changes no
+# user-facing surface for one to drive. autodrive_qa_docs_only decides that,
+# so the answer is a measurement and not an agent's reading of the diff
+# (#1517, #1518), and the merge round and the merge gate read the same
+# function and cannot disagree.
+#
+# Precedence, all fail-closed. The operator's AUTODRIVE_QA_SCENARIO_DIR and a
+# scope helper that did not load are both tested FIRST and both still force
+# true; `unknown` is not `true`. The exemption narrows what evidence criterion
+# 1 requires and nothing else: the repository's own suite, CI, crusty review
+# and every other criterion still apply.
 autodrive_gadugi_required() {
   if [ -n "${AUTODRIVE_QA_SCENARIO_DIR:-}" ] || [ -z "${_AD_SCOPE_OK:-}" ] \
-     || ! declare -F _autodrive_qa_needs_gadugi >/dev/null || _autodrive_qa_needs_gadugi "${1:-.}"; then
+     || ! declare -F _autodrive_qa_needs_gadugi >/dev/null; then
+    printf 'true\n'
+  elif declare -F autodrive_qa_docs_only >/dev/null \
+       && [ "$(autodrive_qa_docs_only "${1:-.}")" = "true" ]; then
+    printf 'false\n'
+  elif _autodrive_qa_needs_gadugi "${1:-.}"; then
     printf 'true\n'
   else
     printf 'false\n'
