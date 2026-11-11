@@ -947,33 +947,38 @@ fn a_usage_limit_wait_does_not_spend_the_wall_budget() {
 
 #[test]
 fn a_wait_ledger_never_takes_out_more_than_the_child_ran() {
-    let Some(fx) = Fixture::new() else { return };
-    fx.set("wait_claim", "999999\nnot-a-number\n");
-    fx.plan(&["CONCERNS|1|1|0|a"]);
-    let o = run_with(&fx, "crusty", &[(BUDGET_KEYS[0], "1")]);
-    assert_eq!(
-        result(&o)["loop_result"],
-        "BUDGET_EXHAUSTED",
-        "{}",
-        show(&o)
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    private_dir(&state);
+    let ledger = state.join(".wait-crusty-round-1-round");
+    std::fs::write(&ledger, "999999\nnot-a-number\n").unwrap();
+    let st = state.display().to_string();
+    let l = ledger.display().to_string();
+    // Supply the child's measured duration explicitly so the credit must
+    // equal that duration, independent of scheduling or clock granularity.
+    let o = helper(
+        "autodrive_budget.sh",
+        &[
+            "add", &st, "crusty", "round-1", "round", "7", "--waited", &l,
+        ],
     );
+    assert!(o.status.success(), "{}", show(&o));
     assert!(
         stderr(&o).contains("malformed line(s) in the usage-limit wait ledger"),
         "{}",
         show(&o)
     );
-    let rows = usage_rows(&fx);
-    let round = rows.iter().find(|r| r[2] == "round").expect("round row");
-    let wait = rows.iter().find(|r| r[2] == "wait").expect("wait row");
-    assert_eq!(round[4], "0", "{rows:?}");
-    // The claim is capped at the round's own time, measured by the loop:
-    // all of the round is taken out (round 0) and no more than it ran. The
-    // round slept 1 s, so its time is at least that, whatever the load.
-    let w: u64 = wait[4].parse().unwrap();
-    assert!(
-        (1..999_999).contains(&w),
-        "the wait is capped at the round's own time: {rows:?}"
+    let tsv = std::fs::read_to_string(state.join("autodrive-usage.tsv")).unwrap();
+    assert_eq!(
+        tsv,
+        "crusty\tround-1\tround\t1\t0\tunknown\n\
+         crusty\tround-1\twait\t0\t7\tunknown\n"
     );
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(state.join("autodrive-usage.json")).unwrap())
+            .unwrap();
+    assert_eq!(json["total"]["seconds"], 0);
+    assert_eq!(json["total"]["wait_seconds"], 7);
 }
 
 #[test]

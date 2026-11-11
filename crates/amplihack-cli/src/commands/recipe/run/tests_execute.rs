@@ -1635,9 +1635,9 @@ fn test_execute_recipe_via_rust_non_verbose_does_not_pass_progress() {
 // Issue #366 (COE feedback): when child writes non-UTF-8 bytes to stderr,
 // the pump must NOT terminate (would risk a stalled-pipe hang on the child).
 // We use a stub that emits raw 0xFF bytes followed by valid UTF-8 lines and
-// then exits 0 with empty stdout. If the pump dies on the bad bytes, the
-// trailing UTF-8 lines won't be captured AND the child can't progress past
-// a full pipe.
+// then exits 1 so its captured stderr is available in the error. If the
+// pump dies on the bad bytes, the trailing lines will not be captured and
+// the child cannot progress past a full pipe.
 #[test]
 #[cfg(unix)]
 fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
@@ -1648,18 +1648,28 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     // The stub writes 0xFF (invalid UTF-8 start byte), then a valid line,
-    // then enough valid lines to fill a typical pipe buffer (~64KB on Linux).
+    // then over 1 MiB of valid lines to exceed a typical pipe buffer.
     crate::test_support::write_executable(
         &runner,
         "#!/bin/sh\n\
-         printf '\\xff\\n' >&2\n\
+         printf '\\377\\n' >&2\n\
          echo 'after-bad-bytes' >&2\n\
-         i=0; while [ $i -lt 200 ]; do echo \"flood-line-$i\" >&2; i=$((i+1)); done\n\
-         : > \"$0.done\"\n\
-         exit 0\n",
+         i=0; while [ $i -lt 16384 ]; do echo \"flood-line-$i-abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\" >&2; i=$((i+1)); done\n\
+         echo 'after-flood-marker' >&2\n\
+         exit 1\n",
     );
 
-    let done_file = temp.path().join("recipe-runner-rs.done");
+    // Verify the actual /bin/sh fixture, including the invalid byte and
+    // flood size, before relying on it to exercise the production pump.
+    let raw = crate::test_support::wait::output_within(
+        "the non-UTF-8 fixture",
+        &mut std::process::Command::new(&runner),
+    );
+    assert_eq!(raw.status.code(), Some(1));
+    assert!(raw.stderr.starts_with(&[0xff, b'\n']));
+    assert!(std::str::from_utf8(&raw.stderr).is_err());
+    assert!(raw.stderr.len() > 1024 * 1024);
+    assert!(raw.stderr.ends_with(b"after-flood-marker\n"));
 
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: probe\nsteps: []\n").expect("failed to write recipe");
@@ -1690,11 +1700,10 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
         "hung: non-UTF-8 stderr stopped the pump and the child blocked on a full stderr pipe",
     );
 
-    result.expect("non-UTF-8 stderr must NOT abort the pump or hang the child");
-    // The stub wrote every flood line before it marked itself done.
+    let error = result.expect_err("the fixture deliberately exits 1");
     assert!(
-        done_file.exists(),
-        "the runner did not write all of its stderr"
+        error.contains("after-flood-marker"),
+        "the pump did not capture stderr after invalid UTF-8 and the flood: {error}"
     );
 }
 
