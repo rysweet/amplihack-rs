@@ -17,6 +17,7 @@ builder call.
 - [What counts as work](#what-counts-as-work)
 - [Why there is no default](#why-there-is-no-default)
 - [Limits you can set](#limits-you-can-set)
+- [Upgrading from the 6-hour default](#upgrading-from-the-6-hour-default)
 - [How to stop a run that has no limit](#how-to-stop-a-run-that-has-no-limit)
 - [Timeouts that stay: hang guards on probes](#timeouts-that-stay-hang-guards-on-probes)
 - [Hook timeouts in settings.json](#hook-timeouts-in-settingsjson)
@@ -71,6 +72,8 @@ to that step. The bundled default-workflow agent steps define none.
 | `CopilotCliClient::with_timeout` | One Copilot CLI agent call | Builder call in Rust | Not applicable: takes a `Duration` |
 | `AgentConfig.timeout_secs`, `TaskSpec.timeout_secs`, `SdkAdapterConfig.timeout_secs` | Recorded on agent-core configs; not enforced | Config field or `with_timeout` | Stored as `Some(0)`; never means "unlimited" |
 | `--max-runtime` | One multitask workstream | Command-line flag | Not applicable |
+| [`autodrive_budget_wall_seconds`](../reference/auto-drive-to-merge.md) | Time an auto-drive spends in its children, less usage-limit waits | Recipe context, `-c autodrive_budget_wall_seconds=N` | No limit; `0` or empty is the default in every bundled recipe |
+| [`GH_RETRY_MAX_RL_WINDOWS`](../WORKFLOW_GH_RATE_LIMIT_TOLERANCE.md) | Number of GitHub rate-limit reset windows `workflow_gh_retry.sh` waits through | Environment variable, whole number | Fail at once on a rate limit; display-only reads such as `workflow_final_status.sh` pin this |
 
 An unparseable `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` is ignored. amplihack
 prints one warning on standard error that names the variable but not its
@@ -99,6 +102,28 @@ run `indeterminate` and prints `recipe-runner-rs timed out after <N>s ...`.
 The agent-core types are described in the
 [agent-core API reference](../reference/agent-core-api.md#timeout-fields).
 
+## Upgrading from the 6-hour default
+
+Before #2022, `amplihack recipe run` stopped the runner after 6 hours
+(`RECIPE_RUNNER_DEFAULT_TIMEOUT`, 21600 s), and
+`AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS=0` was ignored and fell back to that
+default. Long auto-drives were ended mid-round with
+`recipe-runner-rs timed out after 21600s` and classed `indeterminate`.
+
+That default no longer exists. A run that relied on it now runs until it
+exits or is stopped. To keep the old ceiling, set it explicitly:
+
+```sh
+AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS=21600 \
+amplihack recipe run default-workflow \
+  -c task_description="Refresh the dependency lock file"
+```
+
+Scripts that set `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS=0` to mean "no limit"
+need no change: `0` now means no limit. The same holds for
+`autodrive_budget_wall_seconds=0`, and the auto-drive resume hint suggests
+`0` rather than doubling the previous budget.
+
 ## How to stop a run that has no limit
 
 With no limit set, the stop signal is the only built-in way to end a run
@@ -109,8 +134,10 @@ amplihack recipe stop <run-id>
 ```
 
 Ctrl-C, `SIGTERM` and `SIGHUP` to the `amplihack recipe run` process do the
-same. While it waits, the runner checks for a stop request between waits on
-the child; this check is how #1606 works and is not a limit.
+same. While it waits, the runner checks every 100 ms
+(`RECIPE_RUNNER_POLL_INTERVAL`) whether the child has exited or a stop has
+been requested. This check is how #1606 works. It sets no deadline: with no
+limit configured, the wait has no branch that ends it on elapsed time.
 
 ## Timeouts that stay: hang guards on probes
 
@@ -121,7 +148,10 @@ agent step or a recipe run.
 |---|---|---|
 | Version and readiness checks | `claude --version`, `copilot --version`, `node --version` | A version check that hangs means a broken install |
 | `git`, `gh`, `az` and `tmux` queries | `timeout 30`/`timeout 60` around `gh` and `az` reads in `workflow-prep`, `workflow-design`, `workflow-terminal-state` | A read query that hangs means a network or auth fault |
+| `gh` reads and writes through the retry helper | `timeout 60 gh ...` in `workflow_gh_retry.sh` and `workflow-terminal-state` | A single `gh` call that hangs means a network or auth fault |
+| Identity preflight | `AMPLIHACK_IDENTITY_PREFLIGHT_TIMEOUT` (default 30 s) in `workflow_identity_preflight.sh` | Bounds each `gh` identity query before a run starts |
 | `gh pr create` in `quick-change` | `timeout 1800` | Hang guard on one GitHub write |
+| Auto-drive stop comment | `timeout 900` around one `gh pr comment` in `tools/autodrive_budget.sh` | Bounds one comment post after a loop has already stopped; it does not limit the drive |
 | Start-up handshakes | Codex app-server and MCP handshakes | The peer is not answering |
 | Lock acquisition and pipe draining | Recipe-run lock, child stdout and stderr drain after exit | Prevents a deadlock on a stuck peer |
 | Installer and network setup | `curl`, `tar`, `npm`, `apt` and self-upgrade steps (300 s); `git clone` (120 or 300 s); remote file transfer and provisioning | Network hang guard on one setup step; the remote agent run itself has no limit |
@@ -155,6 +185,9 @@ regain capacity.
 | 6 h rate window in the capacity summary | Window used to compute a usage rate |
 | 3600 s platform-block estimate | Estimate of how long a platform block lasts |
 | `SessionManager` 3600 s | Session bookkeeping; it does not end work |
+| `RECIPE_RUNNER_POLL_INTERVAL` (100 ms) | How often the runner wait checks for exit or a stop request; it never ends the wait |
+| `DEFAULT_LATEST_TAG_TTL_MS` (6 h) in `npm/lib/bootstrap.js` | How long the npm launcher caches the latest release tag |
+| `max_runtime` 7200 and 10800 in the multitask skill's `TIMEOUT_LIFECYCLE.md` | Example values for a workstream that sets its own limit; `max_runtime` is optional and has no default |
 
 ## Rules for new code
 
@@ -169,8 +202,11 @@ regain capacity.
   channel, a lock or a FIFO.
 - Tests prove "no limit" by blocking a stub on a FIFO the test releases, and
   prove "limit N" with a short explicit N on a stub that is never released.
-  Tests do not assert an upper bound on elapsed time. Multi-hour waits use an
-  injected clock.
+  Because the stub is never released, only the limit can end the wait, so
+  the test checks the result (`RunnerWait::TimedOut(N)`, the
+  `timed out after Ns` message and the `indeterminate` class) and never
+  measures elapsed time, as a lower or an upper bound. Multi-hour waits use
+  an injected clock.
 
 ## Related
 
