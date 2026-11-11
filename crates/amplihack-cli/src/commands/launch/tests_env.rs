@@ -40,6 +40,7 @@ fn build_command_injects_uvx_plugin_and_project_args_for_claude() {
         false,
         None,
         Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        None,
     )
     .unwrap();
     let args = cmd
@@ -170,6 +171,7 @@ fn build_command_prefers_original_cwd_for_staged_uvx_launches() {
         false,
         None,
         Some(std::path::Path::new(super::command::TEST_CONTRACT_PATH)),
+        None,
     )
     .unwrap();
     let args = cmd

@@ -20,12 +20,10 @@
 
 use super::name::ProfileName;
 use super::store::ProfileStore;
+use crate::commands::install::hook_block::{FileMerge, update_file};
 use amplihack_utils::secure_files::{passwd_home, temp_bases};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-
-/// Larger profile settings files are skipped, as when seeding.
-const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
 
 /// One profile's result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +61,18 @@ pub(crate) fn refresh_profile_settings(
         Some(reason) => refused_all(&store, &reason),
         None => refresh_in(&store, update),
     }
+}
+
+/// [`hook_path_refusal`] for this process: HOME from the environment, the
+/// account's home from the passwd database and the host's temp bases.
+pub(crate) fn hook_path_refusal_here(hooks_bin: &Path, root: &Path) -> Option<String> {
+    hook_path_refusal(
+        hooks_bin,
+        root,
+        current_home().as_deref(),
+        passwd_home().as_deref(),
+        &temp_bases(),
+    )
 }
 
 /// Issue #1699: `None` when `hooks_bin` may be written into the profiles
@@ -225,43 +235,14 @@ fn each_profile(store: &ProfileStore, act: &dyn Fn(&Path) -> Refresh) -> Vec<(St
         .collect()
 }
 
-#[cfg(unix)]
+/// Issue #2279 (C6): one profile's file through `hook_block::update_file`,
+/// which refuses symlinks, non-regular, hard-linked, foreign-owned and
+/// oversized files, never creates a file, and writes (0600) only on change.
 fn refresh_one(dir: &Path, update: &dyn Fn(&mut Value)) -> Refresh {
-    use amplihack_utils::secure_files::{read_bounded_nofollow, write_private_atomic};
-    use std::os::unix::fs::MetadataExt;
-
-    let path = dir.join("settings.json");
-    let (raw, meta) = match read_bounded_nofollow(&path, MAX_SETTINGS_BYTES) {
-        Ok(Some(found)) => found,
-        Ok(None) => return Refresh::Missing,
-        Err(error) => return Refresh::Skipped(error.to_string()),
-    };
-    // SAFETY: geteuid has no preconditions and cannot fail.
-    if meta.uid() != unsafe { libc::geteuid() } {
-        return Refresh::Skipped("not owned by the current user".into());
+    match update_file(&dir.join("settings.json"), update) {
+        FileMerge::Written => Refresh::Updated,
+        FileMerge::AlreadyCurrent => Refresh::Unchanged,
+        FileMerge::Absent => Refresh::Missing,
+        FileMerge::Unparseable(reason) | FileMerge::Refused(reason) => Refresh::Skipped(reason),
     }
-    let mut settings: Value = match serde_json::from_slice(&raw) {
-        Ok(value @ Value::Object(_)) => value,
-        Ok(_) => return Refresh::Skipped("not a JSON object".into()),
-        Err(error) => return Refresh::Skipped(format!("invalid JSON: {error}")),
-    };
-    let before = settings.clone();
-    update(&mut settings);
-    if settings == before {
-        return Refresh::Unchanged;
-    }
-    let mut contents = match serde_json::to_vec_pretty(&settings) {
-        Ok(bytes) => bytes,
-        Err(error) => return Refresh::Skipped(error.to_string()),
-    };
-    contents.push(b'\n');
-    match write_private_atomic(dir, "settings.json", &contents) {
-        Ok(()) => Refresh::Updated,
-        Err(error) => Refresh::Skipped(error.to_string()),
-    }
-}
-
-#[cfg(not(unix))]
-fn refresh_one(_dir: &Path, _update: &dyn Fn(&mut Value)) -> Refresh {
-    Refresh::Skipped("profile settings refresh is Unix-only".into())
 }

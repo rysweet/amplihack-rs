@@ -13,6 +13,7 @@ mod command;
 mod context;
 /// Issue #2030 — the 0600 contract file and the Claude Code version gate.
 mod contract_file;
+pub(crate) mod hook_settings;
 /// Issue #2030 — `amplihack claude` passthrough arguments never carry prompt
 /// text to the agent's argv.
 mod passthrough_rewrite;
@@ -35,6 +36,8 @@ mod tests_command;
 mod tests_env;
 #[cfg(test)]
 mod tests_issue_2030_contract;
+#[cfg(all(test, unix))]
+mod tests_issue_2279_launch_settings;
 #[cfg(test)]
 mod tests_launch;
 #[cfg(test)]
@@ -554,6 +557,13 @@ fn run_launch_core(
         // This final check catches ordinary package and symlink replacement
         // after preflight and narrows same-user races without claiming the
         // stronger guarantees of descriptor-based execution.
+        let hook_settings = match hook_settings::prepare(&binary.name, &extra_args) {
+            hook_settings::Inject::Path(path) => Some(path),
+            hook_settings::Inject::Skip(reason) => {
+                tracing::debug!("no hooks --settings file: {reason}");
+                None
+            }
+        };
         let mut cmd = build_command_for_dir(
             &binary,
             resume,
@@ -564,6 +574,7 @@ fn run_launch_core(
             subprocess_safe,
             claude_config_dir.as_deref(),
             contract_file.as_deref(),
+            hook_settings.as_deref(),
         )?;
         cmd.current_dir(&execution_dir);
         // Issue #2030, step 6: a rewritten `-p <text>` reaches the child on a

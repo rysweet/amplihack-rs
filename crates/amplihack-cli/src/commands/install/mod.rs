@@ -14,8 +14,10 @@ mod directories;
 mod fetch_backoff;
 pub(crate) mod filesystem;
 pub(crate) mod framework_source;
+pub(crate) mod hook_block;
 mod hooks;
 pub(crate) mod interactive;
+mod launch_repair;
 mod manifest;
 mod mermaid_cli;
 pub(crate) mod paths;
@@ -392,6 +394,16 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
 /// [`ensure_framework_installed`], writing the #1526 refusal warning to
 /// `notice` (stderr in the binary).
 pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W) -> Result<()> {
+    ensure_framework_installed_opts(notice, false)
+}
+
+/// [`ensure_framework_installed_with`]; with `skip_home_merge` the hooks
+/// repair of the settings file is left out, for a launch whose hooks reach
+/// Claude Code through its own `--settings` file (#2279, D5 fallback).
+pub(crate) fn ensure_framework_installed_opts<W: std::io::Write>(
+    notice: &mut W,
+    skip_home_merge: bool,
+) -> Result<()> {
     // Issue #1526: this bootstrap is an implicit installer too. A binary older
     // than the installed stamp must not stage, top up commands or repair
     // settings.json over the newer install.
@@ -463,70 +475,10 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
             );
         }
     }
-    let settings_path = global_settings_path()?;
-    match hooks_registered_in_settings(&settings_path)? {
-        HookRegistration::Registered => {
-            // #1659: a settings.json from #1660 registers `StopFailure` for
-            // every user. A Claude Code too old for it ignores the whole
-            // file, so the entry is drift even though every hook is present.
-            // Only a Claude launch asks `claude --version`: copilot and codex
-            // never read this file, and the next Claude launch repairs it.
-            let Some(version) =
-                harmful_limit_resume_registration(&settings_path, launched_claude_too_old)
-            else {
-                return Ok(());
-            };
-            tracing::warn!(
-                "settings.json registers StopFailure, which Claude Code {version} does not know \
-                 — auto-repairing"
-            );
-            println!(
-                "⚠️  Claude Code {version} is older than {LIMIT_RESUME_MIN_CLAUDE}: removing the \
-                 usage-limit resume hook (StopFailure) from settings.json, which this Claude \
-                 Code would otherwise read as invalid and run no amplihack hook"
-            );
-        }
-        HookRegistration::Missing => {}
-        HookRegistration::Unparseable => {
-            // Issue #1526 (SR-8): never back up or rewrite a file we cannot read.
-            tracing::warn!("settings.json is not valid JSON; skipping hook auto-repair");
-            eprintln!(
-                "amplihack: warning: {} is not valid JSON; hook registrations were not \
-                 checked or repaired. Fix the file, then run `amplihack install`.",
-                paths::sanitize_path(&settings_path)
-            );
-            return Ok(());
-        }
+    if skip_home_merge {
+        return Ok(());
     }
-    tracing::warn!("hooks not registered in settings.json — auto-repairing");
-    let timestamp = unix_timestamp();
-    // The launch repair writes the user's own settings, so it is global.
-    let status_line =
-        status_line_command(interactive::HookScope::Global, binary::stable_self_binary);
-    let (settings_ok, _events) = ensure_settings_json(
-        &settings_path,
-        &staging_dir,
-        timestamp,
-        &hooks_bin,
-        status_line.as_deref(),
-    )?;
-    if !settings_ok {
-        bail!(
-            "failed to configure ~/.claude/settings.json for amplihack hooks.\n\
-             Run `amplihack install` to repair, or `amplihack doctor` to diagnose."
-        );
-    }
-    // Verify the repair actually worked
-    if hooks_registered_in_settings(&settings_path)? != HookRegistration::Registered
-        || harmful_limit_resume_registration(&settings_path, launched_claude_too_old).is_some()
-    {
-        bail!(
-            "hooks still not registered after auto-repair.\n\
-             Run `amplihack install` manually to fix hook wiring."
-        );
-    }
-    println!("✅ Auto-repaired missing hook registrations in settings.json");
-    Ok(())
+    launch_repair::repair_settings_hooks(notice, &staging_dir, &hooks_bin)
 }
 
 /// Issue #1526: an implicit re-stage does not write `settings_path`, so an
@@ -583,97 +535,6 @@ pub(super) fn warn_implicit_hook_drift_for<W: std::io::Write>(
         crate::VERSION,
         missing.join(", ")
     );
-}
-
-/// #1659: the version of the `claude` a launch would run, when
-/// `settings_path` holds amplihack's `StopFailure` registration and that
-/// `claude` is older than [`LIMIT_RESUME_MIN_CLAUDE`]. `old_claude` is only
-/// called when the registration is there, so a launch without it never
-/// probes. A file that is absent, unreadable or not JSON gives `None`.
-pub(super) fn harmful_limit_resume_registration(
-    settings_path: &Path,
-    old_claude: impl FnOnce() -> Option<String>,
-) -> Option<String> {
-    let raw = fs::read_to_string(settings_path).ok()?;
-    let settings = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
-    if !has_limit_resume_registration(&settings) {
-        return None;
-    }
-    old_claude()
-}
-
-/// #1659: [`claude_too_old_for_limit_resume`] for the launch bootstrap, which
-/// runs before every launch. A launch of another tool gives `None` without
-/// running `claude --version` (about 150 ms, up to the 10-second probe
-/// budget): that tool never reads `~/.claude/settings.json`, and the next
-/// Claude launch removes an entry its Claude Code cannot read.
-fn launched_claude_too_old() -> Option<String> {
-    claude_too_old_for_launch(claude_too_old_for_limit_resume)
-}
-
-/// [`launched_claude_too_old`] with the version check passed in.
-pub(super) fn claude_too_old_for_launch(
-    old_claude: impl FnOnce() -> Option<String>,
-) -> Option<String> {
-    if !crate::freshness::claude_selected() {
-        return None;
-    }
-    old_claude()
-}
-
-/// Whether `~/.claude/settings.json` holds an `amplihack-hooks` command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum HookRegistration {
-    Registered,
-    /// The file is absent, or parses with no amplihack hook.
-    Missing,
-    Unparseable,
-}
-
-/// Classify the settings file. Absence is read off the failed read (no
-/// `exists()` probe, issue #1123); any other read error, such as EACCES, is
-/// an `Err`, because an unreadable file is not evidence that hooks are missing.
-pub(super) fn hooks_registered_in_settings(settings_path: &Path) -> Result<HookRegistration> {
-    let raw = match fs::read_to_string(settings_path) {
-        Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(HookRegistration::Missing);
-        }
-        Err(e) => {
-            return Err(e).with_context(|| format!("failed to read {}", settings_path.display()));
-        }
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
-        return Ok(HookRegistration::Unparseable);
-    };
-    let has_hooks = json
-        .get("hooks")
-        .and_then(|h| h.as_object())
-        .map(|hooks_map| {
-            hooks_map.values().any(|wrappers| {
-                wrappers.as_array().is_some_and(|arr| {
-                    arr.iter().any(|wrapper| {
-                        wrapper
-                            .get("hooks")
-                            .and_then(|h| h.as_array())
-                            .is_some_and(|entries| {
-                                entries.iter().any(|entry| {
-                                    entry
-                                        .get("command")
-                                        .and_then(|c| c.as_str())
-                                        .is_some_and(|cmd| cmd.contains("amplihack-hooks"))
-                                })
-                            })
-                    })
-                })
-            })
-        })
-        .unwrap_or(false);
-    Ok(if has_hooks {
-        HookRegistration::Registered
-    } else {
-        HookRegistration::Missing
-    })
 }
 
 #[cfg(test)]

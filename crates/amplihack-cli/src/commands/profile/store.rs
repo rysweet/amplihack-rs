@@ -8,6 +8,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::commands::install::hook_block::{FileMerge, HookTarget, hook_target, merge_file};
 pub use amplihack_utils::rotator_status::ROOT_ENV;
 const SHARED_ASSET_DIRS: &[&str] = &["agents", "commands", "output-styles", "rules", "skills"];
 const MAX_COPY_DEPTH: usize = 16;
@@ -44,6 +45,9 @@ pub(super) const SHARED_SETTINGS_KEYS: &[&str] = &[
 pub struct ProfileStore {
     root: PathBuf,
     shared_assets: Option<PathBuf>,
+    /// Issue #2279 (C7): the hooks block a newly seeded profile gets, or why
+    /// it gets none. `None`: decided when seeding, from this process.
+    seed_hooks: Option<Result<HookTarget, String>>,
 }
 
 impl ProfileStore {
@@ -51,6 +55,42 @@ impl ProfileStore {
         Self {
             root,
             shared_assets: None,
+            seed_hooks: None,
+        }
+    }
+
+    /// Fixes the hooks block seeding gives a new profile's `settings.json`:
+    /// `Ok(target)` merges it, `Err(reason)` writes none. Tests use it in
+    /// place of this process's hooks binary.
+    #[cfg(test)]
+    pub(crate) fn with_seed_hooks(mut self, hooks: Result<HookTarget, String>) -> Self {
+        self.seed_hooks = Some(hooks);
+        self
+    }
+
+    /// Issue #2279 (C7, D7): gives the `settings.json` just seeded into
+    /// `profile_dir` amplihack's full hooks block, so a profile seeded from a
+    /// hook-less home file still runs every hook. Never creates the file and
+    /// never fails the seeding: a refusal is logged.
+    fn seed_hooks_into(&self, profile_dir: &Path) {
+        let target = match &self.seed_hooks {
+            Some(decided) => decided.clone(),
+            // Unit tests never resolve the host's hooks binary.
+            None if cfg!(test) => return,
+            None => production_seed_hooks(&self.root),
+        };
+        let target = match target {
+            Ok(target) => target,
+            Err(reason) => {
+                tracing::info!("new profile settings.json gets no hooks block: {reason}");
+                return;
+            }
+        };
+        match merge_file(&profile_dir.join("settings.json"), &target) {
+            FileMerge::Written | FileMerge::AlreadyCurrent | FileMerge::Absent => {}
+            FileMerge::Unparseable(reason) | FileMerge::Refused(reason) => {
+                tracing::warn!("new profile settings.json: hooks block not written ({reason})");
+            }
         }
     }
 
@@ -148,6 +188,9 @@ impl ProfileStore {
         };
         if let Err(error) = result {
             return Err(discard_staging(&staging, error));
+        }
+        if self.shared_assets.is_some() {
+            self.seed_hooks_into(&staging);
         }
         if let Err(error) = rename_noreplace(&staging, &dir) {
             let error = if error.kind() == std::io::ErrorKind::AlreadyExists {
@@ -1034,6 +1077,17 @@ fn copy_filtered_settings(source: &Path, destination: &Path) -> Result<(), Profi
         ));
     }
     write_filtered_settings(&raw, destination)
+}
+
+/// This process's hooks block for profiles under `root`: none without a
+/// usable hooks binary, or when [`super::settings_refresh::hook_path_refusal`]
+/// refuses it (#1699).
+fn production_seed_hooks(root: &Path) -> Result<HookTarget, String> {
+    let target = hook_target().ok_or_else(|| "no usable amplihack-hooks binary".to_string())?;
+    match super::settings_refresh::hook_path_refusal_here(&target.bin, root) {
+        Some(reason) => Err(reason),
+        None => Ok(target),
+    }
 }
 
 fn write_filtered_settings(raw: &[u8], destination: &Path) -> Result<(), ProfileError> {

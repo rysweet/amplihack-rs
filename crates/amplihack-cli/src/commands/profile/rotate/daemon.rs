@@ -317,7 +317,9 @@ pub fn watch(
             idle = false;
             match cycle::run_cycle(&mut ctx, Mode::Watch) {
                 Ok(CycleOutcome::Stopped) => break,
-                Ok(_) => {}
+                // Issue #2279 (D6): heal the hooks block after the cycle,
+                // outside the swap lock. It never changes the outcome.
+                Ok(outcome) => super::hook_heal::after_cycle(outcome, &ctx),
                 Err(e) => log_line(&rs, &failure(&e)),
             }
         } else if !idle {

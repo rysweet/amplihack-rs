@@ -163,13 +163,11 @@ fn validate_amplihack_native_hook_contract_reports_duplicate_native_drift() {
 
     let drift = settings::validate_amplihack_native_hook_contract(&settings_val, true);
 
+    // Issue #2279: drift lines name events, never commands or content.
     assert!(
         drift
             .iter()
-            .any(|issue| issue.contains("workflow-classification-reminder"))
-            && drift
-                .iter()
-                .any(|issue| issue.contains("unexpected native hook")),
+            .any(|issue| issue.contains("differ") && issue.contains("UserPromptSubmit")),
         "duplicate native drift must be surfaced explicitly, got: {drift:?}"
     );
 }
@@ -337,42 +335,6 @@ fn verify_framework_assets_succeeds_with_empty_xpia_dir() {
 }
 
 #[test]
-fn xpia_hook_specs_use_binary_subcmd_not_scripts() {
-    // XPIA_HOOK_SPECS must remain intact and use BinarySubcmd exclusively.
-    // This is the CORRECT way XPIA hooks are implemented — via the Rust binary.
-    for spec in XPIA_HOOK_SPECS {
-        match &spec.cmd {
-            HookCommandKind::BinarySubcmd { subcmd } => {
-                assert!(
-                    !subcmd.is_empty(),
-                    "XPIA hook spec for '{}' must have a non-empty subcmd",
-                    spec.event
-                );
-                assert!(
-                    !subcmd.contains(".py") && !subcmd.contains(".sh"),
-                    "XPIA hook spec subcmd must not reference script files: {subcmd}"
-                );
-            }
-        }
-    }
-
-    // Verify the three expected XPIA events are present
-    let events: Vec<&str> = XPIA_HOOK_SPECS.iter().map(|s| s.event).collect();
-    assert!(
-        events.contains(&"SessionStart"),
-        "XPIA must include SessionStart"
-    );
-    assert!(
-        events.contains(&"PreToolUse"),
-        "XPIA must include PreToolUse"
-    );
-    assert!(
-        events.contains(&"PostToolUse"),
-        "XPIA must include PostToolUse"
-    );
-}
-
-#[test]
 fn no_production_code_references_xpia_hook_files() {
     // Comprehensive check: no non-test production code should reference
     // XPIA_HOOK_FILES after the cleanup.
@@ -485,55 +447,6 @@ fn ensure_settings_json_repo_local_backup_is_owner_only() {
     assert_eq!(
         mode, 0o600,
         "repo-local backup must remain owner-read/write only (0o600), got {mode:o}"
-    );
-}
-
-// ─── hooks_registered_in_settings: atomic read (issue #1123 precedent) ───
-
-/// Collapsing the `exists()` probe + read into a single read must preserve the
-/// absent-vs-unreadable distinction. Absent maps to `Missing` exactly as the
-/// probe did; present-but-unreadable must still be a hard error rather than
-/// being silently reported as "no hooks registered", which would make
-/// `ensure_framework_installed` rewrite a settings file it could not read.
-#[test]
-fn hooks_registered_in_settings_distinguishes_absent_from_unreadable() {
-    let temp = tempfile::tempdir().unwrap();
-
-    // Absent file → Missing, no error.
-    let missing = temp.path().join("does-not-exist.json");
-    assert_eq!(
-        hooks_registered_in_settings(&missing).unwrap(),
-        HookRegistration::Missing,
-        "a nonexistent settings.json must read as 'no hooks registered'"
-    );
-
-    // Present-but-unreadable (a directory at the path) → Err, because
-    // read_to_string fails with a non-NotFound error.
-    let dir_at_path = temp.path().join("settings.json");
-    fs::create_dir(&dir_at_path).unwrap();
-    let err = hooks_registered_in_settings(&dir_at_path)
-        .expect_err("an unreadable settings.json must be an error, not Missing");
-    assert!(
-        err.to_string().contains("failed to read"),
-        "the unreadable case must keep its context message; got: {err}"
-    );
-}
-
-/// Issue #1526 (SR-8): malformed JSON is its own verdict, never `Missing`, so
-/// the caller does not "repair" (back up and rewrite) a file it cannot parse.
-#[test]
-fn hooks_registered_in_settings_reports_malformed_json_as_unparseable() {
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("settings.json");
-    fs::write(&path, "{ not json").unwrap();
-    assert_eq!(
-        hooks_registered_in_settings(&path).unwrap(),
-        HookRegistration::Unparseable
-    );
-    fs::write(&path, r#"{"model": "x"}"#).unwrap();
-    assert_eq!(
-        hooks_registered_in_settings(&path).unwrap(),
-        HookRegistration::Missing
     );
 }
 

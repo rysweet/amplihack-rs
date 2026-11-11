@@ -54,6 +54,8 @@ mod held;
 #[cfg(unix)]
 mod history;
 #[cfg(unix)]
+mod hook_heal;
+#[cfg(unix)]
 pub(super) mod identify;
 #[cfg(unix)]
 mod identity_claims;
@@ -164,6 +166,8 @@ mod tests_issue_1886;
 #[cfg(all(test, unix))]
 mod tests_issue_1886_cycle;
 #[cfg(all(test, unix))]
+mod tests_issue_2279_heal;
+#[cfg(all(test, unix))]
 mod tests_key_check;
 #[cfg(all(test, unix))]
 mod tests_log;
@@ -270,7 +274,9 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                 }
                 let mut ctx = cycle::Ctx::new(store.clone(), home?, s);
                 ctx.reread = Some(fresh::reread_as_configured);
-                cycle::run_cycle(&mut ctx, mode)?;
+                let outcome = cycle::run_cycle(&mut ctx, mode)?;
+                // Issue #2279 (D6): outside the swap lock; a dry run writes nothing.
+                hook_heal::after_cycle(outcome, &ctx);
             }
             Some(RotateAction::Start(w)) => {
                 if w.supervised.is_some() {

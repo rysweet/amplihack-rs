@@ -3,62 +3,7 @@
 use super::binary::{validate_binary_path, validate_hook_command_string};
 use super::types::{HookCommandKind, HookSpec};
 use serde_json::{Map, Value};
-use std::collections::BTreeSet;
 use std::path::Path;
-
-pub(super) fn update_hook_paths(
-    settings: &mut Value,
-    hook_system: &str,
-    specs: &[HookSpec],
-    hooks_bin: &Path,
-) {
-    let root = ensure_object(settings);
-    let hooks = root
-        .entry("hooks")
-        .or_insert_with(|| Value::Object(Map::new()));
-    let hooks = ensure_object(hooks);
-
-    // Group specs by event so we can rewrite each event's wrappers in the
-    // canonical order defined by `specs`. This is the only way to reliably
-    // heal drift from an older install that wrote the native hooks in a
-    // different order — update-in-place would keep the wrong order forever.
-    let mut events: Vec<&'static str> = Vec::new();
-    let mut seen: BTreeSet<&'static str> = BTreeSet::new();
-    for spec in specs {
-        if seen.insert(spec.event) {
-            events.push(spec.event);
-        }
-    }
-
-    for event in events {
-        let event_specs: Vec<&HookSpec> = specs.iter().filter(|spec| spec.event == event).collect();
-        let wrappers = hooks
-            .entry(event)
-            .or_insert_with(|| Value::Array(Vec::new()));
-        let wrappers = ensure_array(wrappers);
-
-        // Strip out every wrapper that is one of ours — preserves
-        // third-party hooks (the `is_own_wrapper` filter is scoped to our
-        // own native binary and legacy Python paths). Stale copies of ours,
-        // such as one without `asyncRewake`, are stripped too.
-        wrappers.retain(|wrapper| {
-            !event_specs
-                .iter()
-                .any(|spec| is_own_wrapper(wrapper, spec, hook_system))
-        });
-
-        // Re-insert in canonical order at the front. Canonical order for the
-        // UserPromptSubmit event is intentional: workflow-classification
-        // reminder must run before user-prompt-submit.
-        let rebuilt: Vec<Value> = event_specs
-            .iter()
-            .map(|spec| build_hook_wrapper(spec, hooks_bin))
-            .collect();
-        let existing: Vec<Value> = std::mem::take(wrappers);
-        wrappers.extend(rebuilt);
-        wrappers.extend(existing);
-    }
-}
 
 /// Build the Claude Code hook wrapper JSON for a given spec.
 ///
@@ -136,21 +81,6 @@ pub(super) fn wrapper_matches(wrapper: &Value, spec: &HookSpec, hook_system: &st
             == spec.async_rewake
 }
 
-/// Removes amplihack's wrappers for `spec` from `settings`, and the event
-/// itself when no wrapper is left. Every other wrapper stays.
-pub(super) fn remove_hook_wrappers(settings: &mut Value, spec: &HookSpec, hook_system: &str) {
-    let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
-        return;
-    };
-    let Some(wrappers) = hooks.get_mut(spec.event).and_then(Value::as_array_mut) else {
-        return;
-    };
-    wrappers.retain(|wrapper| !is_own_wrapper(wrapper, spec, hook_system));
-    if wrappers.is_empty() {
-        hooks.remove(spec.event);
-    }
-}
-
 /// Whether `wrapper` is amplihack's registration for `spec`.
 ///
 /// `BinarySubcmd` matches either the native `amplihack-hooks <subcmd>` wrapper or
@@ -192,6 +122,19 @@ pub(super) fn is_own_wrapper(wrapper: &Value, spec: &HookSpec, hook_system: &str
                 })
         }
     }
+}
+
+/// The `amplihack-hooks` subcommand `spec` runs.
+pub(super) fn subcmd_of(spec: &HookSpec) -> &'static str {
+    let HookCommandKind::BinarySubcmd { subcmd } = spec.cmd;
+    subcmd
+}
+
+/// Issue #2279 (D2): whether a hook command runs one of the XPIA hook
+/// scripts amplihack once installed. Only the command string is checked;
+/// such an entry is amplihack's and is removed, never written.
+pub(super) fn is_xpia_command(command: &str) -> bool {
+    command.replace('\\', "/").contains("tools/xpia/hooks/")
 }
 
 pub(super) fn ensure_object(value: &mut Value) -> &mut Map<String, Value> {
