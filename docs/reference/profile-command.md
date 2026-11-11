@@ -5707,6 +5707,24 @@ same comparison with the rules for a stay: it stops only on a `journal`,
 `live`, `pin` or `overflow` change, logs the same skip line, and never
 reads again or reconsiders.
 
+The liveness scan behind `live`, `session running` and the target's
+eligibility reads the system process table, `/proc`. In the test suite, a
+fixture can supply a synthetic process table instead, so that sessions
+running elsewhere on the host do not change a test's result (#1860). The
+table is the one named by `AMPLIHACK_TEST_PROC_ROOT`, selected through
+`procfs::proc_root()`. The override is honored only when
+`AMPLIHACK_TEST_HOME_GUARD` is non-empty and the canonical path is a
+directory strictly inside the canonical temporary directory, owned by the
+current user and not writable by group or others. Otherwise the scan uses
+`/proc`. The shared rotate fixture
+(`tests/support/profile_rotate.rs`) gives every fixture an empty synthetic
+table by default. Tests add sessions with `FakeProc` and select their tree
+with `with_proc()` (#2042), including the session-running case in
+`issue_1691_switch_live.rs`; they do not read the host's sessions. The
+rotation-owner tests (#1803) use synthetic process tables too. Checks that
+precede signalling a rotator still read the real `/proc`, so a synthetic
+table cannot select a host process to signal.
+
 Revalidation and swap completion use trusted identity; later session
 rewrites cannot restore the previous account in the ledger. These checks
 do not change the separate usage-selection and stale-reading policies.
