@@ -75,6 +75,12 @@ restricted. An unknown organisation on either side is not a crossing.
 | Necessary capacity relief, with no eligible Same target that has capacity | Crossing targets as well |
 | Upgrade or plan-room | Never a Crossing target |
 
+The plan-room pool applies the same rules with room in place of strict
+capacity: a Same target restricts it only when the plan-room fallback, offered
+that target alone, would pick it. A Same login without room therefore never
+excludes an Unresolved login with room, so a session on paid overflow can
+still leave it.
+
 A better headroom score in another organisation does not override available
 same-organisation capacity. Missing metadata never keeps a session where it
 is: a session on a paid overflow login whose organisation is unknown still
@@ -122,7 +128,7 @@ The existing operator commands remain the entry points:
 | Command | Relevant behavior |
 | --- | --- |
 | `amplihack profile rotate --dry-run` | Previews selection under the affinity policy without moving a login or writing a swap record |
-| `amplihack profile rotate` | Applies the policy, writes the warning to the rotate log and records the organisation outcome in the swap record |
+| `amplihack profile rotate` | Applies the policy, writes an `affinity:` line to the rotate log and records the organisation outcome in the swap record |
 | `amplihack profile rotate status` | Prints the last swap's warning (`last swap: ...`) when that swap was a crossing or unresolved |
 | `amplihack profile auto-switch status` | Prints the last auto-switch crossing (`last crossing: ...`), with both profiles, both organisations and the warning |
 
@@ -130,15 +136,34 @@ Auto-switch makes its swaps inside the status-line wrapper that Claude Code
 runs after each status-line update, not in any `profile auto-switch`
 subcommand. When such a swap is a crossing or unresolved, the wrapper:
 
-- appends `auto-switch in <dir> from <profile> to <profile>: <warning>` to
-  the rotate log;
+- appends the `affinity:` line below to the rotate log;
 - writes `<profile-root>/.auto-switch.d/affinity/last-crossing.json` with
   `at`, `dir`, `from`, `to`, `from_org`, `to_org` and `affinity`, replacing
   any earlier record;
-- writes the same line on its own stderr. Claude Code does not display a
-  status-line command's stderr, so this copy is for manual runs only.
+- writes `auto-switch in <dir> from <profile> to <profile>: <warning>` on
+  its own stderr. Claude Code does not display a status-line command's
+  stderr, so this copy is for manual runs only.
 
 A swap within one organisation writes none of these.
+
+### Rotate log line
+
+The rotator and auto-switch write the same rotate-log line after a swap that
+is a crossing or unresolved:
+
+```text
+<UTC time> affinity: <crossing|unresolved> <from>-><to>: <warning>
+```
+
+`<from>` and `<to>` are profile names. No organisation ID is written.
+
+A profile with no expected record (`.auto-switch.d/expected/<profile>.json`)
+has an unknown organisation, so every swap to or from it is `unresolved` and
+writes this line, the stderr line, the `last-crossing.json` record (for
+auto-switch) and the warning in the next resume. This is intended: affinity
+cannot be established without the record. Test fixtures that do not set up
+expected records see these lines; a fixture that should swap silently records
+one organisation for both profiles.
 
 For setup and command examples, see [Rotate Claude Logins](../howto/claude-profile-rotation.md)
 and [Switch Accounts Automatically](../howto/claude-profiles.md#switch-accounts-automatically).

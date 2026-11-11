@@ -21,6 +21,25 @@ impl Affinity {
             _ => Self::Unresolved,
         }
     }
+    /// The kind word in the rotate log's `affinity:` line.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Same => "same",
+            Self::Crossing => "crossing",
+            Self::Unresolved => "unresolved",
+        }
+    }
+    /// The rotate-log line for a swap from profile `from` to profile `to`:
+    /// `affinity: <crossing|unresolved> <from>-><to>: <warning>`. `None`
+    /// for a swap within one organisation, which logs nothing.
+    ///
+    /// A profile with no organisation record is `unresolved`, so every swap
+    /// to or from such a profile writes this line and its warning. That is
+    /// intended: affinity cannot be established without the record.
+    pub fn log_line(self, from: &str, to: &str) -> Option<String> {
+        self.warning()
+            .map(|w| format!("affinity: {} {from}->{to}: {w}", self.as_str()))
+    }
     pub fn warning(self) -> Option<&'static str> {
         match self {
             Self::Same => None,
@@ -42,7 +61,11 @@ pub enum Purpose {
 pub struct Candidate<'a> {
     pub org: Option<&'a str>,
     pub eligible: bool,
+    /// The capacity-relief selector, offered only this target, picks it.
     pub capacity: bool,
+    /// The plan-room fallback, offered only this target, picks it. A login
+    /// can have room without strict capacity.
+    pub room: bool,
 }
 /// The permitted pool, in the existing ranking order.
 ///
@@ -95,8 +118,9 @@ pub fn preference_permitted(source: Option<&str>, target: Option<&str>) -> bool 
 pub struct Pools {
     /// Targets the selector may rank for this decision's purpose.
     pub allowed: Vec<usize>,
-    /// Targets the plan-room fallback may use. Room is checked by the
-    /// selector, so `capacity` is ignored here.
+    /// Targets the plan-room fallback may use, worked out from `room` in
+    /// place of `capacity`: a same-organisation login without room never
+    /// excludes an unknown-organisation login with room.
     pub plan_room: Vec<usize>,
 }
 
@@ -113,7 +137,8 @@ pub fn pools(source: Option<&str>, necessary: bool, candidates: &[Candidate<'_>]
         .map(|c| Candidate {
             org: c.org,
             eligible: c.eligible,
-            capacity: true,
+            capacity: c.room,
+            room: c.room,
         })
         .collect();
     Pools {

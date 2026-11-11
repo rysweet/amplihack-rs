@@ -273,13 +273,13 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             let seen = (next_plan_reset, unknown_plan.len());
             note_per_token(&mut out, &first, tag, &to, seen, check);
             out.emit(now(), &msg::swap(&from, &to, &live_shown, &target, reason));
-            if let Some(warning) = amplihack_utils::organisation_affinity::Affinity::between(
+            if let Some(line) = amplihack_utils::organisation_affinity::Affinity::between(
                 first.source_org(),
                 first.org_of(&to),
             )
-            .warning()
+            .log_line(from.as_str(), to.as_str())
             {
-                out.emit(now(), warning);
+                out.emit(now(), &line);
             }
             let (off_key, onto_key) = (first.platform_live(), first.platform() == Some(&to));
             note_move(

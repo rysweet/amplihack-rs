@@ -71,20 +71,24 @@ pub fn restrict(
         .map(|p| (p.clone(), organisation::resolve_login(state, p.as_str())))
         .collect();
     // Capacity: whether the selector, offered only this target, picks it.
-    // Asked only of eligible targets.
+    // Room: whether the plan-room fallback, offered only this target, picks
+    // it. Asked only of eligible targets.
+    let only = |p: &ProfileName, capacity: bool| {
+        let this = |q: &ProfileName| q == p && affinity_eligible(q);
+        let picked = if capacity {
+            candidate::select_restricted(pool, &ov, current, this, |_| false)
+        } else {
+            candidate::select_restricted(pool, &ov, current, |_| false, this)
+        };
+        picked == Some(p)
+    };
     let candidates: Vec<Candidate<'_>> = orgs
         .iter()
         .map(|(p, org)| Candidate {
             org: org.as_deref(),
             eligible: true,
-            capacity: candidate::select_restricted(
-                pool,
-                &ov,
-                current,
-                |q| q == p && affinity_eligible(q),
-                |_| false,
-            )
-            .is_some(),
+            capacity: only(p, true),
+            room: only(p, false),
         })
         .collect();
     let pools = pools(source_org.as_deref(), necessary, &candidates);
@@ -121,9 +125,10 @@ pub fn record_swap(
     let Some(warning) = affinity.warning() else {
         return;
     };
-    let line = format!("auto-switch in {dir} from {from} to {to}: {warning}");
-    eprintln!("amplihack: {line}");
-    crate::commands::profile::rotate::append_to_log(&state.root, &line);
+    eprintln!("amplihack: auto-switch in {dir} from {from} to {to}: {warning}");
+    if let Some(line) = affinity.log_line(from, to) {
+        crate::commands::profile::rotate::append_to_log(&state.root, &line);
+    }
     let valid = |o: Option<&str>| o.filter(|v| valid_id(v)).map(str::to_owned);
     let record = serde_json::json!({
         "at": at,

@@ -813,7 +813,7 @@ fn crossing_run(spare_org: &str) -> (Fx, Vec<String>, Option<String>) {
     let log = fs::read_to_string(RotateState::new(&f.root).log).unwrap_or_default();
     let lines = log
         .lines()
-        .filter(|l| l.contains("auto-switch in work"))
+        .filter(|l| l.contains(" affinity: "))
         .map(str::to_string)
         .collect();
     let status = super::affinity::status_line(&f.state, |_| "just now".into());
@@ -826,7 +826,7 @@ fn an_auto_switch_crossing_is_recorded_and_reported() {
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(
         lines[0].ends_with(
-            "auto-switch in work from work to spare: Cross-organisation swap: earlier \
+            " affinity: crossing work->spare: Cross-organisation swap: earlier \
              thinking becomes unavailable on the next turn. The visible conversation \
              remains and the session can continue."
         ),

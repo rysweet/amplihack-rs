@@ -35,6 +35,15 @@ fn c(org: Option<&str>, eligible: bool, capacity: bool) -> Candidate<'_> {
         org,
         eligible,
         capacity,
+        room: capacity,
+    }
+}
+fn r(org: Option<&str>, capacity: bool, room: bool) -> Candidate<'_> {
+    Candidate {
+        org,
+        eligible: true,
+        capacity,
+        room,
     }
 }
 #[test]
@@ -112,12 +121,33 @@ fn unknown_source_still_returns_from_overflow_to_a_recovered_plan_login() {
 fn pools_give_the_plan_room_fallback_its_own_non_crossing_pool() {
     let candidates = [
         c(Some("org-b"), true, true),
-        c(Some("org-a"), true, false),
+        // Room without strict capacity.
+        r(Some("org-a"), false, true),
         c(Some("org-a"), false, true),
     ];
     let p = pools(Some("org-a"), true, &candidates);
     assert_eq!(p.allowed, vec![0], "necessary relief may cross");
     assert_eq!(p.plan_room, vec![1], "room fallback never crosses");
+}
+#[test]
+fn a_same_org_login_without_room_does_not_exclude_an_unknown_org_login_with_room() {
+    // Same-organisation login: no capacity, no room. Unknown-organisation
+    // login: room but not strict capacity. The plan-room fallback must keep
+    // the unknown one, or a session stays on paid overflow.
+    let candidates = [r(Some("org-a"), false, false), r(None, false, true)];
+    let p = pools(Some("org-a"), true, &candidates);
+    assert_eq!(p.plan_room, vec![1]);
+    // With room on the same-organisation login it is preferred.
+    let candidates = [r(Some("org-a"), false, true), r(None, false, true)];
+    assert_eq!(pools(Some("org-a"), true, &candidates).plan_room, vec![0]);
+}
+#[test]
+fn log_lines_carry_the_affinity_kind_and_both_profiles() {
+    assert_eq!(Affinity::Same.log_line("x", "y"), None);
+    let line = Affinity::Unresolved.log_line("x", "y").unwrap();
+    assert!(line.starts_with("affinity: unresolved x->y: Organisation affinity is unresolved"));
+    let line = Affinity::Crossing.log_line("x", "y").unwrap();
+    assert!(line.starts_with("affinity: crossing x->y: Cross-organisation swap"));
 }
 #[test]
 fn warnings_distinguish_evidence_from_risk_without_claiming_the_session_is_broken() {

@@ -64,15 +64,18 @@ pub(in super::super) fn decide(
             // Whether the authoritative selector, offered only this target,
             // picks it. Plan-room fallback has its own pool.
             let permitted = [m.name.clone()];
-            let capacity = eligible
-                && matches!(
-                    decide_restricted(input, Some((&permitted, &[]))).decision,
-                    Decision::Swap { ref to, .. } if to == &m.name
-                );
+            let picks = |d: Decision| matches!(d, Decision::Swap { ref to, .. } if to == &m.name);
+            let capacity =
+                eligible && picks(decide_restricted(input, Some((&permitted, &[]))).decision);
+            // Whether the plan-room fallback, offered only this target,
+            // picks it: room without strict capacity counts here.
+            let room =
+                eligible && picks(decide_restricted(input, Some((&[], &permitted))).decision);
             Candidate {
                 org: snap.org_of(&m.name),
                 eligible,
                 capacity,
+                room,
             }
         })
         .collect();
