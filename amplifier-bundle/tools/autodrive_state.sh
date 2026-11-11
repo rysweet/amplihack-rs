@@ -179,7 +179,11 @@ autodrive_phase_done() {
 # own verdict was CLEAN or MINOR_ONLY (whose .findings is empty, #1979), so every
 # concern listed is settled. Callers check for DONE first; this function does not.
 autodrive_record_crusty_loop_done() {
-  local dir="${1:?state dir}" f id
+  local dir="${1:?state dir}" f id row tmp
+  row="$(autodrive_crusty_manifest_row "$dir")" || { echo "ERROR: cannot bind crusty completion to manifest" >&2; return 1; }
+  tmp="$(umask 077; mktemp "$dir/.crusty-completion.XXXXXX")" || return 1
+  printf '%s\n' "$row" > "$tmp" && mv -f -- "$tmp" "$dir/crusty-completion.txt" \
+    || { rm -f -- "$tmp"; return 1; }
   for f in "$dir"/crusty-round-*.json.findings; do
     [ -f "$f" ] || continue
     while IFS= read -r id; do
@@ -214,7 +218,6 @@ autodrive_clear_phase() {
   return 1
 }
 
-# --- criterion 3: the crusty loop's last loop-written record ---------------
 
 # autodrive_blob_hash <dir> < file -> the git blob hash of stdin. git runs with
 # <dir> as its working directory, so the config of whatever checkout the caller
@@ -247,7 +250,6 @@ autodrive_manifest_row() {
     }'
 }
 
-# autodrive_crusty_manifest_row <dir> -> autodrive_manifest_row <dir> crusty.
 autodrive_crusty_manifest_row() { autodrive_manifest_row "${1:-}" crusty; }
 
 # autodrive_crusty_final <state dir> -> criterion 3 under auto-drive (#1517).
@@ -299,17 +301,15 @@ autodrive_crusty_final() {
   fi
   rm -f -- "$copy"
   if [ -n "$tok" ]; then printf '%s\n' "$tok"; return 1; fi
+  if [ ! -f "$dir/crusty-completion.txt" ] || [ -L "$dir/crusty-completion.txt" ] \
+     || [ "$(cat "$dir/crusty-completion.txt")" != "$row" ]; then
+    printf 'crusty-completion-stale\n'; return 1
+  fi
   printf '%s\n' "$sha"
 }
 
-# --- resolved crusty concerns ---------------------------------------------
-#
-# Concern identifiers that a previous run addressed AND had confirmed clean by
-# a later crusty round. Passed back into crusty so a resumed run does not
-# reopen settled ground. Crusty may still re-raise one with NEW evidence — the
-# record informs the reviewer, it does not gag it. It is written ONLY by this
-# host, from rounds this host actually ran; nothing off-host can seed it.
-
+# Resolved ids are host-written evidence of earlier addressed concerns. A
+# reviewer may re-raise one with new evidence; this record informs, not gags.
 autodrive_record_resolved() {
   local dir="${1:?state dir}"
   shift
