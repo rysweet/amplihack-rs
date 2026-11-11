@@ -1790,6 +1790,19 @@ fn test_execute_recipe_via_rust_sets_isolated_runtime_directories() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _fixture_environment = fixture_environment();
+    // Issue #2291: pin the default layout. Without this, a caller's TMPDIR
+    // outside the work root would be used as the run's temp root. The
+    // caller's TMPDIR is made to lie inside a "parent runtime folder", which
+    // the chooser skips silently, so TMPDIR itself is never changed for
+    // tests running alongside this one.
+    let _tmp_root_env = crate::test_support::EnvGuard::capture(&[
+        "AMPLIHACK_RUN_TMP_ROOT",
+        "AMPLIHACK_WORKFLOW_RUNTIME_DIR",
+    ]);
+    unsafe {
+        std::env::remove_var("AMPLIHACK_RUN_TMP_ROOT");
+        std::env::set_var("AMPLIHACK_WORKFLOW_RUNTIME_DIR", std::env::temp_dir());
+    }
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let repo = temp.path().join("repo");
     let runner = temp.path().join("recipe-runner-rs");
