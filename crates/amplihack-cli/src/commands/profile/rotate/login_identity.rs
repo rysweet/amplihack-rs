@@ -6,7 +6,7 @@ use super::identify::{Account, LoginKind, login_kind};
 use crate::commands::profile::auto_switch::kit::{CREDS, dir_writable_by_others, euid};
 use crate::commands::profile::usage_direct::reason;
 use serde::{Deserialize, Serialize};
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -137,28 +137,57 @@ fn stamp(dir: &Path) -> Result<Stamp, &'static str> {
 }
 
 /// Shared identity-work budget; unrelated usage measurement is excluded.
-pub struct Budget(Cell<Instant>);
+/// Issue #2218: it also holds this cycle's local-only folders, whose
+/// identity [`Reader::bound`] takes from local files, never a request.
+pub struct Budget {
+    started: Cell<Instant>,
+    local_only: RefCell<Vec<PathBuf>>,
+    home: RefCell<Option<PathBuf>>,
+}
 impl Budget {
-    /// Start a new identity-work budget.
+    /// Start a new identity-work budget, with no local-only folder.
     pub fn new() -> Self {
-        Self(Cell::new(Instant::now()))
+        Self {
+            started: Cell::new(Instant::now()),
+            local_only: RefCell::new(Vec::new()),
+            home: RefCell::new(None),
+        }
     }
     /// Begin the next cycle's identity work.
     pub fn reset(&self) {
-        self.0.set(Instant::now());
+        self.started.set(Instant::now());
     }
     /// Whether another bounded identity read may start.
     pub fn available(&self) -> bool {
-        self.0.get().elapsed() < identity_budget()
+        self.started.get().elapsed() < identity_budget()
     }
     /// Exclude time spent measuring usage from the identity-work deadline.
     pub fn exclude_measurement(&self, elapsed: Duration) {
         // The measured interval starts after this budget, so shifting its
         // origin cannot exceed the current monotonic time. On an impossible
         // overflow retain the expired budget rather than grant more time.
-        if let Some(origin) = self.0.get().checked_add(elapsed) {
-            self.0.set(origin);
+        if let Some(origin) = self.started.get().checked_add(elapsed) {
+            self.started.set(origin);
         }
+    }
+    /// Issue #2218: replaces the local-only folders. `home` is `$HOME`, so
+    /// that `~/.claude`'s account is read from `~/.claude.json`.
+    pub fn set_local_only(&self, home: &Path, dirs: Vec<PathBuf>) {
+        *self.home.borrow_mut() = Some(home.to_path_buf());
+        *self.local_only.borrow_mut() = dirs;
+    }
+    fn is_local_only(&self, dir: &Path) -> bool {
+        self.local_only.borrow().iter().any(|d| d == dir)
+    }
+    /// The account of a local-only folder, from its `.claude.json`, or
+    /// `~/.claude.json` for `~/.claude`. No request is made.
+    fn local_account(&self, dir: &Path) -> Result<Account, &'static str> {
+        let home = self.home.borrow();
+        let source = match home.as_deref() {
+            Some(h) if dir == h.join(".claude") => h,
+            _ => dir,
+        };
+        super::identify::excluded_offline::local_account(source).ok_or(UNAVAILABLE)
     }
 }
 
@@ -227,6 +256,9 @@ impl Reader<'_> {
         }
         let before = stamp(dir)?;
         let account = match login_kind(&dir.join(CREDS)) {
+            LoginKind::OAuth if self.budget.is_local_only(dir) => {
+                Some(self.budget.local_account(dir)?)
+            }
             LoginKind::OAuth => Some((self.read)(dir)?),
             LoginKind::NoOAuth if platform => None,
             LoginKind::NoOAuth => return Err(reason::NO_TOKEN),
@@ -258,6 +290,20 @@ impl super::cycle::Ctx {
             read: &self.identity,
             budget: &self.identity_budget,
         }
+    }
+
+    /// Issue #2218: the folders whose identity this cycle takes from local
+    /// files only; replaces the previous set.
+    pub(super) fn set_excluded_dirs(&self, dirs: Vec<PathBuf>) {
+        self.identity_budget.set_local_only(&self.home, dirs);
+    }
+
+    /// Issue #2218: whether `~/.claude` holds an excluded login this cycle,
+    /// so its identity is local evidence only and hand-change recovery,
+    /// which would move logins on that evidence, does not run.
+    pub(super) fn home_local_only(&self) -> bool {
+        self.identity_budget
+            .is_local_only(&self.home.join(".claude"))
     }
 }
 

@@ -286,7 +286,8 @@ pub(super) fn from_rows(
 ) -> Option<Snapshot> {
     let mut points = BTreeMap::new();
     let mut unknown = Vec::new();
-    let logins = rows.iter().filter(|r| !r.api_key);
+    // Issue #2218: excluded rows are neither counted nor unknown.
+    let logins = rows.iter().filter(|r| r.is_login());
     let mut any = false;
     for r in logins {
         any = true;
@@ -736,14 +737,34 @@ fn read_history(_root: &Path) -> Result<Vec<u8>, ReadRefused> {
 /// history does not look like an empty one. One read parses the whole
 /// tail, so a caller that needs both the newest entry and the ones before
 /// it reads once.
+///
+/// Issue #2218: profiles in the auto-switch exclude list are dropped from
+/// every entry's readings and unknown logins, so a line written before the
+/// fix never counts them. The file itself is not rewritten. A corrupt
+/// config excludes nothing; its warning is printed by the command, not
+/// repeated here.
 pub(super) fn read_all(root: &Path, now: i64) -> (Vec<Entry>, Option<String>) {
     match read_history(root) {
         Ok(bytes) => {
             let (mut out, skipped) = entries_in(&bytes, now);
             out.sort_by_key(|e| e.at);
+            drop_excluded(&mut out, &super::usage_cmd::exclude_list(root, |_| {}));
             (out, (skipped > 0).then(|| skipped_warning(skipped)))
         }
         Err(ReadRefused) => (Vec::new(), Some(READ_REFUSED.to_string())),
+    }
+}
+
+/// Removes the `excluded` profiles from each entry, comparing parsed
+/// profile names only.
+fn drop_excluded(entries: &mut [Entry], excluded: &[ProfileName]) {
+    if excluded.is_empty() {
+        return;
+    }
+    let is_excluded = |n: &str| excluded.iter().any(|x| x.as_str() == n);
+    for e in entries {
+        e.profiles.retain(|n, _| !is_excluded(n));
+        e.unknown.retain(|n| !is_excluded(n));
     }
 }
 

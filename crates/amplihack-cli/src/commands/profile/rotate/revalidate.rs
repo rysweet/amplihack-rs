@@ -153,6 +153,8 @@ pub fn changed(first: &Snap, fresh: &Snap, decision: &Decision, journal: bool) -
         home_no_oauth,
         // A swap's target only, through `still_eligible` below.
         candidate_accounts: _,
+        // Read from config; not compared (#2218 decision 11).
+        live_excluded: _,
     } = first;
     let mut why = Vec::new();
     if journal {

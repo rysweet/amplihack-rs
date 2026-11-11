@@ -25,6 +25,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 pub use super::account::Account;
+
+#[path = "excluded_offline.rs"]
+pub(super) mod excluded_offline;
 pub use super::candidates::{CandidateInput, Skip, candidates, refused_dirs};
 
 /// The largest login or settings file read for its keys; the top-level key
@@ -175,6 +178,13 @@ pub fn live(
             LiveId::Known(name)
         };
         return Ok((id, None));
+    }
+    // Issue #2218: an excluded login is named from local files, so no
+    // request is sent with its token.
+    if login_kind(&home.join(".claude").join(CREDS)) == LoginKind::OAuth
+        && let Some((name, _)) = excluded_offline::live_excluded_offline(store, rs, home)
+    {
+        return Ok((LiveId::Known(name), None));
     }
     let budget = super::login_identity::Budget::new();
     let read = super::login_identity::default_read();

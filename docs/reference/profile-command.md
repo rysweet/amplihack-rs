@@ -126,6 +126,7 @@ Every row records which step gave it as its [source](#reading-source):
 
 | Profile | Steps |
 |---------|-------|
+| In the auto-switch `exclude` list | None. It is not probed, read or refreshed. See [Excluded profiles](#excluded-profiles). This wins over every row below. |
 | [API-key profile](#api-key-usage) | None. It is not probed, as before. |
 | Marked as [overflow](#rotate-overflow) | Fallback only, as `/usage` text. The spend limit is visible only in `/usage`, so the [spend-limit block](#overflow-spend-limit-block) keeps working. Source `fallback`. Under `AMPLIHACK_PROFILE_USAGE_PROBE=direct` the row is not probed and reads `error`; see [Probe method](#probe-method). |
 | A direct answer shows usage credits turned on (`extra_usage` is not absent, `null` or `{"is_enabled": false}`) | The windows and state come from the direct answer. Source `direct`. Spend `not_probed`, unless `--spend` asks for one `/usage` text probe, under the normal per-probe timeout (`--timeout-secs`, 120 s by default), that reads only the spend status; see [Usage credits on](#usage-credits-on). If neither window in the answer is usable, the direct read fails with `usage credits on` and the profile goes to the fallback. |
@@ -500,9 +501,14 @@ for:
 
 - `~/.claude`, for the live profile;
 - a profile whose login is [lent](#leases) to another directory, or whose
-  directory [hosts](#leases) another profile's login.
+  directory [hosts](#leases) another profile's login;
+- a profile in the auto-switch `exclude` list. Such a profile is never
+  probed, so it never reaches this step; see
+  [Excluded profiles](#excluded-profiles). The same holds for the login in
+  `~/.claude` when local files show that it belongs to an excluded profile;
+  see [Local proof of an excluded live login](#local-proof-of-an-excluded-live-login).
 
-In those cases a session may be using the login, and `claude` refreshes it
+In the first two cases a session may be using the login, and `claude` refreshes it
 itself, so the row falls back with `token expired` or `http 401`. The one
 exception is outside the usage read: a rotate cycle refreshes the login in
 `~/.claude` once, by these steps, when its token has already expired, so
@@ -1180,12 +1186,112 @@ Known limitations:
   (for example session-exhausted) for at most five hours. See
   [Refreshing auto-switch readings](#refreshing-auto-switch-readings).
 
+#### Excluded profiles
+
+A profile in the auto-switch [`exclude` list](#settings-file) is never
+probed or refreshed by `profile usage`. Such a login is often shared with
+another host. A token refresh from this host rotates the login's refresh
+token and signs the other host out, so the only safe action is none.
+Issue [#2218](https://github.com/rysweet/amplihack-rs/issues/2218) made
+this rule apply to every reader.
+
+The list is read once per command from `<root>/.auto-switch`, the file the
+rotator reads, whether auto-switch is on or off. There is no second list
+and no other setting. A name in the list that is not a profile under the
+root is ignored, as before.
+
+For an excluded profile, `profile usage` makes no usage request, no token
+request and no identity request, does not open its `.credentials.json` or
+API-key file, starts no `claude`, and runs no [spend probe](#spend-probe),
+even under `--spend`.
+
+`usage.json` is updated by loading it, changing the entries for the profiles
+read and saving it again, so an entry for the excluded profile written
+before it was excluded stays in the file. `profile usage` neither shows,
+updates nor deletes that entry. No reader counts it as room: the
+[capacity file](#capacity-writers) writers, auto-switch
+[candidate selection](#candidate-selection) and the rotator apply the same
+`exclude` list, and the [usage-limit wait](#usage-limit-wait) never counts an
+excluded profile as a login that could take over.
+
+The same holds for the [usage history](#usage-history). Lines written before
+the profile was excluded, or before
+[#2218](https://github.com/rysweet/amplihack-rs/issues/2218), can still hold
+a reading for it. Every reader of the history drops the excluded names from
+each line as it reads it, so the [capacity summary](#capacity-summary) of
+`profile usage` and the capacity line of [`rotate status`](#rotate-status)
+never count them in `usable now`, `login-weeks of N` or `unknown`. The file
+itself is not rewritten.
+
+With no names, the excluded profile is still listed, so that the table
+shows every profile under the root:
+
+| Output | Excluded row |
+|--------|--------------|
+| Bar view | `excluded (not probed)` from `WEEK` to the end of `S-RESET`; `STATE` is `excluded`; no marks other than `(live)` after the name. |
+| `--table` | `STATE` is `excluded`, `SESSION` is `excluded (not probed)`, every other usage cell is `-`, `SPEND` is `n/a`. |
+| `--json` and `--summary-json` | `"state": "excluded"`. The keys `source`, `account`, `session`, `week_all` and `error` are present with the value `null`, `week_models` is `[]` and `spend` is `"n/a"`. No e-mail, account name or cached figure appears anywhere in the row. |
+| [Capacity summary](#capacity-summary) | Not counted at all: neither in `N` nor on the `unknown` line. |
+| [Usage history](#usage-history) and `usage.json` | No new reading is written for it. An older `usage.json` entry is left as it is, and is ignored as above. |
+
+Excluded rows come after every other row; see [Ordering](#ordering). The
+command exits `0` when the only difference from a full run is the excluded
+rows.
+
+The login in `~/.claude` is not read either when local files show that it
+belongs to an excluded profile, by the rules under
+[Local proof of an excluded live login](#local-proof-of-an-excluded-live-login).
+That profile's row is the `excluded (not probed)` row, marked `(live)`, and
+`live_in` is `null`. A profile that is both live and excluded is always
+treated as excluded.
+
+With names, each excluded name is refused on stderr, and the other names are
+probed, recorded and reported as usual:
+
+```
+amplihack profile usage work shared
+```
+
+```
+shared: excluded (in auto-switch exclude list); not probed (amplihack profile auto-switch exclude)
+PROFILE  WEEK             W-RESET      SESSION           S-RESET     STATE
+work     ███░░░░░░░  30%  11-05 09:00  ██░░░░░░░░  20%   11-01 12:00 ok
+shared   excluded (not probed)                                       excluded
+...
+```
+
+The refused name is also shown as an `excluded (not probed)` row, as with no
+names. The command exits `1` once every other name has been probed, recorded
+and printed, so `profile usage work shared` reads `work`, refuses `shared` and
+exits `1`. A script that wants only the readable profiles can name them, or
+run with no names. A name that is not a profile under the root is
+still refused as an unknown profile before anything is read, and that error
+takes precedence over the exclusion.
+
+A profile that is both excluded and an [API-key](#api-key-usage) or
+[overflow](#rotate-overflow) profile is shown as excluded. Neither kind is
+probed.
+
+When `<root>/.auto-switch` is corrupt or unsafe, the exclude list cannot be
+read, and every profile is probed as if the list were empty. The command
+prints this line once on stderr in that case:
+
+```
+warning: auto-switch config unreadable or unsafe; exclude list not applied
+```
+
+`profile usage` warns and goes on, so that a damaged file does not hide every
+reading. The rotator and [`profile verify`](#profile-verify) do the same; see
+[Unreadable exclude list](#unreadable-exclude-list). Fix the file with
+`amplihack profile auto-switch on` or `off`.
+
 #### States
 
 Every profile gets exactly one state:
 
 | State | Meaning |
 |-------|---------|
+| `excluded` | The profile is in the auto-switch `exclude` list and was not probed. See [Excluded profiles](#excluded-profiles). |
 | `ok` | The session or the all-models week was read, from a passive reading, a direct read, an accepted usage request or a `/usage` line, and neither is at 100%. |
 | `session_exhausted` | The session is at 100% or more and a session limit applies. A reading with [no session limit](#no-session-limit) never has this state. |
 | `weekly_exhausted` | The all-models week is at 100% or more and the session is not. |
@@ -1195,7 +1301,7 @@ Every profile gets exactly one state:
 | `unparsed` | The `/usage` output had nothing recognisable. Run again with `--raw` to see what Claude said. |
 | `error` | The probe could not run. The reason goes to stderr in both modes, and the JSON also has it in `error`. |
 
-When several apply, the first in this order wins: `error`, `timeout`,
+When several apply, the first in this order wins: `excluded`, `error`, `timeout`,
 `spend_limit`, `session_exhausted`, `weekly_exhausted`, `ok`,
 `not_logged_in`, `unparsed`. A model-specific week line at 100% (for example
 `Current week (Opus)`) does not make a profile exhausted; the profile can
@@ -1365,6 +1471,7 @@ end of `S-RESET` they show one message:
 |-----|---------|
 | [API-key](#api-key-usage) (`api_key`) | `api-key (billed per token)` |
 | `not_logged_in`, `timeout`, `unparsed`, `error` | `no reading (<state>)`, for example `no reading (timeout)` |
+| [Excluded](#excluded-profiles) (`excluded`) | `excluded (not probed)` |
 
 The `STATE` cell and the marks are still shown on these rows. Rows in state
 `ok`, `session_exhausted`, `weekly_exhausted` and `spend_limit` show their
@@ -1618,7 +1725,7 @@ view, `--table` and `--json` use the same order, and the bar view and
 order: rotator pick (most room in the worse of session and week, then name)
 ```
 
-Rows are in four groups:
+Rows are in five groups:
 
 1. **Usable** (`ok`): most headroom first, then by name. Headroom is the
    rotator's: `100 - max(session, week)` for the all-models week, rounded
@@ -1639,6 +1746,8 @@ Rows are in four groups:
 3. **API key** (`api_key`): by name.
 4. **Unavailable**: `not_logged_in`, then `timeout`, then `unparsed`, then
    `error`, each by name.
+5. **Excluded** (`excluded`): by name. See
+   [Excluded profiles](#excluded-profiles).
 
 Only the headroom rule is applied. The rules that decide which profiles
 the rotator may pick at all are not: the [overflow tiers](#overflow-tiers),
@@ -1650,7 +1759,7 @@ overflow profile at 20% of its session and 30% of its week (headroom 70) is
 listed above a plan login at 50% of its week (headroom 50), although the
 rotator moves to the plan login first and uses the overflow profile only as
 described under [Overflow decision](#overflow-decision). An excluded
-profile is listed by its headroom, although the rotator never picks it.
+profile is not probed, so it has no headroom and is listed last.
 
 The headroom used for sorting also differs from the rotator's in one
 respect. A window whose reset time has already passed counts as 0% used
@@ -2257,13 +2366,13 @@ Each row has these keys:
 | Key | Type | Meaning |
 |-----|------|---------|
 | `profile` | string | Profile name. |
-| `account` | string | The account whose login is live in the profile's directory: the profile's own name unless it [hosts](#leases) another account. The numbers belong to this account. |
+| `account` | string or `null` | The account whose login is live in the profile's directory: the profile's own name unless it [hosts](#leases) another account. The numbers belong to this account. `null` only for an [excluded](#excluded-profiles) row. |
 | `default` | bool | Whether this is the default profile. |
 | `leased_to` | string or `null` | The directory this profile's login is lent to. |
 | `live_in` | string or `null` | `"~/.claude"` when this profile's login is [live in `~/.claude`](#logins-in-claude) and its numbers were read from there; otherwise `null`. The key is always present, and at most one row has a non-null value. The value is always the literal `~/.claude`, never the expanded home path. |
 | `overflow` | bool | Whether the profile is marked as [credit-backed overflow](#rotate-overflow). Always present. |
 | `overflow_blocked_until` | integer or `null` | Unix epoch seconds until which the rotator has [blocked](#overflow-spend-limit-block) this overflow profile after a spend limit; `null` when it is not blocked or not marked. Always present. |
-| `state` | string | One of the [states](#states). |
+| `state` | string | One of the [states](#states). `"excluded"` for a profile in the auto-switch `exclude` list; such a row has `source`, `account`, `session`, `week_all` and `error` `null`. See [Excluded profiles](#excluded-profiles). |
 | `source` | string or `null` | How the row was read: `"passive"`, `"direct"` or `"fallback"`; see [Reading source](#reading-source). A row that failed on every step has the source of its last attempt. `null` for a row that was never probed, such as an [API-key](#api-key-usage) row or a `profile directory refused` row. Always present, immediately after `state`. |
 | `spend` | string | The [spend status](#spend-status): `"n/a"`, `"ok"`, `"limit_reached"`, `"unknown"` or `"not_probed"`. Always present, immediately after `source`. `"unknown"` means a probe was asked for or needed and gave no reading; `"not_probed"` means usage credits are on and no spend probe was asked for (no `--spend`). Neither says anything about the spend limit. `"n/a"` does not mean that usage credits are off. Scripts should treat a value they do not know as `"unknown"`. |
 | `session` | window or `null` | The session: `five_hour` from a [passive reading](#passive-readings), the [direct read](#direct-read) or the [usage request](#probe-method), or the `Current session` line from `/usage`. Always `null` for `timeout` and `error`, and when `session_limit` is `false`. |
@@ -2493,7 +2602,9 @@ prints only the `no profiles` line.
 The summary counts subscription profiles only. [API-key profile](#api-key-profiles)
 rows are not logins in
 the summary and are not listed as unknown. An overflow profile is a
-subscription profile and is counted.
+subscription profile and is counted. A profile in the auto-switch `exclude`
+list is left out entirely: it is not in `N`, not in any sum and not on the
+`unknown` line, because it was [not probed](#excluded-profiles).
 
 A row's reading is valid only when its weekly figure is known:
 
@@ -2779,7 +2890,7 @@ one line per measured cycle to `<root>/.auto-switch.d/usage-history.jsonl`
 |-----|---------|
 | `at` | When the cycle was measured, UTC. |
 | `by` | Which command wrote the line: `usage` for `profile usage`, which reads every subscription login, or `rotate` for a rotator cycle, which records only the profiles it probed. Absent in lines written before this key existed; such a line, or one with another value, has no known writer. |
-| `profiles` | Profile name to reading, for valid readings only. Unknown readings are left out, not written as 0 or 100. |
+| `profiles` | Profile name to reading, for valid readings only. Unknown readings are left out, not written as 0 or 100. [Excluded profiles](#excluded-profiles) are never written, here or under `unknown`, and a name in the current `exclude` list is dropped from both on read, so older lines never count it. |
 | `s` | Session percentage, a whole number `0`–`100`, or `null` when not read. `session_exhausted` is written as `100`. |
 | `session_limit` | Written only as `false`, beside `"s":null`, when the reading showed no session window (see [Usable now](#usable-now)). Absent otherwise. A missing key, `null`, or `false` beside a session figure, reads as "not read". |
 | `w` | All-models week percentage, a whole number `0`–`100`. `weekly_exhausted` is written as `100`. |
@@ -3041,8 +3152,8 @@ recorded or noted.
 
 | Status | When |
 |--------|------|
-| `0` | The probes ran, whatever states they produced, or there are no profiles. Codex rows never change the status, whatever their states. Recording failures, [usage history](#usage-history) failures and [weight](#capacity-weights) warnings do not change it. |
-| `1` | Setup failed: Docker is active, the profile root is invalid, or a name is invalid or does not exist. Printed as `error:`/`hint:` like other [errors](#errors). Nothing is probed. A `claude` that cannot be found is not a setup failure: only rows that need a fallback read `error` with `claude not found`. |
+| `0` | The probes ran, whatever states they produced, or there are no profiles. Rows in state `excluded`, listed when no names are given, do not change it. Codex rows never change the status, whatever their states. Recording failures, [usage history](#usage-history) failures and [weight](#capacity-weights) warnings do not change it. |
+| `1` | Setup failed: Docker is active, the profile root is invalid, or a name is invalid or does not exist. Printed as `error:`/`hint:` like other [errors](#errors). Nothing is probed. A `claude` that cannot be found is not a setup failure: only rows that need a fallback read `error` with `claude not found`. Also `1` when any name given on the command line is in the auto-switch `exclude` list: each is refused with `<name>: excluded (in auto-switch exclude list); not probed (amplihack profile auto-switch exclude)`, the other names are probed, recorded and printed first, and the status is then `1`. See [Excluded profiles](#excluded-profiles). |
 | `2` | Command-line usage error, such as `--timeout-secs 0`, `--usable-session-pct 101`, `--summary-json` with `--json`, `--raw`, `--table` or `--utc`, or `--table` with `--json`. |
 
 With no profiles, the bar view and `--table` print
@@ -3059,6 +3170,20 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
 
 #### Privacy
 
+- No request is ever made with an [excluded](#excluded-profiles) profile's
+  token. `profile usage` and [`profile verify`](#profile-verify) never open
+  its `.credentials.json`. The rotator reads that file locally, in memory,
+  only for the byte comparison of
+  [rule 3](#local-proof-of-an-excluded-live-login), and writes it only for
+  the [write-back](#write-back-into-an-excluded-folder) of a move off an
+  excluded live profile.
+- Identity checks for an excluded folder use its local account and stored
+  [record](#recorded-account) only. The rotator's
+  [local proof](#local-proof-of-an-excluded-live-login) of an excluded live
+  login reads the ledger, `~/.claude.json` and the record, and may compare
+  two credential files byte for byte in memory. It never sends the token. The reason
+  given when an excluded folder is skipped names no path, e-mail address or
+  account identifier.
 - A profile's `.credentials.json` is read, in memory only, for its
   [direct read](#direct-read), and written only after a
   [token refresh](#token-refresh). Its contents are never printed, logged,
@@ -4088,7 +4213,7 @@ overflow=ryan-mistt-org
 |-----|--------|---------|
 | `enabled` | `on` or `off`. Required. | — |
 | `threshold` | Integer `1` to `100`, in percent. | `90` |
-| `exclude` | Comma-separated profile names, may be empty. | empty |
+| `exclude` | Comma-separated profile names, may be empty. An excluded profile is never chosen, and no amplihack command probes it or refreshes its token; see [Excluded profiles](#excluded-profiles) and [Rotate excluded live profile](#rotate-excluded-live-profile). | empty |
 | `overflow` | Comma-separated profile names, in the order the rotator tries them. See [Rotate overflow](#rotate-overflow). Written only by [`profile overflow`](#overflow-commands). | empty |
 
 `overflow` is written last, and only when the list is not empty, so a file
@@ -4253,9 +4378,11 @@ Eligible accounts are ordered:
 2. accounts with no reading, by name.
 
 The first one is chosen. A known reading below the threshold always beats
-no reading. If none is eligible, nothing is switched. The
-exclusion list only stops an account being chosen; an excluded account that
-is current can still be switched away from.
+no reading. If none is eligible, nothing is switched. An excluded
+account is never chosen, and its stored reading is never refreshed by a
+probe. When an excluded account is the live one, the rotator moves off it
+without probing or refreshing it; see
+[Rotate excluded live profile](#rotate-excluded-live-profile).
 
 #### Auto-switch and overflow profiles
 
@@ -4479,6 +4606,13 @@ The wrapper writes to standard output itself only to add the capacity line
 and the [capacity notice](#capacity-notice) after the original output. Its exit code is the
 original command's, or `0` if there is none or it was not run. Its own errors, including a
 panic, are one line on stderr naming paths only.
+
+The wrapper makes no network request and never opens a profile's
+`.credentials.json`. It records the `rate_limits` Claude passes it and reads
+`usage.json`, `home-usage.json` and the ledgers. A profile in the
+auto-switch `exclude` list is therefore never probed or refreshed by it,
+and an in-session swap never chooses one (see
+[Candidate selection](#candidate-selection)).
 
 ### In-session swap
 
@@ -4850,7 +4984,12 @@ of them makes an extra network call or probe for it.
 | `rotate` | By the rotator, in a [cycle](#rotate-cycle) that reaches the swap, stay or ALERT, under the lock taken in step 6. | That cycle's probes. A `session_exhausted` or `weekly_exhausted` probe counts as at its limit; a failed probe, including one that timed out, counts as no reading and never as at its limit. Reset times come from the profile's `usage.json` entry while they are in the future, and are otherwise unknown. |
 
 All three use the auto-switch threshold and exclusion list, not the
-rotator's `--session-at` and `--week-at`, so they agree on the state. None
+rotator's `--session-at` and `--week-at`, so they agree on the state. None of
+them probes or refreshes an excluded profile to write the file: the
+`statusline` writer reads only files, the `usage` writer gets no reading for
+one (see [Excluded profiles](#excluded-profiles)), and the `rotate` writer
+never counts an excluded live login as room (see
+[Rotate excluded live profile](#rotate-excluded-live-profile)). None
 of them counts an [overflow](#rotate-overflow) profile as eligible: its
 capacity is credit capacity, used only by the rotator's overflow rule. While
 the rotator's last cycle left the live login on credits, its own write sets
@@ -5267,7 +5406,8 @@ Every non-dry-run cycle runs these steps in order:
 3. **Lock and recover.** Take `<root>/.auto-switch.d/lock`, waiting up to
    2 seconds. If it is busy, log `skip: state lock busy` and end the cycle.
    Under the lock, run auto-switch [recovery](#session-end-and-recovery), then
-   [rotate recovery](#rotate-recovery), then the one refresh of an
+   read the `exclude` list (an [unreadable list](#unreadable-exclude-list)
+   is logged and excludes nothing this cycle), then [rotate recovery](#rotate-recovery), then the one refresh of an
    [expired live login](#an-expired-live-login), then the
    [unreadable-ledger stop](#unreadable-ledger-stop), then
    [hand-change recovery](#rotate-hand-change-recovery), then
@@ -5287,7 +5427,8 @@ Every non-dry-run cycle runs these steps in order:
    which is kept) and end the cycle without measuring. Release the lock.
 4. **Measure.** Read the live login and every candidate, as
    [`profile usage`](#how-a-profile-is-probed) does (passive, direct, then
-   `claude`), with the same
+   `claude`). A live profile in the `exclude` list is not read; see
+   [Rotate excluded live profile](#rotate-excluded-live-profile). Reads use the same
    [method, deadline and parallelism bounds](#probe-settings-in-the-rotator).
    The cycle waits for the reads only until `--interval` minus 2 seconds
    after it started; a read still running then is used by a later cycle,
@@ -5395,10 +5536,12 @@ Material records and duplicate claims are revalidated when they support
 the selected placement, adoption or backfill; unrelated profile changes
 remain irrelevant.
 
-Exclusion is checked for the target only. The live profile is always
-skipped as `live` before the `exclude` list is read, so adding the live
-profile to `exclude` while a cycle measures has no effect on a swap away
-from it.
+Revalidation checks exclusion for the target only. Exclusion of the live
+profile is decided earlier, when the cycle reads the `exclude` list under
+the lock, and is not compared again here: a live profile excluded when the
+cycle loaded the `exclude` list under the lock is never probed in that cycle and is swapped away from as described
+under [Rotate excluded live profile](#rotate-excluded-live-profile). A change
+to `exclude` made while a cycle measures takes effect on the next cycle.
 
 A `journal`, `live`, `pin` or `overflow` change ends the cycle with a skip.
 One of these means a person or another process has acted, for example with
@@ -5526,6 +5669,8 @@ failed or that were exhausted.
 
 | Condition (all comparisons inclusive) | Outcome |
 |---------------------------------------|---------|
+| The live profile is in the `exclude` list, and `best >= margin` | Swap to best, `reason=threshold`. The live login counts as headroom `0`, and no damping, hold or home-key stay applies. See [Rotate excluded live profile](#rotate-excluded-live-profile). |
+| The live profile is in the `exclude` list, no candidate meets the margin, and no [plan-room](#rotate-plan-room-swap) or [overflow](#overflow-decision) move is possible | ALERT `excluded-live`. No swap. |
 | Live probe failed, or `session_used >= session-at`, or `week_used >= week-at`; and `best - live >= margin` | Swap to best, `reason=threshold`. A failed live probe counts as headroom `0`, and the swap is then subject to [failed-probe damping](#rotate-failed-live-probes). |
 | As above, but no candidate meets the margin, or there are no candidates | ALERT `no-capacity`. No swap. |
 | No threshold reached, `now - swapped_at >= hold` (or no earlier swap), and `best - live >= upgrade-margin` and `best - live > 0` | Swap to best, `reason=upgrade`. |
@@ -5546,7 +5691,9 @@ rotator last swapped away from it while it was full, is read again (by the
 #### Rotate failed live probes
 
 When the table above gives a threshold swap only because the live probe
-failed, the rotator applies these rules in order. `k` is the number of
+failed, the rotator applies these rules in order. An excluded live profile
+is not probed, so its swap is not a failed-probe swap and none of these
+rules applies to it. `k` is the number of
 consecutive cycles, including this one, whose live probe failed.
 
 | Condition | Outcome | Log line |
@@ -6298,7 +6445,10 @@ ALERT: overflow profile <name> hit its spend limit; blocked until <time>; rotati
 
 The login stays where it is, since the pin still holds. Once the block is
 recorded the held cycles stop probing until it ends or is cleared. A pinned
-plan login is never probed. `profile switch` refuses an overflow profile that
+plan login is never probed. A pinned profile in the auto-switch `exclude`
+list is never probed either: each held cycle logs
+`skip: pinned profile <name> is excluded; spend not probed` and the pin
+holds as before. `profile switch` refuses an overflow profile that
 already has an active block (see [Rotate switch](#rotate-switch)).
 
 The `--hold` that `overflow-in` and `overflow-out` ignore is the minimum time
@@ -6400,7 +6550,13 @@ Comparing the account key alone is insufficient. Missing fields make
 evidence insufficient only when the applicable ownership check needs
 them; supported legacy email identities do not acquire a UUID requirement.
 
-Ownership scans distinguish claimed, unclaimed and uncertain logins.
+Ownership scans distinguish claimed, unclaimed and uncertain logins. No request is
+sent for an [excluded](#rotate-excluded-live-profile) folder during a
+scan: with a record, the record alone makes it claimed; without one, it is
+unclaimed. The duplicate-login check still uses its local `oauthAccount`,
+read from disk.
+Excluded folders are never swap sources or targets, so an unclaimed one
+authorises nothing.
 An unclaimed result requires a complete scan of the relevant logins and
 records. A failed duplicate read, unusable record, changed dependency or
 exhausted budget cannot prove absence. Missing records may follow the
@@ -6550,6 +6706,210 @@ place. An unfinished empty adoption is not evidence of ownership; retry
 must establish ownership again. Existing profile creation, journal and
 cleanup rules still apply.
 
+### Rotate excluded live profile
+
+When the login in `~/.claude` belongs to a profile in the auto-switch
+`exclude` list, the rotator moves off it without probing or refreshing it.
+An excluded login is often shared with another host, and a token refresh
+from this host would rotate its refresh token and sign that host out
+([#2218](https://github.com/rysweet/amplihack-rs/issues/2218)).
+
+The `exclude` list is read once per cycle, under the rotate lock and before
+any recovery, refresh or identity read. A cycle that cannot read the list
+logs a warning and excludes nothing; see
+[Unreadable exclude list](#unreadable-exclude-list).
+Call the excluded live profile `C`. The rotator identifies `C` from local
+files only, as described under
+[Local proof of an excluded live login](#local-proof-of-an-excluded-live-login).
+In every cycle that finds `C` live, the rotator:
+
+- sends no request of any kind with `C`'s token: no usage request, no token
+  refresh and no `GET /api/oauth/profile` identity read, on the first cycle
+  and every later one;
+- starts no `claude` for `C`;
+- skips the one refresh of an [expired live login](#an-expired-live-login),
+  and, when `C`'s token has expired, logs
+  `refresh: live profile C is excluded; token not refreshed`;
+- writes nothing to `C`'s credential files, except the
+  [write-back](#write-back-into-an-excluded-folder) of a move off `C`;
+- records no reading for `C` in the [usage history](#usage-history),
+  `usage.json`, the [capacity file](#capacity-file), the ledger's
+  `swapped_away` list or the no-room record.
+
+The swap protections of
+[#1845](https://github.com/rysweet/amplihack-rs/issues/1845) and
+[#1886](https://github.com/rysweet/amplihack-rs/issues/1886) still need a
+[trusted reading](#rotation-login-identity) of the login in `~/.claude`
+before any move. For an excluded live login that reading comes from local
+files instead of the server. The incoming target is still read over the
+network, as for any swap.
+
+#### Local proof of an excluded live login
+
+Once per cycle, after the rotate lock is taken and auto-switch recovery has
+run, and before [swap recovery](#rotate-recovery), the
+[expired-login refresh](#an-expired-live-login),
+[hand-change recovery](#rotate-hand-change-recovery) and the snapshot, the
+rotator decides from local files alone which logins it must never send to
+the server. It reads no token and sends no request to decide.
+
+The login in `~/.claude` is taken to be the excluded profile `C` by the
+first of these rules that matches:
+
+| Rule | Condition | Match |
+|------|-----------|-------|
+| 1 | The rotate ledger's `live` field names `C`, and `C` is in the `exclude` list. This rule is enough on its own. | `ledger` |
+| 2 | The ledger has no `live` field, or a [hand change](#two-readings) is suspected, and the `oauthAccount` in `~/.claude.json` matches `C`'s [recorded account](#recorded-account) by full [account identity](#account-identity), organisation included. | `local account` |
+| 3 | As rule 2, but `~/.claude.json` gives no account, and `~/.claude/.credentials.json` is byte for byte the same as `<root>/C/.credentials.json`. | `same bytes` |
+
+An e-mail or a prefix alone never matches in rule 2. `~/.claude.json` is
+read without following a symlink, up to the usual size limit, and must be
+owned by you and not writable by group or other users. A file that fails
+any of these checks counts as missing. Any read error makes that rule give
+no match; it never sends a request in its place.
+
+Every profile folder named in the `exclude` list is also marked, for the
+whole cycle, so that no identity read is sent for it. When a rule matches,
+`~/.claude` is marked as well. For a marked folder the identity of the login
+is taken from its local account (`.claude.json`) in place of
+`GET /api/oauth/profile`. When no local account is found, the identity read
+fails with `unavailable` and no request is sent. The other checks a trusted
+reading needs still apply: the shared identity-work budget, the
+[login directory rule](#login-directory-rule), the login kind, and the
+metadata of `.credentials.json` before and after the read. A `/login`, or
+any other change to that file between the proof and its use, gives
+`login changed during read` and nothing is moved.
+
+The marked set is rebuilt at the start of every cycle from parsed profile
+names and `~/.claude` only. A change to `exclude` made while a cycle runs
+takes effect on the next cycle.
+
+[`rotate status`](#rotate-status) uses the same rules to name the live
+profile. When the ledger has no `live` field and a rule names `C`, the
+status shows `C` as live and sends no request.
+
+#### Moving off an excluded live profile
+
+The decision treats `C` as a live login that must be left in this cycle:
+
+| Case | Outcome |
+|------|---------|
+| A candidate meets the margin | Swap to the best candidate by the [decision rule](#rotate-decision-rule), `reason=threshold`, on the first cycle. `C` counts as headroom `0`, as an exhausted live login does. [Failed-probe damping](#rotate-failed-live-probes), `--hold`, the trusted-identity stop and the [home-key stay](#api-key-login-check) do not apply. |
+| No candidate meets the margin | The [plan-room](#rotate-plan-room-swap) and then the [overflow](#overflow-decision) rules choose a target as they do for an exhausted live login. |
+| No move is possible | ALERT `excluded-live`. `C` stays in `~/.claude`, unprobed and unrefreshed. The cycle records `alerted`, which is not capacity by the [rotator capacity rule](#rotator-capacity-rule), and the ALERT is never [advisory](#rotate-advisory-alert). No retry, wait or loop is added: the next normal cycle decides again. `~/.claude` is never left empty. |
+
+`C`'s reading is never counted as room: it is not capacity for a stay, for
+the [capacity file](#capacity-writers) or for the usage-limit wait. After the
+swap, `C` is a profile in its own folder again and is skipped as `excluded`
+by every later cycle, so the rotator never swaps it back in, however much
+room `C` may have.
+
+A swap off `C` writes:
+
+```
+2026-11-10T08:00:05Z cycle live=shared shared:excluded (not probed) review:s=5%,w=10% work:s=20%,w=30%
+2026-11-10T08:00:06Z note: live profile shared is excluded; moving off it
+2026-11-10T08:00:06Z swap shared->review live excluded (not probed) target s=5% w=10% reason=threshold
+```
+
+With no eligible candidate:
+
+```
+2026-11-10T08:00:05Z cycle live=shared shared:excluded (not probed)
+2026-11-10T08:00:05Z ALERT: live profile shared is excluded; no eligible candidate
+```
+
+The ALERT is written once per key, like any other.
+
+#### Write-back into an excluded folder
+
+A normal swap moves the outgoing login from `~/.claude` back into its
+profile folder. For `C` this move is the only write the rotator ever makes
+to `C`'s credentials. It is the existing journalled exchange of login files,
+with no refresh and no request. Without it, a token that a session on this
+host refreshed would be lost and `C`'s stored copy would go stale.
+
+The move into `<root>/C/` is made only when one of these holds:
+
+- the match came from rule 1 (`ledger`), no hand change is suspected, and
+  `~/.claude.json` agrees with `C`'s record;
+- `~/.claude/.credentials.json` is already byte for byte the same as
+  `<root>/C/.credentials.json` (rule 3, or rule 1 with identical files).
+
+In every other case, for example a match from rule 2 alone or any match
+while a hand change is suspected, nothing is moved and `C`'s folder is left
+as it is. The cycle writes, once per key:
+
+```
+ALERT: live profile C is excluded; not moved, as only ~/.claude.json names it
+```
+
+Such a match is not written to the ledger as the live profile, so a later
+cycle cannot take it for a rule 1 match. While `~/.claude` is marked,
+[hand-change recovery](#rotate-hand-change-recovery) and the seeding of a
+[recorded account](#recorded-account) do not run either: both would act on
+the local account alone. This stops a stale `~/.claude.json` after a manual
+`/login` from moving another account's login into `C`'s folder, the slot
+mix-up that #1845 and #1886 fixed. The ALERT clears once the ledger names
+the live login again, for example after
+[`profile switch`](#rotate-switch) or a fresh `profile login`.
+
+#### Limits of the rule
+
+- An expired access token does not stop the move. No identity read is sent
+  for `C`, so the login is moved back to `C`'s folder unrefreshed. The
+  rotator never refreshes the token to get the login moved.
+- The local proof trusts the ledger, `~/.claude.json` and the stored
+  record. A login file copied by hand into `~/.claude`, with a ledger that
+  names `C`, is taken to be `C`'s. The write-back rule above stops it being
+  copied into `C`'s folder unless `~/.claude.json` also agrees. Run
+  [`profile verify`](#profile-verify) after any hand copy.
+- When `~/.claude.json` gives no account and the login matches no excluded
+  folder byte for byte, and the ledger does not name `C`, the rotator cannot
+  tell that the login is excluded. It is treated as any other live login.
+  Knowing which host owns a login without these files is the job of the
+  lease design in [#1019](https://github.com/rysweet/amplihack-rs/issues/1019).
+- When the ledger names a live profile that is not excluded, no hand change
+  is suspected, and only `~/.claude.json` points at the excluded profile `C`,
+  no rule matches. Rule 1 does not name `C`, and rules 2 and 3 apply only
+  when the ledger has no `live` field or a hand change is suspected. The
+  login is treated as the profile the ledger names, and may be probed or
+  refreshed as that profile. Once a hand change is suspected, rule 2 or 3
+  applies on the next cycle.
+- When `<root>/.auto-switch` is corrupt or unsafe, the list cannot be read
+  and the cycle excludes nothing, so an excluded login can be probed or
+  refreshed in that cycle; see
+  [Unreadable exclude list](#unreadable-exclude-list).
+- A pin that holds rotation on `C`, set before `C` was excluded, still holds.
+  The held cycles do not probe its spend: see [Pin and overflow](#pin-and-overflow).
+
+`--dry-run` prints the same decision as `would swap:` or `would alert:`.
+Like a real cycle, it sends no request with `C`'s token and writes nothing.
+
+#### Unreadable exclude list
+
+When `<root>/.auto-switch` is corrupt or unsafe, the rotator cannot tell
+which logins are excluded. It treats the list as empty for that cycle, as it
+treats the overflow list, and logs this line once per cycle:
+
+```
+warning: auto-switch config unreadable or unsafe; exclude list not applied
+```
+
+No profile is excluded in that cycle: no folder is marked, no
+[local proof](#local-proof-of-an-excluded-live-login) is made, and every
+login, including one listed in the damaged file, can be probed, refreshed
+and moved as usual. The cycle is not stopped. `rotate watch` already idles
+on a damaged settings file at the [toggle step](#rotate-cycle), so the line
+is seen mainly from a one-shot `rotate`, `--dry-run`, or a file damaged after
+the toggle step has read it. The list applies again from the first cycle
+that reads the file safely. Fix the file with
+`amplihack profile auto-switch on` or `off`.
+
+[`profile usage`](#excluded-profiles) and [`profile verify`](#profile-verify)
+print the same warning on stderr and read every profile, as described in
+their sections.
+
 ### Rotate candidates
 
 A profile is a candidate unless any of these holds, checked in this order.
@@ -6558,10 +6918,10 @@ set of skipped profiles changes, and by the one-shot command on every run.
 
 | Skip reason | Condition |
 |-------------|-----------|
-| `live` | It is the live profile. |
+| `live` | It is the live profile. A live profile in the `exclude` list is handled as in [Rotate excluded live profile](#rotate-excluded-live-profile). |
 | `directory refused` | The profile directory fails the ownership and mode check: it is a symlink, not a directory, not owned by you, or open to group or other users. A profile in the auto-switch `exclude` list is skipped as `excluded` instead. While a plan profile has this reason, the rotator does not move onto an overflow profile (see [Overflow decision](#overflow-decision)). |
 | `no login` | `<root>/<name>/.credentials.json` is missing, a symlink, not a regular file, not owned by you, readable by other users, or has more than one link. |
-| `excluded` | It is in the auto-switch `exclude` list. |
+| `excluded` | It is in the auto-switch `exclude` list. It is not probed and no request is sent with its token. Its `.credentials.json` is read only for the byte comparison of [rule 3](#local-proof-of-an-excluded-live-login), and written only by the [write-back](#write-back-into-an-excluded-folder). It never reaches the `no account` check or the unbound set. |
 | `session running` | A running process has `CLAUDE_CONFIG_DIR=<root>/<name>` (the same `/proc` scan auto-switch uses). If `/proc` cannot be scanned, every profile is skipped and `skip: cannot see running sessions; no candidates` is logged once. |
 | `leased` | Its login is on loan to another profile's session in the auto-switch ledger. |
 | `hosting` | Its directory hosts another account's login in the auto-switch ledger. |
@@ -6833,6 +7193,7 @@ never refreshed. These still refuse the refresh:
 
 | Refusal | Reason in the log |
 |---------|-------------------|
+| A rule under [Local proof of an excluded live login](#local-proof-of-an-excluded-live-login) names an excluded profile as the live login | none: the line is `refresh: live profile <name> is excluded; token not refreshed`. See [Rotate excluded live profile](#rotate-excluded-live-profile). |
 | A swap journal exists | `refresh busy` |
 | Another process holds the refresh lock | `refresh busy` |
 | The directory fails the [login directory rule](#login-directory-rule) | `refresh refused` |
@@ -7153,6 +7514,29 @@ ledger names as live. The statuses are:
 | `no login` | No `.credentials.json`; for the live profile this is normal after a swap. |
 | `not an OAuth login` | An API-key file, or a file that is not private or cannot be parsed. |
 | `not read (<reason>)` | The server did not answer for the token: one of the fixed [direct-read](#direct-read) reasons, such as `token expired` or `http 401`, or `folder refused` for a folder that fails the directory check. |
+| `excluded (not probed)` | The profile is in the auto-switch `exclude` list. Its folder and login are not read and no request is made. Having no e-mail, the line is `<P>: excluded (not probed)`. |
+
+Excluded profiles are not read at all. `verify` has no swap to protect, so
+it makes no request for them, writes nothing to their credentials and never
+refreshes their logins. The `~/.claude` line is not read either when local
+files show that the live login belongs to an excluded profile, by the rules
+under [Local proof of an excluded live login](#local-proof-of-an-excluded-live-login).
+That line is then `~/.claude: excluded (not probed), live profile <P>`.
+
+```
+~/.claude: excluded (not probed), live profile shared
+review -> review@example.com: ok
+shared: excluded (not probed)
+```
+
+Excluded lines do not change the exit status: the user chose to exclude
+those profiles. `--fix` leaves them out of its plan and never touches their
+folders.
+
+The exclude list is read from `<root>/.auto-switch` once per run. When that
+file is corrupt or unsafe, `verify` prints
+`warning: auto-switch config unreadable or unsafe; exclude list not applied`
+on stderr and checks every profile.
 
 Without `--fix` nothing is written. The command exits non-zero when any
 folder holds an account other than its recorded one and is still there at
@@ -7179,7 +7563,9 @@ these hold:
   must be chosen by hand;
 - no other move in the same run goes to `T`.
 
-Each other mismatch prints `<P>: not moved: <why>`. `~/.claude` is never
+Each other mismatch prints `<P>: not moved: <why>`. An excluded profile is
+never a source or a target of a move; a move that would target one prints
+`<P>: not moved: <T> is excluded; --fix does not touch it`. `~/.claude` is never
 moved; a mismatch there prints `~/.claude: not moved by --fix; use amplihack
 profile switch`. A move goes from one folder to an empty one, so a pair of
 folders that hold each other's accounts is reported, not swapped; fix such a
@@ -7873,8 +8259,8 @@ run and prints their `reread:` lines; see
 
 | Message | Meaning |
 |---------|---------|
-| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
-| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, and one still running shows `live unknown, still running`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
+| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A live profile in the auto-switch `exclude` list shows `<name>:excluded (not probed)`; see [Rotate excluded live profile](#rotate-excluded-live-profile). A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
+| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, one still running shows `live unknown, still running`, and an excluded live profile shows `live excluded (not probed)`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
 | `ALERT: home_key (<detail>): <effect>` | A key is in `~/.claude.json` or `~/.claude/settings.json` while a plan login is live, so sessions bill per token. Written once, and again if the setting changes; see [API-key login check](#api-key-login-check). The cycle carries on. |
@@ -7892,6 +8278,11 @@ run and prints their `reread:` lines; see
 | `damp: <name> swapped away exhausted; no later reading shows room` | `<name>` is in the ledger's `swapped_away`, and its re-read shows it still at or above `--session-at` or `--week-at`, or exhausted. It stays damped. See [Swap-back damping](#swap-back-damping). |
 | `damp: <name> later reading shows room; swap-back allowed` | A reading of `<name>` taken after the rotator swapped away from it shows room, so its `swapped_away` entry was removed. Written in the [record step](#rotate-cycle), after the cycle's `swap`, stay or ALERT line, and never by `--dry-run`. |
 | `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` / `ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)` | A threshold is reached and no candidate meets the margin. The suffix is added only when `F + E > 0`: `F` candidates had a failed probe and `E` were exhausted, whatever figures each exhausted candidate read. When every candidate failed, the probes are at fault rather than the accounts. The suffix holds no profile names, and the ALERT key stays `no-capacity`, so a change in the counts does not repeat the ALERT. `--dry-run` prints it as `would alert: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`, without the `ALERT: ` prefix, and with the same rule for the suffix. |
+| `ALERT: live profile <name> is excluded; no eligible candidate` | ALERT `excluded-live`: the live profile is in the auto-switch `exclude` list and no move off it is possible. The login stays in `~/.claude`, unprobed and unrefreshed. Written once per key. See [Rotate excluded live profile](#rotate-excluded-live-profile). |
+| `note: live profile <name> is excluded; moving off it` | Written before the `swap` line of a move off an excluded live profile. |
+| `refresh: live profile <name> is excluded; token not refreshed` | The [expired-login refresh](#an-expired-live-login) was skipped because a rule under [Local proof of an excluded live login](#local-proof-of-an-excluded-live-login) named `<name>` as the live profile. |
+| `skip: pinned profile <name> is excluded; spend not probed` | A held cycle did not probe the spend of a pinned excluded profile; see [Pin and overflow](#pin-and-overflow). |
+| `warning: auto-switch config unreadable or unsafe; exclude list not applied` | `<root>/.auto-switch` could not be read safely, so the cycle excluded no profile. Written once per cycle. See [Unreadable exclude list](#unreadable-exclude-list). |
 | `ALERT: no login in ~/.claude; no swap` | `~/.claude/.credentials.json` is missing or not a regular file. |
 | `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); no swap` | ALERT `hand-change`: a [hand-change suspicion](#two-readings) is open, or recovery refused a confirmed one. Written on each affected cycle while the identity refusal persists. |
 | `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); profile <M> holds the same account and has its own login; recovery refused: <reason>; no swap` | A confirmed hand change whose move failed a [check](#checks-before-the-move). Followed by its `fix 1:` line. Written every cycle. |
@@ -9286,6 +9677,13 @@ There are two kinds of wait:
 
 When neither applies, the step is not waited for and the run ends as before.
 
+The wait reads only files: the harness's limit message, the
+[capacity file](#capacity-file), the stored [readings](#readings) and the
+ledgers. It makes no usage, token or identity request for any profile and
+writes no credential file, so a profile in the auto-switch `exclude` list is
+never probed or refreshed by it, and never counts as a login that could take
+over.
+
 The [capacity governor](./capacity-governor.md) does not hold an agent step
 of a running recipe at an exhausted weekly or session limit: this wait owns
 that case, so the governor's shorter wait never replaces it (see
@@ -9571,7 +9969,8 @@ to a whole organisation, so another login of the same organisation would
 not end the wait.
 
 **Another login could take over** is one read-only check made when the
-limit is seen. It never probes the network and never writes. It is true
+limit is seen. It never probes the network and never writes, so it makes no
+request for any profile, excluded or not. It is true
 when the profile store holds at least one profile that:
 
 - is not the step's own login: the inherited profile for a profile step,

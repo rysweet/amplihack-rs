@@ -15,6 +15,11 @@
 //! of its refresh token. `~/.claude` is reported, never moved: a swap or
 //! `profile switch` changes it. See "profile verify" in
 //! docs/reference/profile-command.md.
+//!
+//! Issue #2218: a profile in the auto-switch `exclude` list is not read at
+//! all, so no identity request is made with its token; nor is `~/.claude`
+//! when the rotator's local proof names an excluded profile's login there. `--fix` never
+//! moves a login out of or into an excluded profile's folder.
 
 use super::ProfileError;
 use super::auto_switch::kit::{CREDS, MoveError, State, exists, move_login};
@@ -25,7 +30,9 @@ use super::rotate::backup::{rejected_dir, stamp};
 use super::rotate::cred_identity::record_of;
 use super::rotate::identify::{Account, LoginKind, login_kind};
 use super::rotate::ledger::RotateState;
+use super::rotate::live_excluded_offline;
 use super::store::ProfileStore;
+use super::usage_cmd::{EXCLUDED_CELL, exclude_list, sanitize_display};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -57,6 +64,9 @@ pub enum Held {
     /// An OAuth login the server did not answer for; a `usage_direct::reason`.
     Unread(&'static str),
     Account(Account),
+    /// Issue #2218: an excluded profile, or `~/.claude` while the ledger
+    /// names one live. Not read.
+    Excluded,
 }
 
 /// One line of the report.
@@ -104,23 +114,37 @@ fn held_in(dir: &Path, read: Read<'_>) -> Held {
 }
 
 /// Reads `~/.claude` and then every profile folder in name order. A folder
-/// that fails the spawn-time directory check is reported as unread.
+/// that fails the spawn-time directory check is reported as unread. An
+/// excluded profile (issue #2218) is decided before its folder is checked
+/// or read, and so is `~/.claude` when the local proof names one there.
 pub fn survey(store: &ProfileStore, home: &Path, read: Read<'_>) -> Result<Vec<Row>, ProfileError> {
-    let live = RotateState::new(store.root())
+    let excluded = exclude_list(store.root(), |w| eprintln!("{w}"));
+    let rs = RotateState::new(store.root());
+    let ledger_live = rs
         .load_ledger()
         .ok()
         .flatten()
         .and_then(|l| l.live)
         .and_then(|s| ProfileName::parse(&s).ok());
+    // Issue #2218: the rotator's local proof decides whether `~/.claude`
+    // holds an excluded login, so it is never read when it does.
+    let (live, home_held) = match live_excluded_offline(store, &rs, home) {
+        Some((name, _)) => (Some(name), Held::Excluded),
+        None => (ledger_live, held_in(&home.join(".claude"), read)),
+    };
     let mut rows = vec![Row {
         record: live.as_ref().and_then(|l| record_of(store, l)),
-        held: held_in(&home.join(".claude"), read),
+        held: home_held,
         place: Place::Home { live },
     }];
     for name in sorted_names(store)? {
-        let held = match store.verify_profile_dir(&name) {
-            Ok(dir) => held_in(&dir, read),
-            Err(_) => Held::Unread("folder refused"),
+        let held = if excluded.contains(&name) {
+            Held::Excluded
+        } else {
+            match store.verify_profile_dir(&name) {
+                Ok(dir) => held_in(&dir, read),
+                Err(_) => Held::Unread("folder refused"),
+            }
         };
         rows.push(Row {
             record: record_of(store, &name),
@@ -156,6 +180,18 @@ pub fn render(rows: &[Row]) -> Vec<String> {
 }
 
 fn line(rows: &[Row], r: &Row) -> String {
+    if matches!(r.held, Held::Excluded) {
+        return match &r.place {
+            Place::Home { live: Some(l) } => format!(
+                "~/.claude: {EXCLUDED_CELL}, live profile {}",
+                sanitize_display(l.as_str(), false)
+            ),
+            Place::Home { live: None } => format!("~/.claude: {EXCLUDED_CELL}"),
+            Place::Profile(n) => {
+                format!("{}: {EXCLUDED_CELL}", sanitize_display(n.as_str(), false))
+            }
+        };
+    }
     let place = match &r.place {
         Place::Home { live: Some(l) } => format!("~/.claude (live {l})"),
         Place::Home { live: None } => "~/.claude".to_string(),
@@ -165,6 +201,7 @@ fn line(rows: &[Row], r: &Row) -> String {
         Held::NoLogin => return format!("{place} -> no login"),
         Held::NotOAuth => return format!("{place} -> not an OAuth login"),
         Held::Unread(why) => return format!("{place} -> not read ({why})"),
+        Held::Excluded => return format!("{place}: {EXCLUDED_CELL}"),
         Held::Account(a) => a,
     };
     let owners = recorded_for(rows, a);
@@ -219,6 +256,8 @@ pub fn plan_fix(rows: &[Row]) -> FixPlan {
         } else {
             match target.map(|t| &t.held) {
                 Some(Held::NoLogin) => None,
+                // Issue #2218: an excluded folder is never written.
+                Some(Held::Excluded) => Some(format!("{to} is excluded; --fix does not touch it")),
                 Some(Held::Account(b)) if b.same(a) => {
                     Some(format!("{to} already holds that account"))
                 }

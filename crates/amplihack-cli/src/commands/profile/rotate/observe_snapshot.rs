@@ -35,6 +35,9 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         _ => None,
     };
     let config = effective(root).config;
+    let live_excluded = live_name
+        .as_ref()
+        .is_some_and(|n| config.exclude.contains(n));
     let (overflow, ignored) = tiers_detail(&ctx.store, Some(&ctx.home));
     let input = CandidateInput {
         live: live_name.as_ref(),
@@ -97,5 +100,6 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         unmarked,
         detected_mark,
         home_no_oauth,
+        live_excluded,
     })
 }

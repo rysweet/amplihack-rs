@@ -125,7 +125,8 @@ pub struct Probed {
     pub windows: Windows,
     pub spend_limit: bool,
     /// The probe timed out or could not run: the login may have capacity,
-    /// so it blocks a move onto overflow. Always with `Reading::Failed`.
+    /// so it blocks a move onto overflow. With `Reading::Failed`, except for
+    /// [`Probed::excluded`], whose login is never read (issue #2218).
     pub unknown: bool,
     /// Issue #1844: the read had not finished when the cycle stopped waiting
     /// for it. Read only by the log (`log::Shown`); always with `unknown`.
@@ -174,6 +175,27 @@ impl Probed {
             windows: Windows::default(),
             spend_limit: false,
             unknown: false,
+            still_running: false,
+            observed_at: None,
+            carried: false,
+            passive: false,
+        }
+    }
+
+    /// Issue #2218: the live login of a profile in the auto-switch `exclude`
+    /// list, which is never probed. It reads as exhausted with no figures,
+    /// so the first cycle must swap: not `failed`, which damping would hold
+    /// for several cycles, nor `platform`, which reads as room. It is
+    /// unknown, so it is never counted as fresh room or a measured login.
+    pub fn excluded() -> Self {
+        Self {
+            reading: Reading::Exhausted {
+                session: None,
+                week: None,
+            },
+            windows: Windows::default(),
+            spend_limit: false,
+            unknown: true,
             still_running: false,
             observed_at: None,
             carried: false,

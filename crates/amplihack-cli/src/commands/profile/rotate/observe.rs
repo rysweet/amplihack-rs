@@ -55,6 +55,10 @@ pub struct Snap {
     pub home_no_oauth: bool,
     /// Each candidate's account; step 6 compares the target's (#1721).
     pub candidate_accounts: Vec<(ProfileName, Option<Account>)>,
+    /// Issue #2218: the live login is a known profile in the auto-switch
+    /// `exclude` list. It is never probed or refreshed, nothing measured is
+    /// recorded under its name, and the cycle moves off it.
+    pub live_excluded: bool,
 }
 
 impl Snap {
@@ -225,6 +229,9 @@ pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profile
     let measured_at = now();
     let platform = snap.platform();
     let live = match &snap.live {
+        // Issue #2218: before the API-key case, so an excluded API-key
+        // profile is moved off as well.
+        LiveId::Known(_) if snap.live_excluded => Live::Excluded,
         _ if snap.platform_live() => Live::Platform,
         LiveId::Known(n) => Live::Profile(n),
         _ => Live::Unowned,
@@ -274,8 +281,11 @@ pub(super) fn decide_measured(
     let swapped_at = ledger.as_ref().and_then(|l| l.swapped_at);
     let platform_block = ledger.as_ref().and_then(|l| l.platform_block.clone());
     let blocks = ledger.map(|l| l.overflow_blocked).unwrap_or_default();
+    // Issue #2218: an excluded live login is decided on as if no profile
+    // owned it, so neither the hold, damping nor the home key keeps it, and
+    // no synthetic reading of it is taken for a measured one.
     let live_name = match &snap.live {
-        LiveId::Known(n) => Some(n),
+        LiveId::Known(n) if !snap.live_excluded => Some(n),
         _ => None,
     };
     let t = now();

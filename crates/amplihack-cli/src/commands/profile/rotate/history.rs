@@ -22,8 +22,10 @@ mod tests;
 /// is written while a credential variable is set. A line that cannot be
 /// written puts one fixed line in the rotate log and never fails the cycle.
 pub fn record(root: &Path, out: &mut Sink, first: &Snap, probes: &Probes, at: i64) {
+    // Issue #2218: an excluded live login was not probed, so its synthetic
+    // reading is never recorded.
     let live = match &first.live {
-        LiveId::Known(n) => Some(n),
+        LiveId::Known(n) if !first.live_excluded => Some(n),
         _ => None,
     };
     let unmeasured = first.unmeasured_plan();

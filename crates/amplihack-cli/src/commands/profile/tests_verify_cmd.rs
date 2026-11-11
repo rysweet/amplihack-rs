@@ -483,3 +483,231 @@ fn verify_reads_the_profile_endpoint_and_prints_no_token() {
     assert_eq!(fake.count("POST", "/v1/oauth/token"), 0);
     assert!(lines.iter().all(|l| !l.contains("fake-at")), "{lines:?}");
 }
+
+// --- Issue #2218 (D7, C4): an excluded profile is never read ------------------
+
+mod issue_2218 {
+    use super::*;
+    use crate::commands::profile::auto_switch::config::{self, ReadMode};
+
+    fn exclude(f: &Fx, names: &[&str]) {
+        config::update(&f.root, ReadMode::Editable, |c| {
+            for p in names {
+                c.exclude.push(n(p));
+            }
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// `~/.claude.json` naming `uuid` in the fixture's organization.
+    fn home_json(f: &Fx, uuid: &str) {
+        private(
+            &f.home.join(".claude.json"),
+            &serde_json::json!({"oauthAccount": {"accountUuid": uuid,
+                "emailAddress": format!("{uuid}@mistt.com"),
+                "organizationUuid": "org-mistt"}})
+            .to_string(),
+        );
+    }
+
+    /// Runs verify with a reader that records every path it is asked for.
+    fn run_counting(f: &Fx, fix: bool) -> (Vec<PathBuf>, Vec<String>) {
+        let asked = RefCell::new(Vec::new());
+        let read = |p: &Path| {
+            asked
+                .borrow_mut()
+                .push(p.canonicalize().unwrap_or_else(|_| p.to_path_buf()));
+            f.read(p)
+        };
+        let mut lines = Vec::new();
+        let _ = run_with(&f.store, &f.home, fix, &read, T, &mut |l| {
+            lines.push(l.to_string())
+        });
+        (asked.into_inner(), lines)
+    }
+
+    fn fixture() -> Fx {
+        let f = fx(&["alpha", "bravo"], Some("bravo"));
+        assert!(
+            f.root
+                .starts_with(std::env::temp_dir().canonicalize().unwrap())
+        );
+        f.holds("~/.claude", "u-bravo");
+        f.holds("alpha", "u-alpha");
+        f
+    }
+
+    #[test]
+    fn an_excluded_folder_is_never_read() {
+        let f = fixture();
+        exclude(&f, &["alpha"]);
+        let before = fs::read(f.place("alpha").join(CREDS)).unwrap();
+        let (asked, lines) = run_counting(&f, false);
+        assert!(!asked.contains(&f.place("alpha")), "{asked:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("alpha") && l.contains("excluded")),
+            "{lines:?}"
+        );
+        assert_eq!(fs::read(f.place("alpha").join(CREDS)).unwrap(), before);
+        assert!(asked.contains(&f.place("~/.claude")), "home still read");
+    }
+
+    #[test]
+    fn home_is_not_read_when_the_ledger_names_an_excluded_profile_live() {
+        let f = fixture();
+        exclude(&f, &["bravo"]);
+        let (asked, lines) = run_counting(&f, false);
+        assert!(!asked.contains(&f.place("~/.claude")), "{asked:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("~/.claude") && l.contains("excluded")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn home_is_not_read_when_a_hand_change_is_suspected_and_claude_json_names_an_excluded_profile()
+    {
+        // A hand swap: the ledger still names bravo but suspects a hand
+        // change, and ~/.claude.json now matches alpha's record (rule 2).
+        let f = fixture();
+        f.holds("~/.claude", "u-alpha");
+        home_json(&f, "u-alpha");
+        suspect_hand_change(&f, "alpha");
+        exclude(&f, &["alpha"]);
+        let before = fs::read(f.place("~/.claude").join(CREDS)).unwrap();
+        let (asked, lines) = run_counting(&f, false);
+        assert!(
+            asked.is_empty() || !asked.contains(&f.place("~/.claude")),
+            "{asked:?}"
+        );
+        assert!(!asked.contains(&f.place("alpha")), "{asked:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("~/.claude") && l.contains("excluded")),
+            "{lines:?}"
+        );
+        assert_eq!(fs::read(f.place("~/.claude").join(CREDS)).unwrap(), before);
+    }
+
+    #[test]
+    fn home_is_read_when_claude_json_names_a_profile_that_is_not_excluded() {
+        let f = fixture();
+        home_json(&f, "u-bravo");
+        exclude(&f, &["alpha"]);
+        let (asked, _) = run_counting(&f, false);
+        assert!(asked.contains(&f.place("~/.claude")), "{asked:?}");
+    }
+
+    #[test]
+    fn an_unsafe_claude_json_does_not_mark_home_excluded() {
+        let f = fixture();
+        home_json(&f, "u-alpha");
+        fs::set_permissions(
+            f.home.join(".claude.json"),
+            fs::Permissions::from_mode(0o666),
+        )
+        .unwrap();
+        exclude(&f, &["alpha"]);
+        let (asked, _) = run_counting(&f, false);
+        assert!(
+            asked.contains(&f.place("~/.claude")),
+            "an unsafe file is missing, so home is read: {asked:?}"
+        );
+    }
+
+    #[test]
+    fn fix_neither_moves_out_of_nor_into_an_excluded_folder() {
+        // alpha's folder holds bravo's account, and charlie's folder is
+        // empty while holding... charlie's record: no move involves alpha.
+        let f = fx(&["alpha", "bravo", "charlie"], Some("charlie"));
+        f.holds("~/.claude", "u-charlie");
+        f.holds("alpha", "u-bravo");
+        exclude(&f, &["alpha"]);
+        let ino = f.ino("alpha");
+        let (asked, _) = run_counting(&f, true);
+        assert!(!asked.contains(&f.place("alpha")), "{asked:?}");
+        assert_eq!(f.ino("alpha"), ino, "alpha's login stays");
+        assert!(f.ino("bravo").is_none(), "nothing moved into bravo");
+        assert!(f.backups().is_empty(), "no move list written");
+    }
+
+    /// The ledger keeps `live`, and records a suspected hand change to `p`.
+    fn suspect_hand_change(f: &Fx, p: &str) {
+        let rs = RotateState::new(&f.root);
+        let l = rs.load_ledger().unwrap().unwrap_or_default();
+        let mut v = serde_json::to_value(&l).unwrap();
+        v["hand_suspect"] = serde_json::json!({"profile": p, "first_seen": 1_760_000_000});
+        let l: RotateLedger = serde_json::from_value(v).unwrap();
+        rs.save_ledger(&l).unwrap();
+    }
+
+    /// Drops the ledger's `live` field.
+    fn no_ledger_live(f: &Fx) {
+        let rs = RotateState::new(&f.root);
+        rs.save_ledger(&RotateLedger::default()).unwrap();
+    }
+
+    #[test]
+    fn the_excluded_lines_use_the_usage_cell_text() {
+        let f = fixture();
+        exclude(&f, &["alpha", "bravo"]);
+        let (_, lines) = run_counting(&f, false);
+        assert!(
+            lines.iter().any(|l| l == "alpha: excluded (not probed)"),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "~/.claude: excluded (not probed), live profile bravo"),
+            "{lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("not checked")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn home_is_not_read_when_no_ledger_live_and_claude_json_names_an_excluded_profile() {
+        let f = fixture();
+        no_ledger_live(&f);
+        home_json(&f, "u-alpha");
+        exclude(&f, &["alpha"]);
+        let (asked, lines) = run_counting(&f, false);
+        assert!(!asked.contains(&f.place("~/.claude")), "{asked:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l == "~/.claude: excluded (not probed), live profile alpha"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_ledger_naming_a_profile_that_is_not_excluded_with_no_hand_change_reads_home() {
+        // The documented limit of the local proof: only ~/.claude.json points
+        // at excluded alpha, the ledger names bravo and no hand change is
+        // suspected, so the login is taken to be bravo's.
+        let f = fixture();
+        home_json(&f, "u-alpha");
+        exclude(&f, &["alpha"]);
+        let (asked, _) = run_counting(&f, false);
+        assert!(asked.contains(&f.place("~/.claude")), "{asked:?}");
+    }
+
+    #[test]
+    fn excluded_rows_alone_do_not_fail_verify() {
+        let f = fixture();
+        exclude(&f, &["alpha"]);
+        let read = |p: &Path| f.read(p);
+        let got = run_with(&f.store, &f.home, false, &read, T, &mut |_| {});
+        assert_eq!(got.unwrap().mismatches, 0, "the user chose to exclude it");
+    }
+}
