@@ -1,3 +1,12 @@
+---
+title: Versioned Install Layout
+description: How atomic release switching preserves running processes and trusted auto-drive bundles.
+last_updated: 2026-11-11
+review_schedule: quarterly
+owner: amplihack-maintainers
+doc_type: explanation
+---
+
 # Versioned Install Layout
 
 > [Home](../index.md) > Concepts > Versioned Install Layout
@@ -135,8 +144,8 @@ The install builds the whole release first, then switches the links:
 2. Stage the framework bundle into `releases/<release>/amplifier-bundle.staging/`
    and run every check from
    [framework source selection](../reference/framework-source-selection.md):
-   version match, manifest check, `normalize_bundle_modes` and the merge-guard
-   check. Then rename the staging directory to `amplifier-bundle/`.
+   version match, manifest check, mode normalization, and compatibility. Then
+   rename the staging directory to `amplifier-bundle/`.
 3. Write `.installed-by`, then `.complete`, and fix modes. If writing
    `.installed-by` fails, the install stops and the unpublished release is
    removed.
@@ -189,24 +198,26 @@ remaining links.
 | Open files in the old release | Still valid; the files are not changed or deleted. |
 | A shell that re-reads `~/.amplihack/amplifier-bundle/...` by path | Reads the new release's files. Each file is complete, never half-written. |
 | A new `amplihack` or `amplihack-hooks` exec | Starts the new release's binary. |
-| The merge-guard shim on `PATH` | Uses the release pinned at run start. See below. |
+| An auto-drive invocation | Uses its private launch copy of trusted recipes, criteria, templates, evaluator, and helpers. |
 
-### One release per run for the merge guard
+### One trusted bundle per auto-drive invocation
 
-At `recipe run` start, `merge_guard::pin_bundle` resolves
-`$AMPLIHACK_HOME/amplifier-bundle` to its physical release path once. That one
-path is used for the merge-guard `PATH` entry, `BASH_ENV` and the `PATH`
-de-duplication check. Child processes inherit it and never resolve the link
-again, so a later switch cannot make the shim's checks straddle two releases.
+The runner binds auto-drive's trusted recipes, criteria, templates, evaluator, and
+helpers at launch. A release switch cannot redirect later review or
+finalization to new instructions or PR-authored tools. Selection checks
+ownership and modes before starting work. A release-backed bundle resolves
+to its physical path beneath the configured `releases/` root and requires
+`.complete`; the bundle, release, and releases root must have trusted
+ownership and no group/other write access. A later public-link switch cannot
+change that selection.
 
-Pinning applies only when `amplifier-bundle` is a symlink. A real directory is
-used as given. The pinned path must be under `~/.amplihack/releases/`, must
-have `.complete`, and must pass the guard's owner and mode checks on every
-directory from the release root up to `releases/`. If any check fails, the run
-stops before its first step.
+This responsibility is independent of merge enforcement. There is no merge shim on `PATH`, gate-specific `BASH_ENV`, or process-identity merge guard.
+Runner-owned authorization records and evidence snapshots preserve workflow
+state; the finalization agent observes hosting-service state.
 
-`AMPLIHACK_BUNDLE_DIR` is exported with the pinned path for information.
-amplihack never reads it.
+For other consumers, a step that re-reads the public bundle link can still
+see a new complete release. See [framework source selection](../reference/framework-source-selection.md#auto-drive-launch-bundle)
+and [auto-drive's execution contract](../reference/auto-drive-to-merge.md#trusted-execution-and-portability).
 
 ## Cleanup of old releases
 
@@ -576,9 +587,9 @@ its inode. Once nothing is left in them, `releases/.retired/` and
 - A source checkout's `amplifier-bundle` link is followed only when the
   `releases/` beside it is a real directory that meets the same rule, so a
   `releases` symlink cannot point staging at another tree.
-- `recipe run` pins the merge guard only from a release owned by you, and
-  only when the bundle directory, the release root and `releases/` are not
-  writable by group or others.
+- The current runner pins its merge guard only from a release with trusted
+  ownership and modes. Planned auto-drive bundle selection retains these
+  checks independently of merge enforcement.
 - A release is allocated only under the install lock. Cleanup removes an
   incomplete release with no age check, which is safe only because no other
   process can be staging one at the same time.
@@ -629,10 +640,9 @@ These checks accept a link into a release and still reject anything else:
   path into it. A forward step only keeps more. Issue #2185 tracks replacing
   the start-time rule with a lease that recipe runs hold on the release they
   use, which removes both limits.
-- Only the merge guard is pinned to one release per run. A recipe step that
-  reads `$AMPLIHACK_HOME/amplifier-bundle/<file>` by path after a switch reads
-  the new release's file. That file is complete, but may differ from what an
-  earlier step read.
+- Auto-drive binds its full trusted execution bundle per invocation.
+  Other consumers that read `$AMPLIHACK_HOME/amplifier-bundle/<file>` directly
+  after a switch can see a different complete file.
 - Mapped directories under `~/.amplihack/.claude/` are swapped, not
   versioned. A run reading them by path after a swap sees the new tree.
 - On non-Linux hosts, cleanup is skipped and old releases accumulate until
@@ -695,7 +705,7 @@ rm -rf ~/.amplihack/releases/1.2.107
 | `commands/install/tests/issue_1954_release_layout.rs` | Release naming, atomic switch over a file, link or directory, switching only planned links, a partial switch report with the per-link keep set, exchange fallback, `EXDEV` retire, in-use cleanup (holders signal readiness on stdout and are released by closing stdin), the exact message text and the security rules above. Also the `.installed-by` record (fields, sanitised `exe`, planted symlink not followed, garbage or oversized file reads as `None`) and this release's #1526 downgrade guard (`self_heal_from_older_binary_leaves_newer_release_alone`): self-heal from an older binary leaves a newer release alone. |
 | `commands/install/tests/issue_1954_install_lock.rs` | Lock re-entrancy on one thread, a second thread or process waiting (ordering checked through a channel, not a timer), no lock passed to a child, a symlinked lock path refused, no truncation, mode 0600 and the exact wait message. |
 | `update/tests/build_install_command.rs` (`exact_handoff_contract_matches_v1_2_107`) | The update hand-off has argv exactly `["install", "--force-refresh"]` and `AMPLIHACK_NO_UPDATE_CHECK=1`, `AMPLIHACK_NONINTERACTIVE=1` and `AMPLIHACK_POST_UPDATE_INSTALL=1` set, as in 1.2.107. Other variables (`AMPLIHACK_REPAIR_ORIGINAL_PATH`, `PATH`) are not part of the check. |
-| `commands/recipe/run/tests_merge_guard_pin.rs` | Pinning rejects a link outside `releases/`, a group-writable release or bundle directory, and never reads `AMPLIHACK_BUNDLE_DIR`. |
+| `commands/recipe/run/tests_merge_guard_pin.rs` | Current guard pinning rejects unsafe ownership/modes and invalid release paths. Planned trusted-bundle tests must also reject PR-authored instruction fallback; that coverage is not established here. |
 | `commands/install/command_staging/tests.rs` | The previous slash-command set is retired under `releases/.retired/`, not deleted. When it cannot be retired, it is removed only if the scan shows no process uses it, and otherwise kept as `.unretired-<n>` and checked again by the next install; a leftover `.staging` tree is never deleted unchecked. |
 | `commands/install/tests/deploy_binary_tests.rs` (`stage_binary`) | The #302, #524 and #885 rules on the production path: a deleted source with an installed binary is left alone, a missing source and destination is an error, and re-staging the installed binary copies it without touching the previous release. |
 

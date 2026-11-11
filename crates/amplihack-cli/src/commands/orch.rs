@@ -21,9 +21,16 @@ use std::path::PathBuf;
 
 use crate::commands::multitask;
 
+pub(crate) mod autodrive;
 mod named_branch;
 mod select_workflow;
 mod workflow_log_inventory;
+
+// TDD contracts for #2329. The implementation supplies `mod autodrive`;
+// keeping these registered makes missing implementation a visible red test.
+#[cfg(test)]
+#[path = "orch/autodrive/tests.rs"]
+mod autodrive_contract_tests;
 
 #[derive(Subcommand, Debug)]
 pub enum OrchCommands {
@@ -47,6 +54,11 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
+    /// Portable auto-drive record, state, and local Git operations.
+    Autodrive {
+        #[command(subcommand)]
+        operation: autodrive::helper::Operations,
+    },
     /// Read stdin, print the first complete JSON object found in it.
     ///
     /// Mirrors `orch_helper.extract_json`. Tries, in order: ```json blocks,
@@ -494,6 +506,7 @@ fn read_bounded_stdin() -> String {
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
+        OrchHelperCommands::Autodrive { operation } => autodrive::helper::run(operation),
         OrchHelperCommands::ExtractJson { require_field } => {
             let input = read_stdin()?;
             let found = match require_field.as_deref() {

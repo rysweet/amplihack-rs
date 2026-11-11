@@ -40,7 +40,6 @@ TRUST="${TOOLS}/autodrive_trust.sh"
 SCOPE="${TOOLS}/autodrive_qa_scope.sh"
 SOURCES="${TOOLS}/autodrive_qa_sources.sh"
 SNAME="${TOOLS}/autodrive_scenario_name.sh"
-GATE="${TOOLS}/autodrive_merge_gate.sh"
 RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"
 
 harness_error() { echo "HARNESS-ERROR: $*" >&2; exit 2; }
@@ -851,21 +850,13 @@ expect_helper gate-head-empty autodrive_gadugi_required "true" "$B" AUTODRIVE_QA
 repo Cargo.toml web/package.json web/src/app.ts; base; change web/src/app.ts
 PRH="$(git -C "$REPO" rev-parse HEAD)"; git -C "$REPO" update-ref HEAD refs/remotes/origin/main
 expect_helper gate-head-web autodrive_gadugi_required "true" "$B" AUTODRIVE_QA_HEAD="$PRH"
-# The one statement that asks, from `GADUGI_REQ="$(` to its `|| GADUGI_REQ="true"`.
-GCOUNT="$(grep -v '^[[:space:]]*#' "$GATE" | grep -c 'autodrive_gadugi_required')"
-GLINE="$(awk '/^[[:space:]]*GADUGI_REQ="\$\(/ { on = 1 } on { print } on && /GADUGI_REQ="true"/ { exit }' "$GATE")"
-if [ "$GCOUNT" = 1 ] && printf '%s' "$GLINE" | grep -q 'autodrive_gadugi_required' \
-   && printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_BASE=' \
-   && printf '%s' "$GLINE" | grep -qF 'baseRefName' \
-   && ! printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_BASE:-' \
-   && printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_HEAD="$HEAD_SHA"' \
-   && printf '%s' "$GLINE" | grep -qF 'GADUGI_REQ="true"'; then
-    pass gate-line "the gate sets AUTODRIVE_QA_BASE and AUTODRIVE_QA_HEAD from its own baseRefName and headRefOid, fail-closed"
-else fail gate-line "gate line is: ${GLINE:-<none>}"; fi
+# Finalization must refresh trusted policy against the actual head and base.
+if grep -q 'Refresh mutable checks' "$RECIPES/autodrive-finalize.yaml" && grep -q 'merge-base QA configuration' "$RECIPES/autodrive-merge-evidence.yaml"; then
+    pass finalization-policy "agent responsibilities retain current head/base QA policy"
+else fail finalization-policy "missing current QA policy responsibility"; fi
 
-# ===========================================================================
 echo "== #1763 static constraints =="
-for t in "$TOOL" "$TRUST" "$SCOPE" "$SOURCES" "$SNAME" "$GATE"; do
+for t in "$TOOL" "$TRUST" "$SCOPE" "$SOURCES" "$SNAME"; do
     if [ ! -f "$t" ]; then fail "lines:${t##*/}" "missing"; continue; fi
     n="$(wc -l < "$t" | tr -d ' ')"
     if [ "$n" -le 400 ]; then pass "lines:${t##*/}" "$n lines (<= 400)"; else fail "lines:${t##*/}" "$n lines (> 400)"; fi
@@ -914,9 +905,9 @@ if code "$TOOL" | grep -E 'Cargo\.toml|package\.json|pyproject\.toml' >/dev/null
     fail tool-markers "autodrive_qa_evidence.sh names a manifest outside comments"
 else pass tool-markers "manifest names stay in the scope helper"; fi
 STEP02="$(awk '/- id: "step-02-qa-team-scenarios"/{on=1} on && /- id: "step-03/{on=0} on' "$RECIPES/autodrive-merge-evidence.yaml")"
-if printf '%s' "$STEP02" | grep -q 'RECIPE_VAR_merge_sync' && printf '%s' "$STEP02" | grep -q 'AUTODRIVE_QA_BASE='; then
-    pass evidence-step02 "evidence step-02 reads base from merge_sync and passes AUTODRIVE_QA_BASE"
-else fail evidence-step02 "evidence step-02 does not wire AUTODRIVE_QA_BASE from RECIPE_VAR_merge_sync"; fi
+if printf '%s' "$STEP02" | grep -q 'merge-base QA configuration' && printf '%s' "$STEP02" | grep -q 'operator overrides'; then
+    pass evidence-step02 "agent keeps merge-base policy and operator precedence"
+else fail evidence-step02 "missing source precedence"; fi
 ROUND="$RECIPES/autodrive-merge-round.yaml"
 if grep -n 'qa-unresolved' "$ROUND" | grep -q 'qa-config-invalid' \
    || { grep -q 'qa-unresolved' "$ROUND" && grep -q 'qa-config-invalid' "$ROUND"; }; then
@@ -925,14 +916,11 @@ if grep -n 'qa-unresolved' "$ROUND" | grep -q 'qa-config-invalid' \
         pass round-map "the round maps qa-unresolved and qa-config-invalid to the operator action"
     else fail round-map "the round names the tokens without the AUTODRIVE_QA_COMMAND / qa.toml action"; fi
 else fail round-map "autodrive-merge-round.yaml does not name qa-unresolved and qa-config-invalid"; fi
-if grep -q '"autodrive_qa_scope.sh"' "$REPO_ROOT/crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs"; then
-    pass gate-files "GATE_FILES lists autodrive_qa_scope.sh"
-else fail gate-files "GATE_FILES does not list autodrive_qa_scope.sh"; fi
 if grep -q 'test-issue-1763-qa-scope.sh' "$REPO_ROOT/.github/workflows/ci.yml"; then pass ci-wired "CI runs this test"
 else fail ci-wired ".github/workflows/ci.yml does not run test-issue-1763-qa-scope.sh"; fi
 if command -v shellcheck >/dev/null 2>&1; then
     if [ -f "$SCOPE" ] && (cd "$TOOLS" && shellcheck -x -S warning autodrive_qa_scope.sh autodrive_trust.sh autodrive_qa_evidence.sh \
-            autodrive_merge_gate.sh autodrive_qa_sources.sh autodrive_scenario_name.sh) >/dev/null 2>&1; then
+            autodrive_qa_sources.sh autodrive_scenario_name.sh) >/dev/null 2>&1; then
         pass shellcheck "the scope file, autodrive_trust.sh, the evidence tool and the gate are clean at -S warning"
     else fail shellcheck "shellcheck -S warning reports problems (or the scope file is missing)"; fi
 else

@@ -369,9 +369,9 @@ jobs:
       - name: Recipes — auto-drive QA evidence record is valid JSON (issue #1531)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1531-qa-evidence-json.sh
-      - name: Recipes — #1551 no merge outside gate
+      - name: Recipes — #2329 agentic finalization and authorization
         shell: bash
-        run: bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
+        run: bash amplifier-bundle/recipes/tests/test-issue-2329-agentic-finalization.sh
       - name: Recipes — auto-drive QA command selection, nested Cargo and mixed roots (issue #1516)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh
