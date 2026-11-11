@@ -196,7 +196,7 @@ pub(super) fn run(
         raw,
     );
     if PROBE_CANCEL.load(Ordering::Relaxed) {
-        return Ok(());
+        anyhow::bail!("profile usage interrupted");
     }
     // The login in `~/.claude` may have been swapped during the probe; its
     // numbers are shown but not recorded against the profile.
@@ -209,7 +209,7 @@ pub(super) fn run(
         rows.push(home_row_of(probe(cmd, Duration::from_secs(secs), now, raw)));
     }
     if PROBE_CANCEL.load(Ordering::Relaxed) {
-        return Ok(());
+        anyhow::bail!("profile usage interrupted");
     }
     order(&mut rows, now_secs());
     print_output(&rows, json, swapped.as_ref());

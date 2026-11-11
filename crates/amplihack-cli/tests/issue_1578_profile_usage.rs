@@ -559,6 +559,159 @@ fn a_slow_profile_times_out_without_holding_up_the_others() {
     assert_eq!(rows[1]["session"], serde_json::Value::Null);
 }
 
+// /proc distinguishes a reaped probe owner from a killed zombie, and a
+// stopped descendant from one still running after the command returned.
+#[cfg(target_os = "linux")]
+mod cancellation {
+    use super::*;
+    use std::process::Stdio;
+
+    fn assert_interrupted(sig: i32, home_probe: bool) {
+        let f = Fixture::new(true);
+        if home_probe {
+            // Every profile's account must be readable to establish that
+            // none holds the manual home login.
+            for name in ["a", "b", "c", "d"] {
+                private_file(
+                    &f.root.join(name).join(".claude.json"),
+                    &serde_json::json!({"oauthAccount": {"accountUuid": name}}).to_string(),
+                );
+            }
+            private_file(
+                &f.home.join(".claude/.credentials.json"),
+                r#"{"claudeAiOauth":{"accessToken":"test-only"}}"#,
+            );
+            private_file(
+                &f.home.join(".claude.json"),
+                r#"{"oauthAccount":{"accountUuid":"home-account","emailAddress":"home@example.com"}}"#,
+            );
+            private_file(
+                &f.state().join("rotate/ledger.json"),
+                r#"{"version":1,"live":"c","account":"old-account","since":10}"#,
+            );
+            for dir in [f.home.join(".claude"), f.state().join("rotate")] {
+                fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+            }
+        }
+        executable(
+            &f.tools.join("claude"),
+            r#"#!/bin/sh
+case "$1" in
+  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+esac
+p=$(basename "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
+if [ "$p" = "$STALL_PROFILE" ]; then
+  sleep 60 &
+  echo "$$ $!" > "$RECORD_DIR/pids"
+  wait
+fi
+echo 'Current session: 1% used'
+"#,
+        );
+        let args: &[&str] = if home_probe {
+            &["profile", "usage", "--json"]
+        } else {
+            &["profile", "usage", "--json", "a"]
+        };
+        // Files keep a leaked pipe holder from blocking output collection
+        // when this test catches a cleanup regression.
+        let stdout = f.records.join("stdout");
+        let stderr = f.records.join("stderr");
+        let mut child = f
+            .cmd(args)
+            .env("STALL_PROFILE", if home_probe { ".claude" } else { "a" })
+            .stdout(Stdio::from(fs::File::create(&stdout).unwrap()))
+            .stderr(Stdio::from(fs::File::create(&stderr).unwrap()))
+            .spawn()
+            .unwrap();
+        let pids_file = f.records.join("pids");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let pids = loop {
+            let pids: Vec<i32> = fs::read_to_string(&pids_file)
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(|p| p.parse().unwrap())
+                .collect();
+            if pids.len() == 2 {
+                break pids;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!(
+                    "probe never started: {}",
+                    fs::read_to_string(stderr).unwrap()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        // Signal only the CLI: it must cancel and reap the probe itself.
+        assert_eq!(unsafe { libc::kill(child.id() as i32, sig) }, 0);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                break None;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let owner_reaped = !Path::new(&format!("/proc/{}", pids[0])).exists();
+        let alive: Vec<_> = pids
+            .into_iter()
+            .filter(|pid| {
+                fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| {
+                    s.rsplit(')')
+                        .next()
+                        .is_some_and(|r| !r.trim_start().starts_with('Z'))
+                })
+            })
+            .collect();
+        // Clean up helpers even if a regression makes the assertions fail.
+        for pid in &alive {
+            unsafe { libc::kill(*pid, libc::SIGKILL) };
+        }
+        assert!(owner_reaped, "probe owner was not reaped before CLI exit");
+        assert!(alive.is_empty(), "probe processes still running: {alive:?}");
+        let status = status.expect("usage did not exit within 10s of cancellation");
+        assert!(!status.success(), "signal {sig} falsely reported success");
+        assert!(
+            fs::read_to_string(stderr)
+                .unwrap()
+                .contains("profile usage interrupted"),
+            "cancellation must report an interruption"
+        );
+        assert!(fs::read(stdout).unwrap().is_empty());
+        assert!(
+            f.usage_json().is_none(),
+            "cancelled readings must not be recorded"
+        );
+    }
+
+    #[test]
+    fn sigterm_cancels_profile_probe_with_failure_after_cleanup() {
+        assert_interrupted(libc::SIGTERM, false);
+    }
+
+    #[test]
+    fn sigint_cancels_profile_probe_with_failure_after_cleanup() {
+        assert_interrupted(libc::SIGINT, false);
+    }
+
+    #[test]
+    fn sigterm_cancels_home_probe_with_failure_after_cleanup() {
+        assert_interrupted(libc::SIGTERM, true);
+    }
+
+    #[test]
+    fn sigint_cancels_home_probe_with_failure_after_cleanup() {
+        assert_interrupted(libc::SIGINT, true);
+    }
+}
+
 #[test]
 fn timeout_env_is_honoured_and_a_bad_value_warns() {
     let f = Fixture::new(false);
