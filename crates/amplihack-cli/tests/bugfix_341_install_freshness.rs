@@ -165,6 +165,7 @@ fn install_stages_amplifier_bundle_from_local_checkout_not_stale_source() {
             let hooks_stub = write_stub_hooks_binary(&bin_dir);
 
             child_set_var("HOME", home.path());
+            child_set_var("AMPLIHACK_AGENT_BINARY", "claude");
             child_remove_var("AMPLIHACK_HOME");
             // Issue #1699: `run_install` refreshes every profile under this
             // root; an inherited value would point at the real profiles.
