@@ -365,6 +365,9 @@ fn test_failure_path_reaps_orphaned_descendants() {
 // -------------------------------------------------------------------------
 #[test]
 fn test_timeout_teardown_sends_sigterm_before_sigkill() {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -373,6 +376,13 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("graceful-marker");
     let ready = temp.path().join("trap-ready");
+    let completed = temp.path().join("trap-completed");
+    mkfifo(&completed);
+    let mut completion = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&completed)
+        .expect("open TERM completion event reader");
 
     // The runner blocks on a builtin FIFO read. The supervisor releases it
     // only during drop, so passing still requires the timeout teardown.
@@ -381,8 +391,9 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     write_stub(
         &runner,
         &format!(
-            "#!/bin/sh\ntrap 'echo graceful > \"{}\"; exit 0' TERM\necho ready > \"{}\"\nread _hold < \"{}\"\n",
+            "#!/bin/sh\ntrap 'echo graceful > \"{}\"; printf x > \"{}\"; exit 0' TERM\necho ready > \"{}\"\nread _hold < \"{}\"\n",
             marker.display(),
+            completed.display(),
             ready.display(),
             hold.display()
         ),
@@ -394,8 +405,10 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     let _timeout_env = EnvVarGuard::set(RUNNER_TIMEOUT_ENV, "1");
-    // Explicit, generous grace so the trapped child can finish cleanly.
-    let _grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "5");
+    // Grace stays frozen in virtual time until the child exits. Scheduling
+    // delays cannot exhaust it; grace expiration is covered by the policy
+    // test below, while CEILING only fails a missing completion event.
+    let _grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "1");
 
     let dir = temp.path().to_path_buf();
     let mut worker = super::test_runner::RunnerWorker::spawn(Some((&hold, 1)), true, move || {
@@ -403,6 +416,22 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
             .is_err()
     });
     worker.advance_after_ready("the runner to install its TERM trap", || ready.exists());
+    crate::test_support::wait::wait_until("the TERM handler completion event", || {
+        let event = completion.read(&mut [0; 1]);
+        match event {
+            Ok(1) => true,
+            Ok(0) => false,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                ) =>
+            {
+                false
+            }
+            other => panic!("read TERM handler completion event: {other:?}"),
+        }
+    });
     assert!(worker.wait(), "hung recipe-runner must time out");
 
     // The teardown reaps the runner before it returns, and the runner writes

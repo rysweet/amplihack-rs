@@ -244,9 +244,16 @@ fn run_to_exit_returns_when_a_grandchild_never_stops_writing() {
     let mut cmd = Command::new("/bin/sh");
     cmd.args(["-c", "yes & printf 'claude 1.2.3\\n' >&2; exit 0", "sh"])
         .process_group(group.id());
-    // The test harness timeout is the only outer bound; nothing here waits
-    // on a clock.
-    let out = run_capped_output_to_exit(cmd, PROBE_CAPTURE_LIMIT).expect("spawn sh");
+    // Keep group ownership on this thread so a hung capture cannot prevent
+    // cleanup. CEILING only fails a hang; completion decides a pass.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(run_capped_output_to_exit(cmd, PROBE_CAPTURE_LIMIT));
+    });
+    let out = rx
+        .recv_timeout(wait::CEILING)
+        .expect("hung: run_capped_output_to_exit kept draining the continuous writer")
+        .expect("spawn sh");
     assert!(out.status.success(), "{:?}", out.status);
     assert!(
         out.stdout.len() <= PROBE_CAPTURE_LIMIT,

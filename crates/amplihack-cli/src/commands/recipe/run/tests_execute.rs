@@ -1701,6 +1701,7 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
 #[test]
 #[cfg(target_os = "linux")]
 fn runner_worker_failure_kills_group_and_joins_before_fixture_teardown() {
+    use std::os::unix::fs::OpenOptionsExt;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::sync::{
         Arc,
@@ -1717,12 +1718,25 @@ fn runner_worker_failure_kills_group_and_joins_before_fixture_teardown() {
     let ready = temp.path().join("ready");
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: cancellation-probe\nsteps: []\n").unwrap();
-    // Neither process can finish naturally. There is no FIFO release path
-    // that could make this pass without killing the runner's entire group.
+    // Park the descendant on a builtin read, retaining the writer through
+    // every cancellation assertion. No data or EOF can release it normally.
+    let hold = temp.path().join("hold");
+    mkfifo(&hold);
+    let _hold_reader = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&hold)
+        .unwrap();
+    let _hold_writer = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(&hold)
+        .unwrap();
     crate::test_support::write_executable(
         &runner,
         &format!(
-            "#!/bin/sh\nwhile :; do :; done &\necho ready > '{}'\nwait\n",
+            "#!/bin/sh\nexec 3< '{}'\n(read _hold <&3) &\necho ready > '{}'\nwait\n",
+            hold.display(),
             ready.display(),
         ),
     );

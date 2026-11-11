@@ -1514,9 +1514,22 @@ fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
         // The signal target is `-pgid`, so this is scoped strictly to the
         // runner's own session and never touches unrelated / parent processes.
         let pgid = pid as libc::pid_t;
+        let clock: &dyn Clock = &SystemClock;
+        #[cfg(test)]
+        let control = super::test_runner::current();
+        #[cfg(test)]
+        let clock = control.as_deref().map_or(clock, |c| c as &dyn Clock);
         terminate_recipe_runner_with(
-            &SystemClock,
-            || matches!(child.try_wait(), Ok(None)),
+            clock,
+            || {
+                // A test's virtual grace may be frozen while it awaits the
+                // TERM handler. Unwinding must still cancel and join it.
+                #[cfg(test)]
+                if control.as_ref().is_some_and(|c| c.cancelled()) {
+                    return false;
+                }
+                matches!(child.try_wait(), Ok(None))
+            },
             |signal| signal_process_group(pgid, signal),
         );
     }
