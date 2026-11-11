@@ -69,7 +69,9 @@ fn main() -> io::Result<()> {
     let mut record = fs::OpenOptions::new().create(true).append(true)
         .open(required("ISSUE_1390_RECORD"))?;
     writeln!(record, "run")?;
-    fs::write(required("ISSUE_1390_SETUP"), "setup complete\n")?;
+    if let Some(setup) = env::var_os("ISSUE_1390_SETUP") {
+        fs::write(setup, "setup complete\n")?;
+    }
     io::stdout().write_all(&payload)?;
     io::stdout().flush()?;
     process::exit(1);
@@ -112,7 +114,16 @@ fn assert_agent_resolution(binary: &Path, root: &Path, expected: &str) {
 }
 
 #[test]
+fn a_single_limited_step_preserves_the_reset_hint() {
+    run_reported_limit(false);
+}
+
+#[test]
 fn reported_limit_survives_the_cli_boundary_without_transport_retry() {
+    run_reported_limit(true);
+}
+
+fn run_reported_limit(include_setup: bool) {
     // Under a recipe run TMPDIR lies inside ~/.amplihack, whose `.claude/`
     // and `amplifier-bundle/` the CLI's ancestor scans would find ahead of
     // this fixture's (tests/support/scratch_base.rs).
@@ -144,23 +155,30 @@ fn reported_limit_survives_the_cli_boundary_without_transport_retry() {
     let payload = root.join("payload.json");
     let record = root.join("invocations");
     let setup = root.join("setup-complete");
+    let mut steps = Vec::new();
+    if include_setup {
+        steps.push(serde_json::json!({"step_id": "setup", "status": "completed"}));
+    }
+    steps.push(serde_json::json!({
+        "step_id": "limited-agent",
+        "status": "error",
+        "error": "agent step failed (exit 1)",
+        "recent_stdout": [MESSAGE]
+    }));
     let result = serde_json::json!({
         "recipe_name": "issue-1390",
         "success": false,
-        "step_results": [{
-            "step_id": "setup",
-            "status": "completed"
-        }, {
-            "step_id": "limited-agent",
-            "status": "error",
-            "error": "agent step failed (exit 1)",
-            "recent_stdout": [MESSAGE]
-        }],
+        "step_results": steps,
         "context": {}
     });
     fs::write(&payload, format!("{result}\n")).unwrap();
     let recipe = repo.join("recipe.yaml");
-    fs::write(&recipe, "name: issue-1390\ndescription: Synthetic usage limit\nversion: 1.0.0\nsteps:\n  - id: setup\n    type: bash\n    command: 'fixture filesystem setup'\n  - id: limited-agent\n    type: agent\n    prompt: 'Synthetic usage limit'\n").unwrap();
+    let setup_step = if include_setup {
+        "  - id: setup\n    type: bash\n    command: 'fixture filesystem setup'\n"
+    } else {
+        ""
+    };
+    fs::write(&recipe, format!("name: issue-1390\ndescription: Synthetic usage limit\nversion: 1.0.0\nsteps:\n{setup_step}  - id: limited-agent\n    type: agent\n    prompt: 'Synthetic usage limit'\n")).unwrap();
     // Probes must succeed without counting as executions or doing setup.
     for probe in ["--version", "--capabilities"] {
         let output = isolated_command(&runner, root).arg(probe).output().unwrap();
@@ -183,7 +201,8 @@ fn reported_limit_survives_the_cli_boundary_without_transport_retry() {
         assert!(!record.exists(), "{probe} counted as a recipe execution");
         assert!(!setup.exists(), "{probe} performed recipe setup");
     }
-    let output = isolated_command(&binary, root)
+    let mut command = isolated_command(&binary, root);
+    command
         .args(["recipe", "run"])
         .arg(&recipe)
         .args(["--format", "json", "-w"])
@@ -196,10 +215,11 @@ fn reported_limit_survives_the_cli_boundary_without_transport_retry() {
         .env("ISSUE_1390_RECORD", &record)
         .env("ISSUE_1390_PAYLOAD", &payload)
         .env("ISSUE_1390_RECIPE", &recipe)
-        .env("ISSUE_1390_WORK", &repo)
-        .env("ISSUE_1390_SETUP", &setup)
-        .output()
-        .unwrap();
+        .env("ISSUE_1390_WORK", &repo);
+    if include_setup {
+        command.env("ISSUE_1390_SETUP", &setup);
+    }
+    let output = command.output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     crate::isolated_amplihack::assert_proc_root_honoured(&stderr);
     assert_eq!(output.status.code(), Some(1), "{stderr}");
@@ -226,7 +246,8 @@ fn reported_limit_survives_the_cli_boundary_without_transport_retry() {
     assert_eq!(verdict["retryable"], false);
     assert_eq!(verdict["attempt"], 1);
     assert_eq!(verdict["action"], "terminal");
-    assert_eq!(verdict["completed_steps"], serde_json::json!(["setup"]));
+    let completed: Vec<&str> = if include_setup { vec!["setup"] } else { vec![] };
+    assert_eq!(verdict["completed_steps"], serde_json::json!(completed));
     assert_eq!(
         verdict["failed_steps"],
         serde_json::json!(["limited-agent"])
@@ -252,5 +273,9 @@ fn reported_limit_survives_the_cli_boundary_without_transport_retry() {
     assert_eq!(markers, vec![verdict.clone()], "{stderr}");
     // Process completion is the synchronization event; no timed window.
     assert_eq!(fs::read_to_string(record).unwrap(), "run\n");
-    assert_eq!(fs::read_to_string(setup).unwrap(), "setup complete\n");
+    if include_setup {
+        assert_eq!(fs::read_to_string(setup).unwrap(), "setup complete\n");
+    } else {
+        assert!(!setup.exists());
+    }
 }

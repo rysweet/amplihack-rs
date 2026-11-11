@@ -7,6 +7,101 @@ last_updated: 2026-11-10
 
 # Issue #1390: validation and delivery evidence
 
+## Step 13: Local Testing Results
+
+**FAIL — 2026-11-10.** Both current-source outside-in scenarios compiled and
+executed, but failed during fixture creation, before invoking the CLI. Neither
+scenario establishes a behavioral pass. Tested source: local HEAD
+`6e69aec0a19e2f4fff674849799033fa37f75b8c` plus the uncommitted change splitting
+the single-step and multi-step scenarios through one shared Rust fixture.
+Full output, numeric exit receipts, source hashes and the exact patch are
+retained in `target/review-1390-step13/`.
+
+Detected toolchains:
+
+- Rust/Cargo: root workspace `Cargo.toml`, `Cargo.lock`, and
+  `rust-toolchain.toml` (Rust 1.97.0, edition 2024); all affected executable
+  source is Rust. The `amplihack-cli` manifest sets `autotests = false` and
+  registers `tests/main.rs` as `cli_integration`. The executable entry point
+  is `bins/amplihack/src/main.rs`. README development commands document
+  locked workspace builds and tests. Other language manifests belong to
+  unrelated assets and distribution paths.
+
+Chosen validation strategy:
+
+- Use qa-team's native Rust CLI workflow: select the two registered scenarios
+  individually, with `AMPLIHACK_TEST_BINARY` absent so the normal helper builds
+  this checkout's executable. The single-step scenario checks the complete
+  reset hint and structured failure. The multi-step scenario additionally
+  checks completed setup, failed-agent identity, stderr/JSON agreement and
+  exactly one runner execution. Both retain synthetic ancestor launcher
+  configuration checks and temporary HOME/config/profile/process roots.
+- Use `/home/ryan/.cargo/bin/cargo` with `CARGO_TARGET_DIR="$PWD/target"`,
+  `RUSTC_WRAPPER` empty, and the recipe-provided `TMPDIR`. This avoids the
+  host Cargo wrapper's test exclusions. Long commands run in a private-socket
+  tmux session with `GIT_TERMINAL_PROMPT=0`, null stdin and a command-level
+  timeout. Tests contain no timers or wall-clock assertion windows.
+
+### Scenario 1 — Single limited agent preserves its full reset hint
+
+Command: `/home/ryan/.cargo/bin/cargo test --locked -p amplihack-cli --test cli_integration issue_1390_usage_limit::a_single_limited_step_preserves_the_reset_hint -- --exact --nocapture`
+
+Result: FAIL (exit 101)
+
+Output: `test result: FAILED. 0 passed; 1 failed; 0 ignored`.
+Fixture creation at `issue_1390_usage_limit.rs:130` failed with
+`Read-only file system` (errno 30) under `/var/tmp/.tmpawHmgw`.
+Full output: `target/review-1390-step13/simple.log`;
+exit receipt: `target/review-1390-step13/simple.exit`.
+
+### Scenario 2 — Completed setup followed by a limited agent is not transport-retried
+
+Command: `/home/ryan/.cargo/bin/cargo test --locked -p amplihack-cli --test cli_integration issue_1390_usage_limit::reported_limit_survives_the_cli_boundary_without_transport_retry -- --exact --nocapture`
+
+Result: FAIL (exit 101)
+
+Output: `test result: FAILED. 0 passed; 1 failed; 0 ignored`.
+Fixture creation at `issue_1390_usage_limit.rs:130` failed with
+`Read-only file system` (errno 30) under `/var/tmp/.tmpfnuecw`.
+Full output: `target/review-1390-step13/complex.log`;
+exit receipt: `target/review-1390-step13/complex.exit`.
+
+Root cause: the scratch helper rejects both writable roots because they are
+below framework state. The clean `/var/tmp` candidate is read-only. No
+isolation guard was weakened, and neither scenario reached real user state
+or its CLI assertions. See the scratch storage gate below for the complete
+constraint. Passing classifier or cleanup checks cannot replace these CLI
+results.
+
+Integration was also attempted freshly: `git fetch origin main` returned 255
+opening read-only `FETCH_HEAD`; `git merge --no-edit origin/main` returned 128
+creating read-only `ORIG_HEAD.lock`. Their complete output and exits are in
+`target/review-1390-step13/{fetch,merge}.{log,exit}`. Current `origin/main` is
+`bd0df1988f9e9a7a354eb62ef49efb10f4ff8b57`, outside local HEAD ancestry.
+
+Staging the Rust scenario and this record returned 128 creating read-only
+`index.lock` (`stage.log`, `stage.exit`). No commit or push was attempted
+after that failure. No hooks were disabled or bypassed.
+
+Additional current-source checks passed: all 52 failure-classification tests,
+the exact reported cleanup-lock test on the branch, formatting and whitespace
+checks (each exit 0). These results have separate `.log` and `.exit` pairs in
+the same evidence directory. They do not change Step 13's failing status.
+
+The exact cleanup-lock test also passed freshly on `origin/main`
+`bd0df1988f9e9a7a354eb62ef49efb10f4ff8b57` (1 passed, exit 0). Its source
+was extracted again with `git archive origin/main` into the existing isolated
+baseline checkout; the baseline used its separate `main-target` build
+directory and the same pinned toolchain. The actual command was
+`/home/ryan/.cargo/bin/cargo test --manifest-path "$TMPDIR/issue-1390-validation/main/Cargo.toml" --locked -p amplihack-cli --lib commands::cleanup::sweep::target_remove::tests::held_cargo_lock_at_any_level_means_in_use_and_nothing_is_deleted -- --exact --nocapture`.
+Evidence: `main-source.txt`, `main-cleanup.log` and `main-cleanup.exit`.
+`git diff --exit-code origin/main -- crates/amplihack-cli/src/commands/cleanup`
+also returned 0 (`cleanup-source.log`, `cleanup-source.exit`). The original
+intermittent failure remains unreproduced. Passing exact tests and identical
+cleanup source do not establish its cause or waive the failing delivery gates.
+
+## Historical step 11b results
+
 Delivery of [PR #2289](https://github.com/rysweet/amplihack-rs/pull/2289)
 remains **incomplete**. Step 11b rechecked local commit
 `c5db3477f84f4005b6141fb0be55db16b50430ce`; no integration commit was
