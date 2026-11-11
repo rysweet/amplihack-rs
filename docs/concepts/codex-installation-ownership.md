@@ -191,8 +191,8 @@ updates with valid pending-journal schema **2** can be replayed under the same l
 on the next install or uninstall. The ownership ledger uses schema **1**; it is a
 separate record, not a recovery-journal version.
 
-With neither a pending journal nor an incomplete archival intent, recovery
-returns without native calls or synchronization.
+With neither a pending journal nor an archival marker (intent or completion
+receipt), recovery returns without native calls or synchronization.
 
 Unsupported journal schemas, including older journals, are rejected by automatic
 classification and strict recovery before either mutates live state. Explicit
