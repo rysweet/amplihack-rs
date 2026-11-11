@@ -135,12 +135,13 @@ fn failure_payload_with_stderr(error: &str, output: &str, stderr: &str) -> serde
 }
 
 #[test]
-fn a_full_guard_phrase_in_failed_step_evidence_preserves_the_conservative_refusal() {
+fn a_full_guard_phrase_in_failed_step_evidence_does_not_refuse_an_api_failure() {
     let payload = failure_payload(
         "amplihack copilot failed (exit 1)\n--- stdout (tail) ---\nsource.rs:141: BLOCKED_TERMINAL orchestration_unavailable\n--- stderr (tail) ---\nExecution failed: 400 The resource you requested was not found.",
         "BLOCKED_TERMINAL orchestration_unavailable: nested run refused; completed inline",
     );
-    assert_eq!(payload["structural_refusal"], true);
+    assert_eq!(payload["structural_refusal"], false);
+    assert_eq!(payload["class"], "agent_api");
 }
 
 #[test]
@@ -158,11 +159,11 @@ fn genuine_refusal_survives_eliding_its_entire_diagnostic() {
 }
 
 #[test]
-fn runner_stderr_cannot_clear_the_final_refusal_marker_for_an_exit_one_run() {
+fn runner_stderr_cannot_clear_a_guard_status_in_a_failed_run() {
     const GUARD: &str = "BLOCKED_TERMINAL orchestration_unavailable: depth guard";
     for stderr in ["x".repeat(1800), "API Error: 529 Overloaded".repeat(120)] {
         let payload = failure_payload_with_stderr(
-            "amplihack copilot failed (exit 1)",
+            "amplihack copilot failed (exit 79)",
             &format!("{}\n{GUARD}", "x".repeat(2100)),
             &stderr,
         );

@@ -17,7 +17,7 @@
 #                            not looping.
 #
 # Also asserted:
-#   - exit 79 / BLOCKED_TERMINAL is TERMINAL: surfaced, and never retried into
+#   - exit 79 / a structured refusal is TERMINAL: surfaced, and never retried into
 #     (the agent evaluation step is skipped entirely).
 #   - the worked 2h47m case is detected from its evidence alone.
 #   - CONTINUE and DONE still pass through, so a converging loop is not cut off.
@@ -39,6 +39,8 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/loop-health-evaluator.yaml"
 # The deterministic measurement half is its own brick, composed as step-01.
 COLLECTOR="${REPO_ROOT}/amplifier-bundle/recipes/loop-evidence-collector.yaml"
+# Resolve the same refusal helper as the recipe files under test.
+export AMPLIHACK_HOME="${REPO_ROOT}"
 
 for f in "${RECIPE}" "${COLLECTOR}"; do
     [[ -f "${f}" ]] || { echo "HARNESS-ERROR: recipe not found: ${f}" >&2; exit 2; }
@@ -226,16 +228,36 @@ else
     fail "EXIT79-detect" "exit 79 not detected (terminal_refusal='${T}'): ${EV79}"
 fi
 
-EVBT="$(LOOP_REPO_PATH="${REPO_ROOT}" LOOP_NAME="t" LOOP_HISTORY="" \
-    LOOP_LAST_ROUND_OUTPUT="child returned BLOCKED_TERMINAL at depth 4/3" \
-    run_step "${COLLECT}" 2>/dev/null)"
-T="$(printf '%s' "${EVBT}" | amplihack orch helper extract-json \
-    | amplihack orch helper extract-field --field terminal_refusal --default MISSING)"
-if [[ "${T}" == "true" ]]; then
-    pass "EXIT79-blocked-terminal" "BLOCKED_TERMINAL in round output is a terminal policy refusal"
-else
-    fail "EXIT79-blocked-terminal" "BLOCKED_TERMINAL not detected (terminal_refusal='${T}')"
-fi
+# Run the shipped collector, resolver and enforcement with only the model
+# assessment supplied. Text and historical markers must not skip evaluation.
+check_refusal_pipeline() { # name rc output history expected-terminal
+    local name="$1" child_rc="$2" last="$3" hist="$4" want="$5" ev terminal health out rc
+    ev="$(LOOP_REPO_PATH="${REPO_ROOT}" LOOP_CHILD_EXIT_CODE="$child_rc" \
+        LOOP_LAST_ROUND_OUTPUT="$last" LOOP_HISTORY="$hist" run_step "${COLLECT}" 2>/dev/null)"
+    terminal="$(printf '%s' "$ev" | amplihack orch helper extract-field --field terminal_refusal --default MISSING)"
+    health="$(LOOP_EVIDENCE="$ev" LOOP_HEALTH_ASSESSMENT='{"loop_verdict":"CONTINUE"}' run_step "${RESOLVE}" 2>/dev/null)"
+    out="$(LOOP_HEALTH="$health" run_step "${ENFORCE}" 2>&1)"; rc=$?
+    if [[ "$terminal" == "$want" ]] && {
+        [[ "$want" == false && "$rc" -eq 0 && "$out" == *'LOOP_HEALTH: CONTINUE'* ]] ||
+        [[ "$want" == true && "$rc" -ne 0 && "$out" == *'terminal_policy_refusal'* ]];
+    }; then
+        pass "REFUSAL-${name}" "collector/resolver/enforcer agree: terminal=$want"
+    else
+        fail "REFUSAL-${name}" "terminal=$terminal want=$want rc=$rc evidence=$ev output=$out"
+    fi
+}
+TRUE_MARK='amplihack.recipe.failure_class {"class":"work","structural_refusal":true}'
+FALSE_MARK='amplihack.recipe.failure_class {"class":"agent_api","structural_refusal":false}'
+QUOTED_GUARD=$'BLOCKED_TERMINAL orchestration_unavailable: handled inline\nquoted exit code 79\nExecution failed: 400'
+check_refusal_pipeline quoted 1 "$QUOTED_GUARD" "" false
+check_refusal_pipeline api 1 "$QUOTED_GUARD"$'\n'"$FALSE_MARK" "" false
+check_refusal_pipeline final-false 1 "$TRUE_MARK"$'\n'"$FALSE_MARK" "" false
+check_refusal_pipeline final-true 1 "$FALSE_MARK"$'\n'"$TRUE_MARK" "" true
+check_refusal_pipeline rc-zero 0 "$TRUE_MARK" "" false
+check_refusal_pipeline rc-missing "" "$TRUE_MARK" "" false
+check_refusal_pipeline history 1 "$FALSE_MARK" "$QUOTED_GUARD"$'\n'"$TRUE_MARK" false
+check_refusal_pipeline string-true 1 'amplihack.recipe.failure_class {"class":"work","structural_refusal":"true"}' "" false
+check_refusal_pipeline rc79 79 "$FALSE_MARK" "" true
 
 # A terminal refusal forces STUCK even when the model said CONTINUE.
 V="$(resolve_verdict "${EV79}" '{"loop_verdict":"CONTINUE"}')"
@@ -290,8 +312,8 @@ check_field "findings_recurring" "2"           "recurring findings are counted"
 check_field "findings_resolved" "0"            "nothing was resolved"
 check_field "tests_moved" "false"              "the test signal did not move"
 
-# Same evidence, but with a BLOCKED_TERMINAL child in the history.
-EVW79="$(LOOP_REPO_PATH="${REPO_ROOT}" LOOP_NAME="default-workflow" \
+# Same evidence with an authoritative child exit-79 status.
+EVW79="$(LOOP_REPO_PATH="${REPO_ROOT}" LOOP_NAME="default-workflow" LOOP_CHILD_EXIT_CODE=79 \
     LOOP_HISTORY="${WORKED_HISTORY}
 child BLOCKED_TERMINAL at depth 4/3, exit 79" \
     LOOP_LAST_ROUND_OUTPUT="${WORKED_LAST}" run_step "${COLLECT}" 2>/dev/null)"
@@ -1023,6 +1045,27 @@ ${E2E_OUT}"
     else
         fail "E2E-terminal" "exit 79 was not terminal end to end (rc=${E2E_RC}):
 ${E2E_OUT}"
+    fi
+
+    # The real runner must execute the agent step after an ordinary API
+    # failure, and skip it for a structured refusal. No deterministic step is
+    # replaced; step-02 alone reads the supplied model assessment.
+    e2e_run api-after-quote '{"loop_verdict":"CONTINUE"}' \
+        -c loop_child_exit_code=1 -c "loop_last_round_output=$QUOTED_GUARD
+$TRUE_MARK
+$FALSE_MARK" -c "loop_history=$TRUE_MARK"
+    if [[ $E2E_RC -eq 0 && "$E2E_OUT" == *'LOOP_HEALTH: CONTINUE'* && "$E2E_OUT" != *'terminal_policy_refusal'* ]]; then
+        pass "E2E-api-after-quote" "quoted guards and historical markers leave the agent step enabled"
+    else
+        fail "E2E-api-after-quote" "ordinary API failure became terminal (rc=$E2E_RC): $E2E_OUT"
+    fi
+    e2e_run structured-refusal '{"loop_verdict":"CONTINUE"}' \
+        -c loop_child_exit_code=1 -c "loop_last_round_output=$TRUE_MARK"
+    if [[ $E2E_RC -ne 0 && "$E2E_OUT" == *'terminal_policy_refusal'* ]] \
+        && ! printf '%s' "$E2E_OUT" | grep -qE '"loop_health_assessment"[[:space:]]*:[[:space:]]*".+"'; then
+        pass "E2E-structured-refusal" "a structured refusal skips the agent step and forces STUCK"
+    else
+        fail "E2E-structured-refusal" "structured refusal failed (rc=$E2E_RC): $E2E_OUT"
     fi
 
     # --- 7e. The brick does not poison itself -------------------------------

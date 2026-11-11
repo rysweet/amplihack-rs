@@ -8,12 +8,9 @@
 /// The literal line a structural guard prints when it refuses to spawn
 /// (`terminal_block` in `execute.rs`, issues #1326/#1327/#1329/#1332).
 ///
-/// Matched as the whole phrase, never as the bare word `BLOCKED_TERMINAL`.
-/// Issue #1437: the bare word appears in a run transcript whenever a
-/// *descendant* was refused and the agent then did exactly what the refusal
-/// told it to do — "complete this step inline and return your result" — so
-/// matching the word alone reported an already-handled refusal as this run's
-/// terminating cause.
+/// Used as the signal for an authoritative exit-79 refusal, never matched in
+/// captured text. Even the full phrase can quote a handled descendant refusal
+/// before an unrelated API failure (#1437).
 pub(super) const STRUCTURAL_REFUSAL_MARKER: &str = "blocked_terminal orchestration_unavailable";
 
 /// Markers that only a transport-level fault produces. Every entry is a status
@@ -145,12 +142,6 @@ pub(super) const WORK_MARKERS: &[&str] = &[
     "syntaxerror",
     "merge conflict",
     "hook failed",
-    // Terminal policy refusals from the recursion / width guards (#1326,
-    // #1327, #1332). These are FINAL answers by construction; retrying into a
-    // guard is precisely the behaviour those guards exist to stop. Matched as
-    // the guard's whole literal line, not as the bare words — see
-    // `STRUCTURAL_REFUSAL_MARKER` (#1437).
-    STRUCTURAL_REFUSAL_MARKER,
 ];
 
 /// Markers for an account usage / session limit (issue #1390).

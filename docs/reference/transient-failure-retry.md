@@ -40,7 +40,7 @@ the marker writer.
 | `transient_transport` | `API Error: 529`, 503, 502, 500, 429, `overloaded_error`, `rate_limit_error`, `ECONNRESET`, `socket hang up`, `request timed out` | **Yes**, bounded |
 | `usage_limit`         | `usage limit`, `weekly limit`, `spend limit`; see [Usage-limit markers](#usage-limit-markers) | No               |
 | `environmental`       | 401/403, `invalid x-api-key`, `API Error: 404`, `404 Not Found`, `not_found_error`, `model_not_found`, `command not found`, `no space left on device` | No               |
-| `work`                | `test result: FAILED`, `assertion failed`, `panicked at`, `error[E0308]`, `merge conflict`, the guard's full `BLOCKED_TERMINAL orchestration_unavailable` phrase | No               |
+| `work`                | `test result: FAILED`, `assertion failed`, `panicked at`, `error[E0308]`, `merge conflict`, a failed step terminating with exit `79` | No               |
 | `agent_api`           | `Execution failed: 400`, `Execution failed: 404`, `The resource you requested was not found`, `API Error: 400`, `400 Bad Request`, `invalid_request_error`, `session not found`, `conversation not found` | No               |
 | `indeterminate`       | nothing in the evidence identifies the failure                                              | No               |
 
@@ -58,9 +58,9 @@ Five rules matter more than the tables:
   `model_not_found` are environmental markers, and environmental markers are
   checked before agent-API markers, so the same evidence never gets two
   classes depending on which phrase a provider used.
-- **A policy refusal is the guard's whole phrase**, `BLOCKED_TERMINAL
-  orchestration_unavailable`. Neither word on its own is a marker. Whether the
-  refusal ended the run is published separately, as
+- **A policy refusal requires the reserved terminating status `79`.** The
+  guard's phrase, even in full, can be quoted from a descendant refusal the
+  agent already handled inline. Captured text cannot set
   [`structural_refusal`](#the-structural_refusal-field).
 - **Ambiguity resolves toward not retrying.** When the same evidence carries a
   work marker *and* a transient marker, the verdict is `work`. A missed retry
@@ -152,32 +152,27 @@ grep amplihack.recipe.failure_class run.log | jq -r '.class + " " + .action'
 
 ### The `structural_refusal` field
 
-`structural_refusal` is a JSON boolean, never a string. It is `true` when
-the failed step's own evidence contains the guard's full phrase,
-`BLOCKED_TERMINAL orchestration_unavailable`, matched without regard to case.
-A failed step's terminating error header recording the reserved exit code `79`
-also sets it, even without the phrase. The class is then `work`. Neither word
-on its own sets it: `blocked_terminal` and `orchestration_unavailable` appear
-in transcripts whenever a descendant was refused and the agent then did what
-the refusal told it to do. Every other failure, `agent_api` included, has `false`.
+`structural_refusal` is a JSON boolean, never a string. It is `true` only when
+an unsuccessful step's terminating error header records the reserved exit code
+`79`. The runner decodes its pinned subprocess error envelope, anchored at the
+start of `error`, before diagnostics. It does not search captured stdout,
+stderr or diagnostic text for refusal phrases or embedded exit-code references.
+The class is then `work`, and the failure is never mechanically retried.
 
 ```text
-BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3   -> true,  work
-blocked_terminal orchestration_unavailable                     -> true,  work
-the step mentioned blocked_terminal                            -> false
-Execution failed: 400 The resource you requested was not found -> false, agent_api
+Command failed (exit 79): <any diagnostics>                  -> true, work
+amplihack copilot failed (exit 79)                            -> true, work
+Command failed (exit 1): BLOCKED_TERMINAL orchestration_unavailable -> false
+quoted guard phrase followed by Execution failed: 400        -> false, agent_api
 ```
 
-`structural_refusal` reads a narrower set of evidence than `class`. `class`
-also reads the run status and the last 40 lines of the runner's stderr, and
-that stderr tail can hold the transcripts of runs the runner started.
-`structural_refusal` reads only the failed steps' own evidence: their `error`
-and their captured stdout and stderr. The runner's other steps, its stderr
-tail, its run status and earlier output cannot set the field. The decision is
-stored before combining and truncating diagnostic evidence to its
-2,000-character bound. Eliding a failed step's header, or even its entire
-diagnostic when later runner stderr displaces it, cannot clear the refusal or
-make it mechanically retryable.
+`class` still reads the failed steps' diagnostics, run status and the last 40
+lines of the runner's stderr. `structural_refusal` reads only the failed
+steps' terminating status. Completed steps, captured transcripts, runner stderr
+and run status cannot set it. The decision is stored before combining and
+truncating diagnostic evidence to its 2,000-character bound. Eliding a failed
+step's header, or even its entire diagnostic when later runner stderr displaces
+it, cannot clear an exit-79 refusal or make it mechanically retryable.
 
 When the runner produced no structured result (a spawn failure, unparseable
 stdout, a runner that died before writing its JSON), the class comes from the

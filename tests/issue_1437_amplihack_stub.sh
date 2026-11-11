@@ -17,6 +17,9 @@
 #                 $STUB_HEALTH_EXTRA_h, then the runner's step-04 block (#1512)
 #                 with $STUB_HEALTH_h (default CONTINUE for h=1, DONE after),
 #                 and exits $STUB_HEALTH_RC_h (default 0).
+#                 STUB_REAL_HEALTH_ROOT opts into the shipped collector,
+#                 resolver and enforcement commands; only the model
+#                 assessment comes from STUB_HEALTH_h in that mode.
 #     any other recipe, call n:
 #                 writes $STUB_RECORD_n to the autodrive_round_record file
 #                 (default CONCERNS for n=1, CLEAN after), prints $STUB_OUT_n
@@ -50,13 +53,20 @@ if [ "${1:-} ${2:-}" = "orch helper" ]; then
   done
   BLOB="$(cat)"
   case "$MODE" in
+    normalise-loop-verdict)
+      case "$BLOB" in CONTINUE|DONE|STUCK) printf '%s' "$BLOB" ;; *) printf STUCK ;; esac
+      exit 0 ;;
     extract-json)
-      case "$BLOB" in *"\"${FIELD}\""*) printf '%s' "$BLOB" ;; esac
+      if [ -z "$FIELD" ]; then
+        case "$BLOB" in \{*\}) printf '%s' "$BLOB" ;; *) printf '{}' ;; esac
+      else
+        case "$BLOB" in *"\"${FIELD}\""*) printf '%s' "$BLOB" ;; *) printf '{}' ;; esac
+      fi
       exit 0 ;;
     extract-field)
       if [ "$REQUIRE_BOOLEAN" = true ]; then
         V="$(printf '%s' "$BLOB" | sed -n "s/.*\"${FIELD}\"[[:space:]]*:[[:space:]]*\(true\|false\)[[:space:]]*[,}].*/\1/p" | head -n 1)"
-        printf '%s' "${V:-$DEFAULT}"
+        printf '%s\n' "${V:-$DEFAULT}"
         exit 0
       fi
       V="$(printf '%s' "$BLOB" | sed -n "s/.*\"${FIELD}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -n 1)"
@@ -65,7 +75,7 @@ if [ "${1:-} ${2:-}" = "orch helper" ]; then
       fi
       [ -n "$V" ] || V="$DEFAULT"
       V="${V//\\n/$'\n'}"; V="${V//\\t/$'\t'}"
-      printf '%s' "$V"
+      printf '%s\n' "$V"
       exit 0 ;;
   esac
   exit 0
@@ -83,6 +93,12 @@ if [ "${1:-} ${2:-}" = "recipe run" ]; then
         autodrive_round_record=*) RECORD="${a#*=}" ;;
         loop_history=*) HISTORY="${a#*=}" ;;
       esac
+      case "$a" in
+        loop_*=*)
+          context_name="$(printf '%s' "${a%%=*}" | tr '[:lower:]' '[:upper:]')"
+          export "$context_name=${a#*=}"
+          ;;
+      esac
     fi
     prev="$a"
   done
@@ -90,6 +106,34 @@ if [ "${1:-} ${2:-}" = "recipe run" ]; then
     h="$(count health)"
     printf '%s' "$HISTORY" > "${STATE}/history-${h}"
     if [ "$h" = 1 ]; then d=CONTINUE; else d=DONE; fi
+    # Opt in to the shipped deterministic evaluator commands. Only the model
+    # assessment is supplied by the test; collection, resolution and enforcement
+    # execute verbatim, so transcript false positives cannot hide behind a stub.
+    if [ -n "${STUB_REAL_HEALTH_ROOT:-}" ]; then
+      export AMPLIHACK_HOME="$STUB_REAL_HEALTH_ROOT"
+      recipe_dir="$STUB_REAL_HEALTH_ROOT/amplifier-bundle/recipes"
+      step_command() {
+        awk -v id="$2" '
+          /^  - id:/ { if (body) exit; active = index($0, "id: \"" id "\"") > 0 }
+          active && /^    command: \|/ { body=1; next }
+          body { if ($0 ~ /^    [a-zA-Z_]+:/) exit; sub(/^      /, ""); print }
+        ' "$1"
+      }
+      RECIPE_VAR_loop_evidence="$(bash -c "$(step_command "$recipe_dir/loop-evidence-collector.yaml" step-01-collect-loop-evidence)")" || exit $?
+      export RECIPE_VAR_loop_evidence
+      terminal="$(printf '%s' "$RECIPE_VAR_loop_evidence" | "$0" orch helper extract-field --field terminal_refusal --default true)"
+      export RECIPE_VAR_loop_health_assessment=""
+      if [ "$terminal" = false ]; then
+        : > "${STATE}/health-agent-called-${h}"
+        RECIPE_VAR_loop_health_assessment="{\"loop_verdict\":\"$(knob STUB_HEALTH_ "$h" "$d")\"}"
+        export RECIPE_VAR_loop_health_assessment
+      fi
+      RECIPE_VAR_loop_health="$(bash -c "$(step_command "$recipe_dir/loop-health-evaluator.yaml" step-03-resolve-loop-verdict)")" || exit $?
+      export RECIPE_VAR_loop_health
+      printf '  \342\234\223 step-04-enforce-loop-verdict: completed\n    Output: '
+      bash -c "$(step_command "$recipe_dir/loop-health-evaluator.yaml" step-04-enforce-loop-verdict)"
+      exit $?
+    fi
     extra="$(knob STUB_HEALTH_EXTRA_ "$h" "")"
     [ -n "$extra" ] && printf '%s\n' "$extra"
     printf '  \342\234\223 step-04-enforce-loop-verdict: completed\n    Output: LOOP_HEALTH: %s\n' \

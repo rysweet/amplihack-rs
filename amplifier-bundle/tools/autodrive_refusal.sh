@@ -57,8 +57,16 @@ classify_child() { # classify_child <log>
   printf '%s\n' "$line"
   json="${line#amplihack.recipe.failure_class }"
 
-  value="$(autodrive_marker_field "$json" class)"
-  if printf '%s' "$value" | LC_ALL=C grep -qxE '[a-z_]{1,32}'; then CHILD_FAILURE_CLASS="$value"; fi
+  # Preserve trailing newlines too; command substitution normally strips them.
+  value="$(autodrive_marker_field "$json" class; printf '.')"
+  value="${value%.}"
+  value="${value%$'\n'}" # remove exactly the extract-field output terminator
+  # Validate the entire value: grep -x accepts any matching line in a
+  # multiline value, which would let a class inject another history row.
+  case "$value" in
+    ''|*[!abcdefghijklmnopqrstuvwxyz_]*) ;;
+    *) [ "${#value}" -le 32 ] && CHILD_FAILURE_CLASS="$value" ;;
+  esac
   value="$(autodrive_marker_field "$json" retryable --require-boolean)"
   case "$value" in true|false) CHILD_FAILURE_RETRYABLE="$value" ;; esac
   # Check the JSON type before rendering: the string "true" is not a refusal.

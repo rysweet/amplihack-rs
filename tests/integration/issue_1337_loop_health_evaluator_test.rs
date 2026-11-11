@@ -320,8 +320,8 @@ fn exit_79_is_terminal_and_never_retried_into() {
     let recipe = recipe_yaml();
     let collect = collect_command();
     assert!(
-        collect.contains("BLOCKED_TERMINAL"),
-        "step-01 must detect a BLOCKED_TERMINAL child"
+        collect.contains("terminal_refusal \"${LOOP_CHILD_EXIT_CODE:-}\" \"$WORK/last\""),
+        "step-01 must use the shared authoritative refusal rule on the current child"
     );
     assert!(
         collect.contains("79"),

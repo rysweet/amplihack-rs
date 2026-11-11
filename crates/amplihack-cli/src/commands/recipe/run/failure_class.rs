@@ -132,7 +132,7 @@ pub(crate) struct FailureVerdict {
     pub(crate) evidence: String,
     pub(crate) failed_steps: Vec<String>,
     pub(crate) completed_steps: Vec<String>,
-    /// A failed step reported a structural guard refusal before evidence truncation.
+    /// A failed step terminated with the reserved guard status before evidence truncation.
     pub(crate) structural_refusal: bool,
 }
 
@@ -147,9 +147,9 @@ impl FailureVerdict {
     /// that knows, instead of grepping a whole transcript for a word that also
     /// appears in refusals a descendant already handled (issue #1437).
     ///
-    /// Computed from each failed step's own evidence and terminating status
-    /// before combined diagnostics are truncated. Runner stderr and run status
-    /// cannot set this flag.
+    /// Computed only from each failed step's terminating status before combined
+    /// diagnostics are truncated. Captured guard text, runner stderr and run
+    /// status cannot set this flag.
     pub(crate) fn is_structural_refusal(&self) -> bool {
         self.structural_refusal
     }
@@ -312,10 +312,9 @@ pub(crate) fn classify_run_failure(result: &RecipeRunResult, stderr_tail: &str) 
         let evidence = step_evidence(step);
         // Preserve step provenance before truncation can remove its header or
         // runner stderr can displace the step's entire diagnostic evidence.
-        structural_refusal |= step.termination_exit_code() == Some(79)
-            || evidence
-                .to_ascii_lowercase()
-                .contains(STRUCTURAL_REFUSAL_MARKER);
+        // Captured evidence can quote a descendant refusal that was handled
+        // inline before this step later failed for an unrelated reason (#1437).
+        structural_refusal |= step.termination_exit_code() == Some(79);
         if !evidence.trim().is_empty() {
             evidence_parts.push(format!("[{}] {evidence}", step.step_id));
         }

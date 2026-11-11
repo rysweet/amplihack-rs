@@ -11,8 +11,8 @@
 //! 1. an agent-endpoint rejection is classified `agent_api`, below `Work`,
 //!    `Environmental` and `UsageLimit`; a 404 for an unknown model stays
 //!    `Environmental` (#1421);
-//! 2. `structural_refusal` is set by a FAILED step's guard exit or whole refusal
-//!    phrase, never by the bare words, the runner's stderr,
+//! 2. `structural_refusal` is set by a FAILED step's guard exit, never by
+//!    captured refusal phrases, the runner's stderr,
 //!    a completed step, or a run with no structured result;
 //! 3. the marker JSON only gains a key: nothing existing is renamed.
 
@@ -237,7 +237,7 @@ fn the_bare_words_are_no_longer_work_markers() {
         STRUCTURAL_REFUSAL_MARKER,
         "blocked_terminal orchestration_unavailable"
     );
-    assert!(WORK_MARKERS.contains(&STRUCTURAL_REFUSAL_MARKER));
+    assert!(!WORK_MARKERS.contains(&STRUCTURAL_REFUSAL_MARKER));
 }
 
 #[test]
@@ -259,7 +259,14 @@ fn a_bare_word_alone_is_neither_work_nor_a_refusal() {
 
 #[test]
 fn the_guard_line_in_a_failed_step_is_a_final_work_refusal() {
-    let verdict = classify_run_failure(&run(vec![failed("step-02", GUARD_LINE, &[])]), "");
+    let verdict = classify_run_failure(
+        &run(vec![failed(
+            "step-02",
+            &format!("Command failed (exit 79): {GUARD_LINE}"),
+            &[],
+        )]),
+        "",
+    );
     assert_eq!(verdict.class, FailureClass::Work);
     assert_eq!(verdict.signal, Some(STRUCTURAL_REFUSAL_MARKER));
     assert!(structural(&verdict));
@@ -271,24 +278,24 @@ fn the_guard_line_in_a_failed_step_is_a_final_work_refusal() {
 }
 
 #[test]
-fn the_phrase_matches_whatever_its_case() {
+fn quoted_phrases_in_any_case_cannot_refuse_a_step() {
     for line in [
         "blocked_terminal orchestration_unavailable: width cap",
         "Blocked_Terminal ORCHESTRATION_UNAVAILABLE: width cap",
     ] {
         let verdict = classify_run_failure(&run(vec![failed("step-02", "", &[line])]), "");
-        assert!(structural(&verdict), "{line:?} must set structural_refusal");
+        assert!(!structural(&verdict), "{line:?} is captured output");
     }
 }
 
-/// The flag follows the phrase in the failed step, not the deciding signal: a
-/// failing test printed earlier in the same tail does not hide the refusal.
+/// The terminating guard status wins even when another work marker decides
+/// the diagnostic signal.
 #[test]
-fn the_phrase_counts_even_when_another_marker_decides_the_class() {
+fn the_guard_status_counts_even_when_another_marker_decides_the_class() {
     let verdict = classify_run_failure(
         &run(vec![failed(
             "step-02",
-            "",
+            "amplihack copilot failed (exit 79)",
             &["test result: FAILED. 1 failed", GUARD_LINE],
         )]),
         "",
@@ -331,7 +338,7 @@ fn the_phrase_in_a_completed_step_is_not_a_refusal() {
 #[test]
 fn a_run_with_no_structured_result_never_sets_the_flag() {
     let verdict = classify_error(&anyhow::anyhow!("{GUARD_LINE}"));
-    assert_eq!(verdict.class, FailureClass::Work);
+    assert_eq!(verdict.class, FailureClass::Indeterminate);
     assert!(!structural(&verdict));
 }
 
@@ -356,12 +363,10 @@ fn a_transcript_that_quotes_the_word_is_classified_by_its_real_cause() {
     assert!(!structural(&verdict));
 }
 
-/// Known limit, pinned on purpose (docs/reference/auto-drive-to-merge.md,
-/// "Limits"): a descendant's real guard line still in the failed step's tail
-/// sets the flag even when the step later failed on a 400. The loop then stops
-/// and escalates rather than retrying into the guard.
+/// A descendant refusal followed by an API rejection must retain the actual
+/// terminating cause and remain available for agentic evaluation.
 #[test]
-fn a_real_guard_line_before_a_later_failure_still_sets_the_flag() {
+fn a_quoted_guard_line_before_a_later_api_failure_is_not_a_refusal() {
     let verdict = classify_run_failure(
         &run(vec![failed(
             "step-04-address-blockers",
@@ -374,8 +379,8 @@ fn a_real_guard_line_before_a_later_failure_still_sets_the_flag() {
         )]),
         "",
     );
-    assert_eq!(verdict.class, FailureClass::Work);
-    assert!(structural(&verdict));
+    assert_eq!(verdict.class, FailureClass::AgentApi);
+    assert!(!structural(&verdict));
 }
 
 // --- the marker is additive --------------------------------------------------
@@ -386,7 +391,14 @@ fn the_marker_only_gains_structural_refusal() {
         FAILURE_CLASS_MARKER_PREFIX,
         "amplihack.recipe.failure_class "
     );
-    let verdict = classify_run_failure(&run(vec![failed("step-02", GUARD_LINE, &[])]), "");
+    let verdict = classify_run_failure(
+        &run(vec![failed(
+            "step-02",
+            &format!("Command failed (exit 79): {GUARD_LINE}"),
+            &[],
+        )]),
+        "",
+    );
     let payload = verdict.to_json(2, "terminal");
     let mut keys: Vec<&str> = payload
         .as_object()
@@ -438,43 +450,46 @@ fn a_guard_exit_without_a_guard_phrase_is_still_a_refusal() {
 }
 
 #[test]
-fn truncation_cannot_hide_a_failed_steps_guard_refusal() {
-    // Guard provenance must survive for every supported structured evidence
-    // field, even when the child recipe reports the overall failure as exit 1.
-    for field in ["error", "output", "recent_stdout", "recent_stderr"] {
-        for preceding in ["".to_string(), "x".repeat(2100)] {
-            let evidence = format!("{preceding}{GUARD_LINE}");
-            let mut step = failed("step-02", "amplihack copilot failed (exit 1)", &[]);
-            match field {
-                "error" => step.error = evidence,
-                "output" => step.output = evidence,
-                "recent_stdout" => step.recent_stdout = vec![evidence],
-                "recent_stderr" => step.recent_stderr = vec![evidence],
-                _ => unreachable!(),
-            }
-            let result = run(vec![step]);
-            // Runner stderr may preserve the guard but displace its header,
-            // or displace all of the refused step's evidence with a retryable
-            // transport error. Neither can change the structural decision.
-            for stderr in [
-                String::new(),
-                "x".repeat(1800),
-                "API Error: 529 Overloaded".repeat(120),
-            ] {
-                let verdict = classify_run_failure(&result, &stderr);
-                assert!(
-                    structural(&verdict),
-                    "{field}, stderr length {}",
-                    stderr.len()
-                );
-                assert_eq!(verdict.class, FailureClass::Work);
-                assert!(!verdict.class.is_mechanically_retryable());
-                assert!(verdict.reasoning().contains("FINAL"));
-                if !preceding.is_empty() || stderr.len() > 2000 {
-                    assert!(!verdict.evidence.contains("[step-02]"));
-                    assert!(verdict.evidence.starts_with("…(earlier evidence elided)…"));
+fn truncation_preserves_termination_provenance_for_both_guard_and_api_exits() {
+    for exit in [1, 79] {
+        for field in ["error", "output", "recent_stdout", "recent_stderr"] {
+            for preceding in ["".to_string(), "x".repeat(2100)] {
+                let evidence = format!("{preceding}{GUARD_LINE}\nExecution failed: 400");
+                let header = format!("amplihack copilot failed (exit {exit})");
+                let mut step = failed("step-02", &header, &[]);
+                match field {
+                    "error" => step.error = format!("{header}\n{evidence}"),
+                    "output" => step.output = evidence,
+                    "recent_stdout" => step.recent_stdout = vec![evidence],
+                    "recent_stderr" => step.recent_stderr = vec![evidence],
+                    _ => unreachable!(),
                 }
-                assert_eq!(verdict.evidence.contains(GUARD_LINE), stderr.len() < 2000);
+                let result = run(vec![step]);
+                // Runner stderr can elide the entire step diagnostic; it cannot
+                // manufacture or clear an authoritative guard termination.
+                for stderr in [
+                    String::new(),
+                    "x".repeat(1800),
+                    "API Error: 529 Overloaded".repeat(120),
+                ] {
+                    let verdict = classify_run_failure(&result, &stderr);
+                    assert_eq!(
+                        structural(&verdict),
+                        exit == 79,
+                        "exit {exit}, {field}, stderr length {}",
+                        stderr.len()
+                    );
+                    if exit == 79 {
+                        assert_eq!(verdict.class, FailureClass::Work);
+                        assert!(!verdict.class.is_mechanically_retryable());
+                        assert!(verdict.reasoning().contains("FINAL"));
+                    }
+                    if !preceding.is_empty() || stderr.len() > 2000 {
+                        assert!(!verdict.evidence.contains("[step-02]"));
+                        assert!(verdict.evidence.starts_with("…(earlier evidence elided)…"));
+                    }
+                    assert_eq!(verdict.evidence.contains(GUARD_LINE), stderr.len() < 2000);
+                }
             }
         }
     }

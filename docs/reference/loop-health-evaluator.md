@@ -183,8 +183,8 @@ A shell assertion in the contract test enforces this.
 `loop_health` object. Two cases are settled before any source is tried. First,
 a [terminal refusal](#exit-code-79-is-terminal) gives `STUCK` with
 `verdict_source=terminal_policy_refusal`. That covers evidence showing exit
-`79` / `BLOCKED_TERMINAL`, and also evidence that is missing, unparseable or
-`null`, because `terminal_refusal` defaults to `true`. Second, empty output
+`79` or a failed child's final marker with `structural_refusal: true`, and also
+evidence that is missing, unparseable or `null`, because `terminal_refusal` defaults to `true`. Second, empty output
 gives `STUCK` with `verdict_source=missing_verdict`. Otherwise step-03 tries
 four sources in a fixed order. Each source runs only if every source before it
 found nothing.
@@ -549,7 +549,7 @@ caller that wants the numbers alone can invoke the collector directly. Its
 
 | Field | Signal |
 | ----- | ------ |
-| `terminal_refusal`, `terminal_reason` | A child returned exit `79` / `BLOCKED_TERMINAL`. Terminal — see below. |
+| `terminal_refusal`, `terminal_reason` | A child returned exit `79`, or failed with a final `structural_refusal: true` marker. Terminal — see below. |
 | `commits_since_baseline`, `diff_lines`, `diff_stat` | What the last round **actually** produced, from `git rev-list` / `git diff --numstat` against `loop_baseline_ref`. Zero and zero means it produced nothing, whatever the round's prose claims. |
 | `repeated_duration_count`, `repeated_duration_value` | How many steps reported the *same* duration. Identical durations repeating are a cap, not work. |
 | `repeated_output` | Whether the last round's output is textually a repeat of something already in the history (compared after normalising away digits, punctuation and whitespace). |
@@ -593,7 +593,7 @@ every forced `STUCK`, is attributable:
 | `evaluator` | The evaluator emitted a JSON object with `loop_verdict`. |
 | `evaluator_alt_key` | No `loop_verdict` object; the evaluator emitted a `verdict` object as its last non-blank line instead. |
 | `evaluator_prose_token` | No JSON verdict; one clear line-leading token was found in the prose. |
-| `terminal_policy_refusal` | The evidence showed exit `79` / `BLOCKED_TERMINAL`, or was missing or unparseable (`terminal_refusal` defaults to `true`); the evaluator was skipped. |
+| `terminal_policy_refusal` | The evidence showed exit `79` or a failed child's final `structural_refusal: true` marker, or was missing or unparseable (`terminal_refusal` defaults to `true`); the evaluator was skipped. |
 | `missing_verdict` | The evaluator produced no output. |
 | `unparseable_verdict` | Output existed but held no usable verdict, or held conflicting tokens. |
 
@@ -647,9 +647,9 @@ this brick is the pattern new loops should use.
 
 ## Exit code 79 is terminal
 
-Exit code `79` and `BLOCKED_TERMINAL` are final answers from a structural
-guard (#1327 / #1332). They are surfaced and the loop stops. They are **never**
-retried into, and the agentic step is skipped entirely on a terminal refusal
+Exit code `79` and a failed child's final `structural_refusal: true` marker
+are authoritative answers from a structural guard (#1327 / #1332). They are
+surfaced and the loop stops. They are **never** retried into, and the agentic step is skipped entirely on a terminal refusal
 (`condition: "loop_evidence.terminal_refusal == 'false'"`) — not even a model
 call is spent deciding whether to re-enter a sealed guard. A terminal refusal
 forces `STUCK` even if an evaluator verdict from an earlier round said
@@ -667,11 +667,12 @@ marker in its log has `"structural_refusal": true`. A transcript that quotes
 failure reaches this evaluator instead, with `child=rc=<n> class=<class> retryable=<bool>[ signal=<signal>]` on the
 round's `loop_history` line. See
 [auto-drive-to-merge](auto-drive-to-merge.md#not-every-failure-is-terminal-issue-1437).
-This evaluator does not yet follow that rule: `loop-evidence-collector` still
-sets `terminal_refusal` when round output contains the bare word
-`BLOCKED_TERMINAL`, so such a round ends as `STUCK` (exit `1`, not `79`).
-Moving the collector to exit `79` and the failure-class marker is tracked in
-[#1630](https://github.com/rysweet/amplihack-rs/issues/1630).
+The collector sources the same `autodrive_refusal.sh` helper and applies it
+only to `loop_child_exit_code` and `loop_last_round_output`. A successful child,
+a missing/non-numeric status, quoted guard/exit text and markers in
+`loop_history` cannot set `terminal_refusal`. A marker must carry a JSON boolean
+`true`; the string `"true"` is ignored. The last anchored marker wins, so the
+runner's final marker overrides nested markers in the round output.
 
 `loop-evidence-collector.yaml` sets `infrastructure_fault=true` only for
 `transient_transport` and `environmental`, and the evaluator prompt names only
@@ -748,12 +749,11 @@ the same rule, so prompt and extractor agree.
 
 ### The brick does not poison itself
 
-Every line these bricks author is tagged `[loop-health-evaluator]`, and the
-collector drops tagged lines before running its terminal detectors. Without
-that, the brick's own reason string ("child process exited 79 …") re-matches
-its own exit-79 regex, so feeding one escalation report back into
-`loop_history` would make the loop permanently terminal on evidence it
-invented.
+The collector never uses `loop_history` to decide current termination, and
+never searches text for an exit code or guard phrase. Feeding a previous
+escalation report back into history therefore cannot manufacture another
+terminal refusal. Tagged `[loop-health-evaluator]` report lines are excluded
+from repetition and waiting measurements as well.
 
 Agent output is treated as untrusted **data** throughout, per
 [Structured Verdict & Intent Parsing](structured-verdict-parsing.md#security-agent-output-is-untrusted-data-never-code):
@@ -776,7 +776,7 @@ Feeding the real run's evidence to `step-01-collect-loop-evidence`:
 ```json
 {
   "terminal_refusal": "true",
-  "terminal_reason": "BLOCKED_TERMINAL reported by a child; exit code 79 present in round output",
+  "terminal_reason": "exit 79 [loop-health-evaluator]",
   "commits_since_baseline": 0,
   "diff_lines": 0,
   "repeated_duration_count": 7,
