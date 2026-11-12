@@ -2,6 +2,7 @@
 //! `token_share` (`AMPLIHACK_GOVERNOR_MANIFEST`). Read only; the path is
 //! never printed or logged.
 
+use crate::commands::usage::models::{Manifest, Provider};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -12,8 +13,14 @@ const MAX_MANIFEST: u64 = 4096;
 /// tokens over all tokens, unattributed ones included. Empty when the
 /// manifest is not an absolute path to a regular file owned by this user
 /// (symlinks are not followed; permissions are not checked, since the file
-/// holds only token counts), or has no observed tokens. The path is never
-/// printed or logged.
+/// holds only token counts), names a session whose provider has no usage
+/// adapter, or has no observed tokens. The path is never printed or logged.
+///
+/// The usage report keeps an unsupported-provider session (unknown usage,
+/// report incomplete) instead of rejecting the manifest. Its tokens are then
+/// missing from both sides of the fraction, so a share would look exact
+/// while describing only part of the work; it stays empty, as it did when
+/// such a manifest failed to parse.
 pub(super) fn token_shares(path: &Path) -> BTreeMap<String, f64> {
     use amplihack_utils::secure_files::{euid, read_bounded_nofollow};
     use std::os::unix::fs::MetadataExt;
@@ -28,11 +35,18 @@ pub(super) fn token_shares(path: &Path) -> BTreeMap<String, f64> {
             return out;
         }
     };
-    let Ok(manifest) = serde_json::from_slice::<crate::commands::usage::models::Manifest>(&raw)
-    else {
+    let Ok(manifest) = serde_json::from_slice::<Manifest>(&raw) else {
         tracing::debug!("governor status: usage manifest is not valid");
         return out;
     };
+    if manifest
+        .sessions
+        .iter()
+        .any(|s| matches!(s.provider, Provider::Unsupported(_)))
+    {
+        tracing::debug!("governor status: usage manifest names an unsupported provider");
+        return out;
+    }
     let Some(dir) = path.parent() else {
         return out;
     };

@@ -66,12 +66,37 @@ pub(super) fn parse(provider: &Provider, v: &Value) -> Parsed {
     p
 }
 
+/// Claude Code writes its own `assistant` records for API errors and
+/// interrupts: model `<synthetic>`, usually `isApiErrorMessage: true`, a
+/// client UUID as `message.id` and explicit zero counters. They are not
+/// provider responses, so they are no observation: counting one would add a
+/// response with a known input of zero. A failed or interrupted call stays an
+/// unrecorded call, unknown rather than zero. If such a record ever carries a
+/// nonzero or non-numeric counter, it is diagnosed instead of dropped silently.
+fn client_generated(v: &Value) -> bool {
+    v["message"]["model"] == "<synthetic>" || v["isApiErrorMessage"] == true
+}
+
 fn claude(v: &Value, p: &mut Parsed) {
     if v["type"] != "assistant" {
         return;
     }
     let msg = &v["message"];
     let u = &msg["usage"];
+    if client_generated(v) {
+        let counted = [
+            "input_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+            "output_tokens",
+        ]
+        .iter()
+        .any(|field| !u[*field].is_null() && u[*field].as_u64() != Some(0));
+        if counted {
+            p.diagnostics.push("usage_on_client_generated_record");
+        }
+        return;
+    }
     let tokens = if u.is_object() {
         claude_tokens(u, &mut p.diagnostics)
     } else {

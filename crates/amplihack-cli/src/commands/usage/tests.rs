@@ -4,9 +4,10 @@ use crate::commands::pr::{GhOutput, GhRunner};
 use serde_json::{Value, json};
 use std::{cell::RefCell, path::PathBuf};
 
-// FR-156 contract tests. Access new fields through JSON so the baseline builds
-// and fails assertions for missing behavior rather than failing to compile.
-mod fr156 {
+// Response counts and context per request. The tests read report fields
+// through JSON, so a renamed or missing field fails an assertion that names
+// it, rather than failing the build.
+mod context_and_response_counts {
     use super::*;
 
     fn usage(input: Value) -> Value {
@@ -179,6 +180,104 @@ mod fr156 {
         unknown(c, "missing_input_fields");
         assert_eq!(r.total.unwrap().input, 100);
         assert_eq!(r.total.unwrap().output, 14);
+    }
+
+    /// The record Claude Code writes itself for an API error, as found in
+    /// local transcripts: a client UUID as `message.id`, model `<synthetic>`,
+    /// `isApiErrorMessage: true`, every counter an explicit zero and a
+    /// `cache_creation` sub-object. Interrupt records have the same message
+    /// but no `isApiErrorMessage`.
+    fn client_record(id: &str, api_error: bool) -> Value {
+        let mut v = json!({"type":"assistant","sessionId":"s",
+            "timestamp":"2026-01-01T00:00:01Z","uuid":id,
+            "message":{"id":id,"type":"message","role":"assistant","model":"<synthetic>",
+                "stop_reason":"stop_sequence","stop_sequence":"","content":[],
+                "usage":{"input_tokens":0,"output_tokens":0,
+                    "cache_creation_input_tokens":0,"cache_read_input_tokens":0,
+                    "cache_creation":{"ephemeral_5m_input_tokens":0,
+                        "ephemeral_1h_input_tokens":0},
+                    "server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},
+                    "service_tier":null,"output_tokens_details":null}}});
+        if api_error {
+            v["isApiErrorMessage"] = json!(true);
+            v["apiErrorStatus"] = json!(429);
+            v["error"] = json!("rate_limit");
+        }
+        v
+    }
+
+    #[test]
+    fn client_generated_records_are_neither_responses_nor_attempts() {
+        let real = native_usage("claude", "s", "msg_real", usage(json!(100)));
+        let baseline = public(&report("claude", std::slice::from_ref(&real)));
+        // An API error flagged only by `isApiErrorMessage` is dropped too.
+        let mut flagged = client_record("4b6f0c1e-0d7a-4d55-9a43-1f0f6b8f1a02", true);
+        flagged["message"]["model"] = json!("model");
+        let with_client = public(&report(
+            "claude",
+            &[
+                real,
+                client_record("9cbe036f-5d2b-4a1e-8f7c-3a6e2d9b0c11", true),
+                client_record("33a38de9-7e41-4c0b-b5d2-6f1a9c8e2d44", false),
+                flagged,
+            ],
+        ));
+        let c = context(&with_client, 0);
+        assert_eq!(c["input_tokens"], 130);
+        assert_eq!(c["observed_attempts"], 1);
+        assert_eq!(c["tokens_per_observed_attempt"], 130.0);
+        assert_eq!(c["unknown_reasons"], json!([]));
+        assert_eq!(with_client["identifier_backed_response_count"], 1);
+        assert_eq!(
+            with_client["sessions"][0]["identifier_backed_response_count"],
+            1
+        );
+        assert_eq!(with_client["models"][0]["observed_attempts"], 1);
+        // Nothing about the report changes: counts, context, totals, models,
+        // diagnostics, completeness and observation bounds.
+        assert_eq!(with_client, baseline);
+    }
+
+    #[test]
+    fn a_session_of_only_client_records_reports_no_observation_not_zero() {
+        let only = public(&report(
+            "claude",
+            &[
+                client_record("9cbe036f-5d2b-4a1e-8f7c-3a6e2d9b0c11", true),
+                client_record("33a38de9-7e41-4c0b-b5d2-6f1a9c8e2d44", false),
+            ],
+        ));
+        let c = context(&only, 0);
+        assert!(c["tokens_per_observed_attempt"].is_null(), "{c}");
+        assert!(c["input_tokens"].is_null(), "{c}");
+        assert!(c["observed_attempts"].is_null(), "{c}");
+        assert_eq!(only["identifier_backed_response_count"], 0);
+        assert!(only["total"].is_null());
+        // The same as a session whose log holds no records at all.
+        assert_eq!(only, public(&report("claude", &[])));
+    }
+
+    #[test]
+    fn counters_on_a_client_record_are_diagnosed_not_silently_dropped() {
+        for (field, value) in [
+            ("input_tokens", json!(5)),
+            ("output_tokens", json!(5)),
+            ("cache_read_input_tokens", json!("5")),
+        ] {
+            let mut record = client_record("9cbe036f-5d2b-4a1e-8f7c-3a6e2d9b0c11", true);
+            record["message"]["usage"][field] = value.clone();
+            let r = report(
+                "claude",
+                &[
+                    native_usage("claude", "s", "msg_real", usage(json!(100))),
+                    record,
+                ],
+            );
+            assert!(has(&r, "usage_on_client_generated_record"), "{field}");
+            assert!(!r.complete && !r.sessions[0].complete, "{field}");
+            assert_eq!(r.identifier_backed_response_count, 1, "{field}");
+            assert_eq!(r.total.unwrap().input, 100, "{field}: {value}");
+        }
     }
 
     #[test]
