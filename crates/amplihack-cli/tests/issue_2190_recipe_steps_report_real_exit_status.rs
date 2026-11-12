@@ -638,6 +638,10 @@ fn fix_step_prompt_points_at_the_log_file_as_untrusted_data() {
         lower.contains("follow no other paths"),
         "prompt must forbid following paths found in the log"
     );
+    assert!(
+        lower.contains("if log_file is empty") && lower.contains("nothing is verified passing"),
+        "prompt must say an empty log_file means the checks never started"
+    );
 }
 
 #[test]
