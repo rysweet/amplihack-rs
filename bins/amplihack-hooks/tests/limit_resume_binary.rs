@@ -18,9 +18,13 @@
 
 #![cfg(unix)]
 
+#[path = "../../../tests/support/isolated_hook.rs"]
+mod isolated_hook;
+
 use amplihack_hooks::limit_resume::RESUME_MSG;
 #[cfg(target_os = "linux")]
 use amplihack_utils::file_event::{Waiter, Watch, Woke};
+use isolated_hook::HookSandbox;
 use serde_json::{Value, json};
 use std::fs;
 use std::io::Write;
@@ -33,8 +37,10 @@ use std::time::{Duration, Instant};
 /// means the hook polled when it should have decided at once.
 const CHILD_LIMIT: Duration = Duration::from_secs(60);
 
+/// The hook runs in a [`HookSandbox`] (#2361); `home` and `root` are its
+/// `HOME` and profile root, and a test may point `root` elsewhere.
 struct Env {
-    _home: tempfile::TempDir,
+    sandbox: HookSandbox,
     home: PathBuf,
     root: PathBuf,
 }
@@ -50,13 +56,13 @@ fn private_file(p: &Path, bytes: &[u8]) {
 }
 
 fn env() -> Env {
-    let home = tempfile::tempdir().unwrap();
-    let h = home.path().to_path_buf();
+    let sandbox = HookSandbox::new();
+    let h = sandbox.home();
     fs::set_permissions(&h, fs::Permissions::from_mode(0o700)).unwrap();
-    let root = h.join("profiles-root");
+    let root = sandbox.profiles();
     private_dir(&root);
     Env {
-        _home: home,
+        sandbox,
         home: h,
         root,
     }
@@ -166,6 +172,13 @@ fn spawn(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (std::process::Child, I
 /// hook command. Where `/bin/sh` is dash, the shell does not `exec` the
 /// command, so the hook's parent is the short-lived shell, not the session
 /// (crusty, PR #2295 round 3).
+///
+/// Both forms are built by the [`HookSandbox`] (#2361). Its cleared
+/// environment carries no AMPLIHACK_CLAUDE_AUTO_SWITCH, TMUX or TMUX_PANE
+/// from the test process, and the shell passes on the environment it was
+/// given, so the hook sees the same environment either way. With no pane, a
+/// resume takes the exit-2 path and never sends keys to the terminal the
+/// tests run in.
 fn spawn_via(
     e: &Env,
     toggle: Option<&str>,
@@ -174,23 +187,16 @@ fn spawn_via(
 ) -> (std::process::Child, Instant) {
     let bin = env!("CARGO_BIN_EXE_amplihack-hooks");
     let mut cmd = if shell {
-        let mut c = Command::new("/bin/sh");
+        let mut c = e.sandbox.command("/bin/sh");
         c.args(["-c", &format!("\"{bin}\" limit-resume")]);
         c
     } else {
-        let mut c = Command::new(bin);
+        let mut c = e.sandbox.command(bin);
         c.arg("limit-resume");
         c
     };
-    cmd.current_dir(&e.home)
-        .env("HOME", &e.home)
-        .env("AMPLIHACK_HOME", e.home.join(".amplihack"))
+    cmd.env("HOME", &e.home)
         .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &e.root)
-        .env_remove("AMPLIHACK_CLAUDE_AUTO_SWITCH")
-        // No pane: a resume takes the exit-2 path and never sends keys to
-        // the terminal the tests run in.
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -419,7 +425,7 @@ fn auto_switch_off_is_silent_and_creates_nothing() {
 fn unresolvable_root_is_silent() {
     let e = env();
     let mut cmd_env = Env {
-        _home: tempfile::tempdir().unwrap(),
+        sandbox: HookSandbox::new(),
         home: e.home.clone(),
         root: PathBuf::from("relative/root"),
     };
@@ -561,7 +567,9 @@ fn unsafe_resume_dir_is_silent_and_untouched() {
 
 #[test]
 fn usage_text_lists_limit_resume() {
-    let out = Command::new(env!("CARGO_BIN_EXE_amplihack-hooks"))
+    let sandbox = HookSandbox::new();
+    let out = sandbox
+        .command(env!("CARGO_BIN_EXE_amplihack-hooks"))
         .arg("no-such-hook")
         .stdin(Stdio::null())
         .output()
