@@ -23,4 +23,7 @@ pub mod sessions_archive;
 pub mod socket_dir;
 pub mod test_path;
 pub mod unix_process;
+/// The fake clocks shared with the lib tests and the utils and hooks tests
+/// (issue #2019).
+pub mod virtual_clock;
 pub mod wait;
