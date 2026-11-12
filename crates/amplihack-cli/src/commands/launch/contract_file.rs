@@ -18,6 +18,7 @@ use super::system_prompt_append::{
 };
 
 use anyhow::{Context, Result, bail};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 /// Where the contract file lives, relative to the amplihack home.
@@ -59,16 +60,58 @@ fn is_rustyclawd_name(name: &str) -> bool {
     matches!(name, "rusty" | "rustyclawd")
 }
 
-/// The amplihack home that holds the contract file: `AMPLIHACK_HOME` if set
-/// and non-empty, otherwise `~/.amplihack`.
-pub(crate) fn contract_home() -> Result<PathBuf> {
-    if let Some(home) = std::env::var_os("AMPLIHACK_HOME").filter(|v| !v.is_empty()) {
-        return Ok(PathBuf::from(home));
+/// Choose the amplihack home that holds the contract file
+/// (`private/system-prompt-append.md`) from candidate values.
+///
+/// Returns `amplihack_home` when it is set, non-empty and
+/// `amplihack_home_is_checkout` is `false`. Otherwise returns
+/// `<home>/.amplihack`, and fails when `home` is unset or empty. A checkout
+/// is never chosen, so the contract file is never written into the `-w`
+/// checkout of a recipe run (#2361).
+///
+/// Only the directory choice lives here. The ownership checks, the 0700 and
+/// 0600 modes, `O_NOFOLLOW` and the newline and NUL rejection applied by the
+/// writer are unchanged, and apply to the `$HOME/.amplihack` fallback as
+/// well. Relative non-empty values are still accepted; see the follow-up
+/// issue linked from the #2361 PR.
+///
+/// Pure: reads neither the environment nor the file system.
+pub(crate) fn contract_home_from(
+    amplihack_home: Option<&OsStr>,
+    home: Option<&OsStr>,
+    amplihack_home_is_checkout: bool,
+) -> Result<PathBuf> {
+    if !amplihack_home_is_checkout && let Some(dir) = amplihack_home.filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(dir));
     }
-    let home = std::env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .context("cannot locate the amplihack home: neither AMPLIHACK_HOME nor HOME is set")?;
+    let home = home.filter(|v| !v.is_empty()).with_context(|| {
+        if amplihack_home_is_checkout {
+            "cannot locate the amplihack home: AMPLIHACK_HOME is a Git checkout, which never \
+             holds runtime state (#2361), and HOME is not set"
+        } else {
+            "cannot locate the amplihack home: neither AMPLIHACK_HOME nor HOME is set"
+        }
+    })?;
     Ok(PathBuf::from(home).join(".amplihack"))
+}
+
+/// The amplihack home that holds the contract file.
+///
+/// Reads `AMPLIHACK_HOME` and `HOME`, probes a non-empty `AMPLIHACK_HOME`
+/// with [`amplihack_types::is_git_checkout`] and applies
+/// [`contract_home_from`]: `AMPLIHACK_HOME` when it is not a Git checkout,
+/// otherwise `$HOME/.amplihack`. Fails when neither yields a directory.
+pub(crate) fn contract_home() -> Result<PathBuf> {
+    let amplihack_home = std::env::var_os("AMPLIHACK_HOME");
+    let is_checkout = amplihack_home
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .is_some_and(|v| amplihack_types::is_git_checkout(Path::new(v)));
+    contract_home_from(
+        amplihack_home.as_deref(),
+        std::env::var_os("HOME").as_deref(),
+        is_checkout,
+    )
 }
 
 /// The first `MAJOR.MINOR.PATCH` in `output`. A part that overflows `u32`

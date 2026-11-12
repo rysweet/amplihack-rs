@@ -1,7 +1,7 @@
 //! The state of a rotate cycle and of a watch process's retained readings.
 
 use super::super::cred_identity::{DEFAULT_READ, ReadFn};
-use super::super::fresh::RereadFn;
+use super::super::fresh::{RereadFn, live};
 use super::super::identify::Skip;
 use super::super::key_check::{self, KeyCheckFn};
 use super::super::ledger::RotateState;
@@ -36,6 +36,9 @@ pub struct Ctx {
     pub(in crate::commands::profile::rotate) measure: Option<MeasureFn>,
     /// Freshness re-read by the configured method; None reads nothing.
     pub(in crate::commands::profile::rotate) reread: Option<RereadFn>,
+    /// Issue #2211: re-read of the live login in `~/.claude`, never its
+    /// profile directory; None reads nothing.
+    pub(in crate::commands::profile::rotate) reread_live: Option<RereadFn>,
     /// Replaces a held cycle's spend-limit probe when set; only tests do.
     pub(in crate::commands::profile::rotate) probe_held: Option<super::super::held::HeldProbeFn>,
     /// Waits before step 6 reads the state again; tests act in it instead.
@@ -55,6 +58,12 @@ pub struct Ctx {
     pub(in crate::commands::profile::rotate) read_only: bool,
     /// The seed note this process last logged; a repeat is not logged.
     pub(in crate::commands::profile::rotate) last_seed_note: Option<String>,
+    /// Issue #2211: the live login's recent readings, kept across cycles.
+    pub(in crate::commands::profile::rotate) live_series: live::Series,
+    /// Issue #2211: this cycle's projected or substituted live figures.
+    pub(in crate::commands::profile::rotate) live_outlook: Option<live::Outlook>,
+    /// The clock of the decision; tests set a synthetic one.
+    pub(in crate::commands::profile::rotate) now: fn() -> i64,
 }
 
 impl Ctx {
@@ -73,6 +82,7 @@ impl Ctx {
             procs: ProcSource::system(),
             measure: None,
             reread: None,
+            reread_live: None,
             probe_held: None,
             pause: |_| std::thread::sleep(revalidate::REREAD_PAUSE),
             key_check: key_check::reachable,
@@ -82,7 +92,18 @@ impl Ctx {
             identity_budget: super::super::login_identity::Budget::new(),
             read_only: false,
             last_seed_note: None,
+            live_series: live::Series::default(),
+            live_outlook: None,
+            now: crate::commands::profile::auto_switch::kit::now,
         }
+    }
+
+    /// Installs the configured re-read hooks for the profile copies (issue
+    /// #1870) and for the live login (issue #2211).
+    pub(in crate::commands::profile::rotate) fn with_rereads(mut self) -> Self {
+        self.reread = Some(super::super::fresh::reread_as_configured);
+        self.reread_live = Some(super::super::fresh::reread_live_as_configured);
+        self
     }
 
     /// The probe mode a read-only run forces, whatever the environment says.

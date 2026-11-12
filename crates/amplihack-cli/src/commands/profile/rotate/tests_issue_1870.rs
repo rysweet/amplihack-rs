@@ -432,23 +432,32 @@ fn only_production_call_sites_wire_the_direct_reread() {
         c.reread.is_none(),
         "SR-10: Ctx::new reads nothing, so no test reaches a live read"
     );
+    let wired = c.with_rereads();
+    assert!(
+        wired.reread.is_some() && wired.reread_live.is_some(),
+        "Ctx::with_rereads installs both re-read hooks"
+    );
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/profile/rotate");
+    let code_has = |file: &str, needle: &str| {
+        let text = fs::read_to_string(dir.join(file)).unwrap();
+        text.lines()
+            .any(|l| l.split("//").next().unwrap_or_default().contains(needle))
+    };
+    assert!(
+        code_has("cycle_ctx.rs", "fresh::reread_as_configured)"),
+        "Ctx::with_rereads no longer wires fresh::reread_as_configured"
+    );
     // One-shot and --dry-run (mod.rs) and watch (daemon.rs). A switch
     // decides nothing, so it has no re-read.
     for file in ["mod.rs", "daemon.rs"] {
-        let text = fs::read_to_string(dir.join(file)).unwrap();
-        let wired = text.lines().any(|l| {
-            let code = l.split("//").next().unwrap_or_default();
-            code.contains(".reread = Some(") && code.contains("fresh::reread_as_configured)")
-        });
         assert!(
-            wired,
-            "rotate/{file} no longer wires fresh::reread_as_configured"
+            code_has(file, ".with_rereads()"),
+            "rotate/{file} no longer wires the configured re-reads"
         );
     }
     let switch = fs::read_to_string(dir.join("switch.rs")).unwrap();
     assert!(
-        !switch.contains("reread_as_configured"),
+        !switch.contains("reread_as_configured") && !switch.contains("with_rereads"),
         "a switch makes no decision, so it wires no re-read"
     );
 }

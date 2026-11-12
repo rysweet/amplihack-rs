@@ -41,7 +41,7 @@
 //! repository that contains the starting directory, and when no repository
 //! contains it only the starting directory itself is considered. A walk-up
 //! candidate must additionally look like an amplihack source tree
-//! ([`looks_like_amplihack_source`]) rather than merely carry a directory of
+//! ([`looks_like_amplihack_source_in`]) rather than merely carry a directory of
 //! the right shape. When a bundle-carrying ancestor *is* refused, resolution
 //! says so and names `amplihack install --local <path>`, the deliberate route
 //! to the same outcome.
@@ -298,12 +298,55 @@ impl FrameworkRootQuery {
     }
 }
 
-/// Does `dir` hold a repository marker?
+/// The three filesystem questions the walk asks (issue #2196). [`RealFs`]
+/// answers them from the disk; the tests answer them from a synthetic
+/// layout, so no walk-up test needs a real directory.
+trait FsView {
+    /// Does anything exist at `path` (following symlinks)?
+    fn exists(&self, path: &Path) -> bool;
+    /// Is `path` a directory (following symlinks)?
+    fn is_dir(&self, path: &Path) -> bool;
+    /// The first `limit` bytes of `path` when it is a regular file, not a
+    /// symlink to one (SEC-11); `None` otherwise or on any read error.
+    fn regular_file_head(&self, path: &Path, limit: u64) -> Option<Vec<u8>>;
+}
+
+/// The disk, through the calls the walk has always made.
+struct RealFs;
+
+impl FsView for RealFs {
+    fn exists(&self, path: &Path) -> bool {
+        path.exists()
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        path.is_dir()
+    }
+
+    fn regular_file_head(&self, path: &Path, limit: u64) -> Option<Vec<u8>> {
+        // SEC-11: only a regular file, so a FIFO in a directory the user is
+        // only standing in can't block a launch.
+        if !fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()) {
+            return None;
+        }
+        let file = fs::File::open(path).ok()?;
+        let mut head = Vec::new();
+        file.take(limit).read_to_end(&mut head).ok()?;
+        Some(head)
+    }
+}
+
+/// Does `dir` hold a repository marker, as `fs` sees it?
 ///
 /// `.git` is a directory in an ordinary clone and a *file* in a linked
 /// worktree or submodule, so both count.
-fn is_repository_root(dir: &Path) -> bool {
-    dir.join(".git").exists()
+fn is_repository_root(fs: &dyn FsView, dir: &Path) -> bool {
+    fs.exists(&dir.join(".git"))
+}
+
+/// Does `dir` carry an `amplifier-bundle/` directory, as `fs` sees it?
+fn has_bundle(fs: &dyn FsView, dir: &Path) -> bool {
+    fs.is_dir(&dir.join("amplifier-bundle"))
 }
 
 /// The directories a walk-up starting at `start` is allowed to consider,
@@ -314,11 +357,11 @@ fn is_repository_root(dir: &Path) -> bool {
 /// contains `start` — an unpacked tarball, a scratch directory — only `start`
 /// itself is considered, because there is no enclosing unit of "the thing the
 /// user is working on" to justify climbing further (issue #1275).
-fn walk_up_scope(start: &Path) -> Vec<PathBuf> {
+fn walk_up_scope(fs: &dyn FsView, start: &Path) -> Vec<PathBuf> {
     let mut scope = Vec::new();
     for dir in start.ancestors() {
         scope.push(dir.to_path_buf());
-        if is_repository_root(dir) {
+        if is_repository_root(fs, dir) {
             return scope;
         }
     }
@@ -326,34 +369,19 @@ fn walk_up_scope(start: &Path) -> Vec<PathBuf> {
     scope
 }
 
-/// Does `dir` look like an amplihack framework source tree?
+/// Does `dir` look like an amplihack framework source tree, as `fs` sees it?
 ///
 /// Carrying an `amplifier-bundle/` is a shape check that any directory can
 /// satisfy; this asks the narrower question the walk-up actually cares about.
 /// A complete framework checkout ships `.claude/`, and the amplihack-rs cargo
-/// workspace root names `crates/amplihack-cli` in its `Cargo.toml`.
-fn looks_like_amplihack_source(dir: &Path) -> bool {
-    if dir.join(".claude").is_dir() {
+/// workspace root names `crates/amplihack-cli` in its `Cargo.toml`, of which
+/// at most [`CARGO_TOML_SNIFF_LIMIT`] bytes are read.
+fn looks_like_amplihack_source_in(fs: &dyn FsView, dir: &Path) -> bool {
+    if fs.is_dir(&dir.join(".claude")) {
         return true;
     }
-    // SEC-11: only a regular file, so a FIFO in a directory the user is only
-    // standing in can't block a launch.
-    let cargo_toml = dir.join("Cargo.toml");
-    if !fs::symlink_metadata(&cargo_toml).is_ok_and(|meta| meta.is_file()) {
-        return false;
-    }
-    let Ok(file) = fs::File::open(&cargo_toml) else {
-        return false;
-    };
-    let mut head = Vec::new();
-    if file
-        .take(CARGO_TOML_SNIFF_LIMIT)
-        .read_to_end(&mut head)
-        .is_err()
-    {
-        return false;
-    }
-    String::from_utf8_lossy(&head).contains(AMPLIHACK_WORKSPACE_MARKER)
+    fs.regular_file_head(&dir.join("Cargo.toml"), CARGO_TOML_SNIFF_LIMIT)
+        .is_some_and(|head| String::from_utf8_lossy(&head).contains(AMPLIHACK_WORKSPACE_MARKER))
 }
 
 /// The version gate, applied to each candidate that passes validation.
@@ -363,6 +391,7 @@ type CandidateGate<'a> = dyn Fn(&Path, FrameworkRootOrigin) -> CandidateVerdict 
 struct CandidateChecks<'a> {
     validate: &'a dyn Fn(&Path) -> Result<(), String>,
     gate: &'a CandidateGate<'a>,
+    fs: &'a dyn FsView,
     notes: Vec<ResolutionNote>,
 }
 
@@ -377,7 +406,7 @@ impl CandidateChecks<'_> {
         candidate: &Path,
         origin: FrameworkRootOrigin,
     ) -> Result<Option<SourceVersion>, SourceRefused> {
-        if !candidate.join("amplifier-bundle").is_dir() {
+        if !has_bundle(self.fs, candidate) {
             return Ok(None);
         }
         if let Err(error) = (self.validate)(candidate) {
@@ -410,12 +439,12 @@ impl CandidateChecks<'_> {
         origin: FrameworkRootOrigin,
         report_out_of_scope: bool,
     ) -> Result<Option<(PathBuf, SourceVersion)>, SourceRefused> {
-        let scope = walk_up_scope(start);
+        let scope = walk_up_scope(self.fs, start);
         for dir in &scope {
-            if !dir.join("amplifier-bundle").is_dir() {
+            if !has_bundle(self.fs, dir) {
                 continue;
             }
-            if !looks_like_amplihack_source(dir) {
+            if !looks_like_amplihack_source_in(self.fs, dir) {
                 self.notes
                     .push(ResolutionNote::NotAmplihackSource { path: dir.clone() });
                 continue;
@@ -430,7 +459,7 @@ impl CandidateChecks<'_> {
             && let Some(out_of_scope) = boundary
                 .ancestors()
                 .skip(1)
-                .find(|dir| dir.join("amplifier-bundle").is_dir())
+                .find(|dir| has_bundle(self.fs, dir))
         {
             self.notes.push(ResolutionNote::OutsideStartingRepository {
                 path: out_of_scope.to_path_buf(),
@@ -508,9 +537,21 @@ pub(super) fn resolve_framework_root_gated(
     validate: &dyn Fn(&Path) -> Result<(), String>,
     gate: &CandidateGate<'_>,
 ) -> FrameworkRootResolution {
+    resolve_with_fs(query, validate, gate, &RealFs)
+}
+
+/// [`resolve_framework_root_gated`] with the walk's filesystem view passed
+/// in as `fs`. Step 5's `.claude` check stays on disk.
+fn resolve_with_fs(
+    query: &FrameworkRootQuery,
+    validate: &dyn Fn(&Path) -> Result<(), String>,
+    gate: &CandidateGate<'_>,
+    fs: &dyn FsView,
+) -> FrameworkRootResolution {
     let mut checks = CandidateChecks {
         validate,
         gate,
+        fs,
         notes: Vec::new(),
     };
     let outcome = checks.walk_candidates(query);
@@ -811,6 +852,7 @@ mod tests {
     use super::*;
     #[cfg(unix)]
     use crate::commands::profile::ROOT_ENV;
+    use std::collections::BTreeMap;
 
     /// Accept everything: isolates the *ordering and bound* under test from
     /// the (separately tested) bundle compatibility rules.
@@ -832,10 +874,6 @@ mod tests {
         dir.to_path_buf()
     }
 
-    fn git_dir(dir: &Path) {
-        fs::create_dir_all(dir.join(".git")).unwrap();
-    }
-
     fn cwd_query(cwd: &Path) -> FrameworkRootQuery {
         FrameworkRootQuery {
             current_dir: Some(cwd.to_path_buf()),
@@ -851,45 +889,147 @@ mod tests {
             .join("\n")
     }
 
+    // Issue #2196: the walk tests run over a synthetic filesystem. `Layout`
+    // implements `FsView` from a map of entries, so nothing here reads the
+    // disk, and the result does not depend on what exists at `/tmp/.git` or
+    // above `TMPDIR`. The walk asks it the same three questions it asks `RealFs`. Paths are
+    // lexical (`/w/...`), no ancestor is implied by an entry, and `home`
+    // stays `None` so step 5's on-disk `.claude` check is never run.
+
+    /// One synthetic filesystem entry.
+    #[derive(Debug, Clone)]
+    enum Entry {
+        Dir,
+        File(Vec<u8>),
+        /// Anything that is neither: a FIFO, a socket, a device.
+        Other,
+    }
+
+    /// A synthetic filesystem: exactly the entries inserted, nothing more.
+    #[derive(Default)]
+    struct Layout(BTreeMap<PathBuf, Entry>);
+
+    impl FsView for Layout {
+        fn exists(&self, path: &Path) -> bool {
+            self.0.contains_key(path)
+        }
+
+        fn is_dir(&self, path: &Path) -> bool {
+            matches!(self.0.get(path), Some(Entry::Dir))
+        }
+
+        fn regular_file_head(&self, path: &Path, limit: u64) -> Option<Vec<u8>> {
+            match self.0.get(path) {
+                Some(Entry::File(bytes)) => {
+                    let end = bytes
+                        .len()
+                        .min(usize::try_from(limit).unwrap_or(usize::MAX));
+                    Some(bytes[..end].to_vec())
+                }
+                _ => None,
+            }
+        }
+    }
+
+    impl Layout {
+        fn entry(mut self, path: &str, entry: Entry) -> Self {
+            self.0.insert(PathBuf::from(path), entry);
+            self
+        }
+
+        fn dir(self, path: &str) -> Self {
+            self.entry(path, Entry::Dir)
+        }
+
+        fn file(self, path: &str, bytes: &[u8]) -> Self {
+            self.entry(path, Entry::File(bytes.to_vec()))
+        }
+
+        fn other(self, path: &str) -> Self {
+            self.entry(path, Entry::Other)
+        }
+
+        /// A `.git` directory in `dir` (an ordinary clone).
+        fn repo(self, dir: &str) -> Self {
+            self.dir(&format!("{dir}/.git"))
+        }
+
+        /// A `.git` file in `dir` (a linked worktree or submodule).
+        fn worktree(self, dir: &str) -> Self {
+            self.file(
+                &format!("{dir}/.git"),
+                b"gitdir: /elsewhere/.git/worktrees/wt\n",
+            )
+        }
+
+        /// An `amplifier-bundle/` and nothing else.
+        fn bundle(self, dir: &str) -> Self {
+            self.dir(&format!("{dir}/amplifier-bundle"))
+        }
+
+        /// A bundle in a directory that ships `.claude/`.
+        fn source(self, dir: &str) -> Self {
+            self.bundle(dir).dir(&format!("{dir}/.claude"))
+        }
+    }
+
+    /// The amplihack-rs workspace manifest, as the sniff reads it.
+    const WORKSPACE_TOML: &[u8] = b"[workspace]\nmembers = [\"crates/amplihack-cli\"]\n";
+
+    fn resolve_in(layout: &Layout, query: &FrameworkRootQuery) -> FrameworkRootResolution {
+        resolve_with_fs(
+            query,
+            &accept_all,
+            &|_, _| CandidateVerdict::Accept(SourceVersion::Unknown),
+            layout,
+        )
+    }
+
+    fn cwd(path: &str) -> FrameworkRootQuery {
+        cwd_query(Path::new(path))
+    }
+
+    fn found(root: &str, origin: FrameworkRootOrigin) -> Option<ResolvedFrameworkRoot> {
+        Some(ResolvedFrameworkRoot {
+            root: PathBuf::from(root),
+            origin,
+        })
+    }
+
     #[test]
     fn walk_up_finds_the_checkout_that_contains_the_current_directory() {
-        // Fix #341's workflow: `amplihack install` run from deep inside the
-        // clone must stage from that clone.
-        let temp = crate::test_support::tempdir_outside_framework_roots();
-        let repo = temp.path().join("amplihack-rs");
-        amplihack_source(&repo);
-        git_dir(&repo);
-        let cwd = repo.join("crates").join("amplihack-cli");
-        fs::create_dir_all(&cwd).unwrap();
+        // Fix #341: `amplihack install` run from deep inside the clone must
+        // stage from that clone.
+        let layout = Layout::default()
+            .repo("/w/amplihack-rs")
+            .source("/w/amplihack-rs");
 
-        let resolution = resolve_framework_root(&cwd_query(&cwd), &accept_all);
+        let resolution = resolve_in(&layout, &cwd("/w/amplihack-rs/crates/amplihack-cli"));
 
         assert_eq!(
             resolution.resolved,
-            Some(ResolvedFrameworkRoot {
-                root: repo,
-                origin: FrameworkRootOrigin::CurrentDirectory,
-            }),
-            "the enclosing checkout must still win (fix #341)"
+            found("/w/amplihack-rs", FrameworkRootOrigin::CurrentDirectory),
+            "the enclosing checkout must win (fix #341)"
         );
         assert!(resolution.notes.is_empty(), "{:?}", resolution.notes);
+
+        // Negative check: without the repository's bundle there is nothing
+        // to find.
+        let bare = Layout::default().repo("/w/amplihack-rs");
+        let resolution = resolve_in(&bare, &cwd("/w/amplihack-rs/crates/amplihack-cli"));
+        assert_eq!(resolution.resolved, None);
     }
 
     #[test]
     fn a_bundle_in_an_ancestor_outside_the_repository_is_refused_and_reported() {
-        // Issue #1275: the hostile shape. `~/src` carries a perfectly
-        // well-formed amplihack source tree; the user is working in an
-        // unrelated repository underneath it. The old walk-up staged from
-        // `~/src`; nothing about the user's cwd asked for that.
-        let temp = crate::test_support::tempdir_outside_framework_roots();
-        let ancestor = temp.path().join("src");
-        amplihack_source(&ancestor);
-        let project = ancestor.join("unrelated-project");
-        git_dir(&project);
-        let cwd = project.join("lib");
-        fs::create_dir_all(&cwd).unwrap();
+        // Issue #1275: `/w/src` holds an amplihack source tree, and the user
+        // works in an unrelated repository below it.
+        let layout = Layout::default()
+            .source("/w/src")
+            .repo("/w/src/unrelated-project");
+        let start = "/w/src/unrelated-project/lib";
 
-        let resolution = resolve_framework_root(&cwd_query(&cwd), &accept_all);
+        let resolution = resolve_in(&layout, &cwd(start));
 
         assert_eq!(
             resolution.resolved, None,
@@ -898,36 +1038,31 @@ mod tests {
         assert_eq!(
             resolution.notes,
             vec![ResolutionNote::OutsideStartingRepository {
-                path: ancestor.clone(),
-                start: cwd,
+                path: PathBuf::from("/w/src"),
+                start: PathBuf::from(start),
             }]
         );
         let text = rendered(&resolution.notes);
         assert!(
-            text.contains(&ancestor.display().to_string()) && text.contains("install --local"),
+            text.contains("/w/src") && text.contains("install --local"),
             "the refusal must name the directory and the deliberate route: {text}"
         );
     }
 
     #[test]
     fn without_an_enclosing_repository_only_the_starting_directory_is_considered() {
-        // An unpacked tarball has no `.git`. Installing from inside it still
-        // works (this is the shape `bugfix_341_install_freshness` builds), but
-        // it does not license a climb towards `$HOME`.
-        let temp = crate::test_support::tempdir_outside_framework_roots();
-        let checkout = temp.path().join("checkout");
-        amplihack_source(&checkout);
-        let nested = checkout.join("docs");
-        fs::create_dir_all(&nested).unwrap();
+        // An unpacked tarball has no `.git`. Installing from inside it works,
+        // but it does not license a climb towards `$HOME`.
+        let layout = Layout::default().source("/w/checkout");
 
-        let from_root = resolve_framework_root(&cwd_query(&checkout), &accept_all);
+        let from_root = resolve_in(&layout, &cwd("/w/checkout"));
         assert_eq!(
-            from_root.resolved.map(|r| r.root),
-            Some(checkout.clone()),
+            from_root.resolved,
+            found("/w/checkout", FrameworkRootOrigin::CurrentDirectory),
             "standing in the unpacked checkout must resolve to it"
         );
 
-        let from_nested = resolve_framework_root(&cwd_query(&nested), &accept_all);
+        let from_nested = resolve_in(&layout, &cwd("/w/checkout/docs"));
         assert_eq!(
             from_nested.resolved, None,
             "with no repository to bound the walk, only the start directory counts"
@@ -935,85 +1070,310 @@ mod tests {
         assert_eq!(
             from_nested.notes,
             vec![ResolutionNote::OutsideStartingRepository {
-                path: checkout,
-                start: nested,
+                path: PathBuf::from("/w/checkout"),
+                start: PathBuf::from("/w/checkout/docs"),
             }]
         );
     }
 
     #[test]
-    fn a_scratch_directory_has_no_repository_marker_above_it() {
-        // Issue #1937: a stray `.git` in the scratch parent (for example
-        // `/tmp/.git`, written by a fixture that inherited a hook's GIT_DIR)
-        // makes every walk-up that starts below it stop there. The walk-up
-        // tests above all build their fixtures in a scratch directory, so the
-        // scope of a fresh one must be that directory alone.
-        let temp = crate::test_support::tempdir_outside_framework_roots();
-
+    fn the_walk_scope_ends_at_the_first_repository_marker() {
+        let layout = Layout::default().repo("/w").repo("/w/repo");
         assert_eq!(
-            walk_up_scope(temp.path()),
-            vec![temp.path().to_path_buf()],
-            "a repository marker above the scratch directory {} was found by the walk-up; \
-             remove the stray .git from its ancestors",
-            temp.path().display()
+            walk_up_scope(&layout, Path::new("/w/repo/a/b")),
+            ["/w/repo/a/b", "/w/repo/a", "/w/repo"].map(PathBuf::from),
+        );
+        let none = Layout::default();
+        assert_eq!(
+            walk_up_scope(&none, Path::new("/w/repo/a")),
+            [PathBuf::from("/w/repo/a")],
+            "with no marker the scope is the start directory alone"
         );
     }
 
     #[test]
     fn a_directory_that_merely_carries_a_bundle_is_not_an_install_source() {
-        // The shape check alone cannot tell an amplihack checkout from any
-        // project that happens to vendor a directory of the same shape.
-        let temp = crate::test_support::tempdir_outside_framework_roots();
-        let repo = temp.path().join("some-project");
-        bundle_only(&repo);
-        git_dir(&repo);
+        // The shape check alone cannot tell an amplihack checkout from a
+        // project that vendors a directory of the same shape (#341).
+        let layout = Layout::default()
+            .repo("/w/some-project")
+            .bundle("/w/some-project");
 
-        let resolution = resolve_framework_root(&cwd_query(&repo), &accept_all);
+        let resolution = resolve_in(&layout, &cwd("/w/some-project"));
 
         assert_eq!(resolution.resolved, None);
         assert_eq!(
             resolution.notes,
-            vec![ResolutionNote::NotAmplihackSource { path: repo.clone() }]
+            vec![ResolutionNote::NotAmplihackSource {
+                path: PathBuf::from("/w/some-project")
+            }]
         );
 
-        // The cargo workspace root is the other recognised shape.
-        fs::write(
-            repo.join("Cargo.toml"),
-            "[workspace]\nmembers = [\"crates/amplihack-cli\"]\n",
-        )
-        .unwrap();
-        let resolution = resolve_framework_root(&cwd_query(&repo), &accept_all);
+        // The amplihack-rs workspace manifest makes it a source tree.
+        let workspace = Layout::default()
+            .repo("/w/some-project")
+            .bundle("/w/some-project")
+            .file("/w/some-project/Cargo.toml", WORKSPACE_TOML);
+        let resolution = resolve_in(&workspace, &cwd("/w/some-project"));
         assert_eq!(
-            resolution.resolved.map(|r| r.root),
-            Some(repo),
-            "the amplihack cargo workspace root must be recognised"
+            resolution.resolved,
+            found("/w/some-project", FrameworkRootOrigin::CurrentDirectory),
+            "an amplihack source tree with a bundle is accepted"
+        );
+
+        // SEC-11: a `Cargo.toml` that is not a regular file (a FIFO) is
+        // refused unread, and the directory is reported, not staged.
+        let fifo = Layout::default()
+            .repo("/w/some-project")
+            .bundle("/w/some-project")
+            .other("/w/some-project/Cargo.toml");
+        let resolution = resolve_in(&fifo, &cwd("/w/some-project"));
+        assert_eq!(resolution.resolved, None);
+        assert_eq!(
+            resolution.notes,
+            vec![ResolutionNote::NotAmplihackSource {
+                path: PathBuf::from("/w/some-project")
+            }]
         );
     }
 
     #[test]
     fn a_git_file_marks_a_worktree_root() {
-        // Linked worktrees and submodules carry `.git` as a file, not a
-        // directory. Getting that wrong would silently unbound the walk.
-        let temp = crate::test_support::tempdir_outside_framework_roots();
-        let ancestor = temp.path().join("src");
-        amplihack_source(&ancestor);
-        let worktree = ancestor.join("wt-1275");
-        amplihack_source(&worktree);
-        fs::write(
-            worktree.join(".git"),
-            "gitdir: /elsewhere/.git/worktrees/wt\n",
-        )
-        .unwrap();
-        let cwd = worktree.join("crates");
-        fs::create_dir_all(&cwd).unwrap();
+        // A linked worktree's `.git` is a file, not a directory. The walk
+        // must count it as the repository marker and stop there, not climb
+        // to the source tree above it.
+        let layout = Layout::default()
+            .source("/w/src")
+            .source("/w/src/wt-1275")
+            .worktree("/w/src/wt-1275");
 
-        let resolution = resolve_framework_root(&cwd_query(&cwd), &accept_all);
+        let resolution = resolve_in(&layout, &cwd("/w/src/wt-1275/crates"));
 
         assert_eq!(
-            resolution.resolved.map(|r| r.root),
-            Some(worktree),
+            resolution.resolved,
+            found("/w/src/wt-1275", FrameworkRootOrigin::CurrentDirectory),
             "the worktree, not the directory above it, is the bound"
         );
+    }
+
+    #[test]
+    fn the_executable_walk_up_stays_inside_its_own_checkout() {
+        let exe = |path: &str| FrameworkRootQuery {
+            current_exe: Some(PathBuf::from(path)),
+            ..FrameworkRootQuery::default()
+        };
+
+        // In-tree dev binary: `<repo>/target/debug/amplihack` finds its repo.
+        let layout = Layout::default()
+            .repo("/w/amplihack-rs")
+            .source("/w/amplihack-rs");
+        let resolution = resolve_in(&layout, &exe("/w/amplihack-rs/target/debug/amplihack"));
+        assert_eq!(
+            resolution.resolved,
+            found("/w/amplihack-rs", FrameworkRootOrigin::ExecutableParent)
+        );
+
+        // Installed binary: `~/.local/bin/amplihack` must not climb to a
+        // source tree in the home directory above it, and says nothing.
+        let layout = Layout::default().source("/w/home");
+        let resolution = resolve_in(&layout, &exe("/w/home/.local/bin/amplihack"));
+        assert_eq!(
+            resolution.resolved, None,
+            "an installed binary has no enclosing checkout to walk"
+        );
+        assert!(
+            resolution.notes.is_empty(),
+            "the executable walk-up has no `--local` advice to give: {:?}",
+            resolution.notes
+        );
+    }
+
+    #[test]
+    fn the_current_checkout_outranks_the_compile_time_workspace() {
+        // Fix #341: a binary built elsewhere must not pin the bundle to what
+        // was on disk at build time. `walk_up_finds…` sets no compile-time
+        // root, so this ordering is covered here only.
+        let layout = Layout::default()
+            .source("/w/build-host")
+            .repo("/w/amplihack-rs")
+            .source("/w/amplihack-rs");
+        let query = FrameworkRootQuery {
+            current_dir: Some(PathBuf::from("/w/amplihack-rs")),
+            compile_time_workspace_root: Some(PathBuf::from("/w/build-host")),
+            ..FrameworkRootQuery::default()
+        };
+
+        let resolution = resolve_in(&layout, &query);
+        assert_eq!(
+            resolution.resolved,
+            found("/w/amplihack-rs", FrameworkRootOrigin::CurrentDirectory)
+        );
+
+        // Negative check: with no checkout at the current directory, the
+        // compile-time workspace is the answer.
+        let layout = Layout::default().source("/w/build-host");
+        let resolution = resolve_in(&layout, &query);
+        assert_eq!(
+            resolution.resolved,
+            found(
+                "/w/build-host",
+                FrameworkRootOrigin::CompileTimeWorkspaceRoot
+            )
+        );
+    }
+
+    #[test]
+    fn the_source_check_is_asked_only_of_a_directory_with_a_bundle() {
+        // SR-7: the walk is lazy, as the disk calls were. The source check
+        // (`.claude`, then the Cargo.toml sniff) runs only where a bundle is.
+        struct Recording<'a>(&'a Layout, std::cell::RefCell<Vec<PathBuf>>);
+        impl FsView for Recording<'_> {
+            fn exists(&self, path: &Path) -> bool {
+                self.1.borrow_mut().push(path.to_path_buf());
+                self.0.exists(path)
+            }
+            fn is_dir(&self, path: &Path) -> bool {
+                self.1.borrow_mut().push(path.to_path_buf());
+                self.0.is_dir(path)
+            }
+            fn regular_file_head(&self, path: &Path, limit: u64) -> Option<Vec<u8>> {
+                self.1.borrow_mut().push(path.to_path_buf());
+                self.0.regular_file_head(path, limit)
+            }
+        }
+        let layout = Layout::default()
+            .repo("/w/repo")
+            .source("/w/repo")
+            .bundle("/w");
+        let recording = Recording(&layout, std::cell::RefCell::default());
+        let resolution = resolve_with_fs(
+            &cwd("/w/repo/a"),
+            &accept_all,
+            &|_, _| CandidateVerdict::Accept(SourceVersion::Unknown),
+            &recording,
+        );
+        assert_eq!(
+            resolution.resolved,
+            found("/w/repo", FrameworkRootOrigin::CurrentDirectory)
+        );
+        let asked = recording.1.into_inner();
+        let source_checks: Vec<_> = asked
+            .iter()
+            .filter(|p| p.ends_with(".claude") || p.ends_with("Cargo.toml"))
+            .collect();
+        assert_eq!(source_checks, [Path::new("/w/repo/.claude")], "{asked:?}");
+        assert!(
+            !asked
+                .iter()
+                .any(|p| p.parent() == Some(Path::new("/w")) || p.parent() == Some(Path::new("/"))),
+            "an accepted walk asks nothing above its repository: {asked:?}"
+        );
+    }
+
+    // The predicates are the code the walk runs over `RealFs`. These tests
+    // drive them through `Layout`, so the checks are exercised without the
+    // disk; `regular_file_head_stops_at_the_limit`
+    // is the one test of `RealFs` itself.
+
+    #[test]
+    fn a_git_file_and_a_git_directory_both_mark_a_repository() {
+        let none = Layout::default().dir("/w");
+        assert!(!is_repository_root(&none, Path::new("/w")));
+
+        let worktree = Layout::default().worktree("/w");
+        assert!(is_repository_root(&worktree, Path::new("/w")), ".git file");
+
+        let clone = Layout::default().repo("/w");
+        assert!(
+            is_repository_root(&clone, Path::new("/w")),
+            ".git directory"
+        );
+    }
+
+    #[test]
+    fn only_a_directory_counts_as_a_bundle() {
+        let file = Layout::default().file("/w/amplifier-bundle", b"");
+        assert!(
+            !has_bundle(&file, Path::new("/w")),
+            "a file named amplifier-bundle is not a bundle"
+        );
+        let other = Layout::default().other("/w/amplifier-bundle");
+        assert!(!has_bundle(&other, Path::new("/w")));
+        let dir = Layout::default().bundle("/w");
+        assert!(has_bundle(&dir, Path::new("/w")));
+    }
+
+    #[test]
+    fn the_source_check_sniffs_the_cargo_workspace_or_a_claude_directory() {
+        let w = Path::new("/w");
+        assert!(!looks_like_amplihack_source_in(&Layout::default(), w));
+
+        let other_workspace =
+            Layout::default().file("/w/Cargo.toml", b"[workspace]\nmembers = []\n");
+        assert!(
+            !looks_like_amplihack_source_in(&other_workspace, w),
+            "a workspace that does not name crates/amplihack-cli"
+        );
+
+        let workspace = Layout::default().file("/w/Cargo.toml", WORKSPACE_TOML);
+        assert!(looks_like_amplihack_source_in(&workspace, w));
+
+        let claude = Layout::default().dir("/w/.claude");
+        assert!(looks_like_amplihack_source_in(&claude, w));
+
+        let claude_file = Layout::default().file("/w/.claude", b"");
+        assert!(
+            !looks_like_amplihack_source_in(&claude_file, w),
+            "a file named .claude is not a framework checkout"
+        );
+    }
+
+    #[test]
+    fn a_cargo_toml_that_is_not_a_regular_file_is_never_read() {
+        // SEC-11: a FIFO named Cargo.toml in a directory the user only
+        // stands in must not block a launch, so it is refused unread.
+        let fifo = Layout::default().other("/w/Cargo.toml");
+        assert!(!looks_like_amplihack_source_in(&fifo, Path::new("/w")));
+        let dir = Layout::default().dir("/w/Cargo.toml");
+        assert!(!looks_like_amplihack_source_in(&dir, Path::new("/w")));
+    }
+
+    #[test]
+    fn the_sniff_reads_no_further_than_its_limit() {
+        // The marker lies past the cap, so the capped head cannot hold it.
+        let limit = usize::try_from(CARGO_TOML_SNIFF_LIMIT).unwrap();
+        let mut late = vec![b'#'; limit];
+        late.extend_from_slice(WORKSPACE_TOML);
+        let layout = Layout::default().file("/w/Cargo.toml", &late);
+        assert!(!looks_like_amplihack_source_in(&layout, Path::new("/w")));
+    }
+
+    #[test]
+    fn regular_file_head_stops_at_the_limit() {
+        // The one walk-related test that touches the disk: it exercises
+        // `RealFs` on one file in a scratch directory and walks nowhere.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cargo.toml");
+        fs::write(&path, vec![b'x'; 100]).unwrap();
+        assert_eq!(RealFs.regular_file_head(&path, 10), Some(vec![b'x'; 10]));
+        assert_eq!(
+            RealFs.regular_file_head(&path, 1_000).map(|h| h.len()),
+            Some(100)
+        );
+        assert_eq!(
+            RealFs.regular_file_head(dir.path(), 10),
+            None,
+            "a directory is not a regular file"
+        );
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert_eq!(
+            RealFs.regular_file_head(&link, 10),
+            None,
+            "a symlink is refused before it is opened (SEC-11)"
+        );
+        assert!(RealFs.exists(&path) && !RealFs.is_dir(&path));
+        assert!(RealFs.is_dir(dir.path()));
     }
 
     #[test]
@@ -1063,56 +1423,6 @@ mod tests {
     }
 
     #[test]
-    fn the_executable_walk_up_stays_inside_its_own_checkout() {
-        let temp = crate::test_support::tempdir_outside_framework_roots();
-
-        // In-tree dev binary: `<repo>/target/debug/amplihack` must still find
-        // the repo it was built in.
-        let repo = temp.path().join("amplihack-rs");
-        amplihack_source(&repo);
-        git_dir(&repo);
-        let exe = repo.join("target").join("debug").join("amplihack");
-        fs::create_dir_all(exe.parent().unwrap()).unwrap();
-        let resolution = resolve_framework_root(
-            &FrameworkRootQuery {
-                current_exe: Some(exe),
-                ..FrameworkRootQuery::default()
-            },
-            &accept_all,
-        );
-        assert_eq!(
-            resolution.resolved,
-            Some(ResolvedFrameworkRoot {
-                root: repo,
-                origin: FrameworkRootOrigin::ExecutableParent,
-            })
-        );
-
-        // Installed binary: `~/.local/bin/amplihack` must not climb to a
-        // bundle sitting in the home directory above it.
-        let home = temp.path().join("home");
-        amplihack_source(&home);
-        let installed = home.join(".local").join("bin").join("amplihack");
-        fs::create_dir_all(installed.parent().unwrap()).unwrap();
-        let resolution = resolve_framework_root(
-            &FrameworkRootQuery {
-                current_exe: Some(installed),
-                ..FrameworkRootQuery::default()
-            },
-            &accept_all,
-        );
-        assert_eq!(
-            resolution.resolved, None,
-            "an installed binary has no enclosing checkout to walk"
-        );
-        assert!(
-            resolution.notes.is_empty(),
-            "the executable walk-up has no `--local` advice to give: {:?}",
-            resolution.notes
-        );
-    }
-
-    #[test]
     fn a_prior_staged_install_is_the_last_local_step() {
         let temp = crate::test_support::tempdir_outside_framework_roots();
         let home = temp.path().join("home");
@@ -1132,34 +1442,6 @@ mod tests {
             Some(ResolvedFrameworkRoot {
                 root: staged,
                 origin: FrameworkRootOrigin::PriorStagedInstall,
-            })
-        );
-    }
-
-    #[test]
-    fn the_current_checkout_outranks_the_compile_time_workspace() {
-        // Fix #341 in one assertion: a binary built elsewhere must not pin the
-        // bundle to whatever was on disk at build time.
-        let temp = crate::test_support::tempdir_outside_framework_roots();
-        let built_from = amplihack_source(&temp.path().join("build-host"));
-        let repo = temp.path().join("amplihack-rs");
-        amplihack_source(&repo);
-        git_dir(&repo);
-
-        let resolution = resolve_framework_root(
-            &FrameworkRootQuery {
-                current_dir: Some(repo.clone()),
-                compile_time_workspace_root: Some(built_from),
-                ..FrameworkRootQuery::default()
-            },
-            &accept_all,
-        );
-
-        assert_eq!(
-            resolution.resolved,
-            Some(ResolvedFrameworkRoot {
-                root: repo,
-                origin: FrameworkRootOrigin::CurrentDirectory,
             })
         );
     }

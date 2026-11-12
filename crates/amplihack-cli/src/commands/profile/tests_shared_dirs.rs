@@ -1500,12 +1500,25 @@ fn ensure_for_without_a_home_does_nothing() {
 #[cfg(target_os = "linux")]
 #[test]
 fn ensure_for_migrates_a_profile_no_process_is_using() {
+    // The liveness scan reads this test's synthetic process table (issue
+    // #2196), which holds no session.
+    let proc = crate::test_support::proc::fake_proc_scope();
     let f = Fx::new();
     f.legacy("A", "projects/-w/s1.jsonl", b"x");
     shared_dirs::ensure_for(&shared_store(&f), &n("A"));
     f.assert_linked("A", "projects");
     assert!(f.canon.join("projects/-w/s1.jsonl").is_file());
     assert_no_credentials_under(&f.canon);
+
+    // Negative check: a session running in A defers the same migration.
+    let busy = Fx::new();
+    busy.legacy("A", "projects/-w/s1.jsonl", b"x");
+    proc.running_session(crate::test_support::proc::FAKE_PID_BASE + 1, &busy.dir("A"));
+    shared_dirs::ensure_for(&shared_store(&busy), &n("A"));
+    assert!(
+        is_real_dir(&busy.dir("A").join("projects")),
+        "a profile in use keeps its own projects directory"
+    );
 }
 
 #[test]

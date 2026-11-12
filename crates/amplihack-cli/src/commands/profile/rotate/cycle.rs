@@ -153,6 +153,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     // Steps 4 and 5: measure without the lock, then decide. `claude` is
     // looked for only when a read falls back to it (issue #1844).
     let measuring = std::time::Instant::now();
+    ctx.live_outlook = None;
     let m = match ctx.measure {
         Some(stub) => stub(ctx, &first)?,
         None => measure_and_decide(ctx, &first)?,
@@ -163,7 +164,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         now(),
         &msg::cycle(name, &live_shown, &others_shown, platform),
     );
-    // Issue #1870: before `failed_live` moves on, so it is counted once.
+    // Issues #2211, #1870: before `failed_live` moves on, so it is counted once.
+    let m = fresh::live::step(ctx, &first, m)?;
     let m = fresh::gate(ctx, &first, m, Reread::Allowed)?;
     ctx.identity_budget.exclude_measurement(measuring.elapsed());
     m.fresh_lines.iter().for_each(|line| out.emit(now(), line));
@@ -288,12 +290,20 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 }
                 Err(e) => return Err(e),
             };
-            swapped_at = now();
+            swapped_at = (ctx.now)();
             swapped = Some([to.clone(), from.clone()]);
             let target = shown_of(&others_shown, &to);
             let seen = (next_plan_reset, unknown_plan.len());
             note_per_token(&mut out, &first, tag, &to, seen, check);
             out.emit(now(), &msg::swap(&from, &to, &live_shown, &target, reason));
+            if let Some(line) = amplihack_utils::organisation_affinity::Affinity::between(
+                first.source_org(),
+                first.org_of(&to),
+            )
+            .log_line(from.as_str(), to.as_str())
+            {
+                out.emit(now(), &line);
+            }
             let (off_key, onto_key) = (first.platform_live(), first.platform() == Some(&to));
             note_move(
                 &mut out,
@@ -305,6 +315,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 onto_key,
             );
             ctx.failed_live = 0;
+            ctx.live_series.clear();
             l = ctx.rs.load_ledger()?.unwrap_or_default();
             CycleOutcome::Swapped
         }
@@ -361,6 +372,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             &others,
             measured_at,
             swapped_at,
+            (first.source_org(), first.org_of(to)),
         );
     }
     // Issue #1634: link the session dirs of both profiles swapped, after the

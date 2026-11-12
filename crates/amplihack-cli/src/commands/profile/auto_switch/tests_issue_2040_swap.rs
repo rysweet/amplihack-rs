@@ -40,6 +40,12 @@ struct Fx {
 }
 
 fn fx() -> Fx {
+    fx_with(&[("spare", None), ("work", None)])
+}
+
+/// A private root where each of `logins` holds an OAuth login, recorded as
+/// belonging to its organisation when one is given.
+fn fx_with(logins: &[(&str, Option<&str>)]) -> Fx {
     let tmp = tempfile::tempdir().unwrap();
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let base = tmp.path().canonicalize().unwrap();
@@ -49,7 +55,7 @@ fn fx() -> Fx {
     fs::create_dir(&root).unwrap();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     let mut profiles = Vec::new();
-    for name in ["spare", "work"] {
+    for (name, _) in logins {
         let dir = root.join(name);
         fs::create_dir(&dir).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
@@ -59,6 +65,12 @@ fn fx() -> Fx {
     private(&root.join(".auto-switch"), "enabled=on\n");
     let state = State::new(&root).unwrap();
     state.ensure().unwrap();
+    for (name, org) in logins {
+        if let Some(org) = org {
+            let expected = serde_json::json!({"account": format!("u-{name}"), "org": org});
+            state.write_sub_json("expected", name, &expected).unwrap();
+        }
+    }
     Fx {
         _tmp: tmp,
         home,
@@ -112,11 +124,17 @@ fn source(answers: Vec<Liveness>) -> (ProcSource, Arc<AtomicUsize>) {
 /// Runs `swap_check` for a session in `work`, whose account is used up,
 /// with `spare` at `spare_pct`; returns the number of reads.
 fn run(f: &Fx, spare_pct: f64, answers: Vec<Liveness>) -> usize {
+    run_with(f, &[("spare", spare_pct)], answers)
+}
+
+/// Runs `swap_check` for a session in `work`, whose account is used up,
+/// with each of `others` at its reading; returns the number of reads.
+fn run_with(f: &Fx, others: &[(&str, f64)], answers: Vec<Liveness>) -> usize {
     let now = fsx::now();
-    let accounts = BTreeMap::from([
-        ("work".to_string(), reading(100.0, now)),
-        ("spare".to_string(), reading(spare_pct, now)),
-    ]);
+    let mut accounts = BTreeMap::from([("work".to_string(), reading(100.0, now))]);
+    for (name, pct) in others {
+        accounts.insert(name.to_string(), reading(*pct, now));
+    }
     f.state
         .save_usage(&UsageFile {
             version: 1,
@@ -217,4 +235,58 @@ fn a_forced_read_taken_by_recovery_is_not_repeated() {
     let hosts = f.state.load_ledger().unwrap().hosts;
     assert!(hosts.contains_key("other"), "the session in other runs on");
     assert!(hosts.contains_key("work"), "the login moved");
+}
+
+/// Issue #2040 with #2136's organisation affinity: the forced read picks the
+/// target again and works out its organisation restriction again, from that
+/// read alone. `work` and `same` are in `org-a`, `other` in `org-b`. The
+/// cached read sees no session in `same`, so the restriction keeps the swap
+/// inside `org-a` and the cached pick is `same`. The forced read finds a
+/// session in `same`; the restriction worked out from it allows the
+/// necessary crossing to `other`, and the login moves there. A restriction
+/// kept from the cached pick would allow only `same`, and nothing would move.
+#[test]
+fn the_forced_pick_works_out_its_own_organisation_restriction() {
+    let _l = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let f = fx_with(&[
+        ("work", Some("org-a")),
+        ("same", Some("org-a")),
+        ("other", Some("org-b")),
+    ]);
+    let _env = env(&f);
+    let reads = run_with(
+        &f,
+        &[("same", 10.0), ("other", 10.0)],
+        vec![on(&["work"]), on(&["work", "same"])],
+    );
+    assert_eq!(reads, 2, "the cached read, then one forced read");
+    let hosts = f.state.load_ledger().unwrap().hosts;
+    assert_eq!(
+        hosts.get("work").map(|h| h.live.as_str()),
+        Some("other"),
+        "the swap used the forced pick and its restriction"
+    );
+}
+
+/// The same fixture, with the forced read finding sessions in both other
+/// directories: the forced pick finds no target, so nothing moves even
+/// though the cached pick had one.
+#[test]
+fn a_forced_pick_with_no_target_moves_nothing_across_organisations() {
+    let _l = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let f = fx_with(&[
+        ("work", Some("org-a")),
+        ("same", Some("org-a")),
+        ("other", Some("org-b")),
+    ]);
+    let _env = env(&f);
+    let before = fs::read(f.root.join("work").join(CREDS)).unwrap();
+    let reads = run_with(
+        &f,
+        &[("same", 10.0), ("other", 10.0)],
+        vec![on(&["work"]), on(&["work", "same", "other"])],
+    );
+    assert_eq!(reads, 2);
+    assert!(f.state.load_ledger().unwrap().hosts.is_empty(), "no move");
+    assert_eq!(fs::read(f.root.join("work").join(CREDS)).unwrap(), before);
 }

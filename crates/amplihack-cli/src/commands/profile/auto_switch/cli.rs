@@ -336,6 +336,9 @@ fn status(store: &ProfileStore) -> Result<String> {
         }
         Err(_) => writeln!(out, "hosted directories: unknown (ledger unreadable)")?,
     }
+    if let Some(line) = super::affinity::status_line(&state, |t| ago(Some(t), now)) {
+        writeln!(out, "{line}")?;
+    }
     let pending = swap::pending_journal(&state);
     let problem = match &ledger {
         Err(e) => Some(e.to_string()),

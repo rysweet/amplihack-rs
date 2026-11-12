@@ -10,6 +10,8 @@
 //! touches the filesystem is Unix-only; other platforms get no-ops.
 
 #[cfg(unix)]
+mod affinity;
+#[cfg(unix)]
 mod candidate;
 #[cfg(unix)]
 pub(super) mod capacity;
@@ -720,3 +722,6 @@ pub fn record_usage(root: &Path, observed: &[Observation]) -> Result<RecordOutco
         Ok(RecordOutcome::NotSetUp)
     }
 }
+
+#[cfg(test)]
+mod tests_issue_2136;
