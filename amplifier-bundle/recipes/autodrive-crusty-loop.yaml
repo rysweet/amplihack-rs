@@ -239,16 +239,10 @@ steps:
       TASK_IN="$(umask 077; mktemp)" || exit 1
       trap 'rm -f -- "$TASK_IN"' EXIT
       write_context_value task_description "$TASK_IN" || { echo "ERROR: task_description unavailable" >&2; exit 1; }
-      # #2391: autodrive_minor_findings, trimmed and allow-listed. Twin of the block
-      # in autodrive_crusty_rereview.sh; keep the two identical.
-      MF="${RECIPE_VAR_autodrive_minor_findings:-}"
-      MF="${MF#"${MF%%[![:space:]]*}"}"; MF="${MF%"${MF##*[![:space:]]}"}"
-      case "$MF" in
-        follow_up|address) ;;
-        '') MF=address ;;
-        *) printf "WARNING: autodrive_minor_findings='%s' is not recognised; using 'address'\n" "$(printf '%s' "$MF" | tr -d '[:cntrl:]')" >&2
-           MF=address ;;
-      esac
+      # #2391: autodrive_minor_findings is parsed in one place,
+      # autodrive_minor_findings.sh (also used by
+      # autodrive_crusty_rereview.sh).
+      MF="$(bash "$(dirname "$LOOP_HELPER")/autodrive_minor_findings.sh" "${RECIPE_VAR_autodrive_minor_findings:-}")" || { echo "ERROR: cannot read autodrive_minor_findings" >&2; exit 1; }
       ALSO_CLEAN=(); [ "$MF" != follow_up ] || ALSO_CLEAN=(--also-clean-token MINOR_ONLY)
       bash "$LOOP_HELPER" --task-file "$TASK_IN" \
         --loop-name "crusty" \

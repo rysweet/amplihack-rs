@@ -1427,6 +1427,13 @@ fn run_loop_step_02_from(
         tools.join("recipe_context_value.sh"),
     )
     .expect("copy recipe_context_value.sh");
+    // Crusty step-02 reads autodrive_minor_findings through the one parser
+    // beside the loop helper (#2391).
+    fs::copy(
+        tools_dir().join("autodrive_minor_findings.sh"),
+        tools.join("autodrive_minor_findings.sh"),
+    )
+    .expect("copy autodrive_minor_findings.sh");
     // Step-02 passes the launch tree's round recipe by absolute path and
     // refuses when it is missing there (#1543).
     let recipes = root.join("ah/amplifier-bundle/recipes");

@@ -48,7 +48,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 30] = [
+const AUTODRIVE_TOOLS: [&str; 31] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
@@ -64,6 +64,7 @@ const AUTODRIVE_TOOLS: [&str; 30] = [
     "autodrive_completion_context.sh",
     "autodrive_merge_gate.sh",
     "autodrive_merge_ready_files.sh",
+    "autodrive_minor_findings.sh",
     "autodrive_platform_facts.sh",
     "autodrive_pr_head.sh",
     "autodrive_progress.sh",
@@ -749,7 +750,10 @@ fn merge_gate_verifies_every_criterion_and_binds_them_to_one_head_sha() {
         "mergeStateStatus",
         "reviewDecision",
         "reviewThreads",
-        "gh pr checks",
+        // #2186: CI is read at the head SHA by the expected-checks reader,
+        // which replaced the `gh pr checks` rollup.
+        "autodrive_expected_checks.sh",
+        "ci_status",
         "qa_status",
         "merge_ready_verdict",
     ] {
@@ -770,7 +774,7 @@ fn merge_gate_verifies_every_criterion_and_binds_them_to_one_head_sha() {
     // Unreadable is a failure, never a pass.
     for unreadable in [
         "metadata is unreadable",
-        "CI status for #${PR} is unreadable",
+        "expected checks unreadable",
         "review-thread state is unreadable",
     ] {
         assert!(
@@ -778,8 +782,15 @@ fn merge_gate_verifies_every_criterion_and_binds_them_to_one_head_sha() {
             "the merge gate must treat `{unreadable}` as a blocker"
         );
     }
+    // #2186: CI is read by the expected-checks reader, which blocks on an
+    // unreadable endpoint and on zero checks at the head.
+    let reader = read(&tool_path("autodrive_expected_checks.sh"));
     assert!(
-        gate.contains("zero checks is not a green build"),
+        reader.contains(r#"t: ("expected checks unreadable: " + cl)"#),
+        "an unreadable CI endpoint must be a blocker"
+    );
+    assert!(
+        reader.contains(r#"t: ("no checks" + at)"#),
         "a PR reporting no checks at all must not be treated as green"
     );
     // The evidence bundle is written BEFORE anything is merged.
@@ -2627,11 +2638,11 @@ fn merge_gate_keeps_every_existing_block() {
         r#"block "a review requests changes""#,
         r#"block "review-thread state is unreadable; an unreadable criterion is a failure, not a pass""#,
         r#"block "${THREADS} unresolved review thread(s)""#,
-        r#"block "jq is unavailable, so the CI rollup cannot be read; a criterion we cannot read is a failure""#,
-        r#"block "CI status for #${PR} is unreadable; an unreadable CI status is a failure, not a pass""#,
-        r#"block "no CI checks reported for #${PR}; zero checks is not a green build""#,
-        r#"block "${PENDING:-unreadable} CI check(s) still pending""#,
-        r#"block "${FAILING:-unreadable} CI check(s) failing or cancelled""#,
+        // #2186 replaced the `gh pr checks` rollup refusals (jq missing,
+        // unreadable, zero, pending, failing) with the expected-checks
+        // reader: its blocker lines become blocks, and anything short of a
+        // GREEN verdict with exit 0 and no blocker line is refused here.
+        r#"block "expected checks unreadable: the reader gave no verdict or no blocker""#,
         r#"block "no qa-team scenario evidence file was produced in this run""#,
         r#"block "qa-team scenarios did not pass in this run (qa_status=${QA_STATUS})""#,
         r#"block "the qa-team evidence records no head_sha; evidence that is not bound to a SHA never merges""#,

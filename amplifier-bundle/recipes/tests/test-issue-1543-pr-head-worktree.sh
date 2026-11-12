@@ -200,7 +200,9 @@ cp "$REPO_ROOT/amplifier-bundle/tools/recipe_context_value.sh" "$FAKE_HOME/ampli
 # #1528: step-02 of both loops takes the review dir from the guard and the
 # rounds' worktree from the PR-worktree resolver, both beside the loop helper.
 # They are the real tools: they decide where the loop runs.
-for t in autodrive_worktree_guard.sh autodrive_pr_worktree.sh workflow_worktree_root.sh; do
+# #2391: crusty step-02 reads autodrive_minor_findings through the one parser
+# beside the loop helper; it is the real tool.
+for t in autodrive_worktree_guard.sh autodrive_pr_worktree.sh workflow_worktree_root.sh autodrive_minor_findings.sh; do
   cp "$REPO_ROOT/amplifier-bundle/tools/$t" "$FAKE_HOME/amplifier-bundle/tools/" \
     || harness_error "$t missing from the bundle"
 done
@@ -221,7 +223,8 @@ install_fake_tools() {
      "$FAKE_HOME/amplifier-bundle/tools/recipe_context_value.sh" \
      "$FAKE_HOME/amplifier-bundle/tools/autodrive_worktree_guard.sh" \
      "$FAKE_HOME/amplifier-bundle/tools/autodrive_pr_worktree.sh" \
-     "$FAKE_HOME/amplifier-bundle/tools/workflow_worktree_root.sh" "$1/"
+     "$FAKE_HOME/amplifier-bundle/tools/workflow_worktree_root.sh" \
+     "$FAKE_HOME/amplifier-bundle/tools/autodrive_minor_findings.sh" "$1/"
   cp "$FAKE_HOME"/amplifier-bundle/recipes/*.yaml "$1/../recipes/"
 }
 round_of() { [[ "$1" == merge ]] && echo autodrive-merge-round || echo autodrive-crusty-round; }

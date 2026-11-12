@@ -782,10 +782,11 @@ for case_ in explicit inside default context other-repo not-a-checkout sibling-w
     not-a-checkout) RD_ARGS=(--review-dir "${WORK}/not-a-checkout"); RUN_IN="${LAUNCH}" ;;
     sibling-worktree) RD_ARGS=(--review-dir "${WORK}/sibling-wt"); RUN_IN="${LAUNCH}" ;;
   esac
+  # ${RD_ARGS[@]+...}: the default case leaves RD_ARGS empty, and Bash before 4.4 (macOS ships 3.2) calls that unbound under set -u.
   ( cd "${RUN_IN}" && PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
     bash "${LOOP}" --loop-name "health-contract" --round-recipe "autodrive-crusty-round" \
       --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-      --repo "${TAMPERED}" "${RD_ARGS[@]}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
+      --repo "${TAMPERED}" ${RD_ARGS[@]+"${RD_ARGS[@]}"} --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
       >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err" ); rc=$?
   if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}.calls" ] \
      && grep -qF '"loop_result":"UNTRUSTED_REVIEW_DIR"' "${LOOP_DIR}.out" \
@@ -1261,10 +1262,25 @@ fi
 # ---------------------------------------------------------------------------
 # 5. Merge gate — no silent merge.
 # ---------------------------------------------------------------------------
+# #2186: the gate's CI read is autodrive_expected_checks.sh, which makes REST
+# GETs with no --jq. Those go to the fixture route from
+# expected-checks-fixtures.sh, serving GH_CI_FIX (the default green set unless
+# a case sets another). Calls with --jq (platform facts) and graphql still go
+# to the mode stub below, so the existing modes are unchanged.
+# shellcheck source=expected-checks-fixtures.sh
+. "${SCRIPT_DIR}/expected-checks-fixtures.sh"
+CI_ROUTE="${WORK}/ci-api-route"; ec_write_route "${CI_ROUTE}"
+CI_FX_GREEN="${WORK_PHYS}/ci-fx-green"; ec_fixture_green "${CI_FX_GREEN}"
 make_gh_stub() { # make_gh_stub <mode>
   cat > "${STUB_BIN}/gh" <<'GH'
 #!/usr/bin/env bash
 echo "$*" >> "${GH_CALLS:-/dev/null}"
+# The route and green fixture paths are filled in below when the stub is
+# written, so a step run under `env -i` still reaches the fixture route.
+if [ "${1:-}" = "api" ] && [ "${2:-}" != "graphql" ]; then
+  export GH_CI_FIX="${GH_CI_FIX:-__CI_FX_GREEN__}" GH_HEAD="${GH_HEAD:-abc123def4567890abc123def4567890abc12345}"
+  case " $* " in *" --jq "*) ;; *) exec "${GH_CI_ROUTE:-__CI_ROUTE__}" "$@" ;; esac
+fi
 # `pr view` prints the PR fields with the head from GH_HEAD and the base from
 # GH_BASE (set but empty means no baseRefName), through `--jq` when one is given.
 JQ=""; prev=""; for a in "$@"; do [ "$prev" = "--jq" ] && JQ="$a"; prev="$a"; done
@@ -1336,6 +1352,8 @@ case "${GH_MODE:-}" in
 esac
 exit 1
 GH
+  sed "s#__CI_FX_GREEN__#${CI_FX_GREEN}#; s#__CI_ROUTE__#${CI_ROUTE}#" "${STUB_BIN}/gh" > "${STUB_BIN}/gh.new" \
+    && mv "${STUB_BIN}/gh.new" "${STUB_BIN}/gh"
   chmod +x "${STUB_BIN}/gh"
 }
 make_gh_stub
@@ -1658,6 +1676,7 @@ gate_run() { # gate_run <mode> <extra-args...>
   GH_MODE="$mode" GH_CALLS="${GATE_DIR}/gh-calls" GH_HEAD="${GH_HEAD:-${GATE_HEAD}}" GH_BASE="${GH_BASE-main}" \
     PATH="${GATE_PATH_PREFIX:+${GATE_PATH_PREFIX}:}${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" \
     GH_MERGE_RC="${GH_MERGE_RC:-3}" AMPLIHACK_BIN="${REAL_AMPLIHACK}" TMPDIR="${gate_tmp}" \
+    GH_CI_FIX="${GH_CI_FIX:-${CI_FX_GREEN}}" GH_CI_ROUTE="${CI_ROUTE}" \
     SWAP_FROM="${SWAP_FROM:-}" SWAP_TO="${GATE_DIR}/merge-ready-latest.json" \
     "${gate_cmd[@]}" --pr 42 --repo "${FX}" ${sd[@]+"${sd[@]}"} ${args[@]+"${args[@]}"} \
     >"${GATE_DIR}/out" 2>"${GATE_DIR}/err"
@@ -1705,8 +1724,10 @@ qa_fixture() { # qa_fixture <head_sha> <gadugi_status> <gadugi_scenario_count>
     "$1" "$req" "$2" "$3"
 }
 qa_fixture "${GATE_HEAD}" PASS 3 > "$QA"
-gate_run unreadable-ci --round-record "$REC" --qa-evidence "$QA"; rc=$?
-if [ "$rc" -ne 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"'; then
+# #2186: CI is read by the expected-checks helper; its check-runs read fails.
+GH_FAIL_RE='check-runs$' gate_run unreadable-ci --round-record "$REC" --qa-evidence "$QA"; rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
+   && grep -qF 'BLOCKER: expected checks unreadable: ' "${GATE_DIR}/err"; then
   pass "GATE-unreadable-ci" "an unreadable CI status is a failure, not a pass"
 else
   fail "GATE-unreadable-ci" "an unreadable CI status did not block the merge (rc=${rc}): ${GATE_OUT}"
@@ -1785,6 +1806,82 @@ if ! grep -q '^pr merge' "${GATE_DIR}/gh-calls" 2>/dev/null; then
   pass "GATE-dry-run-merges-nothing" "a dry run merges nothing"
 else
   fail "GATE-dry-run-merges-nothing" "a dry run merged"
+fi
+
+# 5g-2186. CI green means every expected check exists at the head and passed
+# (#2186). The gate's CI read is autodrive_expected_checks.sh beside it; the
+# rollup from `gh pr checks` no longer decides anything.
+if ! grep -q '^pr checks' "${GATE_DIR}/gh-calls" 2>/dev/null \
+   && grep -qF "commits/${GATE_HEAD}/check-runs" "${GATE_DIR}/gh-calls" 2>/dev/null; then
+  pass "GATE-2186-reads-at-head" "the gate reads the checks at the head SHA through the expected-checks helper, not gh pr checks"
+else
+  fail "GATE-2186-reads-at-head" "the gate did not read checks at the head through the helper"
+fi
+if grep -qF 'required: Lint & Format' "${GATE_DIR}/err" \
+   && grep -rqF 'required: Lint & Format' "${GATE_DIR}"/merge-evidence-42-* 2>/dev/null; then
+  pass "GATE-2186-evidence" "the evidence bundle records the expected set"
+else
+  fail "GATE-2186-evidence" "the expected set is not in the gate's notes and evidence bundle"
+fi
+CI_FX_MISSING="${WORK_PHYS}/ci-fx-missing"; cp -R "${CI_FX_GREEN}" "${CI_FX_MISSING}"
+ec_drop_job "${CI_FX_MISSING}" 1001 "Install Smoke Test"
+GH_CI_FIX="${CI_FX_MISSING}" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
+   && grep -qF "BLOCKER: expected check 'Install Smoke Test' was never created at ${GATE_HEAD}" "${GATE_DIR}/err" \
+   && ! grep -q '^pr merge' "${GATE_DIR}/gh-calls"; then
+  pass "GATE-2186-missing-blocks" "a required job that was never created is named and blocks the merge (exit 1)"
+else
+  fail "GATE-2186-missing-blocks" "a missing expected check did not block the merge (rc=${rc}): $(grep -F BLOCKER "${GATE_DIR}/err" | tr '\n' ' ')"
+fi
+if ! grep -qF 'the reader gave no verdict or no blocker' "${GATE_DIR}/err"; then
+  pass "GATE-2186-no-double-blocker" "when the helper names a blocker, the gate adds no fallback blocker"
+else
+  fail "GATE-2186-no-double-blocker" "the gate added the fallback blocker although the helper named one"
+fi
+CI_FX_UNREAD="${WORK_PHYS}/ci-fx-unreadable"; cp -R "${CI_FX_GREEN}" "${CI_FX_UNREAD}"; rm "${CI_FX_UNREAD}/jobs-1001.json"
+GH_CI_FIX="${CI_FX_UNREAD}" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'BLOCKER: expected checks unreadable: ' "${GATE_DIR}/err"; then
+  pass "GATE-2186-unreadable" "an expected set that cannot be read blocks the merge"
+else
+  fail "GATE-2186-unreadable" "an unreadable expected set did not block (rc=${rc})"
+fi
+# A bad base ref: the helper exits 2 (its usage error); the gate reports a CI
+# blocker with exit 1, never its own exit 2.
+GH_BASE='-bad' gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'BLOCKER: expected checks unreadable' "${GATE_DIR}/err"; then
+  pass "GATE-2186-helper-exit2" "the helper's usage error is a CI blocker with gate exit 1, not exit 2"
+else
+  fail "GATE-2186-helper-exit2" "the helper's usage error did not give a CI blocker with exit 1 (rc=${rc})"
+fi
+# The gate copied with its platform-facts reader but WITHOUT the helper.
+LONELY_EC="${WORK_PHYS}/lonely-ec"; mkdir -p "${LONELY_EC}"
+cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" "${LONELY_EC}/"
+for t in "${TOOLS}"/autodrive_*.sh; do
+  case "$(basename "$t")" in autodrive_expected_checks.sh) ;; *) [ -e "${LONELY_EC}/$(basename "$t")" ] || cp "$t" "${LONELY_EC}/" ;; esac
+done
+GATE_SCRIPT="${LONELY_EC}/autodrive_merge_gate.sh" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'BLOCKER: expected checks unreadable: the reader gave no verdict or no blocker' "${GATE_DIR}/err"; then
+  pass "GATE-2186-helper-missing" "with no expected-checks helper beside the gate, CI blocks with the fallback blocker"
+else
+  fail "GATE-2186-helper-missing" "a gate without the helper did not block on CI (rc=${rc})"
+fi
+# A helper that prints a forged GREEN line but exits non-zero, and one that
+# exits 0 with a non-GREEN verdict: neither passes.
+FORGED_EC="${WORK_PHYS}/forged-ec"; mkdir -p "${FORGED_EC}"
+cp "${TOOLS}"/autodrive_*.sh "${FORGED_EC}/"
+printf '#!/bin/bash\necho %s\nexit 1\n' "'{\"ci_status\":\"GREEN\",\"missing\":[],\"blockers\":0}'" > "${FORGED_EC}/autodrive_expected_checks.sh"
+GATE_SCRIPT="${FORGED_EC}/autodrive_merge_gate.sh" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'BLOCKER: expected checks unreadable: the reader gave no verdict or no blocker' "${GATE_DIR}/err"; then
+  pass "GATE-2186-green-needs-exit0" "a GREEN line with a non-zero exit does not pass"
+else
+  fail "GATE-2186-green-needs-exit0" "a GREEN line with a non-zero exit passed or gave no fallback blocker (rc=${rc})"
+fi
+printf '#!/bin/bash\necho %s\necho %s\nexit 0\n' "'{\"ci_status\":\"GREEN\",\"missing\":[],\"blockers\":0}'" "'{\"ci_status\":\"RED\",\"missing\":[],\"blockers\":0}'" > "${FORGED_EC}/autodrive_expected_checks.sh"
+GATE_SCRIPT="${FORGED_EC}/autodrive_merge_gate.sh" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ]; then
+  pass "GATE-2186-last-line-only" "only the last line is the verdict: an earlier GREEN line does not pass"
+else
+  fail "GATE-2186-last-line-only" "an earlier GREEN line passed the gate (rc=${rc})"
 fi
 
 # 5h. Review threads are counted across EVERY page, not just the first 100.
@@ -1874,7 +1971,8 @@ if [ -x "${GUARD_1551}/gh" ]; then
   # has its merge refused: only the bundle's own gate may merge.
   COPY_1551="${WORK_PHYS}/gate-copy-1551"; mkdir -p "${COPY_1551}"
   cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" \
-     "${TOOLS}/autodrive_followups.sh" "${TOOLS}/autodrive_followups_check.sh" "${TOOLS}/autodrive_finding_rules.sh" "${COPY_1551}/"
+     "${TOOLS}/autodrive_followups.sh" "${TOOLS}/autodrive_followups_check.sh" "${TOOLS}/autodrive_finding_rules.sh" \
+     "${TOOLS}/autodrive_expected_checks.sh" "${COPY_1551}/"
   GATE_PRIV=1 GATE_SCRIPT="${COPY_1551}/autodrive_merge_gate.sh" GATE_PATH_PREFIX="${GUARD_1551}" \
     gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
   if [ "$rc" -eq 1 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
@@ -2439,7 +2537,8 @@ LT_MARK="${WORK}/lt-marker"
 lt_guard() { # lt_guard <dir>: a stub autodrive_worktree_guard.sh that writes LT_MARK and exits 0
   mkdir -p -- "$1"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nprintf "lt-stamp\\n"\nexit 0\n' "${LT_MARK}" > "$1/autodrive_worktree_guard.sh"
-  chmod 0700 -- "$1/autodrive_worktree_guard.sh"
+  # Put -- before the mode: BSD chmod stops parsing options at the first operand and would read -- as a file.
+  chmod -- 0700 "$1/autodrive_worktree_guard.sh"
 }
 lt_snapshot() { # lt_snapshot <cwd>: files under the cwd, and the review dir's status
   find "$1" -print 2>/dev/null | LC_ALL=C sort
@@ -5733,6 +5832,9 @@ fi
 # tools they call are replaced by recorders under a fake AMPLIHACK_HOME.
 FAKE_HOME="${WORK}/fake-home"; FAKE_TOOLS="${FAKE_HOME}/amplifier-bundle/tools"
 mkdir -p "${FAKE_TOOLS}" "${WORK}/notgit"
+# #2391: crusty step-02 reads autodrive_minor_findings through the one parser
+# beside the loop helper; it is the real tool.
+cp "${REPO_ROOT}/amplifier-bundle/tools/autodrive_minor_findings.sh" "${FAKE_TOOLS}/" || { echo "autodrive_minor_findings.sh missing from the bundle" >&2; exit 2; }
 cat > "${FAKE_TOOLS}/autodrive_loop.sh" <<'EOF'
 printf '%s\n' "$@" > "${FAKE_CALLS_DIR}/loop-args"
 echo '{"loop":"stub","loop_result":"DONE"}'

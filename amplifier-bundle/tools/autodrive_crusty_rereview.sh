@@ -104,16 +104,6 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$REPO" ] && [ -n "$REVIEW_DIR" ] && [ -n "$DIR" ] || { echo "ERROR: autodrive_crusty_rereview.sh: --repo, --review-dir and --state-dir are required" >&2; exit 2; }
 case "$PR" in *[!0-9]*) PR="" ;; esac
-# #2391: autodrive_minor_findings, trimmed and allow-listed. Twin of the block
-# in autodrive-crusty-loop.yaml step-02; keep the two identical.
-MF="${MF#"${MF%%[![:space:]]*}"}"; MF="${MF%"${MF##*[![:space:]]}"}"
-case "$MF" in
-  follow_up|address) ;;
-  '') MF=address ;;
-  *) printf "WARNING: autodrive_minor_findings='%s' is not recognised; using 'address'\n" "$(printf '%s' "$MF" | tr -d '[:cntrl:]')" >&2
-     MF=address ;;
-esac
-ALSO_CLEAN=(); [ "$MF" != follow_up ] || ALSO_CLEAN=(--also-clean-token MINOR_ONLY)
 
 result() { # result <before_round_result> <range> <crusty_loop_result> <exit>
   printf '{"before_round_result":"%s","range":"%s","crusty_loop_result":"%s"}\n' "$1" "$2" "$3"
@@ -121,13 +111,18 @@ result() { # result <before_round_result> <range> <crusty_loop_result> <exit>
 }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
-for t in autodrive_round_evidence.sh autodrive_loop.sh autodrive_state.sh autodrive_trust.sh autodrive_followups.sh autodrive_crusty_finalize.sh; do
+for t in autodrive_round_evidence.sh autodrive_loop.sh autodrive_state.sh autodrive_trust.sh autodrive_followups.sh autodrive_crusty_finalize.sh autodrive_minor_findings.sh; do
   [ -n "$HERE" ] && [ -f "$HERE/$t" ] && continue
   echo "ERROR: autodrive-tools-not-found: ${t} is not beside autodrive_crusty_rereview.sh (${HERE:-<unknown>})" >&2
   result crusty-rereview-unavailable not-checked "" 1
 done
 # shellcheck source=/dev/null
 . "$HERE/autodrive_state.sh" || result crusty-rereview-unavailable not-checked "" 1
+# #2391: autodrive_minor_findings is parsed in one place,
+# autodrive_minor_findings.sh (also used by
+# autodrive-crusty-loop.yaml step-02).
+MF="$(bash "$HERE/autodrive_minor_findings.sh" "$MF")" || result crusty-rereview-unavailable not-checked "" 1
+ALSO_CLEAN=(); [ "$MF" != follow_up ] || ALSO_CLEAN=(--also-clean-token MINOR_ONLY)
 
 # 1. The range, measured in the repository; the marker is cleared there.
 DECISION="$(cd -- "$REPO" 2>/dev/null && AUTODRIVE_STATE_DIR="$DIR" PR_NUMBER="$PR" \

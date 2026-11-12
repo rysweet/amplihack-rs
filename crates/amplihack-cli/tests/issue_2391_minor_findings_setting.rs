@@ -8,7 +8,8 @@
 //!   MINOR_ONLY, it ends the loop, and the finalizer files one linked
 //!   follow-up issue per minor finding.
 //! - Any other value is treated as `address`, with one WARNING line from each
-//!   step that normalises the value (crusty-loop step-02 and the re-review).
+//!   entry point that reads the value (crusty-loop step-02 and the re-review).
+//!   Both call the one parser, `autodrive_minor_findings.sh`.
 //!
 //! The contract is `docs/reference/auto-drive-to-merge.md`, section
 //! "Minor findings: address or follow up (#1979, #2391)".
@@ -208,6 +209,45 @@ printf '{"loop":"crusty","loop_result":"DONE","round_label":"round-1","round_ver
 exit 0
 "#;
 
+/// Runs the one parser, `autodrive_minor_findings.sh`.
+fn normalise(d: &Drive, value: Option<&str>) -> Output {
+    let mut c = d.cmd("bash");
+    c.arg(tools_dir().join("autodrive_minor_findings.sh"));
+    if let Some(v) = value {
+        c.arg(v);
+    }
+    c.output().unwrap()
+}
+
+#[test]
+fn the_shared_parser_prints_the_canonical_value() {
+    let d = Drive::new();
+    let cases = ADDRESS_VALUES
+        .iter()
+        .map(|v| (*v, "address", 0))
+        .chain(FOLLOW_UP_VALUES.iter().map(|v| (Some(*v), "follow_up", 0)))
+        .chain(UNKNOWN_VALUES.iter().map(|v| (Some(*v), "address", 1)));
+    for (value, want, warnings) in cases {
+        let o = normalise(&d, value);
+        assert!(o.status.success(), "{value:?}: {}", show(&o));
+        assert_eq!(stdout(&o), format!("{want}\n"), "{value:?}: {}", show(&o));
+        assert_eq!(warning_lines(&o).len(), warnings, "{value:?}: {}", show(&o));
+    }
+    let o = d
+        .cmd("bash")
+        .arg(tools_dir().join("autodrive_minor_findings.sh"))
+        .args(["follow_up", "extra"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        o.status.code(),
+        Some(2),
+        "a second value is a usage error: {}",
+        show(&o)
+    );
+    assert!(stdout(&o).is_empty(), "{}", show(&o));
+}
+
 /// A tool tree with a stub loop driver. Step-02 takes its loop helper and
 /// round recipe from `$AMPLIHACK_HOME`; the re-review takes every tool from
 /// beside itself, so the real re-review script is copied in next to the stubs.
@@ -253,7 +293,11 @@ fn stub_tree(d: &Drive) -> StubTree {
         "autodrive_crusty_finalize.sh",
         "#!/usr/bin/env bash\nexit 0\n",
     );
-    for real in ["recipe_context_value.sh", "autodrive_crusty_rereview.sh"] {
+    for real in [
+        "recipe_context_value.sh",
+        "autodrive_crusty_rereview.sh",
+        "autodrive_minor_findings.sh",
+    ] {
         write(
             real,
             &std::fs::read_to_string(tools_dir().join(real)).unwrap(),
