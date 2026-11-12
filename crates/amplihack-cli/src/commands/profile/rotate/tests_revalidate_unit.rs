@@ -48,6 +48,7 @@ fn base() -> Snap {
             .iter()
             .map(|c| (n(c), acct(&format!("u-{c}"), &format!("{c}@example.com"))))
             .collect(),
+        live_excluded: false,
     }
 }
 

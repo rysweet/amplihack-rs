@@ -212,6 +212,9 @@ pub mod msg {
     /// does not have. An unread week is `w=?`, failed `failed`, in flight
     /// `unknown, still running`.
     pub(in super::super) fn usage(r: &Shown, sep: &str) -> String {
+        if r.excluded {
+            return EXCLUDED_NOT_PROBED.to_string();
+        }
         if r.still_running {
             return "unknown, still running".to_string();
         }
@@ -277,6 +280,8 @@ pub mod msg {
     pub const LIVE_REFRESHED: &str =
         "refresh: expired login in ~/.claude refreshed; identity read again";
     pub const LIVE_REFRESH_FAILED: &str = "refresh: expired login in ~/.claude not refreshed";
+    /// Issue #2218: the lines about an excluded live or pinned profile.
+    pub use super::shown::excluded::*;
     pub const CHANGED: &str = "skip: state changed during measurement";
     pub const NO_LIVENESS: &str = "skip: cannot see running sessions; no candidates";
     pub const STOPPED: &str = "stop: signal received; cycle abandoned";

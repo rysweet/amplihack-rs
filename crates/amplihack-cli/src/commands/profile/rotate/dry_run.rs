@@ -6,6 +6,7 @@ use super::cycle::{Ctx, CycleOutcome};
 use super::decide::Decision;
 use super::fresh::{self, Reread};
 use super::handfix;
+use super::identify::excluded_offline;
 use super::ledger::{Phase, spend_reset};
 use super::log::{Sink, msg, timestamp};
 use super::observe::{
@@ -39,6 +40,9 @@ pub(super) fn would(decision: &Decision) -> CycleOutcome {
 /// cycle would have recorded.
 pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     ctx.identity_budget.reset();
+    // Issue #2218: as a real cycle does, before any identity read.
+    let dirs = excluded_offline::local_only_dirs(&ctx.store, &ctx.rs, &ctx.home)?;
+    ctx.set_excluded_dirs(dirs);
     let mut out = Sink::new(None, true, false);
     if exists(&ctx.rs.journal) {
         match ctx.rs.load_journal() {
@@ -77,7 +81,12 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     let read = |p: &std::path::Path| ctx.identity_reader().oauth(p);
     let (store, rs, home) = (&ctx.store, &ctx.rs, &ctx.home);
     let gap = handfix::min_gap(ctx);
-    let lines = handfix::preview(store, rs, home, env_for, &read, gap, now())?;
+    // Issue #2218: as a real cycle, no recovery on local evidence alone.
+    let lines = if ctx.home_local_only() {
+        Vec::new()
+    } else {
+        handfix::preview(store, rs, home, env_for, &read, gap, now())?
+    };
     for l in &lines {
         out.emit(0, l);
     }
@@ -85,7 +94,7 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         return Ok(CycleOutcome::Alerted);
     }
     let snap = snapshot(ctx, &state, Read::Cached)?;
-    if seed::preview(ctx, &state, &snap, &mut out) {
+    if !ctx.home_local_only() && seed::preview(ctx, &state, &snap, &mut out) {
         return Ok(CycleOutcome::Alerted);
     }
     if let Some((_, line)) = live_alert(&snap) {
@@ -105,13 +114,18 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
             return Ok(CycleOutcome::Held);
         }
     }
+    // Issue #2218: where a real cycle pauses on an unreadable exclude list.
+    if let Some(alert) = excluded_offline::exclude_paused(&ctx.store, |w| out.emit(0, w)) {
+        out.emit(0, &format!("would alert: {alert}"));
+        return Ok(CycleOutcome::Alerted);
+    }
     // Tests stub the measurement as for a real cycle.
     ctx.live_outlook = None;
     let m = match ctx.measure {
         Some(stub) => stub(ctx, &snap)?,
         None => measure_and_decide(ctx, &snap)?,
     };
-    let (live_shown, others_shown) = super::log::shown(&m);
+    let (live_shown, others_shown) = super::log::shown(&m, snap.live_excluded);
     let name = live_name(&snap.live);
     out.emit(
         0,
@@ -123,7 +137,7 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     for line in &m.fresh_lines {
         out.emit(0, line);
     }
-    let (live_shown, others_shown) = super::log::shown(&m);
+    let (live_shown, others_shown) = super::log::shown(&m, snap.live_excluded);
     let Measurement {
         live,
         others,

@@ -1,7 +1,7 @@
 //! Trusted snapshot acquisition, separated from measurement and decisions.
 use super::{CandidateInput, Ctx, LiveId, LoginKind, Skip, Snap, identify, kind, pin};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{CREDS, Liveness, State, effective};
+use crate::commands::profile::auto_switch::kit::{CREDS, Liveness, State};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{PLATFORM_TIER, tiers_detail};
 use crate::commands::profile::proc_snapshot::Fresh;
@@ -59,11 +59,15 @@ pub fn snapshot(ctx: &Ctx, state: &State, read: Read) -> Result<Snap, ProfileErr
         LiveId::Known(n) => Some(n.clone()),
         _ => None,
     };
-    let config = effective(root).config;
+    // Issue #2218: the shared reader, so a private file that is invalid for
+    // other settings still excludes, and an unreadable or unsafe one
+    // excludes every profile.
+    let exclude = crate::commands::profile::usage_cmd::exclude_list(root, |_| {})?;
+    let live_excluded = live_name.as_ref().is_some_and(|n| exclude.contains(n));
     let (overflow, ignored) = tiers_detail(&ctx.store, Some(&ctx.home));
     let input = CandidateInput {
         live: live_name.as_ref(),
-        exclude: config.exclude,
+        exclude,
         liveness,
         auto_switch: state.load_ledger()?,
     };
@@ -122,5 +126,20 @@ pub fn snapshot(ctx: &Ctx, state: &State, read: Read) -> Result<Snap, ProfileErr
         unmarked,
         detected_mark,
         home_no_oauth,
+        live_excluded,
     })
+}
+
+impl Snap {
+    /// Issue #2218: the live login when a profile owns it and it is not in
+    /// the auto-switch `exclude` list (`live_excluded`, the
+    /// `config::excluded_from` rule this snapshot applied). Every reader
+    /// that decides on, records or re-reads the live login's usage takes its
+    /// name from here, so an excluded live login is never read again.
+    pub fn measured_live(&self) -> Option<&ProfileName> {
+        match &self.live {
+            LiveId::Known(n) if !self.live_excluded => Some(n),
+            _ => None,
+        }
+    }
 }
