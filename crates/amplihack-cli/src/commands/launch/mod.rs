@@ -36,6 +36,8 @@ mod tests_env;
 #[cfg(test)]
 mod tests_issue_2030_contract;
 #[cfg(test)]
+mod tests_issue_2361;
+#[cfg(test)]
 mod tests_launch;
 #[cfg(test)]
 mod tests_model;
