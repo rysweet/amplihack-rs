@@ -1029,11 +1029,20 @@ swap between the stop and a late hook start, including the record present
 when the hook starts. Nothing read from the transcript is logged.
 
 **Which event it is.** The event key includes the login the session stopped
-on: the noted swap record's `from_login` when the swap falls between the stop
-and the hook's start (`stop <= swapped_at <= start`), otherwise the ledger's
-live login at the hook's start. With a stop time the session's past resumes
-play no part, so a second hook run for the same stop gets the same key, even
-after the first has resumed it, and logs `duplicate`. Without a stop time the
+on: the noted swap record's `from_login` when the swap is at or after the
+resume threshold above and not later than the hook's start
+(`min(stop, start - 1) <= swapped_at <= start`), otherwise the ledger's live
+login at the hook's start. The key and the resume decision use the same lower
+bound, so a session resumed on a record, including through the one-second
+allowance when the hook starts in the stop's second, has its event named for
+that record's `from_login`, and a later limit on the new login with the same
+text is a new event, not `duplicate`. With a stop time the session's past
+resumes play no part, so a second hook run for the same stop gets the same
+key, even after the first has resumed it, and logs `duplicate`. The exception
+is a stop in its hook's start second with the swap in the second before: a
+repeat run for that stop starting a second or more later is keyed on the live
+login, and waits for the next swap (its snapshot is the swap the session was
+already resumed on) rather than resuming twice. Without a stop time the
 swap must count as after the stop by the one-second rule above and not be
 later than the hook's start.
 

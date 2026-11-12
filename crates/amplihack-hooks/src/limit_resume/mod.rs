@@ -317,9 +317,11 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     // The login the session stopped on is part of the event: the same login
     // limited again is the same event, a limit after a swap is a new one.
     // When a swap noted at the start falls after the stop, the session
-    // stopped on its outgoing login, not on the live one (#2235). With a
-    // stop time the rule ignores past resumes, so a second delivery of the
-    // same stop gets the same key (see `stopped_on_outgoing`).
+    // stopped on its outgoing login, not on the live one (#2235). The rule
+    // has the same lower bound as the resume decision in `judge_at`, so a
+    // record the hook resumes on is never keyed on its incoming login. With
+    // a stop time it ignores past resumes, so a second delivery of the same
+    // stop gets the same key (see `stopped_on_outgoing`).
     let key_login = match (&snapshot, &resumed) {
         (Some(r), Ok(resumed_at)) if stopped_on_outgoing(r, start, stop, *resumed_at) => {
             Some(r.from_login.as_str())

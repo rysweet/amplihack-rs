@@ -1756,6 +1756,33 @@ fn issue_2235_a_limit_on_the_new_login_is_a_new_event_not_a_duplicate() {
 }
 
 #[test]
+fn issue_2235_a_stop_in_the_start_second_keys_the_slack_snapshot_on_its_outgoing_login() {
+    // The usual case: the hook starts in the stop's second and the swap
+    // finished the second before. The resume goes through the slack
+    // allowance, so the event must name the outgoing login, and a later
+    // limit on the new login with the same text must wait, not be dropped
+    // as a duplicate.
+    let mut d = Fake::new();
+    d.cycle = Some(ledger("spare"));
+    d.stop = Some(START);
+    d.swap = Some(record_at(6, -1, 12, 40));
+    let msg = "You've hit your session limit";
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+    let on_work = event_key("s", Some("rate_limit"), None, Some(msg), Some("work"));
+    let on_spare = event_key("s", Some("rate_limit"), None, Some(msg), Some("spare"));
+    assert!(d.guard.events.contains(&on_work), "{:?}", d.guard.events);
+    assert!(!d.guard.events.contains(&on_spare));
+
+    d.restart_at(START + 30);
+    d.stop = Some(START + 30);
+    let out = run_with(&limit_input("s", msg), &mut d);
+    assert_ne!(out, Outcome::Duplicate);
+    assert_eq!(out, Outcome::NoCapacityTimeout);
+    assert_eq!(d.guard.events.len(), 1, "no second resume");
+    assert_eq!(d.last_log().event, on_spare[..12]);
+}
+
+#[test]
 fn issue_2235_without_a_stop_the_slack_snapshot_also_keys_on_its_outgoing_login() {
     // The snapshot in the slack second counts as after the stop, and the
     // key follows the same rule as the decision to resume.

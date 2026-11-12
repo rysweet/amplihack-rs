@@ -876,10 +876,36 @@ fn with_a_stop_a_swap_before_the_stop_is_the_live_login() {
     // A limit on the new login after the swap: the session stopped on it.
     let r = record(6, START - 10, START - 40, 12, 40);
     assert!(!stopped_on_outgoing(&r, START, Some(START - 9), None));
-    // Even inside the slack second, where `noted_after_stop` says yes.
+}
+
+#[test]
+fn with_a_stop_in_the_start_second_the_slack_second_is_the_outgoing_login() {
+    // #2235: the key uses the same threshold as the resume decision. A
+    // swap in the second before a stop in the start second is resumed
+    // through the slack allowance, so the event names its outgoing login.
     let r = record(6, START - 1, START - 40, 12, 40);
     assert!(noted_after_stop(&r, START, Some(START), None));
+    assert!(stopped_on_outgoing(&r, START, Some(START), None));
+    // Two seconds before is outside the allowance for both rules.
+    let r = record(6, START - 2, START - 40, 12, 40);
+    assert!(!noted_after_stop(&r, START, Some(START), None));
     assert!(!stopped_on_outgoing(&r, START, Some(START), None));
+}
+
+#[test]
+fn with_a_stop_the_key_agrees_with_the_resume_rule_before_any_resume() {
+    // One predicate for one fact: for any stop and swap not later than the
+    // start, with no resume yet, the key and the resume decision agree.
+    for stop in START - 5..=START {
+        for at in START - 8..=START {
+            let r = record(6, at, START - 40, 12, 40);
+            assert_eq!(
+                stopped_on_outgoing(&r, START, Some(stop), None),
+                noted_after_stop(&r, START, Some(stop), None),
+                "stop {stop}, swapped_at {at}"
+            );
+        }
+    }
 }
 
 #[test]
