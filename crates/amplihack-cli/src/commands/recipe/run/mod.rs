@@ -27,6 +27,8 @@ pub(crate) mod removed_keys;
 mod retry;
 /// Issue #1606: SIGHUP/SIGINT/SIGTERM stop the whole recipe tree.
 pub(crate) mod stop_signal;
+/// Issue #1437 — a failed step's terminating exit status, from the runner's envelope.
+mod termination;
 
 pub use context_sources::resolve_context_args;
 /// Issue #1569: the auto-switch rerun supervisor uses the same classifier, so
@@ -503,3 +505,5 @@ mod tests_root_sandbox;
 mod tests_teardown;
 #[cfg(test)]
 mod tests_terminal_record;
+#[cfg(test)]
+mod tests_termination;

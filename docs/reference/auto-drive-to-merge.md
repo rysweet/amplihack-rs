@@ -4263,7 +4263,11 @@ non-numeric `<rc>` is not `79`, never reaches shell arithmetic and never reads
 the marker.
 
 The recipe runner sets [`structural_refusal`](transient-failure-retry.md#the-structural_refusal-field)
-only when the failed step's terminating error header records exit `79`.
+only when the failed step's terminating error header records exit `79`. For
+an in-process `type: recipe` step, such as `autodrive-merge-loop` inside
+`auto-drive-to-merge`, that is the header of the first failed step the
+runner lists for the sub-recipe
+([Sub-recipe steps](transient-failure-retry.md#sub-recipe-steps)).
 Captured guard phrases can describe a descendant refusal already handled
 inline; they never establish this step's terminating cause. This decision is
 retained before diagnostic evidence is truncated. The runner's stderr tail and run status
@@ -4394,22 +4398,46 @@ and the `CHILD_FAILURE_*` variables never reach the calling shell.
 
 #### Limits
 
-These cases can stop a run that should have continued. None can hide a
-refusal, because exit `79` is checked first and a marker field can only push
-the decision toward stopping.
+For the loop's own children (the `--before-round` step, the rounds and the
+loop-health evaluator), the cases below can stop a run that should have
+continued, but none can hide a refusal. Exit `79` is checked first, and a
+marker field can only push the decision toward stopping. None of those
+children reaches the sub-recipe case below: `autodrive-merge-round` runs its
+sub-recipe `autodrive-merge-evidence`, and that sub-recipe starts no `recipe
+run`.
 
 - **A forged marker stops the loop when the child dies before the runner
   writes its own.** A line that begins `amplihack.recipe.failure_class ` with
   `"structural_refusal": true`, printed by a step that is then killed, or that exits
   through the runner's error path or another path that writes no final
   marker, is the last marker in the log. The
-  loop stops and escalates to a human. Writing the marker to a dedicated file
-  in the round's record directory would close this gap; that is tracked
-  separately from #1437.
+  loop stops and escalates to a human. Reading the marker from a dedicated
+  file that only the runner writes would close this gap (issue #2489).
 - **A marker that cannot be parsed is not terminal.** If the marker is
   malformed, or the `amplihack` binary that reads its fields is missing or
   broken, every field is empty and the child classifies as `unknown`, not
   terminal. Exit `79` stays the authority for a real refusal.
+
+One layer up, a supervisor that runs `auto-drive-to-merge` (or
+`auto-drive-light`) as its child and calls `terminal_refusal` on it gets a
+narrower guarantee. That child exits `1`, not `79`, when one of its loops is
+refused: the loops are in-process `type: recipe` steps, and the runner reports
+the loop's `exit 79` inside its sub-recipe envelope. The runner decodes that
+envelope, so the marker has `"structural_refusal": true` and the supervisor
+stops. The decoder reads only the **first** failed step the sub-recipe lists,
+because later lines in the envelope can be that step's stderr. So:
+
+- **A refusal after a non-fatal failure in the same sub-recipe is not seen.**
+  If a sub-recipe's first failed step was non-fatal (`continue_on_error` or
+  `fatal: false`) and a later step exited `79`, the marker has
+  `"structural_refusal": false`, and the supervisor reports an ordinary
+  failure. No shipped auto-drive loop recipe has a non-fatal step before its
+  exit-79 step. If the failed step's evidence quotes
+  `BLOCKED_TERMINAL orchestration_unavailable`, the runner still does not
+  retry the run mechanically
+  ([Quoted guard text vetoes a retry](transient-failure-retry.md#quoted-guard-text-vetoes-a-retry)).
+  The runner reporting each step's exit code as a number would close this
+  (issue #2490).
 
 The loop-health evaluator uses the same helper against the current child's
 exit status and last marker. Quoted guards, textual exit-code references and

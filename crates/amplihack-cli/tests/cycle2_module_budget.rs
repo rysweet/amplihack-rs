@@ -40,6 +40,8 @@ fn cycle2_new_test_targets_and_extracted_helpers_obey_300_line_boundary() {
         "../../amplifier-bundle/tools/autodrive_refusal.sh",
         "src/commands/recipe/run/failure_evidence.rs",
         "src/commands/recipe/run/failure_markers.rs",
+        "src/commands/recipe/run/termination.rs",
+        "src/commands/recipe/run/tests_termination.rs",
         "tests/issue_1437_final_marker.rs",
         "../../amplifier-bundle/tools/workflow_finalization_pr_signal.sh",
         "../../amplifier-bundle/tools/workflow_finalization_handoff.sh",

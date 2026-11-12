@@ -595,3 +595,112 @@ fn a_completed_step_with_exit_79_does_not_refuse_the_run() {
     );
     assert!(!structural(&verdict));
 }
+
+// --- quoted guard text vetoes a retry (PR #1442 review, round 3) -------------
+
+/// Text cannot set `structural_refusal`, but it stops a mechanical retry. A
+/// refusal the envelope decoder cannot see (a later entry in a sub-recipe's
+/// failed-step list, see `termination.rs`) otherwise reads as whatever else is
+/// in the evidence, and a 529 from an earlier round would retry the whole run
+/// into the guard.
+#[test]
+fn a_quoted_guard_line_vetoes_a_transport_retry_without_refusing() {
+    for (error, stdout) in [
+        (
+            "amplihack copilot failed (exit 1)",
+            vec![GUARD_LINE, "API Error: 529 Overloaded"],
+        ),
+        (
+            "Command failed (exit 1): API Error: 529 Overloaded",
+            vec![GUARD_LINE],
+        ),
+    ] {
+        let verdict = classify_run_failure(&run(vec![failed("step-02", error, &stdout)]), "");
+        assert_eq!(verdict.class, FailureClass::Indeterminate, "{error}");
+        assert_eq!(verdict.signal, Some(STRUCTURAL_REFUSAL_MARKER));
+        assert!(!verdict.class.is_mechanically_retryable());
+        assert!(!structural(&verdict), "the veto never sets the flag");
+        let why = verdict.reasoning();
+        assert!(
+            why.contains("never decides a refusal") && why.contains("Not retried"),
+            "{why}"
+        );
+        assert!(!why.contains("FINAL"), "{why}");
+    }
+}
+
+/// The veto is read before truncation, so 529s in the runner's stderr that
+/// push the guard line out of the 2,000-character window cannot retry it.
+#[test]
+fn the_veto_survives_truncation_by_runner_stderr() {
+    let result = run(vec![failed(
+        "step-02",
+        "amplihack copilot failed (exit 1)",
+        &[GUARD_LINE],
+    )]);
+    let verdict = classify_run_failure(&result, &"API Error: 529 Overloaded".repeat(120));
+    assert!(!verdict.evidence.contains(GUARD_LINE));
+    // What is left in the window reads as transport; the veto is what stops it.
+    assert_eq!(
+        classify_failure_text(&verdict.evidence).0,
+        FailureClass::TransientTransport
+    );
+    assert_eq!(verdict.class, FailureClass::Indeterminate);
+    assert!(!verdict.class.is_mechanically_retryable());
+    assert!(!structural(&verdict));
+}
+
+/// Only the transport verdict changes. A bare word is not the guard's line, a
+/// completed step's output and the runner's stderr are not a failed step's
+/// evidence, and every other class was never retried.
+#[test]
+fn the_veto_is_narrow() {
+    let transient = |steps, stderr: &str| classify_run_failure(&run(steps), stderr).class;
+    assert_eq!(
+        transient(
+            vec![failed(
+                "s",
+                "API Error: 529 Overloaded",
+                &["BLOCKED_TERMINAL"]
+            )],
+            ""
+        ),
+        FailureClass::TransientTransport
+    );
+    assert_eq!(
+        transient(
+            vec![
+                completed("s1", GUARD_LINE),
+                failed("s2", "API Error: 529 Overloaded", &[])
+            ],
+            ""
+        ),
+        FailureClass::TransientTransport
+    );
+    assert_eq!(
+        transient(
+            vec![failed("s", "API Error: 529 Overloaded", &[])],
+            GUARD_LINE
+        ),
+        FailureClass::TransientTransport
+    );
+    for (text, class) in [
+        ("test result: FAILED", FailureClass::Work),
+        ("Execution failed: 400", FailureClass::AgentApi),
+        ("API Error: 401", FailureClass::Environmental),
+    ] {
+        let verdict = classify_run_failure(&run(vec![failed("s", text, &[GUARD_LINE])]), "");
+        assert_eq!(verdict.class, class, "{text}");
+        assert_ne!(verdict.signal, Some(STRUCTURAL_REFUSAL_MARKER), "{text}");
+    }
+}
+
+#[test]
+fn a_run_with_no_structured_result_is_vetoed_too() {
+    let verdict = classify_error(&anyhow::anyhow!("{GUARD_LINE}\nAPI Error: 529 Overloaded"));
+    assert_eq!(verdict.class, FailureClass::Indeterminate);
+    assert!(!verdict.class.is_mechanically_retryable());
+    assert!(!structural(&verdict));
+    let control = classify_error(&anyhow::anyhow!("API Error: 529 Overloaded"));
+    assert_eq!(control.class, FailureClass::TransientTransport);
+}

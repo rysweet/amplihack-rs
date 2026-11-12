@@ -778,10 +778,13 @@ alone:
 | a `true` marker in `loop_history` only | `"false"` |
 
 What this costs: a refusal whose exit code was lost and whose runner wrote no
-final marker is not seen. Neither happens in practice. A guard refuses before
-a run starts and `amplihack recipe run` exits 79; a failed step that ended
-with exit 79 sets `structural_refusal` on the marker the runner writes last
-(see [auto-drive-to-merge](auto-drive-to-merge.md#not-every-failure-is-terminal-issue-1437)).
+final marker is not seen. For the loop's own rounds neither happens in
+practice. A guard refuses before a run starts and `amplihack recipe run` exits
+79; a failed step that ended with exit 79 sets `structural_refusal` on the
+marker the runner writes last. For a `type: recipe` step that is the first
+failed step the runner lists for the sub-recipe; a refusal after a non-fatal
+failure in the same sub-recipe is not seen (see the
+[Limits](auto-drive-to-merge.md#limits) of the #1437 section).
 The duration, still-running and repetition checks still read the unfiltered
 history and last round output. `autodrive_round_tail.sh` still prints whole
 lines only, and the final marker, being the log's last line, is always inside

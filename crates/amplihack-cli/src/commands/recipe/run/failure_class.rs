@@ -28,11 +28,19 @@
 //! verdict is NOT transient. Retrying an impossible step forever is its own
 //! bug, and it is the more expensive one: a missed retry costs one run, an
 //! unbounded retry costs the whole budget and hides the real failure.
+//!
+//! The same rule covers the structural guard's own line. Text never decides a
+//! refusal (#1437): only a failed step's terminating exit `79` does. But when a
+//! failed step's evidence quotes `BLOCKED_TERMINAL orchestration_unavailable`
+//! and the verdict would otherwise be `transient_transport`, it is
+//! `indeterminate` instead. The guard may have refused a step the envelope
+//! decoder cannot see (`termination.rs` names those cases), and retrying the
+//! run would retry into it.
 
 use super::super::RecipeRunResult;
 use super::failure_evidence::{
-    EVIDENCE_TAIL_LINES, is_completed_status, repo_selection_repo_hint, step_evidence, tail_lines,
-    truncate_evidence,
+    EVIDENCE_TAIL_LINES, is_completed_status, quotes_structural_guard, repo_selection_repo_hint,
+    step_evidence, tail_lines, truncate_evidence,
 };
 use super::failure_markers::{
     AGENT_API_MARKERS, ENVIRONMENTAL_MARKERS, REPO_SELECTION_MARKERS, STRUCTURAL_REFUSAL_MARKER,
@@ -127,7 +135,9 @@ impl FailureClass {
 pub(crate) struct FailureVerdict {
     pub(crate) class: FailureClass,
     /// The deciding marker (or the guard signal when diagnostics are elided).
-    /// `None` for `Indeterminate`.
+    /// `None` for `Indeterminate`, except when quoted guard text vetoed a
+    /// mechanical retry: then it is the guard's phrase and
+    /// `structural_refusal` stays `false`.
     pub(crate) signal: Option<&'static str>,
     /// Bounded diagnostic output; structural termination is retained separately.
     pub(crate) evidence: String,
@@ -201,6 +211,17 @@ impl FailureVerdict {
                  retried mechanically, because the identical request gets the identical \
                  rejection. A supervising loop may start a fresh round.",
                 self.signal.unwrap_or("an agent endpoint rejection")
+            );
+        }
+        if !self.is_structural_refusal() && self.signal == Some(STRUCTURAL_REFUSAL_MARKER) {
+            return format!(
+                "classified `{}` — the failure evidence quotes the structural guard's line \
+                 ({STRUCTURAL_REFUSAL_MARKER:?}) and also carries a transport marker, but no \
+                 failed step terminated with exit 79 in the runner's error envelope. Quoted \
+                 text never decides a refusal (#1437), so this is not one; it does veto a \
+                 mechanical retry, because the guard may have refused a nested step and a \
+                 retry would run into it again. Not retried.",
+                self.class.as_str()
             );
         }
         if self.is_structural_refusal() {
@@ -303,6 +324,7 @@ pub(crate) fn classify_run_failure(result: &RecipeRunResult, stderr_tail: &str) 
     let mut completed_steps = Vec::new();
     let mut evidence_parts: Vec<String> = Vec::new();
     let mut structural_refusal = false;
+    let mut quotes_guard = false;
 
     for step in &result.step_results {
         if is_completed_status(&step.status) {
@@ -316,6 +338,8 @@ pub(crate) fn classify_run_failure(result: &RecipeRunResult, stderr_tail: &str) 
         // Captured evidence can quote a descendant refusal that was handled
         // inline before this step later failed for an unrelated reason (#1437).
         structural_refusal |= step.termination_exit_code() == Some(79);
+        // Read before truncation too. It can only stop a retry, never set the flag.
+        quotes_guard |= quotes_structural_guard(&evidence);
         if !evidence.trim().is_empty() {
             evidence_parts.push(format!("[{}] {evidence}", step.step_id));
         }
@@ -334,7 +358,8 @@ pub(crate) fn classify_run_failure(result: &RecipeRunResult, stderr_tail: &str) 
     }
 
     let evidence = truncate_evidence(evidence_parts.join("\n"));
-    let (mut class, mut signal) = classify_failure_text(&evidence);
+    let (mut class, mut signal) =
+        veto_retry_on_quoted_guard(classify_failure_text(&evidence), quotes_guard);
     // The runner's scoped supervisor evidence survives nested error summaries.
     // Work and environmental failures keep their established higher priority.
     if matches!(
@@ -369,8 +394,11 @@ pub(crate) fn classify_run_failure(result: &RecipeRunResult, stderr_tail: &str) 
 /// unparseable stdout, a runner that died before emitting JSON). The error
 /// chain is the only evidence there is, and it already carries the stderr tail.
 pub(crate) fn classify_error(error: &anyhow::Error) -> FailureVerdict {
-    let evidence = truncate_evidence(format!("{error:#}"));
-    let (class, signal) = classify_failure_text(&evidence);
+    let chain = format!("{error:#}");
+    let quotes_guard = quotes_structural_guard(&chain);
+    let evidence = truncate_evidence(chain);
+    let (class, signal) =
+        veto_retry_on_quoted_guard(classify_failure_text(&evidence), quotes_guard);
     FailureVerdict {
         class,
         signal,
@@ -378,6 +406,23 @@ pub(crate) fn classify_error(error: &anyhow::Error) -> FailureVerdict {
         failed_steps: Vec::new(),
         completed_steps: Vec::new(),
         structural_refusal: false,
+    }
+}
+
+/// Text cannot decide a refusal, but it can stop a retry (#1437 review).
+///
+/// A `transient_transport` verdict whose evidence quotes the guard's line
+/// (a failed step's evidence, or the error chain when there is no structured
+/// result) becomes `indeterminate`, with the guard's phrase as its signal.
+/// Every other class is unchanged: none of them is retried anyway.
+fn veto_retry_on_quoted_guard(
+    (class, signal): (FailureClass, Option<&'static str>),
+    quotes_guard: bool,
+) -> (FailureClass, Option<&'static str>) {
+    if quotes_guard && class == FailureClass::TransientTransport {
+        (FailureClass::Indeterminate, Some(STRUCTURAL_REFUSAL_MARKER))
+    } else {
+        (class, signal)
     }
 }
 

@@ -41,6 +41,15 @@ pub(super) fn repo_selection_repo_hint(text: &str) -> Option<String> {
     }
 }
 
+/// Does `text` quote the structural guard's own line, in any case?
+///
+/// Never a refusal (#1437): a handled descendant refusal is quoted the same
+/// way. Used only to veto a mechanical retry (`failure_class`).
+pub(super) fn quotes_structural_guard(text: &str) -> bool {
+    text.to_ascii_lowercase()
+        .contains(super::failure_markers::STRUCTURAL_REFUSAL_MARKER)
+}
+
 /// A step status the runner reports for work that finished successfully.
 pub(super) fn is_completed_status(status: &str) -> bool {
     matches!(

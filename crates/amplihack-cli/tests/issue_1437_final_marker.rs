@@ -124,6 +124,12 @@ fn failure_payload_with_stderr(error: &str, output: &str, stderr: &str) -> serde
         "agent"
     };
     let error = format!("Step 'step-04-address-blockers' failed: {kind} step failed: {error}");
+    let (payload, _) = runner_payload(&error, output, stderr);
+    payload
+}
+
+/// The last marker and the whole log, for a step whose `error` is given whole.
+fn runner_payload(error: &str, output: &str, stderr: &str) -> (serde_json::Value, String) {
     let result = serde_json::json!({
         "recipe_name": "issue-1437-final-marker",
         "success": false,
@@ -141,7 +147,7 @@ fn failure_payload_with_stderr(error: &str, output: &str, stderr: &str) -> serde
         .filter_map(|line| line.strip_prefix(PREFIX))
         .next_back()
         .unwrap();
-    serde_json::from_str(last).unwrap()
+    (serde_json::from_str(last).unwrap(), text)
 }
 
 #[test]
@@ -184,4 +190,35 @@ fn runner_stderr_cannot_clear_a_guard_status_in_a_failed_run() {
         assert_eq!(payload["class"], "work");
         assert_eq!(payload["retryable"], false);
     }
+}
+
+/// PR #1442 review, round 3: a loop refused inside an in-process `type:
+/// recipe` step, in the runner's own sub-recipe envelope (`90286bc`).
+#[test]
+fn a_refusal_inside_a_sub_recipe_step_is_a_structural_refusal() {
+    let error = "Step \"step-04-address-blockers\" failed: Sub-recipe 'autodrive-merge-loop' failed.\n\
+                 Failed steps:\n\
+                 - step-02-merge-ready-loop [error]: Step 'step-02-merge-ready-loop' failed: bash step failed: \
+                 Command failed (exit 79): ERROR: exit 79 terminal policy refusal in the merge-ready loop\n\
+                 Completed steps: step-01-merge-loop-preflight";
+    let (payload, _) = runner_payload(error, "", &"API Error: 529 Overloaded\n".repeat(60));
+    assert_eq!(payload["structural_refusal"], true, "{payload}");
+    assert_eq!(payload["class"], "work");
+    assert_eq!(payload["retryable"], false);
+}
+
+/// Quoted guard text cannot refuse, but it stops the runner retrying a 529.
+#[test]
+fn a_quoted_guard_line_beside_a_529_is_not_retried() {
+    let error = "Step 'step-04-address-blockers' failed: agent step failed: amplihack copilot failed (exit 1)";
+    let output =
+        "BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3\nAPI Error: 529 Overloaded";
+    let (payload, text) = runner_payload(error, output, "");
+    assert_eq!(payload["structural_refusal"], false, "{payload}");
+    assert_eq!(payload["class"], "indeterminate");
+    assert_eq!(payload["retryable"], false);
+    assert!(
+        !text.contains(r#""action":"retry""#),
+        "the run was retried:\n{text}"
+    );
 }
