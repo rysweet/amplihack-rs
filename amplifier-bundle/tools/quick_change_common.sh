@@ -249,9 +249,10 @@ qc_fallback_title() {
   done < "$names"
   rm -f "$names"
   [ -n "$main" ] || qc_die "no changed path for a descriptive title"
-  # Represent unusual path characters without allowing multiline titles.
-  main="$(printf '%s' "$main" | jq -R -s -r 'if test("[\\x00-\\x1f\\x7f-\\x9f]") then tojson else . end')"
   case "$main" in docs/*|*.md|*.rst|*.txt) category=docs ;; *lock*) category=chore ;; esac
+  # Quote controls and leading/trailing whitespace so commit-message cleanup
+  # preserves the complete path, without allowing multiline titles.
+  main="$(printf '%s' "$main" | jq -R -s -r 'if test("[\\x00-\\x1f\\x7f-\\x9f]") or test("^\\s|\\s$") then tojson else . end')"
   printf '%s: %s %s' "$category" "$action" "$main"
 }
 

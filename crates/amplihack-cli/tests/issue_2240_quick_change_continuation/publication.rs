@@ -452,3 +452,32 @@ fn full_task_references_survive_request_truncation_and_respect_issue_precedence(
         assert!(body.lines().any(|line| line == expected), "{body}");
     }
 }
+
+#[test]
+fn fallback_preserves_whitespace_in_path_identity_through_pr_creation() {
+    for path in [
+        "notes with trailing space.md ",
+        " leading space.md",
+        "tabs\tand trailing spaces.md ",
+    ] {
+        let mut f = Fixture::new("");
+        success(&f.select());
+        success(&f.qc("record-base"));
+        f.write(&f.selected(), path, "review guidance\n");
+        f.ctx.set(
+            "quick_change_implementation",
+            json!({"summary": "Document review guidance", "commit_subject": ""}),
+        );
+        assert_eq!(success(&f.qc("diff-limits")), "proceed");
+        success(&f.qc("run-checks"));
+        commit(&mut f);
+        let displayed = serde_json::to_string(path).unwrap();
+        assert_descriptive(
+            &f.git(&f.selected(), &["show", "-s", "--format=%s"]),
+            &displayed,
+        );
+        success(&f.qc("push"));
+        success(&f.qc("create-pr"));
+        assert_descriptive(&f.read_home("pr-title"), &displayed);
+    }
+}

@@ -521,7 +521,7 @@ PR-title selection reads actual commit subjects in `base..HEAD`. Commits already
 
 Title selection reads newest first and chooses the most recent usable subject, including a later usable repair subject. Overlong subjects are shortened to at most 72 characters at a word boundary, without a cut-off word or trailing ellipsis. Invalid subjects are rejected before shortening.
 
-The fallback chooses the path with the greatest additions-plus-deletions count in the measured diff. Stable Git path ordering breaks ties. Binary files are eligible with a line count of zero. The title preserves the complete path, including long paths; control characters are escaped so unusual filenames cannot make a multiline title. The fallback is never only a path.
+The fallback chooses the path with the greatest additions-plus-deletions count in the measured diff. Stable Git path ordering breaks ties. Binary files are eligible with a line count of zero. The title preserves the complete path, including long paths; control characters and leading or trailing whitespace are quoted using JSON so unusual filenames retain their identity through commit-message cleanup and cannot make a multiline title. The fallback is never only a path.
 
 For example, this task starts with a brief path:
 
