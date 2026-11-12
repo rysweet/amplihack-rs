@@ -173,8 +173,13 @@ steps:
       TASK_DESC="${TASK_DESCRIPTION:-}"
       ISSUE_NUMBER="${ISSUE_NUMBER:-}"
       # strict_delivery: an issue owned by another repository is written owner/repo#N; a bare #N would name this repository's issue N (docs/reference/workflow-delivery-inputs.md).
+      # strict_issue_tag is the one rule, shared with step-03 and step-16 (repository names compare case-insensitively).
       ISSUE_TAG="#${ISSUE_NUMBER}"
-      [ "${RECIPE_VAR_strict_delivery:-false}" != true ] || [ "${RECIPE_VAR_repository:-}" = "${RECIPE_VAR_pr_repository:-}" ] || ISSUE_TAG="${RECIPE_VAR_repository:-}#${ISSUE_NUMBER}"
+      if [ "${RECIPE_VAR_strict_delivery:-false}" = true ]; then
+        [ -f "$WF_TOOLS/workflow_delivery_inputs.sh" ] || { echo "ERROR: step-15-commit-push: $WF_TOOLS/workflow_delivery_inputs.sh not found; a strict_delivery commit cannot name its issue" >&2; exit 2; }
+        . "$WF_TOOLS/workflow_delivery_inputs.sh"
+        ISSUE_TAG="$(strict_issue_tag "$ISSUE_NUMBER" "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_pr_repository:-}")"
+      fi
       # FIX (#944): commit prefix from step-14's real change type (PATCH->fix:,
       # MINOR->feat:, MAJOR->feat!:), not a hardcoded 'feat:'. Unknown -> bugfix heuristic.
       CHANGE_CLASS="$(printf '%s' "${RECIPE_VAR_version_bump:-}" | jq -r 'if type=="object" and has("change_classification") and .change_classification != null then .change_classification | tostring else empty end' 2>/dev/null)" || { echo "WARNING: step-15-commit-push: version_bump is not valid JSON; treated as missing (#1561)" >&2; CHANGE_CLASS=""; }

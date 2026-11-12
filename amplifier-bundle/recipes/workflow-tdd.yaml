@@ -129,6 +129,9 @@ steps:
       {{implementation}}
       **`allow_no_op` opt-out (orchestration / docs-only / audit / meta):**
       {{allow_no_op}}
+      **Base, `<base>` below:** `{{worktree_setup.base_ref}}`, the base step-04
+      recorded (`origin/<base_branch>` when the caller set one). When that is
+      empty, use `origin/HEAD`.
 
       ## Investigation (use shell tools; ALL evidence must be real)
       Be LIBERAL about WHERE work landed; STRICT about WHETHER it landed.
@@ -139,13 +142,13 @@ steps:
       done. Prioritize git log and PR evidence over working tree state.
 
       1. **Local commits since branch point (PRIMARY)** —
-         `git log --oneline origin/main..HEAD` (fall back to `origin/HEAD`).
+         `git log --oneline <base>..HEAD`.
          Empty commits and no-op edits do NOT count.
       2. **Already-merged-during-implement** — the agent may have committed,
-         pushed, opened a scoped PR, and auto-merged into `origin/main` all
-         within step-08; in that case `git merge-base HEAD origin/main` equals
-         HEAD. Detect with `git fetch --quiet origin main || true`,
-         `git log --oneline --since='6 hours ago' origin/main -- .`, and only
+         pushed, opened a scoped PR, and auto-merged into <base> all
+         within step-08; in that case `git merge-base HEAD <base>` equals
+         HEAD. Detect with `git fetch --quiet origin <base without origin/> || true`,
+         `git log --oneline --since='6 hours ago' <base> -- .`, and only
          persisted PR URL/number or `workflow_pr_scope.sh` with explicit repo,
          headRefName, baseRefName, headRefOid, isCrossRepository=false,
          expected_pr_title_prefix, created_after, and issue/work-item scope.

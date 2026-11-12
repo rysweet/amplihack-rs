@@ -426,16 +426,17 @@ defuse_mentions() {
   }'
 }
 
-# cap_pr_title <base> <issue-reference>: base cut so that "<base> (<ref>)" fits
-# in 200 bytes, never inside a UTF-8 sequence, trailing spaces and full stops
-# dropped. <ref> is ISSUE_TAG: `#N`, or `owner/repo#N` for a strict_delivery
-# issue in another repository, because GitHub links a bare #N to this
-# repository's issue N. The suffix is always kept when there is an issue: the
-# claim check's title signal relies on it. An empty reference adds no suffix.
+# cap_pr_title <base> <issue-number> [<issue-reference>]: base cut so that
+# "<base> (<ref>)" fits in 200 bytes, never inside a UTF-8 sequence, trailing
+# spaces and full stops dropped. <ref> defaults to `#N`; step-16 passes
+# ISSUE_TAG, which is `owner/repo#N` for a strict_delivery issue in another
+# repository, because GitHub links a bare #N to this repository's issue N. The
+# suffix is always kept when there is an issue: the claim check's title signal
+# relies on it. An empty issue number adds no suffix.
 cap_pr_title() {
   local base="$1" suffix="" limit
   # Issue #1976: no linked issue, no suffix and nothing for the claim check.
-  [ -z "$2" ] || suffix=" ($2)"
+  [ -z "$2" ] || suffix=" (${3:-#$2})"
   limit=$((200 - ${#suffix}))
   base="$(head -c "$limit" <<<"$base")" || return $?
   # Drop an incomplete trailing multibyte sequence left by the byte cut: a lead
@@ -902,7 +903,7 @@ prepare_title_text() {
   METADATA_OPERATION="defuse_issue_refs"
   text="$(defuse_issue_refs "$text")" || return $?
   METADATA_OPERATION="cap_pr_title (head and UTF-8 boundary)"
-  PR_TITLE="$(cap_pr_title "$text" "$ISSUE_TAG")" || return $?
+  PR_TITLE="$(cap_pr_title "$text" "$ISSUE_NUM" "$ISSUE_TAG")" || return $?
   usable_title "$PR_TITLE"
 }
 
@@ -963,7 +964,7 @@ derive_pr_title() {
     text="$(normalise_pr_title_text "$text")" || return $?
     text="$(defuse_issue_refs "$text")" || return $?
     METADATA_OPERATION="cap_pr_title (head and UTF-8 boundary)"
-    PR_TITLE="$(cap_pr_title "$text" "$ISSUE_TAG")" || return $?
+    PR_TITLE="$(cap_pr_title "$text" "$ISSUE_NUM" "$ISSUE_TAG")" || return $?
     usable_title "$PR_TITLE" || return 1
   else
     prepare_title_text "$text" || return $?

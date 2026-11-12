@@ -41,18 +41,33 @@ is `"true"`.
 
 When `base_branch` is empty, nothing changes. Step-04 starts a new branch from
 the remote default branch (`origin/HEAD`, then `origin/master`, then
-`origin/develop`), and step-16 calls `gh pr create` without `--base`, so GitHub
-uses the repository's default branch.
+`origin/develop`), step-16 calls `gh pr create` without `--base`, so GitHub
+uses the repository's default branch, and finalize checks the pull request
+against `origin/HEAD` as before.
 
 When `base_branch` is set:
 
 | Step | Behaviour |
 | ---- | --------- |
 | step-04, new branch | The branch starts from `origin/<base_branch>`. The receipt's `base_ref` and `base_branch` record it. |
-| step-04, existing branch | The receipt records `origin/<base_branch>`. The base is checked at step-16, and at step-03 for a strict run. |
+| step-04, existing branch | `delivery_base_ref` checks the base before the worktree is set up, so a bad base fails before any agent runs. The receipt records `origin/<base_branch>`. |
+| step-08c | The work verifier counts commits from `worktree_setup.base_ref`, or `origin/HEAD` when the receipt has no base. |
 | step-14 | The version-bump agent compares against `worktree_setup.base_ref`, or `main` when the receipt has no base. |
 | step-15, step-16 | The protected-branch guard refuses `main`, `master` and `base_branch`. A set `base_branch` adds a refused branch; it never removes one. |
 | step-16 | The base is `origin/<base_branch>`, with no discovery or fallback. `gh pr create` gets `--base=<base_branch>`. On Azure DevOps the same base is the `--target-branch`. |
+| terminal-state probe (publish and finalize) | The base is `origin/<base_branch>`. The diff, the commit count and the pull request's `baseRefName` are checked against it. |
+| step-21 | `workflow_pr_ready.sh --base <base_branch>`: the scoped match and the `baseRefName` check before `gh pr ready` expect `base_branch`. |
+| terminal adjudication, step-22b | `workflow_terminal_evidence.sh collect-for-step --base <base_branch>` and `workflow_final_status.sh --base <base_branch>`: the no-diff check, the scoped match and the "work already in the base" evidence use `base_branch`. |
+| collect-finalization-evidence | `workflow_agentic_finalization.sh collect --base <base_branch>`: the evidence's `base_ref`, diff and commit count are taken from `origin/<base_branch>`. |
+
+Finalize applies the rule step-16 applies: `base_branch` when it is set,
+otherwise the discovery it always had. It reads the run's `base_branch`, not
+the receipt's `base_ref`. For an ordinary new branch the receipt holds step-04's
+own discovery, which need not be the branch GitHub chose for a pull request
+opened without `--base`. When `base_branch` is set the two are the same branch.
+`base_branch` reaches every finalize recipe the way `worktree_setup` does: each
+recipe on the way declares the key, and the runner passes a parent's value only
+into declared keys.
 
 `delivery_base_ref` checks the value before it is used. The step fails, and no
 other base is substituted, when `base_branch`:
@@ -96,13 +111,19 @@ Required inputs:
 
 | Step | What strict delivery changes |
 | ---- | ---------------------------- |
-| step-03 | `select_strict_delivery_issue` checks the inputs above. `pr_repository` must be the checkout's `origin` and `closing_reference` must match. A set `base_branch` must pass `delivery_base_ref`. It then reads `repos/<repository>/issues/<N>` with `gh api --hostname github.com`. The read has a 30-second timeout and closed stdin. The answer must be an issue, not a pull request, at `https://github.com/<repository>/issues/<N>`. Any failure ends the step with exit 2. The step does not read the task text, consult `remote_host_type`, create an issue or fall back to local tracking. |
+| step-03 | `select_strict_delivery_issue` checks the inputs above. `pr_repository` must be the checkout's `origin` and `closing_reference` must match. A set `base_branch` must pass `delivery_base_ref`. It then reads `repos/<repository>/issues/<N>` with `gh api --hostname github.com`. The read has a 30-second timeout and closed stdin. The answer must be an open issue, not a pull request, at `https://github.com/<repository>/issues/<N>`. Any failure ends the step with exit 2. The step does not read the task text, consult `remote_host_type`, create an issue or fall back to local tracking. |
 | step-03c | Skipped: `existing_branch` is set (the rule from issue #1448). |
 | step-04 | Uses `existing_branch`. Step-03 has already refused a strict run without one, and the new-branch path refuses a strict run as well. |
 | step-06d | Reads the issue with `gh issue view N --repo github.com/<repository>`. A closed issue in this checkout's repository that shares the number no longer skips implementation. |
 | step-08c | The work verifier reads the issue through the URL step-03 recorded, which names the owning repository. |
-| step-15 | The commit message names the issue as `owner/repo#N` when it is in another repository. |
+| step-15 | The commit message names the issue with `strict_issue_tag`, the rule step-03 and step-16 use: `owner/repo#N` when the issue is in another repository, compared case-insensitively. |
 | step-16 | `pr_repository` and `closing_reference` are checked again against the checkout's `origin` before any write. The title suffix, summary and issue line use the reference. The issue title is read from `repository`. The issue claim check is skipped when the issue is in another repository (see below). |
+
+The issue must be open, as on the ordinary path (#1595). A task that was
+closed while it waited in the caller's queue, as completed or as not planned,
+is not implemented: step-03 fails instead of opening a pull request that
+closes an issue nobody wants done. A caller that wants a closed issue worked
+on reopens it first.
 
 The closing keyword is still chosen from the diff (#1361): `Closes` when the
 change earns it, `Refs` otherwise. Strict delivery changes how the issue is
@@ -162,13 +183,23 @@ amplihack recipe run default-workflow \
 
 | Helper | Used by | Purpose |
 | ------ | ------- | ------- |
-| `delivery_base_ref BASE BRANCH FORBIDDEN` (`tools/workflow_delivery_inputs.sh`) | step-03, step-04, step-16 | Checks `base_branch` and prints `origin/<base_branch>`. |
-| `strict_issue_tag ISSUE REPOSITORY PR_REPOSITORY` | step-03, step-16 | Prints `#N` or `owner/repo#N`. |
+| `delivery_base_ref BASE BRANCH FORBIDDEN` (`tools/workflow_delivery_inputs.sh`) | step-03, step-04 (new and existing branch), step-16 | Checks `base_branch` and prints `origin/<base_branch>`. |
+| `strict_issue_tag ISSUE REPOSITORY PR_REPOSITORY` | step-03, step-15, step-16 | Prints `#N` or `owner/repo#N`. |
 | `same_github_repository A B` | step-03, step-16 | Case-insensitive `owner/repo` comparison. |
 | `select_strict_delivery_issue` (`tools/workflow_issue_tracking.sh`) | step-03 | Confirms the caller's issue or fails. |
 
 None of them read `RECIPE_VAR_*`. Each recipe passes the values it has
 declared in its own `context` (#1561).
+
+The finalize helpers take the base the same way, as an argument. An empty or
+absent `--base` keeps their discovery; a set one is never replaced:
+
+| Helper | Called by |
+| ------ | --------- |
+| `workflow_pr_ready.sh [--base BRANCH]` | step-21 |
+| `workflow_final_status.sh [--base BRANCH]` | step-22b, and the terminal-state recipe's strict gate |
+| `workflow_terminal_evidence.sh collect-for-step [--base BRANCH]` | the terminal adjudication recipe |
+| `workflow_agentic_finalization.sh collect [--base BRANCH]` | collect-finalization-evidence |
 
 ## Tests
 

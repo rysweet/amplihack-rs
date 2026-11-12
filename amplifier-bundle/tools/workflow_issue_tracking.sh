@@ -168,6 +168,9 @@ _strict_slug_ok() {
 # empty). The base is checked here as well as at step-16, so a misdirected run
 # fails before any work. The issue is read on github.com: publication accepts
 # only a github.com origin, and a closing reference cannot cross hosts.
+# The issue must be open, as on the ordinary path (#1595): a task closed while
+# it waited in the caller's queue (completed, or not planned) is not delivered.
+# A caller that wants a closed issue worked on reopens it first.
 # Prints the issue's URL and returns 0, or returns 2 with the reason on stderr.
 # It never creates an issue, never reads the task text, never consults the
 # remote host type and never falls back to local tracking: a strict run on the
@@ -175,7 +178,7 @@ _strict_slug_ok() {
 select_strict_delivery_issue() {
   local n="${1:-}" create="${2:-}" repo="${3:-}" pr_repo="${4:-}" closing="${5:-}" branch="${6:-}"
   local base="${7:-}" forbidden="${8:-}" host="github.com"
-  local dir origin tag url observed rc=0
+  local dir origin tag url observed kind rc=0
   dir="$(dirname "${BASH_SOURCE[0]}")"
   # shellcheck source=/dev/null
   if ! . "$dir/workflow_delivery_inputs.sh" || ! . "$dir/workflow_github_repo.sh"; then
@@ -196,12 +199,19 @@ select_strict_delivery_issue() {
   [ "$closing" = "$tag" ] || { echo "ERROR: strict_delivery: closing_reference must be '${tag}' (issue ${n} in ${repo}, pull request in ${pr_repo})" >&2; return 2; }
   url="https://${host}/${repo}/issues/${n}"
   # gh's stderr stays discarded (it can hold tokens); its exit code is logged.
-  # The filter turns a pull request into an empty answer: the issues endpoint
-  # also returns pull requests.
-  observed="$(GH_PROMPT_DISABLED=1 timeout 30 gh api --hostname "$host" "repos/${repo}/issues/${n}" --jq 'if has("pull_request") then "" else .html_url end' </dev/null 2>/dev/null)" || rc=$?
+  # The filter answers `<kind><TAB><html_url>`, where kind is the issue's state
+  # (`open`, `closed`) or `pull_request`: the issues endpoint also returns pull
+  # requests.
+  observed="$(GH_PROMPT_DISABLED=1 timeout 30 gh api --hostname "$host" "repos/${repo}/issues/${n}" --jq '[(if has("pull_request") then "pull_request" else (.state // "") end), (.html_url // "")] | @tsv' </dev/null 2>/dev/null)" || rc=$?
   [ "$rc" -eq 0 ] || { echo "ERROR: strict_delivery: could not read ${repo}#${n} on ${host} (gh exit ${rc}); a strict run never substitutes another issue" >&2; return 2; }
-  [ "$(printf '%s' "$observed" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')" ] || {
+  kind=""
+  IFS=$'\t' read -r kind observed <<< "$observed" || true
+  if [ "$kind" = pull_request ] || [ "$(printf '%s' "$observed" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$url" | tr '[:upper:]' '[:lower:]')" ]; then
     echo "ERROR: strict_delivery: ${repo}#${n} on ${host} is not an issue at ${url} (a pull request, or moved)" >&2
+    return 2
+  fi
+  [ "$kind" = open ] || {
+    echo "ERROR: strict_delivery: ${repo}#${n} is ${kind:-in no reported state}, not open; a strict run delivers only an open issue and never implements a task closed while it waited" >&2
     return 2
   }
   echo "INFO: tracking issue ${repo}#${n} selected (strict_delivery)" >&2

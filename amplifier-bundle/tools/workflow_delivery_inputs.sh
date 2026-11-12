@@ -33,7 +33,8 @@
 #       written in full.
 #
 # This file defines functions only when sourced: no set -e/-u/-o and nothing
-# printed. bash 3.2 compatible (no ${x,,}, no mapfile).
+# printed. Runs on bash 3.2: case folding goes through tr, never the bash 4
+# lowercase expansion.
 
 delivery_base_ref() {
   local base="${1:-}" branch="${2:-}" forbidden="${3:-}" pattern

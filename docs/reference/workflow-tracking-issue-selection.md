@@ -740,7 +740,8 @@ task, takes precedence. The tests check only the step-03b read-back.
 When `strict_delivery` is `"true"`, the caller has already chosen the issue,
 and step-03 confirms it instead of choosing one. `select_strict_delivery_issue`
 reads `issue_number` in `repository`, which may differ from this checkout's
-repository. If the inputs or the read do not confirm it, the step fails. It
+repository. As on the ordinary path, the issue must be open. If the inputs or
+the read do not confirm an open issue, the step fails. It
 never creates an issue, reads the task text or falls back to local tracking,
 whatever `remote_host_type` says. The inputs, the checks and what later steps
 do with the issue are described in the

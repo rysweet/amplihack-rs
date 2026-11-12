@@ -141,9 +141,11 @@ fn write_executable(path: &Path, content: &str) {
 ///   only that exact shape, and only for `H` = `STRICT_HOST` (default
 ///   `github.com`), `O/R` = `STRICT_REPO` and `N` = `STRICT_NUMBER`; any other
 ///   api call with `--hostname` fails, so a wrong endpoint cannot pass.
-///   `STRICT_ISSUE` picks the answer: `open` (default; the issue URL),
-///   `pull` (what `F` yields for a pull request, which needs `F` to test
-///   `pull_request`), `moved` (another repository's URL) or `fail` (HTTP 502).
+///   `STRICT_ISSUE` picks the REST document, and the real `jq` applies `F` to
+///   it, as `gh api --jq` does: `open` (default), `closed` (closed as not
+///   planned), `pull` (a pull request: `pull_request` set, a `/pull/` URL),
+///   `moved` (an open issue whose URL is in another repository) or `fail`
+///   (HTTP 502).
 /// - `api rate_limit`: reset epoch `GH_RESET_EPOCH`, or now + `GH_RESET_IN`
 ///   (default 10). Honours `--jq` by printing the bare epoch.
 /// - `repo view`: `GH_REPO_NWO` (default `example-org/example-repo`), as
@@ -186,13 +188,16 @@ case "$1:$2" in
     if [ "$#" -ne 6 ] || [ "$3" != "${STRICT_HOST:-github.com}" ] || [ "$4" != "repos/${STRICT_REPO:-}/issues/${STRICT_NUMBER:-}" ] || [ "$5" != "--jq" ]; then
       echo "fake gh: unexpected strict api call: $*" >&2; exit 7
     fi
+    issue="https://$3/$STRICT_REPO/issues/$STRICT_NUMBER"
     case "${STRICT_ISSUE:-open}" in
-      open) printf 'https://%s/%s/issues/%s\n' "$3" "$STRICT_REPO" "$STRICT_NUMBER" ;;
-      pull) case "$6" in *pull_request*) printf '\n' ;; *) printf 'https://%s/%s/pull/%s\n' "$3" "$STRICT_REPO" "$STRICT_NUMBER" ;; esac ;;
-      moved) printf 'https://%s/elsewhere/moved/issues/%s\n' "$3" "$STRICT_NUMBER" ;;
+      open) doc="{\"state\":\"open\",\"html_url\":\"$issue\"}" ;;
+      closed) doc="{\"state\":\"closed\",\"state_reason\":\"not_planned\",\"html_url\":\"$issue\"}" ;;
+      pull) doc="{\"state\":\"open\",\"html_url\":\"https://$3/$STRICT_REPO/pull/$STRICT_NUMBER\",\"pull_request\":{\"url\":\"x\"}}" ;;
+      moved) doc="{\"state\":\"open\",\"html_url\":\"https://$3/elsewhere/moved/issues/$STRICT_NUMBER\"}" ;;
       fail) echo "HTTP 502: Bad Gateway token ghp_STRICTFAKESTRICTFAKE" >&2; exit 1 ;;
     esac
-    exit 0 ;;
+    printf '%s\n' "$doc" | jq -r "$6"
+    exit $? ;;
   api:*) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
   repo:view)
     if [ -n "${GH_REPO_VIEW_EXIT:-}" ]; then echo "gh: could not determine repository" >&2; exit "$GH_REPO_VIEW_EXIT"; fi
@@ -295,6 +300,7 @@ impl Sandbox {
         // on macOS, where Homebrew tools are outside /usr/local/bin.
         for (name, lookup) in [
             ("timeout", "command -v timeout"),
+            ("jq", "command -v jq"),
             ("sha256sum", "command -v sha256sum || command -v gsha256sum"),
             ("stat", "command -v gstat || command -v stat"),
         ] {
@@ -2350,8 +2356,10 @@ fn strict_delivery_confirms_the_owning_repository_issue_with_one_exact_read() {
         run.diag()
     );
     assert!(
-        call[5].contains("pull_request") && call[5].contains("html_url"),
-        "the filter must turn a pull request into an empty answer: {:?}",
+        call[5].contains("pull_request")
+            && call[5].contains("state")
+            && call[5].contains("html_url"),
+        "the filter must report a pull request, the issue's state and its URL: {:?}",
         call[5]
     );
     assert!(
@@ -2413,6 +2421,15 @@ fn strict_delivery_rejects_a_pull_request_number() {
 fn strict_delivery_rejects_an_issue_that_answers_from_another_repository() {
     run_strict("42", &[("STRICT_ISSUE", "moved")])
         .assert_strict_refusal("plan/tasks#42 on github.com is not an issue");
+}
+
+#[test]
+fn strict_delivery_rejects_a_closed_issue() {
+    // A task closed (here as not planned) while it waited in the caller's
+    // queue is not implemented, as on the ordinary path (#1595).
+    let run = run_strict("42", &[("STRICT_ISSUE", "closed")]);
+    run.assert_strict_refusal("plan/tasks#42 is closed, not open");
+    assert_eq!(run.calls_of("api", "--hostname").len(), 1);
 }
 
 #[test]

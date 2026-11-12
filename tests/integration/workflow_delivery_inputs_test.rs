@@ -1,10 +1,12 @@
 //! `base_branch` and `strict_delivery` (docs/reference/workflow-delivery-inputs.md).
 //!
 //! Covers the shared helper `amplifier-bundle/tools/workflow_delivery_inputs.sh`,
-//! the step-15/16 protected-branch guard, step-06d (goal already met) for an
-//! issue owned by another repository, and step-04's new-branch base. Step-03 is
-//! covered in `issue_1881_local_default_tracking_test.rs` and step-16 in
-//! `issue_2306_publish/recovery.rs`.
+//! the step-15/16 protected-branch guard, step-15's issue reference, step-06d
+//! (goal already met) for an issue owned by another repository, step-04's base
+//! for a new and for an existing branch, and finalize (the terminal-state
+//! probe, step-21 and step-22b) accepting a pull request opened on
+//! `base_branch`. Step-03 is covered in `issue_1881_local_default_tracking_test.rs`
+//! and step-16 in `issue_2306_publish/recovery.rs`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -482,4 +484,371 @@ fn existing_branch_receipt_reports_base_branch() {
     assert_eq!(r["branch_name"], "feat/assigned", "{r}");
     assert_eq!(r["base_ref"], "origin/dev", "{r}");
     assert_eq!(r["base_branch"], "dev", "{r}");
+}
+
+#[test]
+fn existing_branch_never_proceeds_on_a_bad_base() {
+    // The base of an existing branch is checked at step-04, as for a new
+    // branch, so a mistyped or forbidden base fails before any agent runs.
+    for (base, forbidden, reason) in [
+        ("nope", "", "has no remote-tracking ref origin/nope"),
+        (
+            "dev",
+            "release/* dev",
+            "matches forbidden_base_branches pattern 'dev'",
+        ),
+        ("feat/assigned", "", "is the branch being delivered"),
+    ] {
+        let repo = Repo::new();
+        git(&repo.path(), &["branch", "feat/assigned", "origin/dev"]);
+        git(&repo.path(), &["push", "origin", "feat/assigned"]);
+        let out = run_step04(
+            &repo,
+            &[
+                ("EXISTING_BRANCH", "feat/assigned"),
+                ("RECIPE_VAR_base_branch", base),
+                ("RECIPE_VAR_forbidden_base_branches", forbidden),
+            ],
+        );
+        assert_eq!(out.status.code(), Some(1), "{base}: {}", describe(&out));
+        assert!(out.stdout.is_empty(), "{base}: no receipt");
+        assert!(
+            text(&out.stderr).contains(reason),
+            "{base}: {}",
+            describe(&out)
+        );
+        let worktrees = git(&repo.path(), &["worktree", "list", "--porcelain"]);
+        assert_eq!(
+            worktrees
+                .lines()
+                .filter(|l| l.starts_with("worktree "))
+                .count(),
+            1,
+            "{base}: no task worktree is set up on a bad base\n{worktrees}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// step-15: the commit message's issue reference
+// ---------------------------------------------------------------------------
+
+/// Step-15's issue-reference block, from `ISSUE_TAG="#${ISSUE_NUMBER}"` to
+/// the `fi` that closes it, exactly as the recipe has it.
+fn step15_issue_tag_block() -> String {
+    let command = step_command("workflow-publish", "step-15-commit-push");
+    let lines: Vec<&str> = command.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.trim() == "ISSUE_TAG=\"#${ISSUE_NUMBER}\"")
+        .expect("step-15 sets ISSUE_TAG");
+    let end = start
+        + lines[start..]
+            .iter()
+            .position(|l| l.trim() == "fi")
+            .expect("the ISSUE_TAG block ends with fi");
+    lines[start..=end].join("\n")
+}
+
+#[test]
+fn step15_names_the_issue_with_the_shared_rule() {
+    let dir = TempDir::new().unwrap();
+    let tools = workspace_root().join("amplifier-bundle/tools");
+    let script = format!(
+        "set -euo pipefail\n{}\nprintf '%s\\n' \"$ISSUE_TAG\"\n",
+        step15_issue_tag_block()
+    );
+    for (strict, repository, expected) in [
+        // GitHub compares repository names case-insensitively, and so does
+        // strict_issue_tag; step-15 used to write Owner/Repo#42 here.
+        ("true", "Owner/Repo", "#42"),
+        ("true", "owner/repo", "#42"),
+        ("true", "plan/tasks", "plan/tasks#42"),
+        ("false", "plan/tasks", "#42"),
+    ] {
+        let out = bash(
+            &script,
+            dir.path(),
+            &[
+                ("WF_TOOLS", tools.to_str().unwrap()),
+                ("ISSUE_NUMBER", "42"),
+                ("RECIPE_VAR_strict_delivery", strict),
+                ("RECIPE_VAR_repository", repository),
+                ("RECIPE_VAR_pr_repository", "owner/repo"),
+            ],
+        );
+        assert!(
+            out.status.success(),
+            "{strict} {repository}: {}",
+            describe(&out)
+        );
+        assert_eq!(text(&out.stdout).trim(), expected, "{strict} {repository}");
+    }
+    let out = bash(
+        &script,
+        dir.path(),
+        &[
+            ("WF_TOOLS", dir.path().to_str().unwrap()),
+            ("ISSUE_NUMBER", "42"),
+            ("RECIPE_VAR_strict_delivery", "true"),
+            ("RECIPE_VAR_repository", "plan/tasks"),
+            ("RECIPE_VAR_pr_repository", "owner/repo"),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(2), "{}", describe(&out));
+    assert!(text(&out.stderr).contains("a strict_delivery commit cannot name its issue"));
+}
+
+// ---------------------------------------------------------------------------
+// finalize: a pull request opened on base_branch
+// ---------------------------------------------------------------------------
+
+/// Fake gh for finalize. Pull request 7 is `feat/x` into `dev`, a draft at
+/// `$HEAD_SHA`. Every call is logged; anything unexpected fails.
+const FAKE_GH_FINALIZE: &str = r#"#!/bin/sh
+printf '%s\n' "$*" >> "$GH_LOG"
+pr() {
+  printf '{"number":7,"title":"Deliver to dev","body":"","state":"OPEN","createdAt":"2026-11-11T00:00:00Z","mergedAt":null,"url":"https://github.com/owner/repo/pull/7","headRefName":"feat/x","baseRefName":"dev","headRefOid":"%s","headRepositoryOwner":{"login":"owner"},"headRepository":{"name":"repo"},"isCrossRepository":false,"statusCheckRollup":[],"isDraft":true,"mergeable":"MERGEABLE","reviews":[]}' "$HEAD_SHA"
+}
+case "$1 $2" in
+  "auth status") exit 0 ;;
+  "pr view") pr; echo ;;
+  "pr list") printf '['; pr; echo ']' ;;
+  "pr ready") echo "marked ready: $3" ;;
+  "pr comment") echo "$3#issuecomment-1" ;;
+  *) echo "fake gh: unexpected: $*" >&2; exit 7 ;;
+esac
+"#;
+
+const PR_URL: &str = "https://github.com/owner/repo/pull/7";
+
+/// `Repo` with `feat/x` checked out: one commit on top of `dev`, while
+/// `origin/HEAD` is `main`. The origin URL is github.com's, as finalize needs.
+struct FinalizeFixture {
+    repo: Repo,
+    bin: PathBuf,
+    log: PathBuf,
+}
+
+impl FinalizeFixture {
+    fn new() -> Self {
+        let repo = Repo::new();
+        let path = repo.path();
+        git(&path, &["checkout", "-b", "feat/x", "origin/dev"]);
+        fs::write(path.join("feature.txt"), "feature\n").unwrap();
+        git(&path, &["add", "feature.txt"]);
+        git(&path, &["commit", "-m", "feature"]);
+        git(&path, &["push", "origin", "feat/x"]);
+        git(
+            &path,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://github.com/owner/repo.git",
+            ],
+        );
+        assert_eq!(
+            git(
+                &path,
+                &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]
+            ),
+            "origin/main"
+        );
+        let bin = repo.root.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let gh = bin.join("gh");
+        fs::write(&gh, FAKE_GH_FINALIZE).unwrap();
+        fs::set_permissions(
+            &gh,
+            <fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o755),
+        )
+        .unwrap();
+        let log = repo.root.path().join("gh.log");
+        FinalizeFixture { repo, bin, log }
+    }
+
+    fn worktree(&self) -> PathBuf {
+        fs::canonicalize(self.repo.path()).unwrap()
+    }
+
+    /// Runs `step` of `recipe` as the runner would, with `base_branch` set.
+    fn run(&self, recipe: &str, step: &str, base_branch: &str) -> (Output, String) {
+        let _ = fs::remove_file(&self.log);
+        let worktree = self.worktree();
+        let path = format!(
+            "{}:{}",
+            self.bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let setup =
+            serde_json::json!({ "worktree_path": worktree, "branch_name": "feat/x" }).to_string();
+        let publish =
+            serde_json::json!({ "pr_url": PR_URL, "pr_number": "7", "state": "FOLLOWUP_CREATED" })
+                .to_string();
+        let root = workspace_root();
+        let out = bash(
+            &step_command(recipe, step),
+            &worktree,
+            &[
+                ("PATH", &path),
+                ("GH_LOG", self.log.to_str().unwrap()),
+                ("HEAD_SHA", &self.repo.rev("HEAD")),
+                ("AMPLIHACK_HOME", root.to_str().unwrap()),
+                ("REPO_PATH", worktree.to_str().unwrap()),
+                ("REMOTE_HOST_TYPE", "github"),
+                ("RECIPE_VAR_repo_path", worktree.to_str().unwrap()),
+                ("RECIPE_VAR_worktree_setup", &setup),
+                ("RECIPE_VAR_pr_publish_result", &publish),
+                ("RECIPE_VAR_pr_url", PR_URL),
+                ("RECIPE_VAR_terminal_fail_mode", "report"),
+                ("RECIPE_VAR_base_branch", base_branch),
+            ],
+        );
+        (out, fs::read_to_string(&self.log).unwrap_or_default())
+    }
+}
+
+#[test]
+fn every_finalize_recipe_declares_base_branch() {
+    // The runner passes a parent's value only into keys the sub-recipe
+    // declares, so each recipe on the way from default-workflow to the base
+    // checks must declare base_branch.
+    for recipe in [
+        "default-workflow",
+        "workflow-publish",
+        "workflow-finalize",
+        "workflow-terminal-state",
+        "workflow-terminal-adjudication",
+    ] {
+        let path = workspace_root().join(format!("amplifier-bundle/recipes/{recipe}.yaml"));
+        let doc: Value = serde_yaml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            doc["context"]["base_branch"].as_str(),
+            Some(""),
+            "{recipe} must declare base_branch: \"\""
+        );
+    }
+}
+
+#[test]
+fn terminal_state_probe_checks_the_pull_request_against_base_branch() {
+    let fx = FinalizeFixture::new();
+    let (out, log) = fx.run("workflow-terminal-state", "probe-terminal-state", "dev");
+    assert!(out.status.success(), "{}\n{log}", describe(&out));
+    let stdout = text(&out.stdout);
+    let line = stdout
+        .lines()
+        .rev()
+        .find(|l| l.starts_with('{'))
+        .expect("probe JSON");
+    let state: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(state["terminal_state"], "FOLLOWUP_CREATED", "{state}");
+    assert_eq!(state["should_run_ci_wait"], "true", "{state}");
+    assert_eq!(state["pr_url"], PR_URL, "{state}");
+    assert_eq!(
+        state["commits_ahead"], "1",
+        "counted from origin/dev, not origin/main: {state}"
+    );
+
+    // Control: the same pull request, with the base discovered from
+    // origin/HEAD, is rejected; the fixture would catch a lost base_branch.
+    let (out, _) = fx.run("workflow-terminal-state", "probe-terminal-state", "");
+    let stdout = text(&out.stdout);
+    let line = stdout
+        .lines()
+        .rev()
+        .find(|l| l.starts_with('{'))
+        .expect("probe JSON");
+    let state: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(state["terminal_state"], "FAILED_INVALID_INPUT", "{state}");
+}
+
+#[test]
+fn step21_marks_a_pull_request_into_base_branch_ready() {
+    let fx = FinalizeFixture::new();
+    let (out, log) = fx.run("workflow-finalize", "step-21-pr-ready", "dev");
+    assert!(out.status.success(), "{}\n{log}", describe(&out));
+    assert!(
+        log.lines().any(|l| l == format!("pr ready {PR_URL}")),
+        "the draft is marked ready\n{log}"
+    );
+
+    // Control: without base_branch the helper expects origin/HEAD (main), so
+    // the pull request into dev does not match and nothing is mutated.
+    let (out, log) = fx.run("workflow-finalize", "step-21-pr-ready", "");
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert!(
+        text(&out.stderr).contains("no_scoped_pr"),
+        "{}",
+        describe(&out)
+    );
+    assert!(!log.contains("pr ready"), "{log}");
+}
+
+#[test]
+fn step22b_matches_the_pull_request_on_base_branch() {
+    let fx = FinalizeFixture::new();
+    let (out, log) = fx.run("workflow-finalize", "step-22b-final-status", "dev");
+    assert!(out.status.success(), "{}\n{log}", describe(&out));
+    let all = format!("{}{}", text(&out.stdout), text(&out.stderr));
+    assert!(
+        !all.contains("scoped final PR match did not resolve"),
+        "the scoped match finds the pull request into dev\n{}",
+        describe(&out)
+    );
+    assert!(
+        text(&out.stdout).contains("\"baseRefName\":\"dev\""),
+        "the final status shows the matched pull request\n{}",
+        describe(&out)
+    );
+
+    let (out, _) = fx.run("workflow-finalize", "step-22b-final-status", "");
+    assert!(
+        text(&out.stderr).contains("scoped final PR match did not resolve: no_scoped_pr"),
+        "control: without base_branch the match misses\n{}",
+        describe(&out)
+    );
+}
+
+#[test]
+fn finalization_evidence_measures_the_diff_from_base_branch() {
+    let fx = FinalizeFixture::new();
+    for (base, expected_ref, ahead) in [("dev", "origin/dev", "1"), ("", "origin/main", "2")] {
+        let (out, log) = fx.run("workflow-finalize", "collect-finalization-evidence", base);
+        assert!(out.status.success(), "{base:?}: {}\n{log}", describe(&out));
+        let evidence: serde_json::Value =
+            serde_json::from_str(&text(&out.stdout)).expect("evidence JSON");
+        assert_eq!(
+            evidence["git"]["base_ref"], expected_ref,
+            "{base:?}: {evidence}"
+        );
+        assert_eq!(
+            evidence["git"]["commits_ahead"], ahead,
+            "{base:?}: {evidence}"
+        );
+    }
+}
+
+#[test]
+fn finalize_helpers_refuse_a_malformed_base() {
+    let fx = FinalizeFixture::new();
+    for (helper, mode) in [
+        ("workflow_pr_ready.sh", ""),
+        ("workflow_final_status.sh", ""),
+        ("workflow_agentic_finalization.sh", "collect "),
+    ] {
+        let script = format!("bash \"$TOOLS/{helper}\" {mode}--base 'a..b'");
+        let tools = workspace_root().join("amplifier-bundle/tools");
+        let out = bash(
+            &script,
+            &fx.worktree(),
+            &[("TOOLS", tools.to_str().unwrap())],
+        );
+        assert_eq!(out.status.code(), Some(2), "{helper}: {}", describe(&out));
+        assert!(
+            text(&out.stderr).contains("is not a valid branch name"),
+            "{helper}"
+        );
+    }
 }
