@@ -51,7 +51,7 @@ pub(super) fn run(
             _ => Source::Adopt,
         };
         let mut checked = None;
-        let mut placement = || -> Result<ProfileName, ProfileError> {
+        let placement = || -> Result<ProfileName, ProfileError> {
             if exists(&ctx.rs.journal) {
                 return Err(ProfileError::RotateInconsistent(
                     "pending journal before candidate attempt".into(),
