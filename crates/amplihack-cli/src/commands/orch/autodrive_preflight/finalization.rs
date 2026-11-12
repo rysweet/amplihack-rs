@@ -11,9 +11,11 @@ pub(super) struct FinalizedRefusal {
 /// Make `dir` a state directory the merge gate accepts, by the rule
 /// `autodrive_private_dir` in autodrive_state.sh applies: created under umask
 /// 077 when missing; refused when it is a symlink, not a directory or not
-/// owned by this user; otherwise its group and world write bits are removed
-/// (chmod go-w). Read bits are left alone: records are written 0600, and the
-/// merge gate only refuses entries others could write.
+/// owned by this user; otherwise, when it grants any group or world access,
+/// its mode is set to exactly 0o700. The completion code (`secure_fs`)
+/// refuses a state directory with `mode & 0o077 != 0`, so read bits go too.
+/// Setting exactly 0o700 also clears setuid, setgid and sticky; records are
+/// written 0600.
 pub(crate) fn validate_state_directory(dir: &Path) -> Result<()> {
     #[cfg(unix)]
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
@@ -43,11 +45,9 @@ pub(crate) fn validate_state_directory(dir: &Path) -> Result<()> {
         if m.uid() != unsafe { libc::geteuid() } {
             bail!("{display} is not owned by this user, so others may write in it");
         }
-        if m.mode() & 0o022 != 0 {
-            fs::set_permissions(dir, fs::Permissions::from_mode(m.mode() & 0o7777 & !0o022))
-                .with_context(|| {
-                    format!("could not remove the group and world write bits from {display}")
-                })?;
+        if m.mode() & 0o077 != 0 {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("could not set owner-only access on {display}"))?;
         }
     }
     Ok(())
@@ -67,7 +67,7 @@ fn persist(dir: &Path, value: &Value) -> Result<()> {
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
             .open(dir)?;
         let m = directory.metadata()?;
-        if m.mode() & 0o022 != 0 || m.uid() != unsafe { libc::geteuid() } {
+        if m.mode() & 0o077 != 0 || m.uid() != unsafe { libc::geteuid() } {
             bail!("state directory changed ownership or permissions");
         }
         let name = std::ffi::CString::new(format!(".preflight-{}", uuid::Uuid::new_v4()))?;
@@ -250,16 +250,18 @@ mod tests {
     #[test]
     fn issue_2188_state_directory_rule_matches_autodrive_private_dir() {
         let root = tempfile::tempdir().unwrap();
-        // Read bits are accepted and left alone; write bits for group or
-        // world are removed, as `chmod go-w` in autodrive_private_dir does.
+        // Every group and world bit is removed, read bits included, because
+        // the completion code (secure_fs) refuses any state directory with
+        // `mode & 0o077 != 0`. autodrive_private_dir runs `chmod 700`.
         for (mode, expected) in [
             (0o700, 0o700),
-            (0o750, 0o750),
-            (0o755, 0o755),
-            (0o775, 0o755),
-            (0o770, 0o750),
-            (0o777, 0o755),
-            (0o707, 0o705),
+            (0o750, 0o700),
+            (0o755, 0o700),
+            (0o775, 0o700),
+            (0o770, 0o700),
+            (0o777, 0o700),
+            (0o707, 0o700),
+            (0o744, 0o700),
         ] {
             let dir = root.path().join(format!("state-{mode:o}"));
             fs::create_dir(&dir).unwrap();
@@ -281,6 +283,48 @@ mod tests {
         assert_eq!(
             fs::metadata(&missing).unwrap().permissions().mode() & 0o777,
             0o700
+        );
+    }
+
+    #[test]
+    fn issue_2188_state_directory_is_set_to_exactly_0700_clearing_special_bits() {
+        let root = tempfile::tempdir().unwrap();
+        // The Rust helper sets exactly 0o700, so setgid and sticky go as
+        // well; the result must satisfy the completion check `0o077 == 0`.
+        for mode in [0o2755, 0o1777, 0o2700] {
+            let dir = root.path().join(format!("special-{mode:o}"));
+            fs::create_dir(&dir).unwrap();
+            fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+            let applied = fs::metadata(&dir).unwrap().permissions().mode() & 0o7777;
+            if applied & 0o077 == 0 && applied & 0o7000 != 0 {
+                // Already owner-only: the helper must leave it alone.
+                validate_state_directory(&dir).unwrap();
+                assert_eq!(
+                    fs::metadata(&dir).unwrap().permissions().mode() & 0o7777,
+                    applied,
+                    "mode {mode:o}"
+                );
+                continue;
+            }
+            validate_state_directory(&dir).unwrap();
+            let after = fs::metadata(&dir).unwrap().permissions().mode() & 0o7777;
+            assert_eq!(after, 0o700, "mode {mode:o} became {after:o}");
+        }
+    }
+
+    #[test]
+    fn issue_2188_persist_leaves_no_group_or_world_access_on_state_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("state");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        persist(&dir, &json!({"recovery":"preserve"})).unwrap();
+        let mode = fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "state directory left at {:o}",
+            mode & 0o777
         );
     }
 

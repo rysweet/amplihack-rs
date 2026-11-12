@@ -615,3 +615,4 @@ the foreground group, and the trap does not appear.
 - [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md) - The rotator stops that `isolated(..)` sets
 - [Run in Non-Interactive Mode](./run-in-noninteractive-mode.md) - Running amplihack without a terminal
 - [Developing amplihack](./develop-amplihack.md) - Build and test setup
+- [Git Repository Environment Helper](../reference/git-repo-env-helper.md) - The `GIT_*` repository selectors auto-drive and the cargo hook clear before running tests

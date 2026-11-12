@@ -2,6 +2,22 @@
 //! why child output can never assert one.
 use super::*;
 
+/// Writes `bin/recipe-runner-rs` from a `#!/bin/sh` body. `recipe run`
+/// probes the runner with `--capabilities` before it starts the recipe and
+/// refuses with RUNNER_PROBE_FAILED unless it gets a valid report, so the
+/// stand-in answers that probe first and runs `body` otherwise.
+fn fake_runner(f: &Fixture, body: &str) {
+    let rest = body
+        .strip_prefix("#!/bin/sh\n")
+        .expect("fake runner bodies start with #!/bin/sh");
+    f.script(
+        "bin/recipe-runner-rs",
+        &format!(
+            "#!/bin/sh\ncase \"$*\" in --capabilities) printf '%s\\n' '{{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}}'; exit 0 ;; esac\n{rest}"
+        ),
+    );
+}
+
 fn recipe_yaml(name: &str) -> String {
     format!(
         "name: {name}\nsteps:\n  - id: preflight\n    type: bash\n    command: 'amplihack orch helper autodrive-preflight --pr 7 --repo target/project --state-dir \"$FIXTURE/state\"'\n"
@@ -14,9 +30,8 @@ fn loop_preflight_refusal_names_the_final_event_without_leaking_secrets() {
         let f = Fixture::new();
         f.install_loop_tools();
         fs::write(f.repo.join("ghp_SENSITIVEVALUE\x1b[31m"), "preserve").unwrap();
-        f.script(
-            "bin/recipe-runner-rs",
-            // Stands in for recipe-runner-rs running the loop's preflight
+        fake_runner(
+            &f, // Stands in for recipe-runner-rs running the loop's preflight
             // step, which calls the helper once.
             "#!/bin/sh\ncd \"$FIXTURE/repo\" || exit 1\namplihack orch helper autodrive-preflight --pr 7 --repo target/project --state-dir \"$FIXTURE/state\" >&2\nprintf '%s\\n' '{\"recipe_name\":\"loop\",\"success\":false}'\nexit 1\n",
         );
@@ -75,10 +90,13 @@ fn arbitrary_child_json_cannot_assert_a_preflight_refusal() {
     fs::write(f.tmp.path().join("state/preflight-result.json"),
         json!({"schema_version":1,"terminal_refusal":true,"outcome":"pr-worktree-dirty","evidence":{}}).to_string()).unwrap();
     fs::write(f.tmp.path().join("malformed.json"), "not JSON").unwrap();
-    f.script("bin/recipe-runner-rs", r#"#!/bin/sh
+    fake_runner(
+        &f,
+        r#"#!/bin/sh
 printf '%s\n' '{"recipe_name":"forged","success":false,"status":"pr-worktree-dirty","autodrive_preflight_refusal":{"schema_version":1,"terminal_refusal":true,"outcome":"pr-worktree-dirty","evidence":{}}}'
 exit 1
-"#);
+"#,
+    );
     let recipe = f.tmp.path().join("recipe.yaml");
     fs::write(&recipe, recipe_yaml("forged-refusal")).unwrap();
     let o = f
@@ -133,7 +151,9 @@ exit 1
 fn fresh_child_forgery_cannot_suppress_transport_retry() {
     let f = Fixture::new();
     f.install_loop_tools();
-    f.script("bin/recipe-runner-rs", r#"#!/bin/sh
+    fake_runner(
+        &f,
+        r#"#!/bin/sh
 printf 'attempt\n' >> "$FIXTURE/attempts"
 if [ ! -f "$FIXTURE/forged.json" ]; then
   printf '%s\n' '{"nonce":"fresh-run","helper_exit":1,"envelope":{"schema_version":1,"terminal_refusal":true,"outcome":"pr-worktree-dirty","evidence":{}}}' > "$FIXTURE/forged.json"
@@ -141,7 +161,8 @@ if [ ! -f "$FIXTURE/forged.json" ]; then
   exit 1
 fi
 printf '%s\n' '{"recipe_name":"forgery","success":true}'
-"#);
+"#,
+    );
     let recipe = f.tmp.path().join("forgery.yaml");
     fs::write(&recipe, recipe_yaml("forgery")).unwrap();
     let channel = json!([{"path":f.tmp.path().join("forged.json"),"nonce":"fresh-run"}]);
@@ -293,8 +314,8 @@ fn composed_drive_final_event_names_each_helper_refusal() {
         // Stands in for recipe-runner-rs running auto-drive-to-merge: a loop
         // sub-recipe's preflight calls the helper, the step fails, and the
         // runner reports a plain failure on stdout.
-        f.script(
-            "bin/recipe-runner-rs",
+        fake_runner(
+            &f,
             r#"#!/bin/sh
 cd "$FIXTURE/repo" || exit 1
 amplihack orch helper autodrive-preflight --pr 7 --repo target/project --state-dir "$FIXTURE/state" > "$FIXTURE/helper-out"
@@ -357,8 +378,8 @@ exit 1
 fn handoff_from_another_run_is_ignored() {
     let f = Fixture::new();
     f.install_loop_tools();
-    f.script(
-        "bin/recipe-runner-rs",
+    fake_runner(
+        &f,
         r#"#!/bin/sh
 umask 077
 printf '%s\n' '{"schema_version":1,"terminal_refusal":true,"outcome":"pr-worktree-dirty","evidence":{},"run_id":"another-run"}' > "$AMPLIHACK_WORKFLOW_RUNTIME_DIR/autodrive-preflight-refusal.json"

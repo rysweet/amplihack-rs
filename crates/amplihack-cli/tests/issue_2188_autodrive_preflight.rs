@@ -938,8 +938,48 @@ fn crusty_completed_phase_skip_preserves_existing_behavior() {
     let state = f.tmp.path().join("state");
     fs::create_dir(&state).unwrap();
     fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
-    fs::write(state.join("phases.tsv"), "crusty-loop\tcompleted\n").unwrap();
-    fs::set_permissions(state.join("phases.tsv"), fs::Permissions::from_mode(0o600)).unwrap();
+    // A completed crusty loop is one autodrive_crusty_final accepts: a CLEAN
+    // round record named by the manifest, crusty-latest.json with the same
+    // hash, and the completion row and phase marker the state helper's own
+    // writer records.
+    let record = format!(
+        "{{\"crusty_verdict\":\"CLEAN\",\"reviewed_head_sha\":\"{}\"}}\n",
+        f.base
+    );
+    for name in ["crusty-round-1.json", "crusty-latest.json"] {
+        fs::write(state.join(name), &record).unwrap();
+        fs::set_permissions(state.join(name), fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    let hash = f.git(&[
+        "hash-object",
+        "--no-filters",
+        state.join("crusty-round-1.json").to_str().unwrap(),
+    ]);
+    fs::write(
+        state.join("crusty-records.tsv"),
+        format!("round-1\tcrusty-round-1.json\t{hash}\n"),
+    )
+    .unwrap();
+    fs::set_permissions(
+        state.join("crusty-records.tsv"),
+        fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let done = f
+        .command("bash")
+        .args([
+            "-c",
+            ". \"$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_state.sh\" && autodrive_record_crusty_loop_done \"$1\"",
+            "record",
+            state.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        done.status.success(),
+        "{}",
+        String::from_utf8_lossy(&done.stderr)
+    );
     fs::write(f.repo.join("dirty"), "preserve").unwrap();
     let o = f.loop_preflight("crusty");
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
@@ -981,10 +1021,16 @@ esac
 
 #[test]
 fn existing_state_directories_follow_the_autodrive_private_dir_rule() {
-    // 0755 is what autodrive_private_dir leaves; 0775 is what drives created
-    // under umask 0002 before it existed. Both continue, and the second
-    // loses its group write bit exactly as `chmod go-w` would remove it.
-    for (mode, expected) in [(0o755, 0o755), (0o775, 0o755), (0o700, 0o700)] {
+    // 0755 and 0775 are what drives created under umask 0022 and 0002 before
+    // autodrive_private_dir existed; 0744 has no write bits but still lets
+    // others read. All continue, and each is made owner-only (0700), as
+    // `chmod 700` does, because secure_fs refuses `mode & 0o077 != 0`.
+    for (mode, expected) in [
+        (0o755, 0o700),
+        (0o775, 0o700),
+        (0o744, 0o700),
+        (0o700, 0o700),
+    ] {
         let f = Fixture::new();
         let state = f.tmp.path().join("state");
         fs::create_dir(&state).unwrap();
@@ -992,7 +1038,8 @@ fn existing_state_directories_follow_the_autodrive_private_dir_rule() {
         f.envelope(0, "ready");
         assert_eq!(
             fs::metadata(&state).unwrap().permissions().mode() & 0o777,
-            expected
+            expected,
+            "mode {mode:o}"
         );
     }
 }

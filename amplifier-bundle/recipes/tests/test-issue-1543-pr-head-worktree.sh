@@ -824,12 +824,26 @@ e2e_setup() {
   for r in auto-drive-to-merge autodrive-build autodrive-crusty-loop autodrive-merge-loop autodrive-crusty-round autodrive-merge-round; do
     cp "$RECIPES/$r.yaml" "$E2E_HOME/amplifier-bundle/recipes/" || harness_error "copy $r"
   done
+  cat > "$E2E_HOME/fixture-completion.sh" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+dir="$1"; repo="$2"; mkdir -p "$dir"; chmod 0700 "$dir"
+head="$(git -C "$repo" rev-parse HEAD)"
+printf '{"crusty_verdict":"CLEAN","reviewed_head_sha":"%s","head_sha":"%s","round_label":"round-1"}\n' "$head" "$head" > "$dir/crusty-round-1.json"
+cp "$dir/crusty-round-1.json" "$dir/crusty-latest.json"
+printf 'round-1\tcrusty-round-1.json\t%s\n' "$(git hash-object --no-filters --stdin < "$dir/crusty-round-1.json")" > "$dir/crusty-records.tsv"
+STUB
   cat > "$E2E_HOME/amplifier-bundle/tools/autodrive_loop.sh" <<'STUB'
 #!/usr/bin/env bash
-name=""; prev=""
-for a in "$@"; do [ "$prev" = "--loop-name" ] && name="$a"; prev="$a"; done
-log="$(cd "$(dirname "$0")/../.." && pwd -P)/log"
+name=""; prev=""; state=""; repo=""
+for a in "$@"; do
+  case "$prev" in --loop-name) name="$a" ;; --state-dir) state="$a" ;; --repo) repo="$a" ;; esac
+  prev="$a"
+done
+root="$(cd "$(dirname "$0")/../.." && pwd -P)"; log="$root/log"
 printf '%s\n' "$@" > "$log/loop-$name.argv"
+[ "$name" != crusty ] || bash "$root/fixture-completion.sh" "$state" "$repo" || exit 1
 echo '{"loop_result":"DONE"}'
 STUB
   cat > "$E2E_HOME/amplifier-bundle/tools/autodrive_crusty_rereview.sh" <<'STUB'
@@ -916,8 +930,9 @@ check_eq T20-report-pr "the run reports PR #7" 7 "$(summary pr)"
 echo "== T21: build and crusty skipped as already done, the gate merges — the run reports MERGED =="
 make_fixture t21
 e2e_setup t21
-( . "$E2E_HOME/amplifier-bundle/tools/autodrive_state.sh" \
-  && autodrive_private_dir "$WORK/state-t21" && autodrive_mark_phase_done "$WORK/state-t21" crusty-loop ) \
+( bash "$E2E_HOME/fixture-completion.sh" "$WORK/state-t21" "$WT" \
+  && . "$E2E_HOME/amplifier-bundle/tools/autodrive_state.sh" \
+  && autodrive_record_crusty_loop_done "$WORK/state-t21" ) \
   || harness_error "cannot mark the crusty loop done in the T21 state directory"
 e2e_run -c pr_number=7 -c existing_branch=feat/x -c autodrive_state_dir="$WORK/state-t21"
 check_eq T21-rc "the composed recipe runs to the end" 0 "$E2E_RC"
