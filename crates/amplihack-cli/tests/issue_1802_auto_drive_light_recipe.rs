@@ -528,6 +528,51 @@ fn resolve_existing_pr_requires_boolean_false_and_preserves_git_guards() {
             "{name}: fetched code must not be checked out"
         );
     }
+    // `gh pr view` exits 0 but prints nothing, or prints text that is not
+    // JSON: there is no boolean `false` to read, so the PR is refused.
+    for (name, body) in [("empty-view", ""), ("invalid-json-view", "{not json")] {
+        std::fs::write(&view_file, body).unwrap();
+        let state = repo.tmp.path().join(name);
+        let output = run_bash(
+            &repo.home,
+            &fakes,
+            Some(&command),
+            &[],
+            &[
+                ("AMPLIHACK_HOME", root.as_os_str()),
+                ("RECIPE_VAR_repo_path", repo.wt.as_os_str()),
+                ("RECIPE_VAR_pr_number", "7".as_ref()),
+                ("RECIPE_VAR_existing_branch", "".as_ref()),
+                ("RECIPE_VAR_autodrive_state_dir", state.as_os_str()),
+                ("FAKE_PR_VIEW", view_file.as_os_str()),
+                ("TMPDIR", repo.tmp.path().as_os_str()),
+                ("XDG_CACHE_HOME", repo.home.as_os_str()),
+                ("npm_config_cache", repo.home.as_os_str()),
+                ("npm_config_prefix", repo.home.as_os_str()),
+            ],
+            "",
+        );
+        assert!(!output.status.success(), "{name}: {}", show(&output));
+        assert!(
+            stdout(&output).trim().is_empty(),
+            "{name}: {}",
+            show(&output)
+        );
+        assert!(
+            !state.exists(),
+            "{name}: rejection must not mark build done"
+        );
+        assert!(
+            stderr(&output).contains("light-cross-repo"),
+            "{name}: {}",
+            show(&output)
+        );
+        assert_eq!(
+            repo.head(),
+            head,
+            "{name}: fetched code must not be checked out"
+        );
+    }
 }
 
 #[test]
