@@ -8142,6 +8142,7 @@ last cycle: 2026-10-18T12:50:05Z stayed
 capacity: headroom 2.07 login-weeks of 4 (52%), usable 2 of 4 logins, runway ~9 h (as of 2026-10-18T12:50:05Z, 3m ago, rotate cycle: probed profiles only)
 overflow: -
 on overflow: no
+hooks repaired: none in the last 24h
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
@@ -8158,6 +8159,7 @@ overflow: -
 api key: -
 on overflow: no
 no session window: review, weekly
+hooks repaired: none in the last 24h
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
@@ -8173,6 +8175,7 @@ live: ryan-mistt-org
 last cycle: 2026-10-24T09:10:05Z stayed overflow=on
 overflow: ryan-mistt-org, team-credits (blocked until 2026-11-01T00:00:00Z)
 on overflow: yes (ryan-mistt-org)
+hooks repaired: none in the last 24h
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
@@ -8211,6 +8214,7 @@ live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
 overflow: -
 on overflow: no
+hooks repaired: none in the last 24h
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
@@ -8276,6 +8280,12 @@ ledger that cannot be read shows `live: - (ledger unreadable)`, or
 `live: - (ledger unreadable: <field>)` when a field was refused, with the
 same fixed text as the [unreadable-ledger stop](#unreadable-ledger-stop).
 
+The line before `log:` counts the rotator's repairs of amplihack's hooks
+block in the last 24 hours (issue #2279): `hooks repaired: none in the last
+24h`, or `hooks repaired: N in the last 24h (last <time>); something is still
+removing amplihack's hooks`. Each `settings.json` file the cycle rewrote counts
+once. See [the hooks block reference](hook-block.md#rotator-cycle).
+
 Under a systemd unit that owns rotation, `status` shows the owner and the
 deferral:
 
@@ -8290,6 +8300,7 @@ last cycle: 2026-11-01T09:30:05Z stayed
 capacity: no recorded cycle
 overflow: -
 on overflow: no
+hooks repaired: none in the last 24h
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
@@ -8323,6 +8334,7 @@ capacity: no recorded cycle
 overflow: -
 on overflow: no
 alert: auto-switch is off while the live login is exhausted (spare: 100% used, threshold 90%)
+hooks repaired: none in the last 24h
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 

@@ -1,7 +1,7 @@
 ---
 title: One source for the hooks block
 description: Why amplihack's Claude Code hooks are defined in one module, written by every path that touches settings.json, and also passed with --settings at launch.
-last_updated: 2026-11-10
+last_updated: 2026-11-11
 review_schedule: quarterly
 owner: amplihack-cli
 related:
@@ -30,19 +30,58 @@ alone, or holding an old binary path, passed both. Profile `settings.json`
 files were copied from the home file at seeding and then never compared again,
 so a profile seeded from a stripped home file stayed stripped.
 
-The visible symptom was a home `settings.json` of about 1010 bytes with no
-hooks section, while `env`, `permissions` and the status line were intact.
+The visible symptom was a home `settings.json` of about 1010 bytes whose
+`hooks` object held only a foreign `PreToolUse` entry (a Bash guard), while
+`env`, `permissions` and the status line were intact.
 Every `amplihack install` restored the block, and the backups it wrote show
 the stripped file each time, so something rewrote the file between installs.
 Sessions started in that state had no hooks, so a session stopped by a usage
 limit was not resumed by `limit-resume`.
 
-One writer that fits this pattern is in amplihack itself. The session-start
-step `migrate_global_hooks` in `amplihack-hooks` removed every amplihack hook
-from `~/.claude/settings.json` whenever the project's `.claude/settings.json`
-also held amplihack hooks, and left every other key alone. A session started
-in any checkout or worktree with project-local hooks therefore stripped the
-home file, and every later session elsewhere ran without hooks.
+## The program that stripped the file
+
+The writer is the session-start step `migrate_global_hooks` in
+`amplihack-hooks`, released up to and including 1.2.132. The evidence is a
+reproduction, not a PID capture.
+
+**No PID capture was made.** `fanotify` and `bpftrace` need root, `sudo` on
+the host needs an interactive password, and `inotify` reports that a file
+changed but not which process changed it. A capture is possible only from a
+root shell.
+
+**What the step did.** It read the "project" settings file as
+`<current folder>/.claude/settings.json`. If that file held amplihack hooks,
+it removed every amplihack hook from `~/.claude/settings.json` and left every
+other key and every foreign hook alone. In a session started with `$HOME` as
+its folder, the "project" file **is** the home file, so the step found
+amplihack hooks in the file it was about to strip and stripped it. No separate
+project file is needed. A search for project files holding amplihack hooks
+therefore cannot find this case: the only file involved is
+`~/.claude/settings.json`.
+
+**Reproduction.** On 11 November 2026 the installed
+`~/.local/bin/amplihack-hooks` 1.2.132 was run by hand in a temporary folder
+used as both `HOME` and the current folder. The input was a `SessionStart`
+event, and the folder held only `.claude/settings.json` with `env`, a foreign
+Bash `PreToolUse` guard and amplihack's `PreToolUse` and `SessionStart`
+entries. The step printed "Removed redundant global amplihack hooks" and
+rewrote the file to `env` plus the foreign guard, with keys sorted.
+
+**Match with the live file.** At the same time, the live
+`~/.claude/settings.json` (1010 bytes, last written 08:51:40 local, four
+minutes after the 08:47:44 install backup) had exactly that shape: `env`,
+`permissions`, the status line and a `hooks` object holding only the foreign
+Bash guard, with keys sorted.
+
+**What this does not rule out.** A second writer, such as a long-running
+Claude Code session saving settings it loaded while the file was stripped,
+is not excluded by the reproduction. That is why the design below does not
+rely on the home file alone: launch passes the block with `--settings`, and
+the rotator's repair is counted. `amplihack profile rotate status` prints
+`hooks repaired: N in the last 24h`. With the session-start step fixed, that
+count should stay at none. A count above zero means another writer is still
+removing the hooks, and it should be traced from a root shell with
+`fanotify`.
 
 ## The design
 
@@ -57,7 +96,8 @@ in one table and reaches every writer and doctor without further edits.
 ### The home file is never stripped
 
 The session-start step no longer removes the global hooks. With project-local
-hooks present, both copies stay. This keeps the home file in the state that
+hooks present, both copies stay, and a session started in `$HOME` leaves the
+home file byte-equal. This keeps the home file in the state that
 install, the launch repair, the rotator cycle and doctor all expect: if the
 step still removed the hooks, each of those would put them back and the next
 session would take them out again, rewriting the file on every cycle.

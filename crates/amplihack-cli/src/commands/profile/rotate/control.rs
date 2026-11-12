@@ -149,6 +149,7 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         Ok(None) => {}
         Err(_) => println!("journal: damaged"),
     }
+    println!("{}", super::hook_heal::status_line(&rs, now()));
     println!("log: {}", rs.log.display());
 }
 

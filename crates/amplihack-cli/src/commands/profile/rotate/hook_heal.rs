@@ -8,13 +8,22 @@
 //! touches `.claude.json` or `.credentials.json`, and never changes the
 //! cycle's outcome or exit code. A binary older than the install stamp
 //! writes nothing (#1526).
+//!
+//! Each file it writes is also counted in `<state>/hook-heals`, one Unix
+//! time per line, kept for a day. `rotate status` prints the count as
+//! `hooks repaired:`, so a repair on every cycle is visible instead of being
+//! kept up quietly: a count above zero means something is still removing
+//! the hooks.
 
 use super::cycle::{Ctx, CycleOutcome};
 use super::daemon::log_line;
 use super::identify::{self, LiveId};
+use super::ledger::RotateState;
+use super::log::timestamp;
 use crate::commands::install::hook_block::{
     FileDrift, FileMerge, HookTarget, block, drift_file, hook_target, merge_file,
 };
+use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::settings_refresh::hook_path_refusal_here;
 use std::path::{Path, PathBuf};
 
@@ -145,6 +154,7 @@ pub(super) fn after_cycle(outcome: CycleOutcome, ctx: &Ctx) {
     if written.is_empty() {
         return;
     }
+    record_heals(&ctx.rs, now(), written.len());
     let events = block(&target)
         .as_object()
         .map(|hooks| hooks.keys().cloned().collect::<Vec<_>>().join(", "))
@@ -157,6 +167,50 @@ pub(super) fn after_cycle(outcome: CycleOutcome, ctx: &Ctx) {
                 path.display()
             ),
         );
+    }
+}
+
+/// The record of recent repairs, in the rotate state directory.
+const HEAL_RECORD: &str = "hook-heals";
+/// How far back the record and the `hooks repaired:` count reach.
+const HEAL_WINDOW: i64 = 86_400;
+
+/// The repair times in the record that fall in the day before `now`. A
+/// missing, unreadable or refused record counts as none.
+fn recent_heals(rs: &RotateState, now: i64) -> Vec<i64> {
+    let Ok(Some(raw)) = rs.read(&rs.dir.join(HEAL_RECORD), "hook repair record") else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&raw)
+        .lines()
+        .filter_map(|line| line.trim().parse::<i64>().ok())
+        .filter(|at| *at <= now && now - *at < HEAL_WINDOW)
+        .collect()
+}
+
+/// Adds `files` repairs at `now` to the record and drops entries older than
+/// a day, so the file stays small. A failed write is logged and changes
+/// nothing else.
+pub(super) fn record_heals(rs: &RotateState, now: i64, files: usize) {
+    let mut times = recent_heals(rs, now);
+    times.extend(std::iter::repeat_n(now, files));
+    let body: String = times.iter().map(|at| format!("{at}\n")).collect();
+    if let Err(error) = rs.write(HEAL_RECORD, body.as_bytes()) {
+        log_line(rs, &format!("hooks: could not record the repair ({error})"));
+    }
+}
+
+/// The `hooks repaired:` line for `rotate status`.
+pub(super) fn status_line(rs: &RotateState, now: i64) -> String {
+    let times = recent_heals(rs, now);
+    match times.iter().max() {
+        None => "hooks repaired: none in the last 24h".to_string(),
+        Some(last) => format!(
+            "hooks repaired: {} in the last 24h (last {}); something is still removing \
+             amplihack's hooks",
+            times.len(),
+            timestamp(*last)
+        ),
     }
 }
 

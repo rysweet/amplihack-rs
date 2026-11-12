@@ -8,6 +8,9 @@
 //!     drift, and skips on `read_only`, a newer install stamp, no target, or
 //!     any other outcome. A refused live profile does not stop the home heal.
 //!     It never creates a file.
+//! (count) Each repaired file is counted in the `hook-heals` record for a
+//!     day, and `rotate status` prints the count, so a repair on every cycle
+//!     is visible.
 //! (C11) A stay on a fresh live reading while a candidate's probe failed
 //!     records `stayed`, which the limit-resume hook reads as capacity.
 //!
@@ -323,6 +326,49 @@ fn heal_never_touches_login_files() {
     hook_heal::heal(CycleOutcome::Swapped, &ctx(&p, Some(&t)));
     assert_eq!(fs::read(&creds).unwrap(), b"{\"k\":\"SECRET\"}");
     assert_eq!(fs::read(&state).unwrap(), b"{\"oauthAccount\":{}}");
+}
+
+// --- (count) repairs are counted and shown --------------------------------
+
+fn rotate_state() -> (tempfile::TempDir, super::super::ledger::RotateState) {
+    let tmp = tempfile::tempdir().unwrap();
+    fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let rs = super::super::ledger::RotateState::new(tmp.path());
+    rs.ensure().unwrap();
+    (tmp, rs)
+}
+
+#[test]
+fn status_says_none_without_a_repair() {
+    let (_tmp, rs) = rotate_state();
+    assert_eq!(
+        hook_heal::status_line(&rs, 1_800_000_000),
+        "hooks repaired: none in the last 24h"
+    );
+}
+
+#[test]
+fn each_repaired_file_is_counted_for_a_day() {
+    let (_tmp, rs) = rotate_state();
+    let t0 = 1_800_000_000;
+    hook_heal::record_heals(&rs, t0, 2);
+    hook_heal::record_heals(&rs, t0 + 120, 1);
+    let line = hook_heal::status_line(&rs, t0 + 120);
+    assert!(
+        line.starts_with("hooks repaired: 3 in the last 24h (last 2027-01-15T08:02:00Z)"),
+        "{line}"
+    );
+    assert!(line.contains("something is still removing"), "{line}");
+    // A day after the first two, only the later one is left.
+    assert!(
+        hook_heal::status_line(&rs, t0 + 86_400).starts_with("hooks repaired: 1 in"),
+        "{}",
+        hook_heal::status_line(&rs, t0 + 86_400)
+    );
+    // A write drops entries older than a day, so the record stays small.
+    hook_heal::record_heals(&rs, t0 + 86_400 + 200, 1);
+    let raw = fs::read_to_string(rs.dir.join("hook-heals")).unwrap();
+    assert_eq!(raw, format!("{}\n", t0 + 86_400 + 200));
 }
 
 // --- (C11) a stay with a skipped candidate records `stayed` ----------------

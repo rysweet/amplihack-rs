@@ -137,7 +137,8 @@ amplihack: warning: /home/you/.claude/settings.json could not be used (is a syml
 ### Rotator cycle
 
 `amplihack profile rotate` (both a single run and the watch daemon) checks the
-hooks after each cycle that ends `swapped`, `stayed` or `switched`. It runs
+hooks after each cycle that ends `swapped` or `stayed`. `amplihack profile
+switch` does not run this check; the next rotator cycle does. It runs
 after the cycle has released the swap lock and adds no timer of its own; it
 reacts to the cycle finishing.
 
@@ -154,8 +155,22 @@ the cycle outcome or the exit code. It logs one line per file it writes. The
 wording below is an example; the path and the event names are fixed:
 
 ```text
-hooks: repaired /home/you/.claude/settings.json (PreToolUse, PostToolUse, StopFailure)
+hooks: restored amplihack's hooks block in /home/you/.claude/settings.json (PreToolUse, PostToolUse, StopFailure)
 ```
+
+Each file it writes is also counted in `hook-heals` in the rotate state
+directory, one Unix time per line, kept for 24 hours. `amplihack profile
+rotate status` prints the count on its own line, just before `log:`:
+
+```text
+hooks repaired: none in the last 24h
+hooks repaired: 3 in the last 24h (last 2026-11-11T16:51:40Z); something is still removing amplihack's hooks
+```
+
+A count above zero means some program is still removing the hooks after
+each repair. The repair keeps sessions working, but the cause has to be
+found: see [the program that stripped the
+file](../concepts/hook-block-single-source.md#the-program-that-stripped-the-file).
 
 ## Merge rules
 
