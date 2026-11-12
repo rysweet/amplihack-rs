@@ -5185,6 +5185,15 @@ bash tests/gadugi/run-autodrive-crusty-rereview-scenario.sh   # and the other ru
 `cli_integration` binary, so a new test file runs only once
 `crates/amplihack-cli/tests/main.rs` declares it with a `mod` line.
 
+On macOS and the BSDs, `test-auto-drive-to-merge.sh` fails one case,
+`1551-gate-merges-under-guard`, so the three `auto_drive_contract_shell_test_*`
+tests fail there. The merge guard finds the gate through `/proc/$PPID`, and
+with no `/proc` it refuses the gate's own merge (the "No `/proc`" row in
+[What this does not stop](#what-this-does-not-stop)). The other `1551-gate-*`
+cases pass, because they check refusals. The case is not skipped on those
+hosts. It fails until [#1646](https://github.com/rysweet/amplihack-rs/issues/1646)
+lands, so do not read a macOS run as green before then.
+
 ### Which `amplihack` binary the shell test uses
 
 The shell test runs `amplihack` through a stub that scripts `recipe run` per
