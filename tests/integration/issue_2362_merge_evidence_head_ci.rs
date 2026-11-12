@@ -1371,6 +1371,29 @@ fn a_missing_repo_path_never_syncs_the_current_repository() {
 }
 
 #[test]
+fn a_repo_path_outside_git_reports_ci_unreadable_without_calling_gh() {
+    // REPO_PATH is a plain directory: step-01b must skip visibly and report
+    // UNREADABLE (never a pass) before it reads a head or calls gh (#537).
+    let sb = Sandbox::new();
+    let plain = sb.root.join("plain-dir");
+    fs::create_dir_all(&plain).unwrap();
+
+    let (out, result) = sb.step_json_env(WAIT_STEP, &[("REPO_PATH", plain.to_str().unwrap())]);
+    assert_eq!(field(&out, "ci_status"), "UNREADABLE", "{out}");
+    assert_eq!(field(&out, "ci_signal"), "no-repo", "{out}");
+    assert_eq!(field(&out, "head_sha"), "", "{out}");
+    assert!(
+        result.stderr.contains("[skip] not a git repo"),
+        "{}",
+        result.stderr
+    );
+    assert!(
+        !sb.state().join("calls.log").exists(),
+        "gh must not be called outside a git repository"
+    );
+}
+
+#[test]
 fn unreadable_pr_state_is_not_reported_up_to_date() {
     // gh pr view fails while the branch is level with origin/main: the step
     // reports state-unreadable, never up-to-date, and does not fetch.
