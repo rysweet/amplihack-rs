@@ -30,7 +30,9 @@
 # Usage:
 #   workflow_terminal_evidence.sh collect [--repo O/R] [--head REF] [--base REF]
 #       [--head-sha SHA] [--pr-url URL] [--pr-number N] [--created-after TIME]
-#   workflow_terminal_evidence.sh collect-for-step        (recipe wrapper for collect)
+#   workflow_terminal_evidence.sh collect-for-step [--base REF]
+#       (recipe wrapper for collect; --base is the run's base_branch, and an
+#       empty value keeps the origin/HEAD discovery)
 #   workflow_terminal_evidence.sh verdict-token          (recipe wrapper: prose -> token)
 #   workflow_terminal_evidence.sh adjudicate [--evidence JSON | --evidence-file F | -]
 #       [--agent-verdict TOKEN] [--scope-reason REASON] [--report-only]

@@ -8,6 +8,9 @@ mod correlation;
 pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.
 mod failure_class;
+/// Issue #1437 — evidence gathering and the marker tables `failure_class` reads.
+mod failure_evidence;
+mod failure_markers;
 mod format;
 /// Issue #1618: the usage-limit patterns of every agent harness, in one place.
 pub(crate) mod limit_patterns;
@@ -24,6 +27,8 @@ pub(crate) mod removed_keys;
 mod retry;
 /// Issue #1606: SIGHUP/SIGINT/SIGTERM stop the whole recipe tree.
 pub(crate) mod stop_signal;
+/// Issue #1437 — a failed step's terminating exit status, from the runner's envelope.
+mod termination;
 
 pub use context_sources::resolve_context_args;
 /// Issue #1569: the auto-switch rerun supervisor uses the same classifier, so
@@ -45,18 +50,6 @@ fn execute_recipe_via_rust_for_test(
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
 ) -> Result<RecipeRunResult> {
-    struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
-    impl Drop for EnvRestore {
-        fn drop(&mut self) {
-            for (key, value) in self.0.drain(..) {
-                match value {
-                    Some(value) => unsafe { std::env::set_var(key, value) },
-                    None => unsafe { std::env::remove_var(key) },
-                }
-            }
-        }
-    }
-
     let inherited_identity = [
         (
             "AMPLIHACK_TREE_ID",
@@ -70,24 +63,8 @@ fn execute_recipe_via_rust_for_test(
     let is_outer_orchestration = inherited_identity
         .iter()
         .all(|(key, inherited)| std::env::var_os(key).as_deref() == *inherited);
-    let _restore = is_outer_orchestration.then(|| {
-        EnvRestore(
-            [
-                "AMPLIHACK_SESSION_TREE_DIR",
-                "AMPLIHACK_TREE_ID",
-                "AMPLIHACK_SESSION_DEPTH",
-                "AMPLIHACK_MAX_DEPTH",
-                "AMPLIHACK_RECIPE_RUN_ID",
-            ]
-            .into_iter()
-            .map(|key| {
-                let previous = std::env::var_os(key);
-                unsafe { std::env::remove_var(key) };
-                (key, previous)
-            })
-            .collect(),
-        )
-    });
+    // #1984: the one list of outer-run variables, RUN_DIR and RUN_ID included.
+    let _restore = is_outer_orchestration.then(crate::test_support::clear_outer_run_env);
 
     // A test that has not chosen otherwise must not run the end-of-run sweep:
     // it resolves the work root from the inherited `AMPLIHACK_WORK_ROOT` or
@@ -98,8 +75,10 @@ fn execute_recipe_via_rust_for_test(
     let _no_sweep = std::env::var_os(crate::commands::cleanup::CLEANUP_ON_EXIT_ENV)
         .is_none()
         .then(|| {
-            unsafe { std::env::set_var(crate::commands::cleanup::CLEANUP_ON_EXIT_ENV, "0") };
-            EnvRestore(vec![(crate::commands::cleanup::CLEANUP_ON_EXIT_ENV, None)])
+            crate::test_support::EnvGuard::set([(
+                crate::commands::cleanup::CLEANUP_ON_EXIT_ENV,
+                "0",
+            )])
         });
 
     execute_recipe_via_rust(
@@ -373,6 +352,7 @@ fn run_recipe_with_options(
     if result.success {
         Ok(())
     } else {
+        failure_class::emit_final_failure_class_marker(&result);
         Err(exit_error(1))
     }
 }
@@ -506,6 +486,8 @@ mod tests_execute;
 #[cfg(test)]
 mod tests_failure_class;
 #[cfg(test)]
+mod tests_failure_class_1437;
+#[cfg(test)]
 mod tests_format;
 #[cfg(test)]
 mod tests_limit_patterns;
@@ -523,3 +505,7 @@ mod tests_root_sandbox;
 mod tests_teardown;
 #[cfg(test)]
 mod tests_terminal_record;
+#[cfg(test)]
+mod tests_termination;
+#[cfg(test)]
+mod tests_termination_contract;

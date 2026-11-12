@@ -14,7 +14,15 @@ Identify which lines start with `✗` and follow the relevant section below. All
 
 ### ✗ hooks installed
 
-**What it means:** `~/.claude/settings.json` either does not exist, contains no `hooks` section, or none of the hook command strings contain the word `"amplihack"`.
+**What it means:** at least one settings file does not hold amplihack's full hooks block. Doctor prints one line per file it checked: `~/.claude/settings.json`, each profile's `settings.json`, and the launch settings file in `~/.amplihack/runtime/`. It does not check `$CLAUDE_CONFIG_DIR/settings.json` or the project's `.claude/settings.json`. For example (the heading and indentation follow doctor's usual layout; the `<path>: <state>` lines are fixed):
+
+```text
+✗ hooks installed
+    /home/you/.claude/settings.json: drift missing=[PreToolUse, PostToolUse, StopFailure] differing=[] extra=[]
+    /home/you/.amplihack/claude-profiles/work/settings.json: clean
+```
+
+The check fails when the home file is not `clean`, or when a profile or launch file that exists shows drift, is unparseable or is refused. Absent profile and launch files pass. The full output format is in the [hooks block reference](../reference/hook-block.md#doctor-report).
 
 **Fix:** Run the installer:
 
@@ -22,13 +30,9 @@ Identify which lines start with `✗` and follow the relevant section below. All
 amplihack install
 ```
 
-`install` registers all 7 amplihack hooks in `settings.json`. Re-run `doctor` to confirm:
+`install` merges the full block into `~/.claude/settings.json`. The live profile's file is repaired by the next `amplihack profile rotate` cycle; other profile files are repaired by profile refresh. Re-run `doctor` to confirm every line reads `clean`.
 
-```
-✓ hooks installed
-```
-
-**If the file exists but hooks are missing,** the file may have been manually edited or overwritten. `amplihack install` is idempotent — it is safe to re-run and will add the missing hooks without duplicating existing ones.
+**If the home file keeps losing its hooks,** another process is rewriting it. Sessions started with `amplihack launch` or `amplihack claude` still receive the hooks through the launch settings file; see [One source for the hooks block](../concepts/hook-block-single-source.md).
 
 ---
 

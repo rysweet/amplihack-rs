@@ -302,8 +302,7 @@ pub fn watch(
         );
     }
     let archive_home = home.clone();
-    let mut ctx = Ctx::new(store.clone(), home, s);
-    ctx.reread = Some(super::fresh::reread_as_configured);
+    let mut ctx = Ctx::new(store.clone(), home, s).with_rereads();
     ctx.stop = Some(stop.clone());
     // Issue #1844: reads that outlast a cycle are used by the next one.
     let (probe_secs, _) = crate::commands::profile::probe_limits::timeout_from_env(None);
@@ -317,7 +316,9 @@ pub fn watch(
             idle = false;
             match cycle::run_cycle(&mut ctx, Mode::Watch) {
                 Ok(CycleOutcome::Stopped) => break,
-                Ok(_) => {}
+                // Issue #2279 (D6): heal the hooks block after the cycle,
+                // outside the swap lock. It never changes the outcome.
+                Ok(outcome) => super::hook_heal::after_cycle(outcome, &ctx),
                 Err(e) => log_line(&rs, &failure(&e)),
             }
         } else if !idle {

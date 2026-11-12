@@ -20,6 +20,7 @@ use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Lock, State};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
+use crate::test_support::proc::{FakeProcScope, fake_proc_scope};
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -84,6 +85,10 @@ fn acct(uuid: &str, email: &str) -> serde_json::Value {
 }
 
 /// `~/.claude` holds `work`'s login (`l`); `spare` has its own (`t`).
+///
+/// `proc` is this test's synthetic process table (issue #2196), installed for
+/// the thread that called [`env`]; it holds no processes until a test seeds
+/// one. A thread the test spawns installs it again with `proc_scope_at`.
 pub(super) struct Env {
     pub(super) _tmp: tempfile::TempDir,
     pub(super) home: PathBuf,
@@ -92,9 +97,11 @@ pub(super) struct Env {
     pub(super) rs: RotateState,
     pub(super) l: u64,
     pub(super) t: u64,
+    pub(super) proc: FakeProcScope,
 }
 
 pub(super) fn env() -> Env {
+    let proc = fake_proc_scope();
     let tmp = tempfile::tempdir().unwrap();
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let home = tmp.path().join("home");
@@ -151,6 +158,7 @@ pub(super) fn env() -> Env {
         rs,
         l,
         t,
+        proc,
     }
 }
 
