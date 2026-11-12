@@ -22,8 +22,16 @@ pub(crate) const OWNED_PATHS: &str = "owned-paths";
 pub(crate) const CLEANUP_RECORD: &str = "cleanup-record.json";
 pub(crate) const RUN_SCHEMA_VERSION: u32 = 1;
 
-/// Longest `runtime/tmp` path the default layout may produce, leaving room
-/// under the 108-byte Unix socket path limit.
+/// Longest `runtime/tmp` path the default layout, or an external root, may
+/// give steps as `TMPDIR`. Tools create Unix sockets below `TMPDIR`, and a
+/// socket path must fit `sun_path` with its NUL: 108 bytes on Linux, 104 on
+/// macOS (XNU `bsd/sys/un.h`). There is no single limit; 80 leaves a tool 27
+/// bytes below `TMPDIR` on Linux and 23 on macOS. Python multiprocessing
+/// needs 32, so it wants a `TMPDIR` of at most 75 bytes on Linux and 59 on
+/// macOS (Python 3.14; 71 before), which a path near this limit does not
+/// meet; #2412 tracks lowering it. "Socket paths" in
+/// `docs/howto/clean-up-after-recipe-runs.md` gives the figures and the
+/// shorter `AMPLIHACK_RUN_TMP_ROOT=/tmp`.
 pub(crate) const MAX_RUNTIME_TMP_BYTES: usize = 80;
 const OWNED_PATHS_MAX_BYTES: u64 = 1024 * 1024;
 const OWNED_PATHS_MAX_LINES: usize = 10_000;
@@ -615,10 +623,10 @@ impl RunWorkspace {
             vars.push(("AMPLIHACK_RUN_ID", scope.run_id.clone().into()));
             vars.push(("AMPLIHACK_RUN_DIR", scope.run_dir.clone().into_os_string()));
         } else {
-            // Fallback mode: do not let steps inherit a parent run's folder
-            // (they would record into its owned-paths) or a refused explicit
-            // work root (worktrees would still go there). Empty means unset
-            // to every consumer.
+            // Dry run: do not let steps inherit a parent run's folder (they
+            // would record into its owned-paths), and keep worktrees out of
+            // a work root the dry run never admitted. Empty means unset to
+            // every consumer.
             vars.push((super::work_root::WORK_ROOT_EXPLICIT_ENV, "0".into()));
             vars.push(("AMPLIHACK_RUN_ID", "".into()));
             vars.push(("AMPLIHACK_RUN_DIR", "".into()));
@@ -658,9 +666,11 @@ impl RunWorkspace {
     }
 }
 
-/// The work root a legacy-mode run compares `AMPLIHACK_RUN_TMP_ROOT`
-/// against: the one that was refused, as given, or the default under
-/// `$HOME`. `$HOME/.amplihack` is checked separately.
+/// The work root a dry run (the only `Legacy` workspace) compares
+/// `AMPLIHACK_RUN_TMP_ROOT` against: `AMPLIHACK_WORK_ROOT` as given, neither
+/// validated nor resolved, when it is set and not empty, otherwise
+/// `$HOME/.amplihack/work`, and an empty path when neither is known.
+/// `$HOME/.amplihack` is checked separately.
 fn legacy_work_root(inputs: &TmpRootInputs) -> PathBuf {
     match std::env::var_os(WORK_ROOT_ENV).filter(|v| !v.is_empty()) {
         Some(root) => PathBuf::from(root),

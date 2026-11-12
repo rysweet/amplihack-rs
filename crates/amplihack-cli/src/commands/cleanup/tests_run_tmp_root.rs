@@ -11,10 +11,13 @@
 //!   root, `/ahr-<12 hex>/tmp`, is 21 bytes and a root of up to 59 bytes fits;
 //! - `pub(crate) struct TmpRootInputs { pub run_tmp_root: Option<OsString>,
 //!   pub tmpdir: Option<OsString>, pub parent_runtime_dir: Option<OsString>,
-//!   pub home: Option<PathBuf>, pub euid: u32 }`, with `Default` and
+//!   pub home: Option<PathBuf>, pub euid: u32,
+//!   pub os_user_tmpdir: Option<PathBuf> }`, with `Default` and
 //!   `from_env()`. `parent_runtime_dir` is the caller's
 //!   `AMPLIHACK_WORKFLOW_RUNTIME_DIR`; `euid` is the uid the root and the
 //!   per-run folder must belong to (root may also be owned by uid 0);
+//!   `os_user_tmpdir` is the macOS login `TMPDIR`
+//!   (`confstr(_CS_DARWIN_USER_TEMP_DIR)`), which rule 2 skips silently;
 //! - `pub(crate) enum RuntimeChoice { Default(PathBuf),
 //!   External { dir: PathBuf, root: PathBuf } }`;
 //! - `pub(crate) struct Chosen { pub choice: RuntimeChoice,
@@ -174,8 +177,8 @@ fn constants_name_the_variable_and_prefix() {
     assert_eq!(RUN_DIR_PREFIX, "ahr-");
 }
 
-/// The per-run name is short so the macOS default `TMPDIR` (56 bytes once
-/// resolved) fits the 80-byte limit with room to spare.
+/// The per-run name is short so that a root of up to 59 bytes fits the
+/// 80-byte limit.
 #[test]
 fn suffix_is_21_bytes_and_the_root_budget_59() {
     assert_eq!(RUN_SUFFIX_BYTES, "/ahr-3f0c9a526d1e/tmp".len());
@@ -525,13 +528,13 @@ fn root_of_60_bytes_is_refused_with_the_length() {
     assert!(!root.join(format!("ahr-{SHORT}")).exists());
 }
 
-/// The macOS default `TMPDIR`, `/var/folders/<2>/<30>/T/`, is given through
-/// a link (`/var` is `/private/var`) and with a trailing slash, and resolves
-/// to 56 bytes. It is honoured with no warning: the run temp path is 77
-/// bytes. Before the per-run name was shortened this printed a warning on
-/// every macOS run.
+/// A `TMPDIR` the caller set, given through a link and with a trailing
+/// slash, the way `/var/folders/<2>/<30>/T/` reaches `/private/var` on
+/// macOS, and resolving to 56 bytes, is honoured with no warning: the run
+/// temp path is 77 bytes. The macOS login folder itself is skipped; see
+/// `macos_login_tmpdir_is_skipped_silently`.
 #[test]
-fn macos_shaped_tmpdir_of_56_resolved_bytes_is_used_without_a_warning() {
+fn linked_tmpdir_of_56_resolved_bytes_is_used_without_a_warning() {
     let fx = Fx::new();
     // `<base>/<pad>/T`, 56 bytes, reached as `<base>/var/T/`.
     let pad = 56 - fx.base.as_os_str().len() - 1 - "/T".len();
@@ -688,6 +691,123 @@ fn tmpdir_owned_by_another_user_warns_naming_tmpdir() {
     let chosen = fx.choose(&inputs);
     assert_eq!(default_of(&chosen), fx.default_dir());
     assert_warns(&chosen, "TMPDIR", "is owned by another user");
+}
+
+// ----- rule 2: the macOS login TMPDIR -----------------------------------
+
+/// A login-style folder: `<base>/<pad>/T`, `len` bytes once resolved, also
+/// reachable as `<base>/var/T/` through a link, like `/var/folders/...` on
+/// macOS. Returns `(resolved, given)`.
+fn login_tmpdir_of_len(fx: &Fx, len: usize) -> (PathBuf, OsString) {
+    let pad = len - fx.base.as_os_str().len() - 1 - "/T".len();
+    let private_var = fx.dir(&"p".repeat(pad));
+    let resolved = private_var.join("T");
+    fs::create_dir(&resolved).unwrap();
+    fs::set_permissions(&resolved, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(resolved.as_os_str().len(), len);
+    symlink(&private_var, fx.base.join("var")).unwrap();
+    let mut given = fx.base.join("var/T").into_os_string();
+    given.push("/");
+    (resolved, given)
+}
+
+/// macOS gives every login a `TMPDIR` under `/var/folders`, on the same
+/// volume as `$HOME`. Honouring it would move nothing off the work root's
+/// disk and would make every step's `TMPDIR` 77 bytes, too long for Python
+/// multiprocessing and `ssh-agent` under the 104-byte macOS socket limit.
+/// Rule 2 skips it without a warning, whichever form either side is given
+/// in, and the run uses the default layout as before #2291.
+#[test]
+fn macos_login_tmpdir_is_skipped_silently() {
+    let fx = Fx::new();
+    let (resolved, given) = login_tmpdir_of_len(&fx, 56);
+    let forms = [resolved.clone().into_os_string(), given.clone()];
+    for login in &forms {
+        for tmpdir in &forms {
+            let inputs = TmpRootInputs {
+                os_user_tmpdir: Some(PathBuf::from(login)),
+                ..fx.with_tmpdir(tmpdir)
+            };
+            let chosen = fx.choose(&inputs);
+            assert_eq!(
+                default_of(&chosen),
+                fx.default_dir(),
+                "{login:?} {tmpdir:?}"
+            );
+            assert_eq!(chosen.warning, None, "{login:?} {tmpdir:?}");
+        }
+    }
+    assert!(!resolved.join(format!("ahr-{SHORT}")).exists());
+}
+
+/// The skip comes before the length check: the login folder is not the
+/// caller's choice, so even one past the 59-byte budget prints nothing.
+#[test]
+fn macos_login_tmpdir_past_the_budget_is_skipped_without_a_warning() {
+    let fx = Fx::new();
+    let (resolved, given) = login_tmpdir_of_len(&fx, 60);
+    let inputs = TmpRootInputs {
+        os_user_tmpdir: Some(PathBuf::from(&given)),
+        ..fx.with_tmpdir(&given)
+    };
+    let chosen = fx.choose(&inputs);
+    assert_eq!(default_of(&chosen), fx.default_dir());
+    assert_eq!(chosen.warning, None);
+    assert!(!resolved.join(format!("ahr-{SHORT}")).exists());
+}
+
+/// Only the login folder itself is skipped. A folder below it is a
+/// deliberate choice and is honoured.
+#[test]
+fn tmpdir_below_the_macos_login_tmpdir_is_used() {
+    let fx = Fx::new();
+    let (resolved, given) = login_tmpdir_of_len(&fx, 40);
+    let below = resolved.join("mine");
+    fs::create_dir(&below).unwrap();
+    fs::set_permissions(&below, fs::Permissions::from_mode(0o700)).unwrap();
+    let inputs = TmpRootInputs {
+        os_user_tmpdir: Some(PathBuf::from(&given)),
+        ..fx.with_tmpdir(&below)
+    };
+    let chosen = fx.choose(&inputs);
+    assert_eq!(chosen.warning, None);
+    let (dir, root) = external(&chosen);
+    assert_eq!(root, below);
+    assert_eq!(dir, below.join(format!("ahr-{SHORT}")));
+}
+
+/// `AMPLIHACK_RUN_TMP_ROOT` may name the login folder: rule 1 is always the
+/// caller's choice, for a run and for a dry run.
+#[test]
+fn root_variable_naming_the_macos_login_tmpdir_is_used() {
+    let fx = Fx::new();
+    let (resolved, given) = login_tmpdir_of_len(&fx, 56);
+    let inputs = TmpRootInputs {
+        os_user_tmpdir: Some(PathBuf::from(&given)),
+        ..fx.with_root(&given)
+    };
+    let chosen = fx.choose(&inputs);
+    assert_eq!(chosen.warning, None);
+    assert_eq!(external(&chosen).1, resolved);
+    assert_eq!(usable_explicit_root(&fx.work, &inputs), Ok(Some(resolved)));
+}
+
+/// On macOS `from_env` reads the login folder from `confstr`. It exists, is
+/// absolute and ends in `T`, like `/var/folders/<2>/<30>/T/`.
+#[cfg(target_os = "macos")]
+#[test]
+fn os_user_tmpdir_is_the_login_temp_folder_on_macos() {
+    let dir = os_user_tmpdir().expect("confstr(_CS_DARWIN_USER_TEMP_DIR)");
+    assert!(dir.is_absolute(), "{dir:?}");
+    assert!(dir.is_dir(), "{dir:?}");
+    assert_eq!(dir.file_name(), Some(OsStr::new("T")), "{dir:?}");
+}
+
+/// Other systems have no login temp folder, so rule 2 is unchanged there.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn os_user_tmpdir_is_none_off_macos() {
+    assert_eq!(os_user_tmpdir(), None);
 }
 
 // ----- the per-run folder (D4, S1, S2, S5) ------------------------------

@@ -7,6 +7,12 @@
 //! [`TmpRootInputs::from_env`] collects the values once, so tests pass their
 //! own. Every refusal falls back to the default layout inside the private
 //! work root, with at most one warning.
+//!
+//! On macOS the per-user folder launchd gives every login as `TMPDIR` does
+//! not count as the caller's choice: it sits on the same volume as `$HOME`,
+//! so honouring it moves nothing off the work root's disk, and its 56-byte
+//! resolved path would make every step's `TMPDIR` 77 bytes, too long for
+//! common socket users under the 104-byte macOS limit.
 
 use super::run_dir::{MAX_RUNTIME_TMP_BYTES, runtime_dir_for, short_id};
 use super::work_root::create_private_dir_all;
@@ -19,9 +25,7 @@ use std::path::{Path, PathBuf};
 pub(crate) const RUN_TMP_ROOT_ENV: &str = "AMPLIHACK_RUN_TMP_ROOT";
 /// Short on purpose: every byte of the per-run name comes out of the 80-byte
 /// budget for `<root>/<name>/tmp`. With `ahr-` the part after the root is 21
-/// bytes, so a resolved root of up to 59 bytes fits. That covers the macOS
-/// default `TMPDIR`, `/var/folders/<2>/<30>/T/`, which resolves through
-/// `/private/var` to 56 bytes.
+/// bytes, so a resolved root of up to 59 bytes fits.
 pub(crate) const RUN_DIR_PREFIX: &str = "ahr-";
 /// The dry-run folder, `<root>/ahd-<random>`. Its part after the root must
 /// never be longer than the per-run folder's, because both are checked
@@ -58,6 +62,10 @@ pub(crate) struct TmpRootInputs {
     pub home: Option<PathBuf>,
     /// The uid the root (or uid 0) and the per-run folder must belong to.
     pub euid: u32,
+    /// The per-user temporary folder macOS gives every login session as
+    /// `TMPDIR` (`confstr(_CS_DARWIN_USER_TEMP_DIR)`); `None` elsewhere.
+    /// Rule 2 skips a `TMPDIR` that resolves to it.
+    pub os_user_tmpdir: Option<PathBuf>,
 }
 
 impl TmpRootInputs {
@@ -71,6 +79,7 @@ impl TmpRootInputs {
                 .map(PathBuf::from),
             // SAFETY: geteuid has no preconditions and cannot fail.
             euid: unsafe { libc::geteuid() },
+            os_user_tmpdir: os_user_tmpdir(),
         }
     }
 
@@ -255,6 +264,12 @@ fn usable_root(
     if !explicit && inside_parent_runtime(value, &root, inputs) {
         return Err(Refused::Silent);
     }
+    // The macOS login `TMPDIR` is the system's default, not a choice: skip it
+    // without a word, before the length check, so macOS runs keep the short
+    // default layout. A deliberately set `TMPDIR` is still honoured.
+    if !explicit && is_os_user_tmpdir(&root, inputs) {
+        return Err(Refused::Silent);
+    }
 
     if meta.uid() != inputs.euid && meta.uid() != 0 {
         return Err(Refused::Warn("is owned by another user".into()));
@@ -269,7 +284,7 @@ fn usable_root(
     }
     // Warned under both rules: a root past [`MAX_ROOT_BYTES`] is one the
     // caller chose, and skipping it silently would put the run back on the
-    // work root's disk without a word. The macOS default `TMPDIR` fits.
+    // work root's disk without a word.
     if root.as_os_str().len() > MAX_ROOT_BYTES {
         let len = root.as_os_str().len() + RUN_SUFFIX_BYTES;
         return Err(Refused::Warn(format!(
@@ -294,6 +309,51 @@ fn inside_parent_runtime(value: &Path, root: &Path, inputs: &TmpRootInputs) -> b
         return true;
     }
     fs::canonicalize(parent).is_ok_and(|p| root.starts_with(p))
+}
+
+/// Whether the resolved `root` is the macOS per-user login temp folder. The
+/// folder is resolved too, so `/var/folders/...` and `/private/var/folders/...`,
+/// with or without a trailing `/`, compare equal. A folder below it does not
+/// count.
+fn is_os_user_tmpdir(root: &Path, inputs: &TmpRootInputs) -> bool {
+    let Some(login) = inputs.os_user_tmpdir.as_ref().filter(|p| p.is_absolute()) else {
+        return false;
+    };
+    let login = fs::canonicalize(login).unwrap_or_else(|_| login.clone());
+    root == login
+}
+
+/// The folder launchd gives a macOS login session as `TMPDIR`, read with
+/// `confstr(_CS_DARWIN_USER_TEMP_DIR)`, or `None` if the call fails.
+#[cfg(target_os = "macos")]
+fn os_user_tmpdir() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    // SAFETY: a null buffer with length 0 only asks for the size needed,
+    // including the terminating NUL; 0 means the call failed.
+    let needed = unsafe { libc::confstr(libc::_CS_DARWIN_USER_TEMP_DIR, std::ptr::null_mut(), 0) };
+    if needed <= 1 {
+        return None;
+    }
+    let mut buf = vec![0u8; needed];
+    // SAFETY: `buf` is writable for `needed` bytes, the length passed.
+    let written = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            buf.as_mut_ptr().cast::<libc::c_char>(),
+            needed,
+        )
+    };
+    if written == 0 || written > needed {
+        return None;
+    }
+    buf.truncate(written - 1);
+    Some(PathBuf::from(OsString::from_vec(buf)))
+}
+
+/// Only macOS has a per-user login temp folder.
+#[cfg(not(target_os = "macos"))]
+fn os_user_tmpdir() -> Option<PathBuf> {
+    None
 }
 
 /// Creates `<root>/<name>` with one non-recursive `mkdir` at mode 0700 and

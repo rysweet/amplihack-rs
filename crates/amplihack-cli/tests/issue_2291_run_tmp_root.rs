@@ -451,12 +451,14 @@ fn relink_tmpdir_to_len(fx: &Fx, len: usize) -> PathBuf {
     long
 }
 
-/// The macOS default: `TMPDIR` names `/var/folders/<2>/<30>/T/`, which
-/// resolves through `/private/var` to 56 bytes. With the 21-byte
-/// `/ahr-<12 hex>/tmp` suffix that is a 77-byte run temp path, so the
-/// caller's `TMPDIR` is honoured and stderr carries no warning.
+/// A caller's `TMPDIR` reached through a link that resolves to 56 bytes,
+/// the shape of `/var/folders/<2>/<30>/T/` through `/private/var`. With the
+/// 21-byte `/ahr-<12 hex>/tmp` suffix that is a 77-byte run temp path,
+/// within the 80-byte limit, so the `TMPDIR` is honoured and stderr carries
+/// no warning. (On macOS the login folder itself is skipped by rule 2; this
+/// folder is not it.)
 #[test]
-fn ac1_macos_shaped_tmpdir_of_56_resolved_bytes_is_honoured_without_a_warning() {
+fn ac1_linked_tmpdir_of_56_resolved_bytes_is_honoured_without_a_warning() {
     let fx = Fx::new_short();
     let long = relink_tmpdir_to_len(&fx, 56);
 

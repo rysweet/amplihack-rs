@@ -73,7 +73,7 @@ for these settings.
 | Variable | Flag | Default | Meaning |
 | --- | --- | --- | --- |
 | `AMPLIHACK_WORK_ROOT` | none | `$HOME/.amplihack/work` | Folder that holds run folders, targets, clones, the archive and, when set explicitly, worktrees. |
-| `AMPLIHACK_RUN_TMP_ROOT` | none | unset | Absolute folder for each run's private temporary folder, `ahr-<short id>`. When unset, the caller's `TMPDIR` is used if it is suitable, and otherwise the work root. See [Where a run's temp folder goes](#where-a-runs-temp-folder-goes). |
+| `AMPLIHACK_RUN_TMP_ROOT` | none | unset | Absolute folder for each run's private temporary folder, `ahr-<short id>`. When unset, the caller's `TMPDIR` is used if it is suitable (on macOS, not the login folder under `/var/folders`), and otherwise the work root. See [Where a run's temp folder goes](#where-a-runs-temp-folder-goes). |
 | `AMPLIHACK_CLEANUP_KEEP_HOURS` | `--keep-hours N` | `24` | How long run-owned worktrees and targets are kept after a run's PR closes or the run ends, and how old untagged targets and system temporary leftovers must be. Does not apply to `run-tmp`. Maximum `87600`. |
 | `AMPLIHACK_LOG_ARCHIVE_DAYS` | `--log-days N` | `30` | Recipe logs and session logs whose modification time is older than this are archived. Maximum `36500`. |
 | `AMPLIHACK_LOG_ARCHIVE_DIR` | none | `<work root>/archive` | Where log archives and `MANIFEST.jsonl` are written. |
@@ -159,9 +159,10 @@ their own temporary folders are not recovery authority.
 
 If `<run dir>/runtime/tmp` would be longer than 80 bytes, which can happen
 with a long home path, the runtime folder is placed at
-`<work root>/r/<first 12 hex digits of the run id>` instead. This leaves room
-under the 108-byte limit on Unix socket paths for tools that create sockets in
-`TMPDIR`.
+`<work root>/r/<first 12 hex digits of the run id>` instead. Tools create
+Unix sockets in `TMPDIR`, and a socket path is limited to 108 bytes on Linux
+and 104 on macOS; [Socket paths](#socket-paths) says what an 80-byte `TMPDIR`
+leaves room for.
 
 ### The run report
 
@@ -392,23 +393,86 @@ TMPDIR=/scratch/amplihack-tmp amplihack recipe run default-workflow \
   `/data/work`;
 - be valid UTF-8 once resolved.
 
-The caller's `TMPDIR` must meet the same rules, with two differences: the
-runner never creates it, so it must already exist, and it must also lie
-outside the folder named by any `AMPLIHACK_WORKFLOW_RUNTIME_DIR` the caller
-set. Some of these failures are skipped without a warning; see
+The caller's `TMPDIR` must meet the same rules, with three differences: the
+runner never creates it, so it must already exist; it must also lie outside
+the folder named by any `AMPLIHACK_WORKFLOW_RUNTIME_DIR` the caller set; and
+on macOS it must not be the login temp folder (see
+[The macOS login TMPDIR](#the-macos-login-tmpdir)). Some of these failures
+are skipped without a warning; see
 [When the runner falls back](#when-the-runner-falls-back).
 
 The resolved path of `<root>/ahr-<12 hex>/tmp` must be at most 80 bytes, the
-same limit as the default layout, so tools can still create Unix sockets in
-`TMPDIR`. The part after the root, `/ahr-<12 hex>/tmp`, takes 21 bytes, so a
+same limit as the default layout; [Socket paths](#socket-paths) explains the
+figure. The part after the root, `/ahr-<12 hex>/tmp`, takes 21 bytes, so a
 resolved root of up to 59 bytes fits; a root of 60 bytes is refused with a
-warning, whichever variable named it. The default `TMPDIR` on macOS,
-`/var/folders/<2>/<30>/T/`, resolves through `/private/var` to 56 bytes, so
-it fits and is used.
+warning, whichever variable named it.
 
 The runner always resolves the root (following symbolic links) before it
 uses it. The resolved path is what steps see, what `run.json` records and
 what cleanup compares.
+
+### The macOS login TMPDIR
+
+On macOS, launchd gives every login a `TMPDIR` in a per-user folder,
+`/var/folders/<2>/<30>/T/`; `getconf DARWIN_USER_TEMP_DIR` prints it. Rule 2
+skips that folder without a warning, comparing both paths after resolving
+them, and the run uses the default layout, as it did before the runner
+honoured `TMPDIR`. There are two reasons:
+
+- The folder is on the same APFS volume as a standard home folder, so using
+  it would move nothing off the work root's disk.
+- It resolves through `/private/var` to 56 bytes, so every step's `TMPDIR`
+  would be `<56 bytes>/ahr-<12 hex>/tmp`, 77 bytes. That is too long for
+  Python multiprocessing and `ssh-agent` under the 104-byte macOS socket
+  limit; see [Socket paths](#socket-paths). The default layout gives
+  `<work root>/r/<12 hex>/tmp`: 46 bytes with the default work root of
+  `/Users/<4 characters>/.amplihack/work`.
+
+A `TMPDIR` you set to another folder, including a folder below the login one,
+is honoured under the usual rules, and `AMPLIHACK_RUN_TMP_ROOT` may name the
+login folder itself. The runner reads the folder with
+`confstr(_CS_DARWIN_USER_TEMP_DIR)`. Other systems have no such folder, and
+rule 2 works there as described above.
+
+### Socket paths
+
+Tools create Unix sockets below `TMPDIR`. The kernel limits a socket path to
+the size of `sun_path`, including the terminating NUL: 108 bytes on Linux
+([unix(7)](https://man7.org/linux/man-pages/man7/unix.7.html)) and 104 on
+macOS (XNU
+[`bsd/sys/un.h`](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/un.h)).
+There is no single limit. A step's `TMPDIR` of 80 bytes, the most the runner
+gives, leaves 27 bytes below it on Linux and 23 on macOS. Some common tools
+need more:
+
+| Tool | Socket path below `TMPDIR` | Longest `TMPDIR` that works |
+| --- | --- | --- |
+| Python `multiprocessing` listeners | `/pymp-<8>/sock-<12>` (3.14) or `/pymp-<8>/listener-<8>` (earlier): 32 bytes | Linux: 75 bytes. macOS: 59 bytes on 3.14, 71 before |
+| `ssh-agent` started without `-a` | `/ssh-<12>/agent.<pid>`: 24 bytes plus the process id | Linux: 76 bytes with a 7-digit id. macOS: 74 bytes with a 5-digit id |
+
+Past its limit, Python 3.14 ignores `TMPDIR` for these sockets and uses
+`/tmp` ([cpython#132124](https://github.com/python/cpython/issues/132124));
+earlier versions fail with `AF_UNIX path too long`. `ssh-agent` cannot create
+its socket.
+
+What a step gets:
+
+| Layout | Step `TMPDIR` | Length |
+| --- | --- | --- |
+| Default | `<work root>/runs/<run id>/runtime/tmp` | work root + 54 bytes, used while that is at most 80 |
+| Default, long work root | `<work root>/r/<12 hex>/tmp` | work root + 19 bytes |
+| External root | `<root>/ahr-<12 hex>/tmp` | root + 21 bytes, at most 80 |
+
+So a work root of 22 to 26 bytes, such as `/home/<4 characters>/.amplihack/work`
+on Linux, gives steps a `TMPDIR` of 76 to 80 bytes, which is past the limit
+for Python multiprocessing. Whether to lower the 80-byte limit is tracked in
+[#2412](https://github.com/rysweet/amplihack-rs/issues/2412).
+
+To keep every step's `TMPDIR` short whatever the home path, set
+`AMPLIHACK_RUN_TMP_ROOT=/tmp`. Steps then get `/tmp/ahr-<12 hex>/tmp`, which
+is 25 bytes, or 33 bytes on macOS, where `/tmp` resolves to `/private/tmp`.
+`/tmp` is owned by root and has the sticky bit set, so it meets the rules
+above. If `/tmp` is a tmpfs, see [tmpfs roots](#tmpfs-roots).
 
 ### The per-run folder
 
@@ -452,16 +516,17 @@ in a variable cannot forge another output line.
 
 A `TMPDIR` is not an error, and the run uses the default layout and prints
 nothing, when it is unset, empty or relative, when it does not exist or is not
-a folder, or when it lies inside the work root, inside `$HOME/.amplihack` or
-inside the folder named by the caller's `AMPLIHACK_WORKFLOW_RUNTIME_DIR`. The
-last case is the normal one for a sub-recipe, because its `TMPDIR` is the
-parent run's own temporary folder; see [Nested runs](#nested-runs).
+a folder, when it is the [macOS login temp folder](#the-macos-login-tmpdir),
+or when it lies inside the work root, inside `$HOME/.amplihack` or inside the
+folder named by the caller's `AMPLIHACK_WORKFLOW_RUNTIME_DIR`. The last case
+is the normal one for a sub-recipe, because its `TMPDIR` is the parent run's
+own temporary folder; see [Nested runs](#nested-runs).
 
 A `TMPDIR` that is too long is not skipped silently: it prints the length
 warning. Falling back without a word would put the run's temporary files back
 on the work root's disk while the caller believes they are elsewhere. The
-login `TMPDIR` on macOS fits, so this warning does not appear there by
-default.
+macOS login `TMPDIR` is skipped before the length is checked, so a default
+macOS login does not see this warning.
 
 A bad `AMPLIHACK_RUN_TMP_ROOT` never falls through to `TMPDIR`. If you set the
 variable, either it is used or the default layout is.
@@ -1450,11 +1515,14 @@ removed. `git worktree remove` run by hand does not remove the target; call
 `amplihack cleanup --apply --worktree-target <path>` with the same path.
 
 **A tool cannot create a socket in `TMPDIR`.** Check the length of
-`$TMPDIR`. Runs switch to the shorter `<work root>/r/<short id>` layout when
-the default path is over 80 bytes; a very long `AMPLIHACK_WORK_ROOT` can still
-exceed the socket limit, so choose a shorter one. An external root, from
-`AMPLIHACK_RUN_TMP_ROOT` or `TMPDIR`, whose resolved path is longer than 59
-bytes is refused with a warning, and the run uses the default layout.
+`$TMPDIR` against the table in [Socket paths](#socket-paths). Runs switch to
+the shorter `<work root>/r/<short id>` layout only when the default path is
+over 80 bytes, so a step's `TMPDIR` can be up to 80 bytes, which is too long
+for Python multiprocessing on Linux and macOS. Set
+`AMPLIHACK_RUN_TMP_ROOT=/tmp` for a 25-byte step `TMPDIR` (33 bytes on
+macOS). An external root, from `AMPLIHACK_RUN_TMP_ROOT` or `TMPDIR`, whose
+resolved path is longer than 59 bytes is refused with a warning, and the run
+uses the default layout.
 
 **A run prints `amplihack: AMPLIHACK_RUN_TMP_ROOT="..." <reason>; using the default run folder`** (or `TMPDIR="..."`).
 The root failed one of the rules in
@@ -1468,7 +1536,9 @@ is set.** Check that `TMPDIR` is an absolute path to a folder that exists and
 lies outside the work root, `$HOME/.amplihack` and any
 `AMPLIHACK_WORKFLOW_RUNTIME_DIR` inherited from a parent run. A `TMPDIR` that
 fails these checks is ignored without a warning; set `AMPLIHACK_RUN_TMP_ROOT`
-instead to get a warning that names the reason. The other refusals of a
+instead to get a warning that names the reason. On macOS, the login `TMPDIR`
+under `/var/folders` is ignored on purpose; see
+[The macOS login TMPDIR](#the-macos-login-tmpdir). The other refusals of a
 `TMPDIR`, such as a resolved path longer than 59 bytes, print a warning; see
 [When the runner falls back](#when-the-runner-falls-back).
 
