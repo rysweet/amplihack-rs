@@ -40,7 +40,9 @@ fn metadata(e: &Env, name: &str, org: Value) {
     }
 }
 
-fn fixture(source: Value, spare: Value, third: Value) -> Env {
+/// `work` live in `source`, `spare` and `third` stored in their
+/// organisations; issue #2211's outlook tests reuse it.
+pub(super) fn fixture(source: Value, spare: Value, third: Value) -> Env {
     let e = env();
     add_stored(&e, "third");
     metadata(&e, "work", source);
