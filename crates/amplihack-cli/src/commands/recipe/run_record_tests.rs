@@ -246,6 +246,10 @@ fn dropping_the_guard_removes_the_record() {
     assert!(root.file("run-a", ID).is_file());
     drop(guard);
     assert!(!root.file("run-a", ID).exists());
+    assert!(
+        !root.run_dir("run-a").join("procs").exists(),
+        "no empty procs/ is left"
+    );
     assert!(root.find(ID).is_none());
 }
 
@@ -268,6 +272,7 @@ fn each_attempt_has_its_own_record() {
     assert!(root.find(ID).is_none());
     assert!(root.find("second-attempt").is_some());
     drop(second);
+    assert!(!root.run_dir("run-a").join("procs").exists());
 }
 
 #[test]

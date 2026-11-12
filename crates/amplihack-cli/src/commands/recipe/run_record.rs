@@ -89,6 +89,11 @@ impl Drop for Guard {
                 self.path.display()
             ),
         }
+        // Leave no empty `procs/` behind in the run folder. `remove_dir` only
+        // removes an empty folder, so a record of another attempt keeps it.
+        if let Some(procs) = self.path.parent() {
+            let _ = fs::remove_dir(procs);
+        }
     }
 }
 

@@ -461,8 +461,10 @@ its own processes into its run directory (on other platforms none is written):
 [Settings](../howto/clean-up-after-recipe-runs.md#settings). `<run dir id>` is
 the run directory's name (`AMPLIHACK_RUN_ID`), not the `run_id` that
 `recipe stop` takes. `<run_id>` is the attempt id from the log pointer lines;
-a run that retries writes one record per attempt. The record is removed with
-its run directory by [`amplihack cleanup`](../howto/clean-up-after-recipe-runs.md).
+a run that retries writes one record per attempt. Each record is removed when
+its attempt ends, and `procs/` is removed with the last one, so a finished run
+leaves no `procs/` behind. A record left by a killed run is removed with its
+run directory by [`amplihack cleanup`](../howto/clean-up-after-recipe-runs.md).
 
 | Field | Meaning |
 |-------|---------|
