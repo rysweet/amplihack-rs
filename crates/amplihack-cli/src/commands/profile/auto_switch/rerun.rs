@@ -62,6 +62,8 @@ pub fn nested_candidate(
     current: &str,
     skip: &[String],
 ) -> Option<Pick> {
+    let source_host = current;
+    let current = ledger.account_in(source_host);
     let now = fsx::now();
     let overflow = OverflowInputs::load(&state.root, cfg, now);
     let pool = Pool {
@@ -78,7 +80,28 @@ pub fn nested_candidate(
             && ledger.leased_to(n).is_none()
             && login_ready(state, &overflow, c)
     };
-    let picked = candidate::select_with_overflow(&pool, &overflow.pool(), current, eligible);
+    let on_overflow = overflow.order.iter().any(|p| p.as_str() == current);
+    let need = amplihack_utils::organisation_affinity::Need::of(
+        on_overflow,
+        !on_overflow && candidate::is_exhausted(readings.get(current), cfg.threshold, now),
+    );
+    let restriction = super::affinity::restrict(
+        state,
+        ledger,
+        &pool,
+        &overflow,
+        source_host,
+        current,
+        need,
+        eligible,
+    );
+    let picked = candidate::select_restricted(
+        &pool,
+        &overflow.pool(),
+        current,
+        |p| eligible(p) && restriction.allowed.contains(p),
+        |p| restriction.plan_room.contains(p),
+    );
     if picked.is_none_or(|p| overflow.platform.as_ref() != Some(p)) {
         let held = per_token::key_held(&pool, &overflow, current, eligible);
         per_token::record_key_held(state, &held);
@@ -196,13 +219,20 @@ pub fn substitute(
     };
     let profiles = profile_names(store);
     let skip = vec![inherited.to_string()];
-    nested_candidate(state, &ledger, &profiles, &readings, cfg, &account, &skip).map(|c| {
-        Substitute {
-            profile: c.profile,
-            reason,
-            inherited_reset,
-            per_token: c.per_token,
-        }
+    nested_candidate(
+        state,
+        &ledger,
+        &profiles,
+        &readings,
+        cfg,
+        inherited.as_str(),
+        &skip,
+    )
+    .map(|c| Substitute {
+        profile: c.profile,
+        reason,
+        inherited_reset,
+        per_token: c.per_token,
     })
 }
 
@@ -589,7 +619,7 @@ fn next_profile(
                 &profile_names(store),
                 &readings,
                 cfg,
-                &account,
+                profile.as_str(),
                 tried,
             )
         }

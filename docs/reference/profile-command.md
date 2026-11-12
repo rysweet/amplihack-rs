@@ -10,6 +10,11 @@ review_schedule: as-needed
 Manage Claude Code login profiles. See the
 [how-to](../howto/claude-profiles.md) for a walkthrough.
 
+Automatic selection also follows [organisation affinity](profile-organisation-affinity.md):
+same-organisation capacity takes precedence over headroom ranking; upgrades and
+plan-room never make a confirmed crossing, and an unknown organisation is not one. The reference describes the
+crossing and unresolved-affinity warnings and how a resumed session receives them.
+
 See also the [capacity governor](./capacity-governor.md), which reads the
 usage readings described here to decide when new work may start.
 

@@ -69,6 +69,7 @@ pub mod litellm_callbacks;
 pub mod litellm_proxy;
 pub mod llm_client;
 pub mod observability;
+pub mod organisation_affinity;
 /// Stdin writer and UTF-8-safe truncation for large child payloads (issue #1570).
 pub mod payload_delivery;
 pub mod plugin_cli;

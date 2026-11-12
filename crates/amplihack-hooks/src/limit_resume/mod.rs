@@ -36,6 +36,7 @@ pub mod log;
 
 use amplihack_types::HookInput;
 use amplihack_utils::file_event::{PROMPT_MASK, SWAP_MASK, Waiter, Watch, Woke};
+use amplihack_utils::organisation_affinity::Affinity;
 use amplihack_utils::rotator_status::swap_record::{
     Judgement, SWAP_FILE, SwapRecord, judge, rotate_dir,
 };
@@ -212,7 +213,22 @@ impl SendFailed {
 /// session still runs and is not suspended (S4). Stops at the first failure
 /// (D8); nothing is retried and there is no other way to wake the session.
 pub fn send_resume<D: Deps + ?Sized>(deps: &mut D, pane: &Pane) -> Result<(), SendFailed> {
+    send_resume_affinity(deps, pane, None)
+}
+
+/// [`send_resume`], with `continue` replaced by the warning text for
+/// `affinity` when the swap record carries one that warns.
+fn send_resume_affinity<D: Deps + ?Sized>(
+    deps: &mut D,
+    pane: &Pane,
+    affinity: Option<Affinity>,
+) -> Result<(), SendFailed> {
     for (sent, key) in (0u8..).zip(RESUME_KEYS) {
+        let key = match (key, affinity) {
+            (Key::LiteralContinue, Some(Affinity::Crossing)) => Key::LiteralCrossing,
+            (Key::LiteralContinue, Some(Affinity::Unresolved)) => Key::LiteralUnresolved,
+            _ => key,
+        };
         if !deps.session_alive_now() {
             return Err(SendFailed {
                 sent,
@@ -251,6 +267,17 @@ fn swap(r: &SwapRecord) -> Note<'_> {
 
 /// Decides one hook invocation.
 pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
+    run_with_affinity(input, deps, &mut None)
+}
+
+/// [`run_with`], also setting `affinity` to the organisation outcome of the
+/// swap record this resume follows. Only a resume reads it; every other
+/// outcome leaves it `None`.
+fn run_with_affinity<D: Deps + ?Sized>(
+    input: &HookInput,
+    deps: &mut D,
+    affinity: &mut Option<Affinity>,
+) -> Outcome {
     let enabled = deps.auto_switch_on();
     let HookInput::StopFailure {
         session_id,
@@ -425,10 +452,13 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
             return note(deps, now, outcome, swap(&record));
         }
     }
+    // The swap that woke this wait carries its own organisation outcome
+    // (#2136). Nothing else is consulted: there is no per-session state.
+    *affinity = record.affinity.filter(|a| a.warning().is_some());
     let Some(pane) = pane else {
         return note(deps, now, Outcome::Resumed, swap(&record));
     };
-    let (outcome, keys_sent, detail) = match send_resume(deps, &pane) {
+    let (outcome, keys_sent, detail) = match send_resume_affinity(deps, &pane, *affinity) {
         Ok(()) => (Outcome::ResumedKeys, RESUME_KEYS.len() as u8, None),
         Err(f) => (Outcome::ResumeKeysFailed, f.sent, Some(f.detail())),
     };
@@ -443,26 +473,32 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
 }
 
 /// Reads at most `MAX_STDIN_BYTES` of payload from `stdin`, decides, and
-/// writes `RESUME_MSG` to `stderr` only on `Resumed`. Returns the exit code:
-/// 2 on `Resumed`, 0 otherwise, including after keys were sent, for an
+/// writes `RESUME_MSG` to `stderr` only on `Resumed`, preceded by the swap
+/// record's organisation warning when it has one (#2136). On `ResumedKeys`
+/// the warning went with the keys instead. Returns the exit code: 2 on
+/// `Resumed`, 0 otherwise, including after keys were sent, for an
 /// oversized or malformed payload and for a panic.
 pub fn run_with_io<D: Deps + ?Sized>(
     stdin: impl Read,
     stderr: &mut dyn Write,
     deps: &mut D,
 ) -> i32 {
+    let mut affinity = None;
     let decided = catch_unwind(AssertUnwindSafe(|| {
         let raw = read_bounded(stdin, MAX_STDIN_BYTES).ok()?;
         if raw.len() as u64 > MAX_STDIN_BYTES {
             return None;
         }
         let input: HookInput = serde_json::from_slice(&raw).ok()?;
-        Some(run_with(&input, deps))
+        Some(run_with_affinity(&input, deps, &mut affinity))
     }));
     match decided {
         Ok(Some(Outcome::Resumed)) => {
             // The resume is already recorded; exit 2 alone wakes the
             // session, so a failed write still exits 2.
+            if let Some(text) = affinity.and_then(Affinity::warning) {
+                let _ = writeln!(stderr, "{text}");
+            }
             let _ = writeln!(stderr, "{RESUME_MSG}");
             let _ = stderr.flush();
             Outcome::Resumed.exit_code()

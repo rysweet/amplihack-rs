@@ -8,12 +8,23 @@ review_schedule: as-needed
 # How to Rotate Claude Logins Automatically
 
 `amplihack profile rotate` keeps the default Claude login in `~/.claude` on
-the account with the most capacity left. It measures every
+an eligible account with capacity, preferring the live login's organisation.
+It measures every
 [login profile](claude-profiles.md) with
 [`profile usage`](claude-profiles.md#check-usage-across-profiles), and when the
 account in `~/.claude` is close to its session or weekly limit it moves a
 better profile's login into `~/.claude` and puts the outgoing login back in the
 profile it came from.
+
+[Organisation affinity](../reference/profile-organisation-affinity.md) restricts
+selection before capacity ranking: crossing is allowed only for necessary
+capacity relief without an eligible same-organisation target with capacity.
+Plan-room and upgrade moves never make a confirmed crossing, including
+fallbacks; an unknown organisation is not a crossing, so missing metadata never
+keeps a session on an overflow login. The rotate log and `rotate status`
+distinguish confirmed crossings from unresolved affinity. A session stopped
+at a limit receives the warning with the resume that follows the swap, read
+from the swap record; a stop that does not end in a resume gets none.
 
 Use it when you run plain `claude` (no `CLAUDE_CONFIG_DIR`) and have several
 profiles. [Auto-switch](claude-profiles.md#switch-accounts-automatically) is
