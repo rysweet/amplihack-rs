@@ -646,6 +646,7 @@ fn crusty_round_has_no_light_branch_in_any_step() {
             "step-04-address-concerns",
             "step-05-verify-concerns-addressed",
             "step-06-write-round-record",
+            "step-07-select-next-action",
         ]
     );
     let step = |id: &str| {
@@ -693,6 +694,11 @@ fn crusty_round_has_no_light_branch_in_any_step() {
             .keys()
             .all(|key| !key.as_str().unwrap().contains("light")),
         "autodrive-crusty-round must not gain light-specific context"
+    );
+    assert_eq!(
+        context.len(),
+        12,
+        "#2336 completion state and the #2222 state directory are the only new context keys on autodrive-crusty-round"
     );
 }
 

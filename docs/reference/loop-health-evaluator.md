@@ -1,6 +1,6 @@
 ---
 title: Loop-Health Evaluator Reference
-last_updated: 2026-10-19
+last_updated: 2026-11-11
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -11,6 +11,13 @@ owner: workflow-team
 after each round of an iterative loop: **is this loop still doing useful
 work?** It looks at the accumulated evidence of the loop and emits one
 structured verdict — `CONTINUE`, `DONE`, or `STUCK`.
+
+Auto-drive Crusty reviews check objective completion before invoking this
+brick. An evidence-valid `CLEAN` or `MINOR_ONLY` ends review iteration without
+an evaluator call; required follow-up recording still gates phase completion.
+This also applies to Crusty rereviews between merge-ready rounds. The
+merge-ready loop's own evaluator policy is unchanged. See the
+[Crusty completion contract](autodrive-crusty-completion.md).
 
 It is deliberately **not** an iteration counter. See
 [Why not a numeric iteration cap](#why-not-a-numeric-iteration-cap).
@@ -124,7 +131,7 @@ smart-reflect loops pass neither input, so their behaviour does not change.
 The rule lives in the prompt only. Steps 03 and 04 do not compare the two
 inputs, and nothing about how the verdict is parsed changes: the
 deterministic check is `ROUND_CLEAN` in `autodrive_loop.sh`, which handles a
-`DONE` that breaks this rule anyway (see
+`DONE` that breaks this rule anyway on evaluated rounds (see
 [Advancing needs two independent signals](auto-drive-to-merge.md#advancing-needs-two-independent-signals)).
 
 **A missing or unparseable verdict is `STUCK`, never `CONTINUE`.** Failing safe
@@ -380,8 +387,9 @@ step-03 reads `DONE` with `verdict_source=evaluator_prose_token`. A `**DONE**`
 line gives the same result. A `DONE` alone does not advance a phase:
 `autodrive_loop.sh` also needs the round's own verdict to be clean (see
 [Advancing needs two independent signals](auto-drive-to-merge.md#advancing-needs-two-independent-signals)).
-If the round verdict is clean, the loop ends without the confirming round that
-a `CONTINUE` would have run; for the crusty loop, that ends the crusty review.
+If an evaluated merge-ready round is clean, the loop ends without the
+confirming round that a `CONTINUE` would have run. Completed Crusty reviews
+use objective-completion dispatch before this evaluator is invoked.
 If the round verdict is anything else, the loop does not advance. It runs
 one more round to re-review, and stops as `STUCK` if the round record is
 missing or if the next round repeats the same non-clean `DONE` with no
@@ -648,7 +656,9 @@ the order in which these are tried.
 
 ## Using it from a recipe
 
-Invoke the brick after each round and gate the next round on the verdict:
+Invoke the brick for rounds that need convergence judgment and gate the next
+round on its verdict. Auto-drive Crusty rounds first apply the
+[completion-first dispatch contract](autodrive-crusty-completion.md):
 
 ```yaml
   - id: "round-2"

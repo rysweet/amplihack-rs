@@ -27,6 +27,7 @@ use super::capacity_summary::{self, Summary};
 use super::capacity_weight;
 use super::name::ProfileName;
 use super::probe_limits::ProbeMode;
+use super::probe_sandbox::{self, NO_PERSIST, Notice, ProbeSandbox};
 use super::rotate::decide::Reading;
 use super::store::ProfileStore;
 use super::usage_codex::{self, CodexJsonRow, CodexView};
@@ -41,6 +42,7 @@ use anyhow::Result;
 use serde::Serialize;
 use std::ffi::OsString;
 use std::io::{Read, Write};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -1168,17 +1170,9 @@ pub(super) fn probe_home(
     .unwrap_or_else(|_| Probe::failed(ErrorReason::ProfileRefused, None))
 }
 
-/// One login probed by `mode` within one deadline (issue #1698). `build`
-/// makes the command for the given arguments and checks the profile
-/// directory each time it is called; a refusal is returned for the caller
-/// to report.
-///
-/// In `Auto` the `get_usage` request runs first. Its answer is used when
-/// [`usage_request::parse_answer`] accepts it, however the attempt ended.
-/// Otherwise, if the attempt ended before the deadline and nothing cancelled
-/// it, `claude -p /usage` runs with a new command in the time left; else the
-/// probe is `timeout`. At most one `claude` runs at a time, and `--raw`
-/// shows the attempt that gave the row.
+/// One login probed by `mode` within one deadline (issue #1698), with the
+/// sandbox detected for this process (issue #1974); see
+/// [`probe_with_sandbox`].
 pub(super) fn probe_with(
     build: impl Fn(&[String]) -> Result<Command, ProfileError>,
     mode: ProbeMode,
@@ -1186,11 +1180,65 @@ pub(super) fn probe_with(
     now: i64,
     keep_raw: bool,
 ) -> Result<Probe, ProfileError> {
-    let text_args = ["-p".to_string(), "/usage".to_string()];
+    let home = home_dir().unwrap_or_default();
+    probe_with_sandbox(
+        build,
+        probe_sandbox::detected(),
+        &home,
+        &probe_sandbox::NOTICE,
+        mode,
+        timeout,
+        now,
+        keep_raw,
+    )
+}
+
+/// One login probed by `mode` within one deadline (issue #1698). `build`
+/// makes the command for the given arguments and checks the profile
+/// directory each time it is called; a refusal is returned for the caller
+/// to report.
+///
+/// Both argument sets end with `--no-session-persistence`, and every
+/// command runs through [`probe_sandbox::wrap`] (issue #1974); a fallback
+/// is noted once through `notice`.
+///
+/// In `Auto` the `get_usage` request runs first. Its answer is used when
+/// [`usage_request::parse_answer`] accepts it, however the attempt ended.
+/// Otherwise, if the attempt ended before the deadline and nothing cancelled
+/// it, `claude -p /usage` runs with a new command in the time left; else the
+/// probe is `timeout`. At most one `claude` runs at a time, and `--raw`
+/// shows the attempt that gave the row.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn probe_with_sandbox(
+    build: impl Fn(&[String]) -> Result<Command, ProfileError>,
+    sandbox: &ProbeSandbox,
+    home: &Path,
+    notice: &Notice,
+    mode: ProbeMode,
+    timeout: Duration,
+    now: i64,
+    keep_raw: bool,
+) -> Result<Probe, ProfileError> {
+    // `wrap` runs before `attempt` sets stdio and the process group, so
+    // `bwrap` leads the group and the group kill still ends `claude`.
+    let prepared = |args: &[String]| -> Result<Command, ProfileError> {
+        let (cmd, fallback) = probe_sandbox::wrap(build(args)?, sandbox, home);
+        if let Some(f) = fallback {
+            notice.note(f);
+        }
+        Ok(cmd)
+    };
+    let text_args = ["-p", "/usage", NO_PERSIST].map(String::from);
     if mode == ProbeMode::Text {
-        return Ok(probe(build(&text_args)?, timeout, now, keep_raw));
+        return Ok(probe(prepared(&text_args)?, timeout, now, keep_raw));
     }
-    let cmd = build(&usage_request::ARGS.map(String::from))?;
+    let request_args: Vec<String> = usage_request::ARGS
+        .iter()
+        .copied()
+        .chain([NO_PERSIST])
+        .map(String::from)
+        .collect();
+    let cmd = prepared(&request_args)?;
     let deadline = Instant::now() + timeout;
     let line = format!("{}\n", usage_request::REQUEST_LINE);
     let a = attempt(cmd, Some(line.as_bytes()), deadline);
@@ -1223,7 +1271,7 @@ pub(super) fn probe_with(
     {
         return Ok(row(timed_out, a.output, Spend::Unknown));
     }
-    let cmd = build(&text_args)?;
+    let cmd = prepared(&text_args)?;
     Ok(text_probe(attempt(cmd, None, deadline), now, keep_raw))
 }
 
