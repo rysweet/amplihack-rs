@@ -180,6 +180,9 @@ Unknown reasons are sorted and unique:
 - `invalid_input_fields`: an input bucket is not an unsigned integer.
 - `overlapping_input_subsets`: cache subsets cannot be disjoint within input.
 - `unknown_attempts_for_input`: retained input has no corresponding known attempts.
+- `unidentified_response_input`: a response-level usage record has no stable
+  response identity, so its input can be neither deduplicated nor counted;
+  `input_tokens` and `observed_attempts` are both null rather than a partial sum.
 - `incompatible_attempt_basis`: response and cumulative observations disagree.
 - `unsupported_provider`: validated provider label has no adapter.
 - `unsupported_schema`: accounting semantics cannot be established.

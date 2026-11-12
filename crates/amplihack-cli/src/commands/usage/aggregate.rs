@@ -158,7 +158,13 @@ pub(super) fn aggregate(
                     contexts[owner]
                         .reasons
                         .extend(input.reasons.iter().copied());
-                    contexts[owner].reasons.insert("unknown_attempts_for_input");
+                    // Without a stable identity the record's input cannot be
+                    // deduplicated, so it is not added. Leaving the partial sum
+                    // numeric would publish a lower bound as if it were exact.
+                    contexts[owner]
+                        .reasons
+                        .insert("unidentified_response_input");
+                    contexts[owner].input = None;
                     contexts[owner].attempts = None;
                 }
                 let Some(tokens) = tokens else { continue };

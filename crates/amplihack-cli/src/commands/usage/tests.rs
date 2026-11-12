@@ -381,6 +381,23 @@ mod fr156 {
     }
 
     #[test]
+    fn unidentified_response_with_valid_usage_makes_context_input_unknown() {
+        let identified = native_usage("claude", "s", "a", usage(json!(100)));
+        let mut unidentified = native_usage("claude", "s", "ignored", usage(json!(999)));
+        unidentified["message"]
+            .as_object_mut()
+            .unwrap()
+            .remove("id");
+        let v = public(&report("claude", &[identified, unidentified]));
+        let c = context(&v, 0);
+        assert!(c["input_tokens"].is_null(), "{c}");
+        assert!(c["observed_attempts"].is_null(), "{c}");
+        assert!(c["tokens_per_observed_attempt"].is_null(), "{c}");
+        assert_eq!(c["unknown_reasons"], json!(["unidentified_response_input"]));
+        assert_eq!(v["identifier_backed_response_count"], 1);
+    }
+
+    #[test]
     fn conflicting_native_owners_count_once_globally_and_neither_owns_context() {
         let dir = tempfile::tempdir().unwrap();
         for id in ["a", "b"] {
