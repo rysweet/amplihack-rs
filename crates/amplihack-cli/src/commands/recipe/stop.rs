@@ -19,8 +19,8 @@
 //!   the first record of that id that this user owns and nobody else can
 //!   write. `recipe run` and the runner get SIGTERM, and so does the runner's
 //!   process group while its leader is still the recorded runner; after the
-//!   grace period, whatever is still the recorded process gets SIGKILL, and
-//!   the group too if its leader still matches. `recipe run`'s own teardown
+//!   grace period the group gets SIGKILL if its leader still matches, then
+//!   whatever is still the recorded process does. `recipe run`'s own teardown
 //!   ends the rest of the runner's tree. Every signal re-checks the start
 //!   time, so a stale record (a SIGKILLed `recipe run`) or a reused pid is
 //!   never hit. A missing, foreign or stale record is "not found" and nothing
@@ -162,8 +162,12 @@ fn stop_run_id(run_id: &str) -> Result<()> {
     }
     terminate(&tree);
     signal_group_if_leader(group, libc::SIGTERM);
-    let killed = sweep(&tree, STOP_GRACE);
+    // The group gets SIGKILL before its leader, while the leader can still
+    // match its recorded start time.
+    let survivors = wait_for_exit(&tree, STOP_GRACE);
     signal_group_if_leader(group, libc::SIGKILL);
+    kill_survivors(&tree, &survivors);
+    let killed = survivors.len();
     report(&format!("run {run_id}"), tree.len(), killed);
     Ok(())
 }
@@ -269,6 +273,14 @@ pub(crate) fn terminate(tree: &Tree) {
 /// Wait up to `grace` for every process in `tree` to exit, then SIGKILL the
 /// ones still running. Returns how many had to be killed.
 pub(crate) fn sweep(tree: &Tree, grace: Duration) -> usize {
+    let survivors = wait_for_exit(tree, grace);
+    kill_survivors(tree, &survivors);
+    survivors.len()
+}
+
+/// Wait up to `grace` for every process in `tree` to exit. Returns the pids
+/// still running.
+fn wait_for_exit(tree: &Tree, grace: Duration) -> Vec<i32> {
     let alive = || {
         tree.iter()
             .filter(|(pid, start)| same_process(**pid, **start))
@@ -279,11 +291,19 @@ pub(crate) fn sweep(tree: &Tree, grace: Duration) -> usize {
     while started.elapsed() < grace && !alive().is_empty() {
         thread::sleep(POLL);
     }
-    let survivors = alive();
-    for pid in &survivors {
-        signal_pid(*pid, libc::SIGKILL);
+    alive()
+}
+
+/// SIGKILL each of `survivors` that is still the process `tree` recorded.
+fn kill_survivors(tree: &Tree, survivors: &[i32]) {
+    for pid in survivors {
+        if tree
+            .get(pid)
+            .is_some_and(|start| same_process(*pid, *start))
+        {
+            signal_pid(*pid, libc::SIGKILL);
+        }
     }
-    survivors.len()
 }
 
 /// `pid` is alive, not a zombie, and still the process recorded with `start`.

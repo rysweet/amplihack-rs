@@ -293,6 +293,11 @@ fn recipe_stop_by_run_id_reads_no_host_process_table() {
         "recipe stop <run_id> read the host process table (issue #2175):\n{}",
         bad.join("\n")
     );
+    let environ: Vec<_> = trace.lines().filter(|l| l.contains("/environ")).collect();
+    assert!(
+        environ.is_empty(),
+        "recipe stop must not read any environ: {environ:#?}"
+    );
     let record = format!("procs/{run_id}.json");
     assert!(
         trace.contains(&record),

@@ -419,7 +419,7 @@ runs under `strace -f`, with the fixture's environment.
 The test fails if any traced process:
 
 - opens `/proc` or `/proc/` as a directory;
-- opens `/proc/<pid>/environ` for a pid outside the traced tree;
+- opens any `environ` at all, even of the run's own pids;
 - opens any `/proc/<pid>/...` path for a pid outside the traced tree, the
   `recipe run` process, the runner and the stub's child. `/proc/self` and
   `/proc/thread-self` count as the traced tree.

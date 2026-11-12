@@ -341,6 +341,19 @@ fn find_refuses_a_symlinked_record() {
 }
 
 #[test]
+fn find_ignores_a_fifo_at_the_record_path() {
+    use std::os::unix::ffi::OsStrExt;
+    let root = Root::new();
+    let path = root.file("run-a", ID);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    // SAFETY: `c` is a valid NUL-terminated path.
+    assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
+    // With no writer, a blocking open would never return.
+    assert!(root.find(ID).is_none());
+}
+
+#[test]
 fn find_does_not_follow_a_procs_symlink() {
     let root = Root::new();
     let (a, b) = (Sleeper::start(), Sleeper::start());

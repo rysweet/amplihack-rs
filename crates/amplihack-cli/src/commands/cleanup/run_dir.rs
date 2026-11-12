@@ -270,11 +270,19 @@ pub(crate) fn read_capped_nofollow_with_metadata(
     path: &Path,
     max: u64,
 ) -> std::io::Result<(Vec<u8>, fs::Metadata)> {
+    // O_NONBLOCK: opening a FIFO with no writer returns at once instead of
+    // blocking; it has no effect on a regular file.
     let file = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)?;
     let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
     let mut buf = Vec::new();
     file.take(max + 1).read_to_end(&mut buf)?;
     if buf.len() as u64 > max {
