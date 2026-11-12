@@ -418,8 +418,9 @@ fn no_short_timeouts_anywhere() {
             }
         }
     }
-    // #2342: the CI wait is `gh run watch` in an agent step, so no polling
-    // interval is pinned. Short sleeps and timeouts stay forbidden below.
+    // #2342: CI is read once per round by merge-evidence step-03b and never
+    // waited on inside the round, so no polling interval is pinned. Short
+    // sleeps and timeouts stay forbidden below.
     for path in control_path_files() {
         let text = read(&path);
         for (n, line) in text.lines().enumerate() {
@@ -1763,12 +1764,11 @@ const STATE_DIR_SENTENCE: &str = "Do not create, edit, move, rename, delete or a
 const STATE_DIR_LEAKS: [&str; 3] = ["STATE_DIR", "autodrive_state_dir", "AUTODRIVE_STATE_DIR"];
 
 /// The agent steps of the auto-drive workflow, by recipe.
-const AUTODRIVE_AGENT_STEPS: [(&str, &str); 8] = [
+const AUTODRIVE_AGENT_STEPS: [(&str, &str); 7] = [
     ("autodrive-crusty-round", "step-02-crusty-review"),
     ("autodrive-crusty-round", "step-04-address-concerns"),
     ("autodrive-crusty-round", "step-07-select-next-action"),
     ("autodrive-merge-evidence", "step-01-sync-with-base"),
-    ("autodrive-merge-evidence", "step-03-wait-for-ci"),
     ("autodrive-merge-round", "step-02-merge-ready-assessment"),
     ("autodrive-merge-round", "step-04-address-blockers"),
     ("loop-health-evaluator", "step-02-evaluate-loop-health"),

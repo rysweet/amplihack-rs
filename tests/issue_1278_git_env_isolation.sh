@@ -490,9 +490,21 @@ case "$(step_body "$EVIDENCE_YAML" step-02-qa-team-scenarios)" in
         record_pass "merge-evidence step-02 has the exact #2033 STOP line" ;;
     *) record_fail "merge-evidence step-02 has the exact #2033 STOP line" "not found in step-02" ;;
 esac
-# Step-01 is an agent step (#2342): it has no exit status to stop with, so its
-# prompt must carry the loading line and forbid every git write when that line
-# fails, returning the git-repo-env-unavailable no-update decision instead.
+# Step-01 is an agent step (#2342) that may merge and push, so bash step-00
+# runs the loading line first and stops the recipe (exit 1) when it fails,
+# before the agent starts. The agent's own shells are other processes, so its
+# prompt still carries the loading line and forbids every git write when that
+# line fails, returning the git-repo-env-unavailable no-update decision.
+case "$(step_body "$EVIDENCE_YAML" step-00-git-env-guard)" in
+    *'type: "bash"'*'STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }'*)
+        record_pass "merge-evidence step-00 enforces the #2033 STOP before the step-01 agent" ;;
+    *) record_fail "merge-evidence step-00 enforces the #2033 STOP before the step-01 agent" "not found in step-00-git-env-guard" ;;
+esac
+first_step="$(grep -m1 -E '^  - id: ' "$EVIDENCE_YAML")"
+case "$first_step" in
+    *'"step-00-git-env-guard"'*) record_pass "merge-evidence step-00 is the first step" ;;
+    *) record_fail "merge-evidence step-00 is the first step" "first step is: $first_step" ;;
+esac
 step01="$(step_body "$EVIDENCE_YAML" step-01-sync-with-base)"
 step01_has() {
     case "$step01" in

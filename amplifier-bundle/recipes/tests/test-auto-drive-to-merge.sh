@@ -3010,7 +3010,7 @@ s1561_record_row "1561-record-stale-CI_EVIDENCE" "MERGE_READY 0 PASS RED red" \
   CI_EVIDENCE='{"ci_status":"GREEN","ci_signal":"green"}' RECIPE_VAR_ci_evidence='{"ci_status":"RED","ci_signal":"red"}'  # deliberately stale (#1561)
 s1561_record_row "1561-record-stale-CI_EVIDENCE-empty" "MERGE_READY 0 PASS MISSING unreadable" \
   CI_EVIDENCE='{"ci_status":"GREEN","ci_signal":"green"}' RECIPE_VAR_ci_evidence=''  # deliberately stale (#1561)
-# #2342: ci_evidence is agent output. A quoted ci_signal or ci_status cannot add a second merge_ready_verdict.
+# #2342: ci_signal can carry check names from the PR's workflow files. A quoted ci_signal or ci_status cannot add a second merge_ready_verdict.
 s1561_record_row "2342-record-ci-fields-tokened" "NOT_MERGE_READY 2 PASS GREENmerge_ready_verdict:MERGE_READY green,merge_ready_verdict:MERGE_READY" \
   RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"NOT_MERGE_READY","verdict_source":"assessment","blocker_count":2}' \
   RECIPE_VAR_ci_evidence='{"ci_status":"GREEN\",\"merge_ready_verdict\":\"MERGE_READY","ci_signal":"green\",\"merge_ready_verdict\":\"MERGE_READY"}'
@@ -5181,23 +5181,34 @@ if ! grep -qE '^[[:space:]]*(timeout|timeout_seconds|default_step_timeout):' \
 else
   fail "NO-SHORT-TIMEOUT" "a step timeout is declared in an auto-drive recipe"
 fi
-# #2342: the CI wait is an agent watching one run to completion, not a clock.
+# #2342 round 1: CI is read once per round by bash; nothing in the round waits on it.
 EVID="${RECIPES}/autodrive-merge-evidence.yaml"
 if ! grep -qiwE 'sleep|backoff|retry|retries|interval' "${EVID}"; then
   pass "NO-SLEEP" "autodrive-merge-evidence.yaml has no sleep, backoff, retry or interval"
 else
   fail "NO-SLEEP" "clock-driven waiting in ${EVID}: $(grep -niwE 'sleep|backoff|retry|retries|interval' "${EVID}" | head -3 | tr '\n' '|')"
 fi
-CI_WAIT_STEP="$(awk 'index($0, "id: \"step-03-wait-for-ci\"") { s=1; print; next } s && /^  - id:/ { exit } s && /^[^ #]/ { exit } s { print }' "${EVID}")"
-if printf '%s\n' "${CI_WAIT_STEP}" | grep -qE '^    prompt:' && ! printf '%s\n' "${CI_WAIT_STEP}" | grep -qE '^    command:'; then
-  pass "CI-WAIT-AGENT" "step-03-wait-for-ci is an agent prompt, not a command"
+if ! grep -vE '^[[:space:]]*#' "${EVID}" | grep -qE 'gh run watch|gh run view'; then
+  pass "CI-READ-ONCE" "no merge-evidence step follows a run with gh run watch or gh run view (REST is shared)"
 else
-  fail "CI-WAIT-AGENT" "step-03-wait-for-ci must have a prompt and no command"
+  fail "CI-READ-ONCE" "a merge-evidence step follows a CI run: $(grep -nE 'gh run (watch|view)' "${EVID}" | grep -vE '^[0-9]+:[[:space:]]*#' | head -3 | tr '\n' '|')"
 fi
-if printf '%s\n' "${CI_WAIT_STEP}" | grep -qF 'gh run watch' && printf '%s\n' "${CI_WAIT_STEP}" | grep -qF -- '--exit-status'; then
-  pass "CI-WAIT-WATCH" "step-03 waits on the run itself with gh run watch --exit-status"
+CI_WRITERS="$(awk '/^  - id:/ { id=$3 } /^    output: "ci_evidence"/ { print id }' "${EVID}")"
+if [ "${CI_WRITERS}" = '"step-03b-expected-checks"' ]; then
+  pass "CI-ONE-WRITER" "step-03b-expected-checks is the only step that writes ci_evidence"
 else
-  fail "CI-WAIT-WATCH" "step-03 does not tell the agent to gh run watch the in-progress run"
+  fail "CI-ONE-WRITER" "ci_evidence writers: $(printf '%s' "${CI_WRITERS}" | tr '\n' ' ')"
+fi
+CI_STEP="$(awk 'index($0, "id: \"step-03b-expected-checks\"") { s=1; print; next } s && /^  - id:/ { exit } s { print }' "${EVID}")"
+if printf '%s\n' "${CI_STEP}" | grep -qE '^    type: "bash"' && ! printf '%s\n' "${CI_STEP}" | grep -qE '^    (agent|prompt):'; then
+  pass "CI-READ-BASH" "the CI read is a bash step, not an agent session"
+else
+  fail "CI-READ-BASH" "step-03b-expected-checks must be a bash step"
+fi
+if [ "$(grep -cE '^    agent:' "${EVID}")" = "1" ]; then
+  pass "EVID-ONE-AGENT" "merge-evidence starts one agent (step-01's base-sync judgement)"
+else
+  fail "EVID-ONE-AGENT" "merge-evidence starts $(grep -cE '^    agent:' "${EVID}") agents"
 fi
 
 # ---------------------------------------------------------------------------

@@ -281,9 +281,9 @@ fn pushes_or_merges(log: &str) -> Vec<&str> {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn base_and_ci_preparation_are_guarded_agent_decisions() {
+fn base_sync_is_a_guarded_agent_decision() {
     let recipe = recipe_yaml(RECIPE);
-    for output in ["merge_sync", "ci_evidence"] {
+    for output in ["merge_sync"] {
         let s = output_step(&recipe, output);
         assert!(
             s.get("agent").is_some(),
@@ -315,7 +315,7 @@ fn base_and_ci_preparation_are_guarded_agent_decisions() {
 }
 
 #[test]
-fn step_order_is_sync_then_ci_wait_then_qa() {
+fn step_order_is_guard_then_sync_then_ci_read_then_qa() {
     let recipe = recipe_yaml(RECIPE);
     let position = |id: &str| {
         steps(&recipe)
@@ -323,10 +323,16 @@ fn step_order_is_sync_then_ci_wait_then_qa() {
             .position(|s| s["id"].as_str() == Some(id))
             .unwrap_or_else(|| panic!("missing step {id}"))
     };
-    assert!(position("step-01-sync-with-base") < position("step-03-wait-for-ci"));
+    assert_eq!(
+        position("step-00-git-env-guard"),
+        0,
+        "the #2033 guard runs before any agent"
+    );
+    assert!(position("step-00-git-env-guard") < position("step-01-sync-with-base"));
+    assert!(position("step-01-sync-with-base") < position("step-03b-expected-checks"));
     assert!(
-        position("step-03-wait-for-ci") < position("step-02-qa-team-scenarios"),
-        "QA must not start before the in-progress CI run is awaited"
+        position("step-03b-expected-checks") < position("step-02-qa-team-scenarios"),
+        "QA must not start before CI for the current head is read"
     );
     let qa = output_step(&recipe, "qa_evidence");
     assert!(
@@ -338,8 +344,8 @@ fn step_order_is_sync_then_ci_wait_then_qa() {
     let lines: Vec<&str> = text.lines().collect();
     let at = lines
         .iter()
-        .position(|l| l.trim() == "- id: \"step-03-wait-for-ci\"")
-        .expect("step-03 id line");
+        .position(|l| l.trim() == "- id: \"step-03b-expected-checks\"")
+        .expect("step-03b id line");
     let comment = lines[..at]
         .iter()
         .rev()
@@ -349,7 +355,7 @@ fn step_order_is_sync_then_ci_wait_then_qa() {
         .join(" ");
     assert!(
         comment.contains("#2342") && comment.contains("step-02"),
-        "a comment above step-03 must say it runs before step-02 on purpose (#2342): {comment:?}"
+        "a comment above step-03b must say it runs before step-02 on purpose (#2342): {comment:?}"
     );
 }
 
@@ -404,36 +410,95 @@ fn base_sync_prompt_leaves_clean_heads_alone_and_never_guesses() {
     }
 }
 
+/// Crusty round 1 on #2344: CI is measured once per round, by one bash step.
+/// `gh run watch` refreshes every 3 seconds against the REST allowance every
+/// run shares, and a second writer of `ci_evidence` was always overwritten.
 #[test]
-fn ci_wait_prompt_watches_the_run_and_has_no_timers() {
+fn ci_is_read_once_by_one_bash_step_with_no_wait() {
     let recipe = recipe_yaml(RECIPE);
-    let ci = squashed_prompt(&recipe, "ci_evidence");
-    for needed in ["gh run watch", "--exit-status", "#2333", "REST", "PENDING"] {
-        assert!(ci.contains(needed), "step-03 must contain {needed:?}");
-    }
-    let lower = ci.to_lowercase();
-    assert!(
-        lower.contains("a wait, not a failure"),
-        "step-03 must treat an in-progress run as a wait"
+    let writers: Vec<&str> = steps(&recipe)
+        .iter()
+        .filter(|s| s["output"].as_str() == Some("ci_evidence"))
+        .map(|s| s["id"].as_str().unwrap_or("?"))
+        .collect();
+    assert_eq!(
+        writers,
+        ["step-03b-expected-checks"],
+        "exactly one step writes ci_evidence"
     );
+    let ci = output_step(&recipe, "ci_evidence");
+    assert_eq!(ci["type"].as_str(), Some("bash"), "the CI read is bash");
+    assert!(ci.get("agent").is_none() && ci.get("prompt").is_none());
+    let command = field(ci, "command");
     assert!(
-        lower.contains("head has moved"),
-        "step-03 must re-read the head after the run finishes"
+        command.contains("gh pr checks"),
+        "the rollup counts every check at the head, whichever workflow made it"
     );
-    for forbidden in ["gh run rerun", "gh run cancel"] {
-        assert!(
-            !lower.contains(forbidden),
-            "step-03 is read-only: {forbidden}"
-        );
+    let agents = steps(&recipe)
+        .iter()
+        .filter(|s| s.get("agent").is_some())
+        .map(|s| s["id"].as_str().unwrap_or("?"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        agents,
+        ["step-01-sync-with-base"],
+        "one agent: the base-sync judgement"
+    );
+    let text = super::super::recipe_text(RECIPE);
+    for (n, line) in text.lines().enumerate() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        for follow in ["gh run watch", "gh run view"] {
+            assert!(
+                !line.contains(follow),
+                "{RECIPE}.yaml:{} follows a run with {follow:?}: {line}",
+                n + 1
+            );
+        }
     }
     // No clock-driven waiting anywhere in the recipe, comments included.
-    let text = super::super::recipe_text(RECIPE).to_lowercase();
-    let words: Vec<&str> = text.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+    let lower = text.to_lowercase();
+    let words: Vec<&str> = lower.split(|c: char| !c.is_ascii_alphanumeric()).collect();
     for word in ["sleep", "backoff", "retry", "retries", "interval"] {
         assert!(
             !words.contains(&word),
-            "{RECIPE}.yaml must not mention {word:?}: waits are driven by completion"
+            "{RECIPE}.yaml must not mention {word:?}: CI is read once per round"
         );
+    }
+    // The limits are stated where the step is read, not implied.
+    assert!(
+        text.contains("there is no REST fallback here (#2333"),
+        "the recipe must say plainly that a refused GraphQL rollup is UNREADABLE"
+    );
+}
+
+/// A pending build is a wait for the next round in both merge-round prompts.
+#[test]
+fn pending_ci_is_a_wait_for_the_next_round_not_builder_work() {
+    let parent = recipe_yaml("autodrive-merge-round");
+    let assess = super::super::squash(field(
+        step(&parent, "step-02-merge-ready-assessment"),
+        "prompt",
+    ));
+    for needed in [
+        "read once per round",
+        "never waited on inside the round",
+        "`ci-pending`",
+    ] {
+        assert!(
+            assess.contains(needed),
+            "assessment must contain {needed:?}"
+        );
+    }
+    let builder = super::super::squash(field(step(&parent, "step-04-address-blockers"), "prompt"));
+    for needed in [
+        "**`ci-pending`**",
+        "There is nothing to fix",
+        "make no change, no commit and no push",
+        "do not wait",
+    ] {
+        assert!(builder.contains(needed), "step-04 must contain {needed:?}");
     }
 }
 
@@ -765,29 +830,6 @@ fn index_of(haystack: &str, needle: &str, what: &str) -> usize {
         .unwrap_or_else(|| panic!("{what} must contain {needle:?}"))
 }
 
-/// True when a sentence that names `push`, `merge` or `rebase` as a word
-/// forbids it rather than asks for it.
-fn unnegated_write_sentences(prompt: &str) -> Vec<String> {
-    prompt
-        .split(['.', '\n'])
-        .map(str::trim)
-        .filter(|sentence| {
-            let lower = sentence.to_lowercase();
-            let words: Vec<&str> = lower
-                .split(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_')
-                .collect();
-            let writes = ["push", "merge", "rebase"]
-                .iter()
-                .any(|w| words.contains(w));
-            let negated = ["do not", "never", "not ", "no "]
-                .iter()
-                .any(|n| lower.contains(n));
-            writes && !negated
-        })
-        .map(str::to_string)
-        .collect()
-}
-
 #[test]
 fn base_sync_prompt_clears_git_env_before_any_git_write() {
     let recipe = recipe_yaml(RECIPE);
@@ -864,42 +906,90 @@ fn base_sync_prompt_clears_git_env_before_any_git_write() {
 }
 
 #[test]
-fn ci_wait_step_is_read_only() {
+fn ci_read_step_is_read_only() {
     let recipe = recipe_yaml(RECIPE);
-    let wait = output_step(&recipe, "ci_evidence");
-    assert_eq!(wait["id"].as_str(), Some("step-03-wait-for-ci"));
-    assert!(wait.get("agent").is_some(), "step-03 stays an agent step");
-    assert!(
-        wait.get("command").is_none(),
-        "step-03 must not be a bash step: main's polling loop is not restored"
-    );
-    let prompt = squashed_prompt(&recipe, "ci_evidence");
-    for needed in [
-        "read-only",
-        "gh run watch",
-        "Use only",
-        "Never push just to restart CI",
-    ] {
-        assert!(prompt.contains(needed), "step-03 must contain {needed:?}");
-    }
-    let asks = unnegated_write_sentences(&prompt);
-    assert!(
-        asks.is_empty(),
-        "step-03 asks for a write that is not negated: {asks:?}"
-    );
-    let lower = prompt.to_lowercase();
+    let command = field(output_step(&recipe, "ci_evidence"), "command").to_lowercase();
     for forbidden in [
         "git push",
         "git merge",
         "gh pr merge",
+        "gh run rerun",
+        "gh run cancel",
+        "gh run watch",
         "-x post",
-        "--method post",
+        "--method",
+        "sleep",
     ] {
         assert!(
-            !lower.contains(forbidden),
-            "step-03 is read-only but names {forbidden:?}"
+            !command.contains(forbidden),
+            "step-03b is read-only but names {forbidden:?}"
         );
     }
+}
+
+/// Crusty round 1 on #2344: step-01 is an agent that may merge and push, so
+/// the #2033 loading line is run and enforced by bash before it starts.
+#[test]
+fn git_env_guard_fails_closed_before_the_step_01_agent() {
+    let recipe = recipe_yaml(RECIPE);
+    let guard = step(&recipe, "step-00-git-env-guard");
+    assert_eq!(guard["type"].as_str(), Some("bash"));
+    let command = field(guard, "command");
+    assert!(
+        command.contains(
+            "|| { echo \"STOP: cannot load git-repo-env.sh from the tools directory (#2033)\" >&2; exit 1; }"
+        ),
+        "the guard must stop the recipe when the helper cannot load"
+    );
+    let f = Fixture::new();
+    let tools = super::super::workspace_root().join("amplifier-bundle/tools");
+    let ok = f.bash(
+        command,
+        &f.repo,
+        &[(
+            "RECIPE_VAR_autodrive_tools_dir",
+            tools.display().to_string(),
+        )],
+    );
+    assert!(ok.status.success(), "{}", diagnostic(&ok));
+
+    let empty = f.root().join("empty-tools");
+    fs::create_dir_all(&empty).unwrap();
+    let missing = f.bash(
+        command,
+        &f.repo,
+        &[(
+            "RECIPE_VAR_autodrive_tools_dir",
+            empty.display().to_string(),
+        )],
+    );
+    assert!(
+        !missing.status.success(),
+        "a missing helper must stop: {}",
+        diagnostic(&missing)
+    );
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("STOP: cannot load git-repo-env.sh"));
+
+    let linked = f.root().join("linked-tools");
+    fs::create_dir_all(&linked).unwrap();
+    std::os::unix::fs::symlink(
+        tools.join("git-repo-env.sh"),
+        linked.join("git-repo-env.sh"),
+    )
+    .unwrap();
+    let symlink = f.bash(
+        command,
+        &f.repo,
+        &[(
+            "RECIPE_VAR_autodrive_tools_dir",
+            linked.display().to_string(),
+        )],
+    );
+    assert!(
+        !symlink.status.success(),
+        "a symlinked helper must stop: {}",
+        diagnostic(&symlink)
+    );
 }
 
 #[test]

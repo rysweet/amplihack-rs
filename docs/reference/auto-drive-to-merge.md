@@ -332,7 +332,7 @@ The preflight adds `repo` (the worktree) to its JSON. It does not emit
 
 | Step | Uses `repo` for |
 | --- | --- |
-| step-02, both loops | The starting point of the [#1528 resolution](#where-phases-2-and-3-run): `review-dir "$REPO"` and `autodrive_pr_worktree.sh resolve --repo "$REPO"`, whose result is `autodrive_loop.sh --repo` and `--context repo_path=`. It reads `repo` as `${RECIPE_VAR_repo:-}`, the same way as `state_dir`. If `repo` is missing, the step refuses to run; it never falls back to `REPO_PATH`. Every round step therefore runs in the PR worktree: base sync, CI wait, `qa-team` run and its `head_sha`, crusty review and fixes, round records, loop baseline. |
+| step-02, both loops | The starting point of the [#1528 resolution](#where-phases-2-and-3-run): `review-dir "$REPO"` and `autodrive_pr_worktree.sh resolve --repo "$REPO"`, whose result is `autodrive_loop.sh --repo` and `--context repo_path=`. It reads `repo` as `${RECIPE_VAR_repo:-}`, the same way as `state_dir`. If `repo` is missing, the step refuses to run; it never falls back to `REPO_PATH`. Every round step therefore runs in the PR worktree: base sync, CI read, `qa-team` run and its `head_sha`, crusty review and fixes, round records, loop baseline. |
 | merge-loop step-04, crusty-loop step-03 | **Nothing.** These steps write only inside `state_dir`, so they do not depend on the working directory. |
 | merge-loop step-03 (merge gate) | **Nothing.** The gate stays on the launch side and binds to `headRefOid` from `gh`. Resolver output never reaches it. |
 
@@ -1465,7 +1465,7 @@ reading that sentence: see
 | --- | --- | --- | --- |
 | `step-00-tools-dir` | bash | `autodrive_tools_dir` | Finds the round's tools once (see below). |
 | `step-00-merge-ready-files` | bash | `merge_ready_files` | Finds `SKILL.md` and its template; where criterion 1 needs `gadugi-test`, stops the round when it is not on `PATH`. |
-| `merge-evidence` | recipe | `merge_sync`, `ci_evidence`, `qa_evidence` | `autodrive-merge-evidence`, in this order: an agent judges whether the base must be merged in, an agent waits for the current head's CI run to finish, step-03b reads the checks once and applies the [expected-checks read](#in-the-merge-evidence-step) at the head, then the suite commands and gadugi scenarios where required run only on completed green CI for that head. See [The merge evidence steps](#the-merge-evidence-steps-2342). |
+| `merge-evidence` | recipe | `merge_sync`, `ci_evidence`, `qa_evidence` | `autodrive-merge-evidence`, in this order: bash checks that the #2033 environment helper loads, an agent judges whether the base must be merged in, step-03b reads the checks once and applies the [expected-checks read](#in-the-merge-evidence-step) at the head, then the suite commands and gadugi scenarios where required run only on completed green CI for that head. See [The merge evidence steps](#the-merge-evidence-steps-2342). |
 | `step-00d-qa-evidence-hash` | bash | `qa_evidence_hash` | `autodrive_round_evidence.sh qa-evidence-sha`: hashes `qa-evidence.json` before any agent runs. |
 | `step-01-platform-facts` | bash | `platform_facts` | Runs `autodrive_platform_facts.sh`. |
 | `step-01b-crusty-evidence` | bash | `crusty_evidence` | `autodrive_round_evidence.sh crusty-evidence`: criterion 3. |
@@ -1509,14 +1509,21 @@ Its four steps run in file order, which is not the order of their IDs:
 
 | Order | Step | Type | Output | Does |
 | --- | --- | --- | --- | --- |
-| 1 | `step-01-sync-with-base` | agent | `merge_sync` | Decides whether the pull request needs the base merged in, and does so only on a verified conflict or a required base update. |
-| 2 | `step-03-wait-for-ci` | agent | `ci_evidence` | Waits for the CI run on the current head to finish. Read-only. |
-| 3 | `step-03b-expected-checks` | bash | `ci_evidence` | Reads the head and its checks once, with no wait, and applies the [expected-checks read](#in-the-merge-evidence-step) (#2186). Its record replaces the agent's, so QA is gated on a measured record. |
+| 1 | `step-00-git-env-guard` | bash | `git_env_guard` | Runs the #2033 loading line and stops the recipe (exit 1) when `git-repo-env.sh` is missing or a symlink, before the step-01 agent can write anything. See [Step-01 clears the inherited repository environment](#step-01-clears-the-inherited-repository-environment-2033). |
+| 2 | `step-01-sync-with-base` | agent | `merge_sync` | Decides whether the pull request needs the base merged in, and does so only on a verified conflict or a required base update. |
+| 3 | `step-03b-expected-checks` | bash | `ci_evidence` | Reads the head and its checks once, with no wait, and applies the [expected-checks read](#in-the-merge-evidence-step) (#2186). It is the only step that writes `ci_evidence`. |
 | 4 | `step-02-qa-team-scenarios` | bash | `qa_evidence` | Runs `autodrive_qa_evidence.sh` with `AUTODRIVE_REQUIRE_CI=true`, so the suites run only on completed green CI for the head the tool is on. |
 
-`step-03-wait-for-ci` sits above `step-02-qa-team-scenarios` on purpose, and
-a YAML comment above it says so. The IDs were kept so that the tests, the
+`step-03b-expected-checks` sits above `step-02-qa-team-scenarios` on purpose,
+and a YAML comment above it says so. The IDs were kept so that the tests, the
 documents and saved run records that name them stay valid.
+
+There is no step that waits for CI. A `step-03-wait-for-ci` agent that
+waited with `gh run watch` was tried during #2342 and removed: `gh run watch`
+refreshes every 3 seconds by default, each refresh a REST read against the
+allowance every drive shares, and it followed one workflow run while a head
+has several. Its `ci_evidence` was also overwritten by step-03b every time, so
+nothing it found reached the gate.
 
 The reason for this order is that both of the earlier steps can change what
 QA would measure. A base merge pushes a new head and starts a new CI run, and
@@ -1581,8 +1588,12 @@ for being behind.
 
 #### Step-01 clears the inherited repository environment (#2033)
 
-Step-01 is an agent step, so it has no bash prelude of its own. Its prompt
-tells the agent to start every shell call that runs `git` or `gh` with the
+Step-01 is an agent step, so it has no bash prelude of its own. Bash
+`step-00-git-env-guard` runs immediately before it and stops the recipe with
+`STOP: cannot load git-repo-env.sh from the tools directory (#2033)` and exit
+1 when the helper is missing, a symlink or fails to clear, so the agent never
+starts without a working helper. Environment cleared in that step does not
+reach the agent's shells, which are other processes, so the prompt also tells the agent to start every shell call that runs `git` or `gh` with the
 same loading line as step-02's prelude:
 
 ```bash
@@ -1613,10 +1624,14 @@ no merge, no commit and no push. It returns:
 {"base":"main","synced":"false","conflict":"unknown","head_sha":"","git_observed":"false","policy_status":"unreadable","update_required":"false","decision":"no-update","reason":"git-repo-env-unavailable: git-repo-env.sh missing or a symlink in the tools directory"}
 ```
 
-The clearing in step-01 is an instruction to the agent. It is not enforced by
-the runner, and no test runs a model to show that it is followed. The checks
-that do not depend on the agent are:
+The clearing inside each of step-01's shells is an instruction to the agent;
+no test runs a model to show that it is followed. The checks that do not
+depend on the agent are:
 
+- step-00's bash guard, which proves the helper loads and clears before the
+  agent starts, and stops the recipe when it does not
+  (`git_env_guard_fails_closed_before_the_step_01_agent` runs it against a
+  working, a missing and a symlinked helper);
 - step-02's bash prelude, which stops the step with
   `STOP: cannot load git-repo-env.sh from the tools directory (#2033)` when the
   helper is missing or a symlink, and otherwise clears the same names before
@@ -1626,43 +1641,40 @@ that do not depend on the agent are:
 - GitHub's mergeability check and branch protection, which still refuse a
   merge that the base rules forbid.
 
-Step-03 reads GitHub only through `gh` and makes no git call, so it has no
-clearing instruction. Evidence it reads for another repository's head is
-refused by `ci-evidence-ready` as `belongs to another head`.
+Step-03b reads GitHub only through `gh` and makes no git call, so it has no
+clearing prelude. Evidence it reads for another repository's head is refused
+by `ci-evidence-ready` as `belongs to another head`.
 
-#### The CI wait follows the run, not a clock
+#### CI is read once per round, never waited on
 
-Step-03 finds the workflow run for the pull request's current head and, when
-it is queued or in progress, waits for that run with:
+Step-03b reads the published head and `gh pr checks` once. It does not wait,
+poll, `gh run watch` or `gh run view`: the REST allowance is shared by every
+drive, so a build still running is read once in this round and again in the
+next. `gh pr checks` lists every check at the head, whichever workflow
+created it (`ci.yml`, `docs.yml` and the others), so one workflow still queued
+while another has finished reads `PENDING`, not `GREEN`.
 
-```bash
-gh run watch <run-id> --exit-status
-```
+`PENDING` makes step-02 return `BLOCKED` with `qa_reason` `ci-not-ready`
+without running any repository code. The merge-ready assessment reports it as
+the blocker `ci-pending`, and the builder step is told there is nothing to
+fix: no change, no commit, no push, no rerun and no wait. The next round
+reads CI again. A pending build therefore costs a round's assessment, never a
+CI restart or a corrective commit.
 
-When GitHub refuses GraphQL ([#2333](https://github.com/rysweet/amplihack-rs/issues/2333)),
-the agent reads the same run through the REST API with `gh api`. When the run
-finishes, the agent reads the head SHA again. If the head has moved, it starts
-over with the new head's runs, so the evidence always describes the head that
-is current when the step ends.
-
-An in-progress run is a wait, not a failure: it never becomes `RED`, a
-corrective round or a `STUCK` verdict. The prompt has no sleep, interval,
-retry count or backoff; the wait ends when the run ends. The step is
-read-only. It may use `gh run watch`, `gh run view`, `gh pr view` and `GET`
-requests through `gh api`, and never reruns, cancels, pushes, comments or
-merges. It carries the same data-not-instructions line as step-01.
+When GitHub refuses the GraphQL rollup behind `gh pr checks`
+([#2333](https://github.com/rysweet/amplihack-rs/issues/2333)), step-03b
+reports `UNREADABLE` and QA does not run. There is no REST fallback in this
+step; #2333 is not fixed here.
 
 The step ends with one JSON object, every value a string:
 
 ```json
-{"ci_status":"GREEN","ci_total":"6","ci_pending":"0","ci_failing":"0","ci_signal":"GREEN:0/6","head_sha":"219fee3daf8960880adf143c504c453f309f91a4","reason":"run 19234567890 attempt 1 completed success on the current head"}
+{"ci_status":"GREEN","ci_total":"6","ci_pending":"0","ci_failing":"0","head_sha":"219fee3daf8960880adf143c504c453f309f91a4","ci_signal":"GREEN:0/6"}
 ```
 
-`ci_status` is one of `GREEN`, `RED`, `PENDING`, `NO_CHECKS` or
-`UNREADABLE`. `GREEN` means at least one check, none pending and none failing,
-on the current head. `PENDING` means the step ended before the run finished,
-for example because the watch was interrupted; the record then has a non-zero
-`ci_pending`, and QA does not run in that round.
+`ci_status` is one of `GREEN`, `RED`, `PENDING`, `NO_CHECKS`, `MISSING` or
+`UNREADABLE`. `GREEN` means at least one check, none pending and none
+failing, and every expected check present, on the current head.
 
 #### QA runs only on completed green CI
 
@@ -1812,9 +1824,9 @@ shown to be followed.
 | Each row of the check table above, an upper-case head, and a lower-case `green` | Unit tests in `ci_evidence.rs` |
 | A clean pull request whose CI is in progress, then green, reaches `PASS` with no base push: `merge_sync` with `decision` `no-update` gives `base` `main`; `PENDING` evidence gives `BLOCKED`/`ci-not-ready` and no `cargo` call; `GREEN` evidence gives `PASS` and a `cargo test --locked` call; no `push` or `merge` is run and `HEAD` is unchanged | `clean_pr_ci_in_progress_then_green_reaches_merge_ready_without_base_push` in `tests/integration/issue_2342_evidence/workflow.rs`, with recording `cargo` and `git` stubs |
 | An empty `HEAD_SHA` blocks QA; input over 64 KiB is refused by the built binary | the same file |
-| Step-01 names `no-update`, the conflict rule and the required-update rule; step-03 names `gh run watch` and has no `sleep`, `backoff` or `retry`; step-02 sets `AUTODRIVE_REQUIRE_CI=true`; step-03 comes before step-02 in the file; both prompts carry the data-not-instructions line | the prompt-contract test in the same file, and the `NO-SLEEP`, `CI-WAIT-AGENT` and `CI-WAIT-WATCH` checks in `test-auto-drive-to-merge.sh` |
+| Step-01 names `no-update`, the conflict rule and the required-update rule; step-03b is the only writer of `ci_evidence`, is bash, uses `gh pr checks`, and no step runs `gh run watch` or `gh run view`; the recipe has no `sleep`, `backoff`, `retry` or `interval`; one agent step (step-01); step-02 sets `AUTODRIVE_REQUIRE_CI=true`; step-00, step-01, step-03b, step-02 is the file order; both merge-round prompts treat `ci-pending` as a wait for the next round | `ci_is_read_once_by_one_bash_step_with_no_wait`, `step_order_is_guard_then_sync_then_ci_read_then_qa` and `pending_ci_is_a_wait_for_the_next_round_not_builder_work` in the same file, and the `NO-SLEEP`, `CI-READ-ONCE`, `CI-ONE-WRITER`, `CI-READ-BASH` and `EVID-ONE-AGENT` checks in `test-auto-drive-to-merge.sh` |
 | Pending evidence runs no suite, green evidence runs it, and no push is made | the shell acceptance case in `test-auto-drive-to-merge.sh` |
-| Step-01 has no bash step that runs `git merge` or `git push` unconditionally, and its prompt contains the clean-PR no-update rule, the unreadable-rules fallback, the loading line above and the `git-repo-env-unavailable` fallback; step-03 contains `gh run watch` and `read-only`, with no instruction to push or merge that is not negated; step-02 contains `AUTODRIVE_REQUIRE_CI=true` after main's #2033 prelude | `base_sync_prompt_clears_git_env_before_any_git_write`, `ci_wait_step_is_read_only` and `qa_step_requires_ci_after_the_2033_prelude` in `workflow.rs` |
+| Step-01 has no bash step that runs `git merge` or `git push` unconditionally, and its prompt contains the clean-PR no-update rule, the unreadable-rules fallback, the loading line above and the `git-repo-env-unavailable` fallback; step-00 stops on a missing or symlinked helper and passes on a working one; step-03b names no push, merge, rerun, cancel, watch, `--method` or `sleep`; step-02 contains `AUTODRIVE_REQUIRE_CI=true` after main's #2033 prelude | `base_sync_prompt_clears_git_env_before_any_git_write`, `git_env_guard_fails_closed_before_the_step_01_agent`, `ci_read_step_is_read_only` and `qa_step_requires_ci_after_the_2033_prelude` in `workflow.rs` |
 | `AUTODRIVE_REQUIRE_CI` unset or set to `1`, `yes` or `TRUE` gives no `ci-not-ready`; only `true` turns the gate on | `only_exact_true_turns_the_ci_gate_on` in `workflow.rs` |
 | Evidence for another head gives `BLOCKED`, with "another head" in `qa_summary` and not the other SHA; text that is not JSON gives `BLOCKED` | `evidence_for_another_head_blocks_without_naming_it` and `non_json_evidence_blocks` in `workflow.rs` |
 | An inherited `GIT_DIR` that names a decoy repository whose head has green evidence still gives `BLOCKED` for the worktree's own head | `inherited_git_dir_decoy_still_blocks` in `workflow.rs` |
@@ -4117,9 +4129,9 @@ only and does not decide whether CI is green.
 
 ### In the merge evidence step
 
-In `autodrive-merge-evidence.yaml` the step-03 agent waits for the CI run
-(see [The merge evidence steps](#the-merge-evidence-steps-2342)); step-03b then
-reads the rollup once and writes the measured `ci_evidence`. When the rollup
+In `autodrive-merge-evidence.yaml` step-03b reads the rollup once per round,
+with no wait, and is the only writer of `ci_evidence` (see
+[The merge evidence steps](#the-merge-evidence-steps-2342)). When the rollup
 is `GREEN`, step-03b re-reads the pull request's `headRefOid` and
 `baseRefName` and runs
 `$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_expected_checks.sh` on them.
@@ -4937,8 +4949,8 @@ its other rows. Waits that run at the same time in parallel steps of one
 round are added together, so a round with parallel waits can have more
 subtracted than any single wait took, up to the round's own length.
 
-The CI wait inside a merge round is agent time for this purpose and is
-counted.
+A merge round does not wait for CI (step-03b reads it once), so there is no
+CI wait to count or subtract.
 
 All three are cumulative across every run that uses the same state
 directory. A relaunch therefore continues counting from the rounds and
@@ -5557,10 +5569,9 @@ Both values reach the template only after step-03 has bounded them:
 
 No step in any of these recipes declares `timeout` or `timeout_seconds`, and no
 recipe declares a `default_step_timeout` (issue #439 — the runner owns the
-ceiling). The CI wait in `step-03-wait-for-ci` has no polling interval: the
-agent waits on the run itself with `gh run watch <run-id> --exit-status`, so
-the wait ends when the run finishes, not when a clock says so (see
-[The CI wait follows the run](#the-ci-wait-follows-the-run-not-a-clock)).
+ceiling). No merge-evidence step waits for CI: step-03b reads it once per round and a
+running build is read again next round (see
+[CI is read once per round](#ci-is-read-once-per-round-never-waited-on)).
 `autodrive-merge-evidence.yaml` contains no `sleep`, and
 `test-auto-drive-to-merge.sh` checks that it stays that way. Test suites, builds, and model calls run to their natural end.
 The guard test `no_short_timeouts_anywhere` fails the build if a seconds-scale
@@ -5991,7 +6002,7 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/recipes/autodrive-build.yaml` | phase 1 | `default-workflow`, resume-aware. |
 | `amplifier-bundle/recipes/autodrive-crusty-round.yaml` | round | Crusty review of the PR head, verdict, fixes, round record. |
 | `amplifier-bundle/recipes/autodrive-crusty-loop.yaml` | phase 2 | Loop driver + phase bookkeeping. |
-| `amplifier-bundle/recipes/autodrive-merge-evidence.yaml` | evidence | In file order: the agent base-sync judgement (`step-01`), the agent CI wait (`step-03`), the measured CI read with the expected-checks rule at the head (`step-03b`), then suite commands and gadugi scenarios where required (`step-02`), gated on completed green CI for the current head. |
+| `amplifier-bundle/recipes/autodrive-merge-evidence.yaml` | evidence | In file order: the bash #2033 guard (`step-00`), the agent base-sync judgement (`step-01`), the measured CI read, read once per round and the only writer of `ci_evidence` with the expected-checks rule at the head (`step-03b`), then suite commands and gadugi scenarios where required (`step-02`), gated on completed green CI for the current head. |
 | `amplifier-bundle/recipes/autodrive-merge-round.yaml` | round | Merge-ready criteria from the skill's files, verdict, blocker fixes. |
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | phase 3 | Loop driver + merge gate + bookkeeping. |
 | `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict. |
@@ -6050,7 +6061,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | When the launcher applies the guard, idempotent `PATH` with the guard first, `no_merge` alone not applying it, the inherited marker, the fail-closed error for an unset, empty or relative `AMPLIHACK_HOME` and a missing or non-executable shim, and (Linux only) a phase-1 `autodrive-*` bash step whose `gh pr merge 1` gets exit `3` and `REFUSED` while the stub `gh` logs no merge, a login shell whose profile prepends another `gh` still resolving `gh` to the shim, the shipped `bash-env` sourcing a user `BASH_ENV` first; off Linux, a companion test shows the merge is refused | `crates/amplihack-cli/tests/issue_1551_merge_guard.rs` |
 | `guard_applies` truth table (`0` and `false` still apply it) and `locate_guard_dir` errors, a group- or other-writable shim, directory or gate file included; every `autodrive_*.sh` a gate file names outside a comment is itself a gate file (#2186) | `crates/amplihack-cli/src/commands/recipe/run/tests_merge_guard.rs` |
 | The real gate's `MERGED` path with the guard first on `PATH`, the phase-2 `MERGED` check, and the directive reaching the agent prompts (§5i-1551) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
-| [The merge evidence steps](#the-merge-evidence-steps-2342) (#2342): the `ci-evidence-ready` check order, one unit test per message; a clean pull request with CI in progress and then green reaching `PASS` with no base push, through recording `cargo` and `git` stubs; an empty head and oversized input refused; the prompt contract for step-01, step-03 and step-02 and the step order. Temporary `HOME`, `AMPLIHACK_HOME` and `CLAUDE_CONFIG_DIR`, git system and global configuration off, no remote, no token variables | `crates/amplihack-cli/src/commands/orch/ci_evidence.rs`; `tests/integration/issue_2342_evidence/workflow.rs`; `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` (`NO-SLEEP`, `CI-WAIT-AGENT`, `CI-WAIT-WATCH` and the pending-then-green case) |
+| [The merge evidence steps](#the-merge-evidence-steps-2342) (#2342): the `ci-evidence-ready` check order, one unit test per message; a clean pull request with CI in progress and then green reaching `PASS` with no base push, through recording `cargo` and `git` stubs; an empty head and oversized input refused; the prompt contract for step-01 and step-02, the single bash CI read, the step-00 guard run against a working, missing and symlinked helper, and the step order. Temporary `HOME`, `AMPLIHACK_HOME` and `CLAUDE_CONFIG_DIR`, git system and global configuration off, no remote, no token variables | `crates/amplihack-cli/src/commands/orch/ci_evidence.rs`; `tests/integration/issue_2342_evidence/workflow.rs`; `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` (`NO-SLEEP`, `CI-READ-ONCE`, `CI-ONE-WRITER`, `CI-READ-BASH`, `EVID-ONE-AGENT` and the pending-then-green case) |
 | [Finalization hand-off](#finalization-hand-off-from-phase-1-1714) (#1714): the allow-list and flag exactness, the validator's hand-off on both `BLOCKED_CI` exits and on `FAILED_IMPLEMENTATION` with a confirmed open PR (and its refusal without one), the open-PR check's PR head rule (a fast-forward PR head present locally or fetched without writing refs is the same PR; a diverged, rewritten or unfetchable head is not), the real terminal-state probe followed by the validator on a merge already on the PR before finalization (`EXISTING_OPEN_PR` when green, `FAILED_IMPLEMENTATION` handed off when pending, `BLOCKED_CI` handed off when red; a diverged head, a rewound remote, or a probe without `accept_pr_head_ahead` still `FAILED_INVALID_INPUT` and never handed off), `step-20-sync-pr-head` and step-20b run from the YAML against a remote that is ahead, with an upstream, with only `origin/<branch>` and with neither (the push lands on the PR head), standalone runs and all five other prior-state blockers still failing closed, step-03 run from its YAML against a stub `gh` (hand-off, closed or different PR, a non-digit `pr_number` printed as `<invalid>`, no PR, resume, `BLOCKED_CI` with no `handoff` field, a state outside the vocabulary, a missing brick), and static guards on the flag's only setter and on the merge gate | `tests/integration/issue_1714_finalization_handoff.rs` |
 | [Usage limits are not STUCK](#usage-limits-are-not-stuck) (#1801): `1801-evaluator-retry-verdict` (the evaluator hits a limit once, is retried inside step-02 and returns a verdict the loop records, with no `STUCK`), `1801-evaluator-usage-limit` (the limit is not lifted and the loop reports `USAGE_LIMIT`), a round and a before-round step that fail on a limit, and negative cases where the loop does not stop as `USAGE_LIMIT`: a nested `class`, the marker with exit `0`, an indented or echoed marker, and `usage_limit_wait` lines alone | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The same retry through the real step supervisor: fake `claude` and a stub `recipe-runner-rs` under an isolated `HOME` | `crates/amplihack-cli/tests/issue_1801_evaluator_retry.rs` |

@@ -1509,7 +1509,7 @@ check "EC-gate-base-read" "the gate reads baseRefName in its own pr view" \
   grep -qE 'gh pr view "\$PR" --json [a-zA-Z,]*baseRefName' "${GATE}"
 check "EC-gate-argv-kept" "the gate's merge argv keeps --match-head-commit" grep -qF -- '--match-head-commit' "${GATE}"
 
-# Merge-evidence step-03b, which measures CI after the step-03 agent waits (#2342); run with the fake gh.
+# Merge-evidence step-03b, the only CI read of a round and the only writer of ci_evidence (#2342); run with the fake gh.
 extract_step_command() {
   awk -v step="$2" '
     index($0, "id: \"" step "\"") { instep=1 }
@@ -1521,7 +1521,7 @@ S3="$(extract_step_command "${RECIPES}/autodrive-merge-evidence.yaml" step-03b-e
 [ -n "$S3" ] || { echo "HARNESS-ERROR: could not extract merge-evidence step-03b" >&2; exit 2; }
 check "EC-S3-amplihack-home" "step-03 runs the helper from \$AMPLIHACK_HOME/amplifier-bundle/tools only" \
   bash -c 'printf "%s" "$1" | grep -qE "AMPLIHACK_HOME[}]?/amplifier-bundle/tools/autodrive_expected_checks\.sh" && ! printf "%s" "$1" | grep -qE "(REPO_PATH|TOP|toplevel)[^\n]*autodrive_expected_checks"' _ "$S3"
-check "EC-S3-one-sleep" "step-03 adds no new wait (one sleep, the existing loop)" \
+check "EC-S3-one-sleep" "step-03b adds no wait (at most one sleep)" \
   test "$(printf '%s\n' "$S3" | grep -cE '(^|[^A-Za-z_])sleep ')" -le 1
 check "EC-S3-tail-n1" "step-03 reads the helper's verdict from the last line" \
   bash -c 'printf "%s" "$1" | grep -qE "tail -n ?1"' _ "$S3"

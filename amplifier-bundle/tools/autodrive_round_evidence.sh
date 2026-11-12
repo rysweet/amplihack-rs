@@ -343,8 +343,8 @@ round_record() {
   count="$(field "${RECIPE_VAR_merge_ready_verdict:-}" blocker_count 0)"
   case "$count" in '' | *[!0-9]*) count=0 ;; esac
   qa="$(token "$(field "${RECIPE_VAR_qa_evidence:-}" qa_status MISSING)")"
-  # Since #2342 an agent writes ci_evidence after reading CI logs, so a quote in ci_signal or ci_status must not open
-  # a second, winning merge_ready_verdict key. ci_signal is free text: it keeps its spaces and loses only quotes,
+  # ci_evidence comes from merge-evidence step-03b (bash), whose ci_signal can carry check names read from the PR's
+  # workflow files, so a quote in ci_signal or ci_status must not open a second, winning merge_ready_verdict key. ci_signal is free text: it keeps its spaces and loses only quotes,
   # backslashes and control bytes; ci_status is a closed vocabulary and goes through token().
   ci_signal="$(field "${RECIPE_VAR_ci_evidence:-}" ci_signal unreadable | LC_ALL=C tr -d '"\\\000-\037\177')"
   ci_status="$(token "$(field "${RECIPE_VAR_ci_evidence:-}" ci_status MISSING)")"
