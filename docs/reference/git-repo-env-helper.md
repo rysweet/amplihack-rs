@@ -211,12 +211,13 @@ stops with a non-zero exit:
 | --- | --- | --- |
 | `git-hook-cargo.sh` | `ERROR: git-repo-env.sh missing or a symlink at <path>; refusing to run tests with inherited GIT_* (#2033)` | 1 |
 | `autodrive_qa_evidence.sh` | `ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh, autodrive_trust.sh or git-repo-env.sh is missing` | 1, and no evidence file is written |
-| merge-evidence steps 01 and 02 | `STOP: cannot load git-repo-env.sh from the tools directory (#2033)` | 1 |
+| merge-evidence step-01 (agent step) | none: it makes no git write and returns `decision: no-update` with a reason beginning `git-repo-env-unavailable` | none; the step has no exit of its own |
+| merge-evidence step-02 | `STOP: cannot load git-repo-env.sh from the tools directory (#2033)` | 1 |
 | merge-round step-04 | the same message | 1, from the agent's bash block; the step itself has no exit of its own |
 
 The tests check these exact strings, so the code and this table cannot drift
 apart: the [drift guard](#the-drift-guard) checks the hook's message and the
-three `STOP` lines, and the [end-to-end test](#the-end-to-end-test) checks the
+two `STOP` lines and step-01's no-write rule, and the [end-to-end test](#the-end-to-end-test) checks the
 `autodrive-qa-helpers-not-found` message.
 
 ## The QA evidence fields
@@ -282,9 +283,13 @@ a refusal message changes. It checks:
    It also runs the hook with the helper missing and with the helper replaced
    by a symbolic link, and checks for the exact `ERROR: git-repo-env.sh missing
    or a symlink` message in [the refusal table](#finding-the-helper) and exit 1.
-   It checks that `autodrive-merge-evidence.yaml` steps 01 and 02 and
-   `autodrive-merge-round.yaml` step-04 all contain the exact `STOP: cannot
-   load git-repo-env.sh from the tools directory (#2033)` line.
+   It checks that `autodrive-merge-evidence.yaml` step-02 and
+   `autodrive-merge-round.yaml` step-04 contain the exact `STOP: cannot
+   load git-repo-env.sh from the tools directory (#2033)` line. Step-01 of
+   `autodrive-merge-evidence.yaml` is an agent step with no exit status, so
+   the check reads its prompt instead: it must contain the loading line, the
+   rule that no git write happens when that line fails, and the
+   `git-repo-env-unavailable` reason, and must not contain a `STOP` line.
 
 Before the change is merged, each check is shown to fail on a broken copy of
 the helper or list (a mutation check), and that failure is recorded in the

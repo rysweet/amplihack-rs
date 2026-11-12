@@ -485,13 +485,32 @@ hook_refuses symlink
 EVIDENCE_YAML="$REPO_ROOT/amplifier-bundle/recipes/autodrive-merge-evidence.yaml"
 ROUND_YAML="$REPO_ROOT/amplifier-bundle/recipes/autodrive-merge-round.yaml"
 step_body() { awk -v id="  - id: \"$2\"" '$0 == id { on = 1; print; next } on && /^  - id:/ { exit } on { print }' "$1"; }
-for sid in step-01-sync-with-base step-02-qa-team-scenarios; do
-    case "$(step_body "$EVIDENCE_YAML" "$sid")" in
-        *'STOP: cannot load git-repo-env.sh from the tools directory (#2033)'*)
-            record_pass "merge-evidence $sid has the exact #2033 STOP line" ;;
-        *) record_fail "merge-evidence $sid has the exact #2033 STOP line" "not found in $sid" ;;
+case "$(step_body "$EVIDENCE_YAML" step-02-qa-team-scenarios)" in
+    *'STOP: cannot load git-repo-env.sh from the tools directory (#2033)'*)
+        record_pass "merge-evidence step-02 has the exact #2033 STOP line" ;;
+    *) record_fail "merge-evidence step-02 has the exact #2033 STOP line" "not found in step-02" ;;
+esac
+# Step-01 is an agent step (#2342): it has no exit status to stop with, so its
+# prompt must carry the loading line and forbid every git write when that line
+# fails, returning the git-repo-env-unavailable no-update decision instead.
+step01="$(step_body "$EVIDENCE_YAML" step-01-sync-with-base)"
+step01_has() {
+    case "$step01" in
+        *"$2"*) record_pass "merge-evidence step-01 $1" ;;
+        *) record_fail "merge-evidence step-01 $1" "not found in step-01: $2" ;;
     esac
-done
+}
+step01_has "loads git-repo-env.sh, refusing a symlink" \
+    '[ ! -L "$TOOLS_D/git-repo-env.sh" ] && . "$TOOLS_D/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env'
+step01_has "forbids git writes when the helper is unavailable" \
+    'no git write of any kind'
+step01_has "returns git-repo-env-unavailable when the helper is unavailable" \
+    '"git-repo-env-unavailable"'
+case "$step01" in
+    *'STOP: cannot load git-repo-env.sh'*)
+        record_fail "merge-evidence step-01 has no STOP line it cannot act on" "step-01 is an agent step" ;;
+    *) record_pass "merge-evidence step-01 has no STOP line it cannot act on" ;;
+esac
 case "$(step_body "$ROUND_YAML" step-04-address-blockers)" in
     *'STOP: cannot load git-repo-env.sh from the tools directory (#2033)'*)
         record_pass "merge-round step-04 has the exact #2033 STOP line" ;;
