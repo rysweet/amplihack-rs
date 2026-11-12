@@ -318,6 +318,13 @@ fn one_shot_old_passive_live_reading_is_reread_from_home() {
         !out.contains("reread: work failed"),
         "the live re-read failed:\n{out}"
     );
+    // The live re-read is dated after the measurement started, where spare's
+    // direct reading is dated. It must not make that reading stale: no
+    // target re-read, however long the measurement took.
+    assert!(
+        !out.contains("reread: spare"),
+        "the live re-read made spare's reading from the same measurement stale:\n{out}"
+    );
     for line in out.lines() {
         assert_log_grammar(line, false);
     }

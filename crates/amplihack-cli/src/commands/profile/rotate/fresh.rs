@@ -1,6 +1,7 @@
 //! Issue #1870: the freshness gate. A swap target chosen by its reading is
 //! accepted only when that reading is fresh: taken no more than
-//! [`MAX_READING_AGE_SECS`] ago, not earlier than the live login's reading,
+//! [`MAX_READING_AGE_SECS`] ago, not earlier than the live login's reading
+//! (taken as no later than when the cycle started measuring, [`live_time`]),
 //! and, for a login in the ledger's `swapped_away` or the ledger's
 //! `previous` (the login the last swap left, issue #2211), strictly after the
 //! swap away from it. A stale target is read again, by the user's probe method
@@ -66,6 +67,22 @@ pub fn read_at(p: &Probed, measured_at: i64) -> Option<i64> {
         return None;
     }
     Some(p.observed_at.unwrap_or(measured_at))
+}
+
+/// The live reading time the gate compares targets with: the live probe's
+/// reading time ([`read_at`]), but never later than `measured_at`, when the
+/// cycle started measuring. `None` when the live probe has no reading time.
+///
+/// The cap is for the issue #2211 live re-read. It runs after the
+/// measurement, so it is dated after `measured_at`, while a target read
+/// directly in the same measurement is dated `measured_at`. Without the cap
+/// every such target would be "older than the live reading" whenever the
+/// measurement crossed a second boundary: one more usage read per target,
+/// and a false `no-capacity` ALERT when that read failed. A target passive
+/// reading taken before the measurement is still older than the live
+/// reading, as it is next to a direct live read.
+pub fn live_time(live: &Probed, measured_at: i64) -> Option<i64> {
+    read_at(live, measured_at).map(|at| at.min(measured_at))
 }
 
 /// Whether a reading taken at `read_at` is stale `now`: no reading time,
@@ -166,7 +183,9 @@ pub(super) fn settle(
         .as_ref()
         .and_then(|l| Some((l.previous.clone()?, l.swapped_at?)));
     let damped = ledger.map(|l| l.swapped_away).unwrap_or_default();
-    let live_at = read_at(&live, m.measured_at);
+    // Capped at `measured_at`: a live re-read made after the measurement
+    // does not make this measurement's own target readings stale.
+    let live_at = live_time(&live, m.measured_at);
     let mut lines = std::mem::take(&mut m.fresh_lines);
     let mut done: Vec<ProfileName> = Vec::new();
     // Targets whose re-read logged new figures. If such a reading is still

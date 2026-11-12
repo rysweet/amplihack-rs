@@ -848,6 +848,13 @@ Together they can add up to two probe deadlines after measurement: about
 240 seconds with the default settings. See the
 [re-read limits](../reference/profile-command.md#re-reads).
 
+A live re-read runs after the measurement, but it does not make the
+cycle's own candidate readings stale. A candidate read directly in the same
+measurement still counts as no older than the live login, so the re-read
+adds no target read. A candidate's stored reading from before the
+measurement is read again, as it is next to a direct live read. See the
+[reading-time contract](../reference/profile-command.md#reading-time).
+
 While the cache stays behind, the frozen count keeps rising on the cached
 figures and the rate history takes only the re-read figures, so the
 rotator reads the login again on every cycle and never treats the lower
@@ -856,11 +863,17 @@ cached figure as a new session window. See the
 
 For example, cached 63% does not replace direct evidence of 65%, 68% and
 71% under the cache recovery rule. A failed re-read does not make
-the older cache current. If accepted recent usage projects to
-`--session-at` by the next cycle, the rotator
+the older cache current, and it does not make a frozen reading trusted
+again either: the frozen count is kept, so the next identical reading is
+read again. If accepted recent usage, over at least one interval, projects
+to `--session-at` by the next cycle, the rotator
 swaps now with `reason=projected`, provided a target qualifies. Near the
-threshold, failed or stale evidence triggers the conservative decision
-described in the
+threshold (within `--margin` of `--session-at`, or projected to reach it),
+failed or stale evidence is decided as if the login were at the threshold:
+a swap or the `no-capacity` ALERT, never a stay. With `--session-at 70
+--margin 5`, a status line that keeps rewriting 66% gets a re-read on its
+third identical reading; if that read fails, the cycle swaps, or alerts
+when no target qualifies, and the next cycle reads again. See the
 [live freshness reference](../reference/profile-command.md#rotate-live-reading-freshness).
 A steady low rate stays below the threshold.
 

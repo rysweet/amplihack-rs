@@ -8,18 +8,31 @@
 //!   non-finite session, `at <= last.at` and `at > t`; it clears the series
 //!   first when `name` differs from the series' login or `session` falls
 //!   below the last point. It keeps at most `MAX_POINTS` (4) points.
-//!   `clear()`, `len()`, and `rate() -> Option<f64>` (points per second
-//!   from the first to the last point; `None` for fewer than 2 points, a
-//!   time difference of 0 or a non-finite result).
+//!   `clear()`, `len()`, and `rate(min_span) -> Option<f64>` (points per
+//!   second from the first to the last point; `None` for fewer than 2
+//!   points, a time difference of 0 or less, a time difference below
+//!   `min_span` seconds, or a non-finite result). The rotator passes
+//!   `--interval` as `min_span`, for the projection and for `near` alike.
 //! - `projected(session, rate, interval) -> f64`: `session + rate *
 //!   interval`, clamped to `[0, 100]`.
-//! - `near(last, rate, &Settings) -> bool`: with a rate,
-//!   `last + rate * interval >= session_at`; with none,
-//!   `last >= session_at - margin`.
+//! - `near(last, rate, &Settings) -> bool`: `last >= session_at - margin`,
+//!   or, with a rate, `last + rate * interval >= session_at`. A rate only
+//!   widens the margin band: a rate of 0 from frozen points never narrows it.
 //! - `map_reason(decision, Basis, &Settings, &real_reading) -> Decision`:
 //!   relabels only `Swap{Threshold}`, and only when the real reading alone
 //!   needs no swap; under `Basis::Substituted` a failed real reading counts
-//!   as needing none. `Basis::Real` changes nothing.
+//!   as needing none. There is no basis for the reading as measured: with
+//!   no outlook, nothing is relabelled.
+//! - `with_outlook(real_verdict, on_outlook, Basis, &Settings, &real_reading)
+//!   -> Verdict`: a measured (not failed) reading at a threshold, or one
+//!   that gives a swap on its own, keeps `real_verdict`; otherwise (below
+//!   both thresholds, or failed) a threshold swap on the outlook, labelled
+//!   by `map_reason`, or the ALERT, never a stay. It never returns a
+//!   plan-room or overflow swap that `real_verdict` did not already hold.
+//! - `fresh::live_time(&live_probe, measured_at) -> Option<i64>`: the live
+//!   reading time the target gate compares with, `read_at` capped at
+//!   `measured_at`, so a live re-read made after the measurement never makes
+//!   the measurement's own target readings stale.
 //!
 //! Pure tests use fixed timestamps; the regression fixtures below use only
 //! temporary homes and synthetic credentials, with explicitly advanced clocks.
@@ -27,8 +40,9 @@
 use super::super::decide::{Decision, Reading, Reason};
 use super::super::fresh::gated_target;
 use super::super::fresh::live::{
-    Basis, FROZEN_CYCLES, MAX_POINTS, Series, map_reason, near, projected,
+    Basis, FROZEN_CYCLES, MAX_POINTS, Series, map_reason, near, projected, with_outlook,
 };
+use super::super::overflow::{Tag, Verdict};
 use super::super::settings::{self, Settings};
 use crate::commands::profile::name::ProfileName;
 
@@ -78,10 +92,10 @@ fn the_limits_are_four_points_and_two_unchanged_cycles() {
 #[test]
 fn an_empty_or_single_point_series_has_no_rate() {
     let mut sr = Series::default();
-    assert_eq!(sr.rate(), None);
+    assert_eq!(sr.rate(120), None);
     sr.note(&n("work"), T0, 22.0, T0);
     assert_eq!(sr.len(), 1);
-    assert_eq!(sr.rate(), None);
+    assert_eq!(sr.rate(120), None);
 }
 
 #[test]
@@ -89,9 +103,38 @@ fn the_rate_is_from_the_first_to_the_last_point() {
     let mut sr = Series::default();
     sr.note(&n("work"), T0, 50.0, T0);
     sr.note(&n("work"), T0 + 120, 63.0, T0 + 120);
-    let r = sr.rate().unwrap();
+    let r = sr.rate(120).unwrap();
     assert!(close(r * 120.0, 13.0), "{r}");
     assert!(close(projected(63.0, r, 120), 76.0));
+}
+
+#[test]
+fn a_rate_needs_points_at_least_the_minimum_span_apart() {
+    // A direct 50% at T, then a status line at 51% written five seconds
+    // later: 0.2 points a second, which would project 51 + 24 = 75.
+    let mut sr = Series::default();
+    sr.note(&n("work"), T0, 50.0, T0);
+    sr.note(&n("work"), T0 + 5, 51.0, T0 + 120);
+    assert_eq!(sr.len(), 2);
+    assert_eq!(sr.rate(120), None, "5 s is less than one interval");
+    assert!(sr.rate(5).is_some(), "the same points over a 5 s minimum");
+    sr.note(&n("work"), T0 + 119, 52.0, T0 + 120);
+    assert_eq!(sr.rate(120), None, "119 s is still less than one interval");
+    sr.note(&n("work"), T0 + 120, 52.0, T0 + 120);
+    let r = sr.rate(120).unwrap();
+    assert!(close(r * 120.0, 2.0), "{r}");
+}
+
+#[test]
+fn over_one_interval_the_projection_adds_no_more_than_the_rise_seen() {
+    for (dt, rise) in [(120, 13.0), (121, 40.0), (360, 31.0), (600, 5.0)] {
+        let mut sr = Series::default();
+        sr.note(&n("work"), T0, 30.0, T0);
+        sr.note(&n("work"), T0 + dt, 30.0 + rise, T0 + dt);
+        let r = sr.rate(120).unwrap();
+        let p = projected(30.0 + rise, r, 120);
+        assert!(p <= 30.0 + 2.0 * rise + 1e-9, "dt={dt} rise={rise}: {p}");
+    }
 }
 
 #[test]
@@ -101,12 +144,12 @@ fn the_rising_history_projects_59_3_at_50_and_73_3_at_63() {
         let at = T0 + 120 * i as i64;
         sr.note(&n("work"), at, v, at);
     }
-    let p50 = projected(50.0, sr.rate().unwrap(), 120);
+    let p50 = projected(50.0, sr.rate(120).unwrap(), 120);
     assert!(close(p50, 59.3), "{p50}");
     assert!(p50 < 70.0);
     sr.note(&n("work"), T0 + 480, 63.0, T0 + 480);
     assert_eq!(sr.len(), MAX_POINTS, "the oldest point (22) is dropped");
-    let p63 = projected(63.0, sr.rate().unwrap(), 120);
+    let p63 = projected(63.0, sr.rate(120).unwrap(), 120);
     assert!(close(p63, 73.3), "{p63}");
     assert!(p63 >= 70.0);
 }
@@ -116,7 +159,7 @@ fn a_slow_rise_projects_below_the_threshold() {
     let mut sr = Series::default();
     sr.note(&n("work"), T0, 20.0, T0);
     sr.note(&n("work"), T0 + 120, 22.0, T0 + 120);
-    assert!(close(projected(22.0, sr.rate().unwrap(), 120), 24.0));
+    assert!(close(projected(22.0, sr.rate(120).unwrap(), 120), 24.0));
 }
 
 #[test]
@@ -126,7 +169,7 @@ fn a_fall_in_session_starts_a_new_series() {
     sr.note(&n("work"), T0 + 120, 65.0, T0 + 120);
     sr.note(&n("work"), T0 + 240, 3.0, T0 + 240);
     assert_eq!(sr.len(), 1, "a new session window");
-    assert_eq!(sr.rate(), None);
+    assert_eq!(sr.rate(120), None);
 }
 
 #[test]
@@ -135,7 +178,7 @@ fn another_live_login_starts_a_new_series() {
     sr.note(&n("work"), T0, 50.0, T0);
     sr.note(&n("spare"), T0 + 120, 63.0, T0 + 120);
     assert_eq!(sr.len(), 1);
-    assert_eq!(sr.rate(), None, "no rate across two logins");
+    assert_eq!(sr.rate(120), None, "no rate across two logins");
 }
 
 #[test]
@@ -145,7 +188,7 @@ fn clear_empties_the_series() {
     sr.note(&n("work"), T0 + 120, 63.0, T0 + 120);
     sr.clear();
     assert_eq!(sr.len(), 0);
-    assert_eq!(sr.rate(), None);
+    assert_eq!(sr.rate(120), None);
 }
 
 #[test]
@@ -155,7 +198,7 @@ fn a_point_not_later_than_the_last_is_ignored() {
     sr.note(&n("work"), T0 + 120, 63.0, T0 + 120);
     sr.note(&n("work"), T0, 63.0, T0 + 120);
     assert_eq!(sr.len(), 1);
-    assert_eq!(sr.rate(), None);
+    assert_eq!(sr.rate(120), None);
 }
 
 #[test]
@@ -173,7 +216,7 @@ fn a_non_finite_session_is_ignored() {
     sr.note(&n("work"), T0 + 120, f64::NAN, T0 + 120);
     sr.note(&n("work"), T0 + 240, f64::INFINITY, T0 + 240);
     assert_eq!(sr.len(), 1);
-    assert_eq!(sr.rate(), None);
+    assert_eq!(sr.rate(120), None);
 }
 
 #[test]
@@ -197,6 +240,33 @@ fn near_with_no_rate_uses_the_margin() {
     assert!(near(65.0, None, &s), "70 - 5 = 65");
     assert!(near(66.0, None, &s));
     assert!(!near(64.0, None, &s));
+}
+
+#[test]
+fn a_rate_never_narrows_the_margin_band() {
+    // Crusty round 6: a cache frozen at 66% whose observation time keeps
+    // moving gives a rate of 0 (or a diluted one). The figure is still
+    // within --margin of --session-at, so it is near.
+    let s = s();
+    assert!(near(66.0, Some(0.0), &s), "66 >= 65 with a rate of 0");
+    assert!(near(65.0, Some(0.0), &s));
+    assert!(near(66.0, Some(1.0 / 600.0), &s), "a diluted rate");
+    assert!(!near(64.0, Some(0.0), &s), "outside the band, no rise");
+    // Outside the band, a rate still widens it.
+    assert!(near(60.0, Some(10.0 / 120.0), &s), "60 + 10 = 70");
+}
+
+#[test]
+fn a_frozen_series_with_a_moving_time_is_near_at_66() {
+    // The points the frozen 66% leaves behind when the status line keeps
+    // rewriting it with a new time: two identical points one interval apart.
+    let s = s();
+    let mut sr = Series::default();
+    sr.note(&n("work"), T0, 66.0, T0);
+    sr.note(&n("work"), T0 + 120, 66.0, T0 + 120);
+    let rate = sr.rate(120);
+    assert_eq!(rate, Some(0.0));
+    assert!(near(66.0, rate, &s));
 }
 
 // --- map_reason ------------------------------------------------------------
@@ -248,16 +318,10 @@ fn a_substituted_reading_already_at_the_threshold_stays_threshold() {
 }
 
 #[test]
-fn a_real_basis_changes_nothing() {
-    let got = map_reason(threshold(), Basis::Real, &s(), &m(63.0, 41.0));
-    assert_eq!(got, threshold());
-}
-
-#[test]
 fn map_reason_never_creates_or_suppresses_a_swap_or_relabels_other_reasons() {
     let s = s();
     let real = m(63.0, 41.0);
-    for basis in [Basis::Real, Basis::Projected, Basis::Substituted] {
+    for basis in [Basis::Projected, Basis::Substituted] {
         assert_eq!(map_reason(Decision::Stay, basis, &s, &real), Decision::Stay);
         assert_eq!(
             map_reason(Decision::Alert, basis, &s, &real),
@@ -277,6 +341,158 @@ fn map_reason_never_creates_or_suppresses_a_swap_or_relabels_other_reasons() {
             assert_eq!(map_reason(d.clone(), basis, &s, &real), d, "{reason:?}");
         }
     }
+}
+
+// --- with_outlook: the outlook reaches the threshold row only ---------------
+
+fn verdict(decision: Decision) -> Verdict {
+    Verdict {
+        decision,
+        tag: None,
+        new_blocks: Vec::new(),
+        next_plan_reset: None,
+        unknown_plan: vec![n("busy")],
+        key_held: Vec::new(),
+    }
+}
+
+fn swap_for(reason: Reason) -> Decision {
+    Decision::Swap {
+        to: n("other"),
+        reason,
+    }
+}
+
+#[test]
+fn a_projection_with_no_candidate_is_the_alert_not_plan_room_or_overflow() {
+    // Measured 63%, projected 73%: the decision rule on the projection
+    // finds no candidate that meets the margin. Whatever the plan-room or
+    // overflow rules would make of 73%, they never see it.
+    let s = s();
+    let got = with_outlook(
+        verdict(Decision::Stay),
+        Decision::Alert,
+        Basis::Projected,
+        &s,
+        &m(63.0, 41.0),
+    );
+    assert_eq!(got.decision, Decision::Alert);
+    assert_eq!(got.tag, None, "never on overflow");
+    assert_eq!(got.next_plan_reset, None);
+    assert!(got.key_held.is_empty(), "no API-key ALERT on a projection");
+    assert_eq!(got.unknown_plan, [n("busy")], "the measured state is kept");
+}
+
+#[test]
+fn a_threshold_swap_on_a_projection_is_relabelled_projected() {
+    let s = s();
+    let got = with_outlook(
+        verdict(Decision::Stay),
+        swap_for(Reason::Threshold),
+        Basis::Projected,
+        &s,
+        &m(63.0, 41.0),
+    );
+    assert_eq!(got.decision, swap_for(Reason::Projected));
+    assert_eq!(got.tag, None);
+}
+
+#[test]
+fn a_swap_the_measured_reading_makes_by_itself_stands() {
+    // At 75% measured, the plan-room swap and the move onto overflow run on
+    // the measured reading, as without the outlook.
+    let s = s();
+    for reason in [Reason::PlanRoom, Reason::OverflowIn, Reason::Threshold] {
+        let mut real = verdict(swap_for(reason));
+        if reason == Reason::OverflowIn {
+            real.tag = Some(Tag::In);
+        }
+        for on_outlook in [Decision::Alert, threshold()] {
+            let got = with_outlook(
+                real.clone(),
+                on_outlook,
+                Basis::Substituted,
+                &s,
+                &m(75.0, 41.0),
+            );
+            assert_eq!(got, real, "{reason:?}");
+        }
+    }
+}
+
+#[test]
+fn a_measured_alert_at_a_threshold_keeps_its_api_key_note() {
+    let s = s();
+    let mut real = verdict(Decision::Alert);
+    real.key_held = vec![n("busy")];
+    let got = with_outlook(
+        real.clone(),
+        Decision::Alert,
+        Basis::Projected,
+        &s,
+        &m(10.0, 95.0),
+    );
+    assert_eq!(got, real);
+}
+
+#[test]
+fn a_substituted_failed_probe_is_a_projected_swap_or_the_alert_never_a_stay() {
+    let s = s();
+    // The failed-probe rules give a threshold swap, which damping delays.
+    let real = verdict(threshold());
+    let got = with_outlook(
+        real.clone(),
+        threshold(),
+        Basis::Substituted,
+        &s,
+        &Reading::Failed,
+    );
+    assert_eq!(got.decision, projected_swap(), "undamped on the outlook");
+    // No candidate meets the margin on the substituted figure: the ALERT,
+    // never the plan-room swap, and never the failed-probe rules' threshold
+    // swap, which damping would turn into a stay.
+    for real in [verdict(threshold()), verdict(Decision::Alert)] {
+        let got = with_outlook(
+            real.clone(),
+            Decision::Alert,
+            Basis::Substituted,
+            &s,
+            &Reading::Failed,
+        );
+        assert_eq!(got.decision, Decision::Alert, "{:?}", real.decision);
+        assert_eq!(got.tag, None);
+        assert!(got.key_held.is_empty());
+        assert_eq!(got.unknown_plan, [n("busy")], "the measured state is kept");
+    }
+}
+
+#[test]
+fn a_measured_reading_at_a_threshold_decides_by_itself() {
+    // Week at 95%: the measured reading needs a swap on its own, and the
+    // overflow-aware rules found no plan login with capacity. An outlook
+    // whose higher session figure lets a candidate meet the margin must not
+    // turn that ALERT into a threshold swap onto a login without capacity.
+    let s = s();
+    let real = verdict(Decision::Alert);
+    for basis in [Basis::Projected, Basis::Substituted] {
+        let got = with_outlook(real.clone(), threshold(), basis, &s, &m(63.0, 95.0));
+        assert_eq!(got, real, "{basis:?}");
+    }
+}
+
+#[test]
+fn the_live_time_is_capped_at_the_start_of_the_measurement() {
+    use super::super::decide::Probed;
+    use super::super::fresh::live_time;
+    use super::super::tests_issue_1870::rd;
+    let at = T0;
+    // A live re-read made 5 s after the measurement started, undated or
+    // dated: never later than the start.
+    assert_eq!(live_time(&rd(75.0, 20.0, Some(at + 5)), at), Some(at));
+    // A direct live read of this measurement, or an older passive reading.
+    assert_eq!(live_time(&rd(75.0, 20.0, None), at), Some(at));
+    assert_eq!(live_time(&rd(75.0, 20.0, Some(at - 30)), at), Some(at - 30));
+    assert_eq!(live_time(&Probed::failed(), at), None);
 }
 
 /// Exercise the real live step and target gate with explicitly supplied
@@ -395,8 +611,9 @@ mod evidence {
                 .any(|l| l.contains("failed; treated as unknown"))
         );
         assert_eq!(c.live_outlook.as_ref().unwrap().basis, Basis::Substituted);
-        // The failed reread reset the frozen counter. This changed cache
-        // value is still older than the accepted direct reading.
+        // The failed reread left the frozen count and the lag mark as they
+        // were. This changed cache value is still older than the accepted
+        // direct reading.
         let m = live(&mut c, &snap, t + 40, cached(66.0, t + 19));
         assert_eq!(
             m.live,
@@ -610,6 +827,83 @@ mod evidence {
         let m = fresh::gate(&c, &snap, m, fresh::Reread::Allowed).unwrap();
         assert!(matches!(m.decision, Decision::Swap { to, .. } if to == n("spare")));
         CALLS.with_borrow(|v| assert!(v.is_empty()));
+    }
+
+    /// Crusty round 6: the live step runs after the measurement, so a live
+    /// re-read is dated after `measured_at`, while a target read directly in
+    /// that measurement is dated `measured_at`. The gate must not count the
+    /// target as older than the live reading, whether the re-read is
+    /// undated (dated by the step clock) or carries its own later time.
+    #[test]
+    fn a_live_reread_after_a_slow_measurement_keeps_the_cycles_targets_fresh() {
+        let swap = Decision::Swap {
+            to: n("spare"),
+            reason: Reason::Threshold,
+        };
+        for (took, dated) in [(0, false), (1, false), (5, false), (5, true), (90, false)] {
+            let (_e, mut c, snap) = fixture();
+            let t = clock();
+            // The live re-read reads 75%. A target re-read would fail, which
+            // would leave no candidate and turn the swap into an ALERT.
+            script([rd(75.0, 20.0, dated.then_some(t + took)), Probed::failed()]);
+            let m = observe::decide_measured(
+                &c,
+                &snap,
+                cached(63.0, t - 200),
+                vec![(n("spare"), rd(0.0, 40.0, None))],
+                t,
+            )
+            .unwrap();
+            assert_eq!(m.decision, Decision::Stay, "63% as measured");
+            // The measurement took `took` seconds.
+            CLOCK.set(t + took);
+            let m = fresh::live::step(&mut c, &snap, m).unwrap();
+            assert_eq!(m.decision, swap, "took {took} s, dated {dated}");
+            let m = fresh::gate(&c, &snap, m, fresh::Reread::Allowed).unwrap();
+            assert_eq!(
+                m.decision, swap,
+                "took {took} s, dated {dated}: {:?}",
+                m.fresh_lines
+            );
+            CALLS.with_borrow(|v| assert_eq!(v.as_slice(), ["work"], "took {took} s"));
+            assert!(
+                !m.fresh_lines.iter().any(|l| l.contains("spare")),
+                "no target re-read line: {:?}",
+                m.fresh_lines
+            );
+            ANSWERS
+                .with_borrow(|v| assert_eq!(v.len(), 1, "the failing target read was never made"));
+        }
+    }
+
+    /// The cap keeps the #1870 rule for a target whose passive reading was
+    /// taken before the measurement: it is older than the live reading, as
+    /// it is next to a direct live read, and is read again.
+    #[test]
+    fn a_passive_target_from_before_the_measurement_is_still_read_again() {
+        let (_e, mut c, snap) = fixture();
+        let t = clock();
+        script([rd(75.0, 20.0, None), rd(10.0, 40.0, None)]);
+        let m = observe::decide_measured(
+            &c,
+            &snap,
+            cached(63.0, t - 200),
+            vec![(n("spare"), cached(0.0, t - 10))],
+            t,
+        )
+        .unwrap();
+        CLOCK.set(t + 5);
+        let m = fresh::live::step(&mut c, &snap, m).unwrap();
+        let m = fresh::gate(&c, &snap, m, fresh::Reread::Allowed).unwrap();
+        CALLS.with_borrow(|v| assert_eq!(v.as_slice(), ["work", "spare"]));
+        assert!(matches!(m.decision, Decision::Swap { to, .. } if to == n("spare")));
+        assert!(
+            m.fresh_lines
+                .iter()
+                .any(|l| l.contains("reread: spare reading stale")),
+            "{:?}",
+            m.fresh_lines
+        );
     }
 
     #[test]

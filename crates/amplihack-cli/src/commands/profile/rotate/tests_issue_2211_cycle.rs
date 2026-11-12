@@ -12,8 +12,11 @@
 //!
 //! Time is synthetic: `Ctx::now` is set to a per-test static clock, seeded
 //! once from the real clock and moved forward by [`INTERVAL`] seconds per
-//! cycle by the test itself. Rates and ages come only from those synthetic
-//! timestamps; there is no sleep, no `Instant` wait and no wall-clock window.
+//! cycle by the test itself. A test can also make the measurement take time
+//! (`MEASURE_SECS`), so the live step and the target gate run on a later
+//! clock than `measured_at`, as they do in production. Rates and ages come
+//! only from those synthetic timestamps; there is no sleep, no `Instant`
+//! wait and no wall-clock window.
 //!
 //! Every test has its own statics (via [`lane!`]), since tests run on
 //! parallel threads. Settings follow the 9 Nov rotator: `--interval 120
@@ -21,7 +24,7 @@
 
 use super::super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::super::decide::Probed;
-use super::super::fresh::live::FROZEN_CYCLES;
+use super::super::fresh::live::{Basis, FROZEN_CYCLES};
 use super::super::tests_issue_1870::{exh, rd};
 use super::super::tests_revalidate_cause::{ctx_with, log_of};
 use super::super::tests_swap::{Env, env, ino_at};
@@ -43,8 +46,9 @@ pub(super) enum Live {
 
 /// One test's statics and its stub functions. A test fills `LIVE` (one
 /// entry per cycle; the last repeats), `OTHERS` (the candidates' probes,
-/// the same every cycle) and `REREAD` (what each live re-read returns; the
-/// last repeats; empty means a failed read), then calls [`run`].
+/// the same every cycle) and `REREAD` (what each re-read, live or target,
+/// returns in call order; the last repeats; empty means a failed read), and
+/// may set `MEASURE_SECS` (how long each measurement takes on the clock).
 macro_rules! lane {
     ($m:ident) => {
         // Not every test uses every stub of its lane.
@@ -68,6 +72,9 @@ macro_rules! lane {
             pub static OTHERS: Mutex<Vec<(&'static str, Probed)>> = Mutex::new(Vec::new());
             pub static REREAD: Mutex<Vec<Probed>> = Mutex::new(Vec::new());
             pub static CALLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+            /// Seconds each measurement takes: the clock moves on by this
+            /// much after `measured_at` is taken.
+            pub static MEASURE_SECS: AtomicI64 = AtomicI64::new(0);
             /// Whether the context was read-only during the last re-read.
             pub static READ_ONLY: AtomicBool = AtomicBool::new(false);
 
@@ -95,7 +102,9 @@ macro_rules! lane {
                 };
                 let table = OTHERS.lock().unwrap().clone();
                 let probes = probes_for(snap, &table);
-                decide_measured(ctx, snap, live, probes, at)
+                let decided = decide_measured(ctx, snap, live, probes, at);
+                CLOCK.fetch_add(MEASURE_SECS.load(Ordering::SeqCst), Ordering::SeqCst);
+                decided
             }
 
             pub fn reread(ctx: &Ctx, name: &ProfileName, _: Duration) -> Probed {
@@ -521,23 +530,31 @@ lane!(lst);
 fn e2d_a_live_reread_preserves_its_evidence_timestamp() {
     let e = env();
     seed(&lst::CLOCK);
-    let t2 = lst::clock() + INTERVAL;
+    let t1 = lst::clock();
     set(
         &lst::LIVE,
         &[
+            Live::Direct(40.0, 41.0),
             Live::Direct(50.0, 41.0),
             Live::Passive(50.0, 41.0, INTERVAL + 1),
         ],
     );
     set(&lst::OTHERS, &spare_room());
-    // Stamped 100 s back, 58% rises 8 points in 20 s and projects to 100%.
-    set(&lst::REREAD, &[rd(58.0, 41.0, Some(t2 - 100))]);
+    // Stamped at t1 + 140, 100 s before cycle 3's clock: 40% to 58% over
+    // 140 s projects 58 + 15.4 = 73.4. Dated by the clock (t1 + 240) it
+    // would be 18 points over 240 s, 58 + 9 = 67, and a stay.
+    set(&lst::REREAD, &[rd(58.0, 41.0, Some(t1 + 140))]);
     let mut c = ctx(&e, lst::clock, lst::measure, Some(lst::reread));
     assert_eq!(step(&mut c, &lst::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(
+        step(&mut c, &lst::CLOCK),
+        CycleOutcome::Stayed,
+        "50 + 10 = 60"
+    );
     let got = step(&mut c, &lst::CLOCK);
     let log = log_of(&e);
     assert_eq!(lst::live_calls(), 1, "{log}");
-    assert_eq!(got, CycleOutcome::Swapped, "58 + 48 >= 70: {log}");
+    assert_eq!(got, CycleOutcome::Swapped, "58 + 15.4 >= 70: {log}");
     assert_eq!(swaps(&log), 1, "{log}");
     assert!(log.contains("reason=projected"), "{log}");
 }
@@ -733,14 +750,16 @@ fn the_live_reread_uses_the_live_hook_and_never_the_target_hook() {
 
     c.reread = None;
     c.reread_live = Some(lhk::reread);
-    // With no hook, the failed attempt on cycle 3 restarted the counter.
-    // Two further unchanged cycles reach the frozen threshold again.
-    step(&mut c, &lhk::CLOCK);
-    assert_eq!(lhk::live_calls(), 0, "one unchanged cycle after the reset");
+    // With no live hook, cycle 3's re-read could not be made, and a re-read
+    // that was not made proves nothing: the frozen count was kept, so the
+    // fourth identical reading is still frozen and is read by the live hook.
     step(&mut c, &lhk::CLOCK);
     let log = log_of(&e);
     assert_eq!(lhk::live_calls(), 1, "frozen, read by the live hook: {log}");
     assert_eq!(stale_lines(&log), 1, "{log}");
+    // That re-read agreed (40%): the count restarts.
+    step(&mut c, &lhk::CLOCK);
+    assert_eq!(lhk::live_calls(), 1, "one unchanged cycle after the reset");
 }
 
 // --- A cache that stays frozen below a re-read is read again every cycle ---
@@ -794,7 +813,7 @@ fn a_cache_frozen_below_a_disagreeing_reread_is_read_again_every_cycle() {
         "the series was cleared as a new window: {} points after cycle 4, {len3} after cycle 3",
         c.live_series.len()
     );
-    let r = c.live_series.rate();
+    let r = c.live_series.rate(INTERVAL);
     assert!(
         r.is_some_and(|r| r > 0.0),
         "rate from the re-read figures: {r:?}"
@@ -884,4 +903,157 @@ fn a_hundred_to_ninety_swap_never_bounces_back_on_older_zero_capacity() {
         log.contains("reading stale s=0% w=0%; fresh s=100% w=20%"),
         "{log}"
     );
+}
+
+// --- Crusty round 6: a live re-read after a slow measurement ----------------
+
+lane!(lsl);
+
+/// The measurement takes 5 s, so the live re-read is dated 5 s after
+/// `measured_at`, where `spare`'s direct reading is dated. The target gate
+/// must not read `spare` again: here that read would fail, and the swap
+/// would become a false `no-capacity` ALERT.
+#[test]
+fn a_live_reread_after_a_five_second_measurement_never_rereads_the_target() {
+    use std::sync::atomic::Ordering;
+    let e = env();
+    seed(&lsl::CLOCK);
+    lsl::MEASURE_SECS.store(5, Ordering::SeqCst);
+    set(&lsl::LIVE, &[Live::Passive(40.0, 20.0, INTERVAL + 1)]);
+    set(&lsl::OTHERS, &spare_room());
+    // Call 1, the live re-read: 75%. Call 2 would be spare's: failed.
+    set(&lsl::REREAD, &[rd(75.0, 20.0, None), Probed::failed()]);
+    let mut c = ctx(&e, lsl::clock, lsl::measure, Some(lsl::reread));
+    let got = step(&mut c, &lsl::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(lsl::calls(), ["work"], "no target re-read: {log}");
+    assert_eq!(stale_lines(&log), 1, "{log}");
+    assert!(!log.contains("reread: spare"), "{log}");
+    assert!(!log.contains("ALERT: no profile has capacity"), "{log}");
+    assert_eq!(got, CycleOutcome::Swapped, "decided on s=75%: {log}");
+    assert!(log.contains("reason=threshold"), "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.t), "spare's login is live");
+}
+
+// --- Crusty round 6: a frozen 66% near the threshold whose re-read fails ---
+//
+// The status line keeps rewriting an old 66% (`--session-at 70 --margin
+// 5`). Whether or not its observation time moves, the third identical
+// reading is read again; when that read fails, the cycle is decided on 70%:
+// a swap or the ALERT, never a stay. The failure keeps the frozen count, so
+// the next identical cycle reads again rather than trusting the 66%.
+//
+// A `no-capacity` ALERT while the live reading is below 100% is advisory
+// (#1907, `capacity::Room::alert`): the cycle returns `Stayed` and the
+// ledger keeps the key in `advisory_alert`. A decided stay clears that
+// field, so it tells the ALERT from the stay these tests rule out.
+
+/// The ledger's advisory ALERT key, set by a no-capacity ALERT and cleared
+/// by a stay.
+fn advisory(e: &Env) -> Option<String> {
+    e.rs.load_ledger().unwrap().unwrap().advisory_alert
+}
+
+fn basis(c: &Ctx) -> Option<Basis> {
+    c.live_outlook.as_ref().map(|o| o.basis)
+}
+
+lane!(lfm);
+
+#[test]
+fn a_frozen_66_with_a_moving_cache_time_whose_reread_fails_swaps() {
+    let e = env();
+    seed(&lfm::CLOCK);
+    // Observed at each cycle's own clock: the time moves, the figures do not.
+    set(&lfm::LIVE, &[Live::Passive(66.0, 41.0, 0)]);
+    set(&lfm::OTHERS, &spare_room());
+    let mut c = ctx(&e, lfm::clock, lfm::measure, Some(lfm::reread));
+    assert_eq!(step(&mut c, &lfm::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(step(&mut c, &lfm::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(lfm::live_calls(), 0);
+    let got = step(&mut c, &lfm::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(lfm::live_calls(), 1, "the third identical reading: {log}");
+    let (stale, failed) = (log.find(STALE), log.find(FAILED));
+    assert!(failed.is_some() && stale < failed, "failure logged:\n{log}");
+    assert_eq!(got, CycleOutcome::Swapped, "never a stay on 66%: {log}");
+    assert!(
+        log.contains("swap work->spare live s=66% w=41%") && log.contains("reason=projected"),
+        "{log}"
+    );
+}
+
+lane!(lfa);
+
+#[test]
+fn a_frozen_66_with_a_moving_cache_time_whose_reread_fails_alerts_and_is_read_again() {
+    let e = env();
+    seed(&lfa::CLOCK);
+    set(&lfa::LIVE, &[Live::Passive(66.0, 41.0, 0)]);
+    set(&lfa::OTHERS, &spare_full());
+    let mut c = ctx(&e, lfa::clock, lfa::measure, Some(lfa::reread));
+    assert_eq!(step(&mut c, &lfa::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(step(&mut c, &lfa::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(advisory(&e), None, "no ALERT on 66% as measured");
+    let got = step(&mut c, &lfa::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(lfa::live_calls(), 1, "{log}");
+    assert_eq!(basis(&c), Some(Basis::Substituted), "decided on 70%: {log}");
+    assert!(
+        log.contains("ALERT: no profile has capacity live=work s=66% w=41%"),
+        "never a stay on 66%: {log}"
+    );
+    assert_eq!(got, CycleOutcome::Stayed, "an advisory ALERT: {log}");
+    assert!(advisory(&e).is_some(), "the ALERT is recorded: {log}");
+    assert!(
+        c.live_series.unchanged() >= FROZEN_CYCLES,
+        "the failed re-read kept the frozen count: {}",
+        c.live_series.unchanged()
+    );
+    // Cycle 4: the same 66% is still frozen and is read again, not trusted.
+    step(&mut c, &lfa::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(lfa::live_calls(), 2, "read again on cycle 4: {log}");
+    assert_eq!(stale_lines(&log), 2, "{log}");
+    assert_eq!(basis(&c), Some(Basis::Substituted), "{log}");
+    assert!(advisory(&e).is_some(), "still the ALERT, not a stay: {log}");
+    assert_eq!(swaps(&log), 0, "{log}");
+}
+
+lane!(lff);
+
+#[test]
+fn a_frozen_66_with_a_fixed_cache_time_whose_reread_fails_alerts_and_is_read_again() {
+    let e = env();
+    seed(&lff::CLOCK);
+    // Observed once, at cycle 1's clock: the reading only ages.
+    set(
+        &lff::LIVE,
+        &[
+            Live::Passive(66.0, 41.0, 0),
+            Live::Passive(66.0, 41.0, INTERVAL),
+            Live::Passive(66.0, 41.0, 2 * INTERVAL),
+            Live::Passive(66.0, 41.0, 3 * INTERVAL),
+        ],
+    );
+    set(&lff::OTHERS, &spare_full());
+    let mut c = ctx(&e, lff::clock, lff::measure, Some(lff::reread));
+    assert_eq!(step(&mut c, &lff::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(step(&mut c, &lff::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(lff::live_calls(), 0);
+    step(&mut c, &lff::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(lff::live_calls(), 1, "{log}");
+    assert_eq!(basis(&c), Some(Basis::Substituted), "{log}");
+    assert!(
+        log.contains("ALERT: no profile has capacity live=work s=66% w=41%"),
+        "{log}"
+    );
+    assert!(advisory(&e).is_some(), "{log}");
+    step(&mut c, &lff::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(lff::live_calls(), 2, "{log}");
+    assert_eq!(basis(&c), Some(Basis::Substituted), "{log}");
+    assert!(advisory(&e).is_some(), "still the ALERT, not a stay: {log}");
+    assert_eq!(swaps(&log), 0, "{log}");
 }

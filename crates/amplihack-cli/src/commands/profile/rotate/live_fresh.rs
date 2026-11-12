@@ -11,28 +11,37 @@
 //!   session above 0), older than one `--interval` (R1, R1b), or below the
 //!   last re-read after a re-read that disagreed with it (the cached source
 //!   is behind); the re-read reads `~/.claude` with no token refresh
-//!   (`Ctx::reread_live`);
+//!   (`Ctx::reread_live`). A failed re-read leaves the frozen count as it
+//!   was, so a frozen reading is read again on every identical cycle until
+//!   a re-read succeeds;
 //! - projects the session use one interval ahead from a short in-memory
-//!   [`Series`], and decides on the projection when it reaches
-//!   `--session-at` (R2);
+//!   [`Series`] whose points span at least one `--interval`, and decides on
+//!   the projection when it reaches `--session-at` (R2);
 //! - decides a failed or still-stale live reading on the larger of
 //!   `--session-at` and the last known session use when the last known
-//!   point was near the threshold (R2b), so the figure never falls.
+//!   point was near the threshold (R2b: within `--margin`, or reaching it
+//!   one interval ahead at the series rate; [`near`]), so the figure never
+//!   falls.
+//!
+//! The live re-read runs after the measurement and is dated then, but it
+//! never makes the cycle's own target readings stale: the target gate caps
+//! the live reading time at the measurement's start (`fresh::settle`).
 //!
 //! The figures only change the decision, through [`Outlook`] on the cycle's
-//! context, which `decide_measured` reads; the ledger, the history and the
-//! log lines keep the reading as measured. [`Point`], [`Series`] and
+//! context, which `decide_measured` reads. They reach the decision rule's
+//! threshold row only ([`with_outlook`]): the plan-room swap and the overflow
+//! rules always run on the reading as measured. The ledger, the history and
+//! the log lines keep the reading as measured. [`Point`], [`Series`] and
 //! [`Outlook`] hold a profile name, times and percentages only: never a
 //! token, an account id, an email or a path. Nothing here is persisted.
 //! See "Rotate live reading freshness" in docs/reference/profile-command.md.
 
 use super::super::cycle::Ctx;
-use super::super::decide::{Decision, Probed, Reading, Reason, needs_swap};
+use super::super::decide::{Probed, Reading};
 use super::super::fresh_msg;
 use super::super::identify::LiveId;
 use super::super::measure;
 use super::super::observe::{Measurement, Snap, decide_measured};
-use super::super::settings::Settings;
 use super::read_at;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
@@ -71,6 +80,13 @@ pub struct Series {
 #[path = "tests_live_fresh_access.rs"]
 mod access;
 
+#[path = "live_outlook.rs"]
+mod outlook;
+pub use outlook::{Basis, Outlook, near, projected, with_outlook};
+// Used inside `with_outlook`; the tests check it on its own.
+#[cfg(test)]
+pub use outlook::map_reason;
+
 impl Series {
     /// Starts afresh for `name` when another login owned the series.
     fn own(&mut self, name: &ProfileName) {
@@ -106,11 +122,19 @@ impl Series {
         *self = Self::default();
     }
 
-    /// Session points per second from the first point to the last.
-    pub fn rate(&self) -> Option<f64> {
+    /// Session points per second from the first point to the last, when
+    /// they are at least `min_span` seconds apart (and at least one second).
+    ///
+    /// The rotator passes `--interval`. Two readings a few seconds apart, a
+    /// direct read and a status line written just after it, say little
+    /// about the rate, and a one-point rise over five seconds would project
+    /// 24 points ahead over a 120-second interval. Over a span of at least
+    /// one interval, `rate * interval` is never more than the rise the
+    /// series has seen, so the projection never adds more than that.
+    pub fn rate(&self, min_span: i64) -> Option<f64> {
         let (first, last) = (self.points.front()?, self.points.back()?);
         let dt = last.at.checked_sub(first.at)?;
-        if dt <= 0 {
+        if dt <= 0 || dt < min_span {
             return None;
         }
         let r = (last.session - first.session) / dt as f64;
@@ -135,13 +159,16 @@ impl Series {
         self.unchanged
     }
 
-    /// After a live re-read that read `figures` (`None` when it failed or
-    /// read no figures) of a measurement that read `measured`. A re-read that
-    /// agrees restarts the frozen count: the source is idle, not frozen. One
-    /// that disagrees marks the source as behind and keeps the count, so the
-    /// next identical measurement is read again. A failed one restarts the
-    /// count and leaves the mark as it was. The count stays on the measured
-    /// figures either way.
+    /// After a live re-read that read `figures` (`None` when it failed, read
+    /// no figures or could not be made) of a measurement that read
+    /// `measured`. A re-read that agrees restarts the frozen count: the
+    /// source is idle, not frozen. One that disagrees marks the source as
+    /// behind and keeps the count, so the next identical measurement is read
+    /// again. A failed one changes nothing: the count and the mark stay as
+    /// they were, so a frozen reading is read again on the next identical
+    /// cycle, as a lagging one is. A failure proves nothing about the cache,
+    /// so it must not make a frozen figure trusted again. The count stays on
+    /// the measured figures either way.
     fn after_reread(&mut self, measured: (f64, f64), figures: Option<(f64, f64)>) {
         match figures {
             Some(f) if f == measured => {
@@ -149,7 +176,7 @@ impl Series {
                 self.behind = false;
             }
             Some(_) => self.behind = true,
-            None => self.unchanged = 0,
+            None => {}
         }
     }
 
@@ -175,79 +202,6 @@ impl Series {
             self.behind = false;
         }
         self.behind
-    }
-}
-
-/// `session + rate * interval`, limited to `[0, 100]`.
-pub fn projected(session: f64, rate: f64, interval: u64) -> f64 {
-    (session + rate * interval as f64).clamp(0.0, 100.0)
-}
-
-/// Whether a last known session figure `last` is near `--session-at`.
-pub fn near(last: f64, rate: Option<f64>, s: &Settings) -> bool {
-    let at = f64::from(s.session_at);
-    match rate {
-        Some(r) => last + r * s.interval as f64 >= at,
-        None => last >= at - f64::from(s.margin),
-    }
-}
-
-/// What the live figures used by the decision rest on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Basis {
-    /// The reading as measured.
-    Real,
-    /// The session use projected one interval ahead.
-    Projected,
-    /// The larger of `--session-at` and the last known session use,
-    /// standing in for a failed or stale reading near the threshold.
-    Substituted,
-}
-
-/// The live figures this cycle's decision uses, for live login `name`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Outlook {
-    pub name: ProfileName,
-    pub session: f64,
-    pub week: f64,
-    pub basis: Basis,
-}
-
-/// The live probe the decision runs on: `probe`, or a measured reading with
-/// the outlook's figures.
-pub fn decision_input(probe: &Probed, outlook: Option<&Outlook>) -> (Probed, Basis) {
-    let Some(o) = outlook else {
-        return (probe.clone(), Basis::Real);
-    };
-    let mut p = probe.clone();
-    p.reading = Reading::Measured {
-        session: o.session.clamp(0.0, 100.0),
-        week: o.week,
-    };
-    p.unknown = false;
-    p.still_running = false;
-    (p, o.basis)
-}
-
-/// Relabels a threshold swap made on an outlook as `projected` only when
-/// the `real` reading would not itself have needed a swap; a failed real
-/// reading under a substitution counts as not needing one. Never creates,
-/// removes or retargets a swap.
-pub fn map_reason(d: Decision, basis: Basis, s: &Settings, real: &Reading) -> Decision {
-    let relabel = match basis {
-        Basis::Real => false,
-        Basis::Substituted if *real == Reading::Failed => true,
-        _ => !needs_swap(s, real),
-    };
-    match d {
-        Decision::Swap {
-            to,
-            reason: Reason::Threshold,
-        } if relabel => Decision::Swap {
-            to,
-            reason: Reason::Projected,
-        },
-        d => d,
     }
 }
 
@@ -305,13 +259,15 @@ pub(in crate::commands::profile::rotate) fn step(
     }
     let s = &ctx.settings;
     let at = f64::from(s.session_at);
+    // A rate needs points at least one interval apart (`Series::rate`).
+    let span = interval;
     let basis = match live.reading {
         Reading::Measured { session, week } if !still_stale => {
             if let Some(read) = read_at(&live, m.measured_at) {
                 ctx.live_series.note(&name, read, session, t);
             }
             ctx.live_series
-                .rate()
+                .rate(span)
                 .filter(|r| *r > 0.0 && session < at)
                 .map(|r| projected(session, r, s.interval))
                 .filter(|p| *p >= at)
@@ -326,7 +282,7 @@ pub(in crate::commands::profile::rotate) fn step(
                 _ => at,
             };
             let week = ctx.live_series.prev.map(|(_, w)| w);
-            let rate = ctx.live_series.rate();
+            let rate = ctx.live_series.rate(span);
             ctx.live_series
                 .last_for(&name)
                 .filter(|last| near(last.session, rate, s))

@@ -5772,7 +5772,15 @@ A target's reading is *fresh* when all of these hold:
 - it has a reading time;
 - the reading time is no more than 300 seconds before now;
 - the reading time is not earlier than the live login's reading time. Equal
-  times count as fresh. When the live probe failed, the live login has no
+  times count as fresh. A live reading time later than when this cycle
+  started measuring (`last_cycle.measured_at`) counts as that start time.
+  This covers a [live re-read](#stale-live-reading), which runs after the
+  measurement and is dated then, and a passive live reading observed during
+  the measurement. So a target read directly in the same measurement is
+  never older than the live login, however long the measurement took, and a
+  live re-read adds no target re-read. A target reading taken before the
+  measurement started is still older than a live reading taken after it.
+  When the live probe failed, the live login has no
   reading time, so this comparison is omitted; the other checks still apply;
 - when the target is the ledger's `previous` login, the reading time is
   strictly later than `swapped_at`, whether or not that login was exhausted;
@@ -6062,17 +6070,22 @@ never refreshes a token or changes credential bytes. The separate
 behavior. Target re-reads continue to use stored-profile credentials.
 
 The decision is then made on the new figures, with the reading time given
-by the [reading-time rules](#reading-time). A re-read that confirms the
+by the [reading-time rules](#reading-time). The re-read is dated after the
+measurement, but it does not make the cycle's own target readings stale:
+the [target gate](#reading-time) treats a live reading time later than the
+start of the measurement as that start time. A re-read that confirms the
 measured figures restarts the frozen count from `0` and clears the lag. A
-failed re-read also restarts the frozen count from `0`. A disagreeing
-re-read marks the cache as behind and leaves the frozen count running, so
-the distinction between the cache baseline and accepted evidence is kept:
+disagreeing re-read marks the cache as behind and leaves the frozen count
+running, so the distinction between the cache baseline and accepted
+evidence is kept. A failed re-read, or one that could not be made, changes
+neither: a failure says nothing about the cache, so a frozen reading stays
+frozen and is read again on the next identical cycle, as a lagging one is.
 
 | Re-read result | Frozen count | Cache behind | Series |
 |----------------|--------------|--------------|--------|
 | Agrees with the cached figures | Restarts from `0` | Cleared | Takes the re-read figure (equal to the cached one) |
 | Disagrees | Kept; rises on the next identical cycle | Set | Takes the re-read figure |
-| Fails | Restarts from `0` | Unchanged | Unchanged (no point added) |
+| Fails | Kept; rises on the next identical cycle, which is read again | Unchanged | Unchanged (no point added) |
 
 The count saturates at its maximum value rather than wrapping, so a cache
 frozen for a very long run cannot return to a count below the frozen limit.
@@ -6098,10 +6111,12 @@ line, and the rules in
 [Failed or stale reading near the threshold](#failed-or-stale-reading-near-the-threshold)
 apply.
 
-Failure does not make a known lagging cache trustworthy again. The accepted
-history remains available for the near-threshold rule, and the next cycle
-retries while the cache remains behind. A successful later re-read replaces
-the failed attempt with current evidence.
+Failure does not make a known lagging cache, or a frozen one, trustworthy
+again. The accepted history remains available for the near-threshold rule,
+and the next cycle retries while the cache remains behind or the reading
+stays frozen: at most one live re-read per cycle, each within its own probe
+deadline. A successful later re-read replaces the failed attempt with
+current evidence.
 
 Under the recovery rule, a cache can remain at 63% while successive
 live re-reads return 65%, 68% and 71%. Each successful re-read supplies that cycle's live
@@ -6127,13 +6142,20 @@ writes one `stale live reading; re-read` line, three in all.
 
 ##### Projected swap
 
-With at least two points in the series, the rotator works out the live
-login's session rate, in points per second, from the first and last points:
+When the first and last points of the series are at least one
+`--interval` apart, the rotator works out the live login's session rate, in
+points per second, from those two points:
 
 ```
 rate      = (last session - first session) / (last time - first time)
 projected = session + rate * interval
 ```
+
+Two points closer together give no rate. A direct read and a status line
+written a few seconds after it say little about the rate: one point over
+five seconds would project 24 points over a 120-second interval. Over at
+least one interval, `rate * interval` is never more than the rise the series
+has seen, so the projection adds no more than that.
 
 `interval` is `--interval`. The projection is limited to the range `0` to
 `100`. When `projected >= --session-at` and the live reading itself is below
@@ -6145,9 +6167,18 @@ and is not stopped by `--hold`. When no candidate meets the margin, the
 cycle writes the `no-capacity` ALERT, so an ALERT can follow a live reading
 still below `--session-at`.
 
-A projection below `--session-at`, a rate of `0` or less, or fewer than two
-points leaves the decision as it would be without this step. Only session
-use is projected; week use is decided on the reading as before.
+A projection below `--session-at`, a rate of `0` or less, fewer than two
+points, or points less than one interval apart leaves the decision as it
+would be without this step. Only session use is projected; week use is
+decided on the reading as before.
+
+The projected figure reaches only the [decision rule](#rotate-decision-rule)'s
+threshold row. The [plan-room swap](#rotate-plan-room-swap) and the
+[overflow](#rotate-overflow) moves always run on the reading as measured, so
+a projection never moves work onto a plan login without capacity, onto
+credits or onto the API key. When the measured reading is itself at
+`--session-at` or `--week-at`, or gives a swap on its own, the cycle is
+decided on it as measured, as without this step.
 
 The projection affects only the decision. The ledger, the `cycle` line, the
 `swap` line's `live s=<n>% w=<n>%` figures and the usage history all show
@@ -6158,23 +6189,44 @@ the reading as measured.
 When the live probe fails, or the live re-read fails, is refused or is
 itself still more than one interval old, the rotator looks at the last
 point in the series for the same live login. The login is *near the
-threshold* when:
+threshold* when either holds:
 
-- with a rate: `last session + rate * interval >= --session-at`;
-- with no rate: `last session >= --session-at - --margin`.
+- `last session >= --session-at - --margin`;
+- with a rate: `last session + rate * interval >= --session-at`.
+
+A rate only widens the margin band; it never narrows it. When the reading
+is frozen, the series holds the frozen points: identical figures whose
+observation time keeps moving, as from a status line that keeps rewriting an
+old figure, give a rate of `0`, or dilute an earlier rise. Such a rate says
+nothing about the login, so a last figure inside the band is near whatever
+the rate, and the outcome does not depend on whether the cache's timestamp
+moves.
 
 When it is near, the decision runs on the larger of `--session-at` and the
 last known session use: the last point, and the stale reading itself when
 there is one. The substituted figure is never lower than the last known
 figure, so this rule can only make a swap more likely than the decision
-without it. The last known week figure is used. The outcome is a swap or
-the `no-capacity` ALERT. The swap is logged with `reason=projected`, unless
-the stale reading would itself have needed a swap, when it is logged with
-`reason=threshold`. It is never a stay, so
-the three-cycle [failed-probe damping](#rotate-failed-live-probes) does not
-delay it. When it is not near, or the series is empty, the failed-probe
-rules apply as before. The series is cleared on a swap, so a failed probe
-just after a swap is damped as usual.
+without it. The last known week figure is used. The outcome is a swap,
+logged with `reason=projected`, or the `no-capacity` ALERT. It is never a
+stay, so the three-cycle [failed-probe damping](#rotate-failed-live-probes)
+does not delay it, and the failed-probe swap made after three failed probes
+does not stand in for it. As with a projection, the
+[plan-room swap](#rotate-plan-room-swap) and the [overflow](#rotate-overflow)
+moves never run on the substituted figure. When the stale reading is itself
+at `--session-at` or `--week-at`, the cycle is decided on it as measured, as
+without this rule, so a threshold swap on it is logged with
+`reason=threshold`. When it is not near, or the series is empty, the
+failed-probe rules apply as before.
+The series is cleared on a swap, so a failed probe just after a swap is
+damped as usual.
+
+For example, with `--session-at 70 --margin 5`, a status line keeps
+rewriting `s=66%` with a new observation time on every cycle. The third
+identical reading is frozen and is read again. When that read fails, the
+cycle is decided on 70%: a swap to a candidate with at least `--margin` more
+headroom, or the ALERT. The failure keeps the frozen count, so the fourth
+identical reading is read again rather than trusted. The same holds when
+the cached observation time does not move, where the reading is also old.
 
 ##### Example: a login rising 10 points a cycle
 
@@ -6240,7 +6292,9 @@ swap only when both hold:
 
 - the live login has reached `--session-at` or `--week-at` on a measured
   reading (a failed live probe is left to the
-  [failed-probe rules](#rotate-failed-live-probes));
+  [failed-probe rules](#rotate-failed-live-probes), or, near the threshold,
+  to the [near-threshold rule](#failed-or-stale-reading-near-the-threshold);
+  a [projected](#projected-swap) or substituted figure never counts);
 - the table above gives `ALERT no-capacity`.
 
 It never fires while the live login is below both thresholds, so it adds no

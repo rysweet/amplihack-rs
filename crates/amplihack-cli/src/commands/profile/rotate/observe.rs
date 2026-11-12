@@ -3,7 +3,7 @@
 
 use super::cycle::Ctx;
 use super::damp::{damp, is_failed_probe_swap, keep_for_home_key, next_failed};
-use super::decide::{Decision, Measured, Probed, Reading};
+use super::decide::{Decision, Measured, Probed, Reading, decide};
 use super::fresh::live;
 use super::identify::{self, Account, CandidateInput, LiveId, LoginKind, Skip};
 use super::key_check;
@@ -279,19 +279,15 @@ pub(super) fn decide_measured(
         _ => None,
     };
     let t = (ctx.now)();
-    // Issue #2211: the live figures of this cycle's outlook, for this live
-    // login only; the real reading is kept for everything else.
-    let outlook = ctx
-        .live_outlook
-        .as_ref()
-        .filter(|o| !snap.platform_live() && live_name == Some(&o.name));
-    let (input, basis) = live::decision_input(&probe, outlook);
     let overflow = snap.decision_overflow();
+    let is_overflow = |n: &ProfileName| overflow.iter().any(|e| &e.name == n);
+    let live_over = live_name.is_some_and(is_overflow);
     let unmeasured_plan = snap.unmeasured_plan();
+    // Every rule runs on the live reading as measured.
     let verdict = decide_overflow(&OverflowInput {
         settings: &ctx.settings,
         live_name,
-        live: &input,
+        live: &probe,
         candidates: &measured,
         unmeasured_plan: &unmeasured_plan,
         refused: &snap.refused_plan(),
@@ -301,17 +297,36 @@ pub(super) fn decide_measured(
         swapped_at,
         now: t,
     });
+    // Issue #2211: this cycle's outlook, for this live plan login only, is
+    // put through the decision rule alone and can add only its threshold
+    // swap or ALERT (`live::with_outlook`). The rules for leaving an
+    // overflow profile do not read the live session figure, so an outlook
+    // there changes nothing.
+    let outlook = ctx
+        .live_outlook
+        .as_ref()
+        .filter(|o| !snap.platform_live() && !live_over && live_name == Some(&o.name));
+    let verdict = match outlook {
+        None => verdict,
+        Some(o) => {
+            let plan: Vec<Measured> = measured
+                .iter()
+                .filter(|c| !is_overflow(&c.name))
+                .cloned()
+                .collect();
+            let on_outlook = decide(&ctx.settings, &o.reading(), &plan, swapped_at, t);
+            live::with_outlook(verdict, on_outlook, o.basis, &ctx.settings, &probe.reading)
+        }
+    };
     // A spend limit on a live overflow profile is handled by its block, so
     // it does not count towards the failed live probes.
-    let live_over = live_name.is_some_and(|n| overflow.iter().any(|e| &e.name == n));
     let failed = if live_over && probe.spend_limit {
         ctx.failed_live
     } else {
         next_failed(ctx.failed_live, &probe.reading)
     };
-    let decision = live::map_reason(verdict.decision, basis, &ctx.settings, &probe.reading);
     let (decision, note) = damp(
-        decision,
+        verdict.decision,
         &probe.reading,
         failed,
         swapped_at,
