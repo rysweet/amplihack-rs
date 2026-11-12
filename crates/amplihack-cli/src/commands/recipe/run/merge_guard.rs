@@ -35,16 +35,21 @@ pub(crate) const USER_BASH_ENV: &str = "AMPLIHACK_MERGE_GUARD_USER_BASH_ENV";
 /// for its CI verdict (#2186), `autodrive_platform_facts.sh` for the review
 /// threads and `autodrive_followups.sh gate`, which loads
 /// `autodrive_finding_rules.sh` and `autodrive_followups_check.sh` (#1979),
-/// and sources `autodrive_merge_method.sh`, which chooses the merge flag (#1888).
+/// and sources `autodrive_merge_message.sh`, which composes the squash
+/// message (#2056), and `autodrive_merge_method.sh`, which chooses the merge
+/// flag (#1888).
 /// Replacing any of them is as good as replacing the shim, so they get the
 /// shim's mode check.
 /// The gate itself is first.
-pub(crate) const GATE_FILES: [&str; 12] = [
+pub(crate) const GATE_FILES: [&str; 13] = [
     "autodrive_merge_gate.sh",
     "autodrive_expected_checks.sh",
     "autodrive_finding_rules.sh",
     "autodrive_followups.sh",
     "autodrive_followups_check.sh",
+    // Sourced by the gate, so it runs inside the process this shim trusts to
+    // merge; it is mode-checked with the rest (#2056).
+    "autodrive_merge_message.sh",
     "autodrive_merge_method.sh",
     "autodrive_platform_facts.sh",
     "autodrive_qa_docs.sh",

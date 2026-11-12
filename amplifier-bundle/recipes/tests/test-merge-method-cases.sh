@@ -51,6 +51,21 @@ mm_files() {
   mr_rec MERGE_READY "$1" > "$MM_REC"; qa_fixture "$1" PASS 3 > "$MM_QA"
 }
 
+# mm_argv_is <method> <head>: gh was handed exactly the gate's argv for
+# <method>, element by element (the stub's #2056 merge-argv log). Only a
+# squash carries the message flags; --merge and --rebase get none, so gh is
+# given no body to read either.
+mm_argv_is() {
+  local want
+  want="$(printf '%s\n' pr merge 42 "--$1" --delete-branch --match-head-commit "$2")"
+  if [ "$1" = squash ]; then
+    want="${want}$(printf '\n%s' --subject "${GH_TITLE-fix(#2056): bind the squash message to the pull request} (#42)" --body-file -)"
+  elif [ -e "${GATE_DIR}/gh-calls.merge-body" ]; then
+    return 1
+  fi
+  [ "$(cat "${GATE_DIR}/gh-calls.merge-argv" 2>/dev/null)" = "$want" ]
+}
+
 # mm_merged <label> <method> <source> <config-commit|not-read> [gate args...]:
 # the gate merges with exactly --<method>, at the exact head, and records why.
 mm_merged() {
@@ -60,7 +75,7 @@ mm_merged() {
   bundle="$(mm_bundle)"
   if [ "$rc" -eq 0 ] && printf '%s' "$GATE_OUT" | grep -qF '"merge_result":"MERGED"' \
      && [ "$(grep -c '^pr merge ' "${GATE_DIR}/gh-calls")" -eq 1 ] \
-     && grep -qxF "pr merge 42 --${method} --delete-branch --match-head-commit ${head}" "${GATE_DIR}/gh-calls" \
+     && mm_argv_is "$method" "$head" \
      && [ -f "$bundle" ] && grep -qF "head_sha=${head}" "$bundle" \
      && grep -qxF "  - merge_method=${method}" "$bundle" \
      && grep -qxF "  - merge_method_source=${source}" "$bundle" \
@@ -70,7 +85,7 @@ mm_merged() {
      && { [ -n "${GATE_HELPER:-}" ] || { mm_own_settings && mm_own_rules; }; }; then
     pass "1888-${label}" "merged with --${method} (${source}, config ${commit}) and the evidence says why"
   else
-    fail "1888-${label}" "rc=$rc $GATE_OUT | $(grep -E 'BLOCKER|merge_method' "${GATE_DIR}/err" | tr '\n' ' ') | $(grep '^pr merge' "${GATE_DIR}/gh-calls" 2>/dev/null) | $(mm_fixture_note)"
+    fail "1888-${label}" "rc=$rc $GATE_OUT | $(grep -E 'BLOCKER|merge_method' "${GATE_DIR}/err" | tr '\n' ' ') | $(tr '\n' ' ' < "${GATE_DIR}/gh-calls.merge-argv" 2>/dev/null) | $(mm_fixture_note)"
   fi
 }
 
