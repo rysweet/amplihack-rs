@@ -1792,6 +1792,12 @@ $ echo $?
 
 The same record with `"ci_status":"GREEN","ci_pending":"0"` exits `0`.
 
+`autodrive_qa_evidence.sh` runs the first `amplihack` on `PATH`. If that
+binary is older than #2342, it has no `ci-evidence-ready` subcommand, so every
+round gives `BLOCKED`/`ci-not-ready` with an "unrecognized subcommand" error
+in `qa_summary`. QA never falls back to running without the check. Install the
+current binary, or put it first on `PATH`.
+
 #### What the tests cover
 
 The tests check the mechanical parts end to end and the agent steps through
