@@ -155,7 +155,7 @@ fn docs_say_overflow_profiles_are_probed_with_usage_only() {
 
 #[test]
 fn reference_quotes_the_rotators_probe_warnings() {
-    let src = include_str!("rotate/measure.rs");
+    let src = include_str!("rotate/probe_reading.rs");
     for (code, doc) in [
         (
             "warning: rotate: probe of {who} timed out",
@@ -166,7 +166,10 @@ fn reference_quotes_the_rotators_probe_warnings() {
             "warning: rotate: probe of <name> failed: <reason>",
         ),
     ] {
-        assert!(src.contains(code), "measure.rs no longer prints {code:?}");
+        assert!(
+            src.contains(code),
+            "probe_reading.rs no longer prints {code:?}"
+        );
         assert!(
             REFERENCE.contains(doc),
             "the reference does not quote {doc:?}"

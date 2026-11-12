@@ -11,15 +11,21 @@ use crate::binary_finder::BinaryInfo;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::probe_limits::{self, ProbeMode};
 use crate::commands::profile::store::ProfileStore;
-use crate::commands::profile::usage_cmd::{self, ErrorReason, Probe, RowReader};
-use crate::commands::profile::usage_parse::UsageState;
-use crate::commands::profile::usage_source::{self, ClaudeGate, LazyBinary, SourceEnv};
+use crate::commands::profile::usage_cmd::{self, Probe, RowReader};
+use crate::commands::profile::usage_source::{ClaudeGate, LazyBinary, SourceEnv};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
-use std::io::Write;
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
+
+#[path = "probe_reading.rs"]
+mod probe_reading;
+#[cfg(test)]
+#[path = "tests_issue_2271_measure.rs"]
+mod tests_issue_2271_measure;
+
+pub(super) use probe_reading::reading;
 
 /// Whose login is in `~/.claude`.
 pub enum Live<'a> {
@@ -35,58 +41,6 @@ impl Live<'_> {
     /// Whether the live login is probed: an API-key one never is.
     pub fn probed(&self) -> bool {
         !matches!(self, Self::Platform)
-    }
-}
-
-/// The reading for `p`. A failed or timed-out probe counts as "swap needed",
-/// so its cause goes to stderr (the daemon's `rotate.err`); the text is fixed
-/// and never Claude's output. Both read `Failed`: never a target and never
-/// exhausted, and probed again next cycle. Both are also unknown, which
-/// blocks a move onto overflow. A profile directory refused just before the
-/// spawn is no exception (issue #1698): that login may have capacity. From
-/// the next cycle the profile is skipped as `directory refused` before any
-/// probe, and that skip holds the move until the directory is fixed.
-pub(super) fn reading(who: &str, p: &Probe) -> Probed {
-    reading_to(who, p, &mut std::io::stderr())
-}
-
-/// [`reading`], writing its warning lines to `err`. Issue #2271: a profile
-/// with no login to use (`ErrorReason::NotSignedIn`) reads `Failed` like a
-/// failed probe, so it is never chosen, but writes no warning: it is not a
-/// failed probe, and would otherwise add a line to `rotate.err` for every
-/// such profile on every cycle.
-pub(super) fn reading_to(who: &str, p: &Probe, err: &mut dyn Write) -> Probed {
-    // SR-10: logged whether or not the row fell back to `claude`.
-    if p.direct_failure.is_some_and(usage_source::not_saved) {
-        warn(err, format_args!("{}", usage_cmd::not_saved_warning(who)));
-    }
-    if matches!(p.error, Some(ErrorReason::NotSignedIn(_))) {
-        return Probed::failed();
-    }
-    if p.error.is_some() || p.report.state == UsageState::Error {
-        let why = p
-            .error
-            .map_or_else(|| "unreadable /usage output".to_string(), |e| e.to_string());
-        warn(
-            err,
-            format_args!("warning: rotate: probe of {who} failed: {why}"),
-        );
-        return Probed::failed();
-    }
-    if p.report.state == UsageState::Timeout {
-        warn(
-            err,
-            format_args!("warning: rotate: probe of {who} timed out"),
-        );
-    }
-    Probed::from_report(&p.report)
-}
-
-/// One warning line to `err`. A write that fails panics, as `eprintln!`
-/// does, so moving the warnings onto a writer changes nothing for stderr.
-fn warn(err: &mut dyn Write, line: fmt::Arguments<'_>) {
-    if let Err(e) = writeln!(err, "{line}") {
-        panic!("failed printing to stderr: {e}");
     }
 }
 

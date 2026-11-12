@@ -164,8 +164,6 @@ mod tests_issue_1886;
 #[cfg(all(test, unix))]
 mod tests_issue_1886_cycle;
 #[cfg(all(test, unix))]
-mod tests_issue_2271_measure;
-#[cfg(all(test, unix))]
 mod tests_key_check;
 #[cfg(all(test, unix))]
 mod tests_log;

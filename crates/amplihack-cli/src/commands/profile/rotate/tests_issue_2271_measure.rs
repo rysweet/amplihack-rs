@@ -1,8 +1,8 @@
 //! Issue #2271 (A3): the rotator's reading of a profile that is not signed
 //! in.
 //!
-//! Contract (`rotate::measure`):
-//! - `measure::reading_to(who: &str, p: &Probe, err: &mut dyn Write) -> Probed`
+//! Contract (`rotate::measure`, with the reading in `probe_reading.rs`):
+//! - `reading_to(who: &str, p: &Probe, err: &mut dyn Write) -> Probed`
 //!   is `pub(super)` and does what `reading` does, writing its warning lines
 //!   to `err`. `reading(who, p)` is `reading_to(who, p, &mut io::stderr())`,
 //!   so the daemon's `rotate.err` is unchanged for every other probe.
@@ -19,8 +19,8 @@
 //! The probes are built in memory: no `claude`, no network and no
 //! credentials file.
 
-use super::decide::{Probed, Reading, Windows};
-use super::measure::reading_to;
+use super::super::decide::{Probed, Reading, Windows};
+use super::probe_reading::reading_to;
 use crate::commands::profile::usage_cmd::{ErrorReason, Probe};
 use crate::commands::profile::usage_direct::reason;
 use crate::commands::profile::usage_parse::{UsageReport, UsageState};
