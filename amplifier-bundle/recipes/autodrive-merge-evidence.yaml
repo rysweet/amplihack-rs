@@ -138,6 +138,10 @@ steps:
   # run read-only and only from AMPLIHACK_HOME (never from a path the PR
   # fills). `gh pr checks` counts every check at the head, whichever workflow
   # created it, so one queued workflow among several still reads PENDING.
+  # Pending is decided before failing, so a running build with one failed job
+  # is PENDING, not RED (the order ci-evidence-ready uses). Before any gh call
+  # it clears the inherited git environment with step-00's line (#2033),
+  # because gh finds the repository through git when no -R is given.
   # When that rollup (GraphQL) cannot be read, the result is UNREADABLE and QA
   # is blocked: there is no REST fallback here (#2333 is not handled by this
   # step). PENDING makes step-02 return BLOCKED/ci-not-ready: a wait for the
@@ -147,11 +151,21 @@ steps:
     parse_json: true
     command: |
       set -uo pipefail
-      cd "${REPO_PATH:-.}" 2>/dev/null || true
-      export GH_PAGER=cat PAGER=cat LESS=FRX
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      # #2033: `gh` given no -R finds the repository by running git in the
+      # working directory, so an inherited GIT_DIR or GIT_WORK_TREE (or GH_REPO)
+      # would make it read another repository's PR and checks. They are cleared
+      # here with step-00's loading line, before the first gh call, and gh runs
+      # from REPO_PATH or not at all.
+      unset GH_REPO
+      TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
+      [ -n "$TOOLS_D" ] || TOOLS_D="${AMPLIHACK_HOME:-}/amplifier-bundle/tools"
+      [ ! -L "$TOOLS_D/git-repo-env.sh" ] && . "$TOOLS_D/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }
+      echo "INFO: cleared git env: ${AMPLIHACK_GIT_ENV_CLEARED}; run env: ${AMPLIHACK_RUN_ENV_CLEARED} (#2033)" >&2
       PR="${PR_NUMBER:-}"
-      case "$PR" in ''|*[!0-9]*) PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')" ;; esac
-      if [ -z "$PR" ] || ! command -v jq >/dev/null 2>&1; then
+      CD_OK=1; cd "${REPO_PATH:-.}" 2>/dev/null || CD_OK=0
+      [ "$CD_OK" = 1 ] && case "$PR" in ''|*[!0-9]*) PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')" ;; esac
+      if [ "$CD_OK" != 1 ] || [ -z "$PR" ] || ! command -v jq >/dev/null 2>&1; then
         echo "ERROR: cannot read CI (pr='${PR:-none}'). Unreadable CI is a FAILURE, not a pass." >&2
         printf '{"ci_status":"UNREADABLE","ci_total":"0","ci_pending":"","ci_failing":"","head_sha":"","ci_signal":"unreadable"}\n'
         exit 0
@@ -168,10 +182,13 @@ steps:
       elif [ "${TOTAL:-0}" = "0" ]; then
         STATUS="NO_CHECKS"
         echo "ERROR: #${PR} reports zero CI checks. Zero checks is not a green build." >&2
+      elif [ "$PENDING" != "0" ]; then
+        # Pending before failing, as ci-evidence-ready checks them (order 6
+        # before 7): a run still in progress is read again next round, even
+        # when one of its jobs has already failed. ci_failing keeps the count.
+        STATUS="PENDING"
       elif [ "${FAILING:-1}" != "0" ]; then
         STATUS="RED"
-      elif [ "$PENDING" != "0" ]; then
-        STATUS="PENDING"
       else
         STATUS="GREEN"
       fi

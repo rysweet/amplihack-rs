@@ -1532,10 +1532,13 @@ check "EC-S3-printf-signal" "step-03's final printf takes ci_signal as one %s" \
 
 AH="${WORK}/amplihack-home"; mkdir -p "${AH}/amplifier-bundle"
 ln -s "${TOOLS}" "${AH}/amplifier-bundle/tools"
+# The #2033 helper comes from the round's tools directory, as in a real round,
+# so the AMPLIHACK_HOME cases below test only the expected-checks helper.
 run_s3() { # run_s3 <fixture> [extra env...] — sets S3_OUT (last line), S3_STATUS, S3_SIGNAL
   local fx="$1"; shift
   (cd "${WORK}" && env GH_CI_FIX="$fx" GH_CI_ROUTE="${ROUTE}" GH_HEAD="$HEAD" GH_BASE=main \
     GH_CALLS="${WORK}/s3-calls" PR_NUMBER=42 REPO_PATH="${WORK}" AMPLIHACK_HOME="${AH}" \
+    RECIPE_VAR_autodrive_tools_dir="${TOOLS}" \
     PATH="${STUB_BIN}:${PATH}" env "$@" bash -c "$S3" >"${WORK}/s3-out" 2>"${WORK}/s3-err" </dev/null)
   S3_OUT="$(tail -n1 "${WORK}/s3-out")"
   S3_STATUS="$(printf '%s' "$S3_OUT" | jq -r .ci_status 2>/dev/null)"

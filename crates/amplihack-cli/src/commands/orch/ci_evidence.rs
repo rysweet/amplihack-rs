@@ -1,9 +1,10 @@
 //! Mechanical QA entry check for CI evidence (#2342).
 //!
-//! Preparation agents observe CI and wait for the run on the current head to
-//! finish; this module only checks the completed record they hand to QA. It
-//! does not observe GitHub, wait, judge policy or establish merge readiness:
-//! the merge gate reads GitHub's own check state for the merged head.
+//! Merge-evidence step-03b, a bash step, reads CI on the current head once per
+//! round and does not wait; this module only checks the record it hands to
+//! QA. It does not observe GitHub, wait, judge policy or establish merge
+//! readiness: the merge gate reads GitHub's own check state for the merged
+//! head.
 //!
 //! Checks run in this order, and the first that fails is reported:
 //!

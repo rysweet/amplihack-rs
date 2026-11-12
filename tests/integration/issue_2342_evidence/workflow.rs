@@ -1236,6 +1236,184 @@ fn inherited_git_dir_decoy_still_blocks() {
     );
 }
 
+/// A decoy repository with its own commit, for the #2033 inherited-env tests.
+fn decoy_repo(f: &Fixture) -> (PathBuf, String) {
+    let decoy = f.root().join("decoy");
+    fs::create_dir(&decoy).unwrap();
+    let init = f.bash(
+        "git init -q && printf decoy > DECOY && git add DECOY && tree=$(git write-tree) \
+         && head=$(git -c user.name=Decoy -c user.email=decoy@example.invalid commit-tree \"$tree\" -m decoy) \
+         && git update-ref HEAD \"$head\" && git rev-parse HEAD",
+        &decoy,
+        &[],
+    );
+    assert!(init.status.success(), "{}", diagnostic(&init));
+    let head = String::from_utf8(init.stdout).unwrap().trim().to_string();
+    assert_ne!(head, f.head, "the decoy must have another head");
+    (decoy, head)
+}
+
+/// Run the production step-03b with a fake `gh` that behaves as the real one
+/// does without `-R`: it finds the repository through git in its working
+/// directory and environment, and reports that repository's HEAD as the PR
+/// head. Every call logs its directory and the repository variables it saw.
+fn ci_read(f: &Fixture, checks: &str, tools: &Path, env: &[(&str, String)]) -> (Output, String) {
+    let gh_bin = f.root().join("gh-bin");
+    fs::create_dir_all(&gh_bin).unwrap();
+    let log = f.root().join("gh.log");
+    let _ = fs::remove_file(&log);
+    write_stub(
+        &gh_bin.join("gh"),
+        &format!(
+            "#!/bin/sh\nprintf 'pwd=%s git_dir=%s work_tree=%s index=%s gh_repo=%s args=%s\\n' \
+             \"$(pwd -P)\" \"${{GIT_DIR-unset}}\" \"${{GIT_WORK_TREE-unset}}\" \"${{GIT_INDEX_FILE-unset}}\" \
+             \"${{GH_REPO-unset}}\" \"$*\" >> {}\n\
+             case \"$1 $2\" in\n\
+             'pr view') h=$(git rev-parse HEAD 2>/dev/null) || exit 1; printf '%s main\\n' \"$h\"; exit 0 ;;\n\
+             'pr checks') printf '%s\\n' \"$STUB_CHECKS\"; exit 0 ;;\n\
+             esac\nexit 1\n",
+            sh_quote(&log)
+        ),
+    );
+    let recipe = recipe_yaml(RECIPE);
+    let command = field(output_step(&recipe, "ci_evidence"), "command");
+    let mut all = vec![
+        ("PATH", format!("{}:{}", gh_bin.display(), f.path)),
+        ("REPO_PATH", f.repo.display().to_string()),
+        ("PR_NUMBER", "42".to_string()),
+        ("STUB_CHECKS", checks.to_string()),
+        (
+            "RECIPE_VAR_autodrive_tools_dir",
+            tools.display().to_string(),
+        ),
+    ];
+    all.extend(env.iter().cloned());
+    // Started outside the PR worktree, so the step's own `cd` is what counts.
+    let out = f.bash(command, f.root(), &all);
+    (out, fs::read_to_string(&log).unwrap_or_default())
+}
+
+fn ci_record(out: &Output) -> Value {
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    serde_json::from_str(stdout.lines().last().unwrap_or_default())
+        .unwrap_or_else(|e| panic!("ci_evidence is not JSON ({e}): {}", diagnostic(out)))
+}
+
+/// Crusty round 2 on #2344: `gh` with no `-R` resolves the repository through
+/// git, so step-03b must clear an inherited GIT_DIR, GIT_WORK_TREE,
+/// GIT_INDEX_FILE and GH_REPO before its first `gh` call and run from
+/// REPO_PATH, or it reports another repository's head and checks.
+#[test]
+fn ci_read_clears_inherited_git_env_before_gh() {
+    let f = Fixture::new();
+    let (decoy, decoy_head) = decoy_repo(&f);
+    let tools = super::super::workspace_root().join("amplifier-bundle/tools");
+    let pending = r#"[{"name":"Test","state":"IN_PROGRESS","bucket":"pending"}]"#;
+    let (out, log) = ci_read(
+        &f,
+        pending,
+        &tools,
+        &[
+            ("GIT_DIR", decoy.join(".git").display().to_string()),
+            ("GIT_WORK_TREE", decoy.display().to_string()),
+            (
+                "GIT_INDEX_FILE",
+                decoy.join(".git/index").display().to_string(),
+            ),
+            ("GH_REPO", "decoy-owner/decoy-repo".to_string()),
+        ],
+    );
+    assert!(out.status.success(), "{}", diagnostic(&out));
+    let record = ci_record(&out);
+    assert_eq!(
+        record["head_sha"],
+        f.head.as_str(),
+        "step-03b read the inherited repository's head ({decoy_head}): {}\n{log}",
+        diagnostic(&out)
+    );
+    assert_ne!(record["head_sha"], decoy_head.as_str());
+    assert_eq!(record["ci_status"], "PENDING", "{}", diagnostic(&out));
+    let repo = fs::canonicalize(&f.repo).unwrap();
+    let calls: Vec<&str> = log.lines().collect();
+    assert!(
+        calls.iter().any(|l| l.contains("args=pr view"))
+            && calls.iter().any(|l| l.contains("args=pr checks")),
+        "step-03b must read the PR and its checks: {log}"
+    );
+    for call in &calls {
+        assert!(
+            call.starts_with(&format!("pwd={} ", repo.display())),
+            "gh ran outside REPO_PATH: {call}"
+        );
+        for cleared in [
+            "git_dir=unset",
+            "work_tree=unset",
+            "index=unset",
+            "gh_repo=unset",
+        ] {
+            assert!(
+                call.contains(cleared),
+                "gh saw an inherited repository variable ({cleared} expected): {call}"
+            );
+        }
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("GIT_DIR") && stderr.contains("(#2033)"),
+        "step-03b reports the names it cleared: {}",
+        diagnostic(&out)
+    );
+
+    // Without the helper the step stops before any gh call, as step-00 does.
+    let empty = f.root().join("empty-tools");
+    fs::create_dir_all(&empty).unwrap();
+    let (missing, log) = ci_read(&f, pending, &empty, &[]);
+    assert!(
+        !missing.status.success(),
+        "a missing helper must stop step-03b: {}",
+        diagnostic(&missing)
+    );
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("STOP: cannot load git-repo-env.sh"));
+    assert!(log.is_empty(), "gh ran without the #2033 prelude: {log}");
+}
+
+/// Crusty round 2 on #2344: a run still in progress is PENDING even when one
+/// of its jobs has already failed, the order ci-evidence-ready uses (pending,
+/// check 6, before failures, check 7). Only a finished run with a failure is
+/// RED.
+#[test]
+fn ci_read_reports_pending_before_failing() {
+    let f = Fixture::new();
+    let tools = super::super::workspace_root().join("amplifier-bundle/tools");
+    let mixed = r#"[{"name":"Test","state":"FAILURE","bucket":"fail"},
+        {"name":"Lint","state":"QUEUED","bucket":"pending"},
+        {"name":"Build","state":"IN_PROGRESS","bucket":"pending"}]"#;
+    let (out, log) = ci_read(&f, mixed, &tools, &[]);
+    assert!(out.status.success(), "{}\n{log}", diagnostic(&out));
+    let record = ci_record(&out);
+    assert_eq!(record["ci_status"], "PENDING", "{}", diagnostic(&out));
+    assert_eq!(record["ci_pending"], "2");
+    assert_eq!(record["ci_failing"], "1", "the failure is still counted");
+
+    let finished = r#"[{"name":"Test","state":"FAILURE","bucket":"fail"},
+        {"name":"Lint","state":"SUCCESS","bucket":"pass"}]"#;
+    let (out, log) = ci_read(&f, finished, &tools, &[]);
+    assert!(out.status.success(), "{}\n{log}", diagnostic(&out));
+    assert_eq!(ci_record(&out)["ci_status"], "RED", "{}", diagnostic(&out));
+
+    // The QA gate gives the same answer for the mixed record: wait, not fail.
+    let (qa_out, evidence) = f.qa(&f.repo, &f.ci("PENDING", "3", "2", "1").to_string(), &[]);
+    f.assert_blocked_without_running_code(&qa_out, &evidence);
+    assert!(
+        evidence["qa_summary"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("still pending"),
+        "{}",
+        diagnostic(&qa_out)
+    );
+}
+
 #[test]
 fn helper_message_with_control_characters_gives_one_json_line() {
     let f = Fixture::new();
