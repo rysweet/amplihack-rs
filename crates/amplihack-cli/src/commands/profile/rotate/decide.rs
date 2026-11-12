@@ -232,6 +232,10 @@ pub enum Reason {
     /// A move to the plan login with the most room when no threshold swap
     /// meets `--margin` (issue #1804); see `plan_room`.
     PlanRoom,
+    /// Issue #2211: a threshold swap decided on the live login's projected
+    /// session use, or on a failed or stale reading near the threshold; see
+    /// `fresh::live` (`live_fresh.rs`).
+    Projected,
 }
 
 impl Reason {
@@ -243,6 +247,7 @@ impl Reason {
             Self::OverflowIn => "overflow-in",
             Self::OverflowOut => "overflow-out",
             Self::PlanRoom => "plan-room",
+            Self::Projected => "projected",
         }
     }
 }

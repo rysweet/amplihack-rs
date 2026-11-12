@@ -105,6 +105,11 @@ fn run_refuses_group_writable_profile_before_spawn() {
     assert!(build_profile_command(&bin, &s, &name, &[]).is_err());
 }
 
+// Issue #2196: the Docker tests give the probe's answer instead of running
+// `docker info` and reading `/proc/1/cgroup`, so they need no Docker daemon
+// and read nothing of the host. `should_use_docker_from_state` and
+// `is_in_docker_from_state` are tested in `docker/mod.rs`.
+
 #[test]
 fn reject_docker_env_errors_when_env_active() {
     let _l = crate::test_support::env_lock()
@@ -115,6 +120,10 @@ fn reject_docker_env_errors_when_env_active() {
         .to_string()
         .to_lowercase();
     assert!(err.contains("docker"), "{err}");
+    assert!(
+        super::reject_docker_mode(false).is_ok(),
+        "without Docker activation nothing is refused"
+    );
 }
 
 #[test]

@@ -304,7 +304,7 @@ mod state_root {
     #[test]
     fn absolute_amplihack_home_wins_over_home() {
         assert_eq!(
-            resolve_state_root(os("/opt/amp"), os("/home/alice")),
+            resolve_state_root(os("/opt/amp"), os("/home/alice"), false),
             Some(PathBuf::from("/opt/amp"))
         );
     }
@@ -312,7 +312,7 @@ mod state_root {
     #[test]
     fn absolute_amplihack_home_is_used_without_home() {
         assert_eq!(
-            resolve_state_root(os("/opt/amp"), None),
+            resolve_state_root(os("/opt/amp"), None, false),
             Some(PathBuf::from("/opt/amp"))
         );
     }
@@ -320,7 +320,7 @@ mod state_root {
     #[test]
     fn absent_amplihack_home_falls_back_to_home_dot_amplihack() {
         assert_eq!(
-            resolve_state_root(None, os("/home/alice")),
+            resolve_state_root(None, os("/home/alice"), false),
             Some(PathBuf::from("/home/alice/.amplihack"))
         );
     }
@@ -328,7 +328,7 @@ mod state_root {
     #[test]
     fn empty_amplihack_home_falls_back_to_home() {
         assert_eq!(
-            resolve_state_root(os(""), os("/home/alice")),
+            resolve_state_root(os(""), os("/home/alice"), false),
             Some(PathBuf::from("/home/alice/.amplihack"))
         );
     }
@@ -336,7 +336,7 @@ mod state_root {
     #[test]
     fn whitespace_amplihack_home_falls_back_to_home() {
         assert_eq!(
-            resolve_state_root(os("   "), os("/home/alice")),
+            resolve_state_root(os("   "), os("/home/alice"), false),
             Some(PathBuf::from("/home/alice/.amplihack"))
         );
     }
@@ -345,7 +345,7 @@ mod state_root {
     #[test]
     fn leading_space_amplihack_home_is_relative_and_skipped() {
         assert_eq!(
-            resolve_state_root(os(" /opt/amp"), os("/home/alice")),
+            resolve_state_root(os(" /opt/amp"), os("/home/alice"), false),
             Some(PathBuf::from("/home/alice/.amplihack"))
         );
     }
@@ -354,7 +354,7 @@ mod state_root {
     #[test]
     fn trailing_space_amplihack_home_is_used_as_written() {
         assert_eq!(
-            resolve_state_root(os("/opt/amp "), os("/home/alice")),
+            resolve_state_root(os("/opt/amp "), os("/home/alice"), false),
             Some(PathBuf::from("/opt/amp "))
         );
     }
@@ -363,7 +363,7 @@ mod state_root {
     fn relative_amplihack_home_falls_back_to_home() {
         for value in [".amplihack", "amp", "./amp", "../amplihack", "."] {
             assert_eq!(
-                resolve_state_root(os(value), os("/home/alice")),
+                resolve_state_root(os(value), os("/home/alice"), false),
                 Some(PathBuf::from("/home/alice/.amplihack")),
                 "relative AMPLIHACK_HOME {value:?} must be ignored"
             );
@@ -374,7 +374,7 @@ mod state_root {
     fn amplihack_home_with_parent_component_falls_back_to_home() {
         for value in ["/opt/amp/../etc", "/..", "/opt/..", "/a/b/../../c"] {
             assert_eq!(
-                resolve_state_root(os(value), os("/home/alice")),
+                resolve_state_root(os(value), os("/home/alice"), false),
                 Some(PathBuf::from("/home/alice/.amplihack")),
                 "AMPLIHACK_HOME {value:?} has a `..` component and must be ignored"
             );
@@ -383,14 +383,14 @@ mod state_root {
 
     #[test]
     fn amplihack_home_with_parent_component_and_no_home_is_none() {
-        assert_eq!(resolve_state_root(os("/opt/amp/../etc"), None), None);
+        assert_eq!(resolve_state_root(os("/opt/amp/../etc"), None, false), None);
     }
 
     /// `..` inside a file name is not a parent component.
     #[test]
     fn dots_inside_a_component_are_not_parent_components() {
         assert_eq!(
-            resolve_state_root(os("/opt/amp..x"), os("/home/alice")),
+            resolve_state_root(os("/opt/amp..x"), os("/home/alice"), false),
             Some(PathBuf::from("/opt/amp..x"))
         );
     }
@@ -407,7 +407,7 @@ mod state_root {
             os("/home/../root"),
         ] {
             assert_eq!(
-                resolve_state_root(None, home),
+                resolve_state_root(None, home, false),
                 None,
                 "HOME {home:?} must not produce a state root"
             );
@@ -416,15 +416,15 @@ mod state_root {
 
     #[test]
     fn relative_amplihack_home_and_relative_home_is_none() {
-        assert_eq!(resolve_state_root(os("amp"), os("home")), None);
+        assert_eq!(resolve_state_root(os("amp"), os("home"), false), None);
     }
 
     /// The working directory and `.` are never a state root.
     #[test]
     fn neither_root_never_resolves_to_cwd_or_dot() {
-        let root = resolve_state_root(None, None);
+        let root = resolve_state_root(None, None, false);
         assert_eq!(root, None);
-        let root = resolve_state_root(os("."), os("."));
+        let root = resolve_state_root(os("."), os("."), false);
         assert_eq!(root, None);
     }
 
@@ -434,7 +434,7 @@ mod state_root {
         use std::os::unix::ffi::OsStrExt;
         let raw = OsStr::from_bytes(b"/opt/amp-\xff\xfe");
         assert_eq!(
-            resolve_state_root(Some(raw), os("/home/alice")),
+            resolve_state_root(Some(raw), os("/home/alice"), false),
             Some(PathBuf::from(raw))
         );
     }
@@ -445,7 +445,7 @@ mod state_root {
         use std::os::unix::ffi::OsStrExt;
         let raw = OsStr::from_bytes(b"/home/\xff");
         assert_eq!(
-            resolve_state_root(None, Some(raw)),
+            resolve_state_root(None, Some(raw), false),
             Some(PathBuf::from(raw).join(".amplihack"))
         );
     }
@@ -625,7 +625,7 @@ mod state_root {
     fn resolver_api_is_reexported_from_crate_root() {
         assert_eq!(crate::UNKNOWN_SESSION_KEY, "unknown-session");
         assert_eq!(
-            crate::resolve_state_root(None, os("/h")),
+            crate::resolve_state_root(None, os("/h"), false),
             Some(PathBuf::from("/h/.amplihack"))
         );
         assert_eq!(

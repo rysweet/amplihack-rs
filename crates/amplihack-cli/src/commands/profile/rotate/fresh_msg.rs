@@ -15,6 +15,10 @@ pub fn stale(name: &ProfileName, old: &Shown, new: &Shown) -> String {
     )
 }
 
+/// Issue #2211: the live login's reading was frozen or old and is read
+/// again. Fixed text, with no figures.
+pub const STALE_LIVE: &str = "stale live reading; re-read";
+
 /// `reread: <name> failed; treated as unknown`.
 pub fn failed(name: &ProfileName) -> String {
     format!("reread: {name} failed; treated as unknown")

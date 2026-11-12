@@ -1108,10 +1108,27 @@ mod swap {
         f.switch_on();
     }
 
+    /// Expected records naming one organisation for X and Y, so a swap
+    /// between them is within one organisation (#2136) and writes no
+    /// affinity warning. Without records the swap is `unresolved`, and the
+    /// warning is printed and recorded on purpose.
+    fn same_organisation(f: &Fixture) {
+        let dir = f.state().join("expected");
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        for p in ["X", "Y"] {
+            let path = dir.join(format!("{p}.json"));
+            let body = serde_json::json!({"account": format!("uuid-{p}"), "org": "org-team"});
+            fs::write(&path, body.to_string()).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
     #[test]
     fn exhausted_session_swaps_by_move_not_copy() {
         let f = Fixture::new();
         prime(&f);
+        same_organisation(&f);
         let y_inode = Fixture::inode(&f.dir("Y").join(".credentials.json"));
         let x_inode = Fixture::inode(&f.dir("X").join(".credentials.json"));
         let _session = f.hold("X");
@@ -1146,6 +1163,10 @@ mod swap {
         assert!(mtime >= now() - 30, "moved-in login must get a fresh mtime");
         assert_eq!(f.hosts(), BTreeMap::from([("X".into(), "Y".into())]));
         assert!(!f.state().join("journal.json").exists());
+        assert!(
+            !f.state().join("affinity/last-crossing.json").exists(),
+            "a swap within one organisation records no crossing"
+        );
         f.assert_one_place_each();
         f.assert_no_leak();
     }

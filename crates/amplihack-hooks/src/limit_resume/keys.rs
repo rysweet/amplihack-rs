@@ -1,8 +1,9 @@
 //! The keys `limit-resume` sends to a stopped session's tmux pane (issue
 //! #2085, D6-D9), and the check that the pane is that session's.
 //!
-//! Only four keys exist, [`RESUME_KEYS`]: Escape (closes the limit menu or
-//! timed wait), C-u (clears the input line), `continue` (sent literally) and
+//! Every resume has four steps, [`RESUME_KEYS`]: Escape (closes the limit menu or
+//! timed wait), C-u (clears the input line), `continue` (sent literally, with
+//! fixed affinity warning text when required) and
 //! Enter. C-u deletes any text the user typed and did not submit: only a
 //! submitted prompt counts as moving on, so an unsent draft does not stop
 //! the resume (D8). Whether these keys end a real Claude Code timed wait,
@@ -31,6 +32,8 @@ pub enum Key {
     ClearLine,
     /// `continue`, sent with `-l` so tmux types it as text.
     LiteralContinue,
+    LiteralCrossing,
+    LiteralUnresolved,
     /// `Enter`: submits the line.
     Enter,
 }
@@ -101,6 +104,17 @@ pub fn argv(pane: &Pane, key: Key) -> Vec<String> {
         Key::Escape => a.push("Escape".into()),
         Key::ClearLine => a.push("C-u".into()),
         Key::LiteralContinue => a.extend(["-l".to_string(), "continue".to_string()]),
+        Key::LiteralCrossing | Key::LiteralUnresolved => {
+            let affinity = if key == Key::LiteralCrossing {
+                amplihack_utils::organisation_affinity::Affinity::Crossing
+            } else {
+                amplihack_utils::organisation_affinity::Affinity::Unresolved
+            };
+            a.extend([
+                "-l".to_string(),
+                format!("{} Continue.", affinity.warning().unwrap_or_default()),
+            ]);
+        }
         Key::Enter => a.push("Enter".into()),
     }
     a

@@ -23,6 +23,8 @@ pub(crate) mod governor_view;
 mod kind;
 #[cfg(unix)]
 mod limit_wait;
+#[cfg(unix)]
+mod organisation;
 /// Issue #2030: Commander option arity, for the `amplihack claude` passthrough rewrite.
 pub(crate) use limit_wait::claude_args::option_end as claude_option_end;
 #[cfg(unix)]
@@ -78,6 +80,8 @@ mod tests_duplicates;
 mod tests_expected;
 #[cfg(all(test, unix))]
 mod tests_fake_http;
+#[cfg(all(test, unix))]
+mod tests_issue_2279_profile;
 #[cfg(all(test, unix))]
 mod tests_kind;
 #[cfg(all(test, unix))]

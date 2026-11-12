@@ -102,12 +102,10 @@ steps:
       for f in merge-ready/SKILL.md auto-drive-to-merge/SKILL.md; do [ -f "${SKILLS}/$f" ] || { echo "ERROR: crusty-skill-path-not-found: $(clean "${SKILLS}/$f")" >&2; exit 1; }; done
       MR="$(cd -- "${SKILLS}/merge-ready" 2>/dev/null && pwd -P)" && ADS="$(cd -- "${SKILLS}/auto-drive-to-merge" 2>/dev/null && pwd -P)" || { echo "ERROR: crusty-skill-path-unusable: $(clean "$SKILLS") cannot be entered" >&2; exit 1; }
       for d in "$MR" "$ADS"; do ! unsafe_path "$d" || { echo "ERROR: crusty-skill-path-unusable: $(clean "$d") holds a quote, backslash, control byte or template braces" >&2; exit 1; }; done
-      # jq data arguments only, never shell or templates; findings byte for byte (--rawfile); printed only on success, the error names the file, never its text.
-      # resolved_fence is one ~ longer than the longest run of ~ anywhere in the findings (at least 4), so no findings line can close the step-02 fence.
+      # jq data arguments only, never shell or templates; findings byte for byte (--rawfile); printed only on success, the error names the file, never its text; resolved_fence is one ~ longer than the longest ~ run in the findings (at least 4), so no findings line closes the step-02 fence.
       CTX_JSON="$(jq -nc --arg pr "$PR" --arg head_sha "$SHA" --rawfile resolved_concerns "$RESOLVED_FILE" \
         --arg round_label "${AUTODRIVE_ROUND_LABEL:-round}" --arg merge_ready_skill_md "${MR}/SKILL.md" --arg auto_drive_skill_dir "$ADS" \
-        '{pr:$pr,head_sha:$head_sha,resolved_concerns:$resolved_concerns,round_label:$round_label,merge_ready_skill_md:$merge_ready_skill_md,auto_drive_skill_dir:$auto_drive_skill_dir}
-         | .resolved_fence = ("~" * ((reduce ($resolved_concerns | explode[]) as $c ({r:0,m:0}; if $c == 126 then .r += 1 | .m = ([.m, .r] | max) else .r = 0 end) | .m) as $n | [$n + 1, 4] | max))')" \
+        '{pr:$pr,head_sha:$head_sha,resolved_concerns:$resolved_concerns,round_label:$round_label,merge_ready_skill_md:$merge_ready_skill_md,auto_drive_skill_dir:$auto_drive_skill_dir} | .resolved_fence = ("~" * ((reduce ($resolved_concerns | explode[]) as $c ({r:0,m:0}; if $c == 126 then .r += 1 | .m = ([.m, .r] | max) else .r = 0 end) | .m) as $n | [$n + 1, 4] | max))')" \
         || { echo "ERROR: crusty-context-serialization-failed: jq could not encode the round context with the resolved concerns from $(clean "$RESOLVED_FILE"); no context is published" >&2; exit 1; }
       printf '%s\n' "$CTX_JSON"
     output: "crusty_round_context"
