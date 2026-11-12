@@ -7,13 +7,12 @@ last_updated: 2026-11-12
 
 # Clean Up After Recipe Runs
 
-**[PLANNED - Implementation Pending]** The ownership-based cleanup contract,
-`ahr-` and `ahd-` prefixes, revised path limits, and examples using them
-describe intended behavior. Publish these changes as finished behavior only
-after the shared authority and every runtime removal entry point satisfy
-the [regression contract](../reference/owned-run-directory-cleanup.md#regression-contract).
-The short-name examples below are planned usage, not verified commands for
-an unguarded checkout.
+Runtime cleanup uses matching creation evidence, retained roots, and filesystem
+identity checks. It preserves historical unmarked directories and refuses
+unsafe candidates. Cleanup requires Linux filesystem guarantees; unsupported
+platforms preserve runtime storage, and filesystems with unavailable guarantees
+preserve directories or refuse ownership initialization.
+See the [cleanup contract](../reference/owned-run-directory-cleanup.md).
 
 Use this guide to find what a recipe run leaves on disk, to choose where it
 goes, and to remove or archive it with `amplihack cleanup`.
@@ -594,7 +593,8 @@ fields left out:
 {
   "schema_version": 1,
   "run_id": "3f0c9a52-6d1e-4b8a-9f57-2c41d0e7a6b3",
-  "runtime_dir": "/scratch/amplihack-tmp/ahr-3f0c9a526d1e"
+  "runtime_dir": "/scratch/amplihack-tmp/ahr-3f0c9a526d1e",
+  "runtime_root": "/scratch/amplihack-tmp"
 }
 ```
 
@@ -603,6 +603,11 @@ default layout leave it out, and reports written by earlier releases read as
 if it were absent. Read this field when inspecting an external runtime path;
 do not assume runtime storage is below the run folder. A recorded path may
 already be gone or may remain after a cleanup refusal.
+
+For external storage, `runtime_root` records the separately selected parent.
+Cleanup compares that selection with matching creation evidence; it does not
+infer a permitted parent from `runtime_dir` or trust the report alone. A legacy
+report without this evidence cannot authorize external runtime deletion.
 
 `amplihack cleanup` and the end-of-run sweep treat a recorded folder as a
 `run-tmp` item. Removal requires the run to be inactive, no running process
@@ -621,8 +626,9 @@ recorded path, and reports it as `skipped` with
 | `path is not canonical` | The path resolves somewhere else, for example because a parent folder was replaced by a link. |
 | `inside the work root` | The recorded path lies in the work root, where only the default layout belongs. |
 
-A recorded path that no longer exists, or a `run.json` that cannot be read,
-produces no item, and the folder, if any, is left alone. Cleanup never
+A recorded path that no longer exists produces no item unless matching creation
+evidence identifies a recoverable interrupted claim under its independently
+selected parent. An unreadable `run.json` grants no cleanup authority. Cleanup never
 removes an `ahr-*` folder that no `run.json` records; the prefix is
 not one of the `tmp-leftover` patterns.
 
@@ -650,7 +656,8 @@ ownership evidence as a durable run. Explicit disposal, `Drop`, and panic
 unwinding must use the shared authority; neither a temporary-directory
 destructor nor a direct pathname deletion may bypass a refusal. Failed
 ownership initialization or removal checks preserve the folder and report
-why.
+why. Explicit completion returns cleanup errors after finalizing the run report;
+destructor cleanup reports them without panicking.
 
 Ownership evidence is distinct from a durable run report. A killed dry run
 can leave valid evidence but no `run.json`, so stale `run-tmp` discovery does

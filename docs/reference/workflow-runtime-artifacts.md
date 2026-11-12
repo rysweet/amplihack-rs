@@ -1,10 +1,15 @@
+---
+title: Workflow runtime artifacts reference
+description: Runtime locations, helper APIs, and worktree artifact guard contracts.
+doc_type: reference
+last_updated: 2026-11-12
+---
+
 # Workflow Runtime Artifacts Reference
 
 This reference defines the runtime-root, cleanup, and guard-point contracts used
 by `default-workflow`, recovery flows, launchers, provenance logging, publish
 helpers, and finalization helpers.
-
-Updated: 2026-10-06
 
 ## Contents
 
@@ -21,39 +26,68 @@ Updated: 2026-10-06
 
 | Variable | Direction | Meaning |
 | --- | --- | --- |
-| `AMPLIHACK_RUNTIME_ROOT` | Read and propagated | Absolute directory for workflow-generated runtime files. |
-| `AMPLIHACK_RECIPE_RUN_ID` | Set by `amplihack recipe run` | Stable per-run ID used in default runtime-root paths and log correlation. |
-| `XDG_RUNTIME_DIR` | Read | Preferred platform runtime base when `AMPLIHACK_RUNTIME_ROOT` is unset. |
-| `TMPDIR` | Read indirectly | Host temporary directory preference for tools that create additional scratch output. |
+| `AMPLIHACK_RUNTIME_ROOT` | Set by the recipe runner; read by helpers | This run's disposable directory for workflow-generated files. A caller's value does not override runner placement. |
+| `AMPLIHACK_WORKFLOW_RUNTIME_DIR` | Set by the recipe runner | This run's disposable directory; equal to `AMPLIHACK_RUNTIME_ROOT`. |
+| `AMPLIHACK_WORKFLOW_ARTIFACT_DIR` | Set by the recipe runner | The disposable directory's `artifacts/` child. |
+| `AMPLIHACK_RUN_TMP_ROOT` | Read; propagated for external layouts | Selects an external parent for fresh per-run children; takes precedence over the caller's `TMPDIR`. |
+| `AMPLIHACK_WORK_ROOT` | Read | Durable reports and recovery storage; also contains default or shortened runtime layouts. |
+| `AMPLIHACK_RUN_ID` | Set by the recipe runner | Durable run ID used in default runtime-root paths; spans attempts. |
+| `AMPLIHACK_RECIPE_RUN_ID` | Set by `amplihack recipe run` | Current attempt ID used for log correlation; distinct from the durable `AMPLIHACK_RUN_ID`. |
+| `XDG_RUNTIME_DIR` | Read by standalone shell fallback | Base used by `workflow_runtime_root.sh` when no runner-provided runtime root exists. |
+| `TMPDIR` | Read on entry; set for steps | Suitable caller preference selects an external parent. Steps receive the disposable directory's `tmp/` child. `TMP` and `TEMP` receive the same child path. |
 | `AMPLIHACK_AGENT_BINARY` | Propagated | Active agent runtime for child agentic steps. |
 | `AMPLIHACK_NONINTERACTIVE` | Propagated | Forces child workflow and helper processes into non-interactive mode. |
 
 `AMPLIHACK_RUNTIME_ROOT` is treated only as a filesystem path. Recipes and shell
 helpers quote it and never evaluate it as shell code.
 
-The top-level workflow establishes `AMPLIHACK_RUNTIME_ROOT` once. Child
-workflows, nested recipes, and agents inherit it unchanged; they must not run
-runtime-root resolution again and create sibling roots.
+Steps, agents, and shell helpers use the current run's exported directory.
+A nested `amplihack recipe run` creates its own owned directory. For external
+layouts, the runner propagates `AMPLIHACK_RUN_TMP_ROOT` as the selected parent,
+so nested runs create siblings rather than share a disposable directory.
+Environment values describe placement; none authorizes recursive deletion.
 
 ## Runtime root resolution
 
-The shared resolver returns one runtime root for a workflow run.
+`amplihack recipe run` selects a parent before exclusively creating a run
+directory. The order is a usable, nonempty `AMPLIHACK_RUN_TMP_ROOT`, otherwise
+a suitable caller `TMPDIR`, otherwise the default layout. An unusable explicit
+root falls back to the default without trying `TMPDIR`.
+
+| Layout | Runtime directory | Retained parent |
+| --- | --- | --- |
+| External | `<selected root>/ahr-<12 hex>` | Independently selected external root. |
+| Default | `<work root>/runs/<run id>/runtime` | The initialized run directory. |
+| Shortened | `<work root>/r/<12 hex>` | The selected work root's `r/` directory. |
+
+The shortened layout applies when the default `runtime/tmp` path exceeds
+80 bytes. See [temporary-root configuration](../howto/clean-up-after-recipe-runs.md#where-a-runs-temp-folder-goes)
+for root eligibility, path limits, and dry runs.
+
+Standalone `workflow_runtime_root.sh <branch_name>` has a shell fallback when
+invoked without a runner-provided `AMPLIHACK_RUNTIME_ROOT`:
 
 | Priority | Source | Example |
 | --- | --- | --- |
 | 1 | `AMPLIHACK_RUNTIME_ROOT` | `/var/tmp/amplihack-runtime/alice/run-123` |
-| 2 | `$XDG_RUNTIME_DIR/amplihack/runtime/<run-id>` | `/run/user/1000/amplihack/runtime/550e8400-e29b-41d4-a716-446655440000` |
-| 3 | `/tmp/amplihack-runtime/<user>/<run-id>` | `/tmp/amplihack-runtime/alice/550e8400-e29b-41d4-a716-446655440000` |
+| 2 | `$XDG_RUNTIME_DIR/amplihack-runtime/<branch_name>` | `/run/user/1000/amplihack-runtime/feat/issue-2291` |
+| 3 | `/tmp/amplihack-runtime/<branch_name>` | `/tmp/amplihack-runtime/feat/issue-2291` |
 
-The resolver rejects empty paths, root paths, and paths that cannot be created.
-Workflow-managed defaults are outside Git worktrees and are created with
-restrictive owner-only permissions where the platform supports them. If a caller
-explicitly sets `AMPLIHACK_RUNTIME_ROOT`, they are responsible for selecting a
-private external path.
+This helper creates its standard subdirectories and prints the selected path.
+Its fallback does not establish `OwnedRunDir` authority. It is separate from
+runner root selection and cannot make arbitrary caller directories eligible
+for run-end or stale runtime deletion. Standalone callers select a private
+external path and manage its lifetime themselves.
+
+Runner completion, `Drop`, unwinding, dry-run disposal, and stale cleanup use
+the [owned-directory cleanup contract](owned-run-directory-cleanup.md).
+Unsupported platforms or filesystem guarantees preserve directories or refuse
+ownership initialization; cleanup has no pathname-recursion fallback.
 
 ## Runtime directory layout
 
-The resolver creates these subdirectories before child workflows or agents run:
+The runner creates `tmp/` and `artifacts/` before executing steps. The shell
+runtime helper adds these standard subdirectories when initialized:
 
 ```text
 <runtime-root>/

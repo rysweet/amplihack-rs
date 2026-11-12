@@ -1,10 +1,15 @@
+---
+title: Workflow runtime isolation
+description: How runtime storage and lifecycle preflight keep generated state outside commit worktrees.
+doc_type: explanation
+last_updated: 2026-11-12
+---
+
 # Workflow Runtime Isolation
 
 Workflow runtime isolation keeps generated agent state, provenance, logs,
 metrics, reflection output, and workflow-owned nested worktrees out of commit
 worktrees.
-
-Updated: 2026-06-19
 
 ## Contents
 
@@ -36,22 +41,27 @@ The workflow isolates that output under a shared runtime root instead of writing
 it into the task worktree. The active Git worktree remains reserved for source
 changes that can be reviewed, staged, committed, pushed, and merged.
 
-Runtime isolation also scopes process state. Child recipes and agents inherit
-the top-level runtime root, run with explicit non-interactive environment
-variables, and record process/workstream identity under the runtime root instead
-of the commit worktree.
+Runtime isolation also scopes process state. Steps and agents inherit the
+current run's runtime root and record process/workstream identity there.
+Nested recipe runs allocate their own directories, so their completion cannot
+dispose of the parent's runtime state.
 
 ## Runtime root contract
 
-Every workflow run has one runtime root. The top-level workflow establishes
-that root once and exports `AMPLIHACK_RUNTIME_ROOT`. Launchers, recipe steps,
-provenance logging, child agents, and shell helpers inherit that same value.
-Child workflows must not recompute their own runtime roots.
+Every recipe run creates its own disposable directory and exports it as
+`AMPLIHACK_RUNTIME_ROOT` and `AMPLIHACK_WORKFLOW_RUNTIME_DIR`. Launchers,
+recipe steps, provenance logging, child agents, and shell helpers use those
+values. To select storage before a run, configure its parent:
 
-1. If `AMPLIHACK_RUNTIME_ROOT` is set, use it.
-2. Otherwise use `$XDG_RUNTIME_DIR/amplihack/runtime/<run-id>` when
-   `XDG_RUNTIME_DIR` is available.
-3. Otherwise use `/tmp/amplihack-runtime/<user>/<run-id>`.
+1. A usable, nonempty `AMPLIHACK_RUN_TMP_ROOT` selects an external parent.
+2. When that variable is unset or empty, a suitable caller `TMPDIR` selects
+   an external parent.
+3. Otherwise the runner uses the work root's default or shortened layout.
+
+An unusable explicit root falls back to the default layout without trying
+`TMPDIR`. Setting `AMPLIHACK_RUNTIME_ROOT` before a run does not select its
+storage. For external layouts, nested runs receive the same selected parent
+and create sibling directories.
 
 The runtime root is outside the commit worktree by default. It contains these
 standard subdirectories:
@@ -64,10 +74,19 @@ provenance/
 reflection/
 ```
 
-The runtime root and its subdirectories are created with restrictive
-owner-only permissions where the platform supports them. Custom
-`AMPLIHACK_RUNTIME_ROOT` values should point at a private external directory,
-not a shared repository path.
+The runner creates runtime storage with restrictive owner-only permissions.
+Its lifetime is governed by verified creation ownership: matching internal
+and external evidence, the independently selected parent, directory identity,
+and protected-root checks. A marker or a reported pathname alone cannot
+authorize deletion. `/tmp`, `TMPDIR`, the system temporary root, and `$HOME`
+are protected themselves; eligible owned children can still be removed.
+
+Completion, drop, unwinding, and stale cleanup share the same authority.
+Linux removal uses directory descriptors and no-replace claims. Unsupported
+platforms or filesystem guarantees preserve storage or refuse ownership
+initialization, rather than use weaker deletion. See the
+[owned-directory cleanup contract](../reference/owned-run-directory-cleanup.md)
+for the exact boundary and retained-directory behavior.
 
 See [Workflow Runtime Artifacts Reference](../reference/workflow-runtime-artifacts.md)
 for the exact resolution order, environment variables, and helper APIs.

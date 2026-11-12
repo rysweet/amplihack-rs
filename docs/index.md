@@ -153,6 +153,7 @@ amplihack copilot
 - [Artifact Guard](artifact-guard.md) - Guard for broad staging, pre-commit, and workflow publication artifacts
 - [Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Keep generated workflow runtime output outside commit worktrees
 - [Clean Up After Recipe Runs](howto/clean-up-after-recipe-runs.md) - Where runs write, choosing where a run's temp folder goes with `AMPLIHACK_RUN_TMP_ROOT` or `TMPDIR`, end-of-run cleanup, when a checkout's build target is removed, linked targets, and `amplihack cleanup` for worktrees, targets, temporary folders and old logs
+- [Owned Run Directory Cleanup](reference/owned-run-directory-cleanup.md) - Ownership, protected-root, identity, lifecycle, dry-run, and stale-run removal contracts
 - [Memory Configuration Consent](features/memory-consent-prompt.md) - Intelligent memory settings with timeout protection
 - [Verify .claude/ Staging](howto/verify-claude-staging.md) - Check that framework files are properly staged
 - [Verify Runtime Asset Resolution](howto/verify-runtime-asset-resolution.md) - Check helper, session, hooks, and multitask asset parity
@@ -350,8 +351,8 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Tutorial: Workflow Execution Guardrails](tutorials/workflow-execution-guardrails.md) - End-to-end walkthrough of the guarded workflow contract
 - [Workflow Execution Guardrails Reference](reference/workflow-execution-guardrails.md) - Input fields, output schema, signals, and failure semantics
 - [Workflow Runtime Isolation](features/workflow-runtime-isolation.md) - Runtime-root isolation and narrow cleanup for generated workflow artifacts
-- [How to Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Set `AMPLIHACK_RUNTIME_ROOT`, inspect runtime files, and troubleshoot guard failures
-- [Tutorial: Workflow Runtime Isolation](tutorials/workflow-runtime-isolation.md) - Practice the runtime isolation and strict Artifact Guard contract
+- [How to Configure Workflow Runtime Isolation](howto/configure-workflow-runtime-isolation.md) - Select a runtime parent, inspect runtime files, and handle cleanup refusals
+- [Tutorial: Workflow Runtime Isolation](tutorials/workflow-runtime-isolation.md) - Observe private runtime placement, guarded disposal, and retained evidence with a shell-only recipe
 - [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md) - Environment variables, shell helper API, lifecycle hooks, and regression contract
 - [Workflow Commit Identity Reference](reference/workflow-commit-identity.md) - Explicit author/committer identity contract for workflow-created commits
 - [Workflow Identity Preflight Reference](reference/identity-preflight.md) - One-call check, before any step does real work, that the acting `gh` account can write to the target repository (issue #1290)
