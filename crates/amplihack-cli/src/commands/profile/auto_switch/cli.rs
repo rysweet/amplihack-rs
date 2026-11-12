@@ -77,7 +77,9 @@ use super::config::EXCLUDE_UNKNOWN_REFUSAL;
 /// no list to keep, and writing an empty one would let the rotator probe
 /// and refresh the logins that were excluded, so they refuse unless the
 /// list is given with `--exclude`. A symlink or someone else's file is
-/// left to `config::update`, which refuses it with the generic error.
+/// left to `config::update`, which refuses it with
+/// `config::unreplaceable_refusal`: no command can replace it, and the
+/// refusal says how to make it replaceable without deleting it.
 fn require_recoverable_exclude(root: &std::path::Path) -> Result<(), ProfileError> {
     if config::exclude_recoverable(root) || !config::own_regular_file(root) {
         Ok(())

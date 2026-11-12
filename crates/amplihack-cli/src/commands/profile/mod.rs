@@ -168,6 +168,11 @@ pub use supervise_gate::maybe_supervise;
 /// profile even if the default pointer changes (issue #1567).
 pub const PROFILE_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE";
 
+/// The hint of [`ProfileError::AutoSwitchConfig`] (issue #2218).
+pub(crate) const AUTO_SWITCH_CONFIG_HINT: &str = "fix what the message names and retry; do not \
+     remove <root>/.auto-switch, which holds the exclude list (see \"Settings file\" in \
+     docs/reference/profile-command.md)";
+
 /// The hint of [`ProfileError::AutoSwitchExcludeAtRisk`] (issue #2218).
 pub(crate) const EXCLUDE_AT_RISK_HINT: &str = "do not remove <root>/.auto-switch: that drops its \
      exclude list, and the rotator would probe and refresh the logins it excluded; see \
@@ -316,9 +321,10 @@ impl ProfileError {
             Self::Leased { .. } | Self::HostsForeignAccount { .. } => {
                 "wait for that session to end, or run `amplihack profile auto-switch status`"
             }
-            Self::AutoSwitchConfig(_) => {
-                "remove <root>/.auto-switch and run `amplihack profile auto-switch on` or `off`"
-            }
+            // Issue #2218: never "remove the file". Every case that reaches
+            // it (a busy lock, a change over 4096 bytes, an unsafe root, a
+            // failed write) leaves a file whose exclude list is in force.
+            Self::AutoSwitchConfig(_) => AUTO_SWITCH_CONFIG_HINT,
             Self::AutoSwitchExcludeAtRisk(_) => EXCLUDE_AT_RISK_HINT,
             Self::AutoSwitchInvariant(_) => {
                 "see the Recovery section of docs/howto/claude-profiles.md"

@@ -372,6 +372,9 @@ pub fn update_within(
     // `off` always write over a missing or corrupt file, so the file then
     // says what they set; `was` names that file for the change log.
     let mut was = None;
+    if let Some(refused) = unreplaceable_refusal(root) {
+        return Err(refused);
+    }
     let (before, mut c) = match mode {
         ReadMode::Editable => {
             let c = read_editable(root).map_err(|_| corrupt_refusal(root))?;
@@ -440,18 +443,13 @@ pub(crate) const EXCLUDE_UNKNOWN_REFUSAL: &str = "auto-switch config does not pa
      NAME,...` or `off --exclude NAME,...` naming the logins that must stay excluded \
      (`--exclude ''` for none)";
 
-/// Why an edit that keeps the file's other keys refuses a corrupt file
-/// (issue #2218). For a regular file of yours, `on` and `off` are the
-/// recovery that keeps its exclude list, so the refusal names them and never
-/// carries the generic `AutoSwitchConfig` hint, which says to remove the
-/// file. A symlink or someone else's file is refused by `on` and `off` too,
-/// so it keeps the generic error.
+/// Why an edit that keeps the file's other keys refuses a corrupt file of
+/// yours (issue #2218): `on` and `off` are the recovery that keeps its
+/// exclude list, so the refusal names them and never carries the generic
+/// `AutoSwitchConfig` hint, which says to remove the file. A file that is
+/// not a regular file of yours never gets here: [`update_within`] refuses
+/// it first with [`unreplaceable_refusal`].
 fn corrupt_refusal(root: &Path) -> ProfileError {
-    if !own_regular_file(root) {
-        return ProfileError::AutoSwitchConfig(format!(
-            "{FILE} is unreadable or invalid; not changed"
-        ));
-    }
     ProfileError::AutoSwitchExcludeAtRisk(if exclude_recoverable(root) {
         format!(
             "{FILE} is unsafe or invalid; not changed. Run `amplihack profile auto-switch on` \
@@ -460,6 +458,34 @@ fn corrupt_refusal(root: &Path) -> ProfileError {
     } else {
         EXCLUDE_UNKNOWN_REFUSAL.into()
     })
+}
+
+/// Issue #2218: the refusal of every write over a `.auto-switch` that no
+/// command may replace: a symlink, something that is not a regular file, or
+/// a file owned by another user (for example one left by `sudo amplihack
+/// profile auto-switch ...`). Such a file is still in force: [`read_exclude`]
+/// applies the list of one that parses, whoever owns it, and one it cannot
+/// read excludes every profile. Removing it would leave no exclusions, so
+/// the logins it excludes would be probed and refreshed; the refusal says
+/// how to make it writable instead, and its hint never says remove. `None`
+/// when the file is missing or is a regular file of yours.
+pub(crate) fn unreplaceable_refusal(root: &Path) -> Option<ProfileError> {
+    let meta = std::fs::symlink_metadata(root.join(FILE)).ok()?;
+    let fix = if meta.file_type().is_symlink() {
+        "is a symlink"
+    } else if !meta.is_file() {
+        "is not a regular file"
+    } else if !amplihack_utils::secure_files::owned_by_euid(&meta) {
+        "is owned by another user"
+    } else {
+        return None;
+    };
+    Some(ProfileError::AutoSwitchExcludeAtRisk(format!(
+        "{FILE} {fix}, so auto-switch cannot replace it; not changed. Its exclude list is \
+         still in force (one that cannot be read excludes every profile). Make it a regular \
+         file of yours holding the same `exclude=` line: fix the owner with `chown`, or \
+         replace the symlink with a copy of its target. Do not delete it"
+    )))
 }
 
 /// Whether `.auto-switch` is a regular file (not a symlink) owned by the

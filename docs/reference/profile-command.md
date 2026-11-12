@@ -4504,9 +4504,9 @@ What each command writes depends on the current file:
 | valid | rewrites it with the new `enabled` | rewrites it, keeping the other keys |
 | missing | creates it | creates it with `enabled=off`, defaults for the key not given |
 | corrupt regular file owned by you | replaces it; `threshold` starts from its default unless given. `exclude` keeps the file's list when it parses; when it does not parse, `on` and `off` are refused with `AutoSwitchExcludeAtRisk` unless `--exclude` names the list (`on --exclude …` or `off --exclude …`; see [Unreadable exclude list](#unreadable-exclude-list)) | refused with `AutoSwitchExcludeAtRisk`, naming the recovery: `on` or `off` first when it parses, `on --exclude …` or `off --exclude …` when it does not |
-| owned by another user | refused with `AutoSwitchConfig` | refused with `AutoSwitchConfig` |
+| owned by another user | refused with `AutoSwitchExcludeAtRisk`, even with `--exclude`: its list is in force, so the message says to fix the owner with `chown`, not to delete it | refused with `AutoSwitchExcludeAtRisk`, as for `on` / `off` |
 | owned by you, writable by group or others | replaced with mode `0600`, as for a corrupt file; its exclude list is kept | refused with `AutoSwitchExcludeAtRisk`; run `on` or `off` first |
-| symlink or not a regular file | refused with `AutoSwitchConfig` | refused with `AutoSwitchConfig` |
+| symlink or not a regular file | refused with `AutoSwitchExcludeAtRisk`, even with `--exclude`: the message says to replace it with a regular file of yours holding the same `exclude=` line, not to delete it | refused with `AutoSwitchExcludeAtRisk`, as for `on` / `off` |
 
 A file is never written through a symlink, and a file owned by someone else
 is never replaced.
@@ -5586,7 +5586,7 @@ again; they move back to a plan profile as soon as one has capacity, or has
 `add` and `remove` change only the `overflow` key of `<root>/.auto-switch`,
 through the same locked write as the [auto-switch commands](#auto-switch-commands)
 (see [Settings file](#settings-file)). A missing file is created with
-`enabled=off`. A corrupt file is refused with `AutoSwitchConfig` and left
+`enabled=off`. A corrupt file is refused with `AutoSwitchExcludeAtRisk` and left
 unchanged. Because the write holds the lock, a `remove` that reports success
 is never lost to a concurrent `auto-switch exclude`, `on` or rotator cycle.
 If the lock is busy for 10 seconds, the command fails with the
@@ -7205,10 +7205,22 @@ ALERT: auto-switch config unreadable; rotation paused, no profile probed
 
 Rotation resumes from the first cycle that reads the file. To fix the file:
 
-- When it parses but is unsafe or invalid, run
-  `amplihack profile auto-switch on` or `off`. They rewrite it with mode
-  `0600` and the defaults for every other setting, and keep its exclude
-  list, so the logins it excluded stay excluded.
+- When it is a regular file of yours that parses but is unsafe (group- or
+  world-writable) or invalid, run `amplihack profile auto-switch on` or
+  `off`. They rewrite it with mode `0600` and the defaults for every other
+  setting, and keep its exclude list, so the logins it excluded stay
+  excluded.
+- When it is owned by another user (for example one left by
+  `sudo amplihack profile auto-switch …`), is a symlink, or is not a
+  regular file, no command replaces it, and every command that writes it
+  refuses with `AutoSwitchExcludeAtRisk`, `--exclude` or not. The file is
+  still in force: a list that parses is applied whoever owns it, and a file
+  that cannot be read excludes every profile. Do not delete it, which
+  leaves no exclusions. Make it a regular file of yours with the same
+  `exclude=` line instead: `sudo chown "$USER" <root>/.auto-switch` for a
+  foreign owner, or, for a symlink, copy its target over it
+  (`cp --remove-destination "$(readlink -f <root>/.auto-switch)" <root>/.auto-switch`).
+  Then run `on` or `off` as above.
 - When it does not parse, its exclude list is unknown, and `on`, `off`,
   `threshold`, `exclude`, `overflow add` and `overflow remove` refuse it
   with `AutoSwitchExcludeAtRisk`:
@@ -10638,8 +10650,8 @@ failures use this format.
 | `InvalidSavedRoot`: `~/.amplihack/profile-root` is invalid (the message names the file and the [reason](#saved-root-file-format)), or `profile root <dir>` cannot write it safely | `fix or remove ~/.amplihack/profile-root, or run: amplihack profile root <absolute dir>` |
 | `Leased`: the profile's login is live in another profile's session | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
 | `HostsForeignAccount`: the profile's directory holds another account's login | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
-| `AutoSwitchConfig`: `.auto-switch` is a symlink or cannot be written, is owned by another user, the change would exceed 4096 bytes, or the [settings lock](#settings-file) stayed busy for 10 seconds (the message ends in `retry`; run the command again) | `` remove <root>/.auto-switch and run `amplihack profile auto-switch on` or `off` `` |
-| `AutoSwitchExcludeAtRisk`: `.auto-switch` is a corrupt regular file of yours, and removing it would drop its exclude list. Either `on` or `off` is run without `--exclude` while it does not parse (its exclude list is unknown), or `threshold`, `exclude`, `overflow add` or `overflow remove` needs to keep its other keys. The message names the recovery: `on --exclude NAME,...` or `off --exclude NAME,...` when it does not parse, `on` or `off` when it does. See [Unreadable exclude list](#unreadable-exclude-list) | `` do not remove <root>/.auto-switch: that drops its exclude list, and the rotator would probe and refresh the logins it excluded; see "Unreadable exclude list" in docs/reference/profile-command.md `` |
+| `AutoSwitchConfig`: `.auto-switch` cannot be written, the change would exceed 4096 bytes, or the [settings lock](#settings-file) stayed busy for 10 seconds (the message ends in `retry`; run the command again) | `` fix what the message names and retry; do not remove <root>/.auto-switch, which holds the exclude list (see "Settings file" in docs/reference/profile-command.md) `` |
+| `AutoSwitchExcludeAtRisk`: `.auto-switch` is a symlink, not a regular file, or owned by another user (no command replaces it; the message says to fix the owner with `chown` or replace the symlink with a regular file holding the same `exclude=` line), or it is a corrupt regular file of yours; in each case removing it would drop its exclude list. Either `on` or `off` is run without `--exclude` while it does not parse (its exclude list is unknown), or `threshold`, `exclude`, `overflow add` or `overflow remove` needs to keep its other keys. The message names the recovery: `on --exclude NAME,...` or `off --exclude NAME,...` when it does not parse, `on` or `off` when it does. See [Unreadable exclude list](#unreadable-exclude-list) | `` do not remove <root>/.auto-switch: that drops its exclude list, and the rotator would probe and refresh the logins it excluded; see "Unreadable exclude list" in docs/reference/profile-command.md `` |
 | `AutoSwitchUnsupported`: an `auto-switch` command on a platform without Unix file semantics | `auto-switch needs Linux or another Unix; leave it off` |
 | `AutoSwitchInvariant`: the state files are damaged or a login is not where the state says | `see the Recovery section of docs/howto/claude-profiles.md` |
 | `AutoSwitchInstall`: a profile's `settings.json` is a symlink, owned by someone else, not a JSON object, or cannot be written | `` fix or remove the reported file, then run `amplihack profile auto-switch repair` `` |
@@ -12164,7 +12176,7 @@ plan login with the most room.
 | `SubscriptionNoLogin`: `run`, `claude`, `launch` or `switch` named a subscription profile with no OAuth login of its own that is not held | `profile <name> is a subscription profile with no login of its own; launching it would bill the Claude Platform API key per token. ...` (in full under [No silent billing](#no-silent-billing)) | `amplihack profile login <name>, or: amplihack profile kind set <name> api-key` |
 | `PlatformTierFixed`: `overflow add --tier N` named an API-key profile | `profile <name> is an API-key profile; the API-key tier is fixed at 10, so --tier cannot be set` | `` run `amplihack profile overflow add <name>` without --tier `` |
 | `PlatformBlocked`: `switch` named an API-key profile while the API-key block is active | `profile <name>: the API key is blocked (<reason>) until <time>` | `amplihack profile overflow clear --platform` |
-| `AutoSwitchConfig` from `kind set`: `.auto-switch` is corrupt, a symlink, untrusted or busy | as for the other [settings commands](#settings-file) | as for the other settings commands |
+| `AutoSwitchConfig` or `AutoSwitchExcludeAtRisk` from `kind set`: `.auto-switch` is busy, or is corrupt, a symlink or another user's | as for the other [settings commands](#settings-file) | as for the other settings commands |
 
 Messages hold profile names, kinds, reasons and times only. No message, log
 line, ALERT or ledger field holds a byte read from a login, settings or

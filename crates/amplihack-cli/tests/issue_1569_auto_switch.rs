@@ -781,7 +781,19 @@ fn symlinked_settings_file_is_never_written_through() {
     std::os::unix::fs::symlink(&target, f.root.join(".auto-switch")).unwrap();
     let out = f.run_args(&["profile", "auto-switch", "on"]);
     assert!(!out.status.success());
-    assert!(text(&out.stderr).contains("hint:"), "{}", text(&out.stderr));
+    let stderr = text(&out.stderr);
+    // Issue #2218: the symlink is still in force, so the advice is to make
+    // it a regular file, never to remove it.
+    assert!(stderr.contains("is a symlink"), "{stderr}");
+    assert!(stderr.contains("Do not delete it"), "{stderr}");
+    assert!(
+        stderr.contains("hint: do not remove <root>/.auto-switch"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains("remove <root>/.auto-switch and run"),
+        "{stderr}"
+    );
     assert_eq!(fs::read_to_string(&target).unwrap(), "enabled=off\n");
     assert!(
         f.stdout(&["profile", "auto-switch", "status"])

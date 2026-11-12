@@ -844,20 +844,76 @@ fn an_edit_over_a_corrupt_file_of_yours_names_the_recovery_that_keeps_the_list()
     assert!(msg.contains("keep its exclude list"), "{msg}");
 }
 
-/// A symlinked `.auto-switch` is refused by `on` and `off` too, so it keeps
-/// the generic error and hint.
+/// Issue #2218: a `.auto-switch` no command may replace (a symlink, a
+/// directory, or a file owned by another user, which shares this code path
+/// but cannot be created without root) is still in force, so every write
+/// over it is refused with a hint that never says remove: removing it would
+/// leave no exclusions. Nothing is written, and the target is untouched.
 #[test]
-fn an_edit_over_a_symlinked_file_keeps_the_generic_error() {
+fn a_write_over_an_unreplaceable_file_never_advises_removing_it() {
+    for (kind, setup) in [
+        ("is a symlink", 0u8),
+        ("is a symlink", 1),
+        ("is not a regular file", 2),
+    ] {
+        let tmp = private_root();
+        let root = tmp.path();
+        let target = root.join("elsewhere");
+        match setup {
+            // Unparseable target: read_exclude calls it Unreadable.
+            0 => {
+                fs::write(&target, "enabled=maybe\n").unwrap();
+                std::os::unix::fs::symlink(&target, root.join(".auto-switch")).unwrap();
+            }
+            // Parseable target with a list in it.
+            1 => {
+                fs::write(&target, "enabled=on\nthreshold=90\nexclude=work\n").unwrap();
+                std::os::unix::fs::symlink(&target, root.join(".auto-switch")).unwrap();
+            }
+            _ => fs::create_dir(root.join(".auto-switch")).unwrap(),
+        }
+        let edits: [(ReadMode, Option<Vec<ProfileName>>); 3] = [
+            (ReadMode::Editable, None),
+            (ReadMode::DefaultOnInvalid, None),
+            (ReadMode::DefaultOnInvalid, Some(names(&["work"]))),
+        ];
+        for (mode, exclude) in edits {
+            let err = config::update(root, mode, |c| {
+                c.enabled = true;
+                if let Some(e) = exclude.clone() {
+                    c.exclude = e;
+                }
+                Ok(())
+            })
+            .unwrap_err();
+            let ProfileError::AutoSwitchExcludeAtRisk(msg) = &err else {
+                panic!("{kind}: {err:?}");
+            };
+            assert!(msg.contains(kind), "{msg}");
+            assert!(msg.contains("Do not delete it"), "{msg}");
+            assert!(msg.contains("chown"), "{msg}");
+            assert!(err.hint().starts_with("do not remove"), "{}", err.hint());
+            assert!(!err.hint().contains("remove <root>/.auto-switch and run"));
+        }
+        assert!(!config::own_regular_file(root));
+        if setup < 2 {
+            assert!(
+                fs::symlink_metadata(root.join(".auto-switch"))
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+        }
+    }
+}
+
+/// The refusal is only for files no command may replace: a missing file
+/// or a regular file of yours gets none.
+#[test]
+fn a_missing_or_own_file_is_replaceable() {
     let tmp = private_root();
     let root = tmp.path();
-    let target = root.join("elsewhere");
-    fs::write(&target, "enabled=maybe\n").unwrap();
-    std::os::unix::fs::symlink(&target, root.join(".auto-switch")).unwrap();
-    let err = config::update(root, ReadMode::Editable, |c| {
-        c.threshold = 50;
-        Ok(())
-    })
-    .unwrap_err();
-    assert!(matches!(err, ProfileError::AutoSwitchConfig(_)), "{err:?}");
-    assert!(!config::own_regular_file(root));
+    assert!(config::unreplaceable_refusal(root).is_none());
+    write_file(root, "enabled=maybe\n");
+    assert!(config::unreplaceable_refusal(root).is_none());
 }
