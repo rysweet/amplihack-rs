@@ -1027,6 +1027,11 @@ Rust dispatcher and the merge gate do not read the setting. They already treat
 `CONCERNS` and `MINOR_ONLY` correctly; the setting only decides which of the
 two an all-minor round is.
 
+The setting applies to rounds that have not run yet. A drive that resumes
+under `address` after a round was already recorded as `MINOR_ONLY` under
+`follow_up` still completes on that round and files its follow-ups, because
+the round's verdict is already recorded.
+
 #### A minor finding that cannot be fixed
 
 Under `address` there is no iteration cap for minor findings, as for any

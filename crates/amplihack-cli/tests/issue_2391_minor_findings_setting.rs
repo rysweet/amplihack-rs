@@ -552,9 +552,10 @@ fn default_address_loops_past_an_all_minor_round_until_clean() {
 }
 
 #[test]
-fn default_address_never_completes_on_an_unaddressed_minor_round() {
-    // The completion agent may not stop on minor findings under address; if
-    // nothing changes, loop-health evaluation stops the loop (no cap).
+fn default_address_keeps_minor_round_as_concerns_and_files_no_follow_ups() {
+    // Under address an all-minor round stays CONCERNS, goes to loop-health
+    // evaluation (no cap) and files no follow-ups. The dispatcher's refusal
+    // of a "complete" claim on such a round is tested in the Rust crate.
     let d = Drive::new();
     d.minor_findings(None);
     d.set("review.json", &two_minor_review());

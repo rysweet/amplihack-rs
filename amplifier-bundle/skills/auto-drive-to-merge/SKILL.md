@@ -220,7 +220,10 @@ value is treated as `address` and prints one
 `WARNING: autodrive_minor_findings='<value>' is not recognised; using 'address'`
 line. `auto-drive-to-merge` passes the setting to the crusty loop and the
 merge loop, and the merge loop passes it to every crusty re-review, so one
-setting governs the whole drive. `auto-drive-light` passes it on in the same
+setting governs the whole drive. A drive that resumes under `address` after a
+round was recorded as `MINOR_ONLY` under `follow_up` still completes on that
+round and files its follow-ups, because the round's verdict is already
+recorded. `auto-drive-light` passes it on in the same
 way, including when it escalates.
 
 Under `follow_up`, Crusty still emits `CLEAN` or `CONCERNS`. When a `CONCERNS`

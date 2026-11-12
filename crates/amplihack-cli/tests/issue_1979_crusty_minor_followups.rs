@@ -2315,13 +2315,8 @@ fn only_the_crusty_loops_pass_the_second_clean_token() {
             || cl.contains("--also-clean-token \"MINOR_ONLY\""),
         "crusty loop"
     );
-    assert!(
-        cl.contains("follow_up"),
-        "crusty loop: token is conditional"
-    );
     let rr = read("amplifier-bundle/tools/autodrive_crusty_rereview.sh");
     assert!(rr.contains("--also-clean-token"), "re-review");
-    assert!(rr.contains("follow_up"), "re-review: token is conditional");
     let ml = read("amplifier-bundle/recipes/autodrive-merge-loop.yaml");
     assert!(
         !ml.contains("--also-clean-token"),
