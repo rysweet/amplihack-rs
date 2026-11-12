@@ -1069,14 +1069,17 @@ fn not_signed_in_has_the_documented_text_and_fields() {
     );
 }
 
+/// Only a document that says there is no login is final: an empty object,
+/// or a `claudeAiOauth` object with no access token (missing, `null` or
+/// empty).
 #[test]
-fn a_file_with_no_usable_token_is_final_in_ordered() {
+fn a_file_with_no_token_is_final_in_ordered() {
     for doc in [
-        "not json at all",
+        "{}",
         r#"{"claudeAiOauth": {}}"#,
         r#"{"claudeAiOauth": {"accessToken": ""}}"#,
+        r#"{"claudeAiOauth": {"accessToken": null}}"#,
         r#"{"claudeAiOauth": {"refreshToken": "sk-ant-oat01-TEST-2271-CANARY"}}"#,
-        r#"{"other": true}"#,
     ] {
         let s = setup();
         write_creds(&s, doc);
@@ -1092,6 +1095,123 @@ fn a_file_with_no_usable_token_is_final_in_ordered() {
         assert!(fb.calls().is_empty(), "{doc}: {:?}", fb.calls());
         assert_not_signed_in(&p, reason::NO_TOKEN);
         assert!(fake.seen().is_empty(), "{doc}");
+    }
+}
+
+/// A file this read cannot make sense of is not a verdict on the login: the
+/// format is not a documented contract, and a file may be caught mid-write.
+/// It is `unreadable credentials` and falls back to `claude`, as every
+/// direct failure did before #2271. `{"other": true}` is a judgement call:
+/// a non-empty document with no `claudeAiOauth` may be an API-key login
+/// (`primaryApiKey`) or a renamed key, and only `claude` can tell.
+#[test]
+fn an_unreadable_file_falls_back_in_ordered() {
+    for doc in [
+        "not json at all",
+        r#"{"claudeAiOauth": {"accessToken": "sk-ant-oat01-TEST-2271-CANA"#,
+        "[]",
+        "null",
+        r#"{"other": true}"#,
+        r#"{"primaryApiKey": "sk-not-oauth"}"#,
+        r#"{"claudeAiOauth": null}"#,
+        r#"{"claudeAiOauth": "token"}"#,
+        r#"{"claudeAiOauth": {"accessToken": 17}}"#,
+        r#"{"claudeAiOauth": {"accessToken": "with space"}}"#,
+    ] {
+        let s = setup();
+        write_creds(&s, doc);
+        let fake = ok_server();
+        let fb = Fallback::new();
+        let p = read(
+            &env_for(&fake, ProbeMode::Ordered),
+            &s.plan(),
+            &s.root,
+            now(),
+            |m| fb.run(m),
+        );
+        assert_falls_back_once(&p, &fb, reason::UNREADABLE_CREDS);
+        assert!(fake.seen().is_empty(), "{doc}");
+    }
+}
+
+/// Under `direct` the same file is an error row, never `not signed in`.
+#[test]
+fn an_unreadable_file_is_a_direct_error_not_not_signed_in() {
+    let s = setup();
+    write_creds(&s, "not json at all");
+    let fake = ok_server();
+    let fb = Fallback::new();
+    let p = read(
+        &env_for(&fake, ProbeMode::Direct),
+        &s.plan(),
+        &s.root,
+        now(),
+        |m| fb.run(m),
+    );
+    assert!(fb.calls().is_empty(), "{:?}", fb.calls());
+    assert_eq!(p.error, Some(ErrorReason::Direct(reason::UNREADABLE_CREDS)));
+    assert_eq!(p.direct_failure, Some(reason::UNREADABLE_CREDS));
+    assert_ne!(p.report.state, UsageState::NotLoggedIn);
+}
+
+/// An expired login whose refresh token is there but rejected (a space in
+/// it, or not a string) is not known to have no refresh token: it falls
+/// back instead of reading `no refresh token`.
+#[test]
+fn an_expired_login_with_a_rejected_refresh_token_falls_back() {
+    for refresh in [json!("has a space"), json!(17), json!("x".repeat(5000))] {
+        let _serial = crate::test_support::refresh_count_lock();
+        let s = setup();
+        write_creds(
+            &s,
+            &json!({"claudeAiOauth": {
+                "accessToken": ACCESS,
+                "refreshToken": refresh,
+                "expiresAt": chrono::Utc::now().timestamp_millis() - 1000
+            }})
+            .to_string(),
+        );
+        let fake = token_server();
+        let fb = Fallback::new();
+        let p = read(
+            &env_for(&fake, ProbeMode::Ordered),
+            &s.plan(),
+            &s.root,
+            now(),
+            |m| fb.run(m),
+        );
+        assert_falls_back_once(&p, &fb, reason::UNREADABLE_CREDS);
+        assert!(fake.seen().is_empty(), "{:?}", fake.seen());
+    }
+}
+
+/// An empty or `null` refresh token is absent: an expired login with one is
+/// final `no refresh token`.
+#[test]
+fn an_expired_login_with_an_empty_refresh_token_is_final() {
+    for refresh in [json!(""), json!(null)] {
+        let _serial = crate::test_support::refresh_count_lock();
+        let s = setup();
+        write_creds(
+            &s,
+            &json!({"claudeAiOauth": {
+                "accessToken": ACCESS,
+                "refreshToken": refresh,
+                "expiresAt": chrono::Utc::now().timestamp_millis() - 1000
+            }})
+            .to_string(),
+        );
+        let fake = token_server();
+        let fb = Fallback::new();
+        let p = read(
+            &env_for(&fake, ProbeMode::Ordered),
+            &s.plan(),
+            &s.root,
+            now(),
+            |m| fb.run(m),
+        );
+        assert!(fb.calls().is_empty(), "{:?}", fb.calls());
+        assert_not_signed_in(&p, reason::NO_REFRESH_TOKEN);
     }
 }
 

@@ -741,7 +741,9 @@ and `"error": null`, as it would if `claude` had reported it; the reason is
 in the bar and table text only. No `claude` is started for
 it: `claude` would find the same empty profile. The same happens for a file with no OAuth token
 (`no oauth token`) and for an expired token with nothing to refresh it with
-(`no refresh token`). The bar view shows the text in place of the bars;
+(`no refresh token`). A file that is there but cannot be read as a login (not JSON,
+an unknown shape, or a rejected token) is `unreadable credentials`, not
+not signed in: that profile still goes to `claude`. The bar view shows the text in place of the bars;
 `--table` shows it in the `MARKS` column. Run
 `amplihack profile login scratch` to fix it.
 

@@ -715,6 +715,27 @@ fn a_not_signed_in_plan_profile_does_not_hold_overflow() {
     assert_eq!(v.tag, None);
 }
 
+/// A plan profile whose credentials file could not be read (not JSON, a
+/// format change, a rejected token) is not "not signed in": under the
+/// `direct` probe it is a failed probe, so it is unknown and holds the move
+/// onto credits. Its `rotate.err` warning is checked in
+/// `measure::tests_issue_2271_measure`. In the default order it falls back
+/// to `claude`, which reads it as before #2271.
+#[test]
+fn an_unreadable_credentials_file_holds_overflow() {
+    use crate::commands::profile::usage_direct::reason;
+    let spare = reading("spare", &Probe::direct_error(reason::UNREADABLE_CREDS));
+    assert!(spare.unknown);
+    let v = Case::new("work", exhausted(FAR, FAR))
+        .cand("spare", spare)
+        .cand("cred", exhausted(None, None))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.decision, Decision::Alert);
+    assert_eq!(v.tag, None);
+    assert!(v.new_blocks.is_empty());
+}
+
 #[test]
 fn a_refused_plan_profile_directory_blocks_overflow() {
     // A directory refused just before the spawn reads `error`; that login

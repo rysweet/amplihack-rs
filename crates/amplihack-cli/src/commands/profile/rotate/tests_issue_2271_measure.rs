@@ -114,6 +114,19 @@ fn only_the_not_signed_in_error_is_quiet() {
     );
 }
 
+/// A credentials file that could not be read is a failure, not "not signed
+/// in": it writes its warning and stays unknown, so it holds overflow.
+#[test]
+fn an_unreadable_credentials_file_warns_and_is_unknown() {
+    let (p, err) = read("odd", &Probe::direct_error(reason::UNREADABLE_CREDS));
+    assert_eq!(p, Probed::failed());
+    assert!(p.unknown);
+    assert_eq!(
+        err,
+        "warning: rotate: probe of odd failed: direct read: unreadable credentials\n"
+    );
+}
+
 /// The quiet row never holds a path, token or server text: the only text
 /// it could carry is the fixed reason.
 #[test]

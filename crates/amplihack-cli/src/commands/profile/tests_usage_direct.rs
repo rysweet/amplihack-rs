@@ -521,6 +521,8 @@ fn reasons_are_the_documented_texts() {
     // Issue #2271: its own reason, so `usage_source` can tell a login with
     // nothing to refresh with from a refresh the server turned away.
     assert_eq!(reason::NO_REFRESH_TOKEN, "no refresh token");
+    // Not a verdict on the login: it falls back to `claude`.
+    assert_eq!(reason::UNREADABLE_CREDS, "unreadable credentials");
 }
 
 // ---------------------------------------------------------------------------
@@ -599,17 +601,48 @@ fn a_file_over_64_kib_is_refused() {
 }
 
 #[test]
-fn no_usable_token_is_no_oauth_token() {
+fn no_token_is_no_oauth_token() {
     let fake = FakeHttp::start(|_, _| Reply::json(200, &body_100_55()));
     let l = login();
     for body in [
-        "not json",
-        r#"{"primaryApiKey":"sk-x"}"#,
-        r#"{"claudeAiOauth":{"accessToken":"with space"}}"#,
+        "{}",
+        r#"{"claudeAiOauth":{}}"#,
+        r#"{"claudeAiOauth":{"accessToken":""}}"#,
+        r#"{"claudeAiOauth":{"accessToken":null}}"#,
     ] {
         fs::write(l.path(), body).unwrap();
         assert_eq!(run(&fake, &l, true), Err(reason::NO_TOKEN), "{body}");
     }
+    assert!(fake.seen().is_empty());
+}
+
+/// A file that does not parse, or holds a token the validator rejects, is
+/// not "no oauth token": nothing says the login is absent.
+#[test]
+fn a_file_that_does_not_parse_is_unreadable_credentials() {
+    let fake = FakeHttp::start(|_, _| Reply::json(200, &body_100_55()));
+    let l = login();
+    for body in [
+        "not json",
+        "[]",
+        r#"{"primaryApiKey":"sk-x"}"#,
+        r#"{"claudeAiOauth":"x"}"#,
+        r#"{"claudeAiOauth":{"accessToken":17}}"#,
+        r#"{"claudeAiOauth":{"accessToken":"with space"}}"#,
+    ] {
+        fs::write(l.path(), body).unwrap();
+        assert_eq!(
+            run(&fake, &l, true),
+            Err(reason::UNREADABLE_CREDS),
+            "{body}"
+        );
+    }
+    let long = format!(
+        r#"{{"claudeAiOauth":{{"accessToken":"{}"}}}}"#,
+        "a".repeat(MAX_TOKEN + 1)
+    );
+    fs::write(l.path(), long).unwrap();
+    assert_eq!(run(&fake, &l, true), Err(reason::UNREADABLE_CREDS));
     assert!(fake.seen().is_empty());
 }
 
@@ -1591,22 +1624,43 @@ fn an_expired_login_with_no_refresh_token_is_no_refresh_token_without_refresh_al
     assert_eq!(l.entries(), [CREDS]);
 }
 
+/// An absent refresh token (`""` or `null`) on an expired login is
+/// `no refresh token`, a final verdict.
 #[test]
-fn an_unusable_refresh_token_on_an_expired_login_is_no_refresh_token() {
+fn an_absent_refresh_token_on_an_expired_login_is_no_refresh_token() {
     let _serial = crate::test_support::refresh_count_lock();
-    for bad in [
-        json!(""),
-        json!("has space"),
-        json!("x".repeat(MAX_TOKEN + 1)),
-        json!(42),
-        Value::Null,
-    ] {
+    for bad in [json!(""), Value::Null] {
         for allow in [true, false] {
             let fake = answering_everything();
             let l = login_with_refresh(-1000, Some(bad.clone()));
             assert_eq!(
                 run(&fake, &l, allow),
                 Err(reason::NO_REFRESH_TOKEN),
+                "refreshToken {bad}, allow_refresh {allow}"
+            );
+            assert!(fake.seen().is_empty(), "refreshToken {bad}");
+            assert_eq!(l.entries(), [CREDS]);
+        }
+    }
+}
+
+/// A refresh token that is there but rejected (whitespace, too long, not a
+/// string) is not known to be absent: `unreadable credentials`, which falls
+/// back, and still nothing is sent.
+#[test]
+fn a_rejected_refresh_token_on_an_expired_login_is_unreadable_credentials() {
+    let _serial = crate::test_support::refresh_count_lock();
+    for bad in [
+        json!("has space"),
+        json!("x".repeat(MAX_TOKEN + 1)),
+        json!(42),
+    ] {
+        for allow in [true, false] {
+            let fake = answering_everything();
+            let l = login_with_refresh(-1000, Some(bad.clone()));
+            assert_eq!(
+                run(&fake, &l, allow),
+                Err(reason::UNREADABLE_CREDS),
                 "refreshToken {bad}, allow_refresh {allow}"
             );
             assert!(fake.seen().is_empty(), "refreshToken {bad}");
@@ -1721,9 +1775,14 @@ fn the_no_refresh_token_reason_never_holds_a_token() {
 #[test]
 fn unusable_endpoints_with_no_token_is_no_oauth_token() {
     let l = login();
-    fs::write(l.path(), r#"{"primaryApiKey":"sk-x"}"#).unwrap();
+    fs::write(l.path(), r#"{"claudeAiOauth":{}}"#).unwrap();
     for allow in [true, false] {
         assert_eq!(run_unusable(&l, allow), Err(reason::NO_TOKEN));
+    }
+    // An API-key-only file is not a verdict on the login.
+    fs::write(l.path(), r#"{"primaryApiKey":"sk-x"}"#).unwrap();
+    for allow in [true, false] {
+        assert_eq!(run_unusable(&l, allow), Err(reason::UNREADABLE_CREDS));
     }
     assert_eq!(l.entries(), [CREDS]);
 }

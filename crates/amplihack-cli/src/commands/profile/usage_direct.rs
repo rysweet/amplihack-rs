@@ -91,6 +91,13 @@ pub(super) mod reason {
     /// holds no usable refresh token, so nothing can renew it. [`read`]
     /// returns it before any request, whether or not refresh is allowed.
     pub const NO_REFRESH_TOKEN: &str = "no refresh token";
+    /// The credentials file is there and private, but its content is not a
+    /// login this read recognises: not JSON, not the expected shape, or a
+    /// token field holding a value [`Token`] rejects. This is not a verdict
+    /// on the login (the format is not a documented contract and can drift),
+    /// so unlike [`NO_TOKEN`] it is never final: `usage_source` falls back
+    /// to `claude` and the rotator warns about it.
+    pub const UNREADABLE_CREDS: &str = "unreadable credentials";
     pub const HTTP_401: &str = "http 401";
     pub const HTTP_403: &str = "http 403";
     pub const HTTP_429: &str = "http 429";
@@ -323,6 +330,9 @@ impl std::fmt::Debug for Token {
 pub(super) struct Creds {
     access: Token,
     refresh: Option<Token>,
+    /// A `refreshToken` was there but [`Token`] rejected it: `refresh` is
+    /// `None`, yet the login is not known to have no refresh token.
+    refresh_rejected: bool,
     expires_at_ms: Option<i64>,
     whole: Value,
 }
@@ -330,21 +340,72 @@ pub(super) struct Creds {
 impl Creds {
     /// `claudeAiOauth.accessToken` is required; `refreshToken` and
     /// `expiresAt` are used when they can be.
+    #[cfg(test)]
     pub(super) fn parse(raw: &[u8]) -> Option<Self> {
-        let whole: Value = serde_json::from_slice(raw).ok()?;
-        let oauth = whole.get("claudeAiOauth")?.as_object()?;
-        let access = Token::parse(oauth.get("accessToken")?.as_str()?)?;
-        let refresh = oauth
-            .get("refreshToken")
-            .and_then(Value::as_str)
-            .and_then(Token::parse);
+        Self::read(raw).ok()
+    }
+
+    /// [`Creds::parse`] with the reason it failed. Only a document that says
+    /// plainly there is no login is [`reason::NO_TOKEN`]:
+    ///
+    /// - an empty JSON object, `{}`;
+    /// - a `claudeAiOauth` object whose `accessToken` is absent, `null` or
+    ///   the empty string.
+    ///
+    /// Everything else that is not a usable login is
+    /// [`reason::UNREADABLE_CREDS`], which falls back to `claude`: text that
+    /// is not JSON (a format change, a file caught mid-write), a document
+    /// that is not an object, a `claudeAiOauth` that is not an object, an
+    /// `accessToken` that is not a string or that [`Token`] rejects, and a
+    /// non-empty object with no `claudeAiOauth`. That last one is a
+    /// judgement call: it may be an API-key login (`primaryApiKey`) or a
+    /// renamed login key, and only `claude` can tell.
+    pub(super) fn read(raw: &[u8]) -> Result<Self, &'static str> {
+        use reason::{NO_TOKEN, UNREADABLE_CREDS};
+        let whole: Value = serde_json::from_slice(raw).map_err(|_| UNREADABLE_CREDS)?;
+        let top = whole.as_object().ok_or(UNREADABLE_CREDS)?;
+        let oauth = match top.get("claudeAiOauth") {
+            None if top.is_empty() => return Err(NO_TOKEN),
+            None => return Err(UNREADABLE_CREDS),
+            Some(v) => v.as_object().ok_or(UNREADABLE_CREDS)?,
+        };
+        let access = match field(oauth, "accessToken") {
+            Field::Absent => return Err(NO_TOKEN),
+            Field::Rejected => return Err(UNREADABLE_CREDS),
+            Field::Token(t) => t,
+        };
+        let refresh = field(oauth, "refreshToken");
         let expires_at_ms = oauth.get("expiresAt").and_then(Value::as_i64);
-        Some(Self {
+        let (refresh, refresh_rejected) = match refresh {
+            Field::Absent => (None, false),
+            Field::Rejected => (None, true),
+            Field::Token(t) => (Some(t), false),
+        };
+        Ok(Self {
             access,
             refresh,
+            refresh_rejected,
             expires_at_ms,
             whole,
         })
+    }
+}
+
+/// A token field of `claudeAiOauth`: absent (missing, `null` or `""`), a
+/// value present but rejected (not a string, or refused by [`Token::parse`]),
+/// or a usable token.
+enum Field {
+    Absent,
+    Rejected,
+    Token(Token),
+}
+
+fn field(oauth: &serde_json::Map<String, Value>, key: &str) -> Field {
+    match oauth.get(key) {
+        None | Some(Value::Null) => Field::Absent,
+        Some(Value::String(s)) if s.is_empty() => Field::Absent,
+        Some(Value::String(s)) => Token::parse(s).map_or(Field::Rejected, Field::Token),
+        Some(_) => Field::Rejected,
     }
 }
 
@@ -371,7 +432,7 @@ fn load(dir: &Path) -> Result<Creds, &'static str> {
             if meta.uid() != euid() || writable_by_others(&meta) || meta.mode() & 0o020 != 0 {
                 return Err(reason::REFUSED);
             }
-            Creds::parse(&raw).ok_or(reason::NO_TOKEN)
+            Creds::read(&raw)
         }
         Err(_) => Err(reason::REFUSED),
     }
@@ -574,8 +635,14 @@ pub(super) fn read(ep: &Endpoints, req: &Request<'_>) -> Result<Direct, &'static
     let creds = load(req.creds_dir)?;
     // A plain comparison: a missing or non-integer `expiresAt` is `None` and
     // never counts as expired here.
+    // Only an absent refresh token is a verdict; one that is there but
+    // rejected is `unreadable credentials` and falls back to `claude`.
     if creds.refresh.is_none() && creds.expires_at_ms.is_some_and(|at| at <= req.now_ms) {
-        return Err(reason::NO_REFRESH_TOKEN);
+        return Err(if creds.refresh_rejected {
+            reason::UNREADABLE_CREDS
+        } else {
+            reason::NO_REFRESH_TOKEN
+        });
     }
     if !ep.usable() {
         return Err(reason::TRANSPORT);

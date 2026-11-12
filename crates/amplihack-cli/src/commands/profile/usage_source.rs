@@ -16,7 +16,9 @@
 //! and on Linux `no credentials file`. The row is `not_logged_in` from the
 //! direct read, shown as `not signed in (<reason>)`, and no `claude` is
 //! looked up or started; `claude` would find the same empty login. Every
-//! other failure, `credentials refused` included, falls back as before.
+//! other failure, `credentials refused` and `unreadable credentials` (a
+//! file that did not parse or held a rejected token) included, falls back
+//! as before.
 //!
 //! Issue #1856: a direct read with usage credits on and a readable window
 //! is a `direct` row with the direct windows, the redacted `extra_usage`

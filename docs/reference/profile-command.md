@@ -348,8 +348,9 @@ when the endpoint settings are unusable, and never `transport`.
 |--------|------|
 | `no credentials file` | The credentials file is missing. |
 | `credentials refused` | The file is a symlink, not a regular file, owned by someone else, writable by group or others, over 64 KiB, or could not be read. |
-| `no oauth token` | The file is not JSON, or has no usable `claudeAiOauth.accessToken`. |
-| `no refresh token` | The token has expired (`expiresAt` is at or before now), and the file has no usable `claudeAiOauth.refreshToken` (missing, empty, over 4096 bytes or holding whitespace). Checked before any request, whether or not amplihack may [refresh](#token-refresh) in this directory. No request is sent. A missing or non-numeric `expiresAt` does not count as expired. |
+| `no oauth token` | The file says there is no login: it is the empty object `{}`, or its `claudeAiOauth` object has no `accessToken`, or one that is `null` or empty. |
+| `unreadable credentials` | The file is there but is not a login this read recognises: it is not JSON (a format change, or a file caught mid-write), is not a JSON object, is a non-empty object with no `claudeAiOauth` (an API-key login, or a renamed key), has a `claudeAiOauth` that is not an object, or has an `accessToken` that is not a string or is over 4096 bytes or holds whitespace or a non-printable byte. Also given for an expired token whose `refreshToken` is there but rejected the same way. |
+| `no refresh token` | The token has expired (`expiresAt` is at or before now), and the file has no `claudeAiOauth.refreshToken` (missing, `null` or empty). A refresh token that is there but rejected (not a string, over 4096 bytes or holding whitespace) gives `unreadable credentials` instead. Checked before any request, whether or not amplihack may [refresh](#token-refresh) in this directory. No request is sent. A missing or non-numeric `expiresAt` does not count as expired. |
 | `token expired` | The token has expired, the file has a refresh token, and amplihack may not [refresh](#token-refresh) it in this directory, so `claude` is left to refresh it. |
 | `http 401`, `http 403`, `http 429` | The endpoint answered with that status (a `401` after any allowed refresh). |
 | `http 3xx`, `http 4xx`, `http 5xx` | Any other status of that class. |
@@ -395,7 +396,7 @@ read and are unchanged.
 
 | Reason | Final when |
 |--------|------------|
-| `no oauth token` | Always, on Unix. The file is not JSON or has no usable `accessToken`. |
+| `no oauth token` | Always, on Unix. The file is `{}`, or its `claudeAiOauth` has no `accessToken` or an empty one. |
 | `no refresh token` | Always, on Unix. The token has expired and there is nothing to refresh it with; `claude` would fail the same way. |
 | `no credentials file` | On Linux only, and only when the directory read is a real directory (checked with `lstat`, so not a symlink). A symlinked directory, and the live login when `$HOME` is not set, still go to the fallback. |
 
@@ -404,7 +405,7 @@ Every other reason still goes to the fallback, including
 permissions or could not be read: a login may be there), `token expired`
 (the token has expired but has a refresh token, and `claude` can refresh
 it), `refresh refused`, `refresh failed`, `refresh busy`,
-`refresh not saved`, `timeout`, `transport`, `unparseable`,
+`refresh not saved`, `unreadable credentials` (the file did not parse or held a token the read rejects: a statement about this read, not about the login), `timeout`, `transport`, `unparseable`,
 `usage credits on` and every `http` status: these can be passing
 conditions, or ones `claude` can still get past. Only the reason is used to
 decide; the token is never read again or shown. Checking for a missing
@@ -419,9 +420,11 @@ platforms other than Unix every failed direct read goes to the fallback,
 again except under `AMPLIHACK_PROFILE_USAGE_PROBE=direct`, where the row
 reads `error`.
 
-A credentials file that is corrupt, or that `claude` is rewriting at the
-moment it is read, gives `no oauth token` and reads as not signed in for
-that run. The next run reads it again.
+A credentials file that is corrupt, in a format this read does not
+recognise, or that `claude` is rewriting at the moment it is read, gives
+`unreadable credentials`, not `no oauth token`. It goes to the fallback, and
+the rotator logs `warning: rotate: probe of <name> failed` for it when the
+probe fails, and holds the move onto overflow, as for any failed probe.
 
 The decision uses only the profile's own credentials file. A login that
 works only through `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or
@@ -7162,7 +7165,8 @@ A cause never holds a token, an account or server text.
 | `timeout` | No answer within the 5-second timeout. |
 | `transport` | The connection or TLS failed, the server closed it, or the endpoint setting is unusable, so nothing was sent. |
 | `unparseable` | The body is too large, is not a JSON object, or names no account. |
-| `no oauth token` | The login file has no usable token. |
+| `no oauth token` | The login file says there is no login (`{}`, or no `accessToken`). |
+| `unreadable credentials` | The login file is not JSON, is not the expected shape, or holds a token the read rejects. |
 | `directory not private` | The directory fails the [login directory rule](#login-directory-rule). |
 | `login file not trusted` | The login file is missing where a login is required, is a symlink or not a regular file, belongs to another owner, can be written by group or others, has more than one link, or is on a different device from its directory. A [seeding scan](#seeding-a-record) treats a definitely missing login in another profile as no login, not as this cause. |
 | `login changed during read` | The file or directory changed between the checks before and after the read. |

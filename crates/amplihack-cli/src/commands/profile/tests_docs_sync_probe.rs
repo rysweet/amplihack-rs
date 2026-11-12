@@ -270,6 +270,7 @@ fn reference_lists_every_direct_failure_reason() {
         reason::REFRESH_FAILED,
         reason::REFRESH_NOT_SAVED,
         reason::NO_REFRESH_TOKEN,
+        reason::UNREADABLE_CREDS,
     ] {
         assert!(
             REFERENCE.contains(&format!("`{r}`")),
