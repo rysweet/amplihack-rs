@@ -777,7 +777,7 @@ goal = """
 CI pipeline failing after push.
 Diagnose failures, apply fixes, push updates, monitor CI.
 Iterate until all checks pass.
-Stop at mergeable state without auto-merging.
+Stop at mergeable state; the calling workflow decides the merge.
 """
 
 # Agent decomposes into phases:
@@ -843,7 +843,7 @@ if iteration >= MAX_ITERATIONS:
 - Iteration limits prevent infinite loops
 - Pattern matching (test/lint/type) enables targeted fixes
 - Smart waiting (exponential backoff) reduces wait time
-- Never auto-merge: human approval always required
+- Stop at mergeable state: the merge belongs to the calling workflow's gate
 
 ### Example 3: Pre-Commit Diagnostic Workflow
 

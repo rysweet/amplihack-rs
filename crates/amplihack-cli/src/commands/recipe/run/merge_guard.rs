@@ -15,6 +15,9 @@ pub(crate) const MERGE_GUARD_ENV: &str = "AMPLIHACK_MERGE_GUARD";
 /// The shim's directory, relative to `AMPLIHACK_HOME`.
 pub(crate) const GUARD_REL: &str = "amplifier-bundle/tools/gh-merge-guard";
 
+/// The shim's directory, relative to the bundle.
+const GUARD_IN_BUNDLE: &str = "tools/gh-merge-guard";
+
 /// The `BASH_ENV` file in the guard directory. It puts the guard back first
 /// on `PATH` in every non-interactive bash of the run, after a login shell's
 /// profile has run.
@@ -26,15 +29,17 @@ pub(crate) const USER_BASH_ENV: &str = "AMPLIHACK_MERGE_GUARD_USER_BASH_ENV";
 
 /// The files in the guard directory's parent (`tools/`) that the shim trusts
 /// to merge: the gate, and every helper the gate sources, directly or through
-/// another helper (`autodrive_state.sh` sources `autodrive_unmerged.sh`, and
-/// `autodrive_trust.sh` loads `autodrive_qa_scope.sh`, #1763).
+/// another helper (`autodrive_state.sh` sources `autodrive_unmerged.sh`,
+/// `autodrive_trust.sh` loads `autodrive_qa_scope.sh`, #1763, and that loads
+/// `autodrive_qa_docs.sh`, #2219).
 /// Replacing any of them is as good as replacing the shim, so they get the
 /// shim's mode check.
-pub(crate) const GATE_FILES: [&str; 6] = [
+pub(crate) const GATE_FILES: [&str; 7] = [
     "autodrive_merge_gate.sh",
     // Sourced by the gate, so it runs inside the process this shim trusts to
     // merge; it is mode-checked with the rest (#2056).
     "autodrive_merge_message.sh",
+    "autodrive_qa_docs.sh",
     "autodrive_qa_scope.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",
@@ -93,19 +98,102 @@ pub(crate) fn apply_guard(env_builder: EnvBuilder, dir: &Path) -> EnvBuilder {
         .set(MERGE_GUARD_ENV, "1")
 }
 
-/// [`locate_guard_dir`] for the run's `AMPLIHACK_HOME`, which must be set.
+/// Exported with the bundle a guarded run pinned, for information only. It
+/// is never read (issue #1954 S3): a value in the environment cannot choose
+/// which guard a run trusts.
+pub(crate) const BUNDLE_DIR_ENV: &str = "AMPLIHACK_BUNDLE_DIR";
+
+/// [`locate_guard_dir`] for the run's `AMPLIHACK_HOME`, which must be set,
+/// in the bundle [`pin_bundle`] pins for the run.
 pub(crate) fn guard_dir_for_home(home: Option<&str>) -> Result<PathBuf> {
     let home = home.ok_or_else(|| {
         anyhow!(
             "AMPLIHACK_HOME is unset; refusing to run auto-drive without the merge guard (#1551)"
         )
     })?;
-    locate_guard_dir(Path::new(home))
+    let home = Path::new(home);
+    if !home.is_absolute() {
+        return locate_guard_dir(home);
+    }
+    locate_guard_dir_at(home, &pin_bundle(home)?.join(GUARD_IN_BUNDLE))
+}
+
+/// The bundle directory a run uses for its whole life (issue #1954 D5).
+///
+/// `home/amplifier-bundle` as given when it is a real directory (or absent,
+/// so [`locate_guard_dir`] reports it). When it is a symlink, it is resolved
+/// once, here, and the run keeps the release it named even after a later
+/// install switches the link. The target must be a real directory inside
+/// `home/releases/`, its release must have `.complete`, and the release root
+/// and `releases/` must not be writable by group or others (S2). The guard
+/// directory's own G11 checks run on the pinned tree too.
+///
+/// [`BUNDLE_DIR_ENV`] is never consulted (S3).
+pub(crate) fn pin_bundle(home: &Path) -> Result<PathBuf> {
+    use crate::commands::install::release_layout;
+    let link = home.join("amplifier-bundle");
+    let is_link = std::fs::symlink_metadata(&link).is_ok_and(|m| m.file_type().is_symlink());
+    if !is_link {
+        return Ok(link);
+    }
+    let releases = release_layout::releases_dir(home);
+    let Some(release_root) = release_layout::release_root_of(&releases, &link) else {
+        bail!(
+            "amplihack: {} links outside {}; refusing to trust its merge guard (#1954)",
+            link.display(),
+            releases.display()
+        );
+    };
+    if !release_root.join(release_layout::COMPLETE_MARKER).is_file() {
+        bail!(
+            "amplihack: release {} has no {}; refusing to trust its merge guard (#1954)",
+            release_root.display(),
+            release_layout::COMPLETE_MARKER
+        );
+    }
+    let pinned = std::fs::canonicalize(&link)
+        .map_err(|e| anyhow!("amplihack: cannot resolve {}: {e} (#1954)", link.display()))?;
+    if !std::fs::symlink_metadata(&pinned).is_ok_and(|m| m.is_dir()) {
+        bail!(
+            "amplihack: {} is not a directory; refusing to trust its merge guard (#1954)",
+            pinned.display()
+        );
+    }
+    // S2: every directory from the bundle up to `releases/`.
+    for dir in [&pinned, &release_root, &releases] {
+        if is_group_or_other_writable(dir) {
+            bail!(
+                "amplihack: {}, which holds the merge guard of this run, is writable by group or \
+                 others; refusing to run auto-drive (#1954). Rerun `amplihack install`, or \
+                 `chmod go-w` it.",
+                dir.display()
+            );
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let owned = std::fs::symlink_metadata(&release_root)
+            .is_ok_and(|m| m.uid() == release_layout::euid());
+        if !owned {
+            bail!(
+                "amplihack: release {} is not owned by this user; refusing to trust its merge \
+                 guard (#1954)",
+                release_root.display()
+            );
+        }
+    }
+    let dir = pinned.join(GUARD_IN_BUNDLE);
+    if dir.join("gh").exists() {
+        check_guard_modes(&dir)?;
+    }
+    Ok(pinned)
 }
 
 /// The guard directory under `home`, provided it holds an executable `gh`
-/// file (symlinks followed) and its [`BASH_ENV_FILE`]. The directory is returned as given, never
-/// canonicalised, so `PATH` de-duplication still recognises it.
+/// file (symlinks followed) and its [`BASH_ENV_FILE`]. The directory is returned as given:
+/// canonicalisation happens once, in [`pin_bundle`] at run start (issue #1954), and the
+/// pinned path is the one used for `PATH`, `BASH_ENV` and their de-duplication.
 ///
 /// There is no fallback location: a missing shim, a `home` that is not an
 /// absolute path (which would resolve against the working directory), a
@@ -115,7 +203,13 @@ pub(crate) fn guard_dir_for_home(home: Option<&str>) -> Result<PathBuf> {
 /// for the `tools/` directory above it and for each [`GATE_FILES`] entry that
 /// exists there, since the shim lets the gate merge.
 pub(crate) fn locate_guard_dir(home: &Path) -> Result<PathBuf> {
-    let dir = home.join(GUARD_REL);
+    locate_guard_dir_at(home, &home.join(GUARD_REL))
+}
+
+/// [`locate_guard_dir`] for the guard directory `dir` of the run's (possibly
+/// pinned) bundle under `home`.
+fn locate_guard_dir_at(home: &Path, dir: &Path) -> Result<PathBuf> {
+    let dir = dir.to_path_buf();
     let shim = dir.join("gh");
     let bash_env = dir.join(BASH_ENV_FILE);
     if !home.is_absolute() {
@@ -148,8 +242,17 @@ pub(crate) fn locate_guard_dir(home: &Path) -> Result<PathBuf> {
             bash_env.display()
         );
     }
+    check_guard_modes(&dir)?;
+    Ok(dir)
+}
+
+/// The G11 owner-and-mode rule for the guard directory `dir`, its shim and
+/// bash-env, `tools/` above it and each [`GATE_FILES`] entry there.
+fn check_guard_modes(dir: &Path) -> Result<()> {
+    let shim = dir.join("gh");
+    let bash_env = dir.join(BASH_ENV_FILE);
     if is_group_or_other_writable(&shim)
-        || is_group_or_other_writable(&dir)
+        || is_group_or_other_writable(dir)
         || is_group_or_other_writable(&bash_env)
     {
         bail!(
@@ -173,7 +276,7 @@ pub(crate) fn locate_guard_dir(home: &Path) -> Result<PathBuf> {
             );
         }
     }
-    Ok(dir)
+    Ok(())
 }
 
 /// Read by the shim to trust the gate's own merge (`parent_is_gate`).

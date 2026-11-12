@@ -16,6 +16,8 @@ amplihack is a development framework for popular coding agent systems (Claude Co
 
 **Looking for something specific?**
 
+- [Repair a Codex installation](howto/repair-codex-installation.md) - Resolve incomplete packages and missing helpers
+- [Codex installation validation](reference/codex-installation-validation.md) - Startup checks, overrides, and recovery policy
 - [Code Atlas](atlas/index.md) - Architecture diagrams, dependency maps, and bug hunt results
 - [Commands & Operations](#%EF%B8%8F-commands--operations) - Execute complex tasks
 - [Workflows](#-workflows) - Structured development processes
@@ -165,11 +167,12 @@ amplihack copilot
 - [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account with the most capacity with `amplihack profile rotate`, and resume sessions stopped by a usage limit
 - [Bring Agent Sessions Back After a Terminal Loss](howto/supervise-agent-sessions.md) - Register long-lived Claude sessions with `amplihack agent` and let a supervisor service resume them from their saved conversation
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
-- [Keep Tests off the Host Process Table](howto/keep-tests-off-the-host-process-table.md) - How `amplihack profile` tests read a fake `/proc` through `AMPLIHACK_TEST_PROC_ROOT`, the `FakeProc` builder, and the guard that fails a test reading host processes
+- [Keep Tests off the Host Process Table](howto/keep-tests-off-the-host-process-table.md) - How `amplihack profile` tests read a fake `/proc` through `AMPLIHACK_TEST_PROC_ROOT` or, in lib tests, a per-thread scope and a shared empty default, the `FakeProc` builder, and the guard that fails a test reading host processes
 - [Keep Tests out of the Real Profile Root](howto/keep-tests-out-of-the-real-profile-root.md) - How tests avoid writing real profiles' `settings.json`, and the guard that fails the run when one changes
 - [Give Test Logins a Fake Account Identity](howto/give-test-logins-a-fake-account-identity.md) - How profile tests give fake logins a server identity, seed logins in rotate unit tests, re-issue a credential when its account changes, and test the no-record case
 - [Keep Tests from Changing PATH and HOME](howto/keep-tests-from-changing-path-and-home.md) - How tests give a child process its `PATH` and `HOME` without changing the test process, and how to test a timeout so that host load cannot fail it
 - [Keep Tests from Prompting for Git Credentials](howto/keep-tests-from-prompting-for-git.md) - Why git under plain `timeout` stops on `SIGTTIN`, the settings that stop test and amplihack git from prompting, and how to run long commands safely
+- [Run recipe::run Tests Inside a Recipe Session](howto/run-recipe-tests-inside-a-recipe-session.md) - How `recipe::run` tests clear the outer run's `AMPLIHACK_*` variables with `clear_outer_run_env()` and `OUTER_RUN_IDENTITY_VARS`, so they pass inside a recipe run (#1984)
 - [Keep Tests Passing Under Host Load](howto/keep-tests-passing-under-host-load.md) - Wait on conditions under one 10-minute ceiling, use the debug-only identity knobs, and prove a fix with all-core CPU load
 - [Wait Without Leaving Orphan Processes](howto/wait-without-orphan-processes.md) - Wait with `amplihack wait --seconds N` or `wait $pid`, use uutils `timeout` safely, and what the tail-follow guard in the `pre-tool-use` hook denies
 - [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
@@ -179,6 +182,7 @@ amplihack copilot
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
 - [Framework Source Selection](reference/framework-source-selection.md) - Which source install, update and self-heal stage the bundle from, the release tag fetch, the manifest check and file modes
+- [Versioned Install Layout](concepts/versioned-install-layout.md) - Releases under `~/.amplihack/releases`, atomic link switch, in-use cleanup and why an install leaves running recipe runs alone
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
 - [External LiteLLM Gateway](features/README.md#external-litellm-gateway) - Route supported local agents through an operator-managed gateway
 - [External LiteLLM Gateway Tutorial](tutorials/external-litellm-gateway.md) - Configure a protected route to an existing gateway
@@ -305,6 +309,12 @@ Document-Driven Development is a systematic methodology where documentation come
 
 Code-enforced workflow execution engine with declarative YAML recipes.
 
+- [Resume After a Usage Limit](howto/resume-recipe-after-usage-limit.md) - **Planned:** relaunch the same issue, inspect the restart step, or use `--fresh`
+- [Recovery after a Recipe Usage Limit](concepts/recipe-usage-limit-recovery.md) - **Planned:** latest-attempt eligibility, nested replay, and compatibility
+- [Recipe Recovery Reference](reference/recipe-recovery.md) - **Planned:** persistence policies, resources, durable storage, and runner contracts
+- [Recipe Runner Architecture](concepts/recipe-runner-architecture.md) - Execution and recovery ownership across the CLI and runner
+- [Recipe Command Reference](reference/recipe-command.md) - Launch flags, detached execution, and recovery decisions
+
 - [Recipe Runner Overview](recipes/README.md) - Architecture, YAML format, and creating custom recipes
 - [UltraThink Recipe Runner Integration](recipes/RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution
 - [Recipe CLI Commands How-To](howto/recipe-cli-commands.md) - Task-oriented guide for using recipe commands
@@ -317,8 +327,10 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Recipe Commit Hook Repair](reference/recipe-commit-hook-repair.md) - How checkpoint and publish steps hand a rejected git `pre-commit` or `pre-push` hook to a fixing agent, retry under loop-health evaluation, and refuse changes to hook configuration
 - [Structured Verdict & Intent Parsing Reference](reference/structured-verdict-parsing.md) - `normalise-verdict` helper, `session-tree register --json`, and the `verdict`/`no_merge`/`goal_status`/`status` fields that replace brittle agent-prose scraping
 - [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the build → crusty-review → merge-ready loops, how the autodrive recipes read step outputs through `RECIPE_VAR_<output>`, how the `LOOP_HEALTH:` line is read, the no-progress stop and per-run usage budget (`autodrive_budget_*`), and the evidence-gated merge
+- [Crusty Completion Contract](reference/autodrive-crusty-completion.md) - Completion-first dispatch for CLEAN and MINOR_ONLY, decision integrity, and follow-up recording before phase completion
 - [Loop-Health Evaluator Reference](reference/loop-health-evaluator.md) - the reusable `CONTINUE`/`DONE`/`STUCK` agentic loop-health contract, `normalise-loop-verdict`, and why the loop terminator is absence of progress rather than an iteration cap
 - [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the three phases, how the merge round applies the merge-ready criteria (gadugi scenarios run one per process, the crusty loop as criterion 3), the `AUTODRIVE_QA_*` variables, `.amplihack/qa.toml` and how the QA command is chosen and scoped to the changed paths, the evidence-gated merge, and why rounds commit only in the pull request's worktree, and how minor-only crusty verdicts end the crusty loop with a follow-up issue per finding (#1979)
+- [Git Repository Environment Helper](reference/git-repo-env-helper.md) - `git-repo-env.sh`: the one shell list of `GIT_*` repository selectors and outer-run `AMPLIHACK_*` names, which auto-drive QA steps and the cargo hook clear before running tests, the `git_env_cleared` and `run_env_cleared` evidence fields, and the drift guard (#2033)
 - [Session-Tree Recursion Control](reference/session-tree-recursion-control.md) - where tree state lives, how the depth ceiling is sealed, the `BLOCKED_TERMINAL` exit-79 contract, `session-tree gc` retention, and mixed-version fleets
 - [Read Agent Verdicts with orch helper](howto/parse-agent-verdicts-with-orch-helper.md) - Migrate grep/awk/jq gates to `orch helper extract-json | extract-field | normalise-verdict` and structured `parse_json` conditions
 - [Pass Large Recipe Context and Agent Text](howto/pass-large-recipe-context.md) - `--context-file`, `--context-from-file`, `--body-file` and `git commit -F` for values that would exceed the argument limit
@@ -806,6 +818,7 @@ Testing strategies, quality assurance, and validation patterns.
 - [Load-Independent Deadline Tests for the Direct Usage Read](bugfixes/bugfix-1962-usage-direct-deadline-tests.md) - How the `tests_usage_direct` deadline tests derive their delays from `REFRESH_BUDGET` and `MAX_STEP` so that a loaded host cannot change their outcome
 - [Multitask Launcher Tests and the Profile Root Variable](bugfixes/bugfix-2014-multitask-launcher-env-race.md) - How the multitask launcher tests pass `AMPLIHACK_CLAUDE_PROFILE_ROOT` as an argument so that another test's non-UTF-8 value cannot fail them, and the regression test that races them against a mutator thread
 - [Merge-Base Diffs and Issue-Derived PR Titles in the Publish Step](bugfixes/bugfix-1968-publish-pr-merge-base-title.md) - How `workflow_publish_pr.sh` lists and counts changed files against the merge base and titles the PR from the issue, with the `Update <scope>` template as the last resort
+- [Draft PR Metadata Recovery and Diagnostics](bugfixes/bugfix-2306-publish-metadata-recovery-diagnostics.md) - GitHub title and body recovery, source-backed macOS temp-directory diagnosis, and verified runner-error propagation
 - [Honest PR Titles and Honoured No-Merge Directives](bugfixes/bugfix-929-pr-title-and-no-merge.md) - Lockfile-free scope selection for the template title and detection of no-merge directives in the task
 - [Keep the Pre-commit Hooks Portable to macOS](howto/keep-pre-commit-hooks-portable-to-macos.md) - POSIX sed, bash 3.2, Linux-only clippy allows, and libc type aliases
 

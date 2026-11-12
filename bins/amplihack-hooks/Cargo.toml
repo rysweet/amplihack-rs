@@ -25,6 +25,7 @@ default = []
 signal = ["amplihack-hooks/signal"]
 
 [dev-dependencies]
+amplihack-utils = { workspace = true }
 tempfile = { workspace = true }
 serde_json = { workspace = true }
 

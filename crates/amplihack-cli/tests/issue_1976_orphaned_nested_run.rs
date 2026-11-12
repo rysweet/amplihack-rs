@@ -28,6 +28,7 @@ const LOG_POINTER_PREFIX: &str = "amplihack.recipe.log_pointer ";
 
 /// Records pid and env, signals readiness, then blocks on the FIFO.
 const BLOCKING_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 env > "$RECORD_DIR/env.tmp" && mv "$RECORD_DIR/env.tmp" "$RECORD_DIR/env.txt"
 echo $$ > "$RECORD_DIR/runner.tmp" && mv "$RECORD_DIR/runner.tmp" "$RECORD_DIR/runner.pid"
 : > "$RECORD_DIR/ready"
@@ -38,6 +39,7 @@ printf '%s\n' '{"recipe_name":"issue-1976-orphan","success":true,"step_results":
 /// Records the parent variables it was given, and the stat and cmdline of
 /// the process they name, then reports success.
 const RECORDING_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 env > "$RECORD_DIR/env.tmp" && mv "$RECORD_DIR/env.tmp" "$RECORD_DIR/env.txt"
 echo $$ > "$RECORD_DIR/runner.pid"
 if [ -n "${AMPLIHACK_PARENT_RECIPE_PID:-}" ]; then

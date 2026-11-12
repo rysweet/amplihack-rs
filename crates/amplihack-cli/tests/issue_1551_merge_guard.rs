@@ -14,7 +14,10 @@
 use crate::support::amplihack_bin::amplihack_bin;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+// `Command` is reached only by the Linux-only tests below (#2210).
+#[cfg(target_os = "linux")]
+use std::process::Command;
+use std::process::Output;
 
 const GUARD_REL: &str = "amplifier-bundle/tools/gh-merge-guard";
 const MARKER_ENV: &str = "AMPLIHACK_MERGE_GUARD";
@@ -28,6 +31,7 @@ fn executable(path: &Path, body: &str, mode: u32) {
 /// would: `gh pr merge` and then `gh pr view`, through the `PATH` the runner
 /// was given, recording each exit code and stderr.
 const STUB_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 printf '%s' "$PATH" > "$RECORD_DIR/path"
 if [ -n "${AMPLIHACK_MERGE_GUARD+set}" ]; then
   printf '%s' "$AMPLIHACK_MERGE_GUARD" > "$RECORD_DIR/marker"
@@ -60,7 +64,7 @@ fi
 printf '%s\n' '{"recipe_name":"issue-1551","success":true,"step_results":[],"context":{}}'
 "#;
 
-const SHIM_BODY: &str = "#!/usr/bin/env bash\n# amplihack-gh-merge-guard\nexit 0\n";
+const SHIM_BODY: &str = "#!/usr/bin/env bash\ncase \"$*\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n# amplihack-gh-merge-guard\nexit 0\n";
 
 struct Fixture {
     _tmp: tempfile::TempDir,
@@ -494,6 +498,7 @@ fn writable_shim_or_guard_dir_fails_closed_before_the_runner_starts() {
 /// A stand-in for the real gh, behind the guard on PATH: logs every argv and
 /// succeeds, so a merge that got through would show in its log.
 const REAL_GH_STUB: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 printf '%s\n' "$*" >> "$RECORD_DIR/gh.log"
 exit 0
 "#;
