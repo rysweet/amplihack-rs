@@ -623,13 +623,6 @@ fn print_empty(output: Output, time: &TimeView, codex: Option<CodexRead>) {
     }
 }
 
-/// Issue #2271: waits for the Codex read, when one was started, and prints
-/// its block after everything else. Used by the text outputs only; the
-/// Claude output is already on stdout by then.
-fn print_codex_last(output: Output, codex: Option<CodexRead>, time: &TimeView) {
-    print_codex_text(output, codex.map(CodexRead::finish).as_ref(), time);
-}
-
 /// Flushes stdout so that its lines are out before anything that follows
 /// on stderr or blocks. A failure (a closed pipe) is logged; the next
 /// write reports it the usual way.
@@ -641,8 +634,10 @@ fn flush_stdout() {
 }
 
 /// The Codex block after the Claude text output, in the bar or table form.
-fn print_codex_text(output: Output, codex: Option<&CodexView>, time: &TimeView) {
-    let Some(v) = codex else {
+/// Issue #2271: waits for the Codex read, when one was started, so it is
+/// called last; the Claude output is already on stdout by then.
+fn print_codex_last(output: Output, codex: Option<CodexRead>, time: &TimeView) {
+    let Some(v) = codex.map(CodexRead::finish) else {
         return;
     };
     // One empty line between the Claude output and the Codex block.
@@ -654,9 +649,9 @@ fn print_codex_text(output: Output, codex: Option<&CodexView>, time: &TimeView) 
                 std::io::stdout().is_terminal(),
                 std::env::var_os("NO_COLOR").as_deref(),
             );
-            print!("{}", usage_codex::bars_block(v, time, colour));
+            print!("{}", usage_codex::bars_block(&v, time, colour));
         }
-        Output::Table => print!("{}", usage_codex::table_block(v, time)),
+        Output::Table => print!("{}", usage_codex::table_block(&v, time)),
         Output::Json | Output::SummaryJson => {}
     }
 }

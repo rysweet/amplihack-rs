@@ -418,6 +418,16 @@ A credentials file that is corrupt, or that `claude` is rewriting at the
 moment it is read, gives `no oauth token` and reads as not signed in for
 that run. The next run reads it again.
 
+The decision uses only the profile's own credentials file. A login that
+works only through `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or
+`CLAUDE_CODE_OAUTH_TOKEN` in the environment, with no token in the
+profile's file, reads `not signed in` as well; `claude` is not started to
+try that credential. With any of these set, `profile usage` already warns
+on stderr that the readings may be that credential's; see
+[Refreshing auto-switch readings](#refreshing-auto-switch-readings). The
+row is read again on every run, so it changes as soon as the profile has a
+login.
+
 The row is:
 
 - state `not_logged_in`, source `direct`, spend `unknown`, and no
@@ -448,8 +458,10 @@ under `auto` or `text`, is shown as before, with the `(fallback)` mark.
 The [rotator](#rotate-decision-rule) uses the same reads, so it also starts
 no `claude` for a login with no token. It treats the row as it treats any
 `not_logged_in` result: never a target, and `<name>:failed` in the cycle
-line. The verdict is read-only: no login is written, refreshed, moved or
-removed because of it.
+line. It writes no `warning: rotate: probe of <name> failed` line for it,
+to stderr or to `rotate.err`, so an unused profile does not add a line to
+every cycle. The verdict is read-only: no login is written, refreshed, moved
+or removed because of it.
 
 ##### Usage credits on
 
@@ -1498,7 +1510,8 @@ figure it shows before the week runs out; `s=100%` always means a session
 limit was reached.
 
 The rotator writes one line to stderr (`rotate.err` for a background
-rotator) for each `timeout` or `error` result, with `~/.claude` as the name
+rotator) for each `timeout` or `error` result, except a profile with
+[no login to use](#logins-with-no-token), with `~/.claude` as the name
 of the live login. Both are fixed text:
 
 ```

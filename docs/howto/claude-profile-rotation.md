@@ -839,8 +839,11 @@ one `ALERT` and stays, as before.
 A probe that timed out or could not run shows as `<name>:failed` in the
 cycle line, never as a percentage, and writes
 `warning: rotate: probe of <name> timed out` (or `failed: <reason>`) to
-`rotate.err`. Its usage is unknown: the rotator does not choose it, does not
-count or record it as exhausted, and probes it again on the next cycle.
+`rotate.err`. A profile with no login to use is the one exception: it shows
+as `<name>:failed` but writes no warning line, to stderr or to `rotate.err`;
+see [Logins with no token](../reference/profile-command.md#logins-with-no-token).
+Its usage is unknown: the rotator does not choose it, does not count or
+record it as exhausted, and probes it again on the next cycle.
 While a plan profile's usage is unknown this way, the rotator does not move
 onto
 [usage credits](#use-usage-credits-when-every-plan-login-is-exhausted); see
