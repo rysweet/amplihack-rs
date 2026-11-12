@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 
 fn amplihack_bin() -> PathBuf {
     // Cargo builds the binary as a prerequisite of this [[test]] target and
@@ -61,7 +60,7 @@ fn index_code_surfaces_legacy_kuzu_path_notice() {
     let db_path = dir.path().join("graph_db");
     write_sample_blarify_json(&input);
 
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args([
             "index-code",
@@ -98,7 +97,7 @@ fn query_code_json_keeps_stdout_clean_when_using_legacy_kuzu_path_flag() {
     let db_path = dir.path().join("graph_db");
     write_sample_blarify_json(&input);
 
-    let index = Command::new(&bin)
+    let index = crate::isolated_amplihack::isolated(&bin)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args([
             "index-code",
@@ -115,7 +114,7 @@ fn query_code_json_keeps_stdout_clean_when_using_legacy_kuzu_path_flag() {
         String::from_utf8_lossy(&index.stderr)
     );
 
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .current_dir(dir.path())
         .args([

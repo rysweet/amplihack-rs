@@ -1,18 +1,29 @@
 //! `rotate status` and `rotate stop`: read the pid file and the ledger, and
-//! signal only a verified rotator.
+//! signal only a verified rotator. Also the ledger side of `profile
+//! overflow list` and `clear` (issue #1606).
 
-use super::daemon::{DaemonState, current_state, daemon_err};
-use super::ledger::{LastCycle, Phase, RotateState};
-use super::log::timestamp;
+use super::daemon::{DaemonState, current_state, daemon_err, exe_name, proc_root, running_on_host};
+use super::exhausted;
+use super::history;
+use super::identify::{self, LiveId};
+use super::ledger::{LastCycle, Phase, RotateLedger, RotateState, active_blocks};
+use super::log::{msg, timestamp};
 use crate::commands::profile::ProfileError;
+use crate::commands::profile::auto_switch::kit::{State, now};
+use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::overflow::overflow_names;
+use crate::commands::profile::pointer;
 use crate::commands::profile::root_cmd::{pinned_line, root_line};
 use crate::commands::profile::root_config::{ROTATE_ROOT_FILE, RootSource, config_dir, read_saved};
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd::sanitize_display;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 const STOP_WAIT: Duration = Duration::from_secs(10);
+/// How long `profile overflow clear` waits for the rotate state lock.
+const CLEAR_LOCK_WAIT: Duration = Duration::from_secs(10);
 
 /// The store whose rotator `status` and `stop` act on, and whether it was
 /// found through `~/.amplihack/rotate-root`. The record is followed only when
@@ -51,20 +62,87 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         DaemonState::Unverifiable => ("unverifiable", "-".into()),
     };
     let ledger = rs.load_ledger();
+    // One read, so the `overflow:`, `on credits:` and `default:` lines agree.
+    let names = overflow_names(store.root());
+    let overflow = overflow_line(&names, ledger.as_ref().map(Option::as_ref), now());
+    let last_tag = ledger
+        .as_ref()
+        .ok()
+        .and_then(Option::as_ref)
+        .and_then(|l| l.last_cycle.as_ref())
+        .and_then(|c| c.overflow.clone());
+    let pin = super::pin::read(&rs);
+    let on_overflow = on_overflow_line(&store, &rs, home, &names, last_tag.as_deref(), &pin);
+    let api_key = api_key_line(&store, home, ledger.as_ref().ok().and_then(Option::as_ref));
     let live = match &ledger {
         Ok(l) => l
             .as_ref()
             .and_then(|l| l.live.clone())
             .unwrap_or_else(|| "-".into()),
-        Err(_) => "- (ledger unreadable)".into(),
+        Err(e) => super::handfix_msg::status_live_unreadable(super::ledger::refused_field(e)),
     };
-    let last = match ledger.ok().flatten().and_then(|l| l.last_cycle) {
-        Some(LastCycle { at, outcome }) => {
-            format!("{} {}", timestamp(at), sanitize_display(&outcome, false))
+    let ledger = ledger.ok().flatten();
+    let last = match ledger.as_ref().and_then(|l| l.last_cycle.as_ref()) {
+        Some(LastCycle {
+            at,
+            outcome,
+            overflow,
+            ..
+        }) => {
+            let tag = overflow.as_ref().map_or_else(String::new, |t| {
+                format!(" overflow={}", sanitize_display(t, false))
+            });
+            format!(
+                "{} {}{tag}",
+                timestamp(*at),
+                sanitize_display(outcome, false)
+            )
         }
         None => "-".into(),
     };
-    println!("rotate: {word}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    let auto = super::autostart_line(store.root());
+    // Issue #1803: read only under a private root; never echoes the marker.
+    let owner = super::owner::describe(store.root(), &proc_root(), exe_name().as_deref());
+    println!("rotate: {word}\n{auto}\n{owner}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    super::observe::affinity::print_status(store.root());
+    // Issue #1797: from the usage history only; no probe and no `claude`.
+    let (capacity, warnings) = history::capacity(store.root(), now());
+    for w in warnings {
+        eprintln!("{w}");
+    }
+    println!("{capacity}");
+    println!("overflow: {overflow}\napi key: {api_key}\non overflow: {on_overflow}");
+    if let Some(line) = super::platform_live_line(store.root()) {
+        println!("{line}");
+    }
+    // Issue #1818: profiles whose stored reading has no session window. Not
+    // labelled "no session limit": the stored reading cannot tell a plan
+    // with none from a session window that was not recorded.
+    let names_now = store.list().unwrap_or_default();
+    if let Some(line) =
+        crate::commands::profile::auto_switch::no_session_window_line(store.root(), &names_now)
+    {
+        println!("{line}");
+    }
+    // `.default` bypasses the rotator: say so when it names an overflow profile.
+    if let Ok(Some(d)) = pointer::read(store.root())
+        && names.contains(&d)
+    {
+        println!("default: {d} (overflow; launches use it directly)");
+    }
+    // Issue #1691: a hold leaves the switch as the last cycle, so say it.
+    match pin {
+        super::pin::PinState::None => {}
+        super::pin::PinState::Pinned(n) => println!("hold: {n}"),
+        super::pin::PinState::Missing(n) => println!("hold: {n} (profile missing; ignored)"),
+        super::pin::PinState::Unreadable => println!("hold: unreadable"),
+    }
+    for line in ledger.as_ref().map(status_alerts).unwrap_or_default() {
+        println!("{line}");
+    }
+    if let Some(line) = exhausted::status_line(store.root(), now()) {
+        println!("{}", sanitize_display(&line, false));
+    }
     match rs.load_journal() {
         Ok(Some(j)) if j.phase == Phase::Inconsistent => println!("journal: inconsistent"),
         Ok(Some(j)) => println!("journal: pending (phase {})", j.phase.as_str()),
@@ -72,6 +150,27 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         Err(_) => println!("journal: damaged"),
     }
     println!("log: {}", rs.log.display());
+}
+
+/// The ledger's hand-change guidance as `note:` or `alert:` lines, then a
+/// `warning:` line for each profile in `lost_login` (#1693, #1886). Shows
+/// what the last cycle decided; compares no accounts.
+pub fn status_alerts(l: &RotateLedger) -> Vec<String> {
+    let line = |kind: &str, text: &str| format!("{kind}: {}", sanitize_display(text, false));
+    let alerts = l
+        .guidance
+        .iter()
+        .flatten()
+        .map(|g| match g.strip_prefix("note: ") {
+            Some(note) => line("note", note),
+            None => line("alert", g.strip_prefix("ALERT: ").unwrap_or(g)),
+        });
+    let lost = l
+        .lost_login
+        .iter()
+        .filter_map(|n| ProfileName::parse(n).ok());
+    let warnings = lost.map(|n| line("warning", msg::lost_login(&n).trim_start_matches("ALERT: ")));
+    alerts.chain(warnings).collect()
 }
 
 /// `stop`: SIGTERM to a verified rotator only, then up to 10 seconds for it
@@ -112,8 +211,9 @@ pub fn stop(store: &ProfileStore, home: Option<&Path>) -> Result<(), ProfileErro
     Ok(())
 }
 
-/// Sends SIGTERM to `pid`, verified again after a pidfd pins it on Linux.
+/// SIGTERM to `pid`, verified on the real `/proc` (#2042) after a pidfd pins it on Linux.
 fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
+    let verified = || exe_name().is_some_and(|n| running_on_host(&rs.pid, pid, &n));
     let gone = || {
         daemon_err(format!(
             "the rotator (pid {pid}) changed before it was signalled"
@@ -121,16 +221,15 @@ fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
     };
     #[cfg(target_os = "linux")]
     {
-        use std::os::fd::{FromRawFd, OwnedFd};
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
         // SAFETY: pidfd_open takes a pid and flags and touches no memory.
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
         if fd >= 0 {
             // SAFETY: `fd` is a new descriptor owned by nothing else.
             let fd = unsafe { OwnedFd::from_raw_fd(fd as i32) };
-            if current_state(rs) != DaemonState::Running(pid) {
+            if !verified() {
                 return Err(gone());
             }
-            use std::os::fd::AsRawFd;
             // SAFETY: a valid pidfd, a signal number, no siginfo and no flags.
             let rc = unsafe {
                 libc::syscall(
@@ -148,7 +247,7 @@ fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
             };
         }
     }
-    if current_state(rs) != DaemonState::Running(pid) {
+    if !verified() {
         return Err(gone());
     }
     let pid = libc::pid_t::try_from(pid).map_err(|_| gone())?;
@@ -159,4 +258,143 @@ fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
     } else {
         Err(std::io::Error::last_os_error().into())
     }
+}
+
+/// The `overflow:` value: the marked profiles `names` in list order, each
+/// with its active spend block, or `-`. An unreadable ledger (`Err`) adds
+/// `(blocks unknown)` rather than showing no blocks.
+fn overflow_line(
+    names: &[ProfileName],
+    ledger: Result<Option<&RotateLedger>, &ProfileError>,
+    now: i64,
+) -> String {
+    if names.is_empty() {
+        return "-".into();
+    }
+    let (blocks, unknown) = match ledger {
+        Ok(l) => (l.map(|l| active_blocks(l, now)).unwrap_or_default(), false),
+        Err(_) => (BTreeMap::new(), true),
+    };
+    let line = names
+        .iter()
+        .map(|n| match blocks.get(n.as_str()) {
+            Some(b) => format!("{n} (blocked until {})", timestamp(b.until)),
+            None => n.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if unknown {
+        format!("{line} (blocks unknown)")
+    } else {
+        line
+    }
+}
+
+/// The `on overflow:` value: `yes (<name>, held by switch)` when the pin
+/// names the live overflow profile; `yes (<name>)` when the login identified in
+/// `~/.claude` is an overflow profile and the rotator's last cycle recorded
+/// `overflow=in` or `on` (it found no plan capacity), `no (<name> is
+/// overflow; plan capacity remains)` when it is an overflow profile without
+/// that tag, `no` for a plan profile, `-` when the live profile cannot be
+/// identified. Runs no probe.
+/// The `api key:` line (issue #1700): the API-key profile the tier uses,
+/// `(marked)` or `(not marked)` (issue #1804), with the active API-key
+/// block, or `-`.
+fn api_key_line(
+    store: &ProfileStore,
+    home: Option<&Path>,
+    ledger: Option<&RotateLedger>,
+) -> String {
+    use crate::commands::profile::overflow::{PLATFORM_TIER, tiers_detail};
+    // Issue #1804: the marked one, else the first by name, labelled.
+    let marked = tiers_detail(store, home)
+        .0
+        .into_iter()
+        .find(|e| e.tier == PLATFORM_TIER)
+        .map(|e| e.name);
+    let platforms = crate::commands::profile::kind::Ctx::load(store, home).platform_profiles(store);
+    let (first, label) = match (marked, platforms.into_iter().next()) {
+        (Some(m), _) => (m, "marked"),
+        (None, Some(p)) => (p, "not marked"),
+        (None, None) => return "-".into(),
+    };
+    match ledger.and_then(|l| super::platform_block::active(l, now())) {
+        Some(b) => format!(
+            "{first} ({label}) (blocked until {}, {})",
+            timestamp(b.until),
+            sanitize_display(&b.reason, false)
+        ),
+        None => format!("{first} ({label})"),
+    }
+}
+
+pub(super) fn on_overflow_line(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: Option<&Path>,
+    overflow: &[ProfileName],
+    last_tag: Option<&str>,
+    pin: &super::pin::PinState,
+) -> String {
+    let live = home.and_then(|h| identify::live(store, rs, h).ok());
+    // An API-key login is always billed per token, whatever the last cycle.
+    if let Some((LiveId::Known(n), _)) = &live
+        && rs.load_ledger().ok().flatten().is_some_and(|l| {
+            l.live_kind.as_deref() == Some(super::ledger::LIVE_KIND_PLATFORM)
+                && l.live.as_deref() == Some(n.as_str())
+        })
+    {
+        return format!("yes ({n})");
+    }
+    match live {
+        Some((LiveId::Known(n), _)) if overflow.contains(&n) => {
+            // A pin holds every cycle before the overflow policy runs, so a
+            // `profile switch` onto an overflow profile spends credits until
+            // `profile switch --none`, plan capacity or not.
+            if *pin == super::pin::PinState::Pinned(n.clone()) {
+                format!("yes ({n}, held by switch)")
+            } else if matches!(last_tag, Some("in" | "on")) {
+                format!("yes ({n})")
+            } else {
+                format!("no ({n} is overflow; plan capacity remains)")
+            }
+        }
+        Some((LiveId::Known(_), _)) => "no".into(),
+        _ => "-".into(),
+    }
+}
+
+/// The active spend blocks under `root`, by profile name, with their end
+/// time. Empty when there is no ledger. Takes no lock.
+pub fn overflow_blocks(root: &Path, now: i64) -> Result<BTreeMap<String, i64>, ProfileError> {
+    let l = RotateState::new(root).load_ledger()?;
+    Ok(l.map(|l| {
+        active_blocks(&l, now)
+            .into_iter()
+            .map(|(n, b)| (n, b.until))
+            .collect()
+    })
+    .unwrap_or_default())
+}
+
+/// Removes the spend block for `name` under the rotate state lock, waiting
+/// up to [`CLEAR_LOCK_WAIT`]. `Ok(false)` when there was none. Never creates
+/// the ledger, and never writes it without the lock.
+pub fn clear_overflow_block(root: &Path, name: &ProfileName) -> Result<bool, ProfileError> {
+    let rs = RotateState::new(root);
+    if !crate::commands::profile::auto_switch::kit::exists(&rs.ledger) {
+        return Ok(false);
+    }
+    let state = State::new(root)?;
+    let Some(_lock) = state.try_lock(CLEAR_LOCK_WAIT)? else {
+        return Err(daemon_err("rotator busy, retry"));
+    };
+    let Some(mut l) = rs.load_ledger()? else {
+        return Ok(false);
+    };
+    if l.overflow_blocked.remove(name.as_str()).is_none() {
+        return Ok(false);
+    }
+    rs.save_ledger(&l)?;
+    Ok(true)
 }

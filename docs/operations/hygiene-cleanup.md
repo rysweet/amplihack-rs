@@ -44,6 +44,12 @@ amplihack hygiene cleanup --worktrees --cargo-targets --sessions \
 Without `--apply`, the command prints the candidate actions and exits without
 deleting anything.
 
+To remove what recipe runs leave behind (run temporary folders, worktrees and
+targets that a run recorded, and old recipe and session logs), use
+`amplihack cleanup` instead. It knows which run created each item and whether
+that run's pull request has closed. See
+[Clean Up After Recipe Runs](../howto/clean-up-after-recipe-runs.md).
+
 ## Cleanup categories
 
 | Category flag | Candidates | Always skipped |

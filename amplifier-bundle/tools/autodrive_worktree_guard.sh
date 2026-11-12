@@ -54,7 +54,8 @@
 #           or that bundle lies inside <repo> (this script was itself picked
 #           up from the tree under review).
 #   autodrive_worktree_guard.sh round-guard
-#       A round's step-00: the review-dir check on $REVIEW_DIR and $REPO_PATH,
+#       A round's step-00: the AUTODRIVE_LAUNCH_TOOLS check below, then the
+#       review-dir check on $REVIEW_DIR and $REPO_PATH,
 #       with an empty $REVIEW_DIR refused (there is no default; "." would be
 #       the worktree). Exit 1 with a STOP line. On success prints a stamp of
 #       the review dir's index and HEAD (index-stamp) for index-check.
@@ -65,6 +66,9 @@
 #       stamp records the main checkout as found, so without this a gitlink
 #       an earlier run left staged would become the round's baseline and
 #       every later check would pass against it.
+#   autodrive_worktree_guard.sh round-index-check <dir> <stamp> <step>
+#       A round's step-02b: the AUTODRIVE_LAUNCH_TOOLS check below, then
+#       index-check.
 #   autodrive_worktree_guard.sh index-stamp <dir>
 #       Print one hash of <dir>'s HEAD, current branch and staged entries
 #       (`git ls-files --stage`). It reads; it writes no object.
@@ -95,6 +99,15 @@
 # repository's AGENTS.md and read the other repository's PR of the same number
 # with `gh pr diff N`, and a bare repository's neighbour directory is no
 # checkout at all.
+#
+# AUTODRIVE_LAUNCH_TOOLS (#1543) is the bundle autodrive_loop.sh hands each
+# round as autodrive_launch_tools. The rounds run this script as
+#   bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh" ...
+# so an empty or relative value is looked up under / and never resolves
+# against the working directory, which may be the tree under review. Once
+# running, round-guard and round-index-check refuse with
+# `STOP: autodrive-launch-tools-invalid` unless the value is one absolute line
+# naming the directory that holds this script. The messages never print it.
 #
 # Every refusal names #1528. Exit 2 is a usage error, exit 3 an index-check
 # that could not stamp again. Nothing here writes.
@@ -213,8 +226,22 @@ cmd_review_dir() {
   printf '%s\n' "$root"
 }
 
+check_launch_tools() {
+  local lt="${AUTODRIVE_LAUNCH_TOOLS:-}" here why
+  case "$lt" in
+    *$'\n'*) why="is not a single line" ;;
+    /*) here="$(real "$(dirname -- "${BASH_SOURCE[0]}")")"
+        [ -n "$here" ] && [ "$(real "$lt")" = "$here" ] && return 0
+        why="is not the directory holding this guard" ;;
+    *) why="is empty or not absolute" ;;
+  esac
+  echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS ${why} (#1543, #1528)" >&2
+  exit 1
+}
+
 cmd_round_guard() {
   local rd repo_real links
+  check_launch_tools
   [ -n "${REVIEW_DIR:-}" ] || stop "review_dir is required; the judging agent never starts in the tree under review"
   rd="$(real "$REVIEW_DIR")" || rd=""
   [ -n "$rd" ] || stop "review_dir '${REVIEW_DIR}' is not a directory"
@@ -259,6 +286,7 @@ case "$sub" in
   round-guard) cmd_round_guard ;;
   index-stamp) cmd_index_stamp "$@" ;;
   index-check) cmd_index_check "$@" ;;
+  round-index-check) check_launch_tools; cmd_index_check "$@" ;;
   commit-dir) cmd_commit_dir "$@" ;;
-  *) echo "usage: autodrive_worktree_guard.sh loop-preflight <loop> <repo> <review-dir> <round-recipe> [<context-key>] | review-dir <repo-path> | round-guard | index-stamp <dir> | index-check <dir> <stamp> <step> | commit-dir <pr>" >&2; exit 2 ;;
+  *) echo "usage: autodrive_worktree_guard.sh loop-preflight <loop> <repo> <review-dir> <round-recipe> [<context-key>] | review-dir <repo-path> | round-guard | round-index-check <dir> <stamp> <step> | index-stamp <dir> | index-check <dir> <stamp> <step> | commit-dir <pr>" >&2; exit 2 ;;
 esac

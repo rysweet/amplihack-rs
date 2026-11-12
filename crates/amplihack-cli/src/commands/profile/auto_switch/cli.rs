@@ -1,16 +1,17 @@
 //! `amplihack profile auto-switch …`: the toggle, threshold, exclusions,
 //! `status`, `install` and `repair`.
 
-use super::config::{self, Config, FileState};
+use super::config::{self, ReadMode};
 use super::fsx;
 use super::liveness::{self, Liveness};
 use super::state::{CREDS, Ledger, PHASE_INCONSISTENT, State};
 use super::statusline;
 use super::swap;
-use super::usage::Window;
+use super::usage::{Reading, Window};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
+use crate::commands::profile::{default_live, duplicates, usage_cmd};
 use anyhow::Result;
 use clap::Subcommand;
 use std::fmt::Write as _;
@@ -62,36 +63,22 @@ fn exclude_arg(names: &[String]) -> Result<Vec<ProfileName>, ProfileError> {
         .collect()
 }
 
-/// The current file as a starting point for a key-only rewrite.
-fn editable(root: &std::path::Path) -> Result<Config, ProfileError> {
-    match config::read(root) {
-        FileState::Valid(c) => Ok(c),
-        FileState::Missing => Ok(Config::default()),
-        FileState::Corrupt => Err(ProfileError::AutoSwitchConfig(format!(
-            "{} is unreadable or invalid",
-            config::FILE
-        ))),
-    }
-}
-
 pub fn handle(store: &ProfileStore, cmd: AutoSwitchCommand) -> Result<()> {
     let root = store.root();
     match cmd {
         AutoSwitchCommand::On { threshold, exclude } => {
             let threshold = threshold.as_deref().map(threshold_arg).transpose()?;
             let exclude = exclude.as_deref().map(exclude_arg).transpose()?;
-            let mut c = match config::read(root) {
-                FileState::Valid(c) => c,
-                _ => Config::default(),
-            };
-            c.enabled = true;
-            if let Some(t) = threshold {
-                c.threshold = t;
-            }
-            if let Some(e) = exclude {
-                c.exclude = e;
-            }
-            config::write(root, &c)?;
+            let c = config::update(root, ReadMode::DefaultOnInvalid, |c| {
+                c.enabled = true;
+                if let Some(t) = threshold {
+                    c.threshold = t;
+                }
+                if let Some(e) = exclude {
+                    c.exclude = e;
+                }
+                Ok(())
+            })?;
             println!("auto-switch: on (threshold {}%)", c.threshold);
             warn_env_override(true);
             if let Ok(state) = State::new(root) {
@@ -103,27 +90,27 @@ pub fn handle(store: &ProfileStore, cmd: AutoSwitchCommand) -> Result<()> {
             }
         }
         AutoSwitchCommand::Off => {
-            let mut c = match config::read(root) {
-                FileState::Valid(c) => c,
-                _ => Config::default(),
-            };
-            c.enabled = false;
-            config::write(root, &c)?;
+            config::update(root, ReadMode::DefaultOnInvalid, |c| {
+                c.enabled = false;
+                Ok(())
+            })?;
             println!("auto-switch: off");
             warn_env_override(false);
         }
         AutoSwitchCommand::Threshold { value } => {
             let t = threshold_arg(&value)?;
-            let mut c = editable(root)?;
-            c.threshold = t;
-            config::write(root, &c)?;
+            config::update(root, ReadMode::Editable, |c| {
+                c.threshold = t;
+                Ok(())
+            })?;
             println!("auto-switch threshold: {t}%");
         }
         AutoSwitchCommand::Exclude { names } => {
             let exclude = exclude_arg(&names)?;
-            let mut c = editable(root)?;
-            c.exclude = exclude;
-            config::write(root, &c)?;
+            let c = config::update(root, ReadMode::Editable, |c| {
+                c.exclude = exclude;
+                Ok(())
+            })?;
             println!("auto-switch exclusions: {}", list(&c.exclude));
         }
         AutoSwitchCommand::Status => print!("{}", status(store)?),
@@ -208,6 +195,17 @@ fn cell(w: Option<&Window>, now: i64) -> String {
     }
 }
 
+/// The `5h` cell (issue #1818): `no session window` for a reading with a
+/// week window and no session window, otherwise as [`cell`]. It does not say
+/// `no session limit`: see [`Reading::no_session_window`] for the other
+/// ways a stored reading loses its session window.
+pub(super) fn five_cell(r: Option<&Reading>, now: i64) -> String {
+    match r {
+        Some(r) if r.no_session_window() => "no session window".into(),
+        _ => cell(r.and_then(|r| r.five_hour.as_ref()), now),
+    }
+}
+
 fn ago(observed_at: Option<i64>, now: i64) -> String {
     let Some(t) = observed_at else {
         return "never".into();
@@ -273,6 +271,20 @@ fn status(store: &ProfileStore) -> Result<String> {
         if eff.on { "on" } else { "off" },
         eff.source
     )?;
+    #[cfg(unix)]
+    {
+        let inactive = if eff.on {
+            ""
+        } else {
+            " — inactive (auto-switch off)"
+        };
+        let line = crate::commands::profile::rotate::autostart_line(root);
+        writeln!(out, "{line}{inactive}")?;
+        if !eff.config.overflow.is_empty() {
+            let line = crate::commands::profile::rotate::overflow_gate_line(root);
+            writeln!(out, "{line}")?;
+        }
+    }
     writeln!(out, "threshold: {}%", eff.config.threshold)?;
     writeln!(out, "exclude: {}", list(&eff.config.exclude))?;
     let names = profile_names(store)?;
@@ -300,7 +312,7 @@ fn status(store: &ProfileStore) -> Result<String> {
             }
             Row {
                 name: n.to_string(),
-                five: cell(r.and_then(|r| r.five_hour.as_ref()), now),
+                five: five_cell(r, now),
                 seven: cell(r.and_then(|r| r.seven_day.as_ref()), now),
                 observed: ago(r.map(|r| r.observed_at), now),
                 login,
@@ -323,6 +335,9 @@ fn status(store: &ProfileStore) -> Result<String> {
         }
         Err(_) => writeln!(out, "hosted directories: unknown (ledger unreadable)")?,
     }
+    if let Some(line) = super::affinity::status_line(&state, |t| ago(Some(t), now)) {
+        writeln!(out, "{line}")?;
+    }
     let pending = swap::pending_journal(&state);
     let problem = match &ledger {
         Err(e) => Some(e.to_string()),
@@ -341,6 +356,9 @@ fn status(store: &ProfileStore) -> Result<String> {
         None if pending => writeln!(out, "invariant: pending recovery")?,
         None => writeln!(out, "invariant: ok (every login is in exactly one place)")?,
     }
+    if let Some(line) = crate::commands::profile::rotate::platform_live_line(store.root()) {
+        writeln!(out, "{line}")?;
+    }
     for note in notes(
         store,
         &state,
@@ -356,7 +374,8 @@ fn status(store: &ProfileStore) -> Result<String> {
 }
 
 /// The status notes, in the documented order. Every input is already read;
-/// only the saved and current `oauthAccount` blocks are read here.
+/// only the saved and current `oauthAccount` blocks, `$HOME/.claude.json`
+/// and the rotator ledgers (for the live profile) are read here.
 fn notes(
     store: &ProfileStore,
     state: &State,
@@ -401,22 +420,18 @@ fn notes(
         let gone: Vec<&str> = gone.iter().map(|n| n.as_str()).collect();
         notes.push(format!("excluded but missing: {}", gone.join(", ")));
     }
-    let uuids: Vec<(&ProfileName, String)> = names
+    let home = usage_cmd::home_dir();
+    let live_profile = default_live::live_name(store, home.as_deref());
+    // Issue #1700: API-key profiles share one credential; never duplicates.
+    let kinds = crate::commands::profile::kind::Ctx::load(store, home.as_deref());
+    let names: Vec<ProfileName> = names
         .iter()
-        .filter_map(|n| {
-            let hosting = ledger.is_some_and(|l| l.hosts.contains_key(n.as_str()));
-            swap::account_uuid(state, n.as_str(), hosting).map(|u| (n, u))
-        })
+        .filter(|n| kinds.kind(store, n) != crate::commands::profile::kind::Kind::Platform)
+        .cloned()
         .collect();
-    for (i, (a, ua)) in uuids.iter().enumerate() {
-        for (b, ub) in &uuids[i + 1..] {
-            if ua == ub {
-                notes.push(format!(
-                    "profiles {a} and {b} are signed in to the same account; their readings are not reliable"
-                ));
-            }
-        }
-    }
+    let accounts = duplicates::accounts_with(state, ledger, &names, home.as_deref(), live_profile);
+    notes.extend(duplicates::warnings(Some(state), &accounts));
+    notes.extend(duplicates::record_warnings(Some(state), &accounts));
     notes
 }
 

@@ -28,6 +28,9 @@
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
 
 set -euo pipefail
+# Issue #1764: no git this script runs may wait on a credential prompt.
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
+exec </dev/null
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
@@ -38,7 +41,7 @@ for tool in git jq; do
 done
 [[ -f "${PUBLISH_RECIPE}" ]] || { echo "HARNESS-ERROR: ${PUBLISH_RECIPE} not found" >&2; exit 2; }
 
-WORK="$(mktemp -d -t issue-1060-XXXXXX)"
+WORK="$(cd "$(mktemp -d -t issue-1060-XXXXXX)" && pwd -P)"
 trap 'rm -rf "${WORK}"' EXIT
 
 PASS_COUNT=0
@@ -121,6 +124,8 @@ run_step16() {
         export GH_INVOCATIONS_LOG="${WORK}/gh.log"
         export GH_PR_LIST_RESULT="${pr_list_result}"
         export WORKTREE_SETUP_WORKTREE_PATH="${worktree}"
+        export RECIPE_VAR_worktree_setup__worktree_path="${worktree}"
+        export RECIPE_VAR_worktree_setup="$(jq -nc --arg p "${worktree}" '{worktree_path: $p}')"
         export REMOTE_HOST_TYPE="github"
         export ISSUE_NUMBER="1060"
         export AMPLIHACK_HOME="${REPO_ROOT}"

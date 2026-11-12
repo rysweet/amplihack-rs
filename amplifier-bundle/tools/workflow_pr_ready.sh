@@ -2,9 +2,30 @@
 set -euo pipefail
 
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-PR_URL="${PR_URL:-${RECIPE_VAR_pr_url:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}}"
-PR_NUMBER="${PR_NUMBER:-${RECIPE_VAR_pr_number:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Usage: workflow_pr_ready.sh [--base BRANCH]
+#   --base BRANCH  The base the pull request was opened against: the run's
+#                  base_branch, which step-16 passed to `gh pr create --base`.
+#                  Empty or absent keeps the discovery below (origin/HEAD, then
+#                  origin/main, origin/master, origin/develop), which matches a
+#                  pull request step-16 opened without --base. A set value is
+#                  never replaced by a discovered one
+#                  (docs/reference/workflow-delivery-inputs.md).
+EXPECTED_BASE_INPUT=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --base)
+      [ "$#" -ge 2 ] || { echo "ERROR: workflow_pr_ready.sh: --base needs a value" >&2; exit 2; }
+      EXPECTED_BASE_INPUT="$2"; shift 2 ;;
+    *) echo "ERROR: workflow_pr_ready.sh: unknown argument '$1' (usage: workflow_pr_ready.sh [--base BRANCH])" >&2; exit 2 ;;
+  esac
+done
+if [ -n "$EXPECTED_BASE_INPUT" ] && ! git check-ref-format --branch "$EXPECTED_BASE_INPUT" >/dev/null 2>&1; then
+  printf 'ERROR: workflow_pr_ready.sh: --base %q is not a valid branch name\n' "$EXPECTED_BASE_INPUT" >&2
+  exit 2
+fi
+
 PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${SCRIPT_DIR}/workflow_pr_scope.sh}"
 # workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
 # isCrossRepository, expected_pr_title_prefix, and created_after.
@@ -22,6 +43,13 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 127
 fi
 
+# rv_field <key> <field>: this run's own field from the base RECIPE_VAR_<key> (#1561).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recipe_var.sh" \
+  || { echo "ERROR: workflow_pr_ready.sh: recipe_var.sh not found beside it" >&2; exit 2; }
+
+PR_URL="${RECIPE_VAR_pr_url:-$(rv_field pr_publish_result pr_url)}"
+PR_NUMBER="${RECIPE_VAR_pr_number:-$(rv_field pr_publish_result pr_number)}"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GH_RETRY_HELPER="${WORKFLOW_GH_RETRY_HELPER:-${SCRIPT_DIR}/workflow_gh_retry.sh}"
 if [ ! -f "$GH_RETRY_HELPER" ]; then
@@ -30,6 +58,14 @@ if [ ! -f "$GH_RETRY_HELPER" ]; then
 fi
 # shellcheck source=/dev/null
 . "$GH_RETRY_HELPER"
+GITHUB_REPO_HELPER="${WORKFLOW_GITHUB_REPO_HELPER:-${SCRIPT_DIR}/workflow_github_repo.sh}"
+if [ ! -f "$GITHUB_REPO_HELPER" ] || [ ! -r "$GITHUB_REPO_HELPER" ]; then
+  echo "ERROR: workflow_pr_ready.sh requires the shared GitHub repo identity parser at $GITHUB_REPO_HELPER" >&2
+  exit 2
+fi
+# Defines parse_github_repo_identity (issue #1642).
+# shellcheck source=workflow_github_repo.sh disable=SC1090
+. "$GITHUB_REPO_HELPER"
 
 # Rate-limit-aware retry. This helper both reads (pr view) and MUTATES (pr ready,
 # pr comment); per the workflow contract mutation paths must never fall back to
@@ -41,29 +77,9 @@ gh_with_retry() {
   _gh_retry_core "$label" "$@"
 }
 
-parse_github_repo_identity() {
-  local url="$1" path owner repo
-  case "$url" in
-    git@github.com:*) path="${url#git@github.com:}" ;;
-    ssh://git@github.com/*) path="${url#ssh://git@github.com/}" ;;
-    https://*@github.com/*|http://*@github.com/*) path="${url#*://}"; path="${path#*@github.com/}" ;;
-    https://github.com/*) path="${url#https://github.com/}" ;;
-    http://github.com/*) path="${url#http://github.com/}" ;;
-    *) return 1 ;;
-  esac
-  path="${path%%\?*}"
-  path="${path%%#*}"
-  path="${path%.git}"
-  case "$path" in */*) ;; *) return 1 ;; esac
-  owner="${path%%/*}"
-  repo="${path#*/}"
-  repo="${repo%%/*}"
-  [ -n "$owner" ] && [ -n "$repo" ] || return 1
-  printf '%s/%s\n' "$owner" "$repo"
-}
-
 resolve_expected_base_branch() {
   local candidate
+  if [ -n "$EXPECTED_BASE_INPUT" ]; then printf '%s\n' "$EXPECTED_BASE_INPUT"; return 0; fi
   candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
   for candidate in origin/main origin/master origin/develop; do
@@ -80,7 +96,11 @@ validate_pr_identity_before_mutation() {
     echo "ERROR: refusing to mutate PR '$pr_url'; workflow_pr_ready.sh is not running inside a git worktree" >&2
     return 1
   }
-  current_branch="$(git branch --show-current 2>/dev/null || true)"
+  # #1762: an alias worktree (<B>--wt-<n> tracking origin/<B>) is on <B>.
+  current_branch="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || {
+    echo "ERROR: refusing to mutate PR '$pr_url'; workflow_remote_branch.sh is missing or failed at $SCRIPT_DIR" >&2
+    return 1
+  }
   [ -n "$current_branch" ] || {
     echo "ERROR: refusing to mutate PR '$pr_url'; current branch is empty" >&2
     return 1
@@ -146,7 +166,7 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "INFO: [skip] not a git repo — skipping gh pr ready" >&2
   exit 0
 fi
-current_branch=$(git branch --show-current 2>/dev/null || true)
+current_branch="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || { echo "ERROR: workflow_remote_branch.sh is missing or failed at $SCRIPT_DIR; refusing PR readiness mutation" >&2; exit 1; }
 local_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
 repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
 expected_base="$(resolve_expected_base_branch || true)"
@@ -160,7 +180,7 @@ if [[ "$PR_NUMBER" =~ [^[:space:]] ]] && ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; 
   exit 1
 fi
 
-scoped_issue_id="${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+scoped_issue_id="${RECIPE_VAR_issue_number:-}"
 # issue_number can carry a non-numeric local tracking reference (e.g.
 # local-5d904cff4398) when the workflow fell back to local tracking (#815,
 # #804). PR-scope matching only understands numeric ids, so coerce a

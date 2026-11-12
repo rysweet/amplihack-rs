@@ -847,6 +847,30 @@ await page.getByRole("button", { name: /submit/i }).click(); // CORRECT - semant
 await page.getByRole("textbox", { name: /email/i }).fill("test@example.com"); // CORRECT - accessible
 ```
 
+### Anti-Pattern 4: tmux Without a Private Socket
+
+**DO NOT DO THIS:**
+
+```bash
+TMUX_TMPDIR="$SB/tmuxsock" tmux new-session -d -s tui-under-test ./target/debug/amplihack
+TMUX_TMPDIR="$SB/tmuxsock" tmux kill-server # WRONG - kills the user's server when $TMUX is set
+```
+
+**Why it fails:**
+
+- Inside a tmux pane `$TMUX` names the user's socket, and tmux uses it in preference to `TMUX_TMPDIR`
+- `kill-server` then ends every one of the user's sessions
+- The amplihack PreToolUse hook denies the second command
+
+**Correct approach:**
+
+```bash
+SOCK="$SB/tmux.sock"
+env -u TMUX tmux -f /dev/null -S "$SOCK" new-session -d -s tui-under-test ./target/debug/amplihack
+env -u TMUX tmux -S "$SOCK" capture-pane -p -t tui-under-test
+env -u TMUX tmux -S "$SOCK" kill-server # CORRECT - only the server started on $SOCK
+```
+
 ---
 
 **See also:**

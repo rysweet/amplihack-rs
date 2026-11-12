@@ -69,6 +69,12 @@ bash tests/issue_1483_memory_injection_outside_in.sh target/release/amplihack-ho
 # last line: passed: 26, failed: 0
 ```
 
+## Workflow classification reminder
+
+`amplihack-hooks workflow-classification-reminder` is a separate UserPromptSubmit hook in `crates/amplihack-hooks/src/workflow_classification.rs`. On a new topic it injects the routing prompt, which tells the agent to classify the request and launch dev-orchestrator for development work. It emits nothing for prompts written by a recipe step (`AMPLIHACK_RECIPE_RUN_ID` set), inside nested sessions or active workflows, for explicit `/dev` commands and for follow-up turns.
+
+A prompt that starts with `[coord]` is coordination traffic between sessions and receives a short note instead of the routing prompt, unless its body is a work request that starts with a change verb such as `fix` or `build`. A work request is throttled like the same text without the marker, and receives the note while the throttle holds. A report such as `fix landed on PR 12` or `fix #12 merged` receives the note. See [Coordination Messages](./coordination-messages.md) for the marker rules, the note text and the `last_rule` values recorded in the state file.
+
 ## Hook Signature
 
 **File**: `~/.amplihack/.claude/tools/amplihack/hooks/user_prompt_submit.py`
@@ -98,6 +104,25 @@ bash tests/issue_1483_memory_injection_outside_in.sh target/release/amplihack-ho
   "additionalContext": "string - injected context"
 }
 ```
+
+When no Claude account has capacity left, the output also has a top-level
+`systemMessage` shown to the user, and the context ends with a note telling
+the model to avoid large parallel work:
+
+```json
+{
+  "systemMessage": "⚠ all Claude accounts ≥90% · next reset Oct 22 2am — run 'amplihack profile usage'",
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "...\n\nClaude account capacity is low across all profiles (next reset Oct 22 2am). Avoid launching large parallel workflows, multi-agent fan-out or long recipe runs; prefer small sequential steps."
+  }
+}
+```
+
+It is shown once per state per session, and again when the state gets worse.
+Nested recipe sessions get the context note only, and Codex reads only
+`additionalContext`. See
+[Capacity notice in hooks](hook-specifications.md#capacity-notice-in-hooks).
 
 ## Core API
 
@@ -273,6 +298,10 @@ except Exception as e:
 
 **Never fails** - hook always exits 0 to prevent blocking Claude Code.
 
+The capacity notice follows the same rule: a missing, damaged or unreadable
+capacity file, or any error while checking it, adds nothing and leaves the
+output unchanged.
+
 ## Injection Context Format
 
 When files differ, full AMPLIHACK.md is injected without modification:
@@ -326,6 +355,10 @@ def process(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
 ```
 
 **Order matters**: Preferences → Memories → Framework ensures proper priority.
+
+The capacity note, when due, is added after these parts. It is also added
+when there are no other parts, in which case the hook returns it instead of
+`{}`.
 
 ## Logging and Metrics
 
@@ -471,3 +504,5 @@ See `USER_PROMPT_SUBMIT_README.md` for preference and memory APIs.
 - [Verify Framework Injection](../howto/verify-framework-injection.md) - User guide
 - [Framework Injection Architecture](../concepts/framework-injection-architecture.md) - Design rationale
 - [Hook Configuration Guide](../howto/configure-hooks.md) - Hook system overview
+- [Coordination Messages](coordination-messages.md) - The `[coord]` marker in the workflow classification reminder
+- [Capacity notice in hooks](hook-specifications.md#capacity-notice-in-hooks) - The no-capacity notice and its dedupe

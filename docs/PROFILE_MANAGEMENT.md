@@ -6,7 +6,16 @@ Amplihack's profile system filters which components get staged during installati
 
 Profiles control **file staging** - which files get staged when you run `amplihack install` or `amplihack claude`. Claude Code sees only the filtered files (no runtime awareness needed).
 
-**Key Principle**: Profile switching happens OUTSIDE Claude Code. To change profiles, you must exit Claude, set a new profile, and restart.
+**Key Principle**: Staging profiles are chosen OUTSIDE Claude Code. To change the staging profile, exit Claude, set a new `AMPLIHACK_PROFILE`, and restart.
+
+> **Not the same as login profiles.** This page covers staging profiles
+> (`AMPLIHACK_PROFILE`), which pick the files Claude Code sees. Claude
+> *login* profiles are managed with `amplihack profile`, and
+> `amplihack profile switch <name>` changes the login in `~/.claude`
+> immediately, with no restart; see
+> [Claude login profiles](howto/claude-profiles.md#choose-a-profile). A login
+> profile can also use a Claude Platform API key, billed per token; see
+> [API-key profiles and usage limits](howto/claude-profiles.md#api-key-profiles-and-usage-limits).
 
 User-facing docs use `amplihack claude` as the explicit launcher. `amplihack launch` still works as a compatibility alias.
 
@@ -103,7 +112,7 @@ amplihack claude   # Stages filtered files for this working directory
 # 3. Claude Code sees only filtered components
 # (no profile awareness - just sees what files exist)
 
-# 4. To switch profiles: Exit Claude, change profile, restart
+# 4. To change the staging profile: exit Claude, set AMPLIHACK_PROFILE, restart
 exit  # Exit Claude
 export AMPLIHACK_PROFILE=amplihack://profiles/research
 amplihack claude
@@ -284,9 +293,23 @@ echo $AMPLIHACK_PROFILE
 - Remember: patterns match against file stem (without .md extension)
 - Use wildcards carefully: `"*-analyst"` excludes ALL analyst agents
 
+## Usage readings for login profiles
+
+Staging profiles have no usage figures. For Claude *login* profiles,
+`amplihack profile usage` and the login rotator read each login's session
+and weekly usage from a recent status-line reading or directly from
+Anthropic's OAuth usage endpoint, and start `claude` only when that fails.
+See:
+
+- [Check usage across profiles](howto/claude-profiles.md#check-usage-across-profiles) for the command and its output;
+- [How a profile is probed](reference/profile-command.md#how-a-profile-is-probed) for the reading order, the `source` field, token refresh and the credential guarantees;
+- [When the host is heavily loaded](howto/claude-profile-rotation.md#when-the-host-is-heavily-loaded) for the rotator's settings;
+- [Environment variables](reference/amplihack-env-vars.md) for the `AMPLIHACK_PROFILE_USAGE_*` variables.
+
 ## Related
 
 - [Rotate Claude logins automatically](howto/claude-profile-rotation.md): Claude *login* profiles, not component profiles; keeps `~/.claude` on the account with the most capacity
+- [Resume sessions stopped by a usage limit](howto/claude-profile-rotation.md#resume-sessions-stopped-by-a-usage-limit): the `limit-resume` hook continues a session after the rotator finds a login with capacity, so the tmux limit nudger is no longer needed
 - Issue #1537: Profile staging implementation
 - `~/.amplihack/.claude/profiles/`: Built-in profile configurations
 - `~/.amplihack/.claude/tools/amplihack/profile_management/`: Implementation modules

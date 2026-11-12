@@ -4,95 +4,43 @@
 //! here.
 
 use super::cycle::{self, Ctx, CycleOutcome, LOCK_WAIT, Mode, prototype_guard};
+use super::exhausted::{self, paused};
+use super::inflight::{finish_refreshes, refresh_grace};
 use super::ledger::{LastCycle, RotateState};
 use super::log::{Sink, msg, open_or_warn};
+use super::owner;
 use super::settings::Settings;
 use super::swap::{self, RecoverOutcome};
-use crate::commands::profile::ProfileError;
+/// The process table root (issue #2042), for the rotate readers.
+pub(super) use crate::commands::agent::procfs::proc_root;
 use crate::commands::profile::auto_switch::kit::{
-    Source, State, effective, euid, now, read_bounded_nofollow, recover_auto_switch,
+    State, check_root_private, now, read_bounded_nofollow, recover_auto_switch,
     write_private_atomic,
 };
 use crate::commands::profile::root_config::{ROTATE_ROOT_FILE, config_dir, save};
 use crate::commands::profile::store::{ProfileStore, ROOT_ENV};
 use crate::commands::profile::usage_cmd::{PROBE_CANCEL, sanitize_display};
+use crate::commands::profile::{PROFILE_ENV, ProfileError};
 use std::ffi::OsStr;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const MAX_PID_FILE: usize = 32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DaemonState {
-    Running(u32),
-    Stopped,
-    Stale,
-    Unverifiable,
-}
+pub use amplihack_utils::rotator_status::DaemonState;
+pub(super) use amplihack_utils::rotator_status::running_on_host;
 
 pub(super) fn daemon_err(msg: impl Into<String>) -> ProfileError {
     ProfileError::RotateDaemon(msg.into())
 }
 
-/// A valid pid file: at most 32 bytes of ASCII digits (one trailing newline
-/// allowed) for a pid greater than 1 that is not `own`.
-pub fn parse_pid(bytes: &[u8], own: u32) -> Option<u32> {
-    if bytes.len() > MAX_PID_FILE {
-        return None;
-    }
-    let digits = bytes.strip_suffix(b"\n").unwrap_or(bytes);
-    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
-        return None;
-    }
-    let pid: u32 = std::str::from_utf8(digits).ok()?.parse().ok()?;
-    (pid > 1 && pid != own).then_some(pid)
-}
-
-/// NUL-separated argv holding `profile`, `rotate` and `watch`, whose
-/// `argv[0]` has the file name `exe_name`.
-pub fn is_rotator(cmdline: &[u8], exe_name: &OsStr) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    let mut args = cmdline.split(|&b| b == 0).filter(|a| !a.is_empty());
-    let Some(argv0) = args.next() else {
-        return false;
-    };
-    if Path::new(OsStr::from_bytes(argv0)).file_name() != Some(exe_name) {
-        return false;
-    }
-    let rest: Vec<&[u8]> = args.collect();
-    [&b"profile"[..], b"rotate", b"watch"]
-        .iter()
-        .all(|w| rest.contains(w))
-}
-
-/// Whether `pid` is a rotator owned by this user, per `proc_root`.
-fn verified(proc_root: &Path, pid: u32, exe_name: &OsStr) -> bool {
-    let dir = proc_root.join(pid.to_string());
-    let owned = std::fs::symlink_metadata(&dir).is_ok_and(|m| m.uid() == euid());
-    owned
-        && matches!(read_bounded_nofollow(&dir.join("cmdline"), 64 * 1024),
-            Ok(Some((raw, _))) if is_rotator(&raw, exe_name))
-}
-
 /// The daemon's state from the pid file and `proc_root`. Read-only.
 pub fn state_at(rs: &RotateState, proc_root: &Path, exe_name: &OsStr) -> DaemonState {
-    let raw = match read_bounded_nofollow(&rs.pid, MAX_PID_FILE as u64) {
-        Ok(None) => return DaemonState::Stopped,
-        Ok(Some((raw, _))) => raw,
-        Err(_) => return DaemonState::Stale,
-    };
-    if !proc_root.is_dir() {
-        return DaemonState::Unverifiable;
-    }
-    match parse_pid(&raw, std::process::id()) {
-        Some(pid) if verified(proc_root, pid, exe_name) => DaemonState::Running(pid),
-        _ => DaemonState::Stale,
-    }
+    amplihack_utils::rotator_status::daemon_state(&rs.pid, proc_root, Some(exe_name))
 }
 
-fn exe_name() -> Option<std::ffi::OsString> {
+pub(super) fn exe_name() -> Option<std::ffi::OsString> {
     std::env::current_exe()
         .ok()?
         .file_name()
@@ -101,9 +49,71 @@ fn exe_name() -> Option<std::ffi::OsString> {
 
 pub(super) fn current_state(rs: &RotateState) -> DaemonState {
     match exe_name() {
-        Some(name) => state_at(rs, Path::new("/proc"), &name),
+        Some(name) => state_at(rs, &proc_root(), &name),
         None => DaemonState::Unverifiable,
     }
+}
+
+/// Whether a login rotator is running for the store at `root`: the built-in
+/// daemon, or the external prototype holding `.rotator/lock` (issue #1801).
+/// Any read error is `false`. Writes nothing, but the prototype check takes
+/// and at once releases a non-blocking exclusive `flock` on `.rotator/lock`
+/// when nothing holds it (see [`prototype_guard`]), so a rotator taking that
+/// lock with `LOCK_NB` in the same instant can be refused once.
+pub(in crate::commands::profile) fn running(root: &Path) -> bool {
+    matches!(
+        current_state(&RotateState::new(root)),
+        DaemonState::Running(_)
+    ) || matches!(
+        prototype_guard(root),
+        Err(ProfileError::RotatePrototypeRunning)
+    )
+}
+
+/// Whether a running rotator is rotating logins: [`running`], and auto-switch
+/// is not turned off. A rotator with auto-switch off stays idle (the watch
+/// loop skips every cycle while [`paused`]), so it records no cycle and makes
+/// no swap. This uses the watch loop's own [`paused`] rule, so the two cannot
+/// drift. `paused` is checked first and needs no lock, so with auto-switch
+/// off `.rotator/lock` is not touched. The auto-switch setting is read in the
+/// calling process, environment first, as everywhere else.
+pub(in crate::commands::profile) fn rotating(root: &Path) -> bool {
+    !paused(root) && running(root)
+}
+
+/// Why `start` refuses before it takes the lock, if it does: the external
+/// rotator holds its lock, or the root is not private. Creates nothing.
+pub(super) fn start_refusal(root: &Path) -> Option<ProfileError> {
+    if let Err(e) = prototype_guard(root) {
+        return Some(e);
+    }
+    check_root_private(root)
+        .err()
+        .map(|e| ProfileError::RotateRefused(format!("profile root {e}")))
+}
+
+/// Spawns a rotator with `spawn`, writes `rotate.pid` and records the root.
+/// The caller holds the state lock and has seen the daemon `Stopped` or
+/// `Stale`. Returns the pid and any failure to record the root, which does
+/// not stop the rotator.
+pub(super) fn launch_core(
+    rs: &RotateState,
+    root: &Path,
+    home: &Path,
+    s: &Settings,
+    spawn: &Spawner,
+) -> Result<(u32, Vec<ProfileError>), ProfileError> {
+    let pid = spawn(rs, s, root)?;
+    if let Err(e) = write_private_atomic(&rs.dir, "rotate.pid", format!("{pid}\n").as_bytes()) {
+        // Without a pid file `stop` could never reach it. It is our own
+        // unreaped child, so the pid cannot have been reused.
+        if let Ok(pid) = libc::pid_t::try_from(pid) {
+            // SAFETY: kill has no memory-safety preconditions.
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+        }
+        return Err(e.into());
+    }
+    Ok((pid, record_root(rs, home, root)))
 }
 
 /// `start`: prototype check, recovery under the lock, then `watch` as a
@@ -145,16 +155,7 @@ pub fn start(store: &ProfileStore, home: &Path, s: &Settings) -> Result<(), Prof
         }
         DaemonState::Stopped | DaemonState::Stale => {}
     }
-    let pid = spawn(&rs, s, store.root())?;
-    if let Err(e) = write_private_atomic(&rs.dir, "rotate.pid", format!("{pid}\n").as_bytes()) {
-        // Without a pid file `stop` could never reach it. It is our own
-        // unreaped child, so the pid cannot have been reused.
-        if let Ok(pid) = libc::pid_t::try_from(pid) {
-            // SAFETY: kill has no memory-safety preconditions.
-            unsafe { libc::kill(pid, libc::SIGTERM) };
-        }
-        return Err(e.into());
-    }
+    let (pid, warnings) = launch_core(&rs, store.root(), home, s, &spawn)?;
     println!(
         "rotate: started (pid {pid}), checking every {}s",
         s.interval
@@ -163,7 +164,9 @@ pub fn start(store: &ProfileStore, home: &Path, s: &Settings) -> Result<(), Prof
         "log: {}",
         sanitize_display(&rs.log.display().to_string(), false)
     );
-    record_root(&rs, home, store.root());
+    for e in warnings {
+        eprintln!("warning: could not record the rotator's root: {e}");
+    }
     println!(
         "root: {}",
         sanitize_display(&store.root().display().to_string(), false)
@@ -173,28 +176,47 @@ pub fn start(store: &ProfileStore, home: &Path, s: &Settings) -> Result<(), Prof
 
 /// Records the root a rotator started with, next to its pid file and in
 /// `~/.amplihack/rotate-root`, so `status` and `stop` find it from a shell
-/// whose root resolves elsewhere. The rotator runs either way.
-fn record_root(rs: &RotateState, home: &Path, root: &Path) {
-    for file in [rs.dir.join("root"), config_dir(home).join(ROTATE_ROOT_FILE)] {
-        if let Err(e) = save(&file, root) {
-            eprintln!("warning: could not record the rotator's root: {e}");
-        }
-    }
+/// whose root resolves elsewhere. The rotator runs either way; the failures
+/// are returned for the caller to report.
+fn record_root(rs: &RotateState, home: &Path, root: &Path) -> Vec<ProfileError> {
+    [rs.dir.join("root"), config_dir(home).join(ROTATE_ROOT_FILE)]
+        .iter()
+        .filter_map(|file| save(file, root).err())
+        .collect()
+}
+
+/// What starts the background process: [`spawn`], or a fake in tests.
+pub(super) type Spawner = dyn Fn(&RotateState, &Settings, &Path) -> Result<u32, ProfileError>;
+
+/// The argv after the executable that [`spawn`] gives the daemon:
+/// `profile rotate watch <flags> --spawned`.
+///
+/// `scripts/check-leaked-rotators.sh` finds leaked daemons by the exact
+/// entries `profile`, `rotate`, `watch` and `--spawned`;
+/// `tests_daemon::the_leak_scan_matches_the_argv_spawn_builds` fails if
+/// this argv and the script's patterns drift apart (issue #1690).
+pub(super) fn spawned_args(s: &Settings) -> Vec<String> {
+    let mut args: Vec<String> = ["profile", "rotate", "watch"].map(String::from).into();
+    args.extend(s.to_args(true));
+    args.push("--spawned".into());
+    args
 }
 
 /// Starts `<this exe> profile rotate watch <flags> --spawned` in a new
 /// session with SIGHUP ignored, stdin from `/dev/null` and its stdout and
 /// stderr appended to `rotate.err`, so the log keeps its grammar. No shell;
-/// the child gets no `AMPLIHACK_ROTATE*` variable, and is pinned to `root`
-/// whatever the variable or the saved root say later (issue #1592).
-fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, ProfileError> {
+/// the child gets no `AMPLIHACK_ROTATE*` variable and no profile selection
+/// (`CLAUDE_CONFIG_DIR`, `AMPLIHACK_CLAUDE_PROFILE`) from the launch that
+/// started it, and is pinned to `root` whatever the variable or the saved
+/// root say later (issue #1592). Nor does it get `INVOCATION_ID`, so a
+/// rotator started from a shell inside a systemd unit never claims to be
+/// that unit's owner (issue #1803).
+pub(super) fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, ProfileError> {
     use std::os::unix::process::CommandExt;
     let errors = super::log::RotateLog::open(&rs.err, &rs.err)?;
     let (out, err) = (errors.file()?, errors.file()?);
     let mut cmd = std::process::Command::new(std::env::current_exe()?);
-    cmd.args(["profile", "rotate", "watch"])
-        .args(s.to_args(true))
-        .arg("--spawned")
+    cmd.args(spawned_args(s))
         .stdin(std::process::Stdio::null())
         .stdout(out)
         .stderr(err);
@@ -203,6 +225,9 @@ fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, ProfileErro
             cmd.env_remove(k);
         }
     }
+    cmd.env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove(PROFILE_ENV)
+        .env_remove("INVOCATION_ID");
     cmd.env(ROOT_ENV, root);
     // SAFETY: the closure runs in the child between fork and exec and calls
     // only setsid and signal, which are async-signal-safe.
@@ -219,12 +244,15 @@ fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, ProfileErro
 }
 
 /// `watch`: cycles every `interval` seconds until SIGTERM or SIGINT. Never
-/// acts on a signal while holding the lock.
+/// acts on a signal while holding the lock. A watch that is not `--spawned`
+/// and is supervised (`--supervised[=UNIT]` or `INVOCATION_ID`) records
+/// itself as the rotation owner (issue #1803); no watch removes the marker.
 pub fn watch(
     store: &ProfileStore,
     home: PathBuf,
     s: Settings,
     spawned: bool,
+    supervised: Option<Option<String>>,
 ) -> Result<(), ProfileError> {
     let rs = RotateState::new(store.root());
     let stop = PROBE_CANCEL.clone();
@@ -248,11 +276,42 @@ pub fn watch(
             "rotate.pid",
             format!("{}\n", std::process::id()).as_bytes(),
         )?;
+        let env = |k: &str| std::env::var_os(k);
+        let proc_root = proc_root();
+        if owner::supervised(&supervised, &env, &proc_root) {
+            let flag = supervised.as_ref().and_then(|f| f.as_deref());
+            let m = owner::Marker {
+                unit: owner::unit_name(flag, &proc_root),
+                pid: std::process::id(),
+                since: Some(now()),
+            };
+            if let Err(e) = owner::write(store.root(), &m) {
+                log_line(&rs, &format!("skip: owner marker not written ({e})"));
+            }
+        } else if let Some(note) = owner::watch_note(store.root()) {
+            eprintln!("{note}");
+        }
     }
-    let mut ctx = Ctx::new(store.clone(), home, s);
+    // Auto-switch reads its overflow gate from this record, so it applies
+    // this rotator's flags, not its own environment. Without the record it
+    // uses no overflow at all.
+    if let Err(e) = super::gate_record::write(&rs, std::process::id(), &s) {
+        log_line(
+            &rs,
+            &format!("overflow: gate not recorded, auto-switch will not use overflow ({e})"),
+        );
+    }
+    let archive_home = home.clone();
+    let mut ctx = Ctx::new(store.clone(), home, s).with_rereads();
     ctx.stop = Some(stop.clone());
+    // Issue #1844: reads that outlast a cycle are used by the next one.
+    let (probe_secs, _) = crate::commands::profile::probe_limits::timeout_from_env(None);
+    let probe_timeout = Duration::from_secs(probe_secs);
+    ctx.in_flight = Some(std::sync::Mutex::new(super::inflight::InFlight::new(
+        super::inflight::max_age(probe_timeout),
+    )));
     let mut idle = false;
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::SeqCst) {
         if !paused(store.root()) {
             idle = false;
             match cycle::run_cycle(&mut ctx, Mode::Watch) {
@@ -265,21 +324,28 @@ pub fn watch(
             log_line(&rs, msg::IDLE);
             record_idle(&rs, store);
         }
+        // Every paused cycle, not once per idle latch; changes nothing.
+        if let Some(line) = exhausted::watch_line(store.root(), now()) {
+            log_line(&rs, &line);
+        }
+        super::sessions_daily::tick(&rs, &archive_home, now(), &stop);
         let until = Instant::now() + Duration::from_secs(s.interval);
-        while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+        while Instant::now() < until && !stop.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_secs(1).min(until - Instant::now()));
         }
     }
+    // SR-9: `stop` is `PROBE_CANCEL`, already set here. A refresh counts
+    // itself before it reads that flag and backs out if it is set, so once
+    // the count reaches zero no refresh can take a lock. Any that counted
+    // in time is let finish, so the lock is never left behind.
+    if !finish_refreshes(refresh_grace(probe_timeout)) {
+        log_line(
+            &rs,
+            "stop: a token refresh was still running; remove .oauth_refresh.lock if it stays",
+        );
+    }
     remove_own_pid(&rs);
     Ok(())
-}
-
-/// Whether auto-switch has been turned off (by its settings file or
-/// `AMPLIHACK_CLAUDE_AUTO_SWITCH=0`), or its settings file is damaged.
-/// Without any setting, rotation runs.
-fn paused(root: &Path) -> bool {
-    let eff = effective(root);
-    !eff.on && eff.source != Source::Default
 }
 
 /// The log line for a cycle that failed: a refused swap is an ALERT.
@@ -291,7 +357,7 @@ fn failure(e: &ProfileError) -> String {
     }
 }
 
-fn log_line(rs: &RotateState, line: &str) {
+pub(super) fn log_line(rs: &RotateState, line: &str) {
     match rs.ensure() {
         Ok(()) => Sink::new(open_or_warn(&rs.log, &rs.log1), false, true).emit(now(), line),
         Err(e) => eprintln!("warning: rotate log unavailable ({e}): {line}"),
@@ -309,7 +375,9 @@ fn record_idle(rs: &RotateState, store: &ProfileStore) {
         let mut l = l.unwrap_or_default();
         l.last_cycle = Some(LastCycle {
             at: now(),
+            measured_at: None,
             outcome: "idle".into(),
+            overflow: None,
         });
         if let Err(e) = rs.save_ledger(&l) {
             log_line(rs, &format!("skip: could not record the idle cycle: {e}"));

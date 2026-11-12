@@ -30,7 +30,9 @@
 # Usage:
 #   workflow_terminal_evidence.sh collect [--repo O/R] [--head REF] [--base REF]
 #       [--head-sha SHA] [--pr-url URL] [--pr-number N] [--created-after TIME]
-#   workflow_terminal_evidence.sh collect-for-step        (recipe wrapper for collect)
+#   workflow_terminal_evidence.sh collect-for-step [--base REF]
+#       (recipe wrapper for collect; --base is the run's base_branch, and an
+#       empty value keeps the origin/HEAD discovery)
 #   workflow_terminal_evidence.sh verdict-token          (recipe wrapper: prose -> token)
 #   workflow_terminal_evidence.sh adjudicate [--evidence JSON | --evidence-file F | -]
 #       [--agent-verdict TOKEN] [--scope-reason REASON] [--report-only]
@@ -106,6 +108,14 @@ if [ -f "$GH_RETRY_HELPER" ]; then
   # shellcheck source=/dev/null
   . "$GH_RETRY_HELPER"
 fi
+GITHUB_REPO_HELPER="${WORKFLOW_GITHUB_REPO_HELPER:-${SCRIPT_DIR}/workflow_github_repo.sh}"
+if [ ! -f "$GITHUB_REPO_HELPER" ] || [ ! -r "$GITHUB_REPO_HELPER" ]; then
+  echo "ERROR: workflow_terminal_evidence.sh requires the shared GitHub repo identity parser at $GITHUB_REPO_HELPER" >&2
+  exit 2
+fi
+# Defines parse_github_repo_identity (issue #1642).
+# shellcheck source=workflow_github_repo.sh disable=SC1090
+. "$GITHUB_REPO_HELPER"
 
 gh_read() {
   local label="$1"; shift
@@ -114,23 +124,6 @@ gh_read() {
   else
     gh "$@"
   fi
-}
-
-parse_github_repo_identity() {
-  local url="$1" path owner repo
-  case "$url" in
-    git@github.com:*) path="${url#git@github.com:}" ;;
-    ssh://git@github.com/*) path="${url#ssh://git@github.com/}" ;;
-    https://*@github.com/*|http://*@github.com/*) path="${url#*://}"; path="${path#*@github.com/}" ;;
-    https://github.com/*) path="${url#https://github.com/}" ;;
-    http://github.com/*) path="${url#http://github.com/}" ;;
-    *) return 1 ;;
-  esac
-  path="${path%%\?*}"; path="${path%%#*}"; path="${path%.git}"
-  case "$path" in */*) ;; *) return 1 ;; esac
-  owner="${path%%/*}"; repo="${path#*/}"; repo="${repo%%/*}"
-  [ -n "$owner" ] && [ -n "$repo" ] || return 1
-  printf '%s/%s\n' "$owner" "$repo"
 }
 
 resolve_base_ref() {
@@ -157,7 +150,9 @@ collect() {
   if [ -z "$REPO" ]; then
     REPO="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" 2>/dev/null || true)"
   fi
-  [ -n "$HEAD_REF" ] || HEAD_REF="$(git branch --show-current 2>/dev/null || true)"
+  # #1762: an alias worktree (<B>--wt-<n> tracking origin/<B>) looks up <B>.
+  # A missing resolver leaves HEAD_REF empty, so the verdict is UNCERTAIN.
+  [ -n "$HEAD_REF" ] || HEAD_REF="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || HEAD_REF=""
   [ -n "$HEAD_SHA" ] || HEAD_SHA="$(git rev-parse --verify HEAD 2>/dev/null || true)"
   [ -n "$BASE_REF" ] || BASE_REF="$(resolve_base_ref 2>/dev/null || true)"
 
@@ -447,13 +442,17 @@ adjudicate() {
   esac
 }
 
+# rv_field <key> <field>: this run's own field from the base RECIPE_VAR_<key> (#1561).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recipe_var.sh" \
+  || { echo "ERROR: workflow_terminal_evidence.sh: recipe_var.sh not found beside it" >&2; exit 2; }
+
 # Recipe-facing wrappers (issue #1268). These keep the recipe steps to a couple
 # of lines each: the env-variable precedence and the fail-soft fallbacks live
 # here, next to the logic they feed, instead of being duplicated across recipes.
 collect_for_step() {
   local pr_url pr_number
-  pr_url="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
-  pr_number="${PR_NUMBER:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}"
+  pr_url="${RECIPE_VAR_pr_url:-$(rv_field pr_publish_result pr_url)}"
+  pr_number="${RECIPE_VAR_pr_number:-$(rv_field pr_publish_result pr_number)}"
   [ "$pr_url" = "''" ] && pr_url=""
   PR_URL="$pr_url"
   case "$pr_number" in ''|"''"|*[!0-9]*) PR_NUMBER="" ;; *) PR_NUMBER="$pr_number" ;; esac
@@ -468,7 +467,7 @@ collect_for_step() {
 # as "no judgement offered" and which therefore lifts nothing on its own.
 verdict_token() {
   local narrative token
-  narrative="${TERMINAL_ADJUDICATION_NARRATIVE:-${RECIPE_VAR_terminal_adjudication_narrative:-}}"
+  narrative="${RECIPE_VAR_terminal_adjudication_narrative:-}"
   token="$(printf '%s\n' "$narrative" \
     | grep -Eo '^[[:space:]]*TERMINAL_VERDICT:[[:space:]]*[A-Za-z_]+' \
     | tail -1 \

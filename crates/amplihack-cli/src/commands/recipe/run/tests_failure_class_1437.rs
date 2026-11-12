@@ -545,6 +545,46 @@ fn termination_status_is_read_only_from_the_runners_error_envelope() {
     }
 }
 
+/// recipe-runner-rs `90286bc` writes the step id in its envelope through
+/// `escape_debug` (`diagnostic_identifier`). A guard refusal in a step whose id
+/// needs escaping must still be read as exit 79, and the raw form an older
+/// runner wrote must still decode.
+#[test]
+fn the_envelope_is_decoded_with_the_runners_escaped_step_id() {
+    let id = "say \"hi\" \\ there";
+    let escaped: String = id.escape_debug().collect();
+    assert_ne!(
+        escaped, id,
+        "the id must need escaping for this test to mean anything"
+    );
+    for (error, code) in [
+        (
+            format!("Step '{escaped}' failed: bash step failed: Command failed (exit 79): refused"),
+            Some(79),
+        ),
+        (
+            format!("Step '{id}' failed: bash step failed: Command failed (exit 79): refused"),
+            Some(79),
+        ),
+        (
+            format!(
+                "Step '{escaped}' failed: agent step failed: amplihack claude failed (exit 1)\nq"
+            ),
+            Some(1),
+        ),
+        (
+            "Step 'say' failed: bash step failed: Command failed (exit 79): refused".to_string(),
+            None,
+        ),
+    ] {
+        assert_eq!(
+            failed(id, &error, &[]).termination_exit_code(),
+            code,
+            "{error}"
+        );
+    }
+}
+
 #[test]
 fn a_completed_step_with_exit_79_does_not_refuse_the_run() {
     let mut done = completed("step-01", GUARD_LINE);

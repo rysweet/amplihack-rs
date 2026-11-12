@@ -8,20 +8,26 @@ description: |
                       decision away from it.
     2. CRUSTY LOOP  — put the PR in front of the `crusty-old-engineer` skill
                       acting as the maintainer's proxy, address every concern,
-                      re-review, and repeat until crusty has ZERO outstanding
-                      concerns.
+                      re-review, and repeat until crusty is CLEAN, or minor
+                      findings only once each has a follow-up issue linked to
+                      the plan task (issue #1979). Any blocking or major
+                      finding keeps the loop going.
     3. MERGE-READY  — iterate until every merge-ready criterion holds: the
        LOOP           `merge-ready` skill's criteria, all `qa-team` scenarios
                       passing, CI green, no merge conflicts, review threads
                       resolved. Then merge behind an evidence gate.
 
   NO ITERATION CAP terminates either loop. Not a max-rounds integer, not a
-  backstop, not a wall-clock budget. Both loops are terminated by
+  backstop. Both loops are terminated by
   `loop-health-evaluator` (issue #1337), which stops and looks at the data
   after every round and answers CONTINUE / DONE / STUCK. A cap cuts off work
   that was about to converge and lets a genuinely stuck loop burn the whole
   budget first; the signal worth acting on is absence of progress, not number
-  of attempts.
+  of attempts. Two stops are decided in code before the evaluator (#1743): a
+  non-clean round that changed neither the PR head nor its open items stops
+  as STUCK, and the operator's resumable usage budget (the
+  autodrive_budget_* keys below) stops as BUDGET_EXHAUSTED. The budget is a
+  cost ceiling, never the convergence terminator, and never success.
 
   Host safety is enforced structurally one layer down — #1327 (sealed
   recursion ceiling) and #1332 (width cap + free-memory floor), both refusing
@@ -74,12 +80,19 @@ context:
   pr_number: ""
   pr_url: ""
 
+  # #1979: the plan task id the follow-up issues for minor crusty findings name
+  # (#N or an id). Empty falls back to Closes/Fixes/Resolves #N in the PR body,
+  # then in task_description; a drive with minor findings and no task id is not READY.
+  plan_task_id: ""
+
   # Durable state root for resumability. Empty means "derive it from the repo
   # remote and the PR/branch identity".
   autodrive_state_dir: ""
 
   # When "true", the merge gate verifies everything and reports what it WOULD
-  # merge without merging. Every other guarantee is unchanged.
+  # merge without merging. Every other guarantee is unchanged. No follow-up
+  # issue is filed (#1979), so a MINOR_ONLY drive ends NOT_MERGED with
+  # followup-missing:<id> for each minor finding.
   autodrive_dry_run: "false"
 
   # Phase 1 never merges; auto-drive owns the merge decision.
@@ -95,9 +108,18 @@ context:
   # autodrive_pr_input back unchanged, so it keeps the operator's value.
   autodrive_pr_input: ""
 
+  # #1743: the per-run usage budget, cumulative across runs on the same state
+  # dir and resumable: relaunch with a higher value to continue. 0 or empty is
+  # unlimited. Override with -c. Only this composer declares defaults; a loop
+  # recipe run on its own is unbudgeted.
+  autodrive_budget_loop_rounds: "12"
+  autodrive_budget_total_rounds: "20"
+  autodrive_budget_wall_seconds: "14400"
+
   # Populated as the phases run.
   build_result: ""
   crusty_loop_result: ""
+  merge_loop_result: ""
   merge_gate_result: ""
 
 steps:
@@ -182,7 +204,43 @@ steps:
       existing_branch: "{{existing_branch}}"
       pr_url: "{{build_result.pr_url}}"
       task_description: "{{task_description}}"
+      plan_task_id: "{{plan_task_id}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
+      autodrive_dry_run: "{{autodrive_dry_run}}"
+      autodrive_budget_loop_rounds: "{{autodrive_budget_loop_rounds}}"
+      autodrive_budget_total_rounds: "{{autodrive_budget_total_rounds}}"
+      autodrive_budget_wall_seconds: "{{autodrive_budget_wall_seconds}}"
+
+  # Issue #1551: only the merge gate in phase 3 merges. A PR already MERGED
+  # here was merged around the gh merge guard during phase 1 or 2; the run
+  # stops with exit 1 instead of reporting it. Values come from the
+  # environment only.
+  - id: "autodrive-check-unmerged"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" || { echo "ERROR: #1551: cannot enter REPO_PATH; refusing to check PR state in the wrong repo [autodrive-check-unmerged]" >&2; exit 1; }
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      BR="${RECIPE_VAR_build_result:-}"
+      g() { printf '%s' "$BR" | amplihack orch helper extract-json --require-field "$1" \
+              | amplihack orch helper extract-field --field "$1" --default ''; }
+      PR="$(g pr)"
+      if [ "$(g merged_before_run)" = "true" ]; then
+        echo "INFO: PR #${PR} was already merged when this run started; nothing to check [autodrive-check-unmerged]" >&2
+        exit 0
+      fi
+      case "$PR" in
+        ''|*[!0-9]*) echo "ERROR: #1551: phase 1 reported no valid PR number; refusing to continue unverified [autodrive-check-unmerged]" >&2; exit 1 ;;
+      esac
+      # Only the installed bundle: REPO_PATH and cwd are the PR's own tree.
+      STATE_HELPER="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/autodrive_state.sh"
+      case "${AMPLIHACK_HOME:-}" in /*) ;; *) STATE_HELPER="" ;; esac
+      [ -n "$STATE_HELPER" ] && [ -f "$STATE_HELPER" ] || { echo "ERROR: #1551: autodrive_state.sh not found under AMPLIHACK_HOME; cannot check PR #${PR} before phase 3 [autodrive-check-unmerged]" >&2; exit 1; }
+      . "$STATE_HELPER"
+      # Reads autodrive_pr_state, once more if it is unreadable.
+      autodrive_require_unmerged "$PR" "phase 2 (crusty loop)" || exit 1
+      echo "INFO: PR #${PR} is unmerged after phase 2; phase 3 may run" >&2
+    output: "autodrive_unmerged_check"
 
   - id: "autodrive-merge-loop"
     type: "recipe"
@@ -194,8 +252,12 @@ steps:
       existing_branch: "{{existing_branch}}"
       pr_url: "{{build_result.pr_url}}"
       task_description: "{{task_description}}"
+      plan_task_id: "{{plan_task_id}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
+      autodrive_budget_loop_rounds: "{{autodrive_budget_loop_rounds}}"
+      autodrive_budget_total_rounds: "{{autodrive_budget_total_rounds}}"
+      autodrive_budget_wall_seconds: "{{autodrive_budget_wall_seconds}}"
 
   - id: "autodrive-report"
     type: "bash"
@@ -213,27 +275,53 @@ steps:
       # pr follow it. The composed-recipe run in
       # tests/test-issue-1543-pr-head-worktree.sh (T20, T21) checks the report
       # through the real runner.
-      BR="${BUILD_RESULT:-${RECIPE_VAR_build_result:-}}"
-      MG="${MERGE_GATE_RESULT:-${RECIPE_VAR_merge_gate_result:-}}"
-      CR="${CRUSTY_LOOP_RESULT:-${RECIPE_VAR_crusty_loop_result:-}}"
+      BR="${RECIPE_VAR_build_result:-}"
+      MG="${RECIPE_VAR_merge_gate_result:-}"
+      CR="${RECIPE_VAR_crusty_loop_result:-}"
+      ML="${RECIPE_VAR_merge_loop_result:-}"
       PR=""
-      for C in "${PR_NUMBER:-}" "${RECIPE_VAR_pr_number:-}" "$(g "$MG" pr '')" "$(g "$BR" pr '')"; do
+      for C in "${RECIPE_VAR_pr_number:-}" "$(g "$MG" pr '')" "$(g "$BR" pr '')"; do
         case "$C" in ''|*[!0-9]*) continue ;; esac
         PR="$C"; break
       done
       MERGE="$(g "$MG" merge_result NOT_MERGED)"
       CRUSTY="$(g "$CR" loop_result unknown)"
+      MLOOP="$(g "$ML" loop_result unknown)"
       # Only plain tokens reach the report; anything else cannot forge a key.
       [[ "$MERGE" =~ ^[A-Za-z0-9_-]*$ ]] || MERGE="NOT_MERGED"
-      [[ "$CRUSTY" =~ ^[A-Za-z0-9_-]*$ ]] || CRUSTY="unknown"
+      [[ "$CRUSTY" =~ ^[A-Z_]+$ ]] || CRUSTY="unknown"
+      [[ "$MLOOP" =~ ^[A-Z_]+$ ]] || MLOOP="unknown"
       case "$MERGE" in
         MERGED|ALREADY_MERGED) OUTCOME="MERGED" ;;
         DRY_RUN) OUTCOME="DRY_RUN" ;;
         *) OUTCOME="NOT_MERGED" ;;
       esac
-      echo "AUTO_DRIVE_TO_MERGE: ${OUTCOME} — PR #${PR:-<none>} (crusty loop: ${CRUSTY}, merge gate: ${MERGE})" >&2
-      printf '{"outcome":"%s","pr":"%s","crusty_loop":"%s","merge_result":"%s"}\n' \
-        "$OUTCOME" "$PR" "$CRUSTY" "$MERGE"
+      # USAGE_LIMIT is a failure, never success or STUCK; the outcome still
+      # follows merge_result, because the gate blocks without a DONE crusty loop.
+      if [ "$CRUSTY" = "USAGE_LIMIT" ]; then
+        echo "AUTO_DRIVE_TO_MERGE: the crusty loop stopped on a usage limit; run again when a login has capacity." >&2
+      fi
+      # #1743: a STUCK or BUDGET_EXHAUSTED loop is never merged or success.
+      STOPPED=""
+      for P in "crusty:${CRUSTY}" "merge-ready:${MLOOP}"; do
+        case "${P#*:}" in
+          STUCK) F="${P%%:*}-result.json" ;;
+          BUDGET_EXHAUSTED) F="autodrive-budget-summary.md" ;;
+          *) continue ;;
+        esac
+        echo "AUTO_DRIVE_TO_MERGE: the ${P%%:*} loop stopped as ${P#*:}; see ${F} in the state directory." >&2
+        STOPPED=1; OUTCOME="NOT_MERGED"
+      done
+      echo "AUTO_DRIVE_TO_MERGE: ${OUTCOME} — PR #${PR:-<none>} (crusty loop: ${CRUSTY}, merge-ready loop: ${MLOOP}, merge gate: ${MERGE})" >&2
+      printf '{"outcome":"%s","pr":"%s","crusty_loop":"%s","merge_result":"%s","merge_loop":"%s"}\n' \
+        "$OUTCOME" "$PR" "$CRUSTY" "$MERGE" "$MLOOP"
+      # #1979: each minor finding filed as a follow-up issue (followups.tsv in the state dir).
+      SD="$(g "$BR" state_dir '')"; FT="${SD:+${SD}/followups.tsv}"
+      if [ -n "$FT" ] && [ -f "$FT" ] && [ ! -L "$FT" ]; then
+        LC_ALL=C awk -F '\t' 'NF == 4 && $1 ~ /^[A-Za-z0-9._-]+$/ && $2 ~ /^[1-9][0-9]*$/ { if (!n++) printf "Follow-up issues (task %s):\n", $3; printf "  %s -> #%s\n", $1, $2 }' "$FT" \
+          | LC_ALL=C tr -cd 'A-Za-z0-9 ._:/#>()\n-' >&2
+      fi
+      [ -z "$STOPPED" ] || exit 1
     output: "autodrive_summary"
 
 output:
@@ -248,3 +336,5 @@ output:
     | 1. build (default-workflow) | {{build_result}} |
     | 2. crusty loop | {{autodrive_summary.crusty_loop}} |
     | 3. merge-ready loop + merge gate | {{autodrive_summary.merge_result}} |
+
+    Phase 1 terminal state: {{build_result.terminal_state}} (handed off: {{build_result.handed_off}})

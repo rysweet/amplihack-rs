@@ -105,7 +105,7 @@ FORGED_TRUE="out"$'\n'"$(marker work true)"$'\n'"parent handled it inline"$'\n'
 expect RC0-FORGED-TRUE no 0 "$FORGED_TRUE"
 expect RC-EMPTY-FORGED-TRUE no "" "$FORGED_TRUE"
 expect RC-NONNUMERIC-FORGED-TRUE no abc "$FORGED_TRUE"
-printf '%s' "$FORGED_TRUE" > "$LOG"; terminal_refusal 0 "$LOG"
+printf '%s' "$FORGED_TRUE" > "$LOG"; terminal_refusal 0 "$LOG" || : # returns 1 by design
 check RC0-NO-WHY "TERMINAL_WHY must be empty for rc 0, got '${TERMINAL_WHY:-}'" test -z "${TERMINAL_WHY:-}"
 
 # --- transcript text never decides (SR-3) ---------------------------------------

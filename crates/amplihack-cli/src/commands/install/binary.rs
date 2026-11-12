@@ -2,6 +2,7 @@
 
 use super::InstallMode;
 use super::paths::{find_binary, home_dir, is_executable};
+use super::release_layout::{self, ReleaseTxn};
 use super::version_stamp::{VersionRelation, relation};
 use anyhow::{Context, Result, bail};
 use std::fs;
@@ -125,9 +126,19 @@ const SELF_BIN: &str = "amplihack";
 const RESOLVER_BIN: &str = "amplihack-asset-resolver";
 
 /// Whether `path` is one of the binaries [`deploy_binaries`] writes into
-/// `bin_dir`.
+/// `bin_dir`, or one of their copies inside a release (issue #1954).
 pub(super) fn is_deployed_binary(path: &Path, bin_dir: &Path) -> bool {
-    path.parent() == Some(bin_dir)
+    let in_dir = path.parent() == Some(bin_dir)
+        || path.parent().is_some_and(|parent| {
+            parent.file_name().is_some_and(|n| n == "bin")
+                && home_dir().is_ok_and(|home| {
+                    release_layout::is_release_path(
+                        &release_layout::releases_dir(&home.join(".amplihack")),
+                        parent,
+                    )
+                })
+        });
+    in_dir
         && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
             [HOOKS_BIN, SELF_BIN, RESOLVER_BIN]
                 .iter()
@@ -135,18 +146,90 @@ pub(super) fn is_deployed_binary(path: &Path, bin_dir: &Path) -> bool {
         })
 }
 
-/// Copy the Rust binaries to `~/.local/bin` with 0o755 perms.
-/// Emits a PATH advisory if `~/.local/bin` is not in `$PATH`.
-/// Returns the paths for the manifest, the hooks binary always first (even
-/// when an implicit re-stage kept the installed one), and the installed
-/// binaries an implicit re-stage kept.
+/// A new release for this build under `~/.amplihack/releases` (issue #1954).
+pub(super) fn new_release_txn() -> Result<ReleaseTxn> {
+    let amplihack_dir = home_dir()?.join(".amplihack");
+    ReleaseTxn::allocate(&amplihack_dir, crate::VERSION)
+}
+
+/// Commits `txn` and turns a failed link switch into an error naming the
+/// link. Nothing is rolled back: every link still names a complete release.
+pub(super) fn commit_release(txn: ReleaseTxn) -> Result<release_layout::SwitchReport> {
+    let root = txn.root().to_path_buf();
+    let report = txn.commit()?;
+    if let Some((link, reason)) = &report.failed {
+        bail!(
+            "release {} is complete but switching {} to it failed: {reason}. The links \
+             already switched stay on the new release; run `amplihack install` again to \
+             switch the rest",
+            root.display(),
+            link.display()
+        );
+    }
+    Ok(report)
+}
+
+/// Deploys the binaries into a release of their own and switches their links.
+/// See [`deploy_binaries_into`].
+#[cfg(test)]
 pub(super) fn deploy_binaries(
     mode: InstallMode,
     stamp: Option<&str>,
 ) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
-    use super::filesystem::deploy_binary;
+    let mut txn = new_release_txn()?;
+    let deployed = deploy_binaries_into(&mut txn, mode, stamp)?;
+    commit_release(txn)?;
+    print_path_conflict_advisory();
+    Ok(deployed)
+}
 
-    let home = home_dir()?;
+/// Copies one binary into the release and plans the link `dst` to it.
+///
+/// Issue #1954: the installed file at `dst` is never rewritten. The new copy
+/// goes into `txn`'s `bin/`, and `dst` becomes a symlink to it when the
+/// release commits, so a process already running the old binary keeps it.
+/// A source that no longer exists (an update replaced it under a running
+/// process, #524) with `dst` present leaves `dst` as it is.
+pub(super) fn stage_binary(txn: &mut ReleaseTxn, src: &Path, dst: &Path) -> Result<bool> {
+    if let Err(e) = src.metadata()
+        && e.kind() == std::io::ErrorKind::NotFound
+    {
+        if dst.is_file() {
+            return Ok(false);
+        }
+        return Err(e).with_context(|| format!("source binary not found: {}", src.display()));
+    }
+    let name = dst
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("destination has no file name: {}", dst.display()))?;
+    let bin_dir = txn.bin_dir();
+    fs::create_dir_all(&bin_dir)
+        .with_context(|| format!("failed to create {}", bin_dir.display()))?;
+    let staged = bin_dir.join(name);
+    fs::copy(src, &staged)
+        .with_context(|| format!("failed to copy {} to {}", src.display(), staged.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))
+            .with_context(|| format!("failed to chmod {}", staged.display()))?;
+    }
+    txn.plan_link(dst, &staged)?;
+    Ok(true)
+}
+
+/// Copy the Rust binaries into `txn`'s `bin/` with 0o755 perms and plan the
+/// `~/.local/bin` links to them (issue #1954).
+/// Emits a notice if `~/.local/bin` is not in `$PATH`. The PATH conflict
+/// advisory is [`print_path_conflict_advisory`], run after the commit.
+/// Returns the link paths for the manifest, the hooks binary always first
+/// (even when an implicit re-stage kept the installed one), and the installed
+/// binaries an implicit re-stage kept. A kept slot plans no link.
+pub(super) fn deploy_binaries_into(
+    txn: &mut ReleaseTxn,
+    mode: InstallMode,
+    stamp: Option<&str>,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     let local_bin = super::paths::preferred_user_bin_dir()?;
     fs::create_dir_all(&local_bin)
         .with_context(|| format!("failed to create {}", local_bin.display()))?;
@@ -166,7 +249,7 @@ pub(super) fn deploy_binaries(
     let mut kept = Vec::new();
     match hooks_src {
         Some(hooks_src) if may_deploy(mode, stamp, &hooks_src, &hooks_dst) => {
-            deploy_binary(&hooks_src, &hooks_dst).with_context(|| {
+            stage_binary(txn, &hooks_src, &hooks_dst).with_context(|| {
                 format!(
                     "failed to deploy {} to {}",
                     hooks_src.display(),
@@ -179,22 +262,29 @@ pub(super) fn deploy_binaries(
 
     let mut deployed = vec![hooks_dst.clone()];
 
-    // Also copy self (the amplihack binary) and the asset-resolver into
-    // ~/.local/bin. These copies are best-effort: a failure here must NOT
-    // abort the framework-asset (agents/skills/context) refresh that follows
-    // (issue #885). During `amplihack update` the amplihack binary was already
-    // swapped in place by the self-update, so a stale/failed ~/.local/bin copy
-    // is recoverable — but aborting before the asset restage leaves the
-    // framework stale, which is the regression we must avoid.
+    // Also copy self (the amplihack binary) and the asset-resolver. These
+    // copies are best-effort: a failure here must NOT abort the
+    // framework-asset (agents/skills/context) refresh that follows (issue
+    // #885), but it is reported.
     if let Ok(self_exe) = std::env::current_exe() {
         let self_src = resolve_running_binary_source(&self_exe);
         let self_dst = local_bin.join(SELF_BIN);
         if !may_deploy(mode, stamp, &self_src, &self_dst) {
             kept.push(self_dst);
-        } else if let Some(self_dst) = deploy_self_binary(&local_bin, &self_exe) {
-            deployed.push(self_dst);
-        } else if !same_file(&self_src, &self_dst) && kept_after_failed_copy(mode, &self_dst) {
-            kept.push(self_dst);
+        } else {
+            match stage_binary(txn, &self_src, &self_dst) {
+                Ok(_) => deployed.push(self_dst),
+                Err(e) => {
+                    println!(
+                        "  ⚠️  Skipped amplihack binary copy to {}: {e:#}",
+                        self_dst.display()
+                    );
+                    tracing::warn!("amplihack binary deploy skipped: {e:#}");
+                    if kept_after_failed_copy(mode, &self_dst) {
+                        kept.push(self_dst);
+                    }
+                }
+            }
         }
 
         // The real source (`self_src`) is used so the asset-resolver is looked
@@ -214,13 +304,11 @@ pub(super) fn deploy_binaries(
                     .flatten()
             });
         if let Some(resolver_src) = resolver_src {
-            if resolver_src == resolver_dst {
-                // Already in place.
-            } else if !may_deploy(mode, stamp, &resolver_src, &resolver_dst) {
+            if !may_deploy(mode, stamp, &resolver_src, &resolver_dst) {
                 kept.push(resolver_dst);
             } else {
-                match deploy_binary(&resolver_src, &resolver_dst) {
-                    Ok(()) => deployed.push(resolver_dst),
+                match stage_binary(txn, &resolver_src, &resolver_dst) {
+                    Ok(_) => deployed.push(resolver_dst),
                     Err(e) => {
                         println!(
                             "  ⚠️  Skipped amplihack-asset-resolver copy to {}: {e:#}",
@@ -251,6 +339,20 @@ pub(super) fn deploy_binaries(
         tracing::warn!("failed to auto-persist PATH: {e}");
     }
 
+    Ok((deployed, kept))
+}
+
+/// Prints the PATH conflict advisory for the installed `amplihack`.
+///
+/// Call only after [`commit_release`]: the analysis looks at
+/// `~/.local/bin/amplihack`, which is a link that names nothing new until the
+/// release commits. Run before it, on a fresh home the analysis finds no
+/// user-level binary for another `amplihack` on PATH to shadow, and the
+/// advisory never prints.
+pub(super) fn print_path_conflict_advisory() {
+    let Ok(home) = home_dir() else {
+        return;
+    };
     if let Ok(current_exe) = std::env::current_exe()
         && let Ok(report) =
             crate::path_conflicts::analyze_current_process_path_conflicts(home, current_exe)
@@ -258,8 +360,6 @@ pub(super) fn deploy_binaries(
     {
         println!("{warning}");
     }
-
-    Ok((deployed, kept))
 }
 
 /// Resolve the on-disk path to copy the running amplihack binary FROM.
@@ -299,6 +399,10 @@ pub(crate) fn resolve_running_binary_source(current_exe: &Path) -> PathBuf {
 ///   destination — the up-to-date binary is in place, nothing to do.
 /// - NEVER propagates an error: a failed `~/.local/bin` copy is logged as a
 ///   warning and swallowed so the framework-asset refresh still proceeds.
+///
+/// Install code stages into a release instead (issue #1954); this direct
+/// copy is kept for the #885 tests of the deleted-source rules.
+#[cfg(test)]
 pub(super) fn deploy_self_binary(local_bin: &Path, current_exe: &Path) -> Option<PathBuf> {
     use super::filesystem::deploy_binary;
 
@@ -562,6 +666,61 @@ pub(super) fn choose_durable_hooks_path(deployed: Option<PathBuf>, discovered: P
             discovered
         }
     }
+}
+
+/// The amplihack binary the `statusLine` entry records (issue #1745): the
+/// deployed copy under the user's bin dir when there is one, as for the
+/// hooks (issue #911), else the running binary. Either is refused if other
+/// users can replace it. A result in a build directory is recorded, with a
+/// warning, because the entry stops working once that directory is cleaned.
+pub(super) fn stable_self_binary() -> Result<PathBuf> {
+    let deployed = super::paths::preferred_user_bin_dir()
+        .ok()
+        .map(|dir| dir.join(SELF_BIN))
+        .filter(|candidate| is_executable(candidate));
+    let exe = match deployed {
+        Some(deployed) => durable_link_or_target(&deployed)?,
+        None => crate::commands::profile::statusline_binary()?,
+    };
+    if let Some(warning) = build_output_warning(&exe) {
+        println!("  ⚠️  {warning}");
+    }
+    Ok(exe)
+}
+
+/// `deployed`, checked like any status-line binary. Issue #1954: when it is a
+/// link into a release, the durable entry names the link, never the release
+/// path, which a later install may remove once it is unused. The link's own
+/// directory gets the same owner and write check as the release it names.
+fn durable_link_or_target(deployed: &Path) -> Result<PathBuf> {
+    let target = crate::commands::profile::statusline_binary_at(deployed)?;
+    let is_link = deployed
+        .symlink_metadata()
+        .is_ok_and(|m| m.file_type().is_symlink());
+    let into_release = home_dir().is_ok_and(|home| {
+        release_layout::is_release_path(
+            &release_layout::releases_dir(&home.join(".amplihack")),
+            &target,
+        )
+    });
+    if !(is_link && into_release) {
+        return Ok(target);
+    }
+    if let Some(dir) = deployed.parent() {
+        crate::commands::profile::statusline_binary_at(dir)?;
+    }
+    Ok(deployed.to_path_buf())
+}
+
+/// The warning for a `statusLine` entry that names `exe`, if it needs one.
+pub(super) fn build_output_warning(exe: &Path) -> Option<String> {
+    looks_like_build_artifact(exe).then(|| {
+        format!(
+            "statusLine names {}, a build output; the status line stops working when that \
+             directory is cleaned",
+            exe.display()
+        )
+    })
 }
 
 /// Does this path live inside a cargo build directory?

@@ -10,13 +10,21 @@
 //! touches the filesystem is Unix-only; other platforms get no-ops.
 
 #[cfg(unix)]
+mod affinity;
+#[cfg(unix)]
 mod candidate;
+#[cfg(unix)]
+pub(super) mod capacity;
+#[cfg(unix)]
+mod capacity_line;
 #[cfg(unix)]
 mod cli;
 #[cfg(unix)]
-mod config;
+pub(super) mod config;
 #[cfg(unix)]
-mod fsx;
+pub(super) mod fsx;
+#[cfg(unix)]
+mod home_line;
 #[cfg(unix)]
 pub(super) mod kit;
 #[cfg(unix)]
@@ -24,28 +32,49 @@ mod liveness;
 #[cfg(unix)]
 mod mv;
 #[cfg(unix)]
-mod rerun;
+mod overflow_inputs;
+#[cfg(unix)]
+mod per_token;
+#[cfg(unix)]
+pub(super) mod rerun;
 #[cfg(unix)]
 mod state;
 #[cfg(unix)]
 mod statusline;
+pub(super) mod statusline_entry;
 #[cfg(unix)]
 mod swap;
+#[cfg(unix)]
+pub(super) mod takeover;
 #[cfg(unix)]
 mod usage;
 
 #[cfg(all(test, unix))]
 mod tests_candidate;
 #[cfg(all(test, unix))]
+mod tests_capacity;
+#[cfg(all(test, unix))]
+mod tests_capacity_line;
+#[cfg(all(test, unix))]
 mod tests_config;
 #[cfg(test)]
 mod tests_contract;
+#[cfg(all(test, unix))]
+mod tests_exhausted_reset;
+#[cfg(all(test, unix))]
+mod tests_home_line;
+#[cfg(all(test, unix))]
+mod tests_issue_1804;
 #[cfg(all(test, unix))]
 mod tests_liveness;
 #[cfg(all(test, unix))]
 mod tests_mv;
 #[cfg(all(test, unix))]
+mod tests_platform_candidate;
+#[cfg(all(test, unix))]
 mod tests_record;
+#[cfg(all(test, unix))]
+mod tests_takeover;
 #[cfg(all(test, unix))]
 mod tests_usage;
 
@@ -58,15 +87,37 @@ use std::path::Path;
 /// supervise itself. Removed before Claude starts.
 pub const SUPERVISED_ENV: &str = "AMPLIHACK_AUTO_SWITCH_SUPERVISED";
 
+/// For the rotate tests that check the rotator and auto-switch agree on
+/// when overflow is used (issue #1606).
+#[cfg(all(test, unix))]
+pub(super) use candidate::{OverflowPool, Pool, select_with_overflow, way_off};
 #[cfg(unix)]
 pub use cli::AutoSwitchCommand;
 /// File helpers `default_live` reuses for its read-only checks.
 #[cfg(unix)]
 pub(super) use fsx::{check_root_private, euid, exists, read_bounded_nofollow, writable_by_others};
+/// For the session archive's live check (issue #1746).
+#[cfg(unix)]
+pub(crate) use liveness::claude_config_dirs;
+/// For the shared-session liveness tests (issue #1634).
+#[cfg(all(test, unix))]
+pub(super) use liveness::scan;
+#[cfg(all(test, unix))]
+pub(super) use overflow_inputs::OverflowInputs;
+#[cfg(unix)]
+pub(super) use overflow_inputs::can_take_login;
 #[cfg(unix)]
 pub(super) use state::CREDS;
 #[cfg(unix)]
 pub(super) use swap::read_claude_json;
+#[cfg(all(test, unix))]
+pub(crate) use swap::rerun_owner;
+#[cfg(unix)]
+pub(super) use usage::Window;
+#[cfg(all(test, unix))]
+pub(super) use usage::{Reading as SwitchReading, ReadingSource};
+#[cfg(unix)]
+pub(crate) use {swap::sweep_rerun, usage::reset_or_default};
 
 #[cfg(not(unix))]
 #[derive(Debug, clap::Subcommand)]
@@ -97,14 +148,51 @@ pub fn handle(store: &ProfileStore, cmd: AutoSwitchCommand) -> anyhow::Result<()
     }
 }
 
-/// The hidden `profile statusline` command; returns the exit code.
-pub fn statusline(root: &str, owner: &str) -> i32 {
+/// The hidden `profile statusline` command; returns the exit code. Without
+/// `owner` it is the command in `~/.claude` (issue #1745).
+pub fn statusline(root: Option<&str>, owner: Option<&str>) -> i32 {
     #[cfg(unix)]
     return statusline::run(root, owner);
     #[cfg(not(unix))]
     {
         let _ = (root, owner);
         0
+    }
+}
+
+/// What every `profile statusline` command contains.
+const MARKER: &str = "profile statusline";
+
+/// The `statusLine` command `amplihack install` writes into
+/// `~/.claude/settings.json` for `exe`: `'<exe>' profile statusline`
+/// (issue #1745). An error when `exe` cannot be quoted for `sh`.
+pub fn home_statusline_command(exe: &std::path::Path) -> anyhow::Result<String> {
+    #[cfg(unix)]
+    return Ok(statusline::home_command(exe)?);
+    #[cfg(not(unix))]
+    {
+        let _ = exe;
+        anyhow::bail!("the status line is not supported on this platform")
+    }
+}
+
+/// The running amplihack binary, refused if anyone but the user (or root)
+/// can replace it.
+pub fn statusline_binary() -> anyhow::Result<std::path::PathBuf> {
+    #[cfg(unix)]
+    return statusline::installed_binary();
+    #[cfg(not(unix))]
+    anyhow::bail!("the status line is not supported on this platform")
+}
+
+/// `path`, resolved, refused if anyone but the user (or root) can replace it.
+pub fn statusline_binary_at(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    #[cfg(unix)]
+    return statusline::trusted_binary(path);
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        anyhow::bail!("the status line is not supported on this platform")
     }
 }
 
@@ -125,6 +213,22 @@ pub fn guard(store: &ProfileStore, name: &ProfileName, action: Action) -> Result
         let _ = (store, name, action);
         Ok(())
     }
+}
+
+/// Whether auto-switch holds `name`'s login for it (issue #1700): leased
+/// to another session's directory, or recorded as hosted in its own. A
+/// state directory or ledger that cannot be read holds nothing.
+#[cfg(unix)]
+pub fn login_held_elsewhere(store: &ProfileStore, name: &ProfileName) -> bool {
+    if !store.root().join(".auto-switch.d").exists() {
+        return false;
+    }
+    let Ok(state) = state::State::new(store.root()) else {
+        return false;
+    };
+    state
+        .load_ledger()
+        .is_ok_and(|l| l.leased_to(name.as_str()).is_some() || l.hosts.contains_key(name.as_str()))
 }
 
 /// Keeps swaps out of a profile between the pre-spawn lease check and the
@@ -210,9 +314,13 @@ pub fn substitute_nested(store: &ProfileStore, inherited: &ProfileName) -> Optio
                 return None;
             }
         };
-        let (c, reason) = rerun::substitute(store, &state, &eff.config, inherited)?;
-        eprintln!("{}", rerun::substitution_note(inherited, &reason, &c));
-        Some(c)
+        let sub = rerun::substitute(store, &state, &eff.config, inherited)?;
+        eprintln!(
+            "{}",
+            rerun::substitution_note(inherited, &sub.reason, &sub.profile)
+        );
+        per_token::record(&state.root, sub.per_token.as_deref());
+        Some(sub.profile)
     }
     #[cfg(not(unix))]
     {
@@ -259,30 +367,22 @@ pub fn return_after_session(dir: &Path) {
     let _ = dir;
 }
 
-/// Runs a nested `-p` launch under the usage-limit supervisor when the switch
-/// is on. `None` when the launch should run normally (switch off, or already
-/// supervised). The caller has checked the flags and arguments.
-pub fn supervise(store: &ProfileStore, inherited: &str) -> anyhow::Result<Option<i32>> {
+/// `amplihack claude` / launch: the one-line no-capacity warning on stderr
+/// when every account is over the threshold. Never changes the launch.
+pub fn launch_warning(args: &[String]) {
     #[cfg(unix)]
-    {
-        if supervised() {
-            return Ok(None);
-        }
-        let Ok(name) = ProfileName::parse(inherited) else {
-            return Ok(None); // the normal launch reports the bad value
-        };
-        let eff = config::effective(store.root());
-        if !eff.on {
-            return Ok(None);
-        }
-        let state = state::State::new(store.root())?;
-        rerun::supervise(store, &state, &eff.config, name)
-    }
+    capacity::launch_warning(args, &mut std::io::stderr());
     #[cfg(not(unix))]
-    {
-        let _ = (store, inherited);
-        Ok(None)
-    }
+    let _ = args;
+}
+
+/// `amplihack recipe run`: the one-line no-capacity warning, with the reset
+/// time, to `out`. Never refuses the run.
+pub fn recipe_warning(out: &mut dyn std::io::Write) {
+    #[cfg(unix)]
+    capacity::recipe_warning(out);
+    #[cfg(not(unix))]
+    let _ = out;
 }
 
 /// Who holds which login, from the ledger: directory → account live there.
@@ -385,6 +485,174 @@ pub fn lease_view(root: &Path) -> Result<Option<LeaseView>, ProfileError> {
     }
 }
 
+/// One account's reading as [`usage_view`] gives it to the capacity
+/// governor (issue #1811). Each window is `(used percentage, resets_at)`.
+#[derive(Debug, Clone, Copy)]
+pub struct UsageViewReading {
+    pub five_hour: Option<(f64, i64)>,
+    pub seven_day: Option<(f64, i64)>,
+    pub observed_at: i64,
+    /// [`usage::Reading::no_session_window`] (issue #1818): a week window
+    /// and no session window. The stored reading cannot tell a plan with no
+    /// session limit from a session window that was not recorded, so the
+    /// governor labels this `no session window`, as `rotate status` does.
+    pub no_session_window: bool,
+}
+
+/// Readings by account for [`usage_view`].
+pub type UsageView = std::collections::BTreeMap<String, UsageViewReading>;
+
+/// Readings by account from `usage.json`, read without the lock, for the
+/// capacity governor (issue #1811). `None` without a state directory. The
+/// same trust checks as [`lease_view`]; nothing is created or written.
+pub fn usage_view(root: &Path) -> Result<Option<UsageView>, ProfileError> {
+    #[cfg(unix)]
+    {
+        if !fsx::exists(&root.join(state::DIR)) {
+            return Ok(None);
+        }
+        let state = state::State::new(root)?;
+        fsx::check_root_private(&state.root)
+            .map_err(|e| ProfileError::AutoSwitchInvariant(format!("profile root {e}")))?;
+        fsx::check_private_dir(&state.dir)
+            .map_err(|e| ProfileError::AutoSwitchInvariant(format!("{}: {e}", state::DIR)))?;
+        let window = |w: Option<usage::Window>| w.map(|w| (w.used_percentage, w.resets_at));
+        Ok(Some(
+            state
+                .try_load_usage()?
+                .accounts
+                .into_iter()
+                .map(|(account, r)| {
+                    let view = UsageViewReading {
+                        no_session_window: r.no_session_window(),
+                        five_hour: window(r.five_hour),
+                        seven_day: window(r.seven_day),
+                        observed_at: r.observed_at,
+                    };
+                    (account, view)
+                })
+                .collect(),
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        Ok(None)
+    }
+}
+
+/// [`usage::plausible`] for the capacity governor (issue #1811), as
+/// `(used percentage, resets_at)`: `None` for a non-finite percentage or a
+/// reset more than one day before or eight days after `now`, and the
+/// percentage clamped to 0 to 100 otherwise. The governor and the rotator
+/// share this plausibility rule. It is not the whole of the rotator's test:
+/// [`fresh_reading`] also rejects a reading older than its `max_age`, and the
+/// governor applies its own age limit, `governor.max_reading_age_secs`.
+#[cfg(unix)]
+pub fn plausible_window(pct: f64, resets_at: i64, now: i64) -> Option<(f64, i64)> {
+    usage::plausible(pct, resets_at, now).map(|w| (w.used_percentage, w.resets_at))
+}
+
+/// Issue #1844: the stored reading for the account whose login is in
+/// directory `dir`, when it was observed no more than `max_age` seconds
+/// before `now` (and not after it), with each window that passes
+/// [`usage::plausible`]. `None` without auto-switch state, a reading, or a
+/// plausible window, and when anything cannot be read. Read-only and
+/// silent: it never creates state, takes the lock or prints.
+#[cfg(unix)]
+pub fn fresh_reading(root: &Path, dir: &str, max_age: i64, now: i64) -> Option<FreshReading> {
+    if max_age <= 0 {
+        return None;
+    }
+    let state = state::State::new(root).ok()?;
+    if !state.exists() {
+        return None;
+    }
+    fsx::check_root_private(&state.root).ok()?;
+    fsx::check_private_dir(&state.dir).ok()?;
+    let ledger = state.load_ledger().ok()?;
+    let account = ledger.account_in(dir);
+    let file = state.try_load_usage().ok()?;
+    let r = file.accounts.get(account)?;
+    let age = now.checked_sub(r.observed_at)?;
+    if !(0..=max_age).contains(&age) {
+        return None;
+    }
+    let ok =
+        |w: &Option<Window>| w.and_then(|w| usage::plausible(w.used_percentage, w.resets_at, now));
+    let (session, week) = (ok(&r.five_hour), ok(&r.seven_day));
+    (session.is_some() || week.is_some()).then_some(FreshReading {
+        session,
+        week,
+        // The same test as [`no_session_window_profiles`]; a stored session
+        // window dropped as implausible is unknown, not absent.
+        no_session_window: r.no_session_window() && week.is_some(),
+        observed_at: r.observed_at,
+    })
+}
+
+/// The plausible windows of a fresh stored reading (issue #1844).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FreshReading {
+    pub session: Option<Window>,
+    pub week: Option<Window>,
+    /// Issue #1818: the reading has a week window and no session window, so
+    /// it has no session limit.
+    pub no_session_window: bool,
+    /// When the status line stored the reading, epoch seconds.
+    pub observed_at: i64,
+}
+
+/// Issue #1818: the profiles among `names` whose stored reading has a week
+/// window and no session window, sorted. Read-only: it never creates state,
+/// takes the lock or writes, and any failure (no state, an unsafe or damaged
+/// `usage.json`) gives an empty list without printing anything.
+pub fn no_session_window_profiles(root: &Path, names: &[&str]) -> Vec<String> {
+    #[cfg(unix)]
+    {
+        let Ok(state) = state::State::new(root) else {
+            return Vec::new();
+        };
+        if !state.exists() {
+            return Vec::new();
+        }
+        let Ok(file) = state.try_load_usage() else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = file
+            .accounts
+            .iter()
+            .filter(|(name, r)| r.no_session_window() && names.contains(&name.as_str()))
+            .map(|(name, _)| name.clone())
+            .collect();
+        out.sort();
+        out
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (root, names);
+        Vec::new()
+    }
+}
+
+/// The `rotate status` line `no session window: <names>` for the profiles
+/// among `names` that [`no_session_window_profiles`] lists, or `None` when
+/// there are none. Read-only. It does not say "no session limit": the stored
+/// reading cannot tell a plan with none from a session window that was not
+/// recorded.
+pub fn no_session_window_line(root: &Path, names: &[String]) -> Option<String> {
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let free = no_session_window_profiles(root, &names);
+    if free.is_empty() {
+        return None;
+    }
+    let free: Vec<String> = free
+        .iter()
+        .map(|n| super::usage_cmd::sanitize_display(n, false))
+        .collect();
+    Some(format!("no session window: {}", free.join(", ")))
+}
+
 /// Records `profile usage` observations as status-line readings. Takes the
 /// lock for a bounded wait, never runs swap recovery, re-checks each
 /// profile's live account under the lock, applies the status-line bounds,
@@ -424,6 +692,11 @@ pub fn record_usage(root: &Path, observed: &[Observation]) -> Result<RecordOutco
             let file = file.get_or_insert_with(|| state.load_usage_or_warn());
             let old = file.accounts.get(&o.account);
             let reading = Reading {
+                // Issue #1818: a reading with no session limit keeps a stored
+                // session window until its reset passes. A 0%, reset-less
+                // reading may be stale, and a live window that contradicts
+                // it is the cautious answer; the cost is at most one
+                // five-hour window in which the login is passed over.
                 five_hour: five_hour.or_else(|| still_valid(old.and_then(|r| r.five_hour))),
                 seven_day: seven_day.or_else(|| still_valid(old.and_then(|r| r.seven_day))),
                 observed_at: now,
@@ -437,6 +710,7 @@ pub fn record_usage(root: &Path, observed: &[Observation]) -> Result<RecordOutco
         }
         if let Some(file) = file {
             state.save_usage(&file)?;
+            capacity::refresh(&state, &file, &ledger, "usage");
         }
         Ok(RecordOutcome::Recorded { written, moved })
     }
@@ -446,3 +720,6 @@ pub fn record_usage(root: &Path, observed: &[Observation]) -> Result<RecordOutco
         Ok(RecordOutcome::NotSetUp)
     }
 }
+
+#[cfg(test)]
+mod tests_issue_2136;

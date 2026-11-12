@@ -44,7 +44,7 @@ flowchart TD
         S2b --> S2c{Ambiguity?}
         S2c -->|yes| S2d[Step 2c: Resolve Ambiguity]
         S2c -->|no| S3
-        S2d --> S3[Step 3: Create GitHub Issue]
+        S2d --> S3[Step 3: Select Tracking Issue]
         S3 --> S3b[Step 3b: Extract Issue Number]
     end
 
@@ -105,9 +105,9 @@ flowchart TD
         S19b --> S19c[Step 19c: Zero-BS Verification]
         S19c --> S19d[Step 19d: Verification Gate]
         S19d --> S20[Step 20: Final Cleanup]
-        S20 --> S20b[Step 20b: Push Cleanup]
-        S20b --> S20c[Step 20c: Quality Audit]
-        S20c --> S21[Step 21: PR Ready]
+        S20 --> S20c[Step 20c: Quality Audit]
+        S20c --> S20b[Step 20b: Push Cleanup]
+        S20b --> S21[Step 21: PR Ready]
         S21 --> S22[Step 22: Ensure Mergeable]
         S22 --> S22b[Step 22b: Final Status]
     end
@@ -271,10 +271,19 @@ specific remediation guidance (`az login`, GCM install, PAT setup). The remote U
 never echoed to avoid leaking embedded credentials. See
 `docs/recipes/issue-655-656-skill-invocation-and-fetch-resilience.md` for details.
 
-### Step 3 — Issue Creation (label missing)
+### Step 3 — Tracking Issue (local by default)
 
-**Failure**: `gh label create` fails silently when labels cannot be created (permission denied, API timeout).
-**Resilience**: Label attachment is best-effort. If `gh issue create --label` fails, retry without `--label`. The issue itself is the critical artifact, not its labels.
+**Default**: Step 3 reuses an explicit `issue_number` or an open issue referenced in the task, and otherwise uses local tracking. It creates no GitHub issue unless the run passes `-c create_issue=true` (also `1` or `yes`); text in the task description does not opt in. A decomposed run forwards the value to its parallel workstreams.
+
+**Opted in**: Step 3 reuses an open issue with exactly the same title in the same repository, whoever opened it. If it cannot check (search and the recent-issue listing both fail), it uses local tracking rather than risk a duplicate.
+
+**Failure**: secondary rate limit on `gh issue create`.
+**Resilience**: Wait at least 60 s plus jitter (or `retry-after` when printed), look up the title again before each retry, and fall back to local tracking after `AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS` (300 s). An auth failure is not retried.
+
+**Failure**: `gh label create` fails (permission denied, API timeout).
+**Resilience**: Label attachment is best-effort. If `gh issue create --label` fails on the label, retry once without `--label`.
+
+See `docs/reference/workflow-tracking-issue-selection.md`.
 
 ### Step 4 — Worktree Setup (non-main default branch)
 

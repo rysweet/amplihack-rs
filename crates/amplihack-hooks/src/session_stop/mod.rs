@@ -6,6 +6,8 @@
 //!
 //! Neither blocks session exit (fail-open).
 
+#[cfg(unix)]
+mod agent_marker;
 mod git;
 #[cfg(test)]
 mod tests;
@@ -42,6 +44,18 @@ impl Hook for SessionStopHook {
             } => (session_id, transcript_path, extra),
             _ => return Ok(Value::Object(serde_json::Map::new())),
         };
+
+        // Issue #1760 (A7): the marker names the input's own session id, read
+        // before the generated fallback below can replace a missing one.
+        #[cfg(unix)]
+        agent_marker::record_clean_end(
+            amplihack_utils::rotator_status::home_from_env().as_deref(),
+            session_id.as_deref(),
+            &extra,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        );
 
         let session_id = session_id.unwrap_or_else(|| {
             let id = generate_unique_session_id();

@@ -4,7 +4,6 @@
 //! These catch regressions in help text, error messages, and formatting.
 
 use std::path::PathBuf;
-use std::process::Command;
 
 fn amplihack_bin() -> PathBuf {
     // Cargo sets CARGO_BIN_EXE_amplihack for this [[test]] target and builds the
@@ -18,7 +17,7 @@ fn run_cmd(args: &[&str]) -> (String, String, bool) {
     if !bin.exists() {
         panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
     }
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .args(args)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .output()

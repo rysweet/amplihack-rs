@@ -102,7 +102,7 @@ fn cli_returns_exit_1_with_paths_and_remediation_for_artifact_violations() {
         "generated plugin bundle\n",
     );
 
-    let output = Command::new(bin())
+    let output = crate::isolated_amplihack::isolated(bin())
         .args([
             "hygiene",
             "artifact-guard",
@@ -145,7 +145,7 @@ fn cli_returns_exit_1_with_paths_and_remediation_for_artifact_violations() {
 fn cli_returns_exit_0_for_clean_repository() {
     let tmp = repo();
 
-    let output = Command::new(bin())
+    let output = crate::isolated_amplihack::isolated(bin())
         .args([
             "hygiene",
             "artifact-guard",
@@ -182,7 +182,7 @@ fn cli_exits_0_when_only_launcher_owned_runtime_files_are_present() {
     );
     write_file(&tmp.path().join(".claude/runtime/sessions.jsonl"), "{}\n");
 
-    let output = Command::new(bin())
+    let output = crate::isolated_amplihack::isolated(bin())
         .args([
             "hygiene",
             "artifact-guard",
@@ -274,7 +274,7 @@ fn cli_returns_exit_2_for_invalid_allowlist() {
     let allowlist = tmp.path().join(".amplihack-artifact-allowlist");
     write_file(&allowlist, "node_modules/**\n");
 
-    let output = Command::new(bin())
+    let output = crate::isolated_amplihack::isolated(bin())
         .args([
             "hygiene",
             "artifact-guard",
@@ -328,7 +328,7 @@ fn repo_with_ignored_present_cache() -> TempDir {
 }
 
 fn run_guard(repo: &Path, mode: &str) -> std::process::Output {
-    Command::new(bin())
+    crate::isolated_amplihack::isolated(bin())
         .args(["hygiene", "artifact-guard", "--mode", mode, "--repo"])
         .arg(repo)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
@@ -540,7 +540,7 @@ fn cli_pre_publish_exits_1_and_names_paths_for_artifacts_this_change_introduced(
 fn cli_preexisting_block_policy_restores_the_old_fail_closed_gate() {
     let tmp = repo_with_preexisting_tracked_node_modules();
 
-    let flag = Command::new(bin())
+    let flag = crate::isolated_amplihack::isolated(bin())
         .args([
             "hygiene",
             "artifact-guard",
@@ -561,7 +561,7 @@ fn cli_preexisting_block_policy_restores_the_old_fail_closed_gate() {
         combined(&flag)
     );
 
-    let env = Command::new(bin())
+    let env = crate::isolated_amplihack::isolated(bin())
         .args([
             "hygiene",
             "artifact-guard",
@@ -606,7 +606,7 @@ fn cli_mode_all_still_fails_closed_on_a_preexisting_condition() {
 fn cli_rejects_an_unresolvable_explicit_baseline_with_exit_2() {
     let tmp = repo_with_preexisting_tracked_node_modules();
 
-    let output = Command::new(bin())
+    let output = crate::isolated_amplihack::isolated(bin())
         .args([
             "hygiene",
             "artifact-guard",
@@ -1349,7 +1349,7 @@ const PATHSPEC_ENV: &[(&str, &str)] = &[
 ];
 
 fn run_guard_with_env(repo: &Path, mode: &str, env: (&str, &str)) -> std::process::Output {
-    Command::new(bin())
+    crate::isolated_amplihack::isolated(bin())
         .args(["hygiene", "artifact-guard", "--mode", mode, "--repo"])
         .arg(repo)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
@@ -1552,7 +1552,7 @@ fn canonical(path: &Path) -> String {
 }
 
 fn guard(repo: &Path, args: &[&str], envs: &[(&str, &str)]) -> std::process::Output {
-    let mut command = Command::new(bin());
+    let mut command = crate::isolated_amplihack::isolated(bin());
     hermetic(&mut command)
         .args(["hygiene", "artifact-guard"])
         .args(args)

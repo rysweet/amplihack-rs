@@ -60,9 +60,22 @@ impl EnvBuilder {
         self
     }
 
+    /// The value this builder will export for `key`, if it sets one. A key
+    /// removed with [`EnvBuilder::unset`] reads as `None`.
+    pub fn var(&self, key: &str) -> Option<&str> {
+        self.vars.get(key).map(String::as_str)
+    }
+
     /// Prepend a directory to PATH (deduplicated).
     pub fn prepend_path(mut self, dir: impl Into<PathBuf>) -> Self {
         self.path_prepend.push(dir.into());
+        self
+    }
+
+    /// Put a directory at the very front of PATH, ahead of every directory
+    /// already prepended (deduplicated). Used by the #1551 merge guard.
+    pub fn prepend_path_first(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.path_prepend.insert(0, dir.into());
         self
     }
 
@@ -76,13 +89,33 @@ impl EnvBuilder {
             .set("AMPLIHACK_DEPTH", depth)
     }
 
+    /// Issue #1811: when this process holds a capacity governor slot, tell
+    /// children its tree id, so their own starts run nested under it rather
+    /// than asking for a second slot. When this process is an admitted
+    /// `recipe run`, also tell them so, because a run nested under a session
+    /// holds no slot and its steps would otherwise look like the session's.
+    fn with_governor_parent(self) -> Self {
+        use crate::commands::governor::{
+            GOVERNOR_PARENT_ENV, GOVERNOR_RECIPE_ENV, recipe_marker, settled_tree_id,
+        };
+        let this = match settled_tree_id() {
+            Some(tree) => self.set(GOVERNOR_PARENT_ENV, tree),
+            None => self,
+        };
+        match recipe_marker() {
+            Some(marker) => this.set(GOVERNOR_RECIPE_ENV, marker),
+            None => this,
+        }
+    }
+
     /// Propagate orchestration tree context without changing depth.
     pub fn with_session_tree_context(self) -> Self {
+        let this = self.with_governor_parent();
         if !session_tree_context_present() {
-            return self;
+            return this;
         }
 
-        self.set("AMPLIHACK_TREE_ID", resolve_session_tree_id())
+        this.set("AMPLIHACK_TREE_ID", resolve_session_tree_id())
             .set("AMPLIHACK_SESSION_DEPTH", resolve_session_tree_depth(false))
             .set(
                 "AMPLIHACK_MAX_DEPTH",
@@ -96,11 +129,12 @@ impl EnvBuilder {
 
     /// Propagate orchestration tree context while incrementing child session depth.
     pub fn with_incremented_session_tree_context(self) -> Self {
+        let this = self.with_governor_parent();
         if !session_tree_context_present() {
-            return self;
+            return this;
         }
 
-        self.set("AMPLIHACK_TREE_ID", resolve_session_tree_id())
+        this.set("AMPLIHACK_TREE_ID", resolve_session_tree_id())
             .set("AMPLIHACK_SESSION_DEPTH", resolve_session_tree_depth(true))
             .set(
                 "AMPLIHACK_MAX_DEPTH",
@@ -149,7 +183,14 @@ impl EnvBuilder {
         tool: &str,
         var: &dyn Fn(&str) -> Option<String>,
     ) -> Self {
-        let this = self.with_resolved_agent_binary(tool, super::launch_binary_source(tool, var));
+        let this = self
+            .with_resolved_agent_binary(tool, super::launch_binary_source(tool, var))
+            // Issue #1606: lets a process in this session tell it apart from
+            // a tmux server's copy of another session of the same CLI.
+            .set(
+                amplihack_utils::agent_binary::SESSION_NONCE_ENV,
+                uuid::Uuid::new_v4().to_string(),
+            );
         amplihack_utils::agent_binary::other_clis_markers(tool)
             .fold(this, |builder, marker| builder.unset(marker))
     }
@@ -266,6 +307,24 @@ impl EnvBuilder {
             && !existing.is_empty()
         {
             return self.set("AMPLIHACK_HOME", existing);
+        }
+
+        // Step 1b (issue #1606): the user's configured `paths.home`, an
+        // explicit choice that ranks below the variable and above every
+        // inferred location. It is used only while it is still an existing
+        // directory this user owns.
+        if let Some(configured) = crate::user_config::configured_home() {
+            match crate::user_config::schema::validate_home_dir(&configured) {
+                Ok(()) => {
+                    if let Some(value) = validate_amplihack_home_path(&configured) {
+                        return self.set("AMPLIHACK_HOME", value);
+                    }
+                }
+                Err(reason) => tracing::warn!(
+                    path = %configured.display(),
+                    "ignoring the configured paths.home: it {reason}"
+                ),
+            }
         }
 
         // Step 2: prefer the checked-out bundle root when running from a repo

@@ -179,6 +179,7 @@ const EXPECTED_HOOKS: &[(&str, Option<&str>, &[&str])] = &[
     ("Stop", None, &["stop"]),
     ("PreCompact", None, &["pre-compact"]),
     ("SessionEnd", None, &["session-stop-event"]),
+    ("StopFailure", Some("rate_limit"), &["limit-resume"]),
 ];
 
 #[test]
@@ -1065,7 +1066,7 @@ mkdir -p "$HOME/.cargo/bin"
 printf '{"installs":{"recipe-runner-rs 0.4.0 (git+https://github.com/rysweet/amplihack-recipe-runner#%s)":{"bins":["recipe-runner-rs"]}}}' "$5" > "$HOME/.cargo/.crates2.json"
 cat > "$HOME/.cargo/bin/recipe-runner-rs" <<'RUNNER'
 #!/bin/sh
-printf '%s\n' '{"capabilities":["codex_exec","future"],"schema_version":1,"version":"0.4.0"}'
+printf '%s\n' '{"capabilities":["codex_exec","durable_recovery_v1","future"],"schema_version":1,"version":"0.4.0"}'
 RUNNER
 chmod +x "$HOME/.cargo/bin/recipe-runner-rs"
 "#
@@ -1096,7 +1097,7 @@ chmod +x "$HOME/.cargo/bin/recipe-runner-rs"
     fn cargo_only_claude_install_needs_no_json_runtime() {
         for (report, accepted) in [
             (
-                r#"{"capabilities":[],"version":"0.4.0","schema_version":1}"#,
+                r#"{"capabilities":["durable_recovery_v1"],"version":"0.4.0","schema_version":1}"#,
                 true,
             ),
             (
@@ -1235,11 +1236,11 @@ fi
         let runner = tools.path().join("runner");
         for (report, accepted) in [
             (
-                r#"{"capabilities":[],"schema_version":1,"version":"custom","extra":true}"#,
+                r#"{"capabilities":["durable_recovery_v1"],"schema_version":1,"version":"custom","extra":true}"#,
                 true,
             ),
             (
-                r#"{"capabilities":["future","codex_exec"],"version":"v","schema_version":1}"#,
+                r#"{"capabilities":["future","codex_exec","durable_recovery_v1"],"version":"v","schema_version":1}"#,
                 true,
             ),
             (
@@ -1247,15 +1248,15 @@ fi
                 false,
             ),
             (
-                r#"{"capabilities":[],"schema_version":true,"version":"v"}"#,
+                r#"{"capabilities":["durable_recovery_v1"],"schema_version":true,"version":"v"}"#,
                 false,
             ),
             (
-                r#"{"capabilities":[],"schema_version":1,"version":" "}"#,
+                r#"{"capabilities":["durable_recovery_v1"],"schema_version":1,"version":" "}"#,
                 false,
             ),
             (
-                r#"{"capabilities":[],"schema_version":1,"version":"v"} {}"#,
+                r#"{"capabilities":["durable_recovery_v1"],"schema_version":1,"version":"v"} {}"#,
                 false,
             ),
         ] {
@@ -1329,10 +1330,13 @@ fi
             "{log}"
         );
         assert!(!log.contains("fetching amplihack"), "{log}");
-        let seen = Command::new(run.home.path().join(".local/bin/amplihack"))
-            .arg("--version")
-            .output()
-            .unwrap();
+        // A stub the test installed, not the real binary; isolated all the
+        // same, as every program named `amplihack` a test runs is.
+        let seen =
+            crate::isolated_amplihack::isolated(run.home.path().join(".local/bin/amplihack"))
+                .arg("--version")
+                .output()
+                .unwrap();
         assert_eq!(
             String::from_utf8_lossy(&seen.stdout).trim(),
             "amplihack 1.0.0"
@@ -1597,6 +1601,42 @@ fi
             "two installs ran at once"
         );
         assert!(home.path().join("cargo-runs").exists(), "no install ran");
+    }
+
+    #[test]
+    fn a_reclaim_never_removes_a_lock_taken_after_its_holder_check() {
+        // The reclaimer has judged the old holder dead and is about to remove
+        // the lock. The stub `rm` runs in exactly that window: the old holder
+        // lets go and a third process asks for the lock. Both must not get it.
+        let work = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let lock = work.path().join("install.lock");
+        fs::create_dir(&lock).unwrap();
+        let mut dead = Command::new("true").spawn().unwrap();
+        fs::write(lock.join("pid"), format!("{}\n", dead.id())).unwrap();
+        dead.wait().unwrap();
+        let helper = repo_root().join("claude-plugin/bin/plugin-lock.sh");
+        let (l, w, h) = (lock.display(), work.path().display(), helper.display());
+        let acquire =
+            |who: &str| format!(". '{h}'; if lock_acquire '{l}'; then echo {who} >> '{w}/got'; fi");
+        write_exe(
+            &stub.path().join("rm"),
+            &format!(
+                "#!/bin/sh\nif [ ! -e '{w}/raced' ]; then\n  : > '{w}/raced'\n  /bin/rm -rf '{l}'\n  sh -c \"{}\"\nfi\nexec /bin/rm \"$@\"\n",
+                acquire("third")
+            ),
+        );
+        let out = Command::new("sh")
+            .args(["-c", &acquire("reclaimer")])
+            .env("PATH", format!("{}:/usr/bin:/bin", stub.path().display()))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert!(work.path().join("raced").exists(), "the window never ran");
+        let got = fs::read_to_string(work.path().join("got")).unwrap();
+        assert_eq!(got, "reclaimer\n", "the lock must have one holder");
+        assert!(lock.is_dir());
+        assert!(!work.path().join("install.lock.reclaim").exists());
     }
 
     #[test]

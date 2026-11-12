@@ -40,7 +40,7 @@ impl Sandbox {
     /// location does not depend on it.
     fn register(&self, tree_id: &str, session: &str, tmpdir: &Path, max_sessions: u32) -> bool {
         fs::create_dir_all(tmpdir).expect("tmpdir");
-        let mut command = Command::new(BIN);
+        let mut command = crate::isolated_amplihack::isolated(BIN);
         isolate_outer_orchestration(&mut command);
         command
             .args(["session-tree", "register", session])
@@ -148,7 +148,7 @@ fn invariant_node_budget_concurrent_registers_respect_cap() {
     // Spawn all attempts before reaping any, so they genuinely contend.
     let mut children: Vec<_> = (0..ATTEMPTS)
         .map(|i| {
-            let mut command = Command::new(BIN);
+            let mut command = crate::isolated_amplihack::isolated(BIN);
             isolate_outer_orchestration(&mut command);
             command
                 .args(["session-tree", "register", &format!("s{i}")])
@@ -237,7 +237,7 @@ fn recipe_run(home: &Path, envs: &[(&str, &str)]) -> Output {
     )
     .expect("write probe recipe");
 
-    let mut cmd = Command::new(BIN);
+    let mut cmd = crate::isolated_amplihack::isolated(BIN);
     cmd.args([
         "recipe",
         "run",
@@ -376,7 +376,7 @@ fn invariant_node_budget_caps_concurrent_recipe_runs() {
 
     let mut children: Vec<_> = (0..ATTEMPTS)
         .map(|_| {
-            Command::new(BIN)
+            crate::isolated_amplihack::isolated(BIN)
                 .args([
                     "recipe",
                     "run",

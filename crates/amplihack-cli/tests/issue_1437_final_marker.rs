@@ -38,7 +38,17 @@ steps:
     command: "true"
 "#;
 
+/// `amplihack recipe run` probes the runner with `--capabilities` before it
+/// runs a recipe (`runner_validation::probe`). Every stub answers it first, as
+/// the stubs in `issue_1618_wait_recipe.rs` do.
+const CAPABILITIES: &str = r#"case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
+"#;
+
 fn run_fixture(stub: &str) -> (i32, String) {
+    let body = stub
+        .strip_prefix("#!/bin/sh\n")
+        .expect("a stub runner starts with #!/bin/sh");
+    let stub = format!("#!/bin/sh\n{CAPABILITIES}{body}");
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     let (home, tools) = (root.join("home"), root.join("tools"));
@@ -46,7 +56,7 @@ fn run_fixture(stub: &str) -> (i32, String) {
         fs::create_dir_all(dir).unwrap();
     }
     let runner = tools.join("recipe-runner-rs");
-    crate::support::exec_stub::write_executable(&runner, stub, 0o755);
+    crate::support::exec_stub::write_executable(&runner, &stub, 0o755);
     let recipe = root.join("recipe.yaml");
     fs::write(&recipe, RECIPE).unwrap();
     let log_path = root.join("round.log");

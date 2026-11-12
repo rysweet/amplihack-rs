@@ -306,10 +306,22 @@ fn worktree_setup_treats_fetch_failure_as_recoverable_after_repo_validation() {
         command.contains("git rev-parse --is-inside-work-tree"),
         "worktree setup must keep hard repository validation"
     );
+    // The retrying fetch lives in tools/workflow_fetch_origin.sh (#1808); the
+    // step calls it, or runs one plain fetch whose failure is ignored.
+    let tool_path = workspace_root().join("amplifier-bundle/tools/workflow_fetch_origin.sh");
+    let tool = std::fs::read_to_string(&tool_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", tool_path.display()));
     assert!(
-        command.contains("WARNING: git fetch origin failed")
-            && command.contains("continuing with local")
+        command.contains("bash \"$TOOLS_DIR/workflow_fetch_origin.sh\"")
+            && command.contains("git fetch origin --no-tags >&2 || true")
             && !command.contains("ERROR: git fetch origin failed after"),
+        "step-04 must fetch through workflow_fetch_origin.sh and ignore a failed plain fetch without it"
+    );
+    assert!(
+        tool.contains("WARNING: git fetch origin failed")
+            && tool.contains("continuing with local refs")
+            && tool.trim_end().ends_with("exit 0")
+            && !tool.contains("ERROR: git fetch origin failed after"),
         "after repository validation, fetch failures should warn and continue with local refs instead of aborting issue #582/eatme-style repos"
     );
 }

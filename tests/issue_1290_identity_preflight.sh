@@ -20,6 +20,9 @@
 # Every token in this file is an obvious fake.
 
 set -uo pipefail
+# Issue #1764: no git this script runs may wait on a credential prompt.
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
+exec </dev/null
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HELPER="$ROOT/amplifier-bundle/tools/workflow_identity_preflight.sh"
@@ -182,7 +185,7 @@ STUB="$WORK/stub"; mkdir -p "$STUB"
 for c in git sed awk grep head sort tr mktemp rm timeout printf env bash cat wc; do
   p="$(command -v "$c" 2>/dev/null)" && ln -sf "$p" "$STUB/$c"
 done
-OUT="$(env -i PATH="$STUB" HOME="$HOME" GIT_CONFIG_NOSYSTEM=1 bash "$HELPER" "$WORK/gh-https" 2>&1)"; RC=$?
+OUT="$(env -i GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true PATH="$STUB" HOME="$HOME" GIT_CONFIG_NOSYSTEM=1 bash "$HELPER" "$WORK/gh-https" 2>&1)"; RC=$?
 continues "gh not installed" "gh-not-installed"
 
 echo "== 5. nothing to check is not a failure either =="

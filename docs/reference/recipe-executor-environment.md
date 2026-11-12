@@ -216,3 +216,4 @@ must never prompt for input.
 - [Recipe Run Correlation Reference](./recipe-run-correlation.md) — Stable recipe run IDs and pointer events
 - [Recipe Execution Flow](../concepts/recipe-execution-flow.md) — Step execution architecture
 - [Troubleshoot Recipe Execution](../howto/troubleshoot-recipe-execution.md) — Diagnosing common recipe failures
+- [Recipe Commit Hook Repair](./recipe-commit-hook-repair.md): why recipe-owned commit and push steps run with the launcher's environment, and how a rejected git hook is handed to a fixing agent and retried

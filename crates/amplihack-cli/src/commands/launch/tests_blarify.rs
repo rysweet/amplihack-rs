@@ -81,7 +81,6 @@ fn resolve_checkout_repo_in_uses_git_clone_stub() {
     permissions.set_mode(0o755);
     fs::set_permissions(&git_path, permissions).unwrap();
 
-    let previous_path = std::env::var_os("PATH");
     let proxy_env = [
         (
             amplihack_utils::litellm_proxy::ENDPOINT_ENV,
@@ -95,18 +94,24 @@ fn resolve_checkout_repo_in_uses_git_clone_stub() {
     ];
     let previous_proxy_env = proxy_env.map(|(name, _)| std::env::var_os(name));
     unsafe {
-        std::env::set_var("PATH", &bin_dir);
         for (name, value) in proxy_env {
             std::env::set_var(name, value);
         }
     }
 
-    let checkout = resolve_checkout_repo_in("owner/repo", &base_dir).unwrap();
-
-    match previous_path {
-        Some(value) => unsafe { std::env::set_var("PATH", value) },
-        None => unsafe { std::env::remove_var("PATH") },
-    }
+    // Issue #1765: the stub `git` is reached through the child's PATH alone;
+    // the process PATH and HOME are never changed.
+    let checkout = resolve_checkout_repo_in_with(
+        "owner/repo",
+        &base_dir,
+        &|command: &mut std::process::Command| {
+            command
+                .env("PATH", &bin_dir)
+                .env("HOME", temp.path())
+                .env_remove(crate::commands::profile::ROOT_ENV);
+        },
+    )
+    .unwrap();
     for ((name, _), previous) in proxy_env.into_iter().zip(previous_proxy_env) {
         match previous {
             Some(value) => unsafe { std::env::set_var(name, value) },

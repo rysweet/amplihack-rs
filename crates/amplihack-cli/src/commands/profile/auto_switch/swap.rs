@@ -8,6 +8,8 @@ use super::config::Config;
 use super::fsx;
 use super::liveness::{self, Liveness};
 use super::mv::{self, MoveError, abort_point};
+use super::overflow_inputs::OverflowInputs;
+use super::per_token;
 use super::state::{
     CLAUDE_JSON, CREDS, HostEntry, Journal, Ledger, Lock, MAX_CLAUDE_JSON, Op, PHASE_INCONSISTENT,
     State,
@@ -15,6 +17,8 @@ use super::state::{
 use super::usage::{self, Attribution, RateLimits};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::rotate::CheckNote;
+use crate::commands::profile::rotate::identify::Account;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -181,23 +185,15 @@ pub fn snapshot_account(state: &State, name: &str) {
     }
 }
 
-/// The `accountUuid` of the account that owns `name`'s login, for the
-/// duplicate-account note: the saved block while `name`'s directory hosts
-/// another account, else the directory's own `.claude.json`. Read-only.
-pub fn account_uuid(state: &State, name: &str, hosting: bool) -> Option<String> {
-    let block = if hosting {
-        state.read_sub_json("accounts", name).ok()??
+/// The account that owns `name`'s login, for the duplicate-login checks:
+/// the saved block while `name`'s directory hosts another account, else the
+/// directory's own `.claude.json`. Read-only.
+pub fn account(state: &State, name: &str, hosting: bool) -> Option<Account> {
+    if hosting {
+        Account::from_block(&state.read_sub_json("accounts", name).ok()??)
     } else {
-        read_claude_json(&state.profile_dir(name))?
-            .0
-            .get("oauthAccount")?
-            .clone()
-    };
-    block
-        .get("accountUuid")?
-        .as_str()
-        .filter(|u| !u.is_empty())
-        .map(str::to_string)
+        Account::of_dir(&state.profile_dir(name))
+    }
 }
 
 /// Sets `oauthAccount` in `dir`'s `.claude.json` to `account`'s saved block,
@@ -395,25 +391,28 @@ fn return_dir(
     Ok(())
 }
 
-/// Removes rerun buffers whose supervisor (`<pid>-<n>.out`) is no longer
-/// running, and any buffer older than 24 hours. Best effort: errors are
-/// ignored because every later `recover` retries the same sweep.
 fn cleanup_rerun(state: &State) {
-    let Ok(entries) = fs::read_dir(state.dir.join("rerun")) else {
+    sweep_rerun(&state.dir.join("rerun"));
+}
+
+/// Removes regular `<pid>-<n>.out` files in `dir` (no recursion) whose
+/// supervisor is gone or that are over 24 h old. Other names are left.
+pub(crate) fn sweep_rerun(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for e in entries.flatten() {
-        if !e.file_type().is_ok_and(|t| t.is_file()) {
+        let file = e.file_type().is_ok_and(|t| t.is_file());
+        let Some(pid) = rerun_owner(&e.file_name()).filter(|_| file) else {
             continue;
-        }
+        };
         let old = e
             .metadata()
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age.as_secs() > RERUN_MAX_AGE_SECS);
-        let orphan = rerun_owner(&e.file_name()).is_some_and(|pid| !pid_running(pid));
-        if old || orphan {
+        if old || !pid_running(pid) {
             let _ = fs::remove_file(e.path());
         }
     }
@@ -474,10 +473,16 @@ pub fn swap_check(
     cfg: &Config,
 ) -> Result<(), ProfileError> {
     let now = fsx::now();
-    // Most updates are below the threshold: decide that from the reading
-    // alone, before recovery and the `/proc` scan. The status-line wrapper
-    // ran recovery moments ago in this same update.
-    if !candidate::is_exhausted(Some(&usage::reading_from(rl, now)), cfg.threshold, now) {
+    // Most updates need no move: decide that cheaply, before recovery and
+    // the `/proc` scan. The status-line wrapper ran recovery moments ago in
+    // this same update. On a plan profile, the reading alone decides. On an
+    // overflow profile its own reading does not count (issue #1606: a credit
+    // account at its plan limit is still usable); only a spend block or a
+    // plan profile to move back to is worth the full check.
+    let exhausted =
+        candidate::is_exhausted(Some(&usage::reading_from(rl, now)), cfg.threshold, now);
+    let worth_checking = overflow_precheck(state, owner, cfg, now).unwrap_or(exhausted);
+    if !worth_checking {
         return Ok(());
     }
     let live = match recover(state)? {
@@ -498,6 +503,12 @@ pub fn swap_check(
         return Ok(()); // no file to move (Keychain, logged out, or linked)
     }
     let readings = state.load_usage().accounts;
+    let overflow = OverflowInputs::load(&state.root, cfg, now);
+    let leaving_overflow = overflow.order.iter().any(|o| o.as_str() == current);
+    let need = amplihack_utils::organisation_affinity::Need::of(leaving_overflow, exhausted);
+    if !exhausted && !leaving_overflow {
+        return Ok(()); // the account changed since the first check
+    }
     let pool = Pool {
         profiles,
         readings: &readings,
@@ -506,14 +517,34 @@ pub fn swap_check(
         now,
     };
     // A candidate's home slot must hold its login; when that slot is its own
-    // directory, no running process may be using the directory.
+    // directory, no running process may be using the directory. An API-key
+    // profile is never swapped into a running session: its `.credentials.json`
+    // is no login on its own, so the session would be logged out (#1804).
     let eligible = |c: &ProfileName| {
         let n = c.as_str();
-        ledger.leased_to(n).is_none()
+        !overflow.not_plan.contains(c)
+            && ledger.leased_to(n).is_none()
             && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))
             && (ledger.hosts.contains_key(n) || n == owner.as_str() || !live.is_live(c))
     };
-    let Some(target) = candidate::select(&pool, &current, eligible).cloned() else {
+    let restriction = super::affinity::restrict(
+        state,
+        &ledger,
+        &pool,
+        &overflow,
+        owner.as_str(),
+        &current,
+        need,
+        eligible,
+    );
+    let Some(target) = candidate::select_restricted(
+        &pool,
+        &overflow.pool(),
+        &current,
+        |p| eligible(p) && restriction.allowed.contains(p),
+        |p| restriction.plan_room.contains(p),
+    )
+    .cloned() else {
         return Ok(());
     };
     if !ledger.hosts.contains_key(target.as_str()) {
@@ -522,9 +553,21 @@ pub fn swap_check(
     if current == owner.as_str() {
         snapshot_account(state, owner.as_str());
     }
+    let source_org = restriction.source_org.clone();
+    let target_org = restriction.org_of(&target).map(str::to_owned);
     let Some(ino) = take_refresh_lock(state, owner.as_str()) else {
         return Ok(());
     };
+    // `eligible` keeps every API-key profile out, so no login check applies.
+    let reason = per_token::reason(
+        &pool,
+        &overflow,
+        cfg,
+        &current,
+        &target,
+        CheckNote::NoSpendBlock,
+    );
+    per_token::record(&state.root, reason.as_deref());
     let j = Journal {
         version: 1,
         op: Op::Swap,
@@ -538,15 +581,98 @@ pub fn swap_check(
         fingerprint: Some(usage::fingerprint(rl)),
         refresh_lock_ino: Some(ino),
     };
-    let result = transfer(state, &mut ledger, j);
+    // The organisations this decision used must still hold before the
+    // move: a record rewritten in between could turn the swap into a
+    // crossing the policy refused. Two record reads, not a fresh selection.
+    let unchanged = super::super::organisation::resolve(state, &ledger, owner.as_str())
+        == source_org
+        && super::super::organisation::resolve_login(state, target.as_str()) == target_org;
+    let result = if unchanged {
+        transfer(state, &mut ledger, j)
+    } else {
+        Err(invariant("organisation affinity changed before swap"))
+    };
     release_refresh_lock(state, owner.as_str(), Some(ino));
     result?;
+    super::affinity::record_swap(
+        state,
+        owner.as_str(),
+        &current,
+        target.as_str(),
+        source_org.as_deref(),
+        target_org.as_deref(),
+        now,
+    );
+    let why = if !leaving_overflow {
+        "reached the auto-switch threshold"
+    } else if !candidate::overflow_usable(&current, &overflow.blocked) {
+        "is an overflow profile that reached its spend limit"
+    } else {
+        "is an overflow profile and a plan profile has capacity again"
+    };
     eprintln!(
-        "amplihack: profile {current:?} reached the auto-switch threshold; the session in profile {:?} now uses the login of profile {:?}",
+        "amplihack: profile {current:?} {why}; the session in profile {:?} now uses the login of profile {:?}",
         owner.as_str(),
         target.as_str()
     );
     Ok(())
+}
+
+/// The status line's cheap pre-check for a session whose account in
+/// `owner`'s directory is an overflow profile: `Some(true)` when the full
+/// check may move it, `Some(false)` when it cannot, `None` when the account
+/// is not an overflow profile (the reading alone decides then). It may move
+/// when the profile has a spend block, or when some plan profile may be
+/// moved back to ([`candidate::way_off`]): the tests the selection applies
+/// ([`candidate::overflow_usable`] and steps 1 and 2 of
+/// `select_with_overflow`), on the same inputs ([`OverflowInputs`]), so the
+/// check does not pass on readings the selection then refuses, nor stop one
+/// it would act on. The overflow profile's own reading plays no part.
+/// Reads the ledger, `usage.json`, the spend blocks and the gate; no
+/// recovery, no `/proc` scan.
+fn overflow_precheck(state: &State, owner: &ProfileName, cfg: &Config, now: i64) -> Option<bool> {
+    // Nothing marked means no overflow account: skip reading every login.
+    if cfg.overflow_order().is_empty() {
+        return None;
+    }
+    let ledger = state.load_ledger().ok()?;
+    let account = ProfileName::parse(ledger.account_in(owner.as_str())).ok()?;
+    // Issue #1700: the API-key profile is in the order too.
+    let overflow = OverflowInputs::load(&state.root, cfg, now);
+    if !overflow.order.contains(&account) {
+        return None;
+    }
+    let readings = state.load_usage().accounts;
+    Some(overflow_may_move(&account, cfg, &overflow, &readings, now))
+}
+
+/// The decision of [`overflow_precheck`] for a session on overflow profile
+/// `account`, from what it read. Pure.
+pub(super) fn overflow_may_move(
+    account: &ProfileName,
+    cfg: &Config,
+    overflow: &OverflowInputs,
+    readings: &std::collections::BTreeMap<String, usage::Reading>,
+    now: i64,
+) -> bool {
+    if !candidate::overflow_usable(account.as_str(), &overflow.blocked) {
+        return true;
+    }
+    // Issue #1700: from the API key, a usable credit profile is a way off.
+    if overflow.platform.as_ref() == Some(account)
+        && overflow.order.iter().any(|o| {
+            Some(o) != overflow.platform.as_ref()
+                && !cfg.exclude.contains(o)
+                && candidate::overflow_usable(o.as_str(), &overflow.blocked)
+        })
+    {
+        return true;
+    }
+    readings
+        .iter()
+        .filter_map(|(name, r)| ProfileName::parse(name).ok().map(|n| (n, r)))
+        .filter(|(n, _)| overflow.pool().is_plan(n) && !cfg.exclude.contains(n))
+        .any(|(_, r)| candidate::way_off(Some(r), overflow.gate.as_ref(), cfg.threshold, now))
 }
 
 // ---------------------------------------------------------------------------

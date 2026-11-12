@@ -43,34 +43,13 @@ enum Evidence {
     /// The same, from the `profile rotate` ledger.
     Rotate(Option<serde_json::Value>),
     /// The account in `~/.claude.json` the profile matched.
-    Account(Account),
+    #[cfg(unix)]
+    Account(super::rotate::identify::Account),
 }
 
-#[cfg_attr(not(unix), allow(dead_code))]
-#[derive(Debug, Clone, PartialEq)]
-struct Account {
-    uuid: Option<String>,
-    /// Lower-cased.
-    email: Option<String>,
-}
-
-#[cfg_attr(not(unix), allow(dead_code))]
-impl Account {
-    /// The uuids decide when both have one; otherwise the e-mails do.
-    fn same(&self, other: &Self) -> bool {
-        match (&self.uuid, &other.uuid) {
-            (Some(a), Some(b)) => a == b,
-            _ => matches!((&self.email, &other.email), (Some(a), Some(b)) if a == b),
-        }
-    }
-}
-
-/// Whether `live` is still the live profile, by the same evidence. A
-/// profile that became live after `live` was detected, or a swap away and
-/// back under a ledger without `since`, is not seen.
-pub(super) fn still_live(store: &ProfileStore, home: Option<&Path>, live: &Live) -> bool {
-    detect(store, home).0.as_ref() == Some(live)
-}
+#[path = "usage_live.rs"]
+mod usage_live;
+pub(super) use usage_live::still_live;
 
 /// Whether `name` could be the live profile: only a profile directory
 /// without its own login can be. Used to skip warnings that cannot concern
@@ -89,6 +68,79 @@ pub(super) fn could_be_live(store: &ProfileStore, name: &super::name::ProfileNam
     {
         let _ = (store, name);
         false
+    }
+}
+
+/// The live profile's name, without the warning: `None` when nothing is
+/// live, detection is ambiguous or fails, `home` is `None`, or on platforms
+/// without the login file.
+pub(super) fn live_name(
+    store: &ProfileStore,
+    home: Option<&Path>,
+) -> Option<super::name::ProfileName> {
+    detect(store, home).0.map(|l| l.name)
+}
+
+/// The live login by the rotator ledgers alone, for the status line in
+/// `~/.claude` (issue #1745).
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct LedgerLive {
+    pub(super) name: super::name::ProfileName,
+    /// The winning ledger's `since`, in epoch seconds.
+    pub(super) since: Option<f64>,
+}
+
+/// The login the rotator ledgers name (issue #1745). Reads the `profile
+/// rotate` ledger and the prototype's once each, under the same trust rules
+/// as [`detect`], and nothing else: no login file, no `~/.claude.json`, no
+/// profile listing. A ledger that is absent, untrusted or names nobody
+/// (`live` missing, null or empty) counts as absent. With two, the later `since` wins; on a tie the rotate
+/// ledger wins, and a ledger without `since` is older. `None` when the
+/// winner's `live` is not a valid profile name.
+#[cfg(unix)]
+pub(super) fn ledger_live(store: &ProfileStore) -> Option<LedgerLive> {
+    let named = |l: unix::Ledger| match l {
+        unix::Ledger::Valid(l)
+            if l.live
+                .as_ref()
+                .is_some_and(|v| !v.is_null() && v.as_str() != Some("")) =>
+        {
+            Some(l)
+        }
+        _ => None,
+    };
+    let rotate = named(unix::rotate(store.root()));
+    let proto = named(unix::prototype(store.root()));
+    let winner = match (rotate, proto) {
+        (Some(r), Some(p)) => {
+            if newer(unix::since(&p), unix::since(&r)) {
+                p
+            } else {
+                r
+            }
+        }
+        (r, p) => r.or(p)?,
+    };
+    let name = winner
+        .live
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .and_then(|s| super::name::ProfileName::parse(s).ok())?;
+    Some(LedgerLive {
+        name,
+        since: unix::since(&winner),
+    })
+}
+
+/// Whether `a` is strictly later than `b`; a missing `since` is older than
+/// any.
+#[cfg(unix)]
+fn newer(a: Option<f64>, b: Option<f64>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a > b,
+        (Some(_), None) => true,
+        _ => false,
     }
 }
 
@@ -138,13 +190,13 @@ mod since;
 #[cfg(unix)]
 mod unix {
     use super::super::auto_switch::{
-        CREDS, check_root_private, euid, exists, read_bounded_nofollow, read_claude_json,
-        writable_by_others,
+        CREDS, check_root_private, euid, exists, read_bounded_nofollow, writable_by_others,
     };
     use super::super::name::ProfileName;
+    use super::super::rotate::identify::Account;
     use super::super::store::ProfileStore;
     use super::{
-        AMBIGUOUS_WARNING, Account, Evidence, LEDGER_WARNING, LIST_WARNING, Live, OWN_LOGIN_WARNING,
+        AMBIGUOUS_WARNING, Evidence, LEDGER_WARNING, LIST_WARNING, Live, OWN_LOGIN_WARNING,
     };
     use serde::Deserialize;
     use std::fs;
@@ -161,9 +213,6 @@ mod unix {
     pub(super) struct RotatorLedger {
         pub(super) live: Option<serde_json::Value>,
         since: Option<serde_json::Value>,
-        /// The rotate ledger's account key (uuid, else e-mail) of `live`.
-        #[serde(default)]
-        account: Option<serde_json::Value>,
     }
 
     pub(super) enum Ledger {
@@ -183,14 +232,13 @@ mod unix {
         }
         let proto = || from(store, home, prototype(store.root()), Evidence::Ledger);
         // A rotate ledger that names nobody (an alert, an idle cycle) says
-        // nothing about who is live, so it counts as absent.
-        // So does one whose account is not the one in `~/.claude.json`: a
-        // hand change the rotator alerts on and does not record.
+        // nothing about who is live, so it counts as absent. One that names
+        // a profile is taken at its word (issue #1886): `~/.claude.json`
+        // can still name the previous account for minutes after a swap.
         let rotate = match rotate(store.root()) {
             Ledger::Valid(r) if r.live.as_ref().is_none_or(serde_json::Value::is_null) => {
                 Ledger::Absent
             }
-            Ledger::Valid(r) if !account_matches(&r, home) => Ledger::Absent,
             l => l,
         };
         match rotate {
@@ -214,21 +262,7 @@ mod unix {
         }
     }
 
-    /// Whether the ledger's account, if it records one, is the account in
-    /// `~/.claude.json`.
-    fn account_matches(l: &RotatorLedger, home: &Path) -> bool {
-        let Some(key) = l.account.as_ref().and_then(serde_json::Value::as_str) else {
-            return true;
-        };
-        account(home).is_some_and(|a| {
-            a.uuid.as_deref() == Some(key)
-                || a.email
-                    .as_deref()
-                    .is_some_and(|e| e.eq_ignore_ascii_case(key))
-        })
-    }
-
-    fn since(l: &RotatorLedger) -> Option<f64> {
+    pub(super) fn since(l: &RotatorLedger) -> Option<f64> {
         super::since::epoch_secs(l.since.as_ref()?)
     }
 
@@ -272,7 +306,7 @@ mod unix {
     }
 
     /// The `profile rotate` ledger, under the same trust rules.
-    fn rotate(root: &Path) -> Ledger {
+    pub(super) fn rotate(root: &Path) -> Ledger {
         match fs::symlink_metadata(root.join(ROTATE_DIRS[0])) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ledger::Absent,
             Err(_) => return Ledger::Bad(LIST_WARNING),
@@ -348,26 +382,8 @@ mod unix {
         }))
     }
 
-    /// `oauthAccount` in `dir/.claude.json`. An empty or non-string value
-    /// counts as missing.
-    fn account(dir: &Path) -> Option<Account> {
-        let (v, _) = read_claude_json(dir)?;
-        let block = v.get("oauthAccount")?;
-        let field = |k: &str| {
-            block
-                .get(k)
-                .and_then(serde_json::Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        };
-        Some(Account {
-            uuid: field("accountUuid"),
-            email: field("emailAddress").map(|e| e.to_lowercase()),
-        })
-    }
-
     fn from_account(store: &ProfileStore, home: &Path) -> (Option<Live>, Option<&'static str>) {
-        let Some(home_account) = account(home) else {
+        let Some(home_account) = Account::of_dir(home) else {
             return (None, None);
         };
         let Ok(names) = store.list() else {
@@ -378,7 +394,7 @@ mod unix {
             .filter_map(|n| ProfileName::parse(n).ok())
             .filter(|n| {
                 login_less_dir(store, n)
-                    .and_then(|dir| account(&dir))
+                    .and_then(|dir| Account::of_dir(&dir))
                     .is_some_and(|a| a.same(&home_account))
             });
         match (matched.next(), matched.next()) {

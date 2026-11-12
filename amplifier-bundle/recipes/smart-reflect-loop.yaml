@@ -17,7 +17,9 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
-context: {}
+context:
+  # Issue #1740: set by select-workflow; quick-change runs skip these steps.
+  selected_workflow: ""
 
 steps:
   # ─────────────────────────────────────────────────────────────────────────
@@ -28,7 +30,7 @@ steps:
   - id: "reflect-round-1"
     type: "agent"
     condition: |
-      'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result
+      'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result and selected_workflow != 'quick-change'
     agent: "amplihack:core:reviewer"
     prompt: |
       Evaluate goal achievement after round 1.
@@ -81,6 +83,12 @@ steps:
           gh pr checks --required
           # or, for a specific branch: gh pr checks --required <branch>
 
+      Waiting (issue #1794): if checks are still running, do not poll with
+      `tail -f /dev/null` or `timeout N tail -f /dev/null`; the `tail` outlives
+      the tool call as an orphan and the PreToolUse hook denies it. Wait with
+      `amplihack wait --seconds N`, or run a command in the background and
+      `wait $pid`.
+
       Apply this rule UNLESS the environment variable
       AMPLIHACK_DISABLE_PR_GREEN_SHORTCIRCUIT is set to a truthy value
       (`1`/`true`), in which case skip this rule entirely and evaluate normally:
@@ -119,7 +127,7 @@ steps:
   - id: "execute-round-2"
     type: "agent"
     condition: |
-      reflection_1 and (reflection_1.goal_status == 'PARTIAL' or reflection_1.goal_status == 'NOT_ACHIEVED' or reflection_1.goal_status == 'HOLLOW')
+      reflection_1 and (reflection_1.goal_status == 'PARTIAL' or reflection_1.goal_status == 'NOT_ACHIEVED' or reflection_1.goal_status == 'HOLLOW') and selected_workflow != 'quick-change'
     agent: "amplihack:core:builder"
     prompt: |
       Round 1 was incomplete. Continue from where it left off.
@@ -136,7 +144,7 @@ steps:
   - id: "reflect-round-2"
     type: "agent"
     condition: |
-      round_2_result and (reflection_1.goal_status == 'PARTIAL' or reflection_1.goal_status == 'NOT_ACHIEVED')
+      round_2_result and (reflection_1.goal_status == 'PARTIAL' or reflection_1.goal_status == 'NOT_ACHIEVED') and selected_workflow != 'quick-change'
     agent: "amplihack:core:reviewer"
     prompt: |
       Evaluate goal achievement after round 2.
@@ -158,6 +166,12 @@ steps:
       pending/failing/closed/draft/no-PR/empty-required-check-set or unknown
       states — in those cases evaluate normally and prefer continuing.
 
+      Waiting (issue #1794): if checks are still running, do not poll with
+      `tail -f /dev/null` or `timeout N tail -f /dev/null`; the `tail` outlives
+      the tool call as an orphan and the PreToolUse hook denies it. Wait with
+      `amplihack wait --seconds N`, or run a command in the background and
+      `wait $pid`.
+
       End with EXACTLY one JSON object as your final line (issue #1062 finding
       C: the loop reads a structured `goal_status` field, not substring-matched
       prose):
@@ -174,7 +188,7 @@ steps:
   - id: "execute-round-3"
     type: "agent"
     condition: |
-      reflection_2 and (reflection_2.goal_status == 'PARTIAL' or reflection_2.goal_status == 'NOT_ACHIEVED')
+      reflection_2 and (reflection_2.goal_status == 'PARTIAL' or reflection_2.goal_status == 'NOT_ACHIEVED') and selected_workflow != 'quick-change'
     agent: "amplihack:core:builder"
     prompt: |
       Final round. Complete as much remaining work as possible.
@@ -190,7 +204,7 @@ steps:
 
   - id: "reflect-final"
     type: "agent"
-    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result"
+    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result and selected_workflow != 'quick-change'"
     agent: "amplihack:core:reviewer"
     prompt: |
       Final assessment after all execution rounds.
@@ -216,6 +230,12 @@ steps:
       override it. NEVER conclude ACHIEVED via this rule on
       pending/failing/closed/draft/no-PR/empty-required-check-set or unknown
       states; evaluate normally in those cases.
+
+      Waiting (issue #1794): if checks are still running, do not poll with
+      `tail -f /dev/null` or `timeout N tail -f /dev/null`; the `tail` outlives
+      the tool call as an orphan and the PreToolUse hook denies it. Wait with
+      `amplihack wait --seconds N`, or run a command in the background and
+      `wait $pid`.
 
       Was the overall goal achieved? Summarize what was done.
       End with `GOAL_STATUS: ACHIEVED`, `GOAL_STATUS: PARTIAL -- [gaps]`,

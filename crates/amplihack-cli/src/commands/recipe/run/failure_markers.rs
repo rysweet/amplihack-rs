@@ -3,7 +3,9 @@
 //! Held apart from the classification logic so each file stays inside the
 //! brick budget (#1437). Every entry is lowercase: the classifier lowercases
 //! the evidence before matching. Precedence between the tables is decided in
-//! `failure_class::classify_failure_text`, not by their order here.
+//! `failure_class::classify_failure_text`, not by their order here. The
+//! usage-limit markers are not here: they live with the other limit patterns
+//! in `limit_patterns` (#1618).
 
 /// The literal line a structural guard prints when it refuses to spawn
 /// (`terminal_block` in `execute.rs`, issues #1326/#1327/#1329/#1332).
@@ -142,33 +144,6 @@ pub(super) const WORK_MARKERS: &[&str] = &[
     "syntaxerror",
     "merge conflict",
     "hook failed",
-];
-
-/// Markers for an account usage / session limit (issue #1390).
-///
-/// These are deliberately NOT in `TRANSIENT_MARKERS`. A 429 or an overload
-/// envelope clears in seconds and is worth retrying inside the budget. A usage
-/// limit clears when the stated reset time arrives, which is typically hours
-/// away -- retrying it inside a minutes-long budget cannot succeed.
-///
-/// Note what is absent: a bare "rate limit". That phrase belongs to the
-/// short-lived envelopes above and must keep its existing meaning.
-///
-/// Issue #1546: "weekly limit" and "spend limit" are listed explicitly,
-/// because "monthly limit" does not match "monthly spend limit". "daily
-/// limit" is deliberately absent too: provider and GitHub API daily request
-/// quotas use that phrase and clear on their own, so listing it would stop
-/// retrying them. List order does not pick the reported signal --
-/// `first_match` reports the marker that appears earliest in the text.
-pub(super) const USAGE_LIMIT_MARKERS: &[&str] = &[
-    "session limit",
-    "usage limit",
-    "usage_limit_reached",
-    "quota exceeded",
-    "monthly limit",
-    "weekly limit",
-    "spend limit",
-    "credit balance is too low",
 ];
 
 /// Markers for an agent transport / model-endpoint rejection (issue #1437).

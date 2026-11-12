@@ -103,6 +103,7 @@ always pre-empt an in-flight turn.
   membership is verified before every outbound post, the daemon must be
   loopback-only, and every accepted prompt is audit-logged (redacted). Do not
   pass `--dangerous-all-tools` unless you fully trust the group membership.
+- **tmux:** run `kill-server` and `kill-session -a` only with `-S <private socket>` or `-L <name>`, for a server you started; inside a tmux pane `$TMUX` overrides `TMUX_TMPDIR`, so without them the command reaches the user's own server, and a PreToolUse hook denies it.
 
 ## Prerequisites
 

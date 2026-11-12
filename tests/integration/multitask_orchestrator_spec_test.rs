@@ -10,6 +10,15 @@ fn multitask_dir() -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../crates/amplihack-cli/src/commands/multitask")
 }
 
+/// `*_tests.rs` modules quote template lines such as `exec bash launcher.sh`
+/// without being the template. Skipping them keeps the template checks
+/// independent of `read_dir` order.
+fn is_test_module(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.ends_with("_tests"))
+}
+
 // ========================================================================
 // SPEC 1: BRICK LIMIT — every file ≤ 400 LOC
 // ========================================================================
@@ -112,7 +121,7 @@ fn launcher_template_invokes_amplihack_recipe_run() {
 fn run_sh_template_uses_bash_not_python() {
     for entry in fs::read_dir(multitask_dir()).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") || is_test_module(&path) {
             continue;
         }
         let content = fs::read_to_string(&path).unwrap();
@@ -201,7 +210,7 @@ fn no_bare_mutex_unwrap() {
 fn run_sh_exports_session_tree_vars() {
     for entry in fs::read_dir(multitask_dir()).unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+        if path.extension().and_then(|e| e.to_str()) != Some("rs") || is_test_module(&path) {
             continue;
         }
         let content = fs::read_to_string(&path).unwrap();

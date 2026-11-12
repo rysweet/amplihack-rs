@@ -34,21 +34,19 @@ tags: ["loop", "convergence", "evaluation", "verdict", "agentic", "issue-1337"]
 #     round-N+1 condition is false, so nothing proceeds either way.
 #
 # JSON-object step outputs get only `RECIPE_VAR_<name>` from recipe-runner-rs,
-# so every step-output read below uses the dual-name idiom; drop it and the
-# recipe goes silently inert.
+# so every step-output read below uses that name alone (#1561); a bare name
+# would be inherited from whatever launched the runner, never this run's output.
 #
-# No step in this file declares a timeout. Per issue #439 the recipe runner
-# owns the ceiling; there is deliberately no seconds-scale or single-digit-
-# minute bound on any step here.
+# No step here declares a timeout: per issue #439 the recipe runner owns the
+# ceiling, so no step has a seconds-scale or single-digit-minute bound.
 
 recursion:
   max_depth: 6
   max_total_steps: 20
 
 context:
-  # Identity / reporting only. `loop_round_label` is a LABEL printed in the
-  # escalation report — it is never compared against a limit and nothing in
-  # this recipe branches on it.
+  # Identity / reporting only. `loop_round_label` is a LABEL in the escalation
+  # report: never compared against a limit, and nothing here branches on it.
   loop_name: "unnamed-loop"
   loop_round_label: ""
   # Accumulated structured verdicts from every round so far (concatenated JSON
@@ -66,31 +64,26 @@ context:
   loop_test_signal_previous: ""
   loop_ci_signal: ""
   loop_ci_signal_previous: ""
-  # When "false", step-04 reports STUCK loudly but exits 0, leaving the stop
-  # decision entirely to the caller's `condition:`. Default is to enforce.
+  loop_clean_token: ""    # #1597: the verdict that makes a round clean (CLEAN, MERGE_READY)
+  loop_round_verdict: ""  # #1597: the reviewer's verdict for the round just finished
+  # "false": step-04 reports STUCK loudly but exits 0; the caller's `condition:` owns the stop.
   loop_health_enforce: "true"
+  # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
+  loop_evidence: ""
+  loop_health_assessment: ""
 
 steps:
   # ---------------------------------------------------------------------------
-  # Step 1 — collect the evidence deterministically.
-  #
-  # Its own brick (`loop-evidence-collector.yaml`), testable without a model:
-  # git counts, token repetition, set differences over findings, literal
-  # signal comparison — measured, not impressed. Step-02 gets that AS DATA
-  # beside the raw material, so its judgement is anchored to observations.
-  # The sub-recipe's `loop_evidence` output lands in this recipe's context, so
-  # step-02's `condition:` and the reads below see it as a local step's.
+  # Step 1 — collect the evidence deterministically in its own brick (`loop-evidence-collector.yaml`,
+  # testable without a model). Step-02 gets it AS DATA beside the raw material; the `loop_evidence`
+  # output lands in this context, so step-02's `condition:` reads it as local.
   # ---------------------------------------------------------------------------
   - id: "step-01-collect-loop-evidence"
     type: "recipe"
     recipe: "loop-evidence-collector"
 
   # ---------------------------------------------------------------------------
-  # Step 2 — the agentic judgement.
-  #
-  # Skipped entirely on a terminal policy refusal: exit 79 is already a final
-  # answer from a structural guard, and asking a model whether to re-enter it
-  # is exactly the "retry into the guard" behaviour #1327 was written to stop.
+  # Step 2 — the agentic judgement. Skipped on a terminal policy refusal: exit 79 is a guard's final answer.
   # ---------------------------------------------------------------------------
   - id: "step-02-evaluate-loop-health"
     condition: "loop_evidence.terminal_refusal == 'false'"
@@ -129,8 +122,8 @@ steps:
       Read those fields literally:
 
       - `commits_since_baseline` / `diff_lines` / `diff_stat` — what the last
-        round ACTUALLY produced. Zero and zero means it produced nothing,
-        whatever the round's prose claims.
+        round ACTUALLY changed in the tree. Zero and zero means no code moved,
+        whatever the prose claims; acting on findings outside the diff: DONE rule.
       - `repeated_duration_count` / `repeated_duration_value` — how many steps
         reported the *same* duration. Identical durations repeating are a
         ceiling being hit, not work being done.
@@ -177,12 +170,24 @@ steps:
         (new diff, resolved findings, changed test/CI signal) and a plausible
         next step. Say what specifically moved.
       - `DONE` — the loop's objective is met; the next phase should advance.
+        If `loop_clean_token` is empty, judge by this round's reviewer verdict
+        in the history above, if any. Otherwise DONE is legal only when this
+        round's own verdict `{{loop_round_verdict}}` equals `{{loop_clean_token}}`.
+        A non-clean round (CONCERNS, NOT_MERGE_READY, ...) is never `DONE`, even
+        if a commit or PR edit seems to address every finding: only another
+        review confirms a fix. Such a round is `CONTINUE` if it acted on its
+        findings, EVEN WITH ZERO COMMITS: a PR-description edit or a thread reply
+        the round output shows counts as moved, and the re-review is the next
+        step (#1597). `STUCK` only if it neither changed code nor acted on a
+        finding. A history line ending `done_overridden=1` is a DONE refused as
+        non-clean.
       - `STUCK` — no progress is being made. Say precisely WHAT is not
         converging, with the specific evidence, so a human or a parent workflow
         can act on it instead of burning the rest of the budget.
 
-      If you are not sure, answer `STUCK`. Stopping and escalating costs one
-      round; looping on a dead loop costs the whole budget.
+      If you are not sure, answer `STUCK`; a round that visibly acted on its
+      findings is not in doubt. Stopping and escalating costs one round;
+      looping on a dead loop costs the whole budget.
 
       ## OUTPUT CONTRACT (repeated)
 
@@ -204,8 +209,7 @@ steps:
 
       {"loop_verdict":"STUCK","not_converging":[]}
 
-      CONTINUE, DONE and STUCK are the only legal `loop_verdict` values;
-      any other word is STUCK.
+      Only CONTINUE, DONE and STUCK are legal; any other word is STUCK.
     output: "loop_health_assessment"
 
   # ---------------------------------------------------------------------------
@@ -215,10 +219,8 @@ steps:
     type: "bash"
     command: |
       set -uo pipefail
-      # DUAL-NAME READ (required): recipe-runner-rs adds the plain alias only for
-      # SCALAR outputs, and both outputs read here are usually JSON objects.
-      RAW="${LOOP_HEALTH_ASSESSMENT:-${RECIPE_VAR_loop_health_assessment:-}}"
-      EV="${LOOP_EVIDENCE:-${RECIPE_VAR_loop_evidence:-}}"
+      RAW="${RECIPE_VAR_loop_health_assessment:-}"
+      EV="${RECIPE_VAR_loop_evidence:-}"
       # Caller and evidence text reaches the JSON and the messages only after
       # jsafe: quotes, backslashes and control bytes are deleted, never escaped.
       jsafe() { LC_ALL=C tr -d '"\\[:cntrl:]'; }
@@ -337,16 +339,14 @@ steps:
     parse_json: true
 
   # ---------------------------------------------------------------------------
-  # Step 4 — enforce. A caller that forgot to write the CONTINUE condition
-  # still stops, because STUCK exits non-zero here.
+  # Step 4 — enforce: STUCK exits non-zero, so a caller without a CONTINUE condition still stops.
   # ---------------------------------------------------------------------------
   - id: "step-04-enforce-loop-verdict"
     type: "bash"
     command: |
       set -uo pipefail
-      # step-03 declares parse_json, so LOOP_HEALTH is an object and the runner
-      # never creates the plain alias — see the dual-name note in step-03.
-      HEALTH_JSON=$(printf '%s' "${LOOP_HEALTH:-${RECIPE_VAR_loop_health:-}}" \
+      # Step outputs are read as RECIPE_VAR_<key> only (#1561).
+      HEALTH_JSON=$(printf '%s' "${RECIPE_VAR_loop_health:-}" \
         | amplihack orch helper extract-json)
       VERDICT=$(printf '%s' "$HEALTH_JSON" \
         | amplihack orch helper extract-field --field loop_verdict --default STUCK \
@@ -375,7 +375,7 @@ steps:
           {
             echo "LOOP_HEALTH: STUCK — '${NAME}' is not converging (source=${SOURCE}). [loop-health-evaluator]"
             echo "  Round: $(printf '%s' "${LOOP_ROUND_LABEL:-?}" | jsafe)"
-            echo "  Evidence: $(printf '%s' "${LOOP_EVIDENCE:-${RECIPE_VAR_loop_evidence:-<none>}}" | jsafe | head -c 2000)"
+            echo "  Evidence: $(printf '%s' "${RECIPE_VAR_loop_evidence:-<none>}" | jsafe | head -c 2000)"
             echo "  Not converging: ${DETAIL}"
             echo "  No further round is authorised. This is a judgement about absence of progress, not an attempt count."
           } >&2

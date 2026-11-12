@@ -206,6 +206,12 @@ mod tests {
 
         let over = MAX_INJECTED_CONTENT_SIZE + 1234;
         tracing::subscriber::with_default(subscriber, || {
+            // The global max level and callsite interest are shared by every
+            // test thread. Another test's subscriber being created or dropped
+            // can rebuild them concurrently from a dispatcher list that misses
+            // this one, leaving WARN disabled and the event unrecorded. Rebuild
+            // here, with this subscriber registered, before emitting.
+            tracing::callsite::rebuild_interest_cache();
             let _ = sanitize_injected_content(&"a".repeat(over));
         });
 

@@ -11,6 +11,7 @@
 #![cfg(unix)]
 
 use crate::support::amplihack_bin::amplihack_bin;
+use crate::support::profile_default::{give_logins, set_default};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -23,7 +24,7 @@ fn executable(path: &Path, body: &str) {
 /// starts a nested launch; the nested one (second run) only records.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.0 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 record() {
   {
@@ -42,6 +43,7 @@ record nested
 "#;
 
 struct Fixture {
+    identity: Option<crate::support::profile_default::LoginIdentities>,
     _tmp: tempfile::TempDir,
     home: PathBuf,
     root: PathBuf,
@@ -62,7 +64,8 @@ impl Fixture {
             fs::create_dir_all(d).unwrap();
         }
         executable(&tools.join("claude"), FAKE_CLAUDE);
-        let f = Self {
+        let mut f = Self {
+            identity: None,
             _tmp: tmp,
             home,
             root,
@@ -70,9 +73,13 @@ impl Fixture {
             work,
             tools,
         };
-        for name in ["X", "Y", "Z"] {
+        for name in ["W", "X", "Y", "Z"] {
             f.ok(&["profile", "add", name]);
         }
+        // Since #1691 the fake `claude`'s `profile switch` moves a login into
+        // `~/.claude`, so there must be one to move: W's is live, and X, Y
+        // and Z each have one stored.
+        f.identity = Some(give_logins(&f.home, &f.root, "W", &["X", "Y", "Z"]));
         f
     }
 
@@ -80,10 +87,16 @@ impl Fixture {
     /// developer's own amplihack session cannot leak a profile or session
     /// variable into the test.
     fn cmd(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(amplihack_bin());
+        let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
         c.args(args)
             .current_dir(&self.work)
             .env_clear()
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env(
+                crate::isolated_amplihack::PROC_ROOT_ENV,
+                crate::isolated_amplihack::shared_empty_proc_root(),
+            )
+            .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),
@@ -97,6 +110,8 @@ impl Fixture {
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
+            // Launches never start a real background rotator here (autostart).
+            .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
             .env("AMPLIHACK_SKIP_REFLECTION", "1");
         // Belt and braces: `env_clear` already removed these.
         for var in [
@@ -117,6 +132,9 @@ impl Fixture {
         }
         // Set after the removal above, which would otherwise drop it.
         c.env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
+        if let Some(identity) = &self.identity {
+            identity.configure(&mut c);
+        }
         c
     }
 
@@ -174,7 +192,7 @@ impl Fixture {
 #[test]
 fn nested_launch_keeps_flag_profile_despite_pointer_and_switch() {
     let f = Fixture::new();
-    f.ok(&["profile", "switch", "Y"]);
+    set_default(&f.root, "Y");
 
     let mut parent = f.cmd(&[
         "claude",
@@ -205,7 +223,7 @@ fn nested_launch_keeps_flag_profile_despite_pointer_and_switch() {
 #[test]
 fn nested_launch_keeps_pointer_profile_resolved_by_parent_after_switch() {
     let f = Fixture::new();
-    f.ok(&["profile", "switch", "X"]);
+    set_default(&f.root, "X");
 
     let mut parent = f.cmd(&["claude", "--subprocess-safe", "--", "-p", "outer"]);
     parent.env("SWITCH_TO", "Y");
@@ -234,7 +252,7 @@ fn nested_launch_keeps_pointer_profile_resolved_by_parent_after_switch() {
 #[test]
 fn nested_launch_receives_the_profile_root() {
     let f = Fixture::new();
-    f.ok(&["profile", "switch", "Y"]);
+    set_default(&f.root, "Y");
 
     let mut parent = f.cmd(&[
         "claude",
@@ -262,7 +280,7 @@ fn nested_launch_receives_the_profile_root() {
 #[test]
 fn nested_launch_inside_profile_run_keeps_its_profile() {
     let f = Fixture::new();
-    f.ok(&["profile", "switch", "Y"]);
+    set_default(&f.root, "Y");
 
     let mut parent = f.cmd(&["profile", "run", "X", "--", "-p", "outer"]);
     parent.env("SWITCH_TO", "Z");

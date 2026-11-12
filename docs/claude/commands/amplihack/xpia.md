@@ -13,6 +13,25 @@ triggers:
 
 XPIA (Cross-Platform Injection Attack) Defense system management and health monitoring.
 
+## XPIA is off by default
+
+XPIA scanning runs only when the agent CLI starts with `XPIA_ENABLED` set to
+`1`, `true` or `yes` (any case). Unset, `false`, `0`, `no` or any other value
+leaves it off:
+
+```bash
+export XPIA_ENABLED=true
+amplihack claude
+```
+
+With XPIA off, the pre-tool-use hook still checks for deletion or renaming of
+the working directory, `git commit` on `main` or `master`, and `--no-verify`.
+Whether that check stops the call depends on the agent CLI: see
+[Enforcement by agent CLI](../../../reference/xpia-configuration.md#enforcement-by-agent-cli).
+
+Do not edit the installed Codex hook wrapper to change this setting. See the
+[XPIA Configuration Reference](../../../reference/xpia-configuration.md).
+
 ## Usage
 
 When you run `/amplihack:xpia [subcommand]`, the system will execute the corresponding XPIA operation.
@@ -25,24 +44,11 @@ Check XPIA security system health and configuration status.
 
 **Usage**: `/amplihack:xpia health [--verbose]`
 
-**What it does**:
-
-- Checks if XPIA hooks are configured in settings.json
-- Verifies XPIA hook files exist and are executable
-- Tests XPIA log directory permissions
-- Validates XPIA modules are importable
-- Provides recommendations for fixing issues
-
-**Example output**:
-
-```
-XPIA Security Health Check
-==================================================
-Overall Status: ✅ Healthy
-Timestamp: 2025-01-23T10:30:45
-
-Summary: 7/7 checks passed
-```
+There is no health-check command behind this subcommand. The script it used
+to run was removed with the Python tree (#637), and nothing in amplihack
+calls `amplihack_security::check_health`, so it prints nothing. To see
+whether XPIA is on, check `XPIA_ENABLED` in the environment that started the
+agent CLI.
 
 ### status
 
@@ -116,9 +122,9 @@ XPIA Defense provides protection against:
 
 XPIA security is integrated at these points:
 
-- **SessionStart**: Initialize security monitoring
-- **PreToolUse**: Validate commands before execution (Bash tool)
-- **PostToolUse**: Monitor command results and log security events
+- **PreToolUse**: Validate tool input before the tool runs, when
+  `XPIA_ENABLED` opts in. This is the only hook that calls XPIA;
+  SessionStart and PostToolUse do not.
 
 ## Troubleshooting
 

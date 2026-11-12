@@ -41,7 +41,10 @@ mod runner_ancestry;
 mod runner_probe;
 mod runner_validation;
 pub use runner_validation::InternalCommands;
+#[cfg(debug_assertions)]
+pub(crate) mod debug_knob;
 pub mod health_check;
+pub(crate) mod install_lock;
 pub mod install_output_contract;
 pub mod launcher;
 pub mod launcher_context;
@@ -64,6 +67,7 @@ pub mod test_support;
 pub mod tool_update_check;
 pub mod uninstall;
 pub mod update;
+pub(crate) mod user_config;
 pub mod util;
 
 use clap::{
@@ -91,7 +95,7 @@ pub const VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
 
 pub use cli_commands::Commands;
 pub use cli_subcommands::{
-    BuilderCommands, HygieneArtifactGuardArgs, HygieneCleanupArgs, HygieneCommands,
+    BuilderCommands, ConfigCommands, HygieneArtifactGuardArgs, HygieneCleanupArgs, HygieneCommands,
     LiteLlmCommands, LiveClient, MIN_CLEANUP_APPLY_OLDER_THAN_HOURS,
     MIN_CLEANUP_APPLY_OLDER_THAN_SECS, MemoryCommands, ModeCommands, MultitaskCommands,
     PluginCommands, QueryCodeCommands, RecipeCommands, ReflectCommands, RemoteCommands,

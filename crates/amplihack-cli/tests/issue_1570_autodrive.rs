@@ -13,8 +13,11 @@
 //!
 //! The loop is driven end to end with a stub `amplihack` first on `PATH` that
 //! records every argv, copies the task file each round names, and plays the
-//! evaluator: CONTINUE after round 1, STUCK after round 2. The loop therefore
-//! runs exactly two rounds and exits 1.
+//! evaluator (through the merge-ready path): CONTINUE after round 1, STUCK after round 2. The loop therefore
+//! runs exactly two rounds and exits 1. Each stub round commits in the PR
+//! worktree, so the rounds make progress and the no-progress rule of #1743
+//! leaves the decision to the evaluator; a stub `gh` first on `PATH` keeps
+//! any stop comment off GitHub.
 //!
 //! The task no longer passes through the environment, so the payload is
 //! 200 KiB, above the 131,072-byte limit on a single argv or environment
@@ -74,6 +77,11 @@ case "${1:-} ${2:-}" in
     fi
     prev=
     for a in "$@"; do
+      if [ "$prev" = "--working-dir" ]; then
+        t="$(git -C "$a" write-tree)"
+        c="$(git -C "$a" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "stub round $n")"
+        git -C "$a" update-ref HEAD "$c"
+      fi
       if [ "$prev" = "--context-from-file" ]; then
         f=${a#task_description=}
         cp -- "$f" "$STUB_STATE/task-seen-$n"
@@ -86,6 +94,10 @@ case "${1:-} ${2:-}" in
 esac
 exit 0
 "#;
+
+/// #1743: a stop decided in code posts a PR comment; this one goes nowhere.
+const GH_STUB: &str =
+    "#!/usr/bin/env bash\nprintf '%s\\0' \"$@\" >> \"$STUB_STATE/gh-calls\"\nexit 0\n";
 
 fn task_payload() -> String {
     let unit = "Fix E2BIG: héllo € 😀 \"quoted\" 'single' $(touch pwned) `touch pwned2` %s -n\n";
@@ -169,6 +181,7 @@ fn drive(task: Option<&str>) -> Run {
     main_checkout_with_worktree(tmp.path(), &cwd, &repo);
     let stub = bin.join("amplihack");
     crate::support::exec_stub::write_executable(&stub, STUB, 0o755);
+    crate::support::exec_stub::write_executable(&bin.join("gh"), GH_STUB, 0o755);
 
     let script = repo_root().join("amplifier-bundle/tools/autodrive_loop.sh");
     let path = format!(
@@ -178,10 +191,10 @@ fn drive(task: Option<&str>) -> Run {
     );
     let out = Command::new("bash")
         .arg(&script)
-        .args(["--loop-name", "crusty"])
-        .args(["--round-recipe", "autodrive-crusty-round"])
-        .args(["--clean-token", "CLEAN"])
-        .args(["--verdict-field", "crusty_verdict"])
+        .args(["--loop-name", "merge-ready"])
+        .args(["--round-recipe", "autodrive-merge-round"])
+        .args(["--clean-token", "MERGE_READY"])
+        .args(["--verdict-field", "merge_ready_verdict"])
         .arg("--repo")
         .arg(&repo)
         .arg("--state-dir")
@@ -227,11 +240,11 @@ fn drive(task: Option<&str>) -> Run {
 }
 
 /// Whether `arg` names the crusty round recipe. The loop hands `recipe run`
-/// the launch-side path (`.../recipes/autodrive-crusty-round.yaml`, #1528),
+/// the launch-side path (`.../recipes/autodrive-merge-round.yaml`, #1528),
 /// never the bare name.
 fn is_crusty_round(arg: Option<&String>) -> bool {
     arg.and_then(|a| Path::new(a).file_stem())
-        .is_some_and(|stem| stem == "autodrive-crusty-round")
+        .is_some_and(|stem| stem == "autodrive-merge-round")
 }
 
 fn round_calls(run: &Run) -> Vec<&Vec<String>> {
@@ -291,7 +304,9 @@ fn task_description_is_copied_to_a_private_state_file_and_removed_at_exit() {
         );
     }
     assert!(
-        !run.state_dir.join("crusty-task_description.txt").exists(),
+        !run.state_dir
+            .join("merge-ready-task_description.txt")
+            .exists(),
         "autodrive_loop.sh must remove its copy of the task when it exits"
     );
     assert!(!run.cwd.join("pwned").exists() && !run.cwd.join("pwned2").exists());
@@ -330,7 +345,11 @@ fn a_missing_or_empty_task_file_is_exit_2_and_runs_no_round() {
             round_calls(&run).is_empty(),
             "{label}: no round may run without a task"
         );
-        assert!(!run.state_dir.join("crusty-task_description.txt").exists());
+        assert!(
+            !run.state_dir
+                .join("merge-ready-task_description.txt")
+                .exists()
+        );
     }
 }
 
@@ -351,7 +370,7 @@ fn each_round_passes_the_task_by_file_and_never_in_argv() {
         "exactly two rounds expected; stderr:\n{}",
         run.stderr
     );
-    let expected = run.state_dir.join("crusty-task_description.txt");
+    let expected = run.state_dir.join("merge-ready-task_description.txt");
     for (i, argv) in rounds.iter().enumerate() {
         let path = task_file_arg(argv).unwrap_or_else(|| {
             panic!(

@@ -4,6 +4,15 @@ set -euo pipefail
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 
 mode="${1:-}"
+# collect [--base BRANCH]: BRANCH is the run's base_branch, the base step-16
+# gave the pull request. The evidence's diff is taken against origin/BRANCH;
+# empty keeps origin/HEAD (docs/reference/workflow-delivery-inputs.md).
+FINALIZATION_BASE_BRANCH=""
+if [ "$mode" = collect ] && [ "${2:-}" = "--base" ]; then FINALIZATION_BASE_BRANCH="${3:-}"; fi
+if [ -n "$FINALIZATION_BASE_BRANCH" ] && ! git check-ref-format --branch "$FINALIZATION_BASE_BRANCH" >/dev/null 2>&1; then
+  printf 'ERROR: workflow_agentic_finalization.sh: --base %q is not a valid branch name\n' "$FINALIZATION_BASE_BRANCH" >&2
+  exit 2
+fi
 
 # run_finalization_cleanup (issue #808)
 # Deterministic, fail-soft finalization cleanup invoked before evidence
@@ -21,6 +30,7 @@ run_finalization_cleanup() {
   [ -n "$repo_root" ] || repo_root="$(pwd)"
   worktree="$(workflow_finalization_metadata worktree_path || :)"
   intended="$(workflow_finalization_metadata branch_name || :)"
+  # shellcheck source=/dev/null
   ( . "$helper" 2>/dev/null && finalize_workflow_cleanup_entry "$repo_root" "$worktree" "$intended" ) >&2 || true
   return 0
 }
@@ -31,6 +41,16 @@ boolish() {
     *) printf 'false' ;;
   esac
 }
+
+# The finalization libraries classify origins through the shared GitHub repo
+# identity parser (issue #1642). They only warn and fail closed when it is
+# missing, so the entry point checks it up front: a missing or unreadable
+# helper means a broken install, which must fail loudly before anything runs.
+GITHUB_REPO_HELPER="${WORKFLOW_GITHUB_REPO_HELPER:-$(dirname "${BASH_SOURCE[0]}")/workflow_github_repo.sh}"
+if [ ! -f "$GITHUB_REPO_HELPER" ] || [ ! -r "$GITHUB_REPO_HELPER" ]; then
+  echo "ERROR: workflow GitHub repo helper not found: $GITHUB_REPO_HELPER (workflow_github_repo.sh is required by workflow_agentic_finalization.sh)" >&2
+  exit 2
+fi
 
 . "$(dirname "${BASH_SOURCE[0]}")/workflow_finalization_context.sh"
 
@@ -43,6 +63,10 @@ resolve_pr_number() { workflow_finalization_metadata pr_number || :; }
 here="$(dirname "${BASH_SOURCE[0]}")"
 . "$here/workflow_finalization_metadata.sh"
 . "$here/workflow_finalization_collect.sh"
+. "$here/workflow_gh_retry.sh"
+. "$here/workflow_finalization_pr_signal.sh"
+. "$here/workflow_finalization_open_pr.sh"
+. "$here/workflow_finalization_handoff.sh"
 . "$here/workflow_finalization_validate.sh"
 . "$here/workflow_finalization_complete.sh"
 

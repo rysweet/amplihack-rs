@@ -70,7 +70,9 @@ high-quality code.
 ### Prerequisites
 
 - **Platform**: macOS, Linux, or Windows via WSL. Native Windows is
-  [not supported](#windows-support).
+  [not supported](#windows-support). The `auto-drive-to-merge` workflow
+  needs Linux (its merge guard reads `/proc`) and stops at launch elsewhere
+  ([#1646](https://github.com/rysweet/amplihack-rs/issues/1646)).
 - **Runtime**: Rust 1.88+ / cargo, Node.js 18+, git. `amplihack install`
   installs a user-local Rust toolchain via rustup (and `build-essential` via
   apt, as root or with passwordless sudo) if cargo or a C linker is missing.
@@ -394,7 +396,7 @@ Full reference:
 <details>
 <summary>Quality, Security & Customization (5 features)</summary>
 
-- **[Security Analysis](/amplihack:xpia)** — Cross-prompt injection defense
+- **[Security Analysis](/amplihack:xpia)** — Cross-prompt injection defense (opt-in: set `XPIA_ENABLED=true`; see [XPIA configuration](docs/reference/xpia-configuration.md))
 - **[Socratic Questioning](/amplihack:socratic)** — Challenge claims and clarify
   requirements
 - **[Benchmarking](https://rysweet.github.io/amplihack-rs/BENCHMARKING/)** —

@@ -18,7 +18,9 @@
 #
 # The rounds themselves are stand-ins: a stub `amplihack recipe run` writes the
 # round record and logs the session depth it was started at; `orch helper` is
-# the real amplihack. `gh` is a stub that names the base branch.
+# the real amplihack. `gh` is a stub, first on PATH, that names the base
+# branch, logs every call to $WORK/gh-calls and accepts `pr comment`, so a stop
+# comment (#1743) can never reach the real PR #42 (PR #1862 review).
 #
 # Launched by the gadugi `execute` action with no arguments; prints one PASS or
 # FAIL line per case and ALL_CASES_PASSED when every case holds.
@@ -92,9 +94,10 @@ git -C "$FX_MAIN" update-ref HEAD "$M0" && git -C "$FX_MAIN" worktree add -q --d
   && FX="$WORK/repo" || { echo "FAIL: could not add the pull request worktree"; echo "SCENARIO_FAILED"; exit 1; }
 
 # --- stand-ins ---------------------------------------------------------------
-cat > "$WORK/bin/gh" <<'GH'
+cat > "$WORK/bin/gh" <<GH
 #!/usr/bin/env bash
-case " $* " in *" baseRefName "*) echo main; exit 0 ;; esac
+printf '%s\n' "\$*" >> "$WORK/gh-calls"
+case " \$* " in *" baseRefName "*) echo main; exit 0 ;; " pr comment "*) exit 0 ;; esac
 exit 1
 GH
 cat > "$WORK/bin/amplihack" <<'STUB'
@@ -233,6 +236,15 @@ if [ "$RC" -eq 0 ] && ! grep -q '^autodrive-crusty-round' "$WORK/calls-desc" && 
   pass description_commit_needs_no_rereview "a PR_DESCRIPTION.md commit is on the allowlist: no crusty run, criterion 3 still holds"
 else
   fl description_commit_needs_no_rereview "rc=$RC calls=$(tr '\n' '|' < "$WORK/calls-desc" 2>/dev/null) err=$(tail -n 5 "$WORK/err-desc" | tr '\n' ' ')"
+fi
+
+# The stub is the gh the loop finds, and every gh call it made was logged by
+# the stub; none can have reached GitHub.
+GH_FOUND="$(env -i PATH="$WORK/bin:$SYS_PATH" bash -c 'command -v gh')"
+if [ "$GH_FOUND" = "$WORK/bin/gh" ] && [ -s "$WORK/gh-calls" ]; then
+  pass only_the_stub_gh_runs "the loop's gh is the stub on PATH, which logged $(wc -l < "$WORK/gh-calls" | tr -d ' ') call(s)"
+else
+  fl only_the_stub_gh_runs "gh resolves to '$GH_FOUND'; calls: $(tr '\n' '|' < "$WORK/gh-calls" 2>/dev/null)"
 fi
 
 # 3. The real recursion guard, ceiling 3 sealed in a private tree store. A

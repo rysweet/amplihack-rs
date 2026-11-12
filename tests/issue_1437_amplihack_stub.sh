@@ -22,7 +22,7 @@
 #                 assessment comes from STUB_HEALTH_h in that mode.
 #     any other recipe, call n:
 #                 writes $STUB_RECORD_n to the autodrive_round_record file
-#                 (default CONCERNS for n=1, CLEAN after), prints $STUB_OUT_n
+#                 (default NOT_READY for n=1, MERGE_READY after), prints $STUB_OUT_n
 #                 and exits $STUB_RC_n (default 0).
 set -u
 STATE="${STUB_STATE:?STUB_STATE is not set}"
@@ -141,7 +141,7 @@ if [ "${1:-} ${2:-}" = "recipe run" ]; then
     exit "$(knob STUB_HEALTH_RC_ "$h" 0)"
   fi
   n="$(count rounds)"
-  if [ "$n" = 1 ]; then d='{"crusty_verdict":"CONCERNS"}'; else d='{"crusty_verdict":"CLEAN"}'; fi
+  if [ "$n" = 1 ]; then d='{"merge_ready_verdict":"NOT_READY"}'; else d='{"merge_ready_verdict":"MERGE_READY"}'; fi
   [ -n "$RECORD" ] && { knob STUB_RECORD_ "$n" "$d" > "$RECORD"; : > "${RECORD}.findings"; }
   printf '%s\n' "$(knob STUB_OUT_ "$n" "round ran")"
   exit "$(knob STUB_RC_ "$n" 0)"

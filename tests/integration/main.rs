@@ -17,8 +17,19 @@
 
 #[path = "amplihack_path.rs"]
 mod amplihack_path;
+#[path = "../../crates/amplihack-cli/tests/support/exec_stub.rs"]
+#[allow(dead_code)]
+mod exec_stub;
 #[path = "investigation_workflow_decomposition_test.rs"]
 mod investigation_workflow_decomposition;
+#[path = "../support/isolated_amplihack.rs"]
+mod isolated_amplihack;
+#[path = "isolated_amplihack_scan.rs"]
+mod isolated_amplihack_scan;
+
+// Issue #1973: condition waits with one ceiling, shared with cli_integration.
+#[path = "../../crates/amplihack-cli/tests/support/wait.rs"]
+mod wait;
 
 #[path = "smart_orchestrator_decomposition_test.rs"]
 mod smart_orchestrator_decomposition;
@@ -61,6 +72,11 @@ mod test_harness_binary_path_contract;
 // resolve for it, so it can locate the binary robustly.
 #[path = "skip_update_check_flag_test.rs"]
 mod skip_update_check_flag;
+
+// Issue #1971: pins the AMPLIHACK_SKIP_AUTO_INSTALL bypass and --skip-update-check
+// by recording stub git/npm/curl, with no timing assertion.
+#[path = "issue_1971_skip_guard_test.rs"]
+mod issue_1971_skip_guard;
 
 // WS3: Recipe runner E2E integration tests
 // These tests verify the full recipe delegation chain:
@@ -121,6 +137,10 @@ mod workflow_publish_pr_metadata;
 
 #[path = "workflow_publish_resilience.rs"]
 mod workflow_publish_resilience;
+
+// Issue #1976: step-16 publishes a local tracking reference as no linked issue.
+#[path = "issue_1976_publish_local_issue.rs"]
+mod issue_1976_publish_local_issue;
 
 #[path = "issue_978_step15_rebase_base_test.rs"]
 mod issue_978_step15_rebase_base;
@@ -360,6 +380,17 @@ mod issue_684_host_aware_workflow;
 #[path = "issue_1595_tracking_issue_selection_test.rs"]
 mod issue_1595_tracking_issue_selection;
 
+// Issue #1881: step-03 uses local tracking unless create_issue=true, reuses an
+// open issue with exactly the same title, and bounds creation retries.
+#[path = "issue_1881_local_default_tracking_test.rs"]
+mod issue_1881_local_default_tracking;
+// base_branch and strict_delivery: the shared helper, the step-15/16 guard,
+// step-06d for an issue in another repository, step-04's base, finalize, and
+// the callers that do not deliver to base_branch (quick-change, auto-drive-light,
+// smart-orchestrator's parallel launcher).
+#[path = "workflow_delivery_inputs_test.rs"]
+mod workflow_delivery_inputs;
+
 // Issues #815/#804: default-workflow local tracking issue-number extraction.
 // step-03b must accept hash-based `local-<hash>` references (propagate them),
 // never surface a bare number for a local fallback, and never abort the workflow.
@@ -420,6 +451,22 @@ mod ci_wallclock_parallelize;
 #[path = "issue_1337_loop_health_evaluator_test.rs"]
 mod issue_1337_loop_health_evaluator;
 
+// Issue #1671: a rejected git hook in a checkpoint or publish step goes to a
+// fixing agent and the step retries until the loop-health evaluator ends the
+// loop. Pins the fixing recipe, its manifest entry, the brick budget, the
+// reference page links, and runs the executable shell contract.
+#[path = "issue_1671_hook_rejection_repair_test.rs"]
+mod issue_1671_hook_rejection_repair;
+
+// Issues #1510 and #1437: the loop-evidence collector reads no round text for
+// a refusal. It applies terminal_refusal from autodrive_refusal.sh, the helper
+// autodrive_loop.sh sources: exit 79, or the runner's final failure_class
+// marker with structural_refusal true. A review quoting the guard is not a
+// refusal. Runs the real step-01 command through bash; needs bash, git and
+// the built amplihack binary.
+#[path = "issue_1510_collector_agent_prose_test.rs"]
+mod issue_1510_collector_agent_prose;
+
 // auto-drive-to-merge: wrap default-workflow and drive the PR to merge through
 // two agentically-terminated loops (crusty, then merge-ready). Pins the absence
 // of any numeric iteration cap, the fail-safe-to-blocking verdict defaults, the
@@ -429,3 +476,57 @@ mod issue_1337_loop_health_evaluator;
 // tests themselves need only extract-json / extract-field, already on main.
 #[path = "auto_drive_to_merge_test.rs"]
 mod auto_drive_to_merge;
+
+// Issue #1641: a resumed run whose branch already has an open, same-repo PR
+// with green checks (or pending/no CI plus this run's typed precommit evidence)
+// finalizes as EXISTING_OPEN_PR instead of FAILED_IMPLEMENTATION; a failing
+// check is BLOCKED_CI, and every fail-closed case (no PR, no verification
+// signal, hollow success, blockers) is kept. Runs the
+// real validator against a private git repo and a stub gh.
+#[path = "issue_1641_finalization_open_pr.rs"]
+mod issue_1641_finalization_open_pr;
+
+// Issue #1714: under auto-drive, a default-workflow build that finalizes
+// BLOCKED_CI with a published open PR hands that PR to the crusty and
+// merge-ready loops; a standalone run and every other failure still fail
+// closed. Runs the real validator and autodrive-build step-03 against stubs.
+#[path = "issue_1714_finalization_handoff.rs"]
+mod issue_1714_finalization_handoff;
+
+#[path = "issue_1642_github_origin_parsing.rs"]
+mod issue_1642_github_origin_parsing;
+
+// Issue #1762: a target branch checked out in the caller's own checkout gets a
+// task worktree on a local alias (`<B>--wt-<n>`) tracking origin/<B>; every
+// later push and PR lookup uses <B>. Runs step 4, the push steps, the
+// finalization helpers and the two new tools against a bare local origin and
+// a fake gh, all through `isolated(..)`.
+#[path = "issue_1762_caller_branch_alias_test.rs"]
+mod issue_1762_caller_branch_alias;
+
+// Issue #1697: bundled journalistic-writing-style skill — content, trigger
+// separation from documentation-writing, registration, isolated install.
+#[path = "journalistic_writing_style_skill_test.rs"]
+mod journalistic_writing_style_skill;
+
+// Issue #1764: no git that a test or amplihack starts may wait on a
+// credential prompt. Checks the cargo [env] table and isolated(..), runs git
+// through amplihack_git::command() and under script and plain timeout against
+// a server on 127.0.0.1 that answers 401, and pins the recipe guidance for
+// long commands and the how-to links.
+#[path = "issue_1764_git_never_prompts_test.rs"]
+mod issue_1764_git_never_prompts;
+
+// Issue #1771: runs tests/issue_1771_precommit_symlinked_caches.sh, the suite
+// for the symlinked pre-commit cache sweep in scripts/git-hook-cargo.sh, so
+// `cargo test --workspace` covers the shell change as well as CI's lint job.
+#[path = "issue_1771_precommit_symlinked_caches_test.rs"]
+mod issue_1771_precommit_symlinked_caches;
+
+// Issue #1966: is_critical_code is a required caller input. consensus-workflow
+// step 0 and consensus-tdd-impl reject a missing or malformed value before any
+// route, and the route gate fails unless exactly one route completed. Static
+// checks, helper unit tests in bash, and the real recipes through
+// recipe-runner-rs with agent steps stubbed, all under isolated(..).
+#[path = "issue_1966_consensus_criticality.rs"]
+mod issue_1966_consensus_criticality;

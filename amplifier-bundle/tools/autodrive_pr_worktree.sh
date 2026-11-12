@@ -22,7 +22,9 @@
 #              the one linked worktree that has the PR head branch checked out.
 #              On any refusal stdout is empty.
 #     exit 0 : resolved (an existing linked worktree, or one created at
-#              <main>/worktrees/<branch>).
+#              <base>/<branch>, where <base> comes from
+#              `workflow_worktree_root.sh base`: <main>/worktrees, or the
+#              repository's folder under an explicit work root, issue #1808).
 #     exit 1 : refused; the reason, mentioning #1528, is on stderr. The
 #              rejected branch name is never echoed.
 #     exit 2 : usage error (missing, repeated, unknown or dash-prefixed flag
@@ -128,13 +130,13 @@ verify_worktree() {
     [ "$ref" = "refs/heads/$branch" ]
 }
 
-# check_target_components <root> <branch> — every existing component of
-# <root>/worktrees/<branch> below <root> is a real directory, and the final
+# check_target_components <base> <branch> — <base> and every existing
+# component of <base>/<branch> below it is a real directory, and the final
 # component does not exist at all (not even as a dangling symlink).
 check_target_components() {
-    local current="$1/worktrees" rest="$2" part
+    local current="$1" rest="$2" part
     if [ -L "$current" ] || { [ -e "$current" ] && [ ! -d "$current" ]; }; then
-        refuse "worktrees/ under the main checkout is a symlink or not a directory"
+        refuse "the worktree base folder is a symlink or not a directory"
     fi
     while :; do
         part="${rest%%/*}"
@@ -203,6 +205,18 @@ cmd_resolve() {
     [ -f "$root_helper" ] || refuse "workflow_worktree_root.sh not found next to this helper"
     main_root="$(bash "$root_helper" root "$PWD")" || refuse "cannot resolve the main repository work tree"
     main_root="$(canonical_dir "$main_root")" || refuse "the main repository work tree is not accessible"
+    # Issue #1808: `base` is the one source of the worktree base, so an
+    # explicit AMPLIHACK_WORK_ROOT moves these worktrees too.
+    local wt_base
+    wt_base="$(bash "$root_helper" base "$PWD")" || refuse "cannot work out where worktrees go (see the message above)"
+    # A symlinked base would move the worktree elsewhere: refuse it before
+    # resolving the folders above it.
+    if [ -L "$wt_base" ] || { [ -e "$wt_base" ] && [ ! -d "$wt_base" ]; }; then
+        refuse "the worktree base folder is a symlink or not a directory"
+    fi
+    if [ -d "$wt_base" ]; then
+        wt_base="$(canonical_dir "$wt_base")" || refuse "the worktree base folder is not accessible"
+    fi
 
     if [ "$seen_pr" = 1 ]; then
         head="$(gh pr view "$pr" --json headRefName,isCrossRepository \
@@ -223,7 +237,7 @@ cmd_resolve() {
 
     local listing
     listing="$(git worktree list --porcelain)" || refuse "cannot list the repository's worktrees"
-    local target="$main_root/worktrees/$head"
+    local target="$wt_base/$head"
     local line rec_path="" rec_branch="" rec_prunable=0 index=0
     local matches=0 match_path="" main_on_branch=0 prunable_match=0 target_taken=0
     while IFS= read -r line; do
@@ -297,14 +311,15 @@ EOF
             git merge-base --is-ancestor "refs/remotes/origin/$head" "$tip" \
                 || refuse "the matching worktree is behind or has diverged from origin; fast-forward it with 'git -C <worktree> merge --ff-only' onto the origin branch, then resume"
         fi
+        own_worktree adopt "$found" "$head"
         printf '%s\n' "$found"
         return 0
     fi
 
-    # No worktree has the branch: create one at <main>/worktrees/<branch>.
+    # No worktree has the branch: create one at <base>/<branch>.
     safe_path "$target" || refuse "the target worktree path contains shell metacharacters or control characters"
     [ "$target_taken" = 0 ] || refuse "the target worktree path is registered to another branch"
-    check_target_components "$main_root" "$head"
+    check_target_components "$wt_base" "$head"
 
     if git show-ref --verify --quiet "refs/heads/$head"; then
         if [ "$on_origin" = 1 ] \
@@ -323,7 +338,20 @@ EOF
     found="$(canonical_dir "$target")" || refuse "the new worktree is not accessible"
     [ "$found" = "$target" ] || refuse "the new worktree did not land at the target path"
     verify_worktree "$found" "$head" "$common" || refuse "the new worktree failed verification"
+    own_worktree record "$found" "$head"
     printf '%s\n' "$found"
+}
+
+# own_worktree <record|adopt> <path> <branch> — issue #1808: record a new
+# worktree so cleanup may remove it later, or adopt a reused one so it stays
+# owned by this run while it is active. A failure is only a warning.
+own_worktree() {
+    local recorder
+    recorder="$(dirname -- "${BASH_SOURCE[0]}")/amplihack_run_owned.sh"
+    if [ -n "${AMPLIHACK_RUN_DIR:-}" ] && [ -f "$recorder" ]; then
+        bash "$recorder" "$1" worktree "$2" "$3" \
+            || printf 'WARNING: could not record %s for cleanup (issue #1808)\n' "$2" >&2
+    fi
 }
 
 main() {

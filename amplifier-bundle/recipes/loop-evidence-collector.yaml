@@ -24,7 +24,7 @@ tags: ["loop", "convergence", "evidence", "agentic", "issue-1337"]
 # Because it parses as an object the runner exports it as
 # `RECIPE_VAR_loop_evidence` (plus flattened `RECIPE_VAR_loop_evidence__*`)
 # and does NOT create a plain `LOOP_EVIDENCE` alias — consumers must read it
-# with the dual-name idiom `${LOOP_EVIDENCE:-${RECIPE_VAR_loop_evidence:-}}`.
+# as `${RECIPE_VAR_loop_evidence:-}` only (#1561).
 #
 # No step in this file declares a timeout. Per issue #439 the recipe runner
 # owns the ceiling; there is deliberately no seconds-scale or single-digit-
@@ -91,7 +91,11 @@ steps:
       TERMINAL="false"; TERMINAL_WHY=""
       printf '%s\n' "$LAST" > "$WORK/last"
       if terminal_refusal "${LOOP_CHILD_EXIT_CODE:-}" "$WORK/last"; then
-        TERMINAL="true"; TERMINAL_WHY="${TERMINAL_WHY} ${SELF}"
+        TERMINAL="true"
+        case "$TERMINAL_WHY" in
+          "exit 79") TERMINAL_WHY="child process exited 79 (policy refusal, #1327/#1332) ${SELF}" ;;
+          *) TERMINAL_WHY="child failed with ${TERMINAL_WHY} (policy refusal, #1327/#1332) ${SELF}" ;;
+        esac
       fi
       # Exclude this brick's reports from repetition and waiting measurements.
       printf '%s\n%s\n' "$HIST" "$LAST" | grep -vF "$SELF" > "$WORK/blob" || true

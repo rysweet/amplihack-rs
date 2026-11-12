@@ -202,11 +202,18 @@ pub(crate) fn with_provider<T>(provider: &str, action: impl FnOnce() -> T) -> T 
     let _restore = Restore(SELECTED_PROVIDER.with(|p| p.replace(Some(provider.to_string()))));
     action()
 }
-pub(crate) fn codex_selected() -> bool {
+fn selected_provider() -> String {
     SELECTED_PROVIDER
         .with(|p| p.borrow().clone())
         .unwrap_or_else(crate::env_builder::active_agent_binary)
-        == "codex"
+}
+pub(crate) fn codex_selected() -> bool {
+    selected_provider() == "codex"
+}
+/// Whether the launch in progress runs Claude Code (#1659): only then does
+/// the bootstrap ask `claude --version`.
+pub(crate) fn claude_selected() -> bool {
+    selected_provider() == "claude"
 }
 
 /// Reconcile managed `recipe-runner-rs` delivery with the shared immutable
@@ -501,17 +508,7 @@ fn keep_installed(
 //
 // Framework assets are now bundled in the amplihack-rs source tree and
 // delivered via binary updates.  The upstream freshness check against
-// `rysweet/amplihack` is no longer performed.  The public functions below
-// are kept as no-ops so that callers in `commands::install` continue to
-// compile without changes during the transition period.
-
-/// No-op.  Upstream SHA tracking is no longer used (issue #254).
-pub fn record_framework_installed_sha(_sha: &str) {}
-
-/// Always returns `None`.  Upstream SHA fetching is no longer used (#254).
-pub fn current_framework_remote_sha() -> Option<String> {
-    None
-}
+// `rysweet/amplihack` is no longer performed.
 
 /// Always returns `false`.  Framework freshness is now tied to the
 /// amplihack-rs binary version, not legacy upstream commits.
@@ -656,6 +653,9 @@ mod codex_delivery_contract_tests {
                 &format!("freshness::codex_delivery_contract_tests::{test}"),
                 "--nocapture",
             ])
+            // As in `downgrade_guard_tests::run_worker`: never inherit a
+            // working directory that another test may delete.
+            .current_dir(home)
             .env("AMPLIHACK_DELIVERY_WORKER", test)
             .env("PATH", bin)
             .env("HOME", home)
@@ -706,7 +706,7 @@ mod codex_delivery_contract_tests {
         fs::create_dir(&bin).unwrap();
         executable(
             &bin.join("recipe-runner-rs"),
-            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[]}'\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"durable_recovery_v1\"]}'\n",
         );
         run_worker(test, dir.path(), &bin);
     }
@@ -731,7 +731,7 @@ mod codex_delivery_contract_tests {
         cargo_fixture(dir.path(), dir.path());
         executable(
             &dir.path().join("recipe-runner-rs"),
-            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"custom\",\"capabilities\":[\"codex_exec\"]}'\n",
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"custom\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n",
         );
         run_worker(test, dir.path(), dir.path());
     }
@@ -1042,11 +1042,17 @@ mod downgrade_guard_tests {
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
     }
 
-    const COMPATIBLE: &str = "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'\n";
-    const INCOMPATIBLE: &str = "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[]}'\n";
+    const COMPATIBLE: &str = "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n";
+    const INCOMPATIBLE: &str = "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"durable_recovery_v1\"]}'\n";
 
     /// Runs `test` in a child process. `runner` is the stub installed in
     /// `$CARGO_HOME/bin`; `extra` adds environment variables.
+    ///
+    /// The child runs in this test's own directory. Otherwise it inherits
+    /// the test process's working directory, which another test may have
+    /// moved into a temporary directory that it then deletes. Git cannot
+    /// start in a deleted directory, so the ancestry lookup would answer
+    /// `Unverifiable` instead of the expected order.
     fn run_worker(test: &str, runner: &str, extra: &[(&str, &str)]) {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
@@ -1075,6 +1081,7 @@ mod downgrade_guard_tests {
                 &format!("freshness::downgrade_guard_tests::{test}"),
                 "--nocapture",
             ])
+            .current_dir(dir.path())
             .env(WORKER_ENV, test)
             .env("PATH", path)
             .env("HOME", &home)

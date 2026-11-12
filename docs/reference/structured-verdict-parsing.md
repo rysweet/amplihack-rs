@@ -261,7 +261,7 @@ emitted by an agent step as a `parse_json` field and read by an engine
 | A1      | `workflow-tdd.yaml` step-08c work-verifier gate | `verdict`             | `extract-json \| extract-field --field verdict \| normalise-verdict`  |
 | A2      | `workflow-pr-review.yaml` step-17a testing gate | `verdict` (+ fail-safe) | JSON verdict via helper; prose `VERDICT: FAILED` retained as fatal token |
 | A3      | `workflow-design.yaml` doc-review checkpoint    | `verdict` / `status`  | agent `parse_json`, read via `extract-field` + `normalise-verdict`    |
-| B       | `workflow-terminal-state.yaml`                  | `no_merge`            | classifier `parse_json` boolean → `NO_MERGE` env → engine condition   |
+| B       | `workflow-terminal-state.yaml`                  | `no_merge`            | classifier `parse_json` boolean → `RECIPE_VAR_no_merge` → engine condition   |
 | C       | `smart-reflect-loop.yaml`                       | `goal_status`         | reviewer `parse_json` field, `reflection_N.goal_status == '…'`        |
 | D1      | `smart-execute-routing.yaml`                    | `status`              | `extract-json \| extract-field --field status --default unknown`      |
 | D2      | `smart-classify-route.yaml`                     | `tree_id`, `depth`    | `session-tree register --json` → `extract-field`                      |
@@ -313,10 +313,12 @@ stdout markers are unchanged, and the checkpoint remains non-fatal (issue #834).
 
 The classifier (`smart-classify-route.yaml`) emits a `no_merge` boolean in its
 `parse_json` output, derived from the task description it already reads. It
-threads down as the context var `no_merge` / env `NO_MERGE` that
-`workflow-terminal-state.yaml` already reads. Terminal-state consumes the
-structured flag via an engine `condition:` (or `[ "$NO_MERGE" = … ]` on the
-exported env), never a prose regex. The "only suppress merge, never fabricate"
+threads down as the context var `no_merge`, which
+`workflow-terminal-state.yaml` reads from `RECIPE_VAR_no_merge` through
+`no_merge_flag`. A bare `NO_MERGE` can only switch merging off; see the
+[`NO_MERGE` override](auto-drive-to-merge.md#no_merge-override).
+Terminal-state consumes the structured flag via an engine `condition:` or that
+read, never a prose regex. The "only suppress merge, never fabricate"
 semantics and the explicit-flag path are unchanged.
 
 Because intent is now a structured field, previously unmatched phrasings — "hold

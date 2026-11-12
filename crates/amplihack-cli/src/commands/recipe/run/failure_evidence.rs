@@ -13,23 +13,11 @@ pub(super) const EVIDENCE_TAIL_LINES: usize = 40;
 /// Upper bound on the evidence text handed to the marker/result payload.
 const EVIDENCE_MAX_CHARS: usize = 2000;
 
-/// The reset time a usage-limit message carries, if it states one. Returned
-/// verbatim rather than parsed into a timestamp: the operator needs to read it,
-/// and inventing a timezone we were not given would be worse than quoting it.
+/// The reset time a usage-limit message carries, if it states one (#1390).
+/// Returned verbatim rather than parsed into a timestamp: the operator needs
+/// to read it. The anchor lives with the other patterns (#1618).
 pub(crate) fn usage_limit_reset_hint(text: &str) -> Option<String> {
-    let lower = text.to_ascii_lowercase();
-    let at = lower.find("resets ")?;
-    let rest = &text[at + "resets ".len()..];
-    let hint: String = rest
-        .chars()
-        .take_while(|c| *c != '\n' && *c != '\r')
-        .collect();
-    let hint = hint.trim();
-    if hint.is_empty() {
-        None
-    } else {
-        Some(hint.to_string())
-    }
+    super::limit_patterns::reset_hint(text)
 }
 
 /// The repository a repository-selection precondition refused, if it names one.

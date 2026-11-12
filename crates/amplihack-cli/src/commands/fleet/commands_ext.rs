@@ -100,10 +100,22 @@ pub(super) fn run_copilot_log(tail: usize) -> Result<()> {
 }
 
 pub(super) fn run_watch(vm_name: &str, session_name: &str, lines: u32) -> Result<()> {
-    run_watch_with_timeout(vm_name, session_name, lines, CLI_WATCH_TIMEOUT)
+    run_watch_with(&AzlinLookup::from_env(), vm_name, session_name, lines)
+}
+
+/// [`run_watch`] with the `AZLIN_PATH`, `PATH` and `HOME` values supplied by
+/// the caller (issue #1765).
+pub(super) fn run_watch_with(
+    lookup: &AzlinLookup,
+    vm_name: &str,
+    session_name: &str,
+    lines: u32,
+) -> Result<()> {
+    run_watch_with_timeout(lookup, vm_name, session_name, lines, CLI_WATCH_TIMEOUT)
 }
 
 pub(super) fn run_watch_with_timeout(
+    lookup: &AzlinLookup,
     vm_name: &str,
     session_name: &str,
     lines: u32,
@@ -111,7 +123,7 @@ pub(super) fn run_watch_with_timeout(
 ) -> Result<()> {
     validate_vm_name(vm_name)?;
     validate_session_name(session_name)?;
-    let azlin = match get_azlin_path() {
+    let azlin = match get_azlin_path_in(lookup) {
         Ok(path) => path,
         Err(_) => {
             eprintln!("Error: azlin not found. Install azlin or set AZLIN_PATH.");

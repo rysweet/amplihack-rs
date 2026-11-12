@@ -11,14 +11,19 @@ validate_finalization() {
     exit 1
   fi
 
-  # Issue #969: terminal classification is derived EXCLUSIVELY from typed
-  # deterministic evidence (FINALIZATION_EVIDENCE) plus typed recipe state
-  # (implementation/verification completion + the finalizer reporting step
-  # status). The agentic finalizer emits a human-readable narrative only; that
-  # prose is NEVER read here and no jq/regex/fence-stripping is applied to any
-  # agent-generated text. Implementation failure is classified separately from
-  # reporting failure so durable evidence survives a failed reporting step.
+  # Issue #969: classification uses typed evidence (FINALIZATION_EVIDENCE) and
+  # typed recipe state (implementation/verification completion, reporter step
+  # status). Sole exception (#1641, step 5): after every blocker, a read-only
+  # `gh pr view` (preceded by `gh pr list` only when no PR ref is known; 60s
+  # timeout each, no retries) may turn FAILED_IMPLEMENTATION into
+  # EXISTING_OPEN_PR/BLOCKED_CI. Inside auto-drive the same check also runs on
+  # the step-3 reporting-failure exits, where it can only hand a confirmed PR
+  # to the loops (#1714), never classify success. Agent prose is NEVER read. Implementation and
+  # reporting failures stay separate so evidence survives a failed reporter.
 
+  # Set only by the open-PR path (#1641, #1714) from gh-confirmed facts;
+  # cleared here so an ambient environment variable can never spoof them.
+  local publish_state_override="" open_pr_confirmed_number="" open_pr_confirmed_url="" open_pr_confirmed_facts=""
   evidence_status=0
   finalization_evidence="$(workflow_context_read finalization_evidence)" || evidence_status=$?
   evidence_invalid="false"
@@ -71,7 +76,7 @@ FIELDS
 
   emit_result() {
     local field separator publish_state_reached observed_phases missing_evidence
-    publish_state_reached="$(resolve_publish_state_reached)"
+    publish_state_reached="${publish_state_override:-$(resolve_publish_state_reached)}"
     observed_phases="workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-refactor-review,workflow-precommit-test,workflow-publish,workflow-pr-review,workflow-finalize"
     missing_evidence=""
     # File-backed metadata and diagnostics can exceed argv's per-value limit.
@@ -162,7 +167,8 @@ FIELDS
   fi
   target_dir="$(workflow_finalization_metadata worktree_path || :)"
   [ -n "$target_dir" ] || target_dir="$(workflow_finalization_metadata repo_path || :)"
-  [ -n "$target_dir" ] || target_dir="."
+  target_dir_explicit="true"
+  [ -n "$target_dir" ] || { target_dir="."; target_dir_explicit="false"; }
   # Fall back to a live worktree probe only when the deterministic evidence did
   # not already report a dirty-worktree signal; collected evidence is
   # authoritative (issue #969, requirement R2).
@@ -187,7 +193,7 @@ FIELDS
   fi
   case "$prior_terminal_state" in
     BLOCKED_CI|FAILED_MEANINGFUL_DIFF|FAILED_CLOSED_UNMERGED|FAILED_PR_METADATA_UNAVAILABLE|FAILED_INVALID_INPUT|FAILED_WRONG_BRANCH)
-      fail_result "$prior_terminal_state" "deterministic terminal probe reported $prior_terminal_state" "Resolve the deterministic blocker before finalization." "prior_terminal_state=$prior_terminal_state"
+      finalization_fail_or_handoff "$prior_terminal_state" "deterministic terminal probe reported $prior_terminal_state" "Resolve the deterministic blocker before finalization." "prior_terminal_state=$prior_terminal_state"
       ;;
   esac
   if [ "$evidence_hollow_success" = "true" ]; then
@@ -197,21 +203,34 @@ FIELDS
 
   # 3. Implementation-vs-reporting split (issue #969). A failed reporting step is
   #    classified distinctly from an implementation failure and preserves the
-  #    durable implementation/verification/PR evidence.
+  #    durable implementation/verification/PR evidence. Inside auto-drive
+  #    (#1714) a published, open PR on the run branch, confirmed by the open-PR
+  #    check, is handed to the crusty and merge-ready loops on both exits: the
+  #    reporting narrative has no effect on the PR those loops review and fix.
+  #    The check runs only with the hand-off flag, so a standalone run makes no
+  #    extra gh call and fails closed exactly as before. A confirmed PR never
+  #    turns a reporting failure into success here.
   if [ "$reporting_failure" = "true" ]; then
+    if [ "$(finalization_handoff_flag)" = "true" ] && confirm_open_pr; then
+      remember_confirmed_open_pr
+    fi
     if [ "$implementation_completed" = "true" ] && [ "$verification_completed" = "true" ]; then
+      reporting_reason="implementation and verification succeeded but a reporting/finalization step failed; durable evidence is preserved"
+      reporting_next="Re-run the failed reporting step; implementation and verification evidence is durable and does not need to be redone."
+      reporting_evidence="implementation_completed=true,verification_completed=true,reporting_failure=true"
+      finalization_try_handoff_open_pr "FAILED_REPORTING" "$reporting_reason" "$reporting_next" "$reporting_evidence" || :
       finalizer_output_valid="true"
       terminal_state="FAILED_REPORTING"
       terminal_success="false"
       terminal_failure="true"
-      terminal_reason="implementation and verification succeeded but a reporting/finalization step failed; durable evidence is preserved"
-      required_next_action="Re-run the failed reporting step; implementation and verification evidence is durable and does not need to be redone."
-      evidence_used="implementation_completed=true,verification_completed=true,reporting_failure=true"
+      terminal_reason="$reporting_reason"
+      required_next_action="$reporting_next"
+      evidence_used="$reporting_evidence"
       emit_result
       echo "ERROR: workflow finalization reached non-success terminal state: FAILED_REPORTING: $terminal_reason" >&2
       exit 1
     fi
-    fail_result "FAILED_IMPLEMENTATION" "reporting failed and durable implementation/verification evidence is absent" "Complete implementation and verification before finalization." "implementation_completed=$implementation_completed,verification_completed=$verification_completed,reporting_failure=true"
+    finalization_fail_or_handoff_open_pr "FAILED_IMPLEMENTATION" "reporting failed and durable implementation/verification evidence is absent" "Complete implementation and verification before finalization." "implementation_completed=$implementation_completed,verification_completed=$verification_completed,reporting_failure=true"
   fi
 
   # 4. Success and no-op paths from durable typed evidence.
@@ -222,6 +241,32 @@ FIELDS
     classify_success "ALLOW_NO_OP" "explicit no-op task with durable allow_no_op evidence" "No action required." "allow_no_op=true,terminal_no_op=true"
   fi
 
-  # 5. Default: implementation/verification evidence absent.
-  fail_result "FAILED_IMPLEMENTATION" "implementation/verification evidence was absent or incomplete" "Complete implementation and verification before finalization." "implementation_completed=$implementation_completed,verification_completed=$verification_completed"
+  # 5. Resumed runs (#1641): with no outputs of its own, a run whose branch has
+  #    a PR confirmed by confirm_open_pr succeeds when every check is green
+  #    (any failing check counts) or CI has not reported (pending/none) and
+  #    this run's verification_completed is true. A failing check is
+  #    BLOCKED_CI; pre-commit evidence never overrides it.
+  if confirm_open_pr; then
+    open_pr_checks="$(printf '%s' "$open_pr_signal" | jq -r '.checks // empty')"
+    run_pr_number="$pr_number"; run_pr_url="$pr_url"
+    pr_number="$(printf '%s' "$open_pr_signal" | jq -r '.pr_number')"
+    pr_url="$(printf '%s' "$open_pr_signal" | jq -r '.pr_url')"
+    publish_state_override="true"
+    open_pr_facts="$(open_pr_facts_from_signal)"
+    # A red check is a negative signal; pre-commit evidence never overrides it.
+    [ "$open_pr_checks" != "failing" ] || finalization_fail_or_handoff "BLOCKED_CI" "open PR #$pr_number for the run branch has a failing CI check" "Fix the failing CI checks on PR #$pr_number before merge." "$open_pr_facts,all_checks=failing,verification_completed=$verification_completed"
+    [ "$open_pr_checks" != "green" ] || classify_success "EXISTING_OPEN_PR" "the run branch has a published, open, same-repo PR whose checks are all green" "No action required." "$open_pr_facts,all_checks=green"
+    case "$verification_completed:$open_pr_checks" in
+      true:pending|true:none)
+        classify_success "EXISTING_OPEN_PR" "the run branch has a published, open, same-repo PR; CI has not reported yet and this run's verification passed" "Watch CI on PR #$pr_number: checks are $open_pr_checks and only this run's pre-commit verification vouches for it; a failing check is BLOCKED_CI." "$open_pr_facts,precommit_passed=true,all_checks=$open_pr_checks" ;;
+    esac
+    # No success: keep the run's own PR evidence, not the confirmed PR's;
+    # the confirmed PR is kept only for the auto-drive hand-off below.
+    pr_number="$run_pr_number"; pr_url="$run_pr_url"; publish_state_override=""
+    remember_confirmed_open_pr
+    echo "WARNING: open PR for the run branch has checks=$open_pr_checks and verification_completed=$verification_completed; no passing verification signal, not classified as EXISTING_OPEN_PR" >&2
+  fi
+
+  # 6. Default: evidence absent. Inside auto-drive a PR confirmed above goes to the loops (#1714).
+  finalization_fail_or_handoff_open_pr "FAILED_IMPLEMENTATION" "implementation/verification evidence was absent or incomplete" "Complete implementation and verification before finalization." "implementation_completed=$implementation_completed,verification_completed=$verification_completed"
 }

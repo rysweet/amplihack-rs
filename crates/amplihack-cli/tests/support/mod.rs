@@ -1,8 +1,15 @@
 //! Helpers shared by the modules of the `cli_integration` test binary.
 
 pub mod amplihack_bin;
+pub mod auto_drive_light;
+pub mod events;
 pub mod exec_stub;
+pub mod fake_proc;
+pub mod proc_root_scan;
+pub mod profile_1962;
+pub mod profile_default;
 pub mod profile_rotate;
+pub mod quick_change_repo;
 pub mod quiet_process;
 /// The crate-private bounded capability probe, compiled into this binary once
 /// for `runner_probe_cleanup` and `runner_probe_lifecycle` (a file may be a
@@ -11,4 +18,8 @@ pub mod quiet_process;
 #[cfg(unix)]
 #[path = "../../src/runner_probe.rs"]
 pub mod runner_probe;
+pub mod scratch_base;
+pub mod sessions_archive;
+pub mod socket_dir;
 pub mod test_path;
+pub mod wait;

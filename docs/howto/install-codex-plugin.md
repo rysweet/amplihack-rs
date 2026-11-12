@@ -2,7 +2,7 @@
 title: Use Amplihack with Codex
 description: Install native Codex assets, preserve configuration and run recipes.
 type: howto
-updated: 2026-10-08
+updated: 2026-11-06
 ---
 
 # Use Amplihack with Codex
@@ -13,6 +13,7 @@ Amplihack supports interactive Codex sessions and unattended Codex recipe steps 
 
 - [Install and launch](#install-and-launch)
 - [Run an unattended recipe](#run-an-unattended-recipe)
+- [Sandbox and hook trust for agent steps](#sandbox-and-hook-trust-for-agent-steps)
 - [Preserve configuration](#preserve-configuration)
 - [Skills, commands, and personas](#skills-commands-and-personas)
 - [Hook behavior and limitations](#hook-behavior-and-limitations)
@@ -57,7 +58,7 @@ AMPLIHACK_AGENT_BINARY=codex amplihack recipe run default-workflow \
   -c repo_path=. --format json
 ```
 
-Recipe steps use the production `amplihack codex` route with `codex exec`. The runner sends the complete effective instructions, persona, task, and recipe provenance through stdin and closes the pipe. Large prompts use the same transport. Provenance suppresses recursive orchestration in leaf steps; it does not authorize tool access. Interactive prompts that cannot be delivered completely fail visibly instead of being truncated or silently converted into unattended tasks. Empty prompts are likewise rejected before Codex is spawned, and arguments are passed as an argv vector, never through a shell string. Prompts and native arguments containing NUL bytes are rejected with an error rather than being truncated at the NUL, because operating-system argument passing cannot carry them.
+Recipe steps use the production `amplihack codex` route with `codex exec`, which adds `--sandbox danger-full-access` (the same trust as Claude agent steps) and bypasses hook trust; see [Sandbox and hook trust for agent steps](#sandbox-and-hook-trust-for-agent-steps). The runner sends the complete effective instructions, persona, task, and recipe provenance through stdin and closes the pipe. Large prompts use the same transport. Provenance suppresses recursive orchestration in leaf steps; it does not authorize tool access. Interactive prompts that cannot be delivered completely fail visibly instead of being truncated or silently converted into unattended tasks. Empty prompts are likewise rejected before Codex is spawned, and arguments are passed as an argv vector, never through a shell string. Prompts and native arguments containing NUL bytes are rejected with an error rather than being truncated at the NUL, because operating-system argument passing cannot carry them.
 
 The runner captures the final assistant message with `--output-last-message` in a private per-task file. Progress is diagnostic output. Success requires completed input delivery, a successful child exit, and a readable UTF-8 final-message file (an existing empty file is valid). Timeout, cancellation, missing or invalid output, and child failure are reported as failures even when partial output exists. Successful final text is preserved within the runner's `MAX_STEP_OUTPUT_BYTES` limit (10,000,000 bytes); larger output fails instead of being truncated. SIGINT and SIGTERM remain terminal through nonfatal policies, nested recipes, parallel dispatch, JSON repair, and recovery; no subsequent step or recovery starts after cancellation. Owned child processes and input/output resources receive bounded cleanup. Concurrent steps use separate files.
 
@@ -93,6 +94,86 @@ verification producer and finalization collection, validation and completion;
 the verdict reader alone does not establish that support. See
 [workflow context transport](../reference/workflow-context-transport.md) for the
 authority rules, preserved policies and acceptance requirements.
+
+## Sandbox and hook trust for agent steps
+
+When a recipe agent step runs on Codex, it is launched as `amplihack codex -- exec …`. On that path amplihack adds two flags directly after the `exec` token (or its alias `e`):
+
+```text
+--sandbox danger-full-access
+--dangerously-bypass-hook-trust
+```
+
+A step that the runner starts as
+
+```bash
+amplihack codex -- exec --output-last-message /d0/run/final-message -
+```
+
+therefore runs
+
+```bash
+codex exec --sandbox danger-full-access --dangerously-bypass-hook-trust \
+  --output-last-message /d0/run/final-message -
+```
+
+For `exec resume`, the flags go between `exec` and `resume`, because `--sandbox` is not an `exec resume` option. On codex-cli 0.166.0, `codex exec resume --sandbox read-only` fails with `unexpected argument '--sandbox' found`:
+
+```bash
+codex exec --sandbox danger-full-access --dangerously-bypass-hook-trust \
+  resume 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b -
+```
+
+The flags were checked against codex-cli 0.166.0, whose `codex exec --help` lists `read-only`, `workspace-write` and `danger-full-access` as the values of `--sandbox`. There is no environment variable or configuration key to turn them off; a recipe that needs a different sandbox passes its own, as described below. The hook-trust flag is added to every `amplihack codex -- exec` launch, including one a person types, not only to recipe agent steps; issue #2009 tracks limiting it to recipe runs or adding an opt-out.
+
+When amplihack adds the sandbox, it writes one line to stderr before Codex starts (issue #2010):
+
+```text
+amplihack: codex exec: added --sandbox danger-full-access, --dangerously-bypass-hook-trust (#1985)
+```
+
+If the caller already passed `--dangerously-bypass-hook-trust`, the line is `amplihack: codex exec: added --sandbox danger-full-access (#1985)`. The line is built from fixed text only and never contains caller arguments. It goes only to stderr, so a step's stdout and its `--output-last-message` file are unchanged. No line is printed when the caller passed its own sandbox, even though the hook-trust flag is still added, and none is printed for an argv without `exec`. There is no option to turn the line off.
+
+The line is reliably seen only when you run `amplihack codex -- exec` yourself. In a recipe run it usually is not seen. The recipe runner pinned in `claude-plugin/recipe-runner.rev` (recipe-runner-rs `4d5187e`) does not stream an agent step's stderr to the recipe log. It writes the stderr to a file under `/tmp/amplihack-agent-stderr/` and deletes that file when the step succeeds. When the step fails, the error quotes only the last 4000 bytes, which after a long Codex run usually leaves the notice out; the full file is kept at the path printed after `--- stderr-log:`. Finding no line in a recipe log therefore does not mean no flags were added. Issue #2066 tracks keeping these lines from agent steps. The full rules are in [launch flag injection](../reference/launch-flag-injection.md).
+
+### Why the flags are added
+
+- **Sandbox (issue #2317).** Codex agent steps run with the same trust as Claude agent steps, which are launched with `--dangerously-skip-permissions`. Under the earlier `workspace-write` sandbox, a step running in a linked git worktree could not commit: the worktree's index and refs live under the main checkout's `.git/`, outside the step's writable root. `danger-full-access` removes that difference. The explicit flag also takes precedence over any `sandbox_mode` in the host `$CODEX_HOME/config.toml`, so every agent step gets the same mode whatever the host sets.
+- **Deny rules.** The amplihack PreToolUse hooks apply the same deny rules to Claude and Codex steps; Codex differs only in the hook wire format. When the hook itself fails, Codex denies the tool call, which is stricter than Claude. These hooks check commands before they run. They are not a filesystem or network sandbox.
+- **Hook trust.** Codex runs a user hook only when a trusted hash for it is recorded in `config.toml`, and it skips an untrusted hook without any message. After a `hooks.json` change, or on a new Codex home, the command-check hook (software-factory #149) would be off for every agent step. `--dangerously-bypass-hook-trust` runs the enabled hooks for that one invocation without persisted trust.
+
+### Rules
+
+- **The caller's sandbox choice wins.** If the step's own arguments already choose a sandbox, amplihack does not add `--sandbox danger-full-access`, so the step never carries two sandbox selections. These forms count as a choice, before or after `exec`:
+  - `--sandbox <value>`, `--sandbox=<value>` and `-s <value>`, whatever the value;
+  - attached `-s<mode>` or `-s=<mode>`, only when `<mode>` is `read-only`, `workspace-write` or `danger-full-access`;
+  - `--approve-for-me` (which selects the workspace-write sandbox, and which codex-cli 0.166.0 refuses alongside `--sandbox`), `--dangerously-bypass-approvals-and-sandbox` and its hidden alias `--yolo`;
+  - a configuration override whose key is `sandbox_mode`, in any spelling: `-c <value>`, `-c<value>`, `-c=<value>`, `--config <value>` or `--config=<value>`. Spaces around the key are ignored, as Codex ignores them, so `-c 'sandbox_mode = "read-only"'` counts.
+
+  Hook trust is still bypassed.
+- **No network override is added.** amplihack adds no `-c sandbox_workspace_write.*` setting. A caller's own `-c sandbox_workspace_write.network_access=<value>` is forwarded unchanged. It is not a sandbox choice, and under `danger-full-access` it restricts nothing.
+- **Hook trust is added once.** If the caller already passes `--dangerously-bypass-hook-trust`, it is not added again.
+- **The approvals bypass is never added.** amplihack never passes `--dangerously-bypass-approvals-and-sandbox` or `--yolo`. If a caller passes one, it is forwarded unchanged and counts as the caller's sandbox choice.
+- **Interactive sessions are unchanged.** An argv with no `exec` subcommand is passed to Codex byte for byte. This covers bare `amplihack codex`, `resume`, `resume --last` and a positional prompt. A `-c exec` or `-m exec` value, or an `exec` after a bare `--`, is not treated as the subcommand.
+- **Nothing is written to configuration.** The flags exist only on the command line. amplihack writes no `sandbox_mode`, hook trust or bypass setting to any `config.toml`.
+
+To run an agent step with a stricter sandbox, pass it in the step's Codex arguments:
+
+```bash
+amplihack codex -- exec --sandbox read-only --output-last-message /d0/run/final-message -
+# spawns: codex exec --dangerously-bypass-hook-trust --sandbox read-only --output-last-message /d0/run/final-message -
+```
+
+### Preconditions
+
+Full access is not safe for untrusted input. It gives a Codex step the same reach as a Claude step: anything the user account can read or write.
+
+- **Run agent steps only in checkouts you trust.** Do not run them on untrusted repositories, or with issue or PR bodies from untrusted authors as the task. Text in a checkout or a task can steer the model, and nothing below the user account limits what the step then does.
+- **A step can change what later steps run.** Under full access a step can write `.codex/hooks.json` at any level of the checkout, files under `~/.codex/`, `.git/hooks` and `.git/config`. Because every agent step bypasses hook trust, a hook planted by one step runs in later steps without a trust prompt. Codex loads hooks from `CODEX_HOME`, from installed plugins, and, when the project is marked trusted (`trust_level = "trusted"` in the user `config.toml`), from `.codex/` in the working directory and each parent up to the project root. The bypass flag does not mark a project trusted, and amplihack writes no trust entry. That condition gives no protection under full access, because a step can also write `~/.codex/config.toml` and set `trust_level` for the checkout itself. Issue #1993 tracks the planting of `.codex/hooks.json`.
+- **A step can reach credentials.** Files the user account can read, such as SSH keys, `~/.codex/auth.json`, the `gh` and git credential stores and cloud CLI tokens, are readable and writable by the step, and the network is open.
+- **The argv comes from the recipe author.** The caller-wins rule trusts the arguments after `--`. Prompt text, issue bodies and other untrusted content must reach Codex on stdin (`-`), never in argv, where a crafted `--sandbox` or `-c` value would be honoured.
+- **The injected sandbox overrides a stricter host setting.** A host `config.toml` that sets `read-only` or `workspace-write` does not restrict agent steps, because the command-line `--sandbox` takes precedence. A recipe that needs a stricter mode passes it explicitly with `--sandbox <mode>`, as shown above. amplihack does not read `config.toml` or `-p` profiles, so the stderr line cannot say whether a stricter host setting was overridden.
+- **Profiles do not count as a sandbox choice.** Command-line flags take precedence over a `-p <profile>` profile's `sandbox_mode`, so `amplihack codex -- -p ci exec -` still receives `--sandbox danger-full-access`. To keep the profile's mode, pass the same `--sandbox` value explicitly.
 
 ## Preserve configuration
 
@@ -171,7 +252,7 @@ On the Codex path, payload parse errors and handler errors during PreToolUse fai
 
 > **Wrapper-only variable.** Do not `export AMPLIHACK_HOOK_PROTOCOL=codex` in your shell profile, CI environment, or launcher settings. A global export flips Claude Code and Copilot hooks to the Codex protocol and breaks them. If you run a hook by hand for testing, set it inline: `echo '{"hook_event_name":"PreToolUse","tool_name":"shell_command","tool_input":{"command":"ls"}}' | AMPLIHACK_HOOK_PROTOCOL=codex amplihack-hooks pre-tool-use`. Hand-running the installed `bin/hook` wrapper is equivalent, since it sets the variable itself.
 
-Trust is user-controlled. Ordinary install and launch never insert `--dangerously-bypass-hook-trust`; review and trust the command definitions through Codex's `/hooks` interface. Do not bypass hook trust to make an unattended installation succeed. Hooks execute with user privileges, so the model sandbox does not isolate hook commands. [Official packaging documentation](https://developers.openai.com/plugins/build/plugins) describes the native manifest and portable plugin runtime variables.
+Trust is user-controlled for installation and interactive sessions. `amplihack install` and interactive `amplihack codex` launches never insert `--dangerously-bypass-hook-trust`; review and trust the command definitions through Codex's `/hooks` interface, and do not bypass hook trust to make an installation succeed. Recipe agent steps (`amplihack codex -- exec …`) are the exception: they receive `--dangerously-bypass-hook-trust` so that an untrusted or changed hook definition cannot silently turn off the command-check hook. See [Sandbox and hook trust for agent steps](#sandbox-and-hook-trust-for-agent-steps) for the rules and the trusted-checkout precondition. Hooks execute with user privileges, so the model sandbox does not isolate hook commands. [Official packaging documentation](https://developers.openai.com/plugins/build/plugins) describes the native manifest and portable plugin runtime variables.
 
 ## Runner delivery and removal
 
@@ -192,6 +273,8 @@ Managed delivery requires both semantic validation and exact Cargo provenance: p
 ## Migration and troubleshooting
 
 Legacy `config.yaml` with `approval_mode: auto` and legacy JSON are not current Codex configuration. Only positively identified Amplihack-generated files are automatically migrated or removed. Ambiguous files remain for manual review: back them up, translate intended settings into TOML using the official configuration reference, and remove obsolete files yourself after verification. Never replace your TOML wholesale.
+
+If `amplihack codex` stops with `failed native Codex reconciliation`, or `amplihack install` or `amplihack update` stops with `failed native Codex installation`, the rest of the message names the cause: a probe timeout, a non-zero exit, output that is not JSON, or a Codex without plugin support. Only the last case asks you to update Codex. See the [native plugin probe reference](../reference/codex-native-plugin-probe.md) for each message and its fix.
 
 If hooks do not run, inspect plugin enablement, `/hooks` trust, and managed hook policy. If a recipe fails compatibility checks, inspect `RECIPE_RUNNER_RS_PATH` and the capability probe before reinstalling the managed runner. If configuration cannot be edited, repair its syntax or explicitly edit the resolved symlink target; Amplihack preserves the original. Unsupported fresh/resume option combinations fail rather than silently discarding requested settings. See the [mode-specific flag matrix](../reference/flag-matrix.md).
 

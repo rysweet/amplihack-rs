@@ -34,6 +34,10 @@
 
 set -uo pipefail
 
+# grep -q exits at its first match, so under pipefail a writer still sending
+# gets SIGPIPE and the pipeline reports failure for text that is there.
+matches() { grep "$@" >/dev/null; }
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/loop-health-evaluator.yaml"
@@ -114,13 +118,25 @@ run_step() { printf '%s\n' "$1" | bash; }
 
 # resolve_verdict <loop_evidence-json> <raw-assessment> -> canonical token on stdout
 resolve_verdict() {
-    LOOP_EVIDENCE="$1" LOOP_HEALTH_ASSESSMENT="$2" LOOP_NAME="t" LOOP_ROUND_LABEL="r" \
+    RECIPE_VAR_loop_evidence="$1" RECIPE_VAR_loop_health_assessment="$2" LOOP_NAME="t" LOOP_ROUND_LABEL="r" \
         run_step "${RESOLVE}" 2>/dev/null \
         | amplihack orch helper extract-json \
         | amplihack orch helper extract-field --field loop_verdict --default MISSING
 }
 
 CLEAN_EV='{"terminal_refusal":"false","terminal_reason":"","commits_since_baseline":3,"diff_lines":120,"repeated_output":"false"}'
+
+# #1561: the steps read their step outputs only as RECIPE_VAR_<key>. A bare
+# LOOP_EVIDENCE / LOOP_HEALTH_ASSESSMENT / LOOP_HEALTH inherited from a parent
+# run conflicts with this run's own values here and must lose.
+V="$(LOOP_EVIDENCE='{"terminal_refusal":"true","terminal_reason":"stale"}' \
+     LOOP_HEALTH_ASSESSMENT='{"loop_verdict":"STUCK","not_converging":["stale parent run"]}' \
+     resolve_verdict "${CLEAN_EV}" '{"loop_verdict":"CONTINUE","not_converging":[]}')"  # deliberately stale (#1561)
+if [[ "${V}" == "CONTINUE" ]]; then
+    pass "1561-stale-bare-resolve" "own RECIPE_VAR_ evidence and assessment win over stale bare LOOP_EVIDENCE/LOOP_HEALTH_ASSESSMENT"
+else
+    fail "1561-stale-bare-resolve" "expected CONTINUE from the own values, got '${V}'"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. STUCK path — the evaluator says stop, and nothing proceeds.
@@ -133,13 +149,13 @@ else
 fi
 
 STUCK_HEALTH='{"loop_verdict":"STUCK","verdict_source":"evaluator","loop_name":"t","not_converging":["zero commits in 7 rounds"]}'
-out="$(LOOP_HEALTH="${STUCK_HEALTH}" LOOP_EVIDENCE="${CLEAN_EV}" LOOP_NAME="t" LOOP_ROUND_LABEL="r" run_step "${ENFORCE}" 2>&1)"; rc=$?
+out="$(RECIPE_VAR_loop_health="${STUCK_HEALTH}" RECIPE_VAR_loop_evidence="${CLEAN_EV}" LOOP_NAME="t" LOOP_ROUND_LABEL="r" run_step "${ENFORCE}" 2>&1)"; rc=$?
 if [[ ${rc} -ne 0 ]]; then
     pass "STUCK-enforce" "STUCK exits non-zero — the loop stops, nothing proceeds (rc=${rc})"
 else
     fail "STUCK-enforce" "STUCK did NOT stop the loop (rc=0): ${out}"
 fi
-if printf '%s' "${out}" | grep -qF 'zero commits in 7 rounds'; then
+if printf '%s' "${out}" | matches -F 'zero commits in 7 rounds'; then
     pass "STUCK-escalates" "STUCK escalates with the specific evidence of what is not converging"
 else
     fail "STUCK-escalates" "STUCK did not surface the not_converging evidence: ${out}"
@@ -189,7 +205,7 @@ fi
 
 # And the enforcement step must fail safe on garbage too.
 for bad in "" "not json at all" '{"loop_verdict":"DISCONTINUE"}'; do
-    out="$(LOOP_HEALTH="${bad}" LOOP_NAME="t" run_step "${ENFORCE}" 2>&1)"; rc=$?
+    out="$(RECIPE_VAR_loop_health="${bad}" LOOP_NAME="t" run_step "${ENFORCE}" 2>&1)"; rc=$?
     if [[ ${rc} -ne 0 ]]; then
         pass "MALFORMED-enforce" "enforcement on [${bad:-<empty>}] stops the loop (rc=${rc})"
     else
@@ -207,7 +223,7 @@ for tok in CONTINUE DONE; do
     else
         fail "PASSTHRU" "${tok} resolved to '${V}'"
     fi
-    out="$(LOOP_HEALTH="{\"loop_verdict\":\"${tok}\"}" LOOP_NAME="t" run_step "${ENFORCE}" 2>&1)"; rc=$?
+    out="$(RECIPE_VAR_loop_health="{\"loop_verdict\":\"${tok}\"}" LOOP_NAME="t" run_step "${ENFORCE}" 2>&1)"; rc=$?
     if [[ ${rc} -eq 0 ]]; then
         pass "PASSTHRU-enforce" "${tok} does not stop the loop (rc=0)"
     else
@@ -235,8 +251,11 @@ check_refusal_pipeline() { # name rc output history expected-terminal
     ev="$(LOOP_REPO_PATH="${REPO_ROOT}" LOOP_CHILD_EXIT_CODE="$child_rc" \
         LOOP_LAST_ROUND_OUTPUT="$last" LOOP_HISTORY="$hist" run_step "${COLLECT}" 2>/dev/null)"
     terminal="$(printf '%s' "$ev" | amplihack orch helper extract-field --field terminal_refusal --default MISSING)"
-    health="$(LOOP_EVIDENCE="$ev" LOOP_HEALTH_ASSESSMENT='{"loop_verdict":"CONTINUE"}' run_step "${RESOLVE}" 2>/dev/null)"
-    out="$(LOOP_HEALTH="$health" run_step "${ENFORCE}" 2>&1)"; rc=$?
+    # #1561: step outputs are read only as RECIPE_VAR_<key>.
+    health="$(RECIPE_VAR_loop_evidence="$ev" RECIPE_VAR_loop_health_assessment='{"loop_verdict":"CONTINUE"}' \
+        LOOP_NAME="t" LOOP_ROUND_LABEL="r" run_step "${RESOLVE}" 2>/dev/null)"
+    out="$(RECIPE_VAR_loop_health="$health" RECIPE_VAR_loop_evidence="$ev" LOOP_NAME="t" LOOP_ROUND_LABEL="r" \
+        run_step "${ENFORCE}" 2>&1)"; rc=$?
     if [[ "$terminal" == "$want" ]] && {
         [[ "$want" == false && "$rc" -eq 0 && "$out" == *'LOOP_HEALTH: CONTINUE'* ]] ||
         [[ "$want" == true && "$rc" -ne 0 && "$out" == *'terminal_policy_refusal'* ]];
@@ -258,6 +277,40 @@ check_refusal_pipeline rc-missing "" "$TRUE_MARK" "" false
 check_refusal_pipeline history 1 "$FALSE_MARK" "$QUOTED_GUARD"$'\n'"$TRUE_MARK" false
 check_refusal_pipeline string-true 1 'amplihack.recipe.failure_class {"class":"work","structural_refusal":"true"}' "" false
 check_refusal_pipeline rc79 79 "$FALSE_MARK" "" true
+
+# The runner's log_pointer line echoes task_description. A task that names the
+# full marker and "exit 79" is not a refusal (round 1 of PR #1632, #1510).
+# Since #1437 neither is the guard's phrase on a line after it: the child's
+# exit status and the runner's final failure_class marker decide.
+LP='amplihack.recipe.log_pointer {"schema_version":1,"event":"final","task_description":"a review quoting BLOCKED_TERMINAL orchestration_unavailable or exit 79 must not stop the loop","exit_code":79,"status":"failure"}'
+EVLP="$(LOOP_REPO_PATH="${REPO_ROOT}" LOOP_NAME="t" LOOP_HISTORY="" \
+    LOOP_LAST_ROUND_OUTPUT="${LP}" run_step "${COLLECT}" 2>/dev/null)"
+T="$(printf '%s' "${EVLP}" | amplihack orch helper extract-json \
+    | amplihack orch helper extract-field --field terminal_refusal --default MISSING)"
+if [[ "${T}" == "false" ]]; then
+    pass "EXIT79-log-pointer-echo" "a log_pointer line echoing the marker in task_description is not a refusal"
+else
+    fail "EXIT79-log-pointer-echo" "log_pointer task_description read as a refusal (terminal_refusal='${T}')"
+fi
+EVLPG="$(LOOP_REPO_PATH="${REPO_ROOT}" LOOP_NAME="t" LOOP_HISTORY="" LOOP_CHILD_EXIT_CODE=1 \
+    LOOP_LAST_ROUND_OUTPUT="${LP}"$'\n'"BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3" \
+    run_step "${COLLECT}" 2>/dev/null)"
+T="$(printf '%s' "${EVLPG}" | amplihack orch helper extract-json \
+    | amplihack orch helper extract-field --field terminal_refusal --default MISSING)"
+if [[ "${T}" == "false" ]]; then
+    pass "EXIT79-log-pointer-then-guard-text" "the guard's phrase after a log_pointer line, with exit 1 and no marker, is not a refusal (#1437)"
+else
+    fail "EXIT79-log-pointer-then-guard-text" "guard text after log_pointer was read as a refusal (terminal_refusal='${T}')"
+fi
+EVLPM="$(LOOP_REPO_PATH="${REPO_ROOT}" LOOP_NAME="t" LOOP_HISTORY="" LOOP_CHILD_EXIT_CODE=1 \
+    LOOP_LAST_ROUND_OUTPUT="${LP}"$'\n'"${TRUE_MARK}" run_step "${COLLECT}" 2>/dev/null)"
+T="$(printf '%s' "${EVLPM}" | amplihack orch helper extract-json \
+    | amplihack orch helper extract-field --field terminal_refusal --default MISSING)"
+if [[ "${T}" == "true" ]]; then
+    pass "EXIT79-log-pointer-then-marker" "the runner's final structural_refusal marker after a log_pointer line is a refusal"
+else
+    fail "EXIT79-log-pointer-then-marker" "final marker after log_pointer not detected (terminal_refusal='${T}')"
+fi
 
 # A terminal refusal forces STUCK even when the model said CONTINUE.
 V="$(resolve_verdict "${EV79}" '{"loop_verdict":"CONTINUE"}')"
@@ -328,13 +381,13 @@ fi
 # 6. Design constraints the issue is explicit about.
 # ---------------------------------------------------------------------------
 if grep -nEi '(max_iterations|max_iteration|max_rounds|max_attempts|iteration_limit|MAX_LOOPS)' "${RECIPE}" "${COLLECTOR}" \
-   | grep -vi 'not an iteration counter' | grep -q .; then
+   | grep -vi 'not an iteration counter' | matches .; then
     fail "NO-CAP" "the recipe introduces a numeric iteration cap — issue #1337 rejects this outright"
 else
     pass "NO-CAP" "no numeric iteration cap: the terminator is absence of progress, not attempt count"
 fi
 
-if grep -nE '^\s*timeout(_seconds)?:' "${RECIPE}" "${COLLECTOR}" | grep -q .; then
+if grep -nE '^\s*timeout(_seconds)?:' "${RECIPE}" "${COLLECTOR}" | matches .; then
     fail "NO-SHORT-TIMEOUT" "the recipe declares a per-step timeout — see issue #439"
 else
     pass "NO-SHORT-TIMEOUT" "no per-step timeout anywhere: nothing is bounded at seconds or single-digit-minute scale"
@@ -349,6 +402,68 @@ for tok in CONTINUE DONE STUCK; do
 done
 
 # ---------------------------------------------------------------------------
+# 6a. Issue #1597 — DONE needs this round's own verdict to be the clean token.
+# ---------------------------------------------------------------------------
+# The evaluator answered DONE over a round whose reviewer said CONCERNS (or
+# NOT_MERGE_READY) because the findings looked addressed. The caller now
+# passes its clean token and this round's verdict, and the Decide rules make
+# DONE legal only when the two are equal.
+CONTEXT_BLOCK="$(LC_ALL=C awk '/^context:/ { inctx = 1; next } inctx && /^[^ #]/ { exit } inctx { print }' "${RECIPE}")"
+for var in loop_clean_token loop_round_verdict; do
+    if printf '%s\n' "${CONTEXT_BLOCK}" | matches -E "^  ${var}: \"\"[[:space:]]*(#.*)?$"; then
+        pass "1597-context-${var}" "the recipe declares ${var} in context:, empty by default"
+    else
+        fail "1597-context-${var}" "context: has no '${var}: \"\"' entry"
+    fi
+    if printf '%s' "${PROMPT}" | matches -F "{{${var}}}"; then
+        pass "1597-prompt-${var}" "the evaluator prompt shows {{${var}}} to the agent"
+    else
+        fail "1597-prompt-${var}" "the step-02 prompt never shows {{${var}}}"
+    fi
+done
+DECIDE="$(printf '%s\n' "${PROMPT}" | LC_ALL=C awk '/^## Decide/ { on = 1; next } on && /^## / { exit } on { print }')"
+DONE_RULE="$(printf '%s\n' "${DECIDE}" | LC_ALL=C awk '/^- `DONE`/ { on = 1; print; next } on && /^- `/ { exit } on && /^$/ { exit } on { print }')"
+if [[ -n "${DONE_RULE}" ]] && printf '%s' "${DONE_RULE}" | matches -F '{{loop_round_verdict}}' \
+   && printf '%s' "${DONE_RULE}" | matches -F '{{loop_clean_token}}'; then
+    pass "1597-done-rule" "the Decide section's DONE rule requires {{loop_round_verdict}} to equal {{loop_clean_token}}"
+else
+    fail "1597-done-rule" "the DONE rule in ## Decide does not reference both placeholders: [${DONE_RULE}]"
+fi
+# The #1587 round: CONCERNS, fixed by a PR-description edit, zero commits,
+# nothing re-reviewed yet. Forbidding DONE without naming CONTINUE for it lets
+# "zero and zero" plus "if you are not sure, answer STUCK" decide, and the loop
+# honours an evaluator STUCK, so #1597 comes back by another path. The DONE
+# rule must name the zero-commit case as CONTINUE and keep STUCK for a round
+# that acted on nothing; the evidence and fallback lines must not override it.
+DONE_FLAT="$(printf '%s' "${DONE_RULE}" | tr -s '[:space:]' ' ')"
+if printf '%s' "${DONE_FLAT}" | matches -F '`CONTINUE` if it acted on its findings, EVEN WITH ZERO COMMITS' \
+   && printf '%s' "${DONE_FLAT}" | matches -F 'PR-description edit or a thread reply' \
+   && printf '%s' "${DONE_FLAT}" | matches -F '`STUCK` only if it neither changed code nor acted on a finding'; then
+    pass "1597-zero-commit-fix-is-continue" "the DONE rule names a non-clean round fixed outside the diff as CONTINUE, and STUCK only for a round that acted on nothing"
+else
+    fail "1597-zero-commit-fix-is-continue" "the DONE rule does not name the zero-commit, description-only fix as CONTINUE: [${DONE_FLAT}]"
+fi
+PROMPT_FLAT="$(printf '%s' "${PROMPT}" | tr -s '[:space:]' ' ')"
+if ! printf '%s' "${PROMPT_FLAT}" | matches -F 'Zero and zero means it produced nothing' \
+   && printf '%s' "${PROMPT_FLAT}" | matches -F 'acting on findings outside the diff: DONE rule' \
+   && printf '%s' "${PROMPT_FLAT}" | matches -F 'a round that visibly acted on its findings is not in doubt'; then
+    pass "1597-evidence-and-fallback-defer" "the zero-diff evidence note and the 'not sure' fallback both defer to the DONE rule for a round that acted on its findings"
+else
+    fail "1597-evidence-and-fallback-defer" "the evidence note or the 'not sure' fallback still reads a zero-diff fix as no progress"
+fi
+if printf '%s' "${PROMPT}" | matches -F 'If `loop_clean_token` is empty'; then
+    pass "1597-fallback" "the prompt says what to do when a loop passes no clean token"
+else
+    fail "1597-fallback" "the prompt has no 'If \`loop_clean_token\` is empty' fallback for loops that pass neither input"
+fi
+# The new rule is prompt-only: steps 03 and 04 decide exactly as before.
+if ! printf '%s\n%s' "${RESOLVE}" "${ENFORCE}" | matches -E 'loop_clean_token|loop_round_verdict'; then
+    pass "1597-prompt-only" "steps 03 and 04 do not read the new inputs; the deterministic check stays in autodrive_loop.sh"
+else
+    fail "1597-prompt-only" "step-03 or step-04 reads loop_clean_token/loop_round_verdict"
+fi
+
+# ---------------------------------------------------------------------------
 # 6b. Issue #1513 — every evaluator output shape, and where its verdict came
 #     from. Order (docs/reference/loop-health-evaluator.md#how-step-03-
 #     resolves-the-verdict): `loop_verdict` JSON -> `verdict` JSON -> one
@@ -360,7 +475,7 @@ RS_OUT=""; RS_ERR=""; RS_VERDICT=""; RS_SOURCE=""
 resolve_verdict_and_source() { # <evidence> <raw> [loop_name] -> sets RS_*
     local errf json
     errf="$(mktemp)"
-    RS_OUT="$(LOOP_EVIDENCE="$1" LOOP_HEALTH_ASSESSMENT="$2" LOOP_NAME="${3-t}" \
+    RS_OUT="$(RECIPE_VAR_loop_evidence="$1" RECIPE_VAR_loop_health_assessment="$2" LOOP_NAME="${3-t}" \
         LOOP_ROUND_LABEL="r" run_step "${RESOLVE}" 2>"${errf}")"
     RS_ERR="$(cat "${errf}")"; rm -f "${errf}"
     json="$(printf '%s' "${RS_OUT}" | amplihack orch helper extract-json)"
@@ -598,8 +713,8 @@ check_rs "1513-residual-guard" \
 
 # The fail-safe WARNING names the case but never echoes the evaluator's text.
 resolve_verdict_and_source "${CLEAN_EV}" 'SENTINEL-7f3a no verdict here'
-if [[ "${RS_VERDICT}" == "STUCK" ]] && printf '%s' "${RS_ERR}" | grep -q 'WARNING' \
-   && ! printf '%s' "${RS_ERR}" | grep -qF 'SENTINEL-7f3a'; then
+if [[ "${RS_VERDICT}" == "STUCK" ]] && printf '%s' "${RS_ERR}" | matches 'WARNING' \
+   && ! printf '%s' "${RS_ERR}" | matches -F 'SENTINEL-7f3a'; then
     pass "1513-warning-no-raw" "an unparseable reply warns without printing the evaluator's raw output"
 else
     fail "1513-warning-no-raw" "the warning was missing or echoed raw output: ${RS_ERR}"
@@ -608,7 +723,7 @@ fi
 # A prose token must still survive step-04: CONTINUE/DONE exit 0.
 for tok in CONTINUE DONE; do
     resolve_verdict_and_source "${CLEAN_EV}" "${tok} — from prose"
-    out="$(LOOP_HEALTH="${RS_OUT}" LOOP_NAME="t" run_step "${ENFORCE}" 2>/dev/null)"; rc=$?
+    out="$(RECIPE_VAR_loop_health="${RS_OUT}" LOOP_NAME="t" run_step "${ENFORCE}" 2>/dev/null)"; rc=$?
     if [[ ${rc} -eq 0 && "${out}" == "LOOP_HEALTH: ${tok}"* ]]; then
         pass "1513-prose-enforce" "a prose ${tok} reaches step-04 as ${tok} (rc=0)"
     else
@@ -714,8 +829,8 @@ for raw in '{"loop_verdict":"STUCK","not_converging":["x"]}' 'no verdict at all'
     fi
 done
 for tok in CONTINUE DONE STUCK; do
-    all="$(LOOP_HEALTH="{\"loop_verdict\":\"${tok}\",\"verdict_source\":\"evaluator\",\"not_converging\":[]}" \
-        LOOP_NAME="${ANSI_NAME}" LOOP_EVIDENCE="${CLEAN_EV}" run_step "${ENFORCE}" 2>&1)"
+    all="$(RECIPE_VAR_loop_health="{\"loop_verdict\":\"${tok}\",\"verdict_source\":\"evaluator\",\"not_converging\":[]}" \
+        LOOP_NAME="${ANSI_NAME}" RECIPE_VAR_loop_evidence="${CLEAN_EV}" run_step "${ENFORCE}" 2>&1)"
     if [[ "${all}" != *"${ESC}"* && "${all}" != *'"name\'* ]]; then
         pass "GUARD-step04-name" "step-04 ${tok} messages carry no raw quote, backslash or escape from LOOP_NAME"
     else
@@ -730,7 +845,7 @@ done
 # ---------------------------------------------------------------------------
 for case_ in "CONTINUE:true" "DONE:true" "STUCK:true" "STUCK:false"; do
     tok="${case_%%:*}"; enforce="${case_#*:}"
-    out="$(LOOP_HEALTH="{\"loop_verdict\":\"${tok}\",\"verdict_source\":\"evaluator\",\"not_converging\":[\"x\"]}" \
+    out="$(RECIPE_VAR_loop_health="{\"loop_verdict\":\"${tok}\",\"verdict_source\":\"evaluator\",\"not_converging\":[\"x\"]}" \
         LOOP_NAME="${EVIL_NAME}" LOOP_HEALTH_ENFORCE="${enforce}" run_step "${ENFORCE}" 2>/dev/null)"
     n="$(printf '%s' "${out}" | grep -c '' || true)"
     if [[ "${tok}" == "STUCK" ]]; then
@@ -750,8 +865,8 @@ done
 # comments, CI logs): no control bytes, and the echoed part is capped.
 BIG="$(head -c 6000 /dev/zero | tr '\0' 'A')"
 EV_EVIL="{\"terminal_refusal\":\"false\",\"note\":\"${ESC}[2J${BIG}\"}"
-err="$(LOOP_HEALTH='{"loop_verdict":"STUCK","verdict_source":"evaluator","not_converging":["y"]}' \
-    LOOP_NAME="t" LOOP_EVIDENCE="${EV_EVIL}" run_step "${ENFORCE}" 2>&1 >/dev/null)"
+err="$(RECIPE_VAR_loop_health='{"loop_verdict":"STUCK","verdict_source":"evaluator","not_converging":["y"]}' \
+    LOOP_NAME="t" RECIPE_VAR_loop_evidence="${EV_EVIL}" run_step "${ENFORCE}" 2>&1 >/dev/null)"
 ev_line="$(printf '%s\n' "${err}" | grep -F 'Evidence:' | head -n1)"
 if [[ "${err}" != *"${ESC}"* && -n "${ev_line}" && "${#ev_line}" -le 2100 ]]; then
     pass "STEP04-stderr-sanitised" "STUCK's evidence echo has no control bytes and is capped (${#ev_line} bytes)"
@@ -762,7 +877,7 @@ fi
 # S1: the log reader in autodrive_loop.sh trusts step-04 because it ALWAYS
 # runs last. A `condition:` on it would let the trusted block go missing.
 S04_BLOCK="$(awk '/id: "step-04-enforce-loop-verdict"/{f=1;next} f && /^  - id:/{exit} f && /^output:/{exit} f' "${RECIPE}")"
-if [[ -n "${S04_BLOCK}" ]] && ! printf '%s\n' "${S04_BLOCK}" | grep -qE '^    condition:'; then
+if [[ -n "${S04_BLOCK}" ]] && ! printf '%s\n' "${S04_BLOCK}" | matches -E '^    condition:'; then
     pass "STEP04-unconditional" "step-04 has no condition: and always runs last"
 else
     fail "STEP04-unconditional" "step-04 is missing or conditional"
@@ -817,7 +932,7 @@ if [[ -n "${HN}" && "${LAST_NB_TXT}" == *'any other word is STUCK'* && -z "${BRA
 else
     fail "PROMPT-contract-ends-prompt" "expected the last non-blank line to contain 'any other word is STUCK' and no {{ at or after the last heading; got last non-blank prompt line ${LAST_NB:-none} '${LAST_NB_TXT}', last heading ${HN:-none} '${HN_TXT}', first {{ after it ${BRACE_AFTER:-none}"
 fi
-if grep -nE '^[[:space:]]*(LOOP_HEALTH: (CONTINUE|DONE)|Output: LOOP_HEALTH:)' "${RECIPE}" | grep -q .; then
+if grep -nE '^[[:space:]]*(LOOP_HEALTH: (CONTINUE|DONE)|Output: LOOP_HEALTH:)' "${RECIPE}" | matches .; then
     fail "PROMPT-no-marker" "a recipe line starts with a health marker the loop driver would read: $(grep -nE '^[[:space:]]*(LOOP_HEALTH: (CONTINUE|DONE)|Output: LOOP_HEALTH:)' "${RECIPE}" | head -n3)"
 else
     pass "PROMPT-no-marker" "no recipe line starts with LOOP_HEALTH: CONTINUE/DONE or Output: LOOP_HEALTH:"
@@ -896,7 +1011,7 @@ fi
 
 # Step-04 stops the loop on the refusal and names the source.
 resolve_verdict_and_source "" '{"loop_verdict":"DONE"}'
-err="$(LOOP_HEALTH="${RS_OUT}" LOOP_NAME="t" LOOP_EVIDENCE="" run_step "${ENFORCE}" 2>&1 >/dev/null)"; rc=$?
+err="$(RECIPE_VAR_loop_health="${RS_OUT}" LOOP_NAME="t" RECIPE_VAR_loop_evidence="" run_step "${ENFORCE}" 2>&1 >/dev/null)"; rc=$?
 if [[ ${rc} -ne 0 && "${err}" == *'source=terminal_policy_refusal'* ]]; then
     pass "NOEV-enforce" "step-04 exits non-zero on a missing-evidence refusal and names terminal_policy_refusal"
 else
@@ -969,7 +1084,7 @@ else
 
     # --- 7a. CONTINUE reaches step-04 and exits 0 (the B1 regression) --------
     e2e_run continue '{"loop_verdict":"CONTINUE","moved":["3 commits"]}'
-    if [[ ${E2E_RC} -eq 0 ]] && printf '%s' "${E2E_OUT}" | grep -qF 'LOOP_HEALTH: CONTINUE'; then
+    if [[ ${E2E_RC} -eq 0 ]] && printf '%s' "${E2E_OUT}" | matches -F 'LOOP_HEALTH: CONTINUE'; then
         pass "E2E-continue" "a CONTINUE verdict survives the real runner and exits 0"
     else
         fail "E2E-continue" "CONTINUE did not reach step-04 (rc=${E2E_RC}):
@@ -978,13 +1093,13 @@ ${E2E_OUT}"
     # The exact signature of the inert-recipe bug: the reads miss, the
     # `--default true` fail-safe fires, and an exit-79 refusal that never
     # happened is reported as the reason.
-    if printf '%s' "${E2E_OUT}" | grep -qF 'terminal_policy_refusal'; then
+    if printf '%s' "${E2E_OUT}" | matches -F 'terminal_policy_refusal'; then
         fail "E2E-no-fabricated-refusal" "the run fabricated a terminal policy refusal:
 ${E2E_OUT}"
     else
         pass "E2E-no-fabricated-refusal" "no exit-79 refusal is invented when none occurred"
     fi
-    if printf '%s' "${E2E_OUT}" | grep -q '"verdict_source": *"evaluator"'; then
+    if printf '%s' "${E2E_OUT}" | matches '"verdict_source": *"evaluator"'; then
         pass "E2E-verdict-source" "the verdict is attributed to the evaluator, not to a failed read"
     else
         fail "E2E-verdict-source" "verdict_source is not 'evaluator':
@@ -993,8 +1108,8 @@ ${E2E_OUT}"
 
     # --- 7a2. Issue #1513: a prose verdict survives the real runner ---------
     e2e_run prose 'CONTINUE — round 1 made real progress on the review threads'
-    if [[ ${E2E_RC} -eq 0 ]] && printf '%s' "${E2E_OUT}" | grep -qF 'LOOP_HEALTH: CONTINUE' \
-       && printf '%s' "${E2E_OUT}" | grep -q '"verdict_source": *"evaluator_prose_token"'; then
+    if [[ ${E2E_RC} -eq 0 ]] && printf '%s' "${E2E_OUT}" | matches -F 'LOOP_HEALTH: CONTINUE' \
+       && printf '%s' "${E2E_OUT}" | matches '"verdict_source": *"evaluator_prose_token"'; then
         pass "E2E-prose-token" "a line-leading prose CONTINUE reaches step-04 through the real runner"
     else
         fail "E2E-prose-token" "a prose CONTINUE did not survive the real runner (rc=${E2E_RC}):
@@ -1003,7 +1118,7 @@ ${E2E_OUT}"
 
     # --- 7b. STUCK stops the loop, end to end -------------------------------
     e2e_run stuck '{"loop_verdict":"STUCK","not_converging":["zero commits in 7 rounds"]}'
-    if [[ ${E2E_RC} -ne 0 ]] && printf '%s' "${E2E_OUT}" | grep -qF 'LOOP_HEALTH: STUCK'; then
+    if [[ ${E2E_RC} -ne 0 ]] && printf '%s' "${E2E_OUT}" | matches -F 'LOOP_HEALTH: STUCK'; then
         pass "E2E-stuck" "a STUCK verdict fails the recipe end to end (rc=${E2E_RC})"
     else
         fail "E2E-stuck" "STUCK did not stop the run (rc=${E2E_RC}):
@@ -1031,7 +1146,7 @@ ${E2E_OUT}"
 ```
 It moved. Verdict:
 {"loop_verdict": "CONTINUE", "moved": ["3 commits"]}'
-    if [[ ${E2E_RC} -eq 0 ]] && printf '%s' "${E2E_OUT}" | grep -qF 'LOOP_HEALTH: CONTINUE'; then
+    if [[ ${E2E_RC} -eq 0 ]] && printf '%s' "${E2E_OUT}" | matches -F 'LOOP_HEALTH: CONTINUE'; then
         pass "E2E-quoted-evidence" "evidence quoted back in a fence is ignored; the real verdict wins"
     else
         fail "E2E-quoted-evidence" "quoted evidence was read as the verdict (rc=${E2E_RC}):
@@ -1040,7 +1155,7 @@ ${E2E_OUT}"
 
     # --- 7d. A real exit-79 refusal is still terminal, end to end -----------
     e2e_run terminal '{"loop_verdict":"CONTINUE"}' -c loop_child_exit_code=79
-    if [[ ${E2E_RC} -ne 0 ]] && printf '%s' "${E2E_OUT}" | grep -qF 'terminal_policy_refusal'; then
+    if [[ ${E2E_RC} -ne 0 ]] && printf '%s' "${E2E_OUT}" | matches -F 'terminal_policy_refusal'; then
         pass "E2E-terminal" "a genuine exit-79 refusal still forces STUCK and stops the run"
     else
         fail "E2E-terminal" "exit 79 was not terminal end to end (rc=${E2E_RC}):
@@ -1076,12 +1191,25 @@ $FALSE_MARK" -c "loop_history=$TRUE_MARK"
   Evidence: {\"terminal_refusal\":\"true\",\"terminal_reason\":\"child process exited 79 (policy refusal, #1327/#1332) [loop-health-evaluator]\"}"
     e2e_run selfpoison '{"loop_verdict":"CONTINUE","moved":["3 commits"]}' \
         -c loop_history="${SELF_REPORT}"
-    if [[ ${E2E_RC} -eq 0 ]] && printf '%s' "${E2E_OUT}" | grep -qF 'LOOP_HEALTH: CONTINUE'; then
+    if [[ ${E2E_RC} -eq 0 ]] && printf '%s' "${E2E_OUT}" | matches -F 'LOOP_HEALTH: CONTINUE'; then
         pass "E2E-self-poison" "this brick's own escalation report does not re-trigger its exit-79 detector"
     else
         fail "E2E-self-poison" "the brick poisoned itself from its own report (rc=${E2E_RC}):
 ${E2E_OUT}"
     fi
+fi
+
+# --- Issue #1801: a failed step-02 stops this recipe -------------------------
+# A usage limit on step-02 must reach the caller as a failed recipe with the
+# runner's marker. With continue_on_error, step-03 would turn the missing
+# verdict into STUCK with verdict_source=missing_verdict.
+STEP02="$(awk '/^  - id: "step-02-evaluate-loop-health"/ { on = 1; print; next } /^  - id: / { on = 0 } on' "${RECIPE}")"
+if [[ -z "${STEP02}" ]]; then
+    fail "1801-step-02-stops" "step-02-evaluate-loop-health was not found in the recipe"
+elif grep -qE '^[[:space:]]*(continue_on_error|on_failure)[[:space:]]*:' <<<"${STEP02}"; then
+    fail "1801-step-02-stops" "step-02 must not continue after a failure"
+else
+    pass "1801-step-02-stops" "a failed step-02 stops the recipe, so its usage limit is never read as STUCK"
 fi
 
 echo ""

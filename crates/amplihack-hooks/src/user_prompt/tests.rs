@@ -11,6 +11,11 @@ use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
 use std::fs;
 
+/// Never resolves the real profile root.
+fn test_hook() -> UserPromptSubmitHook {
+    UserPromptSubmitHook::with_prompt_root(|| None)
+}
+
 #[test]
 fn extract_prefs_from_table() {
     let content = r#"
@@ -239,7 +244,7 @@ fn stored_learnings_are_injected_once_and_only_when_relevant() {
 
 #[test]
 fn handles_unknown_events() {
-    let hook = UserPromptSubmitHook;
+    let hook = test_hook();
     let result = hook.process(HookInput::Unknown).unwrap();
     assert!(result.as_object().unwrap().is_empty());
 }
@@ -254,9 +259,11 @@ fn returns_additional_context_without_mutating_prompt() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
-    let hook = UserPromptSubmitHook;
+    let hook = test_hook();
     let result = hook
         .process(HookInput::UserPromptSubmit {
             user_prompt: Some("/dev continue parity audit".to_string()),
@@ -305,9 +312,11 @@ fn extracts_prompt_from_extra_prompt_key() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
-    let hook = UserPromptSubmitHook;
+    let hook = test_hook();
     let result = hook
         .process(HookInput::UserPromptSubmit {
             user_prompt: None,
@@ -334,9 +343,11 @@ fn extracts_prompt_from_user_message_dict() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
-    let hook = UserPromptSubmitHook;
+    let hook = test_hook();
     let result = hook
         .process(HookInput::UserPromptSubmit {
             user_prompt: None,
@@ -365,9 +376,11 @@ fn dev_prompt_initializes_workflow_enforcement_state_and_warning_path() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
-    let hook = UserPromptSubmitHook;
+    let hook = test_hook();
     let result = hook
         .process(HookInput::UserPromptSubmit {
             user_prompt: Some("/dev continue parity audit".to_string()),
@@ -376,10 +389,11 @@ fn dev_prompt_initializes_workflow_enforcement_state_and_warning_path() {
         })
         .unwrap();
 
-    let workflow_state = dir
+    let workflow_state = home
         .path()
-        .join(".claude/runtime/workflow_state/workflow-session.json");
+        .join(".amplihack/runtime/sessions/workflow-session/workflow_state.json");
     assert!(workflow_state.exists());
+    assert!(!dir.path().join(".claude/runtime/workflow_state").exists());
     assert!(
         result["hookSpecificOutput"]["additionalContext"]
             .as_str()
@@ -424,8 +438,9 @@ fn load_user_preferences_uses_amplihack_root_override() {
     let _guard = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let project = tempfile::tempdir().unwrap();
-    let framework = tempfile::tempdir().unwrap();
+    let base = crate::test_support::scratch_base::scratch_base();
+    let project = tempfile::tempdir_in(&base).unwrap();
+    let framework = tempfile::tempdir_in(&base).unwrap();
     fs::create_dir_all(framework.path().join(".claude/context")).unwrap();
     fs::write(
         framework.path().join(".claude/context/USER_PREFERENCES.md"),
@@ -467,7 +482,7 @@ fn workflow_active_semaphore_skips_dev_detection() {
     )
     .unwrap();
 
-    let hook = UserPromptSubmitHook;
+    let hook = test_hook();
     let result = hook
         .process(HookInput::UserPromptSubmit {
             user_prompt: Some("/dev continue parity audit".to_string()),
@@ -500,7 +515,7 @@ fn workflow_active_via_session_depth_skips_dev_detection() {
     let previous = std::env::var_os("AMPLIHACK_SESSION_DEPTH");
     unsafe { std::env::set_var("AMPLIHACK_SESSION_DEPTH", "1") };
 
-    let hook = UserPromptSubmitHook;
+    let hook = test_hook();
     let result = hook
         .process(HookInput::UserPromptSubmit {
             user_prompt: Some("/dev continue parity audit".to_string()),
@@ -543,4 +558,52 @@ fn is_workflow_active_returns_true_with_live_pid() {
     )
     .unwrap();
     assert!(is_workflow_active(&dirs));
+}
+
+#[cfg(unix)]
+#[test]
+fn prompt_is_noted_for_a_waiting_limit_resume_hook_only_when_resume_dir_exists() {
+    use crate::limit_resume::decide::session_key;
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
+    let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
+    let root = tempfile::tempdir().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let cwd_dir = tempfile::tempdir().unwrap();
+    let cwd = crate::test_support::CwdGuard::set(cwd_dir.path()).unwrap();
+
+    let root_path = root.path().to_path_buf();
+    let hook = UserPromptSubmitHook::with_prompt_root(move || Some(root_path.clone()));
+    let submit = || {
+        hook.process(HookInput::UserPromptSubmit {
+            user_prompt: Some("keep going".to_string()),
+            session_id: Some("prompt-session".to_string()),
+            extra: Value::Null,
+        })
+        .unwrap();
+    };
+
+    submit();
+    assert_eq!(
+        fs::read_dir(root.path()).unwrap().count(),
+        0,
+        "nothing is created without resume/"
+    );
+
+    let resume = root.path().join(".auto-switch.d").join("resume");
+    for d in [root.path().join(".auto-switch.d"), resume.clone()] {
+        fs::create_dir(&d).unwrap();
+        fs::set_permissions(&d, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    submit();
+    drop(cwd);
+
+    let marker = resume.join("prompted").join(session_key("prompt-session"));
+    let text = fs::read_to_string(&marker).unwrap();
+    assert!(text.trim_end().parse::<i64>().unwrap() > 0, "{text:?}");
+    assert!(!text.contains("prompt-session"));
 }

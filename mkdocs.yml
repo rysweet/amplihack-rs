@@ -65,7 +65,19 @@ nav:
       - Uninstall: howto/uninstall.md
       - Claude Login Profiles: howto/claude-profiles.md
       - Claude Login Rotation: howto/claude-profile-rotation.md
+      - Supervise Agent Sessions: howto/supervise-agent-sessions.md
+      - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
+      - Keep Tests off the Host Process Table: howto/keep-tests-off-the-host-process-table.md
+      - Keep Tests out of the Real Profile Root: howto/keep-tests-out-of-the-real-profile-root.md
+      - Give Test Logins a Fake Account Identity: howto/give-test-logins-a-fake-account-identity.md
+      - Keep Tests from Changing PATH and HOME: howto/keep-tests-from-changing-path-and-home.md
+      - Keep Tests from Prompting for Git Credentials: howto/keep-tests-from-prompting-for-git.md
+      - Run recipe::run Tests Inside a Recipe Session: howto/run-recipe-tests-inside-a-recipe-session.md
+      - Wait Without Leaving Orphan Processes: howto/wait-without-orphan-processes.md
       - Profile Command Reference: reference/profile-command.md
+      - Capacity Governor: reference/capacity-governor.md
+      - Sessions Command Reference: reference/sessions-command.md
+      - Agent Command Reference: reference/agent-command.md
       - ccswitch Review: reviews/ccswitch-review.md
   - Core Concepts:
       - Philosophy: claude/context/PHILOSOPHY.md
@@ -74,6 +86,7 @@ nav:
       - Trust & Anti-Sycophancy: claude/context/TRUST.md
       - Rust Runner Execution Architecture: concepts/rust-runner-execution-architecture.md
       - Agent Binary Routing: concepts/agent-binary-routing.md
+      - Versioned Install Layout: concepts/versioned-install-layout.md
       - Launch Target Resolution: LAUNCH_TARGET_RESOLUTION.md
       - System Prompt Append: SYSTEM_PROMPT_APPEND.md
       - Memory Architecture: concepts/memory-backend-architecture.md
@@ -106,7 +119,11 @@ nav:
       - Multi-Agent Debate: claude/workflow/DEBATE_WORKFLOW.md
       - Fallback Cascade: claude/workflow/CASCADE_WORKFLOW.md
       - Investigation Workflow: claude/workflow/INVESTIGATION_WORKFLOW.md
+      - Quick-Change Recipe: reference/quick-change-recipe.md
+      - Auto-Drive-Light Recipe: reference/auto-drive-light.md
+      - Git Repository Environment Helper: reference/git-repo-env-helper.md
       - Recipe CLI Commands: howto/recipe-cli-commands.md
+      - Clean Up After Recipe Runs: howto/clean-up-after-recipe-runs.md
       - Recipe CLI Reference: reference/recipe-cli-reference.md
       - Large Payload Delivery:
           - Explanation: concepts/large-payload-delivery.md
@@ -119,10 +136,15 @@ nav:
           - Tutorial: tutorials/pr-recovery-readiness.md
           - Reference: reference/pr-recovery-readiness.md
       - Terminal-State Provider Safety: reference/workflow-terminal-state-provider-safety.md
+      - GitHub Repo Identity Parser: reference/workflow-github-repo-identity.md
       - Evidence & Bookkeeping Gate Hardening: reference/workflow-implementation-evidence.md
       - Publish Lockfile Sync: reference/workflow-publish-lockfile-sync.md
+      - Commit Hook Repair: reference/recipe-commit-hook-repair.md
       - Local Tracking Issue-Number Extraction: recipes/issue-815-804-local-tracking-issue-number.md
+      - Caller Branch Worktree Alias: recipes/issue-1762-caller-branch-worktree-alias.md
       - Tracking Issue Selection: reference/workflow-tracking-issue-selection.md
+      - Workflow Delivery Inputs: reference/workflow-delivery-inputs.md
+      - Consensus Criticality Contract: reference/consensus-criticality-contract.md
   - Agents:
       - Overview: claude/agents/README.md
       - Core Agents:
@@ -163,6 +185,7 @@ nav:
       - Scenarios Overview: claude/scenarios/README.md
       - Creating Tools: CREATE_YOUR_OWN_TOOLS.md
       - Hooks Configuration: HOOK_CONFIGURATION_GUIDE.md
+      - Coordination Messages: reference/coordination-messages.md
       - GitHub Copilot CLI:
           - Overview: COPILOT_CLI.md
           - Tutorial: tutorials/copilot-parity-control-plane.md
@@ -226,6 +249,7 @@ nav:
   - Reference:
       - Discoveries: claude/context/DISCOVERIES.md
       - Security: SECURITY_RECOMMENDATIONS.md
+      - XPIA Configuration: reference/xpia-configuration.md
       - Testing: testing/TEST_PLAN.md
       - Migration Contract Tests: testing/MIGRATION_CONTRACT_TESTS.md
       - Subprocess Env Isolation Tests: testing/SUBPROCESS_ENV_ISOLATION_TESTS.md
@@ -234,6 +258,7 @@ nav:
       - Rust Code Quality: reference/rust-code-quality.md
       - CLI Reference: reference/cli.md
       - install Command: reference/install-command.md
+      - Framework Source Selection: reference/framework-source-selection.md
       - Install/Update PATH Conflicts: reference/install-update-path-conflicts.md
       - recipe Command: reference/recipe-command.md
       - RustyClawd Command: reference/rustyclawd-command.md
@@ -244,5 +269,7 @@ nav:
       - query-code Command: reference/query-code-command.md
       - multitask Command: reference/multitask-command.md
       - doctor Command: reference/doctor-command.md
+      - User Configuration: reference/user-config.md
+      - AMPLIHACK_* Environment Variable Audit: reference/amplihack-env-vars.md
       - Rust Runner Execution: reference/rust-runner-execution.md
       - Transient Failure Retry: reference/transient-failure-retry.md

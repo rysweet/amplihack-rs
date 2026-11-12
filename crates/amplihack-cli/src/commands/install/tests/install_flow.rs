@@ -608,25 +608,49 @@ fn find_framework_repo_root_finds_github_tarball_layout() {
     assert_eq!(found, extracted);
 }
 
-#[test]
-fn find_compatible_framework_repo_root_accepts_downloaded_composable_bundle() {
-    let temp = tempfile::tempdir().unwrap();
-    let extracted = temp.path().join("amplihack-main");
-    create_source_repo(&extracted);
-
-    let found = clone::find_compatible_framework_repo_root(temp.path(), "test download").unwrap();
-
-    assert_eq!(found, extracted);
+/// A plain install whose only source is `fetcher`, checked with the real
+/// compatibility rules. Issue #1955 moved this check here from the removed
+/// `find_compatible_framework_repo_root`.
+fn acquire_from_download(
+    fetcher: &super::issue_1955_support::FakeFetcher,
+) -> Result<framework_source::AcquiredSource> {
+    framework_source::acquire_framework_source(
+        &framework_source::SourcePolicy {
+            local: None,
+            force_refresh: true,
+            mode: InstallMode::Explicit,
+            fetch_backoff: None,
+        },
+        &clone::FrameworkRootQuery::default(),
+        &framework_source::BinaryIdentity {
+            version: "1.2.99".to_string(),
+            may_fetch: true,
+        },
+        fetcher,
+        &|candidate| {
+            validate_framework_bundle_compatibility(candidate).map_err(|err| format!("{err:#}"))
+        },
+    )
 }
 
 #[test]
-fn find_compatible_framework_repo_root_rejects_downloaded_stale_bundle() {
-    let temp = tempfile::tempdir().unwrap();
-    let extracted = temp.path().join("amplihack-main");
-    create_source_repo(&extracted);
-    fs::write(
-        extracted.join("amplifier-bundle/recipes/smart-orchestrator.yaml"),
-        r#"name: "smart-orchestrator"
+fn a_downloaded_composable_bundle_is_accepted() {
+    let fetcher = super::issue_1955_support::FakeFetcher::serving("1.2.99");
+
+    let source = acquire_from_download(&fetcher).unwrap();
+
+    assert_eq!(source.origin, framework_source::SourceOrigin::ReleaseTag);
+    assert!(source.root.ends_with("amplihack-rs-1.2.99"));
+}
+
+#[test]
+fn a_downloaded_stale_bundle_is_rejected() {
+    let fetcher = super::issue_1955_support::FakeFetcher::new(|destination| {
+        let root = destination.join("amplihack-rs-1.2.99");
+        super::issue_1955_support::versioned_tree(&root, "1.2.99");
+        fs::write(
+            root.join("amplifier-bundle/recipes/smart-orchestrator.yaml"),
+            r#"name: "smart-orchestrator"
 steps:
   - id: "parse-decomposition"
     type: "shell"
@@ -636,18 +660,23 @@ steps:
       import importlib
       PY
 "#,
-    )
-    .unwrap();
+        )?;
+        Ok(root)
+    });
 
-    let err = clone::find_compatible_framework_repo_root(temp.path(), "test download")
+    let err = acquire_from_download(&fetcher)
         .expect_err("downloaded stale smart-orchestrator bundle must be rejected");
     let msg = err.to_string();
 
     assert!(
-        msg.contains("downloaded framework bundle")
+        msg.contains("release tag v1.2.99")
             && msg.contains("incompatible")
             && msg.contains("smart-orchestrator"),
         "error must explain the incompatible downloaded bundle, got: {msg}"
+    );
+    assert!(
+        err.downcast_ref::<tag_fetch::SourceFetchFailed>().is_none(),
+        "self-heal must not be able to continue past a bad tree: {err:#}"
     );
 }
 
@@ -852,6 +881,130 @@ fn copy_amplifier_bundle_replaces_existing_atomically() {
         !parent.join("amplifier-bundle.old").exists(),
         "no backup dir must remain after a successful install"
     );
+}
+
+/// Issue #1551: the `gh` merge guard is staged with the bundle and stays
+/// executable, since `amplihack recipe run` puts its directory on PATH and
+/// refuses to run auto-drive without it.
+#[cfg(unix)]
+#[test]
+fn copy_amplifier_bundle_stages_the_merge_guard_executable() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let repo_root = temp.path().join("repo");
+    let claude_dir = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
+    let guard = repo_root.join("amplifier-bundle/tools/gh-merge-guard");
+    fs::create_dir_all(&guard).unwrap();
+    fs::write(
+        guard.join("gh"),
+        "#!/usr/bin/env bash\n# amplihack-gh-merge-guard\n",
+    )
+    .unwrap();
+    fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+
+    let staged = temp
+        .path()
+        .join(".amplihack/amplifier-bundle/tools/gh-merge-guard/gh");
+    let meta = fs::metadata(&staged)
+        .unwrap_or_else(|e| panic!("{} must be staged: {e}", staged.display()));
+    assert!(meta.is_file());
+    assert!(
+        meta.permissions().mode() & 0o111 != 0,
+        "the staged merge guard must stay executable (mode {:o})",
+        meta.permissions().mode()
+    );
+}
+
+/// Issue #1551 G11: the install sets the shim to exactly 0755 rather than
+/// keeping whatever mode the checkout (and its umask) gave it, because
+/// `amplihack recipe run` refuses a guard that group or others can write.
+#[cfg(unix)]
+#[test]
+fn copy_amplifier_bundle_stages_the_merge_guard_at_exactly_0755() {
+    use std::os::unix::fs::PermissionsExt;
+    for source_mode in [0o775, 0o777, 0o700, 0o644] {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = temp.path().join("repo");
+        let claude_dir = temp.path().join(".amplihack/.claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
+        let guard = repo_root.join("amplifier-bundle/tools/gh-merge-guard");
+        fs::create_dir_all(&guard).unwrap();
+        fs::write(
+            guard.join("gh"),
+            "#!/bin/bash -p\n# amplihack-gh-merge-guard\n",
+        )
+        .unwrap();
+        fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(source_mode)).unwrap();
+
+        directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+
+        let staged_dir = temp
+            .path()
+            .join(".amplihack/amplifier-bundle/tools/gh-merge-guard");
+        let mode = fs::metadata(staged_dir.join("gh"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(
+            mode, 0o755,
+            "a {source_mode:o} source shim must be staged as 0755, got {mode:o}"
+        );
+        let dir_mode = fs::metadata(&staged_dir).unwrap().permissions().mode();
+        assert_eq!(
+            dir_mode & 0o022,
+            0,
+            "the staged guard dir must not be group- or other-writable (mode {dir_mode:o})"
+        );
+    }
+}
+
+/// Issue #1551 G11: the guard also trusts tools/ and the gate files in it, so
+/// the install removes their group and other write bits, keeping the rest.
+#[cfg(unix)]
+#[test]
+fn copy_amplifier_bundle_removes_group_write_from_tools_and_gate_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let repo_root = temp.path().join("repo");
+    let claude_dir = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
+    let tools = repo_root.join("amplifier-bundle/tools");
+    let guard = tools.join("gh-merge-guard");
+    fs::create_dir_all(&guard).unwrap();
+    fs::write(
+        guard.join("gh"),
+        "#!/bin/bash -p\n# amplihack-gh-merge-guard\n",
+    )
+    .unwrap();
+    fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(tools.join("autodrive_merge_gate.sh"), "#!/bin/bash\n").unwrap();
+    fs::set_permissions(
+        tools.join("autodrive_merge_gate.sh"),
+        fs::Permissions::from_mode(0o777),
+    )
+    .unwrap();
+    fs::write(tools.join("autodrive_state.sh"), "# sourced\n").unwrap();
+    fs::set_permissions(
+        tools.join("autodrive_state.sh"),
+        fs::Permissions::from_mode(0o664),
+    )
+    .unwrap();
+    fs::set_permissions(&tools, fs::Permissions::from_mode(0o775)).unwrap();
+
+    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+
+    let staged = temp.path().join(".amplihack/amplifier-bundle/tools");
+    let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode(&staged) & 0o022, 0, "tools/ mode {:o}", mode(&staged));
+    assert_eq!(mode(&staged.join("autodrive_merge_gate.sh")), 0o755);
+    assert_eq!(mode(&staged.join("autodrive_state.sh")), 0o644);
 }
 
 #[test]
@@ -1584,66 +1737,33 @@ fn run_install_force_refresh_false_uses_bundled_root_when_available() {
 
 #[test]
 fn run_install_force_refresh_true_skips_bundled_root() {
-    // Contract (THE FIX): when `force_refresh=true` and `local` is `None`,
-    // `run_install` must NOT use `find_bundled_framework_root()`. It must
-    // fall through directly to the network download path.
-    //
-    // In the test environment, `find_bundled_framework_root()` always returns
-    // `Some` (the workspace root is discoverable). With `force_refresh=true`,
-    // the function must skip it and attempt a fresh network download instead.
-    //
-    // Since network download may succeed or fail depending on environment
-    // (git availability, network connectivity), this test verifies the
-    // contract by checking that the code path taken is different from
-    // the `force_refresh=false` path. Specifically:
-    //
-    // - `force_refresh=false` uses bundled root → stages from local source
-    // - `force_refresh=true` skips bundled root → downloads from upstream
-    //
-    // We verify the download path was taken by checking for the
-    // freshness SHA stamp that is ONLY written after a network-fallback
-    // install (see mod.rs L100-102), NOT after a bundled-root install.
+    // Contract (issue #675, as changed by #1955): with `force_refresh=true` and
+    // no `AMPLIHACK_HOME`, the install must not use the bundled root it would
+    // find in this workspace. It goes to the release tag instead.
     with_install_env(|home| {
-        // First: install with force_refresh=false (bundled root path).
-        // This should succeed and NOT write the framework-sha stamp.
-        let result_default = run_install(None, false, false);
-        result_default.expect("baseline install with force_refresh=false must succeed");
+        let fetcher = super::issue_1955_support::FakeFetcher::serving(crate::VERSION);
+        let binary = framework_source::BinaryIdentity {
+            version: crate::VERSION.to_string(),
+            may_fetch: true,
+        };
 
-        let sha_stamp = home.join(".amplihack/.framework-sha");
-        let had_sha_after_default = sha_stamp.exists();
+        run_install_with_fetcher(
+            None,
+            false,
+            true,
+            false,
+            InstallMode::Explicit,
+            &binary,
+            &fetcher,
+        )
+        .expect("force_refresh=true must install from the release tag");
 
-        // Clean staged assets for a fresh run
-        let _ = fs::remove_dir_all(home.join(".amplihack/.claude"));
-        let _ = fs::remove_file(&sha_stamp);
-
-        // Second: install with force_refresh=true (network download path).
-        // This test validates that the code ATTEMPTS the network path.
-        // If the network download succeeds, the framework-sha stamp will
-        // be written (distinguishing it from the bundled-root path).
-        // If the download fails (no network), that's also acceptable —
-        // the error message should reference network/download, not bundled root.
-        let result_refresh = run_install(None, false, true);
-        match result_refresh {
-            Ok(()) => {
-                // Network download succeeded — verify the SHA stamp was written
-                // (this stamp is ONLY written after network-fallback installs).
-                assert!(
-                    sha_stamp.exists() || !had_sha_after_default,
-                    "issue #675: force_refresh=true must take the network download path, \
-                     which writes the framework-sha stamp"
-                );
-            }
-            Err(ref e) => {
-                let msg = e.to_string();
-                // Network download failed — the error must reference the
-                // download/network path, NOT the bundled root.
-                assert!(
-                    !msg.contains("Using bundled framework"),
-                    "issue #675: force_refresh=true must NOT use bundled framework root. \
-                     Got error: {msg}"
-                );
-            }
-        }
+        assert_eq!(fetcher.call_count(), 1, "the tag must have been fetched");
+        assert!(
+            home.join(".amplihack/amplifier-bundle/context/fetched-sentinel.txt")
+                .is_file(),
+            "the fetched tree must be what was staged"
+        );
     });
 }
 
@@ -1658,5 +1778,106 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
     ]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    // A session's own AMPLIHACK_HOME is a source install would now refuse (#1955).
+    unsafe { std::env::remove_var("AMPLIHACK_HOME") };
     saved
+}
+
+/// Issue #1954 B2: the mapped `.claude` trees are exchanged only after the
+/// release commits, so a bundle that fails its staging check leaves them,
+/// and the published bundle link, exactly as the previous install left them.
+#[test]
+fn failed_bundle_staging_leaves_claude_trees_on_the_old_version() {
+    use crate::commands::install::directories::staging_hook::with_staging_hook;
+
+    fn files(root: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+        let mut out = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                let kind = entry.file_type().unwrap();
+                if kind.is_dir() {
+                    stack.push(path);
+                } else if kind.is_file() {
+                    out.push((
+                        path.strip_prefix(root).unwrap().to_path_buf(),
+                        fs::read(&path).unwrap(),
+                    ));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    let bin_dir = temp.path().join("stub_bin");
+    let hooks_stub = create_exe_stub(&bin_dir, "amplihack-hooks");
+    let prev_hooks = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+    let prev_path = std::env::var_os("PATH");
+    unsafe {
+        std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+        std::env::set_var(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin_dir.display(),
+                prev_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ),
+        );
+    }
+
+    create_source_repo(temp.path());
+    local_install(temp.path(), None).unwrap();
+    let claude = temp.path().join(".amplihack/.claude");
+    let link = temp.path().join(".amplihack/amplifier-bundle");
+    let before = files(&claude);
+    let link_before = fs::read_link(&link).unwrap();
+
+    // The next source ships changed agents and skills; its bundle fails the
+    // staging comparison because the staged copy gains a file.
+    for dir in ["agents", "skills"] {
+        fs::write(
+            temp.path()
+                .join("amplifier-bundle")
+                .join(dir)
+                .join("marker.txt"),
+            "changed\n",
+        )
+        .unwrap();
+    }
+    let result = with_staging_hook(
+        |staging| fs::write(staging.join("injected.txt"), "x\n").unwrap(),
+        || local_install(temp.path(), None),
+    );
+
+    let after = files(&claude);
+    let link_after = fs::read_link(&link).unwrap();
+
+    if let Some(v) = prev_hooks {
+        unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
+    } else {
+        unsafe { std::env::remove_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") };
+    }
+    if let Some(v) = prev_path {
+        unsafe { std::env::set_var("PATH", v) };
+    }
+    crate::test_support::restore_home(previous);
+
+    assert!(result.is_err(), "the staging check must fail the install");
+    assert_eq!(link_after, link_before, "the bundle link did not switch");
+    assert!(
+        before == after,
+        "the .claude trees changed although the release did not commit"
+    );
 }

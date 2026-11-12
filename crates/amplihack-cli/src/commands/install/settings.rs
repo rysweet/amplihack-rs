@@ -1,8 +1,12 @@
 //! Settings.json configuration, hook contract validation, and framework verification.
 
-use super::hooks::{ensure_array, ensure_object, update_hook_paths, wrapper_matches};
+use super::hooks::{
+    ensure_array, ensure_object, is_own_wrapper, remove_hook_wrappers, update_hook_paths,
+    wrapper_matches,
+};
 use super::paths::xpia_hooks_dir;
 use super::types::*;
+use crate::commands::profile::is_amplihack_statusline;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
@@ -16,6 +20,13 @@ use std::path::Path;
 /// parent-directory creation, and atomic-write semantics are keyed off
 /// `settings_path.parent()`.
 ///
+/// `status_line`: the `statusLine` command to install (issue #1745). Two
+/// callers pass one, both writing `~/.claude/settings.json`: the explicit
+/// `amplihack install` at global scope (`run_install_scoped`), and the
+/// launch-time hook repair (`ensure_framework_installed_with`), which writes
+/// the user's own settings and so is global too. A repo-local install passes
+/// `None`. With `None` an existing entry is left as it is.
+///
 /// Returns `(success, registered_event_names)` where `registered_event_names`
 /// is a deduplicated list of event names that were configured.
 pub(super) fn ensure_settings_json(
@@ -23,6 +34,7 @@ pub(super) fn ensure_settings_json(
     staging_dir: &Path,
     timestamp: u64,
     hooks_bin: &Path,
+    status_line: Option<&str>,
 ) -> Result<(bool, Vec<String>)> {
     if let Some(parent) = settings_path.parent() {
         fs::create_dir_all(parent)
@@ -67,12 +79,18 @@ pub(super) fn ensure_settings_json(
 
     let mut settings = read_settings_json(settings_path)?;
     ensure_permissions(&mut settings);
-    update_hook_paths(&mut settings, "amplihack", AMPLIHACK_HOOK_SPECS, hooks_bin);
-
-    let xpia_dir = xpia_hooks_dir()?;
-    if xpia_dir.exists() {
-        update_hook_paths(&mut settings, "xpia", XPIA_HOOK_SPECS, hooks_bin);
+    let with_xpia = xpia_hooks_dir()?.exists();
+    let old_claude = claude_too_old_for_limit_resume();
+    if let Some(version) = &old_claude {
+        println!(
+            "  ⚠️  Claude Code {version} is older than {LIMIT_RESUME_MIN_CLAUDE}: the usage-limit \
+             resume hook (StopFailure) is not registered; upgrade Claude Code and run \
+             `amplihack install` again"
+        );
     }
+    let limit_resume = old_claude.is_none();
+    register_hooks(&mut settings, hooks_bin, with_xpia, limit_resume);
+    let status_line = status_line.map(|cmd| ensure_status_line(&mut settings, cmd));
 
     fs::write(
         settings_path,
@@ -80,8 +98,11 @@ pub(super) fn ensure_settings_json(
     )
     .with_context(|| format!("failed to write {}", settings_path.display()))?;
     println!("  ✅ settings.json configured");
+    if let Some(message) = status_line.and_then(StatusLineOutcome::message) {
+        println!("  {message}");
+    }
 
-    let hook_contract_drift = validate_amplihack_native_hook_contract(&settings);
+    let hook_contract_drift = validate_amplihack_native_hook_contract(&settings, limit_resume);
     if hook_contract_drift.is_empty() {
         println!("  ✅ Native amplihack hook contract matches hooks.json");
     } else {
@@ -98,7 +119,7 @@ pub(super) fn ensure_settings_json(
     // Collect deduplicated event names that were registered
     let registered_events: Vec<String> = {
         let mut seen = BTreeSet::new();
-        for spec in AMPLIHACK_HOOK_SPECS {
+        for spec in amplihack_specs(limit_resume) {
             seen.insert(spec.event.to_string());
         }
         seen.into_iter().collect()
@@ -107,31 +128,225 @@ pub(super) fn ensure_settings_json(
     Ok((true, registered_events))
 }
 
-/// Issue #1526: the amplihack hook registrations this build would add that
-/// `settings` lacks, as `Event (subcommand)`. Empty when `settings` holds no
-/// amplihack hook at all: that file is unconfigured rather than out of date,
-/// and the launch bootstrap registers hooks in it.
-pub(super) fn missing_hook_registrations(settings: &Value) -> Vec<String> {
-    let registered = |spec: &HookSpec| {
+/// What [`ensure_status_line`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatusLineOutcome {
+    Installed,
+    Updated,
+    Unchanged,
+    /// The entry is the user's and was left byte for byte.
+    KeptUser,
+}
+
+impl StatusLineOutcome {
+    /// The line install prints, if any: nothing when the entry is current.
+    pub(crate) fn message(self) -> Option<&'static str> {
+        match self {
+            Self::Installed => Some("statusLine: installed"),
+            Self::Updated => Some("statusLine: updated"),
+            Self::Unchanged => None,
+            Self::KeptUser => Some("statusLine: kept your existing entry"),
+        }
+    }
+}
+
+/// Points `settings.statusLine` at `cmd` (issue #1745). Only amplihack's
+/// own entry is replaced (`cmd` itself, or see [`is_amplihack_statusline`]);
+/// its `padding` and every other key are kept. Any other entry is the user's
+/// and is not touched.
+pub(crate) fn ensure_status_line(settings: &mut Value, cmd: &str) -> StatusLineOutcome {
+    let Some(obj) = settings.as_object_mut() else {
+        return StatusLineOutcome::KeptUser;
+    };
+    let Some(current) = obj.get_mut("statusLine") else {
+        let mut sl = Map::new();
+        sl.insert("type".into(), "command".into());
+        sl.insert("command".into(), cmd.into());
+        obj.insert("statusLine".into(), Value::Object(sl));
+        return StatusLineOutcome::Installed;
+    };
+    let Some(sl) = current.as_object_mut() else {
+        return StatusLineOutcome::KeptUser;
+    };
+    let ours = sl
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|c| c.trim() == cmd.trim() || is_amplihack_statusline(c));
+    if !ours {
+        return StatusLineOutcome::KeptUser;
+    }
+    let before = sl.clone();
+    sl.insert("type".into(), "command".into());
+    sl.insert("command".into(), cmd.into());
+    if *sl == before {
+        StatusLineOutcome::Unchanged
+    } else {
+        StatusLineOutcome::Updated
+    }
+}
+
+/// The first Claude Code the limit-resume hook (`StopFailure` with
+/// `asyncRewake`) was verified on. Versions before 2.1.78 do not know
+/// `StopFailure` and skip the whole settings file that names it (#1659).
+pub(super) const LIMIT_RESUME_MIN_CLAUDE: semver::Version = semver::Version::new(2, 1, 306);
+
+/// The version of the `claude` a launch would run, when it is known and
+/// older than [`LIMIT_RESUME_MIN_CLAUDE`]. An unknown version (no `claude`
+/// yet, or no answer within the probe budget) is not too old: Claude Code
+/// installed later is current.
+pub(super) fn claude_too_old_for_limit_resume() -> Option<String> {
+    // Unit tests never run the host's `claude`.
+    if cfg!(test) {
+        return None;
+    }
+    let resolution = amplihack_utils::launch_target::resolve(
+        "claude",
+        amplihack_utils::launch_target::OverrideOrigin::User,
+    );
+    resolution
+        .target
+        .map(|t| t.version)
+        .filter(|v| too_old_for_limit_resume(v))
+}
+
+/// Whether `version` (semver) is older than [`LIMIT_RESUME_MIN_CLAUDE`];
+/// `false` when it does not parse.
+pub(super) fn too_old_for_limit_resume(version: &str) -> bool {
+    semver::Version::parse(version).is_ok_and(|v| v < LIMIT_RESUME_MIN_CLAUDE)
+}
+
+/// The amplihack hook specs to register: all of them, less `StopFailure`
+/// when `limit_resume` is false.
+fn amplihack_specs(limit_resume: bool) -> Vec<HookSpec> {
+    AMPLIHACK_HOOK_SPECS
+        .iter()
+        .filter(|spec| limit_resume || spec.event != LIMIT_RESUME_EVENT)
+        .cloned()
+        .collect()
+}
+
+/// Replaces amplihack's hook entries in `settings` (and xpia's, when its hooks
+/// are installed) with this build's, leaving every other entry in place.
+/// Without `limit_resume`, amplihack's `StopFailure` entry is removed.
+pub(super) fn register_hooks(
+    settings: &mut Value,
+    hooks_bin: &Path,
+    with_xpia: bool,
+    limit_resume: bool,
+) {
+    update_hook_paths(
+        settings,
+        "amplihack",
+        &amplihack_specs(limit_resume),
+        hooks_bin,
+    );
+    if !limit_resume {
+        for spec in AMPLIHACK_HOOK_SPECS
+            .iter()
+            .filter(|s| s.event == LIMIT_RESUME_EVENT)
+        {
+            remove_hook_wrappers(settings, spec, "amplihack");
+        }
+    }
+    if with_xpia {
+        update_hook_paths(settings, "xpia", XPIA_HOOK_SPECS, hooks_bin);
+    }
+}
+
+/// Unit tests set this to let `refresh_profile_hooks` run.
+pub(super) const PROFILE_REFRESH_TEST_OPT_IN: &str = "AMPLIHACK_TEST_PROFILE_REFRESH";
+
+/// Issue #1661: gives every profile's existing `settings.json` the same hook
+/// registrations as `~/.claude/settings.json`. Never fails the install: a
+/// profile that cannot be refreshed is reported and skipped. Issue #1699: a
+/// `hooks_bin` that does not exist, or that lies under a temporary directory
+/// while the profile root is outside HOME or not itself temporary, is refused
+/// for every profile.
+pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
+    use crate::commands::profile::{Refresh, refresh_profile_settings};
+    // This crate's in-process install tests inherit the developer's
+    // AMPLIHACK_CLAUDE_PROFILE_ROOT and would rewrite their real profiles;
+    // they opt in explicitly. Integration tests start the binary through
+    // `isolated(..)`, which clears that variable.
+    if cfg!(test) && std::env::var_os(PROFILE_REFRESH_TEST_OPT_IN).is_none() {
+        return;
+    }
+    let with_xpia = xpia_hooks_dir().is_ok_and(|dir| dir.exists());
+    let limit_resume = claude_too_old_for_limit_resume().is_none();
+    let results = refresh_profile_settings(hooks_bin, &|settings| {
+        register_hooks(settings, hooks_bin, with_xpia, limit_resume)
+    });
+    let updated = results
+        .iter()
+        .filter(|(_, r)| *r == Refresh::Updated)
+        .count();
+    if updated > 0 {
+        println!("  ✅ Refreshed amplihack hooks in {updated} profile settings.json file(s)");
+    }
+    for (name, result) in &results {
+        if let Refresh::Skipped(reason) = result {
+            println!("  ⚠️  Profile {name}: settings.json not refreshed ({reason})");
+        }
+    }
+}
+
+/// Issue #1526: the amplihack hook registrations this build would add or
+/// change in `settings`, as `Event (subcommand)`: missing, or registered
+/// with another `timeout` or `asyncRewake` (#1659). `StopFailure` counts
+/// only with `limit_resume`. Empty when `settings` holds no amplihack hook
+/// at all: that file is unconfigured rather than out of date, and the launch
+/// bootstrap registers hooks in it.
+pub(super) fn missing_hook_registrations(settings: &Value, limit_resume: bool) -> Vec<String> {
+    let wrappers = |spec: &HookSpec| {
         settings
             .get("hooks")
             .and_then(|hooks| hooks.get(spec.event))
             .and_then(Value::as_array)
-            .is_some_and(|wrappers| {
-                wrappers
-                    .iter()
-                    .any(|wrapper| wrapper_matches(wrapper, spec, "amplihack"))
-            })
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     };
-    if !AMPLIHACK_HOOK_SPECS.iter().any(registered) {
+    let specs = amplihack_specs(limit_resume);
+    let ours = |spec: &HookSpec| {
+        wrappers(spec)
+            .iter()
+            .any(|wrapper| is_own_wrapper(wrapper, spec, "amplihack"))
+    };
+    if !specs.iter().any(ours) {
         return Vec::new();
     }
+    let current = |spec: &HookSpec| {
+        wrappers(spec)
+            .iter()
+            .any(|wrapper| wrapper_matches(wrapper, spec, "amplihack"))
+    };
     let mut missing = BTreeSet::new();
-    for spec in AMPLIHACK_HOOK_SPECS.iter().filter(|spec| !registered(spec)) {
+    for spec in specs.iter().filter(|spec| !current(spec)) {
         let HookCommandKind::BinarySubcmd { subcmd } = spec.cmd;
         missing.insert(format!("{} ({subcmd})", spec.event));
     }
     missing.into_iter().collect()
+}
+
+/// Whether `settings` holds amplihack's usage-limit resume registration
+/// (`StopFailure` running `amplihack-hooks limit-resume`). #1660 wrote it for
+/// every user; with a Claude Code older than [`LIMIT_RESUME_MIN_CLAUDE`] it
+/// has to go, and neither the drift list nor the `amplihack-hooks` presence
+/// check sees an entry that should not be there.
+pub(super) fn has_limit_resume_registration(settings: &Value) -> bool {
+    AMPLIHACK_HOOK_SPECS
+        .iter()
+        .filter(|spec| spec.event == LIMIT_RESUME_EVENT)
+        .any(|spec| {
+            settings
+                .get("hooks")
+                .and_then(|hooks| hooks.get(spec.event))
+                .and_then(Value::as_array)
+                .is_some_and(|wrappers| {
+                    wrappers
+                        .iter()
+                        .any(|wrapper| is_own_wrapper(wrapper, spec, "amplihack"))
+                })
+        })
 }
 
 pub(super) fn verify_framework_assets(claude_dir: &Path) -> Result<()> {
@@ -290,11 +505,19 @@ pub(super) fn ensure_permissions(settings: &mut Value) {
     }
 }
 
-pub(super) fn validate_amplihack_native_hook_contract(settings: &Value) -> Vec<String> {
+/// Drift between `settings` and the canonical hook contract. `StopFailure`
+/// is checked only with `limit_resume`.
+pub(super) fn validate_amplihack_native_hook_contract(
+    settings: &Value,
+    limit_resume: bool,
+) -> Vec<String> {
     let mut drift = Vec::new();
     let mut seen_events = Vec::new();
 
     for entry in CANONICAL_AMPLIHACK_HOOK_CONTRACT {
+        if !limit_resume && entry.event == LIMIT_RESUME_EVENT {
+            continue;
+        }
         if !seen_events.contains(&entry.event) {
             seen_events.push(entry.event);
         }
@@ -595,7 +818,7 @@ mod tests {
     #[test]
     fn validate_empty_settings_reports_missing() {
         let settings = json!({});
-        let drift = validate_amplihack_native_hook_contract(&settings);
+        let drift = validate_amplihack_native_hook_contract(&settings, true);
         // With no hooks configured, all expected hooks should be missing
         assert!(!drift.is_empty());
         assert!(drift.iter().any(|d| d.contains("missing")));

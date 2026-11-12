@@ -4,7 +4,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::support::amplihack_bin::amplihack_bin;
@@ -45,10 +44,16 @@ fn frontmatter(content: &str) -> serde_yaml::Mapping {
 
 fn help(args: &[&str]) -> String {
     let tmp = tempfile::tempdir().unwrap();
-    let out = Command::new(amplihack_bin())
+    let out = crate::isolated_amplihack::isolated(amplihack_bin())
         .args(args)
         .arg("--help")
         .env_clear()
+        .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+        .env(
+            crate::isolated_amplihack::PROC_ROOT_ENV,
+            crate::isolated_amplihack::shared_empty_proc_root(),
+        )
+        .env("TMPDIR", std::env::temp_dir())
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", tmp.path())
         .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", tmp.path().join("profiles"))
@@ -99,10 +104,13 @@ fn skill_covers_the_commands_and_the_credential_rule() {
 #[test]
 fn every_flag_the_skill_cites_exists() {
     let content = skill_md();
+    // `profile usage` too: the skill cites its `--utc` and `--table`
+    // (issue #1813).
     let known = format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
         help(&["profile", "rotate"]),
-        help(&["profile", "rotate", "start"])
+        help(&["profile", "rotate", "start"]),
+        help(&["profile", "usage"])
     );
     let re = regex::Regex::new(r"(?:^|[\s`(])(--[a-z][a-z-]+)").unwrap();
     let mut cited: Vec<&str> = re
@@ -114,13 +122,17 @@ fn every_flag_the_skill_cites_exists() {
     cited.dedup();
     assert!(!cited.is_empty());
     for f in cited {
-        // Flags of other amplihack commands the skill mentions.
-        if matches!(f, "--json" | "--yes") {
+        // Flags of other amplihack commands the skill mentions (`--tier` is
+        // `profile overflow add`, `--platform` is `profile overflow clear`, `--profile` is `launch`).
+        if matches!(
+            f,
+            "--json" | "--yes" | "--none" | "--tier" | "--platform" | "--profile"
+        ) {
             continue;
         }
         assert!(
             known.contains(f),
-            "SKILL.md cites {f}, which rotate does not accept"
+            "SKILL.md cites {f}, which neither rotate nor usage accepts"
         );
     }
     assert!(

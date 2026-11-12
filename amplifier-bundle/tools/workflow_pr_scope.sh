@@ -27,6 +27,8 @@ WORKSTREAM_ID=""
 EXPECTED_PR_TITLE_PREFIX=""
 CREATED_AFTER=""
 HEAD_SHA=""
+ALLOW_HEAD_BEHIND="false"
+ALLOW_HEAD_AHEAD="false"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -43,6 +45,8 @@ Scope options:
   --expected-pr-title-prefix PREFIX
   --created-after RFC3339_TIME
   --head-sha SHA
+  --allow-head-behind   accept an OPEN named PR whose head is an ancestor of --head-sha (#1467)
+  --allow-head-ahead    accept an OPEN named PR whose head is a fast-forward of --head-sha (#1714)
 USAGE
 }
 
@@ -61,6 +65,8 @@ while [ "$#" -gt 0 ]; do
     --expected-pr-title-prefix) EXPECTED_PR_TITLE_PREFIX="${2:-}"; shift 2 ;;
     --created-after) CREATED_AFTER="${2:-}"; shift 2 ;;
     --head-sha) HEAD_SHA="${2:-}"; shift 2 ;;
+    --allow-head-behind) ALLOW_HEAD_BEHIND="true"; shift ;;
+    --allow-head-ahead) ALLOW_HEAD_AHEAD="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *)
       jq -nc --arg reason "invalid_arg" --arg arg "$1" '{ok:false,reason:$reason,arg:$arg}'
@@ -87,6 +93,15 @@ if [ ! -f "$GH_RETRY_HELPER" ]; then
 fi
 # shellcheck source=/dev/null
 . "$GH_RETRY_HELPER"
+GITHUB_REPO_HELPER="${WORKFLOW_GITHUB_REPO_HELPER:-${SCRIPT_DIR}/workflow_github_repo.sh}"
+if [ ! -f "$GITHUB_REPO_HELPER" ] || [ ! -r "$GITHUB_REPO_HELPER" ]; then
+  echo '{"ok":false,"reason":"missing_github_repo_helper"}'
+  echo "ERROR: workflow_pr_scope.sh requires the shared GitHub repo identity parser at $GITHUB_REPO_HELPER" >&2
+  exit 2
+fi
+# Defines parse_github_repo_identity (issue #1642).
+# shellcheck source=workflow_github_repo.sh disable=SC1090
+. "$GITHUB_REPO_HELPER"
 
 # Thin wrapper over the shared rate-limit-aware retry driver. A rate-limit is no
 # longer treated as a fast 3x transient: the driver waits for the authoritative
@@ -97,27 +112,6 @@ gh_with_retry() {
   local label="$1"
   shift
   _gh_retry_core "$label" "$@"
-}
-
-parse_github_repo_identity() {
-  local url="$1" path owner repo
-  case "$url" in
-    https://github.com/*) path="${url#https://github.com/}" ;;
-    http://github.com/*) path="${url#http://github.com/}" ;;
-    git@github.com:*) path="${url#git@github.com:}" ;;
-    ssh://git@github.com/*) path="${url#ssh://git@github.com/}" ;;
-    https://*@github.com/*|http://*@github.com/*) path="${url#*://}"; path="${path#*@github.com/}" ;;
-    *) return 1 ;;
-  esac
-  path="${path%%\?*}"
-  path="${path%%#*}"
-  path="${path%.git}"
-  case "$path" in */*) ;; *) return 1 ;; esac
-  owner="${path%%/*}"
-  repo="${path#*/}"
-  repo="${repo%%/*}"
-  [ -n "$owner" ] && [ -n "$repo" ] || return 1
-  printf '%s/%s\n' "$owner" "$repo"
 }
 
 if [ -z "$REPO" ]; then
@@ -283,6 +277,38 @@ if [ -n "$PR_NUMBER" ] || [ -n "$PR_URL" ]; then
   # This preserves the fail-closed contract for a caller-supplied PR identity.
   matches="$(apply_discriminators "$primary")"
   match_count="$(array_length "$matches")"
+  # Issue #1467, opt-in (--allow-head-behind; only the terminal-state probe,
+  # which runs before the push steps): a named PR that is OPEN and whose head is
+  # an ancestor of local HEAD is behind, not stale. Accept that head in place of
+  # HEAD_SHA; every other discriminator stays hard. End-of-run callers
+  # (final status, PR ready) must not pass it: there, behind means the PR lacks
+  # the run's work.
+  if [ "$ALLOW_HEAD_BEHIND" = "true" ] && [ "$match_count" -eq 0 ] && [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    behind_oid="$(open_candidates "$primary" | jq -r 'if length == 1 then (.[0].headRefOid // "") else "" end')"
+    if [[ "$behind_oid" =~ ^[0-9a-f]{40}$ ]] && git merge-base --is-ancestor "$behind_oid" "$HEAD_SHA" 2>/dev/null; then
+      echo "INFO: workflow_pr_scope.sh: PR head $behind_oid is behind local HEAD $HEAD_SHA; treating it as unpushed work, not stale (#1467)" >&2
+      matches="$(HEAD_SHA="$behind_oid" apply_discriminators "$primary")"
+      match_count="$(array_length "$matches")"
+    fi
+  fi
+  # Issue #1714, opt-in (--allow-head-ahead; only the terminal-state probe in
+  # workflow-finalize): a named PR that is OPEN and whose head is a
+  # fast-forward of local HEAD (a merge of main pushed from elsewhere) holds
+  # every local commit, so it is the same PR. The test, and the one bounded,
+  # non-interactive fetch it may need, are workflow_pr_head_fetch.sh's, shared
+  # with the open-PR check. A diverged or rewritten head is still no match.
+  if [ "$ALLOW_HEAD_AHEAD" = "true" ] && [ "$match_count" -eq 0 ] && [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    ahead_oid="$(open_candidates "$primary" | jq -r 'if length == 1 then (.[0].headRefOid // "") else "" end')"
+    if [[ "$ahead_oid" =~ ^[0-9a-f]{40}$ ]] && [ -f "$SCRIPT_DIR/workflow_pr_head_fetch.sh" ]; then
+      # shellcheck source=workflow_pr_head_fetch.sh
+      . "$SCRIPT_DIR/workflow_pr_head_fetch.sh"
+      if _finalization_pr_head_descends . "$HEAD_REF" "$HEAD_SHA" "$ahead_oid"; then
+        echo "INFO: workflow_pr_scope.sh: PR head $ahead_oid is a fast-forward of local HEAD $HEAD_SHA; treating it as the same PR (#1714)" >&2
+        matches="$(HEAD_SHA="$ahead_oid" apply_discriminators "$primary")"
+        match_count="$(array_length "$matches")"
+      fi
+    fi
+  fi
   if [ "$match_count" -eq 0 ]; then
     emit_failure "no_scoped_pr" "no PR matched the explicit workflow scope"
   fi

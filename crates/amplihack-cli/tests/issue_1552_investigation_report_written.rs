@@ -31,8 +31,8 @@ fn run_create(synthesis: &str, out_dir: &Path) -> Output {
     Command::new("bash")
         .arg("-c")
         .arg(command_of("create-investigation-report"))
-        .env("OUTPUT_DIR", out_dir)
-        .env("SYNTHESIS", synthesis)
+        .env("RECIPE_VAR_output_dir", out_dir)
+        .env("RECIPE_VAR_synthesis", synthesis)
         .output()
         .expect("run bash")
 }
@@ -98,7 +98,7 @@ fn hostile_output_dir_is_literal_and_never_runs_command_substitution() {
     let update = Command::new("bash")
         .arg("-c")
         .arg(command_of("update-discoveries"))
-        .env("OUTPUT_DIR", &dir)
+        .env("RECIPE_VAR_output_dir", &dir)
         .output()
         .expect("run update-discoveries");
     assert!(
@@ -192,8 +192,8 @@ fn empty_output_dir_fails_nonzero() {
     let out = Command::new("bash")
         .arg("-c")
         .arg(command_of("create-investigation-report"))
-        .env("OUTPUT_DIR", "")
-        .env("SYNTHESIS", "x")
+        .env("RECIPE_VAR_output_dir", "")
+        .env("RECIPE_VAR_synthesis", "x")
         .output()
         .unwrap();
     assert!(!out.status.success());

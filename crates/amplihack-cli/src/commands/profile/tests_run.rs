@@ -22,6 +22,24 @@ fn fake_claude(dir: &std::path::Path) -> BinaryInfo {
     }
 }
 
+/// Runs `cmd`, a script this test has just written, to completion.
+///
+/// Another test thread's fork can inherit the script's write descriptor until
+/// its own exec closes it, and an exec in that window fails with ETXTBSY. The
+/// window is brief but grows on a loaded host, so retry for up to 5 s.
+fn output_of_fresh_script(cmd: &mut std::process::Command) -> std::process::Output {
+    let mut attempts = 0;
+    loop {
+        match cmd.output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 250 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            r => break r.unwrap(),
+        }
+    }
+}
+
 fn setup() -> (tempfile::TempDir, ProfileStore, ProfileName, BinaryInfo) {
     let d = tempfile::tempdir().unwrap();
     let s = ProfileStore::new(d.path().join("root"));
@@ -53,19 +71,7 @@ fn run_forwards_args_literally_without_shell() {
         "$(id)".to_string(),
     ];
     let mut cmd = build_profile_command(&bin, &s, &name, &args).unwrap();
-    // `setup` has just written the fake `claude`. Another test thread's fork
-    // can inherit that write descriptor until its own exec closes it, and an
-    // exec in that window fails with ETXTBSY. The window is brief, so retry.
-    let mut attempts = 0;
-    let out = loop {
-        match cmd.output() {
-            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 50 => {
-                attempts += 1;
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            r => break r.unwrap(),
-        }
-    };
+    let out = output_of_fresh_script(&mut cmd);
     let text = String::from_utf8_lossy(&out.stdout);
     let want = s.resolve(&name).unwrap();
     assert!(text.contains(&format!("CFG={}", want.display())), "{text}");
@@ -99,36 +105,25 @@ fn run_refuses_group_writable_profile_before_spawn() {
     assert!(build_profile_command(&bin, &s, &name, &[]).is_err());
 }
 
-struct DockerEnvGuard(Option<std::ffi::OsString>);
-impl DockerEnvGuard {
-    fn set(v: &str) -> Self {
-        let prev = std::env::var_os("AMPLIHACK_USE_DOCKER");
-        unsafe { std::env::set_var("AMPLIHACK_USE_DOCKER", v) };
-        Self(prev)
-    }
-}
-impl Drop for DockerEnvGuard {
-    fn drop(&mut self) {
-        unsafe {
-            match &self.0 {
-                Some(v) => std::env::set_var("AMPLIHACK_USE_DOCKER", v),
-                None => std::env::remove_var("AMPLIHACK_USE_DOCKER"),
-            }
-        }
-    }
-}
+// Issue #2196: the Docker tests give the probe's answer instead of running
+// `docker info` and reading `/proc/1/cgroup`, so they need no Docker daemon
+// and read nothing of the host. `should_use_docker_from_state` and
+// `is_in_docker_from_state` are tested in `docker/mod.rs`.
 
 #[test]
 fn reject_docker_env_errors_when_env_active() {
     let _l = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let _g = DockerEnvGuard::set("1");
-    let err = super::reject_docker_env()
+    let err = super::reject_docker_mode(true)
         .unwrap_err()
         .to_string()
         .to_lowercase();
     assert!(err.contains("docker"), "{err}");
+    assert!(
+        super::reject_docker_mode(false).is_ok(),
+        "without Docker activation nothing is refused"
+    );
 }
 
 #[test]
@@ -136,12 +131,11 @@ fn profile_run_fails_closed_under_docker_env_before_touching_disk() {
     let _l = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    let _g = DockerEnvGuard::set("1");
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("root");
     let s = ProfileStore::new(root.clone());
     let missing = ProfileName::parse("ghost").unwrap();
-    let err = super::run::run(&s, &missing, vec![])
+    let err = super::run::run_in_mode(&s, &missing, vec![], true)
         .unwrap_err()
         .to_string()
         .to_lowercase();
@@ -230,7 +224,7 @@ fn profile_command_child_sees_the_pinned_name() {
     let mut cmd = with_root_env(None, || {
         build_profile_command(&bin, &s, &name, &[]).unwrap()
     });
-    let out = cmd.env_remove("NOT_A_VAR").output().unwrap();
+    let out = output_of_fresh_script(cmd.env_remove("NOT_A_VAR"));
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("PIN=work\n"),
         "{}",
@@ -287,6 +281,6 @@ fn home_command_child_sees_no_config_dir() {
     };
     let mut cmd = build_home_command(&bin, &[]);
     cmd.env("CLAUDE_CONFIG_DIR_UNRELATED", "x");
-    let out = cmd.output().unwrap();
+    let out = output_of_fresh_script(&mut cmd);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "DIR=<unset>\n");
 }

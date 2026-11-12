@@ -190,7 +190,7 @@ fn known_safe_bundle_symlinks_are_handled_without_generic_warning() {
 }
 
 #[test]
-fn tdd_checkpoint_formats_rust_workspace_before_staging() {
+fn tdd_checkpoint_checks_rust_format_without_expanding_staging_scope() {
     let recipe = load_recipe("amplifier-bundle/recipes/workflow-tdd.yaml");
     let step = find_step(&recipe, "checkpoint-after-implementation");
     let command = step
@@ -199,15 +199,21 @@ fn tdd_checkpoint_formats_rust_workspace_before_staging() {
         .expect("checkpoint-after-implementation must have a command");
 
     let fmt_pos = command
-        .find("cargo fmt --all")
-        .expect("checkpoint-after-implementation must run `cargo fmt --all`");
+        .find("cargo fmt --all -- --check")
+        .expect("checkpoint-after-implementation must check Rust formatting without mutation");
     let add_pos = command
-        .find("git add")
-        .expect("checkpoint-after-implementation must stage changes");
+        .find("git --literal-pathspecs add -A --pathspec-from-file")
+        .expect("checkpoint-after-implementation must stage only captured paths");
     assert!(
         fmt_pos < add_pos,
-        "`cargo fmt --all` must run before git add/commit so pre-commit hooks do not fail on unstaged formatting diffs"
+        "Rust formatting validation must run before staging and committing"
     );
+    assert!(command.contains(
+        "git -c diff.renames=false diff --cached --name-only -z HEAD > \"$checkpoint_paths\""
+    ));
+    assert!(command.contains("cmp -s \"$checkpoint_paths\" \"$after_paths\""));
+    assert!(command.contains("if [ \"$rust_changed\" = true ]"));
+    assert!(!command.contains("\n  cargo fmt --all\n"));
 }
 
 #[test]
@@ -332,15 +338,21 @@ fn recipe_files_with_git_commands_disable_interactive_pagers() {
 
 #[test]
 fn issue_749_prompts_and_dev_orchestrator_docs_state_development_routing_invariant() {
-    let required = "Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.";
+    let required = "Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.";
 
     for rel in [
         "amplifier-bundle/recipes/smart-classify-route.yaml",
         "amplifier-bundle/recipes/smart-execute-routing.yaml",
         "amplifier-bundle/skills/dev-orchestrator/SKILL.md",
         "amplifier-bundle/skills/dev-orchestrator/reference.md",
+        "docs/reference/dev-orchestrator-routing.md",
+        "docs/reference/quick-change-recipe.md",
     ] {
         let content = read_repo_file(rel);
+        assert!(
+            !content.contains("Development classification always routes to `default-workflow`"),
+            "{rel} must not keep the pre-#1740 wording of the invariant"
+        );
         assert!(
             content.contains(required),
             "{rel} must explicitly state the Development routing invariant"
@@ -373,7 +385,7 @@ fn issue_749_routing_hook_prompt_reinforces_development_invariant() {
 
     assert!(
         content.contains(
-            "Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant."
+            "Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`."
         ),
         "routing hook prompt must reinforce the Development routing invariant"
     );
@@ -419,6 +431,43 @@ fn issue_672_workflow_reliability_normalizes_development_recipes() {
             "default-workflow",
         ],
         "Development-classified workstreams must route to default-workflow for missing, empty, wrong, and already-correct recipe values"
+    );
+}
+
+#[test]
+fn issue_1740_parallel_development_workstreams_never_keep_a_model_quick_change() {
+    // build-workstreams-config runs only for a parallel decomposition, and
+    // quick-change needs exactly one workstream (row 6 of the precedence
+    // table in docs/reference/quick-change-recipe.md), so a model-provided
+    // quick-change is coerced like any other value. PR #1758, round 2.
+    let entries = build_workstream_entries(serde_json::json!({
+        "task_type": "Development",
+        "workstreams": [
+            {
+                "name": "small-doc-fix",
+                "classification": "Development",
+                "description": "Fix one broken link.",
+                "recipe": "quick-change"
+            },
+            {
+                "name": "near-miss",
+                "classification": "Development",
+                "description": "A recipe name close to quick-change is still coerced.",
+                "recipe": "quick_change"
+            },
+            {
+                "name": "other",
+                "classification": "Development",
+                "description": "Any other model-provided value is coerced.",
+                "recipe": "consensus-workflow"
+            }
+        ]
+    }));
+
+    assert_eq!(
+        recipes(&entries),
+        vec!["default-workflow", "default-workflow", "default-workflow"],
+        "without an override, every model-provided recipe value of a Development workstream, quick-change included, is coerced to default-workflow"
     );
 }
 
@@ -599,12 +648,22 @@ fn issue_780_workflow_worktree_exports_one_runtime_root_to_child_flows() {
     let recipe = load_recipe("amplifier-bundle/recipes/workflow-worktree.yaml");
     let command = step_command(&recipe, "step-04-setup-worktree");
 
+    // The root is chosen in tools/workflow_runtime_root.sh; the step calls it,
+    // makes the same root inline when no tier has the tool, and exports it (#1808).
     assert_contains_all(
         "workflow-worktree runtime root setup",
         command,
         &[
-            "AMPLIHACK_RUNTIME_ROOT",
+            "workflow_runtime_root.sh",
+            "${XDG_RUNTIME_DIR:-/tmp}/amplihack-runtime/$BRANCH_NAME",
             "export AMPLIHACK_RUNTIME_ROOT",
+        ],
+    );
+    assert_contains_all(
+        "tools/workflow_runtime_root.sh",
+        &read_repo_file("amplifier-bundle/tools/workflow_runtime_root.sh"),
+        &[
+            "AMPLIHACK_RUNTIME_ROOT",
             "XDG_RUNTIME_DIR",
             "/tmp/amplihack-runtime",
         ],

@@ -23,17 +23,30 @@ the "Rotate" section of `docs/reference/profile-command.md`.
 - The user has two or more Claude accounts and wants plain `claude` to use
   whichever has capacity.
 - The user hits session or weekly usage limits and asks to switch accounts.
+- The user has usage credits on an account and wants the rotator to use it
+  when every plan login is exhausted, or mentions overflow or "running on
+  credits".
+- The user has an API-key (Claude Platform) profile, asks about per-token
+  billing, or sees `api-key (billed per token)` or a launch refused with
+  `subscription profile with no login of its own`.
 - The user mentions rotating, swapping or balancing Claude logins, or the
   `claude-rotator` tmux session.
+- A session stopped with "You've hit your ... limit" and did not resume, or
+  the user asks about the tmux limit nudger.
 
 ## Rules
 
 - Never open, read, print, copy, hash or log any `.credentials.json` or token.
-  To inspect logins, use `ls -li` only.
+  To inspect logins, use `ls -li` only. To see a profile's kind, use
+  `amplihack profile kind list`, never `cat`. Never read
+  `~/.config/anthropic`, `apiKeyHelper` or any API key value.
 - Never copy a login file. Move it with `mv -n` if a person must move one.
+- Never open `~/.config/anthropic/` or print any API key. Report only that a
+  key is configured.
 - Always run a dry run before the first real rotation, and after any threshold
   change.
 - Do not stop the user's `claude-rotator` tmux session without asking them.
+- **tmux:** run `kill-server` and `kill-session -a` only with `-S <private socket>` or `-L <name>`, for a server you started; inside a tmux pane `$TMUX` overrides `TMUX_TMPDIR`, so without them the command reaches the user's own server, and a PreToolUse hook denies it.
 
 ## Prerequisites
 
@@ -46,7 +59,16 @@ Check each one and tell the user what is missing:
    amplihack profile usage
    ```
    Every profile to be used should show state `ok`. Log one in with
-   `amplihack profile login <name>`.
+   `amplihack profile login <name>`. `profile usage` draws each profile's
+   week and session as bars, marks the login in `~/.claude` with `(live)`,
+   and sorts rows by the rotator's headroom (most room in the worse of
+   session and week, then name), as its `order:` line says. Overflow and
+   excluded profiles are sorted the same way, so the first row is not
+   always the rotator's next pick.
+   Reset times are local (`MM-DD HH:MM`, zone on the `times:` line); add
+   `--utc` to compare them with the rotate log, which is in UTC. `--table`
+   gives the older text table, and `--json` is for scripts. Bars are
+   coloured only in a terminal; `NO_COLOR=1` turns colour off.
 3. A login in `~/.claude`, made with plain `claude` and `/login`.
 4. `~/.claude` and the profile root on the same filesystem.
 
@@ -106,6 +128,7 @@ profile it names has a login or a different account, and never writes to
 | `--margin` | 5 | A threshold swap needs this many more points of headroom. |
 | `--upgrade-margin` | 30 | Swap early when a profile has this many more points of headroom. |
 | `--hold` | 3600 | Seconds after a swap during which no early swap happens. |
+| `--overflow-wait` | 1800 | Use an overflow profile only when the next plan reset is further away than this many seconds. |
 | `--interval` | 600 | Seconds between checks (`start` and `watch` only). |
 
 Flags go after `start`:
@@ -116,6 +139,51 @@ amplihack profile rotate start --session-at 75 --interval 300
 
 To change settings of a running rotator, run `stop` then `start` again. To
 keep a profile out of rotation: `amplihack profile auto-switch exclude <name>`.
+
+## API-key profiles
+
+An API-key profile runs Claude Code on the Claude Platform API key and is
+billed per token. It is detected from key names and file presence only:
+
+- its `.credentials.json` is `{}` or another object with no OAuth login; or
+- it has no `.credentials.json` and names `ANTHROPIC_API_KEY`,
+  `apiKeyHelper` or `primaryApiKey` in its settings.
+
+A profile with no `.credentials.json` and no such setting is a subscription
+profile with no login, not an API-key profile. The key itself is stored
+outside the profile directory and shared by every profile in the home
+directory.
+
+- Check kinds with `amplihack profile kind list`; fix a wrong detection with
+  `amplihack profile kind set <name> <subscription|api-key|auto>`.
+- It is used only after the user marks it with
+  `amplihack profile overflow add <name>`; the mark is consent to per-token
+  billing. Do not mark it without asking. The rotator uses it last (tier 10):
+  plan logins with capacity, then plan logins below 100% (`plan-room`), then
+  credit overflow, then the API key, and only when every plan login was
+  measured, none is below 100% on both windows, the earliest plan reset is further away than
+  `--overflow-wait` and its login check passes. It moves `~/.claude` off it
+  on the first cycle after a plan login has capacity or room, ignoring
+  `--hold`. Auto-switch uses it only for a
+  new nested launch or a usage-limit rerun; that session's next nested launch
+  or rerun goes back to a plan profile.
+- `rotate status` prints
+  `~/.claude is on API key profile <name>: work is billed per token (since <ts>)`
+  and `profile usage` prints
+  `live: work is running on the API key (billed per token)` while work is on
+  it. Tell the user when you see either line.
+- `profile switch <name>` onto it pins rotation there and keeps billing until
+  `amplihack profile switch --none`. Do not switch onto it without asking.
+- An out-of-funds, revoked or rate-limited key blocks every API-key profile
+  with one ALERT. After the user has funded or replaced the key, clear it
+  with `amplihack profile overflow clear --platform`.
+- A subscription profile with no OAuth login of its own is refused by `run`,
+  `switch` and `--profile` launches with
+  `error: profile <name> is a subscription profile with no login of its own; ...`,
+  because it would fall back to the API key. Fix it with
+  `amplihack profile login <name>`.
+
+See `docs/reference/profile-command.md#api-key-profiles`.
 
 ## Reading the log
 
@@ -128,11 +196,244 @@ grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log | 
 
 | ALERT | What to tell the user |
 |-------|-----------------------|
-| `no profile has capacity` | Every account is near its limit. Wait for a reset or add a profile. |
+| `no profile has capacity` | Every account is near its limit. Wait for a reset or add a profile. If it ends with `(candidates: <F> failed, ...)` and every candidate failed, the probes failed rather than the accounts: run `amplihack profile usage`. |
 | `no login in ~/.claude` | Log in with plain `claude` first. |
 | `the account in ~/.claude is not the one the ledger names` | Someone ran `/login` in `~/.claude`. Log the named profile in again with `amplihack profile login <name>`, then delete `<root>/.auto-switch.d/rotate/ledger.json`. |
 | `rotate recovery is inconsistent` | Follow manual recovery below. |
 | `auto-switch recovery is inconsistent` | Run `amplihack profile auto-switch repair`. |
+
+## Overflow onto usage credits
+
+An account with usage credits turned on keeps working past its plan limit,
+and the extra use is billed to the credits. Marked as an *overflow profile*,
+the rotator moves work onto it only when no measured plan login, the live one
+included, is below 100% on both windows, and the next plan reset is known
+and more than `--overflow-wait` seconds away (default 1800). Until then the
+plan-room swap (`reason=plan-room`) moves `~/.claude` to the plan login with
+the most room: session below `--session-at` first, then the most weekly
+room, then the most session room, then name. It moves work back in the first
+cycle in which a plan login has capacity or room. Auto-switch follows the
+same rule through the same gate, whatever its own threshold: it uses an
+overflow profile only when no plan profile is below 100% on both windows and
+the next plan reset is beyond the wait. Earlier releases used credits once
+every plan login reached `--session-at` or `--week-at`; tell users who
+notice credits starting later that this is intended.
+The overflow profile's own plan reading does not count: a credit account at
+100% of its plan limits is still used, and only a spend block moves work
+to the next overflow profile.
+
+An unknown plan reset (no reading reports one) does **not** move work onto
+overflow unless the user opts in with `--overflow-unknown-reset 1`
+(`AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET=1`); with it, an unknown reset
+spends money at once. Overflow marks have a tier (`overflow add <name>
+--tier N`, 1-9, default 1): lower tiers are tried first. A marked API-key
+profile is always tier 10 and `--tier` is refused for it (see below). Every
+move onto a credit or API-key profile first logs
+`per-token <name>: no plan login below 100%; <gate>; marked overflow tier <N> via profile overflow add; <check>`.
+
+Before marking a profile, tell the user:
+
+- **It costs real money**, and the rotator is not a spending cap. They must
+  turn on usage credits and set an organization spend limit at
+  https://claude.ai/settings/usage themselves; amplihack cannot change that
+  setting.
+- **Leave the default profile unset** (`amplihack profile switch --none`).
+  A default wins over the rotator, so a default naming the overflow profile
+  spends credits on every launch.
+- **Upgrade every amplihack binary first** and restart the rotator. Older
+  binaries treat the `overflow=` line in `<root>/.auto-switch` as corrupt and
+  reject the new ledger fields.
+
+```bash
+amplihack profile overflow add ryan-mistt-org
+amplihack profile overflow list
+amplihack profile rotate stop
+amplihack profile rotate start --overflow-wait 1800
+amplihack profile rotate status
+```
+
+The mark is the `overflow=` line in `<root>/.auto-switch`, not a
+`config.toml` key: the rotator and auto-switch already re-read that file on
+every cycle, and one location avoids two sources of truth. `add` and
+`remove` wait up to 10 seconds for a running cycle; if they fail with
+`.auto-switch is being changed by another process ...; retry`, run them
+again. `overflow list` prints `missing` after a marked name with no profile
+directory.
+
+`--overflow-wait` takes `0` to `604800` seconds; `0` uses overflow as soon as
+plan capacity is gone and a plan reset is known. A plan login loses capacity when either its session
+or its week use reaches the threshold.
+
+`rotate status` shows `overflow:` and `on overflow:` lines. `on overflow: yes
+(<name>)` needs the live login to be marked and the last cycle to have
+recorded `overflow=in` or `on`; `no (<name> is overflow; plan capacity
+remains)` means it was put there while a plan login had room. A `default:`
+line appears when the default pointer names an overflow profile. `profile
+usage` marks the profile `overflow` and prints `running on overflow:
+<name>` after its rows only when its login is in `~/.claude` and its probe shows the session
+or weekly limit reached. Log lines: `reason=overflow-in`,
+`reason=overflow-out`, `overflow: on|staying on|off ...`.
+
+An excluded profile is never used, even when marked. If the user moves an
+overflow login into `~/.claude` by hand while a plan login has capacity, the
+next cycle moves it out; to stay on it, remove the mark or stop the rotator.
+
+While on credits the rotator reports capacity, so recipe steps in the
+usage-limit wait rerun and spend credits. The limit-resume hook does not
+resume interactive sessions onto a login whose plan windows read 100%.
+
+| ALERT | What to tell the user |
+|-------|-----------------------|
+| `overflow profile <name> hit its spend limit; blocked until <time>` | The probe read `You've hit your org's monthly spend limit` or `... has reached its monthly spend limit`: the credits are used up or turned off. The profile is not used until 00:00 UTC on the 1st of next month. After raising the limit or adding credits, run `amplihack profile overflow clear <name>`. If it says `rotator busy, retry`, run it again. |
+
+A plan login *has capacity* when its probe gave `ok` and its session and
+week use are below `--session-at` and `--week-at`; `--margin` does not
+apply. The rotator never moves onto credits while one has capacity.
+
+To turn it off: `amplihack profile overflow remove <name>`. Removing the
+mark, or `rotate stop`, does not stop spending while that login is in
+`~/.claude` and no plan login has the margin: the login stays there. To stop
+spending at once, tell the user to turn off usage credits or lower the spend
+limit at https://claude.ai/settings/usage, then remove the mark. If sessions
+on the overflow profile fail with the spend-limit message but `overflow list`
+shows no block: after `remove`, the rotator swaps it out only after three
+failed probes in a row; after `rotate stop`, nothing moves it.
+
+## API key as the last resort
+
+An API-key profile runs on the Claude Platform API key that Claude Code
+stores outside the profile directory, **billed per token**. Its kind is
+detected: its `.credentials.json` holds `{}` or no `claudeAiOauth` key. It
+is used only once marked with `amplihack profile overflow add <name>`;
+`overflow list` shows `<name>  api-key tier  not marked (not used)` until
+then. Hosts that relied on the old implicit tier must run that command;
+nothing is marked automatically. An unmarked API-key profile left live in
+`~/.claude` by an older release shows as `platform_not_marked` in
+`rotate status`; the rotator moves off it once a plan login has room and
+never moves back. Check with
+`amplihack profile kind list`; fix a wrong guess with
+`amplihack profile kind set <name> api-key|subscription|auto` (writes the
+`kind=` line in `<root>/.auto-switch`; upgrade every binary and restart the
+rotator first, because older binaries read that line as corrupt).
+
+Order: plan logins with capacity, then plan logins past a threshold but
+below 100% (`reason=plan-room`), then marked credit overflow tiers 1-9, then
+the marked API-key tier (10). The rotator moves onto the API key only under
+the same `--overflow-wait` gate, only when no credit profile can be used and
+no plan login is below 100% on both windows, and only after a login check
+finds a non-empty `primaryApiKey` (`~/.claude.json`), `env.ANTHROPIC_API_KEY`
+or `apiKeyHelper` (`~/.claude/settings.json`), where plain `claude` reads after
+the move. The swap moves only `.credentials.json`, so a key in the profile's
+own files does not pass, and nor does a `.credentials.json` alone. The check never runs the helper or makes a request, so
+it confirms a key is configured, not that it works. A failed check moves
+nothing, leaves `~/.claude` unchanged and writes
+`key_check_refused <name>: <reason>` and, once,
+`ALERT: API key profile <name> failed its login check (<reason>); not moving onto it`;
+`--dry-run` prints `would_refuse <name>: <reason>`.
+While on it, every cycle, with no hold: plan capacity -> move to plan; else
+a plan login below 100% -> move to it; else a usable credit profile -> move
+to credits; else stay. Auto-switch follows the
+same rule. All API-key profiles share one key, so only the first by name is
+used. They are never probed with `/usage`.
+
+What to tell the user:
+
+- `rotate status` shows `~/.claude is on API key profile <name>: work is
+  billed per token (since <ts>)` while it is live; `profile usage` shows
+  `api-key (billed per token)` on its row and `live: work is running on the API key
+  (billed per token)`.
+- Log lines: `per-token <name>: ...; marked overflow tier 10 via profile
+  overflow add; login check passed (<detail>)`, then the swap line, then
+  `moved ~/.claude onto API key profile <name> (billed per token)`; and
+  `moved ~/.claude off API key profile <name> to <target>`.
+- `profile run`, `launch --profile` and `profile switch` refuse a
+  subscription profile with no login of its own, because it would fall back
+  to the API key. Fix: `amplihack profile login <name>`.
+
+| ALERT | What to tell the user |
+|-------|-----------------------|
+| `the API key is blocked (<reason>) until <time>; API-key profiles are not used` | A supervised agent step failed with a key error: `key_exhausted` (out of funds), `key_revoked` (invalid key) or `key_rate_limited`. The first two last until cleared (stored as 62 days). After fixing the key: `amplihack profile overflow clear --platform`. |
+| `swap refused: <name> has no oauth login and is not an API-key profile` | The profile's login file has no OAuth login. Log it in again, or `kind set <name> api-key` if it is meant to bill per token. |
+| `API key profile <name> failed its login check (<reason>); not moving onto it` | No key is where plain `claude` will read it after the move. Report it to the user. On a host that bills only plan logins, unmark the profile with `amplihack profile overflow remove <name>`. Otherwise the user can put the key in `primaryApiKey` (`~/.claude.json`) or `env.ANTHROPIC_API_KEY` or `apiKeyHelper` (`~/.claude/settings.json`), but it then applies to plan logins too; never ask for the key value itself. |
+| `more than one API-key profile could be live in ~/.claude; no swap` | `~/.claude` holds a login without OAuth and the ledger does not say which API-key profile it belongs to. They all share one key, so the user needs only one: suggest `amplihack profile remove <extra> --yes` for the others, after asking. |
+
+To stop using it: `amplihack profile auto-switch exclude <names, including
+the API-key profile>`; to stop billing at once, disable the key in the
+Claude Console. Full guide: "Use an API key as the last resort" in
+`docs/howto/claude-profile-rotation.md`.
+
+## Resuming sessions stopped by a limit
+
+`amplihack install` registers the `amplihack-hooks limit-resume` hook on
+Claude Code's `StopFailure` event (matcher `rate_limit`, `asyncRewake: true`).
+When a turn ends on a usage limit and auto-switch is on, it waits up to 7
+days for the rotator to swap `~/.claude` to a login with room. It does not
+poll: it watches `<root>/.auto-switch.d/rotate/swap.json`, which the rotator
+writes only after a successful swap, and resumes on a record newer than the
+stop whose reading is below 100% on both windows. A stay, an ALERT or a
+`profile switch` never resumes a session.
+
+It resumes in exactly one of two ways:
+
+- inside tmux, when the pane's terminal is Claude Code's own and Claude Code
+  is in the foreground, it types Esc, Ctrl+U, `continue` and Enter into that
+  pane (`resumed-keys`). Esc is the exit Claude Code's timed wait names
+  (`Usage limit reached · continuing automatically … · esc to cancel`);
+- otherwise it exits `2` with a continue message (`resumed`), which closes
+  the limit menu and starts a turn (verified on Claude Code 2.1.307), but is
+  not known to end the timed wait.
+
+It never presses a digit or types `/usage-credits` or `/rate-limit-options`.
+If a session does not resume, read `resume.log` first. The tmux limit
+nudger (`limit-nudger.sh`) is no longer needed once this hook is installed.
+
+Tell the user it needs:
+
+- Claude Code 2.1.306 or later, and `amplihack install` run again after
+  upgrading amplihack or Claude Code (install leaves the hook out for an
+  older `claude`);
+- auto-switch on and a rotator from this amplihack version running (a
+  rotator started before the upgrade writes no swap record: restart it);
+- Linux (elsewhere the hook ends as `watch-lost`).
+
+Check it is registered:
+
+```bash
+jq '.hooks.StopFailure' ~/.claude/settings.json
+```
+
+Read its decisions (no message text or tokens are logged):
+
+```bash
+tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
+```
+
+| Outcome | What to tell the user |
+|---------|-----------------------|
+| `resumed-keys` | Esc, Ctrl+U, `continue` and Enter were typed into the session's pane. |
+| `resumed` | The session had no verified pane, so the hook exited `2` and the session was told to continue. |
+| `resume-keys-failed` | A key failed or the session exited part way (`keys_sent=` says how many went). The user finishes by hand: Esc, Ctrl+U, `continue`, Enter. |
+| `swap-no-room` / `swap-stale` | A swap record was at 100% or swapped before the stop; the hook kept waiting. |
+| `watch-lost` | The hook could not watch for swaps (not Linux, old kernel, unsafe or deleted directory; see `detail=`). It never resumes. |
+| `no-capacity-timeout` | No swap to a login with room within 7 days. |
+| `rotator-down` | The rotator was not running (or its ledger was unreadable) when the limit hit; start it. |
+| `session-gone` | The session exited while the hook waited; nothing was done. |
+| `moved-on` | The user sent a prompt in that session during the wait (for example `continue`), so the hook did not wake it. |
+| `disabled` | Auto-switch was off when a swap would have resumed the session. |
+| `duplicate` | That limit event (same session, text and live login) was already resumed, or another hook woke the session first. |
+| `cap` | The session resumed 3 times in 24 hours; it will not resume again until older resumes age out. |
+| `stop-hook-active` | Claude Code reported a stop hook already running; nothing was done. |
+| `guard-failed` | The resume state under `<root>/.auto-switch.d/resume/` could not be used safely. Check its owner and mode (`0700`). |
+
+It never resumes without a swap to a login with room, at most once per limit
+event and once per wait, and at most 3 times per session per day. Each
+`resume.log` line also has `cycle=`, the rotator's last cycle outcome, and,
+when they apply, `swap_seq=`, `swap_live=`, `pane=` (a hash, not the pane
+id), `keys_sent=` and `detail=`.
+
+The tmux limit nudger (`~/.claude-profiles/.backups/limit-nudger.sh`) is no
+longer needed once the hook is registered. Ask the user before stopping it,
+and stop it by pid, not by pattern.
 
 ## Manual recovery
 

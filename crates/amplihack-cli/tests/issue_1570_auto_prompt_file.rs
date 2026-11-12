@@ -19,7 +19,7 @@ use crate::support::amplihack_bin::amplihack_bin;
 use amplihack_cli::{Cli, Commands};
 use std::fs;
 use std::path::PathBuf;
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
 const LAUNCH_SUBCOMMANDS: [&str; 4] = ["claude", "copilot", "codex", "amplifier"];
 
@@ -125,7 +125,7 @@ fn prompt_file_without_a_path_is_a_usage_error() {
 /// prints a short answer.
 const FAKE_AGENT: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.0 (Claude Code)'; exit 0 ;;
+  --version) echo '2.1.319 (Claude Code)'; exit 0 ;;
 esac
 n=$(ls "$RECORD_DIR" | grep -c '^stdin\.')
 n=$((n+1))
@@ -172,10 +172,12 @@ impl Fixture {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        let mut c = Command::new(amplihack_bin());
+        let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
         c.args(args)
             .current_dir(&self.work)
             .env_clear()
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),

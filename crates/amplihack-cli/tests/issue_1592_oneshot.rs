@@ -5,6 +5,7 @@
 
 #![cfg(target_os = "linux")]
 
+use crate::support::fake_proc::{FAKE_PID_BASE, FakeProc};
 use crate::support::profile_rotate::*;
 use std::collections::BTreeMap;
 use std::fs;
@@ -101,6 +102,34 @@ fn a_threshold_swap_moves_both_logins_and_only_the_account() {
     }
 }
 
+/// Issue #1698: the rotator warns about a bad probe variable, the deadline as
+/// well as the pool size, escaped, and the cycle still runs on the defaults.
+#[test]
+fn bad_probe_variables_warn_and_the_cycle_uses_the_defaults() {
+    let f = Fixture::new();
+    f.usage("work", 20, 20);
+    let out = f
+        .cmd(&["profile", "rotate"])
+        .env("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "soon\n")
+        .env("AMPLIHACK_PROFILE_USAGE_PARALLEL", "lots")
+        .output()
+        .unwrap();
+    let err = text(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(
+        err.contains(
+            "warning: ignored AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS \"soon\\n\" (use 1 to 600); using 120"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("warning: ignored AMPLIHACK_PROFILE_USAGE_PARALLEL \"lots\""),
+        "{err}"
+    );
+    assert!(text(&out.stdout).contains("cycle live=work"));
+    assert_eq!(ino(&f.home_login()), Some(f.live_ino));
+}
+
 #[test]
 fn an_upgrade_swap_needs_thirty_points() {
     let f = Fixture::new();
@@ -137,6 +166,15 @@ fn a_cycle_that_stays_moves_nothing_and_records_the_cycle() {
     f.assert_each_login_once();
     let ledger = f.ledger().expect("last_cycle recorded");
     assert_eq!(ledger["last_cycle"]["outcome"], "stayed");
+    // Issue #1659: when measuring began, for the limit-resume hook.
+    let (measured, at) = (
+        ledger["last_cycle"]["measured_at"].as_i64(),
+        ledger["last_cycle"]["at"].as_i64(),
+    );
+    assert!(
+        measured.is_some_and(|m| at.is_some_and(|at| 0 < m && m <= at)),
+        "{ledger}"
+    );
 }
 
 #[test]
@@ -169,6 +207,10 @@ fn the_hold_blocks_an_upgrade_back_and_hold_zero_allows_it() {
 #[test]
 fn a_dry_run_changes_nothing_and_prints_only_would_and_cycle_lines() {
     let f = Fixture::new();
+    // Issue #1962: a dry run reads the usage endpoint only and never starts `claude`.
+    f.usage_direct("work", 90, 20);
+    f.usage_direct("spare", 10, 20);
+    f.usage_direct("extra", 50, 60);
     let before = snapshot(&f);
     let out = f.ok(&["profile", "rotate", "--dry-run"]);
     assert_eq!(snapshot(&f), before, "dry run wrote or moved something");
@@ -183,6 +225,7 @@ fn a_dry_run_changes_nothing_and_prints_only_would_and_cycle_lines() {
         ls.iter().any(|l| l.starts_with("would swap work->spare")),
         "{ls:?}"
     );
+    assert!(f.probe_envs().is_empty(), "the dry run started claude");
 }
 
 #[test]
@@ -236,6 +279,8 @@ fn an_unknown_login_is_adopted_as_default_original() {
         "primaryApiKey": "SECRET-KEY-HOME"
     });
     private_file(&f.home.join(".claude.json"), &home_json.to_string());
+    // Issue #1753: identity comes from the login, so it names the stranger too.
+    assert_eq!(login(&f.home_login()), f.live_ino);
     f.usage("stranger", 95, 10);
     let out = f.ok(&["profile", "rotate"]);
     assert!(
@@ -300,24 +345,39 @@ fn no_login_in_home_is_an_alert_and_nothing_moves_in() {
     assert_eq!(ino(&f.slot("spare")), Some(f.spare_ino));
 }
 
+/// Issue #1886: `~/.claude.json` naming another profile's account is no
+/// hand change. Running sessions rewrite that file from memory, so after a
+/// swap it can still name the previous account. One `profile rotate` moves
+/// no login aside, records nobody in the ledger's place and writes no
+/// recovery or lost-login line; with no usable credential reading (the test
+/// guard sends no request) it can only note that it cannot tell, and the
+/// run goes on to measure and swap as usual.
 #[test]
-fn a_hand_change_is_an_alert_and_nothing_moves() {
+fn claude_json_naming_another_profile_moves_nothing_aside() {
     let f = Fixture::new();
     f.ok(&["profile", "rotate"]);
-    // Someone ran /login in ~/.claude as `extra`'s account.
+    assert_eq!(f.where_is(f.spare_ino).as_deref(), Some("~/.claude"));
     let home_json = serde_json::json!({"oauthAccount": account_json("extra")});
     private_file(&f.home.join(".claude.json"), &home_json.to_string());
     f.usage("extra", 95, 95);
-    let before = f.logins();
+    f.usage("work", 10, 10);
+    let mut before: Vec<u64> = f.logins().iter().map(|(_, i)| *i).collect();
+    before.sort();
     let out = f.ok(&["profile", "rotate"]);
+    let stdout = text(&out.stdout);
+    assert!(!stdout.contains("recovered:"), "{stdout}");
+    assert!(!stdout.contains("has no login anywhere"), "{stdout}");
     assert!(
-        text(&out.stdout).contains(
-            "ALERT: the account in ~/.claude is not the one the ledger names (live=spare); no swap"
-        ),
-        "{}",
-        text(&out.stdout)
+        !f.root.join(".rejected-logins").exists(),
+        "nothing was set aside: {stdout}"
     );
-    assert_eq!(f.logins(), before);
+    assert_eq!(f.where_is(f.extra_ino).as_deref(), Some("extra"));
+    let ledger = f.ledger().unwrap();
+    assert_ne!(ledger["live"], "extra", "{ledger}");
+    assert!(ledger.get("hand_suspect").is_none(), "{ledger}");
+    let mut after: Vec<u64> = f.logins().iter().map(|(_, i)| *i).collect();
+    after.sort();
+    assert_eq!(after, before, "no login lost or copied");
 }
 
 #[test]
@@ -382,7 +442,12 @@ fn profile_usage_attributes_home_to_the_rotated_in_profile() {
 #[test]
 fn probes_get_no_rotate_settings_and_the_live_probe_has_no_config_dir() {
     let f = Fixture::new();
-    f.ok(&["profile", "rotate", "--hold", "0"]);
+    // The fixture's autostart opt-out is itself an `AMPLIHACK_ROTATE*`
+    // variable; the one-shot form never autostarts, so drop it here.
+    let mut c = f.cmd(&["profile", "rotate", "--hold", "0"]);
+    c.env_remove("AMPLIHACK_ROTATE_AUTOSTART");
+    let out = c.output().unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
     let envs = f.probe_envs();
     assert!(
         envs.iter().any(|e| e.contains("CLAUDE_CONFIG_DIR=<unset>")),
@@ -391,4 +456,48 @@ fn probes_get_no_rotate_settings_and_the_live_probe_has_no_config_dir() {
     for e in &envs {
         assert!(!e.contains("AMPLIHACK_ROTATE"), "{e}");
     }
+}
+
+/// A stand-in for a rotator started from an older amplihack binary: a
+/// static entry in a fake process table (issue #2042) whose command line
+/// names `profile rotate watch` and which has no `exe` link to this build.
+/// No process is started; the pid lies above `pid_max`, so nothing can
+/// signal it. Every later fixture command reads the returned tree; keep it
+/// alive while they run.
+fn old_rotator(f: &Fixture) -> FakeProc {
+    let fake = FakeProc::new();
+    fake.process(FAKE_PID_BASE)
+        .cmdline(&["amplihack", "profile", "rotate", "watch"])
+        .status('S');
+    f.with_proc(&fake);
+    let dir = f.rotate_dir();
+    fs::create_dir_all(&dir).unwrap();
+    for d in [dir.parent().unwrap(), dir.as_path()] {
+        fs::set_permissions(d, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    }
+    fs::write(dir.join("rotate.pid"), format!("{FAKE_PID_BASE}\n")).unwrap();
+    fake
+}
+
+/// Issue #1659: beside a rotator from another binary, a one-shot cycle says
+/// how to restart it and writes the ledger without fields that binary would
+/// reject, so it never reads the ledger as inconsistent.
+#[test]
+fn a_one_shot_beside_an_older_rotator_keeps_the_ledger_readable_to_it() {
+    let f = Fixture::new();
+    f.usage("work", 20, 20);
+    let _old = old_rotator(&f);
+    let out = f.ok(&["profile", "rotate"]);
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("runs another amplihack binary")
+            && stderr.contains("amplihack profile rotate stop && amplihack profile rotate start"),
+        "{stderr}"
+    );
+    let ledger = f.ledger().expect("last_cycle recorded");
+    assert_eq!(ledger["last_cycle"]["outcome"], "stayed");
+    assert!(
+        ledger["last_cycle"].get("measured_at").is_none(),
+        "{ledger}"
+    );
 }

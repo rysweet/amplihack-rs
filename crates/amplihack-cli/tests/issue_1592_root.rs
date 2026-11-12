@@ -115,7 +115,9 @@ fn list_without_the_variable_uses_the_saved_root() {
         .collect();
     for p in PROFILES {
         assert!(
-            rest.iter().any(|l| l.trim_start_matches(['*', ' ']) == p),
+            // `<mark> <name>  <kind>` (issue #1700 added the KIND column).
+            rest.iter()
+                .any(|l| l.trim_start_matches(['*', ' ']).split_whitespace().next() == Some(p)),
             "{rest:?}"
         );
     }
@@ -307,7 +309,7 @@ fn a_launch_pins_the_root_only_when_it_came_from_the_variable() {
     let claude = f.tools.join("claude");
     crate::support::exec_stub::write_executable(
         &claude,
-        "#!/bin/sh\n[ \"$1\" = --version ] && { echo '2.1.301 (Claude Code)'; exit 0; }\n\
+        "#!/bin/sh\n[ \"$1\" = --version ] && { echo '2.1.319 (Claude Code)'; exit 0; }\n\
          printf '%s\\n' \"${AMPLIHACK_CLAUDE_PROFILE_ROOT-<unset>}\" > \"$RECORD_DIR/root.env\"\n",
         0o755,
     );

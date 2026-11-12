@@ -4,13 +4,19 @@
 //! and Copilot via JSON stdin/stdout protocol.
 
 mod agent_memory;
+mod capacity_notice;
 mod original_request;
 mod prompt_input;
+mod state_dir;
 #[cfg(test)]
 pub(crate) mod test_support;
 
 #[cfg(test)]
 mod layering_guard;
+
+/// Issue #1963: hook state lands under the amplihack state root, never in cwd.
+#[cfg(all(test, unix))]
+mod issue_1963_state_root_tests;
 
 /// Post-tool-use hook: observes tool results for metrics and validation.
 pub mod post_tool_use;
@@ -44,6 +50,8 @@ pub mod copilot_stop_handler;
 pub mod hook_verification;
 /// Known amplihack agent name registry.
 pub mod known_agents;
+#[cfg(unix)]
+pub mod limit_resume;
 /// Host-specific hook strategies (Claude, Copilot).
 pub mod strategies;
 

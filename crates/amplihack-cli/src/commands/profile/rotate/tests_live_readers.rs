@@ -15,6 +15,8 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+const OAUTH_LOGIN: &str = r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#;
+
 fn private(path: &Path, body: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, body).unwrap();
@@ -40,11 +42,21 @@ fn env() -> (tempfile::TempDir, PathBuf, ProfileStore, RotateState) {
     private(&root.join("a/.claude.json"), &acct("u1"));
     private(&root.join("b/.claude.json"), &acct("u2"));
     private(&root.join("c/.claude.json"), &acct("u3"));
-    private(&root.join("c/.credentials.json"), "{}");
-    private(&home.join(".claude/.credentials.json"), "{}");
+    // OAuth logins (issue #1700: `{}` is an API-key profile's login file).
+    private(&root.join("c/.credentials.json"), OAUTH_LOGIN);
+    private(&home.join(".claude/.credentials.json"), OAUTH_LOGIN);
     private(&home.join(".claude.json"), &acct("u1"));
     let rs = RotateState::new(&root);
     rs.ensure().unwrap();
+    let state = crate::commands::profile::auto_switch::kit::State::new(&root).unwrap();
+    for name in ["a", "b", "c"] {
+        let a = super::super::identify::Account::of_dir(&root.join(name)).unwrap();
+        crate::commands::profile::expected::record(&state, &ProfileName::parse(name).unwrap(), &a)
+            .unwrap();
+    }
+    let path = home.join(".claude/.credentials.json");
+    private(&path, &super::tests_fixture_identity::body(&path));
+    fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o700)).unwrap();
     (tmp, home, store, rs)
 }
 

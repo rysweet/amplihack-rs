@@ -21,12 +21,12 @@ const RECIPES: [(&str, &str, &str); 2] = [
     (
         "autodrive-crusty-loop.yaml",
         "step-02-crusty-loop",
-        "CRUSTY_LOOP_PREFLIGHT",
+        "RECIPE_VAR_crusty_loop_preflight",
     ),
     (
         "autodrive-merge-loop.yaml",
         "step-02-merge-ready-loop",
-        "MERGE_LOOP_PREFLIGHT",
+        "RECIPE_VAR_merge_loop_preflight",
     ),
 ];
 

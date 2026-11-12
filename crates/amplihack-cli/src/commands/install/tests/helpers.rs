@@ -99,7 +99,7 @@ pub(super) fn create_exe_stub(dir: &Path, name: &str) -> std::path::PathBuf {
     fs::create_dir_all(dir).unwrap();
     let path = dir.join(name);
     let response = if name == "recipe-runner-rs" {
-        "printf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'\n"
+        "printf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'\n"
     } else if name == "codex" {
         r#"case "$1 $2 $3" in
   '--version  ') printf '%s\n' 'codex-cli 0.160.0';;
@@ -151,6 +151,9 @@ esac
     {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    if name == "codex" {
+        create_exe_stub(dir, "codex-code-mode-host");
     }
     path
 }
@@ -229,6 +232,7 @@ pub(super) fn build_canonical_native_hook_settings(hooks_bin: &Path) -> serde_js
             },
             timeout: entry.timeout,
             matcher: entry.matcher,
+            async_rewake: entry.async_rewake,
         };
         wrappers.push(hooks::build_hook_wrapper(&spec, hooks_bin));
     }

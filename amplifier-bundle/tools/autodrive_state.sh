@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# autodrive_state.sh — durable, resumable state for the auto-drive-to-merge
-# workflow.
+# autodrive_state.sh — durable, resumable state for the auto-drive-to-merge workflow.
 #
 # A run that dies partway must be re-runnable WITHOUT redoing merged work and
 # WITHOUT reopening concerns a previous run already resolved and had confirmed
@@ -8,7 +7,6 @@
 #
 #   Local — ${AMPLIHACK_STATE_DIR:-$HOME/.amplihack/state}/auto-drive/<key>/
 #   Fast, always available, survives a crashed run on the same host.
-#
 #
 # The authoritative answer to "is this already merged?" is not that store: it
 # is the platform (`gh pr view --json state`). State files record what THIS
@@ -68,16 +66,17 @@ autodrive_state_dir() {
   printf '%s\n' "$dir"
 }
 
-# autodrive_private_dir <dir> -> makes <dir> a state dir the merge gate accepts,
-# whatever the caller's umask, or prints a named ERROR and returns 1.
+# autodrive_private_dir <dir> -> makes <dir> a state dir the merge gate and
+# completion preparation accept, whatever the caller's umask, or prints a
+# named ERROR and returns 1.
 #
 #   ERROR: state-dir-not-private: <dir> is empty, a symlink, not a directory,
 #     not owned by this user, or cannot be created or changed. Nothing in it is
 #     touched.
 #
-# <dir> and any missing parent are created under umask 077, and <dir> loses its
-# group and world write bits (chmod go-w). Existing parents are left as they
-# are.
+# <dir> and any missing parent are created under umask 077, and <dir> is set
+# to mode 0700: completion preparation requires owner-only access, including
+# for existing state directories. Existing parents are left as they are.
 #
 # An entry directly in <dir> that the gate would refuse (a symlink, an entry
 # not owned by this user, or one with a group or world write bit) was written
@@ -104,8 +103,8 @@ autodrive_private_dir() {
   if [ ! -O "$dir" ]; then
     echo "ERROR: state-dir-not-private: ${dir} is not owned by this user, so others may write in it; choose another AUTODRIVE_STATE_DIR" >&2; return 1
   fi
-  if ! chmod go-w -- "$dir" 2>/dev/null; then
-    echo "ERROR: state-dir-not-private: could not remove the group and world write bits from ${dir}" >&2; return 1
+  if ! chmod -- 700 "$dir" 2>/dev/null; then  # -- before the mode: BSD chmod stops parsing options at the first operand and would read -- as a file
+    echo "ERROR: state-dir-not-private: could not set owner-only access on ${dir}" >&2; return 1
   fi
   me="$(id -u)" || { echo "ERROR: state-dir-not-private: the current user id cannot be read" >&2; return 1; }
   list="$(autodrive_untrusted_entries "$dir" "$me" -print)" \
@@ -177,10 +176,14 @@ autodrive_phase_done() {
 # DONE: every concern id in crusty-round-*.json.findings goes to
 # resolved-concerns.txt, so a resumed run does not reopen it, and the
 # `crusty-loop` marker is written. The loop reports DONE only on a round whose
-# own verdict was CLEAN, so every concern it raised is settled. Callers check
-# for DONE first; this function does not.
+# own verdict was CLEAN or MINOR_ONLY (whose .findings is empty, #1979), so every
+# concern listed is settled. Callers check for DONE first; this function does not.
 autodrive_record_crusty_loop_done() {
-  local dir="${1:?state dir}" f id
+  local dir="${1:?state dir}" f id row tmp
+  row="$(autodrive_crusty_manifest_row "$dir")" || { echo "ERROR: cannot bind crusty completion to manifest" >&2; return 1; }
+  tmp="$(umask 077; mktemp "$dir/.crusty-completion.XXXXXX")" || return 1
+  printf '%s\n' "$row" > "$tmp" && mv -f -- "$tmp" "$dir/crusty-completion.txt" \
+    || { rm -f -- "$tmp"; return 1; }
   for f in "$dir"/crusty-round-*.json.findings; do
     [ -f "$f" ] || continue
     while IFS= read -r id; do
@@ -215,8 +218,6 @@ autodrive_clear_phase() {
   return 1
 }
 
-# --- criterion 3: the crusty loop's last loop-written record ---------------
-
 # autodrive_blob_hash <dir> < file -> the git blob hash of stdin. git runs with
 # <dir> as its working directory, so the config of whatever checkout the caller
 # is in cannot change the object format or apply filters. The loop computes
@@ -248,14 +249,13 @@ autodrive_manifest_row() {
     }'
 }
 
-# autodrive_crusty_manifest_row <dir> -> autodrive_manifest_row <dir> crusty.
 autodrive_crusty_manifest_row() { autodrive_manifest_row "${1:-}" crusty; }
 
 # autodrive_crusty_final <state dir> -> criterion 3 under auto-drive (#1517).
 #
 # Prints only the reviewed head SHA and returns 0 when the crusty loop ended
-# DONE and its last loop-written round record is CLEAN. Otherwise prints one
-# token and returns 1. The checks run in this order:
+# DONE and its last loop-written round record is CLEAN or MINOR_ONLY (#1979).
+# Otherwise prints one token and returns 1. The checks run in this order:
 #
 #   crusty-loop-not-done     no `crusty-loop` marker in phases.tsv
 #   crusty-manifest-missing  crusty-records.tsv absent, a symlink, or its last row malformed
@@ -263,7 +263,7 @@ autodrive_crusty_manifest_row() { autodrive_manifest_row "${1:-}" crusty; }
 #   crusty-record-modified   its hash differs from the manifest or from crusty-latest.json,
 #                            or it is not one line that starts with crusty_verdict and
 #                            carries exactly one reviewed_head_sha
-#   crusty-not-clean         its verdict is not CLEAN
+#   crusty-not-clean         its verdict is neither CLEAN nor MINOR_ONLY
 #   crusty-head-sha-empty    reviewed_head_sha is not a 40- or 64-character hex SHA
 #
 # The record is copied once into a private temporary file, and that copy is
@@ -289,10 +289,10 @@ autodrive_crusty_final() {
      || [ ! -f "$latest" ] || [ -L "$latest" ] \
      || [ "$(autodrive_blob_hash "$dir" < "$latest")" != "$want" ] \
      || [ "$(awk 'END { print NR }' "$copy")" != "1" ] \
-     || ! grep -Eq '^\{"crusty_verdict":"(CLEAN|CONCERNS)",' "$copy" \
+     || ! grep -Eq '^\{"crusty_verdict":"(CLEAN|MINOR_ONLY|CONCERNS)",' "$copy" \
      || [ "$(grep -o '"reviewed_head_sha":' "$copy" | wc -l | tr -d ' ')" != "1" ]; then
     tok="crusty-record-modified"
-  elif ! grep -Eq '^\{"crusty_verdict":"CLEAN",' "$copy"; then
+  elif ! grep -Eq '^\{"crusty_verdict":"(CLEAN|MINOR_ONLY)",' "$copy"; then
     tok="crusty-not-clean"
   else
     sha="$(sed -n 's/.*"reviewed_head_sha":"\([0-9a-f]*\)".*/\1/p' "$copy")"
@@ -300,17 +300,15 @@ autodrive_crusty_final() {
   fi
   rm -f -- "$copy"
   if [ -n "$tok" ]; then printf '%s\n' "$tok"; return 1; fi
+  if [ ! -f "$dir/crusty-completion.txt" ] || [ -L "$dir/crusty-completion.txt" ] \
+     || [ "$(cat "$dir/crusty-completion.txt")" != "$row" ]; then
+    printf 'crusty-completion-stale\n'; return 1
+  fi
   printf '%s\n' "$sha"
 }
 
-# --- resolved crusty concerns ---------------------------------------------
-#
-# Concern identifiers that a previous run addressed AND had confirmed clean by
-# a later crusty round. Passed back into crusty so a resumed run does not
-# reopen settled ground. Crusty may still re-raise one with NEW evidence — the
-# record informs the reviewer, it does not gag it. It is written ONLY by this
-# host, from rounds this host actually ran; nothing off-host can seed it.
-
+# Resolved ids are host-written evidence of earlier addressed concerns. A
+# reviewer may re-raise one with new evidence; this record informs, not gags.
 autodrive_record_resolved() {
   local dir="${1:?state dir}"
   shift
@@ -383,6 +381,9 @@ autodrive_pr_state() {
     printf 'UNKNOWN\n'
   fi
 }
+
+# shellcheck source=autodrive_unmerged.sh # autodrive_require_unmerged (#1551) lives there; absent, it fails closed.
+if _ad_u="$(dirname "${BASH_SOURCE[0]}")/autodrive_unmerged.sh" && [ -f "$_ad_u" ]; then . "$_ad_u"; else autodrive_require_unmerged() { echo "ERROR: #1551: autodrive_unmerged.sh is missing beside autodrive_state.sh; refusing to continue unverified." >&2; return 1; }; fi; unset _ad_u
 
 # autodrive_launch_recipe <name|path> -> the recipe in the tree beside this file
 # (#1543). The loops run with --working-dir in the PR worktree, whose own

@@ -27,6 +27,7 @@ fn executable(path: &Path, body: &str) {
 /// Records argv (NUL-separated) and a copy of `--context-file`, then reports
 /// success in the runner's JSON format.
 const STUB_RUNNER: &str = r#"#!/bin/sh
+case "$*" in --capabilities) printf '%b\n' '\173"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]\175'; exit 0 ;; esac
 : > "$RECORD_DIR/argv.bin"
 for a in "$@"; do printf '%s\0' "$a" >> "$RECORD_DIR/argv.bin"; done
 prev=
@@ -93,7 +94,7 @@ impl Fixture {
         if let Some(extra) = extra_path {
             path = format!("{}:{path}", extra.display());
         }
-        let mut c = Command::new(amplihack_bin());
+        let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
         c.arg("recipe")
             .arg("run")
             .arg(&self.recipe)
@@ -102,6 +103,8 @@ impl Fixture {
             .arg(&self.root)
             .current_dir(&self.root)
             .env_clear()
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env("TMPDIR", std::env::temp_dir())
             .env("PATH", path)
             .env("HOME", &self.home)
             .env("RECORD_DIR", &self.records)

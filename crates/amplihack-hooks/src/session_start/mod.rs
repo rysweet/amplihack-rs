@@ -12,6 +12,8 @@ mod context_loaders;
 mod migration;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, unix))]
+mod tests_capacity;
 
 use crate::original_request::{capture_original_request, format_original_request_context};
 use crate::protocol::{FailurePolicy, Hook};
@@ -58,8 +60,11 @@ impl Hook for SessionStartHook {
         // the host should be aware of — e.g. code-graph setup failures.
         let mut warnings: Vec<String> = Vec::new();
 
+        // The original request is saved under the amplihack state root, never
+        // the working directory (#1963). The context is injected either way.
+        let session_dir = amplihack_types::session_state_dir(session_id.as_deref());
         if let Some(original_request_context) =
-            maybe_capture_original_request(&dirs, session_id.as_deref(), &extra)?
+            maybe_capture_original_request(session_dir.as_deref(), session_id.as_deref(), &extra)
         {
             context_parts.push(original_request_context);
         }
@@ -145,6 +150,14 @@ impl Hook for SessionStartHook {
             }
         }
 
+        // The no-capacity notice, after every existing part. A fresh session
+        // has no dedupe record, so it shows here and the first prompt is quiet.
+        let notice =
+            crate::capacity_notice::notice(session_id.as_deref(), is_nested_recipe_session());
+        if let Some(n) = &notice {
+            context_parts.push(n.context.clone());
+        }
+
         let additional_context = context_parts.join("\n\n");
 
         // Signal channel: session start performs NO group I/O. Groups are
@@ -169,23 +182,25 @@ impl Hook for SessionStartHook {
         if !warnings.is_empty() {
             output["warnings"] = serde_json::json!(warnings);
         }
+        if let Some(message) = notice.and_then(|n| n.system_message) {
+            output["systemMessage"] = Value::String(message);
+        }
 
         Ok(output)
     }
 }
 
+/// Capture the original request from the session-start prompt and return the
+/// context block to inject. A failed or skipped save is logged by
+/// `capture_original_request` and does not suppress the context.
 fn maybe_capture_original_request(
-    dirs: &ProjectDirs,
+    session_dir: Option<&std::path::Path>,
     session_id: Option<&str>,
     extra: &Value,
-) -> anyhow::Result<Option<String>> {
-    let Some(prompt) = extra.get("prompt").and_then(Value::as_str).map(str::trim) else {
-        return Ok(None);
-    };
-
-    Ok(capture_original_request(dirs, session_id, prompt)?
-        .as_ref()
-        .map(format_original_request_context))
+) -> Option<String> {
+    let prompt = extra.get("prompt").and_then(Value::as_str).map(str::trim)?;
+    capture_original_request(session_dir, session_id, prompt)
+        .map(|captured| format_original_request_context(&captured.request))
 }
 
 pub(crate) fn codex_protocol_selected() -> bool {

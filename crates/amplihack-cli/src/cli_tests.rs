@@ -486,6 +486,39 @@ mod tests {
         }
     }
 
+    /// Issue #1744: Copilot CLI 1.0.105 removed `--remote`, so amplihack no
+    /// longer adds it. Both `-h` and `--help` for `amplihack copilot` must say
+    /// how to start and stop a remote session instead.
+    #[test]
+    fn copilot_help_explains_remote_on_and_off() {
+        let _env = launcher_env_lock();
+        let mut cmd = Cli::command();
+        let copilot = cmd
+            .find_subcommand_mut("copilot")
+            .expect("copilot command should exist");
+
+        let mut short = Vec::new();
+        copilot.write_help(&mut short).unwrap();
+        let mut long = Vec::new();
+        copilot.write_long_help(&mut long).unwrap();
+
+        for (name, bytes) in [("-h", short), ("--help", long)] {
+            let rendered = String::from_utf8(bytes).unwrap();
+            assert!(
+                rendered.contains("/remote on"),
+                "copilot {name} must mention `/remote on`; got:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("/remote off"),
+                "copilot {name} must mention `/remote off`; got:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("does not pass `--remote`"),
+                "copilot {name} must say amplihack does not pass --remote; got:\n{rendered}"
+            );
+        }
+    }
+
     // ── Provider-neutral workflow helper commands ─────────────────────────────
 
     #[test]
@@ -634,11 +667,15 @@ mod tests {
             Commands::Profile(crate::commands::profile::ProfileCommands::Usage {
                 names,
                 json,
+                table,
+                utc,
                 raw,
                 timeout_secs,
+                ..
             }) => {
                 assert_eq!(names, ["a", "b"]);
                 assert!(json && raw);
+                assert!(!table && !utc);
                 assert_eq!(timeout_secs, None);
             }
             other => panic!("unexpected {other:?}"),
@@ -648,11 +685,135 @@ mod tests {
             Commands::Profile(crate::commands::profile::ProfileCommands::Usage {
                 names,
                 json,
+                table,
+                utc,
                 raw,
                 ..
-            }) => assert!(names.is_empty() && !json && !raw),
+            }) => assert!(names.is_empty() && !json && !table && !utc && !raw),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    /// Issue #1813: `--table` and `--utc` parse, alone and with `--raw`.
+    #[test]
+    fn profile_usage_parses_table_and_utc() {
+        let _env = launcher_env_lock();
+        for (args, want_table, want_utc) in [
+            (&["--table"][..], true, false),
+            (&["--utc"][..], false, true),
+            (&["--table", "--raw", "a"][..], true, false),
+            (&["--utc", "--raw", "a"][..], false, true),
+        ] {
+            let mut argv = vec!["amplihack", "profile", "usage"];
+            argv.extend_from_slice(args);
+            let cli = Cli::try_parse_from(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            match cli.command {
+                Commands::Profile(crate::commands::profile::ProfileCommands::Usage {
+                    json,
+                    table,
+                    utc,
+                    ..
+                }) => {
+                    assert!(!json, "{argv:?}");
+                    assert_eq!((table, utc), (want_table, want_utc), "{argv:?}");
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    /// Issue #1813: flags that would do nothing together are refused.
+    #[test]
+    fn profile_usage_output_flags_conflict() {
+        let _env = launcher_env_lock();
+        for pair in [
+            ["--table", "--json"],
+            ["--json", "--table"],
+            ["--utc", "--json"],
+            ["--json", "--utc"],
+            ["--utc", "--table"],
+            ["--table", "--utc"],
+        ] {
+            let err = Cli::try_parse_from(["amplihack", "profile", "usage", pair[0], pair[1]])
+                .expect_err(&format!("{pair:?} must be refused"));
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{pair:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_usage_help_describes_the_bar_view_and_new_flags() {
+        let _env = launcher_env_lock();
+        let help = Cli::try_parse_from(["amplihack", "profile", "usage", "--help"])
+            .unwrap_err()
+            .to_string();
+        for want in ["--table", "--utc", "bar view"] {
+            assert!(help.contains(want), "help lists {want}: {help}");
+        }
+        assert!(
+            !help.contains("instead of the table"),
+            "help still calls the table the default: {help}"
+        );
+        // Issue #1974: the help states the passive window.
+        for want in [
+            "300",
+            "AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS",
+            "3600",
+        ] {
+            assert!(help.contains(want), "help names {want}: {help}");
+        }
+        let list = Cli::try_parse_from(["amplihack", "profile", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !list.contains("most capacity first"),
+            "summary still says most capacity first: {list}"
+        );
+    }
+
+    #[test]
+    fn profile_prune_probe_logs_parses_its_flags() {
+        let _env = launcher_env_lock();
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "profile",
+            "prune-probe-logs",
+            "--dir",
+            "/x/y",
+            "--dry-run",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Profile(crate::commands::profile::ProfileCommands::PruneProbeLogs {
+                dir,
+                dry_run,
+            }) => {
+                assert_eq!(dir.as_deref(), Some("/x/y"));
+                assert!(dry_run);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let cli = Cli::try_parse_from(["amplihack", "profile", "prune-probe-logs"]).unwrap();
+        match cli.command {
+            Commands::Profile(crate::commands::profile::ProfileCommands::PruneProbeLogs {
+                dir,
+                dry_run,
+            }) => {
+                assert_eq!(dir, None);
+                assert!(!dry_run);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from(["amplihack", "profile", "prune-probe-logs", "--force"]).is_err()
+        );
+        let list = Cli::try_parse_from(["amplihack", "profile", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(list.contains("prune-probe-logs"), "listed: {list}");
     }
 
     #[test]
@@ -714,6 +875,73 @@ mod tests {
         match cli.command {
             Commands::Launch { profile, .. } => assert!(profile.is_none()),
             other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    /// Issue #1746: `sessions archive` / `sessions restore` parse, and bad
+    /// input is a clap usage error (exit 2). Checked through clap's error
+    /// kind, so this compiles before the variant exists.
+    #[cfg(unix)]
+    #[test]
+    fn sessions_commands_parse() {
+        for args in [
+            &["amplihack", "sessions", "archive"][..],
+            &["amplihack", "sessions", "archive", "--apply"],
+            &["amplihack", "sessions", "archive", "--days", "1"],
+            &["amplihack", "sessions", "archive", "--days", "4294967295"],
+            &[
+                "amplihack",
+                "sessions",
+                "archive",
+                "--days",
+                "7",
+                "--dest",
+                "/x",
+                "--apply",
+            ],
+            &["amplihack", "sessions", "restore", "abc"],
+            &["amplihack", "sessions", "restore", "abc", "--dest", "rel"],
+        ] {
+            let got = Cli::try_parse_from(args);
+            assert!(got.is_ok(), "{args:?}: {:?}", got.err().map(|e| e.kind()));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sessions_commands_reject_bad_input() {
+        for args in [
+            &["amplihack", "sessions"][..],
+            &["amplihack", "sessions", "archive", "--days", "0"],
+            &["amplihack", "sessions", "archive", "--days", "-1"],
+            &["amplihack", "sessions", "archive", "--days", "x"],
+            &["amplihack", "sessions", "archive", "--days", "4294967296"],
+            &["amplihack", "sessions", "archive", "--bogus"],
+            &["amplihack", "sessions", "restore"],
+            &["amplihack", "sessions", "restore", "a", "b"],
+            &["amplihack", "sessions", "restore", "abc", "--apply"],
+        ] {
+            let err = match Cli::try_parse_from(args) {
+                Ok(_) => panic!("{args:?} parsed"),
+                Err(e) => e,
+            };
+            assert_eq!(err.exit_code(), 2, "{args:?}: {:?}", err.kind());
+            assert!(
+                !matches!(err.kind(), clap::error::ErrorKind::InvalidSubcommand),
+                "{args:?}: no sessions command"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sessions_help_lists_archive_and_restore() {
+        let mut cmd = Cli::command();
+        let sessions = cmd
+            .find_subcommand_mut("sessions")
+            .expect("sessions command should exist");
+        for sub in ["archive", "restore"] {
+            assert!(sessions.find_subcommand(sub).is_some(), "{sub}");
         }
     }
 }

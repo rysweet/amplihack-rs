@@ -33,6 +33,9 @@
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
 
 set -uo pipefail
+# Issue #1764: no git this script runs may wait on a credential prompt.
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
+exec </dev/null
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
@@ -173,12 +176,11 @@ run_env_step() {
         export AZ_STUB_MODE="${mode}"
         export AZ_ARGS_LOG="${args_log}"
         export REPO_PATH="${FAKE_REPO}"
-        export REMOTE_HOST_TYPE="azdo"
         export TASK_DESCRIPTION="${task}"
-        export FINAL_REQUIREMENTS="requirements body"
-        export ISSUE_NUMBER=""
         export GITHUB_OUTPUT="${TMP_ROOT}/gh_output"
-        env "$@" bash "${STEP_CMD}" 2>"${TMP_ROOT}/stderr.log"
+        # The runner passes step outputs as RECIPE_VAR_<key> (#1684).
+        env RECIPE_VAR_remote_host_type="azdo" RECIPE_VAR_final_requirements="requirements body" \
+            RECIPE_VAR_issue_number="" "$@" bash "${STEP_CMD}" 2>"${TMP_ROOT}/stderr.log"
     )"
     rc=$?
     LAST_OUT="${out}"
@@ -269,12 +271,10 @@ else
         # told where amplifier-bundle/tools/ is (issue #1361).
         export AMPLIHACK_HOME="${REPO_ROOT}"
         export REPO_PATH="${FAKE_REPO}"
-        export REMOTE_HOST_TYPE="azdo"
         export TASK_DESCRIPTION="Local only task with no az"
-        export FINAL_REQUIREMENTS="requirements body"
-        export ISSUE_NUMBER=""
         export GITHUB_OUTPUT="${TMP_ROOT}/gh_output2"
-        bash "${STEP_CMD}" 2>"${ABSENT_ERRLOG}"
+        env RECIPE_VAR_remote_host_type="azdo" RECIPE_VAR_final_requirements="requirements body" \
+            RECIPE_VAR_issue_number="" bash "${STEP_CMD}" 2>"${ABSENT_ERRLOG}"
     )"
     ABSENT_RC=$?
     ABSENT_ERR="$(cat "${ABSENT_ERRLOG}" 2>/dev/null || true)"

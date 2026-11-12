@@ -30,7 +30,11 @@ use tempfile::TempDir;
 
 const BRICK_LIMIT: usize = 400;
 
-const EXTRA_RECIPE_NAMES: &[&str] = &["default-workflow", "smart-validate-summarize"];
+const EXTRA_RECIPE_NAMES: &[&str] = &[
+    "default-workflow",
+    "smart-validate-summarize",
+    "smart-reflect-loop",
+];
 
 static RECIPE_TEXTS: LazyLock<HashMap<&'static str, String>> = LazyLock::new(|| {
     PHASE_RECIPES
@@ -171,7 +175,7 @@ impl Step03bRunner {
                 "workflow-prep",
                 "step-03b-extract-issue-number",
             ))
-            .env("ISSUE_CREATION", issue_creation)
+            .env("RECIPE_VAR_issue_creation", issue_creation)
             .env("TASK_DESCRIPTION", task_description)
             .env("PATH", &self.path)
             .output()
@@ -282,10 +286,13 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-19d-verification-gate",
     // Phase 8: workflow-finalize (terminal gate + steps 20-22b + complete)
     "finalize-terminal-state",
+    // Issue #1714: fast-forward to an accepted PR head before any agent edits.
+    "step-20-sync-pr-head",
     "step-20-final-cleanup",
+    // Issue #1467: the audit runs before the guard and push, so its fixes are pushed.
+    "step-20c-quality-audit",
     "step-20a-artifact-guard",
     "step-20b-push-cleanup",
-    "step-20c-quality-audit",
     "step-21-pr-ready",
     "step-22-ensure-mergeable",
     // Issue #1268: evidence + judgement between the scoped-PR signal and the
@@ -407,6 +414,43 @@ fn no_duplicate_step_ids_across_subrecipes() {
         }
     }
     assert!(dups.is_empty(), "duplicate step IDs found: {dups:?}");
+}
+
+/// Issue #1794: agents waited with `tail -f /dev/null`, which outlives the
+/// tool call. The orphans came from step 18b, and the reflect steps poll CI,
+/// so those prompts, step 13 and the Claude system-prompt fragment all name
+/// the supported ways to wait and the forms the hook denies. Copilot and
+/// Codex agents do not read the system-prompt fragment, so the recipe
+/// prompts are their only advance notice.
+#[test]
+fn recipe_prompts_and_system_prompt_name_the_supported_ways_to_wait() {
+    let fragment_path = recipes_dir()
+        .join("..")
+        .join("context")
+        .join("SYSTEM_PROMPT_APPEND.md");
+    let fragment = std::fs::read_to_string(&fragment_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", fragment_path.display()));
+    let mut prompts: Vec<(String, &str)> = vec![("SYSTEM_PROMPT_APPEND.md".into(), &fragment)];
+    for (recipe, step) in [
+        ("workflow-precommit-test", "step-13-local-testing"),
+        ("workflow-pr-review", "step-18b-implement-feedback"),
+        ("smart-reflect-loop", "reflect-round-1"),
+        ("smart-reflect-loop", "reflect-round-2"),
+        ("smart-reflect-loop", "reflect-final"),
+    ] {
+        prompts.push((format!("{recipe}/{step}"), step_prompt(recipe, step)));
+    }
+    for (name, text) in &prompts {
+        for needle in ["amplihack wait --seconds", "tail -f /dev/null", "wait $pid"] {
+            assert!(text.contains(needle), "{name} lacks {needle:?}");
+        }
+        if name != "SYSTEM_PROMPT_APPEND.md" {
+            assert!(
+                text.contains("timeout N tail"),
+                "{name} must name `timeout N tail` as a form not to use"
+            );
+        }
+    }
 }
 
 #[test]
@@ -902,9 +946,9 @@ fn workflow_prep_step_02d_detects_remote_host_type() {
 fn workflow_prep_step_03_consumes_remote_host_type() {
     let command = step_command("workflow-prep", "step-03-create-issue");
 
-    // Step-03 must consume REMOTE_HOST_TYPE from step-02d (not re-detect)
+    // Step-03 must consume remote_host_type from step-02d (not re-detect)
     assert!(
-        command.contains("REMOTE_HOST_TYPE"),
+        command.contains("RECIPE_VAR_remote_host_type"),
         "step-03 must consume REMOTE_HOST_TYPE from step-02d"
     );
 }
@@ -937,10 +981,12 @@ fn workflow_prep_step_03_reuses_existing_issue_number_before_provider_commands()
     let command = step_command("workflow-prep", "step-03-create-issue");
 
     let issue_number_pos = command
-        .find("ISSUE_NUMBER")
+        .find("RECIPE_VAR_issue_number")
         .expect("step-03 must read existing ISSUE_NUMBER context before creating/searching issues");
+    // #1881: GitHub issue logic lives in sourced helpers; the first GitHub
+    // provider call in the step is the selection helper.
     let first_gh_issue_pos = command
-        .find("gh issue")
+        .find("select_github_tracking_issue")
         .expect("step-03 must retain GitHub issue logic for GitHub hosts");
     let first_az_boards_pos = command
         .find("az boards")
@@ -964,22 +1010,30 @@ fn workflow_prep_step_03_reuses_existing_issue_number_before_provider_commands()
 fn workflow_prep_step_03_has_github_path_inside_host_conditional() {
     let command = step_command("workflow-prep", "step-03-create-issue");
 
-    // gh issue commands must still exist (for GitHub remotes)
+    // #1881: the GitHub create moved into workflow_issue_create.sh, which
+    // step-03 calls through create_github_issue_bounded.
+    let helper_path = recipes_dir()
+        .parent()
+        .expect("amplifier-bundle dir")
+        .join("tools")
+        .join("workflow_issue_create.sh");
+    let helper = fs::read_to_string(&helper_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", helper_path.display()));
     assert!(
-        command.contains("gh issue"),
-        "step-03 must retain 'gh issue' commands for GitHub remotes"
+        helper.contains("gh issue create"),
+        "workflow_issue_create.sh must retain 'gh issue create' for GitHub remotes"
     );
 
-    // gh issue must NOT appear before HOST_TYPE is set from REMOTE_HOST_TYPE
+    // The create must NOT appear before HOST_TYPE is set from REMOTE_HOST_TYPE
     let host_type_pos = command
         .find("HOST_TYPE")
         .expect("HOST_TYPE must exist in step-03");
-    let first_gh_issue_pos = command
-        .find("gh issue")
-        .expect("'gh issue' must exist in step-03");
+    let create_pos = command
+        .rfind("create_github_issue_bounded")
+        .expect("step-03 must call create_github_issue_bounded");
     assert!(
-        first_gh_issue_pos > host_type_pos,
-        "step-03 must not invoke 'gh issue' before consuming the remote host type"
+        create_pos > host_type_pos,
+        "step-03 must not create a GitHub issue before consuming the remote host type"
     );
 }
 
@@ -1201,9 +1255,14 @@ fn mid_stage_read_only_steps_fall_back_to_repo_path() {
     // REPO_PATH fallback cannot commit in the launch checkout. It still
     // hard-fails (via :?) when REPO_PATH is also empty.
     let command = step_command("workflow-publish", "step-16-create-draft-pr");
+    // #1561: the fallback is the recipe's own repo_path, never an inherited
+    // bare REPO_PATH, and only when worktree_setup is unset (exit 3); a
+    // present but rejected path stops the step.
     assert!(
-        command.contains(":-${REPO_PATH:-}"),
-        "workflow-publish/step-16-create-draft-pr must fall back to $REPO_PATH when worktree var is empty"
+        command.contains(
+            r#"|| { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }"#
+        ),
+        "workflow-publish/step-16-create-draft-pr must fall back to repo_path when worktree_setup is unset"
     );
     assert!(
         command.contains("WORKTREE_SETUP_WORKTREE_PATH:?"),
@@ -1256,20 +1315,58 @@ fn step_18c_does_not_fall_back_to_repo_path() {
 
 #[test]
 fn workflow_publish_step_16_guards_non_github_remotes() {
+    // step-16 hands PR creation to workflow_publish_pr.sh, and the host-type
+    // decision is made there (#1684). Check the tool's code lines, not the
+    // step body: the step only mentions REMOTE_HOST_TYPE in a comment. The
+    // final exec hands cancellation to the helper after removing the step trap.
     let command = step_command("workflow-publish", "step-16-create-draft-pr");
-
-    // step-16 must detect remote host type before creating a PR
     assert!(
-        command.contains("REMOTE_HOST_TYPE")
-            || command.contains("remote_host_type")
-            || command.contains("github.com"),
-        "step-16 must detect the remote host type before attempting PR creation"
+        command.split(';').any(|statement| {
+            statement
+                .trim_start()
+                .starts_with("exec bash \"$PUBLISH_HELPER\"")
+        }),
+        "step-16 must create the PR by running workflow_publish_pr.sh"
+    );
+    assert!(
+        command.contains("amplifier-bundle/tools/workflow_publish_pr.sh"),
+        "step-16 must resolve PUBLISH_HELPER to workflow_publish_pr.sh"
     );
 
-    // step-16 must skip PR creation for ALL non-GitHub remotes (not just AzDO)
+    let tool = std::fs::read_to_string(recipes_dir().join("../tools/workflow_publish_pr.sh"))
+        .expect("read workflow_publish_pr.sh");
+    // Byte offset of the first non-comment line that starts with `needle`.
+    let code_line_pos = |needle: &str| -> Option<usize> {
+        let mut offset = 0;
+        for line in tool.split_inclusive('\n') {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with(needle) {
+                return Some(offset + (line.len() - trimmed.len()));
+            }
+            offset += line.len();
+        }
+        None
+    };
+
+    let read_pos = code_line_pos("HOST_TYPE=\"${REMOTE_HOST_TYPE").expect(
+        "workflow_publish_pr.sh must set HOST_TYPE from REMOTE_HOST_TYPE in code, not a comment",
+    );
+    let guard_pos = code_line_pos("if [ \"$HOST_TYPE\" != \"github\" ]")
+        .expect("workflow_publish_pr.sh must skip GitHub PR creation for every non-GitHub host");
+    let lookup_pos = code_line_pos("PR_JSON=\"$(scoped_pr_lookup)\"")
+        .expect("workflow_publish_pr.sh must look up the branch's PR through scoped_pr_lookup");
     assert!(
-        command.contains("!= \"github\""),
-        "step-16 must skip PR creation for all non-GitHub remotes, not just AzDO"
+        read_pos < guard_pos,
+        "workflow_publish_pr.sh must read REMOTE_HOST_TYPE before the non-GitHub guard"
+    );
+    assert!(
+        guard_pos < lookup_pos,
+        "the non-GitHub guard must run before any gh PR lookup or creation"
+    );
+    let guard_line = tool[guard_pos..].lines().nth(1).unwrap_or_default();
+    assert!(
+        guard_line.contains("finish_publish \"non-github\""),
+        "the non-GitHub guard must finish publishing as non-github, got: {guard_line}"
     );
 }
 
@@ -1279,35 +1376,27 @@ fn workflow_publish_step_16_guards_non_github_remotes() {
 
 #[test]
 fn workflow_finalize_step_21_guards_pr_url_before_gh_commands() {
+    // step-21 delegates to workflow_pr_ready.sh, which reads PR_URL itself
+    // from the recipe's own values (#1561) and checks it before any gh call.
     let command = step_command("workflow-finalize", "step-21-pr-ready");
-
-    // Must reference PR_URL variable
     assert!(
-        command.contains("PR_URL"),
-        "step-21 must reference PR_URL to guard against empty values"
+        command.contains("workflow_pr_ready.sh"),
+        "step-21 must run workflow_pr_ready.sh"
     );
-
-    // Must check PR_URL is non-empty (whitespace-tolerant) before calling gh pr ready
-    assert!(
-        command.contains("-z \"$PR_URL\"")
-            || command.contains("-n \"$PR_URL\"")
-            || command.contains("[ -z \"${PR_URL")
-            || command.contains("[ -n \"${PR_URL")
-            || command.contains("[^[:space:]]"),
-        "step-21 must check PR_URL is non-empty before invoking gh commands"
-    );
-
-    // gh pr ready must NOT be invoked unconditionally at the top level
-    // It should be inside a conditional that checks PR_URL
-    let pr_url_check_pos = command
-        .find("PR_URL")
-        .expect("PR_URL must appear in step-21");
-    let gh_pr_ready_pos = command
-        .find("gh pr ready")
+    let helper = std::fs::read_to_string(recipes_dir().join("../tools/workflow_pr_ready.sh"))
+        .expect("read workflow_pr_ready.sh");
+    let read_pos = helper
+        .find("PR_URL=\"${RECIPE_VAR_pr_url:-")
+        .expect("workflow_pr_ready.sh must read PR_URL from RECIPE_VAR_pr_url");
+    let check_pos = helper
+        .find("[[ \"$PR_URL\" =~ [^[:space:]] ]]")
+        .expect("workflow_pr_ready.sh must check PR_URL is non-empty");
+    let gh_pr_ready_pos = helper
+        .find("pr ready \"$pr_url\"")
         .expect("'gh pr ready' must still exist for GitHub PRs");
     assert!(
-        gh_pr_ready_pos > pr_url_check_pos,
-        "step-21 must check PR_URL before invoking 'gh pr ready'"
+        read_pos < check_pos && check_pos < gh_pr_ready_pos,
+        "workflow_pr_ready.sh must read and check PR_URL before invoking 'gh pr ready'"
     );
 }
 

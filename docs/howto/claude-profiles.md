@@ -13,14 +13,27 @@ credentials live outside the configuration directory. See Claude Code's
 > `CLAUDE_CONFIG_DIR` Claude Code runs with.
 
 Profiles rely on Claude Code's documented `CLAUDE_CONFIG_DIR` variable.
-amplihack never modifies `~/.claude` and makes no network calls for this
-feature. See [What a new profile inherits](#what-a-new-profile-inherits).
+Logins stay separate, but sessions are shared: every profile's `projects/`,
+`file-history/` and `session-env/` is a link to the same directory in
+`~/.claude`, so `claude --resume <id>` finds a session whatever profile
+started it. Apart from those three directories, amplihack never modifies
+`~/.claude` for this feature, and its only network calls are the usage
+reads of [`profile usage`](#check-usage-across-profiles) and the rotator.
+See
+[What a new profile inherits](#what-a-new-profile-inherits) and
+[Share sessions across profiles](#share-sessions-across-profiles).
 To see which accounts have quota left, see
 [Check usage across profiles](#check-usage-across-profiles). To move work to
 another account automatically when one runs out of quota, see
 [Switch accounts automatically](#switch-accounts-automatically). To keep the
 default `~/.claude` login on the account with the most capacity, see
 [Rotate Claude logins automatically](claude-profile-rotation.md).
+To be told when every account is out of capacity, see
+[When no account has capacity](#when-no-account-has-capacity).
+For what a recipe step does when every account is out of quota, see
+[Waiting for a usage-limit reset](#waiting-for-a-usage-limit-reset).
+For a profile that uses a Claude Platform API key, billed per token, see
+[API-key profiles and usage limits](#api-key-profiles-and-usage-limits).
 
 ## What a new profile inherits
 
@@ -39,18 +52,28 @@ the official [environment variable reference](https://code.claude.com/docs/en/en
 | `agents/`, `commands/`, `output-styles/`, `rules/`, `skills/` | Copied recursively |
 | `settings.json` (filtered) | Only allowlisted top-level keys: `alwaysThinkingEnabled`, `attribution`, `cleanupPeriodDays`, `hooks`, `includeCoAuthoredBy`, `language`, `model`, `outputStyle`, `permissions`, `respectGitignore`, `spinnerVerbs`, `statusLine` |
 
-Never copied: `.credentials.json`, `.claude.json`, `history*`, `projects/`,
+The copy is made once, when the profile is added. After that, `amplihack install`
+keeps the amplihack hooks in each profile's `settings.json` current: it replaces
+amplihack's hook entries with the ones it writes to `~/.claude/settings.json`
+and leaves the rest of the file alone. A profile without a `settings.json` is
+left without one.
+
+Never copied: `.credentials.json`, `.claude.json`, `history*`,
 `sessions/`, `todos/`, `statsig/`, `shell-snapshots/`, `ide/`, and anything else not
 on the allowlist (so plugins and MCP server settings are not carried over), and the `env` and `apiKeyHelper` settings keys (and any other
-key not on the allowlist). If `~/.claude` does not exist, the profile is simply
-created empty.
+key not on the allowlist). `projects/`, `file-history/` and `session-env/` are
+not copied either: they are linked, see
+[Share sessions across profiles](#share-sessions-across-profiles). If
+`~/.claude` does not exist, the profile is simply created empty and gets no
+links.
 If the path exists but is not a directory, `profile add` fails and removes the
 new profile directory rather than silently creating an unseeded profile.
 
 Caveats:
 
-- **Copy by value.** Nothing is linked. Later edits to `~/.claude` do not
-  propagate to existing profiles; re-add the profile to pick them up.
+- **Copy by value.** The allowlisted assets are copies, not links. Later
+  edits to `~/.claude` do not propagate to existing profiles; re-add the
+  profile to pick them up. The only links are the three session directories.
 - **Allowlisted setting values are copied verbatim.** Review hooks and
   status-line commands for embedded secrets or machine-specific paths before
   adding a profile; what they contain is your responsibility. Values are never
@@ -95,6 +118,270 @@ amplihack profile add work
 # (exact wording may vary; no profile directory is left behind)
 ```
 
+## Share sessions across profiles
+
+Every profile uses the same session store, so a conversation started under
+one account can be resumed under another. Logins are never shared.
+
+| Shared (one copy, in `~/.claude`) | Per profile (never shared) |
+|-----------------------------------|----------------------------|
+| `projects/`: session transcripts (`<session-id>.jsonl`), grouped by working directory | `.credentials.json`, `.claude.json` (login and account) |
+| `file-history/`: file snapshots, one directory per session id | `settings.json`, `CLAUDE.md` and the other seeded assets |
+| `session-env/`: per-session environment, one directory per session id | `history*`, `todos/`, `statsig/`, `shell-snapshots/`, `ide/` |
+
+`file-history/` and `session-env/` are shared along with `projects/` because
+both are keyed by session id and `--resume` needs them: without them a
+resumed session can't rewind file edits or restore its environment.
+
+In each profile directory the three names are symbolic links:
+
+```bash
+ls -l ~/.amplihack/claude-profiles/work/
+# lrwxrwxrwx ... file-history -> /home/you/.claude/file-history
+# lrwxrwxrwx ... projects -> /home/you/.claude/projects
+# lrwxrwxrwx ... session-env -> /home/you/.claude/session-env
+```
+
+### Resume a session from another profile
+
+```bash
+amplihack claude --profile work      # session 0f6c…e1 is written to ~/.claude/projects
+amplihack claude --profile personal -- --resume 0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1
+```
+
+Plain `claude --resume` (no profile) sees the same sessions, because the
+store is `~/.claude` itself.
+
+### When the links are made
+
+amplihack makes or checks the links at each of these points. When there is
+nothing to do it prints nothing.
+
+| Command | What happens |
+|---------|--------------|
+| `profile add <name>` | Links are created in the new profile. Nothing is printed unless something went wrong. |
+| `profile switch <name>`, `profile login <name>` | The profile's links are checked and fixed: by `switch` after the login has moved and the pointer is written, for `<name>` and for the profile whose login it replaced; by `login` before `claude` starts. |
+| `amplihack claude` / `launch` with any profile (`--profile`, inherited, default pointer), `profile run` | Checked just before spawn, after the usual directory check. |
+| `profile rotate` | After a swap that actually ran, for both profiles in it. `--dry-run` and refused rotates change nothing. |
+
+Auto-switch makes no check of its own. Its swap moves only the login files,
+and the rerun after a usage limit is an ordinary launch, so the launch row
+covers it.
+
+Problems are printed to stderr as warnings, for example
+`amplihack: profile work: projects is a symlink to /mnt/old/projects; left alone`.
+They never stop a launch, an `add`, a `switch`, a `login` or a rotate.
+
+### Moving an existing profile's sessions into the shared store
+
+Profiles made before sessions were shared have real `projects/`,
+`file-history/` and `session-env/` directories. The first launch, `switch` or
+`login` of such a profile merges them into `~/.claude` and replaces each with
+a link. The merge runs before `claude` starts. It prints
+`amplihack: profile work: merging session history into ~/.claude (one-time; may take a while)`
+when it begins and the results when it finishes. When the profile and `~/.claude` are on different filesystems every
+file is copied, so a profile with gigabytes of history can take minutes;
+let it finish rather than interrupting it (an interrupted merge is safe and
+resumes on the next launch, but it starts by re-checking every file).
+
+```
+amplihack: profile work: projects: moved 41 files into ~/.claude/projects, 2 identical, 1 conflict
+amplihack: profile work: projects: conflict: -home-you-src-app/0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl kept the shared copy; this profile's copy saved as ~/.claude/projects/-home-you-src-app/0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl.conflict-work
+amplihack: profile work: projects: old directory kept as ~/.amplihack/claude-profiles/work/projects.pre-share-20261020T141503Z
+```
+
+The merge never deletes or overwrites a session:
+
+- **Only in the profile:** the file is moved into the shared store, keeping
+  its modification time. Its mode is limited to the owner (a `0644`
+  transcript becomes `0600`), because `~/.claude` may be readable by other
+  users where the profile directory was not.
+- **Same bytes in both:** the shared copy stays. The profile's copy is left
+  behind and ends up in the backup.
+- **Different contents:** the shared copy always keeps the real name. The
+  profile's copy is moved beside it as `<file>.conflict-<profile>`, or
+  `.conflict-<profile>-2`, `-3` and so on if that name is taken. The shared
+  file is never renamed, so a session another profile has open is never
+  split and its name never goes missing, even for a moment. If the
+  profile's copy was the one you wanted, see
+  [Resume the losing copy of a conflict](#resume-the-losing-copy-of-a-conflict).
+- **Claude's memory index:** Claude reads per-project memory only through
+  `projects/<project>/memory/MEMORY.md`, which lists the memory files beside
+  it. When the profile's `MEMORY.md` differs from the shared one, the shared
+  file keeps its name and the profile's copy is saved as
+  `MEMORY.md.conflict-<profile>` like any conflict, and then every entry of
+  the profile's index that the shared index lacks is appended to the shared
+  `MEMORY.md` (headings and blank lines are left out; a link to a memory file
+  that was itself saved under a conflict name points at that name). This
+  append is the only change the merge ever makes to an existing shared file.
+  amplihack prints
+  `projects: memory index <project>/memory/MEMORY.md: added <n> entries from this profile to the shared copy`.
+  Read the shared `MEMORY.md` afterwards and tidy any entries that now say
+  the same thing twice.
+- **Skipped and left in the backup:** credential files (`.credentials*`,
+  `.claude.json`) at any depth, symbolic links, and special files.
+
+When the merge finishes, the old directory is renamed to
+`<name>.pre-share-<UTC time>` inside the profile, holding whatever was left
+behind, and the link takes its place. The merge is safe to stop and re-run;
+the next launch picks up where it stopped. A second run on a merged profile
+changes nothing.
+
+If the link is put in place but the old directory can't then be renamed to
+its `.pre-share-` backup name, amplihack warns
+`rename failed: ...; nothing removed, the old directory is at <profile>/.<name>.share-tmp`.
+That warning is printed only once: on later runs `<name>` is a correct link
+and the leftover isn't mentioned again. Check its contents, move anything you
+still want into `~/.claude/<name>`, then remove it by hand. While it is still
+there, a later swap of the same name refuses to run.
+
+### Resume the losing copy of a conflict
+
+The `.conflict-<profile>` suffix stops Claude from listing the file as a
+second session. To resume that copy instead, end every session that has the
+shared copy open, then put the losing copy under the session's own name and
+keep the shared copy aside:
+
+```bash
+cd ~/.claude/projects/-home-you-src-app
+mv 0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl 0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl.conflict-shared
+mv 0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl.conflict-work 0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl
+amplihack claude --profile work -- --resume 0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1
+```
+
+### Delete the backups
+
+Backups are never deleted automatically. They can hold full transcripts, so
+once you have checked the merge, delete them rather than copying them
+anywhere:
+
+```bash
+ls -d ~/.amplihack/claude-profiles/*/*.pre-share-*
+rm -rf ~/.amplihack/claude-profiles/work/projects.pre-share-20261020T141503Z
+```
+
+`profile remove` deletes a profile's backups along with its directory. It
+removes only the links, never the shared sessions they point to.
+
+### A running session delays the merge
+
+If a Claude session is running with the profile's directory, its real
+directories are not merged; you see
+`amplihack: profile work: projects: migration deferred: live session`.
+If amplihack can't read the list of running processes (on Linux, `/proc`), it
+also waits, and says
+`projects: migration deferred: could not check for running sessions (retried next launch)`
+instead.
+Missing names still get links straight away. The merge happens on the first
+launch, `switch` or `login` after every session using that profile has ended.
+
+On systems other than Linux, amplihack can't see which sessions are running,
+so it never merges automatically there. New profiles and missing names still
+get links. While a profile still has a real directory, each launch, `switch`
+and `login` of it prints
+`amplihack: profile work: projects: not merged: running sessions can't be checked on this system; merge by hand, see docs/howto/claude-profiles.md#merge-by-hand-on-macos`
+until you merge it as shown below.
+
+On Windows the store is not shared and each profile keeps its own
+directories. `profile add` prints
+`shared session dirs not supported on this platform; profiles keep separate projects/`
+once; other commands log it at debug level only.
+
+### Merge by hand on macOS
+
+End every session that uses the profile, then run:
+
+```bash
+p=~/.amplihack/claude-profiles/work
+for d in projects file-history session-env; do
+  [ -d "$p/$d" ] && [ ! -L "$p/$d" ] || continue      # only real directories
+  rsync -a --no-links --ignore-existing \
+    --exclude='.credentials*' --exclude='.claude.json' \
+    "$p/$d/" "$HOME/.claude/$d/" &&
+  mv "$p/$d" "$p/$d.pre-share-manual" &&
+  ln -s "$HOME/.claude/$d" "$p/$d" ||
+  { echo "stopped at $d; nothing was linked for it" >&2; break; }
+done
+```
+
+- `--ignore-existing` never overwrites a shared file.
+- `--no-links` (after `-a`) skips symbolic links, and the two `--exclude`
+  options keep credential files out of the shared store.
+- A file that exists in both places with different contents is not copied:
+  the profile's copy stays only in `$d.pre-share-manual`. Run
+  `diff -rq "$p/projects.pre-share-manual" ~/.claude/projects` to list
+  them before you delete the backup.
+
+If the system `rsync` rejects one of these options, install rsync 3 (for
+example `brew install rsync`) and run the loop again.
+
+### Privacy: every profile can read every session
+
+With a shared store, any profile, and anyone using it, can read every
+transcript and file snapshot from every other profile. Only the logins stay
+separate. [Stop sharing for one profile](#stop-sharing-for-one-profile)
+keeps that profile's new sessions out of the shared store, so other profiles
+don't list them, but they are still files your OS user can read. If you need
+an account whose sessions the others can't read, use a different OS user
+rather than a profile.
+
+All profiles also share one `session-env/`. If you keep accounts separate
+for trust reasons, for example a client's account next to your own, create
+`.no-shared-sessions` in that profile before its first launch after the
+upgrade (see [Stop sharing for one profile](#stop-sharing-for-one-profile)).
+
+### When nothing is linked
+
+amplihack leaves a profile's directories as they are, with a warning, when:
+
+- the profile has a `.no-shared-sessions` file (no warning; see
+  [Stop sharing for one profile](#stop-sharing-for-one-profile));
+- `$HOME` is unset, or `~/.claude` doesn't exist (no warning in this case;
+  amplihack doesn't create `~/.claude`);
+- `~/.claude` is itself a symlink, as in many dotfile setups (a warning is
+  printed). Point the profiles at the real directory instead, or keep
+  sharing off;
+- `~/.claude` is not owned by you, or is writable by group or others (a
+  group-writable directory is accepted when the group is your own private
+  group, as with Ubuntu's default umask of `002`);
+- the profile directory is not owned by you, or has any group or other
+  permission bit (`mode & 0o077` is not zero, the same rule as the
+  launch check);
+- `~/.claude/projects` (or one of the other two) is a symlink, not a
+  directory, not owned by you, or writable by group or others (same rule as
+  `~/.claude`). Only that name is skipped;
+- the profile directory is inside `~/.claude` (a warning is printed; move
+  the profile root elsewhere to share sessions);
+- the profile's `projects/` is already a symlink to somewhere else, or is a
+  file rather than a directory. amplihack never follows or replaces it.
+
+A missing `~/.claude/projects` (or `file-history/`, `session-env/`) is created
+with mode `0700`.
+
+### Stop sharing for one profile
+
+A `.no-shared-sessions` file in the profile directory turns sharing off for
+that profile. amplihack checks for it before anything else and, when it is
+there, never links or merges that profile's directories. End the profile's
+sessions, then create the file and replace each link with a real directory:
+
+```bash
+p=~/.amplihack/claude-profiles/work
+touch "$p/.no-shared-sessions"
+for d in projects file-history session-env; do
+  [ -L "$p/$d" ] && rm "$p/$d"        # removes the link only, never the shared files
+  [ -e "$p/$d" ] || mkdir -m 700 "$p/$d"
+done
+```
+
+Sessions the profile wrote while it was shared stay in `~/.claude`. Copy back
+the ones you want, or move a `*.pre-share-*` backup into place instead of the
+`mkdir`; a backup holds only what the merge left behind.
+
+To share again, delete `.no-shared-sessions`. The next launch, `switch` or
+`login` merges the profile's directories into `~/.claude` as described in
+[Moving an existing profile's sessions into the shared store](#moving-an-existing-profiles-sessions-into-the-shared-store).
+
 ## Create and log in
 
 ```bash
@@ -111,6 +398,12 @@ also saves the profile root it used; see
 [Choose where profiles live](#choose-where-profiles-live). `login`
 always runs the `claude` binary (not the configured launch binary) with
 `CLAUDE_CONFIG_DIR` pointing at the profile so the login is stored there.
+If the new login is an account another profile already has, `login` refuses
+it and puts the previous login back; see
+[Duplicate logins](#duplicate-logins). An accepted login also records the
+account as the one the profile is meant to hold. The duplicate-login warning
+and the rotator compare against this record; see
+[Recorded account](../reference/profile-command.md#recorded-account).
 
 ## Choose a profile
 
@@ -121,13 +414,32 @@ amplihack claude --profile work
 amplihack profile run personal -- --model sonnet
 ```
 
-As a persistent default:
+As the login in `~/.claude` and the default:
 
 ```bash
 amplihack profile switch work
-amplihack claude              # uses "work"
+# Live login moved: personal -> work
+# Default for new launches: work
+# Rotation held on work until `amplihack profile switch --none`.
+amplihack claude              # runs as "work", against ~/.claude
+claude                        # plain claude is "work" too
 amplihack profile show        # prints name and directory, or "none"
+amplihack profile switch --none   # no default, rotation released
 ```
+
+`switch` moves `work`'s login into `~/.claude` with the same swap
+[`profile rotate`](claude-profile-rotation.md) uses, and holds rotation on
+`work` until you run `switch --none`. Plain `claude` and every amplihack
+launch without `--profile` then use `work`. Moving the login needs Linux
+and a profile that has a login of its own. When the login cannot be moved
+(on macOS or Windows, or when `work` is open in a session of its own),
+`switch` still makes `work` the default for new launches, prints
+`Live login not moved; ...`, holds nothing, and exits 1; see
+[Switch to a login by hand](claude-profile-rotation.md#switch-to-a-login-by-hand)
+for the details and the refusals.
+
+See [Clearing the default profile](#clearing-the-default-profile) and
+[Launching the rotator's live profile](#launching-the-rotators-live-profile).
 
 Resolution order: `--profile` flag, then an inherited
 `AMPLIHACK_CLAUDE_PROFILE`, then the default pointer, then none. An explicit
@@ -154,13 +466,17 @@ amplihack profile switch personal
 amplihack claude --profile work
 # inside the session, and in every recipe step or workstream it starts:
 echo "$AMPLIHACK_CLAUDE_PROFILE"   # work
-amplihack profile switch personal  # changes the default for new shells only
+amplihack profile switch personal  # moves personal's login into ~/.claude
 amplihack claude                   # still runs as "work"
 ```
 
-A `profile switch` therefore never moves a running session or orchestration
-to another account part way through. It affects only launches started
-afterwards from a shell without `AMPLIHACK_CLAUDE_PROFILE`.
+A `profile switch` therefore never moves a session started with a profile,
+or the orchestration it runs, to another account part way through: those run
+with `CLAUDE_CONFIG_DIR=<root>/<name>`, which `switch` does not touch. It
+changes the login in `~/.claude`, so sessions of plain `claude` (no
+`CLAUDE_CONFIG_DIR`) use the new account when they next read their
+credentials, exactly as after a rotator swap. Launches from a shell without
+`AMPLIHACK_CLAUDE_PROFILE` use the new default.
 
 To pin a profile for a run started from a plain shell, set the variable
 yourself:
@@ -180,6 +496,61 @@ hint: unset AMPLIHACK_CLAUDE_PROFILE, or create the profile with `amplihack prof
 See the
 [resolution reference](../reference/profile-command.md#resolution-and-environment)
 for how the name reaches each kind of nested launch.
+
+## Clearing the default profile
+
+```bash
+amplihack profile switch --none
+# Default profile cleared.
+# Rotation released; the rotator picks the best login on its next cycle.
+amplihack profile show
+# none
+```
+
+After this, `amplihack claude` runs with no profile and leaves
+`CLAUDE_CONFIG_DIR` alone. The login in `~/.claude` does not move; the
+rotator is free to swap it again on its next cycle. The second line appears
+only when a `switch` had held rotation. Clear the default when the
+[rotator](claude-profile-rotation.md) uses a
+[credit-backed overflow profile](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted):
+a default always wins over the rotator, so a default that names the overflow
+profile spends credits on every launch. If no default was set, the command
+prints `No default profile was set.` and still exits 0. `--none` cannot be combined
+with a name, and `switch` with neither is a usage error (exit 2).
+
+There is no `switch default` form: `default` is a valid profile name, so
+`amplihack profile switch default` selects a profile called `default`.
+
+## Launching the rotator's live profile
+
+When [`amplihack profile rotate`](claude-profile-rotation.md) has moved a
+profile's login into `~/.claude`, that profile's own directory has no login.
+Launching Claude in that directory would ask you to log in, and logging in
+there would create a [duplicate login](#duplicate-logins).
+
+So when the profile a launch resolves to is the rotator's live profile,
+`amplihack claude` and `amplihack launch` run against `~/.claude` instead,
+with `CLAUDE_CONFIG_DIR` unset and no profile pinned. This applies whether
+the profile came from `--profile`, an inherited `AMPLIHACK_CLAUDE_PROFILE`,
+or the default pointer. One line goes to stderr:
+
+```
+note: profile 'team' is the rotator's live login, which is in ~/.claude; launching against ~/.claude.
+```
+
+The session uses the right account because `~/.claude` is where that
+account's login is. Because no profile is pinned, nested launches inside
+the session also run against `~/.claude`.
+
+The live profile is the one shown as `live in ~/.claude` by
+[`profile usage`](#a-profile-shows-live-in-claude). If amplihack cannot tell
+which profile is live (no ledger and no single account match, or Windows or
+another platform without Unix file semantics), it launches the profile directory as before and prints
+nothing. Docker and `--auto` launches are not affected.
+
+`amplihack profile run <name>` does not redirect; it always uses the
+profile's own directory. Use `amplihack claude --profile <name>` for the
+live profile.
 
 ## Choose where profiles live
 
@@ -266,6 +637,9 @@ root: /home/you/.claude-profiles (source: config)
 */30 * * * * amplihack profile usage --json > /tmp/claude-usage.json
 ```
 
+The saved file is the array of Claude rows, so a script reads it with
+`jq '.[]'`. It has no Codex rows; save `--summary-json` instead for those.
+
 ```bash
 tmux new-session -d -s work 'amplihack claude --profile work'
 ```
@@ -316,7 +690,9 @@ line with the default marked `*`.
 
 `remove` deletes only the verified profile directory, requires `--yes`, and
 clears the default pointer if it named that profile. This deletes that
-account's local Claude login and history.
+account's local Claude login, its history and any `*.pre-share-*` backups.
+The shared session links are removed without being followed, so sessions in
+`~/.claude/projects`, `file-history/` and `session-env/` are kept.
 
 `remove` reads the default pointer before deleting anything. A missing pointer
 means "no default" and removal proceeds. A corrupt, unreadable or dangling
@@ -339,19 +715,113 @@ amplihack profile usage
 ```
 
 ```
-PROFILE   MARKS             STATE              SESSION  SESSION RESETS                        WEEK  WEEK RESETS
-review    -                 ok                 5%       Oct 16, 9pm (America/Los_Angeles)     10%   Oct 22, 2am (America/Los_Angeles)
-work      *                 ok                 20%      Oct 16, 7pm (America/Los_Angeles)     30%   Oct 22, 2am (America/Los_Angeles)
-team      -                 session_exhausted  100%     Oct 16, 4:50pm (America/Los_Angeles)  68%   Oct 22, 2am (America/Los_Angeles)
-scratch   -                 not_logged_in      -        -                                     -     -
+PROFILE  WEEK             W-RESET      SESSION           S-RESET     STATE
+review   █░░░░░░░░░  10%  11-05 09:00  ░░░░░░░░░░   5%   11-01 14:00 ok
+work     ███░░░░░░░  30%  11-05 09:00  ██░░░░░░░░  20%   11-01 12:00 ok                 *
+mistt    █████░░░░░  52%  11-05 09:00  ███░░░░░░░  35%   11-01 13:00 ok                 spend:not_probed
+team     █████░░░░░  55%  11-05 09:00  ██████████ 100%   11-01 23:50 session_exhausted
+scratch  no reading (not_logged_in)                                  not_logged_in      (fallback) spend:unknown
+times: Europe/London
+order: rotator pick (most room in the worse of session and week, then name)
 ```
 
-amplihack runs `claude -p /usage` under every profile at once, with
-`CLAUDE_CONFIG_DIR` set to that profile, and reads the `Current session` and
-`Current week` lines. Checking does not appear to use quota, and an
-exhausted account still answers. The profiles with the most room come first. Exhausted ones
-follow, soonest back first, and the reset column says when. Profiles that
-could not be read come last. `*` marks the default.
+For each profile, amplihack first uses a reading the status line stored in
+the last 300 seconds, if there is one. Otherwise it reads the profile's
+stored login and asks Anthropic's OAuth usage endpoint for the session and
+weekly figures itself, which takes well under a second and starts no
+`claude` process. With 16 profiles the whole command normally finishes in a
+few seconds. The token is read in memory only and is never printed, logged
+or passed to another process; an expired one is refreshed and saved back to
+the profile, as `claude` would do.
+
+Only when that fails, as for `scratch` above, which has no login, does
+amplihack start `claude` with `CLAUDE_CONFIG_DIR` set to that profile. It
+asks with a `get_usage` request, then runs `claude -p /usage` and reads its
+`Current session` and `Current week` lines if it cannot use the answer.
+Such rows are marked `(fallback)`, and with `--raw` a `note:` line on
+stderr says why the direct read failed. A profile marked as
+[overflow](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted)
+is always read with `/usage`, because only `/usage` shows a used-up spend
+limit. For any other account with usage credits turned on, such as `mistt`
+above, the session and weekly figures still come from the direct read, no
+`claude` is started, and the row ends in `spend:not_probed` (the `SPEND`
+column with `--table`). To read the spend limit too, add `--spend`:
+
+```bash
+amplihack profile usage --spend mistt
+```
+
+That runs one `/usage` probe per such account, only to fill its spend
+status. `/usage` can take 10 to 20 seconds per profile on a busy host, so
+`--spend` makes the command slower; each probe gets the same 120-second
+deadline as a fallback, and one that does not answer by then shows
+`unknown`. Checking does
+not appear to use quota, and an exhausted account still answers. A profile
+at its session limit shows its weekly figure as reported (`55%` for `team`
+above).
+
+### Reading the bar view
+
+Each row shows the all-models week (`WEEK`) and the current session
+(`SESSION`) as a bar of 10 cells and a percentage, and when each resets
+(`W-RESET`, `S-RESET`). Reset times are in your local time zone, as
+`MM-DD HH:MM`, and the `times:` line names the zone. `*` marks the default
+profile, and `(live)` after a name marks the profile whose login is in
+`~/.claude`.
+
+The rows are sorted by the [rotator's](claude-profile-rotation.md)
+headroom, as the `order:` line says: the most room in the worse of the
+session and the week first, then by name. A profile with
+[no session limit](../reference/profile-command.md#no-session-limit) is
+ranked by its week. Exhausted profiles follow, soonest back first, then
+API-key profiles, then the profiles that could not be read. Only the
+headroom rule is applied: overflow profiles and profiles on the `exclude`
+list are sorted like any other, so the first row is not always the login
+the rotator would pick next. The full rule is in the
+[reference](../reference/profile-command.md#ordering).
+
+Percentages in the bar view are whole numbers, rounded down; `--table` and
+`--json` show one decimal place where there is one.
+
+In a terminal, the bars are green below 70%, yellow from 70% and red from
+90%. To turn colour off, set `NO_COLOR`:
+
+```bash
+NO_COLOR=1 amplihack profile usage
+```
+
+Piped output is never coloured, so `amplihack profile usage | less` and
+`amplihack profile usage > usage.txt` contain plain text.
+
+To read reset times in UTC, for example to compare them with the rotate log,
+use `--utc`. The cells then read `MM-DD HH:MMZ`:
+
+```bash
+amplihack profile usage --utc
+```
+
+To see the older table, with Claude's own reset text for a profile read
+with `/usage` (`Oct 16, 4:50pm (America/Los_Angeles)`), use `--table`:
+
+```bash
+amplihack profile usage --table
+```
+
+`--utc` applies only to the bar view, so `--utc --table` and `--utc --json`
+are refused, as is `--table --json`.
+
+### Selected profiles, states and scripts
+
+What the spend status means. The bar view shows it as a `spend:<value>`
+mark when it is not `n/a`; `--table` shows it in its `SPEND` column:
+
+| Spend | Meaning |
+|-------|---------|
+| `n/a` | No spend limit was read for this row, and none was needed: usage credits are off, or the row came from a stored reading or is an API-key profile. It does not prove that credits are off. |
+| `ok` | `/usage` gave a usage reading and reported no used-up spend limit. |
+| `limit_reached` | The account's spend limit is used up. It cannot work past its plan limits on credits until the limit is raised or resets. |
+| `unknown` | A probe ran and the spend limit could not be read: a `--spend` probe did not answer in time or `claude` could not be found, `claude` did not give a usage reading (as for `scratch`, which is not logged in), or the row could not be read at all. |
+| `not_probed` | Usage credits are on and no spend probe was asked for: run with `--spend` to read it. Says nothing about the spend limit. |
 
 To check only some profiles, name them:
 
@@ -366,10 +836,11 @@ What the `STATE` column means:
 | `ok` | Ready to use. |
 | `session_exhausted` / `weekly_exhausted` | Wait for the reset shown, or use another profile. |
 | `spend_limit` | Your organisation's spend limit was reached. |
+| `api_key` | An API-key profile, billed per token; its row reads `api-key (billed per token)` instead of bars and nothing is probed. Nothing to fix. See [API-key profiles and usage limits](#api-key-profiles-and-usage-limits). |
 | `not_logged_in` | `amplihack profile login <name>` |
-| `timeout` | Claude did not answer in time (30 seconds by default). Try again. |
+| `timeout` | The `claude` fallback did not answer in time (120 seconds by default, for the `get_usage` request and any `/usage` fallback together). The usage is unknown, not exhausted. Try again, or see [Probes on a busy host](#probes-on-a-busy-host). |
 | `unparsed` | Claude printed something unexpected. Run with `--raw` to see it. |
-| `error` | The probe could not run (the profile directory was refused, or `claude` could not be started, read or waited for); the reason is printed on stderr. |
+| `error` | The probe could not run (the profile directory was refused, `claude` was needed but could not be found, started, read or waited for, or a direct read failed under `AMPLIHACK_PROFILE_USAGE_PROBE=direct`); the reason is printed on stderr. |
 
 Claude's own text is shown only when you ask for it, for example to report
 output amplihack does not recognise:
@@ -378,8 +849,29 @@ output amplihack does not recognise:
 amplihack profile usage --raw scratch
 ```
 
-`--raw` text can include your e-mail address or organisation name. Read it
-before you share it.
+`--raw` output can include your e-mail address, organisation name or
+subscription type. Read it before you share it. For a `(fallback)` row it
+shows everything `claude` printed in the attempt that gave the row: for a
+`get_usage` answer, every JSON line, starting with the one `claude` prints
+when it starts; for `/usage`, the text. Other rows print
+`(direct: no claude output)` or `(passive: no claude output)`. With
+`--raw`, a row whose direct read failed also prints why on stderr, for
+example `note: profile "scratch": direct read gave http 5xx; using claude`;
+without `--raw` that line is not printed.
+
+To see how each row was read, use the `source` key of `--json`:
+
+```bash
+amplihack profile usage --json | jq -r '.[] | "\(.profile) \(.source)"'
+```
+
+```
+review direct
+work passive
+mistt direct
+team direct
+scratch fallback
+```
 
 For scripts, use `--json`. This picks the profile with the most capacity:
 
@@ -391,21 +883,215 @@ amplihack profile usage --json | jq -r '[.[] | select(.state == "ok")][0].profil
 review
 ```
 
-Each JSON row also has the per-model week lines (`week_models`) and each
-reset as Unix time (`resets_at`); see the
+Each JSON row also has the per-model week lines (`week_models`), each
+reset as Unix time (`resets_at`) and the spend status as `spend`; see the
 [reference](../reference/profile-command.md#json-output).
 
 If [auto-switch](#switch-accounts-automatically) is set up, `profile usage`
 also refreshes its readings, so it can choose accounts using numbers taken
 now instead of the last status-line update. While auto-switch has state
-(`<root>/.auto-switch.d/`), the table also shows where logins are: `leased→work` on a profile whose login is lent
+(`<root>/.auto-switch.d/`), the output also shows where logins are: `leased→work` on a profile whose login is lent
 to `work`'s session, and `hosts:personal` on the profile holding it. The
 numbers on a `hosts:` row belong to the hosted account. See
 [Refreshing auto-switch readings](../reference/profile-command.md#refreshing-auto-switch-readings)
 for when a reading is not recorded.
 
+A profile marked as credit-backed overflow
+(`amplihack profile overflow add <name>`) shows the mark `overflow`, and
+`overflow, blocked until <time>` after the rotator has blocked it on a spend
+limit. When its login is the one in `~/.claude` and its probe shows the
+session or all-models weekly limit reached, the rows are followed by
+`running on overflow: <name>`. In `--json`, every row has `overflow` and
+`overflow_blocked_until`. See
+[Use usage credits when every plan login is exhausted](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted).
+
+Below the bars, a six-line summary gives the weekly headroom across all
+logins, how many can take work now, the next session reset and how long the
+weekly capacity lasts at the recent rate; see
+[See how much capacity is left](claude-profile-rotation.md#see-how-much-capacity-is-left).
+`--summary-json` prints the rows and that summary as one JSON object.
+
+### See your Codex accounts in the same view
+
+With no profile names, `profile usage` also asks each Codex account under
+`~/.codex-profiles` (or `CODEX_PROFILES_ROOT`) for its rate limits, live,
+and lists it after the Claude output. `~/.codex` is included when it is
+signed in. Each row shows the five-hour and weekly use with their resets,
+any credit balance, the plan and the time of the reading, and `<- next`
+marks the account `codex-pick`'s rule picks from these live readings
+(`codex-pick` itself reads session files, which can be older, so the two
+can disagree):
+
+```
+Codex accounts under /home/ryan/.codex-profiles
+ffarmer  signed in      5h █░░░░░░░░░  12% 11-06 21:40 in 2h 31m  7d ████░░░░░░  41% 11-12 08:00 in 132h 51m  plan plus  read 19:09:00
+ggrant   signed in      7d ███░░░░░░░  34% 11-10 14:30 in 91h 21m  plan pro  read 19:09:00  <- next
+jjones   not signed in  read 19:09:00
+```
+
+The accounts are read at once, each with a 20-second limit
+(`AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS`); one that does not answer shows
+`timed out`, never an older figure. amplihack does not open `auth.json`;
+Codex reads its own login. `--json` stays the array of Claude rows and does
+not read Codex; the Codex rows are under `codex` in `--summary-json`:
+
+```bash
+amplihack profile usage --summary-json | jq -r '.codex[] | select(.next_choice) | .account'
+```
+
+```
+ggrant
+```
+
+See [Codex accounts](../reference/profile-command.md#codex-accounts) for
+the states, the choice rule and every JSON key.
+
 The command exits with status 0 whenever the probes ran, whatever their
 states. Like `profile run`, it is refused under Docker.
+
+### See why an account counts as having usage credits on
+
+If a row without the `(fallback)` mark shows a `spend:` mark (with
+`--table`, a `SPEND` value other than `n/a`), amplihack found usage credits
+on for that account. If you did not
+expect that, run the profile with `--raw` (here with `--spend` as well):
+
+```bash
+amplihack profile usage --raw --spend mistt
+```
+
+Two `note:` lines on stderr describe what the usage endpoint sent in its
+`extra_usage` field:
+
+```
+note: profile "mistt": direct read gave usage credits on; windows direct, spend from claude
+note: profile "mistt": extra_usage: object; keys: currency, is_enabled, monthly_limit, org_id, used_credits; is_enabled: bool true
+```
+
+The second line lists the key names and shows `is_enabled` with its JSON
+type. `is_enabled: bool true` means credits are on. `is_enabled: string "false"`
+or `is_enabled: number 0` means the server sent a string or a number where
+amplihack expects `false`, and amplihack treats that as on. Credits count
+as off only when `extra_usage` is absent, `null`, or an object whose
+`is_enabled` is the JSON value `false`; no shape line is printed then.
+
+The line never contains an e-mail address, an account or organisation
+identifier, a currency or an amount: only key names, types, and bool or
+`null` values. Key names come from Anthropic's server and have every
+character other than letters, digits, `_`, `.` and `-` replaced by `?`.
+Read the line before you share it all the same, since a key name could
+look like an identifier. If the first line ends `spend probe failed`, the
+`--spend` probe ran but did not finish in time or gave no usage reading, and
+the spend status is `unknown`. If it ends `spend not probed`, no `/usage` probe was
+asked for: the run had no `--spend`, or
+`AMPLIHACK_PROFILE_USAGE_PROBE=direct` was set. Then the spend status is
+`not_probed`. See
+[Usage credits on](../reference/profile-command.md#usage-credits-on) for
+every form the line can take.
+
+### Probes on a busy host
+
+Passive and direct reads cost almost nothing. The `claude` fallback does:
+the `/usage` attempt reads every transcript the profile can see, which can
+take a minute or more of CPU on a busy host. So amplihack gives each
+fallback 120 seconds, for the `get_usage` request and any `/usage` attempt
+together, and runs between 2 and 4 of them at once, fewer when the host's
+load average is close to its number of CPUs. Direct reads run up to 8 at
+once.
+
+A profile in state `timeout` or `error` shows `-` for its percentages, and
+`--json` gives `null` for `session` and `week_all`. Its usage is unknown,
+never 100%, and it is not recorded for auto-switch. Check which profiles
+timed out:
+
+```bash
+amplihack profile usage --json | jq -r '.[] | select(.state == "timeout") | .profile'
+```
+
+```
+spare
+```
+
+If fallbacks keep timing out, give them longer, run fewer at once, or both:
+
+```bash
+AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS=300 AMPLIHACK_PROFILE_USAGE_PARALLEL=1 amplihack profile usage
+```
+
+`AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` takes `1` to `600` seconds and
+`AMPLIHACK_PROFILE_USAGE_PARALLEL` takes `1` to `16`. An invalid value prints
+one warning and the default is used.
+
+To read every profile afresh, ignoring stored readings, set the passive age
+to `0`:
+
+```bash
+AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS=0 amplihack profile usage
+```
+
+To make sure no `claude` process is started for a reading, use `direct`.
+A profile whose direct read fails then reads `error`, with the reason on
+stderr, instead of falling back. A profile marked as overflow can only be
+read with `/usage`, so under `direct` it reads `error` with
+`direct read: overflow needs /usage`:
+
+```bash
+AMPLIHACK_PROFILE_USAGE_PROBE=direct amplihack profile usage
+```
+
+```
+warning: profile "scratch": direct read: no credentials file
+```
+
+The [rotator](claude-profile-rotation.md#when-the-host-is-heavily-loaded)
+uses the same variables. The limits, the formula, the direct-read bound
+(`AMPLIHACK_PROFILE_USAGE_DIRECT_PARALLEL`) and the endpoint overrides are
+in the [reference](../reference/profile-command.md#how-a-profile-is-probed).
+
+### Compare the two probe methods
+
+The direct read and `get_usage` read the same figures by different routes.
+To check that they agree for your logins, run the default order and the
+`claude`-only `text` method one after the other and compare the
+percentages. `/usage` prints whole percentages and the direct read can
+send decimals, so this rounds both to whole numbers before comparing:
+
+```bash
+q='def whole: if type == "number" then round else . end;
+  .[] | {profile, state, session: (.session.used_percentage | whole), week: (.week_all.used_percentage | whole)}'
+AMPLIHACK_PROFILE_USAGE_PROBE=text amplihack profile usage --json | jq -c "$q" | sort > ~/usage-text.jsonl
+AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS=0 amplihack profile usage --json | jq -c "$q" | sort > ~/usage-direct.jsonl
+diff ~/usage-text.jsonl ~/usage-direct.jsonl && echo same
+```
+
+```
+same
+```
+
+The second command turns passive readings off, so that every row is read
+now rather than taken from the readings the first command recorded. Run
+the two one after the other, not at once, so they do not compete for the
+host. A percentage can still move between the two runs if a session is
+working, and a difference of one point can still be rounding, for example
+`20.5` from a direct read against `20%` from `/usage`. Resets are not
+compared: they differ in form, an ISO 8601 time against Claude's own words
+from `/usage`.
+
+If the figures disagree, or direct reads stop working after a change on
+Anthropic's side, go back to asking `claude`:
+
+```bash
+export AMPLIHACK_PROFILE_USAGE_PROBE=auto
+```
+
+`AMPLIHACK_PROFILE_USAGE_PROBE` takes `direct`, `auto` or `text`, exactly as
+written; unset means passive, direct, then `claude`. `auto` is the
+`get_usage` request with the `/usage` fallback, and `text` is `/usage`
+alone. Any other value prints a warning and uses the default order. With
+`auto` or `text`, every profile starts `claude`, so on a busy host also see
+[Probes on a busy host](#probes-on-a-busy-host). A running rotator keeps the
+value it started with; restart it as described in
+[When the host is heavily loaded](claude-profile-rotation.md#when-the-host-is-heavily-loaded).
 
 ### A profile shows `live in ~/.claude`
 
@@ -413,12 +1099,16 @@ If you use a login rotator that moves one account's login into the default
 `~/.claude` directory, such as
 [`amplihack profile rotate`](claude-profile-rotation.md), that profile's own directory has no login while it is
 there. `profile usage` checks that account through `~/.claude` instead and
-marks the row:
+marks the row with `(live)` after the name:
 
 ```
-PROFILE   MARKS              STATE  SESSION  SESSION RESETS                     WEEK  WEEK RESETS
-team      live in ~/.claude  ok     40%      Oct 16, 8pm (America/Los_Angeles)  55%   Oct 22, 2am (America/Los_Angeles)
+PROFILE      WEEK             W-RESET      SESSION           S-RESET     STATE
+team (live)  █████░░░░░  55%  10-22 02:00  ████░░░░░░  40%   10-16 20:00 ok
+times: America/Los_Angeles
+order: rotator pick (most room in the worse of session and week, then name)
 ```
+
+`--table` shows the same mark as `live in ~/.claude` in its `MARKS` column.
 
 The numbers on that row are the account's real usage, and the row is not
 `not_logged_in`. In the JSON the row has `"live_in": "~/.claude"`; every
@@ -473,6 +1163,208 @@ cannot see a profile that became live after the command started, or a swap
 away and back again when the ledger has no `since` time. See
 [Logins in `~/.claude`](../reference/profile-command.md#logins-in-claude)
 for the exact rules and warnings.
+
+## Accounts, organizations and duplicate logins
+
+### Which logins count as the same account
+
+One Claude user can belong to several organizations, for example a team
+organization and a personal one. Each organization has its own subscription
+and its own usage limits, so a profile per organization is a normal setup.
+
+amplihack reads two values from the `oauthAccount` block of each
+`.claude.json`: `accountUuid` (the user) and `organizationUuid` (the
+organization). Two logins are the same account only when both match:
+
+| Login A | Login B | Same account? |
+|---------|---------|---------------|
+| user U, org O1 | user U, org O1 | yes |
+| user U, org O1 | user U, org O2 | no |
+| user U, org O1 | user U, no org | no |
+| user U, no org | user U, no org | yes |
+| different users | (any) | no |
+| no user on either side | — | compared by e-mail address, ignoring case |
+
+A missing value never makes two logins look the same. This one rule is used
+by `profile login`, `profile usage`, `auto-switch status`, auto-switch swaps
+and the rotator. No credentials file is read to decide it, and the values
+are never printed.
+
+For example, profiles `ryan-mistt-org` and `ryan-mistt-personal` share a user
+but have different organizations. They are two accounts, and no command
+warns about them.
+
+### Duplicate logins
+
+Claude's login opens claude.ai in your browser and signs in whichever
+account the browser is already signed in to. If that account is already in
+another profile, you get two profiles with the same login.
+
+`amplihack profile login` checks for this after Claude exits. It compares the
+new login with every other profile and with the login in `~/.claude`. If it
+matches one, the login is refused:
+
+```bash
+amplihack profile login rssourcelabs
+```
+
+```
+note: holding the previous login of profile 'rssourcelabs' in /home/ryan/.amplihack/claude-profiles/.rejected-logins/.pending-rssourcelabs-20261020T171502Z while you log in
+...interactive claude session...
+note: moving the new login of profile 'rssourcelabs' to /home/ryan/.amplihack/claude-profiles/.rejected-logins/rssourcelabs-20261020T171502Z
+error: profile 'rssourcelabs' was signed in to the same account and organization as profile 'ryan-ryansweet'. The new login was moved to /home/ryan/.amplihack/claude-profiles/.rejected-logins/rssourcelabs-20261020T171502Z; 'rssourcelabs' is back to its previous login.
+hint: sign out of claude.ai in your browser (or use a private/incognito window), then run 'amplihack profile login rssourcelabs' again.
+```
+
+The command exits with status 1. The profile has the login it had before
+(or no login, if it had none), and its `oauthAccount` block is restored.
+Other `.claude.json` keys Claude changed during the login stay as Claude
+left them. The refused login is moved, not deleted.
+
+To fix it, sign out of claude.ai in the browser, or open a private window,
+and run `amplihack profile login rssourcelabs` again. Sign in to the account
+this profile is meant for.
+
+If the account is the one in `~/.claude`, the holder is named
+`~/.claude (rotator live profile 'team')` when the rotator's live profile is
+known, otherwise just `~/.claude`.
+
+The rotator's live profile cannot be logged in to at all: its login is the
+one in `~/.claude`, and the rotator refuses to swap it back into a profile
+directory that has a login of its own. `login` refuses before Claude starts
+and moves nothing:
+
+```
+error: profile 'team' is the rotator's live profile; its login is ~/.claude. Nothing was moved.
+hint: log in with plain 'claude', or stop the rotator first.
+```
+
+When the login is accepted and the profile had a previous login, that login
+is kept too:
+
+```
+note: the previous login of profile 'work' was moved to /home/ryan/.amplihack/claude-profiles/.rejected-logins/work-20261020T171502Z-replaced
+```
+
+If Claude exits with an error, or you press Ctrl-C, the previous login is
+put back, Claude's exit status is kept, and no check is made. A login Claude
+wrote anyway goes to `.rejected-logins/` like a refused one.
+
+#### What is in `.rejected-logins`
+
+```
+<root>/.rejected-logins/                         0700
+├── .pending-<name>-<time>/                       the previous login while Claude runs
+├── <name>-<time>/                                a refused login
+│   ├── .credentials.json                         0600, moved, not copied
+│   └── oauthAccount.json                         its oauthAccount block, 0600
+└── <name>-<time>-replaced/                       a previous login replaced by an accepted one
+```
+
+`<time>` is UTC, for example `20261020T171502Z`. amplihack never deletes
+anything here. Each login file is in one place only: the profile directory
+or one of these directories. To use a kept login again, move it back with
+`mv -n` into a profile that has no `.credentials.json`, never `cp`.
+
+If amplihack itself is killed while Claude runs, the previous login stays in
+the `.pending-…` directory printed at the start. Ctrl-C is handled, but
+closing the terminal (SIGHUP) or `kill` (SIGTERM) ends amplihack before it
+can restore anything. The previous login is then at
+`<root>/.rejected-logins/.pending-<name>-<time>/.credentials.json`, and its
+`oauthAccount` block is next to it in `oauthAccount.json`. If Claude wrote a
+new login, move that one aside first (or delete it if you do not want it),
+then move the previous one back into the profile directory with one `mv`.
+This example uses the default root; if you chose another root (`amplihack
+profile root` prints it), use that path instead:
+
+```bash
+mv -n ~/.amplihack/claude-profiles/.rejected-logins/.pending-rssourcelabs-20261020T171502Z/.credentials.json \
+      ~/.amplihack/claude-profiles/rssourcelabs/
+```
+
+#### When the check cannot move the login
+
+- **macOS.** Claude keeps the login in the Keychain, not in
+  `.credentials.json`. A duplicate is still reported and `login` exits 1,
+  but there is no file to move aside. The profile's `oauthAccount` block is
+  left as Claude wrote it, so `.claude.json` still matches the login in the
+  Keychain. Sign out in the browser and log in again.
+- **No login file after a previous one.** If the profile had a
+  `.credentials.json` and Claude exits 0 without writing a new one, the
+  login did not finish: the previous login and its `oauthAccount` block are
+  both put back, and `login` exits 1.
+- **The profiles cannot be read.** If the profile root cannot be listed or
+  the auto-switch state cannot be opened, the new login cannot be compared,
+  so it is treated like a refused one: moved to `.rejected-logins/`, the
+  previous login put back, exit 1.
+- **The rotator swapped the profile in during the login.** `profile rotate`
+  takes no lease. If it made this profile the live one while Claude ran,
+  amplihack stops without moving anything and prints where each login is.
+- **A login file that is not private.** If the new `.credentials.json` is
+  not a private regular file (for example mode `0644`, or a symlink),
+  amplihack does not move it or change its mode. It exits 1, reports the
+  mode, and leaves the previous login in the `.pending-…` directory, whose
+  path the hint prints. Treat the new login as exposed: log in again.
+- **A session started using the profile during the login.** If auto-switch
+  lent the profile's login to a session or the profile now hosts another
+  account, amplihack stops without moving anything and prints where each
+  login is.
+
+#### `/login` inside a running session
+
+Running `/login` inside a Claude session is not checked when it happens.
+`amplihack profile usage` and `amplihack profile auto-switch status` find the
+duplicate afterwards:
+
+```
+note: profiles 'rssourcelabs' and 'ryan-ryansweet' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login rssourcelabs' with the browser signed out of claude.ai or in a private window.
+```
+
+Profile names are listed in sorted order. The fix names the profile whose
+login is not the account recorded for it. amplihack records a profile's
+account when `profile login` accepts a login, and in some rotator swaps; see
+[Recorded account](../reference/profile-command.md#recorded-account). Here
+`rssourcelabs` was recorded with another account, so it is the one to log in
+again.
+
+When neither profile has a record, both match their records, or both
+differ, amplihack cannot tell which login is wrong and says so:
+
+```
+note: profiles 'rssourcelabs' and 'ryan-ryansweet' are signed in to the same account and organization (duplicate login); amplihack cannot tell which of them holds the wrong login; fix: run 'amplihack profile login <name>' for the one that should hold a different account, with the browser signed out of claude.ai or in a private window.
+```
+
+Decide which profile should hold another account, and log that one in
+again. The accepted login records its account, so the next warning, if any,
+names a profile.
+
+`status` prints it as a `note:` line; `usage` prints the same text on stderr
+as a `warning:` line, after the rows. The login in `~/.claude` takes part
+too, named `~/.claude`. It is judged by the record of the rotator's live
+profile, since that is the account it should hold, and a profile that
+matches its own record is never named. When `~/.claude` is the one off its
+record, the fix is a `/login` there rather than `profile login`:
+
+```
+note: profiles '~/.claude' and 'bbuck' are signed in to the same account and organization (duplicate login); the login in ~/.claude is not the account recorded for profile 'work'; fix: run plain 'claude' and '/login' to the account 'work' is meant for, with the browser signed out of claude.ai or in a private window.
+```
+
+The rotator refuses to swap in the same state, with the same reason. The
+rotator's live profile is not compared with `~/.claude`, since that is
+where its own login is. See
+[Duplicate-login warning](../reference/profile-command.md#duplicate-login-warning)
+for every form.
+
+A profile can also hold the wrong login without forming a duplicate, for
+example when a Claude session started with `CLAUDE_CONFIG_DIR` pointing at
+that profile's folder signed in to another account. `status` and `usage`
+compare every profile that has a record with its record, the same user in
+another organization counting as another account, and print one line for
+each that differs:
+
+```
+warning: profile 'bbuck' holds a login that is not the account recorded for it; fix: run 'amplihack profile login bbuck' with the browser signed out of claude.ai or in a private window.
+```
 
 ## Switch accounts automatically
 
@@ -591,6 +1483,12 @@ export AMPLIHACK_CLAUDE_AUTO_SWITCH=1   # on in this shell
 An empty value means unset. Any other value prints one warning, `status`
 notes it, and the file decides.
 
+With auto-switch on, `amplihack claude`, `amplihack launch` and
+`amplihack profile run` also start the
+[login rotator](claude-profile-rotation.md#start-the-rotator-automatically)
+for `~/.claude` if it is not running, and print one line when they do. To
+keep auto-switch without that, run `amplihack profile rotate autostart off`.
+
 ### 3. Check what it sees
 
 ```bash
@@ -600,6 +1498,7 @@ amplihack profile auto-switch status
 ```
 root: /home/ryan/.claude-profiles
 switch: on (file)
+autostart: on (default)
 threshold: 90%
 exclude: review
 in-session swap: available (Linux)
@@ -636,8 +1535,9 @@ without returning its login, `status` says so and tells you to run
 update fixes it too.
 
 Usage is tracked per profile. If two profiles are signed in to the same
-Anthropic account, `status` warns that their readings are not reliable;
-this setup is not supported.
+account and organization, `status` prints a duplicate-login note with the
+fix; see [Duplicate logins](#duplicate-logins). Two profiles for the same
+user in different organizations are separate accounts and get no note.
 
 ### What happens inside a running session
 
@@ -729,10 +1629,13 @@ Output that also names a work or environment problem, such as a failed test
 or `permission denied`, is not treated as a usage limit and is not rerun.
 `credit balance is too low` and `disk quota exceeded` count as environment
 problems, so they are not rerun either.
-Each profile is tried at most once per step. When none is left, the last
-attempt's output and exit code are passed back, and the recipe run stops
-with today's usage-limit message. With the switch off, a usage limit ends
-the run exactly as before.
+Each profile is tried at most once per step. When none is left, the step
+waits for the limit to reset and runs once more, as described in
+[Waiting for a usage-limit reset](#waiting-for-a-usage-limit-reset). With
+that wait turned off, the last attempt's output and exit code are passed
+back, and the recipe run stops with the usual usage-limit message. With the
+switch off, the wait still applies; with both off, a usage limit ends the
+run as it did before either existed.
 
 The rerun happens inside the step's own `amplihack claude -p` launch, not
 in the recipe runner, so only the failed step runs again; finished steps
@@ -742,11 +1645,67 @@ While a step is supervised this way, its error output streams as usual but
 its standard output is held back and printed when the last attempt finishes.
 The recipe runner's heartbeat therefore reports such a step as idle until
 it ends; that is expected, and nothing is stopped because of it.
+Piped standard input is copied once, before the first attempt, to a private
+file, and every attempt reads that copy, so a rerun gets the same prompt as
+the first attempt. Input from a terminal is passed through and not copied.
 If the step is stopped (SIGINT, SIGTERM or SIGHUP), it is not rerun: the
 attempt's output is passed back and amplihack exits with `128` plus the
 signal number.
 A rerun starts the step from the beginning, so anything the failed attempt
 had already done (a push, a comment) may be done again.
+
+### When no account has capacity
+
+When every account is at or above the threshold, auto-switch has nowhere to
+go and stops switching. amplihack then tells you instead of letting Claude go
+quiet:
+
+- **Status line.** A line is added below your usual status line:
+
+  ```
+  ⚠ all Claude accounts ≥90% · next reset Oct 22 2am
+  ```
+
+  It reads `at limit` instead of `≥90%` when every account has hit its hard
+  limit.
+- **Claude Code.** At session start, or on the next prompt, Claude Code shows
+  the same line followed by `— run 'amplihack profile usage'`. It is shown
+  once per session for each state, and again if things get worse (from
+  `≥90%` to `at limit`). Claude is also told that capacity is low, so it
+  prefers small sequential steps over large parallel workflows.
+- **`amplihack claude`.** One line on stderr when it starts:
+
+  ```
+  ⚠ all Claude accounts ≥90% · next reset Oct 22 2am — run 'amplihack profile usage'
+  ```
+
+- **`amplihack recipe run`.** One line on stderr before the recipe starts.
+  The recipe still runs; you may know an account is about to reset.
+
+  ```
+  amplihack recipe run: ⚠ all Claude accounts at limit · next reset Oct 22 2am — run 'amplihack profile usage' (continuing anyway)
+  ```
+
+The reset time is the earliest one across your accounts, in local time. To
+see every account's numbers:
+
+```bash
+amplihack profile usage
+```
+
+The notice clears by itself when the first account's window resets. If no
+reset time is known, it clears 5 hours after it was last confirmed. A profile
+in the exclusion list does not count, and a profile with no reading yet
+counts as having capacity, so it never causes a notice.
+
+The state is worked out from readings amplihack already has: the status-line
+wrapper, `amplihack profile usage` and the
+[rotator](claude-profile-rotation.md#when-no-account-has-capacity) each
+update it when they record usage. It is kept in
+`<root>/.auto-switch.d/capacity.json`, which holds profile names and times,
+never logins. Nothing is shown, and nothing is written, while auto-switch is
+off. The file format and exact rules are in the
+[capacity notice reference](../reference/profile-command.md#capacity-notice).
 
 ### Turn it off
 
@@ -859,9 +1818,10 @@ do not depend on these two behaviours.
 - **Helper processes keep a session alive.** A login returns home only when
   no process (including MCP servers Claude started) still has the directory
   in its environment.
-- **Two profiles signed in to the same account** are not supported. An
-  account is identified by the profile that owns its login, so they are
-  treated as two accounts with separate readings; `status` warns about it.
+- **Two profiles signed in to the same account and organization** are not
+  supported. An account is identified by the profile that owns its login,
+  so they are treated as two accounts with separate readings; `status`
+  warns about it. See [Duplicate logins](#duplicate-logins).
 - **`/status` can lag.** It may name the previous account after a swap
   until Claude rewrites `.claude.json`; see above.
 - **Leases protect against accidents, not attacks.** Any process running as
@@ -871,17 +1831,381 @@ do not depend on these two behaviours.
   status-line wrapper a fake usage reading and so pull another profile's
   login into its session. It could already read that login file directly,
   so this adds no new exposure.
-- **Held-back step output is kept on disk briefly.** A supervised step's
-  standard output is in a private file under `<root>/.auto-switch.d/rerun/`
-  until the step finishes. If amplihack is killed first, the next recovery
-  deletes it once that process is gone, and after 24 hours at the latest.
+- **Held-back step output and input are kept on disk briefly.** A
+  supervised step's standard output, and its piped standard input, are in
+  private files under `<root>/.auto-switch.d/rerun/` until the step
+  finishes. If amplihack is killed first, the next recovery deletes them
+  once that process is gone, and after 24 hours at the latest.
 - **A rerun repeats the step.** Anything the failed attempt already did may
   happen twice.
 - **File modes are kept.** Patching `.claude.json` or `settings.json` keeps
   the file's mode; a `settings.json` that `install` creates is `0600`.
+- **The capacity notice can lag by one reading.** It is updated only when
+  the status line, `profile usage` or the rotator records usage. A step that
+  fails with a usage limit and finds no profile left to rerun on does not
+  update it.
+- **Overflow profiles come last and cost money.** A profile marked with
+  `amplihack profile overflow add` is chosen only when no plan profile has
+  capacity (below the rotator's `--session-at` and `--week-at`, 85% and 90%
+  by default) and the earliest plan reset is more than the overflow wait
+  away (default 1800 seconds). This is the rule the
+  [rotator](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted)
+  follows, with the running rotator's own settings. A session or nested
+  launch on an overflow profile moves back to a plan profile as soon as one
+  has capacity. See
+  [Auto-switch and overflow profiles](../reference/profile-command.md#auto-switch-and-overflow-profiles).
 - **Readings come only from sessions with the wrapper and from
   `profile usage`.** A profile that has done neither since the switch was
   turned on has no reading. Run `amplihack profile usage` to fill them in.
+
+## API-key profiles and usage limits
+
+An API-key profile runs Claude Code on a Claude Platform API key instead of
+a subscription login. It has no session or weekly limit; every token it
+uses is billed per token. Its login file, `.credentials.json`, holds `{}`
+(an object with no OAuth login), and Claude Code falls back to the Platform
+credential stored outside the profile directory, in the real home
+directory. Every profile on the machine shares that credential, so there is
+one API-key account per home directory. `amplihack` never reads, prints or
+copies the key; it decides a profile's kind from key names and file
+presence only.
+
+A profile with no login file at all is **not** an API-key profile. It is a
+subscription profile with no login, and launching it is refused (see
+below). A missing login file counts as an API key only when the profile
+names an API-key setting (`ANTHROPIC_API_KEY`, `apiKeyHelper` or
+`primaryApiKey`); those settings are ignored when the profile has a login
+file. The full rules are in
+[Kind detection](../reference/profile-command.md#kind-detection).
+
+`amplihack profile kind list` shows each profile's kind and why:
+
+```
+$ amplihack profile kind list
+api-key         api-key       (detected: login file has no oauth login)
+ryan-mistt      subscription  (detected: oauth login)
+ryan-ryansweet  subscription  (detected: oauth login)
+```
+
+`amplihack profile kind set <name> <subscription|api-key|auto>` overrides a
+wrong detection; `auto` removes the override. See
+[Kind override](../reference/profile-command.md#kind-override).
+
+### Allow the API-key profile to be used
+
+An API-key profile is never used automatically until you mark it. Marking
+is your consent to per-token billing:
+
+```
+$ amplihack profile overflow add api-key
+overflow: added api-key (api-key tier, tier 10)
+note: api-key is billed per token; it is used only when every plan login is measured and none is below 100% on both windows, no credit profile can be used, the earliest plan reset is more than --overflow-wait away and its login check passes.
+```
+
+`overflow list` shows whether it is marked:
+
+```
+$ amplihack profile overflow list
+ryan-mistt-org  tier 1  marked
+api-key  api-key tier  not marked (not used)
+```
+
+After `overflow add api-key` the last line reads `api-key  api-key tier  marked`.
+An API-key profile is always tier 10, the last tier, so `--tier` is refused
+for it. To stop using it, run `amplihack profile overflow remove api-key`,
+which prints `overflow: removed api-key`.
+
+Before each move onto the API-key profile, the rotator and auto-switch run a
+login check. It passes when the profile names a key: a non-empty
+`primaryApiKey` in the profile's `.claude.json`, or a non-empty
+`ANTHROPIC_API_KEY` under `env` or `apiKeyHelper` in its `settings.json`.
+A `.credentials.json` with no OAuth login, `{}` included, is not enough on
+its own. The check reads those files only. It makes no request and does not
+run the helper, so it confirms that a key is configured, not that it works:
+a revoked or unfunded key still passes. If the check fails, nothing moves,
+`~/.claude` is unchanged and the rotator writes:
+
+```
+key_check_refused api-key: no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting
+ALERT: API key profile api-key failed its login check (no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting); not moving onto it
+```
+
+The ALERT is written once, not on every cycle.
+
+A key in `~/.claude.json` or `~/.claude/settings.json` is different: Claude
+uses it ahead of a plan login, so every session on the host bills per token,
+marked or not. `overflow add` warns about it and the rotator logs
+`ALERT: home_key`. See
+[API-key login check](../reference/profile-command.md#api-key-login-check).
+
+If you upgraded from a release that used API-key profiles without a mark,
+run `amplihack profile overflow add <api-key-profile>` to keep that
+behaviour. Nothing is marked for you. If an unmarked API-key profile is
+live in `~/.claude` at the upgrade, it stays live, billed per token, until a
+plan login has room or a credit profile can take over; `rotate status` shows
+it as `platform_not_marked` meanwhile. To avoid that, mark it or move
+off it by hand with `amplihack profile switch <plan-profile>`.
+
+### How limits are handled with an API-key profile
+
+When accounts run out of quota, work moves in this order:
+
+1. another plan (subscription) login with capacity;
+2. another plan login that is past its threshold but still below 100% on
+   both windows, ranked by the
+   [plan-room swap](../reference/profile-command.md#rotate-plan-room-swap):
+   session below the threshold first, then the most weekly room;
+3. only when no measured plan login is below 100% on both windows: a marked credit
+   overflow profile, by tier, once the earliest plan reset is further away
+   than the overflow wait;
+4. the marked API-key profile (tier 10), once every plan login is measured,
+   no credit overflow profile can be used, the earliest plan reset is still
+   further away than the wait and its login check passes.
+
+Credit profiles are billed too, so they wait until no measured plan login
+has room. Only the API key also waits for a plan login that could not be
+measured (a session on it, or a failed probe), with an ALERT that names it. Earlier releases used them as soon as every plan login had reached
+its threshold.
+
+[Auto-switch](#switch-accounts-automatically) and the
+[rotator](claude-profile-rotation.md#use-an-api-key-as-the-last-resort)
+follow the same order. The rotator moves `~/.claude` off the API key on the
+first cycle after a plan login has capacity or room again, without waiting for a
+hold to end. Auto-switch uses the API-key profile only for a new nested
+launch or a usage-limit rerun and never swaps it into a running session; a
+session started on the API-key profile keeps it, and its next nested launch
+or rerun goes back to a plan profile.
+
+`profile usage` does not probe an API-key profile. Its `STATE` is `api_key`
+and its row reads `api-key (billed per token)` instead of bars:
+
+```
+$ amplihack profile usage api-key
+PROFILE         WEEK             W-RESET      SESSION           S-RESET     STATE
+api-key (live)  api-key (billed per token)                                  api_key
+live: work is running on the API key (billed per token)
+times: Europe/London
+order: rotator pick (most room in the worse of session and week, then name)
+```
+
+If the key runs out of funds or is revoked, every API-key profile is
+blocked with one ALERT until you clear the block. A rate limit blocks it
+until the time the error gives, or for one hour. While blocked, `usage`
+prints `blocked: the API key until <time> (<reason>)`. Fund or replace the
+key, then clear the block:
+
+```
+$ amplihack profile overflow clear --platform
+overflow: cleared the API-key block (key_exhausted)
+```
+
+### Subscription profiles with no login are refused
+
+A subscription profile with no OAuth login of its own (never logged in, its
+login file missing or damaged) would quietly use the API key if launched.
+`profile run`, `--profile` launches and `profile switch` refuse it, exit 1
+and say what to run:
+
+```
+error: profile old-team is a subscription profile with no login of its own; launching it would bill the Claude Platform API key per token. Run 'amplihack profile login old-team', or run 'amplihack profile kind set old-team api-key' if per-token billing is intended.
+hint: amplihack profile login <name>, or: amplihack profile kind set <name> api-key
+```
+
+A profile whose login is live in `~/.claude`, or lent to a session by
+auto-switch, is not refused.
+
+### Logging an API-key profile in to a subscription
+
+`amplihack profile login api-key` works as for any profile and first prints:
+
+```
+note: this profile uses a Claude Platform credential stored outside the profile directory, which amplihack does not manage.
+```
+
+If you complete a subscription login there, the profile has an OAuth login
+and is detected as a subscription profile from then on, unless a `kind`
+override says otherwise.
+
+## Waiting for a usage-limit reset
+
+When a recipe agent step fails because the Claude account reached its usage
+limit, amplihack waits for the limit to reset, or for another login with
+capacity, and then runs that step once more, instead of ending the recipe
+run. Steps that already finished are not
+repeated. The wait is **on by default** and needs no profiles.
+
+It applies to the `amplihack claude -p` launch of a recipe step
+(`amplihack recipe run` sets `AMPLIHACK_NONINTERACTIVE=1`), without
+`--profile`, `--docker` or `--auto`. Interactive sessions and launches typed
+at a terminal never wait, and with no setting the wait is off in CI (a
+`CI` other than empty, `0` or `false`; set `recipe.usage_limit_wait = true`
+to turn it on there). A failure that is not a usage limit is passed back at once.
+
+### What happens
+
+1. If [auto-switch](#switch-accounts-automatically) is on and another
+   profile has quota left, the step first runs again under that profile.
+2. Otherwise amplihack reads the reset time from Claude's own message, such
+   as `You've hit your session limit · resets 1pm (America/Los_Angeles)`,
+   and waits until the earliest of:
+   - the reset plus two minutes;
+   - a different account becoming live for the step's login directory;
+   - for a step that uses `~/.claude`, the
+     [login rotator](claude-profile-rotation.md) recording a fresh cycle
+     with capacity;
+   - the configured maximum;
+   - one minute before the step's timeout.
+3. The step runs once more with the same arguments, environment and input.
+   If it hits the limit again, there is no second wait. The supervisor
+   writes `skipped reason=already_waited` and then the
+   [closing line](../reference/profile-command.md#closing-line),
+   `failed reason=already_waited: usage limit not lifted`, and the step
+   ends as a usage limit.
+
+### Weekly limits: waiting for another login
+
+A weekly limit, or a limit whose message states no reset amplihack can
+read, will not lift within the run. When another login could take over,
+amplihack waits for **any** login to have capacity instead, for up to six
+hours by default:
+
+- for a step that uses `~/.claude`, until the
+  [login rotator](claude-profile-rotation.md) records a fresh cycle with
+  capacity, or a different account becomes live in `~/.claude`. This needs
+  a rotator running; without one the run ends at once, as before;
+- for a step under an inherited profile with auto-switch on, until a usage
+  reading taken during the wait shows that another profile has capacity;
+  the step then runs on that profile, not on the exhausted one. This also
+  needs a rotator running; without one nothing may record a reading during
+  an unattended run, so the run ends at once, as before.
+
+"Another login could take over" means the profile store holds another
+login that auto-switch could choose once its readings allow: not excluded
+from auto-switch (`amplihack profile auto-switch exclude`), holding a login
+on this platform, with no spend block, and either a plan login or a marked
+overflow profile while the overflow gate is open. An API-key profile counts
+only when `overflow=` marks it and its key passes the login check; an
+unmarked one never counts, because auto-switch never chooses it.
+A login that is over its threshold or has hit its own weekly limit still
+counts, because it may recover during the wait. With a single stored login
+there is nothing to wait for, and the run ends as before, even when the
+rotator is running.
+
+If no login has capacity by the deadline, the step is not run again. The
+log ends with:
+
+```
+amplihack.recipe.usage_limit_wait end reason=capacity expired
+amplihack.recipe.usage_limit_wait failed reason=capacity_expired: usage limit not lifted
+```
+
+and the recipe runner records the failure as `usage_limit`.
+[Auto-drive](../reference/auto-drive-to-merge.md#usage-limits-are-not-stuck)
+stops such a loop as `USAGE_LIMIT`, not `STUCK`.
+
+The same applies to the
+[loop-health evaluator](../reference/loop-health-evaluator.md#retry-inside-the-step)
+that auto-drive runs after each round: a limit on its agent step is waited
+out and the step retried, so the loop gets an ordinary verdict.
+
+### When it does not wait
+
+The run ends as before, with no wait, when:
+
+- the limit is an organisation spend limit, with no reset or with a weekly
+  reset (a spend limit that also says when your session limit resets is
+  waited out);
+- the limit is weekly, or states no readable reset, and no other login
+  could take over, or no rotator is running;
+- the step uses an explicit `CLAUDE_CONFIG_DIR`, an inherited profile with
+  auto-switch off, or a `.default` profile that is not the rotator's live
+  one, and the limit is weekly or states no readable reset;
+- the prompt came on a pipe (auto-switch then does not rerun it under
+  another profile either).
+
+Model output that merely mentions a usage limit never starts a wait.
+
+The wait stops without a rerun when the run is stopped (Ctrl-C, `SIGTERM`
+or `SIGHUP`), when the process that started the step exits, or when the
+step's timeout is about to run out.
+
+The rerun starts the step from the beginning, so anything the failed
+attempt already did, such as a push or a comment, may happen again. Keep
+agent steps safe to run twice.
+
+### What the log shows
+
+Each line goes to the step's standard error and starts with
+`amplihack.recipe.usage_limit_wait`:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin
+amplihack.recipe.usage_limit_wait progress remaining=3540s
+amplihack.recipe.usage_limit_wait end reason=rotator capacity
+amplihack.recipe.usage_limit_wait resume attempt=2
+```
+
+A wait for another login has `wait=capacity` on its `start` line, and
+`reset=none` when Claude's message gave no readable reset:
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=2026-11-05 00:00:00 -07:00 until=2026-10-31 15:43:00 -07:00 bound=max_wait
+amplihack.recipe.usage_limit_wait end reason=rotator capacity
+amplihack.recipe.usage_limit_wait resume attempt=2
+```
+
+The [reference](../reference/profile-command.md#usage-limit-wait) lists every
+event and reason, and the
+[capacity wait](../reference/profile-command.md#capacity-wait) section
+describes the weekly-limit case in full.
+
+### Turn it off or change the maximum
+
+For every run, set it in `~/.amplihack/config.toml`:
+
+```bash
+amplihack config set recipe.usage_limit_wait false
+amplihack config set recipe.usage_limit_max_wait_secs 3600   # at most an hour
+```
+
+For one run or one shell, the variables outrank the file:
+
+```bash
+export AMPLIHACK_USAGE_LIMIT_WAIT=0
+export AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=3600
+```
+
+The maximum defaults to `21600` seconds (six hours). It shortens a wait for
+a reset, which never lasts beyond the reset plus two minutes, and sets how
+long a wait for another login lasts. `0` means no wait: for a reset, one
+more attempt; for a weekly limit, the step ends at once as a usage limit.
+
+To wait longer than six hours for another login, raise it in your user
+file or the variable:
+
+```bash
+amplihack config set recipe.usage_limit_max_wait_secs 43200   # twelve hours
+```
+
+A project `config.toml` can only lower the maximum. The keys are listed in
+the [user-config reference](../reference/user-config.md#recipeusage_limit_wait)
+and the variables in
+[environment variables](../reference/environment-variables.md#amplihack_usage_limit_max_wait_secs).
+
+### Limits of the wait
+
+- **Standard output is held back.** While the wait is on, a recipe step's
+  standard output is printed when the step ends, even for steps that never
+  hit a limit. Error output still streams.
+- **Piped input is not replayed.** The rerun reads a file given as stdin
+  again from the start, but gets nothing from a pipe, whose contents went
+  to the first attempt. Recipe steps pass their prompt as an argument, so
+  this only matters for hand-built pipelines.
+- **`~/.amplihack` must be private.** Held-back output goes under
+  `~/.amplihack/rerun/` (or `<root>/.auto-switch.d/rerun/` with
+  auto-switch on). If `~/.amplihack` is not owned by you or others can
+  write it, the step writes `skipped reason=not_supervised` and runs once.
+- **Claude Code and Unix only.**
 
 ## Limits
 
@@ -942,8 +2266,23 @@ do not depend on these two behaviours.
   `~/.claude/settings.json` as trusted input.
 - If the default pointer names a deleted profile, launch fails with a hint
   (`amplihack profile switch <name>`); it does not fall back silently.
+- `profile run <name>` with the rotator's live profile still runs in the
+  profile's empty directory; only `amplihack claude` and `amplihack launch`
+  [redirect to `~/.claude`](#launching-the-rotators-live-profile).
+- A redirected launch skips the auto-switch launch checks, as a launch with
+  no profile does.
 - Profiles are not a security boundary against other processes of the same OS
-  user. Anyone able to read your home directory can read the profile.
+  user. Anyone able to read your home directory can read the profile. Every
+  profile can read every other profile's sessions through the shared store;
+  see [Privacy](#privacy-every-profile-can-read-every-session).
+- Two profiles writing the same session at once behave as two `claude`
+  processes writing it under `~/.claude` without profiles do. Session ids are
+  UUIDs, so separate sessions never collide.
+- Claude Code is expected to follow the `projects/` link. If a Claude version
+  replaces the link with a real directory, the next launch merges it back.
+- A first launch that merges a large `projects/` held on another filesystem
+  copies every file, so it can take a while. One line is printed when it
+  starts and the results when it finishes; free space is checked before each file, and it happens once.
 - No token vault or token refresh exists by design. Usage is checked only
   when you run `amplihack profile usage`, which asks Claude itself. Automatic
   switching is opt-in and only moves logins between your own profiles; see
@@ -963,5 +2302,33 @@ PATH="$d:$PATH" amplihack profile run demo
 
 The fake `claude` prints `$CLAUDE_CONFIG_DIR`, which should be the demo profile
 directory. The temporary `HOME` keeps the saved root
-(`$HOME/.amplihack/profile-root`, written by the first `add`) and the seeding
-source (`$HOME/.claude`) away from your real files.
+(`$HOME/.amplihack/profile-root`, written by the first `add`), the seeding
+source and the shared session store (`$HOME/.claude`) away from your real
+files. The temporary `$HOME/.claude` doesn't exist, so `demo` gets no links;
+run `mkdir -m 700 "$HOME/.claude"` before `profile add` to see them made.
+
+To see the [usage-limit wait](#waiting-for-a-usage-limit-reset) without a
+real login, use a fake `claude` that fails with Claude's limit message on
+its first call and succeeds on its second, in a temporary `HOME`:
+
+```bash
+export HOME="$(mktemp -d)" AMPLIHACK_CLAUDE_PROFILE_ROOT="$(mktemp -d)"
+d="$(mktemp -d)"
+cat > "$d/claude" <<'STUB'
+#!/bin/sh
+echo call >> "$HOME/calls"
+if [ "$(wc -l < "$HOME/calls")" -eq 1 ]; then
+  echo "Claude AI usage limit reached|$(( $(date +%s) + 3600 ))" >&2
+  exit 1
+fi
+cat    # echo the prompt it was given on stdin
+STUB
+chmod +x "$d/claude"
+echo "summarise CHANGELOG.md" > "$HOME/prompt"
+PATH="$d:$PATH" AMPLIHACK_NONINTERACTIVE=1 AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=5 \
+  amplihack claude -p < "$HOME/prompt"
+```
+
+The launch writes a `start` line with `bound=max_wait`, waits five seconds,
+writes `end reason=max reached` and `resume attempt=2`, and then prints
+`summarise CHANGELOG.md`: the retry reads the file from the start again.

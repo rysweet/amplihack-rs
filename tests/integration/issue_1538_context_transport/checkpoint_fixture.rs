@@ -91,7 +91,9 @@ impl NativeFixture {
         let recipe_file = case.join("recipe.yaml");
         fs::write(&recipe_file, serde_yaml::to_string(&fixture).unwrap()).unwrap();
         let observer = case.join("observer.sh");
-        fs::write(&observer, "printf '%s\\n' \"$BASH_EXECUTION_STRING\" > \"$SOURCE_RENDERED_BODY\"\ntrap 'code=$?; printf \"%s\\n\" \"$code\" > \"$SOURCE_CHILD_EXIT\"' EXIT\nexec > >(tee \"$SOURCE_CHILD_STDOUT\") 2> >(tee \"$SOURCE_CHILD_STDERR\" >&2)\n").unwrap();
+        // Observe only the step shell: a nested bash (e.g. a `git` wrapper script
+        // on PATH) would otherwise re-source this and truncate the evidence files.
+        fs::write(&observer, "unset BASH_ENV\nprintf '%s\\n' \"$BASH_EXECUTION_STRING\" > \"$SOURCE_RENDERED_BODY\"\ntrap 'code=$?; printf \"%s\\n\" \"$code\" > \"$SOURCE_CHILD_EXIT\"' EXIT\nexec > >(tee \"$SOURCE_CHILD_STDOUT\") 2> >(tee \"$SOURCE_CHILD_STDERR\" >&2)\n").unwrap();
         let mut command = Command::new(&self.runner);
         command
             .arg(&recipe_file)

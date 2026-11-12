@@ -25,6 +25,8 @@ pub(super) fn isolate(command: &mut Command, root: &Path) {
         fs::copy(&selected, bin.join(name)).expect("private tool copy");
     }
     command.env_clear();
+    command.env(crate::isolated_amplihack::HOME_GUARD_ENV, "1");
+    command.env("TMPDIR", std::env::temp_dir());
     for (key, name) in [
         ("HOME", "home"),
         ("CODEX_HOME", "codex"),
@@ -47,6 +49,7 @@ pub(super) fn isolate(command: &mut Command, root: &Path) {
     command
         .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
         .env("RECIPE_RUNNER_RS_PATH", runner)
+        .env("AMPLIHACK_WORK_ROOT", root.join("work"))
         // This test checks skip conditions. Provider startup repair has its
         // own regressions with self-heal enabled.
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")

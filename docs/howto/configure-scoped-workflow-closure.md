@@ -118,9 +118,9 @@ tracking issue differs from the issue referenced in the PR body.
 Use workflow-owned readiness, not a broad PR survey:
 
 ```bash
-PR_NUMBER="$PR_NUMBER" \
-PR_URL="$PR_URL" \
-ISSUE_NUMBER="$ISSUE_NUMBER" \
+RECIPE_VAR_pr_number="$PR_NUMBER" \
+RECIPE_VAR_pr_url="$PR_URL" \
+RECIPE_VAR_issue_number="$ISSUE_NUMBER" \
 EXPECTED_PR_TITLE_PREFIX="Fix issue #754:" \
 WORKFLOW_STARTED_AT="$STARTED_AT" \
 amplifier-bundle/tools/workflow_pr_ready.sh
@@ -157,13 +157,17 @@ Only `scope: valid` can trigger monitor notifications or closure behavior.
 Terminal status uses the same PR identity:
 
 ```bash
-PR_NUMBER="$PR_NUMBER" \
-PR_URL="$PR_URL" \
-ISSUE_NUMBER="$ISSUE_NUMBER" \
+RECIPE_VAR_pr_number="$PR_NUMBER" \
+RECIPE_VAR_pr_url="$PR_URL" \
+RECIPE_VAR_issue_number="$ISSUE_NUMBER" \
 EXPECTED_PR_TITLE_PREFIX="Fix issue #754:" \
 WORKFLOW_STARTED_AT="$STARTED_AT" \
 amplifier-bundle/tools/workflow_final_status.sh
 ```
+
+The helpers read the PR and issue only from `RECIPE_VAR_` names, never from a
+bare `PR_NUMBER`, `PR_URL` or `ISSUE_NUMBER` (see
+[Step outputs ignore inherited bare variables](../reference/auto-drive-to-merge.md#step-outputs-ignore-inherited-bare-variables)).
 
 If another PR is newer, authored by the same user, or mentions the same issue in
 free text, it is ignored unless it matches the explicit scope.
@@ -181,7 +185,7 @@ and head repository must both match `REPOSITORY`.
 | `invalid_pr_url` | The provided PR URL is not a GitHub pull request URL. | Correct the persisted PR URL before readiness/final-status steps. |
 | `invalid_pr_number` | The provided PR number is not positive numeric text. | Correct the persisted PR number. |
 | `FAILED_PR_CREATE` on publish | `gh pr create` failed and no OPEN PR exists for the branch. | Inspect the redacted GitHub error; a genuine create failure (auth, protected branch) must be resolved. A create collision with an existing OPEN PR is handled automatically as `existing-open-pr`. |
-| `FAILED_DUPLICATE_CLAIM` on publish | An open or recently-merged PR already claims the issue this run is working on, on a different branch (issue #1361). | Continue the existing PR instead of racing it: re-run with `pr_number=<N>` or `existing_branch=<branch>`, which makes step-04 reuse that branch and makes the claim check step aside. If the existing PR is genuinely abandoned, close it first. `AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK=1` bypasses the check. |
+| `FAILED_DUPLICATE_CLAIM` on publish | A PR already claims the issue this run is working on, on a different branch (issue #1361): either an open PR, or one merged inside the recent window while that issue is still closed. A PR merged inside the window that left the issue open is not a claim (issue #2238). | The refusal names the claiming PR and whether it is open or recently merged, and where a merged PR was in the window it also reports the issue state it read. For an open PR, continue it instead of racing it: re-run with `pr_number=<N>` or `existing_branch=<branch>`, which makes step-04 reuse that branch and makes the claim check step aside. If the existing PR is genuinely abandoned, close it first. A refusal naming a *merged* PR means the issue did not read `OPEN` — it is closed, or its state could not be read, which leaves the merged PR counting as the fail-safe direction. If that issue should be open for follow-up work, reopen it and re-run; no bypass is needed. `AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK=1` bypasses the check. |
 | `step-03c-issue-claim-check` refuses a review, review-fix, CI fix or resume | The issue has a pull request, and the working directory is not on that PR's head branch (issue #1448). | Check out the claiming PR's head branch in the working directory — the check then recognises the run as continuing that PR rather than racing it, and allows it. If the working directory cannot be on that branch (a detached HEAD, a fresh clone), pass `-c allow_existing_pr=true` to state the intent. A run on a *different* branch is still refused; that is the #1361 guard. |
 | `missing_scope` | Persisted multitask state predates scoped fields. | Treat the record as display-only; relaunch the workstream to capture scope. |
 | `pid_reused` | The PID exists but start metadata differs. | Ignore the old record; relaunch the workstream if work is still needed. |

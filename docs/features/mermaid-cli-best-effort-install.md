@@ -268,16 +268,27 @@ absolute path.
 ## Testing
 
 Hermetic, no-network unit tests live in
-`crates/amplihack-cli/src/commands/install/tests/mermaid_cli_tests.rs` and are
-serialized via `home_env_lock()`. They cover:
+`crates/amplihack-cli/src/commands/install/tests/mermaid_cli_tests.rs`. They
+call `ensure_mermaid_cli_with(..)` with a hook that, on every child it
+starts, sets `PATH` to one stub directory and `HOME` to a temporary
+directory, and removes `AMPLIHACK_CLAUDE_PROFILE_ROOT`. The test process's
+own `PATH` and `HOME` are never changed. The tests hold `home_env_lock()`
+only because they set and clear `AMPLIHACK_SKIP_MMDC`. They cover:
 
 - `AMPLIHACK_SKIP_MMDC` set → `SkippedByEnv` short-circuit (no commands run).
-- npm absent (via `PATH` manipulation) → `SkippedNoNpm`, handled gracefully.
-- A stub `mmdc` on `PATH` → `AlreadyPresent` skip.
-- The function **never returns `Err`** — failure does not propagate as an
+- npm absent (no `npm` stub in the child's `PATH`) → `SkippedNoNpm`, handled gracefully.
+- A stub `mmdc` in the child's `PATH` → `AlreadyPresent` skip.
+- A stub `npm install -g` that writes an `mmdc` stub → `Installed`, with the
+  hook applied to all four children.
+- The function **never returns `Err`**: failure does not propagate as an
   install error.
 
-The tests never perform a real npm install or contact the network.
+The tests in `mermaid_cli.rs` check that a hanging `mmdc` makes the probe
+return `false` well within 30 s, and that the probe's child gets the test's
+`HOME` and no profile root. The install tests run `npm install -g` only
+against a stub `npm`, which either exits 1 or writes an `mmdc` stub; no test
+installs from the npm registry or contacts the network. See
+[Keep Tests from Changing PATH and HOME](../howto/keep-tests-from-changing-path-and-home.md).
 
 ## See Also
 

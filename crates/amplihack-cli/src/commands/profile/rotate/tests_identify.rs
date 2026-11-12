@@ -1,6 +1,6 @@
 //! `rotate::identify`: which profile is live in `~/.claude`, and which
 //! profiles may receive it (D11, D13, D16, issue #1592). Only `.claude.json`
-//! files and metadata are read; the login fixtures are mode 0000.
+//! files and metadata are read, and login files only for their top-level keys.
 //!
 //! Contract:
 //! - `Account::from_claude_json(&[u8]) -> Option<Account>`; `Account::same`
@@ -15,7 +15,7 @@
 //!   Vec<(ProfileName, Skip)>), ProfileError>`; a root that cannot be listed
 //!   is an error. `Skip::as_str()` gives the documented reason.
 
-use super::identify::{Account, CandidateInput, LiveId, Skip, candidates, live};
+use super::identify::{Account, CandidateInput, LiveId, Skip, candidates, live, refused_dirs};
 use super::ledger::{RotateLedger, RotateState};
 use crate::commands::profile::auto_switch::kit::{Ledger, Liveness};
 use crate::commands::profile::name::ProfileName;
@@ -38,11 +38,10 @@ fn private(path: &Path, body: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
+/// An OAuth login (issue #1700: its top-level keys are read for the kind).
 fn login(path: &Path) {
-    private(path, "SENTINEL");
-    if crate::commands::profile::auto_switch::euid() != 0 {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
-    }
+    private(path, &super::tests::tests_fixture_identity::body(path));
+    fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o700)).unwrap();
 }
 
 fn acct(uuid: &str, email: &str) -> String {
@@ -86,6 +85,11 @@ fn env() -> Env {
     );
     let rs = RotateState::new(&root);
     rs.ensure().unwrap();
+    let state = crate::commands::profile::auto_switch::kit::State::new(&root).unwrap();
+    for name in ["work", "spare", "extra"] {
+        let a = Account::of_dir(&root.join(name)).unwrap();
+        crate::commands::profile::expected::record(&state, &n(name), &a).unwrap();
+    }
     Env {
         _tmp: tmp,
         home,
@@ -122,20 +126,117 @@ impl Env {
 
 // --- Accounts --------------------------------------------------------------
 
+fn acct_org(uuid: &str, org: &str, email: &str) -> String {
+    serde_json::json!({"oauthAccount": {
+        "accountUuid": uuid,
+        "organizationUuid": org,
+        "emailAddress": email,
+    }})
+    .to_string()
+}
+
+fn parse(body: &str) -> Account {
+    Account::from_claude_json(body.as_bytes()).unwrap()
+}
+
+// --- Identity rule (D2, bug 1) ----------------------------------------------
+// One user can belong to several organizations, each with its own
+// subscription and limits: the same uuid in a different org is another
+// account.
+
 #[test]
-fn accounts_match_by_uuid_then_email() {
-    let a = Account::from_claude_json(acct("u1", "Me@Example.com").as_bytes()).unwrap();
-    let same_uuid = Account::from_claude_json(acct("u1", "other@example.com").as_bytes()).unwrap();
-    let other_uuid = Account::from_claude_json(acct("u2", "me@example.com").as_bytes()).unwrap();
-    let email_only =
-        Account::from_claude_json(br#"{"oauthAccount":{"emailAddress":"me@EXAMPLE.com"}}"#)
-            .unwrap();
-    assert!(a.same(&same_uuid));
-    assert!(!a.same(&other_uuid), "uuids decide when both have one");
-    assert!(
-        a.same(&email_only),
-        "e-mail, case-insensitive, when one has no uuid"
+fn same_uuid_and_same_org_is_the_same_account() {
+    let a = parse(&acct_org("u1", "o1", "me@example.com"));
+    let b = parse(&acct_org("u1", "o1", "other@example.com"));
+    assert!(a.same(&b));
+    assert!(b.same(&a), "symmetric");
+}
+
+#[test]
+fn same_uuid_in_another_org_is_another_account() {
+    let team = parse(&acct_org("u1", "o-team", "me@example.com"));
+    let personal = parse(&acct_org("u1", "o-personal", "me@example.com"));
+    assert!(!team.same(&personal));
+    assert!(!personal.same(&team));
+}
+
+#[test]
+fn an_org_on_one_side_only_is_another_account() {
+    let with_org = parse(&acct_org("u1", "o1", "me@example.com"));
+    let without = parse(&acct("u1", "me@example.com"));
+    assert!(!with_org.same(&without));
+    assert!(!without.same(&with_org));
+}
+
+#[test]
+fn same_uuid_and_no_org_on_either_side_is_the_same_account() {
+    let a = parse(&acct("u1", "me@example.com"));
+    let b = parse(&acct("u1", "other@example.com"));
+    assert!(a.same(&b));
+}
+
+#[test]
+fn different_uuids_are_different_accounts_whatever_the_org() {
+    for (oa, ob) in [("o1", "o1"), ("o1", "o2"), ("", "")] {
+        let a = parse(&acct_org("u1", oa, "me@example.com"));
+        let b = parse(&acct_org("u2", ob, "me@example.com"));
+        assert!(!a.same(&b), "orgs {oa:?}/{ob:?}");
+    }
+}
+
+#[test]
+fn without_uuids_the_emails_decide_ignoring_case() {
+    let a = parse(r#"{"oauthAccount":{"emailAddress":"Me@Example.com"}}"#);
+    let b = parse(r#"{"oauthAccount":{"emailAddress":"me@EXAMPLE.com"}}"#);
+    let c = parse(r#"{"oauthAccount":{"emailAddress":"you@example.com"}}"#);
+    assert!(a.same(&b));
+    assert!(!a.same(&c));
+}
+
+#[test]
+fn a_uuid_on_one_side_only_is_another_account() {
+    // Was an e-mail fallback before D2: a missing uuid never makes two
+    // logins look like one account.
+    let a = parse(&acct("u1", "me@example.com"));
+    let email_only = parse(r#"{"oauthAccount":{"emailAddress":"me@EXAMPLE.com"}}"#);
+    assert!(!a.same(&email_only));
+    assert!(!email_only.same(&a));
+}
+
+#[test]
+fn the_org_does_not_change_the_ledger_key() {
+    // D3: the ledger still records the user only.
+    let a = parse(&acct_org("u1", "o1", "me@example.com"));
+    assert_eq!(a.key(), "u1");
+    assert!(a.matches_key("u1"));
+    assert!(a.matches_key("ME@example.com"));
+    assert!(!a.matches_key("o1"), "an org id is never a key");
+}
+
+#[test]
+fn an_unsafe_org_counts_as_missing() {
+    let plain = parse(&acct("u1", "me@example.com"));
+    for bad in ["o".repeat(321), "o\u{1b}1".to_string(), String::new()] {
+        let a = parse(&acct_org("u1", &bad, "me@example.com"));
+        assert!(a.same(&plain), "org {bad:?} must count as missing");
+    }
+    let non_string = parse(
+        r#"{"oauthAccount":{"accountUuid":"u1","organizationUuid":7,"emailAddress":"me@example.com"}}"#,
     );
+    assert!(
+        non_string.same(&plain),
+        "a non-string org counts as missing"
+    );
+}
+
+#[test]
+fn from_block_reads_a_bare_oauth_account_block() {
+    let block = serde_json::json!({"accountUuid": "u1", "organizationUuid": "o1"});
+    let a = Account::from_block(&block).unwrap();
+    assert!(a.same(&parse(&acct_org("u1", "o1", ""))));
+    assert!(!a.same(&parse(&acct_org("u1", "o2", ""))));
+    assert!(Account::from_block(&serde_json::json!("not an object")).is_none());
+    assert!(Account::from_block(&serde_json::json!({})).is_none());
 }
 
 #[test]
@@ -146,15 +247,22 @@ fn missing_or_unsafe_account_values_count_as_missing() {
     assert!(Account::from_claude_json(long.as_bytes()).is_none());
     let ctl = acct("u\u{1b}1", "");
     assert!(Account::from_claude_json(ctl.as_bytes()).is_none());
+    for bidi in ['\u{202a}', '\u{202e}', '\u{2066}', '\u{2069}'] {
+        assert!(!super::ledger::safe_account(&format!("a{bidi}@b")));
+        let a = acct(&format!("u{bidi}1"), "");
+        assert!(Account::from_claude_json(a.as_bytes()).is_none());
+    }
+    assert!(super::ledger::safe_account("work@example.com"));
 }
 
 #[test]
 fn account_debug_output_hides_the_values() {
-    let a =
-        Account::from_claude_json(acct("uuid-secret", "secret@example.com").as_bytes()).unwrap();
+    let a = parse(&acct_org("uuid-secret", "org-secret", "secret@example.com"));
     let shown = format!("{a:?}");
     assert!(
-        !shown.contains("uuid-secret") && !shown.contains("secret@"),
+        !shown.contains("uuid-secret")
+            && !shown.contains("secret@")
+            && !shown.contains("org-secret"),
         "{shown}"
     );
 }
@@ -182,12 +290,34 @@ fn the_rotate_ledger_decides_when_its_account_matches() {
     assert_eq!(e.live(), (LiveId::Known(n("work")), None));
 }
 
+/// Issue #1886: `~/.claude.json` can name the previous account for minutes
+/// after a swap, so a ledger account that does not match it is no hand
+/// change; the ledger decides, with or without an account.
 #[test]
-fn a_ledger_account_that_does_not_match_is_a_hand_change() {
+fn a_ledger_account_that_does_not_match_claude_json_still_decides() {
+    let e = env();
+    for account in [Some("u-someone-else".to_string()), None] {
+        e.rs.save_ledger(&RotateLedger {
+            live: Some("work".into()),
+            account,
+            ..RotateLedger::default()
+        })
+        .unwrap();
+        assert_eq!(e.live(), (LiveId::Known(n("work")), None));
+    }
+}
+
+/// Issue #1886: an open suspicion from the credential readings is a hand
+/// change until recovery settles it.
+#[test]
+fn an_open_hand_suspect_is_a_hand_change() {
     let e = env();
     e.rs.save_ledger(&RotateLedger {
         live: Some("work".into()),
-        account: Some("u-someone-else".into()),
+        hand_suspect: Some(super::hand_fields::HandSuspect {
+            profile: "other".into(),
+            first_seen: 1,
+        }),
         ..RotateLedger::default()
     })
     .unwrap();
@@ -201,12 +331,69 @@ fn without_a_ledger_the_single_login_less_match_is_live() {
 }
 
 #[test]
+fn login_less_profiles_of_one_user_in_two_orgs_are_not_ambiguous() {
+    // ryan-mistt-org and ryan-mistt-personal: one user, two subscriptions.
+    let e = env();
+    e.store.add(&n("personal")).unwrap();
+    private(
+        &e.root().join("work/.claude.json"),
+        &acct_org("u-work", "o-team", "work@example.com"),
+    );
+    private(
+        &e.root().join("personal/.claude.json"),
+        &acct_org("u-work", "o-personal", "work@example.com"),
+    );
+    private(
+        &e.home.join(".claude.json"),
+        &acct_org("u-work", "o-personal", "work@example.com"),
+    );
+    seed_ownership(&e, &["work", "personal"], true);
+    assert_eq!(e.live(), (LiveId::Known(n("personal")), None));
+}
+
+#[test]
+fn login_less_profiles_with_the_same_user_and_org_are_ambiguous() {
+    let e = env();
+    e.store.add(&n("twin")).unwrap();
+    for p in ["work", "twin"] {
+        private(
+            &e.root().join(p).join(".claude.json"),
+            &acct_org("u-work", "o1", "work@example.com"),
+        );
+    }
+    private(
+        &e.home.join(".claude.json"),
+        &acct_org("u-work", "o1", "work@example.com"),
+    );
+    seed_ownership(&e, &["work", "twin"], true);
+    assert_eq!(e.live().0, LiveId::Ambiguous);
+}
+
+#[test]
+fn a_prototype_ledger_whose_profile_is_in_another_org_is_ignored() {
+    let e = env();
+    private(
+        &e.root().join("work/.claude.json"),
+        &acct_org("u-work", "o-team", "work@example.com"),
+    );
+    private(
+        &e.home.join(".claude.json"),
+        &acct_org("u-work", "o-personal", "work@example.com"),
+    );
+    seed_ownership(&e, &["work"], true);
+    e.prototype(r#"{"live":"work","since":1}"#);
+    seed_ownership(&e, &["work"], true);
+    assert_eq!(e.live().1, Some("account does not match"));
+}
+
+#[test]
 fn without_any_match_the_login_is_adopted() {
     let e = env();
     private(
         &e.home.join(".claude.json"),
         &acct("u-new", "new@example.com"),
     );
+    seed_ownership(&e, &[], true);
     assert_eq!(e.live().0, LiveId::Adopt);
 }
 
@@ -217,6 +404,7 @@ fn a_matching_profile_that_has_a_login_is_not_live() {
         &e.home.join(".claude.json"),
         &acct("u-spare", "spare@example.com"),
     );
+    seed_ownership(&e, &[], true);
     assert_eq!(e.live().0, LiveId::Adopt, "spare still has its own login");
 }
 
@@ -254,7 +442,10 @@ fn a_prototype_ledger_whose_profile_has_no_account_is_used() {
     fs::remove_file(e.root().join("extra/.credentials.json")).unwrap();
     fs::remove_file(e.root().join("extra/.claude.json")).unwrap();
     e.prototype(r#"{"live":"extra","since":5}"#);
-    assert_eq!(e.live(), (LiveId::Known(n("extra")), None));
+    assert_eq!(
+        e.live(),
+        (LiveId::Known(n("work")), Some("account does not match"))
+    );
 }
 
 #[test]
@@ -341,6 +532,39 @@ fn every_documented_exclusion_applies() {
 }
 
 #[test]
+fn a_refused_directory_is_skipped_as_directory_refused_not_no_login() {
+    // Issue #1698: a directory open to other users fails the check, so its
+    // login cannot be looked at. That is not a missing login: the overflow
+    // rule holds a move onto credits while a plan profile is refused.
+    let e = env();
+    for p in ["g-open", "h-excl"] {
+        e.store.add(&n(p)).unwrap();
+        private(
+            &e.root().join(p).join(".claude.json"),
+            &acct(p, "x@example.com"),
+        );
+        login(&e.root().join(p).join(".credentials.json"));
+        fs::set_permissions(e.root().join(p), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut input = e.input(None);
+    input.exclude = vec![n("h-excl")];
+    let (c, skips) = candidates(&e.store, &input).unwrap();
+    assert_eq!(c, vec![n("extra"), n("spare")]);
+    assert_eq!(skipped(&skips, "g-open"), Some("directory refused"));
+    // Out of rotation anyway, so it holds nothing.
+    assert_eq!(skipped(&skips, "h-excl"), Some("excluded"));
+    // A missing login is still `no login`, and is not refused.
+    assert_eq!(skipped(&skips, "work"), Some("no login"));
+    assert_eq!(refused_dirs(&skips), vec![n("g-open")]);
+
+    // Fixed, it is a candidate again.
+    fs::set_permissions(e.root().join("g-open"), fs::Permissions::from_mode(0o700)).unwrap();
+    let (c, skips) = candidates(&e.store, &input).unwrap();
+    assert_eq!(c, vec![n("extra"), n("g-open"), n("spare")]);
+    assert!(refused_dirs(&skips).is_empty());
+}
+
+#[test]
 fn unknown_liveness_leaves_no_candidates() {
     let e = env();
     for l in [Liveness::Everything, Liveness::Unsupported] {
@@ -359,4 +583,18 @@ fn a_root_that_cannot_be_listed_is_an_error_not_an_empty_list() {
     fs::write(&file, "").unwrap();
     let store = ProfileStore::new(file);
     assert!(candidates(&store, &e.input(None)).is_err());
+}
+
+fn seed_ownership(e: &Env, profiles: &[&str], seed_home: bool) {
+    let state = crate::commands::profile::auto_switch::kit::State::new(e.root()).unwrap();
+    for p in profiles {
+        let a = Account::of_dir(&e.root().join(p)).unwrap();
+        crate::commands::profile::expected::record(&state, &n(p), &a).unwrap();
+    }
+    if seed_home {
+        let path = e.home.join(".claude/.credentials.json");
+        let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        v["task1753FakeIdentity"] = Account::of_dir(&e.home).unwrap().block();
+        private(&path, &v.to_string());
+    }
 }

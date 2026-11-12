@@ -357,6 +357,15 @@ fn base_env(fix: &GitFixture) -> HashMap<&'static str, String> {
     );
     env.insert("EXISTING_BRANCH", String::new());
     env.insert("PR_NUMBER", String::new());
+    // Pin the recipe's helper ladder to THIS checkout's amplifier-bundle/tools.
+    // `run_bash` clears the environment, and the fixture repo has no bundle, so
+    // without this the ladder falls through to `~/.amplihack/amplifier-bundle/tools`,
+    // whose installed helpers may predate the recipe under test (e.g. a
+    // deconflict helper without `--base`, #1565) and fail for host-specific reasons.
+    env.insert(
+        "AMPLIHACK_HOME",
+        workspace_root().to_string_lossy().into_owned(),
+    );
     env
 }
 

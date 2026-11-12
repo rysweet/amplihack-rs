@@ -5,18 +5,26 @@ pub(super) fn run_tui_dry_run(
     state: &FleetState,
     ui_state: &mut FleetTuiUiState,
 ) -> Result<()> {
-    run_tui_dry_run_with(azlin_path, state, ui_state, || {
-        NativeReasonerBackend::detect("auto")
-    })
+    run_tui_dry_run_with(
+        azlin_path,
+        state,
+        ui_state,
+        || NativeReasonerBackend::detect("auto"),
+        &|_| {},
+    )
 }
 
 /// [`run_tui_dry_run`] with the reasoner backend injected (issue #1482: so
-/// tests reach the root-sandbox notice binding with a chosen decision).
+/// tests reach the root-sandbox notice binding with a chosen decision) and
+/// `configure` applied to every child the dry run starts (issue #1765: so
+/// tests give the `azlin` and `claude` children a temporary `HOME` without
+/// changing the test process's environment).
 pub(super) fn run_tui_dry_run_with(
     azlin_path: &Path,
     state: &FleetState,
     ui_state: &mut FleetTuiUiState,
     backend: impl FnOnce() -> Result<NativeReasonerBackend>,
+    configure: &dyn Fn(&mut Command),
 ) -> Result<()> {
     let Some((vm, session)) = ui_state.selected_session(state) else {
         ui_state.status_message = Some("No session selected for dry-run.".to_string());
@@ -28,12 +36,13 @@ pub(super) fn run_tui_dry_run_with(
     // announced in the notice panel rather than on stderr.
     let sandbox_notice = backend.root_sandbox_notice();
     let mut reasoner = FleetSessionReasoner::new(azlin_path.to_path_buf(), backend);
-    let analysis = reasoner.reason_about_session(
+    let analysis = reasoner.reason_about_session_with(
         &vm.name,
         &session.session_name,
         "",
         "",
         Some(&session.last_output),
+        configure,
     )?;
     let summary = format!(
         "Prepared proposal for {}/{}: {} ({:.0}%)",

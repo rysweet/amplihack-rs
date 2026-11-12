@@ -3,10 +3,11 @@
 //! sends a signal.
 //!
 //! Contract:
-//! - `daemon::parse_pid(bytes: &[u8], own: u32) -> Option<u32>`: at most 32
+//! - `parse_pid(bytes: &[u8], own: u32) -> Option<u32>` (shared with the
+//!   limit-resume hook in `amplihack_utils::rotator_status`): at most 32
 //!   bytes of ASCII digits (one trailing newline allowed), value > 1, not
 //!   `own`.
-//! - `daemon::is_rotator(cmdline: &[u8], exe_name: &OsStr) -> bool`:
+//! - `is_rotator(cmdline: &[u8], Some(exe_name)) -> bool` (shared too):
 //!   NUL-separated argv containing `profile`, `rotate` and `watch`, with
 //!   `argv[0]`'s file name equal to `exe_name`.
 //! - `daemon::state_at(&RotateState, proc_root: &Path, exe_name: &OsStr) ->
@@ -14,7 +15,12 @@
 //! - `cycle::prototype_guard(root: &Path) -> Result<(), ProfileError>`.
 
 use super::cycle::prototype_guard;
-use super::daemon::{DaemonState, is_rotator, parse_pid, state_at};
+use super::daemon::{DaemonState, state_at};
+use amplihack_utils::rotator_status::parse_pid;
+
+fn is_rotator(cmdline: &[u8], exe_name: &OsStr) -> bool {
+    amplihack_utils::rotator_status::is_rotator(cmdline, Some(exe_name))
+}
 use super::ledger::RotateState;
 use crate::commands::profile::ProfileError;
 use std::ffi::OsStr;
@@ -265,4 +271,164 @@ fn a_symlinked_prototype_lock_is_not_followed() {
         ),
         "O_NOFOLLOW: the link's target is never locked"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1690: the CI leak scan and the spawner agree on the daemon's argv.
+// ---------------------------------------------------------------------------
+
+const LEAK_SCAN: &str = include_str!("../../../../../../scripts/check-leaked-rotators.sh");
+
+/// `scripts/check-leaked-rotators.sh` reports a process only when its argv
+/// holds each of these as an exact entry. If `daemon::spawned_args` stops
+/// producing one of them, the scan goes blind and CI stays green while
+/// daemons leak; this test fails first.
+#[test]
+fn the_leak_scan_matches_the_argv_spawn_builds() {
+    let s = super::settings::resolve(&super::TuneFlags::default(), None, &|_: &str| None)
+        .expect("default settings");
+    let args = super::daemon::spawned_args(&s);
+
+    // The argv is a real command line: it parses as `profile rotate watch
+    // --spawned`, so the markers below are what the daemon really runs with.
+    let cli =
+        crate::Cli::try_parse_from(std::iter::once("amplihack".to_string()).chain(args.clone()))
+            .unwrap_or_else(|e| panic!("spawned argv {args:?} does not parse: {e}"));
+    match cli.command {
+        crate::Commands::Profile(crate::commands::profile::ProfileCommands::Rotate(r)) => {
+            match r.action {
+                Some(super::RotateAction::Watch(w)) => assert!(w.spawned, "{args:?}"),
+                other => panic!("spawned argv {args:?} parsed as {other:?}, not `watch`"),
+            }
+        }
+        _ => panic!("spawned argv {args:?} is not `profile rotate`"),
+    }
+
+    for marker in ["profile", "rotate", "watch", "--spawned"] {
+        assert!(
+            args.iter().any(|a| a == marker),
+            "spawned argv {args:?} lacks `{marker}`, which scripts/check-leaked-rotators.sh matches on"
+        );
+        // The `case` arm for this marker, whatever its indentation, must set
+        // the flag named after it (`--spawned` sets `have_spawned`).
+        let flag = marker.trim_start_matches('-');
+        let arm = format!("{marker}) have_{flag}=1");
+        assert!(
+            LEAK_SCAN.lines().any(|l| l.trim_start().starts_with(&arm)),
+            "scripts/check-leaked-rotators.sh no longer matches `{marker}` with `{arm}`"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1844 (SR-9): a stopping rotator waits for token refreshes in
+// progress, so it never leaves Claude's `.oauth_refresh.lock` behind.
+//
+// Contract:
+// - `inflight::refresh_grace(timeout) = timeout + 1 s`.
+// - `inflight::finish_refreshes(grace) -> bool` waits until no refresh holds
+//   a lock (`usage_direct::refreshes_in_progress() == 0`) or `grace` ends,
+//   and says whether none is left. It never sets `PROBE_CANCEL`.
+// ---------------------------------------------------------------------------
+
+mod issue_1844 {
+    use super::super::inflight::{finish_refreshes, refresh_grace};
+    use crate::commands::profile::tests_fake_http::{FakeHttp, Reply};
+    use crate::commands::profile::usage_direct::{Endpoints, Request, read};
+    use serde_json::json;
+    use std::ffi::OsStr;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
+
+    static NO_CANCEL: AtomicBool = AtomicBool::new(false);
+
+    #[test]
+    fn the_grace_is_the_deadline_plus_one_second() {
+        assert_eq!(
+            refresh_grace(Duration::from_secs(120)),
+            Duration::from_secs(121)
+        );
+        assert_eq!(
+            refresh_grace(Duration::from_secs(1)),
+            Duration::from_secs(2)
+        );
+    }
+
+    #[test]
+    fn stopping_during_a_stalled_refresh_leaves_no_refresh_lock() {
+        // The stop waits for the process-wide refresh count; no other test's
+        // refresh may run beside this one (issue #2036).
+        let _serial = crate::test_support::refresh_count_lock();
+        let now = chrono::Utc::now().timestamp();
+        let iso = |t: i64| {
+            chrono::DateTime::from_timestamp(t, 0)
+                .unwrap()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string()
+        };
+        let body = json!({
+            "five_hour": {"utilization": 5.0, "resets_at": iso(now + 3600)},
+            "seven_day": {"utilization": 6.0, "resets_at": iso(now + 86_400)}
+        });
+        let fake = FakeHttp::start(move |s, _| {
+            if s.method == "POST" {
+                Reply::json(
+                    200,
+                    &json!({"access_token": "FAKE-NEW-1844-d", "expires_in": 3600}),
+                )
+                .after(Duration::from_millis(1200))
+            } else if s.header("authorization") == Some("Bearer FAKE-NEW-1844-d") {
+                Reply::json(200, &body)
+            } else {
+                Reply::json(401, &json!({}))
+            }
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("spare");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let creds = dir.join(".credentials.json");
+        fs::write(
+            &creds,
+            json!({"claudeAiOauth": {
+                "accessToken": "FAKE-OLD-1844-d",
+                "refreshToken": "FAKE-REFRESH-1844-d",
+                "expiresAt": chrono::Utc::now().timestamp_millis() + 3_600_000
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        fs::set_permissions(&creds, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let (base, token) = (fake.base(), fake.token_url());
+        let reader_dir = dir.clone();
+        let reader = std::thread::spawn(move || {
+            let (ep, _) = Endpoints::resolve(Some(OsStr::new(&base)), Some(OsStr::new(&token)));
+            let journals = Vec::new();
+            let req = Request {
+                creds_dir: &reader_dir,
+                journals: &journals,
+                allow_refresh: true,
+                cancel: &NO_CANCEL,
+                timeout: Duration::from_secs(5),
+                now_ms: chrono::Utc::now().timestamp_millis(),
+            };
+            read(&ep, &req).is_ok()
+        });
+        let start = Instant::now();
+        while fake.count("POST", "/v1/oauth/token") == 0 {
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "no refresh started"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(dir.join(".oauth_refresh.lock").is_dir());
+        // The daemon stops now.
+        assert!(finish_refreshes(refresh_grace(Duration::from_secs(5))));
+        assert!(!dir.join(".oauth_refresh.lock").exists());
+        assert!(reader.join().unwrap());
+    }
 }

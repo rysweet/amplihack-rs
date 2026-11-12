@@ -5,8 +5,8 @@ Those bundled `SKILL.md` files are the install-time source of truth.
 
 ## Summary
 
-- **Unique bundled skill names:** 124
-- **Skill definition files:** 124
+- **Unique bundled skill names:** 125
+- **Skill definition files:** 125
 
 ## Bundled Skills
 
@@ -72,6 +72,7 @@ Those bundled `SKILL.md` files are the install-time source of truth.
 | `indigenous-leader-analyst` | `indigenous-leader-analyst/SKILL.md` |
 | `investigation-workflow` | `investigation-workflow/SKILL.md` |
 | `journalist-analyst` | `journalist-analyst/SKILL.md` |
+| `journalistic-writing-style` | `journalistic-writing-style/SKILL.md` |
 | `knowledge-extractor` | `knowledge-extractor/SKILL.md` |
 | `lawyer-analyst` | `lawyer-analyst/SKILL.md` |
 | `learning-path-builder` | `learning-path-builder/SKILL.md` |

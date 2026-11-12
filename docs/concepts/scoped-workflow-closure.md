@@ -72,6 +72,13 @@ divide into the primary key and the tie-breakers:
 The shell helper `workflow_pr_scope.sh` is the single authority for current-work
 PR ownership. `workflow_publish_pr.sh`, `workflow_pr_ready.sh`, and
 `workflow_final_status.sh` call it before mutating or reporting PR state.
+`workflow_pr_ready.sh` and `workflow_final_status.sh` take the persisted PR
+from `RECIPE_VAR_pr_number` and `RECIPE_VAR_pr_url` (or, when those are empty,
+the `pr_publish_result` step output) and the issue from
+`RECIPE_VAR_issue_number`. A bare `PR_NUMBER`, `PR_URL` or `ISSUE_NUMBER`
+inherited from the launching shell is ignored, so it cannot name another
+workflow's PR (see
+[Step outputs ignore inherited bare variables](../reference/auto-drive-to-merge.md#step-outputs-ignore-inherited-bare-variables)).
 
 Persisted PR identity has priority: a known `pr_number` or `pr_url` is
 authoritative and validated directly. Otherwise the helper resolves the primary

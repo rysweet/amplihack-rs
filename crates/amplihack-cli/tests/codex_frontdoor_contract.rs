@@ -48,7 +48,7 @@ esac
                 .unwrap()
                 .join("amplihack")
         });
-    let out = Command::new(cli)
+    let out = crate::isolated_amplihack::isolated(cli)
         .args(["codex", "--no-reflection", "--", "exec", "-"])
         .env("HOME", home.path())
         .env("CODEX_HOME", home.path().join(".codex"))

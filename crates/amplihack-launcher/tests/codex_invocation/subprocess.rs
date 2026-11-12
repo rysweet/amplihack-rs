@@ -72,8 +72,15 @@ pub(super) fn interactive_resume_subprocess_inherits_real_terminal_stdin() {
                 "terminal stdin was replaced: {output:?}"
             );
             let mut expected = args.join("\n");
-            expected.push_str("\n--\ncontinue λ\n");
-            assert_eq!(output.stdout, expected.as_bytes());
+            expected.push_str("\n--\n");
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            assert!(stdout.starts_with(&expected), "{stdout}");
+            let pointer = &stdout[expected.len()..];
+            assert!(
+                pointer.starts_with(amplihack_utils::prompt_delivery::FILE_REFERENCE_PREFIX),
+                "issue #2030: interactive Codex gets the pointer, not the prompt: {pointer}"
+            );
+            assert!(!pointer.contains("continue λ"));
         }
         println!("CODEX_TERMINAL_FIXTURE_COMPLETE");
         return;
@@ -93,8 +100,8 @@ pub(super) fn interactive_resume_subprocess_inherits_real_terminal_stdin() {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
             )
         },
         0

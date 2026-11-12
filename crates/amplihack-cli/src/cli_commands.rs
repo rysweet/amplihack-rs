@@ -40,6 +40,21 @@ pub enum Commands {
     /// Manage Claude Code login profiles
     #[command(subcommand)]
     Profile(crate::commands::profile::ProfileCommands),
+    /// Remove or archive what recipe runs leave behind (issue #1808)
+    Cleanup(crate::commands::cleanup::CleanupArgs),
+    /// Archive old Claude Code sessions, or restore one
+    #[cfg(unix)]
+    #[command(subcommand)]
+    Sessions(crate::commands::sessions::SessionsCommands),
+    /// Report workstream token observations or explicitly publish a PR summary
+    #[command(subcommand)]
+    Usage(crate::commands::usage::UsageCommands),
+    /// Show the capacity governor's limit, budgets, slots and queue
+    #[command(subcommand)]
+    Governor(crate::commands::governor::GovernorCommands),
+    /// Register, supervise and report long-lived agent sessions
+    #[command(subcommand)]
+    Agent(crate::commands::agent::AgentCommands),
     /// Launch Claude Code
     Launch {
         /// Resume the previous session
@@ -84,6 +99,8 @@ pub enum Commands {
         /// Use a named Claude login profile (see `amplihack profile`).
         #[arg(long = "profile", value_name = "NAME")]
         profile: Option<String>,
+        #[command(flatten)]
+        governor: crate::commands::governor::GovernorArgs,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
@@ -145,6 +162,16 @@ MODEL SELECTION (issues #1421, #1527)
         /// Read the initial auto-mode prompt from a file (requires --auto).
         #[arg(long = "prompt-file", value_name = "PATH", requires = "auto")]
         prompt_file: Option<PathBuf>,
+        /// Record this session under NAME so 'amplihack agent supervise' can
+        /// resume it if its tmux session is lost.
+        #[arg(
+            long = "supervise",
+            value_name = "NAME",
+            conflicts_with_all = ["auto", "append", "docker", "checkout_repo"]
+        )]
+        supervise: Option<String>,
+        #[command(flatten)]
+        governor: crate::commands::governor::GovernorArgs,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
@@ -180,7 +207,9 @@ MODEL SELECTION (issues #1421, #1527)
         /// Read the initial auto-mode prompt from a file (requires --auto).
         #[arg(long = "prompt-file", value_name = "PATH", requires = "auto")]
         prompt_file: Option<PathBuf>,
-        /// Extra args passed to copilot
+        /// Extra args passed to copilot. amplihack does not pass `--remote`
+        /// (Copilot 1.0.105 removed it, issue #1744); start a remote session
+        /// inside Copilot with `/remote on` and stop it with `/remote off`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -338,6 +367,12 @@ MODEL SELECTION (issues #1421, #1527)
     LockStatus,
     /// Show version information
     Version,
+    /// Read and change persistent user defaults (issue #1606):
+    /// `~/.amplihack/config.toml` and a project's `.amplihack/config.toml`.
+    Config {
+        #[command(subcommand)]
+        command: crate::ConfigCommands,
+    },
     /// Print the agent CLI that agent steps would run under, and why.
     ///
     /// With --shell, print it as `env -u <each session marker>
@@ -345,7 +380,10 @@ MODEL SELECTION (issues #1421, #1527)
     /// prefix for a command started with `tmux new-session`. tmux gives a new
     /// session the server's global environment, not this shell's, and that
     /// holds the session markers of whatever started the server; the prefix
-    /// removes them, so only this shell's answer arrives. `setsid` and `nohup`
+    /// removes them, so only this shell's answer arrives. It also removes
+    /// AMPLIHACK_PARENT_RECIPE_PID, AMPLIHACK_PARENT_RECIPE_STARTTIME and
+    /// AMPLIHACK_AUTODRIVE_STATE_DIR, which a server started from a recipe
+    /// step would otherwise hand to every session. `setsid` and `nohup`
     /// keep this shell's environment and need no prefix. A default guess stays
     /// tagged as one. Keep the tmux command in double quotes: in single quotes
     /// this runs in the new session and reads the server's markers.
@@ -361,6 +399,20 @@ MODEL SELECTION (issues #1421, #1527)
         /// (default: the current directory).
         #[arg(short = 'w', long = "working-dir")]
         working_dir: Option<std::path::PathBuf>,
+    },
+    /// Wait for a number of seconds without starting any process.
+    ///
+    /// Use this instead of `tail -f /dev/null` or `timeout N tail -f
+    /// /dev/null`, which outlive the tool call and are left running as
+    /// orphans (the PreToolUse hook denies them). To wait for work to finish
+    /// rather than for a fixed time, run it in the background and wait on its
+    /// PID: `cmd & pid=$!; wait $pid`.
+    ///
+    /// Prints nothing and exits 0. Ctrl-C ends it at once.
+    Wait {
+        /// Whole seconds to wait, from 0 to 86400 (one day).
+        #[arg(long, value_parser = clap::value_parser!(u64).range(0..=86400))]
+        seconds: u64,
     },
     /// Self-update the amplihack binary, then run `install` to refresh framework assets.
     ///

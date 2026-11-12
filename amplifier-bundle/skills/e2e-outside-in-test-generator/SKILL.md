@@ -57,6 +57,8 @@ Generate runnable end-to-end tests from the user's point of view. The bundled he
 - Do not add a new test framework unless the repository has no suitable e2e path.
 - Do not silently skip journeys; document unsupported journeys and why.
 
+**tmux in tests and sandboxes:** pass `-S <private socket>` (or use `env -u TMUX tmux -S <private socket>`) on every tmux command. When `$TMUX` is set, as it is inside any tmux pane, tmux uses that socket and ignores `TMUX_TMPDIR`, so `TMUX_TMPDIR=… tmux kill-server` kills the user's own server. Never run `kill-server` or `kill-session -a` without `-S`/`-L`; a PreToolUse hook denies them.
+
 ## Native Helper
 
 ```bash

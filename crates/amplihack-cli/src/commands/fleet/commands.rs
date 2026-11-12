@@ -126,10 +126,16 @@ pub(super) fn parse_native_fleet_command(args: &[String]) -> Option<NativeFleetC
 }
 
 pub(super) fn run_setup() -> Result<()> {
+    run_setup_with(&AzlinLookup::from_env())
+}
+
+/// [`run_setup`] with the `AZLIN_PATH`, `PATH` and `HOME` values supplied by
+/// the caller (issue #1765).
+pub(super) fn run_setup_with(lookup: &AzlinLookup) -> Result<()> {
     println!("Fleet setup — checking prerequisites...");
     let mut all_ok = true;
 
-    let azlin_path = match get_azlin_path() {
+    let azlin_path = match get_azlin_path_in(lookup) {
         Ok(path) => {
             println!("  azlin: {}", path.display());
             Some(path)
@@ -167,7 +173,7 @@ pub(super) fn run_setup() -> Result<()> {
         }
     }
 
-    if let Some(path) = find_binary("az") {
+    if let Some(path) = find_binary_in("az", lookup.path.as_deref()) {
         println!("  az CLI: {}", path.display());
     } else {
         println!("  az CLI: not found (optional — needed for VM provisioning)");
@@ -185,7 +191,13 @@ pub(super) fn run_setup() -> Result<()> {
 }
 
 pub(super) fn run_status() -> Result<()> {
-    let azlin = match get_azlin_path() {
+    run_status_with(&AzlinLookup::from_env())
+}
+
+/// [`run_status`] with the `AZLIN_PATH`, `PATH` and `HOME` values supplied by
+/// the caller (issue #1765).
+pub(super) fn run_status_with(lookup: &AzlinLookup) -> Result<()> {
+    let azlin = match get_azlin_path_in(lookup) {
         Ok(path) => path,
         Err(_) => {
             eprintln!("Error: azlin not found. Install azlin or set AZLIN_PATH.");
@@ -203,7 +215,13 @@ pub(super) fn run_status() -> Result<()> {
 }
 
 pub(super) fn run_snapshot() -> Result<()> {
-    let azlin = match get_azlin_path() {
+    run_snapshot_with(&AzlinLookup::from_env())
+}
+
+/// [`run_snapshot`] with the `AZLIN_PATH`, `PATH` and `HOME` values supplied
+/// by the caller (issue #1765).
+pub(super) fn run_snapshot_with(lookup: &AzlinLookup) -> Result<()> {
+    let azlin = match get_azlin_path_in(lookup) {
         Ok(path) => path,
         Err(_) => {
             eprintln!("Error: azlin not found. Install azlin or set AZLIN_PATH.");

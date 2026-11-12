@@ -30,6 +30,20 @@ pub(super) struct RecipeRunCorrelation {
     work_item_id: Option<String>,
     work_item_url: Option<String>,
     runner_path: String,
+    /// Issue #1606: what this run resolved, recorded so a run can be audited
+    /// for the agent CLI and home it actually used.
+    settings: RunSettings,
+}
+
+/// The resolved values the log pointer records (issue #1606).
+#[derive(Debug, Clone, Default)]
+pub(super) struct RunSettings {
+    /// The agent CLI every step runs under.
+    pub(super) agent_binary: Option<String>,
+    /// The resolver layer that chose it (`ResolutionSource::label`).
+    pub(super) agent_binary_source: Option<&'static str>,
+    /// The `AMPLIHACK_HOME` handed to the runner.
+    pub(super) amplihack_home: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -38,6 +52,19 @@ pub(super) enum RecipeRunFinalStatus {
     Failure,
     SpawnFailure,
     ParseFailure,
+    /// Issue #1976: the parent `recipe run` exited and this nested run
+    /// stopped itself.
+    Orphaned,
+}
+
+/// Issue #1976: the reason recorded for an orphan stop.
+pub(super) const ORPHAN_REASON: &str = "parent recipe run exited";
+
+/// Issue #1976: what an orphaned final record adds.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct OrphanFields<'a> {
+    pub(super) parent_pid: i32,
+    pub(super) tree_id: &'a str,
 }
 
 impl RecipeRunFinalStatus {
@@ -47,6 +74,7 @@ impl RecipeRunFinalStatus {
             Self::Failure => "failure",
             Self::SpawnFailure => "spawn_failure",
             Self::ParseFailure => "parse_failure",
+            Self::Orphaned => "orphaned",
         }
     }
 }
@@ -88,7 +116,14 @@ impl RecipeRunCorrelation {
             ),
             work_item_url: first_context_value(context, &["work_item_url", "ado_work_item_url"]),
             runner_path: path_to_string(runner_path),
+            settings: RunSettings::default(),
         }
+    }
+
+    /// Record the run's resolved settings in every pointer (issue #1606).
+    pub(super) fn with_settings(mut self, settings: RunSettings) -> Self {
+        self.settings = settings;
+        self
     }
 
     pub(super) fn run_id(&self) -> &str {
@@ -116,10 +151,16 @@ impl RecipeRunCorrelation {
             work_item_id: self.work_item_id.as_deref(),
             work_item_url: self.work_item_url.as_deref(),
             runner_path: &self.runner_path,
+            agent_binary: self.settings.agent_binary.as_deref(),
+            agent_binary_source: self.settings.agent_binary_source,
+            amplihack_home: self.settings.amplihack_home.as_deref(),
             child_pid: None,
             exit_code: None,
             status: None,
             log_paths: None,
+            parent_pid: None,
+            tree_id: None,
+            reason: None,
             timestamp: timestamp(),
         })
     }
@@ -130,6 +171,34 @@ impl RecipeRunCorrelation {
         child_pid: Option<u32>,
         exit_code: Option<i32>,
         log_paths: JsonMap<String, JsonValue>,
+    ) -> RecipeLogPointerSummary {
+        self.emit_final_with(status, child_pid, exit_code, log_paths, None)
+    }
+
+    /// Issue #1976: the final record of an orphaned nested run. It has no
+    /// `exit_code`: the runner child was torn down, and the 75 is the exit
+    /// status of this `recipe run` process, not of the child.
+    pub(super) fn emit_orphaned(
+        &self,
+        child_pid: Option<u32>,
+        orphan: OrphanFields<'_>,
+    ) -> RecipeLogPointerSummary {
+        self.emit_final_with(
+            RecipeRunFinalStatus::Orphaned,
+            child_pid,
+            None,
+            known_log_paths(None),
+            Some(orphan),
+        )
+    }
+
+    fn emit_final_with(
+        &self,
+        status: RecipeRunFinalStatus,
+        child_pid: Option<u32>,
+        exit_code: Option<i32>,
+        log_paths: JsonMap<String, JsonValue>,
+        orphan: Option<OrphanFields<'_>>,
     ) -> RecipeLogPointerSummary {
         let log_paths_ref = if log_paths.is_empty() {
             None
@@ -152,10 +221,16 @@ impl RecipeRunCorrelation {
             work_item_id: self.work_item_id.as_deref(),
             work_item_url: self.work_item_url.as_deref(),
             runner_path: &self.runner_path,
+            agent_binary: self.settings.agent_binary.as_deref(),
+            agent_binary_source: self.settings.agent_binary_source,
+            amplihack_home: self.settings.amplihack_home.as_deref(),
             child_pid,
             exit_code,
             status: Some(status.as_str()),
             log_paths: log_paths_ref,
+            parent_pid: orphan.map(|o| o.parent_pid),
+            tree_id: orphan.map(|o| o.tree_id),
+            reason: orphan.map(|_| ORPHAN_REASON),
             timestamp: timestamp(),
         });
 
@@ -266,6 +341,12 @@ struct LogPointerEvent<'a> {
     work_item_url: Option<&'a str>,
     runner_path: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
+    agent_binary: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_binary_source: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    amplihack_home: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     child_pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     exit_code: Option<i32>,
@@ -273,6 +354,12 @@ struct LogPointerEvent<'a> {
     status: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     log_paths: Option<&'a JsonMap<String, JsonValue>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_pid: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tree_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'a str>,
     timestamp: String,
 }
 
@@ -325,4 +412,22 @@ fn git_output(working_dir: &Path, args: &[&str]) -> Option<String> {
 
 fn timestamp() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+#[cfg(test)]
+mod tests_issue_1976 {
+    use super::RecipeRunFinalStatus;
+
+    #[test]
+    fn orphaned_final_status_is_spelled_orphaned() {
+        assert_eq!(RecipeRunFinalStatus::Orphaned.as_str(), "orphaned");
+    }
+
+    #[test]
+    fn existing_final_statuses_are_unchanged() {
+        assert_eq!(RecipeRunFinalStatus::Success.as_str(), "success");
+        assert_eq!(RecipeRunFinalStatus::Failure.as_str(), "failure");
+        assert_eq!(RecipeRunFinalStatus::SpawnFailure.as_str(), "spawn_failure");
+        assert_eq!(RecipeRunFinalStatus::ParseFailure.as_str(), "parse_failure");
+    }
 }

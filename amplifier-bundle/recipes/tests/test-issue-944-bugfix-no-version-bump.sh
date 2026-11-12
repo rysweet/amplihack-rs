@@ -12,8 +12,10 @@
 #
 # Contract under test:
 #   R1 (behavioural) — The step-15 commit TITLE prefix is derived from the real
-#       change type reported by step-14 via the env var
-#       `RECIPE_VAR_version_bump__change_classification`:
+#       change type reported by step-14 as the `change_classification` field
+#       of the JSON in `RECIPE_VAR_version_bump` (#1561: a nested name such as
+#       RECIPE_VAR_<key>__<field>, or a bare upper-case alias, can hold a
+#       parent run's value and is never read):
 #           PATCH -> "fix: "
 #           MINOR -> "feat: "
 #           MAJOR -> "feat!: "
@@ -144,13 +146,15 @@ compute_title() {
         echo 'printf "COMMIT_TITLE=%s\\n" "$COMMIT_TITLE"'
     } > "$runner"
 
-    if [[ -n "$class" ]]; then
-        RECIPE_VAR_version_bump__change_classification="$class" \
-            bash "$runner" 2>/dev/null | sed -n 's/^COMMIT_TITLE=//p'
-    else
-        env -u RECIPE_VAR_version_bump__change_classification \
-            bash "$runner" 2>/dev/null | sed -n 's/^COMMIT_TITLE=//p'
-    fi
+    # The run's own classification arrives in the base key. A conflicting
+    # stale nested name and bare alias are always set, so a slice that read
+    # either would take MAJOR's "feat!:" prefix.
+    local base=""
+    [[ -z "$class" ]] || base="$(jq -nc --arg c "$class" '{change_classification: $c}')"
+    RECIPE_VAR_version_bump="$base" \
+    RECIPE_VAR_version_bump__change_classification="MAJOR" \
+    VERSION_BUMP_CHANGE_CLASSIFICATION="MAJOR" \
+        bash "$runner" 2>/dev/null | sed -n 's/^COMMIT_TITLE=//p'  # deliberately stale (#1561)
 }
 
 assert_prefix() {
@@ -173,6 +177,7 @@ FEAT_TASK="Add a new publish dashboard command to the CLI"
 assert_prefix "R1: PATCH classification -> 'fix:' prefix"   "PATCH" "$BUG_TASK"  "fix: "
 assert_prefix "R1: MINOR classification -> 'feat:' prefix"  "MINOR" "$FEAT_TASK" "feat: "
 assert_prefix "R1: MAJOR classification -> 'feat!:' prefix" "MAJOR" "$FEAT_TASK" "feat!: "
+assert_prefix "R1: own MINOR beats a stale nested/bare MAJOR (#1561)" "MINOR" "$BUG_TASK" "feat: "
 
 # R1 behavioural — deterministic fallback when classification is unset/empty.
 assert_prefix "R1: unset classification + bug task -> 'fix:' (heuristic)"     "" "$BUG_TASK"  "fix: "
@@ -188,26 +193,28 @@ else
         "expected 'feat:' prefix from MINOR classification, got: '$minor_title'"
 fi
 
-# R1 behavioural — the uppercased alias VERSION_BUMP_CHANGE_CLASSIFICATION
-# (dot -> single '_') must also drive the prefix. Guards the regression where
-# a double-underscore uppercase name was used and silently never matched.
+# R1 behavioural (#1561) — a bare VERSION_BUMP_CHANGE_CLASSIFICATION, and the
+# nested RECIPE_VAR_<key>__<field> name, are inherited from whatever launched
+# the runner and never drive the prefix. With the base key unset and a bug
+# task, the stale MAJOR must lose to the "fix:" heuristic.
 upper_title="$(
     {
         echo 'set -euo pipefail'
-        printf 'export TASK_DESCRIPTION=%q\n' "$FEAT_TASK"
+        printf 'export TASK_DESCRIPTION=%q\n' "$BUG_TASK"
         printf 'export ISSUE_NUMBER=%q\n' "944"
         cat "$STEP15_TITLE_SLICE"
         echo 'printf "COMMIT_TITLE=%s\\n" "$COMMIT_TITLE"'
     } > "${WORK}/runner_upper.sh"
-    env -u RECIPE_VAR_version_bump__change_classification \
-        VERSION_BUMP_CHANGE_CLASSIFICATION="PATCH" \
-        bash "${WORK}/runner_upper.sh" 2>/dev/null | sed -n 's/^COMMIT_TITLE=//p'
+    env -u RECIPE_VAR_version_bump \
+        RECIPE_VAR_version_bump__change_classification="MAJOR" \
+        VERSION_BUMP_CHANGE_CLASSIFICATION="MAJOR" \
+        bash "${WORK}/runner_upper.sh" 2>/dev/null | sed -n 's/^COMMIT_TITLE=//p'  # deliberately stale (#1561)
 )"
 if [[ "$upper_title" == fix:* ]]; then
-    record_pass "R1: uppercase alias VERSION_BUMP_CHANGE_CLASSIFICATION drives prefix"
+    record_pass "R1: stale bare/nested classification is ignored (#1561)"
 else
-    record_fail "R1: uppercase alias VERSION_BUMP_CHANGE_CLASSIFICATION drives prefix" \
-        "expected 'fix:' prefix from uppercase alias, got: '$upper_title'"
+    record_fail "R1: stale bare/nested classification is ignored (#1561)" \
+        "expected 'fix:' from the bug-word heuristic, got: '$upper_title'"
 fi
 
 # R1 safety — the `%.72s` truncation of the description is preserved. Assert
@@ -247,11 +254,12 @@ else
 fi
 
 # R1 static — step-15 must reference the classification signal.
-if grep -qE 'version_bump__change_classification|VERSION_BUMP__?CHANGE_CLASSIFICATION' "$STEP15_FULL"; then
+if grep -qF 'RECIPE_VAR_version_bump:-' "$STEP15_FULL" && grep -qF 'change_classification' "$STEP15_FULL" \
+   && ! grep -qE 'version_bump__change_classification|VERSION_BUMP__?CHANGE_CLASSIFICATION' "$STEP15_FULL"; then
     record_pass "R1-static: step-15 reads version_bump change classification"
 else
     record_fail "R1-static: step-15 reads version_bump change classification" \
-        "no classification env var reference in step-15 command"
+        "step-15 must read change_classification from RECIPE_VAR_version_bump, never a nested or bare name (#1561)"
 fi
 
 # R1 static — step-15 must be able to emit fix: and feat!: prefixes.

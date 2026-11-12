@@ -21,7 +21,7 @@
 #
 # Contracts under test:
 #   POS:            benign, populated gate output -> exit 0, "PASSED".
-#   DEGRADE/N-A:    empty gate ($LOCAL_TESTING_GATE unset/'') -> WARNING + exit 0
+#   DEGRADE/N-A:    empty gate ($RECIPE_VAR_local_testing_gate unset/'') -> WARNING + exit 0
 #                   (this is the #962 regression — currently exit 1).
 #   FAIL-VISIBLE:   evidence containing an explicit failure verdict
 #                   ("VERDICT: FAILED") -> exit non-zero (genuine code failure
@@ -68,10 +68,10 @@ if [[ -z "${BODY}" ]]; then
     exit 2
 fi
 
-# run_gate <gate-value> — run the extracted step body with LOCAL_TESTING_GATE set.
+# run_gate <gate-value> — run the extracted step body with RECIPE_VAR_local_testing_gate set (#1684).
 run_gate() {
     local gate="$1"
-    ( export LOCAL_TESTING_GATE="${gate}"; printf '%s\n' "${BODY}" | bash )
+    printf '%s\n' "${BODY}" | RECIPE_VAR_local_testing_gate="${gate}" bash
 }
 
 # --- POS: populated, benign gate passes ------------------------------------

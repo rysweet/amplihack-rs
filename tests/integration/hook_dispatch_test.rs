@@ -10,37 +10,16 @@
 /// The live hook path is native Rust. These tests intentionally do not require
 /// Python to be installed or importable.
 /// All hooks must remain fail-open (exit 0, produce `{}` or valid output).
+#[path = "../support/isolated_hook.rs"]
+mod isolated_hook;
+
+use isolated_hook::HookSandbox;
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
-
-struct TempProjectRoot {
-    path: PathBuf,
-}
-
-impl TempProjectRoot {
-    fn new() -> Self {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .expect("unix epoch")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "amplihack-hook-dispatch-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("hook dispatch temp project root");
-        Self { path }
-    }
-}
-
-impl Drop for TempProjectRoot {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
 
 /// Path to the compiled amplihack-hooks binary.
 fn hooks_bin() -> PathBuf {
@@ -52,12 +31,11 @@ fn hooks_bin() -> PathBuf {
 #[cfg(target_os = "linux")]
 #[test]
 fn codex_security_denial_write_failure_blocks_tool() {
-    let project = tempfile::tempdir().unwrap();
-    let mut child = Command::new(hooks_bin())
+    let sandbox = HookSandbox::new();
+    let mut child = sandbox
+        .command(hooks_bin())
         .arg("pre-tool-use")
         .env("AMPLIHACK_HOOK_PROTOCOL", "codex")
-        .env("HOME", project.path())
-        .current_dir(project.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::from(
             fs::OpenOptions::new()
@@ -100,12 +78,16 @@ fn run_hook(subcommand: &str, input_json: &str) -> (String, String, bool) {
             true,
         );
     }
-    let project_root = TempProjectRoot::new();
+    // Isolated HOME, AMPLIHACK_HOME, profile root, CLAUDE_PROJECT_DIR and cwd:
+    // the `test-session` records never reach the checkout the tests run in
+    // (#2361), and user-prompt's limit-resume marker stays out of the real
+    // profile root.
+    let sandbox = HookSandbox::new();
 
-    let mut child = Command::new(&bin)
+    let mut child = sandbox
+        .command(&bin)
         .env("AMPLIHACK_AGENT_BINARY", "claude")
         .arg(subcommand)
-        .current_dir(&project_root.path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -260,7 +242,9 @@ fn unknown_hook_exits_nonzero() {
         eprintln!("Skipping: binary not found");
         return;
     }
-    let status = Command::new(&bin)
+    let sandbox = HookSandbox::new();
+    let status = sandbox
+        .command(&bin)
         .env("AMPLIHACK_AGENT_BINARY", "claude")
         .arg("not-a-real-hook")
         .stdin(Stdio::null())
@@ -337,13 +321,15 @@ fn session_start_dispatches_background_blarify_indexing() {
     .expect("stub script");
     fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("chmod");
 
-    let mut child = Command::new(&bin)
+    // The sandbox's cleared environment carries no AMPLIHACK_GRAPH_DB_PATH,
+    // so the hook derives the graph path from the project root.
+    let sandbox = HookSandbox::new();
+    let mut child = sandbox
+        .command_in(&bin, &project_root)
         .env("AMPLIHACK_AGENT_BINARY", "claude")
         .arg("session-start")
-        .current_dir(&project_root)
         .env("AMPLIHACK_AMPLIHACK_BINARY_PATH", &stub)
         .env("AMPLIHACK_BLARIFY_MODE", "background")
-        .env_remove("AMPLIHACK_GRAPH_DB_PATH")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -432,7 +418,9 @@ fn session_start_outside_in_no_python_emits_indexing_status() {
     let tmp_dir = std::env::temp_dir().join(format!("amplihack-oi-no-py-{unique}"));
     fs::create_dir_all(&tmp_dir).expect("create tmp dir");
 
-    let mut child = Command::new(&bin)
+    let sandbox = HookSandbox::new();
+    let mut child = sandbox
+        .command_in(&bin, &tmp_dir)
         .env("AMPLIHACK_AGENT_BINARY", "claude")
         .arg("session-start")
         // (b) Python-free PATH.
@@ -440,7 +428,6 @@ fn session_start_outside_in_no_python_emits_indexing_status() {
         // Skip background blarify indexing so the test does not spawn child
         // processes; we still expect a valid indexing_status in the output.
         .env("AMPLIHACK_BLARIFY_MODE", "skip")
-        .current_dir(&tmp_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

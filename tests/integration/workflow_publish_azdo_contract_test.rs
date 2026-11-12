@@ -317,12 +317,26 @@ fn final_status_blocks_azdo_missing_pr_instead_of_manual_success() {
         .arg(helper_path("workflow_final_status.sh"))
         .current_dir(&repo)
         .env("REMOTE_HOST_TYPE", "azdo")
-        .env("ISSUE_NUMBER", "765")
+        // #1561: step outputs reach the tool only as RECIPE_VAR_<key>, with
+        // object fields in the base key's JSON.
+        .env("RECIPE_VAR_issue_number", "765")
         .env("TASK_DESCRIPTION", "verify AzDO publish terminal state")
-        .env("IMPLEMENTATION_COMPLETED", "true")
-        .env("VERIFICATION_COMPLETED", "true")
-        .env("PUBLISH_STATE_REACHED", "false")
-        .env("PR_PUBLISH_RESULT_STATE", "BLOCKED_PROVIDER")
+        .env(
+            "RECIPE_VAR_implementation_terminal_evidence",
+            r#"{"implementation_completed":"true"}"#,
+        )
+        .env(
+            "RECIPE_VAR_verification_terminal_evidence",
+            r#"{"verification_completed":"true"}"#,
+        )
+        .env(
+            "RECIPE_VAR_publish_terminal_evidence",
+            r#"{"publish_state_reached":"false"}"#,
+        )
+        .env(
+            "RECIPE_VAR_pr_publish_result",
+            r#"{"state":"BLOCKED_PROVIDER"}"#,
+        )
         .output()
         .expect("run workflow_final_status.sh");
 

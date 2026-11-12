@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn amplihack_bin() -> PathBuf {
     // Hard `env!` (not `var_os` with a fallback): Cargo builds the binary as a
@@ -36,7 +36,7 @@ fn run_with_fake_node(node_version_output: &str, args: &[&str]) -> Output {
         bin_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-    Command::new(amplihack_bin())
+    crate::isolated_amplihack::isolated(amplihack_bin())
         .args(args)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .env("PATH", path)
@@ -46,7 +46,7 @@ fn run_with_fake_node(node_version_output: &str, args: &[&str]) -> Output {
 
 #[test]
 fn doctor_help_exposes_node_and_copilot_ensure_node_paths() {
-    let output = Command::new(amplihack_bin())
+    let output = crate::isolated_amplihack::isolated(amplihack_bin())
         .args(["doctor", "--help"])
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .output()

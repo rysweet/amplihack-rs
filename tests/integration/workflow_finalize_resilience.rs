@@ -113,6 +113,9 @@ fn isolate_scope_child(command: &mut Command, tmp: &Path, repo: &Path) {
             format!("{}:/usr/bin:/bin", tmp.join("bin").display()),
         )
         .env("GH_CALL_LOG", tmp.join("gh-calls.log"));
+    // env_clear() dropped the [env] prompt suppressors and any builder's own
+    // GIT_TERMINAL_PROMPT=0, and the origin is on github.com (#1764).
+    crate::isolated_amplihack::no_git_prompt(command);
 }
 
 fn private_git(tmp: &Path, repo: &Path, args: &[&str]) {
@@ -388,7 +391,8 @@ fn pr_ready_helper_fails_closed_when_pr_view_metadata_is_unavailable() {
     write_failing_gh(tmp.path(), "view");
 
     let output = private_scope_command(tmp.path(), &repo, "workflow_pr_ready.sh")
-        .env("PR_URL", "https://github.com/owner/repo/pull/7")
+        .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
+        .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()
         .expect("run workflow_pr_ready.sh");
 
@@ -437,7 +441,8 @@ exit 99
     let old_path = std::env::var("PATH").unwrap_or_default();
     let output = workflow_pr_ready_command()
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
-        .env("PR_URL", "https://github.com/owner/repo/pull/7")
+        .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
+        .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()
         .expect("run workflow_pr_ready.sh");
 
@@ -507,7 +512,8 @@ fn final_status_missing_scope_remains_uncertain_without_scoped_read() {
     write_failing_gh(tmp.path(), "view");
     let output = private_scope_command(tmp.path(), tmp.path(), "workflow_final_status.sh")
         .env("REMOTE_HOST_TYPE", "github")
-        .env("PR_URL", "https://github.com/owner/repo/pull/7")
+        .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
+        .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .env("TASK_DESCRIPTION", "test task")
         .output()
         .expect("run final-status helper without Git scope");
@@ -631,7 +637,8 @@ exit 99
     let output = workflow_pr_ready_command()
         .current_dir(&repo)
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
-        .env("PR_URL", "https://github.com/owner/repo/pull/7")
+        .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
+        .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()
         .expect("run workflow_pr_ready.sh");
 
@@ -745,7 +752,8 @@ exit 99
     let output = workflow_pr_ready_command()
         .current_dir(&repo)
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
-        .env("PR_URL", "https://github.com/owner/repo/pull/7")
+        .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
+        .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()
         .expect("run workflow_pr_ready.sh");
 
@@ -850,7 +858,8 @@ exit 99
     let output = workflow_pr_ready_command()
         .current_dir(&repo)
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
-        .env("PR_URL", "https://github.com/owner/repo/pull/7")
+        .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
+        .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .output()
         .expect("run workflow_pr_ready.sh");
 
@@ -892,7 +901,8 @@ fn final_status_unreadable_gh_is_uncertain_never_silent_success() {
 
     let output = private_scope_command(tmp.path(), &repo, "workflow_final_status.sh")
         .env("REMOTE_HOST_TYPE", "github")
-        .env("PR_URL", "https://github.com/owner/repo/pull/7")
+        .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
+        .env("PR_URL", "https://github.com/owner/repo/pull/9999") // deliberately stale (#1561)
         .env("TASK_DESCRIPTION", "test task")
         .env("ISSUE_NUMBER", "7")
         .output()
@@ -970,7 +980,7 @@ fn final_status_does_not_confirm_no_diff_success_with_dirty_worktree() {
         .arg(workspace_helper_path("workflow_final_status.sh"))
         .current_dir(&repo)
         .env("REMOTE_HOST_TYPE", "other")
-        .env("PR_PUBLISH_RESULT_STATE", "no-diff")
+        .env("RECIPE_VAR_pr_publish_result", r#"{"state":"no-diff"}"#)
         .env("TASK_DESCRIPTION", "test task")
         .env("ISSUE_NUMBER", "7")
         .output()
@@ -1034,7 +1044,10 @@ fn final_status_does_not_confirm_closed_obsolete_with_dirty_worktree() {
         .arg(workspace_helper_path("workflow_final_status.sh"))
         .current_dir(&repo)
         .env("REMOTE_HOST_TYPE", "other")
-        .env("PR_PUBLISH_RESULT_STATE", "CLOSED_OBSOLETE")
+        .env(
+            "RECIPE_VAR_pr_publish_result",
+            r#"{"state":"CLOSED_OBSOLETE"}"#,
+        )
         .env("TASK_DESCRIPTION", "test task")
         .env("ISSUE_NUMBER", "7")
         .output()

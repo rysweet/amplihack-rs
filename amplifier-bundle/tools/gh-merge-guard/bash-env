@@ -1,0 +1,32 @@
+# shellcheck shell=bash
+# amplihack gh merge guard: BASH_ENV file (issue #1551).
+#
+# `amplihack recipe run` exports BASH_ENV pointing here for every auto-drive
+# run. Every non-interactive bash in the run (a recipe step, an agent's Bash
+# tool, `bash -c`, `bash -lc`) sources this file before its command, and a
+# login shell does so after its profile. A profile that prepends ~/.local/bin,
+# ~/.npm-global/bin or Homebrew's directory would otherwise put a real gh
+# ahead of the shim; this puts the shim's directory back in front.
+#
+# Some agent runtimes reset PATH inside the command itself, after this file
+# has run: Claude Code's Bash tool runs `bash -c 'source <snapshot> && eval
+# …'`, and the snapshot exports the profile's PATH. So this file also defines
+# a `gh` function that runs the shim. Bash finds a function before searching
+# PATH, so a later PATH change does not skip the guard.
+#
+# Not covered: an interactive shell (bash -i) does not read BASH_ENV, and
+# `command gh` or an absolute path skips the function. See
+# docs/reference/auto-drive-to-merge.md, "What this does not stop".
+#
+# The user's own BASH_ENV, if any, was saved by the runner and runs first.
+if [ -n "${AMPLIHACK_MERGE_GUARD_USER_BASH_ENV:-}" ] && [ -r "$AMPLIHACK_MERGE_GUARD_USER_BASH_ENV" ]; then
+  # shellcheck source=/dev/null  # the user's own BASH_ENV, whatever it is
+  . "$AMPLIHACK_MERGE_GUARD_USER_BASH_ENV"
+fi
+__amplihack_gh_guard_dir="${BASH_SOURCE[0]%/*}"
+case ":${PATH:-}:" in
+  ":${__amplihack_gh_guard_dir}:"*) ;;
+  *) PATH="${__amplihack_gh_guard_dir}${PATH:+:$PATH}"; export PATH ;;
+esac
+eval "gh() { $(printf '%q' "${__amplihack_gh_guard_dir}/gh") \"\$@\"; }"
+unset __amplihack_gh_guard_dir

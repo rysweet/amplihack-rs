@@ -237,3 +237,10 @@ cargo test -p amplihack --test integration workflow_finalize_resilience::
 - **Read vs. write asymmetry.** Reads may serve from REST on the core budget to
   stay responsive; writes must wait for the authoritative reset so no mutation
   is silently skipped or duplicated.
+
+## Related
+
+- [GitHub Repo Identity Parser](reference/workflow-github-repo-identity.md):
+  `workflow_github_repo.sh`, the sibling shared helper. It decides which
+  `--repo` value these scripts pass to `gh`, and they locate it the same way
+  they locate `workflow_gh_retry.sh`.

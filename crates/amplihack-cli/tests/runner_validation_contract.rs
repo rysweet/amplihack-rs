@@ -1,11 +1,7 @@
 //! Behavioral contracts for the private Cargo-only runner validation boundary.
 #![cfg(unix)]
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Output},
-};
+use std::{fs, path::Path, process::Output};
 
 fn cli_binary() -> std::path::PathBuf {
     std::env::var_os("AMPLIHACK_TEST_BINARY")
@@ -23,7 +19,7 @@ fn cli_binary() -> std::path::PathBuf {
 
 const REPO: &str = "https://github.com/rysweet/amplihack-recipe-runner";
 const REV: &str = "1111111111111111111111111111111111111111";
-const REPORT: &str = r#"{"capabilities":["future","codex_exec"],"version":"custom-99","schema_version":1,"extra":true}"#;
+const REPORT: &str = r#"{"capabilities":["future","codex_exec","durable_recovery_v1"],"version":"custom-99","schema_version":1,"extra":true}"#;
 
 struct Fixture {
     root: tempfile::TempDir,
@@ -63,7 +59,7 @@ impl Fixture {
         self.receipt(json!({format!("recipe-runner-rs 0.4.0 (git+{REPO}?rev={REV}#{REV})"): {"bins":["recipe-runner-rs"]}}));
     }
     fn run(&self, provider: &str, managed: bool, binary: &Path) -> Output {
-        let mut c = Command::new(cli_binary());
+        let mut c = crate::isolated_amplihack::isolated(cli_binary());
         c.args([
             "internal",
             "validate-recipe-runner",
@@ -116,10 +112,10 @@ fn reordered_additive_report_works_without_python_or_node() {
     f.success(f.run("codex", false, &f.binary()), "codex", "explicit");
 }
 #[test]
-fn empty_capabilities_are_legacy_provider_compatible_only() {
+fn recovery_only_capability_supports_legacy_providers_but_codex_still_requires_codex_exec() {
     for provider in ["claude", "copilot", "codex"] {
         let f = Fixture::new(
-            r#"{"capabilities":[],"schema_version":1,"version":"custom-99"}"#,
+            r#"{"capabilities":["durable_recovery_v1"],"schema_version":1,"version":"custom-99"}"#,
             0,
         );
         let o = f.run(provider, false, &f.binary());
@@ -134,8 +130,8 @@ fn empty_capabilities_are_legacy_provider_compatible_only() {
 fn ambiguous_malformed_and_wrong_typed_reports_fail() {
     for report in [
         r#"{"schema_version":1,"schema_version":1,"version":"v","capabilities":["codex_exec"]}"#,
-        r#"{"schema_version":true,"version":"v","capabilities":[]}"#,
-        r#"{"schema_version":1,"version":" ","capabilities":[]}"#,
+        r#"{"schema_version":true,"version":"v","capabilities":["durable_recovery_v1"]}"#,
+        r#"{"schema_version":1,"version":" ","capabilities":["durable_recovery_v1"]}"#,
         r#"{"schema_version":1,"version":"v","capabilities":[1]}"#,
         &format!("{REPORT} {{}}"),
         "not json",
@@ -179,7 +175,7 @@ fn missing_receipt_and_shadowed_selection_fail_visibly() {
 #[test]
 fn partial_managed_arguments_fail_before_probe() {
     let f = Fixture::new(REPORT, 0);
-    let o = Command::new(cli_binary())
+    let o = crate::isolated_amplihack::isolated(cli_binary())
         .args([
             "internal",
             "validate-recipe-runner",
@@ -251,19 +247,32 @@ fn exited_probe_with_inherited_pipe_is_bounded_and_cleans_its_group() {
     let started = std::time::Instant::now();
     failure(f.run("codex", false, &f.binary()), "RUNNER_PROBE_FAILED");
     assert!(started.elapsed() < std::time::Duration::from_secs(13));
-    let pid = fs::read_to_string(f.path().join("descendant")).unwrap();
+    // The group SIGKILL is delivered asynchronously, so under load the
+    // descendant can still read as sleeping just after the probe returns
+    // (#1748). Poll for a bounded period well under the descendant's 60 s.
     #[cfg(target_os = "linux")]
-    if let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid.trim())) {
-        let state = stat
-            .rsplit_once(") ")
-            .unwrap()
-            .1
-            .split_whitespace()
-            .next()
-            .unwrap();
-        assert!(
-            state == "Z" || state == "X",
-            "probe descendant still running"
-        );
+    {
+        // Read the pid here: `/proc` is its only reader (#2210).
+        let pid = fs::read_to_string(f.path().join("descendant")).unwrap();
+        let stat_path = format!("/proc/{}/stat", pid.trim());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while let Ok(stat) = fs::read_to_string(&stat_path) {
+            let state = stat
+                .rsplit_once(") ")
+                .unwrap()
+                .1
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .to_owned();
+            if state == "Z" || state == "X" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "probe descendant still running (state {state}) 5 s after the probe returned"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }

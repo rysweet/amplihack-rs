@@ -4,6 +4,9 @@ use super::models::{Workstream, WorkstreamScope};
 use super::process_scope::normalize_path;
 use super::utils::rand_u32;
 use amplihack_types::workflow;
+use amplihack_workflows::remote_repository::{
+    github_repository_from_remote_url, redact_remote_url,
+};
 use anyhow::{Result, bail};
 use chrono::Utc;
 use std::collections::HashMap;
@@ -28,8 +31,12 @@ pub(super) fn detect_delegate() -> String {
     "amplihack claude".to_string()
 }
 
+/// The scope's repository is `owner/repo` for a GitHub origin (issue #1642).
+/// Any other URL is stored with its userinfo, which may be a token, redacted;
+/// a local path is stored as is.
 pub(super) fn populate_workstream_scope(ws: &mut Workstream, repo_url: &str, base_ref: &str) {
-    let repository = parse_github_repo_identity(repo_url).unwrap_or_else(|| repo_url.to_string());
+    let repository =
+        github_repository_from_remote_url(repo_url).unwrap_or_else(|| redact_remote_url(repo_url));
     let repo_root = normalize_path(&ws.work_dir);
     let tree_id =
         std::env::var("AMPLIHACK_TREE_ID").unwrap_or_else(|_| format!("{:08x}", rand_u32()));
@@ -53,42 +60,27 @@ pub(super) fn populate_workstream_scope(ws: &mut Workstream, repo_url: &str, bas
     };
 }
 
-fn parse_github_repo_identity(url: &str) -> Option<String> {
-    let mut path = if let Some(rest) = url.strip_prefix("git@github.com:") {
-        rest.to_string()
-    } else if let Some(rest) = url.strip_prefix("ssh://git@github.com/") {
-        rest.to_string()
-    } else if let Some(rest) = url.strip_prefix("https://github.com/") {
-        rest.to_string()
-    } else if let Some(rest) = url.strip_prefix("http://github.com/") {
-        rest.to_string()
-    } else if (url.starts_with("https://") || url.starts_with("http://"))
-        && url.contains("@github.com/")
-    {
-        url.split("@github.com/").nth(1)?.to_string()
-    } else {
-        return None;
-    };
-    if let Some((before, _)) = path.split_once('?') {
-        path = before.to_string();
-    }
-    if let Some((before, _)) = path.split_once('#') {
-        path = before.to_string();
-    }
-    path = path.trim_end_matches(".git").to_string();
-    let mut parts = path.split('/');
-    let owner = parts.next()?.trim();
-    let repo = parts.next()?.trim();
-    if owner.is_empty() || repo.is_empty() {
-        None
-    } else {
-        Some(format!("{owner}/{repo}"))
-    }
-}
+/// Environment variable through which `launch-parallel-round-1` hands the
+/// parent run's `create_issue` opt-in to every workstream (issue #1881).
+pub(super) const CREATE_ISSUE_ENV: &str = "AMPLIHACK_CREATE_ISSUE";
 
 /// Build context map for recipe-based resume.
 pub(super) fn build_resume_context(ws: &Workstream) -> HashMap<String, serde_json::Value> {
+    build_resume_context_with(ws, |k| std::env::var(k).ok())
+}
+
+/// [`build_resume_context`] with the environment lookup injected. The parent's
+/// `create_issue` value is forwarded unchanged when set; step-03 decides
+/// whether it opts in, so an unset value leaves the workstream on local
+/// tracking.
+pub(super) fn build_resume_context_with(
+    ws: &Workstream,
+    env: impl Fn(&str) -> Option<String>,
+) -> HashMap<String, serde_json::Value> {
     let mut ctx = HashMap::new();
+    if let Some(v) = env(CREATE_ISSUE_ENV).filter(|v| !v.trim().is_empty()) {
+        ctx.insert("create_issue".to_string(), serde_json::Value::String(v));
+    }
     ctx.insert(
         "task_description".to_string(),
         serde_json::Value::String(ws.task.clone()),
@@ -110,6 +102,13 @@ pub(super) fn build_resume_context(ws: &Workstream) -> HashMap<String, serde_jso
         ctx.insert(
             "resume_checkpoint".to_string(),
             serde_json::Value::String(ws.resume_checkpoint.clone()),
+        );
+    }
+    // Issue #1966: only a caller-supplied value, byte for byte; no default.
+    if let Some(v) = &ws.is_critical_code {
+        ctx.insert(
+            "is_critical_code".to_string(),
+            serde_json::Value::String(v.clone()),
         );
     }
 
@@ -166,11 +165,15 @@ exec amplihack recipe run "$RECIPE" --context-file "$CONTEXT_JSON" --verbose
     ))
 }
 
-pub(super) fn recipe_run_script(ws: &Workstream, delegate: &str) -> Result<String> {
-    let profile_exports = profile_exports(
-        env_var_os,
-        crate::commands::profile::substitute_inherited_profile,
-    )?;
+/// The profile variables are read through `get`, and the inherited profile
+/// name may be replaced by `substitute`; see [`profile_exports`].
+pub(super) fn recipe_run_script(
+    ws: &Workstream,
+    delegate: &str,
+    get: impl Fn(&str) -> Option<OsString>,
+    substitute: impl Fn(&str) -> Option<String>,
+) -> Result<String> {
+    let profile_exports = profile_exports(get, substitute)?;
     let (tree_id, depth, max_depth, max_sessions) = session_tree_env(ws);
     Ok(format!(
         r#"#!/bin/bash
@@ -212,11 +215,15 @@ pub(super) fn classic_task_markdown(ws: &Workstream) -> String {
     )
 }
 
-pub(super) fn classic_run_script(ws: &Workstream, delegate: &str) -> Result<String> {
-    let profile_exports = profile_exports(
-        env_var_os,
-        crate::commands::profile::substitute_inherited_profile,
-    )?;
+/// The profile variables are read through `get`, and the inherited profile
+/// name may be replaced by `substitute`; see [`profile_exports`].
+pub(super) fn classic_run_script(
+    ws: &Workstream,
+    delegate: &str,
+    get: impl Fn(&str) -> Option<OsString>,
+    substitute: impl Fn(&str) -> Option<String>,
+) -> Result<String> {
+    let profile_exports = profile_exports(get, substitute)?;
     let (tree_id, depth, max_depth, max_sessions) = session_tree_env(ws);
     Ok(format!(
         r#"#!/bin/bash
@@ -240,7 +247,9 @@ export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
     ))
 }
 
-fn env_var_os(key: &str) -> Option<OsString> {
+/// The production getter for [`profile_exports`]: reads `key` from the
+/// process environment at call time.
+pub(super) fn env_var_os(key: &str) -> Option<OsString> {
     std::env::var_os(key)
 }
 

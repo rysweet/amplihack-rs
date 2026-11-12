@@ -18,6 +18,9 @@ set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FINALIZE_FILE="$REPO_ROOT/amplifier-bundle/recipes/workflow-finalize.yaml"
+# step-21 runs workflow_pr_ready.sh, which reads PR_URL from the recipe's own
+# values and guards it before any gh call (#1561); the checks read the helper.
+READY_HELPER_FILE="$REPO_ROOT/amplifier-bundle/tools/workflow_pr_ready.sh"
 
 fail=0
 pass=0
@@ -46,16 +49,16 @@ assert "workflow-finalize.yaml exists" "[ -f '$FINALIZE_FILE' ]"
 # Use awk+grep directly (avoids quoting issues with $-vars in YAML command blocks)
 
 assert "step-21 references PR_URL variable" \
-    "awk '/id: .step-21-pr-ready/,/output:/' '$FINALIZE_FILE' | grep -q 'PR_URL'"
+    "cat '$READY_HELPER_FILE' | grep -q 'PR_URL'"
 
 # --- Test 3: step-21 has PR_URL empty check before gh commands ---------------
 assert "step-21 has PR_URL empty/non-empty check" \
-    "awk '/id: .step-21-pr-ready/,/output:/' '$FINALIZE_FILE' | grep -Eq '\\[ -z .PR_URL|\\[ -n .PR_URL|-z \".PR_URL|-n \".PR_URL|PR_URL.*=~|\\[\\[.*PR_URL'"
+    "cat '$READY_HELPER_FILE' | grep -Eq '\\[ -z .PR_URL|\\[ -n .PR_URL|-z \".PR_URL|-n \".PR_URL|PR_URL.*=~|\\[\\[.*PR_URL'"
 
 # --- Test 4: gh pr ready appears AFTER PR_URL check -------------------------
 # The pr ready command must not be invoked unconditionally.
-pr_url_line=$(awk '/id: .step-21-pr-ready/,/output:/' "$FINALIZE_FILE" | grep -n 'PR_URL' | head -1 | cut -d: -f1)
-gh_ready_line=$(awk '/id: .step-21-pr-ready/,/output:/' "$FINALIZE_FILE" | grep -n 'gh pr ready' | head -1 | cut -d: -f1)
+pr_url_line=$(cat "$READY_HELPER_FILE" | grep -n 'PR_URL' | head -1 | cut -d: -f1)
+gh_ready_line=$(cat "$READY_HELPER_FILE" | grep -n 'gh pr ready' | head -1 | cut -d: -f1)
 
 if [ -n "$pr_url_line" ] && [ -n "$gh_ready_line" ]; then
     assert "gh pr ready appears after PR_URL reference (line $gh_ready_line > $pr_url_line)" \
@@ -66,11 +69,11 @@ fi
 
 # --- Test 5: gh pr comment also guarded by PR_URL ----------------------------
 assert "gh pr comment is guarded — appears after PR_URL check" \
-    "awk '/id: .step-21-pr-ready/,/output:/' '$FINALIZE_FILE' | grep -q 'gh pr comment'"
+    "cat '$READY_HELPER_FILE' | grep -q 'gh pr comment'"
 
 # --- Test 6: step-21 emits WARNING or INFO when PR_URL is empty ---------------
 assert "step-21 emits WARNING or INFO when skipping due to empty PR_URL" \
-    "awk '/id: .step-21-pr-ready/,/output:/' '$FINALIZE_FILE' | grep -Eq 'WARNING.*PR_URL|INFO.*PR_URL|PR_URL.*empty|PR_URL.*skip'"
+    "cat '$READY_HELPER_FILE' | grep -Eq 'WARNING.*PR_URL|INFO.*PR_URL|PR_URL.*empty|PR_URL.*skip|INFO: \\[skip\\] no scoped PR'"
 
 # --- Test 7: Runtime — gh pr ready NOT called with empty PR_URL ---------------
 # Create a mock 'gh' that records invocations and exits non-zero to prove

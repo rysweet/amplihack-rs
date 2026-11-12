@@ -1,6 +1,6 @@
 ---
 title: Loop-Health Evaluator Reference
-last_updated: 2026-10-06
+last_updated: 2026-11-11
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -11,6 +11,13 @@ owner: workflow-team
 after each round of an iterative loop: **is this loop still doing useful
 work?** It looks at the accumulated evidence of the loop and emits one
 structured verdict — `CONTINUE`, `DONE`, or `STUCK`.
+
+Auto-drive Crusty reviews check objective completion before invoking this
+brick. An evidence-valid `CLEAN` or `MINOR_ONLY` ends review iteration without
+an evaluator call; required follow-up recording still gates phase completion.
+This also applies to Crusty rereviews between merge-ready rounds. The
+merge-ready loop's own evaluator policy is unchanged. See the
+[Crusty completion contract](autodrive-crusty-completion.md).
 
 It is deliberately **not** an iteration counter. See
 [Why not a numeric iteration cap](#why-not-a-numeric-iteration-cap).
@@ -27,6 +34,9 @@ It is deliberately **not** an iteration counter. See
 - [Outputs](#outputs)
 - [Using it from a recipe](#using-it-from-a-recipe)
 - [Exit code 79 is terminal](#exit-code-79-is-terminal)
+  - [Round text never decides a refusal](#round-text-never-decides-a-refusal)
+- [A usage limit is not a verdict](#a-usage-limit-is-not-a-verdict)
+  - [Retry inside the step](#retry-inside-the-step)
 - [Fail-safe guarantees](#fail-safe-guarantees)
 - [Worked example — the 2h47m run](#worked-example--the-2h47m-run)
 - [Tests](#tests)
@@ -83,8 +93,47 @@ Exactly three outcomes. There is no fourth, and no "maybe".
 | Verdict | Meaning | Effect |
 | ------- | ------- | ------ |
 | `CONTINUE` | Concrete evidence that the last round moved something, and a plausible next step exists. | Another round is authorised. |
-| `DONE` | The loop's objective is met. | Advance to the next phase. |
+| `DONE` | The loop's objective is met **and** this round's own verdict (`loop_round_verdict`) is the loop's clean token (`loop_clean_token`). | Advance to the next phase. |
 | `STUCK` | No progress is being made. | Stop. Do not proceed. Escalate with the specific evidence of what is not converging. |
+
+### `DONE` needs this round's own verdict to be clean
+
+A loop whose rounds are judged by a reviewer has a clean token: `CLEAN` for
+the crusty loop, `MERGE_READY` for the merge-ready loop. The caller passes
+that token as `loop_clean_token` and the verdict the reviewer gave **this**
+round as `loop_round_verdict`. The prompt's `## Decide` rules make `DONE`
+legal only when the two are equal.
+
+A non-clean round (`CONCERNS`, `NOT_MERGE_READY` and the like) is never
+`DONE`, even when every finding looks addressed — by a commit or by an edit
+to the pull request description. Only another review round can confirm a
+fix, so the evaluator answers `CONTINUE` if the round acted on its findings
+and `STUCK` only if it neither changed the code nor acted on a finding. A fix
+made outside the diff counts as movement **even with zero commits**: a pull
+request description edit or a reply on a review thread that the round output
+shows is `CONTINUE`, and the re-review is the next step. Issue #1597 is the
+case this rule closes: a crusty round said `CONCERNS`, the concerns were fixed
+by a description edit with no commit, and the evaluator answered `DONE`.
+Without the zero-commit clause, the measured `commits_since_baseline = 0` and
+the "if you are not sure, answer `STUCK`" fallback would steer the same round
+to `STUCK`, which the loop honours, and the run would end one round short.
+
+The prompt also defines the `done_overridden=1` marker. When `autodrive_loop.sh`
+refuses a `DONE` because the round's verdict was not clean, it appends that
+marker to the round's line in `loop_history`. The `## Decide` rule tells the
+evaluator that a history line ending in `done_overridden=1` is a `DONE` that was
+refused as non-clean, so the model does not have to guess what the marker means.
+
+When `loop_clean_token` is empty, the evaluator applies the same rule to the
+reviewer verdict shown for this round in `loop_history`, if there is one;
+otherwise it decides as before. The quality, self-improvement and
+smart-reflect loops pass neither input, so their behaviour does not change.
+
+The rule lives in the prompt only. Steps 03 and 04 do not compare the two
+inputs, and nothing about how the verdict is parsed changes: the
+deterministic check is `ROUND_CLEAN` in `autodrive_loop.sh`, which handles a
+`DONE` that breaks this rule anyway on evaluated rounds (see
+[Advancing needs two independent signals](auto-drive-to-merge.md#advancing-needs-two-independent-signals)).
 
 **A missing or unparseable verdict is `STUCK`, never `CONTINUE`.** Failing safe
 here means stopping, not looping: a fail-open default would authorise exactly
@@ -126,8 +175,7 @@ its last `##` heading, and shows the same example line both times:
    ```
    {"loop_verdict":"STUCK","not_converging":[]}
 
-   CONTINUE, DONE and STUCK are the only legal `loop_verdict` values;
-   any other word is STUCK.
+   Only CONTINUE, DONE and STUCK are legal; any other word is STUCK.
    ```
 
 The role paragraphs have no heading of their own, so they sit under
@@ -340,10 +388,13 @@ step-03 reads `DONE` with `verdict_source=evaluator_prose_token`. A `**DONE**`
 line gives the same result. A `DONE` alone does not advance a phase:
 `autodrive_loop.sh` also needs the round's own verdict to be clean (see
 [Advancing needs two independent signals](auto-drive-to-merge.md#advancing-needs-two-independent-signals)).
-If the round verdict is clean, the loop ends without the confirming round that
-a `CONTINUE` would have run; for the crusty loop, that ends the crusty review.
-If the round verdict is anything else, the pair is inconsistent and the run
-stops as `STUCK`. A `DONE` from the merge loop only hands over to the
+If an evaluated merge-ready round is clean, the loop ends without the
+confirming round that a `CONTINUE` would have run. Completed Crusty reviews
+use objective-completion dispatch before this evaluator is invoked.
+If the round verdict is anything else, the loop does not advance. It runs
+one more round to re-review, and stops as `STUCK` if the round record is
+missing or if the next round repeats the same non-clean `DONE` with no
+progress. A `DONE` from the merge loop only hands over to the
 [merge gate](auto-drive-to-merge.md#no-silent-merge), which checks the evidence
 again before it merges.
 
@@ -356,7 +407,9 @@ write their reason (`CONTINUE — round 1 made real progress`), so it stays a
 legal ending. The control
 that stops such a `DONE` from ending a loop early is the `ROUND_CLEAN` check
 in `autodrive_loop.sh`: `DONE` advances only when the round's own verdict was
-clean, and otherwise the run stops as `STUCK`.
+clean. Otherwise the loop runs another round to re-review, and stops as
+`STUCK` when the round record is missing or a repeated non-clean `DONE` shows
+no progress.
 
 ### Examples
 
@@ -550,7 +603,7 @@ caller that wants the numbers alone can invoke the collector directly. Its
 | Field | Signal |
 | ----- | ------ |
 | `terminal_refusal`, `terminal_reason` | A child returned exit `79`, or failed with a final `structural_refusal: true` marker. Terminal — see below. |
-| `commits_since_baseline`, `diff_lines`, `diff_stat` | What the last round **actually** produced, from `git rev-list` / `git diff --numstat` against `loop_baseline_ref`. Zero and zero means it produced nothing, whatever the round's prose claims. |
+| `commits_since_baseline`, `diff_lines`, `diff_stat` | What the last round **actually** produced, from `git rev-list` / `git diff --numstat` against `loop_baseline_ref`. Zero and zero means no code moved, whatever the round's prose claims. A non-clean round that acted on its findings outside the diff (a PR-description edit, a thread reply) is still `CONTINUE`; see the `DONE` rule. |
 | `repeated_duration_count`, `repeated_duration_value` | How many steps reported the *same* duration. Identical durations repeating are a cap, not work. |
 | `repeated_output` | Whether the last round's output is textually a repeat of something already in the history (compared after normalising away digits, punctuation and whitespace). |
 | `findings_new`, `findings_recurring`, `findings_resolved` | Set difference over `loop_findings_current` / `loop_findings_previous`. A round that resolves nothing and re-raises the same findings has not moved. |
@@ -574,6 +627,8 @@ caller that wants the numbers alone can invoke the collector directly. Its
 | `loop_findings_current` / `loop_findings_previous` | `""` | Newline-separated finding identifiers for the last two rounds. |
 | `loop_test_signal` / `loop_test_signal_previous` | `""` | Test result summaries for the last two rounds. |
 | `loop_ci_signal` / `loop_ci_signal_previous` | `""` | CI result summaries for the last two rounds. |
+| `loop_clean_token` | `""` | The verdict that makes a round clean for this loop: `CLEAN` (crusty) or `MERGE_READY` (merge-ready). `DONE` is legal only when `loop_round_verdict` equals it. Empty means: use the reviewer verdict for this round in `loop_history` if there is one, otherwise decide as before. |
+| `loop_round_verdict` | `""` | The reviewer's verdict for the round just finished, for example `CONCERNS` or `MERGE_READY`, or `MISSING` when the round wrote no record. `autodrive_loop.sh` passes it with every character outside `A-Za-z0-9_` removed; a non-clean verdict that would then equal the clean token (`CLEAN!`) arrives as `CLEAN_NONCANONICAL`. |
 | `loop_health_enforce` | `"true"` | When `"false"`, `STUCK` is reported loudly but exits `0`, leaving the stop entirely to the caller's `condition:`. |
 
 ## Outputs
@@ -602,7 +657,9 @@ the order in which these are tried.
 
 ## Using it from a recipe
 
-Invoke the brick after each round and gate the next round on the verdict:
+Invoke the brick for rounds that need convergence judgment and gate the next
+round on its verdict. Auto-drive Crusty rounds first apply the
+[completion-first dispatch contract](autodrive-crusty-completion.md):
 
 ```yaml
   - id: "round-2"
@@ -653,7 +710,9 @@ surfaced and the loop stops. They are **never** retried into, and the agentic st
 (`condition: "loop_evidence.terminal_refusal == 'false'"`) — not even a model
 call is spent deciding whether to re-enter a sealed guard. A terminal refusal
 forces `STUCK` even if an evaluator verdict from an earlier round said
-`CONTINUE`.
+`CONTINUE`. Only the exit status and the runner's final marker count: no
+round text, the guard's own phrase included, is a refusal (see
+[Round text never decides a refusal](#round-text-never-decides-a-refusal)).
 
 Historically, agents read a `79` refusal as an infrastructure fault and retried
 one level deeper with a raised ceiling. That is what #1327 sealed, and it is
@@ -687,6 +746,105 @@ because the classifier checks environmental markers first (see
 [transient-failure-retry](transient-failure-retry.md#classification)), so an
 unknown model still counts as an infrastructure fault.
 
+### Round text never decides a refusal
+
+Round text, the guard's own phrase included, never sets `terminal_refusal`.
+Before #1437 the collector also read text: it cut the runner's run summary,
+dropped agent and `amplihack.recipe.log_pointer` lines, and then looked for
+`BLOCKED_TERMINAL orchestration_unavailable` and for `exit 79`-like phrases.
+Each filter closed one path by which quoted text stopped a loop (#1510; PR
+#1586; rounds 1 and 3 of PR #1632), and each left another open. The #1437
+incident was one of those: an agent handled a descendant's refusal inline,
+as the refusal tells it to, and later lost its API session, and the phrase
+in its transcript ended a run that had pushed its work.
+
+The collector now applies `terminal_refusal` from
+`amplifier-bundle/tools/autodrive_refusal.sh`, the function `autodrive_loop.sh`
+uses for every child, to `loop_child_exit_code` and `loop_last_round_output`
+alone:
+
+| Input | `terminal_refusal` |
+| ----- | ------------------ |
+| `loop_child_exit_code` = `79`, with any text or none | `"true"` |
+| exit `1`, and the last line beginning `amplihack.recipe.failure_class ` has `"structural_refusal": true` | `"true"` |
+| exit `1`, `BLOCKED_TERMINAL orchestration_unavailable: …` on its own line at column 0, no marker | `"false"` |
+| exit `1`, an agent line or a run summary quoting the phrase or `exit 79` | `"false"` |
+| exit `1`, `child exited with status 79` | `"false"` |
+| exit `1`, a `log_pointer` line with `"exit_code":79` | `"false"` |
+| exit `1`, a `true` marker followed by a later `false` marker | `"false"` |
+| exit `1`, `"structural_refusal": "true"` (a string) | `"false"` |
+| exit `1`, an indented copy of a `true` marker | `"false"` |
+| exit `0`, or no exit code, with a `true` marker | `"false"` |
+| a `true` marker in `loop_history` only | `"false"` |
+
+What this costs: a refusal whose exit code was lost and whose runner wrote no
+final marker is not seen. Neither happens in practice. A guard refuses before
+a run starts and `amplihack recipe run` exits 79; a failed step that ended
+with exit 79 sets `structural_refusal` on the marker the runner writes last
+(see [auto-drive-to-merge](auto-drive-to-merge.md#not-every-failure-is-terminal-issue-1437)).
+The duration, still-running and repetition checks still read the unfiltered
+history and last round output. `autodrive_round_tail.sh` still prints whole
+lines only, and the final marker, being the log's last line, is always inside
+its 20000-byte tail.
+
+## A usage limit is not a verdict
+
+The evaluator's agent step (step-02) is a Claude call like any other, so it
+can fail on a usage limit. A usage limit says nothing about whether the loop
+is converging, so it never becomes a `STUCK` verdict.
+
+### Retry inside the step
+
+Step-02 runs through `amplihack claude -p`, so its supervisor applies the
+[usage-limit wait](profile-command.md#usage-limit-wait) before the recipe
+runner sees the failure:
+
+1. The first attempt fails on a usage limit.
+2. The supervisor waits. A limit that resets within five hours gets a reset
+   wait. A weekly limit, or one with no readable reset, gets a
+   [capacity wait](profile-command.md#capacity-wait) when another stored
+   login could take over and a rotator is running, for up to six hours by
+   default. Inside a recipe run `AMPLIHACK_RECIPE_RUN_ID` stops launches
+   from starting the rotator, so start one before auto-drive; without one
+   the step fails at once on the usage limit.
+3. The wait ends on `rotator capacity`, `login changed`, `login capacity`
+   or `reset reached`, and step-02 runs once more with the same prompt under
+   whichever login is now live.
+4. The second attempt answers as usual. Step-02 exits `0`, and step-03 and
+   step-04 resolve and enforce its verdict exactly as if the limit had never
+   happened.
+
+The retry happens inside the step, so `loop-health-evaluator.yaml` is
+unchanged. The caller sees one completed evaluator run with an ordinary
+`LOOP_HEALTH:` line, and the step's stderr holds the
+`amplihack.recipe.usage_limit_wait` `start`, `end` and `resume` lines. There
+is at most one wait and one retry per step.
+
+### When the wait does not lift the limit
+
+When the wait is skipped (for example `reset_too_far` with a single stored
+login), expires (`capacity expired`, `step timeout`) or was already used,
+step-02 fails and the recipe runner writes its
+`amplihack.recipe.failure_class` marker with `"class":"usage_limit"`.
+Step-02 does not set `continue_on_error`, so the runner stops the recipe
+there: step-03 and step-04 do not run and no verdict is produced. The
+recipe's shell test checks that step-02 never gains `continue_on_error`,
+because step-03 would then resolve the missing verdict as `STUCK` with
+`verdict_source=missing_verdict`. The caller does not read the failed recipe
+as `STUCK`:
+
+- `autodrive_loop.sh` stops as `USAGE_LIMIT`, exit `1`; see
+  [Usage limits are not STUCK](auto-drive-to-merge.md#usage-limits-are-not-stuck);
+- `hook_repair_evaluate` reports `USAGE_LIMIT` and the repair ends with
+  status `usage_limit`; see
+  [`hook_repair_run`](recipe-commit-hook-repair.md#hook_repair_run).
+
+The verdict rules in this recipe are unchanged. A missing or unparseable
+verdict from an evaluator that **ran** is still `STUCK`. Only the runner's
+own marker, on a non-zero exit, counts as a usage limit: an evaluator or a
+round agent that writes about usage limits, or quotes the marker in its
+output, does not change the verdict.
+
 ## Fail-safe guarantees
 
 Every branch fails toward stopping:
@@ -716,26 +874,32 @@ None of these catches a verdict copied from the round output. See the residual
 risks under [The alternate key is final](#the-alternate-key-is-final) and
 [Prose token rules](#prose-token-rules).
 
-### Reading step outputs: the dual-name idiom
+### Reading step outputs: RECIPE_VAR only
 
 `recipe-runner-rs` exports every step output as `RECIPE_VAR_<name>`, but it
 only adds the plain-uppercase alias (`LOOP_EVIDENCE`) for **scalar** outputs.
 `loop_evidence` and `loop_health` declare `parse_json: true`, and an evaluator
 that obeys the "emit only the JSON object" contract makes
 `loop_health_assessment` an object too. All three plain names are therefore
-**absent** at runtime, and a bare `${LOOP_EVIDENCE:-}` read is silently empty.
+**absent** at runtime, and a bare `${LOOP_EVIDENCE:-}` read is silently empty,
+or worse, holds a stale value inherited from whatever launched the runner.
 
-Every read in these bricks uses the dual-name form, the same idiom as
-`workflow-publish` / `workflow-finalize` / `workflow-terminal-state`:
+Every read in these bricks uses the `RECIPE_VAR_` name alone:
 
 ```bash
-EV="${LOOP_EVIDENCE:-${RECIPE_VAR_loop_evidence:-}}"
+EV="${RECIPE_VAR_loop_evidence:-}"
 ```
 
-Dropping a fallback makes the recipe inert: the reads miss, `--default true`
-fires, and every run reports a `terminal_policy_refusal` that never happened.
-An integration test guards the invariant statically and the contract test
-proves it end to end through the real runner.
+The bare name is never read, so an inherited `LOOP_EVIDENCE` or `LOOP_HEALTH`
+cannot replace the brick's own evidence or verdict (see
+[Step outputs ignore inherited bare variables](auto-drive-to-merge.md#step-outputs-ignore-inherited-bare-variables)).
+Dropping the `RECIPE_VAR_` read makes the recipe inert: the reads miss,
+`--default true` fires, and every run reports a `terminal_policy_refusal` that
+never happened. `tests/integration/issue_1337_loop_health_evaluator_test.rs`
+fails on any read of `LOOP_EVIDENCE`, `LOOP_HEALTH` or
+`LOOP_HEALTH_ASSESSMENT` in a step command, and on a missing `RECIPE_VAR_`
+read of any of the three; the contract test proves it end to end through the
+real runner.
 
 ### Which JSON object is the verdict
 
@@ -791,7 +955,10 @@ Feeding the real run's evidence to `step-01-collect-loop-evidence`:
 
 Seven identical `10m 0s` durations, zero commits, zero diff lines, nothing
 resolved, the test signal unmoved, the run waiting on output that never
-arrives, and a terminal `79` refusal. Verdict: **`STUCK`** — on the first round
+arrives, and a terminal `79` refusal. The evidence paraphrases the child's
+refusal ("child BLOCKED_TERMINAL at depth 4/3, exit 79"), so only the exit-79
+check fires; had the guard's own `BLOCKED_TERMINAL orchestration_unavailable`
+line been present, the reason would also cite it. Verdict: **`STUCK`** — on the first round
 the evidence becomes visible, not after some number of attempts. The loop stops
 and reports what is not converging instead of consuming the remaining budget.
 
@@ -802,13 +969,18 @@ and reports what is not converging instead of consuming the remaining budget.
 | Helper unit tests (synonyms including `CONVERGING` / `PROGRESSING`, canonical pass-through, malformed → `STUCK`, negation-adjacent equality regression including `NOT_PROGRESSING`, opposite-default guard) | `crates/amplihack-cli/src/commands/orch.rs` |
 | Executable contract test (STUCK path, malformed-verdict path, exit-79 terminal path, the 2h47m worked example, no-cap and no-timeout guards, and a hand-written `check_rs` line, run through `resolve_verdict_and_source`, for every row of the [step-03 examples](#examples) — the test does not read the table, so a new row needs its own `check_rs` line — plus the round-trip guard, `LOOP_NAME` cleaning, prompt-marker and [contract-position](#where-the-prompt-states-the-contract) cases, and step-04's stdout being at most one `LOOP_HEALTH: ` line for `CONTINUE`, `DONE` and `STUCK`) | `amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh` |
 | **End-to-end probe** — the real recipe files run through the real `recipe-runner-rs` with only step-02 stubbed as a bash step: `CONTINUE` → exit 0, `STUCK` → exit 1, verdict selection, exit-79 terminal, self-poisoning | same file, section 7 (skipped with a loud notice when `recipe-runner-rs` is not installed; set `RECIPE_RUNNER_RS_PATH` to force it) |
-| Structural + end-to-end wiring, including `evaluator_prompt_states_the_contract_first_and_last` | `tests/integration/issue_1337_loop_health_evaluator_test.rs` |
+| Structural + end-to-end wiring, including `evaluator_prompt_states_the_contract_first_and_last` and the [RECIPE_VAR-only read check](#reading-step-outputs-recipe_var-only) for `loop_evidence`, `loop_health` and `loop_health_assessment` | `tests/integration/issue_1337_loop_health_evaluator_test.rs` |
+| Collector refusals come from the exit code and the runner's final marker only (#1510, #1437): the real step-01 command run through `bash` in an isolated environment, with `AMPLIHACK_HOME` and the built `amplihack` binary for the shared helper. Every #1510 case that quoted the guard (agent prose, an indented or failed-step tail, a bare token, `log_pointer` echoes, a real successful round log whose run summary quotes the marker and "exit 79", a byte tail cut inside an agent line) is still not terminal. Every case #1510 kept terminal on text (the guard's phrase at column 0, indented, after agent prose, after a `log_pointer` line, inside other JSON, before or after a summary header, in history; an unprefixed "exit status 79"; near-miss agent prefixes) is now not terminal with no exit code or exit `1`/`2`, and terminal with the runner's final `structural_refusal: true` marker after it. The marker cases check exit `0`, a missing or non-numeric exit code, an indented copy, the string `"true"`, a later `false` marker and history. `issue_1437_collector_and_loop_share_one_refusal_helper` fails if either reader stops sourcing `autodrive_refusal.sh` or matches the guard's text again. The round-tail tests check that only whole lines are printed and that a long summary keeps its header | `tests/integration/issue_1510_collector_agent_prose_test.rs` |
+| Usage limit on step-02, retried: a fake `claude` that prints the weekly-limit message on its first call and a valid verdict on its second, a fake rotator cycle written during the wait, run through a stub `recipe-runner-rs` under an isolated `HOME`. Checks exit `0`, the verdict once, two calls, the `start` and `end reason=rotator capacity` lines, and no `usage_limit` failure class | `crates/amplihack-cli/tests/issue_1801_evaluator_retry.rs` |
+| Usage limit on step-02, retried and expired, as seen by `autodrive_loop.sh`: `1801-evaluator-retry-verdict` records the verdict with no `STUCK`; `1801-evaluator-usage-limit` stops as `USAGE_LIMIT`; negative cases for a nested `class`, the marker with exit `0`, an indented or echoed marker, and wait lines alone | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 
 Run them with:
 
 ```bash
 cargo test -p amplihack-cli normalise_loop_verdict
 cargo test -p amplihack --test integration issue_1337_loop_health_evaluator::
+cargo test -p amplihack --test integration issue_1510
+cargo test -p amplihack-cli --test cli_integration issue_1801_evaluator_retry::
 bash amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh
 ```
 
@@ -872,3 +1044,5 @@ comes from this workspace. A predictable path in a shared directory such as
 - [Recipe Executor Environment](recipe-executor-environment.md) — how context
   vars and step outputs reach bash steps and engine conditions.
 - [Recipe Quick Reference](recipe-quick-reference.md) — recipe authoring basics.
+- [Usage-limit wait](profile-command.md#usage-limit-wait): how an agent step
+  waits for a reset or for another login, and retries once.

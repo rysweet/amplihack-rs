@@ -37,7 +37,7 @@ use amplihack_utils::launch_target::{LaunchTarget, OverrideOrigin, TargetSource}
 pub fn maybe_print_npm_update_notice(tool: &str, skip: bool, override_origin: OverrideOrigin) {
     // SEC-WS3: AMPLIHACK_NONINTERACTIVE check is the second guard.
     // Unconditionally prevents subprocess spawning regardless of skip flag.
-    if skip || is_noninteractive() {
+    if !check_wanted(skip, is_noninteractive()) {
         return;
     }
 
@@ -77,6 +77,14 @@ pub fn maybe_print_npm_update_notice(tool: &str, skip: bool, override_origin: Ov
         eprintln!("amplihack: update available: {pkg} {safe_installed} → {safe_latest}");
         eprintln!("(run: npm install -g {pkg} to update)");
     }
+}
+
+/// Whether the npm check may run: never when `--skip-update-check` was
+/// passed, and never when the session is non-interactive. A separate
+/// function so a test can show `skip` alone suppresses the check; under the
+/// test harness stdin is not a TTY, so `is_noninteractive()` is always true.
+fn check_wanted(skip: bool, noninteractive: bool) -> bool {
+    !skip && !noninteractive
 }
 
 /// Does an `npm install -g <pkg>` notice actually describe *this* target?
@@ -282,10 +290,27 @@ mod tests {
     ///
     /// Verifies the timeout mechanism works — recv_timeout(0) will always
     /// time out before the thread can complete.
+    #[cfg(unix)]
     #[test]
     fn run_npm_with_timeout_zero_duration_returns_none() {
-        // A zero timeout should always return None regardless of npm presence.
-        let result = run_npm_with_timeout(&["--version"], Duration::from_nanos(0));
+        use std::os::unix::fs::PermissionsExt;
+        // The child's PATH holds only a fake npm that sleeps for 60 s, so
+        // the call reaches the timeout path on every host, whether or not
+        // npm is installed, and never starts the host's npm. The child also
+        // gets a temporary HOME and no profile root (issue #1765).
+        let dir = tempfile::tempdir().unwrap();
+        let fake_npm = dir.path().join("npm");
+        std::fs::write(&fake_npm, "#!/bin/sh\nexec /bin/sleep 60\n").unwrap();
+        std::fs::set_permissions(&fake_npm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let result = run_npm_with_timeout(
+            &["--version"],
+            Duration::from_nanos(0),
+            &|cmd: &mut std::process::Command| {
+                cmd.env("PATH", dir.path())
+                    .env("HOME", dir.path())
+                    .env_remove(crate::commands::profile::ROOT_ENV);
+            },
+        );
         assert!(
             result.is_none(),
             "Zero-duration timeout must return None (timed out before npm could respond)"
@@ -294,15 +319,25 @@ mod tests {
 
     /// WS3-UNIT-14: A non-existent command returns None (npm not found).
     ///
-    /// Tests the fallback path when npm binary is absent from PATH.
-    /// Uses a clearly-bogus command name to ensure it fails.
+    /// Tests the fallback path when npm binary is absent from PATH. The
+    /// child's PATH and HOME are an empty temporary directory, so the spawn
+    /// fails and the installed npm never runs (issue #1765).
     #[test]
     fn run_npm_with_timeout_missing_binary_returns_none() {
+        let empty = tempfile::tempdir().unwrap();
         let result = run_npm_with_timeout(
-            &["totally-invalid-npm-subcommand-that-will-exit-nonzero"],
+            &["--version"],
             Duration::from_millis(500),
+            &|cmd: &mut std::process::Command| {
+                cmd.env("PATH", empty.path())
+                    .env("HOME", empty.path())
+                    .env_remove(crate::commands::profile::ROOT_ENV);
+            },
         );
-        let _ = result; // may be None or Some depending on environment
+        assert!(
+            result.is_none(),
+            "with no npm in the child's PATH the spawn must fail and return None"
+        );
     }
 
     // The `npm list -g --json` parsing tests that lived here went with
@@ -312,32 +347,40 @@ mod tests {
 
     // ── maybe_print_npm_update_notice guards ──────────────────────────────
 
-    /// WS3-UNIT-17: maybe_print_npm_update_notice returns immediately when skip=true.
+    /// Issue #1973: `--skip-update-check` alone suppresses the check, even
+    /// in an interactive session, and either guard alone is enough.
     #[test]
-    fn maybe_print_npm_update_notice_skips_when_skip_true() {
-        let start = std::time::Instant::now();
-        maybe_print_npm_update_notice("claude", true, OverrideOrigin::User);
-        let elapsed = start.elapsed();
+    fn check_wanted_only_without_skip_in_an_interactive_session() {
+        assert!(check_wanted(false, false));
         assert!(
-            elapsed < Duration::from_millis(100),
-            "maybe_print_npm_update_notice with skip=true must return in <100ms, \
-             got {}ms. Subprocess was spawned when it shouldn't have been.",
-            elapsed.as_millis()
+            !check_wanted(true, false),
+            "skip alone must suppress the check"
         );
+        assert!(!check_wanted(false, true));
+        assert!(!check_wanted(true, true));
     }
 
-    /// WS3-UNIT-18: maybe_print_npm_update_notice is a no-op for unknown tools.
+    /// WS3-UNIT-17: maybe_print_npm_update_notice returns before any npm work
+    /// when skip=true. Issue #1973: this asserted a return within 100 ms,
+    /// which a loaded host broke, and under the test harness stdin is not a
+    /// TTY, so the early return happened whatever `skip` was. The guard
+    /// decision is asserted instead.
+    #[test]
+    fn maybe_print_npm_update_notice_skips_when_skip_true() {
+        assert!(
+            !check_wanted(true, false),
+            "skip=true must stop the check even in an interactive session"
+        );
+        maybe_print_npm_update_notice("claude", true, OverrideOrigin::User);
+    }
+
+    /// WS3-UNIT-18: maybe_print_npm_update_notice is a no-op for unknown tools:
+    /// an unknown tool has no npm package, so the function returns before any
+    /// npm work. Issue #1973: asserted by the mapping, not a 100 ms bound.
     #[test]
     fn maybe_print_npm_update_notice_noop_for_unknown_tool() {
-        let start = std::time::Instant::now();
+        assert_eq!(npm_package_for_tool("totally-unknown-tool"), None);
         maybe_print_npm_update_notice("totally-unknown-tool", false, OverrideOrigin::User);
-        let elapsed = start.elapsed();
-        assert!(
-            elapsed < Duration::from_millis(100),
-            "maybe_print_npm_update_notice for unknown tool must return in <100ms \
-             (no npm package → no subprocess), got {}ms",
-            elapsed.as_millis()
-        );
     }
 
     // -----------------------------------------------------------------------

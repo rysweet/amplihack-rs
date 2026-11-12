@@ -36,8 +36,9 @@ use super::failure_evidence::{
 };
 use super::failure_markers::{
     AGENT_API_MARKERS, ENVIRONMENTAL_MARKERS, REPO_SELECTION_MARKERS, STRUCTURAL_REFUSAL_MARKER,
-    TRANSIENT_MARKERS, USAGE_LIMIT_MARKERS, WORK_MARKERS,
+    TRANSIENT_MARKERS, WORK_MARKERS,
 };
+use super::limit_patterns;
 use serde_json::{Value as JsonValue, json};
 use std::io::Write;
 
@@ -267,7 +268,7 @@ pub(crate) fn classify_failure_text(text: &str) -> (FailureClass, Option<&'stati
     // Before TRANSIENT_MARKERS: a usage-limit response frequently arrives
     // wrapped in a 429 envelope, and "retry in a moment" is the wrong reading
     // of it (#1390).
-    if let Some(marker) = first_match(&haystack, USAGE_LIMIT_MARKERS) {
+    if let Some(marker) = first_match(&haystack, &limit_patterns::all_markers()) {
         return (FailureClass::UsageLimit, Some(marker));
     }
     // Before TRANSIENT_MARKERS: an agent-endpoint rejection is a stable answer,
@@ -334,6 +335,22 @@ pub(crate) fn classify_run_failure(result: &RecipeRunResult, stderr_tail: &str) 
 
     let evidence = truncate_evidence(evidence_parts.join("\n"));
     let (mut class, mut signal) = classify_failure_text(&evidence);
+    // The runner's scoped supervisor evidence survives nested error summaries.
+    // Work and environmental failures keep their established higher priority.
+    if matches!(
+        class,
+        FailureClass::Indeterminate | FailureClass::TransientTransport
+    ) && result
+        .extra
+        .get("failure_cause")
+        .is_some_and(|cause| cause["class"] == "usage_limit" && cause["origin"].is_object())
+    {
+        class = FailureClass::UsageLimit;
+        signal = Some("durable scoped usage-limit evidence");
+    }
+    // A failed step that terminated with exit 79 was refused by a structural
+    // guard (#1437). That outranks every class read from text, which is why
+    // it is decided last.
     if structural_refusal && class != FailureClass::Work {
         class = FailureClass::Work;
         signal = Some(STRUCTURAL_REFUSAL_MARKER);
@@ -362,6 +379,17 @@ pub(crate) fn classify_error(error: &anyhow::Error) -> FailureVerdict {
         completed_steps: Vec::new(),
         structural_refusal: false,
     }
+}
+
+/// The marker line for `payload`. `serde_json` writes object keys in sorted
+/// order, so the line begins `{"action":…,"attempt":…,"class":…`; the
+/// usage-limit check in `autodrive_escalate.sh` relies on that order when `jq`
+/// is missing (#1801), and `tests_failure_class.rs` holds it.
+pub(crate) fn marker_line(payload: &JsonValue) -> String {
+    format!(
+        "{FAILURE_CLASS_MARKER_PREFIX}{}",
+        serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_string())
+    )
 }
 
 /// Write the greppable classification marker. `action` is what the runner did
@@ -398,9 +426,6 @@ pub(crate) fn emit_final_failure_class_marker(result: &RecipeRunResult) {
 }
 
 fn write_failure_class_marker(payload: &JsonValue) {
-    let line = format!(
-        "{FAILURE_CLASS_MARKER_PREFIX}{}",
-        serde_json::to_string(payload).expect("a serde_json::Value always serialises")
-    );
+    let line = marker_line(payload);
     let _ = writeln!(std::io::stderr().lock(), "{line}");
 }

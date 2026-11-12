@@ -27,7 +27,7 @@ anchor either — it resolves to the current worktree's bundle root and varies t
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AMPLIHACK_MAX_DEPTH` | `3` | Requested recursion ceiling. May only **lower** the tree's sealed ceiling, never raise it. Clamped to `MAX_DEPTH_CEILING` (32). |
+| `AMPLIHACK_MAX_DEPTH` | `3`, or [`orchestrator.max_depth`](./user-config.md#orchestratormax_depth) | Requested recursion ceiling. May only **lower** the tree's sealed ceiling, never raise it. Clamped to `MAX_DEPTH_CEILING` (32). When unset, the configured `orchestrator.max_depth` is the request, under the same rules. |
 | `AMPLIHACK_MAX_SESSIONS` | `10` | Concurrent active sessions per tree. |
 | `AMPLIHACK_SESSION_DEPTH` | unset (root) | Current depth. Set by the runner for each child; not for callers to set. |
 | `AMPLIHACK_TREE_ID` | generated | Tree identity. Set by the runner for each child. |
@@ -57,6 +57,13 @@ tree is sealed:
 
 ```bash
 AMPLIHACK_MAX_DEPTH=5 amplihack recipe run <recipe> ...
+```
+
+To make a different root ceiling your default, set it once in the user config.
+It applies only to new trees; a sealed tree keeps its ceiling:
+
+```bash
+amplihack config set orchestrator.max_depth 5
 ```
 
 ### "nested run at depth N has no sealed recursion ceiling"

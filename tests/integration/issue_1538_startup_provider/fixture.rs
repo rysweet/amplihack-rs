@@ -5,7 +5,7 @@ use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::Output,
 };
 use tempfile::TempDir;
 
@@ -96,7 +96,7 @@ impl Fixture {
         .unwrap();
         fs::write(home.join(".codex/config.toml"), b"model = \"user-owned\"\n").unwrap();
         fs::write(home.join(".codex/hooks.json"), b"{\"foreign\":true}\n").unwrap();
-        for (provider, version) in [("claude", "2.1.0 (Claude Code)"), ("copilot", "0.0.400")] {
+        for (provider, version) in [("claude", "2.1.319 (Claude Code)"), ("copilot", "0.0.400")] {
             executable(
                 &tools.join(provider),
                 &format!(
@@ -110,7 +110,8 @@ esac"#
             );
         }
         let reply = if unsupported {
-            "exit 23"
+            // A Codex without native plugins rejects the subcommand the way clap does.
+            "printf \"error: unrecognized subcommand 'plugin'\\n\" >&2; exit 2"
         } else {
             "printf '%s\\n' '{\"installed\":[]}'"
         };
@@ -125,6 +126,7 @@ case "$*" in
 esac"#
             ),
         );
+        executable(&tools.join("codex-code-mode-host"), "#!/bin/sh\nexit 0\n");
         executable(&tools.join("node"), "#!/bin/sh\nprintf '%s\\n' 'v24.1.0'");
         executable(
             &tools.join("amplihack-hooks"),
@@ -132,7 +134,7 @@ esac"#
         );
         executable(
             &tools.join("recipe-runner-rs"),
-            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'",
+            "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'",
         );
         for name in [
             ".cargo",
@@ -185,9 +187,11 @@ esac"#
     }
 
     pub fn run(&self, args: &[&str]) -> Output {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack"));
+        let mut command = crate::isolated_amplihack::isolated(env!("CARGO_BIN_EXE_amplihack"));
         command
             .env_clear()
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env("TMPDIR", std::env::temp_dir())
             .args(args)
             .current_dir(&self.source)
             .env("HOME", &self.home)
@@ -199,6 +203,9 @@ esac"#
             .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
             .env("IS_SANDBOX", "1")
+            // AMPLIHACK_HOME is the source checkout here, so the launcher
+            // would write its contract file into the repository (#2030).
+            .env("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND", "1")
             .env(
                 "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
                 self.tools.join("amplihack-hooks"),

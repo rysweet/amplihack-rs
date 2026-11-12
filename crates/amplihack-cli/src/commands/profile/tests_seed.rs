@@ -15,6 +15,9 @@ fn fixture() -> (tempfile::TempDir, PathBuf, ProfileStore) {
     let d = tempfile::tempdir().unwrap();
     let source = d.path().join("main-claude");
     fs::create_dir_all(&source).unwrap();
+    // A umask-independent mode, so the shared-session root check (#1634) passes.
+    #[cfg(unix)]
+    fs::set_permissions(&source, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     if let Some(home) = std::env::var_os("HOME") {
         assert_ne!(
             source.canonicalize().unwrap(),
@@ -53,11 +56,37 @@ fn credentials_history_and_state_are_never_copied() {
 
     let profile = store.add(&n("work")).unwrap();
 
-    let names: Vec<String> = fs::read_dir(&profile)
+    // Issue #1634: the session dirs are links to the source, never copies.
+    let mut names: Vec<String> = fs::read_dir(&profile)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
-    assert_eq!(names, vec!["CLAUDE.md".to_string()]);
+    names.sort();
+    if cfg!(not(unix)) {
+        assert_eq!(names, vec!["CLAUDE.md".to_string()]);
+        return;
+    }
+    assert_eq!(
+        names,
+        ["CLAUDE.md", "file-history", "projects", "session-env"].map(String::from)
+    );
+    assert!(
+        fs::symlink_metadata(profile.join("CLAUDE.md"))
+            .unwrap()
+            .is_file()
+    );
+    let canonical_source = source.canonicalize().unwrap();
+    for name in ["file-history", "projects", "session-env"] {
+        let link = profile.join(name);
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "{name} copied by value"
+        );
+        assert_eq!(fs::read_link(&link).unwrap(), canonical_source.join(name));
+    }
 }
 
 #[test]
@@ -274,14 +303,28 @@ mod race_and_nested {
         fs::create_dir_all(&sub).unwrap();
         fs::write(sub.join("a.md"), "a").unwrap();
         // Hook fires after the entry was classified, before it is opened.
+        // The hook receives the display path relative to the source root, so
+        // resolve it against `source`; a bare relative path would act on the
+        // process working directory and could plant a symlink in the checkout.
+        // The hook must succeed and must fire; otherwise the test checks
+        // nothing, which is how the relative-path bug went unnoticed.
+        let source_root = source.clone();
+        let swapped = std::rc::Rc::new(std::cell::Cell::new(false));
+        let hook_swapped = std::rc::Rc::clone(&swapped);
         super::super::store::test_hook::set_before_open(Some(Box::new(move |p| {
             if p.ends_with("victim") {
-                let _ = fs::remove_dir_all(p);
-                let _ = symlink(&outside, p);
+                let target = source_root.join(p);
+                fs::remove_dir_all(&target).unwrap();
+                symlink(&outside, &target).unwrap();
+                hook_swapped.set(true);
             }
         })));
         let res = store.add(&n("w"));
         super::super::store::test_hook::set_before_open(None);
+        assert!(
+            swapped.get(),
+            "before_open hook never swapped the directory"
+        );
         let dir = store.root().join("w");
         let leaked = dir.exists()
             && walk(&dir).iter().any(|f| {

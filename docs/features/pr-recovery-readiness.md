@@ -68,7 +68,8 @@ amplihack recipe run default-workflow \
 ```
 
 `NODE_OPTIONS=--max-old-space-size=32768` is the supported heap setting for
-large nested agent runs. Persist it in `~/.amplihack/config` when the local
+large nested agent runs. Persist it with `amplihack config set node.heap_consent true` and
+`amplihack config set node.max_old_space_mb 32768` when the local
 environment needs nested workflow agents to inherit it automatically.
 
 ## Recovery Contract

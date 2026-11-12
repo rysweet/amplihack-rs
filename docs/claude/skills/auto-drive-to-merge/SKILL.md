@@ -3,10 +3,12 @@ name: auto-drive-to-merge
 description: |
   Wraps default-workflow and drives the resulting PR all the way to merge:
   build the PR, loop with the crusty-old-engineer skill as the maintainer's
-  proxy until zero concerns remain, then loop on the merge-ready criteria —
+  proxy until its verdict is CLEAN or lists minor findings only (each filed as
+  a follow-up issue linked to the plan task), then loop on the merge-ready criteria —
   qa-team scenarios, CI, conflicts, review threads — until every one holds, and
-  merge behind an evidence gate. Both loops are terminated by agentic
-  loop-health evaluation, never by an iteration count.
+  merge behind an evidence gate. Completed Crusty objectives exit before
+  loop-health evaluation; unresolved reviews use agentic convergence judgment,
+  never an iteration count.
   Use when: "drive this to merge", "take this all the way", "build it and land it".
 version: 1.0.0
 allowed-tools: ["Read", "Grep", "Glob", "Bash", "Agent", "Edit", "Write"]
@@ -43,13 +45,21 @@ flowchart TD
     C -->|yes| D[Phase 2: CRUSTY LOOP]
 
     D --> D1[crusty-old-engineer reviews the PR]
-    D1 --> D2[structured verdict:<br/>CLEAN / CONCERNS]
-    D2 -->|CONCERNS| D3[address every concern, commit, push]
-    D3 --> D4[loop-health-evaluator]
-    D2 -->|CLEAN| D4
+    D1 --> D2[structured verdict:<br/>CLEAN / MINOR_ONLY / CONCERNS]
+    D2 -->|CONCERNS: any blocking, major<br/>or unknown severity| D3[address every concern, commit, push]
+    D3 --> DQ[record round; agent selects evaluate]
+    DQ --> DV{Rust validates decision<br/>and evidence}
+    D2 -->|CLEAN or MINOR_ONLY| DC[record round; agent selects complete]
+    DC --> DV
+    DV -->|invalid| STOP2
+    DV -->|valid evaluate| D4[loop-health-evaluator]
+    DV -->|valid complete: no evaluator| D5
     D4 -->|CONTINUE| D1
     D4 -->|STUCK| STOP2[stop + escalate<br/>nothing merged]
-    D4 -->|DONE + verdict CLEAN| E[Phase 3: MERGE-READY LOOP]
+    D4 -->|DONE with unresolved concerns: re-review| D1
+    D5[file or verify one follow-up issue<br/>per minor finding, linked to the plan task]
+    D5 -->|cannot file| STOP4[stop: followup-create-failed<br/>or followup-task-unresolved<br/>not READY, nothing merged]
+    D5 -->|filed, or none to file| E[Phase 3: MERGE-READY LOOP]
 
     E --> E0[code commits since the clean crusty round?<br/>re-run the crusty loop at phase 2's depth]
     E0 --> E1[sync base, run the repository's tests<br/>and, where required, gadugi scenarios,<br/>wait for CI to a terminal state]
@@ -60,9 +70,11 @@ flowchart TD
     E3 -->|MERGE_READY| E5
     E5 -->|CONTINUE| E0
     E5 -->|STUCK| STOP2
-    E5 -->|DONE + verdict MERGE_READY| F[MERGE GATE]
+    E5 -->|DONE + verdict MERGE_READY| E6[file follow-ups from crusty re-reviews]
+    E6 -->|filed or verified| F[MERGE GATE]
+    E6 -->|failed| STOP4
 
-    F --> F1{every criterion re-verified<br/>in THIS run, bound to ONE sha?}
+    F --> F1{every criterion re-verified<br/>in THIS run, bound to ONE sha?<br/>every minor finding has a follow-up issue?}
     F1 -->|no| STOP3[NOT_MERGED + evidence bundle]
     F1 -->|yes| G[gh pr merge --squash --delete-branch<br/>--match-head-commit sha]
     G --> H{platform confirms MERGED?}
@@ -94,26 +106,58 @@ amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c autodrive_dry_run=
 
 | Context var | Default | Meaning |
 | --- | --- | --- |
-| `task_description` | `""` | What to build. Passed to `default-workflow`. |
+| `task_description` | `""` | What to build. Passed to `default-workflow`. Also the last place the plan task id is looked for (`Closes #N`, `Fixes #N` or `Resolves #N`). |
+| `plan_task_id` | `""` | The plan task each follow-up issue is linked to, such as `1979`, `#1979` or `plan/17.104`. When empty, the first `Closes #N`, `Fixes #N` or `Resolves #N` in the PR body is used, then the same in `task_description`. Needed only when minor findings are filed. |
 | `requirements` | `""` | Extra requirements, passed through. |
 | `repo_path` | `.` | Repository to work in. |
 | `existing_branch` / `pr_number` | `""` | Point the workflow at work that already exists. Whether the PR came from `pr_number` or from phase 1, every evidence step runs in the worktree that has the PR branch checked out, and the run refuses if no worktree, or more than one, has it checked out, or that worktree is not at the PR head (see [PR head and worktree resolution](../../../docs/reference/auto-drive-to-merge.md#pr-head-and-worktree-resolution)). |
 | `autodrive_state_dir` | derived | Durable state root for resumability. |
-| `autodrive_dry_run` | `"false"` | Verify everything, merge nothing. |
+| `autodrive_dry_run` | `"false"` | Verify without GitHub writes or merging. Unrecorded required follow-ups leave the Crusty phase incomplete and prevent advancement. |
+| `autodrive_budget_loop_rounds` | `12` | Rounds either loop may run in total, across every run on the same state directory. `0` or empty means unlimited. |
+| `autodrive_budget_total_rounds` | `20` | Rounds both loops together may run. `0` or empty means unlimited. |
+| `autodrive_budget_wall_seconds` | `14400` | Seconds that rounds, before-round steps and evaluator runs may take in total. `0` or empty means unlimited. |
 
 ## Why there is no iteration cap
 
-Neither loop has a `max_rounds`, a backstop integer, or a wall-clock budget.
+Neither loop has a `max_rounds` or a backstop integer.
 An integer cap fails in both directions: it cuts off the round that was about
 to converge, and it lets a genuinely stuck loop burn the whole budget before
 the counter fires. The signal worth acting on is **absence of progress**, not
 number of attempts — a loop on round 2 that produced nothing twice is stuck; a
 loop on round 12 that is still resolving findings is fine.
 
-So each round ends with the `loop-health-evaluator` contract (issue #1337),
-which stops and looks at the measured data — what the round actually produced,
-which findings are new / recurring / resolved, whether test and CI signals
-moved — and answers `CONTINUE`, `DONE`, or `STUCK`.
+After writing the round record, the Crusty agent selects `complete` for an
+evidence-valid `CLEAN` or `MINOR_ONLY`, or `evaluate` for unresolved concerns.
+The Rust dispatcher validates identity and evidence for both actions;
+completion also requires successful child execution. Accepted
+completion returns `source=objective-completion`, `loop_result=DONE` and
+`evaluator_invoked=false`, preserving records and accounting without an
+evaluator call. Repeated completed verdicts, including six historical
+`MINOR_ONLY` rounds, do not indicate nonconvergence.
+
+Unresolved Crusty reviews and the merge-ready loop use the
+`loop-health-evaluator` contract (issue #1337). It reads measured progress and
+answers `CONTINUE`, `DONE`, or `STUCK`. An evaluator's `DONE` cannot complete an
+unresolved Crusty review; a new review must confirm the fix.
+
+Two stops are decided in code before the evaluator runs, and only for a round
+that is not clean:
+
+- **No progress.** When the PR head SHA, the sorted set of open items and the
+  CI signal are all the same as in the loop's previous round, and CI is not
+  still pending, the loop stops as `STUCK`
+  without asking the evaluator. Open items are crusty's findings for the crusty
+  loop and the merge round's blockers for the merge-ready loop.
+- **Usage budget.** Each run has a cost ceiling set by the operator, in rounds
+  per loop, total rounds and wall seconds. When a limit is reached the loop
+  stops as `BUDGET_EXHAUSTED`, which is never success. The budget is checked
+  again before every round, so an exhausted run starts no agent. Relaunching
+  with a higher limit, for example `-c autodrive_budget_loop_rounds=20`,
+  resumes from the recorded round.
+
+The budget is a cost ceiling. Crusty completion precedes convergence evaluation;
+the merge-ready loop retains its evaluator policy. See
+[No-progress stop and usage budget](../../../docs/reference/auto-drive-to-merge.md#no-progress-stop-and-usage-budget).
 
 Host safety was never this workflow's job and still is not. It is enforced
 structurally one layer down by **#1327** (sealed recursion ceiling) and
@@ -137,7 +181,7 @@ matched against an exact-token allow-list:
 
 | Signal | Field | Clean token | Fail-safe default |
 | --- | --- | --- | --- |
-| Crusty review | `crusty_verdict` | `CLEAN` | `CONCERNS` |
+| Crusty review | `crusty_verdict` | `CLEAN`; `MINOR_ONLY` also ends the crusty loop | `CONCERNS` |
 | Merge-ready assessment | `merge_ready_verdict` | `MERGE_READY` | `NOT_MERGE_READY` |
 | Loop health | `loop_verdict` | `DONE` | `STUCK` |
 
@@ -150,6 +194,51 @@ its own output contract — a ` ```json ` example of a `CLEAN` verdict — hands
 that example to the parser instead of its real verdict, and nothing downstream
 re-measures crusty's judgement the way phase 3 re-measures CI.
 
+
+## Minor findings end the crusty loop
+
+Crusty emits `CLEAN` or `CONCERNS`. When a `CONCERNS` verdict lists at least
+one finding and every finding is a valid `minor` one, the round recipe records
+`MINOR_ONLY`, skips the address and fix-check steps, and the loop may end on
+it as on `CLEAN`, without calling the loop-health evaluator. Follow-up
+finalization is separate from ending iteration. The findings are not dropped:
+
+- Before the `crusty-loop` marker is written, the loop files one follow-up
+  issue for each minor finding with `gh issue create`. The issue names the
+  plan task id and the finding id, and its number is recorded in
+  `followups.tsv` in the drive's state directory.
+- Crusty re-reviews between merge-ready rounds use the same completion-first
+  dispatch and finalization. They collect, file or verify follow-ups and validate
+  receipts before recording completion and returning to merge-ready. Later
+  merge-loop filing remains idempotent.
+- Failed recording, missing dependencies or a dry run with unrecorded required
+  follow-ups leaves the phase incomplete. Completion markers bind to the current
+  review evidence; an older marker cannot authorize a newer unfinished review.
+  Existing receipts are retained for recovery. The merge gate also refuses with
+  `ERROR: followups-unfiled` while any required issue is unrecorded.
+- Merging the PR closes the plan task's issue when the PR body says
+  `Closes #N`, while its follow-up issues stay open. So when the task is an
+  issue, the drive posts one comment on it listing the follow-ups, and the
+  merge gate refuses (`followup-parent-uncommented`) until that comment is
+  recorded. Auto-drive files and lists the follow-ups; it does not track them
+  to completion.
+
+A finding counts as minor only when its `severity` is exactly `minor`, its id
+is valid and was never major in an earlier round, and neither the id nor its
+text names a security subject such as secrets, tokens, injection,
+authentication or permissions. A minor finding that recurs as minor does not
+keep the loop running; a major one downgraded to minor does. A missing or
+unknown severity counts as major. Any blocking or
+major finding keeps the round `CONCERNS`, and the loop continues as before.
+See [Minor findings end the crusty loop](../../../docs/reference/auto-drive-to-merge.md#minor-findings-end-the-crusty-loop-1979).
+The full decision contract is in `docs/reference/autodrive-crusty-completion.md`.
+The decision step treats review content as untrusted data and writes only the
+designated decision through the Rust writer. It does not edit evidence,
+manifests, follow-up receipts or phase state. Failed execution, missing evidence
+and terminal refusals cannot authorize completion.
+Recoverable child failures may reach evaluation only with a valid `evaluate`
+decision and trusted required evidence. Missing or invalid decisions or required
+evidence fail visibly; terminal failures retain their own stop classifications.
 
 A `MERGE_READY` verdict is additionally **downgraded by measurement**: if the
 recorded `qa_status` is not `PASS`, `ci_status` is not `GREEN`, a conflict is
@@ -177,16 +266,55 @@ workflow's recipes, tools, or skill.
 The merge gate does not trust the loop that preceded it. In the run that
 merges, it re-verifies — and writes down, before merging — the head SHA, draft
 state, mergeability and merge-state, review decision, unresolved review
-threads, the full CI rollup, the `qa-team` evidence, and the merge-ready round
-record. Everything is bound to **one** head SHA, and the merge itself passes
+threads, the expected CI checks at the head, the `qa-team` evidence, and the merge-ready round
+record. It also checks, without a network call, that every minor crusty
+finding has a filed follow-up issue. Everything is bound to **one** head SHA, and the merge itself passes
 `--match-head-commit`, so GitHub refuses the merge if the head moved after the
 evidence was captured.
 
-**An unreadable criterion is a failure, never a pass.** Unreadable CI, zero
-reported checks, unreadable review threads, missing `qa-team` evidence, an
+**CI green means every expected check exists at the head SHA and passed.**
+`autodrive_expected_checks.sh` builds the expected set from the base branch's
+required checks and every job of each active `pull_request` workflow at the
+head, then looks for each one at that SHA. A check that was never created is
+named (`expected check '<name>' was never created at <sha>`) and blocks; so
+does an expected set that cannot be read. A defined job absent from a
+completed run blocks whatever the run concluded, with a job-level `if:` or
+without. `neutral` passes, as on GitHub, and a `skipped` required check passes
+only when a defined job at the head explains it. Merge-evidence step-03 runs
+the same helper from `$AMPLIHACK_HOME` and lowers `ci_status` to `MISSING`,
+`PENDING`, `RED` or `UNREADABLE`. Known limits: a workflow whose `paths:` or
+`types:` filter can skip a head, or whose branch pattern jq cannot compile, is
+expected only if it ran; matrix legs are not counted, so one leg satisfies the
+job; jobs match by exact name or by the whole name with each `${{ }}` read as
+any text, and two jobs that share one name are `UNREADABLE` (#2420); required
+checks match by name, not app id; workflows are read at the head while `pull_request` runs build the
+merge commit, so a job the base branch renamed or removed reads as missing
+until the base is merged in (details: "Limits of the expected set" in the full
+reference below).
+
+**An unreadable criterion is a failure, never a pass.** Unreadable CI, a
+missing expected check, zero reported checks, unreadable review threads, missing `qa-team` evidence, an
 absent round record — each is a blocker. After the merge, the platform must
 confirm `MERGED`; a `gh` success that the platform does not confirm is
 reported as not merged.
+
+## Merges outside the gate are refused
+
+Only `autodrive_merge_gate.sh` merges. Auto-drive runs with a `gh` shim first
+on `PATH` that refuses `gh pr merge`, the merge API and the GraphQL merge
+mutations with exit `3`, unless its direct parent is the installed gate run as
+`/bin/bash -p` from a clean environment. Agents are told the same in an
+`[amplihack:no-merge]` line. The runner's `BASH_ENV` file puts the shim back
+first after a shell profile reorders `PATH`, and the pre-tool-use hook refuses
+`gh pr merge` and `gh api` on a merge endpoint by program word. Leave the PR
+open. A PR found `MERGED` after phase 1 or phase 2 ends the run with exit `1`.
+Deliberate evasion with the same token (`curl`, a script file, an alias) is a
+non-goal: branch protection is the boundary and the `MERGED` checks the backstop
+([details](../../../docs/reference/auto-drive-to-merge.md#merges-outside-the-gate-are-refused-1551)).
+The parent check needs Linux `/proc` and a root-owned `/bin/bash`, so
+`amplihack recipe run` stops an auto-drive run at launch on macOS or without
+`/bin/bash`, before any phase runs
+([#1646](https://github.com/rysweet/amplihack-rs/issues/1646)).
 
 ## Exit code 79 is terminal
 
@@ -215,12 +343,13 @@ ordinary failure, reported as `rc=<n> class=<class> retryable=<bool>`, with
 `environmental`, `usage_limit`, `agent_api`, `transient_transport`,
 `indeterminate`, or `unknown` when the log has no marker). After a round or
 an evaluator run, `loop-health-evaluator` decides whether another round is
-worthwhile. Its evidence collector still matches the bare word
-`BLOCKED_TERMINAL` in round output, so a round that handled a descendant's
-refusal inline can end the loop as `STUCK` (exit `1`, not `79`); that is
-tracked in #1630. A failed `--before-round` step still ends the loop with
-`BEFORE_ROUND_FAILED` and exit `1`, never `79`.
-`autodrive_refusal.sh`, sourced by the loop driver, applies these rules.
+worthwhile. Its evidence collector applies the same two rules to the
+round's exit code and output, and the crusty loop's completion dispatch
+applies them to the evaluator it starts, so a round that handled a
+descendant's refusal inline is judged on its work. A failed `--before-round` step still ends the loop
+with `BEFORE_ROUND_FAILED` and exit `1`, never `79`.
+`autodrive_refusal.sh`, sourced by the loop driver and the collector, applies
+these rules.
 
 ## Resumability
 
@@ -260,7 +389,7 @@ run to their natural end. A false timeout costs more than a slow run.
 | [`crusty-old-engineer`](../crusty-old-engineer/SKILL.md) | Phase 2 reviewer, standing in for the maintainer. Emits the opt-in structured verdict. |
 | [`merge-ready`](../merge-ready/SKILL.md) | Phase 3 criteria and guardrails. |
 | [`qa-team`](../qa-team/SKILL.md) | Outside-in scenarios that must actually run and pass. |
-| `loop-health-evaluator` | The agentic terminator for both loops (issue #1337, PR #1347). |
+| `loop-health-evaluator` | Convergence judgment for unresolved Crusty reviews and the merge-ready loop. Completed Crusty objectives exit before dispatch. |
 
 ## Recipes and tools
 
@@ -273,8 +402,12 @@ run to their natural end. A false timeout costs more than a slow run.
 | `amplifier-bundle/recipes/autodrive-merge-evidence.yaml` | Measured evidence for one merge round. |
 | `amplifier-bundle/recipes/autodrive-merge-round.yaml` | One merge-ready round. |
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | Phase 3 loop + merge gate. |
-| `amplifier-bundle/tools/autodrive_loop.sh` | The uncapped, agentically-terminated loop driver. |
+| `amplifier-bundle/tools/autodrive_loop.sh` | Shared driver; Crusty next-action decisions pass through the Rust completion dispatcher. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | The evidence gate and the fixed merge argv. |
+| `amplifier-bundle/tools/autodrive_expected_checks.sh` | Read-only: builds the expected checks for one head SHA and decides `ci_status`. |
+| `amplifier-bundle/tools/autodrive_followups.sh` | Classifies minor-only rounds, files the follow-up issues and lists them on the plan task issue. |
+| `amplifier-bundle/tools/autodrive_followups_check.sh` | The `check` and `gate` commands: the merge gate's offline follow-up check. |
+| `amplifier-bundle/tools/autodrive_finding_rules.sh` | The minor-finding rules and text sanitising used by `autodrive_followups.sh`, for auto-drive-to-merge and auto-drive-light alike. |
 | `amplifier-bundle/tools/autodrive_state.sh` | Resumable local state; platform truth for merged-ness. |
 
 Full reference: [Auto Drive To Merge](../../../docs/reference/auto-drive-to-merge.md).

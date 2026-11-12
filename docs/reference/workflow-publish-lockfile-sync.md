@@ -51,7 +51,7 @@ following invariants:
 | Ordering | `step-14-bump-version` < `step-14b-sync-lockfile` < `step-14g-artifact-guard` < `step-15-commit-push`. |
 | Offline | Sync uses `cargo update --workspace --offline`. No network access is permitted. |
 | Guarded | Runs only when both `Cargo.toml` and `Cargo.lock` exist; non-Rust workspaces are skipped, not errored. |
-| Worktree resolution | Resolves the target tree with the same `WORKTREE_SETUP_WORKTREE_PATH` fallback chain as the sibling `step-14g-artifact-guard`. |
+| Worktree resolution | Gets the target tree from [`worktree_setup_path.sh`](../../amplifier-bundle/tools/worktree_setup_path.sh), which reads only `RECIPE_VAR_worktree_setup`, as the sibling `step-14g-artifact-guard` does. When `worktree_setup` has no path (exit `3`) the step uses `repo_path`; any other failure stops it. |
 | No double-staging | The step does not `git add` the lockfile. `step-15-commit-push` stages it via `git add -A`. |
 | Condition guard | Shares the same `condition` as its sibling steps so it only runs when publishing. |
 
@@ -59,7 +59,8 @@ following invariants:
 
 ```bash
 set -euo pipefail
-: "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-14b-sync-lockfile)" || { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }
 cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14b requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
 if [ -f Cargo.toml ] && [ -f Cargo.lock ]; then
   echo "step-14b: syncing Cargo.lock to bumped version (offline)"
@@ -90,9 +91,8 @@ The step needs no feature-specific flag. It uses the standard publish context:
 
 | Context key / variable | Required | How the step uses it |
 | --- | --- | --- |
-| `worktree_setup.worktree_path` (via `WORKTREE_SETUP_WORKTREE_PATH`) | Yes | Directory to `cd` into before running the offline update. Populated by the `workflow-worktree` sub-recipe (step-04). |
-| `RECIPE_VAR_worktree_setup__worktree_path` | Fallback | Secondary source for the worktree path. |
-| `REPO_PATH` | Fallback | Final fallback if the worktree path is unavailable. |
+| `worktree_setup.worktree_path` (read from `RECIPE_VAR_worktree_setup` by `worktree_setup_path.sh`) | Yes | Directory to `cd` into before running the offline update. Populated by the `workflow-worktree` sub-recipe (step-04). |
+| `repo_path` | Fallback | Used when `worktree_setup` has no worktree path. |
 | `condition` (`goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'`) | Yes | Gates the step to publish-only runs, matching its sibling steps verbatim. |
 
 ## Behavior on non-Rust workspaces

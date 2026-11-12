@@ -135,7 +135,11 @@ impl Fixture {
             env: vec![
                 ("PATH".into(), path),
                 ("REPO_PATH".into(), isolated_repo.clone()),
-                ("WORKTREE_SETUP_WORKTREE_PATH".into(), isolated_repo),
+                ("WORKTREE_SETUP_WORKTREE_PATH".into(), isolated_repo.clone()),
+                (
+                    "RECIPE_VAR_worktree_setup".into(),
+                    serde_json::json!({ "worktree_path": isolated_repo }).to_string(),
+                ),
                 ("AMPLIHACK_HOME".into(), repo().display().to_string()),
             ],
         }

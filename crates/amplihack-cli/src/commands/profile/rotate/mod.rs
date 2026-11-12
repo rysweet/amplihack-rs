@@ -1,133 +1,262 @@
-//! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude`
-//! on the account with the most capacity left, by moving logins between
-//! `~/.claude` and the profiles. One-shot, `--dry-run`, and a background
-//! `watch` with `start`, `stop` and `status`. See the Rotate section of
-//! docs/reference/profile-command.md.
-//!
-//! Login files are never opened, read, copied or hashed: they are checked
-//! with `lstat` and moved with rename and exchange calls only.
-
+//! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude` on
+//! the account with the most capacity left; `profile switch` uses the same swap.
+//! See docs/reference/profile-command.md.
+#[cfg(unix)]
+mod account;
+#[cfg(unix)]
+mod adopt;
+#[cfg(unix)]
+mod alert;
+#[cfg(unix)]
+mod autostart;
+#[cfg(unix)]
+pub(super) mod backup;
+#[cfg(unix)]
+mod candidates;
+#[cfg(unix)]
+mod capacity;
+#[cfg(unix)]
+pub(in crate::commands::profile) mod change_log;
 #[cfg(unix)]
 mod control;
 #[cfg(unix)]
+pub(super) mod cred_identity;
+#[cfg(unix)]
 mod cycle;
 #[cfg(unix)]
-mod daemon;
+pub(super) mod daemon;
 #[cfg(unix)]
-mod decide;
+mod damp;
 #[cfg(unix)]
-mod identify;
+pub(super) mod decide;
 #[cfg(unix)]
-mod ledger;
+mod dry_run;
+#[cfg(unix)]
+mod exhausted;
+#[cfg(unix)]
+mod fresh;
+#[cfg(unix)]
+mod fresh_msg;
+#[cfg(unix)]
+mod gate_record;
+#[cfg(unix)]
+mod guide;
+#[cfg(unix)]
+mod hand_fields;
+#[cfg(unix)]
+mod handfix;
+#[cfg(unix)]
+mod handfix_msg;
+#[cfg(unix)]
+mod handfix_plan;
+#[cfg(unix)]
+mod held;
+#[cfg(unix)]
+mod history;
+#[cfg(unix)]
+pub(super) mod identify;
+#[cfg(unix)]
+mod identity_claims;
+#[cfg(unix)]
+mod inflight;
+#[cfg(unix)]
+pub(super) mod key_check;
+#[cfg(unix)]
+pub(super) mod ledger;
 #[cfg(unix)]
 mod log;
+#[cfg(unix)]
+mod login_identity;
+#[cfg(unix)]
+mod lost;
 #[cfg(unix)]
 mod measure;
 #[cfg(unix)]
 mod observe;
 #[cfg(unix)]
+mod older_readers;
+#[cfg(unix)]
+mod overflow;
+#[cfg(unix)]
+mod overflow_msg;
+#[cfg(unix)]
+mod overflow_record;
+#[cfg(unix)]
+mod owner;
+#[cfg(unix)]
+mod pin;
+#[cfg(unix)]
+pub(super) mod plan_room;
+#[cfg(unix)]
+pub(super) mod platform_block;
+#[cfg(unix)]
+mod precheck;
+#[cfg(unix)]
+mod prelude;
+#[cfg(unix)]
 mod recover;
+#[cfg(unix)]
+mod revalidate;
+#[cfg(unix)]
+pub(super) mod seed;
+#[cfg(unix)]
+mod sessions_daily;
 #[cfg(unix)]
 mod settings;
 #[cfg(unix)]
+mod spend_blocks;
+#[cfg(unix)]
 mod swap;
+#[cfg(unix)]
+mod swap_authorize;
+#[cfg(unix)]
+mod swap_back;
+#[cfg(unix)]
+mod swap_check;
+#[cfg(unix)]
+mod swap_expect;
+#[cfg(unix)]
+mod swap_finish;
+#[cfg(unix)]
+mod swap_record;
+#[cfg(unix)]
+mod switch;
 #[cfg(all(test, unix))]
 pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 
+pub use super::rotate_args::{RotateAction, RotateArgs, TuneFlags};
+pub use candidates::login_unusable;
+pub use overflow_msg::{CheckNote, alert_key_held_session, per_token_off_key, per_token_reason};
+pub use overflow_record::append_to_log;
+
+#[cfg(all(test, unix))]
+mod tests;
+#[cfg(all(test, unix))]
+mod tests_autostart;
 #[cfg(all(test, unix))]
 mod tests_daemon;
 #[cfg(all(test, unix))]
-mod tests_decide;
+mod tests_handfix;
+#[cfg(all(test, unix))]
+mod tests_handfix_cycle;
+#[cfg(all(test, unix))]
+mod tests_handfix_overflow;
+#[cfg(all(test, unix))]
+mod tests_home_unreadable;
 #[cfg(all(test, unix))]
 mod tests_identify;
 #[cfg(all(test, unix))]
-mod tests_ledger;
+mod tests_issue_1804;
 #[cfg(all(test, unix))]
-mod tests_live_readers;
+mod tests_issue_1804_cycle;
+#[cfg(all(test, unix))]
+mod tests_issue_1845_cycle;
+#[cfg(all(test, unix))]
+mod tests_issue_1845_swap;
+#[cfg(all(test, unix))]
+mod tests_issue_1870;
+#[cfg(all(test, unix))]
+mod tests_issue_1870_cycle;
+#[cfg(all(test, unix))]
+mod tests_issue_1870_probe;
+#[cfg(all(test, unix))]
+mod tests_issue_1886;
+#[cfg(all(test, unix))]
+mod tests_issue_1886_cycle;
+#[cfg(all(test, unix))]
+mod tests_key_check;
 #[cfg(all(test, unix))]
 mod tests_log;
 #[cfg(all(test, unix))]
+mod tests_measure;
+#[cfg(all(test, unix))]
+mod tests_pin;
+#[cfg(all(test, target_os = "linux"))]
+mod tests_pin_overflow;
+#[cfg(all(test, unix))]
 mod tests_recover;
 #[cfg(all(test, unix))]
-mod tests_settings;
+mod tests_revalidate;
+#[cfg(all(test, unix))]
+mod tests_revalidate_cause;
+#[cfg(all(test, unix))]
+mod tests_revalidate_unit;
+#[cfg(all(test, unix))]
+mod tests_sessions_daily;
 #[cfg(test)]
 mod tests_source_scan;
 #[cfg(all(test, unix))]
 mod tests_swap;
 #[cfg(all(test, unix))]
 mod tests_swap_refused;
+#[cfg(all(test, unix))]
+mod tests_switch;
+#[cfg(all(test, unix))]
+mod tests_switch_candidates;
+#[cfg(all(test, unix))]
+mod tests_switch_hold;
+#[cfg(all(test, unix))]
+mod tests_switch_race;
+use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
 
-use super::root_config::RootSource;
-use super::store::ProfileStore;
+// Issue #1797: `Probes` is what the usage history records from a cycle.
+#[cfg(unix)]
+pub(super) use self::{identify::is_live, observe::Probes, platform_block::platform_live_line};
+#[cfg(unix)]
+pub(in crate::commands::profile) use autostart::autostart_line;
+#[cfg(unix)]
+pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rotator};
+#[cfg(unix)]
+pub(super) use {control::clear_overflow_block, control::overflow_blocks, log::timestamp};
 
-/// `profile rotate`: one cycle, or a subcommand. Tuning flags of `start` and
-/// `watch` go after the subcommand.
-#[derive(Debug, clap::Args)]
-#[command(args_conflicts_with_subcommands = true)]
-pub struct RotateArgs {
-    #[command(subcommand)]
-    pub action: Option<RotateAction>,
-    /// Measure and decide, print what would happen, and change nothing
-    #[arg(long)]
-    pub dry_run: bool,
-    #[command(flatten)]
-    pub tune: TuneFlags,
+// Auto-switch's overflow gate (`gate_record`): the running rotator's own
+#[cfg(all(test, unix))]
+pub(super) use gate_record::effective_at as overflow_gate_at;
+#[cfg(unix)]
+pub(super) use gate_record::{GateSource, effective as overflow_gate, line as overflow_gate_line};
+
+/// The tail of the warning after `profile switch NAME` (#1691) while a rotator
+/// of another amplihack binary, which ignores the switch hold, runs.
+#[cfg(unix)]
+const FOREIGN_IGNORES_HOLD: &str = "runs another amplihack binary and ignores the switch \
+    hold; restart it: amplihack profile rotate stop && amplihack profile rotate start";
+
+/// The switch-hold warning for the rotator of `rs`, judged against
+/// `proc_root` and this process's executable `exe`; `None` when no rotator
+/// runs or it runs this binary.
+#[cfg(unix)]
+fn foreign_note_for(
+    rs: &ledger::RotateState,
+    proc_root: &std::path::Path,
+    exe: Option<&std::path::Path>,
+) -> Option<String> {
+    rs.foreign_rotator_at(proc_root, exe).map(|pid| {
+        format!("amplihack: the Claude login rotator (pid {pid}) {FOREIGN_IGNORES_HOLD}")
+    })
 }
 
-#[derive(Debug, clap::Subcommand)]
-pub enum RotateAction {
-    /// Start `rotate watch` as a detached background process
-    Start(WatchFlags),
-    /// Run a cycle every --interval seconds in the foreground
-    Watch(WatchFlags),
-    /// Stop the background rotator
-    Stop,
-    /// Show whether the rotator runs, the live profile and the last cycle
-    Status,
+/// After a successful `profile switch NAME`: one line on stderr when the
+/// running rotator would ignore the hold. The switch itself succeeded, so
+/// this never changes the exit code.
+#[cfg(unix)]
+fn warn_switch_hold(root: &std::path::Path) {
+    let exe = std::env::current_exe().ok();
+    let rs = ledger::RotateState::new(root);
+    if let Some(note) = foreign_note_for(&rs, &daemon::proc_root(), exe.as_deref()) {
+        eprintln!("{note}");
+    }
 }
 
-/// Thresholds and margins. Kept as text so the error can name the flag; see
-/// `settings::resolve`.
-#[derive(Debug, Clone, Default, clap::Args)]
-pub struct TuneFlags {
-    /// Swap when the live session usage reaches N% (default 85)
-    #[arg(long, value_name = "N")]
-    pub session_at: Option<String>,
-    /// Swap when the live weekly usage reaches N% (default 90)
-    #[arg(long, value_name = "N")]
-    pub week_at: Option<String>,
-    /// Points of headroom the target needs over the live login (default 5)
-    #[arg(long, value_name = "N")]
-    pub margin: Option<String>,
-    /// Points of headroom that justify a swap below the thresholds (default 30)
-    #[arg(long, value_name = "N")]
-    pub upgrade_margin: Option<String>,
-    /// Seconds after a swap during which no upgrade happens; 0 disables (default 3600)
-    #[arg(long, value_name = "SECS")]
-    pub hold: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, clap::Args)]
-pub struct WatchFlags {
-    #[command(flatten)]
-    pub tune: TuneFlags,
-    /// Seconds between cycles (default 600)
-    #[arg(long, value_name = "SECS")]
-    pub interval: Option<String>,
-    /// Set by `start`: the pid file is already written
-    #[arg(long, hide = true)]
-    pub spawned: bool,
-}
+/// Starts the rotator from a launch when auto-switch is on; see
+/// `autostart`. Nothing to start off Unix.
+#[cfg(not(unix))]
+pub(crate) fn autostart_on_launch(_docker_flag: bool) {}
 
 pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
-        use super::ProfileError;
         let env = |k: &str| std::env::var_os(k);
-        let home = std::env::var_os("HOME")
-            .filter(|h| !h.is_empty())
-            .map(std::path::PathBuf::from)
-            .ok_or_else(|| ProfileError::RotateRefused("HOME is not set".into()));
+        let home = settings::home_dir();
         match args.action {
             None => {
                 let s = settings::resolve(&args.tune, None, &env)?;
@@ -136,19 +265,29 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                 } else {
                     cycle::Mode::OneShot
                 };
-                let mut ctx = cycle::Ctx::new(store.clone(), home?, s);
+                if mode == cycle::Mode::OneShot {
+                    warn_foreign_rotator(Some(store.root()));
+                }
+                let mut ctx = cycle::Ctx::new(store.clone(), home?, s).with_rereads();
                 cycle::run_cycle(&mut ctx, mode)?;
             }
             Some(RotateAction::Start(w)) => {
+                if w.supervised.is_some() {
+                    let why = "--supervised applies to rotate watch only";
+                    return Err(super::ProfileError::RotateRefused(why.into()).into());
+                }
                 let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
                 daemon::start(store, &home?, &s)?;
             }
             Some(RotateAction::Watch(w)) => {
+                owner::check_flag(&w.supervised)?;
                 let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
-                daemon::watch(store, home?, s, w.spawned)?;
+                daemon::watch(store, home?, s, w.spawned, w.supervised.clone())?;
             }
             Some(RotateAction::Stop) => control::stop(store, home.as_deref().ok())?,
             Some(RotateAction::Status) => control::status(store, home.as_deref().ok(), source),
+            Some(RotateAction::Autostart { state }) => autostart::cli(store, state.as_deref())?,
+            Some(RotateAction::Owner { action }) => owner::cli(store, action.is_some())?,
         }
         Ok(())
     }
@@ -156,5 +295,105 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
     {
         let _ = (store, source, args);
         Err(super::ProfileError::RotateUnsupported.into())
+    }
+}
+
+/// `profile switch NAME` swaps the login and pins rotation. A later failed
+/// write is an error, not a refusal. If the login cannot move, NAME is still
+/// made the default for new launches and printed, then the refusal exits 1.
+pub(in crate::commands::profile) fn switch_live(
+    store: &ProfileStore,
+    name: &ProfileName,
+) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        let home = settings::home_dir()?;
+        // Judged before the move, from the profile's own login (or from
+        // `~/.claude` when it is already live), as the kind guard does.
+        let platform = super::kind::kind_of(store, name, &home) == super::kind::Kind::Platform;
+        let note = || {
+            if platform {
+                println!("{}", log::msg::switch_platform_note(name));
+            }
+        };
+        match switch::switch_live(store, &home, name)? {
+            Ok(switch::Switched::DefaultOnly { reason, held }) => {
+                println!("Default for new launches: {name}");
+                match held {
+                    Some(h) => println!(
+                        "Live login not moved; rotation still held on {h} until \
+                         `amplihack profile switch --none`."
+                    ),
+                    None => println!("Live login not moved; rotation not held."),
+                }
+                Err(super::ProfileError::RotateRefused(reason).into())
+            }
+            Ok(switch::Switched::Moved { from, to }) => {
+                println!("Live login moved: {from} -> {to}");
+                print_held(store, name);
+                note();
+                Ok(())
+            }
+            Ok(switch::Switched::AlreadyLive(n)) => {
+                println!("{n} is already the live login; nothing moved.");
+                print_held(store, name);
+                note();
+                Ok(())
+            }
+            Err(f) => Err(anyhow::anyhow!(
+                "the live login moved to {to}, but writing the {what} failed: {err}; \
+                 run `amplihack profile switch {to}` again",
+                to = f.to,
+                what = f.what,
+                err = f.err
+            )),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // No live login can be moved here, but the default for new launches
+        // is still set, as `switch` always did.
+        crate::commands::profile::pointer::write(store.root(), name)?;
+        println!("Default for new launches: {name}");
+        println!("Live login not moved; rotation not held.");
+        Err(super::ProfileError::RotateUnsupported.into())
+    }
+}
+
+/// The last two lines of a switch that moved the login or found it live.
+#[cfg(unix)]
+fn print_held(store: &ProfileStore, name: &ProfileName) {
+    println!("Default for new launches: {name}");
+    println!("Rotation held on {name} until `amplihack profile switch --none`.");
+    warn_switch_hold(store.root());
+}
+
+/// What `profile switch --none` removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Released {
+    /// Something was at the rotation pin path.
+    pub pin: bool,
+    /// Something was at the default pointer path.
+    pub default: bool,
+}
+
+/// `profile switch --none`: removes the rotation pin and the default
+/// pointer as one operation under the rotate lock; what was there. Off Unix
+/// there is no rotator and so no pin, and only the pointer is removed.
+pub(in crate::commands::profile) fn release(
+    store: &ProfileStore,
+) -> Result<Released, super::ProfileError> {
+    #[cfg(unix)]
+    {
+        switch::release(store)
+    }
+    #[cfg(not(unix))]
+    {
+        let default = super::pointer::exists(store.root());
+        super::pointer::clear(store.root())?;
+        Ok(Released {
+            pin: false,
+            default,
+        })
     }
 }

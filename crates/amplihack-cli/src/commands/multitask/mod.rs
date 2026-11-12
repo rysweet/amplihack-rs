@@ -12,6 +12,12 @@ mod command_builder_tests;
 mod default_branch;
 #[cfg(test)]
 mod issue_1570_launcher;
+#[cfg(test)]
+mod issue_1642_repo_identity;
+#[cfg(test)]
+mod issue_1966_criticality;
+#[cfg(test)]
+mod issue_2014_launcher_env;
 mod launcher;
 #[cfg(test)]
 mod launcher_tests;

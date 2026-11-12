@@ -1,0 +1,2 @@
+{"type":"assistant","sessionId":"parent","timestamp":"2026-01-01T00:00:02Z","message":{"id":"msg-1","model":"claude-unknown","usage":{"input_tokens":100,"cache_creation_input_tokens":30,"cache_creation":{"ephemeral_5m_input_tokens":20,"ephemeral_1h_input_tokens":10},"cache_read_input_tokens":50,"output_tokens":15}}}
+{"type":"assistant","sessionId":"child","timestamp":"2026-01-01T00:00:03Z","message":{"id":"msg-2","model":"claude-unknown","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":5}}}

@@ -80,9 +80,15 @@ additive; consumers must ignore fields they do not understand.
 | `work_item_id` | string | early, final | no | Explicit Azure Boards or external work item ID when supplied. |
 | `work_item_url` | string | early, final | no | Explicit external work item URL when supplied. |
 | `runner_path` | string | early, final | yes | `recipe-runner-rs` executable path selected by the wrapper. |
+| `agent_binary` | string | early, final | no | Agent CLI the steps run under (`claude`, `copilot`, `codex` or `amplifier`), resolved once at entry. |
+| `agent_binary_source` | string | early, final | no | Resolver layer that chose `agent_binary`: `env`, `user_config`, `session_marker`, `launcher_context` or `default`. See [Active Agent Binary](./active-agent-binary.md#resolution-precedence). |
+| `amplihack_home` | string | early, final | no | `AMPLIHACK_HOME` handed to the runner. Omitted when no home resolved. |
 | `child_pid` | integer | final | no | Child `recipe-runner-rs` process ID when the child spawned. |
 | `exit_code` | integer | final | no | Child exit code when available. |
 | `status` | string | final | yes | Lowercase terminal wrapper status. See [Final statuses](#final-statuses). |
+| `parent_pid` | integer | final | no | PID of the parent `amplihack recipe run` that exited. Present only when `status` is `orphaned`. |
+| `tree_id` | string | final | no | Value of `AMPLIHACK_TREE_ID` when set. Present only when `status` is `orphaned`. |
+| `reason` | string | final | no | Fixed text `parent recipe run exited`. Present only when `status` is `orphaned`. |
 | `log_paths` | object | final | no | Known child log locations, such as `jsonl`. Omitted when no path is known. |
 | `timestamp` | string | early, final | yes | RFC 3339 timestamp for the pointer event. |
 
@@ -94,6 +100,22 @@ additive; consumers must ignore fields they do not understand.
 | `failure` | The child spawned and exited nonzero. |
 | `spawn_failure` | The wrapper could not spawn `recipe-runner-rs`. |
 | `parse_failure` | The child exited but stdout could not be parsed as the expected recipe result. |
+| `orphaned` | A nested run stopped because its parent `amplihack recipe run` exited. The runner's process group was torn down and the wrapper exited `75`. See [Nested runs and orphan stops](./recipe-cli-reference.md#nested-runs-and-orphan-stops). |
+
+A stop by signal is recorded as `failure`. The status is `orphaned` only when
+the orphan stop was the first stop reason; a signal received before it keeps
+`failure` and exit `128+n`.
+
+An orphaned final pointer has no `exit_code` field. That field holds the
+runner child's own exit code, and the child was torn down, so it has none. The
+`75` is the exit code of the `amplihack recipe run` wrapper process, not a
+pointer field.
+
+An orphaned final pointer looks like this:
+
+```text
+amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"0c1f8e2a-6b7d-4a52-9e0f-3d4c5b6a7e81","recipe_name":"autodrive-crusty-round","status":"orphaned","cwd":"/home/user/src/myapp/worktrees/feat/retry-tests","child_pid":41907,"parent_pid":41822,"tree_id":"t-41790","reason":"parent recipe run exited","runner_path":"/home/user/.local/bin/recipe-runner-rs","timestamp":"2026-06-12T04:25:02Z"}
+```
 
 Pointer statuses are lowercase wrapper statuses. Top-level result statuses keep
 the existing result-schema casing, commonly uppercase values such as `SUCCESS`,

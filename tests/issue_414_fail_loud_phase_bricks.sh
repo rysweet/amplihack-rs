@@ -285,7 +285,7 @@ run_resilient \
 run_negative \
     "workflow-finalize.step-22b-final-status" \
     "step-22b-final-status requires repo_path" \
-    'set -euo pipefail; cd "${REPO_PATH:?step-22b-final-status requires repo_path; ensure parent recipe propagated repo_path context}"'
+    'set -euo pipefail; : "${REPO_PATH:?step-22b-final-status requires repo_path; ensure parent recipe propagated repo_path context}"'
 
 # step-18c-push-feedback-changes
 run_negative \

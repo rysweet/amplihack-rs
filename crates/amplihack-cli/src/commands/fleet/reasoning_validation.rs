@@ -174,16 +174,48 @@ pub(super) fn validate_session_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// The environment values that decide where `azlin` and `az` are found.
+///
+/// Production reads them from the process with [`AzlinLookup::from_env`].
+/// Tests build one directly, so they never change `PATH` or `HOME` for the
+/// whole test process, which every concurrently spawned child would inherit
+/// (issue #1765).
+#[derive(Debug, Clone, Default)]
+pub(super) struct AzlinLookup {
+    /// Value of `AZLIN_PATH`.
+    pub(super) azlin_path: Option<std::ffi::OsString>,
+    /// Value of `PATH`.
+    pub(super) path: Option<std::ffi::OsString>,
+    /// Value of `HOME`.
+    pub(super) home: Option<std::ffi::OsString>,
+}
+
+impl AzlinLookup {
+    pub(super) fn from_env() -> Self {
+        Self {
+            azlin_path: env::var_os("AZLIN_PATH"),
+            path: env::var_os("PATH"),
+            home: env::var_os("HOME"),
+        }
+    }
+}
+
 pub(super) fn get_azlin_path() -> Result<PathBuf> {
-    if let Some(path) = env::var_os("AZLIN_PATH") {
+    get_azlin_path_in(&AzlinLookup::from_env())
+}
+
+/// [`get_azlin_path`] against explicit values instead of the process
+/// environment.
+pub(super) fn get_azlin_path_in(lookup: &AzlinLookup) -> Result<PathBuf> {
+    if let Some(path) = &lookup.azlin_path {
         return Ok(PathBuf::from(path));
     }
 
-    if let Some(path) = find_binary("azlin") {
+    if let Some(path) = find_binary_in("azlin", lookup.path.as_deref()) {
         return Ok(path);
     }
 
-    if let Some(home) = env::var_os("HOME") {
+    if let Some(home) = &lookup.home {
         let dev_path = PathBuf::from(home).join("src/azlin/.venv/bin/azlin");
         if is_executable_file(&dev_path) {
             return Ok(dev_path);
@@ -196,8 +228,12 @@ pub(super) fn get_azlin_path() -> Result<PathBuf> {
 }
 
 pub(super) fn find_binary(name: &str) -> Option<PathBuf> {
-    let path_var = env::var_os("PATH")?;
-    env::split_paths(&path_var).find_map(|dir| {
+    find_binary_in(name, env::var_os("PATH").as_deref())
+}
+
+/// [`find_binary`] against an explicit `PATH` value.
+pub(super) fn find_binary_in(name: &str, path_var: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    env::split_paths(path_var?).find_map(|dir| {
         let candidate = dir.join(name);
         is_executable_file(&candidate).then_some(candidate)
     })

@@ -198,7 +198,7 @@ registration state, on-disk presence, and `repo_path` form:
 | `repo_path` | Worktree registered? | Directory on disk? | Branch matches? | Result |
 | ----------- | -------------------- | ------------------ | --------------- | ------ |
 | `.` or absolute | yes | yes | yes | **State 1** — reuse, exit 0, `created=false` |
-| `.` or absolute | yes | yes | no (dirty/ahead) | reset to `BASE_REF`, exit 0 |
+| `.` or absolute | yes | yes | no (dirty/ahead) | kept untouched; run moves to a fresh branch, exit 0 ([#1565](issue-1565-rerun-preserves-worktree.md)) |
 | `.` or absolute | yes | no | — | **State 2** — attach, exit 0 |
 | `.` or absolute | no | yes | yes | prune + reuse, exit 0 |
 | `.` or absolute | no | yes | no | prune + remove + re-add, exit 0 |
@@ -212,8 +212,15 @@ No combination results in exit 128 or an `already exists` abort.
 
 This fix is surgical. It does **not** change:
 
-- The **#858 caller-checkout refusal** — a run never reuses the caller's own
-  repository as its task worktree.
+- The **#858 caller-checkout rule**: a run never uses the caller's own checkout
+  as its task worktree. Since [#1762](issue-1762-caller-branch-worktree-alias.md),
+  when the target branch is checked out there, step-04 creates the task worktree
+  on a local alias branch `<branch>--wt-<n>` that tracks `origin/<branch>`,
+  instead of stopping. A new alias worktree is created with
+  `git worktree add --track -b`, not through `wt_add_idempotent`. An existing
+  alias is reused only when it is already checked out at its path; otherwise
+  step-04 stops. A concurrent create therefore fails on git's ref lock, stops,
+  or reuses the other run's worktree. Nothing is removed.
 - The **#200 cleanliness resets** — a dirty worktree or a branch with commits
   ahead of `BASE_REF` is still `reset --hard "${BASE_REF}"` before reuse.
 - The **#829 / #840 foreign-worktree deconfliction** and the orphan

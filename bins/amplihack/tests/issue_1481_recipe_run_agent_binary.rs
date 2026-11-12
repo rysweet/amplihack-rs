@@ -29,14 +29,14 @@ impl Fixture {
         let runner = dir.path().join("recipe-runner-rs");
         // Records what it was handed. The unset/empty distinction matters for
         // the tag, so it is written as an explicit marker rather than "".
-        // `--capabilities` answers the probe a codex selection runs first
+        // `--capabilities` answers the probe every provider selection runs first
         // (freshness::probe_recipe_runner) without recording anything.
         fs::write(
             &runner,
             format!(
                 "#!/bin/sh\n\
                  if [ \"$1\" = --capabilities ]; then \
-                   printf '%s\\n' '{{\"schema_version\":1,\"version\":\"stub\",\"capabilities\":[\"codex_exec\"]}}'; exit 0; fi\n\
+                   printf '%s\\n' '{{\"schema_version\":1,\"version\":\"stub\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}}'; exit 0; fi\n\
                  out=\"$(dirname \"$0\")/probe.json\"\n\
                  printf '{{\"agent_binary\":\"%s\",\"source\":\"%s\"}}' \
                    \"${{AMPLIHACK_AGENT_BINARY-<unset>}}\" \"${{{SOURCE_ENV}-<unset>}}\" > \"$out\"\n\
@@ -79,7 +79,9 @@ impl Fixture {
 
     /// [`Fixture::run`] with extra `recipe run` arguments.
     fn run_with_args(&self, args: &[&std::ffi::OsStr], extra: &[(&str, &str)]) -> (Output, Value) {
-        let mut command = self.harness(Command::new(env!("CARGO_BIN_EXE_amplihack")));
+        let mut command = self.harness(crate::isolated_amplihack::isolated(env!(
+            "CARGO_BIN_EXE_amplihack"
+        )));
         command
             .arg("recipe")
             .arg("run")
@@ -98,6 +100,8 @@ impl Fixture {
     fn harness(&self, mut command: Command) -> Command {
         command
             .env_clear()
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env("TMPDIR", std::env::temp_dir())
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", self.path().join("home"))
             .env("TMPDIR", std::env::temp_dir())
@@ -297,7 +301,9 @@ fn a_rejected_value_is_never_logged_at_any_filter() {
     const REJECTED: &str = "claude-code";
     let fx = Fixture::new();
     let agent_binary = |extra: &[(&str, &str)]| {
-        let mut command = fx.harness(Command::new(env!("CARGO_BIN_EXE_amplihack")));
+        let mut command = fx.harness(crate::isolated_amplihack::isolated(env!(
+            "CARGO_BIN_EXE_amplihack"
+        )));
         command.arg("agent-binary").env("RUST_LOG", "trace");
         for (key, value) in extra {
             command.env(key, value);
@@ -498,7 +504,7 @@ fn auto_mode_hands_an_inherited_guess_on_tagged_and_persists_nothing() {
         bin.join("claude"),
         format!(
             "#!/bin/sh\n\
-             if [ \"$1\" = \"--version\" ]; then echo '2.0.0 (Claude Code)'; exit 0; fi\n\
+             if [ \"$1\" = \"--version\" ]; then echo '2.1.319 (Claude Code)'; exit 0; fi\n\
              printf '%s|%s\\n' \"${{AMPLIHACK_AGENT_BINARY-<unset>}}\" \"${{{SOURCE_ENV}-<unset>}}\" >> '{}'\n\
              exit 0\n",
             probe.display()
@@ -512,8 +518,10 @@ fn auto_mode_hands_an_inherited_guess_on_tagged_and_persists_nothing() {
         &std::env::var_os("PATH").unwrap_or_default(),
     )))
     .expect("join PATH");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amplihack"))
+    let mut child = crate::isolated_amplihack::isolated(env!("CARGO_BIN_EXE_amplihack"))
         .env_clear()
+        .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+        .env("TMPDIR", std::env::temp_dir())
         .env("PATH", path)
         .env("HOME", fx.path().join("home"))
         .env("TMPDIR", &tmp)
@@ -731,6 +739,17 @@ fn without_any_marker() -> String {
         .map(|(key, _)| format!("-u {key}"))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// The `env -u` arguments `agent-binary --shell` prints: every session
+/// marker, then the #1976 parent-watch variables, which a tmux server started
+/// from a recipe step would otherwise hand to every later session.
+fn hand_off_unsets() -> String {
+    format!(
+        "{} -u AMPLIHACK_PARENT_RECIPE_PID -u AMPLIHACK_PARENT_RECIPE_STARTTIME \
+         -u AMPLIHACK_AUTODRIVE_STATE_DIR",
+        without_any_marker()
+    )
 }
 
 /// The documented hand-off's command string. The caller's shell expands it.
@@ -1762,7 +1781,9 @@ fn without_the_hand_off_a_server_an_amplihack_codex_agent_started_is_named() {
 
 /// `amplihack agent-binary --shell` run directly, stdout and stderr apart.
 fn agent_binary_shell(fx: &Fixture, env: &[(&str, &str)]) -> Output {
-    let mut command = fx.harness(Command::new(env!("CARGO_BIN_EXE_amplihack")));
+    let mut command = fx.harness(crate::isolated_amplihack::isolated(env!(
+        "CARGO_BIN_EXE_amplihack"
+    )));
     command.args(["agent-binary", "--shell"]);
     for (key, value) in env {
         command.env(key, value);
@@ -1785,7 +1806,7 @@ fn a_log_filter_does_not_leak_into_the_shell_output() {
         String::from_utf8_lossy(&output.stdout),
         format!(
             "env {} AMPLIHACK_AGENT_BINARY=copilot AMPLIHACK_AGENT_BINARY_SOURCE=default:copilot\n",
-            without_any_marker()
+            hand_off_unsets()
         ),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
@@ -1837,7 +1858,7 @@ fn a_conflicting_export_wins_the_hand_off_and_is_announced() {
         String::from_utf8_lossy(&output.stdout),
         format!(
             "env {} AMPLIHACK_AGENT_BINARY=copilot AMPLIHACK_AGENT_BINARY_SOURCE=\n",
-            without_any_marker()
+            hand_off_unsets()
         )
     );
     let stderr = String::from_utf8_lossy(&output.stderr);

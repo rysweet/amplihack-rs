@@ -15,6 +15,9 @@
 //! `tests/integration/test_harness_binary_path_contract_test.rs`) fails on any
 //! file left out.
 
+#[path = "../../../tests/support/isolated_amplihack.rs"]
+mod isolated_amplihack;
+
 #[path = "issue_1445_host_only_litellm.rs"]
 mod issue_1445_host_only_litellm;
 #[path = "issue_1481_recipe_run_agent_binary.rs"]
@@ -23,6 +26,8 @@ mod issue_1481_recipe_run_agent_binary;
 mod issue_1525_agent_binary_is_not_subprocess_safe;
 #[path = "issue_1525_migrate_detect_cli_uses_the_resolver.rs"]
 mod issue_1525_migrate_detect_cli_uses_the_resolver;
+#[path = "issue_1810_usage_startup.rs"]
+mod issue_1810_usage_startup;
 #[path = "issue_537_git_optional_recipes.rs"]
 mod issue_537_git_optional_recipes;
 #[path = "issue_538_install_completeness.rs"]

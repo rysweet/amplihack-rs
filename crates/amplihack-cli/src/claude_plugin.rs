@@ -2090,14 +2090,14 @@ mod tests {
     }
 
     #[test]
-    fn real_corpus_publishes_all_131_skills_in_isolated_home() {
+    fn real_corpus_publishes_all_132_skills_in_isolated_home() {
         let (_lock, temp, _home) = isolated_home();
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/skills");
         let mut sources = Vec::new();
         find_skill_dirs(&root, &mut sources).unwrap();
-        assert_eq!(sources.len(), 131);
+        assert_eq!(sources.len(), 132);
         let expected: BTreeSet<_> = sources.iter().map(|(name, _)| name.clone()).collect();
-        assert_eq!(expected.len(), 131);
+        assert_eq!(expected.len(), 132);
         let staged = temp.path().join(".amplihack/.claude/skills");
         copy_dir_recursive(&root, &staged).unwrap();
         ensure_claude_plugin_installed().unwrap();

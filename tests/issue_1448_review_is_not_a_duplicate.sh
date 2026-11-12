@@ -38,6 +38,9 @@
 # wrapper, which already gives it a fresh shell; saying `+e` here means the file
 # also behaves when it is run under `bash -e` directly.
 set +e -uo pipefail
+# Issue #1764: no git this script runs may wait on a credential prompt.
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
+exec </dev/null
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLAIM="$ROOT/amplifier-bundle/tools/workflow_issue_claim_check.sh"
@@ -60,6 +63,10 @@ export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 unset GH_TOKEN GITHUB_TOKEN GH_HOST
 unset AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK ALLOW_EXISTING_PR AMPLIHACK_ALLOW_EXISTING_PR
+# step-03c skips the claim check when the run targets an existing branch or
+# PR. An auto-drive or recipe shell exports PR_NUMBER, and inheriting it made
+# every step-03c check below take the skip path instead of the one under test.
+unset EXISTING_BRANCH PR_NUMBER
 
 # The reported incident: issue #142, claimed by PR #173 whose head is
 # `fix/142-band-edge-previous-slice`, reviewed from a worktree already on that
@@ -225,7 +232,7 @@ fi
 step() { # step <repo> [env...]
   local repo="$1"; shift
   OUT="$(cd "$WORK" && env PATH="$BIN:$PATH" AMPLIHACK_HOME="$ROOT" \
-        REPO_PATH="$repo" ISSUE_NUMBER="$ISSUE" "$@" bash "$STEP" 2>&1)"
+        REPO_PATH="$repo" RECIPE_VAR_issue_number="$ISSUE" "$@" bash "$STEP" 2>&1)"
   RC=$?
 }
 if [ -s "$STEP" ]; then

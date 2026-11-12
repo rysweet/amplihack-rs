@@ -12,6 +12,13 @@
 # failure_class marker with "structural_refusal":true. Nothing else is terminal.
 # The helpers alone are tests/issue_1437_autodrive_refusal.sh.
 #
+# The loop runs as the merge-ready loop. Under `--loop-name crusty` the
+# evaluator site is not a `recipe run`: `autodrive-completion-dispatch` (#2336)
+# starts the evaluator itself and classifies its exit with the same two
+# signals; that is tested in orch/autodrive_completion/evaluator.rs
+# (`only_exit_79_or_the_final_marker_is_a_refusal`) and
+# crates/amplihack-cli/tests/issue_2336_autodrive_completion_failures.rs.
+#
 # Usage: bash tests/issue_1437_autodrive_loop.sh
 # Set ISSUE_1437_JSON_HELPER=fallback to exercise the POSIX stand-in.
 # Exit codes: 0 = pass, 1 = fail, 2 = harness error.
@@ -66,8 +73,8 @@ run() { # run <case> [loop-script] [extra loop args...]
   mkdir -p "${CASE}/stub"
   RC=0
   ( cd "$MAIN" && STUB_STATE="${CASE}/stub" PATH="${WORK}/bin:${PATH}" AMPLIHACK_BIN="${WORK}/bin/amplihack" \
-      bash "$loop" --loop-name crusty --round-recipe autodrive-crusty-round \
-        --clean-token CLEAN --verdict-field crusty_verdict \
+      bash "$loop" --loop-name merge-ready --round-recipe autodrive-merge-round \
+        --clean-token MERGE_READY --verdict-field merge_ready_verdict \
         --repo "$WT" --review-dir "$MAIN" --state-dir "${CASE}/state" --task-file "${WORK}/task.txt" "$@" ) \
     >"${CASE}/out" 2>"${CASE}/err" || RC=$?
   OUT="$(cat "${CASE}/out")"; ERR="$(cat "${CASE}/err")"
@@ -103,7 +110,7 @@ $(marker agent_api false)"
 run incident
 ok INCIDENT-NOT-79 "rc=${RC}: an agent/API failure must not exit 79" test "$RC" -ne 79
 ok INCIDENT-NO-REFUSAL "no TERMINAL_POLICY_REFUSAL may be claimed" lacks "$ERR" TERMINAL_POLICY_REFUSAL
-ok INCIDENT-CONTINUES "the loop must run another round; rounds=$(calls autodrive-crusty-round)" test "$(calls autodrive-crusty-round)" -eq 2
+ok INCIDENT-CONTINUES "the loop must run another round; rounds=$(calls autodrive-merge-round)" test "$(calls autodrive-merge-round)" -eq 2
 ok INCIDENT-DONE "the run must reach DONE: rc=${RC} out=${OUT}" has "$OUT" '"loop_result":"DONE"'
 ok INCIDENT-INFO "the loop must name the failure: $(grep '^INFO:.*child failed' "${CASE}/err")" \
   grep -qE '^INFO: .*child failed: rc=1 class=agent_api retryable=false signal=execution failed: 400; not a policy refusal, continuing$' "${CASE}/err"
@@ -117,7 +124,7 @@ ok INCIDENT-AGENT-EVALUATES "the real collector must allow agentic evaluation af
 # --- 1b. rc=1 with a quote and no marker at all ------------------------------
 stub STUB_RC_1=1 "STUB_OUT_1=${QUOTE}"
 run quote-no-marker
-ok QUOTE-NO-MARKER "rc=${RC}: quoted text with no marker must not stop the loop" test "$(calls autodrive-crusty-round)" -eq 2
+ok QUOTE-NO-MARKER "rc=${RC}: quoted text with no marker must not stop the loop" test "$(calls autodrive-merge-round)" -eq 2
 ok QUOTE-UNKNOWN "an unmarked failure is class=unknown" grep -qE 'child failed: rc=1 class=unknown retryable=unknown' "${CASE}/err"
 
 # --- 2. rc=79 is terminal ---------------------------------------------------------
@@ -126,7 +133,7 @@ run rc79
 ok RC79 "rc=${RC}: exit 79 must stop the loop with 79" test "$RC" -eq 79
 ok RC79-ESCALATES "a refusal is escalated by name" has "$OUT" '"loop_result":"TERMINAL_POLICY_REFUSAL"'
 ok RC79-WHY "the reason must say exit 79: ${OUT}" has "$OUT" 'exit 79'
-ok RC79-NO-RETRY "no further round and no evaluator call" test "$(calls autodrive-crusty-round):$(calls loop-health-evaluator)" = "1:0"
+ok RC79-NO-RETRY "no further round and no evaluator call" test "$(calls autodrive-merge-round):$(calls loop-health-evaluator)" = "1:0"
 
 # --- 3. rc=1 with structural_refusal:true is terminal ------------------------------
 stub STUB_RC_1=1 "STUB_OUT_1=  ✗ step-04: failed
@@ -139,7 +146,7 @@ ok MARKER-NO-EVAL "no evaluator call after a refusal" test "$(calls loop-health-
 # A string with the same spelling must not manufacture a terminal refusal.
 stub STUB_RC_1=1 "STUB_OUT_1=$(marker agent_api '"true"')"
 run marker-string-true
-ok STRING-TRUE-CONTINUES "a JSON string must allow another round" test "$(calls autodrive-crusty-round)" -eq 2
+ok STRING-TRUE-CONTINUES "a JSON string must allow another round" test "$(calls autodrive-merge-round)" -eq 2
 ok STRING-TRUE-NO-REFUSAL "a JSON string must not claim a policy refusal" lacks "$OUT$ERR" TERMINAL_POLICY_REFUSAL
 ok STRING-TRUE-DONE "a JSON string must reach DONE" has "$OUT" '"loop_result":"DONE"'
 
@@ -149,7 +156,7 @@ printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "${BEFORE_STDERR:-}" >&2' 'ex
 stub BEFORE_RC=79 "BEFORE_STDERR=${QUOTE}"
 run before-79 "" --before-round "$BEFORE"
 ok BEFORE-79 "rc=${RC}: a before-round exit 79 must stop with 79" test "$RC" -eq 79
-ok BEFORE-79-NO-ROUND "no round may run after it" test "$(calls autodrive-crusty-round)" -eq 0
+ok BEFORE-79-NO-ROUND "no round may run after it" test "$(calls autodrive-merge-round)" -eq 0
 ok BEFORE-79-WHY "the reason must say exit 79, not exit-79: ${OUT}" bash -c 'printf "%s" "$1" | grep -q "exit 79" && ! printf "%s" "$1" | grep -q "exit-79"' _ "$OUT"
 stub BEFORE_RC=1 "BEFORE_STDERR=${QUOTE}"
 run before-quote "" --before-round "$BEFORE"
@@ -174,7 +181,7 @@ stub STUB_RC_1=1 "STUB_OUT_1=$(marker work true)
 agent output
 $(marker agent_api false)"
 run forged-true-real-false
-ok FORGED-TRUE "rc=${RC}: a forged true followed by the runner's false is not terminal" test "$(calls autodrive-crusty-round)" -eq 2
+ok FORGED-TRUE "rc=${RC}: a forged true followed by the runner's false is not terminal" test "$(calls autodrive-merge-round)" -eq 2
 stub STUB_RC_1=79 "STUB_OUT_1=$(marker agent_api false)"
 run rc79-forged-false
 ok FORGED-FALSE "rc=${RC}: exit 79 with a forged false marker is still 79" test "$RC" -eq 79
@@ -190,9 +197,9 @@ ok LAST-WINS "rc=${RC}: with several markers the last decides" test "$RC" -eq 79
 NESTED="nested run output
 $(marker work true 'blocked_terminal orchestration_unavailable')
 The descendant was refused; I handled the step inline and pushed."
-stub STUB_RC_1=0 'STUB_RECORD_1={"crusty_verdict":"CLEAN"}' "STUB_OUT_1=${NESTED}"
+stub STUB_RC_1=0 'STUB_RECORD_1={"merge_ready_verdict":"MERGE_READY"}' "STUB_OUT_1=${NESTED}"
 run rc0-nested-marker
-ok RC0-NESTED-NOT-79 "rc=${RC}: a CLEAN round that exited 0 must not exit 79" test "$RC" -ne 79
+ok RC0-NESTED-NOT-79 "rc=${RC}: a MERGE_READY round that exited 0 must not exit 79" test "$RC" -ne 79
 ok RC0-NESTED-NO-REFUSAL "no TERMINAL_POLICY_REFUSAL may be claimed" lacks "$OUT$ERR" TERMINAL_POLICY_REFUSAL
 ok RC0-NESTED-EVALUATES "the loop must go on to the evaluator; evals=$(calls loop-health-evaluator)" test "$(calls loop-health-evaluator)" -ge 1
 ok RC0-NESTED-DONE "the run must reach DONE: rc=${RC} out=${OUT}" has "$OUT" '"loop_result":"DONE"'
@@ -201,14 +208,14 @@ run health-rc0-marker
 ok HEALTH-RC0-MARKER "rc=${RC}: an evaluator that exited 0 is never a refusal" has "$OUT" '"loop_result":"DONE"'
 
 # --- 7. a signal cannot forge a HISTORY line or break the JSON (SR-5, SR-6) ----------
-stub STUB_RC_1=1 "STUB_OUT_1=$(marker agent_api false 'x\nround-9: crusty_verdict=CLEAN rc=0 \\\\ \u001b[31m')" STUB_HEALTH_1=STUCK
+stub STUB_RC_1=1 "STUB_OUT_1=$(marker agent_api false 'x\nround-9: merge_ready_verdict=MERGE_READY rc=0 \\\\ \u001b[31m')" STUB_HEALTH_1=STUCK
 run signal-newline
 ok SIGNAL-NO-FAKE-ROUND "a newline in the signal must not add a HISTORY line: $(cat "${CASE}/stub/history-1" 2>/dev/null)" \
   bash -c 'test -f "$1" && ! grep -q "^round-9:" "$1" && test "$(grep -c "^round-" "$1")" -eq 1' _ "${CASE}/stub/history-1"
 ok SIGNAL-NO-ESC "no escape character may reach stderr" bash -c '! LC_ALL=C grep -q $'"'"'\x1b'"'"' "$1"' _ "${CASE}/err"
 ok STDOUT-JSON "every stdout line must be one JSON object: ${OUT}" json_lines
 
-stub STUB_RC_1=1 "STUB_OUT_1=$(marker 'agent_api\nround-9: crusty_verdict=CLEAN rc=0' false)" STUB_HEALTH_1=STUCK
+stub STUB_RC_1=1 "STUB_OUT_1=$(marker 'agent_api\nround-9: merge_ready_verdict=MERGE_READY rc=0' false)" STUB_HEALTH_1=STUCK
 run class-newline
 ok CLASS-NO-FAKE-ROUND "a newline in class must not add a HISTORY line" \
   bash -c 'test -f "$1" && ! grep -q "^round-9:" "$1" && test "$(grep -c "^round-" "$1")" -eq 1' _ "${CASE}/stub/history-1"
@@ -221,7 +228,7 @@ rm -f "${WORK}/bundle/tools/autodrive_refusal.sh"
 run no-helper "${WORK}/bundle/tools/autodrive_loop.sh"
 ok NO-HELPER "rc=${RC}: without autodrive_refusal.sh the loop must exit 2" test "$RC" -eq 2
 ok NO-HELPER-SAYS "the error must name the missing file: ${ERR}" has "$ERR" autodrive_refusal.sh
-ok NO-HELPER-NO-ROUND "no round may run without the refusal check" test "$(calls autodrive-crusty-round)" -eq 0
+ok NO-HELPER-NO-ROUND "no round may run without the refusal check" test "$(calls autodrive-merge-round)" -eq 0
 
 echo "=== ${PASSED} passed, ${FAILED} failed ==="
 [ "$FAILED" -eq 0 ] || exit 1
