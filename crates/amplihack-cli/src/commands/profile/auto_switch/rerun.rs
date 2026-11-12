@@ -17,7 +17,7 @@ use super::state::{Ledger, State};
 use super::takeover::{capacity_candidate, profile_check};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{
-    Limited, Signals, note_key_error, run_attempt, usage_limited,
+    Limited, Signals, note_key_error, run_attempt_with_recovery, usage_limited,
 };
 use crate::commands::profile::limit_wait::plan::{self, NoWait, WaitFor};
 use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
@@ -394,15 +394,30 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     }
     let mut tried: Vec<String> = Vec::new();
     let mut n = 0u32;
+    let mut recovery = recipe_runner_rs::recovery::ipc::Client::from_environment()?;
     loop {
         n += 1;
+        if n > 1
+            && let Some(client) = &recovery
+        {
+            recovery = Some(client.renew()?);
+        }
         let switch_dir = switch
             .as_ref()
             .zip(profile.as_ref())
             .map(|(sw, p)| (p, sw.state.profile_dir(p.as_str())));
         let env = switch_dir.as_ref().map(|(p, d)| (*p, d.as_path()));
         let input = stdin.for_attempt(n);
-        let attempt = match run_attempt(&exe, &args, &rerun_dir, env, input, n, &signals) {
+        let attempt = match run_attempt_with_recovery(
+            &exe,
+            &args,
+            &rerun_dir,
+            env,
+            input,
+            n,
+            &signals,
+            recovery.as_ref(),
+        ) {
             Ok(a) => a,
             // The first attempt never started, so a plain launch can follow.
             Err(e) if n == 1 && profile.is_none() => {
@@ -419,6 +434,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         let Some(lim) = usage_limited(&attempt, waiter.now()) else {
             return attempt.finish(None);
         };
+        if let Some(client) = &recovery {
+            client.outcome(recipe_runner_rs::recovery::model::Outcome::UsageLimit)?;
+        }
         if profile.is_none() {
             // This attempt ran under the inherited profile: its limit is the
             // freshest word on that profile.

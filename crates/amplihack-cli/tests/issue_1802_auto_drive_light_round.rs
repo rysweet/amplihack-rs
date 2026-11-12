@@ -198,6 +198,11 @@ const CANARY: &str = "light-tool-ran";
 fn fake_tools(e: &Env) -> PathBuf {
     let t = e.repo.tmp.path().join("fake-tools");
     std::fs::create_dir_all(&t).unwrap();
+    std::fs::copy(
+        tools_dir().join("autodrive_crusty_record.sh"),
+        t.join("autodrive_crusty_record.sh"),
+    )
+    .unwrap();
     for f in RETIRED_TOOLS {
         crate::support::exec_stub::write_executable(
             &t.join(f),
@@ -537,6 +542,7 @@ fn real_tools(e: &Env) -> PathBuf {
     let t = e.repo.tmp.path().join("real-tools");
     std::fs::create_dir_all(&t).unwrap();
     for f in [
+        "autodrive_crusty_record.sh",
         "autodrive_followups.sh",
         "autodrive_followups_check.sh",
         "autodrive_finding_rules.sh",

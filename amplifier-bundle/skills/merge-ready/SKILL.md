@@ -35,7 +35,7 @@ Platform detection signals:
 
 A PR/pull request is merge-ready only when **all** of the following are true:
 
-1. `qa-team` scenarios were written or updated, validated with `gadugi-test validate`, and actually run with `gadugi-test run`.
+1. `qa-team` scenarios were written or updated, validated with `gadugi-test validate`, and actually run with `gadugi-test run`. Not applicable when the PR/pull request changes documentation and nothing else: there is no user-facing surface (section 3's list) for a scenario to drive. Every other criterion still applies.
 2. User-facing docs were updated when the change affects APIs, configuration, deployment, CLI behavior, or other external surfaces.
 3. `quality-audit` completed at least 3 SEEK -> VALIDATE -> FIX cycles, continued past 3 if critical or high findings remained, and ended on a clean final cycle.
 4. Checks/build validation for the current head revision passed according to the active platform and repository policy.
@@ -54,6 +54,7 @@ If any criterion is missing, stale, inaccessible, or blocked by external approva
 ## Non-negotiable guardrails
 
 - Do **not** treat "scenario YAML exists" as sufficient. The scenarios must be validated **and** run.
+- Do **not** waive criterion 1 for anything but a change that is documentation only. One changed file that is not documentation — a build, workflow, configuration or agent-instruction file included — costs the whole PR/pull request the exemption, and an unreadable diff is not a documentation-only change.
 - Do **not** claim docs are irrelevant without checking the changed surfaces.
 - Do **not** accept fewer than 3 quality-audit cycles.
 - Do **not** accept a quality-audit result unless the final cycle is clean.
@@ -108,7 +109,16 @@ If no PR/pull request exists yet, you may still prepare evidence, but the final 
 
 ### 2. Satisfy the QA criterion with `qa-team`
 
-Invoke `qa-team` and ensure it covers the changed behavior from an external user perspective.
+First decide whether this PR/pull request changes any user-facing surface, by
+section 3's list. If it changes documentation and nothing else, it changes
+none of them, so there is no behaviour for a scenario to cover: record the
+changed files as the evidence, state that criterion 1 is not applicable, and
+go on to the next criterion. Do not write a scenario to satisfy the letter of
+the rule. This waiver is for documentation alone; a build, workflow,
+configuration or agent-instruction file is not documentation, however it is
+formatted.
+
+Otherwise invoke `qa-team` and ensure it covers the changed behavior from an external user perspective.
 
 Required deliverables:
 

@@ -952,6 +952,65 @@ mod opaque_process {
         assert!(!report.unknown);
     }
 
+    // #2024: one release and two non-dumpable same-user processes. Only the
+    // process that started after the release existed may have inherited a
+    // working directory, descriptor or environment value inside it, so only
+    // that process keeps it. The one that started before the release existed
+    // must not keep it, or no release would ever be removed while a
+    // long-running non-dumpable process is alive.
+    const BORN_SECS: u64 = 1_000_000;
+    const BEFORE_PID: u32 = 101;
+    const AFTER_PID: u32 = 202;
+
+    fn started_at(pid: u32) -> proc_scan::Opaque {
+        let born = UNIX_EPOCH + Duration::from_secs(BORN_SECS);
+        match pid {
+            BEFORE_PID => proc_scan::Opaque::StartedAt(born - Duration::from_secs(3600)),
+            AFTER_PID => proc_scan::Opaque::StartedAt(born + Duration::from_secs(3600)),
+            other => unreachable!("the scan asked about pid {other}, which the test never listed"),
+        }
+    }
+
+    #[test]
+    fn a_non_dumpable_process_started_after_a_release_keeps_it_and_one_started_before_does_not() {
+        let fx = Fixture::new();
+        let candidate = fx.release("0.9.40");
+        let born = UNIX_EPOCH + Duration::from_secs(BORN_SECS);
+        let report = cleanup_unused_with(&fx.amp, &[], |candidates| {
+            assert_eq!(candidates, std::slice::from_ref(&candidate));
+            scan_with(candidates, &[Some(born)], &[BEFORE_PID, AFTER_PID], |pid| {
+                Err(started_at(pid))
+            })
+        })
+        .unwrap();
+        assert!(candidate.exists(), "the later process may be inside it");
+        assert!(report.removed.is_empty(), "{:?}", report.removed);
+        assert_eq!(
+            report.kept_in_use,
+            vec![(candidate, vec![AFTER_PID])],
+            "only the process started after the release keeps it"
+        );
+        assert!(!report.unknown);
+    }
+
+    #[test]
+    fn a_non_dumpable_process_started_before_a_release_does_not_keep_it() {
+        let fx = Fixture::new();
+        let candidate = fx.release("0.9.40");
+        let born = UNIX_EPOCH + Duration::from_secs(BORN_SECS);
+        let report = cleanup_unused_with(&fx.amp, &[], |candidates| {
+            assert_eq!(candidates, std::slice::from_ref(&candidate));
+            scan_with(candidates, &[Some(born)], &[BEFORE_PID], |pid| {
+                Err(started_at(pid))
+            })
+        })
+        .unwrap();
+        assert!(!candidate.exists(), "the process predates the release");
+        assert_eq!(report.removed, vec![candidate]);
+        assert!(report.kept_in_use.is_empty(), "{:?}", report.kept_in_use);
+        assert!(!report.unknown);
+    }
+
     #[test]
     fn the_user_manager_keeps_no_release() {
         // systemd --user (linger on) started at boot, before both releases.
@@ -1021,33 +1080,49 @@ mod opaque_process {
     }
 
     #[test]
-    fn this_hosts_opaque_processes_never_force_an_unknown_scan() {
-        // Every same-user process whose fd table is unreadable must be
-        // classified from status and stat, so cleanup is not blocked.
-        let me = std::fs::metadata("/proc/self").map(|m| {
-            use std::os::unix::fs::MetadataExt;
-            m.uid()
-        });
-        let Ok(me) = me else { return };
-        for entry in std::fs::read_dir("/proc").unwrap().flatten() {
-            let Some(pid) = entry
-                .file_name()
-                .to_str()
-                .and_then(|n| n.parse::<u32>().ok())
-            else {
-                continue;
-            };
-            use std::os::unix::fs::MetadataExt;
-            let Ok(meta) = entry.metadata() else { continue };
-            if meta.uid() != me || std::fs::read_dir(entry.path().join("fd")).is_ok() {
-                continue;
-            }
-            assert_ne!(
-                proc_scan::classify_opaque(pid),
-                proc_scan::Opaque::Unknown,
-                "pid {pid}"
+    fn opaque_processes_are_classified_from_a_synthetic_table() {
+        use crate::test_support::proc::{FAKE_PID_BASE, fake_proc_scope};
+
+        let scope = fake_proc_scope();
+        let classify = |pid| proc_scan::classify_opaque_at(scope.path(), pid);
+        let boot = 1_000_000;
+        std::fs::write(scope.path().join("stat"), format!("btime {boot}\n")).unwrap();
+        // SAFETY: sysconf has no preconditions; its result is checked below.
+        let ticks_per_sec = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        assert!(ticks_per_sec > 0);
+        for (offset, state) in [(0, 'S'), (1, 'Z')] {
+            let pid = FAKE_PID_BASE + offset;
+            let entry = scope.fake.process(pid);
+            entry.status(state);
+            let stat = format!(
+                "{pid} ((sd-pam) x) {state} 1 1 1 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 {} 1 2 3\n",
+                ticks_per_sec * 10
+            );
+            std::fs::write(entry.path().join("stat"), stat).unwrap();
+            assert!(std::fs::read_dir(entry.path().join("fd")).is_err());
+            assert_eq!(
+                classify(pid),
+                proc_scan::Opaque::StartedAt(UNIX_EPOCH + Duration::from_secs(boot + 10)),
+                "an opaque {state} process still has a readable start time"
             );
         }
+        let manager_pid = FAKE_PID_BASE + 2;
+        let manager = scope.fake.process(manager_pid);
+        let uid = super::release_layout::euid();
+        std::fs::write(
+            manager.path().join("cgroup"),
+            format!("0::/user.slice/user-{uid}.slice/user@{uid}.service/init.scope\n"),
+        )
+        .unwrap();
+        assert_eq!(classify(manager_pid), proc_scan::Opaque::UserManager);
+        assert_eq!(classify(FAKE_PID_BASE + 3), proc_scan::Opaque::Gone);
+
+        let malformed_pid = FAKE_PID_BASE + 4;
+        let malformed = scope.fake.process(malformed_pid);
+        std::fs::write(malformed.path().join("stat"), "garbage").unwrap();
+        assert_eq!(classify(malformed_pid), proc_scan::Opaque::Unknown);
+        std::fs::remove_file(scope.path().join("stat")).unwrap();
+        assert_eq!(classify(FAKE_PID_BASE), proc_scan::Opaque::Unknown);
     }
 }
 

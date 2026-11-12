@@ -757,6 +757,14 @@ mod tests {
             !help.contains("instead of the table"),
             "help still calls the table the default: {help}"
         );
+        // Issue #1974: the help states the passive window.
+        for want in [
+            "300",
+            "AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS",
+            "3600",
+        ] {
+            assert!(help.contains(want), "help names {want}: {help}");
+        }
         let list = Cli::try_parse_from(["amplihack", "profile", "--help"])
             .unwrap_err()
             .to_string();
@@ -764,6 +772,48 @@ mod tests {
             !list.contains("most capacity first"),
             "summary still says most capacity first: {list}"
         );
+    }
+
+    #[test]
+    fn profile_prune_probe_logs_parses_its_flags() {
+        let _env = launcher_env_lock();
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "profile",
+            "prune-probe-logs",
+            "--dir",
+            "/x/y",
+            "--dry-run",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Profile(crate::commands::profile::ProfileCommands::PruneProbeLogs {
+                dir,
+                dry_run,
+            }) => {
+                assert_eq!(dir.as_deref(), Some("/x/y"));
+                assert!(dry_run);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let cli = Cli::try_parse_from(["amplihack", "profile", "prune-probe-logs"]).unwrap();
+        match cli.command {
+            Commands::Profile(crate::commands::profile::ProfileCommands::PruneProbeLogs {
+                dir,
+                dry_run,
+            }) => {
+                assert_eq!(dir, None);
+                assert!(!dry_run);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from(["amplihack", "profile", "prune-probe-logs", "--force"]).is_err()
+        );
+        let list = Cli::try_parse_from(["amplihack", "profile", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(list.contains("prune-probe-logs"), "listed: {list}");
     }
 
     #[test]

@@ -49,6 +49,7 @@ amplihack profile kind list
 amplihack profile kind set <name> <subscription|api-key|auto>
 amplihack profile verify [--fix]
 amplihack profile seed-record <name> [--write]
+amplihack profile prune-probe-logs [--dir <dir>] [--dry-run]
 amplihack profile overflow clear --platform
 amplihack launch|claude --profile <name> [...]
 ```
@@ -73,6 +74,7 @@ amplihack launch|claude --profile <name> [...]
 | `kind list`, `kind set <name> <kind>` | Show whether each profile is a subscription or an [API-key profile](#api-key-profiles), and set or remove an override. See [Kind override](#kind-override). |
 | `verify [--fix]` | Unix only. For `~/.claude` and each profile folder, print the account Anthropic's OAuth profile endpoint reports for the folder's own token, against the account [recorded](#recorded-account) for it. `--fix` moves a profile's login that is another profile's recorded account into that profile's empty folder; do not use it until [#1960](https://github.com/rysweet/amplihack-rs/issues/1960) is closed. See [profile verify](#profile-verify). |
 | `seed-record <name> [--write]` | Unix only. Shows the account a profile with no [record](#recorded-account) would be recorded with, from one fresh reading. `--write` saves it. Moves no login and writes no credentials file. See [profile seed-record](#profile-seed-record). |
+| `prune-probe-logs [--dir <dir>] [--dry-run]` | Deletes the session logs that usage probes from older amplihack versions left in `~/.claude/projects/<encoded home>`, and nothing else. `--dry-run` lists them without deleting. Never run automatically. See [Prune probe logs](#prune-probe-logs). |
 
 `remove` and `login` are also refused while auto-switch has an account's
 login away from home; see [Leases](#leases). `run`, `switch` and
@@ -196,6 +198,12 @@ are stored in the same way, tagged `statusline`, so they also count as
 passive while they are fresh: a second `profile usage` within 300 seconds
 reads most rows passively. A passive row is never recorded again, so a
 reading does not stay fresh by being read.
+
+`amplihack profile usage --help` states the window: a stored reading
+younger than 300 seconds (`AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`,
+at most 3600) is used without starting `claude`. The same help says that
+the `~/.claude` row and `AMPLIHACK_PROFILE_USAGE_PROBE=auto` or `text`
+always probe.
 
 This applies to the rotator too. A rotator cycle records the rows it
 measured, so with `--interval 120` the next two cycles mostly use those
@@ -594,7 +602,7 @@ within one [deadline](#probe-deadline) of its own:
 1. **Usage request.** `claude` is started as
 
    ```
-   claude -p --input-format stream-json --output-format stream-json --verbose
+   claude -p --input-format stream-json --output-format stream-json --verbose --no-session-persistence
    ```
 
    and amplihack writes exactly one line to its stdin, then closes it:
@@ -611,10 +619,15 @@ within one [deadline](#probe-deadline) of its own:
    `claude` is started again as
 
    ```
-   claude -p /usage
+   claude -p /usage --no-session-persistence
    ```
 
    with stdin from `/dev/null`, and its text is [read](#what-is-read).
+
+Both command lines end with `--no-session-persistence`, so `claude` writes
+no session log for the probe. On Linux, each one is also run inside the
+[probe sandbox](#probe-sandbox), which hides the shared `projects` folder
+from the probe.
 
 Profiles marked as [overflow](#rotate-overflow) skip the first attempt:
 they are always probed with `/usage` only, whatever the
@@ -631,7 +644,9 @@ directory (`~/.claude/.claude.json`), not the `~/.claude.json` the default
 login uses, so it would report the wrong account or none. Removing the
 variable is exactly what "use the default directory" means. Those children
 still get `AMPLIHACK_CLAUDE_PROFILE=<name>`, like every other probe. There is no
-shell, and no arguments other than the ones above are passed. The profile
+shell, and no arguments other than the ones above are passed; the
+[probe sandbox](#probe-sandbox) only puts `bwrap` and its own arguments in
+front of them. The profile
 directory is checked again just before each spawn, as for every launch. A
 refused directory gives `error` (`profile directory refused`), and no further
 attempt is made.
@@ -675,12 +690,23 @@ there, such as `.claude.json`, as any `claude` run does.
   controls. `claude` contacts Anthropic to answer; in the fallback,
   amplihack itself makes no network calls.
 
-The `/usage` attempt makes `claude` read every session transcript reachable
-from the profile's `projects` directory. With large transcripts that is
-over half a minute of CPU time for one probe, and one probe was measured at
-71.5 seconds on a 72-CPU host at a load average of 194. The usage request
-does not appear to make that scan, though it still pays for `claude`
-starting up. This cost is why the
+Without the [probe sandbox](#probe-sandbox), the `/usage` attempt makes
+`claude` read every session transcript reachable from the profile's
+`projects` directory. With large transcripts that is over half a minute of
+CPU time for one probe: one probe was measured at 71.5 seconds on a 72-CPU
+host at a load average of 194, and another opened 10,371 session logs in
+47.5 seconds. On 10 November 2026, on the same host at a load average of
+about 60, with Claude Code 2.1.322 and 9,084 transcripts in the shared
+folder, `claude -p /usage --no-session-persistence` run directly opened
+8,918 `.jsonl` files and took 68 seconds. Through `amplihack profile usage`
+with the sandbox, the same probe opened 3 `.jsonl` files, none of them under
+`projects`, and took 4.5 seconds. In the default mode, where that login's answer to
+the usage request was not used and the probe went on to `/usage`, both
+attempts together took 7.5 seconds. Neither run created a file in the shared folder, while the same
+probe from a build without this change wrote one session log there. The
+usage request opened 5 paths under `projects` with or without the sandbox,
+so it does not make that scan, though it still pays for `claude` starting
+up. This cost is why the
 [direct read](#direct-read) comes first. The deadline and the `claude`
 bound are still sized for the `/usage` attempt on a loaded host, because it
 remains the fallback and the only method that can read overflow profiles.
@@ -689,6 +715,92 @@ remains the fallback and the only method that can read overflow profiles.
 [parallelism](#probe-parallelism), the
 [passive age](#passive-readings) and the
 [endpoint overrides](#direct-read).
+
+##### Probe sandbox
+
+Every `claude` that `profile usage` and the rotator start to read usage
+gets two protections: both [fallback](#fallback-probe) attempts, the
+[spend probe](#spend-probe) and the rotator's
+[held-cycle spend-limit check](#pin-and-overflow).
+
+1. **No session log.** The probe's arguments end with
+   `--no-session-persistence`, so `claude` writes no transcript for it.
+   Older versions wrote one log of about 5 KB per probe into the shared
+   `projects` folder; see [Prune probe logs](#prune-probe-logs) to remove
+   them.
+2. **No shared history.** On Linux, when `bwrap` (bubblewrap) is usable,
+   the probe runs in its own mount namespace with an empty `tmpfs` over the
+   resolved `projects` folder:
+
+   ```
+   bwrap --dev-bind / / --tmpfs <canonical projects> -- claude -p /usage --no-session-persistence
+   ```
+
+   Inside, `projects` is empty, whether `claude` reaches it directly or
+   through the profile's `projects` link, so `/usage` has no transcripts to
+   read. The login files are seen in place. Nothing outside the probe
+   changes: the profile's `projects` link is not repointed, no folder is
+   created on the host, and a session started on the same profile during
+   the probe writes its transcript to the shared folder as before.
+
+**Which `projects` folder is hidden.** The folder is
+`<config dir>/projects`, with every link resolved. The config dir is read
+from the probe's own command, not from amplihack's environment:
+
+| `CLAUDE_CONFIG_DIR` on the probe's command | Config dir |
+|---|---|
+| Set to a value (a profile directory) | That value |
+| Removed (a [login live in `~/.claude`](#logins-in-claude)) | `$HOME/.claude` |
+| Not mentioned | amplihack's `CLAUDE_CONFIG_DIR` if set, else `$HOME/.claude` |
+
+A profile's `projects` is a link to `~/.claude/projects`, so the folder
+hidden is normally `~/.claude/projects` itself. The probe runs without
+`bwrap`, with `--no-session-persistence` alone, when the folder does not
+exist, a link in its path is broken, or the resolved path is `/`, `$HOME`
+or the config dir itself.
+
+**When `bwrap` is used.** The first probe that needs the sandbox looks for
+`bwrap` once for the life of the process:
+
+1. Each absolute directory on `PATH` is checked, in order, for a regular,
+   executable file named `bwrap`. Empty and relative entries are skipped.
+2. That file is run once as `bwrap --dev-bind / / -- true`, with no shell
+   and its output discarded.
+3. Exit status `0` means `bwrap` is usable, and its absolute path is kept
+   for every later probe. A missing file, a failed start or any other exit
+   status means it is not. AppArmor on Ubuntu 24.04, for example, can refuse
+   unprivileged namespaces to an installed `bwrap`.
+
+The answer is not checked again until the process ends, so the rotator
+checks once when it starts. There is no timeout and no retry on the check.
+On any system but Linux, `bwrap` is never looked for.
+
+**The note.** When a probe runs without the sandbox, amplihack prints one
+line to stderr, at most once per process, naming the reason:
+
+```
+note: usage probes run claude with --no-session-persistence only: bwrap not found
+note: usage probes run claude with --no-session-persistence only: bwrap refused
+note: usage probes run claude with --no-session-persistence only: projects folder not resolved
+```
+
+`bwrap refused` means the check in step 2 failed. The note contains no
+path and no environment value. It goes to stderr, so stdout stays clean for
+`--json` and `--summary-json`; the rotator's copy goes to `rotate.err`.
+
+**What the sandbox is not.** `--dev-bind / /` gives the probe the whole
+filesystem, read and write, as before. The sandbox hides one folder; it
+does not confine `claude` and is not a security boundary. `bwrap` runs with
+no extra privilege: the user id is unchanged.
+
+**Process handling.** The command keeps the probe's environment changes
+(values set and values removed) and its working directory. `bwrap` is
+started in place of `claude`, so it leads the probe's process group, and
+the group kill at the end of each attempt ends `bwrap`, `claude` and what
+`claude` started. `--die-with-parent` and `--new-session` are not passed:
+the group kill already ends the probe, and the probe's stdio is pipes or
+`/dev/null`, never a terminal. If amplihack itself is killed with
+`SIGKILL`, the probe can outlive it, as a plain `claude` probe can.
 
 #### Probe method
 
@@ -3109,12 +3221,126 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
   whole-number percentages, counts and times only. They never use the
   row's `account`, and nothing Claude printed reaches them, even when its
   output includes an e-mail address.
+- The [probe sandbox](#probe-sandbox) never reads, copies or links
+  `.credentials.json`, and puts no credential in `bwrap`'s arguments or
+  environment. Its note names a reason only, never a path or a value.
+- [`prune-probe-logs`](#prune-probe-logs) prints paths and counts only,
+  never what a log contains.
 - The [Codex read](#what-the-codex-read-does-not-do) opens no file inside
   a Codex account directory, including `auth.json` and `config.toml`, and
   passes no API key to the Codex app server. Its rows hold directory
   names, paths, percentages, times, plan types and error reasons cut to
   200 characters; nothing from them is stored.
 
+
+### Prune probe logs
+
+```
+amplihack profile prune-probe-logs [--dir <dir>] [--dry-run]
+```
+
+Usage probes from amplihack versions before the
+[probe sandbox](#probe-sandbox) wrote one session log per probe into the
+shared `projects` folder, under the folder for the directory amplihack ran
+in. On a busy host that is thousands of files, and every later `/usage`
+read them all. This command removes those logs. It is never run
+automatically.
+
+| Flag | Effect |
+|------|--------|
+| `--dir <dir>` | Folder to clean. Default `$HOME/.claude/projects/<encoded home>`. |
+| `--dry-run` | Print each matching file and delete nothing. |
+
+The encoded home is `$HOME` with every character outside `A-Z`, `a-z`,
+`0-9` and `-` replaced by `-`: `/home/ryan` becomes `-home-ryan`. The
+default needs `HOME` to be set to an absolute path.
+
+**What is read.** Only files directly in the folder whose names end in
+`.jsonl`. Subfolders are not entered. A symlink is never followed and is
+kept. A file larger than 1 MiB is kept without being read.
+
+**What is removed.** A file is removed only when all of these hold:
+
+1. Every non-empty line is a JSON object with a string `type`.
+2. Every `type` is `user` or one of the entries a `/usage` run writes
+   around it: `session-owner`, `queue-operation`, `attachment`, `system`,
+   `last-prompt` and `cost-state`. Any other type keeps the file:
+   `assistant`, and the `mode`, `permission-mode` and
+   `file-history-snapshot` entries that `/login` and typed sessions write.
+   A `queue-operation` or `last-prompt` entry can hold a queued or last
+   typed prompt, so it counts as probe-only only when its text field
+   (`content` or `lastPrompt`) is missing or is the string `/usage`, after
+   trimming whitespace. Any other value keeps the file.
+3. Exactly one `user` entry is the `/usage` command: its `message.content`
+   is a string made of `<command-name>/usage</command-name>`, then
+   optionally `<command-message>usage</command-message>`, then optionally
+   an empty `<command-args></command-args>`, with only whitespace between
+   and around them.
+4. Every other `user` entry is one of:
+   - the caveat: `isMeta` is the JSON value `true` and the content is one
+     `<local-command-caveat>…</local-command-caveat>` element;
+   - the command's output: the content is one
+     `<local-command-stdout>…</local-command-stdout>` or
+     `<local-command-stderr>…</local-command-stderr>` element.
+
+A file is kept when it has a typed prompt, content that is an array (a tool
+result, for example), a second command, any other command such as
+`/login`, an `isMeta` that is not the boolean `true`, a line that is not a
+JSON object, or when it cannot be read. When in doubt, the file is kept.
+
+A log written by a probe looks like this, one JSON object per line, with
+fields the rule does not read left out:
+
+```json
+{"type":"session-owner"}
+{"type":"queue-operation"}
+{"type":"attachment"}
+{"type":"user","isMeta":true,"message":{"content":"<local-command-caveat>The command below was run directly in Claude Code…</local-command-caveat>"}}
+{"type":"user","message":{"content":"<command-name>/usage</command-name>\n            <command-message>usage</command-message>\n            <command-args></command-args>"}}
+{"type":"system"}
+{"type":"last-prompt"}
+{"type":"cost-state"}
+```
+
+**Output.** With `--dry-run`, one matching path per line on stdout:
+
+```
+"/home/ryan/.claude/projects/-home-ryan/0b7c….jsonl"
+"/home/ryan/.claude/projects/-home-ryan/1f3a….jsonl"
+```
+
+Without it, one line:
+
+```
+removed 2467, kept 312
+```
+
+`kept` counts every `.jsonl` file in the folder that was not removed,
+including files that could not be removed.
+Every path, in `--dry-run` lines, warnings and errors, is printed in double
+quotes, with control characters escaped. No
+log content is ever printed, in output or in errors. A file that cannot be
+removed is reported on stderr and counted as kept:
+
+```
+warning: could not remove "/home/ryan/.claude/projects/-home-ryan/0b7c….jsonl": Permission denied (os error 13)
+```
+
+| Exit status | Meaning |
+|-------------|---------|
+| `0` | The folder was read. Files that could not be removed do not change it. |
+| `1` | No `--dir` and `HOME` is unset, empty or relative; or the folder does not exist or cannot be read. |
+| `2` | Usage error. |
+
+```
+error: prune-probe-logs needs an absolute HOME, or --dir
+error: no such directory: "/home/ryan/.claude/projects/-home-ryan"
+```
+
+A session that has so far run only `/usage` matches the rule, including an
+interactive one still open. Run `--dry-run` first, and prune while no
+interactive `claude` session is running in your home directory. See
+[Remove logs left by old usage probes](../howto/claude-profile-rotation.md#remove-logs-left-by-old-usage-probes).
 
 ## Configuration
 
@@ -4681,17 +4907,20 @@ An attempt counts as hitting a usage limit only when all of these hold:
 3. the recipe runner's own classifier, applied to the kept stderr tail
    followed by the last 64 KiB of buffered stdout, returns its
    `usage_limit` class. That is the same classifier, with the same markers
-   (`session limit`, `usage limit`, `usage_limit_reached`, `quota exceeded`,
-   `monthly limit`) and the same precedence, the runner uses to end a run
-   with a usage-limit message. Work markers are checked first, then
-   environmental ones, then usage-limit ones, so a tail that also matches a
-   work or environmental marker is not a usage limit. For example, a
-   `claude -p` stdout tail that contains `permission denied` anywhere is
-   classed as environmental and the step is not rerun, even if it also says
-   `usage limit`. Two usage-limit-like messages are environmental for the
-   same reason and never cause a rerun: `credit balance is too low` (an
-   environmental marker, checked first) and `disk quota exceeded` (which
-   matches the environmental marker before `quota exceeded`).
+   (`session limit`, `5-hour limit`, `usage limit`, `usage_limit_reached`,
+   `quota exceeded`, `monthly limit`, `weekly limit`,
+   `hit your opus limit`, `hit your sonnet limit`, `hit your fable limit`,
+   `spend limit`) and the same precedence,
+   the runner uses to end a run with a usage-limit message. Work markers
+   are checked first, then environmental ones, then usage-limit ones, so a
+   tail that also matches a work or environmental marker is not a usage
+   limit. For example, a `claude -p` stdout tail that contains
+   `permission denied` anywhere is classed as environmental and the step
+   is not rerun, even if it also says `usage limit`. Two usage-limit-like
+   messages are environmental for the same reason and never cause a rerun:
+   `credit balance is too low` (an environmental marker, checked first) and
+   `disk quota exceeded` (which matches the environmental marker before
+   `quota exceeded`).
 
 Using one classifier means the supervisor and the runner cannot disagree: a
 step the runner would end the run for is always offered a rerun first. A
@@ -5485,6 +5714,24 @@ A [held cycle](#pin-and-overflow) that records a spend-limit block makes the
 same comparison with the rules for a stay: it stops only on a `journal`,
 `live`, `pin` or `overflow` change, logs the same skip line, and never
 reads again or reconsiders.
+
+The liveness scan behind `live`, `session running` and the target's
+eligibility reads the system process table, `/proc`. In the test suite, a
+fixture can supply a synthetic process table instead, so that sessions
+running elsewhere on the host do not change a test's result (#1860). The
+table is the one named by `AMPLIHACK_TEST_PROC_ROOT`, selected through
+`procfs::proc_root()`. The override is honored only when
+`AMPLIHACK_TEST_HOME_GUARD` is non-empty and the canonical path is a
+directory strictly inside the canonical temporary directory, owned by the
+current user and not writable by group or others. Otherwise the scan uses
+`/proc`. The shared rotate fixture
+(`tests/support/profile_rotate.rs`) gives every fixture an empty synthetic
+table by default. Tests add sessions with `FakeProc` and select their tree
+with `with_proc()` (#2042), including the session-running case in
+`issue_1691_switch_live.rs`; they do not read the host's sessions. The
+rotation-owner tests (#1803) use synthetic process tables too. Checks that
+precede signalling a rotator still read the real `/proc`, so a synthetic
+table cannot select a host process to signal.
 
 Revalidation and swap completion use trusted identity; later session
 rewrites cannot restore the previous account in the ledger. These checks
@@ -9430,6 +9677,8 @@ starts with `Claude AI usage limit reached|` and Unix seconds, or with
 | Message | Example | Result |
 |---------|---------|--------|
 | Session limit | `You've hit your session limit · resets 1pm (America/Los_Angeles)` | reset wait, when the reset is at most five hours away |
+| 5-hour limit | `You've hit your 5-hour limit · resets 8:20pm (America/Los_Angeles)` | reset wait, when the reset is at most five hours away |
+| Per-model limit | `You've hit your Opus limit · resets 8:20pm (America/Los_Angeles)` | reset wait, when the reset is at most five hours away |
 | Weekly limit | `You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)` | [capacity wait](#capacity-wait) when another login could take over, else `skipped reason=reset_too_far` |
 | Spend limit with a session reset | `You've hit your org's monthly spend limit · run /usage-credits … · your session limit resets 1pm (America/Los_Angeles)` | wait for that reset: the session limit is what stops work |
 | Spend limit with a weekly reset | `… monthly spend limit · … · your weekly limit resets Oct 8, 12am (America/Los_Angeles)` | `skipped reason=reset_too_far`, even when another login could take over |
