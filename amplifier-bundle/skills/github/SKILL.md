@@ -153,6 +153,9 @@ shared round evidence. Agents use the supplied `ci_evidence` snapshot where
 present, otherwise the available round evidence. This applies to assessment,
 review, remediation and next-action selection; each agent has no separate
 status-query allowance. No additional configuration or evidence field is needed.
+This policy overrides conflicting inherited skill guidance, including instructions
+to clear every blocker, address every concern or follow CI to completion.
+Agents may reread the shared observation without making another GitHub request.
 
 Agent steps must not run `gh pr checks --watch` or `gh run watch`, make
 additional CI status queries, poll `gh api` or `gh pr checks` in loops, or use
@@ -161,15 +164,16 @@ observation.
 
 | Evidence | Agent behaviour |
 | -------- | --------------- |
-| Pending CI | Report it as unresolved, complete the step's required outputs and end the step. The next existing round assesses it again. |
+| Pending CI | Keep it unresolved, finish other actionable work and all required outputs, then end the step. The next existing round assesses it again. |
 | Established failure | Diagnose known failing logs and fix the cause using the existing evidence. Reading those logs does not permit fresh status discovery. |
-| Missing, unreadable or unavailable CI | Report it as unverified; it cannot establish merge readiness. |
+| Missing, unreadable, unavailable or stale CI | Report it as unverified; it cannot establish merge readiness. Never query GitHub for replacement status. |
 | Passing CI | Use it only for the head and execution it covers, alongside every other merge gate. A commit, base merge or rerun needs evidence for the resulting head or execution. |
 
 Instructions to clear every blocker or address every concern defer pending CI
-to the next existing round. Reporting pending CI alone requires neither a
-commit nor a push. Required verdicts, remediation reports and decision output
-still apply. Next-action selection writes only its designated decision through
+to the next existing round. Finish other actionable fixes and their required
+commits and pushes before completing remediation. Reporting pending CI alone
+requires neither a commit nor a push. Required verdicts, remediation reports and
+decision output still apply. Next-action selection writes only its designated decision through
 the existing Rust writer; agents do not alter round records or evidence.
 
 Crusty's `CLEAN` still means no outstanding review concerns. `MINOR_ONLY`
@@ -190,6 +194,10 @@ the required step output and ends the step. It makes no status query and
 creates no empty commit to keep the round moving.
 
 #### Workflow commands
+
+These generic discovery examples grant auto-drive round agents no additional
+CI status queries, even when shared evidence is missing, unreadable, unavailable
+or stale. Known failing-run logs may be read for diagnosis without status polling.
 
 ```bash
 # List workflows
