@@ -418,12 +418,6 @@ fn no_short_timeouts_anywhere() {
             }
         }
     }
-    // The only wait in the workflow is the CI poll, and its interval is 60s.
-    let evidence = recipe_text("autodrive-merge-evidence");
-    assert!(
-        evidence.contains("sleep 60"),
-        "the CI wait must poll on a 60-second interval"
-    );
     for path in control_path_files() {
         let text = read(&path);
         for (n, line) in text.lines().enumerate() {
@@ -5803,7 +5797,11 @@ fn issue_2033_merge_evidence_steps_clear_before_any_git_command() {
             .is_some(),
         "autodrive-merge-evidence must declare autodrive_tools_dir in its context"
     );
-    for id in ["step-01-sync-with-base", "step-02-qa-team-scenarios"] {
+    for id in [
+        "step-01-sync-with-base",
+        "step-01b-wait-for-head-ci",
+        "step-02-qa-team-scenarios",
+    ] {
         let cmd = field(step(&recipe, id), "command");
         assert!(
             cmd.contains("STOP: cannot load git-repo-env.sh from the tools directory (#2033)"),

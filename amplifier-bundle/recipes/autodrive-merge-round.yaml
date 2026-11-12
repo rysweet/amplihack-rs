@@ -38,6 +38,7 @@ context:
   platform_facts: ""
   crusty_evidence: ""
   autodrive_tools_dir: ""
+  autodrive_ci_watch_interval: "120"  # #2362: gh run watch --interval, forwarded to autodrive-merge-evidence.
 
 steps:
   # The tools this round runs, found ONCE: the first amplifier-bundle/tools under AMPLIHACK_HOME, REPO_PATH, ~/.copilot or
@@ -113,6 +114,7 @@ steps:
       autodrive_qa_evidence: "{{autodrive_qa_evidence}}"
       autodrive_round_label: "{{autodrive_round_label}}"
       autodrive_tools_dir: "{{autodrive_tools_dir}}"
+      autodrive_ci_watch_interval: "{{autodrive_ci_watch_interval}}"
   # D5: hash qa-evidence.json before any agent runs; step-03 re-hashes, step-05 records.
   - id: "step-00d-qa-evidence-hash"
     type: "bash"

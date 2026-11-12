@@ -62,7 +62,7 @@ flowchart TD
     D5 -->|filed, or none to file| E[Phase 3: MERGE-READY LOOP]
 
     E --> E0[code commits since the clean crusty round?<br/>re-run the crusty loop at phase 2's depth]
-    E0 --> E1[sync base, run the repository's tests<br/>and, where required, gadugi scenarios,<br/>wait for CI to a terminal state]
+    E0 --> E1[sync base only when GitHub requires it,<br/>wait for the CI runs at the head to finish,<br/>then run the repository's tests<br/>and, where required, gadugi scenarios]
     E1 --> E2[merge-ready skill criteria]
     E2 --> E3[structured verdict:<br/>MERGE_READY / NOT_MERGE_READY]
     E3 -->|NOT_MERGE_READY| E4[clear blockers, commit, push]
@@ -116,6 +116,7 @@ amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c autodrive_dry_run=
 | `autodrive_budget_loop_rounds` | `12` | Rounds either loop may run in total, across every run on the same state directory. `0` or empty means unlimited. |
 | `autodrive_budget_total_rounds` | `20` | Rounds both loops together may run. `0` or empty means unlimited. |
 | `autodrive_budget_wall_seconds` | `14400` | Seconds that rounds, before-round steps and evaluator runs may take in total. `0` or empty means unlimited. |
+| `autodrive_ci_watch_interval` | `120` | Seconds between `gh` refreshes while each merge round watches the CI runs at the head. An integer of at least `60` with no leading zero; any other value falls back to `120` with a note on stderr. Lower it to `60` only when faster turns matter more than the shared GitHub API allowance (see [The watch interval](../../../docs/reference/auto-drive-to-merge.md#the-watch-interval)). |
 
 ## Why there is no iteration cap
 
@@ -329,10 +330,21 @@ regardless of what any state file says.
 ## No short timeouts
 
 No step in this workflow declares a `timeout` or `timeout_seconds`, and no
-recipe declares a `default_step_timeout`. CI polling waits on a 60-second
-interval until CI reaches a terminal state or becomes unreadable — bounded by
-the build finishing, not by a stopwatch. Test suites, builds, and model calls
-run to their natural end. A false timeout costs more than a slow run.
+recipe declares a `default_step_timeout`. Each merge round waits for CI with
+`gh run watch` on each GitHub Actions run at the head SHA, one at a time,
+before QA starts. Its `--interval` comes from `autodrive_ci_watch_interval`
+(default `120`, minimum `60`; any other value falls back to `120` with a
+note on stderr), chosen to keep many drives well inside GitHub's hourly API
+allowance. The interval only sets how often `gh` refreshes the run; the round
+adds no sleep, polling loop or retry of its own, and the wait ends when the
+runs finish. Until a run exists at the head, CI is `PENDING`, which is not
+merge-ready; two such rounds in a row with the same head and open items stop
+the loop as `STUCK`, so a workflow that never fires cannot keep it running. The round merges the base and pushes only when GitHub reports the
+branch `BEHIND`, or `DIRTY` while the local merge is clean, so it does not
+restart CI on every round. See
+[Merge evidence steps](../../../docs/reference/auto-drive-to-merge.md#merge-evidence-steps).
+Test suites, builds, and model calls run to their natural end. A false
+timeout costs more than a slow run.
 
 ## What it composes
 

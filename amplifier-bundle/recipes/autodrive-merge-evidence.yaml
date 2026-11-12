@@ -1,10 +1,10 @@
 name: "autodrive-merge-evidence"
 description: |
   Deterministic evidence collection for one round of the auto-drive-to-merge
-  merge-ready loop: bring the branch up to date with its base, run the
-  repository's own tests and, where qa-team's repo-type table requires
-  gadugi, validate and run the `qa-team` scenarios with gadugi-test, and wait
-  for CI on the current head to reach a terminal state.
+  merge-ready loop: bring the branch up to date with its base when GitHub
+  requires it, wait for the GitHub Actions runs at the current head to finish,
+  then run the repository's own tests and, where qa-team's repo-type table
+  requires gadugi, validate and run the `qa-team` scenarios with gadugi-test.
 
   Everything here is MEASURED. No step in this brick forms an opinion, and
   nothing it reports is a model's impression. Unreadable is never reported as
@@ -15,10 +15,12 @@ author: "Amplihack Team"
 tags: ["auto-drive", "merge-ready", "qa-team", "ci", "evidence"]
 
 # NO-TIMEOUT POLICY (issue #439): no step declares `timeout` or
-# `timeout_seconds`. The CI wait below polls on a 60-second interval and stops
-# when CI reaches a terminal state or becomes unreadable — it is bounded by the
-# build finishing, not by a seconds-scale or single-digit-minute stopwatch. A
-# test suite is likewise never cut off mid-run.
+# `timeout_seconds`. The CI wait (step-01b, issue #2362) blocks on
+# `gh run watch` for each run at the head SHA, one run at a time, and returns
+# when that run finishes. `--interval` (autodrive_ci_watch_interval, default
+# 120, minimum 60) only sets how often gh itself polls GitHub; the step adds
+# no sleep, retry, re-list or deadline of its own and never declares a
+# timeout. A test suite is likewise never cut off mid-run.
 # PROHIBITIONS: a hook-skipping commit flag and a branch-protection bypass are
 # NEVER used anywhere in this workflow. See
 # docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
@@ -34,8 +36,18 @@ context:
   autodrive_round_label: "round"
   # The round's step-00-tools-dir result; empty when this recipe runs alone.
   autodrive_tools_dir: ""
+  # #2362: seconds between gh's polls in `gh run watch --interval`. The default
+  # of 120 keeps a fleet of drives far below GitHub's hourly allowance (the
+  # bb:0 rate-limit incident). 60 is the minimum; any value that is not an
+  # integer from 60 to 999999 falls back to 120 with a note on stderr.
+  autodrive_ci_watch_interval: "120"
 
 steps:
+  # #2362: the step merges the base and pushes only when GitHub's
+  # mergeStateStatus says the branch must move (BEHIND, or DIRTY while the
+  # local merge is clean). Every other state leaves the branch alone, so a
+  # round does not restart CI it is about to wait on. Policy table:
+  # docs/reference/auto-drive-to-merge.md#when-the-round-syncs-with-the-base.
   - id: "step-01-sync-with-base"
     type: "bash"
     parse_json: true
@@ -53,35 +65,198 @@ steps:
       echo "INFO: cleared git env: ${AMPLIHACK_GIT_ENV_CLEARED}; run env: ${AMPLIHACK_RUN_ENV_CLEARED} (#2033)" >&2
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-      # `main` requires branches to be up to date before merge (the strict
-      # policy — see docs/reference/merge-flow.md). A BEHIND branch is brought
-      # forward here so CI runs on what will actually be merged.
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "[skip] not a git repo; the branch cannot be brought up to date and is reported unsynced, never as clean" >&2
-        printf '{"base":"","synced":"false","conflict":"unknown","head_sha":"","git_observed":"false"}\n'
+        printf '{"base":"","synced":"false","conflict":"unknown","head_sha":"","git_observed":"false","sync_reason":"not-a-repo"}\n'
         exit 0
       fi
-      BASE="$(gh pr view "${PR_NUMBER:-}" --json baseRefName --jq .baseRefName 2>/dev/null || printf '')"
-      [ -n "$BASE" ] || BASE="main"
-      SYNCED="false"; CONFLICT="false"
-      if git fetch origin "$BASE" >/dev/null 2>&1; then
-        BEHIND="$(git rev-list --count "HEAD..origin/${BASE}" 2>/dev/null || printf 0)"
-        if [ "${BEHIND:-0}" != "0" ]; then
-          if git merge --no-edit "origin/${BASE}" >/dev/null 2>&1; then
-            SYNCED="true"
-            git push >/dev/null 2>&1 || echo "WARNING: merged origin/${BASE} but the push failed; CI will still be reading the old head." >&2
-          else
-            CONFLICT="true"
-            git merge --abort >/dev/null 2>&1 || true
-            echo "ERROR: merge conflict against origin/${BASE}. Conflicts are resolved by fixing the branch, never by bypassing the gate." >&2
-          fi
+      # emit <base> <synced> <conflict> <sync_reason>: prints merge_sync, exits.
+      emit() {
+        local head; head="$(git rev-parse HEAD 2>/dev/null || printf '')"
+        echo "INFO: base sync: ${4} (synced=${2} conflict=${3})" >&2
+        if command -v jq >/dev/null 2>&1; then
+          jq -cn --arg base "$1" --arg synced "$2" --arg conflict "$3" --arg head "$head" --arg reason "$4" \
+            '{base:$base,synced:$synced,conflict:$conflict,head_sha:$head,git_observed:"true",sync_reason:$reason}'
+        else
+          echo "ERROR: jq is not installed; merge_sync is written without the base name." >&2
+          printf '{"base":"","synced":"%s","conflict":"%s","head_sha":"%s","git_observed":"true","sync_reason":"%s"}\n' \
+            "$2" "$3" "$head" "$4"
         fi
+        exit 0
+      }
+      PR="${PR_NUMBER:-}"; BASE=""; STATE=""
+      case "$PR" in
+        ''|*[!0-9]*) echo "ERROR: PR_NUMBER is not all digits; the pull request's merge state cannot be read." >&2 ;;
+        *)
+          if VIEW="$(gh pr view "$PR" --json baseRefName,mergeStateStatus 2>/dev/null)" \
+             && BASE="$(printf '%s' "$VIEW" | jq -r '.baseRefName // ""' 2>/dev/null)" \
+             && STATE="$(printf '%s' "$VIEW" | jq -r '.mergeStateStatus // ""' 2>/dev/null)"; then
+            :
+          else
+            BASE=""; STATE=""
+            echo "ERROR: could not read baseRefName and mergeStateStatus for #${PR} (gh or jq failed)." >&2
+          fi
+          ;;
+      esac
+      if [ -z "$BASE" ]; then
+        BASE="main"
       else
-        echo "WARNING: could not fetch origin/${BASE}; up-to-date state is unknown and will be reported as unverified." >&2
+        case "$BASE" in
+          -*|*@\{*) emit "" false false state-unreadable ;;
+        esac
+        git check-ref-format --branch "$BASE" >/dev/null 2>&1 || emit "" false false state-unreadable
       fi
-      printf '{"base":"%s","synced":"%s","conflict":"%s","head_sha":"%s","git_observed":"true"}\n' \
-        "$BASE" "$SYNCED" "$CONFLICT" "$(git rev-parse HEAD 2>/dev/null || printf '')"
+      if ! git fetch origin "$BASE" >/dev/null 2>&1; then
+        echo "WARNING: could not fetch origin/${BASE}; up-to-date state is unknown and will be reported as unverified." >&2
+        emit "$BASE" false false fetch-failed
+      fi
+      BEHIND="$(git rev-list --count "HEAD..origin/${BASE}" 2>/dev/null)" || BEHIND=""
+      [ -n "$BEHIND" ] || { echo "WARNING: origin/${BASE} is unreadable after the fetch." >&2; emit "$BASE" false false fetch-failed; }
+      [ "$BEHIND" != "0" ] || emit "$BASE" false false up-to-date
+      case "$STATE" in
+        BEHIND) REASON="behind-strict" ;;
+        DIRTY) REASON="dirty-stale" ;;
+        UNKNOWN|'') emit "$BASE" false false state-unreadable ;;
+        *) emit "$BASE" false false not-required ;;
+      esac
+      PRE="$(git rev-parse HEAD)"
+      if ! git merge --no-edit "origin/${BASE}" >&2; then
+        git merge --abort >/dev/null 2>&1 || echo "WARNING: git merge --abort failed; check the worktree for a merge in progress." >&2
+        echo "ERROR: merge conflict against origin/${BASE}. Conflicts are resolved by fixing the branch, never by bypassing the gate." >&2
+        emit "$BASE" false true conflict
+      fi
+      # A merge that leaves the tree as it was is not pushed (it would only
+      # restart CI); it is undone so the local head stays the pushed head.
+      if git diff --quiet "$PRE" HEAD; then
+        git reset -q --keep "$PRE" || echo "WARNING: could not undo the no-op merge; the local head differs from the pushed head." >&2
+        emit "$BASE" false false no-op-merge
+      fi
+      if ! git push >&2; then
+        echo "WARNING: merged origin/${BASE} but the push was rejected; the merge commit stays local and CI has no run for this head." >&2
+        emit "$BASE" false false push-failed
+      fi
+      emit "$BASE" true false "$REASON"
     output: "merge_sync"
+
+  # #2362: QA must judge a head whose CI has finished. This step lists the
+  # GitHub Actions runs at the local HEAD once and blocks on
+  # `gh run watch --interval N` for each one in turn: an event wait, with no
+  # sleep, retry or re-list of its own. N is gh's poll spacing, read from
+  # autodrive_ci_watch_interval through the environment (never spliced into
+  # this text). The watch exit code is ignored; each conclusion is read with
+  # `gh run view` and checked against the head again. It never waits for a
+  # run to appear: no run at the head with an active workflow is
+  # PENDING/no-run-for-head, never merge-ready, and the next round reads
+  # again. Precedence: RED, then UNREADABLE, then PENDING, then GREEN.
+  - id: "step-01b-wait-for-head-ci"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      # #2033: inherited GIT_* (a hook's GIT_DIR, GIT_WORK_TREE, ...) and the outer
+      # run's AMPLIHACK_* identity are cleared before any git command, so the
+      # repository's own hooks and tests act on this checkout. The helper comes from
+      # the tools directory autodrive-merge-round's step-00-tools-dir found once
+      # (it requires git-repo-env.sh there); run alone, from AMPLIHACK_HOME. Never
+      # through git, which those variables could redirect. Same line as merge-round step-04.
+      TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
+      [ -n "$TOOLS_D" ] || TOOLS_D="${AMPLIHACK_HOME:-}/amplifier-bundle/tools"
+      [ ! -L "$TOOLS_D/git-repo-env.sh" ] && . "$TOOLS_D/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }
+      echo "INFO: cleared git env: ${AMPLIHACK_GIT_ENV_CLEARED}; run env: ${AMPLIHACK_RUN_ENV_CLEARED} (#2033)" >&2
+      cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH; CI cannot be bound to a head." >&2; printf '{"ci_status":"UNREADABLE","ci_total":"0","ci_pending":"0","ci_failing":"0","ci_signal":"no-repo","head_sha":"","runs":[]}\n'; exit 0; }
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      SHA="$(git rev-parse HEAD 2>/dev/null || printf '')"
+      [[ "$SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || SHA=""
+      # Watch interval: caller input, so it is checked by length and a regex
+      # before any use and passed as one quoted argument. The regex refuses a
+      # leading zero, which bash arithmetic would read as octal.
+      IV=120
+      if [ -n "${RECIPE_VAR_autodrive_ci_watch_interval+set}" ] || [ -n "${AUTODRIVE_CI_WATCH_INTERVAL+set}" ]; then
+        IV_RAW="${RECIPE_VAR_autodrive_ci_watch_interval-${AUTODRIVE_CI_WATCH_INTERVAL-}}"
+        if [ "${#IV_RAW}" -le 6 ] && [[ "$IV_RAW" =~ ^[1-9][0-9]{1,5}$ ]] && [ "$IV_RAW" -ge 60 ]; then
+          IV="$IV_RAW"
+        else
+          IV_SHOWN="$(printf '%s' "$IV_RAW" | tr -d '\000-\037\177' | cut -c1-32)"
+          echo "WARNING: autodrive_ci_watch_interval '${IV_SHOWN}' (${#IV_RAW} chars) is not an integer of at least 60; gh run watch polls every 120s instead." >&2
+        fi
+      fi
+      if ! command -v jq >/dev/null 2>&1; then
+        echo "ERROR: jq is not installed; CI at the head cannot be read. Unreadable CI is a FAILURE, not a pass." >&2
+        printf '{"ci_status":"UNREADABLE","ci_total":"0","ci_pending":"0","ci_failing":"0","ci_signal":"unreadable","head_sha":"%s","runs":[]}\n' "$SHA"
+        exit 0
+      fi
+      RUNS='[]'; TOTAL=0; FAILING=0; UNREAD=0
+      # finish <status> <signal>: prints ci_evidence, exits. ci_pending is
+      # always 0: the wait has returned, there is no run, or nothing counted.
+      finish() {
+        echo "INFO: CI at ${SHA:-unknown head}: ${1} (${2}; total=${TOTAL} failing=${FAILING} unreadable=${UNREAD})" >&2
+        jq -cn --arg st "$1" --arg total "$TOTAL" --arg failing "$FAILING" \
+          --arg sig "$2" --arg head "$SHA" --argjson runs "$RUNS" \
+          '{ci_status:$st,ci_total:$total,ci_pending:"0",ci_failing:$failing,ci_signal:$sig,head_sha:$head,runs:$runs}'
+        exit 0
+      }
+      [ -n "$SHA" ] || { echo "ERROR: no readable HEAD SHA; CI cannot be bound to a head." >&2; finish UNREADABLE unreadable; }
+      if ! LIST="$(gh run list --commit "$SHA" --limit 100 --json databaseId,headSha,workflowName 2>/dev/null)"; then
+        echo "ERROR: gh run list failed for ${SHA}. Unreadable CI is a FAILURE, not a pass." >&2
+        finish UNREADABLE unreadable
+      fi
+      N="$(printf '%s' "$LIST" | jq -er 'if type == "array" then length else error("not an array") end' 2>/dev/null)" \
+        || { echo "ERROR: gh run list returned no JSON array." >&2; finish UNREADABLE unreadable; }
+      if [ "$N" = "100" ]; then
+        echo "ERROR: gh run list returned 100 runs for ${SHA}; the list may be truncated, so CI is not read as complete." >&2
+        finish UNREADABLE unreadable
+      fi
+      if [ "$N" = "0" ]; then
+        WF="$(gh workflow list --json state 2>/dev/null)" \
+          && ACTIVE="$(printf '%s' "$WF" | jq -er '[.[] | objects | select(.state == "active")] | length' 2>/dev/null)" \
+          || { echo "ERROR: gh workflow list failed; whether CI should exist is unknown." >&2; finish UNREADABLE unreadable; }
+        if [ "$ACTIVE" = "0" ]; then
+          echo "ERROR: no active workflow and no run at ${SHA}. Zero checks is not a green build." >&2
+          finish NO_CHECKS "NO_CHECKS:0/0"
+        fi
+        echo "INFO: no run is registered yet for ${SHA}; PENDING is not merge-ready and the next round reads again." >&2
+        finish PENDING no-run-for-head
+      fi
+      IDS=()
+      IDS_TEXT="$(printf '%s' "$LIST" | jq -r --arg sha "$SHA" '.[] | objects | select(.headSha == $sha) | .databaseId | tostring' 2>/dev/null)" \
+        || { echo "ERROR: could not read run ids from gh run list." >&2; finish UNREADABLE unreadable; }
+      [ -z "$IDS_TEXT" ] || mapfile -t IDS <<<"$IDS_TEXT"
+      # One watch at a time: when the first run ends the others have usually
+      # ended too, and a watch on a finished run returns at once.
+      for id in "${IDS[@]}"; do
+        if ! [[ "$id" =~ ^[0-9]{1,20}$ ]]; then
+          echo "ERROR: run id is not numeric; that run is unreadable." >&2
+          UNREAD=$((UNREAD + 1)); continue
+        fi
+        echo "INFO: waiting for run ${id} at ${SHA} to finish (gh run watch, polling every ${IV}s)." >&2
+        gh run watch "$id" --exit-status --interval "$IV" >&2 </dev/null || true
+        if ! VIEW="$(gh run view "$id" --json conclusion,headSha,workflowName 2>/dev/null)" \
+           || ! VSHA="$(printf '%s' "$VIEW" | jq -r '.headSha // ""' 2>/dev/null)" \
+           || ! CONC="$(printf '%s' "$VIEW" | jq -r '.conclusion // ""' 2>/dev/null)" \
+           || ! WFN="$(printf '%s' "$VIEW" | jq -r '.workflowName // ""' 2>/dev/null)"; then
+          echo "ERROR: gh run view ${id} failed; that run is unreadable." >&2
+          UNREAD=$((UNREAD + 1)); continue
+        fi
+        SAFE="$(printf '%s' "$WFN" | tr -d '\000-\037\177' | cut -c1-120)"
+        if [ "$VSHA" != "$SHA" ]; then
+          echo "ERROR: run ${id} (${SAFE}) was listed at ${SHA} but its view names another head; discarded and counted unreadable." >&2
+          UNREAD=$((UNREAD + 1)); continue
+        fi
+        TOTAL=$((TOTAL + 1))
+        case "$CONC" in
+          success|skipped|neutral) ;;
+          failure|cancelled|timed_out|action_required|startup_failure) FAILING=$((FAILING + 1)) ;;
+          *) UNREAD=$((UNREAD + 1)); echo "ERROR: run ${id} (${SAFE}) has no conclusion that counts as green or red." >&2 ;;
+        esac
+        echo "INFO: run ${id} (${SAFE}) concluded '$(printf '%s' "$CONC" | tr -d '\000-\037\177' | cut -c1-40)'." >&2
+        RUNS="$(printf '%s' "$RUNS" | jq -c --arg id "$id" --arg wf "$WFN" --arg c "$CONC" '. + [{id:$id,workflow:$wf,conclusion:$c}]')" \
+          || { echo "ERROR: could not record run ${id}." >&2; RUNS='[]'; finish UNREADABLE unreadable; }
+      done
+      [ "$FAILING" = "0" ] || finish RED "RED:${FAILING}/${TOTAL}"
+      [ "$UNREAD" = "0" ] || finish UNREADABLE unreadable
+      [ "$TOTAL" != "0" ] || finish PENDING no-run-for-head
+      finish GREEN "GREEN:0/${TOTAL}"
+    output: "ci_evidence"
 
   # Criterion 1 is measured by amplifier-bundle/tools/autodrive_qa_evidence.sh:
   # the repository's suite commands, then, only where autodrive_gadugi_required
@@ -91,7 +266,7 @@ steps:
   # qa-team's repo-type table says. It prints one JSON line and writes the
   # same line, private, to autodrive_qa_evidence. A missing tool is an
   # installation fault, so the step fails by name rather than reporting
-  # evidence it did not measure.
+  # evidence it did not measure. It runs after step-01b, whatever CI says.
   - id: "step-02-qa-team-scenarios"
     type: "bash"
     parse_json: true
@@ -133,53 +308,6 @@ steps:
         | amplihack orch helper extract-field --field base --default '' 2>/dev/null)" || B=""
       AUTODRIVE_QA_BASE="$B" REPO_PATH="$PWD" bash "$T"
     output: "qa_evidence"
-
-  - id: "step-03-wait-for-ci"
-    type: "bash"
-    parse_json: true
-    command: |
-      set -uo pipefail
-      cd "${REPO_PATH:-.}" 2>/dev/null || true
-      export GH_PAGER=cat PAGER=cat LESS=FRX
-      PR="${PR_NUMBER:-}"
-      case "$PR" in ''|*[!0-9]*) PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')" ;; esac
-      if [ -z "$PR" ] || ! command -v jq >/dev/null 2>&1; then
-        echo "ERROR: cannot read CI (pr='${PR:-none}', jq present=$(command -v jq >/dev/null 2>&1 && echo yes || echo no)). Unreadable CI is a FAILURE, not a pass." >&2
-        printf '{"ci_status":"UNREADABLE","ci_total":"0","ci_pending":"","ci_failing":"","ci_signal":"unreadable"}\n'
-        exit 0
-      fi
-      # Poll until CI reaches a terminal state. The loop is bounded by the
-      # build finishing or by the status becoming unreadable — never by a
-      # seconds-scale or single-digit-minute stopwatch, and never by a count.
-      while :; do
-        JSON="$(gh pr checks "$PR" --json name,state,bucket 2>/dev/null)"
-        if [ -z "$JSON" ]; then
-          echo "ERROR: CI status for #${PR} became unreadable while waiting. Unreadable is a FAILURE, not a pass." >&2
-          printf '{"ci_status":"UNREADABLE","ci_total":"0","ci_pending":"","ci_failing":"","ci_signal":"unreadable"}\n'
-          exit 0
-        fi
-        TOTAL="$(printf '%s' "$JSON" | jq -r 'length' 2>/dev/null)"
-        PENDING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="pending")]|length' 2>/dev/null)"
-        FAILING="$(printf '%s' "$JSON" | jq -r '[.[]|select(.bucket=="fail" or .bucket=="cancel")]|length' 2>/dev/null)"
-        [ -n "${PENDING:-}" ] || PENDING="unreadable"
-        if [ "$PENDING" = "0" ] || [ "$PENDING" = "unreadable" ]; then break; fi
-        echo "INFO: waiting on CI for #${PR}: ${PENDING}/${TOTAL} pending, ${FAILING} failing." >&2
-        sleep 60
-      done
-      if [ "$PENDING" = "unreadable" ]; then
-        STATUS="UNREADABLE"
-      elif [ "${TOTAL:-0}" = "0" ]; then
-        STATUS="NO_CHECKS"
-        echo "ERROR: #${PR} reports zero CI checks. Zero checks is not a green build." >&2
-      elif [ "${FAILING:-1}" = "0" ]; then
-        STATUS="GREEN"
-      else
-        STATUS="RED"
-      fi
-      echo "INFO: CI for #${PR}: ${STATUS} (total=${TOTAL:-?} failing=${FAILING:-?})" >&2
-      printf '{"ci_status":"%s","ci_total":"%s","ci_pending":"%s","ci_failing":"%s","ci_signal":"%s:%s/%s"}\n' \
-        "$STATUS" "${TOTAL:-0}" "$PENDING" "${FAILING:-}" "$STATUS" "${FAILING:-?}" "${TOTAL:-?}"
-    output: "ci_evidence"
 
 output:
   format: "markdown"

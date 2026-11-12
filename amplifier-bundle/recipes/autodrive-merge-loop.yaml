@@ -59,6 +59,8 @@ context:
   autodrive_budget_loop_rounds: ""
   autodrive_budget_total_rounds: ""
   autodrive_budget_wall_seconds: ""
+  # #2362: the CI watch interval, forwarded to each round (see auto-drive-to-merge.yaml).
+  autodrive_ci_watch_interval: "120"
   merge_loop_result: ""
   # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
   merge_gate_result: ""
@@ -248,7 +250,8 @@ steps:
         --context "autodrive_state_dir=${DIR}" \
         --context "autodrive_budget_loop_rounds=${RECIPE_VAR_autodrive_budget_loop_rounds:-}" \
         --context "autodrive_budget_total_rounds=${RECIPE_VAR_autodrive_budget_total_rounds:-}" \
-        --context "autodrive_budget_wall_seconds=${RECIPE_VAR_autodrive_budget_wall_seconds:-}"
+        --context "autodrive_budget_wall_seconds=${RECIPE_VAR_autodrive_budget_wall_seconds:-}" \
+        --context "autodrive_ci_watch_interval=${RECIPE_VAR_autodrive_ci_watch_interval:-}"
       RC=$?
       if [ "$RC" -eq 79 ]; then
         echo "ERROR: exit 79 terminal policy refusal in the merge-ready loop (#1327/#1332). Final — surfaced and stopped, never retried into the guard." >&2

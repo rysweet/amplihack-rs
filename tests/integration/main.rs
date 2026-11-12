@@ -182,6 +182,11 @@ mod pre_commit_artifact_guard;
 #[path = "autodrive_pr_worktree_tests.rs"]
 mod autodrive_pr_worktree;
 
+// Issue #2362: merge-ready QA waits on the CI run at the head (an event), and
+// step-01 pushes a sync only when GitHub requires it.
+#[path = "issue_2362_merge_evidence_head_ci.rs"]
+mod issue_2362_merge_evidence_head_ci;
+
 #[path = "doctor_node_remediation_test.rs"]
 mod doctor_node_remediation;
 

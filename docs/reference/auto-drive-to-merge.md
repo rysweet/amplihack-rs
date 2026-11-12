@@ -63,7 +63,7 @@ PR to this recipe when the change exceeds its eligibility rules.
 | 0. Prerequisites | `auto-drive-to-merge.yaml` step `autodrive-prerequisites` | Where criterion 1 needs `gadugi-test` (a Node repository, or `AUTODRIVE_QA_SCENARIO_DIR` set), stops the run with `ERROR: gadugi-test-not-installed` when it is not on `PATH`, before the build and the crusty loop spend hours. A Rust CLI or Python repository does not need it. |
 | 1. Build | `autodrive-build.yaml` | Runs `default-workflow` with `no_merge: "true"` to produce a PR. Never merges. A build that ends `BLOCKED_CI`, or `FAILED_IMPLEMENTATION` on a confirmed open PR, hands that PR to phases 2 and 3 instead of ending the run ([#1714](#finalization-hand-off-from-phase-1-1714)). |
 | 2. Crusty loop | `autodrive-crusty-loop.yaml` over `autodrive-crusty-round.yaml` | Reviews and remediates until an evidence-valid `CLEAN` or `MINOR_ONLY` completes iteration without evaluating loop health. Files or verifies every required minor follow-up before recording phase completion ([completion contract](autodrive-crusty-completion.md)). |
-| 3. Merge-ready loop | `autodrive-merge-loop.yaml` over `autodrive-merge-round.yaml` | Before each round, sends code commits made after the clean crusty round back to the crusty loop (`autodrive_crusty_rereview.sh`). Syncs the base, runs the repository tests and, where criterion 1 needs them, the `gadugi-test` scenarios, waits for CI, applies the `merge-ready` criteria read from the skill's files, clears blockers, repeats, then merges behind the gate. |
+| 3. Merge-ready loop | `autodrive-merge-loop.yaml` over `autodrive-merge-round.yaml` | Before each round, sends code commits made after the clean crusty round back to the crusty loop (`autodrive_crusty_rereview.sh`). Syncs the base where GitHub requires it, waits for the CI runs at the head to finish, runs the repository tests and, where criterion 1 needs them, the `gadugi-test` scenarios, applies the `merge-ready` criteria read from the skill's files, clears blockers, repeats, then merges behind the gate. |
 
 Phase 1 is a no-op when an open PR already exists for the branch, and the whole
 workflow short-circuits when the PR is already merged.
@@ -301,10 +301,11 @@ let it in.
 Evidence records the worktree's real `git rev-parse HEAD`, never `headRefOid`.
 
 Nothing in the run closes the gap. The round's base-sync step fetches and
-merges only the **base** branch and then runs `git push`. It never pulls the PR
-branch. On a stale worktree that push fails as a non-fast-forward, which is
-only a warning. Base-merge commits and crusty-fix commits then land on the
-stale head, so the worktree diverges further from the PR.
+merges only the **base** branch and, when GitHub requires the sync, runs
+`git push`. It never pulls the PR branch. On a stale worktree that push fails
+as a non-fast-forward, which the step reports as `sync_reason: push-failed`.
+Base-merge commits and crusty-fix commits then land on the stale head, so the
+worktree diverges further from the PR.
 
 The merge gate also refuses evidence whose `head_sha` is not the PR head it
 is about to merge (see [No silent merge](#no-silent-merge)). It is the last
@@ -801,7 +802,7 @@ budget](#no-progress-stop-and-usage-budget)):
 
 | Condition | Result |
 | --- | --- |
-| Previous round not clean, same non-empty head SHA, same open items, same `ci_signal` with no `PENDING` | `STUCK` (decided in code), exit `1`. The evaluator does not run. |
+| Previous round not clean, same non-empty head SHA, same open items, same `ci_signal` with no `PENDING` | `STUCK` (decided in code), exit `1`. The evaluator does not run. The exemption matches the text `PENDING` in `ci_signal`, not in `ci_status`: a `PENDING` round from step-01b has `ci_signal` `no-run-for-head`, so two such rounds in a row at the same head with the same open items stop as `STUCK` (see [CI status](#ci-status)). |
 | A budget limit is reached | `BUDGET_EXHAUSTED`, exit `1`. The evaluator does not run. |
 
 A non-clean `DONE` usually means the findings were addressed without a new
@@ -1464,7 +1465,7 @@ reading that sentence: see
 | --- | --- | --- | --- |
 | `step-00-tools-dir` | bash | `autodrive_tools_dir` | Finds the round's tools once (see below). |
 | `step-00-merge-ready-files` | bash | `merge_ready_files` | Finds `SKILL.md` and its template; where criterion 1 needs `gadugi-test`, stops the round when it is not on `PATH`. |
-| `merge-evidence` | recipe | `merge_sync`, `qa_evidence`, `ci_evidence` | `autodrive-merge-evidence`: base sync, suite commands, gadugi scenarios where required, CI wait. |
+| `merge-evidence` | recipe | `merge_sync`, `qa_evidence`, `ci_evidence` | `autodrive-merge-evidence`: base sync where GitHub requires it, a wait for the CI runs at the head, then suite commands and gadugi scenarios where required. See [Merge evidence steps](#merge-evidence-steps). |
 | `step-00d-qa-evidence-hash` | bash | `qa_evidence_hash` | `autodrive_round_evidence.sh qa-evidence-sha`: hashes `qa-evidence.json` before any agent runs. |
 | `step-01-platform-facts` | bash | `platform_facts` | Runs `autodrive_platform_facts.sh`. |
 | `step-01b-crusty-evidence` | bash | `crusty_evidence` | `autodrive_round_evidence.sh crusty-evidence`: criterion 3. |
@@ -1500,6 +1501,250 @@ only. A step that cannot enter `REPO_PATH` fails with
 `ERROR: cannot cd to REPO_PATH`. A failed step fails the round with no record
 and no manifest row; repeated, it ends the loop `STUCK`. An install error is
 never reported as a blocker.
+
+### Merge evidence steps
+
+`autodrive-merge-evidence.yaml` runs as the `merge-evidence` step of every
+merge round. Its three steps run in this order, and QA never starts before
+the CI runs for the head it measures have finished (issue #2362).
+
+| Step | Output | Role |
+| --- | --- | --- |
+| `step-01-sync-with-base` | `merge_sync` | Merges the base into the branch and pushes once, only when GitHub requires it. See [When the round syncs with the base](#when-the-round-syncs-with-the-base). |
+| `step-01b-wait-for-head-ci` | `ci_evidence` | Waits for every GitHub Actions run at the local `HEAD` to finish, then records each run's conclusion. See [Waiting for CI at the head](#waiting-for-ci-at-the-head). |
+| `step-02-qa-team-scenarios` | `qa_evidence` | Runs the suite commands and, where required, the gadugi scenarios ([Criterion 1](#criterion-1-qa-team-scenarios-by-repository-type)). It runs whatever the CI result is; the assessment combines the two. |
+
+Before #2362 the round merged the base and pushed on every round, ran QA,
+then polled `gh pr checks` on a 60-second interval. QA therefore judged a
+head whose CI had just been restarted by the round's own push, and long
+drives stopped repeatedly on `qa-command-failed`. The round now pushes only
+when GitHub says the branch must move, and it waits on the runs for the exact
+head before QA starts.
+
+#### When the round syncs with the base
+
+Step-01 runs the [#2033 tools-directory preamble](#the-merge-rounds-tools-directory)
+first, then reads the pull request once:
+
+```bash
+gh pr view "$PR_NUMBER" --json baseRefName,mergeStateStatus
+```
+
+`PR_NUMBER` must be all digits. The base name must pass
+`git check-ref-format --branch`, must not start with `-` and must not contain
+`@{`. An empty or unreadable base name falls back to `main`; a base name that
+is present but fails validation gives `state-unreadable`.
+
+The step takes the first row that matches, in table order. The first two rows
+are decided before any fetch; the step then runs `git fetch origin "$BASE"`
+and tests the rest:
+
+| Condition | Action | `sync_reason` | `synced` | `conflict` |
+| --- | --- | --- | --- | --- |
+| Not a git work tree | nothing | `not-a-repo` | `false` | `unknown` |
+| The base name failed validation | nothing, not even a fetch | `state-unreadable` | `false` | `false` |
+| `git fetch` fails, or `origin/<base>` is unreadable after it | nothing | `fetch-failed` | `false` | `false` |
+| `HEAD` already contains `origin/<base>` | nothing | `up-to-date` | `false` | `false` |
+| `mergeStateStatus` is `BEHIND` | merge, push once | `behind-strict` | `true` | `false` |
+| `DIRTY`, and the local merge conflicts | `git merge --abort`, no push | `conflict` | `false` | `true` |
+| `DIRTY`, and the local merge is clean (GitHub's state is stale) | push once | `dirty-stale` | `true` | `false` |
+| `behind-strict` or `dirty-stale` applied, but the merge left the tree unchanged | merge undone, no push | `no-op-merge` | `false` | `false` |
+| `behind-strict` or `dirty-stale` applied, but `git push` was rejected | the merge commit stays local | `push-failed` | `false` | `false` |
+| `CLEAN`, `BLOCKED`, `UNSTABLE`, `HAS_HOOKS` or any other value | nothing | `not-required` | `false` | `false` |
+| `mergeStateStatus` is `UNKNOWN` or empty, or `gh`/`jq` failed | nothing | `state-unreadable` | `false` | `false` |
+
+A merge that leaves the tree unchanged (`git diff --quiet "$PRE" HEAD`, where
+`PRE` is the head before the merge) is not pushed. The step undoes it with
+`git reset --keep "$PRE"`, so the local head stays the pushed head that CI ran
+on, and reports `sync_reason: no-op-merge` with `synced: false`. The push is a plain `git push` to the branch's upstream: no
+force, no hook-skipping flag, no retry. The branch-protection API is not
+called; `mergeStateStatus` already says whether GitHub needs the branch to
+move.
+
+A repository without the strict up-to-date rule can now reach the merge gate
+while behind its base. That is intended: GitHub's own merge check and the
+gate's re-read stay authoritative.
+
+`merge_sync` is one JSON line built with `jq -cn --arg`:
+
+```json
+{"base":"main","synced":"true","conflict":"false","head_sha":"3f1c9a0e5b7d2c4a6e8f0b1d3c5e7a9b2d4f6a8c","git_observed":"true","sync_reason":"behind-strict"}
+```
+
+`base`, `synced`, `conflict`, `head_sha` and `git_observed` keep their
+earlier meanings; [criterion 7](#what-held-the-round) still reads
+`conflict`.
+
+#### Waiting for CI at the head
+
+Step-01b runs the [#2033 tools-directory preamble](#the-merge-rounds-tools-directory)
+first, then enters `REPO_PATH`; a failed `cd` gives `UNREADABLE` with
+`ci_signal: no-repo`. It reads the head once with `git rev-parse HEAD`, not
+from `merge_sync`, and requires 40 or 64 lower-case hex characters. It then
+lists the runs once:
+
+```bash
+gh run list --commit "$SHA" --limit 100 --json databaseId,headSha,workflowName
+```
+
+It keeps only entries whose `headSha` equals `SHA` exactly and whose
+`databaseId` is all digits. Runs at any other SHA are dropped without a
+further call. For each kept run, one at a time and never in parallel:
+
+```bash
+gh run watch "$id" --exit-status --interval "$IV" >&2 || true
+gh run view "$id" --json conclusion,headSha,workflowName
+```
+
+`gh run watch` returns when the run finishes. `--interval` sets how often
+`gh` itself refreshes the run while it waits; it is not a sleep, retry or
+deadline in the recipe. The step adds no `sleep`, no loop that re-runs a
+status command, no retry and no timeout. The watch exit code is ignored; the
+conclusion comes only from `gh run view`, and a view whose `headSha` differs
+from `SHA` discards that run. Watch output goes to stderr, so stdout carries
+only the `ci_evidence` line.
+
+Because the runs are watched in series, the later runs at the head have
+usually finished by the time the first watch returns, and `gh run watch` on a
+finished run returns at once.
+
+##### The watch interval
+
+`IV` comes from the context key `autodrive_ci_watch_interval`:
+
+| Value | Interval used |
+| --- | --- |
+| unset or `120` (the default) | `120` |
+| an integer from `60` to `999999` with no leading zero, for example `60` or `300` | that value |
+| anything else: `59`, `060`, `abc`, an empty string, `60;touch PWNED` | `120`, with one note on stderr |
+
+The value must match `^[1-9][0-9]{1,5}$` and be at least `60`. Leading zeros
+are rejected outright, so bash never reads `060` as octal. The value is
+checked before any arithmetic and passed to `gh` as one quoted argument; it
+is never evaluated. A rejected value is printed in the note with control
+characters removed and its length capped:
+
+```text
+WARNING: autodrive_ci_watch_interval '59' (2 chars) is not an integer of at least 60; gh run watch polls every 120s instead.
+```
+
+The default of `120` follows a rate-limit incident on a shared GitHub
+account: twenty drives polling CI together used the hourly REST allowance.
+`gh run watch` makes about two REST calls per refresh, so one drive costs
+about 60 calls an hour at `120`, or about 1,200 an hour for twenty drives.
+At `60` the same twenty drives use about 2,400, half of the 5,000 allowance.
+Lower the interval to `60` only when faster turns matter more than the
+shared allowance.
+
+The key is declared with default `"120"` in `auto-drive-to-merge.yaml`,
+`autodrive-merge-loop.yaml`, `autodrive-merge-round.yaml` and
+`autodrive-merge-evidence.yaml`. The merge-ready loop passes it to each round
+with `--context "autodrive_ci_watch_interval=${RECIPE_VAR_autodrive_ci_watch_interval:-}"`,
+beside the budget keys, and the round forwards it to the evidence recipe
+beside `autodrive_round_label`. An empty value reaching step-01b is replaced by
+`120` with the same note. Set it for a whole drive with `-c`:
+
+```bash
+# Default: gh refreshes each watched run every 120 seconds.
+amplihack recipe run auto-drive-to-merge -c pr_number=1743
+
+# Faster turns at twice the API cost.
+amplihack recipe run auto-drive-to-merge -c pr_number=1743 \
+  -c autodrive_ci_watch_interval=60
+```
+
+##### GitHub calls per round
+
+One round of step-01b makes, at most:
+
+| Call | Count |
+| --- | --- |
+| `gh run list --commit <head>` | 1 |
+| `gh run watch <id> --exit-status --interval <N>` | 1 per run at the head, with `N` at least `60` |
+| `gh run view <id>` | 1 per run at the head |
+| `gh workflow list` | 1, only when no run at the head was listed |
+| any call for a run at another SHA | 0 |
+| `gh pr checks` | 0 |
+
+The step calls only these read-only commands. It never calls `pr checks`,
+`pr merge`, `run rerun` or `run cancel`.
+
+##### CI status
+
+When the list holds no run at the head, the step does not wait for one to
+appear. It runs `gh workflow list --json state` once and returns; the
+agentic round loop decides whether to come back, and the next round reads
+the state again.
+
+| Result | `ci_status` | `ci_signal` |
+| --- | --- | --- |
+| Every kept run concluded `success`, `skipped` or `neutral` | `GREEN` | `GREEN:0/<total>` |
+| Any kept run concluded `failure`, `cancelled`, `timed_out`, `action_required`, `startup_failure`, `stale`, or any value outside the green list | `RED` | `RED:<failing>/<total>` |
+| No run at the head yet, and the repository has an active workflow | `PENDING` | `no-run-for-head` |
+| Every listed run was discarded for a foreign `headSha` | `PENDING` | `no-run-for-head` |
+| No run at the head, and the repository has no active workflow | `NO_CHECKS` | `NO_CHECKS:0/0` |
+| `gh` or `jq` failed, `HEAD` was unreadable, a view was unreadable, a conclusion was null or empty, or the list held exactly 100 entries (possible truncation) | `UNREADABLE` | `unreadable` |
+
+Green is an allow-list: only `success`, `skipped` and `neutral` count. When
+several rows apply, the order is `RED`, then `UNREADABLE`, then `PENDING`,
+then `GREEN`. `NO_CHECKS` is not in that order because it cannot coincide
+with another row: it applies only when no run at the head was listed and
+`gh workflow list` read successfully with no active workflow. If that
+`gh workflow list` call fails, the result is `UNREADABLE`. `GREEN` therefore means that at least one run at the head
+finished and none failed. A cancelled run at the same SHA, for example one
+superseded by a re-run, gives `RED`; re-run or remove it to clear the round.
+`PENDING` is not merge-ready: criterion 4 holds the round on anything but
+`GREEN`.
+
+`PENDING` from step-01b carries `ci_signal` `no-run-for-head`, which does not
+contain the text `PENDING`. The [no-progress stop](#no-progress-stop-and-usage-budget)
+exempts only signals that contain it, so two rounds in a row with the same
+head, the same open items and still no run at the head end the loop as
+`STUCK`. This is intended. A workflow that never fires for the head would
+otherwise keep the loop running with nothing to wait on, and the step has no
+timer to end it. The first such round still gets a second round, which is
+normally enough for GitHub to register a run after a push. To clear a
+`STUCK` caused by a workflow that does not trigger, start the run by hand or
+fix the workflow's trigger, then relaunch the drive.
+
+`ci_evidence` is one JSON line built with `jq -cn --arg`:
+
+```json
+{"ci_status":"GREEN","ci_total":"2","ci_pending":"0","ci_failing":"0","ci_signal":"GREEN:0/2","head_sha":"3f1c9a0e5b7d2c4a6e8f0b1d3c5e7a9b2d4f6a8c","runs":[{"id":"18234567890","workflow":"CI","conclusion":"success"},{"id":"18234567912","workflow":"Docs","conclusion":"skipped"}]}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `ci_status` | `GREEN`, `RED`, `PENDING`, `NO_CHECKS` or `UNREADABLE`. Criterion 4 holds the round on anything but `GREEN`. |
+| `ci_total` | Runs kept for the head. |
+| `ci_pending` | Always `0`. For `GREEN` and `RED` the wait has returned; for `PENDING` and `NO_CHECKS` there is no run at the head to wait on; for `UNREADABLE` nothing was counted. |
+| `ci_failing` | Runs with a failing conclusion. |
+| `ci_signal` | `<ci_status>:<failing>/<total>`, or `unreadable`, `no-repo` or `no-run-for-head`. The value the round record and the [no-progress stop](#no-progress-stop-and-usage-budget) compare. |
+| `head_sha` | The SHA the runs were bound to. For information only: the merge gate binds to `headRefOid` and passes `--match-head-commit`. |
+| `runs` | One entry per kept run: `id`, `workflow`, `conclusion`. Empty when `jq` is missing, in which case `ci_status` is `UNREADABLE`. |
+
+Without `jq` the step writes the line with `printf`, using only checked
+values (the hex SHA, fixed status words and digits), never a workflow name
+or base name. Workflow names written to stderr have control characters
+removed. Job logs (`--log`, `--log-failed`) are never read.
+
+After a `behind-strict` or `dirty-stale` push, GitHub may not yet have
+created the run for the new head when step-01b lists runs. That round
+reports `PENDING` and is not merge-ready; the following round finds and
+waits on the run. A `push-failed` round reports `PENDING`, or `NO_CHECKS`
+when the repository has no active workflow, because no run exists at the
+local head; it is never reported `GREEN`.
+
+#### Limits of the CI wait
+
+- Only GitHub Actions runs are seen, because `gh run` lists only those.
+  Check runs posted by other apps are not waited on. The merge gate still
+  reads `gh pr checks` at merge time and covers them there.
+- A run waiting for a deployment environment's approval keeps
+  `gh run watch` waiting until someone approves or cancels it. The step does
+  not put a timer on it; approve or cancel the run in GitHub.
+- The `gh` calls only read (`actions:read`). The step reads no token and
+  writes nothing.
 
 ### The merge-ready files
 
@@ -4657,9 +4902,14 @@ Both values reach the template only after step-03 has bounded them:
 
 No step in any of these recipes declares `timeout` or `timeout_seconds`, and no
 recipe declares a `default_step_timeout` (issue #439 — the runner owns the
-ceiling). The CI wait polls on a 60-second interval and stops when CI reaches a
-terminal state or becomes unreadable; it is bounded by the build finishing, not
-by a stopwatch. Test suites, builds, and model calls run to their natural end.
+ceiling). The CI wait in `step-01b-wait-for-head-ci` blocks on
+`gh run watch` for each GitHub Actions run at the head SHA, one at a time, and
+returns when the run finishes. Its `--interval` (`autodrive_ci_watch_interval`,
+default `120`, minimum `60`) only sets how often `gh` refreshes the run; the
+step adds no sleep, polling loop, retry or count of its own. It is bounded by
+the build finishing, not by a stopwatch (see
+[Waiting for CI at the head](#waiting-for-ci-at-the-head)). Test suites,
+builds, and model calls run to their natural end.
 The guard test `no_short_timeouts_anywhere` fails the build if a seconds-scale
 or single-digit-minute bound is introduced.
 
@@ -5088,7 +5338,7 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/recipes/autodrive-build.yaml` | phase 1 | `default-workflow`, resume-aware. |
 | `amplifier-bundle/recipes/autodrive-crusty-round.yaml` | round | Crusty review of the PR head, verdict, fixes, round record. |
 | `amplifier-bundle/recipes/autodrive-crusty-loop.yaml` | phase 2 | Loop driver + phase bookkeeping. |
-| `amplifier-bundle/recipes/autodrive-merge-evidence.yaml` | evidence | Base sync, suite commands, gadugi scenarios where required, CI wait. |
+| `amplifier-bundle/recipes/autodrive-merge-evidence.yaml` | evidence | Base sync where GitHub requires it, the wait for CI runs at the head, then suite commands and gadugi scenarios where required. |
 | `amplifier-bundle/recipes/autodrive-merge-round.yaml` | round | Merge-ready criteria from the skill's files, verdict, blocker fixes. |
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | phase 3 | Loop driver + merge gate + bookkeeping. |
 | `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict. |
@@ -5149,6 +5399,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | [Minor findings end the crusty loop](#minor-findings-end-the-crusty-loop-1979) (#1979): `classify` on all-minor, mixed, unknown-severity, missing-severity, empty and non-array input; security keywords in an id or summary kept as `CONCERNS`; severity history (a minor finding recurring as minor still `MINOR_ONLY`, a major one downgraded to minor kept as `CONCERNS`, unknown history read as major, no `.severity` file for unreadable input); crusty-loop step-03 refusing to file without `AMPLIHACK_HOME` even when `REPO_PATH` holds the tool; minor-only objective completion without evaluator dispatch; one `gh issue create` per finding naming the task id and finding id, with N rows in `followups.tsv`; a rerun making no call; `gh` exiting `1` (error recorded, gate prints `ERROR: followups-unfiled`, no merge) and `79` (passed through after one call); an unresolved task id; the task id taken from `Closes #N` in the PR body; two JSON arrays on stdin, or a `concerns` string holding a minor and a blocking array, kept as `CONCERNS`; a `jq` parse failure logged with its exit code; mentions, `#N` and `GH-N` references neutralised in the body and the title; a title with shell metacharacters reaching `gh` as one argument, with `&`, `|` and backticks kept as plain characters rather than HTML entities; an unparseable PR URL; a `CLEAN` drive filing nothing and passing the check; dry runs leaving the phase incomplete when required follow-ups are unrecorded; `gate` naming each filed issue in its evidence line and printing the error and blocker on a miss; `collect` reading only the terminal round; `check` refusing a symlinked or group-writable `followups.tsv`, a malformed row and `MINOR_ONLY` with no set; `autodrive_crusty_final` accepting `MINOR_ONLY`; and static checks that both `SKILL.md` copies match, the old loop-end wording is gone from the recipes, skill and reference, the 400-line budgets hold with no per-file exception, and `autodrive_followups.sh` sources the shared rules file while no light round tool exists. Stub `gh` on `PATH`, scratch under `$TMPDIR`, no network | `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs`, with `mod issue_1979_crusty_minor_followups;` in `crates/amplihack-cli/tests/main.rs` |
 | A minor-only round ending the loop, and a `[minor, major]` round continuing it, through the `run_loop` stub | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
+| [Merge evidence steps](#merge-evidence-steps) (#2362): QA starts only after `gh run watch` returns for the head run (a FIFO handshake, no timers); `ci_evidence` bound to the head SHA, with runs at other SHAs ignored; `GREEN`, `RED` (including `cancelled`), `PENDING`, `NO_CHECKS` and `UNREADABLE` from run conclusions, a `gh` failure, no run for the head, a foreign `headSha` and a 100-entry list; the watch interval: `120` by default, `60` accepted, and `59`, `abc`, an empty string and shell-metacharacter values replaced by `120` with no command run; the key reaching step-01b from a whole-drive `-c autodrive_ci_watch_interval=60` through the merge-ready loop and the round; one round making exactly one `run list`, one `run watch` (with `--interval` of at least 60) and one `run view` per run at the head, none for runs at other SHAs and no `pr checks`; two `PENDING` rounds in a row at the same head with the same open items stopping as `STUCK`; the sync policy for `BEHIND`, `CLEAN`, `BLOCKED`, `DIRTY` with and without conflicts, `UNKNOWN`, up to date and an invalid base name, with whether the origin branch moved; a rejected push reported as `push-failed` and never `GREEN`. Run against a fake `gh`, a local bare origin and a temporary `HOME` | `tests/integration/issue_2362_merge_evidence_head_ci.rs` |
 | [Criterion 6 without a required review](#criterion-6-reviews-and-approvals) (#2219): a fake `gh` returning each endpoint's post-`--jq` answer per scenario; a required count of `0` with no review rule, and an unprotected branch, still `MET` through `required-count`, including under `BLOCKED`, so a readable count decides before the merge state is consulted; a classic `0` beside a *failed* rulesets read staying `UNREADABLE`, so `REQ` is not widened; `BLOCKED` beside a code-owner, last-push or required-reviewer rule as `NOT_MET` with `review-rule`; `BLOCKED` with no rule named, and a `DRAFT` merge state, as `UNREADABLE` with `unreadable`; a failed `gh pr view`, a `reviewDecision` the tool does not know (even beside a readable count of 2), and an `UNKNOWN` merge state with the count unreadable, as `UNREADABLE` with `facts-unreadable`; an `UNKNOWN` merge state beside a *readable* count still decided by that count; `CLEAN`, `HAS_HOOKS` and `UNSTABLE`, and every agent-clearable blocker, winning over a named review rule; no reclassified case reaching `MET`; and `approval_blocker` carrying the id for each source, empty only on `MET`. No `jq`, no timers | `amplifier-bundle/recipes/tests/test-issue-2219-approval-no-review-required.sh` |
 | [Documentation-only pull requests](#documentation-only-pull-requests) (#2219): `autodrive_qa_docs_only` and `autodrive_gadugi_required` over synthetic git repositories, both sides of the predicate and both of the function that reads it: prose-only changes `true`, and `.markdown`, `.rst`, a `docs/` `.txt` and root `LICENSE`, `NOTICE`, `COPYING` with them; a `.txt` outside `docs/` and outside the root documentation names `false` (`tests/fixtures/expected.txt`, `src/templates/welcome.txt`, `fuzz/corpus/seed.txt`, `testdata/golden.txt`, `scripts/deploy.txt`), and the near-miss pin spellings `requirements-dev.txt`, `dev-requirements.txt`, `constraints-dev.txt`, `Makefile.txt` and `requirements/base.txt` `false` with them, while `README.txt`, `CHANGELOG.txt` and `CONTRIBUTING.txt` stay `true`, a `docs/` component qualifies a `.txt` at any depth and `notdocs/notes.txt` does not; a `.js`, `.json`, `.sh`, `.github/`, `.amplihack/`, `.claude/`, `.cursor/`, `AGENTS.md`, `CLAUDE.md`, `amplifier-bundle/` or `SKILL.md` path `false`; `requirements.txt`, `docs/requirements.txt`, `constraints.txt` and `CMakeLists.txt` `false`, the pin spellings under `docs/` (`docs/requirements-dev.txt`, `docs/dev-requirements.txt`, `docs/requirements/base.txt`, `docs/constraints-dev.txt`) `false` while ordinary prose under `docs/` stays `true`, with every `.txt` entry of `AUTODRIVE_ROOT_PROJECT_FILES` pinned against the predicate so the two lists cannot drift; `docs/.hidden.md` `true`, since a dot-file is not a dot-directory; `docs/conf.py` and `docs/release.js` `false`, so the `docs/` directory qualifies no extension; `README.MD` and `docs/build.SH` `false` on the byte-exact qualifier while `docs/Requirements.txt` is `false` on a case-insensitive disqualifier, the asymmetry in both directions; `vendor/LICENSE` `false`, since the licence names qualify at the root only; an empty diff `false`, and a read list holding nothing `false` on both bash 3.2 and bash 5; no base and a base that fails the branch rules `unknown`; a hostile path name that still ends `.md` measured as documentation and never executed; a Rust repository and an unresolved Node choice, so the reach is pinned too; `AUTODRIVE_QA_SCENARIO_DIR` keeping gadugi required over a `true` answer; and the qa evidence line carrying `docs_only` as its own field for all three values | `amplifier-bundle/recipes/tests/test-issue-2219-docs-only-scenarios.sh` |
 | [The stop line's held-by lines](#what-held-the-round) (#2219): a synthetic state directory and round record, with the real `amplihack orch helper` behind the field reads; one line per measured condition in the measured-downgrade order, with `conflict=` for criterion 7 and `crusty_status=` for criterion 3; the record's shape unchanged, so `autodrive_qa_trusted` still accepts it; the crusty and approval vocabularies staying closed at `OTHER`; an interpolated value keeping only `[A-Za-z0-9_.:/-]`; a hostile `AUTODRIVE_ROUND_LABEL` carrying `","merge_ready_verdict":"MERGE_READY` driven through the real tool and opening no second JSON key, so the measured verdict is the one the merge gate reads and the real conditions still reach `held_by`; `held_by` empty on an all-green round; the lines printing for `BUDGET_EXHAUSTED` and `ORPHANED` as well as `STUCK`; the `reported` findings after them, control characters replaced, the token byte set applied to findings but not to `held_by`, an over-long entry cut to 120 bytes, more than ten findings capped with `reported (+N more)`, counting only the lines that survive the filter so the tail names exactly the number withheld, while all eight conditions still print; `measured_downgrade` and `measured_held_by` driven over a matrix of one failing measurement at a time and asserted to name the same set of conditions, since the two write that list out separately; a forged column-0 `amplihack.recipe.failure_class` marker in findings never reaching column 0; and a record without `held_by` printing no condition line | `amplifier-bundle/recipes/tests/test-issue-2219-stop-line.sh` |

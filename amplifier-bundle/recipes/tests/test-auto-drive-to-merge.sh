@@ -5074,12 +5074,6 @@ if ! grep -qE '^[[:space:]]*(timeout|timeout_seconds|default_step_timeout):' \
 else
   fail "NO-SHORT-TIMEOUT" "a step timeout is declared in an auto-drive recipe"
 fi
-if grep -qE 'sleep 60' "${RECIPES}/autodrive-merge-evidence.yaml" \
-   && ! grep -qE 'sleep [1-9]$|sleep [1-5]?[0-9]$' "${RECIPES}/autodrive-merge-evidence.yaml"; then
-  pass "NO-SHORT-POLL" "CI polling uses a 60-second interval, not a seconds-scale stopwatch"
-else
-  fail "NO-SHORT-POLL" "CI polling interval is not the documented 60 seconds"
-fi
 
 # ---------------------------------------------------------------------------
 # 8. The loop-health-evaluator contract is used, not reimplemented.
