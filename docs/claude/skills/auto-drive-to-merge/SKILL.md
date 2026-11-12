@@ -23,12 +23,12 @@ open PR, review and repair with crusty, verify readiness, then finalize the
 captured action. Commands are suggestions. Assess their results, recover
 through available alternatives, and persist within loop-health and budgets.
 Unchanged recipes on Linux/macOS under Claude/Codex/Copilot are a
-[target matrix](/docs/reference/auto-drive-to-merge.md#target-compatibility-matrix),
+[target matrix](../../../docs/reference/auto-drive-to-merge.md#target-compatibility-matrix),
 not a verified compatibility claim.
 
 ## Invocation and authorization
 
-Use the [verify-only instructions](/docs/howto/verify-pr-with-auto-drive.md) to leave an existing PR open. Pass `no_merge=true` explicitly. The full-composer default is `false`; its build always receives `true`.
+Use the [verify-only instructions](../../../docs/howto/verify-pr-with-auto-drive.md) to leave an existing PR open. Pass `no_merge=true` explicitly. The full-composer default is `false`; its build always receives `true`.
 Dry-run separately suppresses merging and follow-up issue creation.
 
 Strictly parse authorization before children run. Preserve fresh runner-owned
@@ -57,7 +57,7 @@ captures authorization afresh.
 6. Report readiness, requested action, request outcome, platform state,
    blockers, failures/recovery, and stop reason separately.
 
-Use the [evidence reference](/docs/reference/auto-drive-evidence.md) for
+Use the [evidence reference](../../../docs/reference/auto-drive-evidence.md) for
 the preserved approval interpretations, record contract, and re-review rules.
 Rust helpers validate/snapshot/reduce records; agents collect platform facts
 and judge semantic readiness. Helpers do not contact the hosting service or
@@ -110,7 +110,7 @@ Unresolved Crusty reviews and the merge-ready loop use the
 answers `CONTINUE`, `DONE`, or `STUCK`. An evaluator's `DONE` cannot complete an
 unresolved Crusty review; a new review must confirm the fix.
 
-See the [Crusty completion contract](/docs/reference/autodrive-crusty-completion.md).
+See the Crusty completion contract in `docs/reference/autodrive-crusty-completion.md`.
 
 ## Recovery and safeguards
 
@@ -133,7 +133,7 @@ an OS security boundary against credential holders.
 
 Steps that run git, gh or the repository's tests first clear inherited
 `GIT_*` repository selectors and outer-run `AMPLIHACK_*` identity through
-`git-repo-env.sh` ([details](/docs/reference/git-repo-env-helper.md), #2033).
+`git-repo-env.sh` (#2033; see `docs/reference/git-repo-env-helper.md`).
 
 The budget is a cost ceiling. Crusty completion precedes convergence
 evaluation; the merge-ready loop retains its evaluator policy.
@@ -145,10 +145,10 @@ CI is green only when every expected check exists at the head SHA and passed
 
 ## Related documentation
 
-- [Workflow options and budgets](/docs/reference/auto-drive-to-merge.md)
-- [Evidence and outcomes](/docs/reference/auto-drive-evidence.md)
-- [QA selection](/docs/reference/auto-drive-qa.md)
-- [Light workflow](/docs/reference/auto-drive-light.md)
-- [Crusty completion contract](/docs/reference/autodrive-crusty-completion.md)
-- [Git repository environment helper](/docs/reference/git-repo-env-helper.md)
-- [Expected checks at the head](/docs/reference/autodrive-expected-checks.md)
+- Workflow options and budgets: `docs/reference/auto-drive-to-merge.md`
+- Evidence and outcomes: `docs/reference/auto-drive-evidence.md`
+- QA selection: `docs/reference/auto-drive-qa.md`
+- Light workflow: `docs/reference/auto-drive-light.md`
+- Crusty completion contract: `docs/reference/autodrive-crusty-completion.md`
+- Git repository environment helper: `docs/reference/git-repo-env-helper.md`
+- Expected checks at the head: `docs/reference/autodrive-expected-checks.md`
