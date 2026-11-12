@@ -80,6 +80,10 @@ pub(super) enum ErrorReason {
     Direct(&'static str),
     /// Issue #1844: a row needed `claude` and none was found.
     NoClaude,
+    /// Issue #2218: the profile is in the auto-switch `exclude` list, so it
+    /// is never read: no credential read, no request and no refresh. Not an
+    /// error: [`error_warnings`] and `--json`'s `error` leave it out.
+    Excluded,
 }
 
 impl ErrorReason {
@@ -91,6 +95,7 @@ impl ErrorReason {
             Self::WaitFailed => "could not wait for claude".into(),
             Self::NoClaude => "claude not found".into(),
             Self::Direct(why) => format!("direct read: {why}").into(),
+            Self::Excluded => EXCLUDED_CELL.into(),
         }
     }
 }
@@ -165,6 +170,14 @@ impl Probe {
         p
     }
 
+    /// Issue #2218: a profile in the auto-switch `exclude` list, which is
+    /// never read. No windows, no source and no spend.
+    pub(super) fn excluded() -> Self {
+        let mut p = Self::failed(ErrorReason::Excluded, None);
+        p.spend = Spend::NotApplicable;
+        p
+    }
+
     /// A direct read that failed in a mode that starts no `claude`.
     pub(super) fn direct_error(why: &'static str) -> Self {
         let mut p = Self::failed(ErrorReason::Direct(why), None);
@@ -207,6 +220,21 @@ pub(super) struct Row {
     /// Issue #1856: the redacted `extra_usage` shape of a credits-on direct
     /// row, for the `--raw` note only.
     pub(super) extra_shape: Option<ExtraUsageShape>,
+}
+
+impl Row {
+    /// Issue #2218: the profile is in the auto-switch `exclude` list and was
+    /// not read.
+    pub(super) fn is_excluded(&self) -> bool {
+        self.error == Some(ErrorReason::Excluded)
+    }
+
+    /// A subscription login that was (or could have been) read: neither an
+    /// API-key profile nor an excluded one. Only these are recorded, kept
+    /// in the history and counted in the capacity summary.
+    pub(super) fn is_login(&self) -> bool {
+        !self.api_key && !self.is_excluded()
+    }
 }
 
 /// How `profile usage` prints its rows.
@@ -260,6 +288,23 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         eprintln!("{}", env_credential_warning(var));
     }
     let profiles = selected_profiles(store, names)?;
+    // Issue #2218: an excluded profile is never read. Named, it is refused
+    // on stderr, still listed as not probed, and the others are reported;
+    // with no names it is listed as not probed. An unknown name has already
+    // failed above.
+    let excluded = exclude_list(store.root(), |w| eprintln!("{w}"))?;
+    let refused: Vec<ProfileName> = if names.is_empty() {
+        Vec::new()
+    } else {
+        profiles
+            .iter()
+            .filter(|p| excluded.contains(p))
+            .cloned()
+            .collect()
+    };
+    for p in &refused {
+        eprintln!("{}", excluded_refusal(p));
+    }
     // Issue #2001: names select Claude profiles only; with none, every
     // Codex account is read alongside the Claude probes. `--json` keeps its
     // array of Claude rows, so it has no place for Codex rows and skips the
@@ -268,13 +313,23 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     if profiles.is_empty() {
         let codex = codex.map(CodexRead::finish);
         print_empty(output, &time, codex.as_ref());
-        return Ok(());
+        return refusal_result(&refused);
     }
     let home = home_dir();
     let live = detect_live(store, home.as_deref(), &profiles);
+    // Issue #2218: when `~/.claude` holds an excluded profile's login, by
+    // the rotator's local proof, no other profile is read against it.
+    let excluded_live = excluded_live(store, home.as_deref())?;
+    let live = live.filter(|l| excluded_live.as_ref().is_none_or(|b| b == &l.name));
     // Issue #1700: API-key profiles are never probed; a probe costs tokens
-    // or times out, and there are no plan limits to read.
-    let keys = ApiKeys::load(store, home.as_deref(), &profiles);
+    // or times out, and there are no plan limits to read. Issue #2218: an
+    // excluded API-key profile shows as excluded, so it is not loaded here.
+    let keyable: Vec<ProfileName> = profiles
+        .iter()
+        .filter(|p| !excluded.contains(p))
+        .cloned()
+        .collect();
+    let keys = ApiKeys::load(store, home.as_deref(), &keyable);
     let (keyed, profiles): (Vec<ProfileName>, Vec<ProfileName>) =
         profiles.into_iter().partition(|p| keys.names.contains(p));
     let live_name = live.as_ref().map(|l| l.name.clone());
@@ -302,6 +357,7 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         home: home.clone(),
         no_refresh: no_refresh_dirs(store),
         overflow: super::overflow::overflow_names(store.root()),
+        excluded: Some(excluded),
         now,
         keep_raw: raw,
     };
@@ -347,7 +403,10 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
             claude_bound,
         );
     }
-    let mut rows = build_rows(&marks, &profiles, probes, live_name.as_ref());
+    // Issue #2218: an excluded live login proven from local files only is
+    // marked live, though nothing was read from it.
+    let live_mark = live_name.as_ref().or(excluded_live.as_ref());
+    let mut rows = build_rows(&marks, &profiles, probes, live_mark);
     rows.extend(keys.rows(&marks, &keyed));
     order(&mut rows, at);
     // Issue #1797: the capacity summary, from these rows only; no probe.
@@ -392,7 +451,119 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     if let Some(c) = current.as_ref().filter(|_| !raw && names.is_empty()) {
         record_history(store, c, at);
     }
-    Ok(())
+    // Issue #2218: once every other row is reported and recorded, a named
+    // excluded profile makes the run exit non-zero (the refusals are
+    // already on stderr).
+    refusal_result(&refused)
+}
+
+/// The warning printed when `<root>/.auto-switch` exists but cannot be
+/// read or parsed, or is owned by another user or writable by group or
+/// others (issue #2218): which logins are excluded is unknown, so every
+/// profile is treated as excluded and none is probed or refreshed.
+pub(super) const EXCLUDE_UNREADABLE: &str = "warning: auto-switch config unreadable or unsafe; \
+     every profile treated as excluded, none probed or refreshed";
+
+/// The warning printed when `<root>/.auto-switch` is a private file of
+/// yours that parses but is invalid for its other settings (an unknown
+/// kind, say): its exclude list still applies. An unsafe file never gets
+/// this warning; it gets [`EXCLUDE_UNREADABLE`].
+pub(super) const EXCLUDE_UNTRUSTED: &str = "warning: auto-switch config invalid; \
+     exclude list applied, other settings ignored";
+
+/// Issue #2218: the auto-switch `exclude` list under `root`, or `None` when
+/// the file exists but cannot be read or parsed. `warn` gets
+/// [`EXCLUDE_UNREADABLE`] or [`EXCLUDE_UNTRUSTED`] at most once.
+#[cfg(unix)]
+pub(super) fn read_exclude(
+    root: &std::path::Path,
+    warn: impl FnOnce(&str),
+) -> Option<Vec<ProfileName>> {
+    use super::auto_switch::config::{ExcludeFile, read_exclude};
+    match warned(read_exclude(root), warn) {
+        ExcludeFile::Read { names, .. } => Some(names),
+        ExcludeFile::Unreadable => None,
+    }
+}
+
+/// Passes `file` through after giving `warn` the line it calls for, if any.
+#[cfg(unix)]
+fn warned(
+    file: super::auto_switch::config::ExcludeFile,
+    warn: impl FnOnce(&str),
+) -> super::auto_switch::config::ExcludeFile {
+    use super::auto_switch::config::ExcludeFile;
+    match &file {
+        ExcludeFile::Read { trusted: false, .. } => warn(EXCLUDE_UNTRUSTED),
+        ExcludeFile::Unreadable => warn(EXCLUDE_UNREADABLE),
+        ExcludeFile::Read { .. } => {}
+    }
+    file
+}
+
+/// Issue #2218: the profiles to treat as excluded under `root`, read once
+/// per command or rotate cycle: the `exclude` list, or every profile in
+/// the store when the file cannot be read (fails closed: a refresh of an
+/// excluded login signs out the other hosts that share it). The rule is
+/// `config::excluded_from`, the body of `config::excluded_profiles`, which
+/// `config::effective` follows too; this only adds the warning. A store
+/// that cannot be listed is an error, never an empty list.
+#[cfg(unix)]
+pub(super) fn exclude_list(
+    root: &std::path::Path,
+    warn: impl FnOnce(&str),
+) -> Result<Vec<ProfileName>, ProfileError> {
+    use super::auto_switch::config::{excluded_from, read_exclude};
+    // One read: warn about it, then apply the shared rule to it.
+    excluded_from(warned(read_exclude(root), warn), root)
+}
+
+/// Auto-switch has no config on this platform, so nothing is excluded.
+#[cfg(not(unix))]
+pub(super) fn exclude_list(
+    _: &std::path::Path,
+    _: impl FnOnce(&str),
+) -> Result<Vec<ProfileName>, ProfileError> {
+    Ok(Vec::new())
+}
+
+/// Issue #2218: the excluded profile a rule of the local proof names as
+/// the login in `<home>/.claude`; read from local files only.
+#[cfg(unix)]
+fn excluded_live(
+    store: &ProfileStore,
+    home: Option<&std::path::Path>,
+) -> Result<Option<ProfileName>, ProfileError> {
+    let rs = super::rotate::ledger::RotateState::new(store.root());
+    let Some(home) = home else { return Ok(None) };
+    Ok(super::rotate::live_excluded_offline(store, &rs, home)?.map(|(b, _)| b))
+}
+
+#[cfg(not(unix))]
+fn excluded_live(
+    _: &ProfileStore,
+    _: Option<&std::path::Path>,
+) -> Result<Option<ProfileName>, ProfileError> {
+    Ok(None)
+}
+
+/// The stderr line for a named profile that is excluded (issue #2218).
+pub(super) fn excluded_refusal(name: &ProfileName) -> String {
+    format!(
+        "{}: excluded (in auto-switch exclude list); not probed \
+         (amplihack profile auto-switch exclude)",
+        sanitize_display(name.as_str(), false)
+    )
+}
+
+/// The exit of a run that named an excluded profile: status 1 with no
+/// further message, since [`excluded_refusal`] already printed a line for
+/// each refused name.
+fn refusal_result(refused: &[ProfileName]) -> Result<()> {
+    if refused.is_empty() {
+        return Ok(());
+    }
+    Err(crate::command_error::exit_error(1))
 }
 
 /// Which login a spend probe reads: a profile, against `~/.claude` when
@@ -951,13 +1122,26 @@ pub(super) struct RowReader {
     /// cannot be read, which refreshes none.
     pub(super) no_refresh: Option<Vec<String>>,
     pub(super) overflow: Vec<ProfileName>,
+    /// Issue #2218: the auto-switch `exclude` list. These profiles are never
+    /// read: no credential read, no request and no refresh. `None` when the
+    /// list cannot be worked out, which counts every profile as excluded.
+    pub(super) excluded: Option<Vec<ProfileName>>,
     pub(super) now: i64,
     pub(super) keep_raw: bool,
 }
 
 impl RowReader {
-    /// One profile, against `~/.claude` when `live`.
+    /// Issue #2218: whether `name` is in the auto-switch `exclude` list.
+    pub(super) fn is_excluded(&self, name: &ProfileName) -> bool {
+        self.excluded.as_ref().is_none_or(|l| l.contains(name))
+    }
+
+    /// One profile, against `~/.claude` when `live`. An excluded profile is
+    /// [`Probe::excluded`], decided before anything is read.
     pub(super) fn profile(&self, name: &ProfileName, live: bool) -> Probe {
+        if self.is_excluded(name) {
+            return Probe::excluded();
+        }
         let claude = |m: ProbeMode| {
             usage_source::fallback_with(&self.binary, |bin| {
                 self.gate.run(|| {
@@ -1053,6 +1237,9 @@ impl RowReader {
     /// like one that ran and gave no reading: `NotProbed` is kept for rows
     /// no probe was asked for.
     fn spend(&self, target: SpendTarget<'_>) -> Spend {
+        if self.is_excluded(target.0) {
+            return Spend::NotApplicable;
+        }
         let Some(bin) = self.binary.get() else {
             return Spend::Unknown;
         };
@@ -1593,8 +1780,13 @@ pub(super) const ORDER_LINE: &str =
     "order: rotator pick (most room in the worse of session and week, then name)";
 
 /// [`sort_key`], with API-key rows (issue #1700) after every usable and
-/// exhausted row and before the unavailable ones.
+/// exhausted row and before the unavailable ones, and excluded rows (issue
+/// #2218) after all of them.
 fn row_key(r: &Row, now: i64) -> (u8, i64) {
+    // Issue #2218: excluded rows last, after the unavailable ones.
+    if r.is_excluded() {
+        return (u8::MAX, 0);
+    }
     if r.api_key {
         return (2, 0);
     }
@@ -1790,7 +1982,9 @@ pub(super) fn render_table(rows: &[Row]) -> String {
                 sanitize_display(&r.profile, false),
                 sanitize_display(&marks(r), false),
                 state_label(r).to_string(),
-                if r.api_key {
+                if r.is_excluded() {
+                    EXCLUDED_CELL.to_string()
+                } else if r.api_key {
                     API_KEY_CELL.to_string()
                 } else if no_session_limit(r) {
                     NO_SESSION_LIMIT_CELL.to_string()
@@ -1875,6 +2069,9 @@ pub(super) fn footers(rows: &[Row]) -> String {
 
 /// The `SESSION` cell of an API-key row.
 pub(super) const API_KEY_CELL: &str = "api-key (billed per token)";
+/// The `SESSION` cell (and the bar view's span) of a profile in the
+/// auto-switch `exclude` list (issue #2218).
+pub(super) const EXCLUDED_CELL: &str = "excluded (not probed)";
 /// The `SESSION` cell of a plan reading with no session window (#1818).
 pub(super) const NO_SESSION_LIMIT_CELL: &str = "no session limit";
 
@@ -1884,9 +2081,12 @@ pub(super) fn no_session_limit(r: &Row) -> bool {
         && matches!(r.report.state, UsageState::Ok | UsageState::WeeklyExhausted)
 }
 
-/// The `STATE` of a row: `api_key` for an API-key profile.
+/// The `STATE` of a row: `excluded` for a profile in the auto-switch
+/// `exclude` list (issue #2218), `api_key` for an API-key profile.
 pub(super) fn state_label(r: &Row) -> &'static str {
-    if r.api_key {
+    if r.is_excluded() {
+        "excluded"
+    } else if r.api_key {
         "api_key"
     } else {
         r.report.state.as_str()
@@ -1932,7 +2132,8 @@ struct ApiKeyBlock<'a> {
 #[derive(Serialize)]
 struct JsonRow<'a> {
     profile: &'a str,
-    account: &'a str,
+    /// `null` for an excluded row (issue #2218), whose account is not read.
+    account: Option<&'a str>,
     default: bool,
     leased_to: Option<&'a str>,
     live_in: Option<&'static str>,
@@ -2005,7 +2206,7 @@ fn json_rows(rows: &[Row]) -> Vec<JsonRow<'_>> {
     rows.iter()
         .map(|r| JsonRow {
             profile: &r.profile,
-            account: &r.account,
+            account: (!r.is_excluded()).then_some(r.account.as_str()),
             default: r.default,
             leased_to: r.leased_to.as_deref(),
             live_in: r.live_in.then_some(default_live::LABEL),
@@ -2026,15 +2227,20 @@ fn json_rows(rows: &[Row]) -> Vec<JsonRow<'_>> {
             session_limit: r.report.session_limit,
             week_all: r.report.week_all.as_ref(),
             week_models: &r.report.week_models,
-            error: r.error.map(|e| e.to_string()),
+            error: r
+                .error
+                .filter(|e| *e != ErrorReason::Excluded)
+                .map(|e| e.to_string()),
             raw: r.raw.as_ref(),
         })
         .collect()
 }
 
-/// One stderr line per error row.
+/// One stderr line per error row. An excluded row (issue #2218) is not an
+/// error.
 pub(super) fn error_warnings(rows: &[Row]) -> Vec<String> {
     rows.iter()
+        .filter(|r| !r.is_excluded())
         .filter_map(|r| {
             r.error.map(|e| {
                 format!(
@@ -2115,7 +2321,8 @@ pub(super) fn observations(rows: &[Row]) -> Vec<Observation> {
         })
     };
     rows.iter()
-        .filter(|r| !r.api_key)
+        // Issue #2218: an excluded row has no reading to record.
+        .filter(|r| r.is_login())
         // Issue #1844: a passive row is a stored reading; recording it again
         // would keep it fresh for ever.
         .filter(|r| r.source != Some(Source::Passive))

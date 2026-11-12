@@ -202,9 +202,9 @@ use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
 
 // Issue #1797: `Probes` is what the usage history records from a cycle.
 #[cfg(unix)]
-pub(super) use self::{identify::is_live, observe::Probes, platform_block::platform_live_line};
+pub(super) use self::{autostart::autostart_line, identify::excluded_offline::*};
 #[cfg(unix)]
-pub(in crate::commands::profile) use autostart::autostart_line;
+pub(super) use self::{identify::is_live, observe::Probes, platform_block::platform_live_line};
 #[cfg(unix)]
 pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rotator};
 #[cfg(unix)]
