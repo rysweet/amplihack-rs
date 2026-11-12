@@ -77,6 +77,12 @@ Each decision first works out why the session may move
 | Plan login that needs capacity relief | Capacity relief |
 | Plan login with capacity | Upgrade |
 
+The need comes from the live reading as measured. The rotator's projected
+or substituted live figure ([live reading freshness](profile-command.md#outlook-and-organisation-affinity))
+is decided with that same need, never one worked out on the forecast, so a
+projected or substituted swap never makes a confirmed crossing, nor makes a
+failed-probe crossing sooner. A crossing waits for the reading as measured.
+
 | Need and final swap purpose | Permitted candidates |
 | --- | --- |
 | Any, with a known source and an eligible Same target that has capacity | Same targets only |
@@ -142,6 +148,8 @@ These are policy examples, using profile names from the rotation guide:
 | `work` is a paid overflow login in B; `spare` (B) and `personal` (A) both have capacity, `personal` with more headroom | Back to `spare` |
 | `work` is a blocked overflow login in B; no plan login has capacity; `personal` (A) has room | Moves to `personal`, with a confirmed-crossing warning |
 | Plan-room fallback from a plan login finds only Crossing targets | No plan-room swap |
+| `work` (A) reads 63%, projected to 76%; `spare` (A) has capacity on the projection; `third` (B) has more headroom | Projected swap to `spare` |
+| `work` (A) reads 63%, projected to 76%; only `third` (B) has capacity | No swap and no ALERT on the projection; the measured threshold crosses to `third` |
 
 ## Configuration and operator commands
 

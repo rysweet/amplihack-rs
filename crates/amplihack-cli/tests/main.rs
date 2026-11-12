@@ -338,6 +338,8 @@ mod issue_2042_host_proc_strace;
 mod issue_2042_proc_root_guard;
 #[path = "issue_2042_seam_dry_run_and_refusal.rs"]
 mod issue_2042_seam_dry_run_and_refusal;
+#[path = "issue_2211_live_freshness.rs"]
+mod issue_2211_live_freshness;
 #[path = "issue_2317_codex_step_commits_in_worktree.rs"]
 mod issue_2317_codex_step_commits_in_worktree;
 #[path = "issue_2336_autodrive_completion.rs"]
