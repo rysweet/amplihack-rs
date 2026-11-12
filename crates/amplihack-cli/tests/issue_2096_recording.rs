@@ -2,8 +2,8 @@
 //! in `<run dir>/git-commands.jsonl`, and never writes trace output to a
 //! place the caller chose.
 //!
-//! Also the candidate-1 replay: does a pre-commit hook's stash and restore,
-//! run by a commit in a linked worktree, change the main checkout's index?
+//! Also a synthetic stash/restore diagnostic for candidate 1; this does not
+//! replay the real project hooks or establish the historical index writer.
 use super::*;
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
@@ -11,12 +11,22 @@ use std::os::unix::fs::PermissionsExt;
 /// The run folders made under the fixture's work root.
 fn run_dirs(f: &Fixture) -> Vec<PathBuf> {
     let runs = f.root.join("work/runs");
-    let Ok(read) = fs::read_dir(&runs) else {
-        return Vec::new();
+    let read = match fs::read_dir(&runs) {
+        Ok(read) => read,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => panic!("read {}: {error}", runs.display()),
     };
-    read.map(|e| e.unwrap().path())
-        .filter(|p| p.is_dir())
-        .collect()
+    read.map(|entry| {
+        entry
+            .unwrap_or_else(|error| panic!("list {}: {error}", runs.display()))
+            .path()
+    })
+    .filter(|path| {
+        fs::metadata(path)
+            .unwrap_or_else(|error| panic!("inspect {}: {error}", path.display()))
+            .is_dir()
+    })
+    .collect()
 }
 
 fn the_run_dir(f: &Fixture) -> PathBuf {
@@ -123,7 +133,11 @@ fn a_run_with_no_matching_command_writes_an_empty_record() {
 fn assert_caller_targets_saw_no_step(f: &Fixture, out: &Output) {
     for name in ["caller-event", "caller-normal", "caller-perf"] {
         let path = f.root.join(name);
-        let seen = fs::read(&path).unwrap_or_default();
+        let seen = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => panic!("read {}: {error}", path.display()),
+        };
         assert!(
             !String::from_utf8_lossy(&seen).contains("run-output"),
             "a step's git command was traced to the caller's {name}\nstderr {}",
@@ -175,17 +189,16 @@ fn a_run_without_durable_record_storage_is_rejected_before_execution() {
     assert_caller_targets_saw_no_step(&f, &out);
 }
 
-/// Candidate 1 from the issue: the pre-commit framework's stash and restore,
-/// run by a hook during a commit in a linked worktree, while the main
-/// checkout has an untracked file.
+/// Model candidate 1's stash/restore sequence with a synthetic hook during a
+/// commit in a linked worktree, while the main checkout has an untracked file.
 ///
 /// Observed with git 2.56 on 10 Nov 2026, the hook's `git diff`,
 /// `git checkout -- .` and `git apply` all ran with `GIT_INDEX_FILE` set by
 /// git to the linked worktree's own index (`.git/worktrees/<name>/index`),
-/// and the main checkout's index was byte-identical before and after. So
-/// candidate 1 does not reproduce: this test pins that observation. If git
-/// ever changes, this test fails and names the commands that ran with which
-/// index.
+/// and the main checkout's index was byte-identical before and after. This
+/// pins that synthetic observation, without ruling out the real hook chain
+/// or identifying the historical writer. A regression names the commands
+/// that ran with which index.
 #[test]
 fn candidate_one_precommit_stash_and_restore_in_a_worktree_leaves_the_main_index_alone() {
     let f = Fixture::new();

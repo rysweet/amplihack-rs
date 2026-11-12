@@ -58,6 +58,119 @@ fn prepare_preserves_independent_index_and_working_layers() {
 }
 
 #[test]
+fn prepare_preserves_large_indexes_and_unreachable_duplicate_binary_blobs() {
+    isolated_body(
+        "prepare_preserves_large_indexes_and_unreachable_duplicate_binary_blobs",
+        |f| {
+            // Query input and output both exceed a pipe buffer. Most objects
+            // arrive through the clone; the binary additions are unreachable.
+            for i in 0..2048 {
+                fs::write(f.repo.join(format!("committed-{i}")), format!("{i}\n")).unwrap();
+            }
+            f.git(&["add", "."]);
+            f.git(&["commit", "-qm", "large index fixture"]);
+            let binary = [0, 255, 10, 13].repeat(32768);
+            fs::write(f.repo.join("addition-a"), &binary).unwrap();
+            fs::write(f.repo.join("addition-b"), &binary).unwrap();
+            f.git(&["add", "addition-a", "addition-b"]);
+            fs::write(f.repo.join("addition-a"), b"working layer\n").unwrap();
+            let entries = f.git(&["ls-files", "--stage", "-z"]);
+            let before = f.snapshot();
+            let scratch = f.root.join("scratch");
+            fs::create_dir(&scratch).unwrap();
+            let mut checkout =
+                implementation::RunCheckout::prepare(&f.repo, &scratch, false).unwrap();
+            assert_eq!(
+                f.git_in(checkout.exec_dir(), &["ls-files", "--stage", "-z"]),
+                entries
+            );
+            for name in [":addition-a", ":addition-b"] {
+                assert_eq!(f.git_in(checkout.exec_dir(), &["show", name]), binary);
+            }
+            assert_eq!(
+                fs::read(checkout.exec_dir().join("addition-a")).unwrap(),
+                b"working layer\n"
+            );
+            assert_eq!(
+                fs::read(checkout.exec_dir().join("addition-b")).unwrap(),
+                binary
+            );
+            assert_eq!(f.snapshot(), before);
+            checkout.remove().unwrap();
+        },
+    );
+}
+
+#[test]
+fn prepare_rejects_missing_staged_objects() {
+    isolated_body("prepare_rejects_missing_staged_objects", |f| {
+        fs::write(f.repo.join("addition"), b"unreachable staged bytes\n").unwrap();
+        f.git(&["add", "addition"]);
+        let oid = String::from_utf8(f.git(&["rev-parse", ":addition"]))
+            .unwrap()
+            .trim()
+            .to_string();
+        fs::remove_file(f.repo.join(".git/objects").join(&oid[..2]).join(&oid[2..])).unwrap();
+        let scratch = f.root.join("scratch");
+        fs::create_dir(&scratch).unwrap();
+        let error = implementation::RunCheckout::prepare(&f.repo, &scratch, false)
+            .expect_err("an unavailable staged object must block execution");
+        assert!(format!("{error:#}").contains("cat-file"), "{error:#}");
+    });
+}
+
+#[test]
+fn prepare_rejects_staged_entries_that_name_tree_objects() {
+    isolated_body(
+        "prepare_rejects_staged_entries_that_name_tree_objects",
+        |f| {
+            let tree = String::from_utf8(f.git(&["rev-parse", "HEAD^{tree}"]))
+                .unwrap()
+                .trim()
+                .to_string();
+            f.git(&["update-index", "--cacheinfo", "100644", &tree, "tracked"]);
+            let scratch = f.root.join("scratch");
+            fs::create_dir(&scratch).unwrap();
+            let error = implementation::RunCheckout::prepare(&f.repo, &scratch, false)
+                .expect_err("a staged tree must not be accepted as an existing blob");
+            assert!(
+                format!("{error:#}").contains("unexpected isolated object query response"),
+                "{error:#}"
+            );
+        },
+    );
+}
+
+#[test]
+fn prepare_preserves_an_empty_index_and_its_working_files() {
+    isolated_body(
+        "prepare_preserves_an_empty_index_and_its_working_files",
+        |f| {
+            f.git(&["rm", "--cached", "-r", "."]);
+            let before = f.snapshot();
+            let scratch = f.root.join("scratch");
+            fs::create_dir(&scratch).unwrap();
+            let mut checkout =
+                implementation::RunCheckout::prepare(&f.repo, &scratch, false).unwrap();
+            assert!(
+                f.git_in(checkout.exec_dir(), &["ls-files", "--stage"])
+                    .is_empty()
+            );
+            assert_eq!(
+                fs::read(checkout.exec_dir().join("tracked")).unwrap(),
+                b"base\n"
+            );
+            assert_eq!(
+                fs::read(checkout.exec_dir().join("sub/file")).unwrap(),
+                b"sub\n"
+            );
+            assert_eq!(f.snapshot(), before);
+            checkout.remove().unwrap();
+        },
+    );
+}
+
+#[test]
 fn prepare_distinguishes_corrupt_metadata_from_absent_repository() {
     isolated_body(
         "prepare_distinguishes_corrupt_metadata_from_absent_repository",

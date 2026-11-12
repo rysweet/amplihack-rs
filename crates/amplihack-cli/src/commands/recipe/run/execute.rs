@@ -891,11 +891,8 @@ pub(super) fn execute_recipe_via_rust(
                 &git_record,
             );
 
-            // Issue #964: restore on ANY terminal failure, not just a spawn/parse `Err`.
-            // A runner that completes and emits a structured result reporting failure
-            // (`Ok(RecipeRunResult { success: false, .. })`) is still a terminal failure
-            // and is in fact the more likely path to leave the caller checkout corrupted
-            // (it did real work before failing). Restoring only on `Err` would miss it.
+            // Structured runner failures and spawn/parse errors both enter
+            // the failure-classification path below.
             let failed = match &attempt_result {
                 Err(_) => true,
                 Ok(run_result) => !run_result.success,
@@ -912,9 +909,6 @@ pub(super) fn execute_recipe_via_rust(
             if !failed {
                 return AttemptOutcome::Final(attempt_result);
             }
-            // Issue #1267: repair before a retry too — a second attempt must not
-            // run against a checkout the first attempt corrupted.
-
             let verdict = match &attempt_result {
                 Ok(run_result) => classify_run_failure(run_result, &stderr_tail),
                 Err(error) => classify_error(error),

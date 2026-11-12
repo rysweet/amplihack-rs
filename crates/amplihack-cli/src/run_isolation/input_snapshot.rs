@@ -129,9 +129,10 @@ impl InputSnapshot {
     pub fn install(&self, source: &Path, destination: &Path) -> Result<()> {
         use std::io::Write;
         use std::process::Stdio;
-        // Staged blobs need not be reachable from any commit. Transfer each
-        // through the object protocol rather than sharing the caller's store.
-        let mut transferred = BTreeSet::new();
+        // The private clone already contains committed blobs. Query all staged
+        // identities in one process, then transfer only missing staged blobs
+        // through the object protocol without sharing the caller's store.
+        let mut staged = BTreeSet::new();
         for entry in self.entries.split(|b| *b == 0).filter(|s| !s.is_empty()) {
             let tab = entry
                 .iter()
@@ -139,23 +140,24 @@ impl InputSnapshot {
                 .context("invalid index entry")?;
             let header = std::str::from_utf8(&entry[..tab])?;
             let oid = header.split(' ').nth(1).context("missing staged object")?;
-            if transferred.insert(oid) {
-                let blob = git(source, &["cat-file", "blob", oid])?;
-                let mut child = super::preparation_command(destination)
-                    .args(["hash-object", "-w", "--stdin"])
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()?;
-                let mut pipe = child.stdin.take().context("object input pipe")?;
-                let writer = std::thread::spawn(move || pipe.write_all(&blob));
-                let output = child.wait_with_output()?;
-                writer
-                    .join()
-                    .map_err(|_| anyhow::anyhow!("object writer panicked"))??;
-                if !output.status.success() || trim_lf(&output.stdout) != oid.as_bytes() {
-                    bail!("cannot transfer staged object {oid} into isolated repository");
-                }
+            staged.insert(oid);
+        }
+        for oid in missing_blobs(destination, &staged)? {
+            let blob = git(source, &["cat-file", "blob", oid])?;
+            let mut child = super::preparation_command(destination)
+                .args(["hash-object", "-w", "--stdin"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?;
+            let mut pipe = child.stdin.take().context("object input pipe")?;
+            let writer = std::thread::spawn(move || pipe.write_all(&blob));
+            let output = child.wait_with_output()?;
+            writer
+                .join()
+                .map_err(|_| anyhow::anyhow!("object writer panicked"))??;
+            if !output.status.success() || trim_lf(&output.stdout) != oid.as_bytes() {
+                bail!("cannot transfer staged object {oid} into isolated repository");
             }
         }
         let mut child = super::preparation_command(destination)
@@ -193,6 +195,58 @@ impl InputSnapshot {
         }
         Ok(())
     }
+}
+
+fn missing_blobs<'a>(destination: &Path, staged: &BTreeSet<&'a str>) -> Result<Vec<&'a str>> {
+    use std::io::Write;
+    use std::process::Stdio;
+    if staged.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut child = super::preparation_command(destination)
+        .args(["cat-file", "--batch-check=%(objectname) %(objecttype)"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut pipe = child.stdin.take().context("object query input pipe")?;
+    // Drain output while writing: a large index can fill both pipe buffers.
+    let output = std::thread::scope(|scope| -> Result<_> {
+        let writer = scope.spawn(move || {
+            let mut pipe = std::io::BufWriter::new(&mut pipe);
+            for oid in staged {
+                writeln!(pipe, "{oid}")?;
+            }
+            pipe.flush()
+        });
+        let output = child.wait_with_output()?;
+        writer
+            .join()
+            .map_err(|_| anyhow::anyhow!("object query writer panicked"))??;
+        Ok(output)
+    })?;
+    if !output.status.success() {
+        bail!(
+            "cannot inspect isolated staged objects: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let mut lines = std::str::from_utf8(&output.stdout)?.lines();
+    let mut missing = Vec::new();
+    for &oid in staged {
+        let line = lines
+            .next()
+            .context("missing isolated object query response")?;
+        match line.split_once(' ') {
+            Some((actual, "blob")) if actual == oid => {}
+            Some((actual, "missing")) if actual == oid => missing.push(oid),
+            _ => bail!("unexpected isolated object query response for {oid}: {line}"),
+        }
+    }
+    if lines.next().is_some() {
+        bail!("extra isolated object query response");
+    }
+    Ok(missing)
 }
 
 use std::os::unix::fs::OpenOptionsExt;

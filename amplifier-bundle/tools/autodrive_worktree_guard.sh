@@ -32,8 +32,8 @@
 #       from the step's working directory, which, like <repo-path> itself, may
 #       be the PR worktree (the preflight answers the head's worktree; an
 #       operator passes `-c repo_path=<worktree>`, or runs `-c repo_path=.`
-#       from inside it). A linked worktree is never the main
-#       checkout, so the review dir is never the tree under review. Exit 1 with
+#       from inside it). This is a legacy review input; the loop converts it
+#       to an owned generation before judging. Exit 1 with
 #       a STOP line when <repo-path> is not in a git work tree, or the answer
 #       is not that repository's main checkout (see "The review dir" below):
 #       for a bare repository the resolver answers the directory beside the
@@ -71,7 +71,7 @@
 #       worktree as a gitlink (one under worktrees/, or any registered
 #       worktree of the repository), staged or committed: the rule
 #       `amplihack hygiene artifact-guard` calls run-worktree-gitlink. A
-#       stamp records the main checkout as found, so without this a gitlink
+#       stamp records the review checkout as found, so without this a gitlink
 #       an earlier run left staged would become the round's baseline and
 #       every later check would pass against it.
 #   autodrive_worktree_guard.sh round-index-check <dir> <stamp> <step>
@@ -87,11 +87,11 @@
 #       round and runs it after the whole round, whatever the round's exit
 #       status (so step-04, the agent that stages and commits, is covered even
 #       when it fails or dies), and again after loop-health-evaluator; a
-#       change there stops the loop. All are full-tool agents kept out of the
-#       main checkout by their prompts alone, and #1528 was an agent staging a
-#       forced gitlink there. A change is caught by the round that made it,
-#       not by the next human commit there. A person committing in the main
-#       checkout meanwhile trips it too; the STOP line says so. Exit 3, not 1,
+#       change there stops the loop. These guards retain #1528's mutation
+#       checks for the drive's own review checkout. That incident involved an
+#       agent staging a forced gitlink in the main checkout; independent main
+#       checkout changes no longer affect a private generation's stamp.
+#       Any writer changing the review checkout still trips it. Exit 3, not 1,
 #       when <dir> cannot be stamped again: nothing was compared, so no change
 #       is claimed.
 #   autodrive_worktree_guard.sh commit-dir <pr>
@@ -100,15 +100,16 @@
 #       is the top of a LINKED worktree (its git dir differs from the absolute
 #       common dir; never the main checkout) on PR <pr>'s head branch.
 #
-# The review dir is the main checkout of the given repo's repository, or a
-# drive's private review checkout of it (#2096): the top of a work tree whose
-# common dir resolves to the same real path as that repo's, and whose git dir
-# IS the common dir, or which is a detached linked worktree at a commit the
-# main checkout's HEAD contains (so never a branch under review). Not "outside the worktree" alone: a
-# directory in another repository would have its judging agent load that
-# repository's AGENTS.md and read the other repository's PR of the same number
-# with `gh pr diff N`, and a bare repository's neighbour directory is no
-# checkout at all.
+# A private review dir belongs to a native generation (#2096). Rust accepts it
+# only after three checks: (1) it has an ownership manifest the run wrote
+# itself; (2) the filesystem identities recorded in that manifest still match,
+# as do the source and private repository identities; (3) HEAD is detached at
+# the recorded PR-source commit. Main need not contain that commit. Being
+# outside the PR worktree, or being detached, grants no trust on its own; when a
+# check fails, the drive stops instead of judging there. Judging
+# launches use the generation's separate trusted launch directory. Legacy
+# main-checkout input must be this repository's main checkout and is converted
+# to an owned generation before judging.
 #
 # AUTODRIVE_LAUNCH_TOOLS (#1543) is the bundle autodrive_loop.sh hands each
 # round as autodrive_launch_tools. The rounds run this script as
@@ -239,18 +240,17 @@ cmd_loop_preflight() {
   printf '%s\n%s\n%s\n' "$rd" "$round_path" "$(launch_recipe loop-health-evaluator "$repo_real" 2>/dev/null)"
 }
 
-# Issue #2096: a drive's own review checkout. A detached worktree, at the
-# main checkout's HEAD, at <dest> (which must not exist yet). The judging
-# agents start there instead of in the main checkout, so a person or another
-# run staging in the main checkout no longer changes the index the drive
-# checks, and the drive's own judging steps cannot stage there either.
+# Issue #2096: provision <dest> (which must not exist yet) at the recorded
+# PR-source commit in a private repository. The generation has a separate
+# trusted launch directory for judging; the checkout remains review data.
+# Changes to the caller's index or HEAD do not change this generation's stamp.
 cmd_private_review_dir() {
   amplihack internal review-checkout "$@"
 }
 
-# Issue #2096: removes a review checkout made by private-review-dir. Refuses
-# anything that is not a detached linked worktree, so it can never remove the
-# main checkout or a branch's worktree.
+# Issue #2096: release a native review generation only after validating its
+# ownership manifest and filesystem identities. Detachment alone grants no
+# cleanup authority. A failed mutation guard does not prevent owned cleanup.
 cmd_release_review_dir() {
   amplihack internal review-release "$@"
 }

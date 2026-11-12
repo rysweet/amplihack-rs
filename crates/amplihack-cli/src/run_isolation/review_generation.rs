@@ -1,6 +1,7 @@
 //! Exact-commit review generations and their trusted launch directories.
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -283,11 +284,7 @@ pub(crate) fn bind_record(checkout: &Path, record: &Path) -> Result<()> {
         );
     }
     let bytes = crate::commands::cleanup::run_dir::read_capped_nofollow(record, 1024 * 1024)?;
-    let super::Report(values) = serde_json::from_slice(&bytes)?;
-    let mut value = serde_json::to_value(values)?;
-    let fields = value
-        .as_object_mut()
-        .context("review round record must be a JSON object")?;
+    let super::Report(mut fields) = serde_json::from_slice(&bytes)?;
     if let Some(recorded) = fields.get("reviewed_head_sha")
         && recorded != &serde_json::Value::String(generation.head.clone())
     {
@@ -297,7 +294,7 @@ pub(crate) fn bind_record(checkout: &Path, record: &Path) -> Result<()> {
     fields.insert("review_generation".to_string(), generation.owner.into());
     // The existing trust reader requires the verdict tag as the first key.
     // Default map sorting would put concern_count before crusty_verdict.
-    struct VerdictFirst<'a>(&'a serde_json::Map<String, serde_json::Value>, &'a str);
+    struct VerdictFirst<'a>(&'a BTreeMap<String, serde_json::Value>, &'a str);
     impl Serialize for VerdictFirst<'_> {
         fn serialize<S: serde::Serializer>(
             &self,
@@ -322,7 +319,7 @@ pub(crate) fn bind_record(checkout: &Path, record: &Path) -> Result<()> {
         (false, true) => "merge_ready_verdict",
         _ => bail!("round record requires exactly one verdict tag"),
     };
-    let mut bytes = serde_json::to_vec(&VerdictFirst(fields, verdict))?;
+    let mut bytes = serde_json::to_vec(&VerdictFirst(&fields, verdict))?;
     bytes.push(b'\n');
     crate::commands::cleanup::run_dir::write_atomic_0600(record, &bytes)?;
     print!("{}", std::str::from_utf8(&bytes)?);
@@ -381,7 +378,7 @@ pub(crate) fn advance(source: &Path, checkout: &Path, state: Option<&Path>) -> R
     Ok(next)
 }
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReviewState {
     schema_version: u32,
@@ -427,7 +424,7 @@ pub(crate) fn register(state: &Path, checkout: &Path) -> Result<()> {
     if !record
         .generations
         .iter()
-        .any(|entry| entry == &(checkout.to_path_buf(), generation.owner.clone()))
+        .any(|(path, owner)| path == checkout && owner == &generation.owner)
     {
         record
             .generations

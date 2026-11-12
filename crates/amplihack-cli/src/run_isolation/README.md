@@ -12,6 +12,12 @@ index flags, conflicts, submodules, special files, and escaping symlinks fail
 preparation. Complete declarations for required ignored inputs and external
 dependencies are not implemented.
 
+Installation checks staged object identities in one Git batch, reuses blobs
+already transferred by the private clone, and copies only missing staged blobs.
+Query failures or unexpected responses abort preparation. This avoids two Git
+processes per already cloned blob without sharing object storage or caching
+caller state across runs. Missing-blob transfers still verify the resulting ID.
+
 `commands/recipe/run/run_checkout.rs` owns the execution lease. Every independent
 launch, including nested launches, provisions a private repository and detached
 worktree without caller object alternates or hardlinks. Preparation disables
@@ -36,8 +42,12 @@ rejected rather than falling back to advisory Trace2.
 
 `review_generation.rs` provisions exact recorded PR commits in private
 repositories and preserves PR instruction files as review data. Separate launch
-directories contain explicitly supplied trusted instructions. Generation records
-bind repository, commit, ownership, and filesystem identity; native publication
+directories contain explicitly supplied trusted instructions. A review
+generation is trusted only after three checks: it has an ownership manifest the
+run wrote itself; the filesystem, source-repository and private-repository
+identities recorded there still match; and HEAD is detached at the recorded
+PR-source commit. Release deletes only paths that manifest proves the run owns
+and never follows symlinks. Native publication
 adds the generation and reviewed SHA to verdict records. Independently launched
 loops own separate generations even when they share an evidence directory.
 Advancing a PR creates a new generation, and cleanup releases only its owner's
