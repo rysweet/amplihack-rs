@@ -8,14 +8,12 @@ mod analysis;
 mod decision;
 mod state;
 
+use super::state_paths::StopStatePaths;
+use crate::state_dir::create_private_dir_all;
 use amplihack_state::AtomicCounter;
-use amplihack_types::ProjectDirs;
+use amplihack_types::{ProjectDirs, session_state_dir};
 use serde_json::Value;
-use std::fs;
 use std::path::Path;
-
-#[cfg(test)]
-use state::completion_semaphore;
 
 #[derive(Debug, Clone, Copy)]
 struct PowerSteeringConfig {
@@ -71,11 +69,21 @@ pub fn check(
     session_id: &str,
     transcript_path: Option<&Path>,
 ) -> anyhow::Result<Option<Value>> {
-    let power_steering_dir = dirs.session_power_steering(session_id);
-    fs::create_dir_all(&power_steering_dir)?;
-    fs::create_dir_all(&dirs.power_steering)?;
+    let Some(session_dir) = session_state_dir(Some(session_id)) else {
+        tracing::warn!("Power steering state unavailable: no amplihack state root, approving");
+        return Ok(None);
+    };
+    check_with_state(dirs, &StopStatePaths::new(session_dir), transcript_path)
+}
 
-    let counter = AtomicCounter::new(power_steering_dir.join("session_count"));
+pub(super) fn check_with_state(
+    dirs: &ProjectDirs,
+    paths: &StopStatePaths,
+    transcript_path: Option<&Path>,
+) -> anyhow::Result<Option<Value>> {
+    create_private_dir_all(&paths.power_steering)?;
+
+    let counter = AtomicCounter::new(paths.power_steering.join("session_count"));
     let count = counter.increment()?;
 
     // First stop: let the agent end naturally, only enforce on repeated stop
@@ -84,7 +92,7 @@ pub fn check(
         return Ok(None);
     }
 
-    if state::is_disabled(dirs) || state::already_completed(dirs, session_id) {
+    if state::is_disabled(dirs) || state::already_completed(paths) {
         return Ok(None);
     }
 
@@ -107,8 +115,8 @@ pub fn check(
 
     let blockers = decision::collect_blockers(&messages, &dirs.root);
     if blockers.is_empty() {
-        state::mark_complete(dirs, session_id)?;
-        state::write_summary(dirs, session_id, &messages)?;
+        state::mark_complete(paths)?;
+        state::write_summary(paths, &messages)?;
         return Ok(None);
     }
 
@@ -121,18 +129,25 @@ pub fn check(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use std::path::{Path, PathBuf};
 
     #[test]
     fn not_enabled_by_default() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         assert!(!should_run(&dirs));
     }
 
     #[test]
     fn enabled_when_config_exists() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.tools_amplihack).unwrap();
         fs::write(dirs.power_steering_config(), r#"{"enabled": true}"#).unwrap();
@@ -141,7 +156,12 @@ mod tests {
 
     #[test]
     fn first_stop_always_approves() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = crate::test_support::isolated_tempdir();
+        let _state = crate::test_support::isolate_state_home(home.path());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = configured_dirs(dir.path());
         let transcript = write_transcript(
             dir.path(),
@@ -155,7 +175,12 @@ mod tests {
 
     #[test]
     fn blocks_when_todos_remain_incomplete() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = crate::test_support::isolated_tempdir();
+        let _state = crate::test_support::isolate_state_home(home.path());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = configured_dirs(dir.path());
         let transcript = write_transcript(
             dir.path(),
@@ -179,7 +204,12 @@ mod tests {
 
     #[test]
     fn blocks_when_final_response_lists_next_steps() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = crate::test_support::isolated_tempdir();
+        let _state = crate::test_support::isolate_state_home(home.path());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = configured_dirs(dir.path());
         let transcript = write_transcript(
             dir.path(),
@@ -203,7 +233,12 @@ mod tests {
 
     #[test]
     fn blocks_when_code_changed_without_tests() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = crate::test_support::isolated_tempdir();
+        let _state = crate::test_support::isolate_state_home(home.path());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = configured_dirs(dir.path());
         fs::create_dir_all(dir.path().join("tests")).unwrap();
         let transcript = write_transcript(
@@ -228,7 +263,12 @@ mod tests {
 
     #[test]
     fn approves_and_marks_complete_after_successful_test_run() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = crate::test_support::isolated_tempdir();
+        let _state = crate::test_support::isolate_state_home(home.path());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = configured_dirs(dir.path());
         fs::create_dir_all(dir.path().join("tests")).unwrap();
         let transcript = write_transcript(
@@ -248,17 +288,19 @@ mod tests {
         );
         let result = check(&dirs, "session-5", Some(&transcript)).unwrap();
         assert!(result.is_none());
-        assert!(completion_semaphore(&dirs, "session-5").exists());
-        assert!(
-            dirs.session_power_steering("session-5")
-                .join("summary.md")
-                .exists()
-        );
+        let session = amplihack_types::session_state_dir(Some("session-5")).unwrap();
+        assert!(session.join("power-steering/.session-5_completed").exists());
+        assert!(session.join("power-steering/summary.md").exists());
     }
 
     #[test]
     fn qa_session_skips_power_steering() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = crate::test_support::isolated_tempdir();
+        let _state = crate::test_support::isolate_state_home(home.path());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = configured_dirs(dir.path());
         let transcript = write_transcript(
             dir.path(),

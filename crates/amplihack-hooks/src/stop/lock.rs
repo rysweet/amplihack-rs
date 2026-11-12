@@ -4,9 +4,11 @@
 //! - Increments lock invocation counter per session
 //! - Safety valve: auto-approves after N iterations
 
+use super::state_paths::StopStatePaths;
+use crate::state_dir::create_private_dir_all;
 use amplihack_state::AtomicCounter;
 use amplihack_state::env_config::env_u64;
-use amplihack_types::ProjectDirs;
+use amplihack_types::{ProjectDirs, session_state_dir};
 use serde_json::Value;
 use std::fs;
 
@@ -44,11 +46,21 @@ pub fn disable_lock_files(dirs: &ProjectDirs) {
 
 /// Handle lock mode: increment counter, check safety valve, block with prompt.
 pub fn handle_lock_mode(dirs: &ProjectDirs, session_id: &str) -> anyhow::Result<Value> {
-    let locks_dir = dirs.session_locks(session_id);
-    fs::create_dir_all(&locks_dir)?;
+    let Some(session_dir) = session_state_dir(Some(session_id)) else {
+        tracing::warn!("Lock state unavailable: no amplihack state root, approving");
+        return Ok(super::approve());
+    };
+    handle_lock_mode_with_state(dirs, &StopStatePaths::new(session_dir))
+}
+
+pub(super) fn handle_lock_mode_with_state(
+    dirs: &ProjectDirs,
+    state: &StopStatePaths,
+) -> anyhow::Result<Value> {
+    create_private_dir_all(&state.locks)?;
 
     // Use .txt for Python parity (Python lock counter is plain text).
-    let counter = AtomicCounter::new(locks_dir.join("lock_invocations.txt"));
+    let counter = AtomicCounter::new(state.locks.join("lock_invocations.txt"));
     let count = counter.increment()?;
 
     let max_iterations = get_max_iterations();
@@ -109,14 +121,20 @@ mod tests {
 
     #[test]
     fn lock_not_active_in_temp() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         assert!(!is_lock_active(&dirs));
     }
 
     #[test]
     fn lock_active_when_file_exists() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.locks).unwrap();
         fs::write(dirs.lock_active_file(), "").unwrap();
@@ -125,7 +143,12 @@ mod tests {
 
     #[test]
     fn handle_lock_increments_counter() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = crate::test_support::isolated_tempdir();
+        let _state = crate::test_support::isolate_state_home(home.path());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.locks).unwrap();
         fs::write(dirs.lock_active_file(), "").unwrap();
@@ -136,13 +159,20 @@ mod tests {
 
     #[test]
     fn safety_valve_triggers() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = crate::test_support::isolated_tempdir();
+        let _state = crate::test_support::isolate_state_home(home.path());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.locks).unwrap();
         fs::write(dirs.lock_active_file(), "").unwrap();
 
         // Pre-seed counter just below threshold so next increment triggers safety valve.
-        let session_locks = dirs.session_locks("valve-session");
+        let session_locks = amplihack_types::session_state_dir(Some("valve-session"))
+            .unwrap()
+            .join("locks");
         fs::create_dir_all(&session_locks).unwrap();
         fs::write(
             session_locks.join("lock_invocations.txt"),
@@ -157,7 +187,10 @@ mod tests {
 
     #[test]
     fn default_continuation_prompt() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         let prompt = read_continuation_prompt(&dirs);
         assert_eq!(prompt, super::super::DEFAULT_CONTINUATION_PROMPT);
@@ -165,7 +198,10 @@ mod tests {
 
     #[test]
     fn custom_continuation_prompt() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.locks).unwrap();
         fs::write(dirs.continuation_prompt_file(), "Keep going!").unwrap();
@@ -176,7 +212,10 @@ mod tests {
 
     #[test]
     fn disable_lock_files_removes_all_artifacts() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.locks).unwrap();
         fs::write(dirs.lock_active_file(), "").unwrap();
@@ -194,7 +233,10 @@ mod tests {
 
     #[test]
     fn disable_lock_files_tolerates_missing_files() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.locks).unwrap();
         // Only create one file — others missing is fine.
@@ -207,7 +249,12 @@ mod tests {
 
     #[test]
     fn safety_valve_cleans_all_lock_artifacts() {
-        let dir = tempfile::tempdir().unwrap();
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = crate::test_support::isolated_tempdir();
+        let _state = crate::test_support::isolate_state_home(home.path());
+        let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(&dirs.locks).unwrap();
         fs::write(dirs.lock_active_file(), "").unwrap();
@@ -215,7 +262,9 @@ mod tests {
         fs::write(dirs.lock_message_file(), "msg").unwrap();
         fs::write(dirs.continuation_prompt_file(), "prompt").unwrap();
 
-        let session_locks = dirs.session_locks("valve-all");
+        let session_locks = amplihack_types::session_state_dir(Some("valve-all"))
+            .unwrap()
+            .join("locks");
         fs::create_dir_all(&session_locks).unwrap();
         fs::write(
             session_locks.join("lock_invocations.txt"),

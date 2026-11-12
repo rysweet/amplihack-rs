@@ -102,7 +102,7 @@ Please provide the filled-out template now.
 
 pub(crate) fn build_reflection_prompt(
     dirs: &ProjectDirs,
-    session_dir: &Path,
+    redirects_dir: &Path,
     conversation: &[ReflectionMessage],
 ) -> Result<String> {
     let mut prompt = load_prompt_template(dirs);
@@ -120,7 +120,7 @@ pub(crate) fn build_reflection_prompt(
         ),
         (
             "{redirects_context}",
-            format_redirects_context(load_power_steering_redirects(session_dir)),
+            format_redirects_context(load_power_steering_redirects(redirects_dir)),
         ),
         ("{template}", load_feedback_template(dirs)),
     ] {
@@ -279,8 +279,10 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let project = tempfile::tempdir().unwrap();
-        let framework = tempfile::tempdir().unwrap();
+        let home = crate::test_support::isolated_tempdir();
+        let _state = crate::test_support::isolate_state_home(home.path());
+        let project = crate::test_support::isolated_tempdir();
+        let framework = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(project.path());
         fs::create_dir_all(
             framework
@@ -323,7 +325,8 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::test_support::isolated_tempdir();
+        let _state = crate::test_support::isolate_state_home(dir.path());
         let fake_cli = dir.path().join("copilot");
         fs::write(
             &fake_cli,

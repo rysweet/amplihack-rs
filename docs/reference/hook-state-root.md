@@ -1,19 +1,25 @@
 ---
 title: Hook State Root Reference
 description: Where amplihack-hooks writes per-session and per-project state, how the location is resolved, and what happens when it cannot be.
-last_updated: 2026-11-11
-related_issues: ["#1963", "#2361", "#2368"]
+last_updated: 2026-11-12
+doc_type: reference
+related_issues: ["#1963", "#2053", "#2361", "#2368"]
 ---
 
 # Hook State Root Reference
 
 The `amplihack-hooks` binary keeps its own state (tool metrics, workflow
 enforcement state, captured original requests, pre-compact transcripts,
-compaction metadata, classification state and the blarify staleness marker)
-under one state root in the user's home directory. It never writes these files
-into the session's working directory or into the root of a Git checkout named
-by `AMPLIHACK_HOME`, so a target repository's git status and the installed
-framework bundle stay unchanged while hooks run.
+compaction metadata, classification state, Stop lock counters, power-steering
+state, reflection output and the blarify staleness marker) under one resolved
+state root. Generated hook state stays outside the project, subject to the
+[state-root resolver](#resolving-the-state-root) and the resolver and symlink
+limitations in [Security notes](#security-notes). This does not guarantee an
+unchanged repository git status: the Stop safety valve deliberately removes
+the four project lock controls listed under
+[Continuation, completion and presentation](#continuation-completion-and-presentation).
+Other project changes are listed under
+[What still touches the working directory](#what-still-touches-the-working-directory).
 
 ## Contents
 
@@ -23,6 +29,7 @@ framework bundle stay unchanged while hooks run.
 - [Session keys](#session-keys)
 - [Project keys](#project-keys)
 - [Files written by each hook](#files-written-by-each-hook)
+- [Stop state and controls](#stop-state-and-controls)
 - [Directory permissions](#directory-permissions)
 - [When no state root resolves](#when-no-state-root-resolves)
 - [Write failures](#write-failures)
@@ -139,11 +146,24 @@ need them.
     │       ├── workflow_state.json
     │       ├── metrics/
     │       │   └── post_tool_use_metrics.jsonl
-    │       └── logs/
-    │           ├── ORIGINAL_REQUEST.md
-    │           ├── original_request.json
-    │           ├── transcript_pre_compact.jsonl
-    │           └── compaction_metadata.jsonl
+    │       ├── locks/
+    │       │   ├── lock_invocations.txt
+    │       │   └── lock_invocations.json.lock
+    │       ├── power-steering/
+    │       │   ├── session_count
+    │       │   ├── session_count.json.lock
+    │       │   ├── .<session key>_completed
+    │       │   └── summary.md
+    │       ├── logs/
+    │       │   ├── ORIGINAL_REQUEST.md
+    │       │   ├── original_request.json
+    │       │   ├── transcript_pre_compact.jsonl
+    │       │   ├── compaction_metadata.jsonl
+    │       │   └── FEEDBACK_SUMMARY.md
+    │       └── reflection/
+    │           ├── reflection_<session key>_<epoch seconds>.md
+    │           ├── current_findings.md
+    │           └── .reflection_presented_<session key>
     └── projects/
         └── <project key>/
             └── blarify_stale
@@ -178,7 +198,7 @@ Two fallback keys are in use when the payload carries no session id:
 
 | Fallback key | Used by |
 | --- | --- |
-| `unknown-session` | Tool metrics, original request, classification state |
+| `unknown-session` | Tool metrics, original request, classification state, Stop lock counters, power steering and reflection |
 | `current` | Workflow enforcement state, so that a `/dev` command and the PostToolUse calls that follow it in the same id-less session share one `workflow_state.json` |
 
 In one PostToolUse call without a session id, the workflow state is therefore
@@ -192,6 +212,14 @@ the directory only and does not change the record.
 
 PreCompact generates a session id of the form `session-<epoch seconds>` when
 the payload has none, and uses it as the key.
+
+Stop uses the payload's session id through `session_state_dir`. Missing,
+empty and whitespace-only identifiers consistently reuse `unknown-session`;
+`CLAUDE_SESSION_ID` and timestamps do not supply a storage identity. Repeated
+invocations with the same resolved key reuse counters, completion markers and
+reflection presentation state. Distinct keys have independent state, while
+identifiers such as `lane 3` and `lane_3` intentionally share it. All session
+components in Stop filenames use the resolved key, never the raw identifier.
 
 The key has no length limit. A session id longer than the file system's name
 limit (`NAME_MAX`, usually 255 bytes) makes the write fail. That failure is
@@ -231,6 +259,12 @@ In this table, `S` is `<state root>/runtime/sessions/<session key>` and `P` is
 | `pre-compact` | `S/logs/transcript_pre_compact.jsonl` | Copy of the transcript | `<cwd>/.claude/runtime/logs/<sid>/` |
 | `pre-compact` | `S/logs/compaction_metadata.jsonl` | One JSON line per compaction | `<cwd>/.claude/runtime/logs/<sid>/` |
 | `workflow-classification-reminder` | `S/classification_state.json` | Classification state; see [Coordination messages: state file](./coordination-messages.md#state-file) | `<cwd>/.claude/runtime/classification_state/<sid>.json` |
+| `stop` (lock) | `S/locks/lock_invocations.txt` | JSON counter, `{"value": N}` | `<cwd>/.claude/runtime/locks/<sid>/` |
+| `stop` (power steering) | `S/power-steering/session_count` | JSON counter, `{"value": N}` | `<cwd>/.claude/runtime/power-steering/<sid>/` |
+| `stop` (power steering) | `S/power-steering/.<session key>_completed`, `S/power-steering/summary.md` | Empty completion marker and Markdown summary | `<cwd>/.claude/runtime/power-steering/` and its `<sid>/` subdirectory |
+| `stop` (reflection) | `S/logs/FEEDBACK_SUMMARY.md` | Markdown feedback | `<cwd>/.claude/runtime/logs/<sid>/` |
+| `stop` (reflection) | `S/reflection/reflection_<session key>_<epoch seconds>.md`, `S/reflection/current_findings.md` | Markdown history and current findings | `<cwd>/.claude/runtime/reflection/` |
+| `stop` (reflection) | `S/reflection/.reflection_presented_<session key>` | Empty presentation semaphore | `<cwd>/.claude/runtime/reflection/` |
 
 The original-request directory always comes from the session id the hook
 received, never from a `session_id` field inside the captured record.
@@ -264,6 +298,77 @@ rm -f .claude/runtime/metrics/post_tool_use_metrics.jsonl .amplihack/blarify_sta
 rm -rf .claude/runtime/classification_state
 ```
 
+## Stop state and controls
+
+The normal `amplihack-hooks stop` protocol processes lock mode, power steering,
+then reflection. It resolves `S` once using
+`amplihack_types::session_state_dir` and keeps project inputs separate from
+generated state. Features remain opt-in.
+
+### Generated state
+
+All Stop counters, completion markers, summaries, feedback, reflection history,
+current findings and presentation semaphores are beneath `S`. Atomic companion
+locks and temporary files stay beside their counters in `S/locks/` or
+`S/power-steering/`. Successful atomic operations leave no temporary files.
+Directories are created only when needed, using the
+[private-directory permissions](#directory-permissions).
+
+For example, with `HOME=/home/alice`, no `AMPLIHACK_HOME` override and payload
+session id `lane 3`, the lock counter is
+`/home/alice/.amplihack/runtime/sessions/lane_3/locks/lock_invocations.txt`.
+The power-steering completion marker is
+`/home/alice/.amplihack/runtime/sessions/lane_3/power-steering/.lane_3_completed`.
+Reflection feedback is
+`/home/alice/.amplihack/runtime/sessions/lane_3/logs/FEEDBACK_SUMMARY.md`.
+No additional session subdirectory is added inside these feature directories.
+
+### Project configuration
+
+Paths in this table are relative to the session's project directory. They
+remain project-owned inputs and are not moved into `S`.
+
+| Feature | Control | Behaviour |
+| --- | --- | --- |
+| Lock | `.claude/runtime/locks/.lock_active` | Enables lock mode |
+| Lock | `.claude/runtime/locks/.continuation_prompt` | Supplies the continuation prompt; missing, blank or overlong content uses the default |
+| Lock | `AMPLIHACK_MAX_LOCK_ITERATIONS` | Safety-valve threshold; default `50` |
+| Power steering | `.claude/tools/amplihack/.power_steering_config` | Enables processing when present and enabled; `{"enabled": true}` enables it and `{"enabled": false}` disables it |
+| Power steering | `.claude/runtime/power-steering/.disabled` or presence of `AMPLIHACK_SKIP_POWER_STEERING` | Disables enforcement |
+| Reflection | `AMPLIHACK_ENABLE_REFLECTION` | Enables reflection for `1`, `true` or `yes`, case-insensitively |
+| Reflection | `.claude/tools/amplihack/.reflection_config` | `{"enabled": true}` explicitly enables reflection when the environment has not enabled it |
+| Reflection | Non-empty `AMPLIHACK_SKIP_REFLECTION` or `.claude/runtime/reflection/.reflection_lock` | Suppresses reflection even when enabled |
+
+### Continuation, completion and presentation
+
+An active lock increments its session counter and blocks with the continuation
+prompt. When the counter reaches or exceeds the safety-valve threshold, it
+removes the project controls
+`.lock_active`, `.lock_goal`, `.lock_message` and `.continuation_prompt` from
+`.claude/runtime/locks/`, then approves immediately. Neither lock result runs
+power steering or reflection on that invocation.
+
+Power steering increments its counter before the first-invocation exemption,
+disable checks and completion check. Its first invocation passes through to
+reflection. Later invocations can block for unfinished work; a block prevents
+reflection. Successful completion writes the session's completion marker and
+summary. Subsequent invocations recognise completion and still increment the
+counter.
+
+Reflection runs only when enabled and earlier features permit it. Findings
+are saved and presented in a blocking response, with a presentation semaphore
+under `S/reflection/`. The next invocation that reaches reflection consumes
+that semaphore and passes through without invoking the subprocess again.
+
+Reflection keeps the project as its subprocess working directory. Transcript,
+preferences, framework templates and repository context retain their existing
+input locations. Redirect history is still read from
+`.claude/runtime/logs/<normalised session key>/redirects.jsonl` in the project;
+relocating generated feedback does not move or create this input.
+
+Legacy project-local Stop state is not imported, moved or deleted. Counters
+and markers at the new location are reused independently of that legacy state.
+
 ## Directory permissions
 
 On Unix, every directory the hooks create under the state root, including
@@ -272,6 +377,10 @@ mode `0700`. Pre-compact transcripts and original prompts are therefore not
 readable by other local accounts, even when the home directory is `0755`.
 Directories that already exist keep their modes. On other platforms the
 directories are created with the default mode.
+
+This includes Stop's `locks/`, `power-steering/`, `logs/` and `reflection/`
+directories and their missing ancestors. Existing file-permission behaviour
+is unchanged.
 
 ## When no state root resolves
 
@@ -287,6 +396,7 @@ Nothing falls back to the checkout or the working directory.
 | `session-start` | The original request is not saved, but its context is still injected into the session. |
 | `pre-compact` | Returns success with the message below, and `transcript_path` and `metadata` set to `null`. |
 | `workflow-classification-reminder` | No turn counter or outcome is read or written (logged at `debug`). A new-topic prompt gets the held-back output (`{}` for an unmarked prompt, the coordination note for a marked one), the same as when the state file cannot be written. |
+| `stop` | Immediately returns `{"decision":"approve"}`. Lock, power steering and reflection are skipped, with no generated writes or safety-valve control removals. |
 
 The PreCompact output with no state root:
 
@@ -313,6 +423,13 @@ When a state root resolves but a write fails, the outcome depends on the file:
 | Original request (`session-start`, `pre-compact`) | Logged and skipped; the hook succeeds |
 | Classification state (`workflow-classification-reminder`) | Logged at `debug`; a new-topic prompt gets the held-back output |
 | Transcript export or compaction metadata (`pre-compact`) | The hook returns its error response, as it did before this change |
+| Stop directory preparation, counter update, completion marker or summary | Propagated errors follow the hook's existing fail-open policy: exit is allowed and later feature processing is skipped |
+| Reflection feedback, history, current findings or presentation semaphore | Later write failures are logged; available findings are still presented. If the semaphore cannot be saved, a later Stop may present findings again |
+
+Stop never redirects failed writes to the project or another storage root.
+Missing storage or a propagated storage error therefore prevents enforcement
+for that invocation. A write failure can leave partial state beneath `S`,
+such as a completion marker saved before a summary failure.
 
 Only the no-root case makes PreCompact report success with `transcript_path`
 and `metadata` set to `null`. A failed export or metadata write under a
@@ -323,21 +440,18 @@ transcript or requirement text.
 
 ## What still touches the working directory
 
-The hooks still read these project files from the working directory, and do
-not create anything there:
+The hooks still read these project files from the working directory and make
+the listed deliberate removals:
 
 | Hook | Reads or removes |
 | --- | --- |
 | `session-start` | Project context files (`PROJECT.md`, discoveries, preferences, workflow); removes a stale `.workflow_active` file |
 | `post-tool-use` | Launcher detection |
 | `workflow-classification-reminder` | The `.workflow_active` semaphore written by the orchestrator |
+| `stop` | Lock controls, power-steering configuration and disable sentinel, reflection configuration and suppression lock, redirect history, preferences and project context; removes the four lock controls only when the safety valve triggers |
 
 These writes still go under the project and are tracked by follow-up issues:
 
-- The Stop hook's lock counter, power-steering state and reflection output.
-  Each is opt-in: the first two need a sentinel or config file the project
-  already owns, and reflection needs an explicit environment variable or
-  config setting.
 - `record_background_index_pid` and the blarify index artefacts written by
   `amplihack-memory` during session start.
 
@@ -408,6 +522,10 @@ assert!(dir.ends_with(UNKNOWN_SESSION_KEY));
 `ProjectDirs::metrics` (`<project>/.claude/runtime/metrics/`) remains in the
 type for compatibility, but the hooks no longer write there.
 
+Stop uses the existing `session_state_dir` API for generated storage and
+`ProjectDirs` for project inputs. Exported feature signatures remain compatible;
+the separation of resolved storage paths is internal to the hooks crate.
+
 ## Security notes
 
 The change closes one threat: hook output (tool metrics, full transcripts and
@@ -423,6 +541,9 @@ Residual cases that remain by design:
   git work tree, state still lands in that work tree, because the probe does
   not look at parent directories.
 - The state root is not checked for ownership or existence before use.
+- Existing symbolic links in the state path are followed by filesystem
+  operations. The resolver does not provide protection against symlink
+  redirection; the configured state path must be trusted.
 - PreCompact copies whatever file the payload's `transcript_path` names.
 - The working-directory writes listed under
   [What still touches the working directory](#what-still-touches-the-working-directory).

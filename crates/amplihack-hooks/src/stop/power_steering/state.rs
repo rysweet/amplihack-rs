@@ -1,10 +1,10 @@
+use super::super::state_paths::StopStatePaths;
 use super::PowerSteeringConfig;
 use super::TranscriptMessage;
 use super::analysis;
-use amplihack_types::{ProjectDirs, sanitize_session_id};
+use amplihack_types::ProjectDirs;
 use serde_json::Value;
 use std::fs;
-use std::path::PathBuf;
 
 pub(super) fn load_config(dirs: &ProjectDirs) -> Option<PowerSteeringConfig> {
     let path = dirs.power_steering_config();
@@ -52,32 +52,20 @@ pub(super) fn is_disabled(dirs: &ProjectDirs) -> bool {
         .unwrap_or(false)
 }
 
-pub(super) fn already_completed(dirs: &ProjectDirs, session_id: &str) -> bool {
-    completion_semaphore(dirs, session_id).exists()
+pub(super) fn already_completed(paths: &StopStatePaths) -> bool {
+    paths.completion_marker().exists()
 }
 
-pub(super) fn mark_complete(dirs: &ProjectDirs, session_id: &str) -> anyhow::Result<()> {
-    let semaphore = completion_semaphore(dirs, session_id);
-    if let Some(parent) = semaphore.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(semaphore, "")?;
+pub(super) fn mark_complete(paths: &StopStatePaths) -> anyhow::Result<()> {
+    fs::write(paths.completion_marker(), "")?;
     Ok(())
 }
 
-pub(super) fn completion_semaphore(dirs: &ProjectDirs, session_id: &str) -> PathBuf {
-    dirs.power_steering
-        .join(format!(".{}_completed", sanitize_session_id(session_id)))
-}
-
 pub(super) fn write_summary(
-    dirs: &ProjectDirs,
-    session_id: &str,
+    paths: &StopStatePaths,
     messages: &[TranscriptMessage],
 ) -> anyhow::Result<()> {
-    let session_dir = dirs.session_power_steering(session_id);
-    fs::create_dir_all(&session_dir)?;
-
+    let session_id = &paths.session_key;
     let first_user = analysis::first_user_message(messages).unwrap_or("unknown task");
     let final_assistant =
         analysis::last_assistant_message(messages).unwrap_or("no assistant summary recorded");
@@ -91,6 +79,6 @@ pub(super) fn write_summary(
         final_assistant.trim()
     );
 
-    fs::write(session_dir.join("summary.md"), summary)?;
+    fs::write(paths.power_steering.join("summary.md"), summary)?;
     Ok(())
 }
