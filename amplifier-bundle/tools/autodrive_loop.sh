@@ -244,6 +244,11 @@ while :; do
   fi
 
   echo "=== auto-drive loop '${LOOP_NAME}': ${ROUND_LABEL} ===" >&2
+  # Driver-owned keys come last, so they replace any caller value: step-02
+  # legitimately passes repo_path, and a caller value for these is never
+  # meaningful. review_dir, autodrive_launch_tools and autodrive_completion_state
+  # are refused at parse time instead: no correct caller passes them, so one
+  # arriving is a wrong setup to report, not hide (#2222).
   T0=$SECONDS # the log is created under umask 077; the round runs with the caller's umask
   ( umask "$CALLER_UMASK" && AMPLIHACK_USAGE_WAIT_LEDGER="$(wait_ledger round)" AMPLIHACK_AUTODRIVE_STATE_DIR="$STATE_DIR" exec "$AMPLIHACK_BIN" recipe run "$ROUND_RECIPE_PATH" \
       --working-dir "$REPO" \

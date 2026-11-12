@@ -30,7 +30,7 @@ You need raw XML access for: comments, speaker notes, slide layouts, animations,
 
 `bash "$PPTX_SKILL_DIR/../common/ooxml/scripts/unpack.sh" <office_file> <output_dir>`
 
-**Note**: Set `PPTX_SKILL_DIR` to the absolute directory containing this loaded `SKILL.md`, supplied by the skill loader. The helper is `../common/ooxml/scripts/unpack.sh` relative to that directory, independently of the current project. Use the quoted absolute invocation above. If the skill directory was not supplied, report that missing input; if the helper is absent, report its exact absolute path. Do not search for another copy.
+**Note**: `PPTX_SKILL_DIR` is not set by anything; it stands for the absolute directory this `SKILL.md` was loaded from. Work it out from that path and set it yourself before running the commands. The helper is `../common/ooxml/scripts/unpack.sh` relative to that directory, independently of the current project. Use the quoted absolute invocation above. If the helper is absent, report its exact absolute path. Do not search for another copy.
 
 #### Key file structures
 

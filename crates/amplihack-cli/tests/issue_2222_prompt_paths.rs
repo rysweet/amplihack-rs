@@ -528,6 +528,7 @@ fn resolved_findings_survive_the_real_producer_and_pinned_renderer_verbatim() {
         "$(touch injected) `touch injected-too` ${HOME}; 'quoted'\n",
         "{{repo_path}} {{missing.value}} remain data\n\n",
         "Unicode: café — concern\n",
+        "C3: spans lines\n```\nfenced `tick` text\n```\nend\n",
     ] {
         std::fs::write(&fx.resolved, findings).unwrap();
         let output = run_step01(&fx, Some(&fx.launch_tools()));
@@ -548,6 +549,10 @@ fn resolved_findings_survive_the_real_producer_and_pinned_renderer_verbatim() {
         assert!(
             p.contains(findings),
             "renderer lost or expanded findings={findings:?}"
+        );
+        assert!(
+            p.contains(&format!("~~~~text\n{findings}\n~~~~\n")),
+            "resolved concerns must sit inside the ~~~~ fence intact, findings={findings:?}\n{p}"
         );
         for dir in [&fx.plain, &fx.repo, &fx.home] {
             for marker in ["injected", "injected-too"] {

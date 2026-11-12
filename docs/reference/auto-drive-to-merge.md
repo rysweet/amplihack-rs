@@ -2683,6 +2683,12 @@ key, so the driver's values always come last.
 Three keys are not replaced but refused: `review_dir`,
 `autodrive_launch_tools` and `autodrive_completion_state`. A `--context`
 naming any of them stops the drive before a round starts.
+Why two treatments: the replaced keys are owned by the driver, and its own
+caller (step-02) legitimately passes `--context repo_path=`, so a caller value
+is never meaningful and replacing it is enough. The refused keys choose which
+checkout is guarded, which code is trusted and where completion is decided; no
+correct caller passes them, so one arriving shows a wrong setup that is
+reported, not hidden.
 `autodrive_completion_state` is the input to the crusty completion decision
 ([completion contract](autodrive-crusty-completion.md)), so step-07 writes its
 decision only to the driver's path. The auto-drive
@@ -2833,8 +2839,9 @@ path; each now falls back through `${TMPDIR:-/tmp}`. This is not a rule for
 every recipe step. Skill folders are checked only for scripts that recipe
 steps run.
 
-The PPTX helper is anchored to the absolute directory containing the loaded
-`pptx/SKILL.md`, supplied by the skill loader, independently of the project.
+The PPTX helper is anchored to the absolute directory the agent loaded
+`pptx/SKILL.md` from. Nothing sets `PPTX_SKILL_DIR`; the agent works it out
+from that path, independently of the project.
 Its shared helper is [common/ooxml/scripts/unpack.sh](../../amplifier-bundle/skills/common/ooxml/scripts/unpack.sh).
 Loading a skill does not authorize searches outside the checkouts permitted
 by an auto-drive prompt.

@@ -48,8 +48,7 @@ context:
 
 steps:
   # Judging agents start outside the tree under review (#1528): autodrive_worktree_guard.sh.
-  # It prints a stamp of the review dir's index; step-02b compares it. The loop
-  # compares its own stamp after the whole round, step-04 included.
+  # It prints a stamp of the review dir's index; step-02b compares it. The loop compares its own stamp after the whole round, step-04 included.
   - id: "step-00-review-dir-guard"
     type: "bash"
     command: |
@@ -157,7 +156,9 @@ steps:
 
       ## Concerns a previous run already resolved
 
-      `{{crusty_round_context.resolved_concerns}}`
+      ~~~~text
+      {{crusty_round_context.resolved_concerns}}
+      ~~~~
 
       Those were addressed and confirmed clean in an earlier round. Do not re-raise one merely because you would have raised it fresh. Re-raise it
       only if you have NEW evidence in the current diff that it is not in fact resolved — and say what that evidence is.
@@ -208,8 +209,7 @@ steps:
           | amplihack orch helper extract-json --require-field crusty_verdict \
           | amplihack orch helper extract-field --field concerns --default '[]')"
         SOURCE="crusty"
-        # Exact-token allow-list. Anything else — including anything that
-        # merely CONTAINS "CLEAN" — falls to CONCERNS.
+        # Exact-token allow-list. Anything else — including anything that merely CONTAINS "CLEAN" — falls to CONCERNS.
         case "$VERDICT" in
           CLEAN|CONCERNS) ;;
           *) echo "WARNING: unrecognised crusty verdict '${VERDICT}'; failing safe to CONCERNS." >&2
