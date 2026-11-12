@@ -3327,10 +3327,12 @@ A check that should have run but was never created is named and blocks the
 merge. A set of expected checks that cannot be read also blocks.
 
 The gate used to read `gh pr checks`, which lists only the checks that exist.
-If a job was never created, for example because a workflow failed to start or
-a matrix leg was dropped, nothing reported it, and "every listed check passed"
-read as green. `autodrive_expected_checks.sh` starts from what *should* exist
-and then looks for it at one SHA.
+If a job was never created, for example because a workflow failed to start,
+nothing reported it, and "every listed check passed" read as green.
+`autodrive_expected_checks.sh` starts from what *should* exist and then looks
+for it at one SHA. It counts defined jobs, not matrix legs: a dropped leg is
+caught only when the base branch requires it (see
+[Limits](#limits-of-the-expected-set)).
 
 ### Usage
 
@@ -3382,23 +3384,44 @@ request at the head. A workflow is included when all of these hold:
 | The file exists at the head | A `.github/workflows/*.yml` or `*.yaml` file listed by `contents/.github/workflows?ref=<HEAD_SHA>`. The path must match `^\.github/workflows/[A-Za-z0-9._-]+\.(yml|yaml)$`. Any other path makes the set unreadable. |
 | It is active | `actions/workflows` reports `state: active` for the same `path`. Disabled workflows never run. |
 | It runs on `pull_request` | The top-level `on:` (also `"on":`, `'on':` and `true:`) names `pull_request`, in scalar, list or mapping form. `pull_request_target` does **not** count: its runs belong to the base SHA, not the head. |
-| Its branch filter matches | A `branches:` list of literal names must contain `BASE_REF`. A list with any glob character (`* ? [ !`) counts as a match. A `branches-ignore:` list that names `BASE_REF` literally excludes the workflow; any other `branches-ignore` does not. |
+| Its branch filter matches | `BASE_REF` is matched against each `branches:` and `branches-ignore:` pattern with GitHub's [filter pattern](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#filter-pattern-cheat-sheet) rules: `*` matches any characters except `/`, `**` matches any characters, `?` and `+` apply to the character before them, and `[...]` is a character class. In `branches:` the last pattern that matches decides, so `['**', '!main']` excludes `main` and `['!main', '**']` includes it. A `branches-ignore:` pattern that matches excludes the workflow. |
 
-`types:` filters are ignored, so the workflow is still expected. `paths:` and
-`paths-ignore:` are handled as described in [Limits](#limits-of-the-expected-set).
+Branch filters depend only on the base name, so the helper evaluates them
+exactly. Three kinds of filter can stop a workflow from running at a head for
+reasons the base name does not settle. A workflow with any of them is expected **only if it
+ran** at the head. Without a run it gets an `evidence:` note naming the
+filter, not a block:
+
+| Filter | Note | Why it is not evaluated |
+| --- | --- | --- |
+| `paths:` or `paths-ignore:` | `paths filter` | The helper does not match path globs against the pull request's files. |
+| `types:` without all of `opened`, `synchronize` and `reopened` | `types filter` | A head gets a run only through one of those three activity types, so a list such as `[labeled]` may never run at a given head. `types:` that names all three is evaluated like no `types:`. |
+| A branch pattern jq cannot compile (for example `+main`, with nothing before the `+`), or a `!` pattern in `branches-ignore:` | `branch pattern` | The result is unknown, so the helper does not guess. |
+
+Before this rule, such a workflow could block a merge for ever. For example, a
+`types: [labeled]` workflow on a pull request that was never labelled would
+stay `MISSING`. The cost is that a workflow with one of these filters that
+should have run, but failed to start, is not caught; required checks are the
+defence (see [Limits](#limits-of-the-expected-set)).
 
 For each included workflow, the helper reads the top-level `jobs:` keys and
-each job's own `name:` and `if:`. A job missing from the workflow's run blocks
-as `MISSING`, with one exception for jobs with a job-level `if:`. GitHub
-usually creates such a job and reports it as `skipped`, and `skipped` passes.
-It does not always create it: on pull request #2152, `ci.yml`'s
-`Prune sccache caches` and `Release` were reported `skipped`, but `docs.yml`'s
-`deploy` (with an `environment:`) was not created at all. So a job with a
-job-level `if:` that is absent from a **completed** run gets an `evidence:`
-note, and one absent from a run that is still going is `PENDING`. A job without
-`if:` that is absent always blocks. `skipped` passes only for defined jobs: a
-required check with no defined job behind it must be `success` (see
-[Which conclusions pass](#which-conclusions-pass)).
+each job's own `name:`. A defined job that is absent from the workflow's
+**completed** run blocks as `MISSING`, whatever the run concluded
+(`startup_failure`, `failure`, `cancelled` or `success`), and whether or not
+the job has a job-level `if:`. GitHub reports a job that its `if:` skipped as a
+`skipped` job, and [`skipped` passes](#which-conclusions-pass) for a defined
+job, so a job whose condition was false is never absent. A job absent from a
+run that is still going is `PENDING`: the run can still create it.
+
+Earlier versions of this helper passed a job with a job-level `if:` that was
+absent from a completed run. The only time that was observed was `docs.yml`'s
+`deploy` on pull request #2152. That run was created at 18:24Z on 9 November
+2026, inside the GitHub Actions incident that #2186 describes. On later heads,
+GitHub created `deploy` as `skipped`. The exception also passed a run that
+concluded `startup_failure` with no jobs, which is #2186's own failure mode,
+so it was removed. The evidence line for each run gives its status and
+conclusion (`run 1008 is completed/startup_failure`), so the reason for a
+missing job is in the evidence bundle.
 
 The run used for a workflow is the latest one (highest `id`) whose `path`
 matches, from `actions/runs?head_sha=<HEAD_SHA>&event=pull_request`. Its jobs
@@ -3431,15 +3454,22 @@ as missing. Give it a literal name.
 
 | Kind | Passes | Blocks |
 | --- | --- | --- |
-| Defined job (a required check of the same name included) | `success`; `skipped` when the job exists in the run | not `completed` (pending); `neutral`, `failure`, `cancelled`, `timed_out`, `action_required`, `stale`, `startup_failure`; never created |
-| Required check with no defined job behind it (a commit status, or a check-run from another app or workflow) | `success` | anything else, `skipped`, `neutral` and `pending` included; never created |
-| Any other check at `HEAD_SHA` | `success`, `skipped` | not `completed`; `neutral`, `failure`, `cancelled`, `timed_out`, `action_required`, `startup_failure`, `stale` |
+| Defined job (a required check of the same name included) | `success`, `neutral`; `skipped` when the job exists in the run | not `completed` (pending); `failure`, `cancelled`, `timed_out`, `action_required`, `stale`, `startup_failure`; never created |
+| Required check with no defined job behind it (a commit status, or a check-run from another app or workflow) | `success`, `neutral` | anything else, `skipped` and `pending` included; never created |
+| Any other check at `HEAD_SHA` | `success`, `neutral`, `skipped` | not `completed`; `failure`, `cancelled`, `timed_out`, `action_required`, `startup_failure`, `stale` |
 | All checks at `HEAD_SHA` | at least one | zero check-runs and zero statuses |
 
-`neutral` always blocks, whatever the check. A `skipped` required check passes
-only when a defined job at the head explains it; a required status or
-check-run that reports `skipped` with no job behind it blocks, because nothing
-shows it was meant to be skipped.
+`neutral` passes on every check. GitHub
+[passes a required check](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-protected-branches/about-protected-branches#require-status-checks-before-merging)
+that is successful, skipped or neutral, and `gh pr checks`, which merge-evidence
+step-03 waits on, counts `NEUTRAL` as skipping, not failing. A `neutral` check
+ran at the head and reported no failure; blocking it would leave the fixing
+agent nothing to fix. The evidence line records it as `neutral`.
+
+`skipped` is the one place the helper is stricter than GitHub. A `skipped`
+required check passes only when a defined job at the head explains it. A
+required status or check-run that reports `skipped` with no job behind it
+blocks, because nothing shows that it ran or was meant to be skipped.
 
 Check-runs are read from `commits/<HEAD_SHA>/check-runs` and statuses from
 `commits/<HEAD_SHA>/status`. Nothing from any other SHA counts, so a green run
@@ -3496,7 +3526,7 @@ Blocker wording:
 | Case | Line |
 | --- | --- |
 | Expected check never created | `blocker: expected check '<name>' was never created at <sha>` |
-| Job with a job-level `if:` absent from a run still going | `blocker: expected check '<name>' is not created yet; run <id> is <status> at <sha>` |
+| Defined job absent from a run still going | `blocker: expected check '<name>' is not created yet; run <id> is <status> at <sha>` |
 | Workflow with no run at the head | `blocker: expected workflow '<path>' never ran at <sha>` |
 | Expected check pending or not passed | `blocker: expected check '<name>' is <state>/<conclusion> at <sha>` |
 | Other check failing or pending | `blocker: check '<name>' is <state>/<conclusion> at <sha>` |
@@ -3528,7 +3558,7 @@ The helper prints one evidence line per reported job, in workflow order:
 ```console
 $ /bin/bash -p amplifier-bundle/tools/autodrive_expected_checks.sh 3f9c2a7e1b4d5c6f708192a3b4c5d6e7f8091a2b main
 evidence: required: Lint & Format, Test, Install Smoke Test, Build x86_64-unknown-linux-gnu, Build aarch64-unknown-linux-gnu, Build x86_64-apple-darwin, Build aarch64-apple-darwin
-evidence: workflow .github/workflows/ci.yml: run 18234567890
+evidence: workflow .github/workflows/ci.yml: run 18234567890 is completed/success
 evidence: expected 'Lint & Format' (required): success
 evidence: expected 'Test' (required): success
 evidence: expected 'Build x86_64-unknown-linux-gnu' (required): success
@@ -3538,7 +3568,7 @@ evidence: expected 'Build aarch64-apple-darwin' (required): success
 evidence: expected 'Prune sccache caches': skipped
 evidence: expected 'Release': skipped
 evidence: workflow .github/workflows/docs.yml: no run at 3f9c2a7e1b4d5c6f708192a3b4c5d6e7f8091a2b (paths filter; not expected)
-evidence: workflow .github/workflows/recipe-runner-pin.yml: run 18234567712
+evidence: workflow .github/workflows/recipe-runner-pin.yml: run 18234567712 is completed/success
 evidence: expected 'Recipe runner pin ancestry': success
 blocker: expected check 'Install Smoke Test' was never created at 3f9c2a7e1b4d5c6f708192a3b4c5d6e7f8091a2b
 {"ci_status":"MISSING","missing":["Install Smoke Test"],"blockers":1}
@@ -3602,10 +3632,18 @@ gate binds to the SHA again and the merge passes `--match-head-commit`.
 These are deliberate. The defence for each is a ruleset of required checks on
 the base branch, which the helper always enforces.
 
-- **Path filters.** A workflow with `paths:` or `paths-ignore:` that has a run
-  at the head has all its jobs expected. One with **no** run is not expected
-  and gets an `evidence:` note. The helper does not evaluate path globs
-  against the pull request's files.
+- **Path filters, `types:` filters and branch patterns jq cannot compile.**
+  A workflow with one of these filters that has a run at the head has all its
+  jobs expected. One with **no** run is not expected and gets an `evidence:`
+  note naming the filter (see [The expected set](#the-expected-set)). So if
+  such a workflow should have run but failed to start, the helper does not
+  catch it.
+- **Matrix legs are not counted.** A matrix job is one defined job, and any
+  one reported leg satisfies it (matching rules 2 and 3). If one leg of
+  `Build ${{ matrix.target }}` is dropped and the others are reported, the job
+  passes. The helper does not expand matrices. The defence is to require each
+  leg on the base branch: this repository requires every `Build` leg, and a
+  required leg that was never created blocks as `MISSING`.
 - **Name matching.** Defined jobs are matched by literal name or literal
   prefix (see [Matching a defined job](#matching-a-defined-job-to-a-reported-job)).
   A job named only by an expression counts as missing. Rules 3 (`<key> (` or
@@ -3624,12 +3662,14 @@ the base branch, which the helper always enforces.
   workflows, required checks from the base branch are the defence.
 - **Required checks from `branches/<base>`.** Classic protection is read from
   the branch object, not the admin-only protection endpoint.
-- **Jobs with a job-level `if:`.** One absent from a completed run is noted,
-  not blocked, because GitHub does not always create a job whose condition is
-  false. A pull request can already change its own workflow files, so this
-  gives it nothing new; required checks still apply.
+- **`skipped` is taken at GitHub's word.** The helper does not evaluate `if:`
+  conditions. A defined job that GitHub reports as `skipped` passes, so if an
+  outage made GitHub skip a job whose condition was true, the helper cannot
+  tell that from a genuine skip. A job that is *absent* is never excused (see
+  [The expected set](#the-expected-set)).
 - **jq 1.6 or later** is required; older jq gives `UNREADABLE`.
-- **`neutral` blocks** on every check at the head, expected or not.
+- **`neutral` passes** on every check, as on GitHub (see
+  [Which conclusions pass](#which-conclusions-pass)).
 - **`skipped` passes only for a defined job.** A required check that reports
   `skipped` passes when its name matches a job in one of the pull request's
   workflows, as GitHub itself treats a skipped required check. A required
@@ -5422,12 +5462,12 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/tools/autodrive_pr_worktree.sh` | tool | Resolves the pull request's linked worktree for phases 2 and 3. Read-only apart from `git worktree add` and fast-forward-only fetches. Refuses a tip that is stale against origin. |
 | `amplifier-bundle/tools/autodrive_worktree_guard.sh` | tool | The #1528 checks: the loop preflight (launch-side recipes, review dir is the main checkout of the PR's repository), each round's `step-00-review-dir-guard` (which also refuses a run-worktree gitlink in the review dir's index), `step-02b-review-dir-unchanged` (index stamp and check), the loop's stamp around each round and the evaluator, and the commit block's linked-worktree and head-branch check. Writes nothing. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv; runs as `/bin/bash -p`, the only process the merge guard trusts. Runs `autodrive_followups.sh check` from its own directory. |
-| `amplifier-bundle/tools/autodrive_expected_checks.sh` | tool | [#2186](#expected-checks-at-the-head-2186): read-only. Builds the expected check set for one head SHA and decides `ci_status`. Run, never sourced, by the merge gate and by merge-evidence step-03. |
+| `amplifier-bundle/tools/autodrive_expected_checks.sh` | tool | [#2186](#expected-checks-at-the-head-2186): read-only. Builds the expected check set for one head SHA and decides `ci_status`. Run, never sourced, by the merge gate and by merge-evidence step-03. A gate file, so the merge guard's mode check covers it. |
 | `amplifier-bundle/tools/autodrive_followups.sh` | tool | [#1979](#minor-findings-end-the-crusty-loop-1979): `classify` (derives `MINOR_ONLY` in crusty-round step-03), `collect` (builds the follow-up set from the round that ended the loop), `file` (one `gh issue create` per unfiled minor finding, then one comment on the plan task issue listing them), `resolve-task` (the task-id rule, #1982). |
 | `amplifier-bundle/tools/autodrive_followups_check.sh` | tool | [#1979](#the-follow-up-check-in-the-merge-gate): `check` and `gate`, sourced by `autodrive_followups.sh`: the merge gate's offline follow-up check. |
 | `amplifier-bundle/tools/autodrive_finding_rules.sh` | tool | Sourced only; no side effects. The single definition of the security keyword lists, `cell()` and the minor-finding predicate, used by `autodrive_followups.sh`. |
 | `amplifier-bundle/tools/gh-merge-guard/gh` | tool | The `gh` shim that refuses a merge outside the gate ([#1551](#merges-outside-the-gate-are-refused-1551)). |
-| `crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs` | launcher | Decides when the shim goes first on `PATH` and exports its `BASH_ENV` file; fails closed when either is missing, the shim is not executable, or either is writable by group or others. |
+| `crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs` | launcher | Decides when the shim goes first on `PATH` and exports its `BASH_ENV` file; fails closed when either is missing, the shim is not executable, or either is writable by group or others. Also fails closed when `tools/` or a gate file is: `GATE_FILES` lists the gate, every helper it sources or runs (`autodrive_expected_checks.sh`, which decides CI, included) and every helper those load. A test keeps that set closed. |
 | `amplifier-bundle/tools/gh-merge-guard/bash-env` | tool | Sourced through `BASH_ENV`; puts the shim back first on `PATH` after a login shell's profile. |
 | `crates/amplihack-hooks/src/pre_tool_use/merge_guard.rs` | hook | Refuses the prohibited forms `gh pr merge`, `gh api` on a merge endpoint and a run of the gate, by program word only. |
 | `amplifier-bundle/tools/autodrive_merge_ready_files.sh` | tool | Finds the merge-ready `SKILL.md` and template. |
@@ -5451,7 +5491,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 
 | Test | Location |
 | --- | --- |
-| [Expected checks at the head](#expected-checks-at-the-head-2186) (#2186): every expected check present and green; a missing job named; a missing required check; each matching rule, rules 3 (`<key> (`) and 4 (`<name> / `) included; `neutral` blocking on expected and other checks; a `skipped` required status with no job behind it blocking; `rules/branches` returning `[]` and an unprotected branch (`protected: false`) read as no required checks, not unreadable; the status order `UNREADABLE`, `MISSING`, `RED`, `PENDING` when several apply; the exact text of all six blocker lines; bad arguments exiting `2` while the gate reports a CI blocker with exit `1`; the gate adding the unreadable blocker only when the helper printed no `blocker:` line; a workflow with no run; a check present only on another SHA; unreadable rules or jobs; the admin-only protection endpoint never called; a by-design skipped job passing; a spoofed check-run in a second suite kept `RED`; a bad workflow path, an injected name and bad arguments; a missing helper blocking the gate; merge-evidence step-03 lowering `GREEN` to `MISSING` and to `UNREADABLE`; the light drive's merge loop running the gate; no `sleep` or wait loop in the helper; no route matching `gh … api …/merge`; the 400-line budget for the gate and the helper; the helper free of bash-4 features (`declare -A`, `mapfile`, `readarray`, `${var,,}`, `${var^^}`) so it runs on macOS `/bin/bash` 3.2. Fake `gh` on `PATH` serving fixtures, no network | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh`; budget list in `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs` |
+| [Expected checks at the head](#expected-checks-at-the-head-2186) (#2186): every expected check present and green; a missing job named; a missing required check; each matching rule, rules 3 (`<key> (`) and 4 (`<name> / `) included; `neutral` passing on expected, required and other checks; a `skipped` required status with no job behind it blocking; a defined job absent from a completed run blocking as `MISSING` whether or not it has a job-level `if:` and whatever the run concluded (`startup_failure`, `failure`, `cancelled`, `success`, with no jobs), and as `PENDING` while the run is queued or in progress; branch patterns matched against the base (`**`, `*` stopping at `/`, `?`, a character class, `!` with the last match deciding, `branches-ignore` globs); the `paths filter`, `types filter` and `branch pattern` notes for a workflow with no run, and a `types: [labeled]` workflow that ran having its jobs expected; an `on:` block list at the key's own indent; the helper's committed mode read from `git ls-files`, not the checkout; `rules/branches` returning `[]` and an unprotected branch (`protected: false`) read as no required checks, not unreadable; the status order `UNREADABLE`, `MISSING`, `RED`, `PENDING` when several apply; the exact text of all six blocker lines; bad arguments exiting `2` while the gate reports a CI blocker with exit `1`; the gate adding the unreadable blocker only when the helper printed no `blocker:` line; a workflow with no run; a check present only on another SHA; unreadable rules or jobs; the admin-only protection endpoint never called; a by-design skipped job passing; a spoofed check-run in a second suite kept `RED`; a bad workflow path, an injected name and bad arguments; a missing helper blocking the gate; merge-evidence step-03 lowering `GREEN` to `MISSING` and to `UNREADABLE`; the light drive's merge loop running the gate; no `sleep` or wait loop in the helper; no route matching `gh … api …/merge`; the 400-line budget for the gate and the helper; the helper free of bash-4 features (`declare -A`, `mapfile`, `readarray`, `${var,,}`, `${var^^}`) so it runs on macOS `/bin/bash` 3.2. Fake `gh` on `PATH` serving fixtures, no network | `amplifier-bundle/recipes/tests/test-issue-2186-expected-checks.sh` (the helper and its two callers); the gate's runtime cases in `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh`; budget list in `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs` |
 | The bundle guard still passes with the helper added to the merge round's tools (#2186) | `crates/amplihack-cli/tests/issue_1561_step_outputs_prefer_recipe_var.rs` (`cargo test -p amplihack-cli --test cli_integration issue_1561`) |
 | The #1551 fake-`gh` stub serving the check-run, status, rules, branch, workflow and run endpoints the gate now reads, if the stub changes for #2186 | `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh` |
 | Executable contract test: loop, verdicts, forbidden-flag scan, merge-gate refusals, qa evidence against stub `cargo` and `gadugi-test`, crusty records and range; a step output read through `RECIPE_VAR_` only, the [#1511 repro](#reading-step-outputs) (`1511-repro`), the `state_dir` refusals and their silence on a safe value, the static `RECIPE_VAR_` check, the inherited-variable rows (`1561-stale-*`, `1561-empty-tools-dir-fails-closed`, `1561-NO_MERGE-*`, `MERGEREADY-no-round-tool-inherited`), and every row of the [loop-health line table](#reading-the-loop-health-line) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
@@ -5463,7 +5503,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | Where phases 2 and 3 run (issue #1528): resolver behaviour and refusals (including a local branch or worktree behind, ahead of or diverged from origin), loop `step-02` resolution and forwarding, round `step-04` commit blocks, a forced-add reproduction the guard refuses, and a commit from the pull request worktree that leaves the launch checkout's index clean | `tests/integration/autodrive_pr_worktree_tests.rs` |
 | [Merges outside the gate](#merges-outside-the-gate-are-refused-1551) (#1551): every merge form refused with exit `3` and the PR left open (T1); forged gates, a copied gate and the real gate run without `-p` refused (T2, T3); the real gate run as `/bin/bash -p` still merges (T3); pass-through of non-merge calls (T4); exit `127` cases (T5); `export -f gh`, `BASH_ENV`, a `PPID` mismatch, a non-digit depth and every non-canonical endpoint form, mixed-case `Pulls` and `Merge` included, refused (SEC); the step-01b directive and its fail-closed branches, the phase-1 `MERGED` check and the unreadable-state exit (T6); static checks (S). CI runs it in a Linux job. | `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh` |
 | When the launcher applies the guard, idempotent `PATH` with the guard first, `no_merge` alone not applying it, the inherited marker, the fail-closed error for an unset, empty or relative `AMPLIHACK_HOME` and a missing or non-executable shim, and (Linux only) a phase-1 `autodrive-*` bash step whose `gh pr merge 1` gets exit `3` and `REFUSED` while the stub `gh` logs no merge, a login shell whose profile prepends another `gh` still resolving `gh` to the shim, the shipped `bash-env` sourcing a user `BASH_ENV` first; off Linux, a companion test shows the merge is refused | `crates/amplihack-cli/tests/issue_1551_merge_guard.rs` |
-| `guard_applies` truth table (`0` and `false` still apply it) and `locate_guard_dir` errors, a group- or other-writable shim or directory included | `crates/amplihack-cli/src/commands/recipe/run/tests_merge_guard.rs` |
+| `guard_applies` truth table (`0` and `false` still apply it) and `locate_guard_dir` errors, a group- or other-writable shim, directory or gate file included; every `autodrive_*.sh` a gate file names outside a comment is itself a gate file (#2186) | `crates/amplihack-cli/src/commands/recipe/run/tests_merge_guard.rs` |
 | The real gate's `MERGED` path with the guard first on `PATH`, the phase-2 `MERGED` check, and the directive reaching the agent prompts (§5i-1551) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | [Finalization hand-off](#finalization-hand-off-from-phase-1-1714) (#1714): the allow-list and flag exactness, the validator's hand-off on both `BLOCKED_CI` exits and on `FAILED_IMPLEMENTATION` with a confirmed open PR (and its refusal without one), the open-PR check's PR head rule (a fast-forward PR head present locally or fetched without writing refs is the same PR; a diverged, rewritten or unfetchable head is not), the real terminal-state probe followed by the validator on a merge already on the PR before finalization (`EXISTING_OPEN_PR` when green, `FAILED_IMPLEMENTATION` handed off when pending, `BLOCKED_CI` handed off when red; a diverged head, a rewound remote, or a probe without `accept_pr_head_ahead` still `FAILED_INVALID_INPUT` and never handed off), `step-20-sync-pr-head` and step-20b run from the YAML against a remote that is ahead, with an upstream, with only `origin/<branch>` and with neither (the push lands on the PR head), standalone runs and all five other prior-state blockers still failing closed, step-03 run from its YAML against a stub `gh` (hand-off, closed or different PR, a non-digit `pr_number` printed as `<invalid>`, no PR, resume, `BLOCKED_CI` with no `handoff` field, a state outside the vocabulary, a missing brick), and static guards on the flag's only setter and on the merge gate | `tests/integration/issue_1714_finalization_handoff.rs` |
 | [Usage limits are not STUCK](#usage-limits-are-not-stuck) (#1801): `1801-evaluator-retry-verdict` (the evaluator hits a limit once, is retried inside step-02 and returns a verdict the loop records, with no `STUCK`), `1801-evaluator-usage-limit` (the limit is not lifted and the loop reports `USAGE_LIMIT`), a round and a before-round step that fail on a limit, and negative cases where the loop does not stop as `USAGE_LIMIT`: a nested `class`, the marker with exit `0`, an indented or echoed marker, and `usage_limit_wait` lines alone | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |

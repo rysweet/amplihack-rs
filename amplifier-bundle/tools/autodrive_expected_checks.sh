@@ -8,10 +8,15 @@
 #   - the required checks of BASE_REF: rulesets (rules/branches/<base>) plus
 #     classic protection as the branch object reports it (branches/<base>);
 #   - every job of each active workflow at HEAD_SHA whose `on:` includes
-#     pull_request and whose branch filters admit BASE_REF.
+#     pull_request and whose branch filters admit BASE_REF (GitHub's glob and
+#     `!` rules, applied to the one base name). A workflow with a filter that
+#     depends on more than the base (paths, or types: without opened,
+#     synchronize and reopened) or a pattern jq cannot compile is expected
+#     only if it ran.
 # A missing check, a pending or failing check, and anything that cannot be
 # read all block. Every other check-run and status at HEAD_SHA must not be
-# pending or failing either, and zero checks at the head blocks.
+# pending or failing either, and zero checks at the head blocks. `neutral`
+# passes, as GitHub passes it for a required check.
 #
 # Output (stdout): `evidence: ...` lines, `blocker: ...` lines, then ONE final
 # JSON line {"ci_status":"GREEN|RED|PENDING|MISSING|UNREADABLE","missing":[..],
@@ -137,16 +142,16 @@ jq -r --slurpfile w "${T}/active.json" ".[] | select(test(\"${WF_RE}\") and (con
 read_into "${T}/runs.json" 1 "actions/runs?head_sha=${SHA}&event=pull_request&per_page=100" \
   'if all(.[]; type == "object" and (.workflow_runs | type) == "array") then [.[].workflow_runs[]]
      | if all(.[]; ((.id | tostring) | test("^[0-9]+$")) and (.path | type) == "string")
-       then [.[] | select(.head_sha == $sha) | {id: (.id | tonumber), path, status, suite: (.check_suite_id // null)}]
+       then [.[] | select(.head_sha == $sha) | {id: (.id | tonumber), path, status, conclusion, suite: (.check_suite_id // null)}]
        else error("run id or path") end
    else error("shape") end'
 
 # --- The YAML scanner (D1). It reads only the top-level `on:` key (scalar,
-# flow list, block list or mapping; also "on", 'on' and true) with the child
-# keys of pull_request, and the top-level `jobs:` keys with each job's own
-# `name:` and `if:` at the job-body indent. Output records (tab-separated):
+# flow list, block list indented or not, or mapping; also "on", 'on' and true)
+# with the child keys of pull_request, and the top-level `jobs:` keys with each
+# job's own `name:` at the job-body indent. Records (tab-separated):
 #   O <trigger>  B <branches entry>  I <branches-ignore entry>  P 1 (paths)
-#   J <key> <name> <1 when the job has a job-level if:>  E <reason>
+#   Y 1 (types)  T <types entry>  J <key> <name>  E <reason>
 # No system(), no command getline, no redirection: the YAML is data.
 SCAN='
 function ind(s) { match(s, /^ */); return RLENGTH }
@@ -166,18 +171,20 @@ function items(s, k,   n, a, i, v) {
     for (i = 1; i <= n; i++) { v = val(a[i]); if (v != "") print k "\t" v }
   } else if (s != "") print k "\t" s
 }
-function flush() { if (jk != "") { gsub(/\t/, " ", jk); gsub(/\t/, " ", jn); print "J\t" jk "\t" jn "\t" jif }; jk = "" }
+function flush() { if (jk != "") { gsub(/\t/, " ", jk); gsub(/\t/, " ", jn); print "J\t" jk "\t" jn }; jk = "" }
 BEGIN { SQ = sprintf("%c", 39); KEYRE = "^[^ #-][^:]*:([ \t]|$)" }
 { sub(/\r$/, "") }
 /^[ \t]*(#|$)/ { next }
 {
   i = ind($0); line = substr($0, i + 1)
+  # A block list under on: may sit at the key indent (YAML 1.2 example 8.22).
+  if (i == 0 && sec == "on" && ol && oi == 0 && line ~ /^-([ \t]|$)/) { print "O\t" val(substr(line, 2)); next }
   if (i == 0) {
     flush(); sec = ""
     if (line !~ KEYRE) next
     k = key(line); r = rest(line)
     if (k == "on" || k == "true") {
-      sawon = 1; sec = "on"; oi = 0
+      sawon = 1; sec = "on"; oi = 0; ol = (r == "")
       if (substr(r, 1, 1) == "{") print "E\tflow mapping under on:"; else items(r, "O")
     } else if (k == "jobs") {
       sawjobs = 1; sec = "jobs"; ji = 0
@@ -190,7 +197,7 @@ BEGIN { SQ = sprintf("%c", 39); KEYRE = "^[^ #-][^:]*:([ \t]|$)" }
     if (i < oi) { print "E\tbad indentation under on:"; next }
     if (i == oi) {
       pr = 0; lk = ""
-      if (substr(line, 1, 2) == "- ") { print "O\t" val(substr(line, 3)); next }
+      if (line ~ /^-([ \t]|$)/) { print "O\t" val(substr(line, 2)); next }
       if (line !~ KEYRE) { print "E\tunreadable on: entry"; next }
       k = key(line); r = rest(line); print "O\t" k
       if (k == "pull_request") { pr = 1; pi = 0; if (r != "" && r != "null" && r != "~" && r != "{}") print "E\tinline pull_request: value" }
@@ -198,16 +205,18 @@ BEGIN { SQ = sprintf("%c", 39); KEYRE = "^[^ #-][^:]*:([ \t]|$)" }
     }
     if (!pr) next
     if (pi == 0) pi = i
-    if (i == pi && substr(line, 1, 2) != "- ") {
+    if (i == pi && line !~ /^-([ \t]|$)/) {
       lk = ""
       if (line !~ KEYRE) next
       k = key(line); r = rest(line)
       if (k == "branches") { lk = "B"; items(r, "B") }
       else if (k == "branches-ignore") { lk = "I"; items(r, "I") }
+      else if (k == "types") { lk = "T"; print "Y\t1"; items(r, "T") }
       else if (k == "paths" || k == "paths-ignore") print "P\t1"
       next
     }
-    if (lk != "" && substr(line, 1, 2) == "- ") print lk "\t" val(substr(line, 3))
+    if (lk != "" && line ~ /^-([ \t]|$)/) print lk "\t" val(substr(line, 2))
+    else if (lk != "") print "E\tunreadable list under pull_request:"
     next
   }
   if (sec == "jobs") {
@@ -215,29 +224,40 @@ BEGIN { SQ = sprintf("%c", 39); KEYRE = "^[^ #-][^:]*:([ \t]|$)" }
     if (i == ji) {
       flush()
       if (line !~ KEYRE) { print "E\tunreadable job key"; next }
-      jk = key(line); jn = ""; jif = 0; bi = 0; njobs++
+      jk = key(line); jn = ""; bi = 0; njobs++
       next
     }
     if (i < ji || jk == "") { print "E\tbad indentation under jobs:"; next }
     if (bi == 0) bi = i
     if (i == bi && line ~ /^name[ \t]*:/) jn = rest(line)
-    if (i == bi && line ~ /^if[ \t]*:/) jif = 1
   }
 }
 END { flush(); if (!sawon) print "E\tno top-level on: key"; if (!sawjobs || njobs == 0) print "E\tno jobs under jobs:" }
 '
 # Is the workflow expected (D2, D3)? pull_request (not pull_request_target) in
-# `on`; `branches` names the base or holds a glob; `branches-ignore` does not
-# name the base. `types:` is ignored (D5). `paths` matters only with no run (D4).
-DECIDE='split("\n") | map(select(length > 0) | split("\t")) as $r
+# `on`, and the base admitted by GitHub's filter rules: `*` stops at `/`, `**`
+# does not, `? + [..]` act as in a regex, and in `branches` the last matching
+# pattern decides (`!` excludes). `cond` names why a workflow is expected only
+# if it ran: paths (D4), a types: list that can skip a head, or a pattern jq
+# cannot compile or a `!` in branches-ignore (an unknown, not a guess).
+DECIDE='def re: "^" + (gsub("(?<c>[.(){}|^$\\\\])"; "\\\(.c)") | gsub("\\*\\*"; "\u0001")
+    | gsub("\\*"; "[^/]*") | gsub("\u0001"; ".*")) + "$";
+  def admits($ps): reduce $ps[] as $p (false; if . == null then null else
+    (try ($base | test($p | ltrimstr("!") | re)) catch null) as $m
+    | if $m == null then null elif $m then ($p | startswith("!") | not) else . end end);
+  split("\n") | map(select(length > 0) | split("\t")) as $r
   | [$r[] | select(.[0] == "E") | .[1]] as $e
   | if ($e | length) > 0 then {error: $e[0]} else
     [$r[] | select(.[0] == "B") | .[1]] as $b | [$r[] | select(.[0] == "I") | .[1]] as $i
-    | {expected: (any($r[]; .[0] == "O" and .[1] == "pull_request")
-         and (($b | length) == 0 or any($b[]; test("[*?\\[!]") or . == $base))
-         and (any($i[]; . == $base) | not)),
-       paths: any($r[]; .[0] == "P"),
-       jobs: [$r[] | select(.[0] == "J") | {key: .[1], name: (.[2] // ""), cond: (.[3] == "1")}]}
+    | [$r[] | select(.[0] == "T") | .[1]] as $t
+    | (if ($b | length) == 0 then true else admits($b) end) as $in
+    | (if any($i[]; startswith("!")) then null else admits($i) end) as $out
+    | {expected: (any($r[]; .[0] == "O" and .[1] == "pull_request") and $in != false and $out != true),
+       cond: ([(if $in == null or $out == null then "branch pattern" else empty end),
+         (if any($r[]; .[0] == "Y") and any("opened", "synchronize", "reopened"; . as $x | any($t[]; . == $x) | not)
+          then "types filter" else empty end),
+         (if any($r[]; .[0] == "P") then "paths filter" else empty end)] | join(", ")),
+       jobs: [$r[] | select(.[0] == "J") | {key: .[1], name: (.[2] // "")}]}
     end'
 
 : > "${T}/wfs.jsonl"
@@ -260,9 +280,8 @@ while IFS= read -r P; do
     *) continue ;;
   esac
   # D6: the latest run (highest id) for this path at the head decides.
-  RID=""; RST=""
-  IFS=$'\t' read -r RID RST < <(jq -r --arg p "$P" \
-    '[.[] | select(.path == $p)] | max_by(.id) | [.id // "", .status // ""] | @tsv' "${T}/runs.json")
+  LATEST='[$runs[0][] | select(.path == $p)] | max_by(.id)'
+  RID="$(jq -nr --arg p "$P" --slurpfile runs "${T}/runs.json" "${LATEST} | .id // empty")"
   echo null > "${F}.j"
   if [ -n "$RID" ]; then
     read_into "${F}.j" 1 "actions/runs/${RID}/jobs?per_page=100" \
@@ -270,9 +289,8 @@ while IFS= read -r P; do
          [.[].jobs[] | {name: (.name | tostring), status, conclusion}] else error("shape") end' \
       || echo null > "${F}.j"
   fi
-  jq -cn --arg path "$P" --arg run "$RID" --arg rst "$RST" --slurpfile d "${F}.d" --slurpfile j "${F}.j" \
-    '{path: $path, run: (if $run == "" then null else ($run | tonumber) end), rstatus: $rst,
-      paths: $d[0].paths, defined: $d[0].jobs, jobs: $j[0]}' >> "${T}/wfs.jsonl"
+  jq -cn --arg p "$P" --slurpfile runs "${T}/runs.json" --slurpfile d "${F}.d" --slurpfile j "${F}.j" \
+    "{path: \$p, run: (${LATEST}), cond: \$d[0].cond, defined: \$d[0].jobs, jobs: \$j[0]}" >> "${T}/wfs.jsonl"
 done < "${T}/paths"
 
 jq -R -s -c 'split("\n") | map(select(length > 0))' "${T}/unr" > "${T}/unr.json"
@@ -284,17 +302,17 @@ jq -s -c '.' "${T}/wfs.jsonl" > "${T}/wfs.json"
 # overrides a failing check-run. Names are cleaned before they are printed.
 # S3: the check suite of a workflow run that a later run of the same workflow
 # at this head superseded (ci.yml cancels in-progress runs) is dropped first.
-# D8': a defined job missing from its run blocks as MISSING, except a job with
-# a job-level `if:`: GitHub does not always create one whose condition is false
-# (docs.yml `deploy`, observed on PR #2152), so once the run has completed it
-# gets a note, and while the run is still going it is PENDING.
+# D8: a defined job missing from a completed run blocks as MISSING, whatever
+# the run concluded and whether or not the job has an `if:` (GitHub reports a
+# job its `if:` skipped as `skipped`); missing from a run still going, PENDING.
 EVAL='
 def cl: tostring | gsub("\\$\\{\\{\\s*"; "<") | gsub("\\s*\\}\\}"; ">")
   | gsub("[[:cntrl:]\"\u0027\\\\$`{}]"; "") | .[0:120];
 def q: "\u0027" + cl + "\u0027";
 def at: " at " + $sha;
 def st: (.status | cl) + "/" + ((.conclusion // "none") | cl);
-def ok($skip): .status == "completed" and (.conclusion == "success" or ($skip and .conclusion == "skipped"));
+def ok($skip): .status == "completed" and (.conclusion == "success" or .conclusion == "neutral"
+  or ($skip and .conclusion == "skipped"));
 def disp: if .name == "" then .key else .name end;
 def matches($j): . as $n | ($j | disp) as $d |
   if ($d | contains("${{")) then
@@ -310,17 +328,15 @@ $req[0] as $req | $wfs[0] as $wfs | $st[0] as $st
 | [ {k: "E", t: ("required: " + (if ($req | length) == 0 then "(none)" else ($req | map(cl) | join(", ")) end))} ] as $B
 | [ $wfs[] | . as $w |
     if $w.run == null then
-      if $w.paths then {k: "E", t: ("workflow " + ($w.path | cl) + ": no run" + at + " (paths filter; not expected)")}
+      if $w.cond != "" then {k: "E", t: ("workflow " + ($w.path | cl) + ": no run" + at + " (" + $w.cond + "; not expected)")}
       else {k: "B", c: "M", t: ("expected workflow " + ($w.path | q) + " never ran" + at), miss: ($w.path | cl)} end
     else
-      {k: "E", t: ("workflow " + ($w.path | cl) + ": run " + ($w.run | tostring))},
+      {k: "E", t: ("workflow " + ($w.path | cl) + ": run " + ($w.run.id | tostring) + " is " + ($w.run | st))},
       (if $w.jobs == null then empty else
         $w.defined[] as $j | ($j | disp) as $d | [$w.jobs[] | select(.name | matches($j))] as $m |
-        if ($m | length) == 0 and $j.cond and $w.rstatus == "completed" then
-          {k: "E", t: ("expected " + ($d | q) + ": not created (job-level if:, run " + ($w.run | tostring) + " completed)")}
-        elif ($m | length) == 0 and $j.cond then
-          {k: "B", c: "P", t: ("expected check " + ($d | q) + " is not created yet; run " + ($w.run | tostring)
-             + " is " + ($w.rstatus | cl) + at), name: $d}
+        if ($m | length) == 0 and $w.run.status != "completed" then
+          {k: "B", c: "P", t: ("expected check " + ($d | q) + " is not created yet; run " + ($w.run.id | tostring)
+             + " is " + ($w.run.status | cl) + at), name: $d}
         elif ($m | length) == 0 then
           {k: "B", c: "M", t: ("expected check " + ($d | q) + " was never created" + at), miss: ($d | cl), name: $d}
         else $m[] | . as $x | (if any($req[]; . == $x.name) then " (required)" else "" end) as $tag |
@@ -341,7 +357,7 @@ $req[0] as $req | $wfs[0] as $wfs | $st[0] as $st
          + [$ss[] | select(.state != "success") | {k: "B", c: (if .state == "pending" then "P" else "R" end),
             t: ("expected check " + ($r | q) + " is " + (.state | cl) + at), name: $r}]) as $bad
         | if ($bad | length) > 0 then $bad[] elif $isjob then empty
-          else {k: "E", t: ("expected " + ($r | q) + " (required): success")} end
+          else {k: "E", t: ("expected " + ($r | q) + " (required): " + ([$rows[].conclusion, $ss[].state] | map(cl) | uniq | join(", ")))} end
       end ] as $D
 | ($blocked + [ $D[] | .name // empty ]) as $blocked
 | [ (if ($crd | length) + ($st | length) == 0 then {k: "B", c: "M", t: ("no checks" + at)} else empty end),

@@ -277,15 +277,17 @@ evidence was captured.
 required checks and every job of each active `pull_request` workflow at the
 head, then looks for each one at that SHA. A check that was never created is
 named (`expected check '<name>' was never created at <sha>`) and blocks; so
-does an expected set that cannot be read. `neutral` always blocks, and a
-`skipped` required check passes only when a defined job at the head explains
-it. Merge-evidence step-03 runs the same
-helper from `$AMPLIHACK_HOME` and lowers `ci_status` to `MISSING`, `PENDING`,
-`RED` or `UNREADABLE`. Known limits: a path-filtered workflow with no run is
-only noted; a job with a job-level `if:` absent from a completed run is only
-noted; jobs match by literal name or prefix; required checks match by
-name, not app id; the workflow list is read at the head only
-(details: "Limits of the expected set" in the full reference below).
+does an expected set that cannot be read. A defined job absent from a
+completed run blocks whatever the run concluded, with a job-level `if:` or
+without. `neutral` passes, as on GitHub, and a `skipped` required check passes
+only when a defined job at the head explains it. Merge-evidence step-03 runs
+the same helper from `$AMPLIHACK_HOME` and lowers `ci_status` to `MISSING`,
+`PENDING`, `RED` or `UNREADABLE`. Known limits: a workflow whose `paths:` or
+`types:` filter can skip a head, or whose branch pattern jq cannot compile, is
+expected only if it ran; matrix legs are not counted, so one leg satisfies the
+job; jobs match by literal name or prefix; required checks match by name, not
+app id; the workflow list is read at the head only (details: "Limits of the
+expected set" in the full reference below).
 
 **An unreadable criterion is a failure, never a pass.** Unreadable CI, a
 missing expected check, zero reported checks, unreadable review threads, missing `qa-team` evidence, an

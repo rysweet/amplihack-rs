@@ -125,8 +125,14 @@ if [ ! -f "${HELPER}" ]; then
 else
   pass "EC-exists" "the helper exists"
 fi
-check "EC-mode-755" "the helper is mode 755" \
-  test "$(stat -c '%a' "${HELPER}" 2>/dev/null)" = "755"
+# The mode git records, not the checkout's: a umask of 0002 checks a 100755
+# file out as 775. Outside a git checkout, the owner execute bit stands in.
+committed_mode() {
+  local m
+  m="$(git -C "${REPO_ROOT}" ls-files -s -- amplifier-bundle/tools/autodrive_expected_checks.sh 2>/dev/null | cut -d' ' -f1)"
+  if [ -n "$m" ]; then [ "$m" = 100755 ]; else test -x "${HELPER}"; fi
+}
+check "EC-mode-755" "the helper is committed as mode 100755" committed_mode
 check "EC-shebang" "the helper starts with #!/bin/bash -p" \
   test "$(head -n1 "${HELPER}" 2>/dev/null)" = "#!/bin/bash -p"
 check "EC-unset-f" "the helper drops gh/git/jq functions with builtin unset -f" \
@@ -210,7 +216,7 @@ ran_check "EC-AC1-no-blockers" "a green run prints no blocker: line" test "$(blo
 check "EC-AC1-evidence-required" "the required set is recorded as an evidence: line" \
   has_prefix "evidence: required: Lint & Format, Test, Install Smoke Test, Build x86_64-unknown-linux-gnu, Build aarch64-unknown-linux-gnu"
 check "EC-AC1-evidence-runs" "each expected workflow's run is recorded" \
-  bash -c 'grep -qxF "evidence: workflow .github/workflows/ci.yml: run 1001" "$1" && grep -qxF "evidence: workflow .github/workflows/recipe-runner-pin.yml: run 1002" "$1"' _ "${WORK}/out"
+  bash -c 'grep -qxF "evidence: workflow .github/workflows/ci.yml: run 1001 is completed/success" "$1" && grep -qxF "evidence: workflow .github/workflows/recipe-runner-pin.yml: run 1002 is completed/success" "$1"' _ "${WORK}/out"
 check "EC-AC1-evidence-per-check" "each expected check's result is recorded" \
   bash -c 'grep -qF "evidence: expected '"'"'Test'"'"' (required): success" "$1" && grep -qF "evidence: expected '"'"'Recipe runner pin ancestry'"'"': success" "$1"' _ "${WORK}/out"
 check "EC-AC1-only-last-json" "only the last stdout line is a JSON object" \
@@ -329,18 +335,48 @@ ec_job "$FX" 1003 deploy completed skipped
 run_helper "$FX"
 expect "EC-AC4b-paths-run-missing" "a paths-filtered workflow that ran but lacks a job blocks" MISSING 1 \
   "blocker: expected check 'build' was never created at ${HEAD}"
-# D8': GitHub does not always create a job whose job-level if: is false (docs.yml
-# deploy on PR #2152). Absent from a completed run it is noted, not blocked;
-# absent from a run still going it is PENDING.
+# D8: GitHub reports a job that its job-level if: skipped as `skipped`, so a
+# job absent from a completed run is MISSING, if: or not, whatever the run
+# concluded. Absent from a run still going, it is PENDING.
 FX="$(new_fx)"; ec_run "$FX" 1003 .github/workflows/docs.yml __HEAD__
 ec_job "$FX" 1003 build completed success
 run_helper "$FX"
-expect "EC-D8-if-job-absent-completed" "an if: job absent from a completed run passes with a note" GREEN 0 \
-  "evidence: expected 'deploy': not created (job-level if:, run 1003 completed)"
-ec_jq "$FX/runs.json" '(.workflow_runs[] | select(.id == 1003)).status = "in_progress"'
+expect "EC-D8-if-job-absent-completed" "an if: job absent from a run that concluded success is MISSING" MISSING 1 \
+  "blocker: expected check 'deploy' was never created at ${HEAD}"
+ec_jq "$FX/runs.json" '(.workflow_runs[] | select(.id == 1003)) |= (.status = "in_progress" | .conclusion = null)'
 run_helper "$FX"
 expect "EC-D8-if-job-absent-running" "an if: job absent from a run still going is PENDING" PENDING 1 \
   "blocker: expected check 'deploy' is not created yet; run 1003 is in_progress at ${HEAD}"
+FX="$(new_fx)"; ec_run "$FX" 1003 .github/workflows/docs.yml __HEAD__
+ec_jq "$FX/runs.json" '(.workflow_runs[] | select(.id == 1003)) |= (.status = "queued" | .conclusion = null)'
+echo '{"total_count":0,"jobs":[]}' > "$FX/jobs-1003.json"
+run_helper "$FX"
+expect "EC-D8-job-absent-queued" "a job without if: absent from a queued run is PENDING" PENDING 1 \
+  "blocker: expected check 'build' is not created yet; run 1003 is queued at ${HEAD}" \
+  "evidence: workflow .github/workflows/docs.yml: run 1003 is queued/none"
+# #2186's own failure mode: the only job carries a job-level if:, and the run
+# completed without creating it. No run conclusion excuses the missing job.
+E2E_YML='name: E2E
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  e2e:
+    name: E2E
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo e2e
+'
+for c in startup_failure failure cancelled success; do
+  FX="$(new_fx)"; ec_wf "$FX" e2e.yml "$E2E_YML"; ec_run "$FX" 1008 .github/workflows/e2e.yml __HEAD__
+  ec_jq "$FX/runs.json" '(.workflow_runs[] | select(.id == 1008)).conclusion = $c' --arg c "$c"
+  echo '{"total_count":0,"jobs":[]}' > "$FX/jobs-1008.json"
+  run_helper "$FX"
+  expect "EC-D8-no-jobs-${c}" "an if: job absent from a run that concluded ${c} with no jobs is MISSING" MISSING 1 \
+    "evidence: workflow .github/workflows/e2e.yml: run 1008 is completed/${c}" \
+    "blocker: expected check 'E2E' was never created at ${HEAD}"
+done
 
 # AC5: the check exists only on another SHA (an earlier push).
 FX="$(new_fx)"
@@ -418,12 +454,21 @@ FX="$(new_fx)"; ec_set_job "$FX" 1001 Test completed failure
 run_helper "$FX"
 expect "EC-R-failure" "an expected check that failed gives RED" RED 1 \
   "blocker: expected check 'Test' is completed/failure at ${HEAD}"
-for c in cancelled timed_out action_required stale startup_failure neutral; do
+for c in cancelled timed_out action_required stale startup_failure; do
   FX="$(new_fx)"; ec_set_job "$FX" 1002 "Recipe runner pin ancestry" completed "$c"
   run_helper "$FX"
   expect "EC-R-${c}" "an expected job concluding ${c} gives RED" RED 1 \
     "blocker: expected check 'Recipe runner pin ancestry' is completed/${c} at ${HEAD}"
 done
+# neutral passes, as GitHub passes it for a required check.
+FX="$(new_fx)"; ec_set_job "$FX" 1002 "Recipe runner pin ancestry" completed neutral
+run_helper "$FX"
+expect "EC-neutral-expected-job" "an expected job concluding neutral passes and is recorded as neutral" GREEN 0 \
+  "evidence: expected 'Recipe runner pin ancestry': neutral"
+FX="$(new_fx)"; ec_set_job "$FX" 1001 Test completed neutral
+run_helper "$FX"
+expect "EC-neutral-required-job" "a required defined job concluding neutral passes" GREEN 0 \
+  "evidence: expected 'Test' (required): neutral"
 # S3: ci.yml cancels a running build when a new one starts for the same ref,
 # so a reopened PR or a re-pushed SHA leaves a cancelled earlier run at the
 # same head. The newer run of the same workflow decides; the older suite is
@@ -435,6 +480,7 @@ add_cancelled_ci_run() { # add_cancelled_ci_run <dir> <run_id>
   for n in "Lint & Format" Test "Install Smoke Test" "Build x86_64-unknown-linux-gnu" "Build aarch64-unknown-linux-gnu"; do
     ec_job "$1" "$2" "$n" completed cancelled
   done
+  ec_job "$1" "$2" Release completed skipped   # its job-level if: is false
 }
 FX="$(new_fx)"; add_cancelled_ci_run "$FX" 999
 run_helper "$FX"
@@ -468,8 +514,7 @@ check "EC-R7-other-pending" "a pending check that is not expected gives PENDING"
 check "EC-R7-other-pending-line" "its blocker uses the 'check' form" has_prefix "blocker: check 'Some Bot' is in_progress/"
 FX="$(new_fx)"; ec_check "$FX" "Some Bot" completed neutral __HEAD__ 9200 some-bot
 run_helper "$FX"
-expect "EC-R7-other-neutral" "neutral blocks on a check that is not expected too" RED 1 \
-  "blocker: check 'Some Bot' is completed/neutral at ${HEAD}"
+expect "EC-R7-other-neutral" "neutral passes on a check that is not expected (gh pr checks counts it as skipping)" GREEN 0
 FX="$(new_fx)"; ec_check "$FX" "Some Bot" completed skipped __HEAD__ 9200 some-bot
 run_helper "$FX"
 expect "EC-R7-other-skipped" "skipped on a check that is not expected passes" GREEN 0
@@ -484,8 +529,8 @@ expect "EC-skipped-required-no-job" "a required check-run with no defined job th
   "blocker: expected check 'External Scan' is completed/skipped at ${HEAD}"
 FX="$(new_fx)"; ec_required "$FX" "External Scan"; ec_check "$FX" "External Scan" completed neutral __HEAD__ 9300 other-app
 run_helper "$FX"
-expect "EC-neutral-required-no-job" "a required check-run with no defined job that reports neutral blocks" RED 1 \
-  "blocker: expected check 'External Scan' is completed/neutral at ${HEAD}"
+expect "EC-neutral-required-no-job" "a required check-run with no defined job that reports neutral passes, as on GitHub" GREEN 0 \
+  "evidence: expected 'External Scan' (required): neutral"
 FX="$(new_fx)"; ec_required "$FX" "External Scan"
 printf '{"state":"pending","sha":"%s","total_count":1,"statuses":[{"context":"External Scan","state":"pending"}]}\n' "$HEAD" > "$FX/status.json"
 run_helper "$FX"
@@ -521,10 +566,11 @@ check "EC-order-unreadable-first" "UNREADABLE outranks MISSING" verdict_is UNREA
 # 7. Which workflows are expected.
 # ---------------------------------------------------------------------------
 # wf_expected <id> <description> <yaml> <expected: yes|no>: adds the workflow
-# with NO run; expected -> MISSING (never ran), not expected -> GREEN.
+# with NO run; expected -> MISSING (never ran), not expected -> GREEN. The base
+# is main, or WF_BASE.
 wf_expected() {
   local fx; fx="$(new_fx)"; ec_wf "$fx" extra.yml "$3"
-  run_helper "$fx"
+  run_helper "$fx" "$HEAD" "${WF_BASE:-main}"
   if [ "$4" = yes ]; then
     expect "EC-wf-$1" "$2 is expected" MISSING 1 "blocker: expected workflow '.github/workflows/extra.yml' never ran at ${HEAD}"
   else
@@ -561,11 +607,44 @@ on:
   - push
   - pull_request
 ${J}" yes
-wf_expected types-ignored "pull_request with a types: filter" "name: A
+wf_expected block-list-unindented "on: block list at the key's own indent" "name: A
+on:
+- push
+- pull_request
+${J}" yes
+# no_run_note <id> <reason>: the last run noted extra.yml as expected only if it ran.
+no_run_note() {
+  check "EC-wf-$1-note" "the workflow with no run gets a '$2' evidence note" \
+    has_line "evidence: workflow .github/workflows/extra.yml: no run at ${HEAD} ($2; not expected)"
+}
+# types: a head reaches a run only through opened, synchronize or reopened.
+wf_expected types-labeled "pull_request with types: [labeled] and no run" "name: A
 on:
   pull_request:
     types: [labeled]
+${J}" no
+no_run_note types-labeled "types filter"
+wf_expected types-default "types: naming opened, synchronize and reopened" "name: A
+on:
+  pull_request:
+    types: [opened, labeled, synchronize, reopened]
 ${J}" yes
+wf_expected types-partial "a types: block list without reopened, and no run" "name: A
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+${J}" no
+FX="$(new_fx)"; ec_wf "$FX" extra.yml "name: A
+on:
+  pull_request:
+    types: [labeled]
+${J}"
+ec_run "$FX" 1009 .github/workflows/extra.yml __HEAD__; echo '{"total_count":0,"jobs":[]}' > "$FX/jobs-1009.json"
+run_helper "$FX"
+expect "EC-wf-types-ran" "a types-filtered workflow that ran at the head has every job expected" MISSING 1 \
+  "blocker: expected check 'x' was never created at ${HEAD}"
 wf_expected prt-only "on: pull_request_target" "name: A
 on: pull_request_target
 ${J}" no
@@ -598,11 +677,51 @@ on:
       - develop
       - main
 ${J}" yes
-wf_expected branch-glob "branches with a glob" "name: A
+# Branch patterns are evaluated against the one base name (GitHub's rules).
+B_RELEASES="name: A
 on:
   pull_request:
     branches: ['releases/**']
+${J}"
+wf_expected branch-glob-other "branches: ['releases/**'] with base main" "$B_RELEASES" no
+WF_BASE=releases/1.x wf_expected branch-glob-base "branches: ['releases/**'] with base releases/1.x" "$B_RELEASES" yes
+WF_BASE=release/1.x wf_expected branch-star-slash "branches: ['*'] with base release/1.x (* stops at /)" "name: A
+on:
+  pull_request:
+    branches: ['*']
+${J}" no
+wf_expected branch-star "branches: ['ma*'] with base main" "name: A
+on:
+  pull_request:
+    branches: ['ma*']
 ${J}" yes
+wf_expected branch-negated "branches: ['**', '!main'] with base main" "name: A
+on:
+  pull_request:
+    branches: ['**', '!main']
+${J}" no
+wf_expected branch-negated-order "branches: ['!main', '**']: the later positive pattern decides" "name: A
+on:
+  pull_request:
+    branches: ['!main', '**']
+${J}" yes
+wf_expected branch-optional "branches: ['mai?n'] (? is zero or one of the character before)" "name: A
+on:
+  pull_request:
+    branches: ['mai?n']
+${J}" yes
+wf_expected branch-class "branches: ['[lm]ain']" "name: A
+on:
+  pull_request:
+    branches:
+      - '[lm]ain'
+${J}" yes
+wf_expected branch-bad-pattern "branches: ['+main'] (jq cannot compile it), no run" "name: A
+on:
+  pull_request:
+    branches: ['+main']
+${J}" no
+no_run_note branch-bad-pattern "branch pattern"
 wf_expected ignore-base "branches-ignore naming the base" "name: A
 on:
   pull_request:
@@ -613,11 +732,22 @@ on:
   pull_request:
     branches-ignore: [develop]
 ${J}" yes
-wf_expected ignore-glob "branches-ignore with a glob" "name: A
+wf_expected ignore-glob "branches-ignore with a glob matching the base" "name: A
 on:
   pull_request:
     branches-ignore: ['ma*']
+${J}" no
+wf_expected ignore-glob-other "branches-ignore with a glob not matching the base" "name: A
+on:
+  pull_request:
+    branches-ignore: ['release/**']
 ${J}" yes
+wf_expected ignore-negated "branches-ignore with a ! entry, and no run" "name: A
+on:
+  pull_request:
+    branches-ignore: ['release/**', '!release/keep']
+${J}" no
+no_run_note ignore-negated "branch pattern"
 wf_expected paths-no-run "pull_request with paths: and no run" "name: A
 on:
   pull_request:
@@ -771,17 +901,14 @@ jobs:
       - run: echo
 "
 
-# A tab inside a quoted job name must not shift the scanner's fields: the job
-# has no job-level if:, so absent from a completed run it blocks.
+# A tab inside a quoted job name must not shift the scanner's fields: the
+# job keeps its whole name (the tab read as a space) and, absent, blocks.
 FX="$(new_fx)"
 ec_wf "$FX" t.yml "$(printf 'name: T\non: pull_request\njobs:\n  t:\n    name: "x\t1"\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n')"
 ec_run "$FX" 1007 .github/workflows/t.yml __HEAD__; ec_job "$FX" 1007 Other completed success
 run_helper "$FX"
-if verdict_is MISSING 1 && ! has_prefix "not created (job-level if:"; then
-  pass "EC-S-tab-in-name" "a tab in a job name does not turn the job into an if: job"
-else
-  fail "EC-S-tab-in-name" "a tab in a job name does not turn the job into an if: job"; explain
-fi
+expect "EC-S-tab-in-name" "a tab in a job name does not shift the scanner's fields" MISSING 1 \
+  "blocker: expected check 'x 1' was never created at ${HEAD}"
 
 # ---------------------------------------------------------------------------
 # 9. Security.
