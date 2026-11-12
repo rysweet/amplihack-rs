@@ -571,11 +571,26 @@ fn identity_reads_ask_the_profile_endpoint_and_never_refresh() {
     let direct =
         fs::read_to_string(rotate_dir().parent().unwrap().join("usage_direct.rs")).unwrap();
     let account = body_of(&direct, "account");
+    let stored = body_of(&direct, "account_bytes");
+    let request = body_of(&direct, "account_creds");
+    for entry in [&account, &stored] {
+        assert!(
+            entry.contains("account_creds("),
+            "both storage readers use the guarded identity transport"
+        );
+        assert!(
+            !entry.contains("refresh("),
+            "identity storage reads never refresh"
+        );
+    }
     assert!(
-        account.contains("profile_url()"),
-        "account reads /api/oauth/profile"
+        request.contains("profile_url()"),
+        "identity transport reads /api/oauth/profile"
     );
-    assert!(!account.contains("refresh("), "account never refreshes");
+    assert!(
+        !request.contains("refresh("),
+        "identity transport never refreshes"
+    );
 }
 
 /// SEC-16: an account read for identity is never written or shown by the

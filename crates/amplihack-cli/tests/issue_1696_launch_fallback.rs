@@ -220,7 +220,7 @@ fn supervised_reentry_rejects_invalid_pinned_context_before_claude_starts() {
             f.assert_selected(&control, "Z");
             fs::remove_file(f.records.join("attempts")).unwrap();
             match invalid {
-                "version" => captured["format_version"] = serde_json::json!(2),
+                "version" => captured["format_version"] = serde_json::json!(999),
                 "tuple" => captured["directory"] = serde_json::json!(f.dir("X")),
                 "root" => captured["root"] = serde_json::json!(f.home.join("other-root")),
                 "join" => captured["join_policy"] = serde_json::json!("existing_session"),

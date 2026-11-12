@@ -601,11 +601,35 @@ pub(super) fn account(
     timeout: Duration,
     now_ms: i64,
 ) -> Result<Account, &'static str> {
+    if !ep.usable() {
+        return Err(reason::TRANSPORT);
+    }
+    account_creds(ep, load(creds_dir)?, timeout, now_ms)
+}
+
+/// Authenticate an in-memory storage read with the same transport safeguards
+/// as file-backed credentials. Never writes or refreshes the login.
+#[cfg(target_os = "macos")]
+pub(super) fn account_bytes(
+    ep: &Endpoints,
+    raw: &[u8],
+    timeout: Duration,
+    now_ms: i64,
+) -> Result<Account, &'static str> {
+    let creds = Creds::parse(raw).ok_or(reason::NO_TOKEN)?;
+    account_creds(ep, creds, timeout, now_ms)
+}
+
+fn account_creds(
+    ep: &Endpoints,
+    creds: Creds,
+    timeout: Duration,
+    now_ms: i64,
+) -> Result<Account, &'static str> {
     let deadline = Deadline::after(timeout);
     if !ep.usable() {
         return Err(reason::TRANSPORT);
     }
-    let creds = load(creds_dir)?;
     if creds.expires_at_ms.is_some_and(|at| at <= now_ms) {
         return Err(reason::EXPIRED);
     }

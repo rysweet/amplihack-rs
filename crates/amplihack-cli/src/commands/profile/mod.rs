@@ -339,7 +339,7 @@ impl ProfileError {
                 "run `amplihack profile run <other>` with a usable profile, or `amplihack profile switch --none`; clearing the default still requires a usable ambient login (normally ~/.claude). Inspect the lease with `amplihack profile auto-switch status`"
             }
             Self::LaunchDestination(_) => {
-                "the destination changed or cannot be protected; check `amplihack profile auto-switch status` and launch again"
+                "the destination changed or cannot be protected; check `amplihack profile auto-switch status`. Run `amplihack profile run <other>` with an available usable profile, or `amplihack profile switch --none` with a usable ambient login"
             }
             // Issue #2218: never "remove the file". Every case that reaches
             // it (a busy lock, a change over 4096 bytes, an unsafe root, a
@@ -1081,7 +1081,7 @@ fn launch_target_with(
     LaunchTarget::named(
         &store,
         &name,
-        if may_join {
+        if join {
             JoinPolicy::ExistingSession
         } else {
             JoinPolicy::Never

@@ -705,7 +705,11 @@ pub fn guard_held(
     if !state.exists() {
         return Ok(None);
     }
-    let lock = state.lock()?;
+    let lock = if matches!(action, Action::Launch { .. }) {
+        state.launch_lock()?
+    } else {
+        state.lock()?
+    };
     recover(state)?;
     let ledger = state.load_ledger()?;
     check_lease(state, &ledger, name, action)?;

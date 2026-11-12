@@ -24,8 +24,8 @@ Logins stay separate, but sessions are shared: every profile's `projects/`,
 `file-history/` and `session-env/` is a link to the same directory in
 `~/.claude`, so `claude --resume <id>` finds a session whatever profile
 started it. Apart from those three directories, amplihack never modifies
-`~/.claude` for this feature, and its only network calls are the usage
-reads of [`profile usage`](#check-usage-across-profiles) and the rotator.
+`~/.claude` for this feature. Network calls include usage reads and
+credential identity checks before a lease-fallback launch.
 See
 [What a new profile inherits](#what-a-new-profile-inherits) and
 [Share sessions across profiles](#share-sessions-across-profiles).
@@ -461,6 +461,12 @@ child process only.
 
 ### Launch while the default directory is leased
 
+A lease on the default directory does not prevent a new launch when another
+named profile is usable. The launch authenticates that login and protects
+its destination through Claude child creation. Linux validation of the
+transition from launch protection to session discovery remains pending.
+See the [fallback safeguards](../reference/profile-command.md#default-profile-lease-fallback).
+
 From a shell without `--profile` or an inherited `AMPLIHACK_CLAUDE_PROFILE`,
 resume as usual:
 
@@ -477,17 +483,26 @@ handling applies to `amplihack launch` in modes that support Claude profiles.
 
 The alternative must hold its own usable login. Existing checks for capacity,
 exclusions, organisation affinity, login kind, billing and overflow
-still apply; a credentials file alone is insufficient. Parked logins and
-`~/.claude` are not destinations for this fallback. No new setting is needed,
-and an active lease is still protected after auto-switch is turned off.
+are used during selection and checked again before launch. Both file-backed
+and macOS Keychain logins qualify when the account and organisation can be
+authenticated and storage continuity can be established. A credentials file
+or displayed account name alone is insufficient. Parked logins and
+`~/.claude` are not destinations for this fallback. No new setting is needed, and an active lease is still protected
+after auto-switch is turned off.
 See the [fallback reference](../reference/profile-command.md#default-profile-lease-fallback)
 for eligibility details.
 
 Claude and nested launches receive the selected profile, directory and root.
-An exported `CLAUDE_CONFIG_DIR` cannot override the selection. Supervised
-attempts use the validated destination; this fallback does not itself enable
-quota-based reruns. The saved default stays unchanged, no credentials are
-moved, and the existing session keeps its lease and borrowed login.
+An exported `CLAUDE_CONFIG_DIR` cannot override the selection. Each process
+creating a Claude child authenticates its destination before acquiring launch
+protection, then revalidates continuity and policy against the full relevant
+candidate pool while protected through child creation. Supervisor hand-offs
+contain destination intent, never credential proof. This fallback does
+not itself enable quota-based reruns. A fallback launch
+preserves Claude's exit status, including non-zero exits, and existing signal
+handling. The saved default stays unchanged, no credentials are moved, and
+the existing session keeps its lease and borrowed login. The fallback and its
+descendants cannot join another session's borrowed login.
 
 If no alternative is usable, Claude does not start. The error names both the
 default profile and the login hosted there, and gives immediate recovery
@@ -520,8 +535,10 @@ options:
    capacity. With no inherited profile, Claude uses the ambient
    `CLAUDE_CONFIG_DIR`, or `~/.claude` if it is unset. That login must be usable.
 
-If the error names corrupt state or a destination that changed before
-spawn, address that cause before launching again. Do not move credentials
+If credentials, lease state or selection policy change, cannot be verified,
+or launch protection is unavailable, amplihack refuses the launch and gives
+the recovery commands above. It does not wait or repeatedly try candidates.
+Address the reported cause before launching again. Do not move credentials
 out of the running session by hand.
 
 This fallback applies only to the saved default hosting another login.
@@ -1891,8 +1908,11 @@ do not depend on these two behaviours.
   amplihack cannot read `/proc/self/environ` (for example with `hidepid`),
   swaps are disabled and `status` says so; nested substitution and step reruns still
   work.
-- **A credentials file is required.** Logins kept in the macOS Keychain, or
-  profiles without `.credentials.json`, are never swapped; `status` notes it.
+- **In-session swaps require a credentials file.** Logins kept in the macOS
+  Keychain, or profiles without `.credentials.json`, are never swapped;
+  `status` notes it. The separate [default-directory lease fallback](#launch-while-the-default-directory-is-leased)
+  supports Keychain-backed destinations with authenticated identity and
+  verified credential continuity; this does not extend in-session swap support.
 - **Unix only.** On Windows `auto-switch on` is refused and nothing else
   happens.
 - **Interactive sessions only, for in-session swaps.** The trigger is the

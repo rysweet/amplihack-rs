@@ -4980,6 +4980,10 @@ A launch *joins* the session in directory `X` only when all of these hold:
 - the launcher's own `CLAUDE_CONFIG_DIR` is set; and
 - that value, canonicalised, is equal to the canonical path of `<root>/X`.
 
+A lease-fallback launch and its descendants cannot join a hosted session,
+even when their inherited name and directory match. Inherited environment
+values and supervisor context do not grant permission to join.
+
 The comparison is between whole canonical paths. It never uses the value of
 `AMPLIHACK_CLAUDE_PROFILE`, a profile name, or a string prefix. A fresh shell
 that runs `export AMPLIHACK_CLAUDE_PROFILE=work` without the session's
@@ -4992,6 +4996,16 @@ Leases are interlocks against accidents. They are not a security boundary
 against other processes running as you.
 
 #### Default-profile lease fallback
+
+The fallback supports named profiles with file-backed credentials or macOS
+Keychain storage. Supervisor files carry intent only; each process creating
+a Claude child authenticates the login afresh. Final policy validation uses
+the full relevant candidate pool.
+
+Linux protection-to-session-discovery validation is **pending**. Holding
+protection through child creation does not by itself demonstrate coverage
+until session discovery can observe the new child; that boundary requires
+Linux execution evidence before it can be described as validated.
 
 After [lease recovery](#session-end-and-recovery), `amplihack claude` and
 `amplihack launch` choose an alternative when all of these hold:
@@ -5025,27 +5039,75 @@ account. Exclusions apply before credential requests or refreshes. A
 credential file's presence alone does not establish identity or usability.
 Missing usage readings keep their existing treatment. Unavailable plan
 logins still count towards overflow gates where existing policy requires
-it; a lease does not authorise paid overflow on its own. There is no new
-preference or configuration setting.
+it; a lease does not authorise paid overflow on its own.
+
+**Credential storage and identity.** A missing `.credentials.json` does not
+disqualify a profile with a usable Keychain login. On macOS the read uses
+Claude Code's directory-specific Keychain service, with canonical Unicode
+composition of the configuration path. An inaccessible Keychain entry is
+refused without prompting or silently substituting another login. The login must belong to the selected
+configuration directory, and credential authentication establishes the
+account and organisation against the profile's expected-account record.
+Directory names, displayed account metadata and usage readings are not
+identity proof. If identity or storage continuity cannot be established,
+the destination is refused without weakening the billing safeguards.
+
+Network identity verification happens before launch locks are acquired.
+Authenticated credential evidence stays in the verifying process and is
+checked again under launch protection for continuity with the authenticated login.
+Tokens, credential contents, token hashes and sensitive continuity evidence
+are absent from diagnostics and supervisor files. Keychain payloads are
+compared in memory during local continuity checks and are never exported.
+
+**Configuration.** Fallback uses the selected profile root and existing
+[auto-switch exclusions](#auto-switch-commands),
+[capacity rules](#candidate-selection),
+[organisation affinity](profile-organisation-affinity.md) and
+[overflow settings](#auto-switch-and-overflow-profiles). There is no new
+flag, preference, environment setting or public API. Turning auto-switch off
+does not disable lease protection or make a borrowed login available.
 
 **Launch and supervision.** Claude receives the selected profile's name,
 directory and root through the [launch environment](#resolution-and-environment),
 with the requested arguments preserved. Descendants inherit that destination
 and run the usual authoritative checks. Supervision watches the selected
-login from its first attempt and carries a validated destination context
-through re-entry. Further policy-approved attempts validate their own
-destinations. Resolving a fallback does not enable reruns that the original
-request would not permit, or grant permission to join a hosted session.
+login from its first attempt.
+
+**Supervisor authentication.** The supervisor carries destination intent only.
+The process creating each actual Claude child obtains fresh authenticated
+evidence before taking launch locks. The supervisor context cannot serve as
+credential proof. Further policy-approved attempts validate their own
+destinations.
+Resolving a fallback does not enable reruns that the original request would
+not permit, or grant permission to join a hosted session.
+
+Arguments retain their order and literal values, including `--resume` and
+session identifiers containing spaces. Ordinary fallback launches preserve
+the child's exit status: a child exiting 37 makes amplihack exit 37. Child
+creation failures remain launch errors. Existing SIGINT, SIGTERM and SIGHUP
+handling is preserved; cancellation does not trigger another attempt.
 
 **Final validation.** Selection is provisional. Immediately before the actual
 Claude spawn, amplihack rechecks the root, directory, credentials, identity,
-login kind, lease state and applicable eligibility and billing policy. State
-and required refresh protection remain held through validation, environment
-application, reporting and child creation. The fallback never joins another
-session's hosted directory. Changed or invalid evidence, malformed or stale
-supervisor context, or unavailable refresh protection stops the launch before
-Claude starts. Final validation neither silently reselects nor starts a child
-with stale evidence. Evidence and context contain no credential values.
+login kind, lease state and applicable eligibility and billing policy against
+the full relevant candidate pool, including both usage windows and unknown
+readings. Changed local candidate evidence refuses the hand-off; refreshed
+usage is evaluated against the whole pool, so returning peer capacity can
+withdraw permission to cross organisations or use paid overflow.
+
+State protection is acquired before credential-refresh protection. Both stay
+held through validation, environment application, reporting and actual Claude
+child creation, including supervised launches. Starting a supervisor wrapper
+alone does not end protection. Final validation makes no network requests.
+Unavailable protection or changed evidence stops the launch promptly, without
+timed retries or silent reselection. Only protection owned by the launch is
+released.
+
+Supervisor files use bounded reads, private ownership and permissions,
+no-follow access and validation of the opened file. Unsupported formats,
+inconsistent destinations and malformed contexts are refused before Claude
+starts. Cleanup removes only context owned by that launch. The fallback and
+its descendants cannot join another session's hosted directory.
 
 A success notice names the conflicting default, its hosted login and the
 selected profile only after validation succeeds. Fallback does not rewrite
@@ -5055,7 +5117,8 @@ retain access to the borrowed login.
 
 **Failure and recovery.** If no destination qualifies, launch exits with
 status 1 before Claude starts. The diagnostic identifies the default and
-hosted login and includes all of these:
+hosted login and includes all of these. The same recovery commands accompany
+a fallback refused during final validation:
 
 - `amplihack profile run <other>` to select an available profile with a usable
   login explicitly;
@@ -12097,6 +12160,12 @@ taken from `AMPLIHACK_CLAUDE_PROFILE` or the default pointer) and
 - its own login file has no OAuth login (missing, unreadable, or without a
   `claudeAiOauth` key);
 - its login is not [held](#held-logins) elsewhere.
+
+For a [default-profile lease fallback](#default-profile-lease-fallback), an
+authenticated Keychain login also counts as the profile's own OAuth login,
+subject to the same identity and billing safeguards. The exception requires
+fresh authenticated identity and protected storage continuity; a missing
+file or displayed account alone never grants it.
 
 While `.auto-switch` is corrupt, every profile whose own login file has no
 OAuth login is checked as a subscription profile. The refusal comes before

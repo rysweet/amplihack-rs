@@ -41,20 +41,34 @@ pub fn now() -> i64 {
         .as_secs() as i64
 }
 
+#[derive(Clone)]
+struct IdentityAnswer {
+    account: String,
+    organisation: String,
+}
+
 /// Blocking acceptance; an explicit HTTP shutdown wakes and joins the worker.
 /// Neither socket timeouts nor interval probes are needed. Tokens are fake.
 struct IdentityServer {
     addr: SocketAddr,
     worker: Option<JoinHandle<()>>,
-    organisations: Arc<Mutex<BTreeMap<String, String>>>,
+    identities: Arc<Mutex<BTreeMap<String, Option<IdentityAnswer>>>>,
+    requests: Arc<Mutex<Vec<String>>>,
+    protected_requests: Arc<Mutex<Vec<String>>>,
 }
 
 impl IdentityServer {
-    fn new() -> Self {
+    fn new(root: &Path) -> Self {
+        use fs4::fs_std::FileExt;
+        let root = root.to_path_buf();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let organisations = Arc::new(Mutex::new(BTreeMap::<String, String>::new()));
-        let answer_org = Arc::clone(&organisations);
+        let identities = Arc::new(Mutex::new(BTreeMap::<String, Option<IdentityAnswer>>::new()));
+        let answers = Arc::clone(&identities);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let received = Arc::clone(&requests);
+        let protected_requests = Arc::new(Mutex::new(Vec::new()));
+        let protected = Arc::clone(&protected_requests);
         let worker = std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let mut stream = stream.unwrap();
@@ -81,13 +95,38 @@ impl IdentityServer {
                 let name = ["X", "Y", "Z", "W"]
                     .into_iter()
                     .find(|name| token == format!("Bearer SENTINEL-1696-{name}"));
-                let (status, body) = match (first.split_whitespace().nth(1), name) {
-                    (Some("/api/oauth/profile"), Some(name)) => (
+                let identity = name.and_then(|name| {
+                    if first.starts_with("GET /api/oauth/profile ") {
+                        received.lock().unwrap().push(name.to_string());
+                        let state_held = fs::OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .open(root.join(".auto-switch.d/lock"))
+                            .ok()
+                            .is_some_and(|file| !file.try_lock_exclusive().unwrap());
+                        if state_held || root.join(name).join(".oauth_refresh.lock").exists() {
+                            protected.lock().unwrap().push(name.to_string());
+                        }
+                    }
+                    answers
+                        .lock()
+                        .unwrap()
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            Some(IdentityAnswer {
+                                account: format!("uuid-{name}"),
+                                organisation: "org-team".into(),
+                            })
+                        })
+                });
+                let (status, body) = match (first.split_whitespace().nth(1), identity) {
+                    (Some("/api/oauth/profile"), Some(identity)) => (
                         "200 OK",
                         json!({
-                            "account": {"uuid": format!("uuid-{name}"),
-                                "email": format!("{name}@example.invalid")},
-                            "organization": {"uuid": answer_org.lock().unwrap().get(name).map(String::as_str).unwrap_or("org-team")}
+                            "account": {"uuid": identity.account,
+                                "email": format!("{}@example.invalid", name.unwrap())},
+                            "organization": {"uuid": identity.organisation}
                         }),
                     ),
                     // Unknown and usage requests fail locally, never externally.
@@ -104,7 +143,9 @@ impl IdentityServer {
         Self {
             addr,
             worker: Some(worker),
-            organisations,
+            identities,
+            requests,
+            protected_requests,
         }
     }
 }
@@ -123,7 +164,7 @@ const CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
   --version)
     if [ -n "$MUTATE_AT_DISCOVERY" ] && [ ! -f "$RECORD_DIR/invalidated" ]; then
-      /bin/sh "$MUTATE_AT_DISCOVERY"
+      /bin/sh "$MUTATE_AT_DISCOVERY" || exit "$?"
       : > "$RECORD_DIR/invalidated"
     fi
     echo '2.1.319 (Claude Code)'; exit 0 ;;
@@ -142,6 +183,13 @@ if [ -n "$AMPLIHACK_CLAUDE_LAUNCH_CONTEXT" ]; then
 fi
 if [ -f "$CLAUDE_CONFIG_DIR/.credentials.json" ]; then
   /usr/bin/cksum < "$CLAUDE_CONFIG_DIR/.credentials.json" > "$RECORD_DIR/credential.$p"
+fi
+if [ -n "$RECORD_STDIN" ]; then cat > "$RECORD_DIR/stdin.$p"; fi
+if [ -n "$SIGNAL_CONTRACT" ]; then
+  trap 'printf "stopped\n" >&9; echo "Claude AI usage limit reached" >&2; exit 37' INT TERM HUP
+  printf 'ready\n' >&9
+  IFS= read -r release <&9
+  exit 91
 fi
 if [ -n "$DESCEND_ONCE" ]; then
   unset DESCEND_ONCE
@@ -164,7 +212,6 @@ pub struct Fixture {
     pub records: PathBuf,
     tools: PathBuf,
     identity: IdentityServer,
-    #[cfg(target_os = "linux")]
     pub proc: crate::support::fake_proc::FakeProc,
 }
 
@@ -184,8 +231,8 @@ impl Fixture {
         // The writer is a joined subprocess: this test process never owns
         // an executable write descriptor that sibling forks could inherit.
         crate::support::exec_stub::write_executable(&tools.join("claude"), CLAUDE, 0o700);
-        #[cfg(target_os = "linux")]
         let proc = crate::support::fake_proc::FakeProc::new_in(&base);
+        let identity = IdentityServer::new(&root);
         let f = Self {
             temp,
             home,
@@ -193,8 +240,7 @@ impl Fixture {
             work,
             records,
             tools,
-            identity: IdentityServer::new(),
-            #[cfg(target_os = "linux")]
+            identity,
             proc,
         };
         for name in PROFILES {
@@ -206,7 +252,31 @@ impl Fixture {
             "enabled=on\nthreshold=90\nexclude=\noverflow=\n",
         );
         f.seed_usage(&[("X", 100.0, 100.0), ("Y", 20.0, 20.0), ("Z", 10.0, 10.0)]);
+        // Contract for a debug-only credential-storage injection. When set,
+        // every Keychain lookup must use this store, without system fallback.
+        // Directory keys avoid assuming Claude's native Keychain service name.
+        private(
+            &f.home.join("keychain.json"),
+            json!({"version":1,"entries":{}}).to_string(),
+        );
         f
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn keychain_login(&self, name: &str) -> PathBuf {
+        let credentials = self.dir(name).join(".credentials.json");
+        let body: serde_json::Value =
+            serde_json::from_slice(&fs::read(&credentials).unwrap()).unwrap();
+        let path = self.home.join("keychain.json");
+        let mut store: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        store["entries"][self.dir(name).to_str().unwrap()] = json!({
+            "credentials": body,
+            "continuity": "fixture-revision-1"
+        });
+        private(&path, store.to_string());
+        fs::remove_file(credentials).unwrap();
+        path
     }
 
     pub fn add(&self, name: &str) {
@@ -249,11 +319,23 @@ impl Fixture {
                 "organizationUuid":organisation,"emailAddress":format!("{name}@example.invalid")}})
             .to_string(),
         );
-        self.identity
-            .organisations
-            .lock()
-            .unwrap()
-            .insert(name.to_string(), organisation.to_string());
+        self.set_remote_identity(name, Some((&format!("uuid-{name}"), organisation)));
+    }
+
+    /// Change the authenticated answer without changing credential bytes,
+    /// local display metadata or expected-account records.
+    pub fn set_remote_identity(&self, name: &str, identity: Option<(&str, &str)>) {
+        self.identity.identities.lock().unwrap().insert(
+            name.to_string(),
+            identity.map(|(account, org)| IdentityAnswer {
+                account: account.to_string(),
+                organisation: org.to_string(),
+            }),
+        );
+    }
+
+    pub fn identity_requests(&self) -> Vec<String> {
+        self.identity.requests.lock().unwrap().clone()
     }
 
     pub fn dir(&self, name: &str) -> PathBuf {
@@ -270,19 +352,22 @@ impl Fixture {
             .current_dir(&self.work)
             .stdin(Stdio::null())
             .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
-            .env(
-                crate::isolated_amplihack::PROC_ROOT_ENV,
-                crate::isolated_amplihack::shared_empty_proc_root(),
-            )
+            .env(crate::isolated_amplihack::PROC_ROOT_ENV, self.proc.path())
             .env("HOME", &self.home)
             .env("TMPDIR", self.temp.path())
             .env("XDG_RUNTIME_DIR", self.home.join("runtime"))
             .env("XDG_CONFIG_HOME", self.home.join(".config"))
+            .env("XDG_CACHE_HOME", self.home.join(".cache"))
+            .env("XDG_STATE_HOME", self.home.join(".state"))
             .env("CODEX_HOME", self.home.join(".codex"))
             .env("AMPLIHACK_HOME", self.home.join(".amplihack"))
             .env("PATH", format!("{}:/usr/bin:/bin", self.tools.display()))
             .env("AMPLIHACK_CLAUDE_BINARY_PATH", self.tools.join("claude"))
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root)
+            .env(
+                "AMPLIHACK_TEST_KEYCHAIN_STORE",
+                self.home.join("keychain.json"),
+            )
             .env("AMPLIHACK_UNDER_TEST", amplihack_bin())
             .env(
                 "AMPLIHACK_PROFILE_USAGE_API_BASE",
@@ -302,13 +387,15 @@ impl Fixture {
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
             .env("AMPLIHACK_SKIP_REFLECTION", "1");
         crate::isolated_amplihack::no_git_prompt(&mut cmd);
-        #[cfg(target_os = "linux")]
-        cmd.env(crate::isolated_amplihack::PROC_ROOT_ENV, self.proc.path());
         cmd
     }
 
     pub fn run(&self, cmd: &mut Command) -> Output {
         let out = cmd.output().unwrap();
+        assert!(
+            self.identity.protected_requests.lock().unwrap().is_empty(),
+            "identity requests must finish before state and refresh protection is acquired"
+        );
         for bytes in [&out.stdout, &out.stderr] {
             assert!(
                 !String::from_utf8_lossy(bytes).contains("SENTINEL-1696-"),

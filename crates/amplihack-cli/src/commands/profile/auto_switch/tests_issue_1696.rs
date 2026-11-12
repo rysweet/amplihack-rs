@@ -190,3 +190,12 @@ fn supervised_contexts_use_the_existing_owner_based_scratch_cleanup() {
     assert!(!dead.exists());
     assert!(live.exists());
 }
+
+#[test]
+fn launch_state_protection_refuses_contention_without_waiting_for_release() {
+    let (_temp, _store, state) = fixture();
+    let held = state.lock().unwrap();
+    assert!(state.launch_lock().is_err());
+    drop(held);
+    assert!(state.launch_lock().is_ok());
+}

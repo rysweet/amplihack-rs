@@ -336,3 +336,9 @@ impl super::cycle::Ctx {
 #[cfg(test)]
 #[path = "tests_bound_identity.rs"]
 mod tests;
+
+// Launch storage is separate from swap bindings: Keychain logins are never
+// exchanged by the file-based rotator.
+#[path = "launch_credentials.rs"]
+mod launch;
+pub(in crate::commands::profile) use launch::{LaunchBound, launch_bound};

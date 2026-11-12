@@ -185,6 +185,19 @@ impl State {
         Ok(Lock { _file: file })
     }
 
+    /// One non-blocking acquisition for a launch hand-off. No timed retry.
+    pub fn launch_lock(&self) -> Result<Lock, ProfileError> {
+        let file = self.open_lock()?;
+        match FileExt::try_lock_exclusive(&file) {
+            Ok(true) => Ok(Lock { _file: file }),
+            Ok(false) => Err(ProfileError::LaunchDestination(
+                "destination state protection unavailable; another profile operation is running"
+                    .into(),
+            )),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     /// Tries for at most `wait`; `None` when another process holds the lock.
     pub fn try_lock(&self, wait: Duration) -> Result<Option<Lock>, ProfileError> {
         let file = self.open_lock()?;

@@ -140,12 +140,12 @@ pub(crate) fn run_attempt_with_recovery(
     signals: &Signals,
     recovery: Option<&recipe_runner_rs::recovery::ipc::Client>,
 ) -> Result<Attempt> {
-    let context_path = target
+    let context = target
         .map(|t| t.write_context(rerun_dir, n))
         .transpose()?
-        .flatten();
-    let context = super::launch_target::LaunchContext::new(context_path);
-    let mut forwarding = signal_hook::iterator::Signals::new([libc::SIGTERM, libc::SIGHUP])?;
+        .unwrap_or_else(super::launch_target::LaunchContext::empty);
+    let mut forwarding =
+        signal_hook::iterator::Signals::new([libc::SIGTERM, libc::SIGHUP, libc::SIGCHLD])?;
     let stdout_path = rerun_dir.join(format!("{}-{n}.out", std::process::id()));
     let mut opts = fs::OpenOptions::new();
     opts.read(true)
@@ -205,24 +205,37 @@ pub(crate) fn run_attempt_with_recovery(
         tail
     });
 
-    // Blocking child completion and a signal pipe replace interval probes.
-    let handle = forwarding.handle();
+    // SIGCHLD provides completion readiness. One worker owns both forwarding
+    // and reaping, so it can never signal a PID after it has reaped that child.
+    // Registering the iterator before spawn also covers an immediate exit.
     let pid = child.id() as libc::pid_t;
-    let forwarder = std::thread::spawn(move || {
+    signals.forward(pid);
+    let forwarder = std::thread::spawn(move || -> std::io::Result<std::process::ExitStatus> {
         for signal in forwarding.forever() {
-            // SAFETY: this is our supervised child's pid.
-            unsafe {
-                libc::kill(pid, signal);
+            if matches!(signal, libc::SIGTERM | libc::SIGHUP) {
+                // SAFETY: this worker still owns the unreaped child's PID.
+                if unsafe { libc::kill(pid, signal) } != 0 {
+                    let error = std::io::Error::last_os_error();
+                    // An exited child needs only reaping; other failures must
+                    // reach the supervisor instead of silently losing a stop.
+                    if error.raw_os_error() != Some(libc::ESRCH) {
+                        return Err(error);
+                    }
+                }
+            }
+            // Readiness may belong to another child; inspect only ours. This
+            // runs in response to a signal, never on an interval.
+            if let Some(status) = child.try_wait()? {
+                return Ok(status);
             }
         }
+        Err(std::io::Error::other(
+            "supervised signal stream closed before child completion",
+        ))
     });
-    signals.forward(pid);
-    let status = child.wait();
-    handle.close();
-    forwarder
+    let status = forwarder
         .join()
-        .map_err(|_| anyhow::anyhow!("supervised signal forwarding thread panicked"))?;
-    let status = status?;
+        .map_err(|_| anyhow::anyhow!("supervised signal forwarding thread panicked"))??;
     let stderr_tail = reader.join().unwrap_or_else(|_| {
         eprintln!("amplihack: this step's stderr reader thread panicked");
         Vec::new()

@@ -1,6 +1,6 @@
 //! Read-only named destinations for a default directory hosting another login.
 //! Selection uses the nested selector's policy. Credentials are neither moved
-//! nor refreshed; only non-secret file evidence crosses a supervisor boundary.
+//! nor refreshed. Authenticated continuity evidence remains process-local.
 
 use super::state::{CREDS, Ledger, State};
 use super::{candidate, config, fsx, overflow_inputs::OverflowInputs, per_token, rerun};
@@ -8,7 +8,6 @@ use crate::commands::profile::launch_target::{JoinPolicy, LaunchTarget, Selectio
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::{ProfileError, expected, kind, rotate};
-use serde::{Deserialize, Serialize};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -18,8 +17,7 @@ pub(super) fn invalid(reason: impl Into<String>) -> ProfileError {
 }
 
 /// File metadata only: never a token, hash of a token or credential contents.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Stamp {
     device: u64,
     inode: u64,
@@ -62,12 +60,35 @@ impl Stamp {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(in crate::commands::profile) struct Evidence {
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PolicyEvidence {
     source_host: String,
     source_login: String,
     stamps: Vec<Option<Stamp>>,
+    pool: Vec<(ProfileName, Vec<Option<Stamp>>)>,
+    approved: Vec<ProfileName>,
+}
+
+#[derive(Clone)]
+pub(in crate::commands::profile) struct Evidence {
+    policy: PolicyEvidence,
+    credential: rotate::login_identity::LaunchBound,
+}
+impl std::fmt::Debug for Evidence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Evidence(<redacted>)")
+    }
+}
+impl Evidence {
+    pub(in crate::commands::profile) fn names_conflict(&self, host: &str, login: &str) -> bool {
+        self.policy.source_host == host && self.policy.source_login == login
+    }
+    pub(in crate::commands::profile) fn own_oauth(&self) -> bool {
+        self.credential.account().is_some()
+    }
+    pub(in crate::commands::profile) fn source_host(&self) -> &str {
+        &self.policy.source_host
+    }
 }
 
 fn paths(store: &ProfileStore, name: &ProfileName, source: &str) -> Vec<PathBuf> {
@@ -95,6 +116,29 @@ fn stamps(
     paths(store, name, source)
         .iter()
         .map(|p| Stamp::read(p))
+        .collect()
+}
+
+// Retain every profile's local policy inputs, including unselected peers.
+// Usage is deliberately re-read: new peer capacity must narrow permission.
+fn pool_stamps(
+    store: &ProfileStore,
+    source: &str,
+) -> Result<Vec<(ProfileName, Vec<Option<Stamp>>)>, ProfileError> {
+    let cfg = config::read_editable(store.root())?;
+    config::every_profile(store.root())?
+        .into_iter()
+        .map(|name| {
+            // Excluded alternatives cannot affect policy. The original
+            // source remains an affinity input even when excluded. The
+            // selected proof also stamps changes to the exclusion file.
+            let proof = if cfg.exclude.contains(&name) && name.as_str() != source {
+                Vec::new()
+            } else {
+                stamps(store, &name, source)?
+            };
+            Ok((name, proof))
+        })
         .collect()
 }
 
@@ -132,12 +176,15 @@ fn ready(
         && ledger.leased_to(name.as_str()).is_none()
         && store.verify_profile_dir(name).is_ok()
         && rerun::login_ready(state, overflow, name)
-        && kind::launch_guard(store, name, None, || false).is_ok()
+        && (kind::launch_guard(store, name, None, || false).is_ok()
+            // A missing file says nothing about macOS storage. This is only
+            // provisional: authentication must produce an owned OAuth proof.
+            || (cfg!(target_os = "macos") && !fsx::exists(&state.live_creds(name.as_str()))))
 }
 
 /// Pins a policy-approved named destination without changing any login.
 /// Network identity work completes before the protected launch boundary.
-pub(in crate::commands::profile) fn pin(
+fn authenticate(
     store: &ProfileStore,
     name: &ProfileName,
     source_host: &str,
@@ -146,6 +193,7 @@ pub(in crate::commands::profile) fn pin(
     let ledger = state.load_ledger()?;
     let source_login = ledger.account_in(source_host).to_string();
     let before = stamps(store, name, &source_login)?;
+    let pool = pool_stamps(store, &source_login)?;
     let budget = rotate::login_identity::Budget::new();
     let read = rotate::login_identity::default_read();
     let reader = rotate::login_identity::Reader {
@@ -154,24 +202,78 @@ pub(in crate::commands::profile) fn pin(
     };
     let kinds = kind::Ctx::load(store, None);
     let platform = kinds.kind(store, name) == kind::Kind::Platform;
-    let bound = reader
-        .bound(&store.verify_profile_dir(name)?, platform)
-        .map_err(invalid)?;
+    let bound =
+        rotate::login_identity::launch_bound(&reader, &store.verify_profile_dir(name)?, platform)
+            .map_err(invalid)?;
     if !bound.current()
         || bound
             .account()
             .is_some_and(|a| !identity_matches(&state, name, a))
         || before != stamps(store, name, &source_login)?
+        || pool != pool_stamps(store, &source_login)?
     {
         return Err(invalid(
             "destination login identity changed or does not match its profile",
         ));
     }
     Ok(Evidence {
-        source_host: source_host.to_string(),
-        source_login,
-        stamps: before,
+        policy: PolicyEvidence {
+            source_host: source_host.to_string(),
+            source_login,
+            stamps: before,
+            pool,
+            approved: Vec::new(),
+        },
+        credential: bound,
     })
+}
+
+/// Authenticate the eligible pool before taking launch locks. Refused peers
+/// remain visible to policy, but are never offered as launch destinations.
+fn verified_pool(
+    store: &ProfileStore,
+    source: &str,
+) -> Result<(Vec<(ProfileName, Evidence)>, Option<ProfileError>), ProfileError> {
+    let state = State::new(store.root())?;
+    let cfg = config::read_editable(store.root())?;
+    let ledger = state.load_ledger()?;
+    let overflow = OverflowInputs::load_at(store.root(), &cfg, fsx::now(), None);
+    if overflow.kinds_unknown {
+        return Err(invalid("fallback profile kinds cannot be read"));
+    }
+    let mut targets = Vec::new();
+    let mut refusal = None;
+    for name in config::every_profile(store.root())? {
+        if ready(store, &state, &ledger, &cfg, &overflow, source, &name) {
+            match authenticate(store, &name, source) {
+                Ok(proof) => targets.push((name, proof)),
+                Err(error) => {
+                    tracing::debug!(profile = %name, error = %error, "fallback destination refused");
+                    refusal = Some(error);
+                }
+            }
+        }
+    }
+    let approved: Vec<_> = targets.iter().map(|(name, _)| name.clone()).collect();
+    for (_, proof) in &mut targets {
+        proof.policy.approved = approved.clone();
+    }
+    Ok((targets, refusal))
+}
+
+/// A supervisor transports intent, so the actual launching process obtains
+/// its own evidence for the destination and the relevant candidate pool.
+pub(in crate::commands::profile) fn pin(
+    store: &ProfileStore,
+    name: &ProfileName,
+    source: &str,
+) -> Result<Evidence, ProfileError> {
+    let (targets, refusal) = verified_pool(store, source)?;
+    targets
+        .into_iter()
+        .find(|(n, _)| n == name)
+        .map(|(_, proof)| proof)
+        .ok_or_else(|| refusal.unwrap_or_else(|| invalid("destination is no longer eligible")))
 }
 
 /// Select provisionally; the selected evidence and policy are checked again
@@ -200,28 +302,7 @@ pub(in crate::commands::profile) fn select(
     if overflow.kinds_unknown {
         return Err(invalid("fallback profile kinds cannot be read"));
     }
-    let mut targets = Vec::new();
-    let mut refusal = None;
-    for name in &profiles {
-        // Exclusions precede credential requests, including failed requests.
-        if ready(
-            store,
-            &state,
-            &ledger,
-            &cfg,
-            &overflow,
-            conflict.as_str(),
-            name,
-        ) {
-            match pin(store, name, conflict.as_str()) {
-                Ok(evidence) => targets.push((name.clone(), evidence)),
-                Err(e) => {
-                    tracing::debug!(profile = %name, error = %e, "fallback destination refused");
-                    refusal = Some(e);
-                }
-            }
-        }
-    }
+    let (targets, refusal) = verified_pool(store, conflict.as_str())?;
     let pool = candidate::Pool {
         profiles: &profiles,
         readings: &readings,
@@ -229,9 +310,25 @@ pub(in crate::commands::profile) fn select(
         exclude: &cfg.exclude,
         now,
     };
-    let picked = rerun::select_ready(&state, &ledger, &pool, &overflow, conflict.as_str(), |n| {
-        targets.iter().any(|(p, _)| p == n)
-    });
+    let picked = rerun::select_verified(
+        &state,
+        &ledger,
+        &pool,
+        &overflow,
+        conflict.as_str(),
+        &|n| {
+            ready(
+                store,
+                &state,
+                &ledger,
+                &cfg,
+                &overflow,
+                conflict.as_str(),
+                n,
+            )
+        },
+        &|n| targets.iter().any(|(p, _)| p == n),
+    );
     let Some(name) = picked else {
         return refusal.map_or(Ok(None), Err);
     };
@@ -248,8 +345,8 @@ pub(in crate::commands::profile) fn select(
     );
     let evidence = targets
         .into_iter()
-        .find(|(p, _)| p == name)
-        .ok_or_else(|| invalid("fallback destination disappeared"))?
+        .find(|(n, _)| n == name)
+        .ok_or_else(|| invalid("destination disappeared during selection"))?
         .1;
     let mut target = LaunchTarget::named(store, name, JoinPolicy::Never, SelectionOrigin::Default)?;
     target.set_evidence(
@@ -267,10 +364,26 @@ pub(in crate::commands::profile) fn validate(
     name: &ProfileName,
     evidence: &Evidence,
 ) -> Result<(), ProfileError> {
+    if !evidence.credential.current() {
+        return Err(invalid(
+            "destination credentials changed since authentication",
+        ));
+    }
+    validate_policy(store, name, &evidence.policy)
+}
+
+fn validate_policy(
+    store: &ProfileStore,
+    name: &ProfileName,
+    evidence: &PolicyEvidence,
+) -> Result<(), ProfileError> {
     ProfileName::parse(&evidence.source_host)?;
     ProfileName::parse(&evidence.source_login)?;
     if stamps(store, name, &evidence.source_login)? != evidence.stamps {
         return Err(invalid("destination evidence changed since selection"));
+    }
+    if pool_stamps(store, &evidence.source_login)? != evidence.pool {
+        return Err(invalid("candidate pool changed since authentication"));
     }
     let state = State::new(store.root())?;
     let ledger = state.load_ledger()?;
@@ -290,24 +403,24 @@ pub(in crate::commands::profile) fn validate(
         exclude: &cfg.exclude,
         now,
     };
-    let picked = rerun::select_ready(
+    let picked = rerun::select_verified(
         &state,
         &ledger,
         &pool,
         &overflow,
         &evidence.source_host,
-        |p| {
-            p == name
-                && ready(
-                    store,
-                    &state,
-                    &ledger,
-                    &cfg,
-                    &overflow,
-                    &evidence.source_host,
-                    p,
-                )
+        &|p| {
+            ready(
+                store,
+                &state,
+                &ledger,
+                &cfg,
+                &overflow,
+                &evidence.source_host,
+                p,
+            )
         },
+        &|p| evidence.approved.contains(p),
     );
     if picked != Some(name) {
         return Err(invalid(
@@ -320,3 +433,7 @@ pub(in crate::commands::profile) fn validate(
 pub(in crate::commands::profile) fn record(root: &Path, line: Option<&str>) {
     per_token::record(root, line);
 }
+
+#[cfg(test)]
+#[path = "tests_launch_fallback_contract.rs"]
+mod tests_launch_fallback_contract;

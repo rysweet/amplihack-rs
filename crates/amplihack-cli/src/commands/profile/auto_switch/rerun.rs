@@ -109,6 +109,29 @@ pub(super) fn select_ready<'a>(
     source_host: &str,
     eligible: impl Fn(&ProfileName) -> bool,
 ) -> Option<&'a ProfileName> {
+    select_verified(
+        state,
+        ledger,
+        pool,
+        overflow,
+        source_host,
+        &eligible,
+        &eligible,
+    )
+}
+
+/// Policy sees the full ready pool, even if a credential could not be
+/// authenticated. Removing that candidate cannot authorise paid overflow or
+/// a more permissive organisation crossing. Only verified targets may launch.
+pub(super) fn select_verified<'a>(
+    state: &State,
+    ledger: &Ledger,
+    pool: &Pool<'a>,
+    overflow: &OverflowInputs,
+    source_host: &str,
+    policy_ready: &dyn Fn(&ProfileName) -> bool,
+    verified: &dyn Fn(&ProfileName) -> bool,
+) -> Option<&'a ProfileName> {
     let current = ledger.account_in(source_host);
     let on_overflow = overflow.order.iter().any(|p| p.as_str() == current);
     let need = amplihack_utils::organisation_affinity::Need::of(
@@ -124,15 +147,15 @@ pub(super) fn select_ready<'a>(
         source_host,
         current,
         need,
-        &eligible,
+        policy_ready,
     );
     // The selector returns an element of pool.profiles, not OverflowInputs.
     let picked = candidate::select_restricted(
         pool,
         &overflow.pool(),
         current,
-        |p| eligible(p) && restriction.allowed.contains(p),
-        |p| restriction.plan_room.contains(p),
+        |p| verified(p) && policy_ready(p) && restriction.allowed.contains(p),
+        |p| verified(p) && policy_ready(p) && restriction.plan_room.contains(p),
     )?;
     pool.profiles.iter().find(|p| *p == picked)
 }
@@ -376,7 +399,12 @@ pub(crate) fn run_with_target(
     });
     let (rerun_dir, exe) = match setup {
         Ok(s) => s,
-        Err(e) => return unsupervised(&waiter, on, &e),
+        Err(e) => {
+            return match initial.as_ref().filter(|t| t.is_pinned()) {
+                Some(target) => Err(target.handoff_error(e)),
+                None => unsupervised(&waiter, on, &e),
+            };
+        }
     };
     super::sweep_rerun(&rerun_dir);
     // Never reads stdin, so nothing here can block before signals are caught.
@@ -390,7 +418,12 @@ pub(crate) fn run_with_target(
     }
     let signals = match Signals::register() {
         Ok(s) => s,
-        Err(e) => return unsupervised(&waiter, on, &format!("cannot catch stop signals: {e}")),
+        Err(e) => {
+            return match initial.as_ref().filter(|t| t.is_pinned()) {
+                Some(target) => Err(target.handoff_error(e.into())),
+                None => unsupervised(&waiter, on, &format!("cannot catch stop signals: {e}")),
+            };
+        }
     };
 
     // The profile this attempt runs under; `None` keeps the inherited
@@ -461,7 +494,27 @@ pub(crate) fn run_with_target(
             .as_ref()
             .zip(profile.as_ref())
             .map(|(sw, p)| {
-                LaunchTarget::pinned(sw.store, p, sw.inherited.as_str(), billing.clone())
+                if let Some(initial) = initial.as_ref().filter(|t| t.is_pinned()) {
+                    // Restricted fallback descendants retain authentication
+                    // at each hand-off. Ordinary inherited quota reruns keep
+                    // their established launch checks and request behaviour.
+                    LaunchTarget::pinned(
+                        sw.store,
+                        p,
+                        sw.inherited.as_str(),
+                        billing.clone(),
+                        initial,
+                    )
+                } else {
+                    let mut target = LaunchTarget::named(
+                        sw.store,
+                        p,
+                        JoinPolicy::Never,
+                        SelectionOrigin::Supervisor,
+                    )?;
+                    target.set_billing(billing.clone());
+                    Ok(target)
+                }
             })
             .transpose()
             .map_err(crate::commands::profile::with_hint)?;
@@ -479,10 +532,19 @@ pub(crate) fn run_with_target(
         ) {
             Ok(a) => a,
             // The first attempt never started, so a plain launch can follow.
-            Err(e) if n == 1 && profile.is_none() => {
+            Err(e)
+                if n == 1
+                    && profile.is_none()
+                    && !initial.as_ref().is_some_and(LaunchTarget::is_pinned) =>
+            {
                 return unsupervised(&waiter, on, &e);
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                return Err(match target {
+                    Some(target) if target.is_pinned() => target.handoff_error(e),
+                    _ => e,
+                });
+            }
         };
         // Issue #1700: a key error on an API-key profile blocks the API key.
         note_key_error(
