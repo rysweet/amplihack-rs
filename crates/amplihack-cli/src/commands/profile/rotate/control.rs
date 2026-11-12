@@ -74,10 +74,7 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     let on_overflow = on_overflow_line(&store, &rs, home, &names, last_tag.as_deref(), &pin);
     let api_key = api_key_line(&store, home, ledger.as_ref().ok().and_then(Option::as_ref));
     let live = match &ledger {
-        Ok(l) => l
-            .as_ref()
-            .and_then(|l| l.live.clone())
-            .unwrap_or_else(|| "-".into()),
+        Ok(l) => super::status_live(&store, &rs, home, l.as_ref().and_then(|l| l.live.clone())),
         Err(e) => super::handfix_msg::status_live_unreadable(super::ledger::refused_field(e)),
     };
     let ledger = ledger.ok().flatten();
