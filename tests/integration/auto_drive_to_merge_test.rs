@@ -48,7 +48,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 24] = [
+const AUTODRIVE_TOOLS: [&str; 32] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
@@ -58,14 +58,21 @@ const AUTODRIVE_TOOLS: [&str; 24] = [
     "autodrive_followups_check.sh",
     "autodrive_last_round.sh",
     "autodrive_loop.sh",
+    "autodrive_loop_record.sh",
+    "autodrive_crusty_record.sh",
+    "autodrive_crusty_finalize.sh",
+    "autodrive_completion_context.sh",
     "autodrive_merge_gate.sh",
+    "autodrive_merge_message.sh",
     "autodrive_merge_ready_files.sh",
     "autodrive_platform_facts.sh",
     "autodrive_pr_head.sh",
     "autodrive_progress.sh",
+    "autodrive_qa_docs.sh",
     "autodrive_qa_evidence.sh",
     "autodrive_qa_scope.sh",
     "autodrive_qa_sources.sh",
+    "autodrive_refusal.sh",
     "autodrive_round_evidence.sh",
     "autodrive_round_tail.sh",
     "autodrive_scenario_name.sh",
@@ -73,6 +80,7 @@ const AUTODRIVE_TOOLS: [&str; 24] = [
     "autodrive_trust.sh",
     "autodrive_unmerged.sh",
     "autodrive_worktree_guard.sh",
+    "git-repo-env.sh",
 ];
 
 fn workspace_root() -> PathBuf {
@@ -223,7 +231,7 @@ fn composer_delegates_to_the_three_phases_in_order() {
 // ── The loop terminator ──────────────────────────────────────────────────────
 
 #[test]
-fn both_loops_terminate_on_the_loop_health_evaluator_contract() {
+fn unresolved_loops_use_the_shared_loop_health_evaluator_contract() {
     let driver = read(&tool_path("autodrive_loop.sh"));
     // Resolved to an absolute path in the launch-side bundle (by
     // autodrive_worktree_guard.sh loop-preflight), never by name under
@@ -522,7 +530,10 @@ fn verdict_gates_use_the_canonical_orch_helper_pipeline() {
 
 #[test]
 fn advancing_a_phase_requires_both_the_round_verdict_and_the_loop_verdict() {
-    let driver = read(&tool_path("autodrive_loop.sh"));
+    let driver = read(&tool_path("autodrive_loop.sh")).replace(
+        ". \"${LOOP_HOME}/autodrive_loop_record.sh\" || exit 1",
+        &read(&tool_path("autodrive_loop_record.sh")),
+    );
     assert!(
         driver.contains("ROUND_CLEAN=\"true\""),
         "the driver must track whether the round's own verdict was the clean token"
@@ -715,17 +726,408 @@ fn forbidden_flags_never_appear_in_an_executable_position() {
             }
         }
     }
-    // The prohibition is structural at the merge, not merely advisory.
-    let gate = read(&tool_path("autodrive_merge_gate.sh"));
+    // The prohibition is structural at the merge, not merely advisory. Read
+    // from the gate's code: a comment quoting the argv is not the argv.
+    let gate = shell_code(&read(&tool_path("autodrive_merge_gate.sh")));
     assert!(
         gate.contains(
-            r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA")"#
+            r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file -)"#
         ),
         "the merge argv must be a fixed literal list that takes no caller flags"
     );
+    // Issue #2056: once one element carries the squash subject, the old
+    // comparison of two IFS-joined arrays cannot tell one element holding
+    // spaces from several, and a twin-array comparison is a tautology however
+    // it is spelled. What still rules out an injected flag is the element
+    // count plus the pinned literal positions.
     assert!(
-        gate.contains(r#"if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]"#),
-        "the merge argv must be asserted unchanged immediately before execution"
+        !gate.contains(r#"if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]"#),
+        "the IFS-joined argv self-check cannot survive a subject containing spaces"
+    );
+    for pin in [
+        r#""${#MERGE_ARGV[@]}" -ne 11"#,
+        r#""${MERGE_ARGV[0]}" != "pr""#,
+        r#""${MERGE_ARGV[1]}" != "merge""#,
+        r#""${MERGE_ARGV[3]}" != "--squash""#,
+        r#""${MERGE_ARGV[4]}" != "--delete-branch""#,
+        r#""${MERGE_ARGV[5]}" != "--match-head-commit""#,
+        r#""${MERGE_ARGV[7]}" != "--subject""#,
+        r#""${MERGE_ARGV[9]}" != "--body-file""#,
+        r#""${MERGE_ARGV[10]}" != "-""#,
+    ] {
+        assert!(
+            gate.contains(pin),
+            "the merge argv must be pinned positionally before execution; missing `{pin}`"
+        );
+    }
+}
+
+/// Shell source with its full-line comments removed. A structural assertion
+/// that searches the whole file is satisfied by a comment describing the code
+/// it means to pin: in crusty's round 4 on PR #2262, `umask 077; set -C;`
+/// deleted from the message helper's code and `jq -j` changed to `jq -r` left
+/// every such check passing on the helper's own comment block.
+fn shell_code(text: &str) -> String {
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// What `autodrive_merge_message.sh` must keep in its CODE, and why.
+const HELPER_CODE_NEEDLES: [(&str, &str); 6] = [
+    (
+        "jq -j",
+        "the body is extracted with `jq -j`; `jq -r` appends a newline the body does not contain",
+    ),
+    (
+        "&& printf x)",
+        "the capture appends `x` only when jq succeeded, so `$(...)` keeps a trailing newline \
+         and a failed jq is never mistaken for a short body",
+    ),
+    (
+        "set -o pipefail",
+        "jq's exit status, not tr's, decides whether the body was read",
+    ),
+    (
+        "umask 077",
+        "the record is 0600 whatever the caller's umask",
+    ),
+    (
+        "set -C",
+        "the record is created O_EXCL, refusing anything that appeared at the path",
+    ),
+    (
+        r#"rm -f -- "$path""#,
+        "a symlink or stale record at the deterministic name is removed, never followed or reused",
+    ),
+];
+
+/// The needles of HELPER_CODE_NEEDLES that `helper`'s code, comments
+/// excluded, does not contain.
+fn helper_code_gaps(helper: &str) -> Vec<&'static str> {
+    let code = shell_code(helper);
+    HELPER_CODE_NEEDLES
+        .iter()
+        .filter(|(needle, _)| !code.contains(needle))
+        .map(|(needle, _)| *needle)
+        .collect()
+}
+
+/// Issue #2056: the squash commit message is READ IN THIS RUN and handed to
+/// `gh`, instead of being left for GitHub to compose from the branch's
+/// commits. Composing from commits puts whatever those commits carry into
+/// main's history: a wrong `Co-Authored-By` trailer, a `Fixes #N` belonging
+/// to a branch this one is stacked on, a recipe's `Task:` line.
+///
+/// Everything asserted here is structural, and every positive assertion reads
+/// code lines only. The shell contract test exercises the behaviour,
+/// including the race these checks cannot see. The two are the same contract
+/// read from opposite ends, and both must move together.
+#[test]
+fn the_merge_gate_composes_the_squash_message_from_the_pull_request() {
+    let gate_text = read(&tool_path("autodrive_merge_gate.sh"));
+    let gate = shell_code(&gate_text);
+
+    // One pre-merge read, carrying the message alongside every other
+    // criterion, so the message binds to the same head SHA as the rest. The
+    // gate's other `gh pr view` is section 10's post-merge confirmation, so an
+    // occurrence COUNT would be wrong; what is pinned is the read that
+    // carries headRefOid.
+    let pre_merge: Vec<&str> = gate
+        .lines()
+        .filter(|l| l.contains(r#"gh pr view "$PR" --json"#) && l.contains("headRefOid"))
+        .collect();
+    assert_eq!(
+        pre_merge.len(),
+        1,
+        "exactly one pre-merge `gh pr view` may carry headRefOid; found {pre_merge:?}"
+    );
+    for field in ["title", "body"] {
+        assert!(
+            pre_merge[0].contains(field),
+            "the pre-merge read must fetch `{field}` so the squash message binds to the \
+             verified head SHA: {}",
+            pre_merge[0]
+        );
+    }
+
+    // The message is read with jq, never through field(). field() resolves to
+    // `extract-json --require-field`, whose LAST-object-wins selector (#1337,
+    // PR #1347) a pull request's own body can influence once free text enters
+    // STATE_JSON. Choosing jq here is a security control, not a style.
+    for forbidden in [
+        r#"field "$STATE_JSON" title"#,
+        r#"field "$STATE_JSON" body"#,
+    ] {
+        assert!(
+            !gate_text.contains(forbidden),
+            "the squash message must not be read with the last-object-wins helper: {forbidden}"
+        );
+    }
+
+    // Composing the message is the helper's contract, and what it must keep
+    // is checked in its code, not in the comments that describe that code
+    // (see the_helper_checks_fail_when_only_the_comments_keep_the_contract).
+    let helper_text = read(&tool_path("autodrive_merge_message.sh"));
+    let helper = shell_code(&helper_text);
+    let gaps = helper_code_gaps(&helper_text);
+    assert!(
+        gaps.is_empty(),
+        "autodrive_merge_message.sh's code is missing {gaps:?}; each is needed because: {:?}",
+        HELPER_CODE_NEEDLES
+            .iter()
+            .filter(|(n, _)| gaps.contains(n))
+            .map(|(_, why)| *why)
+            .collect::<Vec<_>>()
+    );
+    for function in [
+        "autodrive_merge_subject()",
+        "autodrive_merge_body()",
+        "autodrive_merge_record()",
+    ] {
+        assert!(
+            helper.contains(function),
+            "the message helper must define `{function}`"
+        );
+    }
+    for call in [
+        r#"autodrive_merge_subject "$STATE_JSON" "$PR""#,
+        r#"autodrive_merge_body "$STATE_JSON""#,
+        r#"autodrive_merge_record "$MERGE_BODY" "$MERGE_RECORD""#,
+    ] {
+        assert!(gate.contains(call), "the gate must call `{call}`");
+    }
+    assert!(
+        !gate.contains("jq -j"),
+        "the gate must not extract the body itself; that is the helper's contract"
+    );
+    // The two failure classes stay apart: an unreadable body (a platform read
+    // that came back malformed, or a jq that failed) and a record that was
+    // not written (the filesystem under the state dir).
+    assert!(
+        gate.contains("the body of pull request #${PR} is unreadable")
+            && gate.contains("could not be written under ${STATE_DIR}"),
+        "an unreadable body and an unwritten record must be reported separately"
+    );
+
+    // The body goes to gh on stdin, from the gate's own variable, and never
+    // as a path (crusty round 4 on PR #2262, CWE-367). A file in the state
+    // dir can be rewritten by this same user between any check the gate makes
+    // on it and gh opening it; a byte in the gate's memory cannot. gh's own
+    // status is the one captured: under pipefail, `$?` could be printf's.
+    assert!(
+        gate.contains(r#"printf '%s' "$MERGE_BODY" | gh "${MERGE_ARGV[@]}""#),
+        "the gate must pipe MERGE_BODY into gh's stdin"
+    );
+    assert!(
+        gate.contains(r#"MERGE_RC="${PIPESTATUS[1]}""#),
+        "the merge status must be gh's, PIPESTATUS[1], not the pipeline's"
+    );
+    assert!(
+        !gate.contains(r#"--body-file "$"#),
+        "no path may be handed to gh as --body-file"
+    );
+    assert!(
+        !gate_text.contains(r#"--body ""#),
+        "the body must never be passed inline, where it would reach argv and `ps`"
+    );
+    // With no path handed to gh there is nothing left to guard, so the
+    // digest re-check and its sha256sum/shasum dependency are gone rather than
+    // kept beside the pipe, where they would claim a binding they never gave.
+    for gone in [
+        "autodrive_merge_body_intact",
+        "autodrive_merge_digest",
+        "MERGE_BODY_DIGEST",
+        "MERGE_BODY_FILE",
+        "sha256sum",
+        "shasum",
+    ] {
+        assert!(
+            !gate.contains(gone) && !helper.contains(gone),
+            "`{gone}` belonged to guarding a message file that gh no longer reads"
+        );
+    }
+
+    // The record is deterministic, under the private state dir, and bound to
+    // the head SHA, so a record left by an earlier round is never mistaken
+    // for this one's.
+    assert!(
+        gate.contains(r#"MERGE_RECORD="${STATE_DIR}/merge-message-${PR}-${SHA12}.txt""#),
+        "the record must live in the private state dir, named for the PR and head SHA"
+    );
+
+    // Still no bypass, and the merge is still gated on the head not moving.
+    for forbidden in ["--admin", "--auto", "--no-verify"] {
+        for line in gate.lines() {
+            assert!(
+                !line.contains(forbidden),
+                "the gate must not use `{forbidden}` in an executable position: {line}"
+            );
+        }
+    }
+}
+
+/// The structural checks above read the helper's CODE. This replays crusty's
+/// round-4 mutation on PR #2262 — `umask 077; ` and `set -C; ` deleted from
+/// the code and `jq -j` changed to `jq -r`, the comments left alone — and
+/// requires the checks to notice. Without it, an edit that put the
+/// comment-matching back would fail nothing.
+#[test]
+fn the_helper_checks_fail_when_only_the_comments_keep_the_contract() {
+    let helper = read(&tool_path("autodrive_merge_message.sh"));
+    let original = helper.lines().collect::<Vec<_>>().join("\n");
+    let mutated = helper
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with('#') {
+                line.to_string()
+            } else {
+                line.replace("umask 077; ", "")
+                    .replace("set -C; ", "")
+                    .replace("jq -j", "jq -r")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_ne!(
+        mutated, original,
+        "the mutation must change the helper's code, or this test proves nothing"
+    );
+    for needle in ["umask 077", "set -C", "jq -j"] {
+        assert!(
+            mutated.contains(needle),
+            "the mutated helper's comments must still name `{needle}`, as they did when \
+             the old whole-file checks passed on them"
+        );
+    }
+    let gaps = helper_code_gaps(&mutated);
+    for needle in ["umask 077", "set -C", "jq -j"] {
+        assert!(
+            gaps.contains(&needle),
+            "a helper whose code lost `{needle}` must fail the structural check; gaps were {gaps:?}"
+        );
+    }
+}
+
+/// Issue #2056: the gate is at its 400-line brick budget, so the message
+/// derivation is a helper beside it. A helper the gate SOURCES runs inside the
+/// process the #1551 shim trusts to merge, so it must ship and be sourced from
+/// GATE_HOME — never from a path a pull request could populate.
+#[test]
+fn the_squash_message_helper_ships_beside_the_gate() {
+    let helper = tool_path("autodrive_merge_message.sh");
+    assert!(
+        helper.is_file(),
+        "autodrive_merge_message.sh must ship in amplifier-bundle/tools"
+    );
+    let gate = shell_code(&read(&tool_path("autodrive_merge_gate.sh")));
+    assert!(
+        gate.contains(r#". "${GATE_HOME}/autodrive_merge_message.sh""#),
+        "the gate must source the message helper from GATE_HOME, not from the working directory"
+    );
+    let guard =
+        read(&workspace_root().join("crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs"));
+    assert!(
+        guard.contains(r#""autodrive_merge_message.sh""#),
+        "a helper the gate sources must be a GATE_FILES entry, or it escapes the #1551 mode check"
+    );
+    // ...and it joins the tool list, so the brick budget, the forbidden-flag
+    // scan and every other control-path check cover it from then on. This
+    // assertion is what makes extending AUTODRIVE_TOOLS part of the work
+    // rather than an optional tidy-up.
+    assert!(
+        AUTODRIVE_TOOLS.contains(&"autodrive_merge_message.sh"),
+        "the message helper is on the control path and must be listed in AUTODRIVE_TOOLS \
+         so the brick budget and the forbidden-flag scan cover it"
+    );
+}
+
+/// Issue #2056: both copies of the skill describe the argv as implemented.
+/// They are byte-identical and that parity is asserted elsewhere; this pins
+/// the content so a reader is not told the gate does something it does not.
+#[test]
+fn the_skill_documents_the_squash_message_flags() {
+    for rel in [
+        "amplifier-bundle/skills/auto-drive-to-merge/SKILL.md",
+        "docs/claude/skills/auto-drive-to-merge/SKILL.md",
+    ] {
+        let text = read(&workspace_root().join(rel));
+        for needle in ["--subject", "--body-file"] {
+            assert!(
+                text.contains(needle),
+                "{rel} must state the merge argv as implemented, including `{needle}`"
+            );
+        }
+    }
+}
+
+/// Crusty round 8 on PR #2262: under auto-drive the pull request body is also
+/// merge-ready's pre-merge report ("Final platform state: open", a verdict),
+/// and nothing refreshes it after the last round, so the helper cuts the
+/// squash body where that report starts. Where it starts is a convention
+/// between two files, the merge-ready template that writes the report and the
+/// helper that cuts it. This pins both ends: the template's marker line and
+/// heading are the two boundaries the helper's CODE matches, the marker sits
+/// directly above the heading, and the skill tells the agent to keep it.
+#[test]
+fn the_merge_ready_template_marks_where_the_squash_body_ends() {
+    let template = read(
+        &workspace_root().join("amplifier-bundle/skills/merge-ready/pr-description-template.md"),
+    );
+    let skill = read(&workspace_root().join("amplifier-bundle/skills/merge-ready/SKILL.md"));
+    let helper = shell_code(&read(&tool_path("autodrive_merge_message.sh")));
+
+    // The helper compares lowercased lines, so its needles are lowercase.
+    for needle in [
+        "startswith(\"<!-- merge-ready-report\")",
+        "startswith(\"## merge readiness\")",
+        "ascii_downcase",
+    ] {
+        assert!(
+            helper.contains(needle),
+            "autodrive_merge_message.sh's code must cut the body with `{needle}`, the \
+             boundary the merge-ready template writes"
+        );
+    }
+
+    let lines: Vec<&str> = template.lines().collect();
+    let markers: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with("<!-- merge-ready-report"))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        markers.len(),
+        1,
+        "the merge-ready template must carry exactly one line starting \
+         `<!-- merge-ready-report`, the line the merge gate cuts the squash body at"
+    );
+    let marker = markers[0];
+    assert!(
+        lines[marker].ends_with("-->"),
+        "the marker must be a complete HTML comment on one line, so it does not render: {}",
+        lines[marker]
+    );
+    assert_eq!(
+        lines.get(marker + 1).copied(),
+        Some("## Merge readiness"),
+        "the marker must sit directly above the template's `## Merge readiness` heading, so \
+         the whole report is below it"
+    );
+    // No line above the marker may start like a boundary either, or the cut
+    // would come early in every description written from the template.
+    for l in &lines[..marker] {
+        assert!(
+            !l.to_ascii_lowercase().starts_with("## merge readiness"),
+            "a `## Merge readiness` line above the marker would cut the body there: {l}"
+        );
+    }
+    assert!(
+        skill.contains("<!-- merge-ready-report"),
+        "merge-ready's SKILL.md must tell the agent to keep the marker line, since the \
+         merge gate cuts the squash body at it"
     );
 }
 
@@ -740,7 +1142,10 @@ fn merge_gate_verifies_every_criterion_and_binds_them_to_one_head_sha() {
         "mergeStateStatus",
         "reviewDecision",
         "reviewThreads",
-        "gh pr checks",
+        // #2186: CI is read at the head SHA by the expected-checks reader,
+        // which replaced the `gh pr checks` rollup.
+        "autodrive_expected_checks.sh",
+        "ci_status",
         "qa_status",
         "merge_ready_verdict",
     ] {
@@ -761,7 +1166,7 @@ fn merge_gate_verifies_every_criterion_and_binds_them_to_one_head_sha() {
     // Unreadable is a failure, never a pass.
     for unreadable in [
         "metadata is unreadable",
-        "CI status for #${PR} is unreadable",
+        "expected checks unreadable",
         "review-thread state is unreadable",
     ] {
         assert!(
@@ -769,8 +1174,15 @@ fn merge_gate_verifies_every_criterion_and_binds_them_to_one_head_sha() {
             "the merge gate must treat `{unreadable}` as a blocker"
         );
     }
+    // #2186: CI is read by the expected-checks reader, which blocks on an
+    // unreadable endpoint and on zero checks at the head.
+    let reader = read(&tool_path("autodrive_expected_checks.sh"));
     assert!(
-        gate.contains("zero checks is not a green build"),
+        reader.contains(r#"t: ("expected checks unreadable: " + cl)"#),
+        "an unreadable CI endpoint must be a blocker"
+    );
+    assert!(
+        reader.contains(r#"t: ("no checks" + at)"#),
         "a PR reporting no checks at all must not be treated as green"
     );
     // The evidence bundle is written BEFORE anything is merged.
@@ -804,8 +1216,8 @@ fn exit_79_is_terminal_and_never_retried_into() {
         "the loop driver must name exit 79 as the terminal policy refusal"
     );
     assert!(
-        driver.contains("BLOCKED_TERMINAL"),
-        "BLOCKED_TERMINAL must be recognised alongside exit 79"
+        read(&tool_path("autodrive_refusal.sh")).contains("structural_refusal"),
+        "the runner's structural_refusal marker must be recognised alongside exit 79 (#1437)"
     );
     assert!(
         driver.contains("never retried into") || driver.contains("NEVER retried"),
@@ -1069,8 +1481,10 @@ fn the_forbidden_flag_scanner_catches_every_spelling() {
         r#"git commit -m "clear merge-ready blockers: <what changed>""#,
         "git add -A",
         "git push",
-        r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA")"#,
-        "gh pr view \"$PR\" --json state,mergedAt",
+        r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file -)"#,
+        r#"gh pr merge "$PR" --squash --subject "$MERGE_SUBJECT""#,
+        r#"printf '%s' "$MERGE_BODY" | gh pr merge "$PR" --squash --body-file -"#,
+        "gh pr view \"$PR\" --json state,mergedAt,title,body",
         "amplihack hygiene artifact-guard --repo . --mode pre-commit",
     ] {
         assert!(
@@ -1744,10 +2158,11 @@ const STATE_DIR_SENTENCE: &str = "Do not create, edit, move, rename, delete or a
 /// Words the state directory must never be named by in an agent prompt.
 const STATE_DIR_LEAKS: [&str; 3] = ["STATE_DIR", "autodrive_state_dir", "AUTODRIVE_STATE_DIR"];
 
-/// The five agent steps of the auto-drive workflow, by recipe.
-const AUTODRIVE_AGENT_STEPS: [(&str, &str); 5] = [
+/// The six agent steps of the auto-drive workflow, by recipe.
+const AUTODRIVE_AGENT_STEPS: [(&str, &str); 6] = [
     ("autodrive-crusty-round", "step-02-crusty-review"),
     ("autodrive-crusty-round", "step-04-address-concerns"),
+    ("autodrive-crusty-round", "step-07-select-next-action"),
     ("autodrive-merge-round", "step-02-merge-ready-assessment"),
     ("autodrive-merge-round", "step-04-address-blockers"),
     ("loop-health-evaluator", "step-02-evaluate-loop-health"),
@@ -2142,10 +2557,19 @@ fn qa_evidence_step_runs_the_qa_evidence_tool() {
         "REPO_PATH=\"$PWD\" bash \"$T\"",
     ]
     .iter()
-    .chain(TOOL_SEARCH_NEEDLES.iter())
-    {
+    .chain(
+        TOOL_SEARCH_NEEDLES
+            .iter()
+            .filter(|n| **n != "git rev-parse --show-toplevel"),
+    ) {
         assert!(cmd.contains(needle), "step-02 must reference `{needle}`");
     }
+    // #2033: the tool is never found through git, which an inherited
+    // GIT_WORK_TREE could point at a planted worktree.
+    assert!(
+        !cmd.contains("git rev-parse --show-toplevel"),
+        "step-02 must not search the git toplevel for the qa evidence tool (#2033)"
+    );
     let sourced = regex::Regex::new(r#"(^|[;&|\s])(\.|source)\s+"?\$\{?T\b"#).unwrap();
     assert!(
         !sourced.is_match(cmd) && !cmd.contains("eval "),
@@ -2298,7 +2722,11 @@ fn crusty_round_records_the_reviewed_head_sha_every_round() {
         ctx.contains("git rev-parse HEAD"),
         "step-01 must read the reviewed head with git, in bash"
     );
-    let cmd = field(step(&recipe, "step-06-write-round-record"), "command");
+    assert!(
+        field(step(&recipe, "step-06-write-round-record"), "command")
+            .contains("autodrive_crusty_record.sh")
+    );
+    let cmd = read(&tool_path("autodrive_crusty_record.sh"));
     // #1561: step outputs are read only as RECIPE_VAR_<key>.
     for needle in [
         "RECIPE_VAR_crusty_round_context",
@@ -2321,7 +2749,10 @@ fn crusty_round_records_the_reviewed_head_sha_every_round() {
 #[test]
 fn crusty_records_are_trusted_only_through_the_loop_manifest() {
     // Point 4 of #1517: the assessment trusts only records the loop wrote.
-    let driver = read(&tool_path("autodrive_loop.sh"));
+    let driver = read(&tool_path("autodrive_loop.sh")).replace(
+        ". \"${LOOP_HOME}/autodrive_loop_record.sh\" || exit 1",
+        &read(&tool_path("autodrive_loop_record.sh")),
+    );
     for needle in [
         "-records.tsv",
         "hash-object --no-filters --stdin",
@@ -2601,11 +3032,11 @@ fn merge_gate_keeps_every_existing_block() {
         r#"block "a review requests changes""#,
         r#"block "review-thread state is unreadable; an unreadable criterion is a failure, not a pass""#,
         r#"block "${THREADS} unresolved review thread(s)""#,
-        r#"block "jq is unavailable, so the CI rollup cannot be read; a criterion we cannot read is a failure""#,
-        r#"block "CI status for #${PR} is unreadable; an unreadable CI status is a failure, not a pass""#,
-        r#"block "no CI checks reported for #${PR}; zero checks is not a green build""#,
-        r#"block "${PENDING:-unreadable} CI check(s) still pending""#,
-        r#"block "${FAILING:-unreadable} CI check(s) failing or cancelled""#,
+        // #2186 replaced the `gh pr checks` rollup refusals (jq missing,
+        // unreadable, zero, pending, failing) with the expected-checks
+        // reader: its blocker lines become blocks, and anything short of a
+        // GREEN verdict with exit 0 and no blocker line is refused here.
+        r#"block "expected checks unreadable: the reader gave no verdict or no blocker""#,
         r#"block "no qa-team scenario evidence file was produced in this run""#,
         r#"block "qa-team scenarios did not pass in this run (qa_status=${QA_STATUS})""#,
         r#"block "the qa-team evidence records no head_sha; evidence that is not bound to a SHA never merges""#,
@@ -2902,9 +3333,14 @@ fn every_criterion_is_read_completely_and_bound_to_the_merged_sha() {
         "the merge status must be captured from `gh` itself, not from inside \
          the `then` of an `if !`, where `$?` is always 0"
     );
+    // Since #2056 the body is piped into `gh`, so the status must also be
+    // `gh`'s own element of the pipeline: under pipefail, `$?` after a pipe is
+    // the rightmost non-zero status, which could be printf's.
     assert!(
-        gate.contains("gh \"${MERGE_ARGV[@]}\"\nMERGE_RC=$?"),
-        "`gh` must run on its own line with `MERGE_RC=$?` immediately after"
+        gate.contains(
+            "printf '%s' \"$MERGE_BODY\" | gh \"${MERGE_ARGV[@]}\"\nMERGE_RC=\"${PIPESTATUS[1]}\""
+        ),
+        "`gh` must run on its own line with `MERGE_RC=\"${{PIPESTATUS[1]}}\"` immediately after"
     );
 }
 
@@ -3097,6 +3533,14 @@ const ROUND_SUBCOMMANDS: [(&str, &str); 8] = [
     ("round-record", "round_record"),
 ];
 
+/// Functions in autodrive_round_evidence.sh that no subcommand dispatches to
+/// but that subcommand bodies call (#2219): measured_downgrade and
+/// measured_held_by read every measurement through `_measured_read`, and the
+/// criterion 6 stop line reads its facts through `_approval_detail`. Without
+/// following them, the reads those bodies make would be invisible to the
+/// step checks below.
+const ROUND_PRIVATE_HELPERS: [&str; 3] = ["_measured_read", "_approval_detail", "measured_held_by"];
+
 /// The bash a merge-round step runs: its own command and, for each
 /// `bash "$T" <subcommand>` of autodrive_round_evidence.sh it calls, the body
 /// of the function that subcommand dispatches to, and of every subcommand
@@ -3139,12 +3583,20 @@ fn round_step_bash(recipe: &Value, id: &str) -> String {
         }
         seen.push(func);
         let body = body_of(func);
-        for (_, callee) in ROUND_SUBCOMMANDS {
+        let callees = ROUND_SUBCOMMANDS
+            .iter()
+            .map(|(_, f)| *f)
+            .chain(ROUND_PRIVATE_HELPERS);
+        for callee in callees {
             let called = body
                 .lines()
                 .skip(1)
                 .filter(|l| !l.trim_start().starts_with('#'))
-                .any(|l| l.contains(&format!("{callee} ")) || l.contains(&format!("{callee})")));
+                .any(|l| {
+                    l.trim() == callee
+                        || l.contains(&format!("{callee} "))
+                        || l.contains(&format!("{callee})"))
+                });
             if called && !seen.contains(&callee) {
                 pending.push(callee);
             }
@@ -3180,24 +3632,35 @@ fn merge_round_finds_its_tools_once() {
         Some("autodrive_tools_dir")
     );
     let cmd = field(s, "command");
-    for needle in TOOL_SEARCH_NEEDLES.iter().chain(
-        [
-            "autodrive_merge_ready_files.sh",
-            "autodrive_platform_facts.sh",
-            "autodrive_round_evidence.sh",
-            "autodrive_state.sh",
-            "autodrive_trust.sh",
-            "git-identity.sh",
-            "ERROR: autodrive-tools-not-found",
-            "pwd -P",
-        ]
-        .iter(),
-    ) {
+    // #2033: the git toplevel is not searched; an inherited GIT_WORK_TREE
+    // could point it at a planted tree that supplies git-repo-env.sh.
+    for needle in TOOL_SEARCH_NEEDLES
+        .iter()
+        .filter(|n| **n != "git rev-parse --show-toplevel")
+        .chain(
+            [
+                "autodrive_merge_ready_files.sh",
+                "autodrive_platform_facts.sh",
+                "autodrive_round_evidence.sh",
+                "autodrive_state.sh",
+                "autodrive_trust.sh",
+                "git-identity.sh",
+                "git-repo-env.sh",
+                "ERROR: autodrive-tools-not-found",
+                "pwd -P",
+            ]
+            .iter(),
+        )
+    {
         assert!(
             cmd.contains(needle),
             "step-00-tools-dir must reference `{needle}`"
         );
     }
+    assert!(
+        !cmd.contains("git rev-parse --show-toplevel"),
+        "step-00 must not search the git toplevel for tools (#2033)"
+    );
     let text = recipe_text("autodrive-merge-round");
     assert_eq!(
         text.matches("for c in \"${AMPLIHACK_HOME:-}\"").count(),
@@ -3299,7 +3762,7 @@ fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
         // Its judging agents start in the checked review dir, not the PR worktree (#1528).
         "--review-dir \"$REVIEW_DIR\"",
         "--state-dir \"$DIR\"",
-        "autodrive_record_crusty_loop_done \"$DIR\"",
+        "bash \"$HERE/autodrive_crusty_finalize.sh\"",
         "crusty-rereview-not-needed",
         "crusty-rereview-done",
         "crusty-rereview-not-done",
@@ -3318,7 +3781,7 @@ fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
     let crusty_loop = recipe_yaml("autodrive-crusty-loop");
     assert!(
         step_command(&crusty_loop, "step-03-record-crusty-phase")
-            .contains("autodrive_record_crusty_loop_done \"$DIR\""),
+            .contains("bash \"$H/autodrive_crusty_finalize.sh\""),
         "phase 2 and the re-review must record a DONE crusty loop through one function"
     );
     assert!(
@@ -3536,7 +3999,7 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
     let log = tmp.path().join("runner.log");
     fs::write(
         &runner,
-        "#!/bin/sh\nprintf 'depth=%s\\n' \"${AMPLIHACK_SESSION_DEPTH:-}\" >> \"$RUNNER_LOG\"\nprintf '{}\\n'\n",
+        "#!/bin/sh\nif [ \"$1\" = --capabilities ]; then printf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'; exit 0; fi\nprintf 'depth=%s\\n' \"${AMPLIHACK_SESSION_DEPTH:-}\" >> \"$RUNNER_LOG\"\nprintf '{}\\n'\n",
     )
     .expect("write the runner stub");
     #[cfg(unix)]
@@ -3647,24 +4110,62 @@ fn gadugi_test_is_checked_before_the_build() {
 
 #[test]
 fn a_round_log_that_quotes_the_refusal_is_not_a_refusal() {
-    // crusty's review of PR #1520 quoted the guard's refusal in its verdict.
-    // Agent output reaches the round log as `[HH:MM:SS] [amplihack:...]`
-    // lines, and reading any BLOCKED_TERMINAL there as a refusal ended the
-    // run with exit 79.
-    let driver = read(&tool_path("autodrive_loop.sh"));
-    let body = driver
+    // crusty's review of PR #1520 quoted the guard's refusal, and an agent in
+    // #1437 handled a descendant's refusal inline and then lost its session.
+    // Reading BLOCKED_TERMINAL anywhere in a transcript ended both runs with
+    // exit 79. Only the exit code and the runner's own failure_class marker
+    // decide, and every call site asks the same function.
+    let helper = read(&tool_path("autodrive_refusal.sh"));
+    let body = helper
         .split("terminal_refusal() {")
         .nth(1)
         .and_then(|rest| rest.split("\n}").next())
-        .expect("terminal_refusal() must be defined");
+        .expect("terminal_refusal() must be defined in autodrive_refusal.sh");
     assert!(
-        body.contains(r"\[amplihack:") && body.contains("grep -vE"),
-        "terminal_refusal must drop agent output lines before it looks for the refusal"
+        !body.contains("BLOCKED_TERMINAL"),
+        "terminal_refusal must not look for the refusal's text in the transcript"
+    );
+    assert!(body.contains("79"), "terminal_refusal must test exit 79");
+    assert!(
+        body.contains("structural_refusal"),
+        "terminal_refusal must read structural_refusal from the failure_class marker"
     );
     assert!(
-        body.contains("'BLOCKED_TERMINAL orchestration_unavailable'"),
-        "terminal_refusal must match the guard's own refusal text, not any BLOCKED_TERMINAL"
+        !helper.contains("eval "),
+        "autodrive_refusal.sh must not eval anything it read from a log"
     );
+
+    let driver = read(&tool_path("autodrive_loop.sh"));
+    let code: Vec<&str> = driver
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    assert!(
+        !code
+            .iter()
+            .any(|line| line.contains("terminal_refusal() {")),
+        "terminal_refusal is defined once, in autodrive_refusal.sh"
+    );
+    assert!(
+        code.iter()
+            .any(|line| line.contains(". \"${LOOP_HOME}/autodrive_refusal.sh\"")),
+        "autodrive_loop.sh must source autodrive_refusal.sh from beside itself"
+    );
+    assert!(
+        !code.iter().any(|line| line.contains("BLOCKED_TERMINAL")),
+        "autodrive_loop.sh must not match the refusal's text"
+    );
+    let calls: Vec<&&str> = code
+        .iter()
+        .filter(|line| line.contains("terminal_refusal \""))
+        .collect();
+    assert_eq!(calls.len(), 3, "three call sites: {calls:?}");
+    for log in ["\"$BEFORE_LOG\"", "\"$LOG\"", "\"$HEALTH_LOG\""] {
+        assert!(
+            calls.iter().any(|line| line.contains(log)),
+            "terminal_refusal must be called with {log}: {calls:?}"
+        );
+    }
 }
 
 #[test]
@@ -3893,13 +4394,23 @@ fn autodrive_trust_is_a_side_effect_free_library() {
             "autodrive_trust.sh must use `{needle}`"
         );
     }
+    // autodrive_trust_git unsets every name of AUTODRIVE_TRUST_GIT_UNSET_VARS
+    // with `env -u` (#2033); tests/issue_1278_git_env_isolation.sh checks that
+    // list against git-repo-env.sh and runs git under it.
+    let unset_list = regex::Regex::new(r#"(?m)^AUTODRIVE_TRUST_GIT_UNSET_VARS="([A-Z_ ]+)"$"#)
+        .unwrap()
+        .captures(&trust)
+        .map(|c| c[1].to_string())
+        .unwrap_or_default();
+    assert!(
+        trust.contains(
+            r#"for v in $AUTODRIVE_TRUST_GIT_UNSET_VARS; do unset_args+=(-u "$v"); done"#
+        ) && trust.contains(r#"env "${unset_args[@]}""#),
+        "autodrive_trust_git must pass every AUTODRIVE_TRUST_GIT_UNSET_VARS name to `env -u`"
+    );
     for var in ["GIT_DIR", "GIT_WORK_TREE"] {
         assert!(
-            trust.contains(&format!("-u {var}"))
-                || trust.contains(&format!("unset {var}"))
-                || regex::Regex::new(&format!(r"unset [A-Z_ ]*\b{var}\b"))
-                    .unwrap()
-                    .is_match(&trust),
+            unset_list.split(' ').any(|v| v == var),
             "autodrive_trust.sh must run git with `{var}` unset"
         );
     }
@@ -4038,6 +4549,9 @@ fn the_reference_documents_the_range_rule_and_the_qa_chain() {
         "autodrive_base_sha",
         "same user",
         "--match-head-commit",
+        "--subject",
+        "--body-file",
+        "merge-message-",
     ]
     .iter()
     .chain(RANGE_TOKENS.iter())
@@ -5030,6 +5544,35 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
         "MERGEREADY-no-round-tool did not pass (inherited={inherited:?}); a round with no \
          round tool must not find one through an inherited AUTODRIVE_TOOLS_DIR (#1607)\n{stdout}"
     );
+    // An argv and stdin case (#2056): a head commit authored by
+    // `Fixture <fixture.invalid>` gets the same composed message as one authored
+    // by `t`, with no Co-authored-by line in it. The stub `gh` composes nothing,
+    // so this cannot show whether GitHub adds such a line to a supplied body.
+    // That premise has not been probed; #2263 checks it on the landed commit.
+    // Required by name, so the case cannot disappear from the suite unnoticed.
+    assert!(
+        stdout.contains("PASS[MSG-fixture-author-no-coauthor]"),
+        "MSG-fixture-author-no-coauthor did not pass (inherited={inherited:?}); the composed \
+         message for a head commit authored by Fixture <fixture.invalid> must equal the one \
+         for the usual author and carry no Co-authored-by line (#2056)\n{stdout}"
+    );
+    // Crusty round 8 on PR #2262: the merge-ready report is cut off the
+    // squash body, at the template's marker and, for a report written without
+    // it, at its heading. Required by name for the reason the case above is.
+    for case in ["MSG-report-cut-at-marker", "MSG-report-cut-at-heading"] {
+        assert!(
+            stdout.contains(&format!("PASS[{case}]")),
+            "{case} did not pass (inherited={inherited:?}); the bytes gh receives on stdin must \
+             stop where the merge-ready report starts\n{stdout}"
+        );
+    }
+    // Section 5 lost its own `command -v jq` in #2186, so section 5b names a
+    // missing jq itself instead of calling the pull request title unreadable.
+    assert!(
+        stdout.contains("PASS[MSG-no-jq-names-jq]"),
+        "MSG-no-jq-names-jq did not pass (inherited={inherited:?}); a gate without jq must \
+         say so in section 5b, not blame the pull request title (#2056)\n{stdout}"
+    );
     if inherited == Inherited::Conflicting {
         assert!(
             !stdout.contains(DECOY_1561_SENTINEL) && !stderr.contains(DECOY_1561_SENTINEL),
@@ -5608,4 +6151,183 @@ fn autodrive_round_with_inherited_stale_tools_dir_uses_its_own() {
         "a round whose own tools dir has no round tool used the inherited \
          AUTODRIVE_TOOLS_DIR and kept its verdict (#1607):\n{stdout}\n{stderr}"
     );
+}
+
+// ── Issue #2033: repository commands run with the git and run-identity env cleared ──
+
+const GIT_REPO_ENV_LOAD: &str = ". \"{{autodrive_tools_dir}}/git-repo-env.sh\" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env";
+
+#[test]
+fn issue_2033_step_04_loads_the_helper_instead_of_a_partial_unset() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let prompt = field(step(&recipe, "step-04-address-blockers"), "prompt");
+    assert!(
+        !prompt.contains("unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE"),
+        "step-04 must not keep the partial GIT_* unset (#2033)"
+    );
+    // The test-running instruction also loads this helper. Check the commit
+    // block independently so prose order cannot select that other call.
+    let commit_block = prompt
+        .split("```bash\n")
+        .skip(1)
+        .filter_map(|section| section.split_once("```").map(|(block, _)| block))
+        .find(|block| {
+            block
+                .lines()
+                .any(|line| line.trim_start().starts_with("git commit "))
+        })
+        .expect("step-04 must contain a fenced bash commit block");
+    let cd = commit_block
+        .lines()
+        .position(|l| l.contains("cd \"{{repo_path}}\""))
+        .expect("step-04 enters the PR worktree");
+    let (load, line) = commit_block
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("git-repo-env.sh") && l.contains("amplihack_clear_git_repo_env"))
+        .unwrap_or_else(|| panic!("step-04 must source git-repo-env.sh and clear (#2033)"));
+    assert!(
+        line.contains("unset GH_REPO"),
+        "step-04 must keep `unset GH_REPO` on the helper line:\n  {line}"
+    );
+    assert!(
+        line.contains(GIT_REPO_ENV_LOAD),
+        "step-04 must load the helper from the checked tools dir and clear both lists:\n  {line}"
+    );
+    assert!(
+        line.contains("STOP: cannot load git-repo-env.sh from the tools directory (#2033)")
+            && line.contains("exit 1"),
+        "step-04 must stop when the helper cannot be loaded:\n  {line}"
+    );
+    let guard = commit_block
+        .lines()
+        .position(|l| l.contains("autodrive_worktree_guard.sh"))
+        .expect("step-04 checks the PR worktree before committing");
+    assert!(
+        cd < load && load < guard,
+        "step-04 must clear after cd and before the worktree guard (#2033)"
+    );
+    let first_git = commit_block
+        .lines()
+        .enumerate()
+        .find(|(_, l)| {
+            l.trim_start().starts_with("git ") || l.contains("autodrive_worktree_guard.sh")
+        })
+        .map(|(n, _)| n)
+        .expect("step-04 runs git after entering the worktree");
+    assert!(
+        load < first_git,
+        "step-04 must clear before its first git command (#2033)"
+    );
+}
+
+#[test]
+fn issue_2033_step_04_test_runs_load_the_helper_in_the_same_shell_call() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let prompt = field(step(&recipe, "step-04-address-blockers"), "prompt");
+    let instruction = prompt
+        .lines()
+        .find(|line| line.contains("**Running tests or hooks**"))
+        .expect("step-04 must instruct the agent how to isolate test and hook runs (#2033)");
+    assert!(
+        instruction.contains("every shell call") && instruction.contains("in that same call"),
+        "step-04 must clear the inherited environment in each shell call that runs tests or hooks:\n  {instruction}"
+    );
+    assert!(
+        instruction.contains(GIT_REPO_ENV_LOAD),
+        "test and hook runs must load the checked helper and clear both lists:\n  {instruction}"
+    );
+    assert!(
+        instruction.contains("[ ! -L \"{{autodrive_tools_dir}}/git-repo-env.sh\" ] &&")
+            && instruction
+                .contains("|| { echo \"STOP: cannot load git-repo-env.sh (#2033)\" >&2; exit 1; }"),
+        "test and hook runs must stop if the helper is a symlink or cannot be loaded:\n  {instruction}"
+    );
+}
+
+#[test]
+fn issue_2033_step_00_tools_dir_requires_the_helper() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let cmd = field(step(&recipe, "step-00-tools-dir"), "command");
+    let need: String = cmd
+        .lines()
+        .filter(|l| l.trim_start().starts_with("NEED="))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        need.split(|c: char| c.is_whitespace() || c == '"')
+            .any(|w| w == "git-repo-env.sh"),
+        "step-00-tools-dir NEED must list git-repo-env.sh so a tools dir without it is refused (#2033):\n{need}"
+    );
+}
+
+#[test]
+fn issue_2033_merge_evidence_steps_clear_before_any_git_command() {
+    let recipe = recipe_yaml("autodrive-merge-evidence");
+    // One lookup per round: the evidence steps load git-repo-env.sh from the
+    // tools directory merge-round's step-00 found, not from a search of their own.
+    let round = recipe_yaml("autodrive-merge-round");
+    let passed = step(&round, "merge-evidence")
+        .get("context")
+        .and_then(|c| c.get("autodrive_tools_dir"))
+        .and_then(Value::as_str);
+    assert_eq!(
+        passed,
+        Some("{{autodrive_tools_dir}}"),
+        "merge-round must pass autodrive_tools_dir to autodrive-merge-evidence (#2033)"
+    );
+    assert!(
+        recipe
+            .get("context")
+            .and_then(|c| c.get("autodrive_tools_dir"))
+            .is_some(),
+        "autodrive-merge-evidence must declare autodrive_tools_dir in its context"
+    );
+    for id in ["step-01-sync-with-base", "step-02-qa-team-scenarios"] {
+        let cmd = field(step(&recipe, id), "command");
+        assert!(
+            cmd.contains("STOP: cannot load git-repo-env.sh from the tools directory (#2033)"),
+            "{id} must stop with the #2033 message when the helper is missing"
+        );
+        assert!(
+            cmd.contains("${RECIPE_VAR_autodrive_tools_dir:-"),
+            "{id} must load git-repo-env.sh from the round's tools directory"
+        );
+        let lines: Vec<&str> = cmd.lines().collect();
+        let first = |pred: &dyn Fn(&str) -> bool| lines.iter().position(|l| pred(l));
+        let git_clear = first(&|l: &str| {
+            l.contains("amplihack_clear_git_repo_env") && !l.trim_start().starts_with('#')
+        })
+        .unwrap_or_else(|| panic!("{id} must call amplihack_clear_git_repo_env"));
+        let run_clear = first(&|l: &str| {
+            l.contains("amplihack_clear_run_identity_env") && !l.trim_start().starts_with('#')
+        })
+        .unwrap_or_else(|| panic!("{id} must call amplihack_clear_run_identity_env"));
+        let first_git = first(&|l: &str| {
+            let t = l.trim_start();
+            !t.starts_with('#')
+                && (t.starts_with("git ")
+                    || t.contains(" git ")
+                    || t.contains("$(git ")
+                    || t.contains("if git ")
+                    || t.contains("! git "))
+        })
+        .unwrap_or_else(|| panic!("{id} runs git"));
+        assert!(
+            git_clear < first_git && run_clear < first_git,
+            "{id} must clear both lists before its first git command (#2033)"
+        );
+        // The helper and the tools are never found through git: an inherited
+        // GIT_WORK_TREE could point the lookup at a planted worktree.
+        for l in &lines {
+            let t = l.trim_start();
+            if t.starts_with('#') {
+                continue;
+            }
+            assert!(
+                !(t.starts_with("for c in") && t.contains("\"$TOP\"")),
+                "{id} must not search the git toplevel for tools (#2033):\n  {l}"
+            );
+        }
+    }
 }

@@ -373,6 +373,10 @@ fn cycle2_g(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
 fn backdate(e: &Env, name: &str, at: i64) {
     let mut l = e.rs.load_ledger().unwrap().unwrap();
     l.swapped_away.insert(name.into(), at);
+    // Model the same historical swap in both records of its use.
+    if l.previous.as_deref() == Some(name) {
+        l.swapped_at = Some(at);
+    }
     e.rs.save_ledger(&l).unwrap();
 }
 

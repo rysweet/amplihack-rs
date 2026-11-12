@@ -6,19 +6,29 @@
 
 use super::cycle::Ctx;
 use super::decide::Probed;
+pub(super) use super::inflight::join_pending;
 use super::inflight::{InFlight, Job};
 use crate::binary_finder::BinaryInfo;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::probe_limits::{self, ProbeMode};
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd::{self, Probe, RowReader};
-use crate::commands::profile::usage_parse::UsageState;
-use crate::commands::profile::usage_source::{self, ClaudeGate, LazyBinary, SourceEnv};
+use crate::commands::profile::usage_source::{ClaudeGate, LazyBinary, SourceEnv};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
+
+// `probe_reading` belongs to `measure`; it has its own file to keep
+// `measure.rs` under the line budget.
+#[path = "probe_reading.rs"]
+mod probe_reading;
+#[cfg(test)]
+#[path = "tests_issue_2271_measure.rs"]
+mod tests_issue_2271_measure;
+
+pub(super) use probe_reading::reading;
 
 /// Whose login is in `~/.claude`.
 pub enum Live<'a> {
@@ -28,39 +38,23 @@ pub enum Live<'a> {
     /// An API-key profile (issue #1700): never probed, since a probe costs
     /// tokens or times out; its reading is [`Probed::platform`].
     Platform,
+    /// An excluded profile (issue #2218): never probed; [`Probed::excluded`].
+    Excluded,
 }
 
 impl Live<'_> {
-    /// Whether the live login is probed: an API-key one never is.
+    /// Whether the live login is probed: API-key and excluded ones are not.
     pub fn probed(&self) -> bool {
-        !matches!(self, Self::Platform)
+        !matches!(self, Self::Platform | Self::Excluded)
     }
-}
 
-/// The reading for `p`. A failed or timed-out probe counts as "swap needed",
-/// so its cause goes to stderr (the daemon's `rotate.err`); the text is fixed
-/// and never Claude's output. Both read `Failed`: never a target and never
-/// exhausted, and probed again next cycle. Both are also unknown, which
-/// blocks a move onto overflow. A profile directory refused just before the
-/// spawn is no exception (issue #1698): that login may have capacity. From
-/// the next cycle the profile is skipped as `directory refused` before any
-/// probe, and that skip holds the move until the directory is fixed.
-pub(super) fn reading(who: &str, p: &Probe) -> Probed {
-    // SR-10: logged whether or not the row fell back to `claude`.
-    if p.direct_failure.is_some_and(usage_source::not_saved) {
-        eprintln!("{}", usage_cmd::not_saved_warning(who));
+    /// The reading of a live login that is not probed.
+    fn unprobed(&self) -> Probed {
+        match self {
+            Self::Excluded => Probed::excluded(),
+            _ => Probed::platform(),
+        }
     }
-    if p.error.is_some() || p.report.state == UsageState::Error {
-        let why = p
-            .error
-            .map_or_else(|| "unreadable /usage output".to_string(), |e| e.to_string());
-        eprintln!("warning: rotate: probe of {who} failed: {why}");
-        return Probed::failed();
-    }
-    if p.report.state == UsageState::Timeout {
-        eprintln!("warning: rotate: probe of {who} timed out");
-    }
-    Probed::from_report(&p.report)
 }
 
 /// The probe method, as `profile usage` resolves it. A bad variable falls
@@ -145,7 +139,7 @@ pub(super) fn measure_with(
 ) -> (Probed, Vec<(ProfileName, Probed)>) {
     let probe_live = || {
         let p = match live {
-            Live::Platform => return Probed::platform(),
+            Live::Platform | Live::Excluded => return live.unprobed(),
             Live::Profile(name) => {
                 usage_cmd::probe_profile(store, binary, name, true, mode, timeout, now, false)
             }
@@ -169,7 +163,7 @@ pub(super) fn measure_with(
     let live = if skip == 1 {
         probed.remove(0)
     } else {
-        Probed::platform()
+        live.unprobed()
     };
     (live, candidates.iter().cloned().zip(probed).collect())
 }
@@ -319,7 +313,7 @@ pub fn measure_ordered(
     match live {
         Live::Profile(name) => keys.push(Key::Live(name.clone())),
         Live::Unowned => keys.push(Key::Unowned),
-        Live::Platform => {}
+        Live::Platform | Live::Excluded => {}
     }
     keys.extend(candidates.iter().cloned().map(Key::Candidate));
     keys.extend(unbound.iter().cloned().map(Key::UnboundCandidate));
@@ -350,7 +344,7 @@ pub fn measure_ordered(
     let live = if live.probed() {
         read.remove(0).1
     } else {
-        Probed::platform()
+        live.unprobed()
     };
     let others = candidates
         .iter()
@@ -366,21 +360,6 @@ pub fn measure_ordered(
     (live, others)
 }
 
-/// A trust change does not permit two reads of one stored login at once.
-/// Results retain the key (and trust class) they had when started.
-pub(super) fn join_pending(fl: &Reads, keys: &mut [Key]) {
-    for key in keys {
-        let other = match key {
-            Key::Candidate(name) => Key::UnboundCandidate(name.clone()),
-            Key::UnboundCandidate(name) => Key::Candidate(name.clone()),
-            _ => continue,
-        };
-        if fl.busy(&other) {
-            *key = other;
-        }
-    }
-}
-
 /// The row reader of one cycle, with `env` and at most `claude_bound`
 /// `claude` reads at once. Shared by [`measure_ordered`] and the freshness
 /// gate's re-read (`fresh::reread_as_configured`); [`Ctx`] makes it read-only.
@@ -393,6 +372,8 @@ pub(super) fn reader(ctx: &Ctx, env: SourceEnv, claude_bound: usize, now: i64) -
         home: Some(ctx.home.clone()),
         no_refresh: ctx.no_refresh_dirs(),
         overflow: crate::commands::profile::overflow::overflow_names(ctx.store.root()),
+        // An unknown list (`None`) excludes every profile (issue #2218).
+        excluded: usage_cmd::exclude_list(ctx.store.root(), |_| {}).ok(),
         now,
         keep_raw: false,
     }

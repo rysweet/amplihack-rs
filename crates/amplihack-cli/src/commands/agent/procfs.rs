@@ -7,6 +7,8 @@ mod root;
 
 pub use super::claude_names::{CLAUDE, ClaudeNames, is_claude, is_claude_with};
 pub use root::proc_root;
+#[cfg(test)]
+pub(crate) use root::{ProcRootOverride, checked_fake_tree, override_proc_root};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs;
 use std::io::Read;

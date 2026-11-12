@@ -384,6 +384,12 @@ mod issue_1595_tracking_issue_selection;
 // open issue with exactly the same title, and bounds creation retries.
 #[path = "issue_1881_local_default_tracking_test.rs"]
 mod issue_1881_local_default_tracking;
+// base_branch and strict_delivery: the shared helper, the step-15/16 guard,
+// step-06d for an issue in another repository, step-04's base, finalize, and
+// the callers that do not deliver to base_branch (quick-change, auto-drive-light,
+// smart-orchestrator's parallel launcher).
+#[path = "workflow_delivery_inputs_test.rs"]
+mod workflow_delivery_inputs;
 
 // Issues #815/#804: default-workflow local tracking issue-number extraction.
 // step-03b must accept hash-based `local-<hash>` references (propagate them),
@@ -452,11 +458,12 @@ mod issue_1337_loop_health_evaluator;
 #[path = "issue_1671_hook_rejection_repair_test.rs"]
 mod issue_1671_hook_rejection_repair;
 
-// Issue #1510: the loop-evidence collector drops agent output lines
-// (`[HH:MM:SS] [amplihack:...]`) before its BLOCKED_TERMINAL and exit-79
-// detectors, the same rule as terminal_refusal() in autodrive_loop.sh, so a
-// review quoting the token is not a terminal policy refusal. Runs the real
-// step-01 command through bash; needs bash and git, not the amplihack binary.
+// Issues #1510 and #1437: the loop-evidence collector reads no round text for
+// a refusal. It applies terminal_refusal from autodrive_refusal.sh, the helper
+// autodrive_loop.sh sources: exit 79, or the runner's final failure_class
+// marker with structural_refusal true. A review quoting the guard is not a
+// refusal. Runs the real step-01 command through bash; needs bash, git and
+// the built amplihack binary.
 #[path = "issue_1510_collector_agent_prose_test.rs"]
 mod issue_1510_collector_agent_prose;
 

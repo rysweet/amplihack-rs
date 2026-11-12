@@ -29,9 +29,12 @@ inputs:
     description: "URL of the PR this run published, when it published one."
   - name: pr_publish_result.pr_number
     description: "Number of the PR this run published, when it published one."
+  - name: base_branch
+    description: "The run's base_branch, the base step-16 passed to `gh pr create --base`. Passed to the collector as --base, so `work_in_base` is checked against the branch the pull request targets. Empty keeps the collector's discovery."
 
 context:
   repo_path: "."
+  base_branch: ""
   terminal_adjudication_evidence: ""
   terminal_adjudication_narrative: ""
   terminal_adjudication: ""
@@ -52,7 +55,7 @@ steps:
       cd "${REPO_PATH:-$(pwd)}" 2>/dev/null || true
       HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$HELPER" ] || HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$HELPER" ] || HELPER="$(pwd)/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$HELPER" ] || HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$HELPER" ] || HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_terminal_evidence.sh"
       [ -f "$HELPER" ] || { echo "WARNING: terminal-evidence collector not found at any known location (AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack); adjudicating as UNCERTAIN (issue #1268); cwd=$(pwd)" >&2; printf '%s\n' '{"schema_version":1,"evidence_readable":"false","unreadable_reason":"the terminal-evidence collector helper is not installed","work_in_base":"unknown","prs_for_head":[],"merged_pr_count":0,"open_pr_count":0,"closed_unmerged_pr_count":0,"positive_artifact":"false","outstanding_prs":[],"outstanding_pr_count":0,"mechanical_verdict":"UNCERTAIN","mechanical_reason":"terminal evidence could not be read: the collector helper is not installed","hard_negative":"false"}'; exit 0; }
-      bash "$HELPER" collect-for-step
+      bash "$HELPER" collect-for-step --base "${RECIPE_VAR_base_branch:-}"
     output: "terminal_adjudication_evidence"
 
   # Judgement, not a pattern match. Skipped when the mechanical read already

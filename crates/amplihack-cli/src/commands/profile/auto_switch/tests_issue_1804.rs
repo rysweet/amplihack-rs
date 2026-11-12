@@ -434,9 +434,11 @@ fn a_held_key_names_the_login_that_held_it() {
     );
 }
 
-/// `swap_check` needs the real `/proc` scan and the real gate.
+/// `swap_check` needs the liveness scan, over an empty synthetic process
+/// table (issue #2196), and the real gate.
 #[test]
 fn swap_check_moves_nothing_onto_a_key_with_a_mode_600_login() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let _l = lock();
     let f = fx("enabled=on\n");
     let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
@@ -547,6 +549,7 @@ fn a_session_on_an_unmarked_key_never_moves_onto_another_key() {
 /// `{}` login is no login on its own, so the session would be logged out.
 #[test]
 fn swap_check_never_swaps_a_marked_key_into_a_session() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let _l = lock();
     let f = fx("enabled=on\noverflow=console\n");
     // A key the login check accepts, so only the swap rule can refuse.
@@ -727,6 +730,7 @@ fn a_recorded_reason_is_in_the_rotate_log() {
 
 #[test]
 fn swap_check_onto_credits_writes_the_reason_to_the_rotate_log() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let _l = lock();
     let f = fx("enabled=on\noverflow=cred\n");
     let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
@@ -761,6 +765,104 @@ fn swap_check_onto_credits_writes_the_reason_to_the_rotate_log() {
         ) && lines[0].ends_with("; no spend block; auto-switch from work"),
         "{lines:?}"
     );
+}
+
+/// Issue #2136 test 3 for auto-switch: `work` (org-a) is used up and the
+/// only login with room, `spare`, is in org-b. `swap_check` makes the
+/// crossing as the last resort, and records it where an operator reads it:
+/// the rotate log, the last-crossing record and `auto-switch status`.
+/// Returns the rotate log lines and the status line.
+fn crossing_run(spare_org: &str) -> (Fx, Vec<String>, Option<String>) {
+    let _l = lock();
+    let f = fx("enabled=on\n");
+    let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+    let _gate = default_gate();
+    for (name, org) in [("work", "org-a"), ("spare", spare_org), ("cred", "org-b")] {
+        f.state
+            .write_sub_json(
+                "expected",
+                name,
+                &serde_json::json!({"account": format!("u-{name}"), "org": org}),
+            )
+            .unwrap();
+    }
+    let now = fsx::now();
+    let mut accounts = used_up(now);
+    accounts.insert("spare".into(), reading(10.0, 4 * 3600, now));
+    f.state
+        .save_usage(&UsageFile {
+            version: 1,
+            accounts,
+        })
+        .unwrap();
+    let window = Some(Window {
+        used_percentage: 100.0,
+        resets_at: now + 4 * 3600,
+    });
+    let rl = RateLimits {
+        five_hour: window,
+        seven_day: window,
+    };
+    swap_check(&f.state, &f.profiles, &n("work"), &rl, &cfg(&[])).unwrap();
+    assert_eq!(
+        f.state
+            .load_ledger()
+            .unwrap()
+            .hosts
+            .get("work")
+            .map(|h| h.live.as_str()),
+        Some("spare"),
+        "the login moved"
+    );
+    let log = fs::read_to_string(RotateState::new(&f.root).log).unwrap_or_default();
+    let lines = log
+        .lines()
+        .filter(|l| l.contains(" affinity: "))
+        .map(str::to_string)
+        .collect();
+    let status = super::affinity::status_line(&f.state, |_| "just now".into());
+    (f, lines, status)
+}
+
+#[test]
+fn an_auto_switch_crossing_is_recorded_and_reported() {
+    let (f, lines, status) = crossing_run("org-b");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].ends_with(
+            " affinity: crossing work->spare: Cross-organisation swap: earlier \
+             thinking becomes unavailable on the next turn. The visible conversation \
+             remains and the session can continue."
+        ),
+        "{lines:?}"
+    );
+    let record = f
+        .state
+        .read_sub_json("affinity", "last-crossing")
+        .unwrap()
+        .expect("the crossing is recorded");
+    assert_eq!(record["dir"], "work");
+    assert_eq!(record["from"], "work");
+    assert_eq!(record["to"], "spare");
+    assert_eq!(record["from_org"], "org-a");
+    assert_eq!(record["to_org"], "org-b");
+    assert_eq!(record["affinity"], "crossing");
+    let status = status.expect("auto-switch status names the crossing");
+    assert!(
+        status.starts_with(
+            "last crossing: in work from work (organisation org-a) to spare \
+             (organisation org-b), just now: Cross-organisation swap"
+        ),
+        "{status}"
+    );
+}
+
+#[test]
+fn an_auto_switch_swap_within_one_organisation_records_no_crossing() {
+    let (f, lines, status) = crossing_run("org-a");
+    assert!(lines.is_empty(), "{lines:?}");
+    assert_eq!(f.state.read_sub_json("affinity", "last-crossing"), Ok(None));
+    assert_eq!(status, None);
 }
 
 /// The rotator's capacity write takes the kinds from the home it was given,

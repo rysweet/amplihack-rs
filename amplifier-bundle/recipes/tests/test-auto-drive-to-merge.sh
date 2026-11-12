@@ -99,7 +99,7 @@ AUTODRIVE_RECIPES=(
   autodrive-crusty-loop autodrive-merge-evidence autodrive-merge-round
   autodrive-merge-loop
 )
-AUTODRIVE_TOOLS=(autodrive_budget.sh autodrive_progress.sh autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_escalate.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh
+AUTODRIVE_TOOLS=(autodrive_budget.sh autodrive_progress.sh autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_escalate.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_message.sh autodrive_merge_ready_files.sh
   autodrive_platform_facts.sh autodrive_pr_head.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh
   autodrive_trust.sh autodrive_unmerged.sh autodrive_worktree_guard.sh)
 # merge-round step-00-tools-dir finds the tools once and every later step of
@@ -123,6 +123,9 @@ for t in autodrive_loop.sh autodrive_merge_gate.sh autodrive_state.sh; do
   [[ -f "${TOOLS}/${t}" ]] || { echo "HARNESS-ERROR: missing ${TOOLS}/${t}" >&2; exit 2; }
 done
 command -v git >/dev/null 2>&1 || { echo "HARNESS-ERROR: git is required to hash crusty round records" >&2; exit 2; }
+# The gh stub builds its `pr view` object with jq so a title or body carrying
+# quotes, newlines or JSON of its own survives verbatim (#2056).
+command -v jq >/dev/null 2>&1 || { echo "HARNESS-ERROR: jq is required by the gh stub's pr view" >&2; exit 2; }
 REAL_GIT="$(command -v git)"
 # Every git repository this test creates is isolated from the host: no global
 # or system config (so no template hooks, hooksPath or credential helper), and
@@ -217,7 +220,32 @@ if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
   printf '%s %s\n' "$RECIPE" "${AMPLIHACK_SESSION_DEPTH:-unset}" >> "${STUB_DEPTH_LOG:-/dev/null}"
   # The umask each child recipe was started with, when a test asks for it.
   [ -z "${STUB_UMASK_LOG:-}" ] || printf '%s %s\n' "$RECIPE" "$(umask)" >> "$STUB_UMASK_LOG"
-  RECORD=""; for a in "$@"; do case "$a" in autodrive_round_record=*) RECORD="${a#*=}" ;; esac; done
+  RECORD=""; for a in "$@"; do case "$a" in
+    autodrive_round_record=*) RECORD="${a#*=}" ;;
+    autodrive_launch_tools=*) export AUTODRIVE_LAUNCH_TOOLS="${a#*=}" ;;
+  esac; done
+  fixture_next_action() {
+    [ -n "${AUTODRIVE_COMPLETION_STATE:-}" ] && [ -f "$RECORD" ] || return 0
+    local wt="" label="" previous=""
+    for a in "$@"; do
+      [ "$previous" != --working-dir ] || wt="$a"
+      case "$a" in autodrive_round_label=*) label="${a#*=}" ;; esac
+      previous="$a"
+    done
+    local head="$(git -C "$wt" rev-parse HEAD)" action=evaluate
+    # Legacy fixture records lack the mechanical head/round fields. Supply
+    # authentic fixture measurements at the recipe execution boundary.
+    if [ ! -f "${AUTODRIVE_COMPLETION_STATE%.json}.evidence" ]; then
+      ( umask 077
+        jq -c --arg head "$head" --arg label "$label" '. + {head_sha:(.head_sha // $head),reviewed_head_sha:(.reviewed_head_sha // $head),round_label:$label}' "$RECORD" > "$RECORD.tmp" && mv "$RECORD.tmp" "$RECORD"
+        [ -f "$RECORD.findings" ] || : > "$RECORD.findings"
+        chmod 0600 "$RECORD" "$RECORD.findings"
+      ) || return 1
+    fi
+    [ -f "${AUTODRIVE_COMPLETION_STATE%.json}.evidence" ] || "$REAL_AMPLIHACK" orch helper autodrive-completion-seal --private-state "$AUTODRIVE_COMPLETION_STATE" || return 1
+    case "$(jq -r .crusty_verdict "$RECORD")" in CLEAN|MINOR_ONLY) action=complete ;; esac
+    "$REAL_AMPLIHACK" orch helper autodrive-completion-write --private-state "$AUTODRIVE_COMPLETION_STATE" --action "$action" --reason 'Fixture agent judgement'
+  }
   case "$RECIPE" in
     loop-health-evaluator)
       for a in "$@"; do case "$a" in loop_history=*) printf '%s\n---\n' "${a#*=}" >> "${STUB_HISTORY_LOG:-/dev/null}" ;; esac; done
@@ -254,7 +282,8 @@ if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
       # with the record path and label the loop passed (section 13).
       if [ -n "$RECORD" ] && [ -n "${STUB_ROUND_BODY:-}" ]; then
         LABEL=""; for a in "$@"; do case "$a" in autodrive_round_label=*) LABEL="${a#*=}" ;; esac; done
-        AUTODRIVE_ROUND_RECORD="$RECORD" AUTODRIVE_ROUND_LABEL="$LABEL" bash -c "$STUB_ROUND_BODY"
+        AUTODRIVE_ROUND_RECORD="$RECORD" AUTODRIVE_ROUND_LABEL="$LABEL" bash -c "$STUB_ROUND_BODY" || exit $?
+        fixture_next_action "$@"
         exit $?
       fi
       if [ -n "$RECORD" ] && [ "${STUB_ROUND_WRITE_RECORD:-true}" = "true" ]; then
@@ -267,6 +296,7 @@ if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
         printf '%s' "$REC_TEXT" > "$RECORD"
         printf '%s' "${STUB_ROUND_FINDINGS:-}" > "${RECORD}.findings"
       fi
+      fixture_next_action "$@" || exit $?
       printf '%s\n' "${STUB_ROUND_STDOUT:-round ran}"
       exit "${STUB_ROUND_RC:-0}"
       ;;
@@ -323,7 +353,7 @@ run_loop() { # run_loop <state-dir-suffix> [loop-name] [round-recipe] [clean-tok
   local wrap=()
   [ -z "${RUN_LOOP_TIMEOUT:-}" ] || wrap=(timeout "${RUN_LOOP_TIMEOUT}")
   PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
-    ${wrap[@]+"${wrap[@]}"} bash "${LOOP}" --loop-name "${2:-crusty}" --round-recipe "${3:-autodrive-crusty-round}" \
+    ${wrap[@]+"${wrap[@]}"} bash "${LOOP}" --loop-name "${2:-health-contract}" --round-recipe "${3:-autodrive-crusty-round}" \
       --clean-token "${4-CLEAN}" ${RUN_LOOP_ALSO_CLEAN:+--also-clean-token "${RUN_LOOP_ALSO_CLEAN}"} --verdict-field "${5:-crusty_verdict}" \
       --repo "${LOOP_WT}" --review-dir "${LOOP_MAIN}" --state-dir "${LOOP_DIR}" --task-file "${LOOP_LOGS}/task.txt" \
       >"${LOOP_LOGS}/out" 2>"${LOOP_LOGS}/err"
@@ -421,33 +451,33 @@ else
   fail "PASSTHRU" "a converging loop was not allowed to finish (rc=${rc}): ${LOOP_OUT}"
 fi
 
-# Issue #1979: with --also-clean-token MINOR_ONLY, a minor-only round ends the
-# crusty loop on DONE, and the result keeps the round's real verdict.
-set_stub '{"crusty_verdict":"MINOR_ONLY","concern_count":2}' 0 "$H_DONE"
-RUN_LOOP_ALSO_CLEAN=MINOR_ONLY run_loop minor-ends; rc=$?
+# Generic secondary-clean-token compatibility. Actual Crusty MINOR_ONLY
+# completion skips evaluation and is exercised by the issue_2336 Rust suite.
+set_stub '{"crusty_verdict":"SECOND_CLEAN","concern_count":2}' 0 "$H_DONE"
+RUN_LOOP_ALSO_CLEAN=SECOND_CLEAN run_loop minor-ends; rc=$?
 if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"DONE"' \
    && [ "$(grep -c '^autodrive-crusty-round$' "${LOOP_LOGS}/calls" 2>/dev/null)" = "1" ]; then
-  pass "1979-minor-only-ends-loop" "a MINOR_ONLY round plus DONE ends the loop after one round"
+  pass "GENERIC-secondary-clean-ends-loop" "a SECOND_CLEAN round plus DONE ends the loop after one round"
 else
-  fail "1979-minor-only-ends-loop" "a MINOR_ONLY round did not end the loop (rc=${rc}): ${LOOP_OUT}; $(tail -n3 "${LOOP_LOGS}/err")"
+  fail "GENERIC-secondary-clean-ends-loop" "a SECOND_CLEAN round did not end the loop (rc=${rc}): ${LOOP_OUT}; $(tail -n3 "${LOOP_LOGS}/err")"
 fi
-if printf '%s' "${LOOP_OUT}" | grep -qF 'MINOR_ONLY'; then
-  pass "1979-minor-only-verdict-kept" "the loop result reports the real verdict MINOR_ONLY, not CLEAN"
+if printf '%s' "${LOOP_OUT}" | grep -qF 'SECOND_CLEAN'; then
+  pass "GENERIC-secondary-clean-verdict-kept" "the loop result reports the real verdict SECOND_CLEAN, not CLEAN"
 else
-  fail "1979-minor-only-verdict-kept" "the loop result hides the MINOR_ONLY verdict: ${LOOP_OUT}"
+  fail "GENERIC-secondary-clean-verdict-kept" "the loop result hides the SECOND_CLEAN verdict: ${LOOP_OUT}"
 fi
-# The history the evaluator reads keeps MINOR_ONLY too; only loop_round_verdict,
+# The history the evaluator reads keeps SECOND_CLEAN too; only loop_round_verdict,
 # which its DONE rule compares with loop_clean_token, carries the clean token.
 EVAL_ARGV="$(grep -F 'loop-health-evaluator.yaml' "${LOOP_LOGS}/calls.argv" 2>/dev/null | head -n 1)"
-if printf '%s' "$EVAL_ARGV" | grep -qE 'loop_history=.*crusty_verdict=MINOR_ONLY ' \
+if printf '%s' "$EVAL_ARGV" | grep -qE 'loop_history=.*crusty_verdict=SECOND_CLEAN ' \
    && ! printf '%s' "$EVAL_ARGV" | grep -qE 'loop_history=.*crusty_verdict=CLEAN ' \
    && printf '%s' "$EVAL_ARGV" | grep -qE '(^| )loop_round_verdict=CLEAN( |$)' \
    && printf '%s' "$EVAL_ARGV" | grep -qE '(^| )loop_clean_token=CLEAN( |$)'; then
-  pass "1979-minor-only-history-kept" "the evaluator's history records MINOR_ONLY; loop_round_verdict is the clean token"
+  pass "GENERIC-secondary-clean-history-kept" "the evaluator's history records SECOND_CLEAN; loop_round_verdict is the clean token"
 else
-  fail "1979-minor-only-history-kept" "the history or loop_round_verdict is wrong for a MINOR_ONLY round: ${EVAL_ARGV}"
+  fail "GENERIC-secondary-clean-history-kept" "the history or loop_round_verdict is wrong for a SECOND_CLEAN round: ${EVAL_ARGV}"
 fi
-# Without the second token (the merge-ready loop), MINOR_ONLY is not clean.
+# Without the second token (the merge-ready loop), SECOND_CLEAN is not clean.
 fu_two_rounds() { # fu_two_rounds <label> <round-1 verdict> <also-clean token|""> <why>
   set_stub '' 0 "$H_DONE"
   export STUB_ROUND_BODY="case \"\$AUTODRIVE_ROUND_LABEL\" in
@@ -463,12 +493,12 @@ esac"
     fail "$1" "$4 (rc=${rc}): ${LOOP_OUT}; $(tail -n3 "${LOOP_LOGS}/err")"
   fi
 }
-fu_two_rounds "1979-minor-only-needs-token" MINOR_ONLY "" \
-  "without --also-clean-token a MINOR_ONLY round does not end the loop; a clean round 2 is needed"
+fu_two_rounds "GENERIC-secondary-clean-needs-token" SECOND_CLEAN "" \
+  "without --also-clean-token a SECOND_CLEAN round does not end the loop; a clean round 2 is needed"
 # A [minor, major] or [minor, blocking] round is CONCERNS from step-03, so the
 # second token never applies to it: the loop continues.
-fu_two_rounds "1979-mixed-continues" CONCERNS MINOR_ONLY \
-  "a CONCERNS round ([minor, major]) does not end the loop even with --also-clean-token MINOR_ONLY"
+fu_two_rounds "1979-mixed-continues" CONCERNS SECOND_CLEAN \
+  "a CONCERNS round ([minor, major]) does not end the loop even with --also-clean-token SECOND_CLEAN"
 
 # ---------------------------------------------------------------------------
 # 2b. Dependency preflight — a missing terminator costs ZERO rounds.
@@ -512,19 +542,19 @@ MANIFEST_RECORD='{"crusty_verdict":"CLEAN","concern_count":0,"commits_this_round
 set_stub "${MANIFEST_RECORD}" 0 ''
 printf 'LOOP_HEALTH: CONTINUE — confirm once more\nLOOP_HEALTH: DONE — converged\n' > "${WORK}/health-seq"
 export STUB_HEALTH_SEQ="${WORK}/health-seq"
-export STUB_SNAPSHOT_FROM="${WORK}/loop-manifest/crusty-records.tsv" STUB_SNAPSHOT_TO="${WORK}/manifest-at-evaluator"
+export STUB_SNAPSHOT_FROM="${WORK}/loop-manifest/health-contract-records.tsv" STUB_SNAPSHOT_TO="${WORK}/manifest-at-evaluator"
 run_loop manifest; rc=$?
 unset STUB_HEALTH_SEQ STUB_SNAPSHOT_FROM STUB_SNAPSHOT_TO
-MANIFEST="${LOOP_DIR}/crusty-records.tsv"
+MANIFEST="${LOOP_DIR}/health-contract-records.tsv"
 if [ "$rc" -eq 0 ] && [ -f "${MANIFEST}" ]; then
-  pass "LOOP-manifest-written" "the loop writes crusty-records.tsv beside its round records"
+  pass "LOOP-manifest-written" "the loop writes health-contract-records.tsv beside its round records"
 else
-  fail "LOOP-manifest-written" "no crusty-records.tsv after a two-round loop (rc=${rc}): $(ls "${LOOP_DIR}" | tr '\n' ' ')"
+  fail "LOOP-manifest-written" "no health-contract-records.tsv after a two-round loop (rc=${rc}): $(ls "${LOOP_DIR}" | tr '\n' ' ')"
 fi
 want=""
 for n in 1 2; do
-  h="$(git hash-object --no-filters "${LOOP_DIR}/crusty-round-${n}.json" 2>/dev/null)"
-  want="${want}round-${n}	crusty-round-${n}.json	${h}
+  h="$(git hash-object --no-filters "${LOOP_DIR}/health-contract-round-${n}.json" 2>/dev/null)"
+  want="${want}round-${n}	health-contract-round-${n}.json	${h}
 "
 done
 got="$(grep -v '^[[:space:]]*$' "${MANIFEST}" 2>/dev/null)"
@@ -550,10 +580,10 @@ else
   fail "LOOP-manifest-before-agent" "rows seen by the evaluator: round-1=${snap1} round-2=${snap2} (want 1 and 2)"
 fi
 # A round that wrote no record adds no row (the norec run in section 2).
-if [ ! -s "${WORK}/loop-norec/crusty-records.tsv" ]; then
+if [ ! -s "${WORK}/loop-norec/health-contract-records.tsv" ]; then
   pass "LOOP-manifest-no-record-no-row" "a round with no record adds no manifest row"
 else
-  fail "LOOP-manifest-no-record-no-row" "a round with no record left a row: $(cat "${WORK}/loop-norec/crusty-records.tsv")"
+  fail "LOOP-manifest-no-record-no-row" "a round with no record left a row: $(cat "${WORK}/loop-norec/health-contract-records.tsv")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -561,7 +591,7 @@ fi
 # ---------------------------------------------------------------------------
 # The crusty re-review (autodrive_crusty_rereview.sh) starts the crusty loop
 # again on phase 2's state dir, and a resumed run starts a loop on the dir a
-# dead run left. Labelling from round-1 again rewrote crusty-round-1.json, its
+# dead run left. Labelling from round-1 again rewrote health-contract-round-1.json, its
 # .findings and its .log, and left phase 2's manifest row naming a record that
 # no longer existed (PR #1520 review, round 2). Labels now continue after the
 # highest round-N this loop has in the dir, as a file or as a manifest label.
@@ -590,35 +620,35 @@ SECOND_REC='{"crusty_verdict":"CLEAN","concern_count":0,"commits_this_round":0,"
 set_stub "${FIRST_REC}" 0 "${H_DONE}"
 export STUB_ROUND_FINDINGS="phase-2-concern"
 run_loop relabel; rc1=$?
-FIRST_FILES="crusty-round-1.json crusty-round-1.json.findings crusty-round-1.log crusty-round-1-health.log"
+FIRST_FILES="health-contract-round-1.json health-contract-round-1.json.findings health-contract-round-1.log health-contract-round-1-health.log"
 # shellcheck disable=SC2086
 FIRST_HASHES="$(state_hashes "${LOOP_DIR}" ${FIRST_FILES})"
-FIRST_ROWS="$(cat "${LOOP_DIR}/crusty-records.tsv" 2>/dev/null)"
+FIRST_ROWS="$(cat "${LOOP_DIR}/health-contract-records.tsv" 2>/dev/null)"
 set_stub "${SECOND_REC}" 0 "${H_DONE}"
 run_loop relabel; rc2=$?
 # shellcheck disable=SC2086
 if [ "$rc1" -eq 0 ] && [ "$rc2" -eq 0 ] && [ "$(state_hashes "${LOOP_DIR}" ${FIRST_FILES})" = "${FIRST_HASHES}" ] \
-   && [ "$(cat "${LOOP_DIR}/crusty-round-1.json.findings")" = "phase-2-concern" ]; then
+   && [ "$(cat "${LOOP_DIR}/health-contract-round-1.json.findings")" = "phase-2-concern" ]; then
   pass "LOOP-labels-keep-earlier-round" "a second loop on the same state dir leaves the first loop's round-1 record, findings and logs unchanged"
 else
   fail "LOOP-labels-keep-earlier-round" "rc=${rc1}/${rc2} before: $(printf '%s' "${FIRST_HASHES}" | tr '\n' '|') after: $(state_hashes "${LOOP_DIR}" ${FIRST_FILES} | tr '\n' '|')"
 fi
 WANT_ROWS="${FIRST_ROWS}
-round-2	crusty-round-2.json	$(git hash-object --no-filters "${LOOP_DIR}/crusty-round-2.json" 2>/dev/null)"
-if [ "$(cat "${LOOP_DIR}/crusty-round-2.json" 2>/dev/null)" = "${SECOND_REC}" ] \
-   && [ "$(cat "${LOOP_DIR}/crusty-records.tsv")" = "${WANT_ROWS}" ] && rows_resolve "${LOOP_DIR}" crusty \
+round-2	health-contract-round-2.json	$(git hash-object --no-filters "${LOOP_DIR}/health-contract-round-2.json" 2>/dev/null)"
+if [ "$(cat "${LOOP_DIR}/health-contract-round-2.json" 2>/dev/null)" = "${SECOND_REC}" ] \
+   && [ "$(cat "${LOOP_DIR}/health-contract-records.tsv")" = "${WANT_ROWS}" ] && rows_resolve "${LOOP_DIR}" health-contract \
    && printf '%s' "${LOOP_OUT}" | grep -qF '"round_label":"round-2"' \
    && grep -qF 'labels its rounds from round-2' "${LOOP_LOGS}/err"; then
   pass "LOOP-labels-continue" "the second loop's round is round-2, the manifest gains one row, and every row still names a record that hashes to it"
 else
-  fail "LOOP-labels-continue" "out=${LOOP_OUT} rows: $(tr '\t\n' ' |' < "${LOOP_DIR}/crusty-records.tsv") files: $(ls "${LOOP_DIR}" | tr '\n' ' ')"
+  fail "LOOP-labels-continue" "out=${LOOP_OUT} rows: $(tr '\t\n' ' |' < "${LOOP_DIR}/health-contract-records.tsv") files: $(ls "${LOOP_DIR}" | tr '\n' ' ')"
 fi
 # A round that wrote no record still owns its label: its log is not reused.
 mkdir -p "${WORK}/loop-relabel-log"
-( umask 077; printf 'a round that wrote no record\n' > "${WORK}/loop-relabel-log/crusty-round-3.log" )
+( umask 077; printf 'a round that wrote no record\n' > "${WORK}/loop-relabel-log/health-contract-round-3.log" )
 run_loop relabel-log; rc=$?
-if [ "$rc" -eq 0 ] && [ -f "${LOOP_DIR}/crusty-round-4.json" ] && [ ! -e "${LOOP_DIR}/crusty-round-1.json" ] \
-   && [ "$(cat "${LOOP_DIR}/crusty-round-3.log")" = "a round that wrote no record" ]; then
+if [ "$rc" -eq 0 ] && [ -f "${LOOP_DIR}/health-contract-round-4.json" ] && [ ! -e "${LOOP_DIR}/health-contract-round-1.json" ] \
+   && [ "$(cat "${LOOP_DIR}/health-contract-round-3.log")" = "a round that wrote no record" ]; then
   pass "LOOP-labels-after-log-only-round" "a round that left only a log keeps its label; the next loop starts at round-4"
 else
   fail "LOOP-labels-after-log-only-round" "rc=${rc} files: $(ls "${LOOP_DIR}" | tr '\n' ' ')"
@@ -627,14 +657,14 @@ fi
 # rounds in the same dir do not: crusty goes to round-6, not round-10.
 mkdir -p "${WORK}/loop-relabel-row"
 ( umask 077
-  printf 'round-5\tcrusty-round-5.json\t%s\n' "$(printf 'gone' | git hash-object --no-filters --stdin)" > "${WORK}/loop-relabel-row/crusty-records.tsv"
+  printf 'round-5\thealth-contract-round-5.json\t%s\n' "$(printf 'gone' | git hash-object --no-filters --stdin)" > "${WORK}/loop-relabel-row/health-contract-records.tsv"
   printf '{"merge_ready_verdict":"MERGE_READY"}\n' > "${WORK}/loop-relabel-row/merge-ready-round-9.json" )
 run_loop relabel-row; rc=$?
-if [ "$rc" -eq 0 ] && [ -f "${LOOP_DIR}/crusty-round-6.json" ] && [ ! -e "${LOOP_DIR}/crusty-round-10.json" ] \
-   && [ "$(tail -n 1 "${LOOP_DIR}/crusty-records.tsv" | cut -f1-2)" = "round-6	crusty-round-6.json" ]; then
+if [ "$rc" -eq 0 ] && [ -f "${LOOP_DIR}/health-contract-round-6.json" ] && [ ! -e "${LOOP_DIR}/health-contract-round-10.json" ] \
+   && [ "$(tail -n 1 "${LOOP_DIR}/health-contract-records.tsv" | cut -f1-2)" = "round-6	health-contract-round-6.json" ]; then
   pass "LOOP-labels-after-manifest-row" "a manifest label whose record is gone still counts, and the merge-ready loop's rounds do not"
 else
-  fail "LOOP-labels-after-manifest-row" "rc=${rc} files: $(ls "${LOOP_DIR}" | tr '\n' ' ') rows: $(tr '\t\n' ' |' < "${LOOP_DIR}/crusty-records.tsv")"
+  fail "LOOP-labels-after-manifest-row" "rc=${rc} files: $(ls "${LOOP_DIR}" | tr '\n' ' ') rows: $(tr '\t\n' ' |' < "${LOOP_DIR}/health-contract-records.tsv")"
 fi
 umask "${LABEL_CALLER_UMASK}"
 if [ -z "$(find "${WORK}/loop-relabel" "${WORK}/loop-relabel-log" "${WORK}/loop-relabel-row" -mindepth 1 -maxdepth 1 -name 'untrusted-*' -print 2>/dev/null)" ]; then
@@ -669,7 +699,7 @@ set_stub '{"crusty_verdict":"CLEAN"}' 0 "$H_DONE"
 LOOP_DIR="${WORK}/loop-tampered"; mkdir -p "${LOOP_DIR}"
 export STUB_CALLS="${LOOP_DIR}.calls" STUB_SHOW_CALLS="${LOOP_DIR}.shows"
 PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
-  bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
+  bash "${LOOP}" --loop-name "health-contract" --round-recipe "autodrive-crusty-round" \
     --clean-token "CLEAN" --verdict-field "crusty_verdict" \
     --repo "${TAMPERED}" --review-dir "${LAUNCH}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
     >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err"; rc=$?
@@ -703,7 +733,7 @@ TAMPERED_REAL="$(cd "${TAMPERED}" && pwd -P)"
 LOOP_DIR="${WORK}/loop-review-dir"; mkdir -p "${LOOP_DIR}"
 export STUB_CALLS="${LOOP_DIR}.calls" STUB_SHOW_CALLS="${LOOP_DIR}.shows"
 ( cd "${LAUNCH}" && PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
-  bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
+  bash "${LOOP}" --loop-name "health-contract" --round-recipe "autodrive-crusty-round" \
     --clean-token "CLEAN" --verdict-field "crusty_verdict" \
     --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
     --context "repo_path=${TAMPERED}" \
@@ -726,7 +756,7 @@ fi
 # the round as --context-from-file, whatever --repo is.
 if [ "$rc" -eq 0 ] \
    && printf '%s' "${ROUND_ARGV}" | grep -qE -- "--working-dir (${TAMPERED}|${TAMPERED_REAL}) " \
-   && printf '%s' "${ROUND_ARGV}" | grep -qF -- "--context-from-file task_description=${LOOP_DIR}/crusty-task_description.txt" \
+   && printf '%s' "${ROUND_ARGV}" | grep -qF -- "--context-from-file task_description=${LOOP_DIR}/health-contract-task_description.txt" \
    && [ "$(grep '^autodrive-crusty-round ' "${LOOP_DIR}.calls.task" 2>/dev/null | head -n1)" = "autodrive-crusty-round drive the PR to merge" ]; then
   pass "1528-1570-task-reaches-worktree-round" "a round launched in the PR worktree receives task_description through the loop's task file"
 else
@@ -755,10 +785,11 @@ for case_ in explicit inside default context other-repo not-a-checkout sibling-w
     not-a-checkout) RD_ARGS=(--review-dir "${WORK}/not-a-checkout"); RUN_IN="${LAUNCH}" ;;
     sibling-worktree) RD_ARGS=(--review-dir "${WORK}/sibling-wt"); RUN_IN="${LAUNCH}" ;;
   esac
+  # ${RD_ARGS[@]+...}: the default case leaves RD_ARGS empty, and Bash before 4.4 (macOS ships 3.2) calls that unbound under set -u.
   ( cd "${RUN_IN}" && PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
-    bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
+    bash "${LOOP}" --loop-name "health-contract" --round-recipe "autodrive-crusty-round" \
       --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-      --repo "${TAMPERED}" "${RD_ARGS[@]}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
+      --repo "${TAMPERED}" ${RD_ARGS[@]+"${RD_ARGS[@]}"} --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
       >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err" ); rc=$?
   if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}.calls" ] \
      && grep -qF '"loop_result":"UNTRUSTED_REVIEW_DIR"' "${LOOP_DIR}.out" \
@@ -773,13 +804,13 @@ done
 # would resolve "launch-side" recipes from that tree. It must refuse before a
 # single round runs.
 mkdir -p "${TAMPERED}/amplifier-bundle/tools"
-for t in autodrive_loop.sh autodrive_state.sh autodrive_escalate.sh autodrive_worktree_guard.sh autodrive_budget.sh autodrive_progress.sh; do
+for t in autodrive_loop.sh autodrive_state.sh autodrive_escalate.sh autodrive_refusal.sh autodrive_worktree_guard.sh autodrive_budget.sh autodrive_progress.sh; do
   cp "$(dirname "${LOOP}")/${t}" "${TAMPERED}/amplifier-bundle/tools/${t}"
 done
 LOOP_DIR="${WORK}/loop-inside"; mkdir -p "${LOOP_DIR}"
 export STUB_CALLS="${LOOP_DIR}.calls" STUB_SHOW_CALLS="${LOOP_DIR}.shows"
 PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
-  bash "${TAMPERED}/amplifier-bundle/tools/autodrive_loop.sh" --loop-name "crusty" \
+  bash "${TAMPERED}/amplifier-bundle/tools/autodrive_loop.sh" --loop-name "health-contract" \
     --round-recipe "autodrive-crusty-round" --clean-token "CLEAN" --verdict-field "crusty_verdict" \
     --repo "${TAMPERED}" --review-dir "${LAUNCH}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
     >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err"; rc=$?
@@ -797,7 +828,7 @@ fi
 LOOP_DIR="${WORK}/loop-pathname"; mkdir -p "${LOOP_DIR}"
 export STUB_CALLS="${LOOP_DIR}.calls" STUB_SHOW_CALLS="${LOOP_DIR}.shows"
 PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
-  bash "${LOOP}" --loop-name "crusty" \
+  bash "${LOOP}" --loop-name "health-contract" \
     --round-recipe "${TAMPERED}/amplifier-bundle/recipes/autodrive-crusty-round.yaml" \
     --clean-token "CLEAN" --verdict-field "crusty_verdict" \
     --repo "${TAMPERED}" --review-dir "${LAUNCH}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
@@ -851,7 +882,7 @@ run_loop_before() { # run_loop_before <state-dir-suffix> [before-round path]: ru
   export STUB_CALLS="${LOOP_LOGS}/calls" STUB_SHOW_CALLS="${LOOP_LOGS}/shows" STUB_HISTORY_LOG="${LOOP_LOGS}/history"
   printf 'drive the PR to merge' > "${LOOP_LOGS}/task.txt"
   PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" AMPLIHACK_SESSION_DEPTH=2 \
-    bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
+    bash "${LOOP}" --loop-name "health-contract" --round-recipe "autodrive-crusty-round" \
       --clean-token "CLEAN" --verdict-field "crusty_verdict" \
       --repo "${LOOP_WT}" --review-dir "${LOOP_MAIN}" --state-dir "${LOOP_DIR}" --task-file "${LOOP_LOGS}/task.txt" --context "pr_number=42" \
       --before-round "${2:-${BR_HOOK}}" >"${LOOP_LOGS}/out" 2>"${LOOP_LOGS}/err"
@@ -866,7 +897,7 @@ export STUB_HEALTH_SEQ="${WORK}/health-seq-before"
 run_loop_before before-ok; rc=$?
 unset STUB_HEALTH_SEQ
 BR_REVIEW="${LOOP_MAIN}"
-BR_TASK="--context-from-file task_description=${LOOP_DIR}/crusty-task_description.txt"
+BR_TASK="--context-from-file task_description=${LOOP_DIR}/health-contract-task_description.txt"
 BR_WANT="before --repo ${LOOP_WT} --review-dir ${BR_REVIEW} --state-dir ${LOOP_DIR} -c pr_number=42 ${BR_TASK} depth=2
 autodrive-crusty-round
 loop-health-evaluator
@@ -884,7 +915,7 @@ else
   fail "BEFORE-history" "history: $(tr '\n' '|' < "${LOOP_LOGS}/history" 2>/dev/null)"
 fi
 if grep -qF "the before-round step's own stderr" "${LOOP_LOGS}/err" \
-   && [ -f "${LOOP_DIR}/crusty-round-1-before.log" ] && private_file "${LOOP_DIR}/crusty-round-1-before.log"; then
+   && [ -f "${LOOP_DIR}/health-contract-round-1-before.log" ] && private_file "${LOOP_DIR}/health-contract-round-1-before.log"; then
   pass "BEFORE-log" "the step's stderr is kept private in <loop>-<round>-before.log and shown"
 else
   fail "BEFORE-log" "$(ls -l "${LOOP_DIR}" 2>&1 | tr '\n' ' ')"
@@ -1109,7 +1140,9 @@ else
 fi
 
 # Two-argument escalate is byte-identical; only the third argument changes it.
-UL_FUNC="$(sed -n '/^escalate() {/,/^}/p; /^record_result() {/,/^}/p' "${ESCALATE}")" # record_result: #1743
+# held_by_lines comes too (#2219): escalate calls it, and with no round record
+# at RECORD it prints nothing, so the output below is unchanged by it.
+UL_FUNC="$(sed -n '/^escalate() {/,/^}/p; /^record_result() {/,/^}/p; /^held_by_lines() {/,/^}/p' "${ESCALATE}")" # record_result: #1743
 ul_escalate() { env -i PATH="/usr/bin:/bin" bash -c "LOOP_NAME=crusty ROUND_LABEL=round-1 RECORD=/r.json; ${UL_FUNC}"$'\n''escalate "$@"' _ "$@" 2>&1; }
 UL_GOT="$(ul_escalate STUCK 'it did not move')"
 UL_WANT="AUTO_DRIVE_LOOP: STUCK — loop 'crusty' stops at round label 'round-1'.
@@ -1157,7 +1190,8 @@ export STUB_ROUND_STDOUT="round ran"
 # Crusty's review of PR #1520 quoted the guard's message in its verdict, and
 # agent output reaches the round log as `[HH:MM:SS] [amplihack:...]` lines.
 # Matching any BLOCKED_TERMINAL there read that review as an exit-79 refusal
-# and ended the run. The guard's own line still is one.
+# and ended the run. Since #1437 no transcript text decides: only exit 79 or
+# the runner's own failure_class marker with "structural_refusal":true.
 set_stub '{"crusty_verdict":"CONCERNS"}' 0 "${S04}"$'\n''    Output: LOOP_HEALTH: STUCK — stop here' 0
 export STUB_ROUND_STDOUT='  [06:56:22] [amplihack:claude:2742505] {"crusty_verdict": "CONCERNS", "evidence": "-> '"'"'BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3'"'"', rc=79"}'
 run_loop quoted-refusal; rc=$?
@@ -1166,13 +1200,21 @@ if [ "$rc" -ne 79 ] && grep -q 'loop-health-evaluator' "${LOOP_LOGS}/calls" 2>/d
 else
   fail "EXIT79-quoted-is-not-refusal" "rc=${rc}: a quoted refusal stopped the loop as exit 79"
 fi
-set_stub '{"crusty_verdict":"CONCERNS"}' 0 "${H_CONTINUE}" 1
+set_stub '{"crusty_verdict":"CONCERNS"}' 0 "${S04}"$'\n''    Output: LOOP_HEALTH: STUCK — stop here' 1
 export STUB_ROUND_STDOUT='BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3 (issue #964/#1326).'
 run_loop guard-line; rc=$?
-if [ "$rc" -eq 79 ] && ! grep -q 'loop-health-evaluator' "${LOOP_LOGS}/calls" 2>/dev/null; then
-  pass "EXIT79-guard-line" "the guard's own refusal line in a round log is terminal even when the exit code was lost"
+if [ "$rc" -ne 79 ] && grep -q 'loop-health-evaluator' "${LOOP_LOGS}/calls" 2>/dev/null; then
+  pass "EXIT79-guard-line-text" "the refusal's text on a plain line with exit 1 is not a refusal; the evaluator decides (rc=${rc}, #1437)"
 else
-  fail "EXIT79-guard-line" "rc=${rc} out=${LOOP_OUT}"
+  fail "EXIT79-guard-line-text" "rc=${rc}: transcript text stopped the loop as exit 79"
+fi
+set_stub '{"crusty_verdict":"CONCERNS"}' 0 "${H_CONTINUE}" 1
+export STUB_ROUND_STDOUT='amplihack.recipe.failure_class {"schema_version":1,"issue":1267,"class":"work","signal":"blocked_terminal orchestration_unavailable","action":"terminal","attempt":1,"retryable":false,"structural_refusal":true}'
+run_loop guard-marker; rc=$?
+if [ "$rc" -eq 79 ] && ! grep -q 'loop-health-evaluator' "${LOOP_LOGS}/calls" 2>/dev/null; then
+  pass "EXIT79-guard-marker" "the runner's structural_refusal marker is terminal even when the exit code was lost"
+else
+  fail "EXIT79-guard-marker" "rc=${rc} out=${LOOP_OUT}"
 fi
 export STUB_ROUND_STDOUT="round ran"
 
@@ -1222,27 +1264,95 @@ else
 fi
 
 # The merge argv is a fixed literal list with no caller-supplied flags.
-if grep -qF 'MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA")' "${GATE}" \
-   && grep -qF 'if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]' "${GATE}"; then
-  pass "FORBIDDEN-fixed-argv" "the merge argv is a fixed literal list, asserted before execution"
+# Since #2056 it also carries the squash message, so the self-check can no
+# longer be a comparison of two IFS-joined arrays: once one element holds
+# spaces, `${MERGE_ARGV[*]}` cannot tell one element from several, and a
+# twin-array comparison is a tautology however it is spelled. What rules out
+# an injected flag is the element COUNT plus the pinned literal positions.
+if grep -qF 'MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file -)' "${GATE}" \
+   && grep -qF '"${#MERGE_ARGV[@]}" -ne 11' "${GATE}" \
+   && grep -qF '"${MERGE_ARGV[7]}" != "--subject"' "${GATE}" \
+   && grep -qF '"${MERGE_ARGV[9]}" != "--body-file"' "${GATE}" \
+   && grep -qF '"${MERGE_ARGV[10]}" != "-"' "${GATE}" \
+   && ! grep -qF 'if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]' "${GATE}"; then
+  pass "FORBIDDEN-fixed-argv" "the merge argv is a fixed literal list whose element count and flag positions are pinned before execution"
 else
-  fail "FORBIDDEN-fixed-argv" "the merge argv is not a fixed, asserted literal list"
+  fail "FORBIDDEN-fixed-argv" "the merge argv is not a fixed list with a positional self-check"
 fi
 
 # ---------------------------------------------------------------------------
 # 5. Merge gate — no silent merge.
 # ---------------------------------------------------------------------------
+# #2186: the gate's CI read is autodrive_expected_checks.sh, which makes REST
+# GETs with no --jq. Those go to the fixture route from
+# expected-checks-fixtures.sh, serving GH_CI_FIX (the default green set unless
+# a case sets another). Calls with --jq (platform facts) and graphql still go
+# to the mode stub below, so the existing modes are unchanged.
+# shellcheck source=expected-checks-fixtures.sh
+. "${SCRIPT_DIR}/expected-checks-fixtures.sh"
+CI_ROUTE="${WORK}/ci-api-route"; ec_write_route "${CI_ROUTE}"
+CI_FX_GREEN="${WORK_PHYS}/ci-fx-green"; ec_fixture_green "${CI_FX_GREEN}"
 make_gh_stub() { # make_gh_stub <mode>
   cat > "${STUB_BIN}/gh" <<'GH'
 #!/usr/bin/env bash
+# MSG-no-jq-names-jq runs the gate on a PATH with no jq; the stub still needs it for pv.
+[ -z "${GH_STUB_JQ_DIR:-}" ] || PATH="${GH_STUB_JQ_DIR}:${PATH}"
 echo "$*" >> "${GH_CALLS:-/dev/null}"
+# #2056: an element-wise log of the merge argv, written beside the joined log
+# above rather than replacing it. `echo "$*"` cannot tell one element holding
+# spaces from several, and the squash subject is exactly such an element, so a
+# `--subject` carrying an injected `--admin` would read the same either way.
+if [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && [ -n "${GH_CALLS:-}" ]; then
+  printf '%s\n' "$@" > "${GH_CALLS}.merge-argv"
+  # The body, read from wherever the argv says, as the real gh reads it:
+  # `--body-file -` is stdin, any other value is a path opened NOW, at the
+  # moment gh starts. GH_REWRITE_TO/GH_REWRITE_FROM first rewrite a file the
+  # way a process running as this user would if it won the race to the very
+  # last moment before gh reads its body (crusty round 4 on PR #2262), so a
+  # gate that hands gh a path commits the rewrite and one that pipes the
+  # bytes from memory does not.
+  if [ -n "${GH_REWRITE_TO:-}" ] && [ -f "${GH_REWRITE_FROM:-}" ]; then
+    cat "${GH_REWRITE_FROM}" > "${GH_REWRITE_TO}"; : > "${GH_CALLS}.rewritten"
+  fi
+  bf=""; prev=""; for a in "$@"; do [ "$prev" = "--body-file" ] && bf="$a"; prev="$a"; done
+  case "$bf" in
+    '') ;;
+    -) cat > "${GH_CALLS}.merge-body" ;;
+    *) cat -- "$bf" > "${GH_CALLS}.merge-body" ;;
+  esac
+fi
+# The route and green fixture paths are filled in below when the stub is
+# written, so a step run under `env -i` still reaches the fixture route.
+if [ "${1:-}" = "api" ] && [ "${2:-}" != "graphql" ]; then
+  export GH_CI_FIX="${GH_CI_FIX:-__CI_FX_GREEN__}" GH_HEAD="${GH_HEAD:-abc123def4567890abc123def4567890abc12345}"
+  case " $* " in *" --jq "*) ;; *) exec "${GH_CI_ROUTE:-__CI_ROUTE__}" "$@" ;; esac
+fi
 # `pr view` prints the PR fields with the head from GH_HEAD and the base from
 # GH_BASE (set but empty means no baseRefName), through `--jq` when one is given.
 JQ=""; prev=""; for a in "$@"; do [ "$prev" = "--jq" ] && JQ="$a"; prev="$a"; done
+# pv [omit-key]: the PR fields. Built with `jq -nc --arg` rather than printf so
+# a title or body carrying quotes, backslashes, newlines or a JSON object of
+# its own reaches the gate verbatim (#2056) — the JSON-injection case below
+# depends on it. GH_TITLE / GH_BODY set the text; GH_TITLE_NULL /
+# GH_BODY_NULL emit a JSON null; <omit-key> deletes the key outright, which is
+# what a read the gate cannot make sense of looks like.
 pv() {
-  local j
-  j="$(printf '{"number":42,"state":"OPEN","mergedAt":null,"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","headRefOid":"%s","headRefName":"%s","baseRefName":"%s","url":"u"}' \
-    "${GH_HEAD:-abc123def4567890abc123def4567890abc12345}" "${GH_HEAD_REF:-}" "${GH_BASE-main}")"
+  local j omit="${1:-}"
+  j="$(jq -nc \
+      --arg head "${GH_HEAD:-abc123def4567890abc123def4567890abc12345}" \
+      --arg headref "${GH_HEAD_REF:-}" \
+      --arg base "${GH_BASE-main}" \
+      --arg title "${GH_TITLE-fix(#2056): bind the squash message to the pull request}" \
+      --arg body "${GH_BODY-The pull request body.}" \
+      --arg omit "$omit" \
+      --argjson tnull "$([ -n "${GH_TITLE_NULL:-}" ] && echo true || echo false)" \
+      --argjson bnull "$([ -n "${GH_BODY_NULL:-}" ] && echo true || echo false)" \
+      '{number:42,state:"OPEN",mergedAt:null,isDraft:false,mergeable:"MERGEABLE",
+        mergeStateStatus:"CLEAN",reviewDecision:"APPROVED",headRefOid:$head,
+        headRefName:$headref,baseRefName:$base,
+        title:(if $tnull then null else $title end),
+        body:(if $bnull then null else $body end),url:"u"}
+       | if $omit == "" then . else del(.[$omit]) end')"
   if [ -n "$JQ" ]; then printf '%s' "$j" | jq -r "$JQ"; else printf '%s\n' "$j"; fi
 }
 case "${GH_MODE:-}" in
@@ -1298,6 +1408,14 @@ case "${GH_MODE:-}" in
     [ "${1:-}" = "api" ] && { echo 0; exit 0; }
     [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && exit "${GH_MERGE_RC:-3}"
     ;;
+  # #2056: everything else is green, but the squash message cannot be read —
+  # the key is absent from the object the gate must compose the message from.
+  unreadable-title|unreadable-body)
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && { pv "${GH_MODE#unreadable-}"; exit 0; }
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "checks" ] && { echo '[{"name":"Test","state":"SUCCESS","bucket":"pass"}]'; exit 0; }
+    [ "${1:-}" = "api" ] && { echo 0; exit 0; }
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && exit 0
+    ;;
   # autodrive-build step-03 finds PR #7 from the branch name (the preflight
   # gave no number). The stub ignores --jq, so it prints the filtered value.
   pr-for-branch)
@@ -1307,6 +1425,8 @@ case "${GH_MODE:-}" in
 esac
 exit 1
 GH
+  sed "s#__CI_FX_GREEN__#${CI_FX_GREEN}#; s#__CI_ROUTE__#${CI_ROUTE}#" "${STUB_BIN}/gh" > "${STUB_BIN}/gh.new" \
+    && mv "${STUB_BIN}/gh.new" "${STUB_BIN}/gh"
   chmod +x "${STUB_BIN}/gh"
 }
 make_gh_stub
@@ -1397,6 +1517,7 @@ loop_writes_round() { # loop_writes_round <dir> <label> <record-text>: what auto
   cp -f "$1/${f}" "$1/crusty-latest.json"
   printf '%s\t%s\t%s\n' "$2" "${f}" "$(git hash-object --no-filters --stdin < "$1/${f}")" >> "$1/crusty-records.tsv"
   chmod 0644 "$1/${f}" "$1/crusty-latest.json"; chmod 0600 "$1/crusty-records.tsv"
+  ( umask 077; printf '%s %s\n' "$f" "$(git hash-object --no-filters --stdin < "$1/$f")" > "$1/crusty-completion.txt" )
 }
 seed_crusty() { # seed_crusty <dir> <clean|concerns|minor|none|legacy-clean|usage-limit>
   mkdir -p "$1"; chmod 0755 "$1"
@@ -1615,6 +1736,14 @@ gate_run() { # gate_run <mode> <extra-args...>
     symlink-verdict)
       mv "${GATE_DIR}/crusty-latest.json" "${GATE_DIR}.planted-latest.json"
       ln -s "${GATE_DIR}.planted-latest.json" "${GATE_DIR}/crusty-latest.json" ;;
+    # #2056: the squash message file's name is deterministic — PR and head SHA
+    # prefix — so anything already at that path was planted, not left by this
+    # run. The victim is outside the state dir, as a real one would be.
+    body-symlink)
+      printf 'VICTIM\n' > "${GATE_DIR}.planted-victim.txt"
+      ln -s "${GATE_DIR}.planted-victim.txt" "${GATE_DIR}/merge-message-42-$(printf '%s' "${GH_HEAD:-${GATE_HEAD}}" | cut -c1-12).txt" ;;
+    body-clobber)
+      printf 'A STALE MESSAGE FROM AN EARLIER ROUND\n' > "${GATE_DIR}/merge-message-42-$(printf '%s' "${GH_HEAD:-${GATE_HEAD}}" | cut -c1-12).txt" ;;
   esac
   local gate_file="${GATE_SCRIPT:-${GATE}}"
   local -a gate_cmd=(bash "${gate_file}")
@@ -1626,9 +1755,11 @@ gate_run() { # gate_run <mode> <extra-args...>
   # env execs the gate's bash in place, so bash stays the gh shim's parent.
   [ -z "${GATE_EXTRA_ENV:-}" ] || gate_cmd=(env "${GATE_EXTRA_ENV}" "${gate_cmd[@]}")
   GH_MODE="$mode" GH_CALLS="${GATE_DIR}/gh-calls" GH_HEAD="${GH_HEAD:-${GATE_HEAD}}" GH_BASE="${GH_BASE-main}" \
-    PATH="${GATE_PATH_PREFIX:+${GATE_PATH_PREFIX}:}${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" \
+    PATH="${GATE_PATH_PREFIX:+${GATE_PATH_PREFIX}:}${STUB_BIN}:${GATE_BASE_PATH:-${PATH}}" HOME="${TEST_HOME}" \
     GH_MERGE_RC="${GH_MERGE_RC:-3}" AMPLIHACK_BIN="${REAL_AMPLIHACK}" TMPDIR="${gate_tmp}" \
-    SWAP_FROM="${SWAP_FROM:-}" SWAP_TO="${GATE_DIR}/merge-ready-latest.json" \
+    GH_CI_FIX="${GH_CI_FIX:-${CI_FX_GREEN}}" GH_CI_ROUTE="${CI_ROUTE}" \
+    SWAP_FROM="${SWAP_FROM:-}" SWAP_TO="${GATE_DIR}/${SWAP_TO_NAME:-merge-ready-latest.json}" \
+    GH_REWRITE_TO="${GH_REWRITE_NAME:+${GATE_DIR}/${GH_REWRITE_NAME}}" \
     "${gate_cmd[@]}" --pr 42 --repo "${FX}" ${sd[@]+"${sd[@]}"} ${args[@]+"${args[@]}"} \
     >"${GATE_DIR}/out" 2>"${GATE_DIR}/err"
   local rc=$?
@@ -1675,8 +1806,10 @@ qa_fixture() { # qa_fixture <head_sha> <gadugi_status> <gadugi_scenario_count>
     "$1" "$req" "$2" "$3"
 }
 qa_fixture "${GATE_HEAD}" PASS 3 > "$QA"
-gate_run unreadable-ci --round-record "$REC" --qa-evidence "$QA"; rc=$?
-if [ "$rc" -ne 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"'; then
+# #2186: CI is read by the expected-checks helper; its check-runs read fails.
+GH_FAIL_RE='check-runs$' gate_run unreadable-ci --round-record "$REC" --qa-evidence "$QA"; rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
+   && grep -qF 'BLOCKER: expected checks unreadable: ' "${GATE_DIR}/err"; then
   pass "GATE-unreadable-ci" "an unreadable CI status is a failure, not a pass"
 else
   fail "GATE-unreadable-ci" "an unreadable CI status did not block the merge (rc=${rc}): ${GATE_OUT}"
@@ -1746,15 +1879,92 @@ if [ "$rc" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_
 else
   fail "GATE-green-dry-run" "a fully verified PR did not reach the merge step (rc=${rc}): ${GATE_OUT}"
 fi
-if grep -qF "gh pr merge 42 --squash --delete-branch --match-head-commit ${GATE_HEAD}" "${GATE_DIR}/err"; then
-  pass "GATE-argv" "the merge argv is exactly the fixed literal list, bound to the verified SHA"
+if grep -qF "gh pr merge 42 --squash --delete-branch --match-head-commit ${GATE_HEAD} --subject " "${GATE_DIR}/err" \
+   && grep -qF -- "--body-file - (body on stdin; a copy is in ${GATE_DIR}/merge-message-42-${GATE_HEAD:0:12}.txt)" "${GATE_DIR}/err"; then
+  pass "GATE-argv" "the merge argv is exactly the fixed literal list, bound to the verified SHA and carrying the squash message"
 else
-  fail "GATE-argv" "the merge argv is not the expected fixed list"
+  fail "GATE-argv" "the merge argv is not the expected fixed list: $(grep -F 'DRY_RUN' "${GATE_DIR}/err" | tr '\n' ' ')"
 fi
 if ! grep -q '^pr merge' "${GATE_DIR}/gh-calls" 2>/dev/null; then
   pass "GATE-dry-run-merges-nothing" "a dry run merges nothing"
 else
   fail "GATE-dry-run-merges-nothing" "a dry run merged"
+fi
+
+# 5g-2186. CI green means every expected check exists at the head and passed
+# (#2186). The gate's CI read is autodrive_expected_checks.sh beside it; the
+# rollup from `gh pr checks` no longer decides anything.
+if ! grep -q '^pr checks' "${GATE_DIR}/gh-calls" 2>/dev/null \
+   && grep -qF "commits/${GATE_HEAD}/check-runs" "${GATE_DIR}/gh-calls" 2>/dev/null; then
+  pass "GATE-2186-reads-at-head" "the gate reads the checks at the head SHA through the expected-checks helper, not gh pr checks"
+else
+  fail "GATE-2186-reads-at-head" "the gate did not read checks at the head through the helper"
+fi
+if grep -qF 'required: Lint & Format' "${GATE_DIR}/err" \
+   && grep -rqF 'required: Lint & Format' "${GATE_DIR}"/merge-evidence-42-* 2>/dev/null; then
+  pass "GATE-2186-evidence" "the evidence bundle records the expected set"
+else
+  fail "GATE-2186-evidence" "the expected set is not in the gate's notes and evidence bundle"
+fi
+CI_FX_MISSING="${WORK_PHYS}/ci-fx-missing"; cp -R "${CI_FX_GREEN}" "${CI_FX_MISSING}"
+ec_drop_job "${CI_FX_MISSING}" 1001 "Install Smoke Test"
+GH_CI_FIX="${CI_FX_MISSING}" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
+   && grep -qF "BLOCKER: expected check 'Install Smoke Test' was never created at ${GATE_HEAD}" "${GATE_DIR}/err" \
+   && ! grep -q '^pr merge' "${GATE_DIR}/gh-calls"; then
+  pass "GATE-2186-missing-blocks" "a required job that was never created is named and blocks the merge (exit 1)"
+else
+  fail "GATE-2186-missing-blocks" "a missing expected check did not block the merge (rc=${rc}): $(grep -F BLOCKER "${GATE_DIR}/err" | tr '\n' ' ')"
+fi
+if ! grep -qF 'the reader gave no verdict or no blocker' "${GATE_DIR}/err"; then
+  pass "GATE-2186-no-double-blocker" "when the helper names a blocker, the gate adds no fallback blocker"
+else
+  fail "GATE-2186-no-double-blocker" "the gate added the fallback blocker although the helper named one"
+fi
+CI_FX_UNREAD="${WORK_PHYS}/ci-fx-unreadable"; cp -R "${CI_FX_GREEN}" "${CI_FX_UNREAD}"; rm "${CI_FX_UNREAD}/jobs-1001.json"
+GH_CI_FIX="${CI_FX_UNREAD}" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'BLOCKER: expected checks unreadable: ' "${GATE_DIR}/err"; then
+  pass "GATE-2186-unreadable" "an expected set that cannot be read blocks the merge"
+else
+  fail "GATE-2186-unreadable" "an unreadable expected set did not block (rc=${rc})"
+fi
+# A bad base ref: the helper exits 2 (its usage error); the gate reports a CI
+# blocker with exit 1, never its own exit 2.
+GH_BASE='-bad' gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'BLOCKER: expected checks unreadable' "${GATE_DIR}/err"; then
+  pass "GATE-2186-helper-exit2" "the helper's usage error is a CI blocker with gate exit 1, not exit 2"
+else
+  fail "GATE-2186-helper-exit2" "the helper's usage error did not give a CI blocker with exit 1 (rc=${rc})"
+fi
+# The gate copied with its platform-facts reader but WITHOUT the helper.
+LONELY_EC="${WORK_PHYS}/lonely-ec"; mkdir -p "${LONELY_EC}"
+cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" "${LONELY_EC}/"
+for t in "${TOOLS}"/autodrive_*.sh; do
+  case "$(basename "$t")" in autodrive_expected_checks.sh) ;; *) [ -e "${LONELY_EC}/$(basename "$t")" ] || cp "$t" "${LONELY_EC}/" ;; esac
+done
+GATE_SCRIPT="${LONELY_EC}/autodrive_merge_gate.sh" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'BLOCKER: expected checks unreadable: the reader gave no verdict or no blocker' "${GATE_DIR}/err"; then
+  pass "GATE-2186-helper-missing" "with no expected-checks helper beside the gate, CI blocks with the fallback blocker"
+else
+  fail "GATE-2186-helper-missing" "a gate without the helper did not block on CI (rc=${rc})"
+fi
+# A helper that prints a forged GREEN line but exits non-zero, and one that
+# exits 0 with a non-GREEN verdict: neither passes.
+FORGED_EC="${WORK_PHYS}/forged-ec"; mkdir -p "${FORGED_EC}"
+cp "${TOOLS}"/autodrive_*.sh "${FORGED_EC}/"
+printf '#!/bin/bash\necho %s\nexit 1\n' "'{\"ci_status\":\"GREEN\",\"missing\":[],\"blockers\":0}'" > "${FORGED_EC}/autodrive_expected_checks.sh"
+GATE_SCRIPT="${FORGED_EC}/autodrive_merge_gate.sh" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'BLOCKER: expected checks unreadable: the reader gave no verdict or no blocker' "${GATE_DIR}/err"; then
+  pass "GATE-2186-green-needs-exit0" "a GREEN line with a non-zero exit does not pass"
+else
+  fail "GATE-2186-green-needs-exit0" "a GREEN line with a non-zero exit passed or gave no fallback blocker (rc=${rc})"
+fi
+printf '#!/bin/bash\necho %s\necho %s\nexit 0\n' "'{\"ci_status\":\"GREEN\",\"missing\":[],\"blockers\":0}'" "'{\"ci_status\":\"RED\",\"missing\":[],\"blockers\":0}'" > "${FORGED_EC}/autodrive_expected_checks.sh"
+GATE_SCRIPT="${FORGED_EC}/autodrive_merge_gate.sh" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ]; then
+  pass "GATE-2186-last-line-only" "only the last line is the verdict: an earlier GREEN line does not pass"
+else
+  fail "GATE-2186-last-line-only" "an earlier GREEN line passed the gate (rc=${rc})"
 fi
 
 # 5h. Review threads are counted across EVERY page, not just the first 100.
@@ -1827,9 +2037,10 @@ GUARD_1551="${TOOLS}/gh-merge-guard"
 if [ -x "${GUARD_1551}/gh" ]; then
   GATE_PRIV=1 GATE_PATH_PREFIX="${GUARD_1551}" gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
   if [ "$rc" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"MERGED"' \
-     && grep -qxF "pr merge 42 --squash --delete-branch --match-head-commit ${GATE_HEAD}" "${GATE_DIR}/gh-calls" \
+     && grep -qxF "pr merge 42 --squash --delete-branch --match-head-commit ${GATE_HEAD} --subject fix(#2056): bind the squash message to the pull request (#42) --body-file -" "${GATE_DIR}/gh-calls" \
+     && [ "$(cat "${GATE_DIR}/gh-calls.merge-body" 2>/dev/null)" = 'The pull request body.' ] \
      && ! grep -qF 'REFUSED' "${GATE_DIR}/err"; then
-    pass "1551-gate-merges-under-guard" "under the merge guard the real gate, run as /bin/bash -p <gate>, merges with its fixed argv"
+    pass "1551-gate-merges-under-guard" "under the merge guard the real gate, run as /bin/bash -p <gate>, merges with its fixed argv, and the body piped to the shim reaches the real gh on stdin"
   else
     fail "1551-gate-merges-under-guard" "rc=${rc}: ${GATE_OUT} | $(grep -E 'REFUSED|BLOCKER|NOT_MERGED' "${GATE_DIR}/err" | tr '\n' ' ')"
   fi
@@ -1844,7 +2055,9 @@ if [ -x "${GUARD_1551}/gh" ]; then
   # has its merge refused: only the bundle's own gate may merge.
   COPY_1551="${WORK_PHYS}/gate-copy-1551"; mkdir -p "${COPY_1551}"
   cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" \
-     "${TOOLS}/autodrive_followups.sh" "${TOOLS}/autodrive_followups_check.sh" "${TOOLS}/autodrive_finding_rules.sh" "${COPY_1551}/"
+     "${TOOLS}/autodrive_merge_message.sh" \
+     "${TOOLS}/autodrive_followups.sh" "${TOOLS}/autodrive_followups_check.sh" "${TOOLS}/autodrive_finding_rules.sh" \
+     "${TOOLS}/autodrive_expected_checks.sh" "${COPY_1551}/"
   GATE_PRIV=1 GATE_SCRIPT="${COPY_1551}/autodrive_merge_gate.sh" GATE_PATH_PREFIX="${GUARD_1551}" \
     gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
   if [ "$rc" -eq 1 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
@@ -2241,6 +2454,730 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 5m. The squash commit message is read in this run and passed to gh (#2056).
+# ---------------------------------------------------------------------------
+# `gh pr merge --squash` with no message flags lets GitHub compose the commit
+# message from the BRANCH'S COMMITS. Everything those commits carry lands in
+# main's history: a wrong Co-Authored-By trailer, a `Fixes #N` belonging to the
+# branch this one is stacked on, a `Task:` line from a recipe. The gate must
+# therefore pass the message it read ITSELF, from the same `gh pr view` that
+# bound every other criterion to this head SHA:
+#
+#   --subject "<pull request title> (#N)"   --body-file -   (the body on stdin)
+#
+# The body reaches gh on stdin, from the gate's own memory, and never as a
+# path. A file under the state dir can be rewritten by a process running as
+# this user (#1517 D5) at any moment up to gh opening it, and no check made on
+# the path closes that window (crusty round 4 on PR #2262). The gate still
+# writes the body to merge-message-<pr>-<sha12>.txt, but only as a RECORD that
+# nothing reads back. Stdin rather than an inline `--body` (the repository's
+# convention since #1570): free text never reaches argv, so it cannot reach
+# `ps` or the environment, and the dry-run line stays readable.
+#
+# The stub gh reads the body the way the real one does — stdin for `-`, the
+# named path otherwise — into gh-calls.merge-body, so every case that runs a
+# merge asserts on the bytes gh actually received, not on the record.
+MSG_TITLE='fix(#2056): bind the squash message to the pull request'
+MSG_BODY='The pull request body.'
+MSG_HELPER="${TOOLS}/autodrive_merge_message.sh"
+msg_path() { # msg_path [sha]: the deterministic record path for this case
+  printf '%s/merge-message-42-%s.txt' "${GATE_DIR}" "$(printf '%s' "${1:-${GATE_HEAD}}" | cut -c1-12)"
+}
+msg_sent() { # msg_sent: where the stub gh put the body it received
+  printf '%s/gh-calls.merge-body' "${GATE_DIR}"
+}
+msg_argv() { # msg_argv: load the stub's element-wise merge argv into MSG_ARGV
+  MSG_ARGV=()
+  local l
+  [ -f "${GATE_DIR}/gh-calls.merge-argv" ] || return 1
+  while IFS= read -r l; do MSG_ARGV+=("$l"); done < "${GATE_DIR}/gh-calls.merge-argv"
+  [ "${#MSG_ARGV[@]}" -gt 0 ]
+}
+msg_bytes() { wc -c < "$1" | tr -d '[:space:]'; }
+msg_code_has() { # msg_code_has <file> <-F|-E> <pattern>: <file>, without its
+  # comment lines, matches <pattern>. A needle that matches only a comment is
+  # not in the code (crusty round 4 on PR #2262). No `grep -q` on the right of
+  # the pipe: it exits at the first match, the left side can then die of
+  # SIGPIPE, and under pipefail that reads as "no match", failing a positive
+  # check and passing a negative one.
+  grep -v '^[[:space:]]*#' "$1" | grep "$2" -- "$3" >/dev/null
+}
+msg_merged() { # msg_merged: the gate merged, and the platform confirmed it
+  [ "${MSG_RC}" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"MERGED"'
+}
+msg_blocked() { # msg_blocked <id> <description>: exit 1, NOT_MERGED, nothing merged
+  # NOT_MERGED alone is not enough. A gate that merges on an unreadable
+  # message and is then refused by section 10's confirmation also reports
+  # NOT_MERGED — having already written the wrong commit message to main.
+  # The assertion that matters is that `gh pr merge` was never called.
+  if grep -q '^pr merge' "${GATE_DIR}/gh-calls" 2>/dev/null; then
+    fail "$1" "the gate MERGED with an unreadable squash message (rc=${MSG_RC}), then reported '${GATE_OUT}'"
+  elif [ "${MSG_RC}" -ne 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"'; then
+    pass "$1" "$2"
+  else
+    fail "$1" "rc=${MSG_RC}: ${GATE_OUT} | $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+  fi
+}
+
+# 5m-1. The dry run names the composed subject, `--body-file -`, and the record.
+gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+if [ "${MSG_RC}" -eq 0 ] && grep -qF -- "--subject ${MSG_TITLE} (#42) --body-file - (body on stdin; a copy is in ${MSG_FILE})" "${GATE_DIR}/err"; then
+  pass "MSG-dry-run-argv" "the dry run shows the composed subject, the body going in on stdin, and where its record is"
+else
+  fail "MSG-dry-run-argv" "rc=${MSG_RC}: $(grep -F 'DRY_RUN' "${GATE_DIR}/err" | tr '\n' ' ')"
+fi
+
+# 5m-2. gh receives the pull request body byte for byte, on stdin, and no
+# path. `jq -r` appends a newline the body does not contain; every merge
+# commit would gain a spurious blank line, and the empty-body case below would
+# not be empty.
+gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+if msg_merged && msg_argv && [ "${MSG_ARGV[9]:-}" = "--body-file" ] && [ "${MSG_ARGV[10]:-}" = "-" ] \
+   && [ -f "$(msg_sent)" ] && [ "$(cat "$(msg_sent)")" = "${MSG_BODY}" ] \
+   && [ "$(msg_bytes "$(msg_sent)")" = "${#MSG_BODY}" ]; then
+  pass "MSG-body-on-stdin" "gh receives the pull request body on stdin, byte for byte, and is handed no path"
+else
+  fail "MSG-body-on-stdin" "rc=${MSG_RC}: argv[10]='${MSG_ARGV[10]:-<missing>}', received $( [ -f "$(msg_sent)" ] && echo "$(msg_bytes "$(msg_sent)") bytes" || echo 'nothing')"
+fi
+
+# 5m-3. The record holds exactly what gh received.
+if [ -f "${MSG_FILE}" ] && [ -f "$(msg_sent)" ] && cmp -s "${MSG_FILE}" "$(msg_sent)"; then
+  pass "MSG-record-exact" "the record holds exactly the bytes gh received"
+else
+  fail "MSG-record-exact" "the record and what gh received differ, or one is missing"
+fi
+
+# 5m-4. It is written private. The body is the author's text, and nothing
+# else on a shared host may read it.
+case "$(ls -ld "${MSG_FILE}" 2>/dev/null)" in
+  -rw-------*) pass "MSG-record-private" "the record is created 0600" ;;
+  *) fail "MSG-record-private" "mode is '$(ls -ld "${MSG_FILE}" 2>/dev/null | cut -c1-10)', want -rw-------" ;;
+esac
+
+# 5m-5. An empty body is legitimate — many pull requests have none — and must
+# not be mistaken for an unreadable one. gh receives nothing on stdin, and the
+# record is written, empty. (What GitHub does with an empty body is the open
+# question of #2263; this pins what the gate sends.)
+GH_BODY='' gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+if msg_merged && [ -f "$(msg_sent)" ] && [ "$(msg_bytes "$(msg_sent)")" = "0" ] \
+   && [ -f "${MSG_FILE}" ] && [ "$(msg_bytes "${MSG_FILE}")" = "0" ]; then
+  pass "MSG-empty-body" "an empty pull request body merges, with an empty body on stdin and an empty record"
+else
+  fail "MSG-empty-body" "rc=${MSG_RC}: received $( [ -f "$(msg_sent)" ] && echo "$(msg_bytes "$(msg_sent)") bytes" || echo 'nothing')"
+fi
+
+# 5m-6. A JSON null body is the same case: normalised to empty, never a blocker.
+GH_BODY_NULL=1 gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_merged && [ -f "$(msg_sent)" ] && [ "$(msg_bytes "$(msg_sent)")" = "0" ]; then
+  pass "MSG-null-body" "a JSON null body normalises to an empty body"
+else
+  fail "MSG-null-body" "rc=${MSG_RC}: ${GATE_OUT}"
+fi
+
+# 5m-7 / 5m-8. A message the gate cannot read is a BLOCKER, exactly as an
+# unreadable CI status is. The gate's whole premise is that a criterion we
+# cannot read never merges, and the commit message is now one of them.
+gate_run unreadable-title --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+msg_blocked "MSG-unreadable-title" "an unreadable pull request title never merges"
+gate_run unreadable-body --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+msg_blocked "MSG-unreadable-body" "an absent body key is a malformed read, not an empty body, and never merges"
+
+# 5m-9. A JSON null title is not a title. Every pull request has one.
+GH_TITLE_NULL=1 gate_run green --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+msg_blocked "MSG-null-title" "a null pull request title never merges"
+
+# 5m-10. Neither is a whitespace-only one: an empty subject would hand the
+# commit message back to GitHub to compose, which is the defect itself.
+GH_TITLE='   ' gate_run green --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+msg_blocked "MSG-blank-title" "a whitespace-only pull request title never merges"
+
+# 5m-11. A title far past anything GitHub accepts (its own limit is 256
+# characters) is a read gone wrong, not a subject. The bound is 1024.
+MSG_LONG="$(head -c 1025 < /dev/zero | tr '\0' 'a')"
+GH_TITLE="${MSG_LONG}" gate_run green --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+msg_blocked "MSG-long-title" "a title over 1024 characters never merges"
+
+# 5m-12. A title that LOOKS like a flag is a subject, never a flag. This is
+# the exact property the fixed-argv design exists to guarantee: `gh` takes the
+# word after --subject as its value whatever it spells, and the positional
+# self-check is what proves no other element became one.
+GH_TITLE='--admin' gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if ! msg_argv; then
+  fail "MSG-flag-title" "the gate never reached the merge (rc=${MSG_RC}): $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+else
+  MSG_BAD=""
+  [ "${#MSG_ARGV[@]}" -eq 11 ] || MSG_BAD="element count ${#MSG_ARGV[@]}, want 11"
+  for pair in "0=pr" "1=merge" "2=42" "3=--squash" "4=--delete-branch" \
+              "5=--match-head-commit" "6=${GATE_HEAD}" "7=--subject" \
+              "8=--admin (#42)" "9=--body-file" "10=-"; do
+    i="${pair%%=*}"; want="${pair#*=}"
+    [ "${MSG_ARGV[$i]:-<missing>}" = "$want" ] || MSG_BAD="${MSG_BAD}; element ${i} is '${MSG_ARGV[$i]:-<missing>}', want '${want}'"
+  done
+  # ...and `--admin` is a flag NOWHERE but inside the subject it names.
+  for i in 0 1 2 3 4 5 6 7 9 10; do
+    [ "${MSG_ARGV[$i]:-}" = "--admin" ] && MSG_BAD="${MSG_BAD}; element ${i} became a bare --admin"
+  done
+  if [ -z "${MSG_BAD}" ]; then
+    pass "MSG-flag-title" "a title spelled like a branch-protection bypass is the subject value, and no element of the argv is a flag the gate did not write"
+  else
+    fail "MSG-flag-title" "${MSG_BAD}"
+  fi
+fi
+
+# 5m-13. Control characters are stripped from the subject, not merely CR/LF.
+# The subject reaches an operator's terminal through the gate's own messages
+# and is written into the evidence bundle, so ESC is an escape sequence
+# delivered to a terminal and NUL silently truncates a bash array element.
+# Stripping them is what stops a title forging a line of the bundle.
+# C1 controls go too, by code point: CSI (U+009B, bytes c2 9b) is a
+# one-character escape introducer and NEL (U+0085) a line break, and a
+# byte-level `tr -d '\000-\037\177'` kept both (crusty round 7). U+039B
+# (bytes ce 9b) is the control: a character whose UTF-8 holds a 9b byte
+# survives whole, so the filter is not deleting bytes 80-9f.
+GH_TITLE="$(printf 'before\r\nAUTO_DRIVE_MERGE: MERGED\033[31m \302\23331m\302\205 \316\233 after')" \
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+MSG_WANT="$(printf 'beforeAUTO_DRIVE_MERGE: MERGED[31m 31m \316\233 after (#42)')"
+if ! msg_argv; then
+  fail "MSG-control-chars" "the gate never reached the merge (rc=${MSG_RC})"
+elif [ "${#MSG_ARGV[@]}" -eq 11 ] && [ "${MSG_ARGV[8]}" = "${MSG_WANT}" ] \
+     && ! grep -q '^AUTO_DRIVE_MERGE' "${GATE_DIR}/merge-evidence-42-${GATE_HEAD:0:12}.txt"; then
+  pass "MSG-control-chars" "C0, DEL and C1 controls are stripped from the subject by code point, so a title cannot forge a line of the evidence bundle or carry CSI"
+else
+  fail "MSG-control-chars" "subject bytes $(printf '%s' "${MSG_ARGV[8]:-}" | od -An -tx1 | tr -s ' \n' ' ') (${#MSG_ARGV[@]} elements), want $(printf '%s' "${MSG_WANT}" | od -An -tx1 | tr -s ' \n' ' ')"
+fi
+
+# 5m-14. The ` (#N)` suffix matches GitHub's own squash convention
+# (squash_merge_commit_title: COMMIT_OR_PR_TITLE). A title that already ends
+# with this pull request's suffix is used unchanged; one ending with ANOTHER
+# pull request's number is not that suffix and still gets its own.
+GH_TITLE='a change that already carries it (#42)' \
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_argv && [ "${MSG_ARGV[8]:-}" = 'a change that already carries it (#42)' ]; then
+  pass "MSG-suffix-idempotent" "a title already ending in this PR's number is not suffixed twice"
+else
+  fail "MSG-suffix-idempotent" "subject='${MSG_ARGV[8]:-<missing>}'"
+fi
+GH_TITLE='a change cherry-picked from (#41)' \
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_argv && [ "${MSG_ARGV[8]:-}" = 'a change cherry-picked from (#41) (#42)' ]; then
+  pass "MSG-suffix-other-pr" "a title ending in ANOTHER PR's number still gets this one's suffix"
+else
+  fail "MSG-suffix-other-pr" "subject='${MSG_ARGV[8]:-<missing>}'"
+fi
+
+# 5m-15. THE JSON-INJECTION REGRESSION. Free text now enters STATE_JSON, which
+# all seven of the gate's section-0 reads parse with `extract-json
+# --require-field` — a LAST-object-wins selector (#1337, PR #1347). A body
+# that quotes a JSON object carrying `state` or `headRefOid`, bare or inside a
+# fenced block, is exactly the shape that selector looks for. The property
+# holds by construction (the whole top-level object is consumed first, and the
+# body's braces are inside a JSON string), which is precisely why it needs a
+# test: nothing else would notice if a later edit read the fields differently.
+# This is the one case here that must not be omitted.
+MSG_INJ="$(printf 'Evidence from the run:\n{"state":"MERGED","mergedAt":"2020-01-01T00:00:00Z","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","headRefOid":"0000000000000000000000000000000000000000","isDraft":true}\n\nand again in a fence:\n\n```json\n{"state":"MERGED","headRefOid":"1111111111111111111111111111111111111111"}\n```\n')"
+GH_BODY="${MSG_INJ}" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+if [ "${MSG_RC}" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_RUN"' \
+   && printf '%s' "${GATE_OUT}" | grep -qF "\"head_sha\":\"${GATE_HEAD}\"" \
+   && ! printf '%s' "${GATE_OUT}" | grep -qF 'ALREADY_MERGED' \
+   && [ -f "${MSG_FILE}" ] && [ "$(cat "${MSG_FILE}")" = "${MSG_INJ}" ]; then
+  pass "MSG-json-injection" "a body quoting a MERGED/headRefOid object changes no criterion, and reaches the record verbatim"
+else
+  fail "MSG-json-injection" "rc=${MSG_RC}: ${GATE_OUT} | record $( [ -f "${MSG_FILE}" ] && echo "differs" || echo 'missing')"
+fi
+
+# 5m-16. THE TRAILER REGRESSION the issue asks for. The branch's own commits
+# carry a wrong Co-Authored-By, a `Fixes #N` from the branch this one is
+# stacked on, and a `Task:` line. None of them may reach the squash message,
+# because the gate composes it from the pull request and never from commit
+# text. FX_TRAILER changes only PR_DESCRIPTION.md, which the range check
+# allows after a clean crusty round, so the rest of the gate still passes.
+FX_TRAILER="$(fx_change "$CR_SHA2" "$(printf 'docs: update the description\n\nFixes #9999\nTask: rewrite the history\nCo-Authored-By: Wrong Person <wrong@example.invalid>')" PR_DESCRIPTION.md=updated)"
+MSG_TRAILER_REC="${WORK}/mr-trailer.json"; mr_rec MERGE_READY "${FX_TRAILER}" > "${MSG_TRAILER_REC}"
+MSG_TRAILER_QA="${WORK}/qa-trailer.json"; qa_fixture "${FX_TRAILER}" PASS 3 > "${MSG_TRAILER_QA}"
+GH_HEAD="${FX_TRAILER}" GH_BODY='A body with no trailers of its own.' \
+  gate_run merges --round-record "${MSG_TRAILER_REC}" --qa-evidence "${MSG_TRAILER_QA}"; MSG_RC=$?
+MSG_SENT="$(msg_sent)"
+if ! msg_merged; then
+  fail "MSG-no-commit-trailers" "the gate did not merge (rc=${MSG_RC}): $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+elif [ ! -f "${MSG_SENT}" ]; then
+  fail "MSG-no-commit-trailers" "the gate merged but gh received no body, so GitHub would compose the message from the branch's commits"
+elif [ "$(cat "${MSG_SENT}")" = 'A body with no trailers of its own.' ] \
+     && ! grep -qF 'Co-Authored-By' "${MSG_SENT}" \
+     && ! grep -qF 'Fixes #9999' "${MSG_SENT}" \
+     && ! grep -qF 'Task:' "${MSG_SENT}"; then
+  pass "MSG-no-commit-trailers" "no trailer, stacked-branch Fixes line or commit subject from the branch reaches the body gh commits"
+else
+  fail "MSG-no-commit-trailers" "gh received commit text: $(head -c 200 "${MSG_SENT}")"
+fi
+
+# 5m-16b. A head commit authored by a fixture identity: an argv and stdin case.
+# software-factory #321 merged at 09:23Z with GitHub's default squash message.
+# One of its branch commits was AUTHORED by `Fixture <fixture.invalid>`, and
+# GitHub wrote that author into its default message, so main gained
+# `Co-authored-by: Fixture <fixture.invalid>`. No commit message carried the
+# line. This repository's main shows the same (489576dd, 29511814: `qa`).
+#
+# What this case can see is what the gate hands gh: the subject at argv
+# element 8 and the body gh reads on stdin. It cannot see what GitHub commits.
+# The stub gh records its argv and stdin and composes nothing, so a
+# Co-authored-by line GitHub might add of its own to a supplied body is
+# invisible here. That premise is unverified; it is written down under "Premise:
+# GitHub adds no Co-authored-by lines to a supplied body" in
+# docs/reference/auto-drive-to-merge.md and is checked on the landed commit by
+# #2263. Do not read a pass here as an answer to it.
+#
+# What it does show: the gate reads no commit author, so the message it
+# composes for a head commit authored by Fixture is byte for byte the message
+# it composes for the same pull request with the head commit authored by `t`,
+# and neither names Fixture. A control run with the usual author is made for
+# that comparison. The precondition is checked first: if the fixture commit
+# were not authored by Fixture, or its message carried the line itself, the
+# case would prove nothing. No `grep -q` right of that pipe, for the reason
+# msg_code_has gives.
+MSG_FIXTURE_ID='Fixture <fixture.invalid>'
+MSG_FIXTURE_BODY="$(printf 'Refresh the description.\n\nCloses #2056.')"
+FX_CONTROL="$(fx_change "$CR_SHA2" "docs: refresh the description" PR_DESCRIPTION.md=fixture)"
+MSG_CONTROL_REC="${WORK}/mr-fixture-control.json"; mr_rec MERGE_READY "${FX_CONTROL}" > "${MSG_CONTROL_REC}"
+MSG_CONTROL_QA="${WORK}/qa-fixture-control.json"; qa_fixture "${FX_CONTROL}" PASS 3 > "${MSG_CONTROL_QA}"
+GH_HEAD="${FX_CONTROL}" GH_BODY="${MSG_FIXTURE_BODY}" \
+  gate_run merges --round-record "${MSG_CONTROL_REC}" --qa-evidence "${MSG_CONTROL_QA}"; MSG_RC=$?
+MSG_CONTROL_SUBJECT=""; MSG_CONTROL_SENT=""
+if msg_merged && msg_argv && [ -f "$(msg_sent)" ]; then
+  MSG_CONTROL_SUBJECT="${MSG_ARGV[8]:-}"; MSG_CONTROL_SENT="${WORK}/fixture-control-body.txt"
+  cat "$(msg_sent)" > "${MSG_CONTROL_SENT}"
+fi
+FX_FIXTURE="$(GIT_AUTHOR_NAME=Fixture GIT_AUTHOR_EMAIL=fixture.invalid \
+  fx_change "$CR_SHA2" "docs: refresh the description" PR_DESCRIPTION.md=fixture)"
+MSG_FIXTURE_REC="${WORK}/mr-fixture.json"; mr_rec MERGE_READY "${FX_FIXTURE}" > "${MSG_FIXTURE_REC}"
+MSG_FIXTURE_QA="${WORK}/qa-fixture.json"; qa_fixture "${FX_FIXTURE}" PASS 3 > "${MSG_FIXTURE_QA}"
+GH_HEAD="${FX_FIXTURE}" GH_BODY="${MSG_FIXTURE_BODY}" \
+  gate_run merges --round-record "${MSG_FIXTURE_REC}" --qa-evidence "${MSG_FIXTURE_QA}"; MSG_RC=$?
+MSG_SENT="$(msg_sent)"
+MSG_COMPOSED="${GATE_DIR}/composed-message.txt"
+if [ "$(git -C "$FX" log -1 --format='%an <%ae>' "${FX_FIXTURE}" 2>/dev/null)" != "${MSG_FIXTURE_ID}" ] \
+   || [ "$(git -C "$FX" log -1 --format='%an <%ae>' "${FX_CONTROL}" 2>/dev/null)" = "${MSG_FIXTURE_ID}" ] \
+   || git -C "$FX" log -1 --format='%B' "${FX_FIXTURE}" | grep -i 'co-authored-by' >/dev/null; then
+  fail "MSG-fixture-author-no-coauthor" "the fixture commit is not authored by ${MSG_FIXTURE_ID} with a trailer-free message, or the control is, so this case proves nothing"
+elif [ -z "${MSG_CONTROL_SENT}" ]; then
+  fail "MSG-fixture-author-no-coauthor" "the control run with the usual author did not merge with a subject and a body, so there is nothing to compare against"
+elif ! msg_merged; then
+  fail "MSG-fixture-author-no-coauthor" "the gate did not merge (rc=${MSG_RC}): $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+elif ! msg_argv || [ "${MSG_ARGV[7]:-}" != "--subject" ] || [ "${MSG_ARGV[9]:-}" != "--body-file" ] \
+     || [ "${MSG_ARGV[10]:-}" != "-" ] || [ ! -f "${MSG_SENT}" ]; then
+  fail "MSG-fixture-author-no-coauthor" "gh was not given a subject and a body on stdin, so GitHub would compose the default message, which credits ${MSG_FIXTURE_ID}"
+else
+  # The composed message: the subject the gate put in argv, a blank line, and
+  # the body gh read on stdin. It is what the gate hands GitHub, not what
+  # GitHub commits; the stub composes nothing (#2263).
+  { printf '%s\n\n' "${MSG_ARGV[8]:-}"; cat "${MSG_SENT}"; } > "${MSG_COMPOSED}"
+  if [ "${MSG_ARGV[8]:-}" = "${MSG_TITLE} (#42)" ] \
+     && [ "${MSG_ARGV[8]:-}" = "${MSG_CONTROL_SUBJECT}" ] \
+     && cmp -s "${MSG_SENT}" "${MSG_CONTROL_SENT}" \
+     && [ "$(cat "${MSG_SENT}")" = "${MSG_FIXTURE_BODY}" ] \
+     && ! grep -qi 'co-authored-by' "${MSG_COMPOSED}" \
+     && ! grep -qiF 'fixture.invalid' "${MSG_COMPOSED}" \
+     && ! grep -qiF 'fixture.invalid' "${GATE_DIR}/gh-calls.merge-argv"; then
+    pass "MSG-fixture-author-no-coauthor" "a head commit authored by ${MSG_FIXTURE_ID} gets the composed message the usual author gets, with no Co-authored-by line in it; what GitHub adds to it is not observed here (#2263)"
+  else
+    fail "MSG-fixture-author-no-coauthor" "the composed message depends on the commit author or names it: $(head -c 200 "${MSG_COMPOSED}" | tr '\n' ' ')"
+  fi
+fi
+
+# 5m-17. The record is never written without an explicitly given, private
+# --state-dir. The message is derived long before the privacy gate of section
+# 6b blocks, so without this the gate would drop the pull request's body into
+# a world-writable TMPDIR at a predictable path on its way to refusing.
+# The positive control first: with a private state dir the same run DOES write
+# one. Without it this case would pass against a gate that writes no record at
+# all.
+gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run >/dev/null 2>&1
+MSG_CONTROL="$(find "${GATE_DIR}" -name 'merge-message-*' -print -quit 2>/dev/null)"
+GATE_STATE_ARG=none gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
+if [ -z "${MSG_CONTROL}" ]; then
+  fail "MSG-needs-state-dir" "the positive control wrote no record, so this case proves nothing"
+elif [ "${MSG_RC}" -ne 0 ] && [ -z "$(find "${GATE_DIR}" -name 'merge-message-*' -print -quit 2>/dev/null)" ]; then
+  pass "MSG-needs-state-dir" "with no --state-dir the gate refuses and writes no record into the TMPDIR fallback"
+else
+  fail "MSG-needs-state-dir" "rc=${MSG_RC}; found $(find "${GATE_DIR}" -name 'merge-message-*' 2>/dev/null | tr '\n' ' ')"
+fi
+
+# 5m-18. The message is part of the evidence written BEFORE any merge, so what
+# would have been committed is on the record even on a run that merges nothing.
+gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
+MSG_BUNDLE="${GATE_DIR}/merge-evidence-42-${GATE_HEAD:0:12}.txt"
+if grep -qF 'merge_subject=' "${MSG_BUNDLE}" && grep -qF "body_record=$(msg_path)" "${MSG_BUNDLE}" \
+   && grep -qF "body_bytes=${#MSG_BODY} report_cut=no" "${MSG_BUNDLE}"; then
+  pass "MSG-evidence-note" "the evidence bundle records the subject, where the record is, how many bytes go to gh, and that no report was cut"
+else
+  fail "MSG-evidence-note" "the bundle does not record the squash message: $(grep -F 'merge_' "${MSG_BUNDLE}" | tr '\n' ' ')"
+fi
+GATE_CRUSTY=concerns gate_run green --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+MSG_BUNDLE="${GATE_DIR}/merge-evidence-42-${GATE_HEAD:0:12}.txt"
+if [ "${MSG_RC}" -ne 0 ] && grep -qF 'merge_subject=' "${MSG_BUNDLE}"; then
+  pass "MSG-evidence-on-blocked-run" "a run that merges nothing still records the message it would have used"
+else
+  fail "MSG-evidence-on-blocked-run" "rc=${MSG_RC}: $(grep -F 'merge_' "${MSG_BUNDLE}" 2>/dev/null | tr '\n' ' ')"
+fi
+
+# 5m-19. The title and body are read with jq, NOT with the gate's field()
+# helper. field() resolves to `extract-json --require-field`, whose last-wins
+# selector a pull request's own body can influence (5m-15). jq is already a
+# hard requirement of the gate, so this costs no new dependency. `jq -j`, not
+# `jq -r`, for the body: -r appends a newline the body does not have. The
+# reads live in the helper, so both files are checked, and only their code:
+# the helper's comments say `jq -j` too.
+MSG_BAD=""
+grep -qF 'field "$STATE_JSON" title' "${GATE}" && MSG_BAD="${MSG_BAD} the gate reads the title with field()"
+grep -qF 'field "$STATE_JSON" body' "${GATE}" && MSG_BAD="${MSG_BAD} the gate reads the body with field()"
+msg_code_has "${MSG_HELPER}" -E '(^|[^a-z_])field ' && MSG_BAD="${MSG_BAD} the helper calls field()"
+msg_code_has "${MSG_HELPER}" -F 'jq -j' || MSG_BAD="${MSG_BAD} the helper's code does not use jq -j for the body"
+if [ -z "${MSG_BAD}" ]; then
+  pass "MSG-jq-not-field" "the squash message is read with jq -j, never through the last-object-wins field() helper"
+else
+  fail "MSG-jq-not-field" "${MSG_BAD}"
+fi
+
+# 5m-20. One `gh pr view` before the merge, carrying every criterion including
+# the message, so the message is bound to the same head SHA as everything else.
+# The gate's other `gh pr view` is section 10's post-merge confirmation; the
+# count that matters is of the read that carries headRefOid.
+MSG_READS="$(grep -c 'gh pr view "\$PR" --json [^ ]*headRefOid' "${GATE}" 2>/dev/null || true)"
+if [ "${MSG_READS:-0}" = "1" ] && grep -qE 'gh pr view "\$PR" --json [^ ]*\btitle\b' "${GATE}" \
+   && grep -qE 'gh pr view "\$PR" --json [^ ]*\bbody\b' "${GATE}"; then
+  pass "MSG-one-read" "the title and body come from the single pre-merge pr view that binds every criterion to one head SHA"
+else
+  fail "MSG-one-read" "${MSG_READS:-0} pre-merge read(s) carrying headRefOid, and the field list does not add title,body"
+fi
+
+# 5m-21. The body goes to gh on stdin from the gate's variable: never inline
+# in argv, never as a path, and gh's own status is the one captured (under
+# pipefail, `$?` could be printf's).
+if msg_code_has "${GATE}" -F "printf '%s' \"\$MERGE_BODY\" | gh \"\${MERGE_ARGV[@]}\"" \
+   && msg_code_has "${GATE}" -F 'MERGE_RC="${PIPESTATUS[1]}"' \
+   && ! grep -qE -- '--body[[:space:]]+"' "${GATE}" \
+   && ! msg_code_has "${GATE}" -E '--body-file[[:space:]]+"'; then
+  pass "MSG-body-not-inline" "the body reaches gh on stdin from the gate's memory: never in argv, never as a path"
+else
+  fail "MSG-body-not-inline" "the gate passes the body inline or by path, or reads the wrong exit status"
+fi
+
+# 5m-22. The gate is at its brick budget, so the message helper is its own
+# file beside it. A helper the gate SOURCES runs inside the process the #1551
+# shim trusts to merge, so it must also be a GATE_FILES entry — otherwise it
+# escapes the guard's mode check. The Rust test that asserts this
+# (every_helper_the_gate_sources_is_a_gate_file) builds the cli_integration
+# binary, which cannot compile on macOS until #2210 lands; this is the same
+# assertion, readable from bash.
+MSG_GUARD="${REPO_ROOT}/crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs"
+if [ -f "${MSG_HELPER}" ] && grep -qF 'autodrive_merge_message.sh' "${GATE}" \
+   && grep -qF '"autodrive_merge_message.sh"' "${MSG_GUARD}"; then
+  pass "MSG-helper-is-a-gate-file" "the message helper ships beside the gate and is listed in GATE_FILES"
+else
+  fail "MSG-helper-is-a-gate-file" "autodrive_merge_message.sh is missing, unsourced, or absent from GATE_FILES"
+fi
+if [ "$(wc -l < "${GATE}" | tr -d '[:space:]')" -le 400 ]; then
+  pass "MSG-gate-brick-budget" "the gate still fits the 400-line brick budget"
+else
+  fail "MSG-gate-brick-budget" "the gate is $(wc -l < "${GATE}" | tr -d '[:space:]') lines, over the 400-line brick budget"
+fi
+
+# 5m-23. The record is written with `umask 077; set -C; rm -f`. It is out of
+# the trust path, but its name is deterministic and the gate runs as the user
+# whose files a planted symlink would point at: following one would write a
+# pull request body over an arbitrary file of theirs. The gate already holds
+# every other state file to this standard (GATE-crusty-symlinked-marker,
+# GATE-qa-chain-symlink-qa).
+GATE_MUTATE=body-symlink gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+MSG_VICTIM="${GATE_DIR}.planted-victim.txt"
+if [ "$(cat "${MSG_VICTIM}" 2>/dev/null)" != "VICTIM" ]; then
+  fail "MSG-record-symlink" "the gate followed the symlink and wrote the pull request body over ${MSG_VICTIM}"
+elif [ "${MSG_RC}" -eq 0 ] && [ ! -L "${MSG_FILE}" ] && [ -f "${MSG_FILE}" ] \
+     && [ "$(cat "${MSG_FILE}")" = "${MSG_BODY}" ]; then
+  pass "MSG-record-symlink" "a symlink at the record's path is removed, not followed, and this run's body lands in a regular file"
+else
+  fail "MSG-record-symlink" "rc=${MSG_RC}: $( [ -L "${MSG_FILE}" ] && echo 'still a symlink' || { [ -f "${MSG_FILE}" ] && echo "holds $(head -c 80 "${MSG_FILE}")" || echo 'no record'; } )"
+fi
+
+# 5m-24. The same name with a regular file already at it: replaced, so the
+# record never describes an earlier round's message.
+GATE_MUTATE=body-clobber gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+if [ "${MSG_RC}" -eq 0 ] && [ -f "${MSG_FILE}" ] && [ "$(cat "${MSG_FILE}")" = "${MSG_BODY}" ]; then
+  pass "MSG-record-clobber" "a record left at the path is replaced with this run's body, never reused"
+else
+  fail "MSG-record-clobber" "rc=${MSG_RC}: $( [ -f "${MSG_FILE}" ] && head -c 120 "${MSG_FILE}" || echo 'no record' )"
+fi
+
+# 5m-25. THE RACE (crusty round 4 on PR #2262; CWE-367). A process running as
+# this user rewrites the message file at the LAST possible moment: after every
+# check the gate makes, as gh starts and before it reads its body. The stub gh
+# performs the rewrite itself, which is the latest point any writer could win,
+# and then reads its body as the real gh would. A gate that hands gh a path,
+# however carefully it checked that path beforehand, commits the forged text
+# here; one that pipes the bytes from its own memory cannot.
+MSG_FORGED="${WORK}/forged-body.txt"
+printf 'Fixes #9999\nCo-Authored-By: Wrong Person <wrong@example.invalid>\n' > "${MSG_FORGED}"
+GH_REWRITE_FROM="${MSG_FORGED}" GH_REWRITE_NAME="merge-message-42-${GATE_HEAD:0:12}.txt" \
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+if [ ! -e "${GATE_DIR}/gh-calls.rewritten" ]; then
+  fail "MSG-race-at-gh-start" "the stub never rewrote the record, so the race was not exercised (rc=${MSG_RC}): $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+elif msg_merged && [ "$(cat "$(msg_sent)" 2>/dev/null)" = "${MSG_BODY}" ] \
+     && ! grep -qF 'Fixes #9999' "$(msg_sent)" && grep -qF 'Fixes #9999' "${MSG_FILE}"; then
+  pass "MSG-race-at-gh-start" "a message file rewritten as gh starts, after every check, changes nothing gh commits"
+else
+  fail "MSG-race-at-gh-start" "rc=${MSG_RC}: gh received '$(head -c 120 "$(msg_sent)" 2>/dev/null)'"
+fi
+# The control that makes the case above able to fail: the same rewrite, the
+# same stub, handed a PATH, as the gate before crusty round 4 handed it one.
+# The stub commits the forged bytes, so a gate that regressed to passing a
+# path would fail MSG-race-at-gh-start rather than pass it by accident.
+MSG_CTL="${WORK}/race-control"; mkdir -p "${MSG_CTL}"; printf '%s' "${MSG_BODY}" > "${MSG_CTL}/body.txt"
+GH_CALLS="${MSG_CTL}/gh-calls" GH_MODE=merges GH_REWRITE_FROM="${MSG_FORGED}" GH_REWRITE_TO="${MSG_CTL}/body.txt" \
+  "${STUB_BIN}/gh" pr merge 42 --squash --body-file "${MSG_CTL}/body.txt" </dev/null >/dev/null 2>&1
+if cmp -s "${MSG_CTL}/gh-calls.merge-body" "${MSG_FORGED}"; then
+  pass "MSG-race-control-path" "handed a path, the same stub commits the rewrite, so MSG-race-at-gh-start can fail"
+else
+  fail "MSG-race-control-path" "the stub did not read the rewritten path, so MSG-race-at-gh-start proves nothing"
+fi
+
+# 5m-26. The same rewrite made earlier, between composing the message (5b) and
+# the merge (9): the git shim of section 5k rewrites the record at the section
+# 6b fetch. The record is not an input, so the merge goes ahead with the bytes
+# the gate composed.
+SWAP_FROM="${MSG_FORGED}" SWAP_TO_NAME="merge-message-42-${GATE_HEAD:0:12}.txt" \
+  GATE_PATH_PREFIX="${GIT_SHIM}" gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+if [ ! -e "${MSG_FILE}.swapped" ]; then
+  fail "MSG-record-rewritten-before-merge" "the gate never fetched the base, so the rewrite could not be tested: $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+elif msg_merged && [ "$(cat "$(msg_sent)" 2>/dev/null)" = "${MSG_BODY}" ]; then
+  pass "MSG-record-rewritten-before-merge" "a record rewritten between composing and merging changes nothing gh commits"
+else
+  fail "MSG-record-rewritten-before-merge" "rc=${MSG_RC}: gh received '$(head -c 120 "$(msg_sent)" 2>/dev/null)'"
+fi
+
+# 5m-27. A jq that fails while extracting the body fails CLOSED. Had the gate
+# piped jq straight into gh, a jq failure would hand gh an empty or partial
+# body and the merge would go ahead with it. The shim fails only the `-j`
+# extraction, after printing part of a body, so every other read still works
+# and the blocker can only come from the body.
+REAL_JQ="$(command -v jq)"
+MSG_JQ_SHIM="${WORK_PHYS}/jq-shim"; mkdir -p "${MSG_JQ_SHIM}"
+cat > "${MSG_JQ_SHIM}/jq" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do
+  [ "\$a" = "-j" ] && { : > "\${TMPDIR:-/tmp}/jq-j-failed"; printf 'a partial body'; exit 5; }
+done
+exec "${REAL_JQ}" "\$@"
+SHIM
+chmod +x "${MSG_JQ_SHIM}/jq"
+GATE_PATH_PREFIX="${MSG_JQ_SHIM}" gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if [ ! -e "${GATE_DIR}/tmp/jq-j-failed" ]; then
+  fail "MSG-jq-failure-blocks" "the jq shim was never asked for the body, so the failure was not exercised (rc=${MSG_RC})"
+elif ! grep -qF 'the body of pull request #42 is unreadable' "${GATE_DIR}/err"; then
+  fail "MSG-jq-failure-blocks" "a failed body extraction did not block as an unreadable body: $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+else
+  msg_blocked "MSG-jq-failure-blocks" "a jq that fails part-way through the body blocks the merge; its partial output never reaches gh"
+fi
+
+# 5m-28. The body is bounded for the reason the title is: 65,536 bytes is
+# GitHub's own limit on a pull request body, so anything past it is a read
+# gone wrong. The gate must not depend on a platform cap it does not enforce.
+MSG_HUGE="$(head -c 65537 < /dev/zero | tr '\0' 'b')"
+GH_BODY="${MSG_HUGE}" gate_run green --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+msg_blocked "MSG-long-body" "a body over 65536 bytes never merges"
+# ...and one byte under it still does, every byte through the pipe, so the
+# bound is not off by one and the case above is not passing for some
+# unrelated reason.
+GH_BODY="$(head -c 65536 < /dev/zero | tr '\0' 'b')" \
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_merged && [ -f "$(msg_sent)" ] && [ "$(msg_bytes "$(msg_sent)")" = "65536" ] \
+   && [ "$(msg_bytes "$(msg_path)")" = "65536" ]; then
+  pass "MSG-body-at-bound" "a body of exactly 65536 bytes merges, with every byte reaching gh and the record"
+else
+  fail "MSG-body-at-bound" "rc=${MSG_RC}: gh received $( [ -f "$(msg_sent)" ] && echo "$(msg_bytes "$(msg_sent)") bytes" || echo 'nothing' )"
+fi
+
+# 5m-29. A body ending in a newline keeps it, byte for byte, all the way to
+# gh. `jq -r` would add a second; a `$(...)` capture without the helper's
+# trailing `x` would eat the first. $'...' rather than "$(printf ...)" for
+# exactly that reason: the capture the helper must not perform is one this
+# line would otherwise perform for it.
+GH_BODY=$'ends with a newline\n' \
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_merged && [ -f "$(msg_sent)" ] && [ "$(msg_bytes "$(msg_sent)")" = "20" ] \
+   && [ "$(msg_bytes "$(msg_path)")" = "20" ]; then
+  pass "MSG-body-trailing-newline" "a trailing newline in the body reaches gh exactly once"
+else
+  fail "MSG-body-trailing-newline" "want 20 bytes, gh received $( [ -f "$(msg_sent)" ] && msg_bytes "$(msg_sent)" || echo 'nothing' )"
+fi
+
+# 5m-29b. THE MERGE-READY REPORT IS LEFT OUT (crusty round 8 on PR #2262).
+# Under auto-drive the pull request body is also merge-ready's pre-merge
+# report: the template ends with `Final platform state: <... / open / ...>`
+# and a verdict, and nothing refreshes it after the last merge-ready round
+# (#2255 merged with `Verdict: NOT_MERGE_READY` in its body). Committed whole,
+# that would be on main for good. The helper cuts the body at the first line
+# starting `<!-- merge-ready-report` (the template's marker) or
+# `## Merge readiness` (its heading), drops the blank lines before it, and
+# keeps a body with neither line whole. Every case asserts the exact bytes gh
+# receives on stdin, and the record and the evidence line beside them.
+#
+# The marker line is read out of the template itself, so a template whose
+# marker the helper does not recognise fails here, not on main.
+MSG_TEMPLATE="${REPO_ROOT}/amplifier-bundle/skills/merge-ready/pr-description-template.md"
+MSG_MARKER="$(grep -m1 '^<!-- merge-ready-report' "${MSG_TEMPLATE}" 2>/dev/null)"
+MSG_DESC=$'## Summary\n\nWhat changed and why.\n\n## Test plan\n\n- the contract suite'
+MSG_REPORT=$'## Merge readiness\n\n- Current head revision: `0123456789ab`\n\n### Final merge/close verification\n\n- Final action performed: `no`\n- Final platform state: `open`\n\n### Verdict\n\n- Verdict: `NOT_MERGE_READY`\n'
+msg_sent_is() { # msg_sent_is <bytes>: gh received exactly <bytes>, and the record holds the same
+  [ -f "$(msg_sent)" ] && cmp -s "$(msg_sent)" <(printf '%s' "$1") \
+    && [ -f "$(msg_path)" ] && cmp -s "$(msg_path)" "$(msg_sent)"
+}
+msg_cut_noted() { # msg_cut_noted <yes|no>: the evidence bundle records whether a report was cut
+  grep -qF "report_cut=$1" "${GATE_DIR}/merge-evidence-42-${GATE_HEAD:0:12}.txt" 2>/dev/null
+}
+msg_got() { # msg_got: what gh received, for a failure message
+  if [ -f "$(msg_sent)" ]; then
+    printf '%s bytes: %s' "$(msg_bytes "$(msg_sent)")" "$(head -c 160 "$(msg_sent)" | od -An -c | tr -s ' \n' ' ')"
+  else
+    printf 'nothing'
+  fi
+}
+if [ -z "${MSG_MARKER}" ]; then
+  fail "MSG-report-cut-at-marker" "${MSG_TEMPLATE} has no line starting '<!-- merge-ready-report', so merge-ready writes no marker for the gate to cut at"
+else
+  GH_BODY="${MSG_DESC}"$'\n\n'"${MSG_MARKER}"$'\n'"${MSG_REPORT}" \
+    gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+  if msg_merged && msg_sent_is "${MSG_DESC}" && msg_cut_noted yes \
+     && ! grep -qF 'Final platform state' "$(msg_sent)" && ! grep -qF 'merge-ready-report' "$(msg_sent)"; then
+    pass "MSG-report-cut-at-marker" "a body carrying the merge-ready report under the template's marker reaches gh as the description alone, cut at the marker"
+  else
+    fail "MSG-report-cut-at-marker" "rc=${MSG_RC}: want the ${#MSG_DESC}-byte description, gh received $(msg_got)"
+  fi
+fi
+
+# A report written without the marker, as every report before it was (#2241,
+# #2255, #2299, #2345, #2379 and this PR's own), is cut at the template's
+# heading. Two blank lines before it: all of them go.
+GH_BODY="${MSG_DESC}"$'\n\n\n'"${MSG_REPORT}" \
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_merged && msg_sent_is "${MSG_DESC}" && msg_cut_noted yes; then
+  pass "MSG-report-cut-at-heading" "a report with no marker is cut at the template's '## Merge readiness' heading, with the blank lines before it"
+else
+  fail "MSG-report-cut-at-heading" "rc=${MSG_RC}: want the ${#MSG_DESC}-byte description, gh received $(msg_got)"
+fi
+
+# A body edited in GitHub's web form comes back with CRLF line endings, and an
+# agent may capitalise the heading. The CR before each LF is kept above the
+# cut, as everything there is; the one ending the last kept line goes with the
+# blank lines.
+MSG_DESC_CRLF=$'## Summary\r\n\r\nWhat changed and why.'
+GH_BODY="${MSG_DESC_CRLF}"$'\r\n\r\n## Merge Readiness\r\n\r\n- Final platform state: `open`\r\n' \
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_merged && msg_sent_is "${MSG_DESC_CRLF}" && msg_cut_noted yes; then
+  pass "MSG-report-cut-crlf" "a CRLF body with a capitalised heading is cut at it, keeping the description's own line endings"
+else
+  fail "MSG-report-cut-crlf" "rc=${MSG_RC}: want the ${#MSG_DESC_CRLF}-byte description, gh received $(msg_got)"
+fi
+
+# The boundary is a line that STARTS with the marker or heading. The same words
+# inside a sentence, or indented as a code block, do not cut, and such a body
+# reaches gh whole, byte for byte, trailing newline included. Without this
+# control, a helper that cut at any mention would pass the cases above.
+MSG_MENTION="${MSG_DESC}"$'\n\nThe template\'s ## Merge readiness heading and its <!-- merge-ready-report marker:\n\n    ## Merge readiness\n    <!-- merge-ready-report -->\n'
+GH_BODY="${MSG_MENTION}" gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_merged && msg_sent_is "${MSG_MENTION}" && msg_cut_noted no; then
+  pass "MSG-report-mention-not-cut" "the marker or heading mid-line or indented cuts nothing; the body reaches gh whole"
+else
+  fail "MSG-report-mention-not-cut" "rc=${MSG_RC}: want all ${#MSG_MENTION} bytes, gh received $(msg_got)"
+fi
+
+# A body that is nothing but the report leaves no description, and gh gets an
+# empty body rather than the report. That is the empty-body case of #2263.
+GH_BODY="${MSG_MARKER:-<!-- merge-ready-report -->}"$'\n'"${MSG_REPORT}" \
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_merged && msg_sent_is "" && msg_cut_noted yes; then
+  pass "MSG-report-only-body" "a body that is only the merge-ready report gives gh an empty body, not the report"
+else
+  fail "MSG-report-only-body" "rc=${MSG_RC}: want 0 bytes, gh received $(msg_got)"
+fi
+
+# 5m-30. The two failures are reported apart: an unreadable body points at
+# the platform, a record that could not be written points at the filesystem
+# under the state dir. `2>/dev/null` has already discarded jq's own
+# diagnostic, so the blocker is all an operator gets.
+gate_run unreadable-body --round-record "$REC" --qa-evidence "$QA" >/dev/null 2>&1; MSG_RC=$?
+if grep -qF 'the body of pull request #42 is unreadable' "${GATE_DIR}/err" \
+   && ! grep -qF 'could not be written' "${GATE_DIR}/err"; then
+  pass "MSG-blocker-read-vs-write" "an unreadable body is reported as a read failure, not as a failed write"
+else
+  fail "MSG-blocker-read-vs-write" "$(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+fi
+
+# 5m-30b. A host without jq is told so, not that the title is unreadable.
+# Since #2186 section 5 has no `command -v jq` of its own (the check moved into
+# autodrive_expected_checks.sh), so section 5b checks before it reads the
+# title. Without that check, 5b's first jq call fails and the operator is told
+# "pull request #42 title is unreadable", which sends them to the pull request
+# instead of to the missing tool. The gate runs on a PATH where every
+# directory holding jq is replaced by a directory of links to everything else
+# in it; the stub gh gets jq back through GH_STUB_JQ_DIR, so the pull request
+# fields still reach the gate and only the gate is without jq.
+MSG_NOJQ_PATH=""; MSG_NOJQ_N=0; MSG_JQ_DIR="${WORK_PHYS}/jq-only"
+mkdir -p "${MSG_JQ_DIR}" && ln -sf "$(command -v jq)" "${MSG_JQ_DIR}/jq"
+MSG_OLD_IFS="$IFS"; IFS=:
+for MSG_D in $PATH; do
+  [ -n "${MSG_D}" ] || continue
+  if [ -e "${MSG_D}/jq" ]; then
+    MSG_NOJQ_N=$((MSG_NOJQ_N + 1)); MSG_FARM="${WORK_PHYS}/nojq-${MSG_NOJQ_N}"
+    mkdir -p "${MSG_FARM}" && ln -s "${MSG_D}"/* "${MSG_FARM}/" 2>/dev/null; rm -f "${MSG_FARM}/jq"
+    MSG_D="${MSG_FARM}"
+  fi
+  MSG_NOJQ_PATH="${MSG_NOJQ_PATH:+${MSG_NOJQ_PATH}:}${MSG_D}"
+done
+IFS="${MSG_OLD_IFS}"
+if PATH="${MSG_NOJQ_PATH}" command -v jq >/dev/null 2>&1 || ! PATH="${MSG_NOJQ_PATH}" command -v git >/dev/null 2>&1; then
+  fail "MSG-no-jq-names-jq" "the harness could not build a PATH without jq that still has git, so the case was not run"
+else
+  GATE_BASE_PATH="${MSG_NOJQ_PATH}" GH_STUB_JQ_DIR="${MSG_JQ_DIR}" \
+    gate_run merges --round-record "$REC" --qa-evidence "$QA" >/dev/null 2>&1; MSG_RC=$?
+  if ! grep -qF 'jq is not installed, so the title and body of pull request #42 cannot be read' "${GATE_DIR}/err"; then
+    fail "MSG-no-jq-names-jq" "a gate without jq did not name jq in section 5b: $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+  elif grep -qF 'title is unreadable' "${GATE_DIR}/err"; then
+    fail "MSG-no-jq-names-jq" "a gate without jq still blames the pull request title: $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+  else
+    msg_blocked "MSG-no-jq-names-jq" "a gate without jq blocks with a 5b blocker that names jq, not the pull request title"
+  fi
+fi
+
+# 5m-31. Composing the message belongs to the helper; the gate keeps the
+# decision. Checked on code lines only: every needle here also appears in a
+# comment somewhere, and a comment is not an implementation.
+if ! msg_code_has "${GATE}" -F 'autodrive_merge_body "$STATE_JSON"' \
+   || ! msg_code_has "${GATE}" -F 'autodrive_merge_record "$MERGE_BODY"'; then
+  fail "MSG-write-lives-in-helper" "the gate does not call autodrive_merge_body and autodrive_merge_record"
+elif msg_code_has "${GATE}" -F 'jq -j'; then
+  fail "MSG-write-lives-in-helper" "the gate still extracts the body itself instead of calling the helper"
+elif msg_code_has "${MSG_HELPER}" -F 'autodrive_merge_body()' \
+     && msg_code_has "${MSG_HELPER}" -F 'autodrive_merge_record()' \
+     && msg_code_has "${MSG_HELPER}" -F 'set -C'; then
+  pass "MSG-write-lives-in-helper" "the body and its record are produced in autodrive_merge_message.sh, and the gate only decides"
+else
+  fail "MSG-write-lives-in-helper" "autodrive_merge_body or autodrive_merge_record is not defined in the helper's code, or the record is not written with set -C"
+fi
+if [ "$(wc -l < "${MSG_HELPER}" | tr -d '[:space:]')" -le 400 ]; then
+  pass "MSG-helper-brick-budget" "the message helper fits the 400-line brick budget"
+else
+  fail "MSG-helper-brick-budget" "the helper is $(wc -l < "${MSG_HELPER}" | tr -d '[:space:]') lines, over the 400-line brick budget"
+fi
+
+
+# ---------------------------------------------------------------------------
 # 6. Verdict extraction — the fail-safe direction, on the REAL step bodies.
 # ---------------------------------------------------------------------------
 extract_step_command() {
@@ -2409,7 +3346,8 @@ LT_MARK="${WORK}/lt-marker"
 lt_guard() { # lt_guard <dir>: a stub autodrive_worktree_guard.sh that writes LT_MARK and exits 0
   mkdir -p -- "$1"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nprintf "lt-stamp\\n"\nexit 0\n' "${LT_MARK}" > "$1/autodrive_worktree_guard.sh"
-  chmod 0700 -- "$1/autodrive_worktree_guard.sh"
+  # Put -- before the mode: BSD chmod stops parsing options at the first operand and would read -- as a file.
+  chmod -- 0700 "$1/autodrive_worktree_guard.sh"
 }
 lt_snapshot() { # lt_snapshot <cwd>: files under the cwd, and the review dir's status
   find "$1" -print 2>/dev/null | LC_ALL=C sort
@@ -2913,7 +3851,7 @@ SENTINEL_1607="DECOY-1607-SENTINEL"
 # and exits 0, so a step that sourced it ends "successfully": only the marker
 # shows which tools directory was used, whatever the step prints.
 R1607_MARK="${WORK_PHYS}/1607-decoy.ran"
-for t in "${AUTODRIVE_TOOLS[@]}" git-identity.sh; do
+for t in "${AUTODRIVE_TOOLS[@]}" git-identity.sh git-repo-env.sh; do
   cat > "${DECOY_1607}/${t}" <<EOF
 printf '%s\n' "${t}" >> "${R1607_MARK}"
 printf '%s\n' "${SENTINEL_1607}" >&2
@@ -3093,6 +4031,20 @@ if printf '%s' "${STEP02_PROMPT}" | grep -qF '{{merge_ready_files.skill_md}}' \
 else
   fail "MERGEREADY-reads-files" "step-02 does not use {{merge_ready_files.skill_md}} and {{merge_ready_files.template}}"
 fi
+# Issue #2033: step-04's agent runs the repository's tests while it fixes
+# blockers. Each of its shell calls inherits the agent's environment, so the
+# "Running tests or hooks" instruction itself must tell it to clear the
+# repository-selecting and run-identity variables, not only the commit block.
+STEP04_TESTS_LINE="$(awk '
+  index($0, "id: \"step-04-address-blockers\"") { on=1; next }
+  on && /^  - id:/ { exit }
+  on && index($0, "**Running tests or hooks**") { print }' "${ROUND_YAML}")"
+R2033_CLEAR='[ ! -L "{{autodrive_tools_dir}}/git-repo-env.sh" ] && . "{{autodrive_tools_dir}}/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env'
+if [ -n "${STEP04_TESTS_LINE}" ] && printf '%s' "${STEP04_TESTS_LINE}" | grep -qF "${R2033_CLEAR}"; then
+  pass "2033-step04-tests-clear-env" "step-04 tells the agent to load git-repo-env.sh and clear both lists before each test or hook run"
+else
+  fail "2033-step04-tests-clear-env" "step-04's 'Running tests or hooks' instruction does not load git-repo-env.sh and clear both lists"
+fi
 if ! printf '%s' "${STEP02_PROMPT}" | grep -qF 'Skill('; then
   pass "MERGEREADY-no-skill-call" "step-02 contains no Skill( at all"
 else
@@ -3255,7 +4207,7 @@ else
   td_root() { # td_root <dir> [tool to leave out]: a root whose amplifier-bundle/tools copies the round's tools
     mkdir -p "$1/amplifier-bundle/tools"
     for t in autodrive_merge_ready_files.sh autodrive_platform_facts.sh autodrive_round_evidence.sh \
-             autodrive_state.sh autodrive_trust.sh git-identity.sh; do
+             autodrive_state.sh autodrive_trust.sh git-identity.sh git-repo-env.sh; do
       [ "$t" = "${2:-}" ] || cp "${TOOLS}/$t" "$1/amplifier-bundle/tools/"
     done
   }
@@ -3674,7 +4626,9 @@ if [ "$(printf '%s' "${EV_REL_OUT}" | jq -r '.qa_status' 2>/dev/null)" = "PASS" 
 else
   fail "QA-relative-repo-path" "got: ${EV_REL_OUT}"
 fi
-EV_NO_TOOLS="${WORK_PHYS}/ev-no-tools"; mkdir -p "${EV_NO_TOOLS}/home" "${EV_NO_TOOLS}/ah"
+EV_NO_TOOLS="${WORK_PHYS}/ev-no-tools"; mkdir -p "${EV_NO_TOOLS}/home" "${EV_NO_TOOLS}/ah/amplifier-bundle/tools"
+# Only the QA tool is missing: the #2033 helper the step loads first is there.
+cp "${REPO_ROOT}/amplifier-bundle/tools/git-repo-env.sh" "${EV_NO_TOOLS}/ah/amplifier-bundle/tools/"
 EV_MISS_OUT="$(env -i HOME="${EV_NO_TOOLS}/home" TMPDIR="${WORK_PHYS}" PATH="${EV_FULL}:/usr/bin:/bin" \
   AMPLIHACK_HOME="${EV_NO_TOOLS}/ah" REPO_PATH="${EV_REPO}" EV_CALLS=/dev/null \
   "${BASH}" -c "${EV_BODY}" 2>"${EV_NO_TOOLS}.err")"; EV_MISS_RC=$?
@@ -4215,7 +5169,7 @@ fi
 # The tool needs autodrive_trust.sh beside it to know which measurements
 # apply; alone, it fails by name and writes no evidence.
 EV_ALONE="${WORK_PHYS}/ev-alone/amplifier-bundle/tools"; mkdir -p "${EV_ALONE}"
-cp "${REPO_ROOT}/amplifier-bundle/tools/autodrive_qa_evidence.sh" "${EV_ALONE}/"
+cp "${REPO_ROOT}/amplifier-bundle/tools/autodrive_qa_evidence.sh" "${REPO_ROOT}/amplifier-bundle/tools/git-repo-env.sh" "${EV_ALONE}/"
 ev_repo Cargo.toml
 rm -f "${EV_REPO}.evidence.json"
 ev_run "${EV_FULL}" AMPLIHACK_HOME="${WORK_PHYS}/ev-alone"
@@ -4399,7 +5353,7 @@ s6_run() { # s6_run <round-context-json> <fix-evidence-json> <verdict-json> [lab
   # that is all this sets; the upper-case names are removed from the environment.
   env -u CRUSTY_ROUND_CONTEXT -u CRUSTY_FIX_EVIDENCE -u CRUSTY_VERDICT \
     PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" RECIPE_VAR_crusty_round_context="$1" RECIPE_VAR_crusty_fix_evidence="$2" RECIPE_VAR_crusty_verdict="$3" \
-    AUTODRIVE_ROUND_RECORD="${S6_REC}" AUTODRIVE_ROUND_LABEL="${4:-round-1}" \
+    AUTODRIVE_LAUNCH_TOOLS="${TOOLS}" AUTODRIVE_ROUND_RECORD="${S6_REC}" AUTODRIVE_ROUND_LABEL="${4:-round-1}" \
     bash -c "${S6_BODY}" >"${d}.out" 2>"${d}.err"; S6_RC=$?
   S6_ERR="${d}.err"
 }
@@ -4419,7 +5373,7 @@ if [ "${S6_RC}" -eq 0 ] && [ -f "${S6_REC}" ]; then
   RT="${WORK_PHYS}/s6-roundtrip"; seed_crusty "${RT}" none
   printf 'crusty-loop\t2026-10-03T00:00:00Z\n' > "${RT}/phases.tsv"
   loop_writes_round "${RT}" round-1 "$(cat "${S6_REC}")"
-  out="$(env -i PATH="/usr/bin:/bin" bash -uc '. "$1" && autodrive_crusty_final "$2"' _ "${STATE_HELPER}" "${RT}" 2>/dev/null)"
+  out="$(env -i PATH="/usr/bin:/bin" TMPDIR="${WORK_PHYS}" bash -uc '. "$1" && autodrive_crusty_final "$2"' _ "${STATE_HELPER}" "${RT}" 2>/dev/null)"
   if [ "$out" = "${CR_SHA}" ]; then
     pass "CRUSTY-STEP06-roundtrip" "a CLEAN record written by step-06 is accepted by autodrive_crusty_final"
   else
@@ -4811,10 +5765,10 @@ else
   rrt_run() { # rrt_run <seed> <repo> [VAR=value ...]: the tool at depth 2 against a seeded state dir
     local seed="$1" repo="$2"; shift 2
     RRT_N=$((RRT_N + 1)); RRT_DIR="${WORK_PHYS}/rrt-${RRT_N}"; RRT_LOGS="${WORK_PHYS}/rrt-${RRT_N}.logs"
-    mkdir -p "${RRT_LOGS}"; seed_crusty "${RRT_DIR}" "${seed}"; mkdir -p "${RRT_DIR}"
+    mkdir -p "${RRT_LOGS}"; seed_crusty "${RRT_DIR}" "${seed}"; mkdir -p "${RRT_DIR}"; chmod 0700 "${RRT_DIR}"
     printf 't' > "${RRT_LOGS}/task.txt"
     env PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
-      GH_MODE=green GH_HEAD="${CR_SHA2}" GH_BASE=main AMPLIHACK_SESSION_DEPTH=2 \
+      GH_MODE=green GH_HEAD="${FX_CODE}" GH_BASE=main AMPLIHACK_SESSION_DEPTH=2 \
       STUB_CALLS="${RRT_LOGS}/calls" STUB_SHOW_CALLS="${RRT_LOGS}/shows" STUB_DEPTH_LOG="${RRT_LOGS}/depths" \
       STUB_HEALTH_RESOLVES=0 STUB_ROUND_WRITE_RECORD=true STUB_ROUND_STDOUT="round ran" STUB_ROUND_RC=0 \
       STUB_HEALTH_RC=0 STUB_HEALTH_STDOUT= STUB_HEALTH_SEQ= STUB_ROUND_BODY= STUB_ROUND_FINDINGS= STUB_CRUSTY_RECORD= "$@" \
@@ -4844,13 +5798,12 @@ else
   rrt_run clean "${FX}" STUB_ROUND_RECORD="${RR_CLEAN_CODE}" STUB_HEALTH_STDOUT="${H_DONE}" STUB_HEALTH_RC=0
   rrt_expect "RRTOOL-code-commit" 0 crusty-rereview-done crusty-unreviewed-commits 1 kept \
     "a code commit after the clean round runs the crusty loop, and its DONE writes the marker back"
-  if [ "$(cat "${RRT_LOGS}/depths" 2>/dev/null)" = "autodrive-crusty-round 2
-loop-health-evaluator 2" ]; then
-    pass "RRTOOL-same-depth" "the crusty round and its evaluator are started at depth 2, the tool's own: no recipe runner sits in between"
+  if [ "$(cat "${RRT_LOGS}/depths" 2>/dev/null)" = "autodrive-crusty-round 2" ]; then
+    pass "RRTOOL-same-depth" "the completed crusty round starts at depth 2 without spending an evaluator"
   else
     fail "RRTOOL-same-depth" "depths: $(tr '\n' '|' < "${RRT_LOGS}/depths" 2>/dev/null)"
   fi
-  if [ "$(env -i PATH="/usr/bin:/bin" bash -c '. "$1"; . "$2"; autodrive_crusty_final "$3"' _ "${STATE_HELPER}" "${TRUST_HELPER}" "${RRT_DIR}" 2>/dev/null)" = "${FX_CODE}" ]; then
+  if [ "$(env -i PATH="/usr/bin:/bin" TMPDIR="${WORK_PHYS}" bash -c '. "$1"; . "$2"; autodrive_crusty_final "$3"' _ "${STATE_HELPER}" "${TRUST_HELPER}" "${RRT_DIR}" 2>/dev/null)" = "${FX_CODE}" ]; then
     pass "RRTOOL-reviewed-head" "after the re-review, criterion 3 reads the head crusty just reviewed"
   else
     fail "RRTOOL-reviewed-head" "autodrive_crusty_final did not return the re-reviewed head ${FX_CODE}"
@@ -4919,9 +5872,9 @@ loop-health-evaluator 2" ]; then
   fx_head "${FX_CODE}"
   RRE_DIR="${WORK_PHYS}/rre-state"; RRE_LOGS="${WORK_PHYS}/rre.logs"; mkdir -p "${RRE_LOGS}"
   printf 'drive the PR to merge' > "${RRE_LOGS}/task.txt"
-  seed_crusty "${RRE_DIR}" clean
+  seed_crusty "${RRE_DIR}" clean; chmod 0700 "${RRE_DIR}"
   env PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
-    GH_MODE=green GH_HEAD="${CR_SHA2}" GH_BASE=main AMPLIHACK_SESSION_DEPTH=2 \
+    GH_MODE=green GH_HEAD="${FX_CODE}" GH_BASE=main AMPLIHACK_SESSION_DEPTH=2 \
     STUB_CALLS="${RRE_LOGS}/calls" STUB_SHOW_CALLS=/dev/null STUB_DEPTH_LOG="${RRE_LOGS}/depths" STUB_HEALTH_RESOLVES=0 \
     STUB_CRUSTY_RECORD="${RR_CLEAN_CODE}" STUB_ROUND_RECORD='{"merge_ready_verdict":"MERGE_READY","blocker_count":0}' \
     STUB_ROUND_WRITE_RECORD=true STUB_ROUND_STDOUT="round ran" STUB_HEALTH_STDOUT="${H_DONE}" STUB_HEALTH_RC=0 \
@@ -4931,7 +5884,6 @@ loop-health-evaluator 2" ]; then
       --context "repo_path=${FX}" --context "pr_number=42" --before-round "${RR_TOOL}" \
     >"${RRE_LOGS}/out" 2>"${RRE_LOGS}/err"; rc=$?
   RRE_WANT="autodrive-crusty-round 2
-loop-health-evaluator 2
 autodrive-merge-round 2
 loop-health-evaluator 2"
   if [ "$rc" -eq 0 ] && grep -qF '"loop_result":"DONE"' "${RRE_LOGS}/out" && [ "$(cat "${RRE_LOGS}/depths" 2>/dev/null)" = "${RRE_WANT}" ] \
@@ -5162,7 +6114,7 @@ fi
 exit 1
 GH
 chmod +x "${PF_BIN}/gh"
-PF_KEYS='["approval_source","approval_status","base_ref","head_sha","is_draft","merge_state","mergeable","pr","required_approvals","review_decision","state","unresolved_threads"]'
+PF_KEYS='["approval_blocker","approval_source","approval_status","base_ref","head_sha","is_draft","merge_state","mergeable","pr","required_approvals","review_decision","state","unresolved_threads"]'
 PF_OUT=""; PF_RC=0; PF_N=0; PF_CALLS=""
 pf_run() { # pf_run [PF_VAR=value ...]: runs the tool for PR 42 with nothing but the stub gh, jq and coreutils
   PF_N=$((PF_N + 1)); PF_CALLS="${WORK_PHYS}/pf-${PF_N}.calls"; : > "${PF_CALLS}"
@@ -5174,7 +6126,7 @@ pf_expect() { # pf_expect <label> <approval_status> <approval_source> <required_
   if [ "${PF_RC}" != 0 ] || [ "$(printf '%s\n' "${PF_OUT}" | grep -c .)" != 1 ] \
      || [ "$(printf '%s' "${PF_OUT}" | jq -c '[keys[]]' 2>/dev/null)" != "${PF_KEYS}" ] \
      || ! printf '%s' "${PF_OUT}" | jq -e '[.[] | type == "string"] | all' >/dev/null 2>&1; then
-    fail "$label" "not one JSON line of the 12 string fields (rc=${PF_RC}): ${PF_OUT} | $(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
+    fail "$label" "not one JSON line of the 13 string fields (rc=${PF_RC}): ${PF_OUT} | $(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
     return
   fi
   got="$(printf '%s' "${PF_OUT}" | jq -r '[.approval_status, .approval_source, .required_approvals] | join(" ")')"
@@ -5246,7 +6198,7 @@ else
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED PF_THREADS='{"message":"x"}'
   pf_expect "PF-threads-unreadable-not-pending" UNREADABLE unreadable "" "an unreadable thread count is not a thread: BLOCKED with every check passed still needs a person" unresolved_threads=unreadable
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION= PF_MSTATE=UNKNOWN PF_CHECKS="${PF_FAIL_RUN}"
-  pf_expect "PF-unknown-state-not-pending" UNREADABLE unreadable "" "a merge state GitHub has not computed is never read as pending"
+  pf_expect "PF-unknown-state-not-pending" UNREADABLE facts-unreadable "" "a merge state GitHub has not computed, beside an unreadable count, is a failed measurement, not a finding"
   pf_run PF_CLASSIC=1 PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED PF_CHECKS="${PF_FAIL_RUN}"
   pf_expect "PF-known-count-not-pending" NOT_MET required-count 1 "a known count decides whatever else blocks; PENDING is only for an unknown count"
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_RULES='[]' PF_DECISION=APPROVED PF_MSTATE=BLOCKED PF_CHECKS="${PF_FAIL_RUN}"
@@ -5264,7 +6216,7 @@ else
   pf_run PF_CLASSIC=0 PF_RULES='[]' PF_DECISION=CHANGES_REQUESTED PF_MSTATE=BLOCKED
   pf_expect "PF-changes-requested" NOT_MET review-decision 0 "requested changes are outstanding even when no approval is required"
   pf_run PF_VIEW=fail PF_CLASSIC=0 PF_RULES='[]'
-  pf_expect "PF-view-unreadable" UNREADABLE unreadable "" "an unreadable pull request is never an empty review decision" \
+  pf_expect "PF-view-unreadable" UNREADABLE facts-unreadable "" "an unreadable pull request is never an empty review decision; the failed read is reported as a failed measurement" \
     state=UNKNOWN head_sha= merge_state=UNKNOWN base_ref=
   pf_run PF_BASE='main"},"x":"y' PF_CLASSIC=0 PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
   pf_expect "PF-hostile-base-ref" UNREADABLE unreadable "" "a base ref outside [A-Za-z0-9._/-] is dropped and never reaches a URL" base_ref=
@@ -5275,7 +6227,7 @@ else
   # required-reviewer rule blocks the merge. Such a count is unknown, so the
   # merge state decides, and BLOCKED is never MET.
   pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_code_owner_reviews":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
-  pf_expect "PF-count-0-code-owner-blocked" UNREADABLE unreadable "" "protection requires code-owner review at a count of 0: a null decision with BLOCKED is not met"
+  pf_expect "PF-count-0-code-owner-blocked" NOT_MET review-rule "" "protection names code-owner review at a count of 0: BLOCKED with nothing an agent can clear means that review is missing"
   if grep -qF 'classic=unknown(code-owner-or-last-push)' "${WORK_PHYS}/pf-${PF_N}.err"; then
     pass "PF-count-0-code-owner-named" "the INFO line names the review rule that made the count unknown"
   else
@@ -5284,20 +6236,20 @@ else
   pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_code_owner_reviews":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN
   pf_expect "PF-count-0-code-owner-clean" MET merge-state "" "with code-owner review required at a count of 0, CLEAN is met through the merge state, never through a count of 0"
   pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_last_push_approval":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
-  pf_expect "PF-count-0-last-push-blocked" UNREADABLE unreadable "" "protection requires last-push approval at a count of 0: BLOCKED is not met"
+  pf_expect "PF-count-0-last-push-blocked" NOT_MET review-rule "" "protection names last-push approval at a count of 0: BLOCKED means that approval is missing"
   pf_run PF_CLASSIC=0 PF_CLASSIC_FLAGS='"require_code_owner_reviews":false,"require_last_push_approval":false' PF_RULES='[]' PF_DECISION= PF_MSTATE=BLOCKED
   pf_expect "PF-count-0-flags-false" MET required-count 0 "flags that are present but false leave a count of 0 known"
   pf_run PF_CLASSIC=1 PF_CLASSIC_FLAGS='"require_code_owner_reviews":true' PF_RULES='[]' PF_DECISION= PF_MSTATE=CLEAN
   pf_expect "PF-count-1-code-owner" NOT_MET required-count 1 "a count above 0 is kept beside a code-owner rule"
   pf_run PF_CLASSIC=404 PF_PROTECTED=true PF_DECISION= PF_MSTATE=BLOCKED \
     PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_code_owner_review":true}}]'
-  pf_expect "PF-ruleset-0-code-owner-blocked" UNREADABLE unreadable "" "a ruleset requiring code-owner review at a count of 0: BLOCKED is not met"
+  pf_expect "PF-ruleset-0-code-owner-blocked" NOT_MET review-rule "" "a ruleset names code-owner review at a count of 0: BLOCKED means that review is missing"
   pf_run PF_CLASSIC=0 PF_DECISION= PF_MSTATE=BLOCKED \
     PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_last_push_approval":true}}]'
-  pf_expect "PF-ruleset-0-last-push-blocked" UNREADABLE unreadable "" "a classic 0 beside a ruleset requiring last-push approval at a count of 0 is not the whole count"
+  pf_expect "PF-ruleset-0-last-push-blocked" NOT_MET review-rule "" "a classic 0 beside a ruleset naming last-push approval at a count of 0 is not the whole count; BLOCKED means that approval is missing"
   pf_run PF_CLASSIC=0 PF_DECISION= PF_MSTATE=BLOCKED \
     PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"required_reviewers":[{"minimum_approvals":1,"file_patterns":["*"],"reviewer":{"id":1,"type":"Team"}}]}}]'
-  pf_expect "PF-ruleset-0-required-reviewers-blocked" UNREADABLE unreadable "" "a ruleset listing required reviewers at a count of 0: BLOCKED is not met"
+  pf_expect "PF-ruleset-0-required-reviewers-blocked" NOT_MET review-rule "" "a ruleset listing required reviewers at a count of 0: BLOCKED means that review is missing"
   pf_run PF_CLASSIC=0 PF_DECISION= PF_MSTATE=CLEAN \
     PF_RULES='[{"type":"pull_request","parameters":{"required_approving_review_count":0,"require_code_owner_review":true}}]'
   pf_expect "PF-ruleset-0-code-owner-clean" MET merge-state "" "with a ruleset code-owner rule at a count of 0, CLEAN is met through the merge state"
@@ -5498,7 +6450,7 @@ PF_FX="${WORK_PHYS}/umask-pf-fx"
 git init -q -b feat/pf "${PF_FX}" \
   && git -C "${PF_FX}" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m pf \
   || { echo "HARNESS-ERROR: 13c: cannot create the preflight checkout" >&2; exit 2; }
-PF_ENV=(HOME="${TEST_HOME}" PATH="${STUB_BIN}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${FX}" PR_NUMBER=42
+PF_ENV=(HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" PATH="${STUB_BIN}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${FX}" PR_NUMBER=42
   GH_MODE=green GH_HEAD="${CR_SHA2}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 REAL_AMPLIHACK="${REAL_AMPLIHACK}")
 # env applies assignments in order, so these override PF_ENV's for 13c only;
 # the end-to-end section below keeps PF_ENV as it is.
@@ -5554,8 +6506,14 @@ e2e_loop crusty autodrive-crusty-round CLEAN crusty_verdict "${S6_BODY}" \
   RECIPE_VAR_crusty_round_context="{\"pr\":\"42\",\"head_sha\":\"${CR_SHA2}\",\"resolved_concerns\":\"\",\"round_label\":\"round-1\"}" \
   RECIPE_VAR_crusty_verdict='{"crusty_verdict":"CLEAN","verdict_source":"crusty","concern_count":0}'
 E2E_CRUSTY_RC=$?
-env -i "${E2E_ENV[@]}" RECIPE_VAR_crusty_loop_preflight="${E2E_PRE}" RECIPE_VAR_crusty_loop_result="$(cat "${E2E}.crusty.out")" \
+env -i "${E2E_ENV[@]}" RECIPE_VAR_task_description='drive the PR to merge' RECIPE_VAR_crusty_loop_preflight="${E2E_PRE}" RECIPE_VAR_crusty_loop_result="$(cat "${E2E}.crusty.out")" \
   bash -c "umask 0002; $(extract_step_command "${RECIPES}/autodrive-crusty-loop.yaml" step-03-record-crusty-phase)" 2>"${E2E}.rec.err"
+E2E_PHASE_RC=$?
+if [ "$E2E_PHASE_RC" -eq 0 ]; then
+  pass "PRIVATE-E2E-finalization" "successful follow-up verification records the Crusty phase"
+else
+  fail "PRIVATE-E2E-finalization" "rc=$E2E_PHASE_RC; $(cat "${E2E}.rec.err")"
+fi
 ( umask 077; rm -f -- "${E2E_DIR}/qa-evidence.json"; qa_fixture "${CR_SHA2}" PASS 3 > "${E2E_DIR}/qa-evidence.json" )
 E2E_QH="$(git hash-object --no-filters "${E2E_DIR}/qa-evidence.json")"
 e2e_loop merge-ready autodrive-merge-round MERGE_READY merge_ready_verdict \
@@ -5714,6 +6672,9 @@ EOF
 # Issue #1570: the loop steps read task_description through the real
 # recipe_context_value.sh helper, so the fake bundle carries the real copy.
 cp "${TOOLS}/recipe_context_value.sh" "${FAKE_TOOLS}/recipe_context_value.sh"
+cp "${TOOLS}/autodrive_crusty_record.sh" "${FAKE_TOOLS}/autodrive_crusty_record.sh"
+# Context transport test finalization boundary, not receipt policy (covered in Rust).
+printf '%s\n' 'printf "%s|crusty-loop\n" "$1" >> "${FAKE_CALLS_DIR}/marks"' > "${FAKE_TOOLS}/autodrive_crusty_finalize.sh"
 # merge-loop step-02 refuses to start without the crusty re-review beside the
 # loop driver (PR #1520); this run never reaches it, so it is only a file.
 printf '%s\n' 'exit 0' > "${FAKE_TOOLS}/autodrive_crusty_rereview.sh"
@@ -5796,7 +6757,7 @@ else
 fi
 
 # crusty-loop step-03: the phase is recorded complete from RECIPE_VAR_ alone.
-run_body "$CL3" RECIPE_VAR_crusty_loop_preflight="$PRE" \
+run_body "$CL3" RECIPE_VAR_task_description='drive PR 42' RECIPE_VAR_crusty_loop_preflight="$PRE" \
   RECIPE_VAR_crusty_loop_result='{"loop":"crusty","loop_result":"DONE","round_label":"round-1"}'
 if grep -qxF "${SD}|crusty-loop" "${CALLS}/marks" 2>/dev/null; then
   pass "1511-crusty-loop-03" "crusty-loop step-03 records the phase from RECIPE_VAR_crusty_loop_preflight/_result"
@@ -5846,13 +6807,13 @@ done
 echo '{"before_round_result":"crusty-rereview-not-needed","range":"none","crusty_loop_result":""}'
 REREVIEW
 int_run() { # int_run <body> <preflight-var> <round-record>
-  local sd="${WORK_PHYS}/int-state-${BODY_N}"; mkdir -p "${sd}"
+  local sd="${WORK_PHYS}/int-state-${BODY_N}"; mkdir -p "${sd}"; chmod 0700 "${sd}"
   local pre="{\"should_run\":\"true\",\"pr\":\"42\",\"pr_state\":\"OPEN\",\"state_dir\":\"${sd}\",\"repo\":\"${INT_WT}\",\"reason\":\"r\"}"
   set_stub "$3" 0 "$H_DONE"
   BODY_N=$((BODY_N + 1)); CALLS="${WORK_PHYS}/body-${BODY_N}"; mkdir -p "${CALLS}"
   env "${UNSET_ALIASES[@]}" \
     PATH="${STUB_BIN}:${PATH}" AMPLIHACK_HOME="${INT_HOME}" REPO_PATH="${INT_WT}" \
-    HOME="${WORK}/nohome" FAKE_CALLS_DIR="${CALLS}" STUB_CALLS="${CALLS}/calls" STUB_SHOW_CALLS="${CALLS}/shows" \
+    HOME="${WORK}/nohome" FAKE_CALLS_DIR="${CALLS}" STUB_CALLS="${CALLS}/calls" STUB_SHOW_CALLS="${CALLS}/shows" GH_MODE=green GH_HEAD="$(git -C "$INT_WT" rev-parse HEAD)" \
     "$2=${pre}" RECIPE_VAR_task_description="drive PR 42 to merge" \
     bash -c "$1" >"${CALLS}/out" 2>"${CALLS}/err"
   BODY_RC=$?
@@ -5954,7 +6915,7 @@ fi
 # The record needs whole SHAs: the reviewed head from the round context and
 # the post-fix head from the fix evidence (#1517, section 6e).
 CR6_REVIEWED="0123456789abcdef0123456789abcdef01234567"; CR6_FIXED="89abcdef0123456789abcdef0123456789abcdef"
-run_body "$CR6" AUTODRIVE_ROUND_RECORD="${WORK}/cr6-1511.json" AUTODRIVE_ROUND_LABEL="round-3" \
+run_body "$CR6" AUTODRIVE_LAUNCH_TOOLS="${TOOLS}" AUTODRIVE_ROUND_RECORD="${WORK}/cr6-1511.json" AUTODRIVE_ROUND_LABEL="round-3" \
   RECIPE_VAR_crusty_verdict='{"crusty_verdict":"CLEAN","concern_count":0}' \
   RECIPE_VAR_crusty_round_context="{\"head_sha\":\"${CR6_REVIEWED}\"}" \
   RECIPE_VAR_crusty_fix_evidence="{\"commits\":2,\"head_sha\":\"${CR6_FIXED}\"}"
@@ -6459,7 +7420,7 @@ if [ "$rc" -eq 1 ] && [ "$(rounds)" = "2" ] && [ "$(info_count)" = "1" ] \
 else
   fail "1597-no-progress-stuck" "rc=${rc} (124 is the timeout), rounds=$(rounds), overrides=$(info_count): ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
 fi
-if printf '%s' "${LOOP_OUT}" | grep -qF '"loop":"crusty","loop_result":"STUCK","round_label":"round-2"' \
+if printf '%s' "${LOOP_OUT}" | grep -qF '"loop":"health-contract","loop_result":"STUCK","round_label":"round-2"' \
    && printf '%s' "${LOOP_OUT}" | grep -qF "${P1597_REPEAT}"; then
   pass "1597-no-progress-stdout" "the STUCK result line on stdout carries round-2 and the repeated-pair reason"
 else
@@ -6632,9 +7593,9 @@ fi
 SPEC="${WORK}/spec-1597-token"; p1597_reset "${SPEC}"
 set_stub '' 1 ''; spec_body "${SPEC}"
 spec_round "${SPEC}" default crusty_verdict '"CONCERNS"' ''
-run_loop p1597-token crusty autodrive-crusty-round '!!!' crusty_verdict; rc=$?; p1597_collect
+run_loop p1597-token health-contract autodrive-crusty-round '!!!' crusty_verdict; rc=$?; p1597_collect
 WARN_LINE="$(grep -niE '^WARNING:.*clean[ _-]?token' "${LOOP_LOGS}/err" | head -n1 | cut -d: -f1)"
-ROUND1_LINE="$(grep -nF "=== auto-drive loop 'crusty': round-1 ===" "${LOOP_LOGS}/err" | head -n1 | cut -d: -f1)"
+ROUND1_LINE="$(grep -nF "=== auto-drive loop 'health-contract': round-1 ===" "${LOOP_LOGS}/err" | head -n1 | cut -d: -f1)"
 if [ "$(grep -ciE '^WARNING:.*clean[ _-]?token' "${LOOP_LOGS}/err")" = "1" ] && [ -n "${WARN_LINE}" ] && [ -n "${ROUND1_LINE}" ] \
    && [ "${WARN_LINE}" -lt "${ROUND1_LINE}" ] && health_argv 1 | grep -qE '(^| )loop_clean_token=( |$)'; then
   pass "1597-token-warning" "a clean token with no A-Za-z0-9_ characters is warned about once, before round-1"
@@ -6642,12 +7603,13 @@ else
   fail "1597-token-warning" "rc=${rc}; warning line ${WARN_LINE:-none}, round-1 line ${ROUND1_LINE:-none}; argv [$(health_argv 1)]"
 fi
 
-# The loop has exactly one way to succeed: the `exit 0` under DONE && clean.
+# Crusty objective completion and the generic evaluator path are distinct.
 EXIT0="$(grep -cE '(^|[^A-Za-z0-9_])exit 0([^0-9]|$)' "${LOOP}")"
-if [ "${EXIT0}" = "1" ] && grep -B12 -E '(^|[^A-Za-z0-9_])exit 0([^0-9]|$)' "${LOOP}" | grep -qF 'if [ "$ROUND_CLEAN" = "true" ]; then'; then
-  pass "1597-exit0-single" "autodrive_loop.sh has exactly one exit 0, inside the clean-round DONE branch"
+if [ "$EXIT0" = 2 ] && grep -B4 -E '(^|[^A-Za-z0-9_])exit 0([^0-9]|$)' "$LOOP" | grep -qF 'check_review_dir objective-completion' \
+   && grep -B12 -E '(^|[^A-Za-z0-9_])exit 0([^0-9]|$)' "$LOOP" | grep -qF 'if [ "$ROUND_CLEAN" = "true" ]; then'; then
+  pass "2336-completion-exits" "validated Crusty completion and clean evaluator DONE are the two success paths"
 else
-  fail "1597-exit0-single" "autodrive_loop.sh has ${EXIT0} 'exit 0' lines, or the one it has is not under the ROUND_CLEAN check"
+  fail "2336-completion-exits" "success paths must retain Rust validation and the generic clean-round check"
 fi
 
 unset STUB_ROUND_BODY STUB_HEALTH_SEQ STUB_HEALTH_BODY STUB_HISTORY_LOG RUN_LOOP_TIMEOUT

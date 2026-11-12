@@ -669,6 +669,11 @@ fn a_switch_pin_wins_over_the_overflow_policy() {
 /// is `rotate::tests_pin_overflow`. The same cycle, with `.default` unset or
 /// naming the overflow profile or a plan profile, moves the same login with
 /// the same reason and records the same overflow tag.
+///
+/// Issue #1860: each run reads a private, empty process table, so a session
+/// running elsewhere on the host cannot change one run's verdict and not
+/// another's. A failure prints the rotator's stdout, which has already passed
+/// `assert_no_secrets`.
 #[test]
 fn the_default_pointer_does_not_change_the_rotators_verdict() {
     type Setup = fn(&Fixture);
@@ -694,18 +699,69 @@ fn the_default_pointer_does_not_change_the_rotators_verdict() {
                 .map(str::to_string);
             let l = f.ledger().unwrap();
             (
-                reason,
-                l["live"].clone(),
-                l["last_cycle"]["outcome"].clone(),
-                l["last_cycle"].get("overflow").cloned(),
+                (
+                    reason,
+                    l["live"].clone(),
+                    l["last_cycle"]["outcome"].clone(),
+                    l["last_cycle"].get("overflow").cloned(),
+                ),
+                s,
             )
         };
-        let base = verdict(None);
-        assert!(base.0.is_some(), "{what}: the cycle swaps: {base:?}");
+        let (base, base_out) = verdict(None);
+        assert!(
+            base.0.is_some(),
+            "{what}: the cycle swaps: {base:?}\nstdout:\n{base_out}"
+        );
         for d in ["extra", "work", "spare"] {
-            assert_eq!(verdict(Some(d)), base, "{what}, .default = {d}");
+            let (got, out) = verdict(Some(d));
+            assert_eq!(
+                got, base,
+                "{what}, .default = {d}\nstdout:\n{out}\nbaseline stdout:\n{base_out}"
+            );
         }
     }
+}
+
+/// Issue #1860: the rotator's session check reads the fixture's process
+/// table, not the host's. A synthetic session holding `spare` makes `spare`
+/// a running session, so the cycle does not move `work`'s login onto it;
+/// without that session the same fixture moves onto `spare`. Before the fix
+/// the scan read the host's `/proc`, saw neither, and the verdict depended
+/// on whatever else ran on the machine.
+#[test]
+fn the_rotator_sees_sessions_only_through_the_fixtures_process_table() {
+    let free = Fixture::new();
+    let s = stdout(&free.ok(&["profile", "rotate"]));
+    let l = free.ledger().unwrap();
+    assert_eq!(
+        l["live"], "spare",
+        "an empty table leaves spare free: live={} outcome={}\nstdout:\n{s}",
+        l["live"], l["last_cycle"]["outcome"]
+    );
+
+    let held = Fixture::new();
+    let fake = crate::support::fake_proc::FakeProc::new();
+    fake.process(crate::support::fake_proc::FAKE_PID_BASE)
+        .cmdline(&["claude"])
+        .status('S')
+        .environ(&[(
+            "CLAUDE_CONFIG_DIR",
+            held.root.join("spare").to_str().unwrap(),
+        )]);
+    held.with_proc(&fake);
+    let s = stdout(&held.ok(&["profile", "rotate"]));
+    let l = held.ledger().unwrap();
+    assert_ne!(
+        l["live"], "spare",
+        "a session holds spare, so the rotator must not move onto it: live={} outcome={}\nstdout:\n{s}",
+        l["live"], l["last_cycle"]["outcome"]
+    );
+    assert_eq!(
+        held.where_is(held.spare_ino).as_deref(),
+        Some("spare"),
+        "spare's login stays in its slot\nstdout:\n{s}"
+    );
 }
 
 #[test]

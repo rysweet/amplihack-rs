@@ -364,7 +364,8 @@ expect_calls ev-ws-readme-calls "cargo runs in ws" cargo "cargo|ws|$CARGO_ARGS"
 
 repo svc/package.json docs/svc.md svc/tests/agentic/s.yaml; base; change docs/svc.md
 run_tool "$B"
-expect ev-svc "svc Node, docs change" qa_repo_type=node qa_dir=svc gadugi_required=true
+# #2219: a Node project whose change is documentation only needs no scenario.
+expect ev-svc "svc Node, docs change" qa_repo_type=node qa_dir=svc gadugi_required=false docs_only=true
 expect_calls ev-svc-calls "npm runs in svc" npm "npm|svc|test"
 
 repo Cargo.toml web/package.json web/src/app.ts; base; change web/src/app.ts
@@ -787,7 +788,7 @@ expect pick-config-invalid "gadugi required, broken qa.toml, no scenarios" qa_st
 echo "== #1763 fallback: a missing or symlinked scope file blocks =="
 for mode in missing symlink; do
     T="$WORK/tools-$mode"; mkdir -p "$T"
-    for t in autodrive_qa_evidence.sh autodrive_state.sh autodrive_trust.sh autodrive_unmerged.sh; do
+    for t in autodrive_qa_evidence.sh autodrive_state.sh autodrive_trust.sh autodrive_unmerged.sh git-repo-env.sh; do
         [ -f "$TOOLS/$t" ] && cp "$TOOLS/$t" "$T/"
     done
     [ "$mode" = symlink ] && [ -f "$SCOPE" ] && ln -s "$SCOPE" "$T/autodrive_qa_scope.sh"
@@ -804,7 +805,7 @@ done
 # The scope file is there but the sources file is not: detection works, yet
 # qa.toml cannot be read, so the evidence blocks rather than ignore it.
 T="$WORK/tools-nosources"; mkdir -p "$T"
-for t in autodrive_qa_evidence.sh autodrive_state.sh autodrive_trust.sh autodrive_unmerged.sh autodrive_qa_scope.sh; do
+for t in autodrive_qa_evidence.sh autodrive_state.sh autodrive_trust.sh autodrive_unmerged.sh autodrive_qa_scope.sh git-repo-env.sh; do
     cp "$TOOLS/$t" "$T/"
 done
 repo Cargo.toml src/lib.rs; base; change src/lib.rs
@@ -931,7 +932,7 @@ if grep -q 'test-issue-1763-qa-scope.sh' "$REPO_ROOT/.github/workflows/ci.yml"; 
 else fail ci-wired ".github/workflows/ci.yml does not run test-issue-1763-qa-scope.sh"; fi
 if command -v shellcheck >/dev/null 2>&1; then
     if [ -f "$SCOPE" ] && (cd "$TOOLS" && shellcheck -x -S warning autodrive_qa_scope.sh autodrive_trust.sh autodrive_qa_evidence.sh \
-            autodrive_merge_gate.sh autodrive_qa_sources.sh autodrive_scenario_name.sh) >/dev/null 2>&1; then
+            autodrive_merge_gate.sh autodrive_merge_message.sh autodrive_qa_sources.sh autodrive_scenario_name.sh) >/dev/null 2>&1; then
         pass shellcheck "the scope file, autodrive_trust.sh, the evidence tool and the gate are clean at -S warning"
     else fail shellcheck "shellcheck -S warning reports problems (or the scope file is missing)"; fi
 else
