@@ -785,10 +785,11 @@ for case_ in explicit inside default context other-repo not-a-checkout sibling-w
     not-a-checkout) RD_ARGS=(--review-dir "${WORK}/not-a-checkout"); RUN_IN="${LAUNCH}" ;;
     sibling-worktree) RD_ARGS=(--review-dir "${WORK}/sibling-wt"); RUN_IN="${LAUNCH}" ;;
   esac
+  # ${RD_ARGS[@]+...}: the default case leaves RD_ARGS empty, and Bash before 4.4 (macOS ships 3.2) calls that unbound under set -u.
   ( cd "${RUN_IN}" && PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
     bash "${LOOP}" --loop-name "health-contract" --round-recipe "autodrive-crusty-round" \
       --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-      --repo "${TAMPERED}" "${RD_ARGS[@]}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
+      --repo "${TAMPERED}" ${RD_ARGS[@]+"${RD_ARGS[@]}"} --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
       >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err" ); rc=$?
   if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}.calls" ] \
      && grep -qF '"loop_result":"UNTRUSTED_REVIEW_DIR"' "${LOOP_DIR}.out" \
@@ -1273,9 +1274,20 @@ fi
 # ---------------------------------------------------------------------------
 # 5. Merge gate — no silent merge.
 # ---------------------------------------------------------------------------
+# #2186: the gate's CI read is autodrive_expected_checks.sh, which makes REST
+# GETs with no --jq. Those go to the fixture route from
+# expected-checks-fixtures.sh, serving GH_CI_FIX (the default green set unless
+# a case sets another). Calls with --jq (platform facts) and graphql still go
+# to the mode stub below, so the existing modes are unchanged.
+# shellcheck source=expected-checks-fixtures.sh
+. "${SCRIPT_DIR}/expected-checks-fixtures.sh"
+CI_ROUTE="${WORK}/ci-api-route"; ec_write_route "${CI_ROUTE}"
+CI_FX_GREEN="${WORK_PHYS}/ci-fx-green"; ec_fixture_green "${CI_FX_GREEN}"
 make_gh_stub() { # make_gh_stub <mode>
   cat > "${STUB_BIN}/gh" <<'GH'
 #!/usr/bin/env bash
+# MSG-no-jq-names-jq runs the gate on a PATH with no jq; the stub still needs it for pv.
+[ -z "${GH_STUB_JQ_DIR:-}" ] || PATH="${GH_STUB_JQ_DIR}:${PATH}"
 echo "$*" >> "${GH_CALLS:-/dev/null}"
 # #2056: an element-wise log of the merge argv, written beside the joined log
 # above rather than replacing it. `echo "$*"` cannot tell one element holding
@@ -1299,6 +1311,12 @@ if [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && [ -n "${GH_CALLS:-}" ]; then
     -) cat > "${GH_CALLS}.merge-body" ;;
     *) cat -- "$bf" > "${GH_CALLS}.merge-body" ;;
   esac
+fi
+# The route and green fixture paths are filled in below when the stub is
+# written, so a step run under `env -i` still reaches the fixture route.
+if [ "${1:-}" = "api" ] && [ "${2:-}" != "graphql" ]; then
+  export GH_CI_FIX="${GH_CI_FIX:-__CI_FX_GREEN__}" GH_HEAD="${GH_HEAD:-abc123def4567890abc123def4567890abc12345}"
+  case " $* " in *" --jq "*) ;; *) exec "${GH_CI_ROUTE:-__CI_ROUTE__}" "$@" ;; esac
 fi
 # `pr view` prints the PR fields with the head from GH_HEAD and the base from
 # GH_BASE (set but empty means no baseRefName), through `--jq` when one is given.
@@ -1398,6 +1416,8 @@ case "${GH_MODE:-}" in
 esac
 exit 1
 GH
+  sed "s#__CI_FX_GREEN__#${CI_FX_GREEN}#; s#__CI_ROUTE__#${CI_ROUTE}#" "${STUB_BIN}/gh" > "${STUB_BIN}/gh.new" \
+    && mv "${STUB_BIN}/gh.new" "${STUB_BIN}/gh"
   chmod +x "${STUB_BIN}/gh"
 }
 make_gh_stub
@@ -1726,8 +1746,9 @@ gate_run() { # gate_run <mode> <extra-args...>
   # env execs the gate's bash in place, so bash stays the gh shim's parent.
   [ -z "${GATE_EXTRA_ENV:-}" ] || gate_cmd=(env "${GATE_EXTRA_ENV}" "${gate_cmd[@]}")
   GH_MODE="$mode" GH_CALLS="${GATE_DIR}/gh-calls" GH_HEAD="${GH_HEAD:-${GATE_HEAD}}" GH_BASE="${GH_BASE-main}" \
-    PATH="${GATE_PATH_PREFIX:+${GATE_PATH_PREFIX}:}${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" \
+    PATH="${GATE_PATH_PREFIX:+${GATE_PATH_PREFIX}:}${STUB_BIN}:${GATE_BASE_PATH:-${PATH}}" HOME="${TEST_HOME}" \
     GH_MERGE_RC="${GH_MERGE_RC:-3}" AMPLIHACK_BIN="${REAL_AMPLIHACK}" TMPDIR="${gate_tmp}" \
+    GH_CI_FIX="${GH_CI_FIX:-${CI_FX_GREEN}}" GH_CI_ROUTE="${CI_ROUTE}" \
     SWAP_FROM="${SWAP_FROM:-}" SWAP_TO="${GATE_DIR}/${SWAP_TO_NAME:-merge-ready-latest.json}" \
     GH_REWRITE_TO="${GH_REWRITE_NAME:+${GATE_DIR}/${GH_REWRITE_NAME}}" \
     "${gate_cmd[@]}" --pr 42 --repo "${FX}" ${sd[@]+"${sd[@]}"} ${args[@]+"${args[@]}"} \
@@ -1776,8 +1797,10 @@ qa_fixture() { # qa_fixture <head_sha> <gadugi_status> <gadugi_scenario_count>
     "$1" "$req" "$2" "$3"
 }
 qa_fixture "${GATE_HEAD}" PASS 3 > "$QA"
-gate_run unreadable-ci --round-record "$REC" --qa-evidence "$QA"; rc=$?
-if [ "$rc" -ne 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"'; then
+# #2186: CI is read by the expected-checks helper; its check-runs read fails.
+GH_FAIL_RE='check-runs$' gate_run unreadable-ci --round-record "$REC" --qa-evidence "$QA"; rc=$?
+if [ "$rc" -ne 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
+   && grep -qF 'BLOCKER: expected checks unreadable: ' "${GATE_DIR}/err"; then
   pass "GATE-unreadable-ci" "an unreadable CI status is a failure, not a pass"
 else
   fail "GATE-unreadable-ci" "an unreadable CI status did not block the merge (rc=${rc}): ${GATE_OUT}"
@@ -1857,6 +1880,82 @@ if ! grep -q '^pr merge' "${GATE_DIR}/gh-calls" 2>/dev/null; then
   pass "GATE-dry-run-merges-nothing" "a dry run merges nothing"
 else
   fail "GATE-dry-run-merges-nothing" "a dry run merged"
+fi
+
+# 5g-2186. CI green means every expected check exists at the head and passed
+# (#2186). The gate's CI read is autodrive_expected_checks.sh beside it; the
+# rollup from `gh pr checks` no longer decides anything.
+if ! grep -q '^pr checks' "${GATE_DIR}/gh-calls" 2>/dev/null \
+   && grep -qF "commits/${GATE_HEAD}/check-runs" "${GATE_DIR}/gh-calls" 2>/dev/null; then
+  pass "GATE-2186-reads-at-head" "the gate reads the checks at the head SHA through the expected-checks helper, not gh pr checks"
+else
+  fail "GATE-2186-reads-at-head" "the gate did not read checks at the head through the helper"
+fi
+if grep -qF 'required: Lint & Format' "${GATE_DIR}/err" \
+   && grep -rqF 'required: Lint & Format' "${GATE_DIR}"/merge-evidence-42-* 2>/dev/null; then
+  pass "GATE-2186-evidence" "the evidence bundle records the expected set"
+else
+  fail "GATE-2186-evidence" "the expected set is not in the gate's notes and evidence bundle"
+fi
+CI_FX_MISSING="${WORK_PHYS}/ci-fx-missing"; cp -R "${CI_FX_GREEN}" "${CI_FX_MISSING}"
+ec_drop_job "${CI_FX_MISSING}" 1001 "Install Smoke Test"
+GH_CI_FIX="${CI_FX_MISSING}" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
+   && grep -qF "BLOCKER: expected check 'Install Smoke Test' was never created at ${GATE_HEAD}" "${GATE_DIR}/err" \
+   && ! grep -q '^pr merge' "${GATE_DIR}/gh-calls"; then
+  pass "GATE-2186-missing-blocks" "a required job that was never created is named and blocks the merge (exit 1)"
+else
+  fail "GATE-2186-missing-blocks" "a missing expected check did not block the merge (rc=${rc}): $(grep -F BLOCKER "${GATE_DIR}/err" | tr '\n' ' ')"
+fi
+if ! grep -qF 'the reader gave no verdict or no blocker' "${GATE_DIR}/err"; then
+  pass "GATE-2186-no-double-blocker" "when the helper names a blocker, the gate adds no fallback blocker"
+else
+  fail "GATE-2186-no-double-blocker" "the gate added the fallback blocker although the helper named one"
+fi
+CI_FX_UNREAD="${WORK_PHYS}/ci-fx-unreadable"; cp -R "${CI_FX_GREEN}" "${CI_FX_UNREAD}"; rm "${CI_FX_UNREAD}/jobs-1001.json"
+GH_CI_FIX="${CI_FX_UNREAD}" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'BLOCKER: expected checks unreadable: ' "${GATE_DIR}/err"; then
+  pass "GATE-2186-unreadable" "an expected set that cannot be read blocks the merge"
+else
+  fail "GATE-2186-unreadable" "an unreadable expected set did not block (rc=${rc})"
+fi
+# A bad base ref: the helper exits 2 (its usage error); the gate reports a CI
+# blocker with exit 1, never its own exit 2.
+GH_BASE='-bad' gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'BLOCKER: expected checks unreadable' "${GATE_DIR}/err"; then
+  pass "GATE-2186-helper-exit2" "the helper's usage error is a CI blocker with gate exit 1, not exit 2"
+else
+  fail "GATE-2186-helper-exit2" "the helper's usage error did not give a CI blocker with exit 1 (rc=${rc})"
+fi
+# The gate copied with its platform-facts reader but WITHOUT the helper.
+LONELY_EC="${WORK_PHYS}/lonely-ec"; mkdir -p "${LONELY_EC}"
+cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" "${LONELY_EC}/"
+for t in "${TOOLS}"/autodrive_*.sh; do
+  case "$(basename "$t")" in autodrive_expected_checks.sh) ;; *) [ -e "${LONELY_EC}/$(basename "$t")" ] || cp "$t" "${LONELY_EC}/" ;; esac
+done
+GATE_SCRIPT="${LONELY_EC}/autodrive_merge_gate.sh" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'BLOCKER: expected checks unreadable: the reader gave no verdict or no blocker' "${GATE_DIR}/err"; then
+  pass "GATE-2186-helper-missing" "with no expected-checks helper beside the gate, CI blocks with the fallback blocker"
+else
+  fail "GATE-2186-helper-missing" "a gate without the helper did not block on CI (rc=${rc})"
+fi
+# A helper that prints a forged GREEN line but exits non-zero, and one that
+# exits 0 with a non-GREEN verdict: neither passes.
+FORGED_EC="${WORK_PHYS}/forged-ec"; mkdir -p "${FORGED_EC}"
+cp "${TOOLS}"/autodrive_*.sh "${FORGED_EC}/"
+printf '#!/bin/bash\necho %s\nexit 1\n' "'{\"ci_status\":\"GREEN\",\"missing\":[],\"blockers\":0}'" > "${FORGED_EC}/autodrive_expected_checks.sh"
+GATE_SCRIPT="${FORGED_EC}/autodrive_merge_gate.sh" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'BLOCKER: expected checks unreadable: the reader gave no verdict or no blocker' "${GATE_DIR}/err"; then
+  pass "GATE-2186-green-needs-exit0" "a GREEN line with a non-zero exit does not pass"
+else
+  fail "GATE-2186-green-needs-exit0" "a GREEN line with a non-zero exit passed or gave no fallback blocker (rc=${rc})"
+fi
+printf '#!/bin/bash\necho %s\necho %s\nexit 0\n' "'{\"ci_status\":\"GREEN\",\"missing\":[],\"blockers\":0}'" "'{\"ci_status\":\"RED\",\"missing\":[],\"blockers\":0}'" > "${FORGED_EC}/autodrive_expected_checks.sh"
+GATE_SCRIPT="${FORGED_EC}/autodrive_merge_gate.sh" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; rc=$?
+if [ "$rc" -eq 1 ]; then
+  pass "GATE-2186-last-line-only" "only the last line is the verdict: an earlier GREEN line does not pass"
+else
+  fail "GATE-2186-last-line-only" "an earlier GREEN line passed the gate (rc=${rc})"
 fi
 
 # 5h. Review threads are counted across EVERY page, not just the first 100.
@@ -1948,7 +2047,8 @@ if [ -x "${GUARD_1551}/gh" ]; then
   COPY_1551="${WORK_PHYS}/gate-copy-1551"; mkdir -p "${COPY_1551}"
   cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" \
      "${TOOLS}/autodrive_merge_message.sh" \
-     "${TOOLS}/autodrive_followups.sh" "${TOOLS}/autodrive_followups_check.sh" "${TOOLS}/autodrive_finding_rules.sh" "${COPY_1551}/"
+     "${TOOLS}/autodrive_followups.sh" "${TOOLS}/autodrive_followups_check.sh" "${TOOLS}/autodrive_finding_rules.sh" \
+     "${TOOLS}/autodrive_expected_checks.sh" "${COPY_1551}/"
   GATE_PRIV=1 GATE_SCRIPT="${COPY_1551}/autodrive_merge_gate.sh" GATE_PATH_PREFIX="${GUARD_1551}" \
     gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
   if [ "$rc" -eq 1 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
@@ -2600,49 +2700,76 @@ else
   fail "MSG-no-commit-trailers" "gh received commit text: $(head -c 200 "${MSG_SENT}")"
 fi
 
-# 5m-16b. THE MERGE OWNER'S CASE (rysweet, 12 Nov 2026, on PR #2262).
+# 5m-16b. A head commit authored by a fixture identity: an argv and stdin case.
 # software-factory #321 merged at 09:23Z with GitHub's default squash message.
-# One of its branch commits was AUTHORED by `Fixture <fixture.invalid>`, a test
-# fixture's identity, and GitHub writes every commit author on the branch into
-# the default message as a `Co-authored-by:` line, so main gained
-# `Co-authored-by: Fixture <fixture.invalid>`. No commit message carried that
-# line; it came from the author field. MSG-no-commit-trailers does not cover
-# this: its trailer is text inside a message, and its author is `t`. Here the
-# head commit is authored by Fixture and its message has no trailer at all.
-# The composed message, the subject in argv and the body gh reads, must
-# contain no Co-authored-by line and must not name the Fixture identity.
-# The precondition is checked first: if the fixture commit were not authored
-# by Fixture, or its message carried the line itself, the case would prove
-# nothing. No `grep -q` right of that pipe, for the reason msg_code_has gives.
+# One of its branch commits was AUTHORED by `Fixture <fixture.invalid>`, and
+# GitHub wrote that author into its default message, so main gained
+# `Co-authored-by: Fixture <fixture.invalid>`. No commit message carried the
+# line. This repository's main shows the same (489576dd, 29511814: `qa`).
+#
+# What this case can see is what the gate hands gh: the subject at argv
+# element 8 and the body gh reads on stdin. It cannot see what GitHub commits.
+# The stub gh records its argv and stdin and composes nothing, so a
+# Co-authored-by line GitHub might add of its own to a supplied body is
+# invisible here. That premise is unverified; it is written down under "Premise:
+# GitHub adds no Co-authored-by lines to a supplied body" in
+# docs/reference/auto-drive-to-merge.md and is checked on the landed commit by
+# #2263. Do not read a pass here as an answer to it.
+#
+# What it does show: the gate reads no commit author, so the message it
+# composes for a head commit authored by Fixture is byte for byte the message
+# it composes for the same pull request with the head commit authored by `t`,
+# and neither names Fixture. A control run with the usual author is made for
+# that comparison. The precondition is checked first: if the fixture commit
+# were not authored by Fixture, or its message carried the line itself, the
+# case would prove nothing. No `grep -q` right of that pipe, for the reason
+# msg_code_has gives.
 MSG_FIXTURE_ID='Fixture <fixture.invalid>'
+MSG_FIXTURE_BODY="$(printf 'Refresh the description.\n\nCloses #2056.')"
+FX_CONTROL="$(fx_change "$CR_SHA2" "docs: refresh the description" PR_DESCRIPTION.md=fixture)"
+MSG_CONTROL_REC="${WORK}/mr-fixture-control.json"; mr_rec MERGE_READY "${FX_CONTROL}" > "${MSG_CONTROL_REC}"
+MSG_CONTROL_QA="${WORK}/qa-fixture-control.json"; qa_fixture "${FX_CONTROL}" PASS 3 > "${MSG_CONTROL_QA}"
+GH_HEAD="${FX_CONTROL}" GH_BODY="${MSG_FIXTURE_BODY}" \
+  gate_run merges --round-record "${MSG_CONTROL_REC}" --qa-evidence "${MSG_CONTROL_QA}"; MSG_RC=$?
+MSG_CONTROL_SUBJECT=""; MSG_CONTROL_SENT=""
+if msg_merged && msg_argv && [ -f "$(msg_sent)" ]; then
+  MSG_CONTROL_SUBJECT="${MSG_ARGV[8]:-}"; MSG_CONTROL_SENT="${WORK}/fixture-control-body.txt"
+  cat "$(msg_sent)" > "${MSG_CONTROL_SENT}"
+fi
 FX_FIXTURE="$(GIT_AUTHOR_NAME=Fixture GIT_AUTHOR_EMAIL=fixture.invalid \
   fx_change "$CR_SHA2" "docs: refresh the description" PR_DESCRIPTION.md=fixture)"
 MSG_FIXTURE_REC="${WORK}/mr-fixture.json"; mr_rec MERGE_READY "${FX_FIXTURE}" > "${MSG_FIXTURE_REC}"
 MSG_FIXTURE_QA="${WORK}/qa-fixture.json"; qa_fixture "${FX_FIXTURE}" PASS 3 > "${MSG_FIXTURE_QA}"
-MSG_FIXTURE_BODY="$(printf 'Refresh the description.\n\nCloses #2056.')"
 GH_HEAD="${FX_FIXTURE}" GH_BODY="${MSG_FIXTURE_BODY}" \
   gate_run merges --round-record "${MSG_FIXTURE_REC}" --qa-evidence "${MSG_FIXTURE_QA}"; MSG_RC=$?
 MSG_SENT="$(msg_sent)"
-MSG_LANDED="${GATE_DIR}/landed-message.txt"
+MSG_COMPOSED="${GATE_DIR}/composed-message.txt"
 if [ "$(git -C "$FX" log -1 --format='%an <%ae>' "${FX_FIXTURE}" 2>/dev/null)" != "${MSG_FIXTURE_ID}" ] \
+   || [ "$(git -C "$FX" log -1 --format='%an <%ae>' "${FX_CONTROL}" 2>/dev/null)" = "${MSG_FIXTURE_ID}" ] \
    || git -C "$FX" log -1 --format='%B' "${FX_FIXTURE}" | grep -i 'co-authored-by' >/dev/null; then
-  fail "MSG-fixture-author-no-coauthor" "the fixture commit is not authored by ${MSG_FIXTURE_ID} with a trailer-free message, so this case proves nothing"
+  fail "MSG-fixture-author-no-coauthor" "the fixture commit is not authored by ${MSG_FIXTURE_ID} with a trailer-free message, or the control is, so this case proves nothing"
+elif [ -z "${MSG_CONTROL_SENT}" ]; then
+  fail "MSG-fixture-author-no-coauthor" "the control run with the usual author did not merge with a subject and a body, so there is nothing to compare against"
 elif ! msg_merged; then
   fail "MSG-fixture-author-no-coauthor" "the gate did not merge (rc=${MSG_RC}): $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
 elif ! msg_argv || [ "${MSG_ARGV[7]:-}" != "--subject" ] || [ "${MSG_ARGV[9]:-}" != "--body-file" ] \
      || [ "${MSG_ARGV[10]:-}" != "-" ] || [ ! -f "${MSG_SENT}" ]; then
-  fail "MSG-fixture-author-no-coauthor" "gh was not given a subject and a body on stdin, so GitHub would compose the message and add Co-authored-by: ${MSG_FIXTURE_ID}"
+  fail "MSG-fixture-author-no-coauthor" "gh was not given a subject and a body on stdin, so GitHub would compose the default message, which credits ${MSG_FIXTURE_ID}"
 else
-  # The message GitHub commits: the subject, a blank line, the body.
-  { printf '%s\n\n' "${MSG_ARGV[8]:-}"; cat "${MSG_SENT}"; } > "${MSG_LANDED}"
+  # The composed message: the subject the gate put in argv, a blank line, and
+  # the body gh read on stdin. It is what the gate hands GitHub, not what
+  # GitHub commits; the stub composes nothing (#2263).
+  { printf '%s\n\n' "${MSG_ARGV[8]:-}"; cat "${MSG_SENT}"; } > "${MSG_COMPOSED}"
   if [ "${MSG_ARGV[8]:-}" = "${MSG_TITLE} (#42)" ] \
+     && [ "${MSG_ARGV[8]:-}" = "${MSG_CONTROL_SUBJECT}" ] \
+     && cmp -s "${MSG_SENT}" "${MSG_CONTROL_SENT}" \
      && [ "$(cat "${MSG_SENT}")" = "${MSG_FIXTURE_BODY}" ] \
-     && ! grep -qi 'co-authored-by' "${MSG_LANDED}" \
-     && ! grep -qiF 'fixture.invalid' "${MSG_LANDED}" \
+     && ! grep -qi 'co-authored-by' "${MSG_COMPOSED}" \
+     && ! grep -qiF 'fixture.invalid' "${MSG_COMPOSED}" \
      && ! grep -qiF 'fixture.invalid' "${GATE_DIR}/gh-calls.merge-argv"; then
-    pass "MSG-fixture-author-no-coauthor" "a branch commit authored by ${MSG_FIXTURE_ID} merges with a composed message that has no Co-authored-by line for it"
+    pass "MSG-fixture-author-no-coauthor" "a head commit authored by ${MSG_FIXTURE_ID} gets the composed message the usual author gets, with no Co-authored-by line in it; what GitHub adds to it is not observed here (#2263)"
   else
-    fail "MSG-fixture-author-no-coauthor" "the composed message names the commit author: $(head -c 200 "${MSG_LANDED}" | tr '\n' ' ')"
+    fail "MSG-fixture-author-no-coauthor" "the composed message depends on the commit author or names it: $(head -c 200 "${MSG_COMPOSED}" | tr '\n' ' ')"
   fi
 fi
 
@@ -2888,6 +3015,42 @@ else
   fail "MSG-blocker-read-vs-write" "$(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
 fi
 
+# 5m-30b. A host without jq is told so, not that the title is unreadable.
+# Since #2186 section 5 has no `command -v jq` of its own (the check moved into
+# autodrive_expected_checks.sh), so section 5b checks before it reads the
+# title. Without that check, 5b's first jq call fails and the operator is told
+# "pull request #42 title is unreadable", which sends them to the pull request
+# instead of to the missing tool. The gate runs on a PATH where every
+# directory holding jq is replaced by a directory of links to everything else
+# in it; the stub gh gets jq back through GH_STUB_JQ_DIR, so the pull request
+# fields still reach the gate and only the gate is without jq.
+MSG_NOJQ_PATH=""; MSG_NOJQ_N=0; MSG_JQ_DIR="${WORK_PHYS}/jq-only"
+mkdir -p "${MSG_JQ_DIR}" && ln -sf "$(command -v jq)" "${MSG_JQ_DIR}/jq"
+MSG_OLD_IFS="$IFS"; IFS=:
+for MSG_D in $PATH; do
+  [ -n "${MSG_D}" ] || continue
+  if [ -e "${MSG_D}/jq" ]; then
+    MSG_NOJQ_N=$((MSG_NOJQ_N + 1)); MSG_FARM="${WORK_PHYS}/nojq-${MSG_NOJQ_N}"
+    mkdir -p "${MSG_FARM}" && ln -s "${MSG_D}"/* "${MSG_FARM}/" 2>/dev/null; rm -f "${MSG_FARM}/jq"
+    MSG_D="${MSG_FARM}"
+  fi
+  MSG_NOJQ_PATH="${MSG_NOJQ_PATH:+${MSG_NOJQ_PATH}:}${MSG_D}"
+done
+IFS="${MSG_OLD_IFS}"
+if PATH="${MSG_NOJQ_PATH}" command -v jq >/dev/null 2>&1 || ! PATH="${MSG_NOJQ_PATH}" command -v git >/dev/null 2>&1; then
+  fail "MSG-no-jq-names-jq" "the harness could not build a PATH without jq that still has git, so the case was not run"
+else
+  GATE_BASE_PATH="${MSG_NOJQ_PATH}" GH_STUB_JQ_DIR="${MSG_JQ_DIR}" \
+    gate_run merges --round-record "$REC" --qa-evidence "$QA" >/dev/null 2>&1; MSG_RC=$?
+  if ! grep -qF 'jq is not installed, so the title and body of pull request #42 cannot be read' "${GATE_DIR}/err"; then
+    fail "MSG-no-jq-names-jq" "a gate without jq did not name jq in section 5b: $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+  elif grep -qF 'title is unreadable' "${GATE_DIR}/err"; then
+    fail "MSG-no-jq-names-jq" "a gate without jq still blames the pull request title: $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+  else
+    msg_blocked "MSG-no-jq-names-jq" "a gate without jq blocks with a 5b blocker that names jq, not the pull request title"
+  fi
+fi
+
 # 5m-31. Composing the message belongs to the helper; the gate keeps the
 # decision. Checked on code lines only: every needle here also appears in a
 # comment somewhere, and a comment is not an implementation.
@@ -3079,7 +3242,8 @@ LT_MARK="${WORK}/lt-marker"
 lt_guard() { # lt_guard <dir>: a stub autodrive_worktree_guard.sh that writes LT_MARK and exits 0
   mkdir -p -- "$1"
   printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nprintf "lt-stamp\\n"\nexit 0\n' "${LT_MARK}" > "$1/autodrive_worktree_guard.sh"
-  chmod 0700 -- "$1/autodrive_worktree_guard.sh"
+  # Put -- before the mode: BSD chmod stops parsing options at the first operand and would read -- as a file.
+  chmod -- 0700 "$1/autodrive_worktree_guard.sh"
 }
 lt_snapshot() { # lt_snapshot <cwd>: files under the cwd, and the review dir's status
   find "$1" -print 2>/dev/null | LC_ALL=C sort

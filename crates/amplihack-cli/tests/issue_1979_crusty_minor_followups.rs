@@ -2161,6 +2161,8 @@ fn every_touched_recipe_and_tool_stays_within_400_lines() {
         "amplifier-bundle/tools/autodrive_crusty_rereview.sh",
         "amplifier-bundle/tools/autodrive_state.sh",
         "amplifier-bundle/tools/autodrive_merge_gate.sh",
+        // #2186: the expected-checks reader the gate runs for its CI section.
+        "amplifier-bundle/tools/autodrive_expected_checks.sh",
         "amplifier-bundle/tools/autodrive_round_evidence.sh",
         "amplifier-bundle/recipes/autodrive-crusty-round.yaml",
         "amplifier-bundle/recipes/autodrive-crusty-loop.yaml",

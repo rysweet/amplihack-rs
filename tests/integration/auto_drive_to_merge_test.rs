@@ -1072,7 +1072,10 @@ fn merge_gate_verifies_every_criterion_and_binds_them_to_one_head_sha() {
         "mergeStateStatus",
         "reviewDecision",
         "reviewThreads",
-        "gh pr checks",
+        // #2186: CI is read at the head SHA by the expected-checks reader,
+        // which replaced the `gh pr checks` rollup.
+        "autodrive_expected_checks.sh",
+        "ci_status",
         "qa_status",
         "merge_ready_verdict",
     ] {
@@ -1093,7 +1096,7 @@ fn merge_gate_verifies_every_criterion_and_binds_them_to_one_head_sha() {
     // Unreadable is a failure, never a pass.
     for unreadable in [
         "metadata is unreadable",
-        "CI status for #${PR} is unreadable",
+        "expected checks unreadable",
         "review-thread state is unreadable",
     ] {
         assert!(
@@ -1101,8 +1104,15 @@ fn merge_gate_verifies_every_criterion_and_binds_them_to_one_head_sha() {
             "the merge gate must treat `{unreadable}` as a blocker"
         );
     }
+    // #2186: CI is read by the expected-checks reader, which blocks on an
+    // unreadable endpoint and on zero checks at the head.
+    let reader = read(&tool_path("autodrive_expected_checks.sh"));
     assert!(
-        gate.contains("zero checks is not a green build"),
+        reader.contains(r#"t: ("expected checks unreadable: " + cl)"#),
+        "an unreadable CI endpoint must be a blocker"
+    );
+    assert!(
+        reader.contains(r#"t: ("no checks" + at)"#),
         "a PR reporting no checks at all must not be treated as green"
     );
     // The evidence bundle is written BEFORE anything is merged.
@@ -2952,11 +2962,11 @@ fn merge_gate_keeps_every_existing_block() {
         r#"block "a review requests changes""#,
         r#"block "review-thread state is unreadable; an unreadable criterion is a failure, not a pass""#,
         r#"block "${THREADS} unresolved review thread(s)""#,
-        r#"block "jq is unavailable, so the CI rollup cannot be read; a criterion we cannot read is a failure""#,
-        r#"block "CI status for #${PR} is unreadable; an unreadable CI status is a failure, not a pass""#,
-        r#"block "no CI checks reported for #${PR}; zero checks is not a green build""#,
-        r#"block "${PENDING:-unreadable} CI check(s) still pending""#,
-        r#"block "${FAILING:-unreadable} CI check(s) failing or cancelled""#,
+        // #2186 replaced the `gh pr checks` rollup refusals (jq missing,
+        // unreadable, zero, pending, failing) with the expected-checks
+        // reader: its blocker lines become blocks, and anything short of a
+        // GREEN verdict with exit 0 and no blocker line is refused here.
+        r#"block "expected checks unreadable: the reader gave no verdict or no blocker""#,
         r#"block "no qa-team scenario evidence file was produced in this run""#,
         r#"block "qa-team scenarios did not pass in this run (qa_status=${QA_STATUS})""#,
         r#"block "the qa-team evidence records no head_sha; evidence that is not bound to a SHA never merges""#,
@@ -5426,15 +5436,24 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
         "MERGEREADY-no-round-tool did not pass (inherited={inherited:?}); a round with no \
          round tool must not find one through an inherited AUTODRIVE_TOOLS_DIR (#1607)\n{stdout}"
     );
-    // The merge owner's requirement of 12 Nov 2026 on PR #2262: a branch commit
-    // authored by `Fixture <fixture.invalid>` must merge with a composed message
-    // carrying no Co-authored-by line for it (software-factory #321). Required by
-    // name, so the case cannot disappear from the suite unnoticed.
+    // An argv and stdin case (#2056): a head commit authored by
+    // `Fixture <fixture.invalid>` gets the same composed message as one authored
+    // by `t`, with no Co-authored-by line in it. The stub `gh` composes nothing,
+    // so this cannot show whether GitHub adds such a line to a supplied body;
+    // that premise is unverified and #2263 checks it on the landed commit.
+    // Required by name, so the case cannot disappear from the suite unnoticed.
     assert!(
         stdout.contains("PASS[MSG-fixture-author-no-coauthor]"),
-        "MSG-fixture-author-no-coauthor did not pass (inherited={inherited:?}); a commit \
-         authored by Fixture <fixture.invalid> must not become a Co-authored-by line in the \
-         squash message (#2056)\n{stdout}"
+        "MSG-fixture-author-no-coauthor did not pass (inherited={inherited:?}); the composed \
+         message for a head commit authored by Fixture <fixture.invalid> must equal the one \
+         for the usual author and carry no Co-authored-by line (#2056)\n{stdout}"
+    );
+    // Section 5 lost its own `command -v jq` in #2186, so section 5b names a
+    // missing jq itself instead of calling the pull request title unreadable.
+    assert!(
+        stdout.contains("PASS[MSG-no-jq-names-jq]"),
+        "MSG-no-jq-names-jq did not pass (inherited={inherited:?}); a gate without jq must \
+         say so in section 5b, not blame the pull request title (#2056)\n{stdout}"
     );
     if inherited == Inherited::Conflicting {
         assert!(

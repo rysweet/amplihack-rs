@@ -118,24 +118,21 @@ case "$THREADS" in
   *) block "${THREADS} unresolved review thread(s)" ;;
 esac
 
-# --- 5. CI on THIS head SHA -------------------------------------------------
-# `gh pr checks` exits non-zero when checks are failing or pending, and also when
-# it cannot read them. All three block; only a readable, all-green rollup passes.
-CHECKS_JSON="$(gh pr checks "$PR" --json name,state,bucket,link 2>/dev/null)"
-if ! command -v jq >/dev/null 2>&1; then
-  block "jq is unavailable, so the CI rollup cannot be read; a criterion we cannot read is a failure"
-elif [ -z "$CHECKS_JSON" ]; then
-  block "CI status for #${PR} is unreadable; an unreadable CI status is a failure, not a pass"
-else
-  PENDING="$(printf '%s' "$CHECKS_JSON" | jq -r '[.[] | select(.bucket=="pending")] | length' 2>/dev/null)"
-  FAILING="$(printf '%s' "$CHECKS_JSON" | jq -r '[.[] | select(.bucket=="fail" or .bucket=="cancel")] | length' 2>/dev/null)"
-  TOTAL="$(printf '%s' "$CHECKS_JSON" | jq -r 'length' 2>/dev/null)"
-  note "ci_checks total=${TOTAL} pending=${PENDING} failing=${FAILING}"
-  if [ -z "$TOTAL" ] || [ "$TOTAL" = "0" ]; then
-    block "no CI checks reported for #${PR}; zero checks is not a green build"
-  fi
-  [ "${PENDING:-x}" = "0" ] || block "${PENDING:-unreadable} CI check(s) still pending"
-  [ "${FAILING:-x}" = "0" ] || block "${FAILING:-unreadable} CI check(s) failing or cancelled"
+# --- 5. CI on THIS head SHA (#2186) ----------------------------------------
+# CI green means every expected check exists at HEAD_SHA and passed: the base
+# branch's required checks and every job of each pull_request workflow at the
+# head, read by autodrive_expected_checks.sh beside this gate (never from a
+# path the PR fills). Its evidence: lines become notes and its blocker: lines
+# blockers. The verdict is its LAST line only, and passes only as GREEN, exit 0.
+BASE_REF="$(field "$STATE_JSON" baseRefName "")"; CI_BLOCKED=""
+CI_OUT="$(/bin/bash -p "${GATE_HOME}/autodrive_expected_checks.sh" "$HEAD_SHA" "$BASE_REF" 2>/dev/null)"; CI_RC=$?
+while IFS= read -r L; do
+  case "$L" in "evidence: "*) note "${L#evidence: }" ;; "blocker: "*) block "${L#blocker: }"; CI_BLOCKED=1 ;; esac
+done <<< "$CI_OUT"
+CI_STATUS="$(printf '%s\n' "$CI_OUT" | tail -n1 | jq -r '.ci_status // empty' 2>/dev/null)"
+note "ci_status=$(printf '%s' "${CI_STATUS:-none}" | tr -cd 'A-Z_a-z') ci_exit=${CI_RC}"
+if [ "$CI_STATUS" != "GREEN" ] || [ "$CI_RC" -ne 0 ]; then
+  [ -n "$CI_BLOCKED" ] || block "expected checks unreadable: the reader gave no verdict or no blocker"
 fi
 
 # --- 5b. The squash commit message, read in THIS run (#2056) ---------------
@@ -148,6 +145,8 @@ if [ "$STATE_DIR_GIVEN" != "true" ] || [ -z "$GATE_HOME" ] || [ ! -f "${GATE_HOM
    || ! . "${GATE_HOME}/autodrive_merge_message.sh" || ! . "${GATE_HOME}/autodrive_state.sh" \
    || ! autodrive_private "$STATE_DIR" || ! SHA12="$(autodrive_merge_sha12 "$HEAD_SHA")"; then
   block "the squash commit message for #${PR} cannot be composed and written privately (no explicit --state-dir, an empty GATE_HOME, autodrive_merge_message.sh missing beside the merge gate, autodrive_state.sh missing or unloadable, a state dir that is not private to this user, or a head SHA whose first 12 characters are not lowercase hex); the message is never left for the platform to compose from the branch's commits"
+elif ! command -v jq >/dev/null 2>&1; then  # section 5 no longer checks for jq (#2186), so name it here
+  block "jq is not installed, so the title and body of pull request #${PR} cannot be read for the squash message; a criterion we cannot read never merges"
 elif ! MERGE_SUBJECT="$(autodrive_merge_subject "$STATE_JSON" "$PR")"; then
   block "pull request #${PR} title is unreadable (absent, null, not a string, blank, or over 1024 characters); a criterion we cannot read never merges"
 elif ! autodrive_merge_body "$STATE_JSON"; then
@@ -299,7 +298,6 @@ if [ -n "$CRUSTY_REVIEWED" ] && [ "$TRUST_OK" = "true" ]; then
      || ! env -u GIT_DIR -u GIT_WORK_TREE GIT_NO_REPLACE_OBJECTS=1 git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
     block "head ${HEAD_SHA:-<none>} is not in the local clone, so the commits after the clean crusty round cannot be read; criterion 3 is not met"
   else
-    BASE_REF="$(field "$STATE_JSON" baseRefName "")"
     BASE_SHA="$(autodrive_base_sha "$PWD" "$BASE_REF")" || BASE_SHA=""
     note "base_ref=$(printf '%s' "$BASE_REF" | tr -cd 'A-Za-z0-9._/-') base_sha=${BASE_SHA:-<none>}"
     RANGE="$(autodrive_crusty_range "$PWD" "$CRUSTY_REVIEWED" "$HEAD_SHA" "$BASE_SHA")" || true

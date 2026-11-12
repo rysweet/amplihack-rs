@@ -505,6 +505,7 @@ pub fn swap_check(
     let readings = state.load_usage().accounts;
     let overflow = OverflowInputs::load(&state.root, cfg, now);
     let leaving_overflow = overflow.order.iter().any(|o| o.as_str() == current);
+    let need = amplihack_utils::organisation_affinity::Need::of(leaving_overflow, exhausted);
     if !exhausted && !leaving_overflow {
         return Ok(()); // the account changed since the first check
     }
@@ -526,9 +527,24 @@ pub fn swap_check(
             && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))
             && (ledger.hosts.contains_key(n) || n == owner.as_str() || !live.is_live(c))
     };
-    let Some(target) =
-        candidate::select_with_overflow(&pool, &overflow.pool(), &current, eligible).cloned()
-    else {
+    let restriction = super::affinity::restrict(
+        state,
+        &ledger,
+        &pool,
+        &overflow,
+        owner.as_str(),
+        &current,
+        need,
+        eligible,
+    );
+    let Some(target) = candidate::select_restricted(
+        &pool,
+        &overflow.pool(),
+        &current,
+        |p| eligible(p) && restriction.allowed.contains(p),
+        |p| restriction.plan_room.contains(p),
+    )
+    .cloned() else {
         return Ok(());
     };
     if !ledger.hosts.contains_key(target.as_str()) {
@@ -537,6 +553,8 @@ pub fn swap_check(
     if current == owner.as_str() {
         snapshot_account(state, owner.as_str());
     }
+    let source_org = restriction.source_org.clone();
+    let target_org = restriction.org_of(&target).map(str::to_owned);
     let Some(ino) = take_refresh_lock(state, owner.as_str()) else {
         return Ok(());
     };
@@ -563,9 +581,28 @@ pub fn swap_check(
         fingerprint: Some(usage::fingerprint(rl)),
         refresh_lock_ino: Some(ino),
     };
-    let result = transfer(state, &mut ledger, j);
+    // The organisations this decision used must still hold before the
+    // move: a record rewritten in between could turn the swap into a
+    // crossing the policy refused. Two record reads, not a fresh selection.
+    let unchanged = super::super::organisation::resolve(state, &ledger, owner.as_str())
+        == source_org
+        && super::super::organisation::resolve_login(state, target.as_str()) == target_org;
+    let result = if unchanged {
+        transfer(state, &mut ledger, j)
+    } else {
+        Err(invariant("organisation affinity changed before swap"))
+    };
     release_refresh_lock(state, owner.as_str(), Some(ino));
     result?;
+    super::affinity::record_swap(
+        state,
+        owner.as_str(),
+        &current,
+        target.as_str(),
+        source_org.as_deref(),
+        target_org.as_deref(),
+        now,
+    );
     let why = if !leaving_overflow {
         "reached the auto-switch threshold"
     } else if !candidate::overflow_usable(&current, &overflow.blocked) {

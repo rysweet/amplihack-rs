@@ -7,8 +7,8 @@
 # written for a branch this one is stacked on, and anything else that was only
 # ever true of a single commit. A wrong trailer on a pushed commit cannot be
 # corrected afterwards: correcting it needs a force-push, and this workflow
-# does not rewrite pushed commits. So the gate supplies the message itself —
-# what reviewers read on the pull request is what lands on the base branch.
+# does not rewrite pushed commits. So the gate supplies the message itself,
+# from the pull request's title and body; what GitHub adds to it is not seen here.
 #
 # This file only DEFINES functions; sourcing it has no side effects, so the
 # gate may source it twice. It is sourced by autodrive_merge_gate.sh from

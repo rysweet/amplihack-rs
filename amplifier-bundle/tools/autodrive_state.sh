@@ -103,7 +103,7 @@ autodrive_private_dir() {
   if [ ! -O "$dir" ]; then
     echo "ERROR: state-dir-not-private: ${dir} is not owned by this user, so others may write in it; choose another AUTODRIVE_STATE_DIR" >&2; return 1
   fi
-  if ! chmod 700 -- "$dir" 2>/dev/null; then
+  if ! chmod -- 700 "$dir" 2>/dev/null; then  # -- before the mode: BSD chmod stops parsing options at the first operand and would read -- as a file
     echo "ERROR: state-dir-not-private: could not set owner-only access on ${dir}" >&2; return 1
   fi
   me="$(id -u)" || { echo "ERROR: state-dir-not-private: the current user id cannot be read" >&2; return 1; }

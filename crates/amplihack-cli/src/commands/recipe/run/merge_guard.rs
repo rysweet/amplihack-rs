@@ -28,17 +28,26 @@ pub(crate) const BASH_ENV_FILE: &str = "bash-env";
 pub(crate) const USER_BASH_ENV: &str = "AMPLIHACK_MERGE_GUARD_USER_BASH_ENV";
 
 /// The files in the guard directory's parent (`tools/`) that the shim trusts
-/// to merge: the gate, and every helper the gate sources, directly or through
-/// another helper (`autodrive_state.sh` sources `autodrive_unmerged.sh`,
+/// to merge: the gate, every helper the gate sources or runs, and every helper
+/// those load in turn (`autodrive_state.sh` sources `autodrive_unmerged.sh`,
 /// `autodrive_trust.sh` loads `autodrive_qa_scope.sh`, #1763, and that loads
-/// `autodrive_qa_docs.sh`, #2219).
+/// `autodrive_qa_docs.sh`, #2219). The gate runs `autodrive_expected_checks.sh`
+/// for its CI verdict (#2186), `autodrive_platform_facts.sh` for the review
+/// threads and `autodrive_followups.sh gate`, which loads
+/// `autodrive_finding_rules.sh` and `autodrive_followups_check.sh` (#1979).
 /// Replacing any of them is as good as replacing the shim, so they get the
 /// shim's mode check.
-pub(crate) const GATE_FILES: [&str; 7] = [
+/// The gate itself is first.
+pub(crate) const GATE_FILES: [&str; 12] = [
     "autodrive_merge_gate.sh",
+    "autodrive_expected_checks.sh",
+    "autodrive_finding_rules.sh",
+    "autodrive_followups.sh",
+    "autodrive_followups_check.sh",
     // Sourced by the gate, so it runs inside the process this shim trusts to
     // merge; it is mode-checked with the rest (#2056).
     "autodrive_merge_message.sh",
+    "autodrive_platform_facts.sh",
     "autodrive_qa_docs.sh",
     "autodrive_qa_scope.sh",
     "autodrive_state.sh",
