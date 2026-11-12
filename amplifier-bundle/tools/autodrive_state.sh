@@ -123,7 +123,7 @@ autodrive_private_dir() {
 
 # autodrive_private <path>: <path> is owned by this user, is not a symlink, and
 # has no group or world write bit. The merge gate's test for every state file
-# it reads as evidence (autodrive_merge_gate.sh sections 5b, 6b, 6c and 9).
+# it reads as evidence (autodrive_merge_gate.sh sections 5b, 6b and 6c).
 autodrive_private() {
   local loose
   [ -L "$1" ] && return 1
