@@ -35,7 +35,24 @@ pub(crate) const PARENT_MODEL_BINARY_ENV: &str = "AMPLIHACK_PARENT_MODEL_BINARY"
 pub(crate) const PARENT_ENV_VARS: [&str; 3] =
     [PARENT_EFFORT_ENV, PARENT_MODEL_ENV, PARENT_MODEL_BINARY_ENV];
 
-const EFFORT_LEVEL_ENV: &str = "CLAUDE_CODE_EFFORT_LEVEL";
+/// The effort fallback (D3, last tier), and what `claude` reads its effort from.
+pub(crate) const EFFORT_LEVEL_ENV: &str = "CLAUDE_CODE_EFFORT_LEVEL";
+/// The model fallback (D3, last tier), and what `claude` reads its model from.
+pub(crate) const MODEL_ENV: &str = "ANTHROPIC_MODEL";
+/// Every variable `recipe run` reads the run's effort and model from (D3):
+/// the three a launch exports for its children, then the two fallbacks, which
+/// a launch also sets for its agent when it passes an inherited value. A tmux
+/// server keeps whichever of them the process that started it held, and gives
+/// them to every later session, so the tmux hand-offs remove all five
+/// (`amplihack agent-binary --shell`, `amplihack agent`'s resumed pane) and
+/// `recipe run --detach` does not start a server holding them.
+pub(crate) const ENV_INPUTS: [&str; 5] = [
+    PARENT_EFFORT_ENV,
+    PARENT_MODEL_ENV,
+    PARENT_MODEL_BINARY_ENV,
+    EFFORT_LEVEL_ENV,
+    MODEL_ENV,
+];
 const RECIPE_RUN_ID_ENV: &str = "AMPLIHACK_RECIPE_RUN_ID";
 const CODEX_EFFORT_KEY: &str = "model_reasoning_effort=";
 const COPILOT_EFFORT_FLAG: &str = "--reasoning-effort";
@@ -69,7 +86,7 @@ impl InheritSource {
             Self::ParentLaunch => "the parent amplihack launch",
             Self::ParentClaude => "the parent claude process",
             Self::EffortEnv => EFFORT_LEVEL_ENV,
-            Self::ModelEnv => "ANTHROPIC_MODEL",
+            Self::ModelEnv => MODEL_ENV,
         }
     }
 }
@@ -187,6 +204,11 @@ pub(crate) fn vet_for_binary(
         // the LiteLLM gateway, so the inherited model reaches no step and is
         // neither passed on nor named in the run's summary line.
         let mut passed = resolved.inherited.clone();
+        if !takes_effort_flag(binary)
+            && let Some(effort) = passed.effort.take()
+        {
+            lines.push(cannot_pass_line("effort", &effort, binary));
+        }
         if resolved.model_source == Some(InheritSource::ParentLaunch)
             && !model_matches_binary(binary, parent_model_binary)
             && let Some(model) = passed.model.take()
@@ -245,15 +267,19 @@ pub(crate) fn effort_args(
     let Some(level) = inherited.effort.as_deref() else {
         return out;
     };
-    if is_claude_compatible(binary) {
-        // Only `claude` is known to accept `--effort`; the others read the
-        // variable, and an unknown flag would fail every step.
-        if own.is_none() && binary == "claude" {
+    if takes_effort_flag(binary) {
+        if own.is_none() {
             out.argv = vec!["--effort".to_string(), level.to_string()];
         }
         let applied = own.unwrap_or_else(|| level.to_string());
         out.env = vec![(EFFORT_LEVEL_ENV, applied.clone())];
         out.exported = Some(applied);
+    } else if is_claude_compatible(binary) {
+        // rusty, rustyclawd and amplifier: see `takes_effort_flag`. The
+        // step's own `--effort`, when it has one, is still what it exports.
+        if own.is_none() {
+            out.unsupported = Some(cannot_pass_line("effort", level, binary));
+        }
     } else if binary == "codex" {
         if own.is_none() {
             match codex_effort(level) {
@@ -280,6 +306,18 @@ pub(crate) fn effort_args(
     out
 }
 
+/// Whether `binary` takes an inherited effort as `--effort` (and
+/// `CLAUDE_CODE_EFFORT_LEVEL`). Only `claude` is known to: `claude --help`
+/// lists `--effort`. The other Claude-compatible binaries (`rusty`,
+/// `rustyclawd`, `amplifier`) list no such flag, an unknown flag would fail
+/// every step, and no reader of `CLAUDE_CODE_EFFORT_LEVEL` was found in their
+/// sources (crusty review of #1892, round 6). So they are treated like any
+/// binary that takes no effort: one "cannot be passed" line, nothing set, and
+/// the run's summary does not report an effort they would not use.
+fn takes_effort_flag(binary: &str) -> bool {
+    binary == "claude"
+}
+
 /// Whether a binary that is not Claude-compatible can take `level`.
 fn takes_effort(binary: &str, level: &str) -> bool {
     match binary {
@@ -289,13 +327,16 @@ fn takes_effort(binary: &str, level: &str) -> bool {
     }
 }
 
-/// The copilot `--reasoning-effort` level for `level`, as a matched literal,
-/// so only a value copilot lists in `copilot --help` reaches it (S5). Copilot
-/// refuses any other value at startup, which would fail every step.
+/// The copilot `--reasoning-effort` level for `level`, as a matched literal
+/// (S5). Copilot refuses at startup, with exit 1, any value its model does
+/// not support (`copilot --help`: "supported levels depend on the model"),
+/// which would fail every step. Only the levels copilot 1.0.109 accepts for
+/// its default model, `claude-sonnet-5.5`, are passed: `low` to `max`. It
+/// refuses `none` and `minimal` for that model (`Reasoning effort "none"
+/// is not supported for model "claude-sonnet-5.5"`), so those two are
+/// dropped with a "cannot be passed" line (crusty review of #1892, round 6).
 pub(crate) fn copilot_effort(level: &str) -> Option<&'static str> {
     Some(match level {
-        "none" => "none",
-        "minimal" => "minimal",
         "low" => "low",
         "medium" => "medium",
         "high" => "high",
@@ -587,8 +628,8 @@ pub(crate) fn print_once(line: &str) {
 /// C1: export the launched agent's effort and model for its children.
 ///
 /// `applied` is what `command::build_launch_command` returns: the effort from
-/// [`EffortArgs::exported`], which covers binaries that take the effort only
-/// through `CLAUDE_CODE_EFFORT_LEVEL`, and the model from
+/// [`EffortArgs::exported`] (the step's own effort, or the inherited one when
+/// the binary takes it), and the model from
 /// `ModelArgs::exported`, which is never amplihack's own default. Both
 /// variables are removed first, so a stale value is never passed on, and a
 /// variable is set only with a valid value (I1, I2, S4). Called after the

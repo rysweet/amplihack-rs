@@ -661,7 +661,13 @@ PANE_ARGV is, in order:
    names in `SESSION_MARKERS` (`amplihack-utils`), then
    `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_PROJECT_DIR`,
    `AMPLIHACK_SESSION_ID`, `AMPLIHACK_DEPTH`, `AMPLIHACK_SESSION_DEPTH`,
-   `AMPLIHACK_TREE_ID`, `CLAUDE_CONFIG_DIR` and `AMPLIHACK_CLAUDE_PROFILE`.
+   `AMPLIHACK_TREE_ID`, `CLAUDE_CONFIG_DIR` and `AMPLIHACK_CLAUDE_PROFILE`,
+   then the effort and model variables `AMPLIHACK_PARENT_EFFORT`,
+   `AMPLIHACK_PARENT_MODEL`, `AMPLIHACK_PARENT_MODEL_BINARY`,
+   `CLAUDE_CODE_EFFORT_LEVEL` and `ANTHROPIC_MODEL`. A tmux server started
+   inside an amplihack session keeps that session's values of these five and
+   gives them to the pane; the resumed agent gets its recorded values instead
+   (see [Effort and model inheritance](./effort-and-model-inheritance.md#limitations)).
    `TMUX` and `TMUX_PANE` are kept, because the pane needs its own.
 3. `KEY=VALUE` for each recorded variable, sorted by name.
 4. The `amplihack` executable, then `claude`.
@@ -683,6 +689,8 @@ tmux -S /tmp/tmux-1000/default new-session -d -s coordinator -n main -c /home/al
   -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT \
   -u COPILOT_AGENT -u AMPLIHACK_SESSION_ID -u AMPLIHACK_DEPTH -u AMPLIHACK_SESSION_DEPTH \
   -u AMPLIHACK_TREE_ID -u CLAUDE_CONFIG_DIR -u AMPLIHACK_CLAUDE_PROFILE \
+  -u AMPLIHACK_PARENT_EFFORT -u AMPLIHACK_PARENT_MODEL -u AMPLIHACK_PARENT_MODEL_BINARY \
+  -u CLAUDE_CODE_EFFORT_LEVEL -u ANTHROPIC_MODEL \
   CLAUDE_CODE_EFFORT_LEVEL=high \
   /home/alex/.local/bin/amplihack claude --no-reflection --profile work --supervise coordinator \
   -- --resume 0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c MESSAGE \

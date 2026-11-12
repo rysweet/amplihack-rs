@@ -5,8 +5,8 @@
 //! nearest `claude` ancestor's argv and the fallback variables.
 
 use crate::commands::launch::inherit::{
-    Inherited, PARENT_EFFORT_ENV, PARENT_MODEL_ENV, ParentInputs, Resolved, checked,
-    inherit_summary_line, parent_model_binary, resolve_parent, vet_for_binary,
+    EFFORT_LEVEL_ENV, Inherited, MODEL_ENV, PARENT_EFFORT_ENV, PARENT_MODEL_ENV, ParentInputs,
+    Resolved, checked, inherit_summary_line, parent_model_binary, resolve_parent, vet_for_binary,
 };
 use std::collections::BTreeMap;
 
@@ -24,8 +24,8 @@ pub(crate) fn inherit_for_run(
     let non_empty = |name: &str| env(name).filter(|v| !v.trim().is_empty());
     let parent_effort = env(PARENT_EFFORT_ENV);
     let parent_model = env(PARENT_MODEL_ENV);
-    let effort_env = non_empty("CLAUDE_CODE_EFFORT_LEVEL");
-    let model_env = non_empty("ANTHROPIC_MODEL");
+    let effort_env = non_empty(EFFORT_LEVEL_ENV);
+    let model_env = non_empty(MODEL_ENV);
     let context_effort = context.get("effort").map(String::as_str);
     let context_model = context.get("model").map(String::as_str);
     // D2: the ancestor is only a fallback. Scanning `/proc` reads every

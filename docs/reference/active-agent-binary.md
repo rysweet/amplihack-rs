@@ -330,13 +330,14 @@ present:
   agent restarts the server.
 
 `amplihack agent-binary` resolves in the caller's shell and prints the answer
-(issue #1525):
+(issue #1525). In a Claude Code session started with
+`amplihack claude -- --effort high --model claude-opus-5-5`:
 
 ```console
 $ amplihack agent-binary
 claude (session_marker)
 $ amplihack agent-binary --shell
-env -u CLAUDECODE -u CLAUDE_CODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PROJECT_DIR -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT -u COPILOT_AGENT -u AMPLIHACK_PARENT_RECIPE_PID -u AMPLIHACK_PARENT_RECIPE_STARTTIME -u AMPLIHACK_AUTODRIVE_STATE_DIR AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=
+env -u CLAUDECODE -u CLAUDE_CODE -u CLAUDE_CODE_SESSION_ID -u CLAUDE_PROJECT_DIR -u CLAUDE_CODE_ENTRYPOINT -u COPILOT_CLI -u GITHUB_COPILOT -u GITHUB_COPILOT_AGENT -u COPILOT_AGENT -u AMPLIHACK_PARENT_RECIPE_PID -u AMPLIHACK_PARENT_RECIPE_STARTTIME -u AMPLIHACK_AUTODRIVE_STATE_DIR -u AMPLIHACK_PARENT_EFFORT -u AMPLIHACK_PARENT_MODEL -u AMPLIHACK_PARENT_MODEL_BINARY -u CLAUDE_CODE_EFFORT_LEVEL -u ANTHROPIC_MODEL AMPLIHACK_PARENT_EFFORT=high AMPLIHACK_PARENT_MODEL=claude-opus-5-5 AMPLIHACK_PARENT_MODEL_BINARY=claude CLAUDE_CODE_EFFORT_LEVEL=high ANTHROPIC_MODEL=claude-opus-5-5 AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=
 ```
 
 Use the `--shell` form inline, inside the double-quoted command, so that it
@@ -378,6 +379,18 @@ amplihack: agent steps will run under 'copilot' (AMPLIHACK_AGENT_BINARY was hand
   marker. GNU, BSD (macOS) and BusyBox `env` all take `-u`. Further
   `NAME=value` words after the hand-off, such as the templates'
   `AMPLIHACK_HOME=...`, are read by `env` the same way.
+- `env -u` also removes the effort and model variables a `recipe run` reads
+  (#1883): `AMPLIHACK_PARENT_EFFORT`, `AMPLIHACK_PARENT_MODEL`,
+  `AMPLIHACK_PARENT_MODEL_BINARY`, `CLAUDE_CODE_EFFORT_LEVEL` and
+  `ANTHROPIC_MODEL`. A server first started inside an amplihack session holds
+  that session's values, and a run on the far side would otherwise give every
+  step the server starter's model and effort. The hand-off then sets the
+  caller's own value of each one the caller holds, as in the example above.
+  A value is set only when every character is a letter, a digit or one of
+  `- _ . : / @ % + ,`, because the line is read by a shell. Any other value,
+  such as a model ending in `[1m]`, is removed and not set, and the hand-off
+  names the variable on your terminal; see
+  [Effort and Model Inheritance](./effort-and-model-inheritance.md#limitations).
 - `-w` resolves from the directory the recipe will run in, so the
   launcher-context walk-up matches the run's own.
 - The source travels with the value. A default guess is printed with

@@ -33,10 +33,30 @@
 //! `PARENT_WATCH_ENV` variables (issue #1976): a server first started from a
 //! recipe step holds that step's `AMPLIHACK_PARENT_RECIPE_PID`, `_STARTTIME`
 //! and `AMPLIHACK_AUTODRIVE_STATE_DIR`, and a run started in a later session
-//! would otherwise watch a parent that has gone and stop at once with exit 75. The assignments that follow
-//! set the caller's answer. GNU, BSD (macOS) and BusyBox `env` all take `-u`,
-//! and further `NAME=value` words after the hand-off (the templates'
-//! `AMPLIHACK_HOME=...`) are read by `env` the same way. This form works on
+//! would otherwise watch a parent that has gone and stop at once with exit 75.
+//!
+//! It removes the effort and model variables too (`inherit::ENV_INPUTS`, issue
+//! #1883): `AMPLIHACK_PARENT_EFFORT`, `_MODEL` and `_MODEL_BINARY`, which every
+//! `amplihack <cli>` launch exports, and `CLAUDE_CODE_EFFORT_LEVEL` and
+//! `ANTHROPIC_MODEL`, which a launch sets for its agent when it passes an
+//! inherited value. A server first started inside an amplihack session holds
+//! that session's values, and a `recipe run` in a later session would rank
+//! them above everything but its own `-c` context, so every step would run the
+//! server starter's model at its effort, logged as coming "from the parent
+//! amplihack launch" (crusty review of #1892, round 6). After the removals the
+//! hand-off sets the caller's own value of each one it holds, so the far side
+//! sees what a `setsid` launch from the caller would: the effort and model of
+//! the caller's session, or none. A value crosses only when it passes the
+//! launch path's value check unchanged and every character is one a shell
+//! leaves alone in both places the line is read (see [`shell_inert`]); a model
+//! such as `opus[1m]` does not, so it is removed and not set, and the caller's
+//! terminal gets one line naming the variable and how to pass it instead.
+//! `AMPLIHACK_PARENT_MODEL_BINARY` crosses only with the model it describes.
+//!
+//! The assignments that follow set the caller's answer. GNU, BSD (macOS) and
+//! BusyBox `env` all take `-u`, and further `NAME=value` words after the
+//! hand-off (the templates' `AMPLIHACK_HOME=...`) are read by `env` the same
+//! way. This form works on
 //! every tmux; `new-session -e` only exists from tmux 3.2, and cannot unset.
 //!
 //! The source travels with the value. Handing over `AMPLIHACK_AGENT_BINARY`
@@ -91,6 +111,9 @@ use amplihack_utils::agent_binary::{
 };
 use anyhow::{Context, Result};
 
+use crate::commands::launch::inherit::{
+    ENV_INPUTS, PARENT_MODEL_BINARY_ENV, PARENT_MODEL_ENV, checked,
+};
 use crate::commands::recipe::run::parent_watch::PARENT_WATCH_ENV;
 
 /// Resolve from `dir` (default: the current directory) and print the answer.
@@ -110,17 +133,100 @@ pub fn run_agent_binary(shell: bool, dir: Option<PathBuf>) -> Result<()> {
         crate::agent_binary_notice::Reporter::AgentBinary,
         &resolution,
     );
-    println!("{}", render(&resolution, shell, from_tmux_server));
+    let inherit = if shell {
+        inherit_handoff(|name| std::env::var(name).ok())
+    } else {
+        InheritHandoff::default()
+    };
+    if let Some(line) = inherit.not_handed_on_line() {
+        eprintln!("{line}");
+    }
+    println!(
+        "{}",
+        render(&resolution, shell, from_tmux_server, &inherit.set)
+    );
     Ok(())
+}
+
+/// The caller's effort and model variables, as the hand-off passes them on
+/// (issue #1883; see the module doc).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct InheritHandoff {
+    /// `NAME=value` assignments for the far side, in `ENV_INPUTS` order.
+    pub(crate) set: Vec<(&'static str, String)>,
+    /// Variables the caller holds whose value cannot cross the hand-off. The
+    /// far side gets them removed, not set.
+    pub(crate) not_handed_on: Vec<&'static str>,
+}
+
+impl InheritHandoff {
+    /// The one stderr line for the caller's terminal, when anything was held
+    /// back. It names the variables, never their values (S9).
+    pub(crate) fn not_handed_on_line(&self) -> Option<String> {
+        if self.not_handed_on.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "amplihack: not handed on: {}. Only a valid option value made of letters, \
+             digits and - _ . : / @ % + , can cross the hand-off, so a recipe run in the \
+             new session does not inherit this effort or model. Pass -c effort=<level> or \
+             -c model=<id> to that run, in single quotes inside the double-quoted tmux \
+             command.",
+            self.not_handed_on.join(", ")
+        ))
+    }
+}
+
+/// A character the hand-off line may hold in a value: one that neither a
+/// shell's word splitting and pathname expansion (the line read as the result
+/// of an unquoted `$(...)`, POSIX §2.6.5, §2.6.6) nor its parser (the line
+/// read as the source of the tmux command, in the new session's shell) treats
+/// as anything but itself. `[`, `]`, `*`, `?` would glob, and zsh refuses a
+/// glob that matches nothing; `~`, `$`, quotes and whitespace would expand,
+/// split or be removed.
+fn shell_inert(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '/' | '@' | '%' | '+' | ',')
+}
+
+/// What the hand-off sets and holds back for the effort and model variables,
+/// from `read` (the caller's environment). An unset or empty variable is
+/// simply removed on the far side.
+pub(crate) fn inherit_handoff(read: impl Fn(&str) -> Option<String>) -> InheritHandoff {
+    let mut out = InheritHandoff::default();
+    let mut model_crossed = false;
+    for name in ENV_INPUTS {
+        let Some(value) = read(name).filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        if name == PARENT_MODEL_BINARY_ENV {
+            // Provenance travels only with the model it describes.
+            if model_crossed && value.chars().all(shell_inert) {
+                out.set.push((name, value));
+            }
+            continue;
+        }
+        let crosses =
+            checked(&value).as_deref() == Some(value.as_str()) && value.chars().all(shell_inert);
+        if crosses {
+            model_crossed |= name == PARENT_MODEL_ENV;
+            out.set.push((name, value));
+        } else {
+            out.not_handed_on.push(name);
+        }
+    }
+    out
 }
 
 /// The line `amplihack agent-binary` prints.
 ///
 /// With `shell`, an `env` prefix for the command that follows it: `-u` for
-/// every session marker and every `PARENT_WATCH_ENV` variable, then the two `NAME=value` assignments. Marker names
-/// are constants, and both values are allowlisted or built from allowlisted
-/// names, so nothing needs quoting. Without it, the binary and the layer that
-/// supplied it, for a person (or `detect_cli`) to read.
+/// every session marker, every `PARENT_WATCH_ENV` variable and every
+/// `inherit::ENV_INPUTS` variable, then the `inherit` assignments
+/// ([`inherit_handoff`]), then the two agent-binary assignments. Marker names
+/// are constants, the agent-binary values are allowlisted or built from
+/// allowlisted names, and an `inherit` value holds only [`shell_inert`]
+/// characters, so nothing needs quoting. Without it, the binary and the layer
+/// that supplied it, for a person (or `detect_cli`) to read.
 ///
 /// `from_tmux_server` is the session marker the answer rests on when the tmux
 /// server's global environment holds it too
@@ -130,6 +236,7 @@ pub(crate) fn render(
     resolution: &Resolution,
     shell: bool,
     from_tmux_server: Option<SessionMarker>,
+    inherit: &[(&'static str, String)],
 ) -> String {
     if !shell {
         return format!("{} ({})", resolution.binary, resolution.source.label());
@@ -152,31 +259,52 @@ pub(crate) fn render(
         .iter()
         .map(|(variable, _)| *variable)
         .chain(PARENT_WATCH_ENV)
+        .chain(ENV_INPUTS)
         .map(|variable| format!("-u {variable} "))
         .collect();
+    let set: String = inherit
+        .iter()
+        .map(|(name, value)| format!("{name}={value} "))
+        .collect();
     format!(
-        "env {unset}{BINARY_ENV}={} {SOURCE_ENV}={tag}",
+        "env {unset}{set}{BINARY_ENV}={} {SOURCE_ENV}={tag}",
         resolution.binary
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{PARENT_WATCH_ENV, render};
+    use super::{ENV_INPUTS, InheritHandoff, PARENT_WATCH_ENV, inherit_handoff, render};
     use amplihack_utils::agent_binary::{
         Resolution, ResolutionSource, SESSION_MARKERS, SessionMarker,
     };
+    use std::collections::BTreeMap;
 
-    /// `env -u` for every marker and parent-watch variable, from the
-    /// canonical lists.
+    /// `env -u` for every marker, parent-watch and effort/model variable,
+    /// from the canonical lists.
     fn unset_every_marker() -> String {
         let unset: Vec<String> = SESSION_MARKERS
             .iter()
             .map(|(variable, _)| *variable)
             .chain(PARENT_WATCH_ENV)
+            .chain(ENV_INPUTS)
             .map(|variable| format!("-u {variable}"))
             .collect();
         format!("env {}", unset.join(" "))
+    }
+
+    /// [`render`] for a caller with no effort or model variables.
+    fn render3(r: &Resolution, shell: bool, marker: Option<SessionMarker>) -> String {
+        render(r, shell, marker, &[])
+    }
+
+    /// [`inherit_handoff`] over a fixed caller environment.
+    fn handoff(vars: &[(&str, &str)]) -> InheritHandoff {
+        let env: BTreeMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        inherit_handoff(|name| env.get(name).cloned())
     }
 
     fn resolved(binary: &str, source: ResolutionSource) -> Resolution {
@@ -194,7 +322,7 @@ mod tests {
     #[test]
     fn a_default_guess_is_handed_on_tagged() {
         assert_eq!(
-            render(&resolved("copilot", ResolutionSource::Default), true, None),
+            render3(&resolved("copilot", ResolutionSource::Default), true, None),
             format!(
                 "{} AMPLIHACK_AGENT_BINARY=copilot \
                  AMPLIHACK_AGENT_BINARY_SOURCE=default:copilot",
@@ -208,7 +336,7 @@ mod tests {
     /// sees only what the caller resolved.
     #[test]
     fn the_hand_off_unsets_every_session_marker_first() {
-        let line = render(
+        let line = render3(
             &resolved("claude", ResolutionSource::SessionMarker),
             true,
             None,
@@ -241,7 +369,7 @@ mod tests {
     /// is a top-level run and does not stop at once with exit 75.
     #[test]
     fn the_hand_off_unsets_the_parent_watch_variables() {
-        let line = render(&resolved("claude", ResolutionSource::Env), true, None);
+        let line = render3(&resolved("claude", ResolutionSource::Env), true, None);
         let words: Vec<&str> = line.split(' ').collect();
         assert_eq!(words[0], "env");
         for variable in [
@@ -258,6 +386,166 @@ mod tests {
         }
     }
 
+    /// Crusty review of #1892, round 6: a tmux server first started inside an
+    /// amplihack session holds that session's effort and model variables
+    /// globally. The hand-off removes all five, then sets the caller's, before
+    /// the agent-binary assignments, so a run in a later session inherits the
+    /// caller's values and not the server starter's.
+    #[test]
+    fn the_hand_off_replaces_the_effort_and_model_variables() {
+        let caller = handoff(&[
+            ("AMPLIHACK_PARENT_EFFORT", "xhigh"),
+            ("AMPLIHACK_PARENT_MODEL", "claude-opus-5-5"),
+            ("AMPLIHACK_PARENT_MODEL_BINARY", "claude"),
+            ("CLAUDE_CODE_EFFORT_LEVEL", "xhigh"),
+            ("ANTHROPIC_MODEL", "claude-opus-5-5"),
+        ]);
+        assert_eq!(caller.not_handed_on, Vec::<&str>::new());
+        assert_eq!(caller.not_handed_on_line(), None);
+        let line = render(
+            &resolved("claude", ResolutionSource::SessionMarker),
+            true,
+            None,
+            &caller.set,
+        );
+        assert_eq!(
+            line,
+            format!(
+                "{} AMPLIHACK_PARENT_EFFORT=xhigh AMPLIHACK_PARENT_MODEL=claude-opus-5-5 \
+                 AMPLIHACK_PARENT_MODEL_BINARY=claude CLAUDE_CODE_EFFORT_LEVEL=xhigh \
+                 ANTHROPIC_MODEL=claude-opus-5-5 AMPLIHACK_AGENT_BINARY=claude \
+                 AMPLIHACK_AGENT_BINARY_SOURCE=",
+                unset_every_marker()
+            )
+        );
+        let words: Vec<&str> = line.split(' ').collect();
+        for variable in [
+            "AMPLIHACK_PARENT_EFFORT",
+            "AMPLIHACK_PARENT_MODEL",
+            "AMPLIHACK_PARENT_MODEL_BINARY",
+            "CLAUDE_CODE_EFFORT_LEVEL",
+            "ANTHROPIC_MODEL",
+        ] {
+            let unset = words
+                .iter()
+                .position(|word| *word == variable)
+                .unwrap_or_else(|| panic!("{variable} is not unset: {line}"));
+            assert_eq!(words[unset - 1], "-u", "{line}");
+            let set = words
+                .iter()
+                .position(|word| word.starts_with(&format!("{variable}=")))
+                .unwrap_or_else(|| panic!("{variable} is not set: {line}"));
+            assert!(unset < set, "the unset comes first: {line}");
+        }
+    }
+
+    /// A caller outside any amplihack session (a plain shell, cron) holds
+    /// none of them, so the far side holds none either: the server's are
+    /// removed and nothing is set.
+    #[test]
+    fn a_caller_without_values_hands_on_their_removal_only() {
+        let caller = handoff(&[("AMPLIHACK_PARENT_EFFORT", ""), ("HOME", "/h")]);
+        assert_eq!(caller, InheritHandoff::default());
+        assert_eq!(
+            render(
+                &resolved("claude", ResolutionSource::Env),
+                true,
+                None,
+                &caller.set
+            ),
+            format!(
+                "{} AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=",
+                unset_every_marker()
+            )
+        );
+    }
+
+    /// A value that a shell would glob, split or expand cannot cross: the
+    /// `$(...)` output is read both as an expansion result and as tmux's
+    /// command source. It is removed, not set, and named (without its value)
+    /// on the caller's terminal. Its provenance does not cross without it.
+    #[test]
+    fn a_value_a_shell_would_change_is_removed_and_named() {
+        let caller = handoff(&[
+            ("AMPLIHACK_PARENT_EFFORT", "high"),
+            ("AMPLIHACK_PARENT_MODEL", "claude-opus-5[1m]"),
+            ("AMPLIHACK_PARENT_MODEL_BINARY", "claude"),
+            ("CLAUDE_CODE_EFFORT_LEVEL", "high"),
+            ("ANTHROPIC_MODEL", "claude opus"),
+        ]);
+        assert_eq!(
+            caller.set,
+            vec![
+                ("AMPLIHACK_PARENT_EFFORT", "high".to_string()),
+                ("CLAUDE_CODE_EFFORT_LEVEL", "high".to_string()),
+            ]
+        );
+        assert_eq!(
+            caller.not_handed_on,
+            vec!["AMPLIHACK_PARENT_MODEL", "ANTHROPIC_MODEL"]
+        );
+        let line = caller.not_handed_on_line().unwrap();
+        assert!(
+            line.starts_with("amplihack: not handed on: AMPLIHACK_PARENT_MODEL, ANTHROPIC_MODEL. "),
+            "{line}"
+        );
+        assert!(
+            !line.contains("[1m]") && !line.contains("claude opus"),
+            "{line}"
+        );
+        for value in [
+            "a*", "a?", "~a", "$a", "a'b", "a\"b", "a;b", "a`b`", "a\\b", "a#b",
+        ] {
+            let caller = handoff(&[("ANTHROPIC_MODEL", value)]);
+            assert_eq!(caller.set, Vec::new(), "{value}");
+            assert_eq!(caller.not_handed_on, vec!["ANTHROPIC_MODEL"], "{value}");
+        }
+    }
+
+    /// A value the launch path would refuse or change (D9: trimmed, no
+    /// leading `-`) is not handed on as it stands; ids with the punctuation
+    /// real model ids use (Bedrock, Vertex, gateway routes) are.
+    #[test]
+    fn only_a_value_the_launch_path_takes_unchanged_crosses() {
+        for value in ["-x", " high", "high "] {
+            let caller = handoff(&[("AMPLIHACK_PARENT_EFFORT", value)]);
+            assert_eq!(caller.set, Vec::new(), "{value:?}");
+            assert_eq!(caller.not_handed_on, vec!["AMPLIHACK_PARENT_EFFORT"]);
+        }
+        for value in [
+            "us.anthropic.claude-opus-5-5-v1:0",
+            "claude-sonnet-4-5@20250929",
+            "azure/gpt-5.1",
+            "gpt-5.1-codex+beta,x%y",
+        ] {
+            let caller = handoff(&[("AMPLIHACK_PARENT_MODEL", value)]);
+            assert_eq!(
+                caller.set,
+                vec![("AMPLIHACK_PARENT_MODEL", value.to_string())],
+                "{value}"
+            );
+        }
+    }
+
+    /// `AMPLIHACK_PARENT_MODEL_BINARY` describes the model; without a model
+    /// that crosses, a stale provenance is not handed on.
+    #[test]
+    fn model_provenance_crosses_only_with_its_model() {
+        let caller = handoff(&[("AMPLIHACK_PARENT_MODEL_BINARY", "codex")]);
+        assert_eq!(caller, InheritHandoff::default());
+        let caller = handoff(&[
+            ("AMPLIHACK_PARENT_MODEL", "gpt-5.1"),
+            ("AMPLIHACK_PARENT_MODEL_BINARY", "codex"),
+        ]);
+        assert_eq!(
+            caller.set,
+            vec![
+                ("AMPLIHACK_PARENT_MODEL", "gpt-5.1".to_string()),
+                ("AMPLIHACK_PARENT_MODEL_BINARY", "codex".to_string()),
+            ]
+        );
+    }
+
     /// Anything observed or read is handed on with an empty tag, so a stale
     /// `default:<same binary>` in the receiving environment cannot veto it.
     /// That includes a launcher-context answer: it crosses as an explicit
@@ -271,7 +559,7 @@ mod tests {
             ResolutionSource::LauncherContext,
         ] {
             assert_eq!(
-                render(&resolved("claude", source), true, None),
+                render3(&resolved("claude", source), true, None),
                 format!(
                     "{} AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=",
                     unset_every_marker()
@@ -293,7 +581,7 @@ mod tests {
         };
         for source in [ResolutionSource::SessionMarker, ResolutionSource::Env] {
             assert_eq!(
-                render(&resolved("copilot", source), true, Some(copilot_cli)),
+                render3(&resolved("copilot", source), true, Some(copilot_cli)),
                 format!(
                     "{} AMPLIHACK_AGENT_BINARY=copilot \
                      AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:COPILOT_CLI",
@@ -310,7 +598,7 @@ mod tests {
             binary: "codex",
         };
         assert_eq!(
-            render(
+            render3(
                 &resolved("codex", ResolutionSource::SessionMarker),
                 true,
                 Some(described)
@@ -323,7 +611,7 @@ mod tests {
         );
         // The plain form `detect_cli` reads is unchanged.
         assert_eq!(
-            render(
+            render3(
                 &resolved("copilot", ResolutionSource::SessionMarker),
                 false,
                 Some(copilot_cli)
@@ -342,7 +630,7 @@ mod tests {
         };
         for marker in [None, Some(copilot_cli)] {
             assert_eq!(
-                render(
+                render3(
                     &resolved("claude", ResolutionSource::UserConfig),
                     true,
                     marker
@@ -356,7 +644,7 @@ mod tests {
             );
         }
         assert_eq!(
-            render(
+            render3(
                 &resolved("claude", ResolutionSource::UserConfig),
                 false,
                 None
@@ -368,7 +656,7 @@ mod tests {
     #[test]
     fn the_plain_form_names_the_source() {
         assert_eq!(
-            render(
+            render3(
                 &resolved("claude", ResolutionSource::SessionMarker),
                 false,
                 None

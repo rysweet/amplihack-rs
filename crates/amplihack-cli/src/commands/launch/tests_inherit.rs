@@ -347,26 +347,54 @@ fn resolved(
 
 const CLAUDE_LIKE: [&str; 4] = ["claude", "rusty", "rustyclawd", "amplifier"];
 
+/// rusty, rustyclawd and amplifier: no `--effort`, and no evidence they
+/// read `CLAUDE_CODE_EFFORT_LEVEL`.
+const EFFORT_FLAGLESS: [&str; 3] = ["rusty", "rustyclawd", "amplifier"];
+
 #[test]
-fn claude_compatible_binaries_take_both_values_with_no_lines() {
+fn claude_takes_both_values_with_no_lines() {
     let r = resolved(
         Some(("max", InheritSource::ParentLaunch)),
         Some(("claude-opus-5-5", InheritSource::ParentClaude)),
     );
-    for binary in CLAUDE_LIKE {
+    let (vetted, lines) = vet_for_binary("claude", &r, false, None);
+    assert_eq!(vetted, inherited(Some("max"), Some("claude-opus-5-5")));
+    assert!(lines.is_empty(), "{lines:?}");
+}
+
+/// Crusty review of #1892, round 6: the other Claude-compatible binaries
+/// take the model, and the effort is dropped with one "cannot be passed"
+/// line, so the run's summary never reports an effort they would not use.
+#[test]
+fn other_claude_compatible_binaries_take_the_model_and_drop_the_effort() {
+    let r = resolved(
+        Some(("max", InheritSource::ParentLaunch)),
+        Some(("claude-opus-5-5", InheritSource::ParentClaude)),
+    );
+    for binary in EFFORT_FLAGLESS {
         let (vetted, lines) = vet_for_binary(binary, &r, false, None);
+        assert_eq!(vetted, inherited(None, Some("claude-opus-5-5")), "{binary}");
+        assert_eq!(lines, vec![cannot_pass_line("effort", "max", binary)]);
+        let passed = Resolved {
+            effort_source: None,
+            model_source: r.model_source,
+            inherited: vetted,
+            warnings: Vec::new(),
+        };
         assert_eq!(
-            vetted,
-            inherited(Some("max"), Some("claude-opus-5-5")),
+            inherit_summary_line(&passed).as_deref(),
+            Some(
+                "amplihack: steps inherit effort=unset model=claude-opus-5-5 \
+                 (from the parent claude process)"
+            ),
             "{binary}"
         );
-        assert!(lines.is_empty(), "{binary}: {lines:?}");
     }
 }
 
 /// Under the LiteLLM gateway, Claude-compatible steps run the gateway model,
 /// so the inherited model is dropped with one line and the summary does not
-/// name it; the effort still passes (#1892 review).
+/// name it; the effort still passes to `claude` (#1892 review).
 #[test]
 fn claude_compatible_binaries_drop_the_model_under_the_gateway() {
     let r = resolved(
@@ -375,21 +403,31 @@ fn claude_compatible_binaries_drop_the_model_under_the_gateway() {
     );
     for binary in CLAUDE_LIKE {
         let (vetted, lines) = vet_for_binary(binary, &r, true, None);
-        assert_eq!(vetted, inherited(Some("max"), None), "{binary}");
-        assert_eq!(
-            lines,
-            vec![gateway_model_line("claude-opus-5-5", binary)],
-            "{binary}"
-        );
+        let mut want = vec![gateway_model_line("claude-opus-5-5", binary)];
+        if binary == "claude" {
+            assert_eq!(vetted, inherited(Some("max"), None), "{binary}");
+        } else {
+            // Effort first, then the model (D7).
+            assert_eq!(vetted, Inherited::default(), "{binary}");
+            want.insert(0, cannot_pass_line("effort", "max", binary));
+        }
+        assert_eq!(lines, want, "{binary}");
+        // As `inherit_for_run` builds it: only the sources of values passed.
         let passed = Resolved {
-            effort_source: r.effort_source,
+            effort_source: r.effort_source.filter(|_| vetted.effort.is_some()),
             model_source: None,
             inherited: vetted,
             warnings: Vec::new(),
         };
-        let summary = inherit_summary_line(&passed).unwrap_or_default();
-        assert!(summary.contains("model=unset"), "{binary}: {summary}");
-        assert!(!summary.contains("claude-opus-5-5"), "{binary}: {summary}");
+        let summary = inherit_summary_line(&passed);
+        if binary == "claude" {
+            let summary = summary.unwrap_or_default();
+            assert!(summary.contains("model=unset"), "{binary}: {summary}");
+            assert!(!summary.contains("claude-opus-5-5"), "{binary}: {summary}");
+        } else {
+            // Nothing reaches the steps, so there is no summary at all.
+            assert_eq!(summary, None, "{binary}");
+        }
     }
 }
 
@@ -465,15 +503,23 @@ fn copilot_refuses_any_model_under_the_gateway() {
     assert_eq!(lines, vec![cannot_pass_line("model", "gpt-5.1", "copilot")]);
 }
 
-/// Copilot takes every level `copilot --help` lists for
-/// `--reasoning-effort` (crusty review of #1892, round 2).
+/// Copilot takes the `--reasoning-effort` levels its default model accepts
+/// (crusty review of #1892, rounds 2 and 6). Copilot 1.0.109 refuses `none`
+/// and `minimal` at startup for its default model, `claude-sonnet-5.5`, so
+/// those are dropped with one line rather than failing every step.
 #[test]
-fn copilot_takes_every_listed_reasoning_effort() {
-    for level in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+fn copilot_takes_the_levels_its_default_model_accepts() {
+    for level in ["low", "medium", "high", "xhigh", "max"] {
         let r = resolved(Some((level, InheritSource::ParentClaude)), None);
         let (vetted, lines) = vet_for_binary("copilot", &r, false, None);
         assert_eq!(vetted.effort.as_deref(), Some(level));
         assert!(lines.is_empty(), "{level}: {lines:?}");
+    }
+    for level in ["none", "minimal"] {
+        let r = resolved(Some((level, InheritSource::ParentLaunch)), None);
+        let (vetted, lines) = vet_for_binary("copilot", &r, false, None);
+        assert_eq!(vetted.effort, None, "{level}");
+        assert_eq!(lines, vec![cannot_pass_line("effort", level, "copilot")]);
     }
 }
 
@@ -529,13 +575,14 @@ fn no_inherited_effort_adds_nothing() {
 }
 
 /// C1: what a launch exports is the effort its agent runs with. rusty,
-/// rustyclawd and amplifier take it only through the variable, so it is not on
-/// their argv, and they must still pass it on.
+/// rustyclawd and amplifier get no inherited effort, so they pass none on;
+/// a step's own `--effort` is still theirs and is passed on.
 #[test]
 fn exported_effort_is_the_effort_the_agent_runs_with() {
     for binary in ["claude", "rusty", "rustyclawd", "amplifier"] {
         let got = effort_args(binary, &[], &inherited(Some("high"), None));
-        assert_eq!(got.exported.as_deref(), Some("high"), "{binary}");
+        let runs_with = (binary == "claude").then_some("high");
+        assert_eq!(got.exported.as_deref(), runs_with, "{binary}");
         let got = effort_args(
             binary,
             &s(&["--effort=low"]),
@@ -584,12 +631,18 @@ fn parent_env_of(cmd: &Command) -> Vec<(String, Option<String>)> {
     out
 }
 
-/// C1: a rusty step exports the effort it was given through
-/// CLAUDE_CODE_EFFORT_LEVEL, although its argv has no `--effort`.
+/// C1: a rusty step exports its own `--effort`, which it was given on its
+/// command line, over an inherited one it does not take.
 #[test]
-fn export_to_child_passes_on_a_rusty_step_effort() {
-    let effort = effort_args("rusty", &[], &inherited(Some("high"), None));
+fn export_to_child_passes_on_a_rusty_step_own_effort() {
+    let effort = effort_args(
+        "rusty",
+        &s(&["--effort", "high"]),
+        &inherited(Some("low"), None),
+    );
     assert!(effort.argv.is_empty());
+    assert!(effort.env.is_empty(), "{:?}", effort.env);
+    assert_eq!(effort.unsupported, None);
     let mut cmd = Command::new("rusty");
     export_to_child(
         &mut cmd,
@@ -662,19 +715,29 @@ fn effort_after_double_dash_is_not_the_step_own() {
     assert_eq!(got.argv, s(&["--effort", "high"]));
 }
 
-/// rusty, rustyclawd and amplifier may reject an unknown flag, so they get
-/// only the variable, and no log line.
+/// rusty, rustyclawd and amplifier may reject an unknown flag, and nothing
+/// shows that they read `CLAUDE_CODE_EFFORT_LEVEL`, so an inherited effort is
+/// not passed in either form; the launch says so, as for any binary that
+/// takes no effort (crusty review of #1892, round 6).
 #[test]
-fn other_claude_compatible_binaries_get_only_the_variable() {
-    for binary in ["rusty", "rustyclawd", "amplifier"] {
+fn other_claude_compatible_binaries_get_no_inherited_effort() {
+    for binary in EFFORT_FLAGLESS {
         let got = effort_args(binary, &[], &inherited(Some("high"), None));
         assert!(got.argv.is_empty(), "{binary}: {:?}", got.argv);
+        assert!(got.env.is_empty(), "{binary}: {:?}", got.env);
         assert_eq!(
-            env_of(&got),
-            vec![("CLAUDE_CODE_EFFORT_LEVEL", "high")],
+            got.unsupported,
+            Some(cannot_pass_line("effort", "high", binary)),
             "{binary}"
         );
-        assert_eq!(got.unsupported, None, "{binary}");
+        // The step's own effort needs no line about one it would not use.
+        let own = effort_args(
+            binary,
+            &s(&["--effort", "low"]),
+            &inherited(Some("high"), None),
+        );
+        assert_eq!(own.unsupported, None, "{binary}");
+        assert!(own.env.is_empty(), "{binary}: {:?}", own.env);
     }
 }
 
@@ -742,10 +805,10 @@ fn copilot_own_reasoning_effort_wins() {
 /// to start over an inherited value.
 #[test]
 fn copilot_effort_maps_only_the_listed_literals() {
-    for level in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+    for level in ["low", "medium", "high", "xhigh", "max"] {
         assert_eq!(copilot_effort(level), Some(level));
     }
-    for level in ["", "HIGH", "ultra", "high,foo", " high"] {
+    for level in ["", "HIGH", "ultra", "high,foo", " high", "none", "minimal"] {
         assert_eq!(copilot_effort(level), None, "{level:?}");
     }
     let got = effort_args("copilot", &[], &inherited(Some("ultra"), None));

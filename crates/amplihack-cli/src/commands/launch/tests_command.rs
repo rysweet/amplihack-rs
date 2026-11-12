@@ -1351,12 +1351,18 @@ fn test_1883_launch_ignores_the_fallback_variables() {
     );
 }
 
+/// rusty, rustyclawd and amplifier list no `--effort` and are not known to
+/// read `CLAUDE_CODE_EFFORT_LEVEL`, so an inherited effort is not passed in
+/// either form; the inherited model still is (crusty review of #1892,
+/// round 6).
 #[test]
-fn test_1883_rusty_gets_effort_only_through_the_environment() {
-    let b = build_inherit("rusty", false, &PARENT_HIGH_OPUS, &["-p", "do it"]);
-    assert!(!b.args.iter().any(|a| a == "--effort"), "{:?}", b.args);
-    assert_eq!(env_val(&b, "CLAUDE_CODE_EFFORT_LEVEL"), Some("high"));
-    assert_eq!(b.args[pos(&b.args, "--model") + 1], "claude-opus-5-5");
+fn test_1883_rusty_gets_the_model_but_no_inherited_effort() {
+    for binary in ["rusty", "rustyclawd", "amplifier"] {
+        let b = build_inherit(binary, false, &PARENT_HIGH_OPUS, &["-p", "do it"]);
+        assert!(!b.args.iter().any(|a| a == "--effort"), "{:?}", b.args);
+        assert_eq!(env_val(&b, "CLAUDE_CODE_EFFORT_LEVEL"), None, "{binary}");
+        assert_eq!(b.args[pos(&b.args, "--model") + 1], "claude-opus-5-5");
+    }
 }
 
 /// Codex takes `-c model_reasoning_effort=L`, placed before `resume` so codex

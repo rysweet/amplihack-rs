@@ -111,7 +111,11 @@ every session marker and sets both variables (#1525). It also removes
 `AMPLIHACK_PARENT_RECIPE_PID`, `AMPLIHACK_PARENT_RECIPE_STARTTIME` and
 `AMPLIHACK_AUTODRIVE_STATE_DIR` (#1976): a tmux server first started from a
 recipe step keeps the step's values, and a run in a later session would watch
-a parent that has gone and stop at once with exit `75`. It belongs inside the
+a parent that has gone and stop at once with exit `75`. It removes
+`AMPLIHACK_PARENT_EFFORT`, `AMPLIHACK_PARENT_MODEL`,
+`AMPLIHACK_PARENT_MODEL_BINARY`, `CLAUDE_CODE_EFFORT_LEVEL` and
+`ANTHROPIC_MODEL` too, then sets the caller's own value of each (#1883), so a
+run there inherits the caller's effort and model, not the server starter's. It belongs inside the
 double-quoted tmux command; in single quotes it expands in the new session and
 reads the server's markers. An answer read from a marker the tmux server holds
 is tagged `AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker variable>`. That
@@ -1278,10 +1282,17 @@ inherited, not when amplihack chose it itself.
 
 The effort and model that agent steps inherit from the session that started a
 recipe run (issue #1883). Do not set these by hand; pass `-c effort=` and
-`-c model=` to `amplihack recipe run` instead. They cannot be set through `-c`
-or a context file. The resolution order, the support for each binary and the
-log lines are in
+`-c model=` to `amplihack recipe run` instead. They cannot be set through `-c`,
+a context file or the `context:` of the recipe the run starts; a sub-recipe's
+`context:` is not checked (rysweet/amplihack-recipe-runner#146). The
+resolution order, the support for each binary and the log lines are in
 [Effort and Model Inheritance for Recipe Steps](./effort-and-model-inheritance.md).
+
+A tmux server started inside an amplihack session keeps these variables, with
+`CLAUDE_CODE_EFFORT_LEVEL` and `ANTHROPIC_MODEL`, and gives them to every later
+`tmux new-session`. `$(amplihack agent-binary --shell)` removes all five and
+sets the caller's own values instead; see
+[Limitations](./effort-and-model-inheritance.md#limitations).
 
 `AMPLIHACK_PARENT_MODEL_BINARY` accompanies an exported model and records the
 binary that selected it. Codex and Copilot inherit models from a parent launch

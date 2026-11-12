@@ -742,12 +742,17 @@ fn without_any_marker() -> String {
 }
 
 /// The `env -u` arguments `agent-binary --shell` prints: every session
-/// marker, then the #1976 parent-watch variables, which a tmux server started
-/// from a recipe step would otherwise hand to every later session.
+/// marker, then the #1976 parent-watch variables, then the #1883 effort and
+/// model variables, which a tmux server started from a recipe step or an
+/// amplihack session would otherwise hand to every later session. The
+/// fixture's caller holds no effort or model variable, so the hand-off sets
+/// none of them.
 fn hand_off_unsets() -> String {
     format!(
         "{} -u AMPLIHACK_PARENT_RECIPE_PID -u AMPLIHACK_PARENT_RECIPE_STARTTIME \
-         -u AMPLIHACK_AUTODRIVE_STATE_DIR",
+         -u AMPLIHACK_AUTODRIVE_STATE_DIR -u AMPLIHACK_PARENT_EFFORT \
+         -u AMPLIHACK_PARENT_MODEL -u AMPLIHACK_PARENT_MODEL_BINARY \
+         -u CLAUDE_CODE_EFFORT_LEVEL -u ANTHROPIC_MODEL",
         without_any_marker()
     )
 }

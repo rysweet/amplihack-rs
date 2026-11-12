@@ -5,7 +5,7 @@
 //! calling thread only with `procfs::override_proc_root` (issue #2196), so the
 //! developer's own `claude` session (which is usually an ancestor of
 //! `cargo test`) is never read and no other test sees the tree. These tests
-//! never set `AMPLIHACK_TEST_PROC_ROOT` or the test home guard. Every variable
+//! never set the procfs root variable or the test home guard. Every variable
 //! the function reads is set or cleared under the shared environment lock and
 //! restored afterwards.
 
@@ -350,6 +350,57 @@ fn copilot_steps_inherit_the_effort() {
                 .to_string()
         ]
     );
+}
+
+/// Crusty review of #1892, round 6: copilot refuses at startup a level its
+/// model does not support, and its default model refuses `none` and
+/// `minimal`, so a copilot run drops them with one line and its summary does
+/// not report them.
+#[test]
+fn copilot_runs_drop_the_levels_its_default_model_refuses() {
+    let p = fake_proc(&[]);
+    for level in ["none", "minimal"] {
+        let (got, lines) = run(&p, &[], &[("AMPLIHACK_PARENT_EFFORT", level)], "copilot");
+        assert_eq!(got, Inherited::default(), "{level}");
+        assert_eq!(
+            lines,
+            vec![format!(
+                "amplihack: effort '{level}' cannot be passed to copilot; steps use copilot's default"
+            )]
+        );
+    }
+}
+
+/// Crusty review of #1892, round 6: a run of rusty, rustyclawd or amplifier
+/// passes the model but not the effort, says so once, and its summary does
+/// not report an effort the steps would not use.
+#[test]
+fn runs_of_other_claude_compatible_binaries_do_not_report_an_effort() {
+    let p = fake_proc(&[]);
+    for binary in ["rusty", "rustyclawd", "amplifier"] {
+        let (got, lines) = run(
+            &p,
+            &[],
+            &[
+                ("AMPLIHACK_PARENT_EFFORT", "high"),
+                ("AMPLIHACK_PARENT_MODEL", "claude-opus-5-5"),
+            ],
+            binary,
+        );
+        assert_eq!(got, inherited(None, Some("claude-opus-5-5")), "{binary}");
+        assert_eq!(
+            lines,
+            vec![
+                format!(
+                    "amplihack: effort 'high' cannot be passed to {binary}; steps use \
+                     {binary}'s default"
+                ),
+                "amplihack: steps inherit effort=unset model=claude-opus-5-5 (from the parent \
+                 amplihack launch)"
+                    .to_string(),
+            ]
+        );
+    }
 }
 
 #[test]

@@ -162,11 +162,15 @@ pub fn message_times(msg: &str) -> (String, String) {
 }
 
 /// The `-u` names of the pane argv: `SESSION_MARKERS` in order, then the
-/// design 4.13 list, without repeats (D6, A3).
+/// design 4.13 list, then the effort and model variables a tmux server keeps
+/// from the amplihack session that started it (issue #1883), without repeats
+/// (D6, A3).
 pub fn pane_unset() -> Vec<String> {
     let extra = "CLAUDE_CODE_SESSION_ID CLAUDE_CODE_ENTRYPOINT CLAUDE_PROJECT_DIR \
                  AMPLIHACK_SESSION_ID AMPLIHACK_DEPTH AMPLIHACK_SESSION_DEPTH AMPLIHACK_TREE_ID \
-                 CLAUDE_CONFIG_DIR AMPLIHACK_CLAUDE_PROFILE";
+                 CLAUDE_CONFIG_DIR AMPLIHACK_CLAUDE_PROFILE \
+                 AMPLIHACK_PARENT_EFFORT AMPLIHACK_PARENT_MODEL AMPLIHACK_PARENT_MODEL_BINARY \
+                 CLAUDE_CODE_EFFORT_LEVEL ANTHROPIC_MODEL";
     let markers = amplihack_utils::agent_binary::SESSION_MARKERS
         .iter()
         .map(|(n, _)| *n);

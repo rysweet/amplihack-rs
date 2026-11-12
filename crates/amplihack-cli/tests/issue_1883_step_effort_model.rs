@@ -36,6 +36,10 @@
 //! - (h) a Claude run with effort `max` whose second step starts
 //!   `amplihack codex`: codex cannot take `max`, so that step prints the
 //!   "cannot be passed" line for effort and for the model, once each.
+//! - (i) Linux, with tmux: a private tmux server started inside an amplihack
+//!   session at `claude-haiku-4-5`/`low` keeps those values; a run started in
+//!   it with `"$(amplihack agent-binary --shell) …"` runs every step with the
+//!   caller's model and effort instead, or with none when the caller has none.
 
 #![cfg(unix)]
 
@@ -1074,4 +1078,214 @@ fn system_prompt_that_looks_like_a_model_flag_keeps_inherited_model() {
     );
     assert_eq!(call["ANTHROPIC_MODEL"], "sonnet");
     assert_eq!(call["AMPLIHACK_PARENT_MODEL"], "sonnet");
+}
+
+// ---------------------------------------------------------------------------
+// (i) The tmux hand-off (crusty review of #1892, round 6)
+// ---------------------------------------------------------------------------
+
+/// Kills the private tmux server on every way out of the test.
+#[cfg(target_os = "linux")]
+struct TmuxServer {
+    dir: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl TmuxServer {
+    fn tmux(&self) -> Command {
+        let mut c = Command::new("tmux");
+        c.env_clear()
+            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .env("TMUX_TMPDIR", &self.dir)
+            .stdin(std::process::Stdio::null());
+        c
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for TmuxServer {
+    fn drop(&mut self) {
+        let _ = self.tmux().arg("kill-server").output();
+    }
+}
+
+/// `cmd`'s environment as it would start: `isolated()` clears it, so every
+/// variable the child gets is listed.
+#[cfg(target_os = "linux")]
+fn env_of(cmd: &Command) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    cmd.get_envs()
+        .filter_map(|(k, v)| Some((k.to_os_string(), v?.to_os_string())))
+        .collect()
+}
+
+/// The values the session that first started the tmux server ran with.
+#[cfg(target_os = "linux")]
+const SERVER_STARTER: [(&str, &str); 5] = [
+    ("AMPLIHACK_PARENT_EFFORT", "low"),
+    ("AMPLIHACK_PARENT_MODEL", Y),
+    ("AMPLIHACK_PARENT_MODEL_BINARY", "claude"),
+    ("CLAUDE_CODE_EFFORT_LEVEL", "low"),
+    ("ANTHROPIC_MODEL", Y),
+];
+
+/// The values of the session that starts the run, later.
+#[cfg(target_os = "linux")]
+const CALLER: [(&str, &str); 5] = [
+    ("AMPLIHACK_PARENT_EFFORT", "xhigh"),
+    ("AMPLIHACK_PARENT_MODEL", X),
+    ("AMPLIHACK_PARENT_MODEL_BINARY", "claude"),
+    ("CLAUDE_CODE_EFFORT_LEVEL", "xhigh"),
+    ("ANTHROPIC_MODEL", X),
+];
+
+/// (i) `tmux new-session` gives its command the server's global environment,
+/// copied from whatever started the server (tmux(1), GLOBAL AND SESSION
+/// ENVIRONMENT), not the caller's. A server first started inside an amplihack
+/// session at `claude-haiku-4-5`/`low` therefore hands those values to every
+/// later session, where `recipe run` ranks them above all but its own
+/// context. The control run shows that; the documented hand-off,
+/// `tmux new-session -d "$(amplihack agent-binary --shell) amplihack recipe
+/// run …"` in the caller's shell, replaces them with the caller's, or removes
+/// them when the caller has none.
+#[cfg(target_os = "linux")]
+#[test]
+fn i_a_tmux_hand_off_carries_the_callers_effort_and_model_not_the_servers() {
+    if !Command::new("tmux")
+        .arg("-V")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+    let f = Fixture::new(&[]);
+    let (dir, _socket_tmp) = crate::support::socket_dir::tmux_socket_dir(&f.root);
+    fs::create_dir_all(&dir).unwrap();
+    if !crate::support::socket_dir::tmux_socket_fits(&dir) {
+        eprintln!("{}", crate::support::socket_dir::skip_message(&dir));
+        return;
+    }
+    let server = TmuxServer { dir };
+
+    // The server's starter: an amplihack session at haiku/low, as a step of
+    // another run or another drive's agent would be.
+    let starter = f.command("claude", &SERVER_STARTER);
+    let started = server
+        .tmux()
+        .envs(env_of(&starter))
+        .env("TMUX_TMPDIR", &server.dir)
+        .args(["new-session", "-d", "-s", "host"])
+        .output()
+        .unwrap();
+    assert!(started.status.success(), "{}", describe(&started));
+
+    let amp = amplihack_bin();
+    let recipe = f.root.join("inherit-1883.yaml");
+    // `case` names the session and its output files; `prefix` is put in
+    // front of the far side's command by the caller's own shell, as the
+    // documented hand-off does.
+    let start_run = |case: &str, caller: &[(&str, &str)], prefix: &str| -> String {
+        let done = f.root.join(format!("{case}.done"));
+        let err = f.root.join(format!("{case}.err"));
+        let far = format!(
+            "'{}' recipe run '{}' -w '{}' >'{}' 2>'{}'; touch '{}'",
+            amp.display(),
+            recipe.display(),
+            f.work.display(),
+            f.root.join(format!("{case}.out")).display(),
+            err.display(),
+            done.display()
+        );
+        let script = format!("tmux new-session -d -s {case} \"{prefix}$FAR\"");
+        let out = Command::new("sh")
+            .arg("-c")
+            .arg(&script)
+            .env_clear()
+            .envs(env_of(&f.command("claude", caller)))
+            .env("TMUX_TMPDIR", &server.dir)
+            .env("AMP", &amp)
+            .env("WORK", &f.work)
+            .env("FAR", &far)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{case}: {}", describe(&out));
+        crate::support::wait::wait_until(&format!("the {case} run to finish"), || done.exists());
+        for name in ["call.1", "call.2"] {
+            assert!(f.records.join(name).is_file(), "{case}: no {name}");
+        }
+        fs::read_to_string(err).unwrap()
+    };
+    let take_call = |step: u32| {
+        let call = f.call(step);
+        fs::remove_file(f.records.join(format!("call.{step}"))).unwrap();
+        call
+    };
+    let hand_off = "$(\"$AMP\" agent-binary --shell -w \"$WORK\") ";
+
+    // Control: a plain `tmux new-session` gives the run the server's values,
+    // from the caller holding others. This is the leak.
+    let stderr = start_run("control", &CALLER, "");
+    assert!(
+        stderr.contains(&format!(
+            "amplihack: steps inherit effort=low model={Y} (from the parent amplihack launch)"
+        )),
+        "{stderr}"
+    );
+    for step in [1, 2] {
+        let args = argv(&take_call(step));
+        assert_eq!(flag(&args, "--model").as_deref(), Some(Y), "{args:?}");
+        assert_eq!(flag(&args, "--effort").as_deref(), Some("low"), "{args:?}");
+    }
+
+    // The hand-off: every step runs the caller's model at the caller's effort.
+    let stderr = start_run("handoff", &CALLER, hand_off);
+    assert!(
+        stderr.contains(&format!(
+            "amplihack: steps inherit effort=xhigh model={X} (from the parent amplihack launch)"
+        )),
+        "{stderr}"
+    );
+    for step in [1, 2] {
+        let call = take_call(step);
+        let args = argv(&call);
+        assert_eq!(flag(&args, "--model").as_deref(), Some(X), "{args:?}");
+        assert_eq!(
+            flag(&args, "--effort").as_deref(),
+            Some("xhigh"),
+            "{args:?}"
+        );
+        assert_eq!(call["CLAUDE_CODE_EFFORT_LEVEL"], "xhigh", "step {step}");
+        assert_eq!(call["ANTHROPIC_MODEL"], X, "step {step}");
+        assert_eq!(call["AMPLIHACK_PARENT_MODEL"], X, "step {step}");
+        assert!(!format!("{call:?}").contains(Y), "step {step}: {call:?}");
+    }
+
+    // A caller with no values (a plain shell, cron): the run inherits
+    // nothing, as it would started there with `setsid`, and the steps get
+    // amplihack's default model and no effort.
+    let stderr = start_run("plain", &[], hand_off);
+    assert!(!stderr.contains("steps inherit"), "{stderr}");
+    for step in [1, 2] {
+        let call = take_call(step);
+        let args = argv(&call);
+        assert_eq!(
+            flag(&args, "--model").as_deref(),
+            Some(DEFAULT_MODEL),
+            "{args:?}"
+        );
+        assert_eq!(count(&args, "--effort"), 0, "{args:?}");
+        for v in [
+            "CLAUDE_CODE_EFFORT_LEVEL",
+            "ANTHROPIC_MODEL",
+            "AMPLIHACK_PARENT_EFFORT",
+            "AMPLIHACK_PARENT_MODEL",
+            "AMPLIHACK_PARENT_MODEL_BINARY",
+        ] {
+            assert!(
+                !names(&call).contains(&v.to_string()),
+                "step {step} has {v}"
+            );
+        }
+    }
+    drop(server);
 }

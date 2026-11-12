@@ -27,13 +27,24 @@ const LAUNCHER_NAMES: &[&str] = &[
 ];
 
 /// The `env -u` names: every `SESSION_MARKERS` name in constant order, then
-/// [`LAUNCHER_NAMES`], first occurrence kept.
+/// [`LAUNCHER_NAMES`], then the effort and model variables
+/// (`inherit::ENV_INPUTS`), first occurrence kept.
+///
+/// Issue #1883: every `amplihack <cli>` launch exports
+/// `AMPLIHACK_PARENT_EFFORT`, `_MODEL` and `_MODEL_BINARY`, and sets
+/// `CLAUDE_CODE_EFFORT_LEVEL` and `ANTHROPIC_MODEL` for its agent when it
+/// passes an inherited value, so a tmux server started inside an amplihack
+/// session holds them and hands them to this pane. The resumed agent gets its
+/// recorded `--model`, `--effort` and environment instead; without the
+/// removal a stale effort would be inherited whenever the record has none
+/// (crusty review of #1892, round 6).
 pub fn pane_unset() -> Vec<&'static str> {
     let mut out: Vec<&'static str> = Vec::new();
     for name in SESSION_MARKERS
         .iter()
         .map(|(n, _)| *n)
         .chain(LAUNCHER_NAMES.iter().copied())
+        .chain(crate::commands::launch::inherit::ENV_INPUTS)
     {
         if !out.contains(&name) {
             out.push(name);
