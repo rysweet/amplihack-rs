@@ -336,10 +336,10 @@ pub(super) fn decide_measured(
     // Only here is the file read: a swap on this ground is rare. The strict
     // reader, not `key_check::home_key`: a key Claude may not read must not
     // keep a dead login live, and the swap it would have stopped is harmless.
-    let home_key = (is_failed_probe_swap(&decision) && !snap.platform_live())
+    let home_key = (is_failed_probe_swap(&decision, &probe.reading) && !snap.platform_live())
         .then(|| key_check::reachable(&ctx.home).ok())
         .flatten();
-    let (decision, note) = keep_for_home_key(decision, note, home_key);
+    let (decision, note) = keep_for_home_key(decision, note, home_key, &probe.reading);
     // A damped move off credits is a stay on them.
     let tag = match (&decision, verdict.tag) {
         (Decision::Stay, Some(Tag::Out)) => Some(Tag::On),

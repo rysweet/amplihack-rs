@@ -3,11 +3,24 @@
 //!
 //! The contract these tests fix for `fresh::live`:
 //!
-//! - `Series::default()`; `note(&mut self, name, at, session, t)` adds the
-//!   point `(at, session)` for live login `name` at clock `t`. It ignores a
-//!   non-finite session, `at <= last.at` and `at > t`; it clears the series
-//!   first when `name` differs from the series' login or `session` falls
-//!   below the last point. It keeps at most `MAX_POINTS` (4) points.
+//! - `Series::default()`; `note(&mut self, name, at, session, resets, t)`
+//!   adds the point `(at, session)`, whose session window resets at
+//!   `resets`, for live login `name` at clock `t`. It ignores a non-finite
+//!   session, `at <= last.at` and `at > t`. It clears the series first when
+//!   `name` differs from the series' login, or when `window(last.resets,
+//!   resets)` is `Later`. It ignores a figure from an `Earlier` window and a
+//!   lower figure in the `Same` window: use never falls within a window.
+//!   With an `Unknown` window a lower figure clears the series (the step
+//!   reads a lower cached figure again first, so only a direct read gets
+//!   there). It keeps at most `MAX_POINTS` (4) points.
+//! - `window(last, new) -> Window`: `Later` when both reset times are known
+//!   and `new` is more than `SAME_WINDOW_SECS` (3600) after `last`,
+//!   `Earlier` when more than that before, `Same` otherwise, `Unknown` when
+//!   either is missing. `contradicts(&last, session, resets)`: an `Earlier`
+//!   window, or a lower figure in the `Same` or an `Unknown` window.
+//! - `last_known(name, t) -> Option<Point>`: the last point for `name` while
+//!   its window can still be open at `t`: before its reset time when known,
+//!   and less than `SESSION_WINDOW_SECS` (5 h) after it was read.
 //!   `clear()`, `len()`, and `rate(min_span) -> Option<f64>` (points per
 //!   second from the first to the last point; `None` for fewer than 2
 //!   points, a time difference of 0 or less, a time difference below
@@ -24,11 +37,15 @@
 //!   as needing none. There is no basis for the reading as measured: with
 //!   no outlook, nothing is relabelled.
 //! - `with_outlook(real_verdict, on_outlook, Basis, &Settings, &real_reading)
-//!   -> Verdict`: a measured (not failed) reading at a threshold, or one
-//!   that gives a swap on its own, keeps `real_verdict`; otherwise (below
-//!   both thresholds, or failed) a threshold swap on the outlook, labelled
-//!   by `map_reason`, or the ALERT, never a stay. It never returns a
-//!   plan-room or overflow swap that `real_verdict` did not already hold.
+//!   -> Verdict`: for a failed reading, `real_verdict` (the failed-probe
+//!   rules' threshold swap, which damping delays, or their ALERT), with its
+//!   threshold swap relabelled by `map_reason` (so undamped) only when the
+//!   outlook also gives a threshold swap; an ALERT on the outlook never
+//!   replaces it. A measured reading at a threshold, or one that gives a
+//!   swap on its own, keeps `real_verdict`. Otherwise (below both
+//!   thresholds) a threshold swap on the outlook, labelled by `map_reason`,
+//!   or the ALERT, never a stay. It never returns a plan-room or overflow
+//!   swap that `real_verdict` did not already hold, and never retargets.
 //! - `fresh::live_time(&live_probe, measured_at) -> Option<i64>`: the live
 //!   reading time the target gate compares with, `read_at` capped at
 //!   `measured_at`, so a live re-read made after the measurement never makes
@@ -40,7 +57,8 @@
 use super::super::decide::{Decision, Reading, Reason};
 use super::super::fresh::gated_target;
 use super::super::fresh::live::{
-    Basis, FROZEN_CYCLES, MAX_POINTS, Series, map_reason, near, projected, with_outlook,
+    Basis, FROZEN_CYCLES, MAX_POINTS, Point, SAME_WINDOW_SECS, SESSION_WINDOW_SECS, Series, Window,
+    contradicts, map_reason, near, projected, window, with_outlook,
 };
 use super::super::overflow::{Tag, Verdict};
 use super::super::settings::{self, Settings};
@@ -93,7 +111,7 @@ fn the_limits_are_four_points_and_two_unchanged_cycles() {
 fn an_empty_or_single_point_series_has_no_rate() {
     let mut sr = Series::default();
     assert_eq!(sr.rate(120), None);
-    sr.note(&n("work"), T0, 22.0, T0);
+    sr.note(&n("work"), T0, 22.0, None, T0);
     assert_eq!(sr.len(), 1);
     assert_eq!(sr.rate(120), None);
 }
@@ -101,8 +119,8 @@ fn an_empty_or_single_point_series_has_no_rate() {
 #[test]
 fn the_rate_is_from_the_first_to_the_last_point() {
     let mut sr = Series::default();
-    sr.note(&n("work"), T0, 50.0, T0);
-    sr.note(&n("work"), T0 + 120, 63.0, T0 + 120);
+    sr.note(&n("work"), T0, 50.0, None, T0);
+    sr.note(&n("work"), T0 + 120, 63.0, None, T0 + 120);
     let r = sr.rate(120).unwrap();
     assert!(close(r * 120.0, 13.0), "{r}");
     assert!(close(projected(63.0, r, 120), 76.0));
@@ -113,14 +131,14 @@ fn a_rate_needs_points_at_least_the_minimum_span_apart() {
     // A direct 50% at T, then a status line at 51% written five seconds
     // later: 0.2 points a second, which would project 51 + 24 = 75.
     let mut sr = Series::default();
-    sr.note(&n("work"), T0, 50.0, T0);
-    sr.note(&n("work"), T0 + 5, 51.0, T0 + 120);
+    sr.note(&n("work"), T0, 50.0, None, T0);
+    sr.note(&n("work"), T0 + 5, 51.0, None, T0 + 120);
     assert_eq!(sr.len(), 2);
     assert_eq!(sr.rate(120), None, "5 s is less than one interval");
     assert!(sr.rate(5).is_some(), "the same points over a 5 s minimum");
-    sr.note(&n("work"), T0 + 119, 52.0, T0 + 120);
+    sr.note(&n("work"), T0 + 119, 52.0, None, T0 + 120);
     assert_eq!(sr.rate(120), None, "119 s is still less than one interval");
-    sr.note(&n("work"), T0 + 120, 52.0, T0 + 120);
+    sr.note(&n("work"), T0 + 120, 52.0, None, T0 + 120);
     let r = sr.rate(120).unwrap();
     assert!(close(r * 120.0, 2.0), "{r}");
 }
@@ -129,8 +147,8 @@ fn a_rate_needs_points_at_least_the_minimum_span_apart() {
 fn over_one_interval_the_projection_adds_no_more_than_the_rise_seen() {
     for (dt, rise) in [(120, 13.0), (121, 40.0), (360, 31.0), (600, 5.0)] {
         let mut sr = Series::default();
-        sr.note(&n("work"), T0, 30.0, T0);
-        sr.note(&n("work"), T0 + dt, 30.0 + rise, T0 + dt);
+        sr.note(&n("work"), T0, 30.0, None, T0);
+        sr.note(&n("work"), T0 + dt, 30.0 + rise, None, T0 + dt);
         let r = sr.rate(120).unwrap();
         let p = projected(30.0 + rise, r, 120);
         assert!(p <= 30.0 + 2.0 * rise + 1e-9, "dt={dt} rise={rise}: {p}");
@@ -142,12 +160,12 @@ fn the_rising_history_projects_59_3_at_50_and_73_3_at_63() {
     let mut sr = Series::default();
     for (i, v) in [22.0, 32.0, 42.0, 50.0].into_iter().enumerate() {
         let at = T0 + 120 * i as i64;
-        sr.note(&n("work"), at, v, at);
+        sr.note(&n("work"), at, v, None, at);
     }
     let p50 = projected(50.0, sr.rate(120).unwrap(), 120);
     assert!(close(p50, 59.3), "{p50}");
     assert!(p50 < 70.0);
-    sr.note(&n("work"), T0 + 480, 63.0, T0 + 480);
+    sr.note(&n("work"), T0 + 480, 63.0, None, T0 + 480);
     assert_eq!(sr.len(), MAX_POINTS, "the oldest point (22) is dropped");
     let p63 = projected(63.0, sr.rate(120).unwrap(), 120);
     assert!(close(p63, 73.3), "{p63}");
@@ -157,26 +175,128 @@ fn the_rising_history_projects_59_3_at_50_and_73_3_at_63() {
 #[test]
 fn a_slow_rise_projects_below_the_threshold() {
     let mut sr = Series::default();
-    sr.note(&n("work"), T0, 20.0, T0);
-    sr.note(&n("work"), T0 + 120, 22.0, T0 + 120);
+    sr.note(&n("work"), T0, 20.0, None, T0);
+    sr.note(&n("work"), T0 + 120, 22.0, None, T0 + 120);
     assert!(close(projected(22.0, sr.rate(120).unwrap(), 120), 24.0));
 }
 
 #[test]
-fn a_fall_in_session_starts_a_new_series() {
+fn a_fall_with_no_reset_time_to_compare_starts_a_new_series() {
+    // Only a direct read gets here with a lower figure: the step reads a
+    // lower cached figure again first.
     let mut sr = Series::default();
-    sr.note(&n("work"), T0, 60.0, T0);
-    sr.note(&n("work"), T0 + 120, 65.0, T0 + 120);
-    sr.note(&n("work"), T0 + 240, 3.0, T0 + 240);
+    sr.note(&n("work"), T0, 60.0, None, T0);
+    sr.note(&n("work"), T0 + 120, 65.0, None, T0 + 120);
+    sr.note(&n("work"), T0 + 240, 3.0, None, T0 + 240);
     assert_eq!(sr.len(), 1, "a new session window");
     assert_eq!(sr.rate(120), None);
+}
+
+/// A session reset time in these tests.
+const R: i64 = T0 + 3 * 3600;
+
+#[test]
+fn windows_compare_by_session_reset_time() {
+    assert_eq!(SAME_WINDOW_SECS, 3600);
+    assert_eq!(SESSION_WINDOW_SECS, 5 * 3600);
+    assert_eq!(window(Some(R), Some(R)), Window::Same);
+    // A direct read prints the reset to the minute or the hour.
+    assert_eq!(window(Some(R), Some(R - 59 * 60)), Window::Same);
+    assert_eq!(window(Some(R), Some(R + SAME_WINDOW_SECS)), Window::Same);
+    assert_eq!(
+        window(Some(R), Some(R + SAME_WINDOW_SECS + 1)),
+        Window::Later
+    );
+    assert_eq!(window(Some(R), Some(R + 5 * 3600)), Window::Later);
+    assert_eq!(
+        window(Some(R), Some(R - SAME_WINDOW_SECS - 1)),
+        Window::Earlier
+    );
+    assert_eq!(window(None, Some(R)), Window::Unknown);
+    assert_eq!(window(Some(R), None), Window::Unknown);
+    assert_eq!(window(None, None), Window::Unknown);
+}
+
+#[test]
+fn a_lower_figure_contradicts_the_last_point_unless_its_window_is_later() {
+    let last = Point {
+        at: T0,
+        session: 66.0,
+        resets: Some(R),
+    };
+    assert!(contradicts(&last, 64.0, Some(R)), "same window, lower");
+    assert!(contradicts(&last, 64.0, None), "unknown window, lower");
+    assert!(!contradicts(&last, 66.0, Some(R)), "caught up");
+    assert!(!contradicts(&last, 69.0, None), "higher, unknown window");
+    assert!(!contradicts(&last, 3.0, Some(R + 5 * 3600)), "a new window");
+    assert!(
+        contradicts(&last, 90.0, Some(R - 5 * 3600)),
+        "an ended window, whatever its figure"
+    );
+}
+
+#[test]
+fn a_lower_figure_in_the_same_window_is_stale_and_kept_out() {
+    // Crusty round 7: a status line rewrites 64% with a new time after a
+    // direct 66%. Use never falls within one window.
+    let mut sr = Series::default();
+    sr.note(&n("work"), T0, 63.0, Some(R), T0);
+    sr.note(&n("work"), T0 + 120, 66.0, Some(R), T0 + 120);
+    sr.note(&n("work"), T0 + 240, 64.0, Some(R), T0 + 240);
+    assert_eq!(sr.len(), 2, "not a new window, and not a point");
+    let r = sr.rate(120).unwrap();
+    assert!(close(r * 120.0, 3.0), "{r}");
+    // A direct read's reset to the hour is the same window.
+    sr.note(&n("work"), T0 + 360, 65.0, Some(R - 1800), T0 + 360);
+    assert_eq!(sr.len(), 2);
+    sr.note(&n("work"), T0 + 480, 69.0, Some(R - 1800), T0 + 480);
+    assert_eq!(sr.len(), 3, "a higher figure in the same window");
+}
+
+#[test]
+fn a_later_session_reset_starts_a_new_series_whatever_the_figure() {
+    for next in [3.0, 80.0] {
+        let mut sr = Series::default();
+        sr.note(&n("work"), T0, 60.0, Some(R), T0);
+        sr.note(&n("work"), T0 + 120, 65.0, Some(R), T0 + 120);
+        sr.note(&n("work"), T0 + 240, next, Some(R + 5 * 3600), T0 + 240);
+        assert_eq!(sr.len(), 1, "{next}: a new session window");
+        assert_eq!(sr.rate(120), None);
+    }
+}
+
+#[test]
+fn a_figure_from_an_earlier_window_is_ignored() {
+    let mut sr = Series::default();
+    sr.note(&n("work"), T0, 5.0, Some(R + 5 * 3600), T0);
+    sr.note(&n("work"), T0 + 120, 80.0, Some(R), T0 + 120);
+    assert_eq!(sr.len(), 1);
+}
+
+#[test]
+fn the_last_known_point_counts_only_while_its_window_can_be_open() {
+    let mut sr = Series::default();
+    sr.note(&n("work"), T0, 66.0, Some(T0 + 600), T0);
+    assert!(sr.last_known(&n("work"), T0 + 599).is_some());
+    assert_eq!(
+        sr.last_known(&n("work"), T0 + 600),
+        None,
+        "its window reset"
+    );
+    assert_eq!(sr.last_known(&n("spare"), T0), None, "another login's");
+    // With no reset time, one session window at most.
+    let mut sr = Series::default();
+    sr.note(&n("work"), T0, 66.0, None, T0);
+    let end = T0 + SESSION_WINDOW_SECS;
+    assert!(sr.last_known(&n("work"), end - 1).is_some());
+    assert_eq!(sr.last_known(&n("work"), end), None);
 }
 
 #[test]
 fn another_live_login_starts_a_new_series() {
     let mut sr = Series::default();
-    sr.note(&n("work"), T0, 50.0, T0);
-    sr.note(&n("spare"), T0 + 120, 63.0, T0 + 120);
+    sr.note(&n("work"), T0, 50.0, None, T0);
+    sr.note(&n("spare"), T0 + 120, 63.0, None, T0 + 120);
     assert_eq!(sr.len(), 1);
     assert_eq!(sr.rate(120), None, "no rate across two logins");
 }
@@ -184,8 +304,8 @@ fn another_live_login_starts_a_new_series() {
 #[test]
 fn clear_empties_the_series() {
     let mut sr = Series::default();
-    sr.note(&n("work"), T0, 50.0, T0);
-    sr.note(&n("work"), T0 + 120, 63.0, T0 + 120);
+    sr.note(&n("work"), T0, 50.0, None, T0);
+    sr.note(&n("work"), T0 + 120, 63.0, None, T0 + 120);
     sr.clear();
     assert_eq!(sr.len(), 0);
     assert_eq!(sr.rate(120), None);
@@ -194,9 +314,9 @@ fn clear_empties_the_series() {
 #[test]
 fn a_point_not_later_than_the_last_is_ignored() {
     let mut sr = Series::default();
-    sr.note(&n("work"), T0 + 120, 50.0, T0 + 120);
-    sr.note(&n("work"), T0 + 120, 63.0, T0 + 120);
-    sr.note(&n("work"), T0, 63.0, T0 + 120);
+    sr.note(&n("work"), T0 + 120, 50.0, None, T0 + 120);
+    sr.note(&n("work"), T0 + 120, 63.0, None, T0 + 120);
+    sr.note(&n("work"), T0, 63.0, None, T0 + 120);
     assert_eq!(sr.len(), 1);
     assert_eq!(sr.rate(120), None);
 }
@@ -204,17 +324,17 @@ fn a_point_not_later_than_the_last_is_ignored() {
 #[test]
 fn a_point_from_the_future_is_ignored() {
     let mut sr = Series::default();
-    sr.note(&n("work"), T0, 50.0, T0);
-    sr.note(&n("work"), T0 + 600, 90.0, T0 + 120);
+    sr.note(&n("work"), T0, 50.0, None, T0);
+    sr.note(&n("work"), T0 + 600, 90.0, None, T0 + 120);
     assert_eq!(sr.len(), 1);
 }
 
 #[test]
 fn a_non_finite_session_is_ignored() {
     let mut sr = Series::default();
-    sr.note(&n("work"), T0, 50.0, T0);
-    sr.note(&n("work"), T0 + 120, f64::NAN, T0 + 120);
-    sr.note(&n("work"), T0 + 240, f64::INFINITY, T0 + 240);
+    sr.note(&n("work"), T0, 50.0, None, T0);
+    sr.note(&n("work"), T0 + 120, f64::NAN, None, T0 + 120);
+    sr.note(&n("work"), T0 + 240, f64::INFINITY, None, T0 + 240);
     assert_eq!(sr.len(), 1);
     assert_eq!(sr.rate(120), None);
 }
@@ -262,8 +382,8 @@ fn a_frozen_series_with_a_moving_time_is_near_at_66() {
     // rewriting it with a new time: two identical points one interval apart.
     let s = s();
     let mut sr = Series::default();
-    sr.note(&n("work"), T0, 66.0, T0);
-    sr.note(&n("work"), T0 + 120, 66.0, T0 + 120);
+    sr.note(&n("work"), T0, 66.0, None, T0);
+    sr.note(&n("work"), T0 + 120, 66.0, None, T0 + 120);
     let rate = sr.rate(120);
     assert_eq!(rate, Some(0.0));
     assert!(near(66.0, rate, &s));
@@ -436,9 +556,10 @@ fn a_measured_alert_at_a_threshold_keeps_its_api_key_note() {
 }
 
 #[test]
-fn a_substituted_failed_probe_is_a_projected_swap_or_the_alert_never_a_stay() {
+fn a_substituted_failed_probe_whose_target_beats_the_substitute_is_undamped() {
     let s = s();
     // The failed-probe rules give a threshold swap, which damping delays.
+    // The target also has --margin more headroom than the substituted 70%.
     let real = verdict(threshold());
     let got = with_outlook(
         real.clone(),
@@ -448,22 +569,75 @@ fn a_substituted_failed_probe_is_a_projected_swap_or_the_alert_never_a_stay() {
         &Reading::Failed,
     );
     assert_eq!(got.decision, projected_swap(), "undamped on the outlook");
-    // No candidate meets the margin on the substituted figure: the ALERT,
-    // never the plan-room swap, and never the failed-probe rules' threshold
-    // swap, which damping would turn into a stay.
-    for real in [verdict(threshold()), verdict(Decision::Alert)] {
+    assert_eq!(got.unknown_plan, [n("busy")], "the measured state is kept");
+}
+
+#[test]
+fn an_alert_on_the_substitute_never_replaces_the_failed_probe_swap() {
+    // Crusty round 7: `spare` at 68% has 32 points of headroom, 2 more than
+    // the substituted 70% leaves `work`, so the outlook ALERTs. The failed
+    // probe means headroom 0 to the failed-probe rules, whose threshold
+    // swap must stand so that damping makes it after three failures. The
+    // substitution changes timing only, never the target.
+    let s = s();
+    let real = verdict(threshold());
+    let got = with_outlook(
+        real.clone(),
+        Decision::Alert,
+        Basis::Substituted,
+        &s,
+        &Reading::Failed,
+    );
+    assert_eq!(got, real, "the failed-probe rules' own swap");
+    // With no candidate even against headroom 0, their ALERT stands.
+    let real = verdict(Decision::Alert);
+    for on_outlook in [Decision::Alert, threshold()] {
         let got = with_outlook(
             real.clone(),
-            Decision::Alert,
+            on_outlook.clone(),
             Basis::Substituted,
             &s,
             &Reading::Failed,
         );
-        assert_eq!(got.decision, Decision::Alert, "{:?}", real.decision);
-        assert_eq!(got.tag, None);
-        assert!(got.key_held.is_empty());
-        assert_eq!(got.unknown_plan, [n("busy")], "the measured state is kept");
+        assert_eq!(got, real, "never creates a swap: {on_outlook:?}");
     }
+}
+
+#[test]
+fn a_substituted_failed_probe_never_retargets_the_failed_probe_swap() {
+    let s = s();
+    let real = verdict(swap_for(Reason::Threshold));
+    let got = with_outlook(
+        real.clone(),
+        threshold(),
+        Basis::Substituted,
+        &s,
+        &Reading::Failed,
+    );
+    assert_eq!(got.decision, swap_for(Reason::Projected), "real's target");
+}
+
+#[test]
+fn the_early_failed_probe_swap_is_still_stopped_by_a_home_key() {
+    // The substitution only makes the failed-probe swap sooner, so the
+    // home-key rule applies to it as it does to the `failed-probe` swap.
+    use super::super::damp::{is_failed_probe_swap, keep_for_home_key};
+    let key = Some("primaryApiKey set");
+    let early = projected_swap();
+    assert!(is_failed_probe_swap(&early, &Reading::Failed));
+    let (d, note) = keep_for_home_key(early.clone(), None, key, &Reading::Failed);
+    assert_eq!(d, Decision::Stay);
+    assert!(note.is_some_and(|n| n.contains("home key")));
+    // A projection on a measured reading did not come from a failed probe.
+    let measured = m(63.0, 41.0);
+    assert!(!is_failed_probe_swap(&early, &measured));
+    assert_eq!(
+        keep_for_home_key(early.clone(), None, key, &measured).0,
+        early
+    );
+    let late = swap_for(Reason::FailedProbe);
+    assert!(is_failed_probe_swap(&late, &Reading::Failed));
+    assert!(!is_failed_probe_swap(&threshold(), &Reading::Failed));
 }
 
 #[test]
@@ -633,21 +807,87 @@ mod evidence {
         CALLS.with_borrow(|v| assert_eq!(v.len(), 4));
     }
 
+    /// `p` with its session window resetting at `resets`.
+    fn in_window(mut p: Probed, resets: i64) -> Probed {
+        if let Some(w) = p.windows.session.as_mut() {
+            w.resets_at = Some(resets);
+        }
+        p
+    }
+
+    /// As `establish_lag`, with every reading in the window resetting at
+    /// `resets`: cached 63% three times, then a direct 65%.
+    fn establish_lag_in(c: &mut Ctx, snap: &observe::Snap, t: i64, resets: i64) {
+        script([in_window(rd(65.0, 20.0, None), resets)]);
+        for dt in [0, 10, 20] {
+            live(c, snap, t + dt, in_window(cached(63.0, t + dt), resets));
+        }
+        CALLS.with_borrow(|v| assert_eq!(v.as_slice(), ["work"]));
+        assert!(c.live_series.behind());
+    }
+
     #[test]
-    fn timestamp_supported_session_reset_clears_lag_without_a_reread() {
+    fn a_later_session_reset_time_clears_lag_without_a_reread() {
         let (_e, mut c, snap) = fixture();
         let t = clock();
-        establish_lag(&mut c, &snap, t);
-        // Unlike an older 0%, a newly observed 0% is a legitimate reset.
-        let m = live(&mut c, &snap, t + 30, cached(0.0, t + 30));
+        let resets = t + 3600;
+        establish_lag_in(&mut c, &snap, t, resets);
+        // A 0% in the next window: its reset is a session window later.
+        let next = resets + 5 * 3600;
+        let m = live(&mut c, &snap, t + 30, in_window(cached(0.0, t + 30), next));
         assert_eq!(m.decision, Decision::Stay);
         assert!(c.live_outlook.is_none());
+        assert!(!c.live_series.behind(), "a new window ends the lag");
         assert_eq!(
             c.live_series.len(),
             1,
             "old window's rate must be discarded"
         );
         CALLS.with_borrow(|v| assert_eq!(v.len(), 1));
+    }
+
+    #[test]
+    fn a_newer_lower_cache_figure_in_the_same_window_is_read_again() {
+        // Crusty round 7: a newer observation time is not a reset. The
+        // status line rewrites old figures with new times, so a lower
+        // figure in the same window keeps the lag and the series.
+        let (_e, mut c, snap) = fixture();
+        let t = clock();
+        let resets = t + 3600;
+        establish_lag_in(&mut c, &snap, t, resets);
+        let len = c.live_series.len();
+        script([in_window(rd(68.0, 20.0, None), resets)]);
+        let m = live(
+            &mut c,
+            &snap,
+            t + 30,
+            in_window(cached(64.0, t + 30), resets),
+        );
+        assert_eq!(
+            m.live,
+            Reading::Measured {
+                session: 68.0,
+                week: 20.0
+            }
+        );
+        assert!(c.live_series.behind(), "still behind");
+        assert_eq!(c.live_series.len(), len + 1, "the series kept its points");
+        CALLS.with_borrow(|v| assert_eq!(v.len(), 2));
+    }
+
+    #[test]
+    fn a_newer_lower_cache_figure_with_no_reset_time_is_read_again() {
+        // With no reset time to compare, a lower cached figure is checked
+        // by a direct read. One that confirms it is a new window.
+        let (_e, mut c, snap) = fixture();
+        let t = clock();
+        establish_lag(&mut c, &snap, t);
+        script([rd(0.0, 20.0, None)]);
+        let m = live(&mut c, &snap, t + 30, cached(0.0, t + 30));
+        assert_eq!(m.decision, Decision::Stay);
+        assert!(!c.live_series.behind(), "the direct read agreed");
+        assert_eq!(c.live_series.len(), 1, "a new window, by a direct read");
+        CALLS.with_borrow(|v| assert_eq!(v.len(), 2));
     }
 
     #[test]

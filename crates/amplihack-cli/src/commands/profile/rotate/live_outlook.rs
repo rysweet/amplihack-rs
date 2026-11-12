@@ -68,16 +68,16 @@ impl Outlook {
 /// figures: since an outlook is always at or above `--session-at`, that is
 /// a threshold swap or the ALERT.
 ///
-/// - A measured (not failed) reading that is already at a threshold, or
-///   that gives a swap on its own, decides by itself: `real` stands, as
-///   without the outlook (its threshold, plan-room, overflow or upgrade
-///   swap, or its ALERT).
-/// - Otherwise the measured reading is below both thresholds, or failed,
-///   and the outlook decides: a threshold swap on it, labelled by
-///   [`map_reason`], or the `no-capacity` ALERT. Never a stay, so
-///   failed-probe damping never delays it; for a failed reading the
-///   failed-probe rules' threshold swap in `real` is what damping would
-///   delay, and the substitution replaces it.
+/// - A failed reading: see [`on_failed`]. The failed-probe rules choose the
+///   target; the outlook can only remove their damping delay.
+/// - A measured reading that is already at a threshold, or that gives a
+///   swap on its own, decides by itself: `real` stands, as without the
+///   outlook (its threshold, plan-room, overflow or upgrade swap, or its
+///   ALERT).
+/// - Otherwise the measured reading is below both thresholds, so `real` is
+///   a stay, and the outlook decides: a threshold swap on it, labelled by
+///   [`map_reason`], or the `no-capacity` ALERT. An ALERT is a stay with a
+///   warning, so no swap is lost.
 ///
 /// So the plan-room swap and the moves onto overflow never run on a
 /// projected or substituted figure, and nothing here moves work onto
@@ -89,10 +89,10 @@ pub fn with_outlook(
     s: &Settings,
     real_reading: &Reading,
 ) -> Verdict {
-    let failed = *real_reading == Reading::Failed;
-    let decides_alone =
-        needs_swap(s, real_reading) || matches!(real.decision, Decision::Swap { .. });
-    if !failed && decides_alone {
+    if *real_reading == Reading::Failed {
+        return on_failed(real, &on_outlook, basis, s, real_reading);
+    }
+    if needs_swap(s, real_reading) || matches!(real.decision, Decision::Swap { .. }) {
         return real;
     }
     let decision = match on_outlook {
@@ -108,6 +108,51 @@ pub fn with_outlook(
         tag: None,
         next_plan_reset: None,
         key_held: Vec::new(),
+        ..real
+    }
+}
+
+/// The verdict on a failed live reading under a substitution. The outlook
+/// changes the timing only, never the choice of target.
+///
+/// For a failed live plan login, `real` is the decision rule on headroom 0
+/// (`decide`): a threshold swap to the candidate with the most headroom,
+/// when it has `--margin` of headroom, which failed-probe damping delays
+/// for three failures, or the ALERT. The outlook decides on the
+/// substituted figure, which leaves the live login at least that much
+/// headroom, so it asks at least as much of the same candidate (`best`
+/// does not depend on the live reading). Its swap, when there is one, goes
+/// to the same target as `real`'s, and its ALERT can mean only that the
+/// target has less than `--margin` more headroom than the substituted
+/// figure leaves.
+///
+/// - The outlook gives a threshold swap: the target beats even the
+///   substituted figure, so `real`'s swap is made now, relabelled by
+///   [`map_reason`] so that damping does not delay it.
+/// - Otherwise `real` stands, so damping and the `failed-probe` swap after
+///   three failures apply as without the outlook. An ALERT on the outlook
+///   never replaces that swap: a dead live login must still be left.
+///
+/// The result is either `real` or `real` made earlier.
+fn on_failed(
+    real: Verdict,
+    on_outlook: &Decision,
+    basis: Basis,
+    s: &Settings,
+    real_reading: &Reading,
+) -> Verdict {
+    let target_qualifies = matches!(
+        on_outlook,
+        Decision::Swap {
+            reason: Reason::Threshold,
+            ..
+        }
+    );
+    if !target_qualifies {
+        return real;
+    }
+    Verdict {
+        decision: map_reason(real.decision.clone(), basis, s, real_reading),
         ..real
     }
 }

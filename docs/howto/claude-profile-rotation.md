@@ -830,8 +830,12 @@ session reading alone does not.
 Once a re-read establishes lag, older cached values remain untrusted even if
 their percentages change or match the accepted figures. The cache recovers
 only when its observation time is at least as recent as the accepted reading
-and its session figure has caught up. A lower session figure counts as a
-reset only with a strictly newer explicit observation time. See the
+and its session figure has caught up. Session use only rises within one
+session window, so a lower session figure counts as a reset only when its
+session reset time is more than an hour later than the last reading's. A
+newer observation time is not enough: the status line rewrites old figures
+with new times, so a lower cached figure in the same window, or with no
+reset time to compare, is read again. See the
 [cache recovery contract](../reference/profile-command.md#stale-live-reading).
 
 The live re-read uses the configured probe method with passive readings
@@ -869,11 +873,15 @@ read again. If accepted recent usage, over at least one interval, projects
 to `--session-at` by the next cycle, the rotator
 swaps now with `reason=projected`, provided a target qualifies. Near the
 threshold (within `--margin` of `--session-at`, or projected to reach it),
-failed or stale evidence is decided as if the login were at the threshold:
-a swap or the `no-capacity` ALERT, never a stay. With `--session-at 70
---margin 5`, a status line that keeps rewriting 66% gets a re-read on its
-third identical reading; if that read fails, the cycle swaps, or alerts
-when no target qualifies, and the next cycle reads again. See the
+a stale reading whose re-read fails is decided as if the login were at the
+threshold: a swap or the `no-capacity` ALERT, never a stay. With
+`--session-at 70 --margin 5`, a status line that keeps rewriting 66% gets a
+re-read on its third identical reading; if that read fails, the cycle
+swaps, or alerts when no target qualifies, and the next cycle reads again.
+A failed live probe near the threshold only changes timing: the
+failed-probe swap is made at once when its target beats 70% by the margin,
+and otherwise after three failures as usual. The last reading counts only
+while its session window can still be open, and for five hours at most. See the
 [live freshness reference](../reference/profile-command.md#rotate-live-reading-freshness).
 A steady low rate stays below the threshold.
 
@@ -886,10 +894,17 @@ or project a rate.
 
 ## When the live login cannot be measured
 
-If recent accepted evidence places the login near its threshold, the
+If recent accepted evidence places the login near its threshold, and the
+swap target has at least `--margin` more headroom than the live login
+would have at its last known use or at `--session-at`, whichever is
+higher, the
 [live freshness rule](../reference/profile-command.md#failed-or-stale-reading-near-the-threshold)
-can trigger a swap or no-capacity ALERT immediately. Otherwise, the
-failed-probe damping below applies.
+makes the failed-probe swap on the first failure, unless an API key in
+your home files would fail every login's probe (see the
+[API-key login check](../reference/profile-command.md#api-key-login-check)).
+Otherwise, the
+failed-probe damping below applies unchanged: a near-threshold reading
+never stops the failed-probe swap after three failures.
 
 If the probe of the live login fails, the rotator cannot tell whether the
 account is near its limit. A failure that follows whichever login is live

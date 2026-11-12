@@ -14,14 +14,24 @@
 //!   (`Ctx::reread_live`). A failed re-read leaves the frozen count as it
 //!   was, so a frozen reading is read again on every identical cycle until
 //!   a re-read succeeds;
+//! - also reads it again when a cached (passive) figure contradicts the
+//!   last accepted point: lower in the same session window, or from an
+//!   earlier one (`series::contradicts`). Use never falls within one window, so
+//!   only a later session reset time (`Point::resets`, compared by
+//!   `series::window`) makes a lower figure a new window. A newer observation
+//!   time does not: the status line rewrites old figures with new times;
 //! - projects the session use one interval ahead from a short in-memory
 //!   [`Series`] whose points span at least one `--interval`, and decides on
 //!   the projection when it reaches `--session-at` (R2);
-//! - decides a failed or still-stale live reading on the larger of
-//!   `--session-at` and the last known session use when the last known
-//!   point was near the threshold (R2b: within `--margin`, or reaching it
-//!   one interval ahead at the series rate; [`near`]), so the figure never
-//!   falls.
+//! - decides a still-stale live reading on the larger of `--session-at` and
+//!   the last known session use when the last known point was near the
+//!   threshold (R2b: within `--margin`, or reaching it one interval ahead at
+//!   the series rate; [`near`]), so the figure never falls. For a failed
+//!   probe the same substitution changes only the timing: the failed-probe
+//!   rules choose the target, and the substitution removes their damping
+//!   when that target beats the substituted figure (`outlook::on_failed`).
+//!   The last known point counts only while its session window can still
+//!   be open ([`Series::last_known`]).
 //!
 //! The live re-read runs after the measurement and is dated then, but it
 //! never makes the cycle's own target readings stale: the target gate caps
@@ -31,7 +41,7 @@
 //! context, which `decide_measured` reads. They reach the decision rule's
 //! threshold row only ([`with_outlook`]): the plan-room swap and the overflow
 //! rules always run on the reading as measured. The ledger, the history and
-//! the log lines keep the reading as measured. [`Point`], [`Series`] and
+//! the log lines keep the reading as measured. `Point`, [`Series`] and
 //! [`Outlook`] hold a profile name, times and percentages only: never a
 //! token, an account id, an email or a path. Nothing here is persisted.
 //! See "Rotate live reading freshness" in docs/reference/profile-command.md.
@@ -45,40 +55,20 @@ use super::super::observe::{Measurement, Snap, decide_measured};
 use super::read_at;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
-use std::collections::VecDeque;
 
-/// The most points a series keeps.
-pub const MAX_POINTS: usize = 4;
+#[path = "live_series.rs"]
+mod series;
+pub use series::Series;
+use series::{session_resets, stale_at};
+// Used inside the series and the step; the tests check them on their own.
+#[cfg(test)]
+pub use series::{
+    MAX_POINTS, Point, SAME_WINDOW_SECS, SESSION_WINDOW_SECS, Window, contradicts, window,
+};
 
 /// Unchanged cycles after which a live reading is frozen: the third
 /// identical reading in a row.
 pub const FROZEN_CYCLES: u32 = 2;
-
-/// One live reading: when it was read, and its session use.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Point {
-    pub at: i64,
-    pub session: f64,
-}
-
-/// The live login's recent readings, kept in memory across watch cycles.
-#[derive(Debug, Default)]
-pub struct Series {
-    name: Option<ProfileName>,
-    points: VecDeque<Point>,
-    /// The last cycle's measured session and week figures, for the frozen
-    /// count. Always the cached source's own figures, never a re-read's.
-    prev: Option<(f64, f64)>,
-    unchanged: u32,
-    /// The last re-read disagreed with the measured figures: the cached
-    /// source is behind, so a measured figure below the last point is stale,
-    /// not a new session window.
-    behind: bool,
-}
-
-#[cfg(test)]
-#[path = "tests_live_fresh_access.rs"]
-mod access;
 
 #[path = "live_outlook.rs"]
 mod outlook;
@@ -86,124 +76,6 @@ pub use outlook::{Basis, Outlook, near, projected, with_outlook};
 // Used inside `with_outlook`; the tests check it on its own.
 #[cfg(test)]
 pub use outlook::map_reason;
-
-impl Series {
-    /// Starts afresh for `name` when another login owned the series.
-    fn own(&mut self, name: &ProfileName) {
-        if self.name.as_ref() != Some(name) {
-            self.clear();
-            self.name = Some(name.clone());
-        }
-    }
-
-    /// Adds `(at, session)` for live login `name` at clock `t`; see the
-    /// contract in `tests_issue_2211`.
-    pub fn note(&mut self, name: &ProfileName, at: i64, session: f64, t: i64) {
-        if !session.is_finite() || at > t {
-            return;
-        }
-        self.own(name);
-        if let Some(last) = self.points.back() {
-            if at <= last.at {
-                return;
-            }
-            if session < last.session {
-                // A new session window: the old points say nothing of it.
-                self.points.clear();
-            }
-        }
-        self.points.push_back(Point { at, session });
-        while self.points.len() > MAX_POINTS {
-            self.points.pop_front();
-        }
-    }
-
-    pub fn clear(&mut self) {
-        *self = Self::default();
-    }
-
-    /// Session points per second from the first point to the last, when
-    /// they are at least `min_span` seconds apart (and at least one second).
-    ///
-    /// The rotator passes `--interval`. Two readings a few seconds apart, a
-    /// direct read and a status line written just after it, say little
-    /// about the rate, and a one-point rise over five seconds would project
-    /// 24 points ahead over a 120-second interval. Over a span of at least
-    /// one interval, `rate * interval` is never more than the rise the
-    /// series has seen, so the projection never adds more than that.
-    pub fn rate(&self, min_span: i64) -> Option<f64> {
-        let (first, last) = (self.points.front()?, self.points.back()?);
-        let dt = last.at.checked_sub(first.at)?;
-        if dt <= 0 || dt < min_span {
-            return None;
-        }
-        let r = (last.session - first.session) / dt as f64;
-        r.is_finite().then_some(r)
-    }
-
-    /// The last point, when the series belongs to `name`.
-    fn last_for(&self, name: &ProfileName) -> Option<Point> {
-        let last = self.points.back().copied();
-        last.filter(|_| self.name.as_ref() == Some(name))
-    }
-
-    /// Records this cycle's figures for `name` and returns how many cycles
-    /// in a row they have been unchanged.
-    fn seen(&mut self, name: &ProfileName, session: f64, week: f64) -> u32 {
-        self.own(name);
-        self.unchanged = match self.prev {
-            Some(p) if p == (session, week) => self.unchanged.saturating_add(1),
-            _ => 0,
-        };
-        self.prev = Some((session, week));
-        self.unchanged
-    }
-
-    /// After a live re-read that read `figures` (`None` when it failed, read
-    /// no figures or could not be made) of a measurement that read
-    /// `measured`. A re-read that agrees restarts the frozen count: the
-    /// source is idle, not frozen. One that disagrees marks the source as
-    /// behind and keeps the count, so the next identical measurement is read
-    /// again. A failed one changes nothing: the count and the mark stay as
-    /// they were, so a frozen reading is read again on the next identical
-    /// cycle, as a lagging one is. A failure proves nothing about the cache,
-    /// so it must not make a frozen figure trusted again. The count stays on
-    /// the measured figures either way.
-    fn after_reread(&mut self, measured: (f64, f64), figures: Option<(f64, f64)>) {
-        match figures {
-            Some(f) if f == measured => {
-                self.unchanged = 0;
-                self.behind = false;
-            }
-            Some(_) => self.behind = true,
-            None => {}
-        }
-    }
-
-    /// Lag ends only when current evidence catches up, or an explicitly
-    /// newer observation establishes a session reset. An implicit cycle
-    /// timestamp alone cannot turn a lower cached figure into a reset.
-    fn still_behind(
-        &mut self,
-        name: &ProfileName,
-        probe: &Probed,
-        measured_at: i64,
-        t: i64,
-        interval: i64,
-    ) -> bool {
-        if self.behind
-            && let Some(last) = self.last_for(name)
-            && let Reading::Measured { session, .. } = probe.reading
-            && let Some(at) = read_at(probe, measured_at)
-            && !stale_at(at, t, interval)
-            && at >= last.at
-            && (session >= last.session || probe.observed_at.is_some_and(|a| a > last.at))
-        {
-            self.behind = false;
-        }
-        self.behind
-    }
-}
 
 /// The live freshness step for `m`, decided on `snap`. Sets
 /// `ctx.live_outlook`, updates `ctx.live_series`, makes at most one live
@@ -240,7 +112,15 @@ pub(in crate::commands::profile::rotate) fn step(
         let regressed = read_at(&probe, m.measured_at)
             .zip(ctx.live_series.last_for(&name))
             .is_some_and(|(at, last)| at < last.at);
-        if frozen || old || behind || regressed {
+        // A cached figure lower than the last point in the same window (or
+        // an unknown one), or from an earlier window, is stale, however new
+        // its observation time.
+        let contradicted = probe.passive
+            && ctx
+                .live_series
+                .last_for(&name)
+                .is_some_and(|last| series::contradicts(&last, session, session_resets(&probe)));
+        if frozen || old || behind || regressed || contradicted {
             match reread_live(ctx, &name, t, interval, &mut m.fresh_lines) {
                 Some(p) => {
                     let figures = match p.reading {
@@ -264,7 +144,8 @@ pub(in crate::commands::profile::rotate) fn step(
     let basis = match live.reading {
         Reading::Measured { session, week } if !still_stale => {
             if let Some(read) = read_at(&live, m.measured_at) {
-                ctx.live_series.note(&name, read, session, t);
+                let resets = session_resets(&live);
+                ctx.live_series.note(&name, read, session, resets, t);
             }
             ctx.live_series
                 .rate(span)
@@ -275,16 +156,18 @@ pub(in crate::commands::profile::rotate) fn step(
         }
         Reading::Exhausted { .. } => None,
         // A failed probe, or a reading still stale after the step: never
-        // decided on less than the last known session use.
+        // decided on less than the last known session use while its window
+        // can still be open. For a failed probe the outlook only times the
+        // failed-probe rules' own swap (`outlook::on_failed`).
         other => {
             let stale = match other {
                 Reading::Measured { session, .. } => session,
                 _ => at,
             };
-            let week = ctx.live_series.prev.map(|(_, w)| w);
+            let week = ctx.live_series.week();
             let rate = ctx.live_series.rate(span);
             ctx.live_series
-                .last_for(&name)
+                .last_known(&name, t)
                 .filter(|last| near(last.session, rate, s))
                 .zip(week.filter(|w| w.is_finite()))
                 .map(|(last, w)| (at.max(last.session).max(stale), w, Basis::Substituted))
@@ -306,11 +189,6 @@ pub(in crate::commands::profile::rotate) fn step(
     );
     again.fresh_lines = std::mem::take(&mut m.fresh_lines);
     Ok(again)
-}
-
-/// Whether a reading taken at `a` is too old, or later than the clock `t`.
-fn stale_at(a: i64, t: i64, interval: i64) -> bool {
-    a < t.saturating_sub(interval) || a > t
 }
 
 /// One direct re-read of the live login `name` in `~/.claude`, by

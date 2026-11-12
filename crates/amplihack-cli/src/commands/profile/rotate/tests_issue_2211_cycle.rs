@@ -77,6 +77,9 @@ macro_rules! lane {
             pub static MEASURE_SECS: AtomicI64 = AtomicI64::new(0);
             /// Whether the context was read-only during the last re-read.
             pub static READ_ONLY: AtomicBool = AtomicBool::new(false);
+            /// When the live probe's session window resets, epoch seconds;
+            /// 0 for a probe that gives no reset time.
+            pub static RESET: AtomicI64 = AtomicI64::new(0);
 
             pub fn clock() -> i64 {
                 CLOCK.load(Ordering::SeqCst)
@@ -100,6 +103,7 @@ macro_rules! lane {
                     }
                     Live::Failed => Probed::failed(),
                 };
+                let live = super::in_window(live, RESET.load(Ordering::SeqCst));
                 let table = OTHERS.lock().unwrap().clone();
                 let probes = probes_for(snap, &table);
                 let decided = decide_measured(ctx, snap, live, probes, at);
@@ -163,8 +167,16 @@ fn seed(clock: &std::sync::atomic::AtomicI64) {
     clock.store(now(), std::sync::atomic::Ordering::SeqCst);
 }
 
+/// Completed swaps: log lines `<time> swap <from>-><to> ...`. Not every
+/// line with the word: `held after last swap` and the home key's `a swap
+/// changes nothing` are stays.
 fn swaps(log: &str) -> usize {
-    log.lines().filter(|l| l.contains(" swap ")).count()
+    log.lines()
+        .filter(|l| {
+            l.split_once(' ')
+                .is_some_and(|(_, rest)| rest.starts_with("swap "))
+        })
+        .count()
 }
 
 const STALE: &str = "stale live reading; re-read";
@@ -190,6 +202,29 @@ fn spare_full() -> Vec<(&'static str, Probed)> {
 
 fn set<T: Clone>(m: &std::sync::Mutex<Vec<T>>, v: &[T]) {
     *m.lock().unwrap() = v.to_vec();
+}
+
+/// `p` with its session window resetting at `resets`; unchanged for 0 or
+/// a probe with no session window.
+fn in_window(mut p: Probed, resets: i64) -> Probed {
+    if resets != 0
+        && let Some(w) = p.windows.session.as_mut()
+    {
+        w.resets_at = Some(resets);
+    }
+    p
+}
+
+/// Removes the API key the test home holds, as `tests_revalidate` does for
+/// its failed-probe swaps. The key would fail the probe of every login once
+/// live, so the home-key rule (`damp::keep_for_home_key`) turns a swap made
+/// only because the live probe failed into a stay.
+fn take_key_from_home(e: &Env) {
+    use super::super::tests_swap::{json, private};
+    let path = e.home.join(".claude.json");
+    let mut home = json(&path);
+    home.as_object_mut().unwrap().remove("primaryApiKey");
+    private(&path, &home.to_string());
 }
 
 // --- (a) A frozen reading is read again on the third identical cycle -------
@@ -359,6 +394,7 @@ lane!(ld);
 #[test]
 fn d_a_failed_probe_near_the_threshold_swaps_with_reason_projected() {
     let e = env();
+    take_key_from_home(&e);
     seed(&ld::CLOCK);
     // One point at 66% (no rate): near, since 66 >= 70 - 5.
     set(&ld::LIVE, &[Live::Direct(66.0, 41.0), Live::Failed]);
@@ -402,6 +438,126 @@ fn d3_a_failed_first_probe_with_no_series_keeps_failed_probe_damping() {
     let log = log_of(&e);
     assert_eq!(swaps(&log), 0, "{log}");
     assert!(!log.contains("projected"), "{log}");
+}
+
+// --- Crusty round 7: a substitution never blocks the failed-probe swap -----
+//
+// A failed probe means headroom 0 to the failed-probe rules, so any
+// candidate with --margin of headroom is their target. The substituted 70%
+// leaves `work` 30 points, so `spare` at 68% (32 points) does not beat it,
+// and the outlook ALERTs. That ALERT must not replace the failed-probe swap:
+// the substitution only removes damping, and only for a target that beats
+// the substituted figure.
+
+/// `spare` at 68%: 32 points of headroom, 2 more than 70% leaves.
+fn spare_at_68() -> Vec<(&'static str, Probed)> {
+    vec![
+        ("spare", rd(68.0, 40.0, None)),
+        ("work", rd(0.0, 40.0, None)),
+    ]
+}
+
+lane!(ld4);
+
+#[test]
+fn d4_failed_probes_after_66_with_a_68_candidate_make_the_failed_probe_swap() {
+    let e = env();
+    take_key_from_home(&e);
+    seed(&ld4::CLOCK);
+    set(&ld4::LIVE, &[Live::Direct(66.0, 41.0), Live::Failed]);
+    set(&ld4::OTHERS, &spare_at_68());
+    let mut c = ctx(&e, ld4::clock, ld4::measure, Some(ld4::reread));
+    assert_eq!(step(&mut c, &ld4::CLOCK), CycleOutcome::Stayed);
+    // Failures 1 and 2: near the threshold, but the target does not beat
+    // 70%, so damping applies as without the substitution: a damped stay
+    // (unread, since the live probe failed), not the ALERT.
+    for nth in 1..=2 {
+        let got = step(&mut c, &ld4::CLOCK);
+        let log = log_of(&e);
+        assert_eq!(got, CycleOutcome::StayedUnread, "failure {nth}: {log}");
+        assert!(
+            log.contains(&format!("stay: live probe failed ({nth}/3)")),
+            "failure {nth}: {log}"
+        );
+        assert_eq!(basis(&c), Some(Basis::Substituted), "failure {nth}");
+    }
+    // Failure 3: the failed-probe swap.
+    let got = step(&mut c, &ld4::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(got, CycleOutcome::Swapped, "{log}");
+    assert!(
+        log.contains("swap work->spare live failed target s=68% w=40% reason=failed-probe"),
+        "{log}"
+    );
+    assert!(!log.contains("ALERT: no profile has capacity"), "{log}");
+    assert_eq!(swaps(&log), 1, "{log}");
+}
+
+lane!(ld5);
+
+#[test]
+fn d5_a_failed_probe_after_the_last_points_window_reset_is_damped() {
+    use std::sync::atomic::Ordering;
+    let e = env();
+    seed(&ld5::CLOCK);
+    // 66% in a window that resets before the next cycle.
+    ld5::RESET.store(ld5::clock() + INTERVAL / 2, Ordering::SeqCst);
+    set(&ld5::LIVE, &[Live::Direct(66.0, 41.0), Live::Failed]);
+    set(&ld5::OTHERS, &spare_room());
+    let mut c = ctx(&e, ld5::clock, ld5::measure, Some(ld5::reread));
+    assert_eq!(step(&mut c, &ld5::CLOCK), CycleOutcome::Stayed);
+    let got = step(&mut c, &ld5::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(basis(&c), None, "66% is not a floor in a new window: {log}");
+    assert_ne!(got, CycleOutcome::Swapped, "damped: {log}");
+    assert!(!log.contains("projected"), "{log}");
+}
+
+lane!(ld6);
+
+#[test]
+fn d6_a_failed_probe_a_session_window_after_the_last_point_is_damped() {
+    use super::super::fresh::live::SESSION_WINDOW_SECS;
+    use std::sync::atomic::Ordering;
+    let e = env();
+    seed(&ld6::CLOCK);
+    let at1 = ld6::clock();
+    set(&ld6::LIVE, &[Live::Direct(66.0, 41.0), Live::Failed]);
+    set(&ld6::OTHERS, &spare_room());
+    let mut c = ctx(&e, ld6::clock, ld6::measure, Some(ld6::reread));
+    assert_eq!(step(&mut c, &ld6::CLOCK), CycleOutcome::Stayed);
+    // No reset time: the 66% counts for one session window at most.
+    ld6::CLOCK.store(at1 + SESSION_WINDOW_SECS, Ordering::SeqCst);
+    let got = step(&mut c, &ld6::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(basis(&c), None, "{log}");
+    assert_ne!(got, CycleOutcome::Swapped, "damped: {log}");
+    assert!(!log.contains("projected"), "{log}");
+}
+
+lane!(ld7);
+
+/// The near-threshold rule makes the failed-probe swap sooner; it does not
+/// escape the failed-probe rules. A home key fails every login's probe once
+/// live, so the early swap is a stay, as the failed-probe swap would be.
+#[test]
+fn d7_a_home_key_stops_the_early_failed_probe_swap_as_it_stops_the_late_one() {
+    let e = env();
+    seed(&ld7::CLOCK);
+    set(&ld7::LIVE, &[Live::Direct(66.0, 41.0), Live::Failed]);
+    set(&ld7::OTHERS, &spare_room());
+    let mut c = ctx(&e, ld7::clock, ld7::measure, Some(ld7::reread));
+    assert_eq!(step(&mut c, &ld7::CLOCK), CycleOutcome::Stayed);
+    let got = step(&mut c, &ld7::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(basis(&c), Some(Basis::Substituted), "{log}");
+    assert_ne!(got, CycleOutcome::Swapped, "{log}");
+    assert!(
+        log.contains("stay: live probe failed; home key (primaryApiKey set)"),
+        "{log}"
+    );
+    assert_eq!(swaps(&log), 0, "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.l), "work's login stays live");
 }
 
 // --- (e) An old live reading is read again ---------------------------------
@@ -500,6 +656,7 @@ lane!(lsg);
 #[test]
 fn e2c_a_failed_probe_after_90_percent_is_decided_on_90_not_the_threshold() {
     let e = env();
+    take_key_from_home(&e);
     seed(&lsg::CLOCK);
     set(&lsg::LIVE, &[Live::Direct(90.0, 41.0)]);
     set(&lsg::OTHERS, &spare_full());
@@ -841,6 +998,9 @@ fn a_cache_frozen_below_a_disagreeing_reread_is_read_again_every_cycle() {
 
 lane!(llg);
 
+/// The cache is a passive reading observed at each cycle's own clock, as a
+/// status line writes it, with no session reset time (crusty round 7: the
+/// test used to model it as direct reads, which carry no observation time).
 #[test]
 fn a_moving_cache_still_below_a_disagreeing_reread_is_read_again() {
     let e = env();
@@ -848,11 +1008,11 @@ fn a_moving_cache_still_below_a_disagreeing_reread_is_read_again() {
     set(
         &llg::LIVE,
         &[
-            Live::Direct(63.0, 20.0),
-            Live::Direct(63.0, 20.0),
-            Live::Direct(63.0, 20.0),
-            Live::Direct(64.0, 20.0),
-            Live::Direct(69.0, 20.0),
+            Live::Passive(63.0, 20.0, 0),
+            Live::Passive(63.0, 20.0, 0),
+            Live::Passive(63.0, 20.0, 0),
+            Live::Passive(64.0, 20.0, 0),
+            Live::Passive(69.0, 20.0, 0),
         ],
     );
     set(&llg::OTHERS, &spare_room());
@@ -862,13 +1022,71 @@ fn a_moving_cache_still_below_a_disagreeing_reread_is_read_again() {
         assert_eq!(step(&mut c, &llg::CLOCK), CycleOutcome::Stayed);
     }
     assert_eq!(llg::live_calls(), 1, "frozen on cycle 3");
-    // Cycle 4: the cache moved to 64%, still below the 65% re-read.
+    let len3 = c.live_series.len();
+    // Cycle 4: the cache moved to 64%, newly stamped, still below the 65%
+    // re-read. A newer time is not a new window: it is read again.
     assert_eq!(step(&mut c, &llg::CLOCK), CycleOutcome::Stayed);
     assert_eq!(llg::live_calls(), 2, "{}", log_of(&e));
+    assert!(c.live_series.behind(), "still behind after cycle 4");
+    assert!(c.live_series.len() > len3, "the series was not wiped");
     // Cycle 5: the cache is past the last re-read (66%), so it is current
-    // again and is not read.
-    step(&mut c, &llg::CLOCK);
-    assert_eq!(llg::live_calls(), 2, "{}", log_of(&e));
+    // again and is not read. The cycle is decided on the cached 69% with
+    // the rate of 63, 65, 66, 69: 71% one interval ahead.
+    let got = step(&mut c, &llg::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(llg::live_calls(), 2, "{log}");
+    assert_eq!(stale_lines(&log), 2, "{log}");
+    assert_eq!(got, CycleOutcome::Swapped, "{log}");
+    assert!(
+        log.contains("swap work->spare live s=69% w=20%") && log.contains("reason=projected"),
+        "decided on the cached 69%: {log}"
+    );
+}
+
+lane!(lcr);
+
+/// Crusty round 7's probe: the cache creeps up 63, 63, 63, 64, 65, 66, each
+/// freshly stamped and in the same session window as the direct re-reads,
+/// which read 66, 69 and 72. The creeping cache never clears the lag or the
+/// series, so the cycle is decided on the re-reads.
+#[test]
+fn a_creeping_cache_in_the_same_window_never_clears_the_lag() {
+    use std::sync::atomic::Ordering;
+    let e = env();
+    seed(&lcr::CLOCK);
+    let resets = lcr::clock() + 3 * 3600;
+    lcr::RESET.store(resets, Ordering::SeqCst);
+    set(
+        &lcr::LIVE,
+        &[63.0, 63.0, 63.0, 64.0, 65.0, 66.0].map(|v| Live::Passive(v, 20.0, 0)),
+    );
+    set(&lcr::OTHERS, &spare_room());
+    set(
+        &lcr::REREAD,
+        &[66.0, 69.0, 72.0].map(|v| in_window(rd(v, 20.0, None), resets)),
+    );
+    let mut c = ctx(&e, lcr::clock, lcr::measure, Some(lcr::reread));
+    assert_eq!(step(&mut c, &lcr::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(step(&mut c, &lcr::CLOCK), CycleOutcome::Stayed);
+    // Cycle 3: frozen, re-read at 66%, and the cache is behind.
+    assert_eq!(step(&mut c, &lcr::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(lcr::live_calls(), 1);
+    assert!(c.live_series.behind());
+    let len3 = c.live_series.len();
+    assert_eq!(len3, 3, "63, 63, 66");
+    // Cycle 4: the cache reads 64%, newer and lower in the same window. It
+    // is stale: read again at 69%, the lag and the series kept. Over 63,
+    // 63, 66, 69 the rate projects 71% one interval ahead.
+    let got = step(&mut c, &lcr::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(lcr::live_calls(), 2, "cycle 4 is read again: {log}");
+    assert_eq!(stale_lines(&log), 2, "{log}");
+    assert_eq!(
+        got,
+        CycleOutcome::Swapped,
+        "decided on 69% and its rate: {log}"
+    );
+    assert!(log.contains("reason=projected"), "{log}");
 }
 
 // Issue comment: 100% -> 90%, then an older 0%/0% for the login just left.

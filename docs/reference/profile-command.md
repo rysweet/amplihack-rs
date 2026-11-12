@@ -5590,11 +5590,16 @@ Nothing else changes: an ALERT when no candidate meets the margin, swaps on
 a measured threshold, swaps on an exhausted live login and upgrade swaps
 behave as in the table above.
 
-One exception applies before these rules. When the live login was near
-`--session-at` on its last known reading, a failed live probe is decided on
-the larger of `--session-at` and that last known session use, and gives a
-swap with `reason=projected` or the `no-capacity` ALERT, never a damped
-stay. See
+One exception changes only the timing of these rules. When the live login
+was near `--session-at` on a last known reading whose session window can
+still be open, and the swap target has at least `--margin` more headroom
+than the larger of `--session-at` and that last known session use, the
+failed-probe swap is made on the first failure, with `reason=projected`:
+neither the count nor `--hold` delays it, as for any projected swap. The
+home-key rule still applies, so with a key in the `$HOME` files the early
+swap is a stay, as the failed-probe swap would be. Otherwise these rules
+apply unchanged: the exception never changes the target and never turns the
+failed-probe swap into an ALERT. See
 [Failed or stale reading near the threshold](#failed-or-stale-reading-near-the-threshold).
 
 A damped stay is recorded as `stayed-unread`, not `stayed`: the cycle did
@@ -6014,10 +6019,11 @@ it holds no lock.
 ##### Live reading series
 
 `rotate watch` keeps, in memory, a short series of the live login's
-readings: up to 4 points, each a reading time and a session figure. A point
-is added only when its reading time is later than the last point's and not
-later than now. Accepted evidence is kept separately from the measured
-cache figures used to count frozen cycles:
+readings: up to 4 points, each a reading time, a session figure and the
+session window's reset time (none when the reading gave no reset time). A
+point is added only when its reading time is later than the last point's
+and not later than now. Accepted evidence is kept separately from the
+measured cache figures used to count frozen cycles:
 
 - the *frozen count* is kept on the measured (cached) figures only, and
   rises by one on each cycle in which they equal the previous cycle's;
@@ -6025,10 +6031,29 @@ cache figures used to count frozen cycles:
   series takes only the re-read figures. A cached figure below the last
   point is neither added to the series nor treated as a new session window.
 
+Session use only rises within one session window, so the rotator tells a
+new window from a stale figure by the session reset time, never by the
+observation time. The status line rewrites old figures with new
+observation times, and many sessions write the same cache, so a lower
+figure with a newer time is expected and proves nothing. Two reset times
+at most one hour apart are the same window: a direct read prints the reset
+to the minute or the hour, and the status line stores it to the second. The
+next window starts no earlier than the current one resets and lasts five
+hours, so its reset is hours later.
+
+| The new reading's session reset | A lower session figure | A higher or equal one |
+|---------------------------------|------------------------|-----------------------|
+| More than one hour later (a new window) | Clears the series, then is added | Clears the series, then is added |
+| Within one hour (the same window) | Stale: not added; the series is kept | Added |
+| More than one hour earlier (an ended window) | Stale: not added | Stale: not added |
+| Unknown on either side | A cached figure is [read again](#stale-live-reading) first; a direct read clears the series, then is added | Added |
+
 The series is cleared when:
 
-- a newer accepted reading establishes a lower session figure (a new
-  session window); an older cache figure cannot establish that reset;
+- an accepted reading is from a later session window by its reset time, or,
+  with no reset time to compare, a direct read gives a lower session figure
+  (a new session window). A cached figure cannot establish that reset by
+  its observation time;
 - a different login becomes live, or a swap completes;
 - the live login cannot be identified.
 
@@ -6046,10 +6071,15 @@ The live reading is *stale* when any of these holds:
   use in its window reads `0` truthfully.
 - **Old.** Its [reading time](#reading-time) is more than one `--interval`
   before now.
-- **Lagging cache.** A live re-read has established that
-  the cache is behind, and the cached observation is older than the accepted direct
-  evidence. Changing cached percentages or resetting the frozen count
-  does not make that observation current.
+- **Lagging cache.** A live re-read has established that the cache is
+  behind, and the cached observation is older than the accepted direct
+  evidence, or its figure has not caught up with that evidence in the same
+  session window. Changing cached percentages, a newer observation time or
+  resetting the frozen count does not make that figure current.
+- **Contradicted cache.** A cached (passive) figure is lower than the last
+  point in the same session window, or in a window whose reset time is
+  unknown, or comes from an earlier window. Its observation time does not
+  matter: use never falls within one window.
 
 A stale live reading is read once more in the same way as a
 [re-read](#re-reads) of a target: by the [probe method](#probe-method),
@@ -6093,16 +6123,27 @@ frozen for a very long run cannot return to a count below the frozen limit.
 Once lag is established, a cached observation must have a usable reading
 time, no later than now and no more than one interval old, to clear it.
 Its time must be at least that of the latest accepted live evidence, and
-its session figure must have caught up to that evidence. A lower session
-figure can instead establish a new session window only with a strictly
-later explicit observation timestamp. That reset clears the old series. An older observation
-cannot clear lag, overwrite accepted evidence or establish a reset, even
-when its percentages change or equal the accepted figures.
+its session figure must have caught up to that evidence within the same
+session window. A lower session figure can instead establish a new session
+window only with a session reset time more than one hour later than the
+last point's. That reset clears the old series. A newer observation time
+alone is not a reset: a lower figure stamped later in the same window, or
+in a window whose reset time is unknown, keeps the lag and the series, and
+is read again. An older observation cannot clear lag, overwrite accepted
+evidence or establish a reset, even when its percentages change or equal
+the accepted figures.
+
+For example, the cache reads 63%, 63%, 63%, 64%, 65%, each newly stamped,
+in the same window as direct re-reads of 66%, 69% and 72%. The third 63% is
+frozen and is read again at 66%. The 64% is lower than 66% in the same
+window, so it is read again at 69%, and the series keeps 63, 63, 66 and 69.
+Over those points the rate projects 71% one interval ahead, so that cycle
+swaps with `reason=projected`.
 
 A cycle makes at most one live re-read, separately from the target gate's
 three-read limit. None is made once `rotate stop` has arrived, or when the
-reading is current and neither frozen nor lagging. A reading time later
-than now counts as old.
+reading is current and neither frozen, lagging nor contradicted. A reading
+time later than now counts as old.
 
 When the re-read fails, or its reading is itself more than one interval
 old or later than now, the log gets
@@ -6188,8 +6229,14 @@ the reading as measured.
 
 When the live probe fails, or the live re-read fails, is refused or is
 itself still more than one interval old, the rotator looks at the last
-point in the series for the same live login. The login is *near the
-threshold* when either holds:
+point in the series for the same live login. That point counts only while
+the session window it was read in can still be open: before its session
+reset time when it has one, and less than five hours (one session window)
+after it was read in any case. After that its figure says nothing about
+the login's use now, and the rule does not apply. The limit is not the
+300-second [reading age](#reading-time): the default `--interval` is 600
+seconds, so the previous cycle's point would always be too old. The login
+is *near the threshold* when either holds:
 
 - `last session >= --session-at - --margin`;
 - with a rate: `last session + rate * interval >= --session-at`.
@@ -6202,23 +6249,44 @@ nothing about the login, so a last figure inside the band is near whatever
 the rate, and the outcome does not depend on whether the cache's timestamp
 moves.
 
-When it is near, the decision runs on the larger of `--session-at` and the
-last known session use: the last point, and the stale reading itself when
-there is one. The substituted figure is never lower than the last known
-figure, so this rule can only make a swap more likely than the decision
-without it. The last known week figure is used. The outcome is a swap,
-logged with `reason=projected`, or the `no-capacity` ALERT. It is never a
-stay, so the three-cycle [failed-probe damping](#rotate-failed-live-probes)
-does not delay it, and the failed-probe swap made after three failed probes
-does not stand in for it. As with a projection, the
-[plan-room swap](#rotate-plan-room-swap) and the [overflow](#rotate-overflow)
-moves never run on the substituted figure. When the stale reading is itself
-at `--session-at` or `--week-at`, the cycle is decided on it as measured, as
-without this rule, so a threshold swap on it is logged with
-`reason=threshold`. When it is not near, or the series is empty, the
-failed-probe rules apply as before.
-The series is cleared on a swap, so a failed probe just after a swap is
-damped as usual.
+When it is near, the *substituted figure* is the larger of `--session-at`
+and the last known session use: the last point, and the stale reading
+itself when there is one. The last known week figure is used with it. The
+substituted figure is never lower than the last known figure.
+
+**A stale reading** (the re-read failed, was refused or is still old) is
+decided on the substituted figure. The outcome is a swap, logged with
+`reason=projected`, or the `no-capacity` ALERT. It is never a stay. Without
+this rule the stale reading, below `--session-at`, would be a stay, so the
+rule can only make a swap more likely: an ALERT is a stay with a warning.
+As with a projection, the [plan-room swap](#rotate-plan-room-swap) and the
+[overflow](#rotate-overflow) moves never run on the substituted figure.
+When the stale reading is itself at `--session-at` or `--week-at`, the
+cycle is decided on it as measured, as without this rule, so a threshold
+swap on it is logged with `reason=threshold`.
+
+**A failed probe** changes only the timing of a swap, never its target. The
+[failed-probe rules](#rotate-failed-live-probes) count a failed probe as
+headroom `0`, so any candidate with `--margin` of headroom is their target,
+and damping delays that swap for three failures. The substituted figure
+leaves the live login at least that much headroom, so it asks at least as
+much of the same candidate:
+
+| Target against the substituted figure | Outcome |
+|---------------------------------------|---------|
+| At least `--margin` more headroom | The failed-probe rules' swap, made now with `reason=projected`: neither damping nor `--hold` delays it. With a [home key](#api-key-login-check) it is a stay, as the failed-probe swap would be |
+| Less than `--margin` more headroom | The failed-probe rules as without this rule: a damped stay, then the `failed-probe` swap after three failures |
+| No candidate even against headroom `0` | Their `no-capacity` ALERT |
+
+So for a failed probe the rule makes the same swap or makes it sooner. It
+never turns the failed-probe swap into an ALERT, which would keep a dead
+live login live for as long as its probe fails. An early swap needs a
+reading of the live login near the threshold since the last swap, because
+a swap clears the series, so it cannot repeat while the probe keeps failing.
+
+When the login is not near, its last point is too old, or the series is
+empty, the failed-probe rules apply as before. The series is cleared on a
+swap, so a failed probe just after a swap is damped as usual.
 
 For example, with `--session-at 70 --margin 5`, a status line keeps
 rewriting `s=66%` with a new observation time on every cycle. The third
@@ -6227,6 +6295,19 @@ cycle is decided on 70%: a swap to a candidate with at least `--margin` more
 headroom, or the ALERT. The failure keeps the frozen count, so the fourth
 identical reading is read again rather than trusted. The same holds when
 the cached observation time does not move, where the reading is also old.
+
+With the same settings, live `work` read 66% on the last cycle and its
+probe now fails, and `spare` reads 68%. `spare` has 32 points of headroom,
+only 2 more than the substituted 70% leaves `work`, so it does not beat the
+substituted figure. The failed-probe rules apply as without this rule: two
+damped stays, then, on the third failure:
+
+```
+2026-11-09T14:16:05Z swap work->spare live failed target s=68% w=40% reason=failed-probe
+```
+
+With `spare` at 60% instead (40 points, 10 more than 70% leaves), the first
+failure swaps with `reason=projected`.
 
 ##### Example: a login rising 10 points a cycle
 
@@ -6292,8 +6373,9 @@ swap only when both hold:
 
 - the live login has reached `--session-at` or `--week-at` on a measured
   reading (a failed live probe is left to the
-  [failed-probe rules](#rotate-failed-live-probes), or, near the threshold,
-  to the [near-threshold rule](#failed-or-stale-reading-near-the-threshold);
+  [failed-probe rules](#rotate-failed-live-probes), whose swap the
+  [near-threshold rule](#failed-or-stale-reading-near-the-threshold) can
+  only make sooner;
   a [projected](#projected-swap) or substituted figure never counts);
 - the table above gives `ALERT no-capacity`.
 
@@ -11392,8 +11474,10 @@ On a cycle with a failed live reading:
 - The rotator does not try the per-token tier
   ([decision order](#rotate-decision-order)). That loses nothing: Claude is
   already using the key, and the move would not change what is billed.
-- The rotator makes no [failed-probe swap](#rotate-failed-live-probes). The
-  other logins still read normally, because each is probed through its own
+- The rotator makes no [failed-probe swap](#rotate-failed-live-probes),
+  including one the
+  [near-threshold rule](#failed-or-stale-reading-near-the-threshold) would
+  make early. The other logins still read normally, because each is probed through its own
   directory and not these files. But the key applies to whichever
   login is live, so the login swapped in would fail its live probe the same
   way, and the billing would not change. The rotator stays on the live login
