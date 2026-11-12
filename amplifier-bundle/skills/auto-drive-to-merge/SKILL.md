@@ -54,7 +54,10 @@ captures authorization afresh.
 5. For an authorized merge, require expected-head protection. Observe platform
    state before retrying ambiguous requests and after the action. Report
    `merged` only with platform confirmation. Squash with an explicit message
-   composed by the trusted `autodrive_merge_message.sh`: subject `<title> (#N)`
+   composed by the trusted
+   `$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh`, sourced
+   by that absolute path (never from the PR worktree, never through a
+   symlink): subject `<title> (#N)`
    with control characters removed, body the PR description up to the
    merge-ready report, piped on stdin with `--body-file -`. Never let the
    platform concatenate the branch's commit messages and trailers (#2056).

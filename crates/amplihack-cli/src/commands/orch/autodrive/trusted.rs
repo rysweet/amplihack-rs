@@ -11,6 +11,22 @@ pub fn applies(name: &str) -> bool {
     name == "auto-drive-to-merge" || name == "auto-drive-light" || name.starts_with("autodrive-")
 }
 
+/// Assets a launch bundle must hold before any loop runs. The finalize helpers
+/// are here so a bundle without them fails at launch, not after the crusty and
+/// merge-ready loops (`finalize-observed-action` sources
+/// `autodrive_merge_message.sh`; merge evidence runs `autodrive_expected_checks.sh`).
+pub const REQUIRED_ASSETS: &[&str] = &[
+    "skills/merge-ready/SKILL.md",
+    "skills/crusty-old-engineer/SKILL.md",
+    "skills/merge-ready/pr-description-template.md",
+    "recipes/loop-health-evaluator.yaml",
+    "recipes/autodrive-finalize.yaml",
+    "skills/auto-drive-to-merge/evidence-contract.md",
+    "tools/autodrive_loop.sh",
+    "tools/autodrive_merge_message.sh",
+    "tools/autodrive_expected_checks.sh",
+];
+
 /// A private invocation copy keeps recipes, skills, evaluator and helpers on one release.
 pub struct LaunchBundle {
     pub home: PathBuf,
@@ -23,15 +39,7 @@ impl LaunchBundle {
             "auto-drive trusted AMPLIHACK_HOME must be absolute"
         );
         let bundle = pin_bundle(home)?;
-        for relative in [
-            "skills/merge-ready/SKILL.md",
-            "skills/crusty-old-engineer/SKILL.md",
-            "skills/merge-ready/pr-description-template.md",
-            "recipes/loop-health-evaluator.yaml",
-            "recipes/autodrive-finalize.yaml",
-            "skills/auto-drive-to-merge/evidence-contract.md",
-            "tools/autodrive_loop.sh",
-        ] {
+        for relative in REQUIRED_ASSETS {
             let path = bundle.join(relative);
             ensure!(
                 path.is_file(),
@@ -268,4 +276,30 @@ fn bundle_digest(root: &Path) -> Result<String> {
         "trusted-launch-bundle:sha256:{hash:x}",
         hash = hash.finalize()
     ))
+}
+
+#[cfg(test)]
+mod required_assets_tests {
+    use super::REQUIRED_ASSETS;
+
+    #[test]
+    fn finalize_helpers_are_required_and_shipped() {
+        for helper in [
+            "tools/autodrive_merge_message.sh",
+            "tools/autodrive_expected_checks.sh",
+        ] {
+            assert!(
+                REQUIRED_ASSETS.contains(&helper),
+                "LaunchBundle::prepare must require {helper}"
+            );
+        }
+        let bundle =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle");
+        for relative in REQUIRED_ASSETS {
+            assert!(
+                bundle.join(relative).is_file(),
+                "required asset {relative} is not in amplifier-bundle"
+            );
+        }
+    }
 }

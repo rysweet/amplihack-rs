@@ -46,7 +46,8 @@ fn repo_root() -> PathBuf {
 /// runner and set bare names on purpose.
 const RECIPES_DIR: &str = "amplifier-bundle/recipes";
 
-/// Not recursive either: `tools/gh-merge-guard/` is the #1551 shim.
+/// Not recursive either: the scan covers the top-level tool scripts that
+/// recipes call, and subdirectories of `tools/` are not recipe steps.
 const TOOLS_DIR: &str = "amplifier-bundle/tools";
 
 /// Floors that stop the scan from silently covering nothing.

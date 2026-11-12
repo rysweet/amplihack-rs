@@ -3828,6 +3828,11 @@ fn finalize_supplies_the_squash_message_instead_of_the_platform_default() {
         "issue #2056",
         "autodrive_merge_message.sh",
         "never a copy from the PR's tree",
+        // An absolute launch-bundle path: the step runs in the PR worktree,
+        // so a repo-relative path would source the PR's own copy.
+        "MM=\"$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh\"",
+        "[ ! -L \"$MM\" ] && . \"$MM\"",
+        "case \"${AMPLIHACK_HOME:-}\" in /*) ;;",
         "--subject \"$subject\" --body-file -",
         "printf '%s' \"$MERGE_BODY\" | gh pr merge",
     ] {

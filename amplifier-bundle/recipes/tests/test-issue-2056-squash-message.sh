@@ -153,7 +153,9 @@ FP="$(awk '
   s && p { if ($0 ~ /^    [a-zA-Z_]+:/) exit; print }' "$FINALIZE" | tr '\n' ' ')"
 for clause in \
   "never the platform default that concatenates every commit's message and trailers (issue #2056)" \
-  'source the trusted launch-bundle `autodrive_merge_message.sh` (never a copy from the PR'"'"'s tree)' \
+  'source the trusted launch-bundle helper by its absolute path, never a copy from the PR'"'"'s tree and never a path relative to this step'"'"'s working directory' \
+  'case "${AMPLIHACK_HOME:-}" in /*) ;; *) echo "STOP: AMPLIHACK_HOME is not the absolute launch-bundle home (#2056)" >&2; exit 1 ;; esac;' \
+  'MM="$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh"; [ -f "$MM" ] && [ ! -L "$MM" ] && . "$MM" ||' \
   'autodrive_merge_subject <json> <number>' \
   'autodrive_merge_body <json>' \
   'treat a non-zero return from either as a blocker' \

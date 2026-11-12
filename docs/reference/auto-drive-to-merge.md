@@ -279,9 +279,14 @@ each commit's trailers, a `Fixes #N` written for a stacked branch, and the
 pushed commit cannot be corrected without a force-push, which this workflow
 never does. So an authorized merge supplies its own message.
 
-The `finalize-observed-action` step sources the trusted launch-bundle
-`amplifier-bundle/tools/autodrive_merge_message.sh`, never a copy from the
-PR's tree, and composes the message from one `gh pr view --json title,body`
+The `finalize-observed-action` step sources the trusted launch-bundle helper
+by its absolute path, `$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_message.sh`.
+The runner sets `AMPLIHACK_HOME` to the pinned, digest-bound copy of the
+launch bundle, and `LaunchBundle::prepare` refuses a bundle without the
+helper. The step's working directory is the PR worktree, so a repo-relative
+path would resolve to the PR's own copy; the prompt refuses a non-absolute
+`AMPLIHACK_HOME`, a missing helper and a symlinked helper before it reads
+anything. It composes the message from one `gh pr view --json title,body`
 read:
 
 | Part | Source | Refused when |
