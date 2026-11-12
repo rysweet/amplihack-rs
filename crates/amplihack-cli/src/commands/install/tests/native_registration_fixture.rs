@@ -45,11 +45,7 @@ pub(super) fn executable(bin: &Path) -> PathBuf {
 }
 
 fn native_command(binary: &Path, home: &Path, codex_home: &Path) -> Command {
-    // Read the generated shell fixture through its interpreter. Executing its
-    // inode directly can return ETXTBSY while another test's fork still holds
-    // an inherited write descriptor, even after this thread closed the file.
-    let mut command = Command::new("/bin/bash");
-    command.arg(binary);
+    let mut command = Command::new(binary);
     // Other tests temporarily replace the process PATH. Keep this fixture's
     // bash interpreter and POSIX utilities independent of that ambient state.
     command

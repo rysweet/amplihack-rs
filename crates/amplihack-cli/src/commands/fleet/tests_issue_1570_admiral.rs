@@ -14,8 +14,6 @@ const REMOTE_PATH: &str = "/tmp/tmp.Ab3_x-9.Q";
 
 struct StubAzlin {
     temp: tempfile::TempDir,
-    // Keep PATH/HOME stable while the stub invokes its POSIX utilities.
-    _environment: std::sync::MutexGuard<'static, ()>,
 }
 
 impl StubAzlin {
@@ -23,9 +21,6 @@ impl StubAzlin {
     /// status of the `send-keys` call. Only stage 1 reads stdin, so a call
     /// that inherits the test runner's stdin cannot block.
     fn new(stage1_stdout: &str, stage2_exit: i32) -> Self {
-        let environment = crate::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let out = temp.path();
         fs::write(out.join("stage1_out"), stage1_stdout).unwrap();
@@ -47,10 +42,7 @@ esac
         let azlin = out.join("azlin");
         fs::write(&azlin, script).unwrap();
         fs::set_permissions(&azlin, fs::Permissions::from_mode(0o755)).unwrap();
-        Self {
-            temp,
-            _environment: environment,
-        }
+        Self { temp }
     }
 
     fn path(&self) -> PathBuf {
