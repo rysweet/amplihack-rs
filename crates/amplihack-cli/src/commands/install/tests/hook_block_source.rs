@@ -296,12 +296,12 @@ fn validate_contract_is_drift_lines() {
     let t = target(true);
     let mut settings = json!({});
     hook_block::merge(&mut settings, &t);
-    assert!(settings::validate_amplihack_native_hook_contract(&settings, true).is_empty());
+    assert!(settings::validate_amplihack_native_hook_contract(&settings, true, &t.bin).is_empty());
     settings["hooks"]
         .as_object_mut()
         .unwrap()
         .remove("PreCompact");
-    let lines = settings::validate_amplihack_native_hook_contract(&settings, true);
+    let lines = settings::validate_amplihack_native_hook_contract(&settings, true, &t.bin);
     assert!(!lines.is_empty());
     assert!(lines.iter().any(|l| l.contains("PreCompact")));
 }

@@ -19,7 +19,7 @@
 
 use super::binary::validate_binary_path;
 use super::hooks::{build_hook_wrapper, ensure_array, ensure_object, is_xpia_command};
-use super::hooks::{legacy_hook_script_name, native_subcommand, subcmd_of};
+use super::hooks::{legacy_hook_script_name, native_subcommand_for, subcmd_of};
 use super::types::{AMPLIHACK_HOOK_SPECS, HookSpec, LIMIT_RESUME_EVENT};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
@@ -159,7 +159,7 @@ pub(crate) fn merge(settings: &mut Value, t: &HookTarget) -> Merge {
         let Some(Value::Array(wrappers)) = hooks.get_mut(&event) else {
             continue;
         };
-        let stripped = strip_own(wrappers);
+        let stripped = strip_own(wrappers, &t.bin);
         if stripped && wrappers.is_empty() && !wanted.contains_key(&event) {
             hooks.remove(&event);
         }
@@ -186,7 +186,7 @@ pub(crate) fn merge(settings: &mut Value, t: &HookTarget) -> Merge {
 /// this call left with an empty `hooks` list. A wrapper whose `hooks` list
 /// was already empty is foreign and is kept as it is (SR-9). Whether
 /// anything was removed.
-fn strip_own(wrappers: &mut Vec<Value>) -> bool {
+fn strip_own(wrappers: &mut Vec<Value>, bin: &Path) -> bool {
     let before = wrappers.len();
     let mut removed = false;
     wrappers.retain_mut(|wrapper| {
@@ -194,7 +194,7 @@ fn strip_own(wrappers: &mut Vec<Value>) -> bool {
             return true;
         };
         let count = entries.len();
-        entries.retain(|hook| command_of(hook).and_then(classify).is_none());
+        entries.retain(|hook| command_of(hook).and_then(|c| classify(c, bin)).is_none());
         removed |= entries.len() != count;
         entries.len() == count || !entries.is_empty()
     });
@@ -203,13 +203,7 @@ fn strip_own(wrappers: &mut Vec<Value>) -> bool {
 
 /// Drift between `settings` and `block(t)`. Pure.
 pub(crate) fn drift(settings: &Value, t: &HookTarget) -> Drift {
-    drift_inner(settings, &specs(t.limit_resume), Some(&t.bin))
-}
-
-/// [`drift`] that does not compare the hooks binary path, for callers that
-/// do not know which binary the file should name.
-pub(super) fn drift_ignoring_path(settings: &Value, limit_resume: bool) -> Drift {
-    drift_inner(settings, &specs(limit_resume), None)
+    drift_inner(settings, &specs(t.limit_resume), &t.bin)
 }
 
 /// Whose a hook command is: amplihack's native or legacy entry for a known
@@ -223,16 +217,20 @@ fn command_of(hook: &Value) -> Option<&str> {
     hook.get("command").and_then(Value::as_str)
 }
 
-fn classify(command: &str) -> Option<Owned> {
+fn classify(command: &str, bin: &Path) -> Option<Owned> {
+    let native = native_subcommand_for(command, Some(bin));
+    if let Some(sub) = AMPLIHACK_HOOK_SPECS
+        .iter()
+        .map(subcmd_of)
+        .find(|sub| native == Some(*sub))
+    {
+        return Some(Owned::Sub(sub));
+    }
     if is_xpia_command(command) {
         return Some(Owned::Unspecified);
     }
-    let native = native_subcommand(command);
     for spec in AMPLIHACK_HOOK_SPECS {
         let sub = subcmd_of(spec);
-        if native == Some(sub) {
-            return Some(Owned::Sub(sub));
-        }
         if command.contains("tools/amplihack/hooks/")
             && legacy_hook_script_name(sub).is_some_and(|name| command.contains(name))
         {
@@ -244,7 +242,7 @@ fn classify(command: &str) -> Option<Owned> {
         .then_some(Owned::Unspecified)
 }
 
-fn drift_inner(settings: &Value, specs: &[HookSpec], bin: Option<&Path>) -> Drift {
+fn drift_inner(settings: &Value, specs: &[HookSpec], bin: &Path) -> Drift {
     let (mut missing, mut differing, mut extra) =
         (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     let mut seen = BTreeSet::new();
@@ -259,7 +257,7 @@ fn drift_inner(settings: &Value, specs: &[HookSpec], bin: Option<&Path>) -> Drif
         for wrapper in wrappers {
             let entries = wrapper.get("hooks").and_then(Value::as_array);
             for hook in entries.into_iter().flatten() {
-                match command_of(hook).and_then(classify) {
+                match command_of(hook).and_then(|c| classify(c, bin)) {
                     None => {}
                     Some(Owned::Sub(sub)) => {
                         match event_specs.iter().position(|s| subcmd_of(s) == sub) {
@@ -285,7 +283,7 @@ fn drift_inner(settings: &Value, specs: &[HookSpec], bin: Option<&Path>) -> Drif
                 [] => {
                     missing.insert(event.clone());
                 }
-                [one] if wrapper_is(one, spec, bin) => {}
+                [one] if **one == build_hook_wrapper(spec, bin) => {}
                 _ => {
                     differing.insert(event.clone());
                 }
@@ -305,23 +303,5 @@ fn drift_inner(settings: &Value, specs: &[HookSpec], bin: Option<&Path>) -> Drif
         missing: missing.into_iter().collect(),
         differing: differing.into_iter().collect(),
         extra: extra.into_iter().collect(),
-    }
-}
-
-/// Whether `wrapper` is exactly this build's wrapper for `spec`. With no
-/// `bin`, the command strings are not compared.
-fn wrapper_is(wrapper: &Value, spec: &HookSpec, bin: Option<&Path>) -> bool {
-    match bin {
-        Some(bin) => *wrapper == build_hook_wrapper(spec, bin),
-        None => {
-            let shape = |w: &Value| {
-                let mut w = w.clone();
-                if let Some(hook) = w.pointer_mut("/hooks/0").and_then(Value::as_object_mut) {
-                    hook.remove("command");
-                }
-                w
-            };
-            shape(wrapper) == shape(&build_hook_wrapper(spec, Path::new("/amplihack-hooks")))
-        }
     }
 }

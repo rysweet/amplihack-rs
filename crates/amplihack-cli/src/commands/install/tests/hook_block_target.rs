@@ -22,6 +22,52 @@ fn a_safe_path_gives_a_target() {
 }
 
 #[test]
+fn a_selected_custom_name_has_clean_drift_and_an_unchanged_second_merge() {
+    use hook_block::Merge;
+    use serde_json::json;
+
+    for bin in [
+        "/opt/test/amplihack-hooks-v2",
+        "/opt/test/custom-hook-runner",
+    ] {
+        // Exercise the no-deployed-binary fallback used by the override.
+        let selected = binary::choose_durable_hooks_path(None, PathBuf::from(bin));
+        for limit_resume in [true, false] {
+            let t = HookTarget::new(selected.clone(), limit_resume).unwrap();
+            let foreign = json!({"hooks": [
+                {"type": "command", "command": format!("\"{bin}-wrapper\" stop")},
+                {"type": "command", "command": format!("\"/other{bin}\" stop")},
+                {"type": "command", "command": format!("\"{bin}\" --verbose stop")}
+            ]});
+            let mut settings = json!({"hooks": {"Stop": [foreign.clone()]}});
+            assert_eq!(hook_block::merge(&mut settings, &t), Merge::Changed);
+            assert!(hook_block::drift(&settings, &t).is_clean());
+            assert!(
+                settings::validate_amplihack_native_hook_contract(
+                    &settings,
+                    limit_resume,
+                    &selected
+                )
+                .is_empty()
+            );
+            let once = settings.clone();
+            assert_eq!(hook_block::merge(&mut settings, &t), Merge::Unchanged);
+            assert_eq!(settings, once);
+            assert_eq!(settings["hooks"]["Stop"][1], foreign);
+
+            // A custom target's obsolete registration is still ours to remove.
+            let obsolete = HookTarget::new(selected.clone(), !limit_resume).unwrap();
+            hook_block::merge(&mut settings, &obsolete);
+            assert!(hook_block::drift(&settings, &obsolete).is_clean());
+            assert_eq!(
+                hook_block::merge(&mut settings, &obsolete),
+                Merge::Unchanged
+            );
+        }
+    }
+}
+
+#[test]
 fn unsafe_characters_give_none_without_panicking() {
     for bad in [
         "/opt/with space/amplihack-hooks",
@@ -33,6 +79,22 @@ fn unsafe_characters_give_none_without_panicking() {
         let result = std::panic::catch_unwind(|| HookTarget::new(PathBuf::from(bad), true));
         let target = result.unwrap_or_else(|_| panic!("panicked on {bad}"));
         assert!(target.is_none(), "{bad} must be refused");
+    }
+}
+
+#[test]
+fn a_selected_target_takes_precedence_over_legacy_path_detection() {
+    for bin in [
+        "/opt/test/tools/xpia/hooks/custom-hook-runner",
+        "/opt/test/tools/amplihack/hooks/session_start.py",
+    ] {
+        let t = HookTarget::new(PathBuf::from(bin), true).unwrap();
+        let mut settings = serde_json::json!({"hooks": hook_block::block(&t)});
+        assert!(hook_block::drift(&settings, &t).is_clean());
+        assert_eq!(
+            hook_block::merge(&mut settings, &t),
+            hook_block::Merge::Unchanged
+        );
     }
 }
 

@@ -131,6 +131,16 @@ pub(super) fn is_own_wrapper(wrapper: &Value, spec: &HookSpec, hook_system: &str
 /// so a user's wrapper script whose name or arguments merely mention
 /// `amplihack-hooks` is never taken for amplihack's own entry.
 pub(super) fn native_subcommand(command: &str) -> Option<&str> {
+    native_subcommand_for(command, None)
+}
+
+/// Also recognizes the exact selected target path, whose basename may be
+/// custom when it comes from the operator's binary override. Other paths
+/// still require the standard basename; substring matches never imply ownership.
+pub(super) fn native_subcommand_for<'a>(
+    command: &'a str,
+    selected_bin: Option<&Path>,
+) -> Option<&'a str> {
     let command = command.trim();
     let (bin, rest) = match command.strip_prefix('"') {
         Some(quoted) => {
@@ -157,7 +167,9 @@ pub(super) fn native_subcommand(command: &str) -> Option<&str> {
         return None;
     }
     let name = bin.rsplit(['/', '\\']).next()?;
-    matches!(name, "amplihack-hooks" | "amplihack-hooks.exe").then_some(sub)
+    (matches!(name, "amplihack-hooks" | "amplihack-hooks.exe")
+        || selected_bin.and_then(Path::to_str) == Some(bin))
+    .then_some(sub)
 }
 
 /// The `amplihack-hooks` subcommand `spec` runs.

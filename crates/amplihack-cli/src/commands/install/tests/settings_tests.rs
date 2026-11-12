@@ -126,7 +126,7 @@ fn validate_amplihack_native_hook_contract_accepts_canonical_native_wrappers() {
     let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
     let settings_val = build_canonical_native_hook_settings(&hooks_bin);
 
-    let drift = settings::validate_amplihack_native_hook_contract(&settings_val, true);
+    let drift = settings::validate_amplihack_native_hook_contract(&settings_val, true, &hooks_bin);
 
     assert!(
         drift.is_empty(),
@@ -161,7 +161,7 @@ fn validate_amplihack_native_hook_contract_reports_duplicate_native_drift() {
     };
     wrappers.push(hooks::build_hook_wrapper(&drift_spec, &hooks_bin));
 
-    let drift = settings::validate_amplihack_native_hook_contract(&settings_val, true);
+    let drift = settings::validate_amplihack_native_hook_contract(&settings_val, true, &hooks_bin);
 
     // Issue #2279: drift lines name events, never commands or content.
     assert!(

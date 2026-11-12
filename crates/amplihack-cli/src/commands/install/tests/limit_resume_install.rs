@@ -276,7 +276,7 @@ fn too_old_a_claude_gets_no_stop_failure_and_loses_a_stale_one() {
     );
     assert!(settings["hooks"].get("SessionStart").is_some());
     assert!(settings::missing_hook_registrations(&settings, false).is_empty());
-    assert!(settings::validate_amplihack_native_hook_contract(&settings, false).is_empty());
+    assert!(settings::validate_amplihack_native_hook_contract(&settings, false, &bin).is_empty());
 
     let mut only_ours = json!({});
     settings::register_hooks(&mut only_ours, &bin, true);

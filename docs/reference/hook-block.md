@@ -117,7 +117,9 @@ when a project also had project-local hooks no longer does so; see
 ### Launch repair
 
 The launch repair reads the target with the drift check first and writes only
-when the check reports drift. An absent target is left absent. Any missing or differing event counts, so a file
+when the check reports drift or the home settings file is absent. Launch can
+create `~/.claude/settings.json`; an absent `$CLAUDE_CONFIG_DIR/settings.json`
+is left absent. Any missing or differing event counts, so a file
 that lost only `StopFailure`, or holds a stale `StopFailure` entry, is repaired
 as well as a file that lost every hook.
 
@@ -189,6 +191,9 @@ The merge changes only `settings["hooks"]`.
   - a path whose file name is exactly `amplihack-hooks` (or
     `amplihack-hooks.exe`), quoted or bare, followed by one known subcommand
     and nothing else, for example `"/home/u/.local/bin/amplihack-hooks" stop`;
+  - the exact selected hooks binary path followed by one known subcommand
+    and nothing else, including a custom basename selected through
+    `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` when no deployed binary exists;
   - a legacy script under `tools/amplihack/hooks/`;
   - an XPIA script under `tools/xpia/hooks/`.
 

@@ -134,6 +134,42 @@ fn a_current_file_is_not_rewritten_and_gets_no_backup() {
 }
 
 #[test]
+fn a_custom_name_override_is_repaired_once_and_passes_final_verification() {
+    let mut f = fixture();
+    f.hooks_bin = create_exe_stub(f._bin_dir.path(), "amplihack-hooks-v2");
+    f.env
+        .set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &f.hooks_bin);
+    let path = f.home_settings();
+    f.write(&path, &json!({"hooks": {}}));
+    f.launch();
+    assert!(hook_block::drift(&f.read(&path), &f.target()).is_clean());
+    let before = fs::read(&path).unwrap();
+    let saved = backups(path.parent().unwrap());
+    f.launch();
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(backups(path.parent().unwrap()), saved);
+}
+
+#[test]
+fn an_absent_home_settings_file_is_created_at_launch() {
+    let f = fixture();
+    let path = f.home_settings();
+    assert!(!path.exists());
+    f.launch();
+    assert!(hook_block::drift(&f.read(&path), &f.target()).is_clean());
+}
+
+#[test]
+fn an_absent_claude_config_dir_settings_file_is_left_absent() {
+    let mut f = fixture();
+    let cfg = f.home.join("profile-cfg");
+    f.env.set("CLAUDE_CONFIG_DIR", &cfg);
+    f.launch();
+    assert!(!cfg.join("settings.json").exists());
+    assert!(!f.home_settings().exists());
+}
+
+#[test]
 fn the_repair_backs_up_only_when_it_changes_the_file() {
     let f = fixture();
     let path = f.home_settings();

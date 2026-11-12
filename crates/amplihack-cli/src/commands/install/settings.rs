@@ -89,6 +89,7 @@ pub(super) fn ensure_settings_json_for(
         drift_lines.replace(validate_amplihack_native_hook_contract(
             settings,
             limit_resume,
+            hooks_bin,
         ));
     };
     let backup_path = free_backup_path(parent, timestamp);
@@ -533,14 +534,22 @@ pub(super) fn ensure_permissions(settings: &mut Value) {
 }
 
 /// Issue #2279: drift between `settings` and this build's hooks block, one
-/// line per kind, naming events only. The hooks binary path is not compared:
-/// the caller checks a file it has just written with its own path.
+/// line per kind, naming events only. The selected hooks binary path also
+/// identifies registrations written with a custom binary name.
 /// `StopFailure` is checked only with `limit_resume`.
 pub(super) fn validate_amplihack_native_hook_contract(
     settings: &Value,
     limit_resume: bool,
+    hooks_bin: &Path,
 ) -> Vec<String> {
-    hook_block::drift_ignoring_path(settings, limit_resume).lines()
+    hook_block::drift(
+        settings,
+        &HookTarget {
+            bin: hooks_bin.to_path_buf(),
+            limit_resume,
+        },
+    )
+    .lines()
 }
 
 pub(super) fn missing_framework_paths(claude_dir: &Path) -> Result<Vec<String>> {
@@ -680,7 +689,8 @@ mod tests {
     #[test]
     fn validate_empty_settings_reports_missing() {
         let settings = json!({});
-        let drift = validate_amplihack_native_hook_contract(&settings, true);
+        let drift =
+            validate_amplihack_native_hook_contract(&settings, true, Path::new("/amplihack-hooks"));
         // With no hooks configured, all expected hooks should be missing
         assert!(!drift.is_empty());
         assert!(drift.iter().any(|d| d.contains("missing")));
