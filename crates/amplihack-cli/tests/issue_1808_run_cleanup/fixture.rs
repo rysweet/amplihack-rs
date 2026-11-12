@@ -155,12 +155,12 @@ impl Fx {
         Self::in_tempdir(tempfile::tempdir().unwrap())
     }
 
-    /// Issue #2291: a fixture whose root is at most 30 bytes, so a run's
+    /// Issue #2291: a fixture whose root is at most 55 bytes, so a run's
     /// `<root>/tmp/ahr-<12 hex>/tmp` fits the 80-byte limit even
     /// when the test process has a long `TMPDIR`.
     pub fn new_short() -> Self {
         let short =
-            |t: &tempfile::TempDir| t.path().canonicalize().unwrap().as_os_str().len() <= 30;
+            |t: &tempfile::TempDir| t.path().canonicalize().unwrap().as_os_str().len() <= 55;
         let tmp = tempfile::Builder::new()
             .prefix("f")
             .rand_bytes(3)

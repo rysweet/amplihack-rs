@@ -130,7 +130,7 @@ fn ac1_caller_tmpdir_is_honoured_and_runtime_in_work_is_never_created() {
 #[test]
 fn ac2_run_tmp_root_wins_over_tmpdir_and_holds_every_runtime_variable() {
     let fx = Fx::new_short();
-    let root = fx.root.join("runroot");
+    let root = fx.root.join("r");
     let out = fx.recipe_run(&runner(true), |c| {
         c.env("AMPLIHACK_RUN_TMP_ROOT", &root);
     });
@@ -153,10 +153,10 @@ fn ac2_run_tmp_root_wins_over_tmpdir_and_holds_every_runtime_variable() {
 
     assert!(root.is_dir(), "the root is kept");
     assert_eq!(mode_of(&root), 0o700, "a created root is private");
-    assert_eq!(
-        fs::read_dir(&root).unwrap().count(),
-        0,
-        "the per-run folder is gone"
+    assert!(!dir.exists(), "the per-run folder is gone");
+    assert!(
+        root.join(".amplihack-ownership").is_dir(),
+        "external ownership storage survives successful run cleanup"
     );
     let caller_side = canon(&fx.tmp).join(format!("ahr-{}", short_id(&run_id)));
     assert!(!caller_side.exists(), "TMPDIR is not used");
@@ -169,7 +169,7 @@ fn ac2_run_tmp_root_wins_over_tmpdir_and_holds_every_runtime_variable() {
 #[test]
 fn ac4_failing_run_removes_the_per_run_folder() {
     let fx = Fx::new_short();
-    let root = fx.root.join("runroot");
+    let root = fx.root.join("r");
     let out = fx.recipe_run(&runner(false), |c| {
         c.env("AMPLIHACK_RUN_TMP_ROOT", &root);
     });
@@ -194,7 +194,7 @@ fn ac4_failing_run_removes_the_per_run_folder() {
 #[test]
 fn ac5_run_json_records_the_external_folder_before_steps_run() {
     let fx = Fx::new_short();
-    let root = fx.root.join("runroot");
+    let root = fx.root.join("r");
     let out = fx.recipe_run(&runner(true), |c| {
         c.env("AMPLIHACK_RUN_TMP_ROOT", &root);
     });
@@ -233,7 +233,7 @@ fn external_for(root: &Path, run: &SeedRun) -> PathBuf {
 }
 
 fn ext_root(fx: &Fx) -> PathBuf {
-    let root = fx.root.join("runroot");
+    let root = fx.root.join("r");
     mkdir_0700(&root);
     canon(&root)
 }

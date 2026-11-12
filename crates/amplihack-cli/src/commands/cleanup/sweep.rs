@@ -831,9 +831,13 @@ impl Collector<'_> {
                     Some(id),
                 ));
             }
+            // Retain placement independently for each supported layout.
             let mut runtime_dirs = vec![
-                run.dir.join("runtime"),
-                root.short_runtime_dir().join(short_id(id)),
+                (run.dir.join("runtime"), run.dir.clone()),
+                (
+                    root.short_runtime_dir().join(short_id(id)),
+                    root.short_runtime_dir(),
+                ),
             ];
             let existing: Vec<&OwnedPath> = {
                 let mut seen = BTreeSet::new();
@@ -872,17 +876,29 @@ impl Collector<'_> {
             };
             let active = run_is_active(&report);
 
-            // Issue #2291: a per-run folder under an external root, as
-            // `run.json` records it. A missing path produces no item.
+            // Missing originals are considered only when verified creation
+            // evidence can recover their nonce-bound interrupted claim.
             if want_tmp && let Some(recorded) = report.runtime_dir.as_deref().map(PathBuf::from) {
-                if !recorded.exists()
-                    && let Some(parent) = &report.runtime_root
-                    && super::owned_run_dir::OwnedRunDir::load(parent, &recorded, id).is_ok()
-                {
-                    runtime_dirs.push(recorded);
+                let missing = matches!(fs::symlink_metadata(&recorded),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound);
+                if missing {
+                    if let Some(parent) = &report.runtime_root {
+                        runtime_dirs.push((recorded, parent.clone()));
+                    }
                 } else {
                     match external_runtime_check(&recorded, id, &root.path, euid()) {
-                        Ok(()) => runtime_dirs.push(recorded),
+                        Ok(()) => {
+                            if let Some(parent) = &report.runtime_root {
+                                runtime_dirs.push((recorded, parent.clone()));
+                            } else {
+                                self.items.push(Item::skip(
+                                    Category::RunTmp,
+                                    &recorded,
+                                    "no independent runtime root recorded",
+                                    Some(id),
+                                ));
+                            }
+                        }
                         Err(reason) => self.items.push(Item::skip(
                             Category::RunTmp,
                             &recorded,
@@ -894,7 +910,23 @@ impl Collector<'_> {
             }
 
             if want_tmp {
-                for dir in &runtime_dirs {
+                for (dir, expected_root) in &runtime_dirs {
+                    let recovered = if is_real_dir(dir) {
+                        None
+                    } else if matches!(fs::symlink_metadata(dir),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+                    {
+                        match super::owned_run_dir::OwnedRunDir::load(expected_root, dir, id) {
+                            Ok(owned) => Some(owned),
+                            Err(error) => {
+                                tracing::debug!(path = ?dir, %error,
+                                    "no verified runtime or interrupted claim to advertise");
+                                continue;
+                            }
+                        }
+                    } else {
+                        continue;
+                    };
                     if active {
                         self.items.push(Item::skip(
                             Category::RunTmp,
@@ -915,33 +947,11 @@ impl Collector<'_> {
                         } else {
                             "run is no longer active (interrupted)"
                         };
-                        let expected_root = if *dir == run.dir.join("runtime") {
-                            run.dir.clone()
-                        } else if *dir == root.short_runtime_dir().join(short_id(id)) {
-                            root.short_runtime_dir()
-                        } else if let Some(root) = &report.runtime_root {
-                            root.clone()
-                        } else {
-                            self.items.push(Item::skip(
-                                Category::RunTmp,
-                                dir,
-                                "no independent runtime root recorded",
-                                Some(id),
-                            ));
-                            continue;
+                        let authority = match recovered {
+                            Some(owned) => Ok(owned),
+                            None => super::owned_run_dir::OwnedRunDir::load(expected_root, dir, id),
                         };
-                        if !is_real_dir(dir)
-                            && matches!(fs::symlink_metadata(dir), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
-                            && super::owned_run_dir::OwnedRunDir::load(&expected_root, dir, id)
-                                .is_err()
-                        {
-                            continue;
-                        }
-                        let owned = match super::owned_run_dir::OwnedRunDir::load(
-                            &expected_root,
-                            dir,
-                            id,
-                        ) {
+                        let owned = match authority {
                             Ok(owned) => owned,
                             Err(error) => {
                                 self.items.push(Item::skip(

@@ -566,6 +566,8 @@ fn tmpdir_past_the_59_byte_budget_warns_naming_tmpdir() {
     let chosen = fx.choose(&fx.with_tmpdir(&fits));
     assert_eq!(external(&chosen).1, fits);
     assert_eq!(chosen.warning, None);
+    drop(chosen);
+    drop(fx); // Release the fixture's environment lock before constructing another.
 
     let fx = Fx::new();
     let long = root_of_len(&fx, 60);
