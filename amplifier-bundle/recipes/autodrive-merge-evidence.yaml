@@ -46,7 +46,8 @@ steps:
       TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
       [ -n "$TOOLS_D" ] || TOOLS_D="${AMPLIHACK_HOME:-}/amplifier-bundle/tools"
       [ ! -L "$TOOLS_D/git-repo-env.sh" ] && . "$TOOLS_D/git-repo-env.sh" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env || { echo "STOP: cannot load git-repo-env.sh from the tools directory (#2033)" >&2; exit 1; }
-      echo "INFO: cleared git env: ${AMPLIHACK_GIT_ENV_CLEARED}; run env: ${AMPLIHACK_RUN_ENV_CLEARED} (#2033)" >&2
+      # This step runs no git command (#537 guards are for steps that do).
+      echo "INFO: helper loaded; cleared GIT_* names: ${AMPLIHACK_GIT_ENV_CLEARED}; run env: ${AMPLIHACK_RUN_ENV_CLEARED} (#2033)" >&2
       printf 'git-repo-env ok\n'
     output: "git_env_guard"
 

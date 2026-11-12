@@ -283,7 +283,8 @@ fn pushes_or_merges(log: &str) -> Vec<&str> {
 #[test]
 fn base_sync_is_a_guarded_agent_decision() {
     let recipe = recipe_yaml(RECIPE);
-    for output in ["merge_sync"] {
+    {
+        let output = "merge_sync";
         let s = output_step(&recipe, output);
         assert!(
             s.get("agent").is_some(),
