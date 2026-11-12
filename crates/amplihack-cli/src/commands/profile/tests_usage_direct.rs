@@ -179,13 +179,24 @@ fn endpoints(fake: &FakeHttp) -> Endpoints {
     ep
 }
 
+/// The read deadline for a test that expects its read to finish: far longer
+/// than anything its fake takes, so a stall on a loaded host only adds
+/// elapsed time. A refresh saves the login with two syncs, and one sync of
+/// the test's temporary directory on a loaded disk was measured at 10 s. At
+/// 5 s, such a stall left the retry nothing, or one of 2 s before the POST
+/// left less than `REFRESH_BUDGET`, and the read gave `timeout`
+/// (`a_401_refreshes_once_writes_back_and_reads_again` and
+/// `a_slow_refresh_within_the_deadline_still_reads` in loaded parallel runs).
+/// Tests of the deadline itself set their own.
+const READ_T: Duration = Duration::from_secs(60);
+
 fn request<'a>(l: &'a Login, journals: &'a [PathBuf], allow_refresh: bool) -> Request<'a> {
     Request {
         creds_dir: &l.dir,
         journals,
         allow_refresh,
         cancel: &NO_CANCEL,
-        timeout: Duration::from_secs(5),
+        timeout: READ_T,
         now_ms: now_ms(),
     }
 }
@@ -852,7 +863,8 @@ fn a_slow_refresh_within_the_deadline_still_reads() {
     let l = login();
     let journals = l.journals();
     let mut req = request(&l, &journals, true);
-    req.timeout = Duration::from_secs(5);
+    req.timeout = READ_T;
+    assert!(d * 3 + REFRESH_BUDGET < READ_T);
     let r = read(&endpoints(&fake), &req).expect("read after a slow refresh");
     assert_eq!(r.report.week_all.map(|w| w.used_percentage), Some(55.0));
 }
@@ -894,7 +906,11 @@ fn a_refresh_with_too_little_time_left_is_not_sent() {
 /// token saved. The 401 comes at once, so the POST is sent with
 /// `SEND_MARGIN` to spare. The retry `GET` then has `T - TOKEN_D` (about
 /// 0.95 s); that window is fixed by the production step formula (`T - 1 s`)
-/// and cannot be widened from the test.
+/// and cannot be widened from the test. The save's syncs and rename run in
+/// it too, so a stall there on a loaded host, after the token answer is
+/// read, leaves the retry no time: it is `timeout`, as the one deadline says
+/// it must be, and the saved token is still what is pinned. A stall across
+/// the token answer itself is still `refresh not saved`.
 #[test]
 fn a_refresh_with_the_budget_left_saves_the_rotated_token() {
     let t = REFRESH_T;
@@ -907,8 +923,14 @@ fn a_refresh_with_the_budget_left_saves_the_rotated_token() {
     let journals = l.journals();
     let mut req = request(&l, &journals, true);
     req.timeout = t;
-    let r = read(&endpoints(&fake), &req).expect("read after a slow refresh");
-    assert_eq!(r.report.week_all.map(|w| w.used_percentage), Some(55.0));
+    match read(&endpoints(&fake), &req) {
+        Ok(r) => assert_eq!(r.report.week_all.map(|w| w.used_percentage), Some(55.0)),
+        Err(e) => assert_eq!(e, reason::TIMEOUT, "only the retry may run out"),
+    }
+    // A retry that was sent carried the rotated token.
+    for get in gets(&fake).iter().skip(1) {
+        assert_eq!(bearer(get), Some(format!("Bearer {NEW_ACCESS}").as_str()));
+    }
     assert_eq!(posts(&fake), 1);
     assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], NEW_ACCESS);
     assert_eq!(l.doc()["claudeAiOauth"]["refreshToken"], NEW_REFRESH);
@@ -1393,13 +1415,13 @@ fn the_refresh_counter_covers_a_refresh_in_progress() {
             journals: &journals,
             allow_refresh: true,
             cancel: &NO_CANCEL,
-            timeout: Duration::from_secs(5),
+            timeout: READ_T,
             now_ms: now_ms(),
         };
         read(&ep, &req).is_ok()
     });
     let start = Instant::now();
-    while posts(&fake) == 0 && start.elapsed() < Duration::from_secs(3) {
+    while posts(&fake) == 0 && start.elapsed() < READ_T {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(
