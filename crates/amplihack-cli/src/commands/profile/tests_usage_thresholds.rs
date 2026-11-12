@@ -376,3 +376,28 @@ fn a_running_rotator_still_wins_over_a_group_writable_file() {
         v["interval"]
     );
 }
+
+#[test]
+fn a_running_rotator_never_changes_the_interval_or_floor_origin() {
+    // The gate record holds no interval and no floor: both keep the origin
+    // a rotator started now would use (design finding 1).
+    let t = resolve(Some(gate(70, 80)), &no_env, &no_config);
+    let i = t.interval.as_ref().unwrap();
+    assert_eq!((i.value, i.origin.label()), (600, "default"));
+    let c = t.codex_floor.as_ref().unwrap();
+    assert_eq!((c.value, c.origin.label()), (3000, "default"));
+    assert_eq!(t.session_at.as_ref().unwrap().origin.label(), "rotator");
+    assert_eq!(t.week_at.as_ref().unwrap().origin.label(), "rotator");
+
+    let t = resolve(
+        Some(gate(70, 80)),
+        &env_of(&[("AMPLIHACK_ROTATE_INTERVAL", "300")]),
+        &cfg_of(&[("rotator.interval", 120), ("rotator.codex_floor", 10_000)]),
+    );
+    let o = json(&t);
+    assert_eq!(o["interval"]["value"], 300);
+    assert_eq!(o["interval"]["origin"], "env");
+    assert_eq!(o["codex_floor"]["value"], 10_000);
+    assert_eq!(o["codex_floor"]["origin"], "config");
+    assert_eq!(o["session_at"]["origin"], "rotator");
+}

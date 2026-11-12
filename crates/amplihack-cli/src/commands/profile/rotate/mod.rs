@@ -255,17 +255,8 @@ pub(crate) fn autostart_on_launch(_docker_flag: bool) {}
 pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
-        let env = |k: &str| std::env::var_os(k);
+        let (env, cfg) = (|k: &str| std::env::var_os(k), settings::user_file_cfg());
         let home = settings::home_dir();
-        // Issue #2007: the `rotator.*` keys, read once per run. Only the
-        // forms that resolve settings use them; the background rotator gets
-        // every value as a flag, so it never reads the file itself.
-        let resolves = matches!(
-            args.action,
-            None | Some(RotateAction::Start(_)) | Some(RotateAction::Watch(_))
-        );
-        let user = resolves.then(settings::UserConfig::read);
-        let cfg = |k: &str| user.as_ref().map_or(Ok(None), |c| c.get(k));
         match args.action {
             None => {
                 let s = settings::resolve(&args.tune, None, &env, &cfg)?;

@@ -7,7 +7,6 @@
 //! this: every refusal returns silently, the state lock is tried once
 //! without waiting, and failures go to `rotate.err` only.
 
-use super::TuneFlags;
 use super::change_log;
 use super::daemon::{self, DaemonState, Spawner, launch_core, start_refusal, state_at};
 use super::ledger::RotateState;
@@ -316,11 +315,8 @@ pub fn run(root: &Path, docker_flag: bool, d: Deps<'_>) -> Outcome {
     if let Some(o) = blocked() {
         return o;
     }
-    // Issue #2007: the `rotator.*` keys of the user file under this HOME,
-    // so a rotator started here honours them like one started by hand. A
-    // value that cannot be used fails closed, naming the key.
-    let user = settings::UserConfig::at(d.home);
-    let s = match settings::resolve(&TuneFlags::default(), None, d.env, &|k| user.get(k)) {
+    let user = settings::UserConfig::at(d.home); // `rotator.*` keys, failing closed (#2007)
+    let s = match settings::resolve(&Default::default(), None, d.env, &|k| user.get(k)) {
         Ok(s) => s,
         Err(e) => return failed(&rs, &e),
     };

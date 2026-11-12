@@ -2731,7 +2731,18 @@ Each origin is one of:
 `profile usage` has no threshold flags, so it never shows `flag`. The
 running rotator does not record its interval, so `interval` always comes
 from the environment, the config file or the default, and may differ from
-the interval of a rotator started with `--interval`.
+the interval of a rotator started with `--interval`. `interval` is
+therefore the value a rotator would use at its next start, not that of a
+rotator already running. A rotator reads `rotator.session_at`,
+`rotator.week_at` and `rotator.interval` only when it starts, so run
+`amplihack profile rotate stop` and `amplihack profile rotate start` after
+changing them. `codex floor` is read by `profile usage` itself on each run,
+so a change to it applies at once.
+
+The review reserve is derived from `week-at` and cannot be set on its own.
+It is separate from `governor.reserve_points`, the weekly points the
+[governor](./user-config.md#governor-keys) keeps for coordination, recovery
+and review work; changing one does not change the other.
 
 A key that cannot be read is shown with the reason in place of its value,
 and the other fields are unaffected. `profile usage` still exits 0:

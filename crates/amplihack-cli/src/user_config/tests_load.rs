@@ -444,13 +444,19 @@ fn a_group_writable_user_file_gives_the_safe_rs_reason_for_each_key() {
     let fx = Fx::new();
     fx.user("[rotator]\nweek_at = 80\n");
     fs::set_permissions(user_file(&fx.home), fs::Permissions::from_mode(0o664)).unwrap();
-    for r in super::user_keys_detail(&fx.home, &["rotator.week_at", "rotator.codex_floor"]) {
-        let p = r.expect_err("fails closed, never unset");
-        assert_eq!(
-            p.reason,
-            "ignored because the file is writable by group or others"
-        );
-    }
+    let read = super::user_keys_detail(&fx.home, &["rotator.week_at", "rotator.codex_floor"]);
+    let p = read[0]
+        .clone()
+        .expect_err("a key the file sets fails closed");
+    assert_eq!(
+        p.reason,
+        "ignored because the file is writable by group or others"
+    );
+    assert!(p.whole_file, "the fault is the file's, not the key's");
+    // The loader records the fault only against keys the file sets; an
+    // unset key is `Ok(None)` here, and `UserConfig::at` fails it closed
+    // through `whole_file` (tests_settings::config_2007).
+    assert_eq!(read[1], Ok(None));
 }
 
 #[test]
@@ -462,4 +468,28 @@ fn a_bad_key_in_a_sound_file_fails_only_that_key() {
     assert!(p.reason.contains("from 1 to 100"), "{}", p.reason);
     assert!(!p.reason.contains("config.toml"), "{}", p.reason);
     assert_eq!(read[1], Ok(Some(Value::Int(900))));
+}
+
+#[test]
+fn a_guarded_home_keeps_the_path_in_full_and_out_of_reason() {
+    // Issue #2007 S1: under the test guard the reason reaches RotateConfig
+    // errors and `thresholds.*.error` in JSON, so it must not hold HOME.
+    let home = Path::new("/");
+    let read = super::user_keys_detail(home, &["rotator.session_at", "rotator.codex_floor"]);
+    assert_eq!(read.len(), 2);
+    let shown = super::display_path(home);
+    for r in read {
+        let p = r.expect_err("a guarded HOME fails closed");
+        assert!(p.whole_file, "the guard is a fault with the whole file");
+        assert_eq!(
+            p.reason,
+            format!(
+                "{} is set and HOME is outside the temp dir",
+                super::TEST_HOME_GUARD_ENV
+            ),
+            "the reason is path-free"
+        );
+        assert!(p.full.contains(&shown), "full keeps the path: {}", p.full);
+        assert!(p.full.contains(super::TEST_HOME_GUARD_ENV), "{}", p.full);
+    }
 }

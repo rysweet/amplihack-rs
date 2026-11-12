@@ -411,13 +411,14 @@ pub(crate) fn user_keys_detail(
     names: &[&str],
 ) -> Vec<Result<Option<Value>, KeyProblem>> {
     if guard_forbids(home) {
-        let why = format!(
-            "{TEST_HOME_GUARD_ENV} is set and HOME ({}) is outside the temp dir",
-            display_path(home)
-        );
+        // The path goes in `full` only: `reason` reaches rotate errors and
+        // JSON output, which must never quote HOME (issue #2007 S1).
         let problem = KeyProblem {
-            full: why.clone(),
-            reason: why,
+            full: format!(
+                "{TEST_HOME_GUARD_ENV} is set and HOME ({}) is outside the temp dir",
+                display_path(home)
+            ),
+            reason: format!("{TEST_HOME_GUARD_ENV} is set and HOME is outside the temp dir"),
             whole_file: true,
         };
         return names.iter().map(|_| Err(problem.clone())).collect();

@@ -432,7 +432,7 @@ four and prints them in its
 | Key | Effect |
 |-----|--------|
 | `rotator.session_at` | The rotator swaps away from the live login when its session use reaches this percentage. Also the session part of the plan-capacity test that auto-switch uses for [overflow profiles](./profile-command.md#rotate-overflow) while no rotator runs. |
-| `rotator.week_at` | The same for weekly use. It is also the review reserve: `100 - week_at` percent of each login's weekly allowance is held back for review work. The default `90` keeps 10%. |
+| `rotator.week_at` | The same for weekly use. It is also the review reserve: `100 - week_at` percent of each login's weekly allowance is held back for review work. The default `90` keeps 10%. The reserve cannot be set on its own, and it is separate from [`governor.reserve_points`](#governor-keys). |
 | `rotator.interval` | Time between rotator cycles, for `profile rotate start` and `profile rotate watch`. |
 | `rotator.codex_floor` | The credit balance a Codex account must be above to count as having room once its rate limits are used up. Used for the `<- next` choice in [`profile usage`](./profile-command.md#codex-next-choice). `0` lets any account with a positive balance be chosen. |
 
@@ -464,10 +464,13 @@ account with few credits look usable:
 /home/alice/src/myapp/.amplihack/config.toml: rotator.codex_floor: can only be set in the user file; ignored
 ```
 
-`profile rotate start` and autostart read the keys once, when they start the
+`profile rotate start` and autostart read `rotator.session_at`,
+`rotator.week_at` and `rotator.interval` once, when they start the
 background rotator, and pass the values to it as flags. The background
-rotator never reads the config file, so a change reaches a rotator that is
-already running only after `profile rotate stop` and `start`.
+rotator never reads the config file, so a change to these three reaches a
+rotator that is already running only after `profile rotate stop` and
+`start`. The rotator does not use `rotator.codex_floor`; `profile usage`
+reads it on each run, so a change to it applies at once.
 `profile rotate switch` makes no threshold decision and does not read them.
 
 A value that cannot be used is never replaced by the default. A value out of

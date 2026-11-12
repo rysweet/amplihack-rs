@@ -861,3 +861,58 @@ mod config_2007 {
         assert_eq!((floor.value, floor.origin), (3000, Origin::Default));
     }
 }
+
+// --- Issue #2007 G4 and S1 at the reader --------------------------------------
+
+mod config_2007_isolation {
+    use super::super::settings::{Origin, UserConfig, thresholds};
+    use super::no_env;
+    use std::fs;
+    use std::path::Path;
+
+    #[test]
+    fn a_project_session_at_10_resolves_with_origin_default_while_the_user_file_is_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let home = root.join("home");
+        let dir = home.join(".amplihack");
+        fs::create_dir_all(&dir).unwrap();
+        let user = dir.join("config.toml");
+        fs::write(&user, "[rotator]\ninterval = 900\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+            fs::set_permissions(&user, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let project = root.join("project");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        fs::write(project.join(".git").join("HEAD"), "ref: refs/heads/main\n").unwrap();
+        fs::create_dir_all(project.join(".amplihack")).unwrap();
+        fs::write(
+            project.join(".amplihack").join("config.toml"),
+            "[rotator]\nsession_at = 10\n",
+        )
+        .unwrap();
+        let cfg = UserConfig::at(&home);
+        let t = thresholds(&no_env(), &|k| cfg.get(k));
+        let s = t.session_at.unwrap();
+        assert_eq!((s.value, s.origin), (85, Origin::Default));
+        let i = t.interval.unwrap();
+        assert_eq!((i.value, i.origin), (900, Origin::Config), "user file read");
+    }
+
+    #[test]
+    fn a_guarded_home_error_does_not_quote_the_home_path() {
+        // S1: the reason reaches `thresholds.*.error`; it must be path-free.
+        let tmp = tempfile::tempdir().unwrap();
+        let _ = tmp; // keep a temp dir alive; the guarded HOME is `/usr`.
+        let home = Path::new("/usr");
+        let cfg = UserConfig::at(home);
+        let t = thresholds(&no_env(), &|k| cfg.get(k));
+        let e = t.session_at.unwrap_err().to_string();
+        assert!(e.contains("rotator.session_at"), "{e}");
+        assert!(e.contains("AMPLIHACK_TEST_HOME_GUARD"), "{e}");
+        assert!(!e.contains("/usr"), "no HOME in the reason: {e}");
+    }
+}
