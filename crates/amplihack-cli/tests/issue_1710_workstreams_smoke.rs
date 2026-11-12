@@ -99,7 +99,7 @@ impl Fx {
             .env("AMPLIHACK_STATE_DIR", &self.state)
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.profiles)
             .env("AMPLIHACK_PROFILE_USAGE_PROBE", "text")
-            .env("AMPLIHACK_PROFILE_USAGE_PARALLEL", "8")
+            .env("AMPLIHACK_PROFILE_USAGE_PARALLEL", FIRST_TURN.to_string())
             .env("AMPLIHACK_NONINTERACTIVE", "1")
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
@@ -348,41 +348,115 @@ fn the_command_never_changes_the_log_directory_mode() {
     );
 }
 
+/// `--logins-deadline` for the two deadline tests below.
+///
+/// `workstreams status` gives each probe `--timeout-secs` one second under
+/// the deadline, counted from that probe's own start. A probe that starts
+/// in the first second of `profile usage` is therefore ended by its own
+/// timeout before the deadline, which would test the probe timeout and not
+/// the deadline. So the probes that must still be running at the deadline
+/// are queued behind a first pool turn of [`FIRST_TURN`] probes that sleep
+/// [`FIRST_TURN_SECS`] and exit. A sleep is never shorter than asked, so
+/// those probes start more than a second after `profile usage` and their
+/// own timeout cannot come first, however loaded the host. Load can only
+/// delay their start; the deadline leaves `DEADLINE - FIRST_TURN_SECS`
+/// seconds for that.
+const DEADLINE: u64 = 10;
+/// `AMPLIHACK_PROFILE_USAGE_PARALLEL` in [`Fx::run`]: one pool turn.
+const FIRST_TURN: usize = 8;
+const FIRST_TURN_SECS: u64 = 2;
+
+/// A `claude` stub for the deadline tests. Each probe appends its login to
+/// `started` (the profile name, or `home` when `CLAUDE_CONFIG_DIR` is
+/// unset). The profiles in `quick` sleep [`FIRST_TURN_SECS`] and exit;
+/// every other login starts a 600 s `sleep` in its process group, records
+/// `<stub pid> <sleep pid>` in `pids`, and waits.
+fn deadline_stub(fx: &Fx, quick: &str) -> (PathBuf, PathBuf) {
+    let started = fx.marks.join("started");
+    let pids = fx.marks.join("usage-pids");
+    fx.stub(
+        "claude",
+        &format!(
+            "case \"$1\" in\n --version) echo '2.1.301 (Claude Code)'; exit 0 ;;\nesac\n\
+             name=\"${{CLAUDE_CONFIG_DIR:+${{CLAUDE_CONFIG_DIR##*/}}}}\"\n\
+             name=\"${{name:-home}}\"\n\
+             echo \"$name\" >> '{started}'\n\
+             case \"$name\" in\n {quick}) sleep {FIRST_TURN_SECS}; exit 0 ;;\nesac\n\
+             sleep 600 &\n\
+             echo \"$$ $!\" >> '{pids}'\n\
+             wait",
+            started = started.display(),
+            pids = pids.display(),
+        ),
+    );
+    (started, pids)
+}
+
+/// The logins each probe recorded, sorted: the pool's start order is not
+/// part of what these tests prove.
+fn started_logins(started: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_to_string(started)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    names.sort();
+    names
+}
+
+/// Only a backstop: the hung stubs sleep 600 s, so a status that waited for
+/// them instead of cancelling them would take far longer. The proof that
+/// the deadline cancelled them is the count of probes and the
+/// `no reading within` row.
+const BACKSTOP: Duration = Duration::from_secs(120);
+
 #[test]
 fn deadline_cancels_and_reaps_usage_probes_in_later_batches() {
     let fx = Fx::new();
-    // The first eight probes time out at 2s; the second batch is still
-    // running at the command's 3s deadline.
-    for n in 0..17 {
+    // Turn one: spare-00..07 sleep and exit. Turn two: spare-08..15 hang
+    // until the deadline. spare-16 waits for a free worker, and none is
+    // free before the deadline: turn two's own timeouts end after it.
+    for n in 0..=2 * FIRST_TURN {
         fx.add_profile(&format!("spare-{n:02}"));
     }
-    let pids = fx.marks.join("usage-pids");
-    fx.stub("claude", &format!(
-        "case \"$1\" in\n --version) echo '2.1.301 (Claude Code)'; exit 0 ;;\nesac\nsleep 30 &\necho \"$$ $!\" >> '{}'\nwait",
-        pids.display(),
-    ));
+    let (started, pids) = deadline_stub(&fx, "spare-0[0-7]");
     let (out, took) = fx.run(
-        &["workstreams", "status", "--logins-deadline", "3"],
+        &[
+            "workstreams",
+            "status",
+            "--logins-deadline",
+            &DEADLINE.to_string(),
+        ],
         &[("AMPLIHACK_SESSION_ID", "me")],
     );
-    let owners = assert_usage_probes_reaped(&pids);
+    let hung = assert_usage_probes_reaped(&pids);
+    let names = started_logins(&started);
+    let want: Vec<String> = (0..2 * FIRST_TURN)
+        .map(|n| format!("spare-{n:02}"))
+        .collect();
+    assert_eq!(
+        names,
+        want,
+        "turns one and two start, the queued spare-16 never does; stdout: {}; stderr: {}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert_eq!(hung, FIRST_TURN, "every turn-two probe was cancelled");
     assert!(out.status.success(), "{}", stderr(&out));
-    assert!(owners > 8, "a second batch must have started: {owners}");
-    assert_eq!(owners, 16, "the queued third batch must be skipped");
-    assert!(took < Duration::from_secs(10), "took {took:?}");
     assert!(
-        stdout(&out).contains("no reading within 3s"),
+        stdout(&out).contains(&format!("no reading within {DEADLINE}s")),
         "{}",
         stdout(&out)
     );
+    assert!(took < BACKSTOP, "took {took:?}");
 }
 
 #[test]
 fn deadline_cancels_and_reaps_the_live_home_login_probe() {
     let fx = Fx::new();
-    // Eight slow profiles fill the first batch. The login live at home is
-    // in the next batch, which is still running at the overall deadline.
-    for n in 0..8 {
+    // Eight profiles fill the first pool turn, sleep and exit. The login
+    // live at home is the next job, and is still running at the deadline.
+    for n in 0..FIRST_TURN {
         fx.add_profile(&format!("spare-{n:02}"));
     }
     fx.add_profile("zz-live");
@@ -413,35 +487,37 @@ fn deadline_cancels_and_reaps_the_live_home_login_probe() {
         fs::write(&path, body).unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
     }
-    let pids = fx.marks.join("usage-pids");
-    let order = fx.marks.join("probe-order");
-    fx.stub("claude", &format!(
-        "case \"$1\" in\n --version) echo '2.1.301 (Claude Code)'; exit 0 ;;\nesac\nif [ -n \"${{CLAUDE_CONFIG_DIR:-}}\" ]; then\n echo profile >> '{}'\nelse\n echo home >> '{}'\nfi\nsleep 30 &\necho \"$$ $!\" >> '{}'\nwait",
-        order.display(), order.display(), pids.display(),
-    ));
+    let (started, pids) = deadline_stub(&fx, "spare-0[0-7]");
     let (out, took) = fx.run(
-        &["workstreams", "status", "--logins-deadline", "3"],
+        &[
+            "workstreams",
+            "status",
+            "--logins-deadline",
+            &DEADLINE.to_string(),
+        ],
         &[("AMPLIHACK_SESSION_ID", "me")],
     );
+    let hung = assert_usage_probes_reaped(&pids);
+    let mut want: Vec<String> = (0..FIRST_TURN).map(|n| format!("spare-{n:02}")).collect();
+    // zz-live is live in ~/.claude, so its probe runs without
+    // CLAUDE_CONFIG_DIR.
+    want.push("home".into());
+    want.sort();
     assert_eq!(
-        assert_usage_probes_reaped(&pids),
-        9,
-        "order: {:?}; stdout: {}; stderr: {}",
-        fs::read_to_string(&order),
+        started_logins(&started),
+        want,
+        "stdout: {}; stderr: {}",
         stdout(&out),
         stderr(&out)
     );
-    assert_eq!(
-        fs::read_to_string(order).unwrap(),
-        format!("{}home\n", "profile\n".repeat(8))
-    );
+    assert_eq!(hung, 1, "the home probe was cancelled");
     assert!(out.status.success(), "{}", stderr(&out));
-    assert!(took < Duration::from_secs(10), "took {took:?}");
     assert!(
-        stdout(&out).contains("no reading within 3s"),
+        stdout(&out).contains(&format!("no reading within {DEADLINE}s")),
         "{}",
         stdout(&out)
     );
+    assert!(took < BACKSTOP, "took {took:?}");
 }
 
 /// Check direct children were reaped and their descendants stopped before

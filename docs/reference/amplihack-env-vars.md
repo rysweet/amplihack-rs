@@ -270,6 +270,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_WORKSTREAM` | user preference |  | Workstream identity for the capacity governor's fair queue. |
 | `AMPLIHACK_WORKSTREAM_ISSUE` | internal |  | Issue number handed to a multitask workstream. The capacity governor also uses it as the workstream `ws-<n>`. |
 | `AMPLIHACK_WORKSTREAM_PROGRESS_FILE` | internal |  | Progress file handed to a multitask workstream. |
+| `AMPLIHACK_WORKSTREAM_RUN_ID` | internal |  | Session name of a `recipe run --detach` run, set for everything that run starts; a run detached inside it records `run:<value>` as its parent. The first source of the caller identity that `amplihack workstreams status` filters on. `AMPLIHACK_RUN_ID` is not used for either. |
 | `AMPLIHACK_WORKSTREAM_STATE_FILE` | internal |  | State file handed to a multitask workstream. |
 | `AMPLIHACK_WORKTREE_PATH` | internal |  | Worktree path handed to a multitask workstream. |
 | `AMPLIHACK_WORK_ROOT` | user preference |  | Folder for run folders, targets, clones and the log archive; default `$HOME/.amplihack/work`. When set by the caller (see `AMPLIHACK_WORK_ROOT_EXPLICIT`), worktrees also go under it. Clones are never cleaned up. See [Clean Up After Recipe Runs](../howto/clean-up-after-recipe-runs.md#settings). |

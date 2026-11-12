@@ -208,16 +208,24 @@ at most 128 bytes and printable ASCII:
 | Order | Variable | Identity |
 |-------|----------|----------|
 | 1 | `AMPLIHACK_WORKSTREAM_RUN_ID` | `run:<value>` |
-| 2 | `AMPLIHACK_RUN_ID` | `run:<value>` |
-| 3 | `AMPLIHACK_SESSION_ID` | `session:<value>` |
-| 4 | `AMPLIHACK_TREE_ID` | `tree:<value>` |
-| 5 | `CLAUDE_CODE_SESSION_ID` | `claude:<value>` |
+| 2 | `AMPLIHACK_SESSION_ID` | `session:<value>` |
+| 3 | `AMPLIHACK_TREE_ID` | `tree:<value>` |
+| 4 | `CLAUDE_CODE_SESSION_ID` | `claude:<value>` |
 
-The prefix keeps identities from different sources apart. `recipe run
---detach` uses the same order to fill in a new run's `parent`, and sets
-`AMPLIHACK_WORKSTREAM_RUN_ID` to the run's session name for everything the run starts.
-So a run launched from inside a detached run is that run's child, even though
-both share `AMPLIHACK_SESSION_ID`.
+Each prefix comes from one variable only, so identities from different
+sources never match each other. `recipe run --detach` uses the same order to
+fill in a new run's `parent`, and sets `AMPLIHACK_WORKSTREAM_RUN_ID` to the
+run's session name for everything the run starts. So a run launched from
+inside a detached run is that run's child, even though both share
+`AMPLIHACK_SESSION_ID`.
+
+`AMPLIHACK_RUN_ID` is not an identity. Every non-dry `recipe run` gives its
+steps a fresh UUID in it for the run's work folder, and no run record has
+that UUID as its session. A run detached from a step of a foreground
+`recipe run` in an `amplihack launch` session therefore records
+`session:<value>` as its parent, and shows in that session's default view.
+`workstreams status` called from such a step shows the session's runs, not
+only those of that recipe run.
 
 `amplihack launch` sets `AMPLIHACK_SESSION_ID` for Claude Code, Copilot CLI
 and Codex alike, so a session started that way has an identity whichever

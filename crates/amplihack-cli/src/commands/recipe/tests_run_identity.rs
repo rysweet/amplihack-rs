@@ -3,14 +3,16 @@
 //!
 //! Contract: `run_identity::caller_identity(get)` takes a getter for one
 //! environment variable and returns `<source>:<value>` for the first usable
-//! variable in the order `AMPLIHACK_WORKSTREAM_RUN_ID`, `AMPLIHACK_RUN_ID`,
-//! `AMPLIHACK_SESSION_ID`,
+//! variable in the order `AMPLIHACK_WORKSTREAM_RUN_ID`, `AMPLIHACK_SESSION_ID`,
 //! `AMPLIHACK_TREE_ID`, `CLAUDE_CODE_SESSION_ID`. A value is usable when it is
-//! non-empty, at most 128 bytes and printable ASCII. Pure: never reads the
+//! non-empty, at most 128 bytes and printable ASCII. `AMPLIHACK_RUN_ID`, the
+//! recipe workspace's per-run UUID, is never consulted. Pure: never reads the
 //! process environment itself.
 
 use super::run_identity::{RUN_ID_ENV, caller_identity};
 use std::collections::BTreeMap;
+
+const WORKSPACE_UUID: &str = "0b5c1e2a-6f0e-4d8a-9a7e-3c2f1d0e9b8a";
 
 fn identity(vars: &[(&str, &str)]) -> Option<String> {
     let map: BTreeMap<String, String> = vars
@@ -24,9 +26,32 @@ fn identity(vars: &[(&str, &str)]) -> Option<String> {
 fn the_detached_identity_does_not_overwrite_the_workspace_run_id() {
     assert_eq!(RUN_ID_ENV, "AMPLIHACK_WORKSTREAM_RUN_ID");
     assert_eq!(
-        identity(&[(RUN_ID_ENV, "detached"), ("AMPLIHACK_RUN_ID", "uuid")]).as_deref(),
+        identity(&[
+            (RUN_ID_ENV, "detached"),
+            ("AMPLIHACK_RUN_ID", WORKSPACE_UUID)
+        ])
+        .as_deref(),
         Some("run:detached")
     );
+}
+
+#[test]
+fn the_workspace_run_uuid_never_outranks_the_session() {
+    // A foreground recipe step inside an `amplihack launch` session: the
+    // workspace gives the step a fresh UUID that no run record carries.
+    assert_eq!(
+        identity(&[
+            ("AMPLIHACK_RUN_ID", WORKSPACE_UUID),
+            ("AMPLIHACK_SESSION_ID", "S"),
+        ])
+        .as_deref(),
+        Some("session:S")
+    );
+}
+
+#[test]
+fn the_workspace_run_uuid_alone_is_no_identity() {
+    assert_eq!(identity(&[("AMPLIHACK_RUN_ID", WORKSPACE_UUID)]), None);
 }
 
 #[test]
@@ -37,7 +62,7 @@ fn no_variable_gives_no_identity() {
 #[test]
 fn each_source_is_prefixed_with_its_name() {
     assert_eq!(
-        identity(&[("AMPLIHACK_RUN_ID", "amp-r-1")]).as_deref(),
+        identity(&[(RUN_ID_ENV, "amp-r-1")]).as_deref(),
         Some("run:amp-r-1")
     );
     assert_eq!(
@@ -55,12 +80,13 @@ fn each_source_is_prefixed_with_its_name() {
 }
 
 #[test]
-fn run_id_wins_over_every_other_source() {
+fn the_detached_run_id_wins_over_every_other_source() {
     let all = [
         ("CLAUDE_CODE_SESSION_ID", "c"),
         ("AMPLIHACK_TREE_ID", "t"),
         ("AMPLIHACK_SESSION_ID", "s"),
-        ("AMPLIHACK_RUN_ID", "r"),
+        ("AMPLIHACK_RUN_ID", WORKSPACE_UUID),
+        (RUN_ID_ENV, "r"),
     ];
     assert_eq!(identity(&all).as_deref(), Some("run:r"));
 }
@@ -85,7 +111,7 @@ fn the_order_is_run_then_session_then_tree_then_claude() {
 #[test]
 fn an_empty_value_is_skipped() {
     assert_eq!(
-        identity(&[("AMPLIHACK_RUN_ID", ""), ("AMPLIHACK_SESSION_ID", "s")]).as_deref(),
+        identity(&[(RUN_ID_ENV, ""), ("AMPLIHACK_SESSION_ID", "s")]).as_deref(),
         Some("session:s")
     );
 }
@@ -95,7 +121,7 @@ fn a_value_longer_than_128_bytes_is_skipped() {
     let long = "x".repeat(129);
     let max = "y".repeat(128);
     assert_eq!(
-        identity(&[("AMPLIHACK_RUN_ID", &long), ("AMPLIHACK_TREE_ID", &max)]),
+        identity(&[(RUN_ID_ENV, &long), ("AMPLIHACK_TREE_ID", &max)]),
         Some(format!("tree:{max}"))
     );
 }
@@ -104,7 +130,7 @@ fn a_value_longer_than_128_bytes_is_skipped() {
 fn a_value_that_is_not_printable_ascii_is_skipped() {
     for bad in ["a\nb", "a\x1b[31mb", "caf\u{e9}", "tab\there", "\x7f"] {
         assert_eq!(
-            identity(&[("AMPLIHACK_RUN_ID", bad), ("CLAUDE_CODE_SESSION_ID", "c")]).as_deref(),
+            identity(&[(RUN_ID_ENV, bad), ("CLAUDE_CODE_SESSION_ID", "c")]).as_deref(),
             Some("claude:c"),
             "{bad:?} must be skipped"
         );
@@ -115,7 +141,8 @@ fn a_value_that_is_not_printable_ascii_is_skipped() {
 fn only_unusable_values_give_no_identity() {
     assert_eq!(
         identity(&[
-            ("AMPLIHACK_RUN_ID", ""),
+            (RUN_ID_ENV, ""),
+            ("AMPLIHACK_RUN_ID", WORKSPACE_UUID),
             ("AMPLIHACK_SESSION_ID", "\u{1}"),
             ("AMPLIHACK_TREE_ID", &"z".repeat(500)),
         ]),

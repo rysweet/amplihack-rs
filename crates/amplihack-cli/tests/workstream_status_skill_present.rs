@@ -188,7 +188,52 @@ fn the_reference_page_is_linked_from_index_nav_and_catalogue() {
     assert!(read("mkdocs.yml").contains("reference/workstreams-command.md"));
     assert!(read("docs/skills/SKILL_CATALOG.md").contains(SKILL_NAME));
     assert!(
-        read("docs/reference/recipe-command.md").contains("AMPLIHACK_RUN_ID"),
+        read("docs/reference/recipe-command.md").contains("AMPLIHACK_WORKSTREAM_RUN_ID"),
         "the Detached runs section must describe the run record"
+    );
+}
+
+/// The caller identity table must list the sources `run_identity` reads, in
+/// its order. `AMPLIHACK_RUN_ID`, the recipe workspace's per-run UUID, is
+/// not one of them: no run record has it as its session.
+#[test]
+fn the_reference_identity_table_lists_the_sources_in_order() {
+    let page = read("docs/reference/workstreams-command.md");
+    let section = page
+        .split("### Caller identity")
+        .nth(1)
+        .and_then(|rest| rest.split("\n### ").next())
+        .expect("workstreams-command.md has a Caller identity section");
+    let rows: Vec<(String, String)> = section
+        .lines()
+        .filter_map(|line| {
+            let cells: Vec<&str> = line.trim().trim_matches('|').split('|').collect();
+            let [order, var, id] = cells.as_slice() else {
+                return None;
+            };
+            order.trim().parse::<u32>().ok()?;
+            Some((
+                var.trim().trim_matches('`').to_string(),
+                id.trim().trim_matches('`').to_string(),
+            ))
+        })
+        .collect();
+    let want = [
+        ("AMPLIHACK_WORKSTREAM_RUN_ID", "run:<value>"),
+        ("AMPLIHACK_SESSION_ID", "session:<value>"),
+        ("AMPLIHACK_TREE_ID", "tree:<value>"),
+        ("CLAUDE_CODE_SESSION_ID", "claude:<value>"),
+    ]
+    .map(|(v, i)| (v.to_string(), i.to_string()));
+    assert_eq!(rows, want, "the identity table drifted from run_identity");
+    let recipe = read("docs/reference/recipe-command.md");
+    let parent = recipe
+        .split("`parent` is the first of these variables")
+        .nth(1)
+        .and_then(|rest| rest.split("\n\n").next())
+        .expect("recipe-command.md describes how parent is chosen");
+    assert!(
+        parent.contains("`AMPLIHACK_RUN_ID`") && parent.contains("is never used"),
+        "the run-records paragraph must say AMPLIHACK_RUN_ID is not a source: {parent}"
     );
 }

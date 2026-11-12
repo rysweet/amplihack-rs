@@ -458,11 +458,13 @@ records to find the runs a session started.
 
 `parent` is the first of these variables in the launching environment that is
 set, non-empty, at most 128 bytes and printable ASCII:
-`AMPLIHACK_WORKSTREAM_RUN_ID` (`run:<value>`), `AMPLIHACK_RUN_ID`
-(`run:<value>`, the recipe workspace UUID), `AMPLIHACK_SESSION_ID`
+`AMPLIHACK_WORKSTREAM_RUN_ID` (`run:<value>`), `AMPLIHACK_SESSION_ID`
 (`session:<value>`), `AMPLIHACK_TREE_ID` (`tree:<value>`),
 `CLAUDE_CODE_SESSION_ID` (`claude:<value>`). It is read before agent session
-markers are removed from the run's environment.
+markers are removed from the run's environment. `AMPLIHACK_RUN_ID`, the
+per-run UUID that names a recipe run's work folder, is never used: no record
+has it as its session, so a run detached from a foreground recipe step
+records the session the step runs in.
 
 `outcome.class` comes from the exit code and the last 64 KiB of the log:
 

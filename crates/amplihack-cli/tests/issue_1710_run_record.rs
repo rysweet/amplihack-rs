@@ -153,7 +153,9 @@ fn the_run_keeps_its_session_identity_alongside_the_workspace_uuid() {
     if !usable(&fx) {
         return;
     }
-    let (session, _) = launch(&fx, &[("AMPLIHACK_RUN_ID", "outer-run")]);
+    // Launched from inside another detached run, which set its own session
+    // name as AMPLIHACK_WORKSTREAM_RUN_ID for everything it starts.
+    let (session, _) = launch(&fx, &[("AMPLIHACK_WORKSTREAM_RUN_ID", "outer-run")]);
     wait_for(|| fx.records.join("env.txt").is_file(), "runner env");
     assert_eq!(
         fx.runner_env("AMPLIHACK_WORKSTREAM_RUN_ID"),
@@ -161,8 +163,27 @@ fn the_run_keeps_its_session_identity_alongside_the_workspace_uuid() {
     );
     let workspace_id = fx.runner_env("AMPLIHACK_RUN_ID").expect("workspace run id");
     uuid::Uuid::parse_str(&workspace_id).expect("workspace keeps its UUID");
-    // Launched from inside another run, it is that run's child.
     assert_eq!(finished_record(&fx, &session)["parent"], "run:outer-run");
+}
+
+#[test]
+fn a_run_detached_from_a_foreground_recipe_step_is_the_sessions_child() {
+    let fx = Fx::with_runner(QUICK_RUNNER);
+    if !usable(&fx) {
+        return;
+    }
+    // A foreground `recipe run` gives each step a fresh workspace UUID in
+    // AMPLIHACK_RUN_ID. No record has that UUID as its session, so the
+    // parent must be the session the step runs in.
+    let workspace_uuid = uuid::Uuid::new_v4().to_string();
+    let (session, _) = launch(
+        &fx,
+        &[
+            ("AMPLIHACK_RUN_ID", workspace_uuid.as_str()),
+            ("AMPLIHACK_SESSION_ID", "S"),
+        ],
+    );
+    assert_eq!(finished_record(&fx, &session)["parent"], "session:S");
 }
 
 #[test]
