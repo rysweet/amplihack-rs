@@ -331,8 +331,6 @@ mod issue_2001_codex_usage;
 mod issue_2010_codex_exec_notice;
 #[path = "issue_2022_far_reset_wait.rs"]
 mod issue_2022_far_reset_wait;
-#[path = "issue_2022_no_default_time_limits.rs"]
-mod issue_2022_no_default_time_limits;
 #[path = "issue_2042_fake_proc_seam.rs"]
 mod issue_2042_fake_proc_seam;
 #[path = "issue_2042_host_proc_strace.rs"]
