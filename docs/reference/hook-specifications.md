@@ -1029,21 +1029,28 @@ swap between the stop and a late hook start, including the record present
 when the hook starts. Nothing read from the transcript is logged.
 
 **Which event it is.** The event key includes the login the session stopped
-on: the noted swap record's `from_login` when the swap is at or after the
-resume threshold above and not later than the hook's start
-(`min(stop, start - 1) <= swapped_at <= start`), otherwise the ledger's live
-login at the hook's start. The key and the resume decision use the same lower
-bound, so a session resumed on a record, including through the one-second
-allowance when the hook starts in the stop's second, has its event named for
-that record's `from_login`, and a later limit on the new login with the same
-text is a new event, not `duplicate`. With a stop time the session's past
-resumes play no part, so a second hook run for the same stop gets the same
-key, even after the first has resumed it, and logs `duplicate`. The exception
-is a stop in its hook's start second with the swap in the second before: a
-repeat run for that stop starting a second or more later is keyed on the live
-login, and waits for the next swap (its snapshot is the swap the session was
-already resumed on) rather than resuming twice. Without a stop time the
-swap must count as after the stop by the one-second rule above and not be
+on: the noted swap record's `from_login` when the swap falls between one
+second before the stop and the hook's start (`stop - 1 <= swapped_at <=
+start`), otherwise the ledger's live login at the hook's start. The bound
+depends on the stop alone, not on when the hook started and not on the
+session's past resumes, so every hook run for one stop gets the same key,
+whatever second it starts in and even after the first run has resumed it, and
+a repeat run logs `duplicate`. It never waits for a later swap and resumes the
+session a second time. The one second before the stop is the same allowance
+the resume decision gives a hook that starts in the stop's second, so a
+session resumed on such a swap has its event named for that record's
+`from_login`, and a later limit on the new login with the same text is a new
+event, not `duplicate`.
+
+The key is not the resume decision restated. A hook that starts two or more
+seconds after the stop reads a swap in the second before the stop as before it
+and waits for the next swap, while the key still names that swap's
+`from_login`. The run still resumes only once, on the later swap. The one cost
+of this reading: a session resumed on that same swap in the second before its
+next stop, which stops again with the same text and whose hook then starts two
+or more seconds late, gets the earlier event's key and logs `duplicate`. The
+session is then left stopped rather than sent keys twice. Without a stop time
+the swap must count as after the stop by the one-second rule above and not be
 later than the hook's start.
 
 **How it waits.** One blocking `poll(2)`, with nothing read on an interval,

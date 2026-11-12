@@ -1783,6 +1783,53 @@ fn issue_2235_a_stop_in_the_start_second_keys_the_slack_snapshot_on_its_outgoing
 }
 
 #[test]
+fn issue_2235_a_copy_of_a_start_second_stop_one_second_later_is_a_duplicate() {
+    // Stop at T, swap at T-1. Copy A starts at T and resumes through the
+    // slack allowance. Copy B of the same stop starts at T+1. Its key must
+    // not depend on its start: it is a duplicate, not a run that waits.
+    let mut d = Fake::new();
+    d.cycle = Some(ledger("spare"));
+    d.stop = Some(START);
+    d.swap = Some(record_at(6, -1, 12, 40));
+    let msg = "You've hit your session limit";
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+
+    d.restart_at(START + 1);
+    let waits = d.waits.len();
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Duplicate);
+    assert_eq!(d.waits.len(), waits, "copy B never waits");
+    assert_eq!(d.guard.events.len(), 1, "one resume");
+    let on_work = event_key("s", Some("rate_limit"), None, Some(msg), Some("work"));
+    assert_eq!(d.last_log().event, on_work[..12]);
+}
+
+#[test]
+fn issue_2235_a_fresh_swap_never_resumes_a_late_copy_of_a_start_second_stop() {
+    // As above, but a new swap is ready for copy B. Before keying on the
+    // stop alone, copy B keyed on spare, waited, and resumed the session a
+    // second time on that swap (its commit only refuses resumes after its
+    // own start). It must stop at the duplicate check and record nothing.
+    let mut d = Fake::new();
+    d.cycle = Some(ledger("spare"));
+    d.stop = Some(START);
+    d.swap = Some(record_at(6, -1, 12, 40));
+    let msg = "You've hit your session limit";
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+    let resumes = d.guard.sessions.get(&session_key("s")).map(Vec::len);
+
+    d.restart_at(START + 1);
+    d.script.push_back(Act::Swap(record_at(7, 20, 12, 40)));
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Duplicate);
+    assert_eq!(d.guard.events.len(), 1, "one resume event");
+    assert_eq!(
+        d.guard.sessions.get(&session_key("s")).map(Vec::len),
+        resumes,
+        "one resume recorded for the session"
+    );
+    assert_eq!(d.script.len(), 1, "the fresh swap was never waited for");
+}
+
+#[test]
 fn issue_2235_without_a_stop_the_slack_snapshot_also_keys_on_its_outgoing_login() {
     // The snapshot in the slack second counts as after the stop, and the
     // key follows the same rule as the decision to resume.

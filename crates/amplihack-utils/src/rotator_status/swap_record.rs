@@ -251,29 +251,38 @@ pub fn noted_after_stop(
 /// rather than on the live login (#2235). The hook's event key names that
 /// login.
 ///
-/// With a stop time the swap must fall between the resume threshold of
-/// [`after_stop_at`] and the start:
-/// `min(stop, start - STOP_SLACK_SECS) <= swapped_at <= start`. This is
-/// the same lower bound [`judge_at`] uses to decide a resume, so the hook
-/// never resumes a session on a record and then keys the event on that
-/// record's incoming login. A stop in the hook's start second therefore
-/// keeps the one-second allowance here too: the session was resumed as if
-/// it stopped on `from_login`, so its event names `from_login`, and a later
-/// stop on the new login with the same text is not a `duplicate`.
+/// With a stop time the swap must fall between one second before the stop
+/// and the hook's start: `stop - STOP_SLACK_SECS <= swapped_at <= start`.
+/// The lower bound depends on the stop alone, never on `start` (when this
+/// copy of the hook happened to run) or on the session's resumes, so every
+/// delivery of one stop gets the same key, whenever it starts and before or
+/// after the stop is resumed. A repeat delivery is therefore always a
+/// `duplicate`; it never waits for a later swap and resumes the session a
+/// second time.
 ///
-/// The session's resumes play no part, so every delivery of one stop that
-/// starts in the same second, or after it with the stop as the threshold,
-/// gets the same key, before and after its resume is recorded, and a second
-/// copy of the hook is a `duplicate`. A later stop on the new login has a
-/// stop time and start after the resume, so the old swap is below the
-/// threshold: it keys on the live login and is a new event.
+/// The one-second allowance is the same one [`STOP_SLACK_SECS`] gives the
+/// resume decision when the hook starts in the stop's second: the stop and
+/// a swap that finished just after it can be truncated into adjacent whole
+/// seconds. A session resumed on a swap one second before its stop, through
+/// that allowance, therefore has its event named for `from_login`, and a
+/// later stop on the new login with the same text is not a `duplicate`: its
+/// own stop is later, so the old swap is below its bound and it keys on the
+/// live login.
 ///
-/// One case costs a wait. A stop in its hook's start second, swapped in the
-/// second before, whose repeat delivery starts a second or more later, keys
-/// the repeat on the live login (the threshold is now the stop). The
-/// repeat is not a `duplicate`, but the last-resume bound in [`judge_at`]
-/// makes its snapshot `Same`, so it waits for the next swap rather than
-/// resuming the session twice.
+/// This is not the same predicate as the resume decision, and does not try
+/// to be. [`after_stop_at`] uses `min(stop, start - STOP_SLACK_SECS)`, which
+/// depends on `start`. They differ only when the hook starts two or more
+/// seconds after the stop and the swap is in the second before the stop:
+/// the key names `from_login`, while the resume decision reads that swap as
+/// before the stop (`Same`) and waits for the next one. Naming the login
+/// the swap left is the reading that keeps repeat deliveries together; it
+/// costs nothing but the event's name, since the hook still resumes only on
+/// a later swap. The same reading has one cost: a session resumed on that
+/// very swap in the second before its next stop, which stops again with
+/// the same text, and whose hook then starts two or more seconds late, gets
+/// the earlier event's key and is a `duplicate`. That needs a resume, a
+/// fresh limit and a late hook all within about two seconds; the session is
+/// left stopped rather than sent keys twice.
 ///
 /// Without a stop time this is [`noted_after_stop`], whose
 /// [`STOP_SLACK_SECS`] window and last-resume bound are all the hook has.
@@ -285,8 +294,7 @@ pub fn stopped_on_outgoing(
 ) -> bool {
     match stop {
         Some(s) => {
-            let threshold = s.min(start.saturating_sub(STOP_SLACK_SECS));
-            threshold <= record.swapped_at && record.swapped_at <= start
+            s.saturating_sub(STOP_SLACK_SECS) <= record.swapped_at && record.swapped_at <= start
         }
         None => noted_after_stop(record, start, None, resumed_at),
     }
