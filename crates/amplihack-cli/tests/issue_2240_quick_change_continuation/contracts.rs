@@ -369,3 +369,34 @@ fn empty_diff_preserves_existing_no_change_behaviour() {
     assert!(f.read_home("gh-calls").is_empty());
     assert!(!f.read_home("hook-calls").contains("pre-commit"));
 }
+
+#[test]
+fn continuation_without_identity_never_discovers_identity_through_gh() {
+    for branch in [BRANCH, ""] {
+        let mut f = Fixture::new(branch);
+        if !branch.is_empty() {
+            f.branch(true);
+        }
+        success(&f.select());
+        f.git(&f.caller, &["config", "--local", "--unset", "user.name"]);
+        f.git(&f.caller, &["config", "--local", "--unset", "user.email"]);
+        let record = step("quick-change", "quick-change-record-base");
+        let script = f.ctx.render_shell(record["command"].as_str().unwrap());
+        let out = f
+            .command("bash")
+            .current_dir(&f.caller)
+            .args(["-c", &script])
+            .envs(f.ctx.shell_env_vars())
+            .env("REMOTE_HOST_TYPE", "github")
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "missing identity was accepted");
+        assert!(stderr(&out).contains("no safe commit identity"));
+        assert!(!f.state().join("base").exists());
+        if branch.is_empty() {
+            assert!(f.read_home("gh-calls").contains("auth status"));
+        } else {
+            assert!(f.read_home("gh-calls").is_empty());
+        }
+    }
+}

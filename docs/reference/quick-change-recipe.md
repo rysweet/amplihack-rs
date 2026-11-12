@@ -157,7 +157,7 @@ Each selected checkout must belong to the caller's repository, verified through 
 
 Selection preserves local commits and staged, unstaged and untracked work. It does not stash, discard, reset or force a checkout. No alias or replacement branch is created, even when the caller already has the requested branch checked out. Continuation selection runs before general orphan-worktree cleanup can affect the selected checkout and performs no setup push.
 
-The quick-change worktree call forwards `existing_branch` unchanged and sets `worktree_policy: quick-change`. This policy selects exact continuation; other workflows retain their existing worktree-selection behaviour by default. The returned `worktree_setup` identifies the actual checkout path and exact branch name, without alias metadata. The recipe verifies branch identity before implementation, commit and push.
+The quick-change worktree call forwards `existing_branch` unchanged and sets `worktree_policy: quick-change`. This policy selects exact continuation; other workflows retain their existing worktree-selection behaviour by default. The returned `worktree_setup` identifies the actual checkout path and exact branch name, without alias metadata. The recipe verifies branch identity before implementation, commit and push. Continuation requires a safe repository-local or explicitly supplied commit identity; it disables optional provider identity discovery so missing identity cannot cause a `gh` call. Ordinary new-branch runs retain provider identity discovery.
 
 ### Base, existing work and publication
 

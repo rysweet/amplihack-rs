@@ -25,6 +25,9 @@ set -euo pipefail
 export GIT_PAGER=cat PAGER=cat LESS=FRX
 
 QC_STEP="${QC_STEP:-quick-change}"
+# The shared identity resolver otherwise discovers provider metadata via gh.
+# Continuation uses a configured or explicit identity without provider calls.
+if [ -n "${RECIPE_VAR_existing_branch:-}" ]; then export REMOTE_HOST_TYPE=unknown; fi
 QC_TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 
 qc_die() {
