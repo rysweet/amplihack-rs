@@ -83,6 +83,8 @@ mod tests_expected;
 #[cfg(all(test, unix))]
 mod tests_fake_http;
 #[cfg(all(test, unix))]
+mod tests_issue_2279_profile;
+#[cfg(all(test, unix))]
 mod tests_kind;
 #[cfg(all(test, unix))]
 mod tests_login_check;

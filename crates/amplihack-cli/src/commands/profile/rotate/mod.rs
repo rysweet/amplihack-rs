@@ -1,6 +1,5 @@
-//! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude` on
-//! the account with the most capacity left; `profile switch` uses the same swap.
-//! See docs/reference/profile-command.md.
+//! `amplihack profile rotate` (#1592): keeps the login in `~/.claude` on the account with the
+//! most capacity left; `profile switch` shares the swap. See docs/reference/profile-command.md.
 #[cfg(unix)]
 mod account;
 #[cfg(unix)]
@@ -53,6 +52,8 @@ mod handfix_plan;
 mod held;
 #[cfg(unix)]
 mod history;
+#[cfg(unix)]
+mod hook_heal;
 #[cfg(unix)]
 pub(super) mod identify;
 #[cfg(unix)]
@@ -213,7 +214,6 @@ pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rota
 #[cfg(unix)]
 pub(super) use {control::clear_overflow_block, control::overflow_blocks, log::timestamp};
 
-// Auto-switch's overflow gate (`gate_record`): the running rotator's own
 #[cfg(all(test, unix))]
 pub(super) use gate_record::effective_at as overflow_gate_at;
 #[cfg(unix)]
@@ -269,7 +269,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                     warn_foreign_rotator(Some(store.root()));
                 }
                 let mut ctx = cycle::Ctx::new(store.clone(), home?, s).with_rereads();
-                cycle::run_cycle(&mut ctx, mode)?;
+                hook_heal::after_cycle(cycle::run_cycle(&mut ctx, mode)?, &ctx);
             }
             Some(RotateAction::Start(w)) => {
                 if w.supervised.is_some() {
