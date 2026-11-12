@@ -503,6 +503,14 @@ mod issue_1642_github_origin_parsing;
 #[path = "issue_1762_caller_branch_alias_test.rs"]
 mod issue_1762_caller_branch_alias;
 
+// Issue #2471 (first slice of #2472): a failed push step (15, 18c, 20b) gets
+// an agentic recovery. The real steps, taken by id, run through
+// recipe-runner-rs against a bare remote whose pre-receive hook rejects an
+// inherited RECIPE_VAR_issue_number, with a fake agent. Skipped without the
+// runner; CI installs it.
+#[path = "push_failure_recovery.rs"]
+mod push_failure_recovery;
+
 // Issue #1697: bundled journalistic-writing-style skill — content, trigger
 // separation from documentation-writing, registration, isolated install.
 #[path = "journalistic_writing_style_skill_test.rs"]

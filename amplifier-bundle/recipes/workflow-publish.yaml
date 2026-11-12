@@ -6,10 +6,7 @@ tags: ["development", "version", "pr"]
 # workflow-publish: default-workflow phase brick. Parent context is merged by
 # recipe-runner; declared outputs propagate to later phase recipes. Pager safety:
 # recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
-recursion:
-  max_depth: 6
-  max_total_steps: 80
-
+recursion: { max_depth: 6, max_total_steps: 80 }
 inputs:
   - name: worktree_setup.worktree_path
     description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by bash steps that cd into the worktree (step-15, step-16)."
@@ -17,7 +14,7 @@ inputs:
     description: "Absolute path to the repository root. Provided by parent recipe context."
 
 # #1561/#1684/#1968: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
-context: { base_branch: "", forbidden_base_branches: "", strict_delivery: "false", repository: "", pr_repository: "", closing_reference: "", worktree_setup: "", allow_no_op: false, terminal_success: "false", terminal_state: "", terminal_reason: "", publish_status: "", should_finalize: "true", should_run_ci_wait: "true", should_merge: "true", repo_path: "", version_bump: "", local_testing_gate: "", precommit_results: "", task_description: "" }
+context: { base_branch: "", forbidden_base_branches: "", strict_delivery: "false", repository: "", pr_repository: "", closing_reference: "", worktree_setup: "", allow_no_op: false, terminal_success: "false", terminal_state: "", terminal_reason: "", publish_status: "", should_finalize: "true", should_run_ci_wait: "true", should_merge: "true", repo_path: "", version_bump: "", local_testing_gate: "", precommit_results: "", task_description: "", commit_result: "" }
 
 steps:
   - id: "publish-terminal-state"
@@ -112,6 +109,7 @@ steps:
 
   - id: "step-15-commit-push"
     type: "bash"
+    continue_on_error: true
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
     command: |
       set -euo pipefail
@@ -320,6 +318,11 @@ steps:
       echo "=== Commit and Push Complete ===" >&2
     output: "commit_result"
     parse_json: true
+  - id: "step-15-push-recovery"
+    type: "recipe"
+    recipe: "push-failure-recovery"
+    condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true' && commit_result.pushed != 'true' && commit_result.reason != 'no-upstream'"
+    context: { push_step: "step-15-commit-push", push_output_key: "commit_result", push_recovery: "", push_recovery_result: "" }
 
   - id: "step-16-create-draft-pr"
     type: "bash"

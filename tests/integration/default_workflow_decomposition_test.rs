@@ -266,6 +266,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-14c-sync-package-json",
     "step-14g-artifact-guard",
     "step-15-commit-push",
+    // Issue #2471: agentic recovery after a failed push (push-failure-recovery).
+    "step-15-push-recovery",
     "step-16-create-draft-pr",
     "step-16b-outside-in-fix-loop",
     // Phase 7: workflow-pr-review (steps 17a-19d)
@@ -278,6 +280,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-18a-analyze-feedback",
     "step-18b-implement-feedback",
     "step-18c-push-feedback-changes",
+    "step-18c-push-recovery",
     "step-18d-respond-to-comments",
     "step-18e-verification-gate",
     "step-19a-philosophy-check",
@@ -293,6 +296,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-20c-quality-audit",
     "step-20a-artifact-guard",
     "step-20b-push-cleanup",
+    "step-20b-push-recovery",
     "step-21-pr-ready",
     "step-22-ensure-mergeable",
     // Issue #1268: evidence + judgement between the scoped-PR signal and the
@@ -328,6 +332,7 @@ const PR_REVIEW_STEP_INVENTORY: &[&str] = &[
     "step-18a-analyze-feedback",
     "step-18b-implement-feedback",
     "step-18c-push-feedback-changes",
+    "step-18c-push-recovery",
     "step-18d-respond-to-comments",
     "step-18e-verification-gate",
     "step-19a-philosophy-check",

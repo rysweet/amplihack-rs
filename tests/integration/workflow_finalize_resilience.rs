@@ -44,9 +44,31 @@ fn workspace_helper_path(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// `workflow_pr_ready.sh` reads its PR, issue and start-time context from the
+/// environment. Issue #2471: run inside a recipe step, these tests inherited
+/// that step's context. The fixed list below already removed the names the
+/// issue reported, but not the base variable `RECIPE_VAR_pr_publish_result`,
+/// which `workflow_pr_ready.sh:28` reads through `rv_field`, so the helper
+/// scoped the caller's own PR. Every inherited name with a context prefix is
+/// therefore removed as well, matched on bytes so a name that is not valid
+/// UTF-8 is removed too, and each test sets only the values it needs.
 fn workflow_pr_ready_command() -> Command {
     let mut command = Command::new("bash");
     command.arg(workspace_helper_path("workflow_pr_ready.sh"));
+    for (key, _) in std::env::vars_os() {
+        let name = key.as_encoded_bytes();
+        if [
+            b"RECIPE_VAR_".as_slice(),
+            b"WORKFLOW_",
+            b"PR_PUBLISH_RESULT_",
+            b"GH_RETRY_",
+        ]
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+        {
+            command.env_remove(&key);
+        }
+    }
     for key in [
         "PR_URL",
         "RECIPE_VAR_pr_url",
