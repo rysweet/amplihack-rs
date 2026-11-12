@@ -17,27 +17,35 @@
 # write, and it runs no command that could merge. Sourcing adds no process
 # boundary, so the shim still sees the gate as the parent of the merge.
 #
-# One of its functions DOES write: autodrive_merge_body_file creates the
-# message file under the state directory the gate hands it. That is why the
-# GATE_FILES entry matters rather than being a formality — a helper the gate
-# sources runs with the gate's own authority, and this one touches the state
-# directory the merge decision is read from. It chooses no path and emits no
-# blocker: the gate owns where state lives and what refusal means, this owns
-# the bytes that land in the file.
+# The body reaches `gh` on standard input, from the gate's own memory: the
+# merge argv ends `--body-file -`, and the gate pipes MERGE_BODY into it. It is
+# never handed over as a path. A file in the state directory can be rewritten
+# by a process running as this same user (#1517 D5) at any moment between the
+# last check the gate makes on it and `gh` opening it, and no check made by
+# path can close that window (CWE-367). Bytes held in the gate's own variable
+# are not reachable that way.
+#
+# One function here DOES write: autodrive_merge_record writes a copy of the
+# body under the state directory, as the record of what this run commits. That
+# file is never read back — not by the gate, not by `gh` — so rewriting it
+# changes the record and nothing else. It is still written privately, because
+# it is the pull request's text and it lives at a deterministic name: see that
+# function. It chooses no path and emits no blocker; the gate owns where state
+# lives and what refusal means.
 #
 # It exists as a second file for the reason autodrive_followups_check.sh does:
-# the gate stands at exactly the 400-line brick budget and no tool may exceed
-# it (issue #2056). What stays in the gate is the argv, its self-check, and
-# the blocker calls — the decisions. Composing and writing the message is
-# this module's whole contract, subject and body alike.
+# the gate stands at the 400-line brick budget and no tool may exceed it
+# (issue #2056). What stays in the gate is the argv, its self-check, and the
+# blocker calls — the decisions. Composing the message is this module's whole
+# contract, subject and body alike.
 
 # autodrive_merge_sha12 <head-sha>: the head SHA's first 12 characters,
 # printed only when they are 12 lowercase hex digits.
 #
-# The gate builds a file name from this, so a value that is not a SHA must
-# never become a path. `-` alone is stdin to `gh`, and `..` would leave the
-# private state directory. Section 0's own check on HEAD_SHA is `7 hex
-# followed by anything`, which is weaker than what a path needs.
+# The gate builds the record's file name from this, so a value that is not a
+# SHA must never become a path: `..` would leave the private state directory.
+# Section 0's own check on HEAD_SHA is `7 hex followed by anything`, which is
+# weaker than what a path needs.
 autodrive_merge_sha12() {
   local sha12="${1:0:12}"
   [ "${#sha12}" -eq 12 ] || return 1
@@ -90,21 +98,12 @@ autodrive_merge_subject() {
   esac
 }
 
-# autodrive_merge_body_file <pr-view-json> <path>: write the pull request body
-# to <path> as the squash commit's body, byte for byte, and print the SHA-256
-# of exactly those bytes.
+# autodrive_merge_body <pr-view-json>: set MERGE_BODY to the pull request body,
+# byte for byte, with NUL removed. 0 — set. 1 — the body is unreadable, and
+# MERGE_BODY is left empty.
 #
-#   0 — written.  1 — the body is unreadable.  2 — the file was not written,
-#   or what was written could not be digested.
-#
-# The two failures are kept apart because they send an operator to different
-# places: 1 is a platform read that came back malformed, 2 is the filesystem
-# under the state directory. The gate suppresses jq's own diagnostic so that
-# its blocker is the one operator-facing message, which leaves the exit code
-# as the only thing that can tell the two apart.
-#
-# Readability is settled BEFORE anything is written, so every failure after
-# that point is a write failure and nothing is misattributed.
+# It sets a variable rather than printing, because the caller would have to
+# capture what it printed with `$(...)`, which strips every trailing newline.
 #
 # An absent `body` key is NOT an empty body: it is a read that came back
 # malformed, and a criterion the gate cannot read never merges. JSON null IS
@@ -113,78 +112,52 @@ autodrive_merge_subject() {
 # The 65,536-byte bound is GitHub's own limit on a pull request body, and it
 # is here for the reason the 1024-character bound is on the title: past it the
 # read went wrong, and the gate should not depend on a platform cap it does
-# not enforce itself. It is measured on the JSON string, before NUL removal,
-# so it bounds what is written.
+# not enforce itself. It is measured on the JSON string, before NUL removal.
 #
 # `jq -j`, never `jq -r`: -r appends a newline the body does not contain, so
-# every squash commit would gain a spurious blank line and an empty body would
-# be one byte long. NUL is removed because git cannot carry it. Nothing else
-# is removed — the body is the author's text and lands verbatim, trailing
-# newline included. Read with jq for the same reason the title is: see
-# autodrive_merge_subject on why field() is the wrong reader here.
+# every squash commit would gain a spurious blank line. NUL is removed because
+# neither git nor a bash variable can carry it. Nothing else is removed — the
+# body is the author's text and lands verbatim, trailing newline included: the
+# `x` appended inside the capture is what keeps `$(...)` from stripping it.
 #
-# The write is `umask 077; set -C; rm -f`: mode 0600 whatever the caller's
-# umask; O_EXCL, so the create refuses anything that appeared at the path
-# since, a symlink included; and the unconditional rm, so a stale message left
-# at this deterministic name is replaced rather than reused. pipefail is set
-# inside the subshell rather than inherited, so the function behaves the same
-# wherever it is sourced.
-#
-# The digest is printed so the caller can bind the merge to these bytes rather
-# than to the path. Mode and owner say who MAY write the file; they do not say
-# that nobody did. Every other input the gate compares is bound to its content
-# through a manifest or a hash, and this one is written at a deterministic name
-# under a directory the workflow's own agents write to, so it gets the same
-# treatment: see autodrive_merge_body_intact.
-autodrive_merge_body_file() {
-  local json="${1:-}" path="${2:-}"
-  [ -n "$path" ] || return 2
+# jq's own exit status decides, under pipefail, and the `x` is only appended
+# when the whole pipeline succeeded. A jq that fails part-way therefore leaves
+# MERGE_BODY empty and returns 1, which the gate blocks on — it never becomes
+# a short body that `gh` would commit. That is why the gate does not pipe jq
+# straight into `gh`: there, a jq failure would hand `gh` an empty body.
+autodrive_merge_body() {
+  local json="${1:-}" body
+  MERGE_BODY=""
   printf '%s' "$json" | jq -e '
       has("body") and ((.body | type) as $t | ($t == "string" or $t == "null"))
       and (((.body // "") | utf8bytelength) <= 65536)' >/dev/null 2>&1 || return 1
-  ( set -o pipefail; umask 077; set -C; rm -f -- "$path"
-    printf '%s' "$json" | jq -j '.body // ""' | tr -d '\000' > "$path" ) 2>/dev/null || return 2
-  autodrive_merge_digest "$path" || return 2
+  body="$(set -o pipefail; printf '%s' "$json" | jq -j '.body // ""' 2>/dev/null | tr -d '\000' && printf x)" \
+    || return 1
+  # shellcheck disable=SC2034 # read by autodrive_merge_gate.sh, which sources this file
+  MERGE_BODY="${body%x}"
 }
 
-# autodrive_merge_digest <path>: the SHA-256 of <path>'s bytes, as 64 lowercase
-# hex digits. Returns non-zero, printing nothing, when the file cannot be read
-# or no SHA-256 tool is present.
+# autodrive_merge_record <body> <path>: write <body> to <path>, byte for byte,
+# as the record of what this run commits. 0 — written. 1 — not written.
 #
-# sha256sum is coreutils and shasum is perl's; between them every platform this
-# workflow runs on is covered. When neither is there the function fails, the
-# caller blocks, and nothing merges — the gate's standing rule that a criterion
-# it cannot read is a failure rather than a pass. The output is re-validated as
-# hex rather than trusted, so a tool that printed a diagnostic on stdout cannot
-# become a digest that something else could match.
-autodrive_merge_digest() {
-  local sum
-  if command -v sha256sum >/dev/null 2>&1; then sum="$(sha256sum -- "$1" 2>/dev/null)" || return 1
-  elif command -v shasum >/dev/null 2>&1; then sum="$(shasum -a 256 -- "$1" 2>/dev/null)" || return 1
-  else return 1; fi
-  sum="${sum%% *}"
-  [ "${#sum}" -eq 64 ] || return 1
-  case "$sum" in *[!0123456789abcdef]*) return 1 ;; esac
-  printf '%s' "$sum"
-}
-
-# autodrive_merge_body_intact <path> <digest>: 0 only when <path> is STILL a
-# regular file private to this user AND its bytes still hash to <digest>.
+# The record is not an input. The gate pipes the body to `gh` from its own
+# variable, and neither reads this file back, so a process that rewrites it
+# afterwards changes what the record says and nothing that lands on the base
+# branch. The commit GitHub creates is the authoritative record; this one
+# exists so that what the gate would commit can be read off disk on a dry run
+# and on a run that ends NOT_MERGED.
 #
-# This is what the gate re-checks immediately before it merges. The privacy
-# tests alone — symlink, owner, mode — describe who may write the file, which
-# is the wrong question between composing the message and merging it: the
-# adversary the state directory is hardened against (#1517 D5) is a process
-# running as this same user, and it passes all three after rewriting the bytes
-# in place. Comparing the digest asks the question that matters, which is
-# whether the bytes about to land on the base branch are the ones composed from
-# the pull request this run gathered its evidence for.
-#
-# An empty <digest> is a refusal, not a wildcard: it means the caller never got
-# one, and a message that was never digested is not one we can vouch for.
-autodrive_merge_body_intact() {
-  local path="${1:-}" want="${2:-}" have
-  [ -n "$want" ] && [ -f "$path" ] && autodrive_private "$path" || return 1
-  have="$(autodrive_merge_digest "$path")" || return 1
-  [ "$have" = "$want" ]
+# The write is `umask 077; set -C; rm -f`, and that still matters with the
+# file out of the trust path. The name is deterministic and the gate runs as
+# the user whose files a planted symlink would point at, so following one
+# would write a pull request body over an arbitrary file of theirs: the
+# unconditional rm removes a symlink or a stale record from an earlier round,
+# O_EXCL (set -C) refuses anything that appears at the path after it, and
+# mode 0600 whatever the caller's umask keeps the author's text private on a
+# shared host.
+autodrive_merge_record() {
+  local body="${1-}" path="${2:-}"
+  [ -n "$path" ] || return 1
+  ( umask 077; set -C; rm -f -- "$path"
+    printf '%s' "$body" > "$path" ) 2>/dev/null
 }

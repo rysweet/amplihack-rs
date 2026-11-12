@@ -1259,10 +1259,11 @@ fi
 # spaces, `${MERGE_ARGV[*]}` cannot tell one element from several, and a
 # twin-array comparison is a tautology however it is spelled. What rules out
 # an injected flag is the element COUNT plus the pinned literal positions.
-if grep -qF 'MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file "$MERGE_BODY_FILE")' "${GATE}" \
+if grep -qF 'MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file -)' "${GATE}" \
    && grep -qF '"${#MERGE_ARGV[@]}" -ne 11' "${GATE}" \
    && grep -qF '"${MERGE_ARGV[7]}" != "--subject"' "${GATE}" \
    && grep -qF '"${MERGE_ARGV[9]}" != "--body-file"' "${GATE}" \
+   && grep -qF '"${MERGE_ARGV[10]}" != "-"' "${GATE}" \
    && ! grep -qF 'if [ "${MERGE_ARGV[*]}" != "${EXPECTED_ARGV[*]}" ]' "${GATE}"; then
   pass "FORBIDDEN-fixed-argv" "the merge argv is a fixed literal list whose element count and flag positions are pinned before execution"
 else
@@ -1282,6 +1283,22 @@ echo "$*" >> "${GH_CALLS:-/dev/null}"
 # `--subject` carrying an injected `--admin` would read the same either way.
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && [ -n "${GH_CALLS:-}" ]; then
   printf '%s\n' "$@" > "${GH_CALLS}.merge-argv"
+  # The body, read from wherever the argv says, as the real gh reads it:
+  # `--body-file -` is stdin, any other value is a path opened NOW, at the
+  # moment gh starts. GH_REWRITE_TO/GH_REWRITE_FROM first rewrite a file the
+  # way a process running as this user would if it won the race to the very
+  # last moment before gh reads its body (crusty round 4 on PR #2262), so a
+  # gate that hands gh a path commits the rewrite and one that pipes the
+  # bytes from memory does not.
+  if [ -n "${GH_REWRITE_TO:-}" ] && [ -f "${GH_REWRITE_FROM:-}" ]; then
+    cat "${GH_REWRITE_FROM}" > "${GH_REWRITE_TO}"; : > "${GH_CALLS}.rewritten"
+  fi
+  bf=""; prev=""; for a in "$@"; do [ "$prev" = "--body-file" ] && bf="$a"; prev="$a"; done
+  case "$bf" in
+    '') ;;
+    -) cat > "${GH_CALLS}.merge-body" ;;
+    *) cat -- "$bf" > "${GH_CALLS}.merge-body" ;;
+  esac
 fi
 # `pr view` prints the PR fields with the head from GH_HEAD and the base from
 # GH_BASE (set but empty means no baseRefName), through `--jq` when one is given.
@@ -1712,6 +1729,7 @@ gate_run() { # gate_run <mode> <extra-args...>
     PATH="${GATE_PATH_PREFIX:+${GATE_PATH_PREFIX}:}${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" \
     GH_MERGE_RC="${GH_MERGE_RC:-3}" AMPLIHACK_BIN="${REAL_AMPLIHACK}" TMPDIR="${gate_tmp}" \
     SWAP_FROM="${SWAP_FROM:-}" SWAP_TO="${GATE_DIR}/${SWAP_TO_NAME:-merge-ready-latest.json}" \
+    GH_REWRITE_TO="${GH_REWRITE_NAME:+${GATE_DIR}/${GH_REWRITE_NAME}}" \
     "${gate_cmd[@]}" --pr 42 --repo "${FX}" ${sd[@]+"${sd[@]}"} ${args[@]+"${args[@]}"} \
     >"${GATE_DIR}/out" 2>"${GATE_DIR}/err"
   local rc=$?
@@ -1830,7 +1848,7 @@ else
   fail "GATE-green-dry-run" "a fully verified PR did not reach the merge step (rc=${rc}): ${GATE_OUT}"
 fi
 if grep -qF "gh pr merge 42 --squash --delete-branch --match-head-commit ${GATE_HEAD} --subject " "${GATE_DIR}/err" \
-   && grep -qF -- "--body-file ${GATE_DIR}/merge-message-42-${GATE_HEAD:0:12}.txt" "${GATE_DIR}/err"; then
+   && grep -qF -- "--body-file - (body on stdin; a copy is in ${GATE_DIR}/merge-message-42-${GATE_HEAD:0:12}.txt)" "${GATE_DIR}/err"; then
   pass "GATE-argv" "the merge argv is exactly the fixed literal list, bound to the verified SHA and carrying the squash message"
 else
   fail "GATE-argv" "the merge argv is not the expected fixed list: $(grep -F 'DRY_RUN' "${GATE_DIR}/err" | tr '\n' ' ')"
@@ -1911,9 +1929,10 @@ GUARD_1551="${TOOLS}/gh-merge-guard"
 if [ -x "${GUARD_1551}/gh" ]; then
   GATE_PRIV=1 GATE_PATH_PREFIX="${GUARD_1551}" gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
   if [ "$rc" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"MERGED"' \
-     && grep -qxF "pr merge 42 --squash --delete-branch --match-head-commit ${GATE_HEAD} --subject fix(#2056): bind the squash message to the pull request (#42) --body-file ${GATE_DIR}/merge-message-42-${GATE_HEAD:0:12}.txt" "${GATE_DIR}/gh-calls" \
+     && grep -qxF "pr merge 42 --squash --delete-branch --match-head-commit ${GATE_HEAD} --subject fix(#2056): bind the squash message to the pull request (#42) --body-file -" "${GATE_DIR}/gh-calls" \
+     && [ "$(cat "${GATE_DIR}/gh-calls.merge-body" 2>/dev/null)" = 'The pull request body.' ] \
      && ! grep -qF 'REFUSED' "${GATE_DIR}/err"; then
-    pass "1551-gate-merges-under-guard" "under the merge guard the real gate, run as /bin/bash -p <gate>, merges with its fixed argv"
+    pass "1551-gate-merges-under-guard" "under the merge guard the real gate, run as /bin/bash -p <gate>, merges with its fixed argv, and the body piped to the shim reaches the real gh on stdin"
   else
     fail "1551-gate-merges-under-guard" "rc=${rc}: ${GATE_OUT} | $(grep -E 'REFUSED|BLOCKER|NOT_MERGED' "${GATE_DIR}/err" | tr '\n' ' ')"
   fi
@@ -2335,20 +2354,28 @@ fi
 # therefore pass the message it read ITSELF, from the same `gh pr view` that
 # bound every other criterion to this head SHA:
 #
-#   --subject "<pull request title> (#N)"   --body-file <a file the gate wrote>
+#   --subject "<pull request title> (#N)"   --body-file -   (the body on stdin)
 #
-# `--body-file` rather than an inline `--body` (the repository's own convention
-# since #1570): free text never reaches argv, so it cannot reach `ps` or the
-# environment, and the dry-run line stays readable instead of dumping up to
-# 65,536 bytes to stderr.
+# The body reaches gh on stdin, from the gate's own memory, and never as a
+# path. A file under the state dir can be rewritten by a process running as
+# this user (#1517 D5) at any moment up to gh opening it, and no check made on
+# the path closes that window (crusty round 4 on PR #2262). The gate still
+# writes the body to merge-message-<pr>-<sha12>.txt, but only as a RECORD that
+# nothing reads back. Stdin rather than an inline `--body` (the repository's
+# convention since #1570): free text never reaches argv, so it cannot reach
+# `ps` or the environment, and the dry-run line stays readable.
 #
-# Every case here is a property of the GATE'S OWN OUTPUT — the composed subject
-# and the body file — so none of them needs a real merge to be decided.
+# The stub gh reads the body the way the real one does — stdin for `-`, the
+# named path otherwise — into gh-calls.merge-body, so every case that runs a
+# merge asserts on the bytes gh actually received, not on the record.
 MSG_TITLE='fix(#2056): bind the squash message to the pull request'
 MSG_BODY='The pull request body.'
 MSG_HELPER="${TOOLS}/autodrive_merge_message.sh"
-msg_path() { # msg_path [sha]: the deterministic body-file path for this case
+msg_path() { # msg_path [sha]: the deterministic record path for this case
   printf '%s/merge-message-42-%s.txt' "${GATE_DIR}" "$(printf '%s' "${1:-${GATE_HEAD}}" | cut -c1-12)"
+}
+msg_sent() { # msg_sent: where the stub gh put the body it received
+  printf '%s/gh-calls.merge-body' "${GATE_DIR}"
 }
 msg_argv() { # msg_argv: load the stub's element-wise merge argv into MSG_ARGV
   MSG_ARGV=()
@@ -2358,6 +2385,17 @@ msg_argv() { # msg_argv: load the stub's element-wise merge argv into MSG_ARGV
   [ "${#MSG_ARGV[@]}" -gt 0 ]
 }
 msg_bytes() { wc -c < "$1" | tr -d '[:space:]'; }
+msg_code_has() { # msg_code_has <file> <-F|-E> <pattern>: <file>, without its
+  # comment lines, matches <pattern>. A needle that matches only a comment is
+  # not in the code (crusty round 4 on PR #2262). No `grep -q` on the right of
+  # the pipe: it exits at the first match, the left side can then die of
+  # SIGPIPE, and under pipefail that reads as "no match", failing a positive
+  # check and passing a negative one.
+  grep -v '^[[:space:]]*#' "$1" | grep "$2" -- "$3" >/dev/null
+}
+msg_merged() { # msg_merged: the gate merged, and the platform confirmed it
+  [ "${MSG_RC}" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"MERGED"'
+}
 msg_blocked() { # msg_blocked <id> <description>: exit 1, NOT_MERGED, nothing merged
   # NOT_MERGED alone is not enough. A gate that merges on an unreadable
   # message and is then refused by section 10's confirmation also reports
@@ -2372,52 +2410,65 @@ msg_blocked() { # msg_blocked <id> <description>: exit 1, NOT_MERGED, nothing me
   fi
 }
 
-# 5m-1. The dry run names the composed subject and the body file it wrote.
+# 5m-1. The dry run names the composed subject, `--body-file -`, and the record.
 gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
 MSG_FILE="$(msg_path)"
-if [ "${MSG_RC}" -eq 0 ] && grep -qF -- "--subject ${MSG_TITLE} (#42) --body-file ${MSG_FILE}" "${GATE_DIR}/err"; then
-  pass "MSG-dry-run-argv" "the dry run shows the composed subject and the body file's path"
+if [ "${MSG_RC}" -eq 0 ] && grep -qF -- "--subject ${MSG_TITLE} (#42) --body-file - (body on stdin; a copy is in ${MSG_FILE})" "${GATE_DIR}/err"; then
+  pass "MSG-dry-run-argv" "the dry run shows the composed subject, the body going in on stdin, and where its record is"
 else
   fail "MSG-dry-run-argv" "rc=${MSG_RC}: $(grep -F 'DRY_RUN' "${GATE_DIR}/err" | tr '\n' ' ')"
 fi
 
-# 5m-2. The body file holds the pull request body byte for byte. `jq -r`
-# appends a newline the body does not contain; every merge commit would gain a
-# spurious blank line, and the empty-body case below would not be empty.
-if [ -f "${MSG_FILE}" ] && [ "$(cat "${MSG_FILE}")" = "${MSG_BODY}" ] \
-   && [ "$(msg_bytes "${MSG_FILE}")" = "${#MSG_BODY}" ]; then
-  pass "MSG-body-file-exact" "the body file is the pull request body byte for byte, with no newline added"
+# 5m-2. gh receives the pull request body byte for byte, on stdin, and no
+# path. `jq -r` appends a newline the body does not contain; every merge
+# commit would gain a spurious blank line, and the empty-body case below would
+# not be empty.
+gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+if msg_merged && msg_argv && [ "${MSG_ARGV[9]:-}" = "--body-file" ] && [ "${MSG_ARGV[10]:-}" = "-" ] \
+   && [ -f "$(msg_sent)" ] && [ "$(cat "$(msg_sent)")" = "${MSG_BODY}" ] \
+   && [ "$(msg_bytes "$(msg_sent)")" = "${#MSG_BODY}" ]; then
+  pass "MSG-body-on-stdin" "gh receives the pull request body on stdin, byte for byte, and is handed no path"
 else
-  fail "MSG-body-file-exact" "want ${#MSG_BODY} bytes of '${MSG_BODY}', got $( [ -f "${MSG_FILE}" ] && msg_bytes "${MSG_FILE}" || echo 'no file')"
+  fail "MSG-body-on-stdin" "rc=${MSG_RC}: argv[10]='${MSG_ARGV[10]:-<missing>}', received $( [ -f "$(msg_sent)" ] && echo "$(msg_bytes "$(msg_sent)") bytes" || echo 'nothing')"
 fi
 
-# 5m-3. It is written private. The body is the author's text; nothing else on
-# a shared host may read it, and nothing may replace it between write and use.
+# 5m-3. The record holds exactly what gh received.
+if [ -f "${MSG_FILE}" ] && [ -f "$(msg_sent)" ] && cmp -s "${MSG_FILE}" "$(msg_sent)"; then
+  pass "MSG-record-exact" "the record holds exactly the bytes gh received"
+else
+  fail "MSG-record-exact" "the record and what gh received differ, or one is missing"
+fi
+
+# 5m-4. It is written private. The body is the author's text, and nothing
+# else on a shared host may read it.
 case "$(ls -ld "${MSG_FILE}" 2>/dev/null)" in
-  -rw-------*) pass "MSG-body-file-private" "the body file is created 0600" ;;
-  *) fail "MSG-body-file-private" "mode is '$(ls -ld "${MSG_FILE}" 2>/dev/null | cut -c1-10)', want -rw-------" ;;
+  -rw-------*) pass "MSG-record-private" "the record is created 0600" ;;
+  *) fail "MSG-record-private" "mode is '$(ls -ld "${MSG_FILE}" 2>/dev/null | cut -c1-10)', want -rw-------" ;;
 esac
 
-# 5m-4. An empty body is legitimate — many pull requests have none — and must
-# not be mistaken for an unreadable one. The file is written, and it is empty.
-GH_BODY='' gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
+# 5m-5. An empty body is legitimate — many pull requests have none — and must
+# not be mistaken for an unreadable one. gh receives nothing on stdin, and the
+# record is written, empty. (What GitHub does with an empty body is the open
+# question of #2263; this pins what the gate sends.)
+GH_BODY='' gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
 MSG_FILE="$(msg_path)"
-if [ "${MSG_RC}" -eq 0 ] && [ -f "${MSG_FILE}" ] && [ "$(msg_bytes "${MSG_FILE}")" = "0" ]; then
-  pass "MSG-empty-body" "an empty pull request body merges, with an empty body file"
+if msg_merged && [ -f "$(msg_sent)" ] && [ "$(msg_bytes "$(msg_sent)")" = "0" ] \
+   && [ -f "${MSG_FILE}" ] && [ "$(msg_bytes "${MSG_FILE}")" = "0" ]; then
+  pass "MSG-empty-body" "an empty pull request body merges, with an empty body on stdin and an empty record"
 else
-  fail "MSG-empty-body" "rc=${MSG_RC}: $( [ -f "${MSG_FILE}" ] && echo "$(msg_bytes "${MSG_FILE}") bytes" || echo 'no body file')"
+  fail "MSG-empty-body" "rc=${MSG_RC}: received $( [ -f "$(msg_sent)" ] && echo "$(msg_bytes "$(msg_sent)") bytes" || echo 'nothing')"
 fi
 
-# 5m-5. A JSON null body is the same case: normalised to empty, never a blocker.
-GH_BODY_NULL=1 gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
-MSG_FILE="$(msg_path)"
-if [ "${MSG_RC}" -eq 0 ] && [ -f "${MSG_FILE}" ] && [ "$(msg_bytes "${MSG_FILE}")" = "0" ]; then
-  pass "MSG-null-body" "a JSON null body normalises to an empty body file"
+# 5m-6. A JSON null body is the same case: normalised to empty, never a blocker.
+GH_BODY_NULL=1 gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_merged && [ -f "$(msg_sent)" ] && [ "$(msg_bytes "$(msg_sent)")" = "0" ]; then
+  pass "MSG-null-body" "a JSON null body normalises to an empty body"
 else
   fail "MSG-null-body" "rc=${MSG_RC}: ${GATE_OUT}"
 fi
 
-# 5m-6 / 5m-7. A message the gate cannot read is a BLOCKER, exactly as an
+# 5m-7 / 5m-8. A message the gate cannot read is a BLOCKER, exactly as an
 # unreadable CI status is. The gate's whole premise is that a criterion we
 # cannot read never merges, and the commit message is now one of them.
 gate_run unreadable-title --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
@@ -2425,22 +2476,22 @@ msg_blocked "MSG-unreadable-title" "an unreadable pull request title never merge
 gate_run unreadable-body --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
 msg_blocked "MSG-unreadable-body" "an absent body key is a malformed read, not an empty body, and never merges"
 
-# 5m-8. A JSON null title is not a title. Every pull request has one.
+# 5m-9. A JSON null title is not a title. Every pull request has one.
 GH_TITLE_NULL=1 gate_run green --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
 msg_blocked "MSG-null-title" "a null pull request title never merges"
 
-# 5m-9. Neither is a whitespace-only one: an empty subject would hand the
+# 5m-10. Neither is a whitespace-only one: an empty subject would hand the
 # commit message back to GitHub to compose, which is the defect itself.
 GH_TITLE='   ' gate_run green --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
 msg_blocked "MSG-blank-title" "a whitespace-only pull request title never merges"
 
-# 5m-10. A title far past anything GitHub accepts (its own limit is 256
+# 5m-11. A title far past anything GitHub accepts (its own limit is 256
 # characters) is a read gone wrong, not a subject. The bound is 1024.
 MSG_LONG="$(head -c 1025 < /dev/zero | tr '\0' 'a')"
 GH_TITLE="${MSG_LONG}" gate_run green --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
 msg_blocked "MSG-long-title" "a title over 1024 characters never merges"
 
-# 5m-11. A title that LOOKS like a flag is a subject, never a flag. This is
+# 5m-12. A title that LOOKS like a flag is a subject, never a flag. This is
 # the exact property the fixed-argv design exists to guarantee: `gh` takes the
 # word after --subject as its value whatever it spells, and the positional
 # self-check is what proves no other element became one.
@@ -2452,7 +2503,7 @@ else
   [ "${#MSG_ARGV[@]}" -eq 11 ] || MSG_BAD="element count ${#MSG_ARGV[@]}, want 11"
   for pair in "0=pr" "1=merge" "2=42" "3=--squash" "4=--delete-branch" \
               "5=--match-head-commit" "6=${GATE_HEAD}" "7=--subject" \
-              "8=--admin (#42)" "9=--body-file" "10=$(msg_path)"; do
+              "8=--admin (#42)" "9=--body-file" "10=-"; do
     i="${pair%%=*}"; want="${pair#*=}"
     [ "${MSG_ARGV[$i]:-<missing>}" = "$want" ] || MSG_BAD="${MSG_BAD}; element ${i} is '${MSG_ARGV[$i]:-<missing>}', want '${want}'"
   done
@@ -2467,7 +2518,7 @@ else
   fi
 fi
 
-# 5m-12. Control characters are stripped from the subject, not merely CR/LF.
+# 5m-13. Control characters are stripped from the subject, not merely CR/LF.
 # The subject reaches an operator's terminal through the gate's own messages
 # and is written into the evidence bundle, so ESC is an escape sequence
 # delivered to a terminal and NUL silently truncates a bash array element.
@@ -2484,7 +2535,7 @@ else
   fail "MSG-control-chars" "subject='${MSG_ARGV[8]:-<missing>}' (${#MSG_ARGV[@]} elements)"
 fi
 
-# 5m-13. The ` (#N)` suffix matches GitHub's own squash convention
+# 5m-14. The ` (#N)` suffix matches GitHub's own squash convention
 # (squash_merge_commit_title: COMMIT_OR_PR_TITLE). A title that already ends
 # with this pull request's suffix is used unchanged; one ending with ANOTHER
 # pull request's number is not that suffix and still gets its own.
@@ -2503,7 +2554,7 @@ else
   fail "MSG-suffix-other-pr" "subject='${MSG_ARGV[8]:-<missing>}'"
 fi
 
-# 5m-14. THE JSON-INJECTION REGRESSION. Free text now enters STATE_JSON, which
+# 5m-15. THE JSON-INJECTION REGRESSION. Free text now enters STATE_JSON, which
 # all seven of the gate's section-0 reads parse with `extract-json
 # --require-field` — a LAST-object-wins selector (#1337, PR #1347). A body
 # that quotes a JSON object carrying `state` or `headRefOid`, bare or inside a
@@ -2519,12 +2570,12 @@ if [ "${MSG_RC}" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result"
    && printf '%s' "${GATE_OUT}" | grep -qF "\"head_sha\":\"${GATE_HEAD}\"" \
    && ! printf '%s' "${GATE_OUT}" | grep -qF 'ALREADY_MERGED' \
    && [ -f "${MSG_FILE}" ] && [ "$(cat "${MSG_FILE}")" = "${MSG_INJ}" ]; then
-  pass "MSG-json-injection" "a body quoting a MERGED/headRefOid object changes no criterion, and reaches the body file verbatim"
+  pass "MSG-json-injection" "a body quoting a MERGED/headRefOid object changes no criterion, and reaches the record verbatim"
 else
-  fail "MSG-json-injection" "rc=${MSG_RC}: ${GATE_OUT} | body file $( [ -f "${MSG_FILE}" ] && echo "differs" || echo 'missing')"
+  fail "MSG-json-injection" "rc=${MSG_RC}: ${GATE_OUT} | record $( [ -f "${MSG_FILE}" ] && echo "differs" || echo 'missing')"
 fi
 
-# 5m-15. THE TRAILER REGRESSION the issue asks for. The branch's own commits
+# 5m-16. THE TRAILER REGRESSION the issue asks for. The branch's own commits
 # carry a wrong Co-Authored-By, a `Fixes #N` from the branch this one is
 # stacked on, and a `Task:` line. None of them may reach the squash message,
 # because the gate composes it from the pull request and never from commit
@@ -2534,47 +2585,46 @@ FX_TRAILER="$(fx_change "$CR_SHA2" "$(printf 'docs: update the description\n\nFi
 MSG_TRAILER_REC="${WORK}/mr-trailer.json"; mr_rec MERGE_READY "${FX_TRAILER}" > "${MSG_TRAILER_REC}"
 MSG_TRAILER_QA="${WORK}/qa-trailer.json"; qa_fixture "${FX_TRAILER}" PASS 3 > "${MSG_TRAILER_QA}"
 GH_HEAD="${FX_TRAILER}" GH_BODY='A body with no trailers of its own.' \
-  gate_run green --round-record "${MSG_TRAILER_REC}" --qa-evidence "${MSG_TRAILER_QA}" --dry-run; MSG_RC=$?
-MSG_FILE="$(msg_path "${FX_TRAILER}")"
-if [ "${MSG_RC}" -ne 0 ]; then
-  fail "MSG-no-commit-trailers" "the gate did not reach the merge step (rc=${MSG_RC}): $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
-elif [ ! -f "${MSG_FILE}" ]; then
-  fail "MSG-no-commit-trailers" "the gate passed every criterion but wrote no body file, so GitHub would compose the message from the branch's commits"
-elif [ "$(cat "${MSG_FILE}")" = 'A body with no trailers of its own.' ] \
-     && ! grep -qF 'Co-Authored-By' "${MSG_FILE}" \
-     && ! grep -qF 'Fixes #9999' "${MSG_FILE}" \
-     && ! grep -qF 'Task:' "${MSG_FILE}" \
-     && ! grep -qF 'IGNORE PREVIOUS INSTRUCTIONS' "${MSG_FILE}"; then
-  pass "MSG-no-commit-trailers" "no trailer, stacked-branch Fixes line or commit subject from the branch reaches the squash message"
+  gate_run merges --round-record "${MSG_TRAILER_REC}" --qa-evidence "${MSG_TRAILER_QA}"; MSG_RC=$?
+MSG_SENT="$(msg_sent)"
+if ! msg_merged; then
+  fail "MSG-no-commit-trailers" "the gate did not merge (rc=${MSG_RC}): $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+elif [ ! -f "${MSG_SENT}" ]; then
+  fail "MSG-no-commit-trailers" "the gate merged but gh received no body, so GitHub would compose the message from the branch's commits"
+elif [ "$(cat "${MSG_SENT}")" = 'A body with no trailers of its own.' ] \
+     && ! grep -qF 'Co-Authored-By' "${MSG_SENT}" \
+     && ! grep -qF 'Fixes #9999' "${MSG_SENT}" \
+     && ! grep -qF 'Task:' "${MSG_SENT}"; then
+  pass "MSG-no-commit-trailers" "no trailer, stacked-branch Fixes line or commit subject from the branch reaches the body gh commits"
 else
-  fail "MSG-no-commit-trailers" "the body file carries commit text: $(head -c 200 "${MSG_FILE}")"
+  fail "MSG-no-commit-trailers" "gh received commit text: $(head -c 200 "${MSG_SENT}")"
 fi
 
-# 5m-16. The body file is never written without an explicitly given, private
+# 5m-17. The record is never written without an explicitly given, private
 # --state-dir. The message is derived long before the privacy gate of section
 # 6b blocks, so without this the gate would drop the pull request's body into
 # a world-writable TMPDIR at a predictable path on its way to refusing.
 # The positive control first: with a private state dir the same run DOES write
-# one. Without it this case would pass against a gate that writes no message
-# file at all, which is the state the defect leaves us in.
+# one. Without it this case would pass against a gate that writes no record at
+# all.
 gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run >/dev/null 2>&1
 MSG_CONTROL="$(find "${GATE_DIR}" -name 'merge-message-*' -print -quit 2>/dev/null)"
 GATE_STATE_ARG=none gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
 if [ -z "${MSG_CONTROL}" ]; then
-  fail "MSG-needs-state-dir" "the positive control wrote no message file, so this case proves nothing"
+  fail "MSG-needs-state-dir" "the positive control wrote no record, so this case proves nothing"
 elif [ "${MSG_RC}" -ne 0 ] && [ -z "$(find "${GATE_DIR}" -name 'merge-message-*' -print -quit 2>/dev/null)" ]; then
-  pass "MSG-needs-state-dir" "with no --state-dir the gate refuses and writes no message file into the TMPDIR fallback"
+  pass "MSG-needs-state-dir" "with no --state-dir the gate refuses and writes no record into the TMPDIR fallback"
 else
   fail "MSG-needs-state-dir" "rc=${MSG_RC}; found $(find "${GATE_DIR}" -name 'merge-message-*' 2>/dev/null | tr '\n' ' ')"
 fi
 
-# 5m-17. The message is part of the evidence written BEFORE any merge, so what
+# 5m-18. The message is part of the evidence written BEFORE any merge, so what
 # would have been committed is on the record even on a run that merges nothing.
 gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
 MSG_BUNDLE="${GATE_DIR}/merge-evidence-42-${GATE_HEAD:0:12}.txt"
-if grep -qF 'merge_subject=' "${MSG_BUNDLE}" && grep -qF 'body_file=' "${MSG_BUNDLE}" \
-   && grep -qE 'body_bytes=[0-9]+' "${MSG_BUNDLE}" && grep -qE 'body_sha256=[0-9a-f]{64}' "${MSG_BUNDLE}"; then
-  pass "MSG-evidence-note" "the evidence bundle records the subject, the body file, its byte count and its digest"
+if grep -qF 'merge_subject=' "${MSG_BUNDLE}" && grep -qF "body_record=$(msg_path)" "${MSG_BUNDLE}" \
+   && grep -qF "body_bytes=${#MSG_BODY}" "${MSG_BUNDLE}"; then
+  pass "MSG-evidence-note" "the evidence bundle records the subject, where the record is, and how many bytes go to gh"
 else
   fail "MSG-evidence-note" "the bundle does not record the squash message: $(grep -F 'merge_' "${MSG_BUNDLE}" | tr '\n' ' ')"
 fi
@@ -2586,24 +2636,25 @@ else
   fail "MSG-evidence-on-blocked-run" "rc=${MSG_RC}: $(grep -F 'merge_' "${MSG_BUNDLE}" 2>/dev/null | tr '\n' ' ')"
 fi
 
-# 5m-18. The title and body are read with jq, NOT with the gate's field()
+# 5m-19. The title and body are read with jq, NOT with the gate's field()
 # helper. field() resolves to `extract-json --require-field`, whose last-wins
-# selector a pull request's own body can influence (5m-14). jq is already a
+# selector a pull request's own body can influence (5m-15). jq is already a
 # hard requirement of the gate, so this costs no new dependency. `jq -j`, not
 # `jq -r`, for the body: -r appends a newline the body does not have. The
-# reads live in the helper now, so both files are checked.
+# reads live in the helper, so both files are checked, and only their code:
+# the helper's comments say `jq -j` too.
 MSG_BAD=""
 grep -qF 'field "$STATE_JSON" title' "${GATE}" && MSG_BAD="${MSG_BAD} the gate reads the title with field()"
 grep -qF 'field "$STATE_JSON" body' "${GATE}" && MSG_BAD="${MSG_BAD} the gate reads the body with field()"
-grep -qE '^[^#]*[^a-z_]field ' "${MSG_HELPER}" && MSG_BAD="${MSG_BAD} the helper calls field()"
-grep -qF 'jq -j' "${MSG_HELPER}" || MSG_BAD="${MSG_BAD} the helper does not use jq -j for the body"
+msg_code_has "${MSG_HELPER}" -E '(^|[^a-z_])field ' && MSG_BAD="${MSG_BAD} the helper calls field()"
+msg_code_has "${MSG_HELPER}" -F 'jq -j' || MSG_BAD="${MSG_BAD} the helper's code does not use jq -j for the body"
 if [ -z "${MSG_BAD}" ]; then
   pass "MSG-jq-not-field" "the squash message is read with jq -j, never through the last-object-wins field() helper"
 else
   fail "MSG-jq-not-field" "${MSG_BAD}"
 fi
 
-# 5m-19. One `gh pr view` before the merge, carrying every criterion including
+# 5m-20. One `gh pr view` before the merge, carrying every criterion including
 # the message, so the message is bound to the same head SHA as everything else.
 # The gate's other `gh pr view` is section 10's post-merge confirmation; the
 # count that matters is of the read that carries headRefOid.
@@ -2615,15 +2666,19 @@ else
   fail "MSG-one-read" "${MSG_READS:-0} pre-merge read(s) carrying headRefOid, and the field list does not add title,body"
 fi
 
-# 5m-20. --body-file, never an inline --body: the body stays out of argv, out
-# of `ps` and out of the environment, and the dry-run line stays readable.
-if grep -qF -- '--body-file' "${GATE}" && ! grep -qE -- '--body[[:space:]]+"' "${GATE}"; then
-  pass "MSG-body-file-not-inline" "the body reaches gh through a file, never through argv"
+# 5m-21. The body goes to gh on stdin from the gate's variable: never inline
+# in argv, never as a path, and gh's own status is the one captured (under
+# pipefail, `$?` could be printf's).
+if msg_code_has "${GATE}" -F "printf '%s' \"\$MERGE_BODY\" | gh \"\${MERGE_ARGV[@]}\"" \
+   && msg_code_has "${GATE}" -F 'MERGE_RC="${PIPESTATUS[1]}"' \
+   && ! grep -qE -- '--body[[:space:]]+"' "${GATE}" \
+   && ! msg_code_has "${GATE}" -E '--body-file[[:space:]]+"'; then
+  pass "MSG-body-not-inline" "the body reaches gh on stdin from the gate's memory: never in argv, never as a path"
 else
-  fail "MSG-body-file-not-inline" "the gate passes the body inline"
+  fail "MSG-body-not-inline" "the gate passes the body inline or by path, or reads the wrong exit status"
 fi
 
-# 5m-21. The gate is at its brick budget, so the message helper is its own
+# 5m-22. The gate is at its brick budget, so the message helper is its own
 # file beside it. A helper the gate SOURCES runs inside the process the #1551
 # shim trusts to merge, so it must also be a GATE_FILES entry — otherwise it
 # escapes the guard's mode check. The Rust test that asserts this
@@ -2642,137 +2697,143 @@ if [ "$(wc -l < "${GATE}" | tr -d '[:space:]')" -le 400 ]; then
 else
   fail "MSG-gate-brick-budget" "the gate is $(wc -l < "${GATE}" | tr -d '[:space:]') lines, over the 400-line brick budget"
 fi
-# 5m-22. The message file is written with `umask 077; set -C; rm -f`, and no
-# case above would notice if any of the three were dropped. A symlink planted
-# at the deterministic `merge-message-<pr>-<sha12>.txt` name must be REMOVED,
-# not followed: the gate runs as the user whose files the link would point at,
-# so following one would write a pull request body over an arbitrary file of
-# theirs. The gate already holds every other state file to this standard
-# (GATE-crusty-symlinked-marker, GATE-qa-chain-symlink-qa).
+
+# 5m-23. The record is written with `umask 077; set -C; rm -f`. It is out of
+# the trust path, but its name is deterministic and the gate runs as the user
+# whose files a planted symlink would point at: following one would write a
+# pull request body over an arbitrary file of theirs. The gate already holds
+# every other state file to this standard (GATE-crusty-symlinked-marker,
+# GATE-qa-chain-symlink-qa).
 GATE_MUTATE=body-symlink gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
 MSG_FILE="$(msg_path)"
 MSG_VICTIM="${GATE_DIR}.planted-victim.txt"
 if [ "$(cat "${MSG_VICTIM}" 2>/dev/null)" != "VICTIM" ]; then
-  fail "MSG-body-file-symlink" "the gate followed the symlink and wrote the pull request body over ${MSG_VICTIM}"
+  fail "MSG-record-symlink" "the gate followed the symlink and wrote the pull request body over ${MSG_VICTIM}"
 elif [ "${MSG_RC}" -eq 0 ] && [ ! -L "${MSG_FILE}" ] && [ -f "${MSG_FILE}" ] \
      && [ "$(cat "${MSG_FILE}")" = "${MSG_BODY}" ]; then
-  pass "MSG-body-file-symlink" "a symlink at the message file's path is removed, not followed, and this run's body lands in a regular file"
+  pass "MSG-record-symlink" "a symlink at the record's path is removed, not followed, and this run's body lands in a regular file"
 else
-  fail "MSG-body-file-symlink" "rc=${MSG_RC}: $( [ -L "${MSG_FILE}" ] && echo 'still a symlink' || { [ -f "${MSG_FILE}" ] && echo "holds $(head -c 80 "${MSG_FILE}")" || echo 'no message file'; } )"
+  fail "MSG-record-symlink" "rc=${MSG_RC}: $( [ -L "${MSG_FILE}" ] && echo 'still a symlink' || { [ -f "${MSG_FILE}" ] && echo "holds $(head -c 80 "${MSG_FILE}")" || echo 'no record'; } )"
 fi
 
-# 5m-23. The same name with a regular file already at it. A "the file is
-# already there, skip the write" optimisation would pass every case above
-# while merging an earlier round's message, so the replacement is pinned.
+# 5m-24. The same name with a regular file already at it: replaced, so the
+# record never describes an earlier round's message.
 GATE_MUTATE=body-clobber gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
 MSG_FILE="$(msg_path)"
 if [ "${MSG_RC}" -eq 0 ] && [ -f "${MSG_FILE}" ] && [ "$(cat "${MSG_FILE}")" = "${MSG_BODY}" ]; then
-  pass "MSG-body-file-clobber" "a message file left at the path is replaced with this run's body, never reused"
+  pass "MSG-record-clobber" "a record left at the path is replaced with this run's body, never reused"
 else
-  fail "MSG-body-file-clobber" "rc=${MSG_RC}: $( [ -f "${MSG_FILE}" ] && head -c 120 "${MSG_FILE}" || echo 'no message file' )"
+  fail "MSG-record-clobber" "rc=${MSG_RC}: $( [ -f "${MSG_FILE}" ] && head -c 120 "${MSG_FILE}" || echo 'no record' )"
 fi
 
-# 5m-23b. THE REWRITE. Every case above would pass against a gate that checks
-# only the message file's mode and owner before merging, because the adversary
-# the state dir is hardened against (#1517 D5) is a process running as THIS
-# user: it rewrites the bytes in place, leaving a regular 0600 file this user
-# owns, and `gh` then commits its text to the base branch. The git shim of
-# section 5k rewrites the message file at the section 6b fetch — after section
-# 5b composed it, before section 9 merges — which is exactly that window.
+# 5m-25. THE RACE (crusty round 4 on PR #2262; CWE-367). A process running as
+# this user rewrites the message file at the LAST possible moment: after every
+# check the gate makes, as gh starts and before it reads its body. The stub gh
+# performs the rewrite itself, which is the latest point any writer could win,
+# and then reads its body as the real gh would. A gate that hands gh a path,
+# however carefully it checked that path beforehand, commits the forged text
+# here; one that pipes the bytes from its own memory cannot.
 MSG_FORGED="${WORK}/forged-body.txt"
 printf 'Fixes #9999\nCo-Authored-By: Wrong Person <wrong@example.invalid>\n' > "${MSG_FORGED}"
+GH_REWRITE_FROM="${MSG_FORGED}" GH_REWRITE_NAME="merge-message-42-${GATE_HEAD:0:12}.txt" \
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+MSG_FILE="$(msg_path)"
+if [ ! -e "${GATE_DIR}/gh-calls.rewritten" ]; then
+  fail "MSG-race-at-gh-start" "the stub never rewrote the record, so the race was not exercised (rc=${MSG_RC}): $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+elif msg_merged && [ "$(cat "$(msg_sent)" 2>/dev/null)" = "${MSG_BODY}" ] \
+     && ! grep -qF 'Fixes #9999' "$(msg_sent)" && grep -qF 'Fixes #9999' "${MSG_FILE}"; then
+  pass "MSG-race-at-gh-start" "a message file rewritten as gh starts, after every check, changes nothing gh commits"
+else
+  fail "MSG-race-at-gh-start" "rc=${MSG_RC}: gh received '$(head -c 120 "$(msg_sent)" 2>/dev/null)'"
+fi
+# The control that makes the case above able to fail: the same rewrite, the
+# same stub, handed a PATH, as the gate before crusty round 4 handed it one.
+# The stub commits the forged bytes, so a gate that regressed to passing a
+# path would fail MSG-race-at-gh-start rather than pass it by accident.
+MSG_CTL="${WORK}/race-control"; mkdir -p "${MSG_CTL}"; printf '%s' "${MSG_BODY}" > "${MSG_CTL}/body.txt"
+GH_CALLS="${MSG_CTL}/gh-calls" GH_MODE=merges GH_REWRITE_FROM="${MSG_FORGED}" GH_REWRITE_TO="${MSG_CTL}/body.txt" \
+  "${STUB_BIN}/gh" pr merge 42 --squash --body-file "${MSG_CTL}/body.txt" </dev/null >/dev/null 2>&1
+if cmp -s "${MSG_CTL}/gh-calls.merge-body" "${MSG_FORGED}"; then
+  pass "MSG-race-control-path" "handed a path, the same stub commits the rewrite, so MSG-race-at-gh-start can fail"
+else
+  fail "MSG-race-control-path" "the stub did not read the rewritten path, so MSG-race-at-gh-start proves nothing"
+fi
+
+# 5m-26. The same rewrite made earlier, between composing the message (5b) and
+# the merge (9): the git shim of section 5k rewrites the record at the section
+# 6b fetch. The record is not an input, so the merge goes ahead with the bytes
+# the gate composed.
 SWAP_FROM="${MSG_FORGED}" SWAP_TO_NAME="merge-message-42-${GATE_HEAD:0:12}.txt" \
-  GATE_PATH_PREFIX="${GIT_SHIM}" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
+  GATE_PATH_PREFIX="${GIT_SHIM}" gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
 MSG_FILE="$(msg_path)"
 if [ ! -e "${MSG_FILE}.swapped" ]; then
-  fail "MSG-body-file-rewritten" "the gate never fetched the base, so the rewrite could not be tested: $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
-elif grep -q '^pr merge' "${GATE_DIR}/gh-calls" 2>/dev/null || printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_RUN"'; then
-  fail "MSG-body-file-rewritten" "the gate would have merged a message file rewritten after it composed it: $(head -c 120 "${MSG_FILE}")"
-elif [ "${MSG_RC}" -ne 0 ] && grep -qF 'refusing to merge' "${GATE_DIR}/err"; then
-  pass "MSG-body-file-rewritten" "a message file rewritten in place between composing it and merging never merges"
+  fail "MSG-record-rewritten-before-merge" "the gate never fetched the base, so the rewrite could not be tested: $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+elif msg_merged && [ "$(cat "$(msg_sent)" 2>/dev/null)" = "${MSG_BODY}" ]; then
+  pass "MSG-record-rewritten-before-merge" "a record rewritten between composing and merging changes nothing gh commits"
 else
-  fail "MSG-body-file-rewritten" "rc=${MSG_RC}: ${GATE_OUT} | $(tail -2 "${GATE_DIR}/err" | tr '\n' ' ')"
-fi
-# The positive control for the case above: the SAME run through the SAME shim,
-# rewriting nothing, still merges. Without it, a gate that refused every run
-# through the shim — or refused every run at all — would pass it.
-SWAP_TO_NAME="merge-message-42-${GATE_HEAD:0:12}.txt" GATE_PATH_PREFIX="${GIT_SHIM}" \
-  gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
-if [ "${MSG_RC}" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_RUN"'; then
-  pass "MSG-body-file-untouched" "a message file no one touched still merges, so the rewrite case refuses the rewrite and not the shim"
-else
-  fail "MSG-body-file-untouched" "rc=${MSG_RC}: ${GATE_OUT} | $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+  fail "MSG-record-rewritten-before-merge" "rc=${MSG_RC}: gh received '$(head -c 120 "$(msg_sent)" 2>/dev/null)'"
 fi
 
-# 5m-23c. The digest the merge is held to is the one the WRITE reported, not
-# one taken from a later read of the same file. A gate that re-read the file to
-# learn what it should contain would compare it against itself and refuse
-# nothing, and would still pass 5m-23b only by accident of ordering.
-MSG_BAD=""
-grep -qF 'MERGE_BODY_DIGEST="$(autodrive_merge_body_file' "${GATE}" \
-  || MSG_BAD="${MSG_BAD} the gate does not take the digest from the write"
-grep -qF 'autodrive_merge_body_intact "$MERGE_BODY_FILE" "$MERGE_BODY_DIGEST"' "${GATE}" \
-  || MSG_BAD="${MSG_BAD} the merge is not held to the digest"
-grep -qF 'autodrive_private "$MERGE_BODY_FILE"' "${GATE}" \
-  && MSG_BAD="${MSG_BAD} the privacy-only check is still what guards the merge"
-if [ -z "${MSG_BAD}" ]; then
-  pass "MSG-digest-from-write" "the merge is bound to the digest the write reported, not to a re-read of the file"
+# 5m-27. A jq that fails while extracting the body fails CLOSED. Had the gate
+# piped jq straight into gh, a jq failure would hand gh an empty or partial
+# body and the merge would go ahead with it. The shim fails only the `-j`
+# extraction, after printing part of a body, so every other read still works
+# and the blocker can only come from the body.
+REAL_JQ="$(command -v jq)"
+MSG_JQ_SHIM="${WORK_PHYS}/jq-shim"; mkdir -p "${MSG_JQ_SHIM}"
+cat > "${MSG_JQ_SHIM}/jq" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do
+  [ "\$a" = "-j" ] && { : > "\${TMPDIR:-/tmp}/jq-j-failed"; printf 'a partial body'; exit 5; }
+done
+exec "${REAL_JQ}" "\$@"
+SHIM
+chmod +x "${MSG_JQ_SHIM}/jq"
+GATE_PATH_PREFIX="${MSG_JQ_SHIM}" gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if [ ! -e "${GATE_DIR}/tmp/jq-j-failed" ]; then
+  fail "MSG-jq-failure-blocks" "the jq shim was never asked for the body, so the failure was not exercised (rc=${MSG_RC})"
+elif ! grep -qF 'the body of pull request #42 is unreadable' "${GATE_DIR}/err"; then
+  fail "MSG-jq-failure-blocks" "a failed body extraction did not block as an unreadable body: $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
 else
-  fail "MSG-digest-from-write" "${MSG_BAD}"
+  msg_blocked "MSG-jq-failure-blocks" "a jq that fails part-way through the body blocks the merge; its partial output never reaches gh"
 fi
 
-# 5m-23d. An empty digest is a refusal, not a wildcard: a message file that was
-# never digested is not one the gate can vouch for. Asserted on the helper
-# directly, because no gate run can reach section 9 with an empty digest.
-MSG_PROBE="${WORK}/probe-body.txt"; printf 'probe\n' > "${MSG_PROBE}"; chmod 0600 "${MSG_PROBE}"
-MSG_PROBE_OUT="$(bash -c '
-  . "$1"; . "$2"
-  d="$(autodrive_merge_digest "$3")" || { echo "no-digest"; exit 0; }
-  autodrive_merge_body_intact "$3" "$d" || { echo "intact-rejected-the-file-it-digested"; exit 0; }
-  autodrive_merge_body_intact "$3" "" && { echo "empty-digest-accepted"; exit 0; }
-  printf "other\n" >> "$3"
-  autodrive_merge_body_intact "$3" "$d" && { echo "rewrite-accepted"; exit 0; }
-  echo ok' _ "${MSG_HELPER}" "${TOOLS}/autodrive_state.sh" "${MSG_PROBE}" 2>&1)"
-if [ "${MSG_PROBE_OUT}" = "ok" ]; then
-  pass "MSG-intact-contract" "autodrive_merge_body_intact accepts the bytes it digested, and refuses both an empty digest and a rewrite"
-else
-  fail "MSG-intact-contract" "${MSG_PROBE_OUT}"
-fi
-
-# 5m-24. The body is bounded for the reason the title is: 65,536 bytes is
+# 5m-28. The body is bounded for the reason the title is: 65,536 bytes is
 # GitHub's own limit on a pull request body, so anything past it is a read
 # gone wrong. The gate must not depend on a platform cap it does not enforce.
 MSG_HUGE="$(head -c 65537 < /dev/zero | tr '\0' 'b')"
 GH_BODY="${MSG_HUGE}" gate_run green --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
 msg_blocked "MSG-long-body" "a body over 65536 bytes never merges"
-# ...and one byte under it still does, so the bound is not off by one and the
-# case above is not passing for some unrelated reason.
+# ...and one byte under it still does, every byte through the pipe, so the
+# bound is not off by one and the case above is not passing for some
+# unrelated reason.
 GH_BODY="$(head -c 65536 < /dev/zero | tr '\0' 'b')" \
-  gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
-MSG_FILE="$(msg_path)"
-if [ "${MSG_RC}" -eq 0 ] && [ -f "${MSG_FILE}" ] && [ "$(msg_bytes "${MSG_FILE}")" = "65536" ]; then
-  pass "MSG-body-at-bound" "a body of exactly 65536 bytes merges, with every byte in the message file"
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_merged && [ -f "$(msg_sent)" ] && [ "$(msg_bytes "$(msg_sent)")" = "65536" ] \
+   && [ "$(msg_bytes "$(msg_path)")" = "65536" ]; then
+  pass "MSG-body-at-bound" "a body of exactly 65536 bytes merges, with every byte reaching gh and the record"
 else
-  fail "MSG-body-at-bound" "rc=${MSG_RC}: $( [ -f "${MSG_FILE}" ] && echo "$(msg_bytes "${MSG_FILE}") bytes" || echo 'no message file' )"
+  fail "MSG-body-at-bound" "rc=${MSG_RC}: gh received $( [ -f "$(msg_sent)" ] && echo "$(msg_bytes "$(msg_sent)") bytes" || echo 'nothing' )"
 fi
 
-# 5m-25. A body ending in a newline keeps it, byte for byte. `jq -r` would add
-# a second; a `$(...)` capture anywhere in the write path would eat the first.
-# $'...' rather than "$(printf ...)" for exactly that reason: the capture the
-# helper must not perform is one this line would otherwise perform for it.
+# 5m-29. A body ending in a newline keeps it, byte for byte, all the way to
+# gh. `jq -r` would add a second; a `$(...)` capture without the helper's
+# trailing `x` would eat the first. $'...' rather than "$(printf ...)" for
+# exactly that reason: the capture the helper must not perform is one this
+# line would otherwise perform for it.
 GH_BODY=$'ends with a newline\n' \
-  gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; MSG_RC=$?
-MSG_FILE="$(msg_path)"
-if [ "${MSG_RC}" -eq 0 ] && [ -f "${MSG_FILE}" ] && [ "$(msg_bytes "${MSG_FILE}")" = "20" ]; then
-  pass "MSG-body-trailing-newline" "a trailing newline in the body is preserved exactly once"
+  gate_run merges --round-record "$REC" --qa-evidence "$QA"; MSG_RC=$?
+if msg_merged && [ -f "$(msg_sent)" ] && [ "$(msg_bytes "$(msg_sent)")" = "20" ] \
+   && [ "$(msg_bytes "$(msg_path)")" = "20" ]; then
+  pass "MSG-body-trailing-newline" "a trailing newline in the body reaches gh exactly once"
 else
-  fail "MSG-body-trailing-newline" "want 20 bytes, got $( [ -f "${MSG_FILE}" ] && msg_bytes "${MSG_FILE}" || echo 'no message file' )"
+  fail "MSG-body-trailing-newline" "want 20 bytes, gh received $( [ -f "$(msg_sent)" ] && msg_bytes "$(msg_sent)" || echo 'nothing' )"
 fi
 
-# 5m-26. The two failures the message write can suffer are reported apart: an
-# unreadable body points at the platform, a message file that could not be
-# written points at the filesystem under the state dir. `2>/dev/null` has
-# already discarded jq's own diagnostic, so the blocker is all an operator gets.
+# 5m-30. The two failures are reported apart: an unreadable body points at
+# the platform, a record that could not be written points at the filesystem
+# under the state dir. `2>/dev/null` has already discarded jq's own
+# diagnostic, so the blocker is all an operator gets.
 gate_run unreadable-body --round-record "$REC" --qa-evidence "$QA" >/dev/null 2>&1; MSG_RC=$?
 if grep -qF 'the body of pull request #42 is unreadable' "${GATE_DIR}/err" \
    && ! grep -qF 'could not be written' "${GATE_DIR}/err"; then
@@ -2781,17 +2842,20 @@ else
   fail "MSG-blocker-read-vs-write" "$(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
 fi
 
-# 5m-27. Composing and writing the message belong to the helper; the gate
-# keeps the decision. A write pipeline that drifts back into the gate puts the
-# gate over its brick budget again and splits the contract in two.
-if ! grep -qF 'autodrive_merge_body_file' "${GATE}"; then
-  fail "MSG-write-lives-in-helper" "the gate does not call autodrive_merge_body_file"
-elif grep -qE 'jq -j.*body|body.*jq -j' "${GATE}"; then
+# 5m-31. Composing the message belongs to the helper; the gate keeps the
+# decision. Checked on code lines only: every needle here also appears in a
+# comment somewhere, and a comment is not an implementation.
+if ! msg_code_has "${GATE}" -F 'autodrive_merge_body "$STATE_JSON"' \
+   || ! msg_code_has "${GATE}" -F 'autodrive_merge_record "$MERGE_BODY"'; then
+  fail "MSG-write-lives-in-helper" "the gate does not call autodrive_merge_body and autodrive_merge_record"
+elif msg_code_has "${GATE}" -F 'jq -j'; then
   fail "MSG-write-lives-in-helper" "the gate still extracts the body itself instead of calling the helper"
-elif grep -qF 'autodrive_merge_body_file()' "${MSG_HELPER}" && grep -qF 'set -C' "${MSG_HELPER}"; then
-  pass "MSG-write-lives-in-helper" "the message write lives in autodrive_merge_message.sh, and the gate only decides"
+elif msg_code_has "${MSG_HELPER}" -F 'autodrive_merge_body()' \
+     && msg_code_has "${MSG_HELPER}" -F 'autodrive_merge_record()' \
+     && msg_code_has "${MSG_HELPER}" -F 'set -C'; then
+  pass "MSG-write-lives-in-helper" "the body and its record are produced in autodrive_merge_message.sh, and the gate only decides"
 else
-  fail "MSG-write-lives-in-helper" "autodrive_merge_body_file is not defined in the helper, or does not use set -C"
+  fail "MSG-write-lives-in-helper" "autodrive_merge_body or autodrive_merge_record is not defined in the helper's code, or the record is not written with set -C"
 fi
 if [ "$(wc -l < "${MSG_HELPER}" | tr -d '[:space:]')" -le 400 ]; then
   pass "MSG-helper-brick-budget" "the message helper fits the 400-line brick budget"

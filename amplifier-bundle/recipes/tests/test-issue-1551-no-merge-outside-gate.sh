@@ -110,7 +110,9 @@ printf '%s\n' "$*" >> "${GH_LOG:?}"
 [ -f "${GH_STATE:?}" ] || printf 'OPEN' > "${GH_STATE}"
 lc="$(printf '%s' "$*" | tr '[:upper:]' '[:lower:]')"
 case "${1:-} ${2:-}" in
-  "pr merge") printf 'MERGED' > "${GH_STATE}"; echo "stub: merged"; exit "${STUB_MERGE_RC:-0}" ;;
+  "pr merge")
+    [ "${STUB_READ_STDIN:-}" = "1" ] && cat > "${GH_LOG}.stdin"
+    printf 'MERGED' > "${GH_STATE}"; echo "stub: merged"; exit "${STUB_MERGE_RC:-0}" ;;
   "pr view")
     [ "${STUB_MODE:-}" = "unreadable" ] && exit 1
     case " $* " in *" --jq .url "*) printf 'https://github.com/o/r/pull/%s\n' "${3:-0}"; exit 0 ;; esac
@@ -432,10 +434,13 @@ set -uo pipefail
 # and `merge` staying at positions 0 and 1 is what keeps this a merge in the
 # shim's eyes; the stand-in carries the new flags so that an edit which moved
 # a flag ahead of the subcommand would fail here rather than silently
-# reclassify every merge as not-a-merge and permit it from anywhere.
-MERGE_ARGV=(pr merge 38 --squash --delete-branch --match-head-commit "${GATE_SHA}" --subject "stand-in subject (#38)" --body-file "${GATE_MSG}")
+# reclassify every merge as not-a-merge and permit it from anywhere. The real
+# gate pipes the body into gh's stdin (`--body-file -`), which is the `stdin`
+# mode: gh on the RIGHT of a pipe, still a direct child of the gate.
+MERGE_ARGV=(pr merge 38 --squash --delete-branch --match-head-commit "${GATE_SHA}" --subject "stand-in subject (#38)" --body-file -)
 case "${GATE_MODE:-direct}" in
   direct) gh "${MERGE_ARGV[@]}"; rc=$? ;;
+  stdin)  printf '%s' 'stand-in body' | gh "${MERGE_ARGV[@]}"; rc=${PIPESTATUS[1]} ;;
   subst)  out="$(gh "${MERGE_ARGV[@]}")"; rc=$?; printf '%s\n' "$out" ;;
   pipe)   gh "${MERGE_ARGV[@]}" | cat; rc=${PIPESTATUS[0]} ;;
   child)  "${BASH}" "${GATE_CHILD}"; rc=$? ;;
@@ -446,9 +451,7 @@ exit "$rc"
 GATE
 TRUSTED_GATE="${BUNDLE_TOOLS}/autodrive_merge_gate.sh"
 BUNDLE_PATH="${BUNDLE_TOOLS}/gh-merge-guard:${STUB}:${TOOLBIN}"
-MSG_FILE="${WORK}/merge-message-38.txt"
-printf 'stand-in body' > "${MSG_FILE}"
-MERGE_LINE="pr merge 38 --squash --delete-branch --match-head-commit ${SHA} --subject stand-in subject (#38) --body-file ${MSG_FILE}"
+MERGE_LINE="pr merge 38 --squash --delete-branch --match-head-commit ${SHA} --subject stand-in subject (#38) --body-file -"
 
 # allowed <id> <mode>: the trusted gate, run the way merge-loop step-03 runs
 # it (`<root bash> -p <physical gate path>`, G6), merges and the stub logs the
@@ -456,7 +459,7 @@ MERGE_LINE="pr merge 38 --squash --delete-branch --match-head-commit ${SHA} --su
 allowed() {
   local id="$1" mode="$2"
   reset_stub
-  RUN_ENV=("GATE_SHA=${SHA}" "GATE_MSG=${MSG_FILE}" "GATE_MODE=${mode}" ${ALLOWED_ENV[@]+"${ALLOWED_ENV[@]}"})
+  RUN_ENV=("GATE_SHA=${SHA}" "GATE_MODE=${mode}" ${ALLOWED_ENV[@]+"${ALLOWED_ENV[@]}"})
   run_in "${BUNDLE_PATH}" "${BASH_BIN}" -p "${TRUSTED_GATE}"; local rc=$?
   RUN_ENV=()
   if [ "$rc" -eq 0 ] && grep -qxF "${MERGE_LINE}" "${GH_LOG}" && ! grep -qF 'REFUSED' "${ERR}" \
@@ -470,9 +473,21 @@ ALLOWED_ENV=()
 allowed T3-gate-direct direct
 allowed T3-gate-subst subst
 allowed T3-gate-pipe pipe
+# The real gate's shape since #2056 crusty round 4: the body piped INTO gh.
+# The shim reads nothing from stdin on the `pr` path and ends in `exec`, so the
+# body reaches the real gh unchanged, and the merge is still the gate's own.
+ALLOWED_ENV=("STUB_READ_STDIN=1")
+rm -f "${GH_LOG}.stdin"
+allowed T3-gate-stdin stdin
+ALLOWED_ENV=()
+if [ "$(cat "${GH_LOG}.stdin" 2>/dev/null)" = "stand-in body" ]; then
+  pass "T3-gate-stdin-body" "the body the gate pipes in reaches the real gh through the shim, byte for byte"
+else
+  fail "T3-gate-stdin-body" "the real gh read '$(head -c 80 "${GH_LOG}.stdin" 2>/dev/null)' on stdin, want 'stand-in body'"
+fi
 # Extra trailing arguments after the gate path are the gate's own arguments.
 reset_stub
-RUN_ENV=("GATE_SHA=${SHA}" "GATE_MSG=${MSG_FILE}" "GATE_MODE=direct")
+RUN_ENV=("GATE_SHA=${SHA}" "GATE_MODE=direct")
 run_in "${BUNDLE_PATH}" "${BASH_BIN}" -p "${TRUSTED_GATE}" --pr 38 --repo /nowhere; rc=$?
 RUN_ENV=()
 if [ "$rc" -eq 0 ] && grep -qxF "${MERGE_LINE}" "${GH_LOG}"; then
@@ -503,7 +518,7 @@ forged T2-fake-gate "a different file named autodrive_merge_gate.sh is refused" 
 COPY_DIR="${WORK}/copy"; mkdir -p "${COPY_DIR}"
 cp "${TRUSTED_GATE}" "${COPY_DIR}/autodrive_merge_gate.sh"
 printf 'block() { :; }\n' > "${COPY_DIR}/autodrive_state.sh"
-RUN_ENV=("GATE_SHA=${SHA}" "GATE_MSG=${MSG_FILE}")
+RUN_ENV=("GATE_SHA=${SHA}")
 forged T2-gate-copy "a byte-identical copy of the gate elsewhere is refused" \
   "${BASH_BIN}" "${COPY_DIR}/autodrive_merge_gate.sh"
 RUN_ENV=()
@@ -520,14 +535,14 @@ forged T2-gate-as-dollar0 "bash -c with the gate path as \$0 is refused" \
   "${BASH_BIN}" -c 'gh pr merge 1; exit $?' "${TRUSTED_GATE}"
 # A program the gate runs is a grandchild of the gate: never trusted.
 CHILD="${WORK}/child.sh"; printf 'gh pr merge 38 --squash\nexit $?\n' > "${CHILD}"
-RUN_ENV=("GATE_SHA=${SHA}" "GATE_MSG=${MSG_FILE}" "GATE_MODE=child" "GATE_CHILD=${CHILD}")
+RUN_ENV=("GATE_SHA=${SHA}" "GATE_MODE=child" "GATE_CHILD=${CHILD}")
 forged T2-gate-child "a script the gate runs cannot merge (immediate parent only)" \
   "${BASH_BIN}" -p "${TRUSTED_GATE}"
 RUN_ENV=()
 # G6. The argv shape is exactly [<root bash>, -p, <physical gate>, ...].
 # The trusted gate without -p: a BASH_ENV or exported function would run
 # inside it, so its merge is refused.
-RUN_ENV=("GATE_SHA=${SHA}" "GATE_MSG=${MSG_FILE}" "GATE_MODE=direct")
+RUN_ENV=("GATE_SHA=${SHA}" "GATE_MODE=direct")
 forged T2-G6-no-p "the trusted gate run without -p is refused" \
   "${BASH_BIN}" "${TRUSTED_GATE}"
 # -p in another position, or as part of a combined flag word, is not the shape.
@@ -888,7 +903,7 @@ fi
 # reopen the bypass.
 gate_env_refused() { # gate_env_refused <id> <why> <NAME=VALUE...>
   local id="$1" why="$2"; shift 2
-  RUN_ENV=("GATE_SHA=${SHA}" "GATE_MSG=${MSG_FILE}" "GATE_MODE=direct" "$@")
+  RUN_ENV=("GATE_SHA=${SHA}" "GATE_MODE=direct" "$@")
   forged "$id" "$why" "${BASH_BIN}" -p "${TRUSTED_GATE}"
   RUN_ENV=()
 }
@@ -924,7 +939,7 @@ fi
 # that merges with --admin, then the gate run without -p. Refused, PR OPEN,
 # and no merge (with or without --admin) reached the real gh.
 reset_stub
-RUN_ENV=("GATE_SHA=${SHA}" "GATE_MSG=${MSG_FILE}" "GATE_MODE=direct" "BASH_FUNC_gh%%=${ADMIN_GH}")
+RUN_ENV=("GATE_SHA=${SHA}" "GATE_MODE=direct" "BASH_FUNC_gh%%=${ADMIN_GH}")
 run_in "${BUNDLE_PATH}" "${BASH_BIN}" "${TRUSTED_GATE}"; rc=$?
 RUN_ENV=()
 if [ "$rc" -ne 0 ] && ! grep -q 'merge' "${GH_LOG}" && [ "$(pr_state)" = "OPEN" ]; then
@@ -936,7 +951,7 @@ fi
 # without -p.
 printf 'gh() { command gh pr merge 38 --admin --squash; }\n' > "${WORK}/bash_env_gh.sh"
 reset_stub
-RUN_ENV=("GATE_SHA=${SHA}" "GATE_MSG=${MSG_FILE}" "GATE_MODE=direct" "BASH_ENV=${WORK}/bash_env_gh.sh")
+RUN_ENV=("GATE_SHA=${SHA}" "GATE_MODE=direct" "BASH_ENV=${WORK}/bash_env_gh.sh")
 run_in "${BUNDLE_PATH}" "${BASH_BIN}" "${TRUSTED_GATE}"; rc=$?
 RUN_ENV=()
 if [ "$rc" -ne 0 ] && ! grep -q 'merge' "${GH_LOG}" && [ "$(pr_state)" = "OPEN" ]; then
@@ -960,7 +975,7 @@ ALLOWED_ENV=()
 # own launch, which clears them before the gate starts. The same session
 # launching the gate bare is refused, so the clearing is what makes it pass.
 LAUNCH="$(printf '%s\n' "${STEP03}" | awk '/^[[:space:]]*\( unset -f /{f=1} f{print} f&&/"\$\{ARGS\[@\]\}" \)[[:space:]]*$/{exit}')"
-LEGIT_ENV=("GATE_SHA=${SHA}" "GATE_MSG=${MSG_FILE}" "GATE_MODE=direct" "GATE_PHYS=${TRUSTED_GATE}"
+LEGIT_ENV=("GATE_SHA=${SHA}" "GATE_MODE=direct" "GATE_PHYS=${TRUSTED_GATE}"
            "BASH_FUNC_which%%=() { command which \"\$@\"; }" "BASH_FUNC_module%%=() { :; }"
            "SHELLOPTS=braceexpand:hashall:interactive-comments:pipefail"
            "LD_LIBRARY_PATH=${WORK}/no-such-cuda/lib64")
