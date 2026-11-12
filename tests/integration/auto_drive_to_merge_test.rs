@@ -5439,8 +5439,8 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
     // An argv and stdin case (#2056): a head commit authored by
     // `Fixture <fixture.invalid>` gets the same composed message as one authored
     // by `t`, with no Co-authored-by line in it. The stub `gh` composes nothing,
-    // so this cannot show whether GitHub adds such a line to a supplied body;
-    // that premise is unverified and #2263 checks it on the landed commit.
+    // so this cannot show whether GitHub adds such a line to a supplied body.
+    // That premise has not been probed; #2263 checks it on the landed commit.
     // Required by name, so the case cannot disappear from the suite unnoticed.
     assert!(
         stdout.contains("PASS[MSG-fixture-author-no-coauthor]"),
