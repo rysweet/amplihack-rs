@@ -237,6 +237,25 @@ All [13 authoritative criteria and established interpretations](auto-drive-evide
 apply. Evidence accepted for the correct PR and head establishes readiness.
 A criterion-name checklist or a model's assertion cannot do so.
 
+### Expected checks at the head
+
+**CI green means every expected check exists at the head SHA and passed**
+(#2186): the base branch's required checks and every job of the workflows
+that run on `pull_request` for that base. A rollup lists only the checks
+that exist, so for a green rollup the CI evidence step runs the trusted
+read-only `/bin/bash -p "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_expected_checks.sh" <head-sha> <base-branch>`
+from the launch bundle, never from the pull request's worktree. `MISSING`,
+`PENDING`, `RED` and `UNREADABLE` all block; a job that was never created is
+not a pass. See [Expected checks at the head](autodrive-expected-checks.md).
+
+### Limits of the expected set
+
+The helper counts defined jobs, not matrix legs; it cannot see a workflow
+with path, `types:` or uncompilable branch filters that never started; it
+matches jobs by name; and it does not pin check apps. A ruleset of required
+checks on the base branch covers each gap. Details:
+[Limits of the expected set](autodrive-expected-checks.md#limits-of-the-expected-set).
+
 ### No silent merge
 
 Finalization refreshes the head, base, checks, approvals, policy, conflicts,
@@ -480,3 +499,4 @@ runtime compatibility.
 - [Framework source selection](framework-source-selection.md)
 - [Crusty completion contract](autodrive-crusty-completion.md)
 - [Git repository environment helper](git-repo-env-helper.md)
+- [Expected checks at the head](autodrive-expected-checks.md)

@@ -138,6 +138,11 @@ Steps that run git, gh or the repository's tests first clear inherited
 The budget is a cost ceiling. Crusty completion precedes convergence
 evaluation; the merge-ready loop retains its evaluator policy.
 
+CI is green only when every expected check exists at the head SHA and passed
+(#2186): for a green rollup, run the trusted read-only
+`autodrive_expected_checks.sh` from the launch bundle. `MISSING`, `PENDING`,
+`RED` and `UNREADABLE` block; a job that was never created is not a pass.
+
 ## Related documentation
 
 - [Workflow options and budgets](/docs/reference/auto-drive-to-merge.md)
@@ -146,3 +151,4 @@ evaluation; the merge-ready loop retains its evaluator policy.
 - [Light workflow](/docs/reference/auto-drive-light.md)
 - [Crusty completion contract](/docs/reference/autodrive-crusty-completion.md)
 - [Git repository environment helper](/docs/reference/git-repo-env-helper.md)
+- [Expected checks at the head](/docs/reference/autodrive-expected-checks.md)
