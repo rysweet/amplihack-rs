@@ -207,6 +207,69 @@ mod fr156 {
     }
 
     #[test]
+    fn real_shaped_codex_fixtures_without_cache_write_report_numeric_context() {
+        // codex-start.jsonl / codex-resume.jsonl carry the Codex CLI
+        // `token_count` shape, which has no `cache_write_input_tokens`.
+        let r = collect(
+            &manifest(json!([session(
+                "codex-session",
+                "codex",
+                json!([
+                    "codex-resume.jsonl",
+                    "codex-start.jsonl",
+                    "codex-start.jsonl"
+                ])
+            )])),
+            &fixture_dir(),
+        )
+        .unwrap();
+        assert!(has(&r, "cache_write_counter_unreported"));
+        let v = public(&r);
+        let c = context(&v, 0);
+        assert_eq!(c["input_tokens"], 180);
+        assert_eq!(c["observed_attempts"], 2);
+        assert_eq!(c["tokens_per_observed_attempt"], 90.0);
+        assert_eq!(c["unknown_reasons"], json!([]));
+    }
+
+    #[test]
+    fn codex_cache_write_is_optional_but_required_fields_and_present_values_are_checked() {
+        let mut absent = codex_usage(120, 20, 0);
+        absent
+            .as_object_mut()
+            .unwrap()
+            .remove("cache_write_input_tokens");
+        let c = public(&report("codex", &[native_usage("codex", "s", "a", absent)]));
+        let ctx = context(&c, 0);
+        assert_eq!(ctx["tokens_per_observed_attempt"], 120.0);
+        assert_eq!(ctx["unknown_reasons"], json!([]));
+
+        for field in ["input_tokens", "cached_input_tokens"] {
+            let mut u = codex_usage(120, 20, 0);
+            u.as_object_mut().unwrap().remove(field);
+            u.as_object_mut()
+                .unwrap()
+                .remove("cache_write_input_tokens");
+            let r = public(&report("codex", &[native_usage("codex", "s", "a", u)]));
+            unknown(context(&r, 0), "missing_input_fields");
+        }
+
+        let mut invalid = codex_usage(120, 20, 0);
+        invalid["cache_write_input_tokens"] = json!("10");
+        let r = public(&report(
+            "codex",
+            &[native_usage("codex", "s", "a", invalid)],
+        ));
+        unknown(context(&r, 0), "invalid_input_fields");
+
+        let r = public(&report(
+            "codex",
+            &[native_usage("codex", "s", "a", codex_usage(100, 60, 50))],
+        ));
+        unknown(context(&r, 0), "overlapping_input_subsets");
+    }
+
+    #[test]
     fn impossible_codex_cache_subsets_keep_context_unknown() {
         let r = report(
             "codex",
@@ -462,6 +525,61 @@ mod fr156 {
         assert_eq!(c["observed_attempts"], 1);
         assert_eq!(c["tokens_per_observed_attempt"], 120.0);
         assert_eq!(c["attempt_basis"], "cumulative_only_transitions");
+    }
+
+    #[test]
+    fn context_lines_have_their_own_heading_with_one_line_per_session() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            dir.path(),
+            "a",
+            &[native_usage("claude", "s", "a", usage(json!(100)))],
+        );
+        write(
+            dir.path(),
+            "b",
+            &[native_usage("claude", "review", "b", usage(json!(50)))],
+        );
+        let r = collect(
+            &manifest(json!([
+                session("s", "claude", json!(["a"])),
+                session("review", "claude", json!(["b"]))
+            ])),
+            dir.path(),
+        )
+        .unwrap();
+        let rendered = summary(&r);
+        let section = |heading: &str| -> Vec<String> {
+            let start = rendered
+                .find(heading)
+                .unwrap_or_else(|| panic!("{heading}"));
+            rendered[start + heading.len()..]
+                .lines()
+                .skip_while(|l| l.trim().is_empty())
+                .take_while(|l| l.starts_with("- "))
+                .map(str::to_owned)
+                .collect()
+        };
+        let context = section("Session context per request:");
+        let totals = section("Session direct / inclusive token totals (inclusive rows overlap):");
+        for lines in [&context, &totals] {
+            assert_eq!(lines.len(), 2, "{rendered}");
+            assert_eq!(lines.iter().filter(|l| l.starts_with("- `s`")).count(), 1);
+            assert_eq!(
+                lines.iter().filter(|l| l.starts_with("- `review`")).count(),
+                1
+            );
+        }
+        assert!(
+            context
+                .iter()
+                .all(|l| l.contains("tokens per observed attempt"))
+        );
+        assert!(
+            totals
+                .iter()
+                .all(|l| !l.contains("tokens per observed attempt"))
+        );
     }
 
     #[test]

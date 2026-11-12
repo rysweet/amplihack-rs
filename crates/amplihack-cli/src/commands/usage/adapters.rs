@@ -252,10 +252,22 @@ fn input_evidence(provider: &Provider, u: &Value) -> InputEvidence {
             "cache_write_input_tokens",
         ]
     };
-    for field in fields {
+    // Codex CLI `token_count` records do not emit `cache_write_input_tokens`
+    // (see `codex_tokens`, which reports `cache_write_counter_unreported`), and
+    // the Codex numerator is `input_tokens` alone. The cache-write field is
+    // therefore optional for Codex: absent means zero, present must be valid
+    // and still takes part in the subset check below.
+    let optional_from = if *provider == Provider::Codex {
+        2
+    } else {
+        fields.len()
+    };
+    for (i, field) in fields.iter().enumerate() {
         let value = &u[*field];
         if value.is_null() {
-            evidence.reasons.insert("missing_input_fields");
+            if i < optional_from {
+                evidence.reasons.insert("missing_input_fields");
+            }
         } else if value.as_u64().is_none() {
             evidence.reasons.insert("invalid_input_fields");
         }
@@ -270,7 +282,11 @@ fn input_evidence(provider: &Provider, u: &Value) -> InputEvidence {
     if evidence.reasons.is_empty() {
         let input = u[fields[0]].as_u64().unwrap();
         let read = u[fields[1]].as_u64().unwrap();
-        let write = u[fields[2]].as_u64().unwrap();
+        let write = if u[fields[2]].is_null() {
+            0
+        } else {
+            u[fields[2]].as_u64().unwrap()
+        };
         if *provider == Provider::Codex {
             match read.checked_add(write) {
                 None => {

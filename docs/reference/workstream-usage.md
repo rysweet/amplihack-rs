@@ -79,8 +79,7 @@ prove that a log is exhaustive. Report completeness means complete **for those
 declared inputs**, not that every provider request or billed attempt was logged.
 Missing logs, unrecorded failed requests and future adapter schemas cannot be
 reconstructed. Keep `complete: false` while late reviews or retries are expected.
-`completed: true` means the existing engineering completion checks succeeded.
-It permits publication on an eligible open PR and does not assert GitHub merge
+`completed` authorizes publication of the finished workstream; it does not change
 or certify accounting completeness.
 
 ## Counting contract
@@ -173,7 +172,11 @@ invalidate the ratio while known token lower bounds remain in the usage fields.
 Unknown reasons are sorted and unique:
 
 - `zero_observed_attempts`: known denominator is zero.
-- `missing_input_fields`: a required input bucket is absent.
+- `missing_input_fields`: a required input bucket is absent. Claude requires
+  `input_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens`.
+  Codex requires `input_tokens` and `cached_input_tokens`; Codex CLI
+  `token_count` records omit `cache_write_input_tokens`, so an absent value
+  counts as zero, and a present value is validated and joins the subset check.
 - `invalid_input_fields`: an input bucket is not an unsigned integer.
 - `overlapping_input_subsets`: cache subsets cannot be disjoint within input.
 - `unknown_attempts_for_input`: retained input has no corresponding known attempts.
@@ -194,8 +197,10 @@ Provider labels are validated, preserving spelling for unsupported providers.
 Only exact `claude` and `codex` select adapters. An unsupported provider retains
 its session, unknown usage and context, and incomplete coverage. The manifest,
 report and publication marker remain version 1; no manifest fields were added.
-The canonical Markdown renderer used by both report and publish includes every
-session's operands, count, estimate or specific unknown reasons. It retains
+The canonical Markdown renderer used by both report and publish lists every
+session's operands, count, estimate or specific unknown reasons under its own
+"Session context per request" heading, separate from the direct / inclusive
+token totals, so each heading carries one line per session. It retains
 coverage, unattributed usage and non-additive evidence.
 
 ## Explicit completion publication
