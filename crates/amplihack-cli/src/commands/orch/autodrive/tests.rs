@@ -1441,3 +1441,78 @@ fn resumed_run_cannot_replay_prior_finalization_or_receipt() {
         "replay rejection must keep its cause: {report}"
     );
 }
+
+// #2329 merged with #2345: main's Crusty objective-completion path ends the
+// Crusty phase with `loop_result=DONE`, `source=objective-completion` and no
+// evaluator call. That result is not a `LoopCompletion` and must neither
+// block nor replace the merge-ready requirement: readiness still needs the
+// fresh `MERGE_READY` + `DONE` receipt of the merge-ready loop.
+
+const CRUSTY_OBJECTIVE_COMPLETION: &str =
+    r#"{"loop_result":"DONE","source":"objective-completion","evaluator_invoked":false}"#;
+
+fn crusty_evaluator_records(directory: &std::path::Path) -> Vec<String> {
+    std::fs::read_dir(directory)
+        .unwrap()
+        .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+        .filter(|name| name.contains("crusty") && name.contains("evaluat"))
+        .collect()
+}
+
+#[test]
+fn crusty_objective_completion_reaches_merge_ready_reduction() {
+    for no_merge in ["true", "false"] {
+        let mut fixture = ReportingFixture::with_action(no_merge);
+        fixture.context["crusty_loop_result"] = json!(CRUSTY_OBJECTIVE_COMPLETION);
+        fixture.seal_reduction();
+        assert!(
+            crusty_evaluator_records(&fixture.directory).is_empty(),
+            "fixture must not contain a Crusty evaluator record"
+        );
+        let report = fixture.report();
+        assert_eq!(report["readiness"], "merge_ready", "{no_merge}: {report}");
+        assert_eq!(report["stop_reason"], "completed", "{no_merge}: {report}");
+        assert_eq!(
+            report["action"],
+            if no_merge == "true" {
+                "not_requested"
+            } else {
+                "merged"
+            },
+            "{no_merge}: {report}"
+        );
+    }
+}
+
+#[test]
+fn crusty_objective_completion_without_merge_ready_receipt_stays_incomplete() {
+    for no_merge in ["true", "false"] {
+        let mut fixture = ReportingFixture::with_action(no_merge);
+        fixture.context["crusty_loop_result"] = json!(CRUSTY_OBJECTIVE_COMPLETION);
+        // The merge-ready loop never completed: no fresh receipt exists, and
+        // the reducer cannot have succeeded, so the recipe default is empty.
+        let receipt = fixture
+            .directory
+            .join(format!("loop-{}-merge-ready.json", fixture.auth.run_id()));
+        std::fs::remove_file(&receipt).unwrap();
+        fixture.context["autodrive_finalization"] = json!("");
+        // The reducer refuses without the receipt and names what is missing.
+        let error = fixture
+            .reduce()
+            .expect_err("reduced without a merge-ready receipt");
+        assert!(
+            format!("{error:#}").contains("fresh loop completion receipt required"),
+            "{no_merge}: {error:#}"
+        );
+        let report = fixture.report();
+        assert_eq!(report["readiness"], "incomplete", "{no_merge}: {report}");
+        assert_eq!(report["action"], "not_requested", "{no_merge}: {report}");
+        assert_ne!(report["stop_reason"], "completed", "{no_merge}: {report}");
+        // A completed Crusty phase is not a stop cause of its own: it must
+        // not be mapped to no_progress, usage_limit or another loop failure.
+        assert_eq!(
+            report["stop_reason"], "dependency_failure",
+            "{no_merge}: {report}"
+        );
+    }
+}

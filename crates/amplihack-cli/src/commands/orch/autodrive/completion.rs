@@ -81,8 +81,11 @@ pub fn verify(
     current: &CandidateRecord,
 ) -> Result<()> {
     let store = EvidenceStore::create(directory)?;
-    let receipt: Receipt = serde_json::from_slice(&store.read_private(&name(auth))?)
+    let receipt_bytes = store
+        .read_private(&name(auth))
         .context("fresh loop completion receipt required")?;
+    let receipt: Receipt =
+        serde_json::from_slice(&receipt_bytes).context("fresh loop completion receipt required")?;
     ensure!(
         receipt.schema_version == 1 && receipt.run_id == auth.run_id(),
         "completion belongs to another invocation"
