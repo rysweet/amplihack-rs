@@ -48,7 +48,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 24] = [
+const AUTODRIVE_TOOLS: [&str; 30] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
@@ -58,11 +58,16 @@ const AUTODRIVE_TOOLS: [&str; 24] = [
     "autodrive_followups_check.sh",
     "autodrive_last_round.sh",
     "autodrive_loop.sh",
+    "autodrive_loop_record.sh",
+    "autodrive_crusty_record.sh",
+    "autodrive_crusty_finalize.sh",
+    "autodrive_completion_context.sh",
     "autodrive_merge_gate.sh",
     "autodrive_merge_ready_files.sh",
     "autodrive_platform_facts.sh",
     "autodrive_pr_head.sh",
     "autodrive_progress.sh",
+    "autodrive_qa_docs.sh",
     "autodrive_qa_evidence.sh",
     "autodrive_qa_scope.sh",
     "autodrive_qa_sources.sh",
@@ -73,6 +78,7 @@ const AUTODRIVE_TOOLS: [&str; 24] = [
     "autodrive_trust.sh",
     "autodrive_unmerged.sh",
     "autodrive_worktree_guard.sh",
+    "git-repo-env.sh",
 ];
 
 fn workspace_root() -> PathBuf {
@@ -223,7 +229,7 @@ fn composer_delegates_to_the_three_phases_in_order() {
 // ── The loop terminator ──────────────────────────────────────────────────────
 
 #[test]
-fn both_loops_terminate_on_the_loop_health_evaluator_contract() {
+fn unresolved_loops_use_the_shared_loop_health_evaluator_contract() {
     let driver = read(&tool_path("autodrive_loop.sh"));
     // Resolved to an absolute path in the launch-side bundle (by
     // autodrive_worktree_guard.sh loop-preflight), never by name under
@@ -522,7 +528,10 @@ fn verdict_gates_use_the_canonical_orch_helper_pipeline() {
 
 #[test]
 fn advancing_a_phase_requires_both_the_round_verdict_and_the_loop_verdict() {
-    let driver = read(&tool_path("autodrive_loop.sh"));
+    let driver = read(&tool_path("autodrive_loop.sh")).replace(
+        ". \"${LOOP_HOME}/autodrive_loop_record.sh\" || exit 1",
+        &read(&tool_path("autodrive_loop_record.sh")),
+    );
     assert!(
         driver.contains("ROUND_CLEAN=\"true\""),
         "the driver must track whether the round's own verdict was the clean token"
@@ -1744,10 +1753,11 @@ const STATE_DIR_SENTENCE: &str = "Do not create, edit, move, rename, delete or a
 /// Words the state directory must never be named by in an agent prompt.
 const STATE_DIR_LEAKS: [&str; 3] = ["STATE_DIR", "autodrive_state_dir", "AUTODRIVE_STATE_DIR"];
 
-/// The five agent steps of the auto-drive workflow, by recipe.
-const AUTODRIVE_AGENT_STEPS: [(&str, &str); 5] = [
+/// The six agent steps of the auto-drive workflow, by recipe.
+const AUTODRIVE_AGENT_STEPS: [(&str, &str); 6] = [
     ("autodrive-crusty-round", "step-02-crusty-review"),
     ("autodrive-crusty-round", "step-04-address-concerns"),
+    ("autodrive-crusty-round", "step-07-select-next-action"),
     ("autodrive-merge-round", "step-02-merge-ready-assessment"),
     ("autodrive-merge-round", "step-04-address-blockers"),
     ("loop-health-evaluator", "step-02-evaluate-loop-health"),
@@ -2142,10 +2152,19 @@ fn qa_evidence_step_runs_the_qa_evidence_tool() {
         "REPO_PATH=\"$PWD\" bash \"$T\"",
     ]
     .iter()
-    .chain(TOOL_SEARCH_NEEDLES.iter())
-    {
+    .chain(
+        TOOL_SEARCH_NEEDLES
+            .iter()
+            .filter(|n| **n != "git rev-parse --show-toplevel"),
+    ) {
         assert!(cmd.contains(needle), "step-02 must reference `{needle}`");
     }
+    // #2033: the tool is never found through git, which an inherited
+    // GIT_WORK_TREE could point at a planted worktree.
+    assert!(
+        !cmd.contains("git rev-parse --show-toplevel"),
+        "step-02 must not search the git toplevel for the qa evidence tool (#2033)"
+    );
     let sourced = regex::Regex::new(r#"(^|[;&|\s])(\.|source)\s+"?\$\{?T\b"#).unwrap();
     assert!(
         !sourced.is_match(cmd) && !cmd.contains("eval "),
@@ -2298,7 +2317,11 @@ fn crusty_round_records_the_reviewed_head_sha_every_round() {
         ctx.contains("git rev-parse HEAD"),
         "step-01 must read the reviewed head with git, in bash"
     );
-    let cmd = field(step(&recipe, "step-06-write-round-record"), "command");
+    assert!(
+        field(step(&recipe, "step-06-write-round-record"), "command")
+            .contains("autodrive_crusty_record.sh")
+    );
+    let cmd = read(&tool_path("autodrive_crusty_record.sh"));
     // #1561: step outputs are read only as RECIPE_VAR_<key>.
     for needle in [
         "RECIPE_VAR_crusty_round_context",
@@ -2321,7 +2344,10 @@ fn crusty_round_records_the_reviewed_head_sha_every_round() {
 #[test]
 fn crusty_records_are_trusted_only_through_the_loop_manifest() {
     // Point 4 of #1517: the assessment trusts only records the loop wrote.
-    let driver = read(&tool_path("autodrive_loop.sh"));
+    let driver = read(&tool_path("autodrive_loop.sh")).replace(
+        ". \"${LOOP_HOME}/autodrive_loop_record.sh\" || exit 1",
+        &read(&tool_path("autodrive_loop_record.sh")),
+    );
     for needle in [
         "-records.tsv",
         "hash-object --no-filters --stdin",
@@ -3097,6 +3123,14 @@ const ROUND_SUBCOMMANDS: [(&str, &str); 8] = [
     ("round-record", "round_record"),
 ];
 
+/// Functions in autodrive_round_evidence.sh that no subcommand dispatches to
+/// but that subcommand bodies call (#2219): measured_downgrade and
+/// measured_held_by read every measurement through `_measured_read`, and the
+/// criterion 6 stop line reads its facts through `_approval_detail`. Without
+/// following them, the reads those bodies make would be invisible to the
+/// step checks below.
+const ROUND_PRIVATE_HELPERS: [&str; 3] = ["_measured_read", "_approval_detail", "measured_held_by"];
+
 /// The bash a merge-round step runs: its own command and, for each
 /// `bash "$T" <subcommand>` of autodrive_round_evidence.sh it calls, the body
 /// of the function that subcommand dispatches to, and of every subcommand
@@ -3139,12 +3173,20 @@ fn round_step_bash(recipe: &Value, id: &str) -> String {
         }
         seen.push(func);
         let body = body_of(func);
-        for (_, callee) in ROUND_SUBCOMMANDS {
+        let callees = ROUND_SUBCOMMANDS
+            .iter()
+            .map(|(_, f)| *f)
+            .chain(ROUND_PRIVATE_HELPERS);
+        for callee in callees {
             let called = body
                 .lines()
                 .skip(1)
                 .filter(|l| !l.trim_start().starts_with('#'))
-                .any(|l| l.contains(&format!("{callee} ")) || l.contains(&format!("{callee})")));
+                .any(|l| {
+                    l.trim() == callee
+                        || l.contains(&format!("{callee} "))
+                        || l.contains(&format!("{callee})"))
+                });
             if called && !seen.contains(&callee) {
                 pending.push(callee);
             }
@@ -3180,24 +3222,35 @@ fn merge_round_finds_its_tools_once() {
         Some("autodrive_tools_dir")
     );
     let cmd = field(s, "command");
-    for needle in TOOL_SEARCH_NEEDLES.iter().chain(
-        [
-            "autodrive_merge_ready_files.sh",
-            "autodrive_platform_facts.sh",
-            "autodrive_round_evidence.sh",
-            "autodrive_state.sh",
-            "autodrive_trust.sh",
-            "git-identity.sh",
-            "ERROR: autodrive-tools-not-found",
-            "pwd -P",
-        ]
-        .iter(),
-    ) {
+    // #2033: the git toplevel is not searched; an inherited GIT_WORK_TREE
+    // could point it at a planted tree that supplies git-repo-env.sh.
+    for needle in TOOL_SEARCH_NEEDLES
+        .iter()
+        .filter(|n| **n != "git rev-parse --show-toplevel")
+        .chain(
+            [
+                "autodrive_merge_ready_files.sh",
+                "autodrive_platform_facts.sh",
+                "autodrive_round_evidence.sh",
+                "autodrive_state.sh",
+                "autodrive_trust.sh",
+                "git-identity.sh",
+                "git-repo-env.sh",
+                "ERROR: autodrive-tools-not-found",
+                "pwd -P",
+            ]
+            .iter(),
+        )
+    {
         assert!(
             cmd.contains(needle),
             "step-00-tools-dir must reference `{needle}`"
         );
     }
+    assert!(
+        !cmd.contains("git rev-parse --show-toplevel"),
+        "step-00 must not search the git toplevel for tools (#2033)"
+    );
     let text = recipe_text("autodrive-merge-round");
     assert_eq!(
         text.matches("for c in \"${AMPLIHACK_HOME:-}\"").count(),
@@ -3299,7 +3352,7 @@ fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
         // Its judging agents start in the checked review dir, not the PR worktree (#1528).
         "--review-dir \"$REVIEW_DIR\"",
         "--state-dir \"$DIR\"",
-        "autodrive_record_crusty_loop_done \"$DIR\"",
+        "bash \"$HERE/autodrive_crusty_finalize.sh\"",
         "crusty-rereview-not-needed",
         "crusty-rereview-done",
         "crusty-rereview-not-done",
@@ -3318,7 +3371,7 @@ fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
     let crusty_loop = recipe_yaml("autodrive-crusty-loop");
     assert!(
         step_command(&crusty_loop, "step-03-record-crusty-phase")
-            .contains("autodrive_record_crusty_loop_done \"$DIR\""),
+            .contains("bash \"$H/autodrive_crusty_finalize.sh\""),
         "phase 2 and the re-review must record a DONE crusty loop through one function"
     );
     assert!(
@@ -3536,7 +3589,7 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
     let log = tmp.path().join("runner.log");
     fs::write(
         &runner,
-        "#!/bin/sh\nprintf 'depth=%s\\n' \"${AMPLIHACK_SESSION_DEPTH:-}\" >> \"$RUNNER_LOG\"\nprintf '{}\\n'\n",
+        "#!/bin/sh\nif [ \"$1\" = --capabilities ]; then printf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]}'; exit 0; fi\nprintf 'depth=%s\\n' \"${AMPLIHACK_SESSION_DEPTH:-}\" >> \"$RUNNER_LOG\"\nprintf '{}\\n'\n",
     )
     .expect("write the runner stub");
     #[cfg(unix)]
@@ -3893,13 +3946,23 @@ fn autodrive_trust_is_a_side_effect_free_library() {
             "autodrive_trust.sh must use `{needle}`"
         );
     }
+    // autodrive_trust_git unsets every name of AUTODRIVE_TRUST_GIT_UNSET_VARS
+    // with `env -u` (#2033); tests/issue_1278_git_env_isolation.sh checks that
+    // list against git-repo-env.sh and runs git under it.
+    let unset_list = regex::Regex::new(r#"(?m)^AUTODRIVE_TRUST_GIT_UNSET_VARS="([A-Z_ ]+)"$"#)
+        .unwrap()
+        .captures(&trust)
+        .map(|c| c[1].to_string())
+        .unwrap_or_default();
+    assert!(
+        trust.contains(
+            r#"for v in $AUTODRIVE_TRUST_GIT_UNSET_VARS; do unset_args+=(-u "$v"); done"#
+        ) && trust.contains(r#"env "${unset_args[@]}""#),
+        "autodrive_trust_git must pass every AUTODRIVE_TRUST_GIT_UNSET_VARS name to `env -u`"
+    );
     for var in ["GIT_DIR", "GIT_WORK_TREE"] {
         assert!(
-            trust.contains(&format!("-u {var}"))
-                || trust.contains(&format!("unset {var}"))
-                || regex::Regex::new(&format!(r"unset [A-Z_ ]*\b{var}\b"))
-                    .unwrap()
-                    .is_match(&trust),
+            unset_list.split(' ').any(|v| v == var),
             "autodrive_trust.sh must run git with `{var}` unset"
         );
     }
@@ -5608,4 +5671,183 @@ fn autodrive_round_with_inherited_stale_tools_dir_uses_its_own() {
         "a round whose own tools dir has no round tool used the inherited \
          AUTODRIVE_TOOLS_DIR and kept its verdict (#1607):\n{stdout}\n{stderr}"
     );
+}
+
+// ── Issue #2033: repository commands run with the git and run-identity env cleared ──
+
+const GIT_REPO_ENV_LOAD: &str = ". \"{{autodrive_tools_dir}}/git-repo-env.sh\" && amplihack_clear_git_repo_env && amplihack_clear_run_identity_env";
+
+#[test]
+fn issue_2033_step_04_loads_the_helper_instead_of_a_partial_unset() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let prompt = field(step(&recipe, "step-04-address-blockers"), "prompt");
+    assert!(
+        !prompt.contains("unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE"),
+        "step-04 must not keep the partial GIT_* unset (#2033)"
+    );
+    // The test-running instruction also loads this helper. Check the commit
+    // block independently so prose order cannot select that other call.
+    let commit_block = prompt
+        .split("```bash\n")
+        .skip(1)
+        .filter_map(|section| section.split_once("```").map(|(block, _)| block))
+        .find(|block| {
+            block
+                .lines()
+                .any(|line| line.trim_start().starts_with("git commit "))
+        })
+        .expect("step-04 must contain a fenced bash commit block");
+    let cd = commit_block
+        .lines()
+        .position(|l| l.contains("cd \"{{repo_path}}\""))
+        .expect("step-04 enters the PR worktree");
+    let (load, line) = commit_block
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains("git-repo-env.sh") && l.contains("amplihack_clear_git_repo_env"))
+        .unwrap_or_else(|| panic!("step-04 must source git-repo-env.sh and clear (#2033)"));
+    assert!(
+        line.contains("unset GH_REPO"),
+        "step-04 must keep `unset GH_REPO` on the helper line:\n  {line}"
+    );
+    assert!(
+        line.contains(GIT_REPO_ENV_LOAD),
+        "step-04 must load the helper from the checked tools dir and clear both lists:\n  {line}"
+    );
+    assert!(
+        line.contains("STOP: cannot load git-repo-env.sh from the tools directory (#2033)")
+            && line.contains("exit 1"),
+        "step-04 must stop when the helper cannot be loaded:\n  {line}"
+    );
+    let guard = commit_block
+        .lines()
+        .position(|l| l.contains("autodrive_worktree_guard.sh"))
+        .expect("step-04 checks the PR worktree before committing");
+    assert!(
+        cd < load && load < guard,
+        "step-04 must clear after cd and before the worktree guard (#2033)"
+    );
+    let first_git = commit_block
+        .lines()
+        .enumerate()
+        .find(|(_, l)| {
+            l.trim_start().starts_with("git ") || l.contains("autodrive_worktree_guard.sh")
+        })
+        .map(|(n, _)| n)
+        .expect("step-04 runs git after entering the worktree");
+    assert!(
+        load < first_git,
+        "step-04 must clear before its first git command (#2033)"
+    );
+}
+
+#[test]
+fn issue_2033_step_04_test_runs_load_the_helper_in_the_same_shell_call() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let prompt = field(step(&recipe, "step-04-address-blockers"), "prompt");
+    let instruction = prompt
+        .lines()
+        .find(|line| line.contains("**Running tests or hooks**"))
+        .expect("step-04 must instruct the agent how to isolate test and hook runs (#2033)");
+    assert!(
+        instruction.contains("every shell call") && instruction.contains("in that same call"),
+        "step-04 must clear the inherited environment in each shell call that runs tests or hooks:\n  {instruction}"
+    );
+    assert!(
+        instruction.contains(GIT_REPO_ENV_LOAD),
+        "test and hook runs must load the checked helper and clear both lists:\n  {instruction}"
+    );
+    assert!(
+        instruction.contains("[ ! -L \"{{autodrive_tools_dir}}/git-repo-env.sh\" ] &&")
+            && instruction
+                .contains("|| { echo \"STOP: cannot load git-repo-env.sh (#2033)\" >&2; exit 1; }"),
+        "test and hook runs must stop if the helper is a symlink or cannot be loaded:\n  {instruction}"
+    );
+}
+
+#[test]
+fn issue_2033_step_00_tools_dir_requires_the_helper() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let cmd = field(step(&recipe, "step-00-tools-dir"), "command");
+    let need: String = cmd
+        .lines()
+        .filter(|l| l.trim_start().starts_with("NEED="))
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        need.split(|c: char| c.is_whitespace() || c == '"')
+            .any(|w| w == "git-repo-env.sh"),
+        "step-00-tools-dir NEED must list git-repo-env.sh so a tools dir without it is refused (#2033):\n{need}"
+    );
+}
+
+#[test]
+fn issue_2033_merge_evidence_steps_clear_before_any_git_command() {
+    let recipe = recipe_yaml("autodrive-merge-evidence");
+    // One lookup per round: the evidence steps load git-repo-env.sh from the
+    // tools directory merge-round's step-00 found, not from a search of their own.
+    let round = recipe_yaml("autodrive-merge-round");
+    let passed = step(&round, "merge-evidence")
+        .get("context")
+        .and_then(|c| c.get("autodrive_tools_dir"))
+        .and_then(Value::as_str);
+    assert_eq!(
+        passed,
+        Some("{{autodrive_tools_dir}}"),
+        "merge-round must pass autodrive_tools_dir to autodrive-merge-evidence (#2033)"
+    );
+    assert!(
+        recipe
+            .get("context")
+            .and_then(|c| c.get("autodrive_tools_dir"))
+            .is_some(),
+        "autodrive-merge-evidence must declare autodrive_tools_dir in its context"
+    );
+    for id in ["step-01-sync-with-base", "step-02-qa-team-scenarios"] {
+        let cmd = field(step(&recipe, id), "command");
+        assert!(
+            cmd.contains("STOP: cannot load git-repo-env.sh from the tools directory (#2033)"),
+            "{id} must stop with the #2033 message when the helper is missing"
+        );
+        assert!(
+            cmd.contains("${RECIPE_VAR_autodrive_tools_dir:-"),
+            "{id} must load git-repo-env.sh from the round's tools directory"
+        );
+        let lines: Vec<&str> = cmd.lines().collect();
+        let first = |pred: &dyn Fn(&str) -> bool| lines.iter().position(|l| pred(l));
+        let git_clear = first(&|l: &str| {
+            l.contains("amplihack_clear_git_repo_env") && !l.trim_start().starts_with('#')
+        })
+        .unwrap_or_else(|| panic!("{id} must call amplihack_clear_git_repo_env"));
+        let run_clear = first(&|l: &str| {
+            l.contains("amplihack_clear_run_identity_env") && !l.trim_start().starts_with('#')
+        })
+        .unwrap_or_else(|| panic!("{id} must call amplihack_clear_run_identity_env"));
+        let first_git = first(&|l: &str| {
+            let t = l.trim_start();
+            !t.starts_with('#')
+                && (t.starts_with("git ")
+                    || t.contains(" git ")
+                    || t.contains("$(git ")
+                    || t.contains("if git ")
+                    || t.contains("! git "))
+        })
+        .unwrap_or_else(|| panic!("{id} runs git"));
+        assert!(
+            git_clear < first_git && run_clear < first_git,
+            "{id} must clear both lists before its first git command (#2033)"
+        );
+        // The helper and the tools are never found through git: an inherited
+        // GIT_WORK_TREE could point the lookup at a planted worktree.
+        for l in &lines {
+            let t = l.trim_start();
+            if t.starts_with('#') {
+                continue;
+            }
+            assert!(
+                !(t.starts_with("for c in") && t.contains("\"$TOP\"")),
+                "{id} must not search the git toplevel for tools (#2033):\n  {l}"
+            );
+        }
+    }
 }

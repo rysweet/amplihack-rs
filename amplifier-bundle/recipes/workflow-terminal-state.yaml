@@ -16,7 +16,9 @@ inputs:
   - name: branch_name
     description: "Expected branch name; defaults to the current branch when empty."
   - name: base_ref
-    description: "Intended base ref; defaults to origin/HEAD, origin/main, origin/master, or origin/develop."
+    description: "Intended base ref; defaults to origin/<base_branch> when base_branch is set, else origin/HEAD, origin/main, origin/master, or origin/develop."
+  - name: base_branch
+    description: "The run's base_branch (docs/reference/workflow-delivery-inputs.md): the base step-16 passed to `gh pr create --base`. When set and base_ref is empty, the base is origin/<base_branch>, with no discovery, so this probe checks the pull request against the base it was opened on. It is also passed to workflow_final_status.sh as --base."
   - name: pr_number
     description: "Optional PR number to validate and inspect."
   - name: pr_url
@@ -36,6 +38,7 @@ context:
   repo_path: "."
   branch_name: ""
   base_ref: ""
+  base_branch: ""
   pr_number: ""
   pr_url: ""
   goal_already_met: "false"
@@ -242,6 +245,7 @@ steps:
       case "$REPO_DIR" in ""|"''") REPO_DIR="." ;; esac
       BRANCH_INPUT="${RECIPE_VAR_branch_name:-}"
       BASE_INPUT="${RECIPE_VAR_base_ref:-}"
+      BASE_BRANCH_INPUT="${RECIPE_VAR_base_branch:-}"
       PR_NUMBER_INPUT="${RECIPE_VAR_pr_number:-}"
       PR_URL_INPUT="${RECIPE_VAR_pr_url:-}"
       GOAL_ALREADY_MET_INPUT="${RECIPE_VAR_goal_already_met:-}"
@@ -250,6 +254,13 @@ steps:
       [ "${RECIPE_VAR_accept_pr_head_ahead:-}" != "true" ] || ACCEPT_PR_HEAD_AHEAD="true"
       case "$BRANCH_INPUT" in ""|"''") BRANCH_INPUT="" ;; esac
       case "$BASE_INPUT" in ""|"''") BASE_INPUT="" ;; esac
+      case "$BASE_BRANCH_INPUT" in ""|"''") BASE_BRANCH_INPUT="" ;; esac
+      # base_branch is the base step-16 gave the pull request, so it is the base
+      # here too; it is never replaced by a discovered one.
+      if [ -z "$BASE_INPUT" ] && [ -n "$BASE_BRANCH_INPUT" ]; then
+        git check-ref-format --branch "$BASE_BRANCH_INPUT" >/dev/null 2>&1 || fail_terminal_state "FAILED_INVALID_INPUT" "base_branch is not a valid branch name: $BASE_BRANCH_INPUT"
+        BASE_INPUT="origin/$BASE_BRANCH_INPUT"
+      fi
       case "$PR_NUMBER_INPUT" in ""|"''") PR_NUMBER_INPUT="" ;; esac
       case "$PR_URL_INPUT" in ""|"''") PR_URL_INPUT="" ;; esac
       case "$GOAL_ALREADY_MET_INPUT" in ""|"''") GOAL_ALREADY_MET_INPUT="false" ;; esac
@@ -592,5 +603,5 @@ steps:
 
       : "${OBSERVED_PHASES:=workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-refactor-review,workflow-precommit-test,workflow-publish,workflow-pr-review,workflow-finalize}"
       export OBSERVED_PHASES
-      bash "$helper"
+      bash "$helper" --base "${RECIPE_VAR_base_branch:-}"
     output: "terminal_state"

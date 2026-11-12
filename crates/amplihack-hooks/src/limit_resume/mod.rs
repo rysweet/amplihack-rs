@@ -13,7 +13,8 @@
 //! [`record_prompt`], called by the `UserPromptSubmit` hook), the session
 //! exits, a watch is lost or `MAX_WAIT` passes. It never polls and never
 //! sleeps. A record resumes only when
-//! [`judge`] says so: different from the snapshot, swapped after the stop, onto a login below 100% on both windows.
+//! [`judge_at`] says so: different from the snapshot, swapped after the
+//! stop, onto a login below 100% on both windows.
 //!
 //! On a resume the hook re-checks the toggle and moved-on, looks for a
 //! verified tmux pane, records the resume with [`guard::GuardStore::commit`]
@@ -27,7 +28,10 @@
 //! The hook reads only the toggle, the profile-root pointer, the rotate
 //! ledger, swap record and pid file, the rotator's `/proc/<pid>/cmdline`,
 //! Claude Code's `/proc/<pid>/{stat,fd/0}`, `$TMUX` and `$TMUX_PANE`, and
-//! its own resume state; it never opens a login file or the transcript.
+//! its own resume state; it never opens a login file. Of the transcript it
+//! reads only the last entry's `timestamp`, through
+//! [`swap_record::read_stop_time`] in `amplihack-utils`, to learn when the
+//! session stopped; nothing from it is logged, hashed or echoed.
 
 pub mod decide;
 pub mod guard;
@@ -36,8 +40,9 @@ pub mod log;
 
 use amplihack_types::HookInput;
 use amplihack_utils::file_event::{PROMPT_MASK, SWAP_MASK, Waiter, Watch, Woke};
+use amplihack_utils::organisation_affinity::Affinity;
 use amplihack_utils::rotator_status::swap_record::{
-    Judgement, SWAP_FILE, SwapRecord, judge, rotate_dir,
+    self, Judgement, SWAP_FILE, SwapRecord, judge_at, rotate_dir, stopped_on_outgoing,
 };
 use amplihack_utils::rotator_status::{self, CycleStatus, MAX_WAIT};
 use amplihack_utils::secure_files::{euid, read_bounded};
@@ -177,6 +182,9 @@ pub trait Deps {
     fn wait_event(&mut self, deadline: i64) -> Event;
     /// The swap record, read at `now`; `None` when missing or refused.
     fn read_swap(&mut self, now: i64) -> Option<SwapRecord>;
+    /// When the session stopped, epoch seconds, from its transcript; `None`
+    /// with no transcript or when it is refused. Never logged.
+    fn stop_time(&mut self, transcript: Option<&Path>, start: i64) -> Option<i64>;
     /// The session's tmux pane, only when it passes the pane check now.
     fn pane(&mut self) -> Option<Pane>;
     /// Sends one key to `pane`; an error when it was not delivered.
@@ -212,7 +220,22 @@ impl SendFailed {
 /// session still runs and is not suspended (S4). Stops at the first failure
 /// (D8); nothing is retried and there is no other way to wake the session.
 pub fn send_resume<D: Deps + ?Sized>(deps: &mut D, pane: &Pane) -> Result<(), SendFailed> {
+    send_resume_affinity(deps, pane, None)
+}
+
+/// [`send_resume`], with `continue` replaced by the warning text for
+/// `affinity` when the swap record carries one that warns.
+fn send_resume_affinity<D: Deps + ?Sized>(
+    deps: &mut D,
+    pane: &Pane,
+    affinity: Option<Affinity>,
+) -> Result<(), SendFailed> {
     for (sent, key) in (0u8..).zip(RESUME_KEYS) {
+        let key = match (key, affinity) {
+            (Key::LiteralContinue, Some(Affinity::Crossing)) => Key::LiteralCrossing,
+            (Key::LiteralContinue, Some(Affinity::Unresolved)) => Key::LiteralUnresolved,
+            _ => key,
+        };
         if !deps.session_alive_now() {
             return Err(SendFailed {
                 sent,
@@ -251,6 +274,17 @@ fn swap(r: &SwapRecord) -> Note<'_> {
 
 /// Decides one hook invocation.
 pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
+    run_with_affinity(input, deps, &mut None)
+}
+
+/// [`run_with`], also setting `affinity` to the organisation outcome of the
+/// swap record this resume follows. Only a resume reads it; every other
+/// outcome leaves it `None`.
+fn run_with_affinity<D: Deps + ?Sized>(
+    input: &HookInput,
+    deps: &mut D,
+    affinity: &mut Option<Affinity>,
+) -> Outcome {
     let enabled = deps.auto_switch_on();
     let HookInput::StopFailure {
         session_id,
@@ -258,6 +292,7 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         error_details,
         last_assistant_message,
         stop_hook_active,
+        transcript_path,
         ..
     } = input
     else {
@@ -288,12 +323,38 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
 
     let session_id = session_id.as_deref().unwrap_or_default();
     let start = deps.now();
-    // The live login at the limit is part of the event: the same login
-    // limited again is the same event, a limit after a swap is a new one.
     let first = deps.read_cycle(start);
     let live_at_start = first.as_ref().and_then(|s| s.live.as_deref());
-    let event = event_key(session_id, error, details, message, live_at_start);
     let session = session_key(session_id);
+    let stop_hook = gate(&facts) == Gate::StopHookActive;
+    // D4: the record seen at the stop resumes only when it may itself be
+    // after the stop (a swap between the stop and this read); otherwise only
+    // a different one, newer than the stop, does. See `noted_after_stop`.
+    // With `stop_hook_active` the hook never waits, so it reads neither
+    // the transcript nor any guard state.
+    let (stop, snapshot, resumed) = if stop_hook {
+        (None, None, Ok(None))
+    } else {
+        let stop = deps.stop_time(transcript_path.as_deref(), start);
+        let snapshot = deps.read_swap(start);
+        // A swap at or before this session's last resume is never after
+        // its stop, however close the times (see `after_stop_at`).
+        (stop, snapshot, deps.guard().last_resume(&session))
+    };
+    // The login the session stopped on is part of the event: the same login
+    // limited again is the same event, a limit after a swap is a new one.
+    // When a swap noted at the start falls after the stop, the session
+    // stopped on its outgoing login, not on the live one (#2235). With a
+    // stop time the bound is `stop - 1`, which depends on neither this
+    // hook's start nor past resumes, so every delivery of the same stop gets
+    // the same key and a repeat is a duplicate (see `stopped_on_outgoing`).
+    let key_login = match (&snapshot, &resumed) {
+        (Some(r), Ok(resumed_at)) if stopped_on_outgoing(r, start, stop, *resumed_at) => {
+            Some(r.from_login.as_str())
+        }
+        _ => live_at_start,
+    };
+    let event = event_key(session_id, error, details, message, key_login);
     let note = |deps: &mut D, now: i64, outcome: Outcome, n: Note<'_>| {
         let entry = LogEntry {
             session: session[..LOG_KEY_CHARS].to_string(),
@@ -313,7 +374,7 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     let finish =
         |deps: &mut D, now: i64, outcome: Outcome| note(deps, now, outcome, Note::default());
 
-    if gate(&facts) == Gate::StopHookActive {
+    if stop_hook {
         return finish(deps, start, Outcome::StopHookActive);
     }
     // Checked here so a duplicate or capped event exits at once; checked
@@ -326,9 +387,7 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         Ok(n) => facts.capped = n >= MAX_RESUMES_PER_SESSION,
         Err(_) => return finish(deps, start, Outcome::GuardFailed),
     }
-    // A swap at or before this session's last resume is never after its
-    // stop, however close the times (see `after_stop`).
-    let resumed_at = match deps.guard().last_resume(&session) {
+    let resumed_at = match resumed {
         Ok(t) => t,
         Err(_) => return finish(deps, start, Outcome::GuardFailed),
     };
@@ -354,10 +413,6 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
             .map(|t| t.is_some_and(|t| t > start))
     };
 
-    // D4: the record seen at the stop resumes only when it may itself be
-    // after the stop (a swap between the stop and this read); otherwise only
-    // a different one, newer than the stop, does. See `judge`.
-    let snapshot = deps.read_swap(start);
     if let Err(e) = deps.arm() {
         let n = Note {
             detail: Some(format!("{:?}", e.kind())),
@@ -377,7 +432,7 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         match woke {
             Event::Swap => {
                 if let Some(r) = deps.read_swap(now) {
-                    let skipped = match judge(snapshot.as_ref(), &r, start, resumed_at) {
+                    let skipped = match judge_at(snapshot.as_ref(), &r, start, stop, resumed_at) {
                         Judgement::Resume => break (now, r),
                         Judgement::Same => None,
                         Judgement::Stale => Some(Outcome::SwapStale),
@@ -425,10 +480,13 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
             return note(deps, now, outcome, swap(&record));
         }
     }
+    // The swap that woke this wait carries its own organisation outcome
+    // (#2136). Nothing else is consulted: there is no per-session state.
+    *affinity = record.affinity.filter(|a| a.warning().is_some());
     let Some(pane) = pane else {
         return note(deps, now, Outcome::Resumed, swap(&record));
     };
-    let (outcome, keys_sent, detail) = match send_resume(deps, &pane) {
+    let (outcome, keys_sent, detail) = match send_resume_affinity(deps, &pane, *affinity) {
         Ok(()) => (Outcome::ResumedKeys, RESUME_KEYS.len() as u8, None),
         Err(f) => (Outcome::ResumeKeysFailed, f.sent, Some(f.detail())),
     };
@@ -443,26 +501,32 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
 }
 
 /// Reads at most `MAX_STDIN_BYTES` of payload from `stdin`, decides, and
-/// writes `RESUME_MSG` to `stderr` only on `Resumed`. Returns the exit code:
-/// 2 on `Resumed`, 0 otherwise, including after keys were sent, for an
+/// writes `RESUME_MSG` to `stderr` only on `Resumed`, preceded by the swap
+/// record's organisation warning when it has one (#2136). On `ResumedKeys`
+/// the warning went with the keys instead. Returns the exit code: 2 on
+/// `Resumed`, 0 otherwise, including after keys were sent, for an
 /// oversized or malformed payload and for a panic.
 pub fn run_with_io<D: Deps + ?Sized>(
     stdin: impl Read,
     stderr: &mut dyn Write,
     deps: &mut D,
 ) -> i32 {
+    let mut affinity = None;
     let decided = catch_unwind(AssertUnwindSafe(|| {
         let raw = read_bounded(stdin, MAX_STDIN_BYTES).ok()?;
         if raw.len() as u64 > MAX_STDIN_BYTES {
             return None;
         }
         let input: HookInput = serde_json::from_slice(&raw).ok()?;
-        Some(run_with(&input, deps))
+        Some(run_with_affinity(&input, deps, &mut affinity))
     }));
     match decided {
         Ok(Some(Outcome::Resumed)) => {
             // The resume is already recorded; exit 2 alone wakes the
             // session, so a failed write still exits 2.
+            if let Some(text) = affinity.and_then(Affinity::warning) {
+                let _ = writeln!(stderr, "{text}");
+            }
             let _ = writeln!(stderr, "{RESUME_MSG}");
             let _ = stderr.flush();
             Outcome::Resumed.exit_code()
@@ -580,9 +644,10 @@ impl Deps for SystemDeps {
         let left = u64::try_from(deadline.saturating_sub(epoch_now()))
             .unwrap_or(0)
             .min(MAX_WAIT.as_secs());
-        let until = Instant::now()
-            .checked_add(Duration::from_secs(left))
-            .unwrap_or_else(|| Instant::now() + MAX_WAIT);
+        // A deadline the clock cannot represent cannot be waited on.
+        let Some(until) = Instant::now().checked_add(Duration::from_secs(left)) else {
+            return Event::WatchLost;
+        };
         match waiter.wait(until) {
             Ok(Woke::File(1)) => Event::Prompted,
             // An overflow may have dropped a write of the record.
@@ -594,7 +659,11 @@ impl Deps for SystemDeps {
     }
 
     fn read_swap(&mut self, now: i64) -> Option<SwapRecord> {
-        rotator_status::swap_record::read_swap(&self.root, now)
+        swap_record::read_swap(&self.root, now)
+    }
+
+    fn stop_time(&mut self, transcript: Option<&Path>, start: i64) -> Option<i64> {
+        transcript.and_then(|p| swap_record::read_stop_time(p, start))
     }
 
     fn pane(&mut self) -> Option<Pane> {
@@ -613,7 +682,9 @@ impl Deps for SystemDeps {
             // S4: alive and still in the foreground, so a Ctrl-Z between
             // keys stops the rest from reaching the shell.
             Some(w) => w.process_alive() && keys::foreground_now(self.parent),
-            None => self.parent != 1 && std::os::unix::process::parent_id() == self.parent,
+            // Without the pidfd the session's liveness is unproven (a pid
+            // can be reused), so no key is sent.
+            None => false,
         }
     }
 }
