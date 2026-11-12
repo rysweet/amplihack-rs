@@ -263,6 +263,9 @@ fn rotate_log_grammar_is_documented() {
         "damp: <name> later reading shows room; swap-back allowed",
         "#### Rotate reading freshness and swap-back damping",
         "\"swapped_away\": { \"ggrant\": 1793634010 }",
+        // Issue #2211: live reading freshness and the projected swap.
+        "reason=projected",
+        "stale live reading; re-read",
     ] {
         assert!(REFERENCE.contains(line), "reference is missing `{line}`");
     }
