@@ -747,6 +747,12 @@ whatever `remote_host_type` says. The inputs, the checks and what later steps
 do with the issue are described in the
 [Workflow Delivery Inputs Reference](workflow-delivery-inputs.md).
 
+Before it chooses either path, step-03 checks the mode with
+`delivery_strict_mode`. A `strict_delivery` other than `"true"`, `"false"` or
+empty fails the step, and so does `repository`, `pr_repository` or
+`closing_reference` set while `strict_delivery` is off. Neither case falls
+through to the selection above.
+
 ## Azure DevOps and local tracking
 
 The selection described above applies only to `github` hosts.

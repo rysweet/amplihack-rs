@@ -132,9 +132,19 @@ fn source_and_run(repo: &Repo, call: &str) -> Output {
 #[test]
 fn delivery_base_ref_prints_the_remote_tracking_base() {
     let repo = Repo::new();
-    let out = source_and_run(&repo, "delivery_base_ref dev feat/x 'release/*'");
-    assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(text(&out.stdout), "origin/dev\n");
+    // The control for the multi-line refusals below: a list over several
+    // lines, with tabs, CRLF line ends and blank lines, that does not name
+    // `dev` accepts it.
+    for call in [
+        "delivery_base_ref dev feat/x 'release/*'",
+        "delivery_base_ref dev feat/x $'release/*\\nprod'",
+        "delivery_base_ref dev feat/x $'  release/*\\r\\n\\tprod \\n\\n'",
+        "delivery_base_ref dev feat/x ''",
+    ] {
+        let out = source_and_run(&repo, call);
+        assert!(out.status.success(), "{call}: {}", describe(&out));
+        assert_eq!(text(&out.stdout), "origin/dev\n", "{call}");
+    }
 }
 
 #[test]
@@ -165,6 +175,50 @@ fn delivery_base_ref_refuses_without_substituting_another_base() {
         (
             "delivery_base_ref dev '' '*'",
             "matches forbidden_base_branches pattern '*'",
+        ),
+        // Every line of the list is enforced, not only the first: a YAML
+        // block scalar, entries joined with newlines, CRLF line ends, tabs.
+        (
+            "delivery_base_ref dev '' $'release/*\\ndev'",
+            "matches forbidden_base_branches pattern 'dev'",
+        ),
+        (
+            "delivery_base_ref dev '' $'release/*\\r\\ndev\\r\\n'",
+            "matches forbidden_base_branches pattern 'dev'",
+        ),
+        (
+            "delivery_base_ref dev '' $'release/*\\tdev'",
+            "matches forbidden_base_branches pattern 'dev'",
+        ),
+        (
+            "IFS=,; delivery_base_ref dev '' 'release/* dev'",
+            "matches forbidden_base_branches pattern 'dev'",
+        ),
+        // A list in another syntax is refused, never read as globs that match
+        // almost nothing: even when no entry would match the base.
+        (
+            "delivery_base_ref dev '' '[\"dev\"]'",
+            "entry '[\"dev\"]' is not a branch glob",
+        ),
+        (
+            "delivery_base_ref dev '' '[\"release/*\",\"prod\"]'",
+            "is not a branch glob",
+        ),
+        (
+            "delivery_base_ref dev '' '[ \"release/*\", \"prod\" ]'",
+            "entry '[' is not a branch glob",
+        ),
+        (
+            "delivery_base_ref dev '' '[release/*, prod]'",
+            "entry '[release/*,' is not a branch glob",
+        ),
+        (
+            "delivery_base_ref dev '' 'release/*,dev'",
+            "entry 'release/*,dev' is not a branch glob",
+        ),
+        (
+            "delivery_base_ref dev '' $'release/*\\n\\'prod\\''",
+            "entry ''prod'' is not a branch glob",
         ),
         (
             "delivery_base_ref nope '' ''",
@@ -711,9 +765,13 @@ impl FinalizeFixture {
 
 #[test]
 fn every_finalize_recipe_declares_base_branch() {
-    // The runner passes a parent's value only into keys the sub-recipe
-    // declares, so each recipe on the way from default-workflow to the base
-    // checks must declare base_branch.
+    // The runner lays a parent's whole context over each sub-recipe's
+    // defaults and exports every key as RECIPE_VAR_<key>, declared or not, so
+    // the declaration is not what carries base_branch down. Each recipe on the
+    // way declares it anyway: the empty default applies when the recipe runs
+    // on its own, and it keeps a nested process from reading a stale inherited
+    // RECIPE_VAR_base_branch (#1561). See "How the inputs reach each phase" in
+    // docs/reference/workflow-delivery-inputs.md.
     for recipe in [
         "default-workflow",
         "workflow-publish",

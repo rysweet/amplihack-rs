@@ -344,7 +344,7 @@ steps:
       . "$RUNTIME_ARTIFACT_HELPER"
       preflight_known_workflow_runtime_artifacts .
       # Contract implemented by workflow_publish_pr.sh: --state all; gh pr view; headRefName; headRefOid; mergedAt; git diff --quiet; terminal_status; non-github.
-      # Base-ref contract: resolve_pr_base_ref checks refs/remotes/origin/HEAD, runs git remote set-head origin -a, falls back through origin/master origin/develop, and fails with ERROR: no supported remote base ref found.
+      # Base-ref contract: with base_branch set, resolve_pr_base_ref returns origin/<base_branch> once delivery_base_ref accepts it, with no discovery and no fallback, and gh pr create gets --base=<base_branch>. With base_branch empty it checks refs/remotes/origin/HEAD, runs git remote set-head origin -a, falls back through origin/main origin/master origin/develop, and fails with ERROR: no supported remote base ref found.
       # Metadata contract: ISSUE_NUM, git diff, git log, git diff --name-only, Changed files, Validation, Behavior, Risk, and step-13 shape PR title/body context.
       # PUBLISH_STATE="no-diff"; PUBLISH_STATE="existing-open-pr"; PUBLISH_STATE="already-merged"; PUBLISH_STATE="closed-after-merge"; PUBLISH_STATE="closed-unmerged-with-diff".
       # Provider-aware states: GitHub preserves existing scoped PR behavior; AzDO uses REMOTE_HOST_TYPE=azdo with az repos pr list/create.

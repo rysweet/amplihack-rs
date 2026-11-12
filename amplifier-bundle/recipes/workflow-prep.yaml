@@ -268,7 +268,8 @@ steps:
       # Opt-in, exact-title reuse and bounded creation (#1881) live in workflow_issue_create.sh.
       C="$(dirname "$T")/workflow_issue_create.sh"; [ -f "$C" ] || { echo "ERROR: issue creation helper not found: $C" >&2; exit 2; }; . "$C"
       # strict_delivery: the caller's issue, confirmed in the repository that owns it, or a failed step; never creation, substitution or local tracking (docs/reference/workflow-delivery-inputs.md).
-      if [ "${RECIPE_VAR_strict_delivery:-false}" = true ]; then select_strict_delivery_issue "${RECIPE_VAR_issue_number:-}" "${RECIPE_VAR_create_issue:-}" "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_pr_repository:-}" "${RECIPE_VAR_closing_reference:-}" "${RECIPE_VAR_existing_branch:-}" "${RECIPE_VAR_base_branch:-}" "${RECIPE_VAR_forbidden_base_branches:-}"; exit $?; fi
+      D="$(dirname "$T")/workflow_delivery_inputs.sh"; [ -f "$D" ] || { echo "ERROR: delivery-input helper not found: $D" >&2; exit 2; }; . "$D"; STRICT="$(delivery_strict_mode "${RECIPE_VAR_strict_delivery:-}" "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_pr_repository:-}" "${RECIPE_VAR_closing_reference:-}")" || exit 2  # anything but true/false/empty, or a strict-only input without strict, fails the run here; the later strict gates test `= true` and rely on this check
+      if [ "$STRICT" = true ]; then select_strict_delivery_issue "${RECIPE_VAR_issue_number:-}" "${RECIPE_VAR_create_issue:-}" "${RECIPE_VAR_repository:-}" "${RECIPE_VAR_pr_repository:-}" "${RECIPE_VAR_closing_reference:-}" "${RECIPE_VAR_existing_branch:-}" "${RECIPE_VAR_base_branch:-}" "${RECIPE_VAR_forbidden_base_branches:-}"; exit $?; fi
       REF_ISSUE_NUM="$(azdo_task_work_item)"  # AzDO only (AB#N, else #N); GitHub: select_github_tracking_issue (#1595)
       case "$HOST_TYPE" in
       other) echo "INFO: Using local tracking for issue management (remote: other)" >&2; emit_local_metadata; exit 0 ;;

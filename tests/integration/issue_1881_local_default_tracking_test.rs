@@ -1709,6 +1709,44 @@ fn missing_issue_create_helper_exits_two() {
     assert!(run.creates().is_empty(), "{}", run.diag());
 }
 
+#[test]
+fn missing_delivery_input_helper_exits_two() {
+    // Step-03 checks strict_delivery before it chooses a path, so without the
+    // helper it cannot tell a strict run from an ordinary one and must stop.
+    let sandbox = Sandbox::new();
+    let home = sandbox.path("fakehome");
+    let tools = home.join("amplifier-bundle").join("tools");
+    fs::create_dir_all(&tools).unwrap();
+    for f in fs::read_dir(tools_dir()).unwrap() {
+        let f = f.unwrap();
+        let name = f.file_name();
+        if name != "workflow_delivery_inputs.sh" && f.path().is_file() {
+            fs::copy(f.path(), tools.join(&name)).unwrap();
+        }
+    }
+    let output = sandbox
+        .bash(&step_body("step-03-create-issue"))
+        .env("AMPLIHACK_HOME", &home)
+        .env("RECIPE_VAR_remote_host_type", "other")
+        .env("RECIPE_VAR_issue_number", "")
+        .env("TASK_DESCRIPTION", TITLE)
+        .output()
+        .unwrap();
+    let run = Run { output, sandbox };
+    run.assert_exit(2);
+    assert!(
+        run.stderr()
+            .contains("ERROR: delivery-input helper not found"),
+        "{}",
+        run.diag()
+    );
+    assert!(
+        !run.stdout().contains("tracking_system=local"),
+        "{}",
+        run.diag()
+    );
+}
+
 // ===========================================================================
 // Helper unit tests (sourced directly)
 // ===========================================================================
@@ -2538,32 +2576,106 @@ fn strict_delivery_accepts_an_existing_authorized_base() {
 }
 
 #[test]
-fn strict_delivery_off_ignores_the_strict_inputs_and_base_branch() {
-    // Neither base_branch nor the strict inputs change ordinary selection: on
-    // a non-GitHub host step-03 still uses local tracking, and on GitHub the
-    // explicit number is looked up in this repository as before.
-    let mut env = strict_env(&[
-        ("RECIPE_VAR_strict_delivery", "false"),
-        ("RECIPE_VAR_base_branch", "dev"),
-        ("RECIPE_VAR_remote_host_type", "other"),
-    ]);
-    let run = run_step("42", "Fix the thing", &env);
-    run.assert_local();
-    assert!(run.gh_calls().is_empty(), "{}", run.diag());
+fn strict_delivery_off_keeps_ordinary_selection_with_base_branch_set() {
+    // base_branch does not change ordinary selection, with strict_delivery
+    // `false` or empty: on a non-GitHub host step-03 still uses local
+    // tracking, and on GitHub the explicit number is looked up in this
+    // repository as before. This is also the control for the refusals in
+    // `unrecognised_strict_value_or_strict_only_input_without_strict_fails_step_03`:
+    // the same run with the strict-only inputs cleared proceeds.
+    for strict in ["false", ""] {
+        let mut env = strict_env(&[
+            ("RECIPE_VAR_strict_delivery", strict),
+            ("RECIPE_VAR_repository", ""),
+            ("RECIPE_VAR_pr_repository", ""),
+            ("RECIPE_VAR_closing_reference", ""),
+            ("RECIPE_VAR_base_branch", "dev"),
+            ("RECIPE_VAR_remote_host_type", "other"),
+        ]);
+        let run = run_step("42", "Fix the thing", &env);
+        run.assert_local();
+        assert!(
+            run.gh_calls().is_empty(),
+            "strict={strict:?}: {}",
+            run.diag()
+        );
 
-    env.retain(|(k, _)| *k != "RECIPE_VAR_remote_host_type");
-    env.push(("GH_VIEW_ISSUE", "42"));
-    let run = run_step("42", "Fix the thing", &env);
-    run.assert_exit(0);
-    assert_eq!(
-        run.stdout().trim(),
-        format!("{REPO_URL}/issues/42"),
-        "{}",
-        run.diag()
-    );
-    assert!(
-        run.calls_of("api", "--hostname").is_empty(),
-        "{}",
-        run.diag()
-    );
+        env.retain(|(k, _)| *k != "RECIPE_VAR_remote_host_type");
+        env.push(("GH_VIEW_ISSUE", "42"));
+        let run = run_step("42", "Fix the thing", &env);
+        run.assert_exit(0);
+        assert_eq!(
+            run.stdout().trim(),
+            format!("{REPO_URL}/issues/42"),
+            "strict={strict:?}: {}",
+            run.diag()
+        );
+        assert!(
+            run.calls_of("api", "--hostname").is_empty(),
+            "strict={strict:?}: {}",
+            run.diag()
+        );
+    }
+}
+
+#[test]
+fn unrecognised_strict_value_or_strict_only_input_without_strict_fails_step_03() {
+    // A strict_delivery other than true/false/empty must not quietly run the
+    // ordinary path, which may pick an issue from the task text, create one
+    // or fall back to local tracking. Nor may repository, pr_repository or
+    // closing_reference be ignored because strict_delivery is off. Each run
+    // below is otherwise a valid strict run, on a host where the ordinary path
+    // would silently use local tracking.
+    let not_a_value = "strict_delivery must be exactly 'true', 'false' or empty";
+    let cases: &[(&[(&str, &str)], &str)] = &[
+        (&[("RECIPE_VAR_strict_delivery", "1")], not_a_value),
+        (&[("RECIPE_VAR_strict_delivery", "yes")], not_a_value),
+        (&[("RECIPE_VAR_strict_delivery", "TRUE")], not_a_value),
+        (&[("RECIPE_VAR_strict_delivery", " true")], not_a_value),
+        (&[("RECIPE_VAR_strict_delivery", "off")], not_a_value),
+        (
+            &[("RECIPE_VAR_strict_delivery", "false")],
+            "strict_delivery is off but strict-only inputs are set: repository pr_repository closing_reference.",
+        ),
+        (
+            &[
+                ("RECIPE_VAR_strict_delivery", ""),
+                ("RECIPE_VAR_pr_repository", ""),
+                ("RECIPE_VAR_closing_reference", ""),
+            ],
+            "strict_delivery is off but strict-only inputs are set: repository.",
+        ),
+        (
+            &[
+                ("RECIPE_VAR_strict_delivery", "false"),
+                ("RECIPE_VAR_repository", ""),
+                ("RECIPE_VAR_closing_reference", ""),
+            ],
+            "strict_delivery is off but strict-only inputs are set: pr_repository.",
+        ),
+        (
+            &[
+                ("RECIPE_VAR_strict_delivery", "false"),
+                ("RECIPE_VAR_repository", ""),
+                ("RECIPE_VAR_pr_repository", ""),
+            ],
+            "strict_delivery is off but strict-only inputs are set: closing_reference.",
+        ),
+    ];
+    for (overrides, reason) in cases {
+        let mut all: Vec<(&str, &str)> = vec![("RECIPE_VAR_remote_host_type", "other")];
+        all.extend_from_slice(overrides);
+        let run = run_strict("42", &all);
+        run.assert_strict_refusal(reason);
+        assert!(
+            run.gh_calls().is_empty(),
+            "{overrides:?}: refused before any gh call\n{}",
+            run.diag()
+        );
+        assert!(
+            !run.stdout().contains("tracking_system=local"),
+            "{overrides:?}: never falls back to local tracking\n{}",
+            run.diag()
+        );
+    }
 }
