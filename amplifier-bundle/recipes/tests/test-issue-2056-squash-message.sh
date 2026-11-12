@@ -80,14 +80,14 @@ body_is() {
   autodrive_merge_body "$3"; rc=$?
   printf '%s' "$MERGE_BODY" > "$WORK/got"; printf '%s' "$4" > "$WORK/want"
   if [ "$rc" -eq 0 ] && cmp -s "$WORK/got" "$WORK/want" && [ "$MERGE_REPORT_CUT" = "$5" ]; then pass "$1" "$2"
-  else fail "$1" "rc=$rc cut=$MERGE_REPORT_CUT got=$(od -An -c "$WORK/got" | tr -s ' \n' ' ' | head -c 200)"; fi
+  else local shown; shown="$(od -An -c "$WORK/got" | tr -s ' \n' ' ')"; fail "$1" "rc=$rc cut=$MERGE_REPORT_CUT got=${shown:0:200}"; fi
 }
 body_refused() {
   local rc
   MERGE_BODY="stale"; MERGE_REPORT_CUT="stale"
   autodrive_merge_body "$3"; rc=$?
   if [ "$rc" -ne 0 ] && [ -z "$MERGE_BODY" ]; then pass "$1" "$2"
-  else fail "$1" "rc=$rc body='$(printf '%s' "$MERGE_BODY" | head -c 80)'"; fi
+  else fail "$1" "rc=$rc body='${MERGE_BODY:0:80}'"; fi
 }
 NL='
 '
