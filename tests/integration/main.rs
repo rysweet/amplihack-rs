@@ -182,6 +182,9 @@ mod pre_commit_artifact_guard;
 #[path = "autodrive_pr_worktree_tests.rs"]
 mod autodrive_pr_worktree;
 
+#[path = "issue_2441_autodrive_qa_command.rs"]
+mod issue_2441_autodrive_qa_command;
+
 #[path = "doctor_node_remediation_test.rs"]
 mod doctor_node_remediation;
 

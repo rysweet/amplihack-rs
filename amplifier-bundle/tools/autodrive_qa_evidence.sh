@@ -1,32 +1,11 @@
 #!/usr/bin/env bash
-# autodrive_qa_evidence.sh — measure merge-ready criterion 1 for one round of
-# the auto-drive-to-merge merge loop. step-02-qa-team-scenarios of
-# autodrive-merge-evidence.yaml runs this file (moved out of the step, PR #1520).
-#
-# Criterion 1 follows qa-team's repo-type table: one or two measurements,
-# both always run so the evidence lists every cause at once. (1) The suite
-# command from the first source present (#1763): env, .amplihack/qa.toml, one
-# clean CI step, or `cargo test`, `npm test` or `pytest` detected in the
-# project the changed paths pick (QA_UNRESOLVED when they pick none, and
-# nothing runs). (2) Only where autodrive_gadugi_required says true (a Node
-# project, or AUTODRIVE_QA_SCENARIO_DIR set): the qa-team scenarios, validated
-# with `gadugi-test validate` and run one `gadugi-test run --scenario` per
-# file. Elsewhere gadugi_status is NOT_REQUIRED and gadugi-test is never
-# called: qa-team's Rust CLI rule substitutes `cargo test`, and a measured docs_only drops (2) in a Node project too (#2219).
-#
-# Input comes from the environment only:
-#   REPO_PATH              the repository to measure (default: the working directory)
-#   AUTODRIVE_QA_EVIDENCE  file the evidence is written to, private (optional)
-#   AUTODRIVE_ROUND_LABEL  recorded as qa_round
-#   AUTODRIVE_QA_BASE      the base branch name, for the changed paths
-#   AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR, AUTODRIVE_QA_COMMANDS and
-#   AUTODRIVE_QA_SCENARIO_DIR, described where they are read below.
-# Output: one JSON line on stdout, and the same line in AUTODRIVE_QA_EVIDENCE.
-# qa_status is PASS only when every measurement that applies passes. Exit 0
-# whenever evidence was produced, PASS or not; exit 1 when REPO_PATH, a
-# temporary file or the helpers beside this file are unavailable, so no evidence
-# exists. Executed, never sourced; helpers come from beside this file only.
-# NO-TIMEOUT POLICY (issue #439): a test suite is never cut off mid-run.
+# Measure criterion 1 for autodrive-merge-evidence.yaml step-02-qa-team-scenarios.
+# Suite source precedence: env, committed qa.toml, clean CI step, detected suite.
+# Gadugi validates and runs scenarios only where autodrive_gadugi_required says so.
+# Inputs are environment-only: REPO_PATH, AUTODRIVE_QA_* and AUTODRIVE_ROUND_LABEL.
+# Output: one JSON line on stdout and in the optional AUTODRIVE_QA_EVIDENCE file.
+# Exit 0 when evidence is produced (PASS or not); exit 1 for installation/I/O errors.
+# Executed, never sourced. NO-TIMEOUT POLICY (#439): never cut a suite off mid-run.
 set -uo pipefail
 # This file's own directory, found before the cd below (BASH_SOURCE may be
 # relative); without the helpers there, no evidence. An exported CDPATH would
@@ -38,6 +17,12 @@ H="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
     && [ ! -L "$H/git-repo-env.sh" ] && . "$H/git-repo-env.sh"; } \
   || { echo "ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh, autodrive_trust.sh or git-repo-env.sh is missing" >&2; exit 1; }
 amplihack_clear_git_repo_env; amplihack_clear_run_identity_env; GCLR="$AMPLIHACK_GIT_ENV_CLEARED"; RCLR="$AMPLIHACK_RUN_ENV_CLEARED"
+# Resolve before changing directory, including when PATH has relative entries.
+QA_HELPER=""
+if [ -n "${AUTODRIVE_QA_COMMAND:-}" ]; then
+  QA_HELPER="$(command -v "${AMPLIHACK_BIN:-amplihack}" 2>/dev/null)" || QA_HELPER=""
+  case "$QA_HELPER" in ''|/*) ;; *) QA_HELPER="$(pwd -P)/$QA_HELPER" ;; esac
+fi
 cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
 ROOT="$(pwd -P)"
 EVIDENCE="${AUTODRIVE_QA_EVIDENCE:-}"
@@ -118,11 +103,11 @@ res() { printf '%s\t%s\n' "${1##*/}" "$2" >> "$RES"; } # res <file> <PASS|FAIL|I
 # gives none, its reason is qa_ci_skip), then detected. The operator variables
 # come from the environment only (a recipe context default would hide them).
 # Set but empty means "no command", never "detect one":
-#   AUTODRIVE_QA_COMMAND   one command, word-split with globbing off, run in
-#                          AUTODRIVE_QA_DIR (the issue #1516 semantics)
+#   AUTODRIVE_QA_COMMAND   trusted shell source, passed unchanged to Bash by
+#                          the Rust helper in AUTODRIVE_QA_DIR
 #   AUTODRIVE_QA_COMMANDS  one command per line (blank and # lines skipped),
 #                          each run alone with bash -c from the repository root
-# qa_dir records where the word or detected command ran, else `.`.
+# qa_dir records where the singular, word or detected command ran, else `.`.
 QA_DIR="$TDIR"; QD="."; SRC=""; CFGBAD=""; QUNRES=""
 TYPE="unknown"; KINDS=(); TEXTS=()
 if [ -n "$NOSCOPE" ]; then
@@ -130,7 +115,7 @@ if [ -n "$NOSCOPE" ]; then
   cause "the QA scope helper autodrive_qa_scope.sh or autodrive_qa_sources.sh is missing"
 elif [ -n "${AUTODRIVE_QA_COMMAND+x}" ] || [ -n "${AUTODRIVE_QA_COMMANDS+x}" ]; then
   TYPE="configured"; QA_DIR="${AUTODRIVE_QA_DIR:-.}"; SRC="env"
-  [ -z "${AUTODRIVE_QA_COMMAND:-}" ] || { KINDS+=(word); TEXTS+=("$AUTODRIVE_QA_COMMAND"); QD="$QA_DIR"; }
+  [ -z "${AUTODRIVE_QA_COMMAND:-}" ] || { KINDS+=(singular); TEXTS+=("$AUTODRIVE_QA_COMMAND"); QD="$QA_DIR"; }
   while IFS= read -r line || [ -n "$line" ]; do
     case "$(printf '%s' "$line" | sed 's/^[[:space:]]*//')" in ''|'#'*) continue ;; esac
     KINDS+=(entry); TEXTS+=("$line")
@@ -176,6 +161,21 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
     # Its own process from the repository root: a `cd` in one entry
     # never reaches the next, and entries are never joined or sourced.
     ( cd -- "$ROOT" && bash -c "$text" ) >>"$LOG" 2>&1 </dev/null
+    rc=$?
+  elif [ "$kind" = "singular" ]; then
+    dir="$QA_DIR"
+    if [ ! -d "$dir" ]; then
+      S_MISSING="true"; cause "AUTODRIVE_QA_DIR $(printf '%s' "$dir" | san | ascii | cut -c1-120) not found"
+      continue
+    fi
+    if [ -z "$QA_HELPER" ]; then
+      echo "ERROR: amplihack QA command helper not found" >&2
+      rm -f "$LOG"; exit 1
+    fi
+    # A literal '-' is a directory, never $OLDPWD. The directory is a separate
+    # argument; the helper reads the unchanged shell source from the environment.
+    case "$dir" in /*) ;; *) dir="./$dir" ;; esac
+    "$QA_HELPER" orch helper autodrive-qa-command --dir="$dir" >>"$LOG" 2>&1 </dev/null
     rc=$?
   else
     dir="$QA_DIR"

@@ -23,6 +23,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 TOOL="${REPO_ROOT}/amplifier-bundle/tools/autodrive_qa_evidence.sh"
+QA_BINARY="${AMPLIHACK_BIN:-${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/amplihack}"
 
 harness_error() { echo "HARNESS-ERROR: $*" >&2; exit 2; }
 
@@ -59,6 +60,7 @@ mkdir -p "$REPO"
 record() {
     local stdout
     stdout="$(env -i HOME="$WORK" TMPDIR="$WORK" PATH="/usr/bin:/bin" REPO_PATH="$REPO" \
+        AMPLIHACK_BIN="$QA_BINARY" AMPLIHACK_TEST_HOME_GUARD=1 AMPLIHACK_ROTATE_AUTOSTART=0 \
         AUTODRIVE_ROUND_LABEL=round-1 AUTODRIVE_QA_COMMAND="cat $1" \
         bash "$TOOL" 2>"$1.err")"
     printf '%s' "${stdout##*$'\n'}"

@@ -5465,7 +5465,7 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
         }
     }
 
-    let mut cmd = Command::new("bash");
+    let mut cmd = crate::isolated_amplihack::isolated("bash");
     cmd.arg(&script)
         .current_dir(&root)
         .env_remove("AMPLIHACK_MERGE_GUARD_USER_BASH_ENV")

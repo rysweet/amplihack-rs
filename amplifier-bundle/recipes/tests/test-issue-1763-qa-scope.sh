@@ -36,6 +36,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 TOOLS="${REPO_ROOT}/amplifier-bundle/tools"
 TOOL="${TOOLS}/autodrive_qa_evidence.sh"
+QA_BINARY="${AMPLIHACK_BIN:-${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/amplihack}"
 TRUST="${TOOLS}/autodrive_trust.sh"
 SCOPE="${TOOLS}/autodrive_qa_scope.sh"
 SOURCES="${TOOLS}/autodrive_qa_sources.sh"
@@ -128,6 +129,7 @@ run_tool() {
     local stdout
     ERR="$WORK/r$N/err"
     stdout="$(env -i HOME="$WORK" TMPDIR="$WORK" PATH="${STUBS}:${SYSPATH}" REPO_PATH="$REPO" \
+        AMPLIHACK_BIN="$QA_BINARY" AMPLIHACK_TEST_HOME_GUARD=1 AMPLIHACK_ROTATE_AUTOSTART=0 \
         FIXTURE_ROOT="$REPO" CALLS="$CALLS" AUTODRIVE_ROUND_LABEL=round-1 "$@" \
         bash "${TOOL_UNDER_TEST:-$TOOL}" 2>"$ERR" </dev/null)" || true
     OUT="${stdout##*$'\n'}"

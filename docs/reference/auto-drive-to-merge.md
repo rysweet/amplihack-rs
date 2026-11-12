@@ -2,7 +2,7 @@
 title: Auto Drive To Merge Reference
 description: Auto-drive phases, review completion, follow-up recording and merge evidence.
 doc_type: reference
-last_updated: 2026-11-11
+last_updated: 2026-11-12
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -37,6 +37,8 @@ PR to this recipe when the change exceeds its eligibility rules.
 - [Crusty completion decision contract](autodrive-crusty-completion.md)
 - [Minor findings end the crusty loop (#1979)](#minor-findings-end-the-crusty-loop-1979)
 - [How the merge round applies merge-ready](#how-the-merge-round-applies-merge-ready)
+- [Choosing the QA command](#choosing-the-qa-command)
+- [Running the suite commands](#running-the-suite-commands)
 - [Reading step outputs](#reading-step-outputs)
 - [Reading the loop-health line](#reading-the-loop-health-line)
 - [Two absolute prohibitions](#two-absolute-prohibitions)
@@ -1640,9 +1642,9 @@ parity directory is `.`.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `AUTODRIVE_QA_COMMAND` | unset | One command, run in `AUTODRIVE_QA_DIR`, split into words with globbing off. |
+| `AUTODRIVE_QA_COMMAND` | unset | Trusted Bash shell source, passed unchanged as one argument to `bash -c` in `AUTODRIVE_QA_DIR`. Shell quoting, quoted executable paths, expansions, redirections and compound commands are supported. |
 | `AUTODRIVE_QA_DIR` | `.` | The directory `AUTODRIVE_QA_COMMAND` runs in: relative to the repository root, or absolute. Used only with `AUTODRIVE_QA_COMMAND`; the other sources choose their own directory and ignore it. Recorded as `qa_dir`. A directory that does not exist gives `BLOCKED` with `qa-command-missing` and the summary `AUTODRIVE_QA_DIR <dir> not found`. |
-| `AUTODRIVE_QA_COMMANDS` | unset | One command per line, each run as `( cd -- "$ROOT" && bash -c "$entry" )` after `AUTODRIVE_QA_COMMAND`; blank and `#` lines skipped. Only this variable may run shell source: `.amplihack/qa.toml` and CI commands never go through `bash -c`. |
+| `AUTODRIVE_QA_COMMANDS` | unset | Trusted Bash shell source, one command per line, each run as `( cd -- "$ROOT" && bash -c "$entry" )` after `AUTODRIVE_QA_COMMAND`; blank and `#` lines skipped. Every entry starts at the repository root and ignores `AUTODRIVE_QA_DIR`. |
 | `AUTODRIVE_QA_SCENARIO_DIR` | the first existing of `tests/agentic`, `tests/gadugi/scenarios`, `scenarios`; else `tests/agentic` | The scenario directory, searched only where gadugi is required. Setting it requires gadugi scenarios in any repository type. An override naming a missing directory means no scenarios. |
 | `AUTODRIVE_QA_BASE` | set by the caller | The pull request's base branch name, used to find the merge base and the changed paths. Evidence step-02 sets it from the `base` field of `merge_sync`, and the merge gate sets it from its own `gh pr view --json baseRefName`. Both replace any inherited value, even with an empty one, so an operator does not set it. When it is unset, as in `autodrive-prerequisites` and merge round step-00, which only check that `gadugi-test` is installed where it will be needed, the checkout's committed `HEAD` stands in for the merge base and the changed paths are `(none)`; that answer is advisory, and the evidence step and the gate decide again with the real base. Set but empty or invalid, the merge base and the changed paths are unknown, and [gadugi stays required](#an-unknown-merge-base-keeps-gadugi-required). |
 | `AUTODRIVE_QA_HEAD` | `HEAD` | The commit whose changes are judged. The merge gate sets it to the pull request's `headRefOid`, because it runs in the launch checkout, which is normally on the base branch. It must be a full SHA of a commit in the clone; anything else makes the changed paths unknown and gadugi required. The evidence tool leaves it unset and judges its checkout's `HEAD`, the pull request head. |
@@ -1651,6 +1653,33 @@ A variable set to the empty string still means no command:
 `AUTODRIVE_QA_COMMAND=` gives `BLOCKED` with `qa-command-missing`, records
 `qa_command_source` `env`, and stops `.amplihack/qa.toml` from being read. The variables come from the environment
 only, never recipe context (`no_recipe_declares_the_qa_overrides_as_context`).
+
+Both operator overrides are trusted shell source executed with the invoking
+user's permissions. The outer shell's quotes protect the variable assignment;
+quotes stored inside the value are interpreted by Bash when QA runs. For
+example, either assignment below prints `<slow one>` in the suite log: the
+invoked `printf` receives `slow one` as one argument without literal quotes.
+
+```bash
+export AUTODRIVE_QA_COMMAND='printf "<%s>\n" "slow one"'
+# Suite log: <slow one>
+
+export AUTODRIVE_QA_COMMAND="printf '<%s>\n' 'slow one'"
+# Suite log: <slow one>
+```
+
+For a Cargo suite, `AUTODRIVE_QA_COMMAND='cargo test -- --skip "slow one"'`
+passes `slow one` as one argument to the test runner. Set
+`AUTODRIVE_QA_DIR=crates/amplihack-cli` to run it in that directory of this
+repository, or use an absolute directory path. Leaving `AUTODRIVE_QA_DIR`
+unset or empty runs the singular command at the repository root. Paths
+containing spaces are supported when quoted in the variable assignment.
+When both command variables contain commands, the singular command runs
+first in its selected directory, then each plural entry runs at the
+repository root in a separate Bash process.
+
+These shell semantics apply only to the operator overrides. The repository
+file, CI source and detected commands retain their restricted execution rules.
 
 ##### The repository file `.amplihack/qa.toml`
 
@@ -1733,9 +1762,10 @@ command does:
 ```
 
 It is split into words with globbing off, never passed to `bash -c` or
-`eval`, and its first word is checked with the same installed check as
-`AUTODRIVE_QA_COMMAND`. A value such as `command = "$(touch pwned)"` is
-rejected as `unsafe-command` and runs nothing.
+`eval`, and its first word is checked for an installed executable in its
+selected directory, as described under
+[Running the suite commands](#running-the-suite-commands). A value such as
+`command = "$(touch pwned)"` is rejected as `unsafe-command` and runs nothing.
 
 ##### The CI workflows
 
@@ -2201,18 +2231,43 @@ The detected Cargo command is the same `--locked` command at every depth, so
 a nested workspace without a `Cargo.lock` fails with `qa-command-failed`.
 That is a QA failure; commit the lock file.
 
-`AUTODRIVE_QA_COMMAND`, the `.amplihack/qa.toml` command, the CI command and
-detected commands share one run path,
+The `.amplihack/qa.toml` command, the CI command and detected commands share
+one run path,
 `( set -f; cd -- "$QA_DIR" && $command ) </dev/null`, from the repository
-root, split into words with globbing off. `AUTODRIVE_QA_COMMANDS` entries run
-from the root. A command counts as installed when `command -v`, run in
-`qa_dir`, finds it on `PATH`; where it resolves is not checked. A project
+root, split into words with globbing off. A command counts as installed when
+`command -v`, run in `qa_dir`, finds it on `PATH`; where it resolves is not
+checked. A project
 `.venv/bin/pytest` (uv, poetry with in-project virtualenvs,
 `python -m venv .venv`) is used when `.venv/bin` is on `PATH`.
-`AUTODRIVE_QA_COMMAND` also accepts a `./<first word>` executable relative to
-`AUTODRIVE_QA_DIR`, so `AUTODRIVE_QA_COMMAND=bin/check AUTODRIVE_QA_DIR=sub`
-runs `sub/bin/check`. That is the way to use a repository-local wrapper:
-`AUTODRIVE_QA_COMMAND='./scripts/cargo-wrapper test'`.
+
+`AUTODRIVE_QA_COMMAND` runs through `bash -c` with the complete value passed
+unchanged as one argument. Its working directory is `AUTODRIVE_QA_DIR`,
+relative to the repository root or absolute, defaulting to the repository
+root. Standard input comes from `/dev/null`; stdout and stderr go to the
+existing suite log. The tool does not split the source or pre-check its
+executable. Bash resolves commands, including quoted executable paths, and
+reports execution failures. For example,
+`AUTODRIVE_QA_COMMAND='./scripts/cargo-wrapper test'` runs the wrapper
+relative to the selected directory. Shell operators such as `&&` retain
+their Bash meaning, and the complete Bash command's exit status determines
+the result.
+
+`AUTODRIVE_QA_COMMANDS` runs each entry through `bash -c` at the repository
+root with null stdin and the same logging. `AUTODRIVE_QA_DIR` has no effect
+on these entries, and a `cd` in one entry does not affect the next.
+
+A complete command that exits non-zero gives `qa_status=FAIL` and
+`qa_reason=qa-command-failed`. `qa_exit_code` records the first non-zero
+command status, including when later commands succeed. Bash returns `127`
+for a missing executable invocation, but the complete shell source determines
+the command's exit status: `missing-command; true` exits `0`. A missing
+executable gives `FAIL` with `qa-command-failed` only when the complete command
+exits non-zero; it does not give `qa-command-not-installed`. Ordinary
+exit codes are preserved; Unix signal termination is recorded as
+`128 + signal`. The evidence tool still returns zero when it successfully
+produces evidence, even when that evidence reports QA failure. Read
+`qa_status` to determine the QA result; the tool's own non-zero exit means
+evidence generation failed.
 
 **This is not a sandbox, and the installed check is not a security control.**
 The suite runs code from the branch whichever binary starts it: `npm test`
@@ -2284,7 +2339,7 @@ all passed, and `gadugi_status` is `PASS` or, where gadugi is not required,
 | 6 | `gadugi-scenario-unnamed` | `FAIL` | A name is empty, starts with `-`, holds a control byte, exceeds 200 bytes, or is a block scalar or flow mapping (`RUN_FAILED`). |
 | 7 | `gadugi-run-failed` | `FAIL` | A run or staging failed, or a symlinked or non-regular entry exists; such entries never run (`RUN_FAILED`). |
 | 8 | `qa-command-missing` | `BLOCKED` | No suite command, a missing scope helper, or incomplete evidence with no other token. |
-| 9 | `qa-command-not-installed` | `BLOCKED` | The program of the single, repository-file, CI or detected command is missing. |
+| 9 | `qa-command-not-installed` | `BLOCKED` | The program of the repository-file, CI or detected command is missing. Operator shell commands report execution failures through their Bash exit status. |
 | 10 | `gadugi-test-missing` | `BLOCKED` | Gadugi is required and `gadugi-test` is not on `PATH`; no gadugi check ran (`NOT_INSTALLED`). Step-00 stops the round before this when the tool is missing, so in a merge round it means the tool went away during the round; step-04 leaves it to a person. |
 
 The evidence is one JSON line of sanitised strings in `qa-evidence.json`,

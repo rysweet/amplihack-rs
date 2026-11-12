@@ -4922,16 +4922,14 @@ ev_expect "QA-hostile-names" qa_status=FAIL qa_reason=gadugi-scenario-unnamed ga
   gadugi_failed_scenarios="tests/agentic/ctrl.yaml tests/agentic/dash.yaml tests/agentic/long.yaml"
 ev_expect_runs "QA-hostile-names-runs" good
 
-# 19. AUTODRIVE_QA_COMMAND on its own keeps the #1516 semantics: configured,
-# run in AUTODRIVE_QA_DIR, word-split with globbing off, and installed when the
-# first word is an executable file in that directory.
+# 19. AUTODRIVE_QA_COMMAND runs as Bash source in AUTODRIVE_QA_DIR (#2441).
 ev_repo package.json; ev_scen tests/agentic/a.yaml; ev_script sub/runtests.sh
 : > "${EV_REPO}/sub/--evil"
-ev_run "${EV_FULL}" AUTODRIVE_QA_COMMAND='./runtests.sh one *' AUTODRIVE_QA_DIR=sub
+ev_run "${EV_FULL}" AUTODRIVE_QA_COMMAND='./runtests.sh one "*"' AUTODRIVE_QA_DIR=sub
 ev_expect "QA-single-command" qa_status=PASS qa_reason="" qa_repo_type=configured qa_command='./runtests.sh one *' \
   qa_suite_commands_count=1 qa_exit_code=0 gadugi_status=PASS
 if ev_called "suite runtests.sh cwd=${EV_REPO}/sub args=[one *]" && ! grep -q '^npm ' "${EV_CALLS}"; then
-  pass "QA-single-command-run" "AUTODRIVE_QA_COMMAND runs in AUTODRIVE_QA_DIR with globbing off, and detection is skipped"
+  pass "QA-single-command-run" "AUTODRIVE_QA_COMMAND runs in AUTODRIVE_QA_DIR with a quoted literal glob, and detection is skipped"
 else
   fail "QA-single-command-run" "calls=$(tr '\n' '|' < "${EV_CALLS}")"
 fi
@@ -4948,9 +4946,9 @@ ev_expect "QA-single-command-fails" qa_status=FAIL qa_reason=qa-command-failed q
 # 20. A configured program that is not installed, and a variable set but empty.
 ev_repo package.json; ev_scen tests/agentic/a.yaml
 ev_run "${EV_FULL}" AUTODRIVE_QA_COMMAND='no-such-program --flag'
-ev_expect "QA-single-not-installed" qa_status=BLOCKED qa_reason=qa-command-not-installed qa_repo_type=configured \
-  qa_exit_code="" gadugi_status=PASS
-if ev_called "gadugi-test validate" && evf qa_summary | grep -qF 'no-such-program not installed'; then
+ev_expect "QA-single-not-installed" qa_status=FAIL qa_reason=qa-command-failed qa_repo_type=configured \
+  qa_exit_code=127 gadugi_status=PASS
+if ev_called "gadugi-test validate" && evf qa_summary | grep -qF 'repository test failure'; then
   pass "QA-single-not-installed-gadugi-runs" "gadugi still runs when the suite command is not installed"
 else
   fail "QA-single-not-installed-gadugi-runs" "summary='$(evf qa_summary)' calls=$(tr '\n' '|' < "${EV_CALLS}")"

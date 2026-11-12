@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use crate::commands::multitask;
 
 mod autodrive_completion;
+mod autodrive_qa_command;
 mod named_branch;
 mod select_workflow;
 mod workflow_log_inventory;
@@ -48,6 +49,12 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
+    /// Execute the trusted AUTODRIVE_QA_COMMAND shell source through Bash.
+    AutodriveQaCommand {
+        /// Working directory selected by the QA evidence tool.
+        #[arg(long, value_name = "PATH")]
+        dir: PathBuf,
+    },
     /// Prepare driver-owned identity and completion dispatch context.
     AutodriveCompletionPrepare(autodrive_completion::Prepare),
     /// Seal the round evidence before the next-action agent runs.
@@ -506,6 +513,13 @@ fn read_bounded_stdin() -> String {
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
+        OrchHelperCommands::AutodriveQaCommand { dir } => {
+            let code = autodrive_qa_command::run(&dir)?;
+            if code != 0 {
+                return Err(crate::command_error::exit_error(code));
+            }
+            Ok(())
+        }
         OrchHelperCommands::AutodriveCompletionPrepare(args) => autodrive_completion::prepare(args),
         OrchHelperCommands::AutodriveCompletionSeal { private_state } => {
             autodrive_completion::seal(private_state)
