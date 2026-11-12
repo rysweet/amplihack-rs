@@ -6,14 +6,17 @@
 //! Once per cycle, after the measurement and before the target gate,
 //! [`step`]:
 //!
-//! - reads the live login again when its reading is frozen (the same session
-//!   and week figures on [`FROZEN_CYCLES`] cycles after the first, with a
-//!   session above 0), older than one `--interval` (R1, R1b), or below the
-//!   last re-read after a re-read that disagreed with it (the cached source
-//!   is behind); the re-read reads `~/.claude` with no token refresh
-//!   (`Ctx::reread_live`). A failed re-read leaves the frozen count as it
-//!   was, so a frozen reading is read again on every identical cycle until
-//!   a re-read succeeds;
+//! - reads the live login again when its cached (passive) reading is frozen
+//!   (the same session and week figures on [`FROZEN_CYCLES`] cycles after
+//!   the first, with a session above 0), when its reading is older than one
+//!   `--interval` (R1, R1b), or when it is below the last re-read after a
+//!   re-read that disagreed with it (the cached source is behind); the
+//!   re-read reads `~/.claude` with no token refresh (`Ctx::reread_live`).
+//!   A direct reading is never frozen, and it restarts the frozen count:
+//!   it was read from the usage source in this cycle, so identical direct
+//!   figures are an idle login, not a frozen cache. A failed re-read leaves
+//!   the frozen count as it was, so a frozen cached reading is read again on
+//!   every identical cycle until a re-read succeeds;
 //! - also reads it again when a cached (passive) figure contradicts the
 //!   last accepted point: lower in the same session window, or from an
 //!   earlier one (`series::contradicts`). Use never falls within one window, so
@@ -66,8 +69,8 @@ pub use series::{
     MAX_POINTS, Point, SAME_WINDOW_SECS, SESSION_WINDOW_SECS, Window, contradicts, window,
 };
 
-/// Unchanged cycles after which a live reading is frozen: the third
-/// identical reading in a row.
+/// Unchanged cycles after which a cached (passive) live reading is frozen:
+/// the third identical cached reading in a row.
 pub const FROZEN_CYCLES: u32 = 2;
 
 #[path = "live_outlook.rs"]
@@ -103,8 +106,12 @@ pub(in crate::commands::profile::rotate) fn step(
     let mut live = probe.clone();
     let mut still_stale = false;
     if let Reading::Measured { session, week } = probe.reading {
-        let unchanged = ctx.live_series.seen(&name, session, week);
-        let frozen = session > 0.0 && unchanged >= FROZEN_CYCLES;
+        let unchanged = ctx.live_series.seen(&name, session, week, probe.passive);
+        // Only a cached (passive) figure can be frozen. A direct reading was
+        // read from the usage source in this cycle: identical direct figures
+        // are an idle login, and a re-read by the same method seconds later
+        // could only agree, or fail and discard the reading just taken.
+        let frozen = probe.passive && session > 0.0 && unchanged >= FROZEN_CYCLES;
         let old = read_at(&probe, m.measured_at).is_none_or(|a| stale_at(a, t, interval));
         let behind = ctx
             .live_series

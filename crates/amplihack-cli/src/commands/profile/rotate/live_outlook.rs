@@ -1,8 +1,9 @@
 //! Issue #2211: the figures that stand in for the live reading in the
 //! decision, and how they reach it. Pure functions of their arguments: no
 //! file, process or clock. The live step (`step` in `live_fresh.rs`) builds
-//! the [`Outlook`]; `observe::decide_measured` puts it through the decision
-//! rule and [`with_outlook`]. See "Rotate live reading freshness" in
+//! the [`Outlook`]; `observe::decide_measured` decides on it under
+//! organisation affinity (`observe::affinity::outlook`) and puts that
+//! through [`with_outlook`]. See "Rotate live reading freshness" in
 //! docs/reference/profile-command.md.
 
 use super::super::super::decide::{Decision, Reading, Reason, needs_swap};
@@ -63,10 +64,12 @@ impl Outlook {
 /// The verdict a cycle acts on when an outlook stands in for the live
 /// reading `real_reading`, for a live plan login.
 ///
-/// `real` is the overflow-aware verdict on `real_reading`, as measured.
-/// `on_outlook` is the decision rule (`decide`) alone on the outlook's
-/// figures: since an outlook is always at or above `--session-at`, that is
-/// a threshold swap or the ALERT.
+/// `real` is the overflow-aware verdict on `real_reading`, as measured,
+/// restricted by organisation affinity (#2136). `on_outlook` is the
+/// decision on the outlook's figures, made with the cycle's one affinity
+/// `Need`, worked out on `real_reading` (`observe::affinity::outlook`, or
+/// `outlook_failed` for a failed reading). So the outlook never makes a
+/// confirmed organisation crossing, nor makes one sooner.
 ///
 /// - A failed reading: see [`on_failed`]. The failed-probe rules choose the
 ///   target; the outlook can only remove their damping delay.
@@ -77,7 +80,8 @@ impl Outlook {
 /// - Otherwise the measured reading is below both thresholds, so `real` is
 ///   a stay, and the outlook decides: a threshold swap on it, labelled by
 ///   [`map_reason`], or the `no-capacity` ALERT. An ALERT is a stay with a
-///   warning, so no swap is lost.
+///   warning, so no swap is lost. A stay on the outlook, which affinity
+///   gives when only a confirmed crossing has capacity, leaves `real`.
 ///
 /// So the plan-room swap and the moves onto overflow never run on a
 /// projected or substituted figure, and nothing here moves work onto
@@ -115,20 +119,22 @@ pub fn with_outlook(
 /// The verdict on a failed live reading under a substitution. The outlook
 /// changes the timing only, never the choice of target.
 ///
-/// For a failed live plan login, `real` is the decision rule on headroom 0
-/// (`decide`): a threshold swap to the candidate with the most headroom,
-/// when it has `--margin` of headroom, which failed-probe damping delays
-/// for three failures, or the ALERT. The outlook decides on the
-/// substituted figure, which leaves the live login at least that much
-/// headroom, so it asks at least as much of the same candidate (`best`
-/// does not depend on the live reading). Its swap, when there is one, goes
-/// to the same target as `real`'s, and its ALERT can mean only that the
-/// target has less than `--margin` more headroom than the substituted
-/// figure leaves.
+/// For a failed live plan login, `real` is the decision rule on headroom 0,
+/// restricted by organisation affinity: a threshold swap to the permitted
+/// candidate with the most headroom, when it has `--margin` of headroom,
+/// which failed-probe damping delays for three failures, or the ALERT.
 ///
-/// - The outlook gives a threshold swap: the target beats even the
-///   substituted figure, so `real`'s swap is made now, relabelled by
-///   [`map_reason`] so that damping does not delay it.
+/// `on_outlook` asks one thing of `real`'s own target: whether it has
+/// `--margin` more headroom than the substituted figure leaves the live
+/// login (`observe::affinity::outlook_failed`, which also refuses a target
+/// that is a confirmed organisation crossing). Only a threshold swap to
+/// that same target counts here; a swap the outlook names to any other
+/// login is ignored, since another login beating the substituted figure
+/// says nothing about `real`'s target.
+///
+/// - The outlook gives a threshold swap to `real`'s target: that target
+///   beats even the substituted figure, so `real`'s swap is made now,
+///   relabelled by [`map_reason`] so that damping does not delay it.
 /// - Otherwise `real` stands, so damping and the `failed-probe` swap after
 ///   three failures apply as without the outlook. An ALERT on the outlook
 ///   never replaces that swap: a dead live login must still be left.
@@ -141,14 +147,17 @@ fn on_failed(
     s: &Settings,
     real_reading: &Reading,
 ) -> Verdict {
-    let target_qualifies = matches!(
-        on_outlook,
-        Decision::Swap {
-            reason: Reason::Threshold,
-            ..
-        }
-    );
-    if !target_qualifies {
+    let sooner = match (&real.decision, on_outlook) {
+        (
+            Decision::Swap { to, .. },
+            Decision::Swap {
+                to: target,
+                reason: Reason::Threshold,
+            },
+        ) => to == target,
+        _ => false,
+    };
+    if !sooner {
         return real;
     }
     Verdict {

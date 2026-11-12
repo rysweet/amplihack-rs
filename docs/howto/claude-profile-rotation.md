@@ -8,12 +8,23 @@ review_schedule: as-needed
 # How to Rotate Claude Logins Automatically
 
 `amplihack profile rotate` keeps the default Claude login in `~/.claude` on
-the account with the most capacity left. It measures every
+an eligible account with capacity, preferring the live login's organisation.
+It measures every
 [login profile](claude-profiles.md) with
 [`profile usage`](claude-profiles.md#check-usage-across-profiles), and when the
 account in `~/.claude` is close to its session or weekly limit it moves a
 better profile's login into `~/.claude` and puts the outgoing login back in the
 profile it came from.
+
+[Organisation affinity](../reference/profile-organisation-affinity.md) restricts
+selection before capacity ranking: crossing is allowed only for necessary
+capacity relief without an eligible same-organisation target with capacity.
+Plan-room and upgrade moves never make a confirmed crossing, including
+fallbacks; an unknown organisation is not a crossing, so missing metadata never
+keeps a session on an overflow login. The rotate log and `rotate status`
+distinguish confirmed crossings from unresolved affinity. A session stopped
+at a limit receives the warning with the resume that follows the swap, read
+from the swap record; a stop that does not end in a resume gets none.
 
 Use it when you run plain `claude` (no `CLAUDE_CONFIG_DIR`) and have several
 profiles. [Auto-switch](claude-profiles.md#switch-accounts-automatically) is
@@ -47,6 +58,7 @@ The exact flags, files, exit codes and log lines are in the
 - [When live usage stops changing](#when-live-usage-stops-changing)
 - [When the live login cannot be measured](#when-the-live-login-cannot-be-measured)
 - [When the host is heavily loaded](#when-the-host-is-heavily-loaded)
+- [Remove logs left by old usage probes](#remove-logs-left-by-old-usage-probes)
 - [Which profiles can take over](#which-profiles-can-take-over)
 - [Read the log](#read-the-log)
 - [Resume sessions stopped by a usage limit](#resume-sessions-stopped-by-a-usage-limit)
@@ -822,10 +834,13 @@ the lock. See the
 
 ## When live usage stops changing
 
-Look for `stale live reading; re-read` in the rotate log. The third reading
-with identical session and week figures and a nonzero session figure
-triggers a re-read, as does a reading older than one interval. A steady zero
-session reading alone does not.
+Look for `stale live reading; re-read` in the rotate log. The third cached
+(status-line) reading with identical session and week figures and a nonzero
+session figure triggers a re-read, as does a reading older than one
+interval. A steady zero session reading alone does not, and neither do
+identical direct readings: when the status line is not being written, the
+cache ages out and the login is read directly each cycle, and the same
+figures then mean an idle login, not a frozen cache.
 
 Once a re-read establishes lag, older cached values remain untrusted even if
 their percentages change or match the accepted figures. The cache recovers
@@ -871,7 +886,11 @@ the older cache current, and it does not make a frozen reading trusted
 again either: the frozen count is kept, so the next identical reading is
 read again. If accepted recent usage, over at least one interval, projects
 to `--session-at` by the next cycle, the rotator
-swaps now with `reason=projected`, provided a target qualifies. Near the
+swaps now with `reason=projected`, provided a target qualifies. A projected
+or substituted swap never crosses organisations: it is decided with the
+need of the reading as measured, so a crossing waits for that reading to
+reach a threshold (see
+[outlook and organisation affinity](../reference/profile-command.md#outlook-and-organisation-affinity)). Near the
 threshold (within `--margin` of `--session-at`, or projected to reach it),
 a stale reading whose re-read fails is decided as if the login were at the
 threshold: a swap or the `no-capacity` ALERT, never a stay. With
@@ -879,8 +898,9 @@ threshold: a swap or the `no-capacity` ALERT, never a stay. With
 re-read on its third identical reading; if that read fails, the cycle
 swaps, or alerts when no target qualifies, and the next cycle reads again.
 A failed live probe near the threshold only changes timing: the
-failed-probe swap is made at once when its target beats 70% by the margin,
-and otherwise after three failures as usual. The last reading counts only
+failed-probe swap is made at once when its own target beats 70% by the
+margin and is not in another organisation, and otherwise after three
+failures as usual. The last reading counts only
 while its session window can still be open, and for five hours at most. See the
 [live freshness reference](../reference/profile-command.md#rotate-live-reading-freshness).
 A steady low rate stays below the threshold.
@@ -977,8 +997,15 @@ The rotator measures each login as
 3. only if that fails does it start `claude`, first with a `get_usage`
    request and then with `claude -p /usage`.
 
-The last step is the slow one: `/usage` reads every transcript the profile
-can see, which can take a minute or more of CPU on a busy host. A profile
+The last step is the slow one. Without help, `/usage` reads every
+transcript the profile can see, which can take a minute or more of CPU on a
+busy host. On Linux with a usable `bwrap`, each probe runs with an empty
+folder over the shared `projects`, so it has no transcripts to read, and
+every probe passes `--no-session-persistence`, so it adds no log of its own.
+Without `bwrap`, the rotator writes one `note:` line to `rotate.err` and
+probes with the flag alone; installing `bubblewrap` brings the sandbox back
+after a rotator restart. See
+[Probe sandbox](../reference/profile-command.md#probe-sandbox). A profile
 marked as overflow is always probed with `/usage` alone, because only
 `/usage` shows a used-up spend limit. So each login's `claude` probe gets
 120 seconds, and only a few run at once: between 2 and 4, fewer as the load
@@ -1091,6 +1118,46 @@ amplihack profile rotate start --interval 120 --session-at 70
 A value just under `--interval` makes every cycle ask each login again, at
 the cost of one direct read per login per cycle; `0` does the same and also
 ignores the status line's own readings.
+
+## Remove logs left by old usage probes
+
+Before the probe sandbox, every `claude` usage probe wrote a small session
+log into `~/.claude/projects/<encoded home>`, for example
+`~/.claude/projects/-home-ryan`. Thousands of them slow down any `/usage`
+run outside the sandbox. Remove them once, after upgrading:
+
+1. Check that no interactive `claude` session is open in your home
+   directory. A session that has so far run only `/usage` looks like a
+   probe log and would be removed.
+2. List what would be removed:
+
+   ```bash
+   amplihack profile prune-probe-logs --dry-run | wc -l
+   amplihack profile prune-probe-logs --dry-run | head
+   ```
+
+3. Remove them:
+
+   ```bash
+   amplihack profile prune-probe-logs
+   ```
+
+   ```
+   removed 2467, kept 312
+   ```
+
+Only logs that hold the `/usage` command and nothing else are removed;
+anything with a prompt, a reply, another command or a line that cannot be
+read is kept. Claude names the project folder after the directory the
+rotator was started in, so if you started it outside `$HOME`, the logs are
+in that directory's folder. To clean another folder, pass `--dir`:
+
+```bash
+amplihack profile prune-probe-logs --dir ~/.claude/projects/-home-ryan-src --dry-run
+```
+
+The rule is in the
+[reference](../reference/profile-command.md#prune-probe-logs).
 
 ## Which profiles can take over
 
@@ -1289,7 +1356,9 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
    happens:
    - **The rotator writes a new swap record.** The hook reads it and
      resumes the session if the record is newer than the stop and the new
-     login has room (see [The swap record](#the-swap-record)). Otherwise it
+     login has room (see [The swap record](#the-swap-record)). The stop is
+     the time of the last entry in the session's transcript, or one second
+     before the hook started if that is earlier or cannot be read. Otherwise it
      logs `swap-stale` or `swap-no-room` and keeps waiting.
    - **You send a prompt in that session**, for example `continue`. The hook
      ends as `moved-on`. Background task reports and `/usage` are not
@@ -1315,7 +1384,9 @@ The hook never does both. A session that got keys never also gets the exit
 `2` message, so it is never told to continue twice.
 
 The hook trusts the rotator's reading. It never applies the thresholds
-itself and never reads a login, a credentials file or the transcript.
+itself and never reads a login or a credentials file. From the transcript
+it reads only the time of the last entry, which tells it when the session
+stopped, and it logs nothing from it.
 
 ### The swap record
 
@@ -1464,8 +1535,11 @@ of the pane id, not the id. The other outcomes are listed in the
 - **Recorded before acting.** The resume is on disk under the lock before
   the first key or the exit `2`, so a resume cut short is never repeated.
 - **One resume per limit event.** A second hook run for the same session,
-  the same error text and the same live login logs `duplicate`. A limit
-  after the rotator swapped to another login is a new event.
+  the same error text and the same login logs `duplicate`. The login is the
+  one the session stopped on: when the rotator swapped away from it just
+  before the hook started, that is the swap record's `from_login`, not the
+  new live login. A limit after the rotator swapped to another login is a
+  new event.
 - **One wake per wait.** When two hooks wait for the same session, only the
   first to act resumes it; the other logs `duplicate` or `moved-on`.
 - **At most 3 resumes per session in 24 hours.** After that it logs `cap`.
@@ -1489,7 +1563,10 @@ The hook acts only when Claude Code runs it, on a `StopFailure` event with
   again. A limit after the rotator swapped to another login is a new event,
   and the hook waits for the next swap.
 - **A stop on one login, then a swap to another.** The swap's record wakes
-  the session once, and the log line reads `swap_live=<second login>`.
+  the session once, and the log line reads `swap_live=<second login>`. This
+  holds when the swap finishes between the stop and the hook's start. If the
+  session then hits a limit on the second login, that is a new event and
+  the hook waits for the next swap.
 
 ### Continue a session yourself
 

@@ -25,6 +25,9 @@ mod tests_identity_limits;
 mod tests_issue_1886_collide;
 #[path = "tests_issue_1947.rs"]
 mod tests_issue_1947;
+#[path = "tests_issue_2136.rs"]
+#[cfg(target_os = "linux")]
+mod tests_issue_2136;
 #[path = "tests_issue_2211.rs"]
 mod tests_issue_2211;
 #[path = "tests_issue_2211_cycle.rs"]

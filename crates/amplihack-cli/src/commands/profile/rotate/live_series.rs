@@ -89,7 +89,8 @@ pub struct Series {
     name: Option<ProfileName>,
     points: VecDeque<Point>,
     /// The last cycle's measured session and week figures, for the frozen
-    /// count. Always the cached source's own figures, never a re-read's.
+    /// count. Always the measurement's own figures (cached or direct), never
+    /// a re-read's.
     prev: Option<(f64, f64)>,
     unchanged: u32,
     /// The last re-read disagreed with the measured figures: the cached
@@ -197,11 +198,25 @@ impl Series {
     }
 
     /// Records this cycle's figures for `name` and returns how many cycles
-    /// in a row they have been unchanged.
-    pub(super) fn seen(&mut self, name: &ProfileName, session: f64, week: f64) -> u32 {
+    /// in a row the cached (passive) source has shown them unchanged.
+    ///
+    /// A direct reading (`passive` false) restarts the count. It was read
+    /// from the usage source in this cycle, so it is current, as a re-read
+    /// that agrees shows (`after_reread`); identical direct figures mean an
+    /// idle login, and reading them again by the same method could tell
+    /// nothing new. So the first cached figure after a run of direct
+    /// readings starts a new count, and is not re-read because direct
+    /// readings before it matched it.
+    pub(super) fn seen(
+        &mut self,
+        name: &ProfileName,
+        session: f64,
+        week: f64,
+        passive: bool,
+    ) -> u32 {
         self.own(name);
         self.unchanged = match self.prev {
-            Some(p) if p == (session, week) => self.unchanged.saturating_add(1),
+            Some(p) if passive && p == (session, week) => self.unchanged.saturating_add(1),
             _ => 0,
         };
         self.prev = Some((session, week));

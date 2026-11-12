@@ -52,6 +52,8 @@ mod issue_1962_seed_cmd;
 mod issue_1962_seed_output;
 #[path = "issue_1962_seed_scan.rs"]
 mod issue_1962_seed_scan;
+#[path = "issue_1974_probe_sandbox.rs"]
+mod issue_1974_probe_sandbox;
 #[path = "issue_1976_orphaned_nested_run.rs"]
 mod issue_1976_orphaned_nested_run;
 #[path = "issue_1976_real_runner_nested_run.rs"]
@@ -339,6 +341,8 @@ mod issue_2042_seam_dry_run_and_refusal;
 mod issue_2211_live_freshness;
 #[path = "issue_2317_codex_step_commits_in_worktree.rs"]
 mod issue_2317_codex_step_commits_in_worktree;
+#[path = "issue_2336_autodrive_completion.rs"]
+mod issue_2336_autodrive_completion;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

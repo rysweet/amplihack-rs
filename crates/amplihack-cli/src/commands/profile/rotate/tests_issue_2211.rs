@@ -40,11 +40,18 @@
 //!   -> Verdict`: for a failed reading, `real_verdict` (the failed-probe
 //!   rules' threshold swap, which damping delays, or their ALERT), with its
 //!   threshold swap relabelled by `map_reason` (so undamped) only when the
-//!   outlook also gives a threshold swap; an ALERT on the outlook never
-//!   replaces it. A measured reading at a threshold, or one that gives a
+//!   outlook gives a threshold swap to that same target; a swap the outlook
+//!   names to another login, and an ALERT on the outlook, never replace it
+//!   (crusty round 8: another login's headroom says nothing about `real`'s
+//!   target). The caller decides the outlook under organisation affinity
+//!   with the cycle's one need (`observe::affinity::outlook`,
+//!   `outlook_failed`); `tests_issue_2211_cycle` checks that in two
+//!   organisations. A measured reading at a threshold, or one that gives a
 //!   swap on its own, keeps `real_verdict`. Otherwise (below both
 //!   thresholds) a threshold swap on the outlook, labelled by `map_reason`,
-//!   or the ALERT, never a stay. It never returns a plan-room or overflow
+//!   or the ALERT; only a stay on the outlook, which organisation affinity
+//!   gives when just a confirmed crossing has capacity, keeps
+//!   `real_verdict`. It never returns a plan-room or overflow
 //!   swap that `real_verdict` did not already hold, and never retargets.
 //! - `fresh::live_time(&live_probe, measured_at) -> Option<i64>`: the live
 //!   reading time the target gate compares with, `read_at` capped at
@@ -609,12 +616,52 @@ fn a_substituted_failed_probe_never_retargets_the_failed_probe_swap() {
     let real = verdict(swap_for(Reason::Threshold));
     let got = with_outlook(
         real.clone(),
-        threshold(),
+        swap_for(Reason::Threshold),
         Basis::Substituted,
         &s,
         &Reading::Failed,
     );
     assert_eq!(got.decision, swap_for(Reason::Projected), "real's target");
+}
+
+#[test]
+fn a_swap_the_outlook_names_to_another_login_never_makes_the_failed_probe_swap_sooner() {
+    // Crusty round 8: the failed-probe rules chose `other` (in the live
+    // login's organisation, say); `spare` beats the substituted figure, but
+    // that says nothing of `other`. Damping must apply to `other`'s swap.
+    let s = s();
+    let real = verdict(swap_for(Reason::Threshold));
+    let got = with_outlook(
+        real.clone(),
+        threshold(),
+        Basis::Substituted,
+        &s,
+        &Reading::Failed,
+    );
+    assert_eq!(got, real, "damped as without the outlook");
+    // Nor does a stay on the outlook (`outlook_failed`'s answer when the
+    // target does not beat the substituted figure, or is a crossing).
+    let got = with_outlook(
+        real.clone(),
+        Decision::Stay,
+        Basis::Substituted,
+        &s,
+        &Reading::Failed,
+    );
+    assert_eq!(got, real);
+}
+
+#[test]
+fn a_stay_on_the_outlook_of_a_measured_reading_leaves_the_measured_verdict() {
+    // `affinity::outlook` gives a stay where only a confirmed crossing
+    // could take the session: the outlook adds neither a swap nor the
+    // no-capacity ALERT.
+    let s = s();
+    let real = verdict(Decision::Stay);
+    for basis in [Basis::Projected, Basis::Substituted] {
+        let got = with_outlook(real.clone(), Decision::Stay, basis, &s, &m(63.0, 41.0));
+        assert_eq!(got, real, "{basis:?}");
+    }
 }
 
 #[test]

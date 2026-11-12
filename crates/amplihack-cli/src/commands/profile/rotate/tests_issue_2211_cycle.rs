@@ -227,15 +227,23 @@ fn take_key_from_home(e: &Env) {
     private(&path, &home.to_string());
 }
 
-// --- (a) A frozen reading is read again on the third identical cycle -------
+// --- (a) A frozen cached reading is read again on the third identical cycle
+
+/// A cached (status-line) reading taken 5 s before the cycle's clock: the
+/// status line keeps writing, so its observation time keeps moving.
+fn cached(session: f64, week: f64) -> Live {
+    Live::Passive(session, week, 5)
+}
 
 lane!(la);
 
 #[test]
 fn a_a_frozen_live_reading_is_read_again_and_decided_on_the_fresh_value() {
+    // The status line keeps rewriting 40% with a new observation time while
+    // the login's use has risen to 80%: the cache is frozen.
     let e = env();
     seed(&la::CLOCK);
-    set(&la::LIVE, &[Live::Direct(40.0, 20.0)]);
+    set(&la::LIVE, &[cached(40.0, 20.0)]);
     set(&la::OTHERS, &spare_room());
     set(&la::REREAD, &[rd(80.0, 20.0, None)]);
     let mut c = ctx(&e, la::clock, la::measure, Some(la::reread));
@@ -261,9 +269,11 @@ lane!(lb);
 
 #[test]
 fn a2_a_reread_with_the_same_value_is_accepted_and_the_count_restarts() {
+    // A cached 40% that the re-read confirms: the count restarts, and the
+    // cache, still unchanged, is read again two cycles later.
     let e = env();
     seed(&lb::CLOCK);
-    set(&lb::LIVE, &[Live::Direct(40.0, 20.0)]);
+    set(&lb::LIVE, &[cached(40.0, 20.0)]);
     set(&lb::OTHERS, &spare_room());
     set(&lb::REREAD, &[rd(40.0, 20.0, None)]);
     let mut c = ctx(&e, lb::clock, lb::measure, Some(lb::reread));
@@ -280,6 +290,73 @@ fn a2_a_reread_with_the_same_value_is_accepted_and_the_count_restarts() {
     assert_eq!(swaps(&log), 0, "{log}");
 }
 
+// --- Crusty round 8: an identical direct reading is never frozen -----------
+
+lane!(ldd);
+
+#[test]
+fn a4_an_identical_direct_reading_is_never_read_again_or_substituted() {
+    // An idle login whose status line is not being written: the cache ages
+    // out and every cycle reads it directly, with the same figures. 66% is
+    // inside the margin band (70 - 5), and every re-read would fail: before
+    // the passive gate, cycle 3 re-read it, the failed re-read left it still
+    // stale, and the 66% was substituted to 70%, a `projected` swap on one
+    // failure of a redundant read. A direct reading is current, so it is
+    // never re-read, never substituted, and the cycle decides on it.
+    let e = env();
+    seed(&ldd::CLOCK);
+    set(&ldd::LIVE, &[Live::Direct(66.0, 20.0)]);
+    set(&ldd::OTHERS, &spare_room());
+    set(&ldd::REREAD, &[]);
+    let mut c = ctx(&e, ldd::clock, ldd::measure, Some(ldd::reread));
+    for i in 1..=6 {
+        assert_eq!(step(&mut c, &ldd::CLOCK), CycleOutcome::Stayed, "cycle {i}");
+        assert_eq!(c.live_outlook, None, "cycle {i}: no outlook");
+        assert_eq!(c.live_series.unchanged(), 0, "cycle {i}: direct, no count");
+    }
+    let log = log_of(&e);
+    assert_eq!(ldd::live_calls(), 0, "never re-read: {log}");
+    assert_eq!(stale_lines(&log), 0, "{log}");
+    assert!(!log.contains(FAILED), "{log}");
+    assert_eq!(swaps(&log), 0, "{log}");
+    assert!(!log.contains("reason=projected"), "{log}");
+    assert_eq!(c.failed_live, 0, "no failed probe was counted");
+}
+
+lane!(ldc);
+
+#[test]
+fn a5_a_direct_reading_restarts_the_frozen_count_of_the_cache() {
+    // Cached, cached, then direct (the cache aged out for one cycle), then
+    // cached again, all at 66%. The direct reading shows the figures are
+    // current, so the next cached one starts a new count: it is read again
+    // only on the second cached cycle after the direct one, never at once.
+    let e = env();
+    seed(&ldc::CLOCK);
+    let at66 = cached(66.0, 20.0);
+    set(
+        &ldc::LIVE,
+        &[at66.clone(), at66.clone(), Live::Direct(66.0, 20.0), at66],
+    );
+    set(&ldc::OTHERS, &spare_room());
+    set(&ldc::REREAD, &[rd(66.0, 20.0, None)]);
+    let mut c = ctx(&e, ldc::clock, ldc::measure, Some(ldc::reread));
+    for _ in 0..3 {
+        assert_eq!(step(&mut c, &ldc::CLOCK), CycleOutcome::Stayed);
+    }
+    assert_eq!(
+        c.live_series.unchanged(),
+        0,
+        "the direct reading restarts it"
+    );
+    assert_eq!(step(&mut c, &ldc::CLOCK), CycleOutcome::Stayed);
+    assert_eq!(ldc::live_calls(), 0, "cycle 4: one cached cycle since");
+    assert_eq!(step(&mut c, &ldc::CLOCK), CycleOutcome::Stayed);
+    let log = log_of(&e);
+    assert_eq!(ldc::live_calls(), 1, "cycle 5: frozen, read again: {log}");
+    assert_eq!(swaps(&log), 0, "the re-read confirmed 66%: {log}");
+}
+
 // --- A session of 0% is never frozen ---------------------------------------
 
 lane!(lz);
@@ -288,7 +365,8 @@ lane!(lz);
 fn a3_an_idle_login_at_zero_percent_is_never_read_again() {
     let e = env();
     seed(&lz::CLOCK);
-    set(&lz::LIVE, &[Live::Direct(0.0, 20.0)]);
+    // Cached, so only the 0% keeps it from being frozen.
+    set(&lz::LIVE, &[cached(0.0, 20.0)]);
     set(&lz::OTHERS, &spare_room());
     let mut c = ctx(&e, lz::clock, lz::measure, Some(lz::reread));
     for _ in 0..5 {
@@ -647,7 +725,15 @@ fn e2b_a_stale_95_percent_whose_reread_fails_still_swaps_to_a_70_percent_candida
     let log = log_of(&e);
     assert_eq!(lsf::live_calls(), 1, "{log}");
     assert_eq!(got, CycleOutcome::Swapped, "decided on 95, not 70: {log}");
-    assert!(log.contains("reason=threshold"), "95% needs a swap: {log}");
+    // Decided on the measured 95% by the rules as merged with #2136: `spare`
+    // at 70% has room but not capacity at `--session-at 70`, so its pools
+    // label the move `plan-room`. On the substituted 70% it would be the
+    // ALERT (0 points of gain), and it is never a projected swap.
+    assert!(
+        log.contains("swap work->spare live s=95% w=41% target s=70% w=40% reason=plan-room"),
+        "95% needs a swap: {log}"
+    );
+    assert!(!log.contains("reason=projected"), "{log}");
     assert!(!log.contains("ALERT: no profile has capacity"), "{log}");
 }
 
@@ -790,8 +876,10 @@ fn rising_with_no_candidate_alerts_at_63_and_rereads_the_third_identical_reading
     let e = env();
     seed(&lkn::CLOCK);
     let mut script = rising();
-    script.push(Live::Direct(63.0, 41.0)); // cycle 6: unchanged once
-    script.push(Live::Direct(63.0, 41.0)); // cycle 7: unchanged twice
+    // Cycles 6 and 7: the status line rewrites 63%; only a cached figure
+    // can be frozen.
+    script.push(cached(63.0, 41.0)); // cycle 6: unchanged once
+    script.push(cached(63.0, 41.0)); // cycle 7: unchanged twice
     set(&lkn::LIVE, &script);
     set(&lkn::OTHERS, &spare_full());
     set(&lkn::REREAD, &[rd(63.0, 41.0, None)]);
@@ -817,6 +905,41 @@ fn rising_with_no_candidate_alerts_at_63_and_rereads_the_third_identical_reading
     assert_eq!(lkn::live_calls(), 1, "cycle 7 is re-read: {log}");
     assert_eq!(stale_lines(&log), 1, "{log}");
     assert_eq!(swaps(&log), 0, "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.l), "work's login stays live");
+}
+
+lane!(lpr);
+
+/// The decision on the projected 73.3% runs under the overflow-aware rules
+/// (`affinity::outlook`). `spare` at 72% has room but only 2 points more
+/// headroom: on 73.3% those rules would make a plan-room move, which never
+/// runs on a projection. No login has capacity on it, so the cycle ALERTs,
+/// as it does with no candidate at all: the projection is never a silent
+/// stay because plan room exists.
+#[test]
+fn rising_with_only_plan_room_alerts_at_63_and_never_moves_for_room() {
+    let e = env();
+    seed(&lpr::CLOCK);
+    set(&lpr::LIVE, &rising());
+    set(
+        &lpr::OTHERS,
+        &[
+            ("spare", rd(72.0, 40.0, None)),
+            ("work", rd(0.0, 40.0, None)),
+        ],
+    );
+    let mut c = ctx(&e, lpr::clock, lpr::measure, Some(lpr::reread));
+    for _ in 0..4 {
+        assert_eq!(step(&mut c, &lpr::CLOCK), CycleOutcome::Stayed);
+    }
+    step(&mut c, &lpr::CLOCK);
+    let log = log_of(&e);
+    assert_eq!(basis(&c), Some(Basis::Projected), "{log}");
+    assert!(
+        log.contains("ALERT: no profile has capacity live=work s=63% w=41%"),
+        "cycle 5 alerts on the projection: {log}"
+    );
+    assert_eq!(swaps(&log), 0, "no plan-room move on a projection: {log}");
     assert_eq!(ino_at(&e.live()), Some(e.l), "work's login stays live");
 }
 
@@ -887,7 +1010,7 @@ lane!(lhk);
 fn the_live_reread_uses_the_live_hook_and_never_the_target_hook() {
     let e = env();
     seed(&lhk::CLOCK);
-    set(&lhk::LIVE, &[Live::Direct(40.0, 20.0)]);
+    set(&lhk::LIVE, &[cached(40.0, 20.0)]);
     set(&lhk::OTHERS, &spare_room());
     set(&lhk::REREAD, &[rd(40.0, 20.0, None)]);
     let mut c = ctx(&e, lhk::clock, lhk::measure, None);
@@ -928,7 +1051,7 @@ fn a_cache_frozen_below_a_disagreeing_reread_is_read_again_every_cycle() {
     let e = env();
     seed(&lfz::CLOCK);
     // The status-line cache stays at 63% while the login climbs.
-    set(&lfz::LIVE, &[Live::Direct(63.0, 20.0)]);
+    set(&lfz::LIVE, &[cached(63.0, 20.0)]);
     set(&lfz::OTHERS, &spare_room());
     set(
         &lfz::REREAD,
@@ -1274,4 +1397,206 @@ fn a_frozen_66_with_a_fixed_cache_time_whose_reread_fails_alerts_and_is_read_aga
     assert_eq!(basis(&c), Some(Basis::Substituted), "{log}");
     assert!(advisory(&e).is_some(), "still the ALERT, not a stay: {log}");
     assert_eq!(swaps(&log), 0, "{log}");
+}
+
+// --- Crusty round 8: organisation affinity (#2136) on the outlook ----------
+//
+// `work` (org A) is live; `spare` (org A) and `third` (org B) are stored
+// (`tests_issue_2136::fixture`). The outlook is decided with the cycle's one
+// affinity need, worked out on the reading as measured, so a projected or
+// substituted figure never makes a confirmed crossing, nor makes one
+// sooner. A crossing waits for the reading as measured: a measured
+// threshold, or the failed-probe swap after three failures.
+
+/// Runs `test` on the two-organisation fixture, with the process
+/// environment `tests_issue_2136` runs its cycles under.
+#[cfg(target_os = "linux")]
+fn in_two_orgs(test: impl FnOnce(&Env)) {
+    use serde_json::json;
+    let e = super::tests_issue_2136::fixture(json!("org-a"), json!("org-a"), json!("org-b"));
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = crate::test_support::EnvGuard::set([
+        ("HOME", e.home.to_str().unwrap()),
+        ("AMPLIHACK_CLAUDE_PROFILE_ROOT", e.root.to_str().unwrap()),
+    ]);
+    test(&e);
+}
+
+/// The inode of `name`'s stored login, to tell which login went live.
+#[cfg(target_os = "linux")]
+fn stored(e: &Env, name: &str) -> Option<u64> {
+    use super::super::tests_swap::CREDS;
+    ino_at(&e.root.join(name).join(CREDS))
+}
+
+lane!(lo1);
+
+/// Crusty's case: `work` at 63% projected to 76%, `spare` (org A) at 40%
+/// and `third` (org B) at 0%. The projected swap goes to `spare`, never
+/// across to `third`, which has more headroom.
+#[cfg(target_os = "linux")]
+#[test]
+fn o1_a_projected_swap_takes_the_same_organisation_login_over_more_headroom() {
+    in_two_orgs(|e| {
+        let wanted = stored(e, "spare");
+        seed(&lo1::CLOCK);
+        set(
+            &lo1::LIVE,
+            &[Live::Direct(50.0, 41.0), Live::Direct(63.0, 41.0)],
+        );
+        set(
+            &lo1::OTHERS,
+            &[
+                ("spare", rd(40.0, 40.0, None)),
+                ("third", rd(0.0, 0.0, None)),
+            ],
+        );
+        let mut c = ctx(e, lo1::clock, lo1::measure, Some(lo1::reread));
+        assert_eq!(step(&mut c, &lo1::CLOCK), CycleOutcome::Stayed);
+        let got = step(&mut c, &lo1::CLOCK);
+        let log = log_of(e);
+        assert_eq!(got, CycleOutcome::Swapped, "{log}");
+        assert_eq!(ino_at(&e.live()), wanted, "spare's login is live: {log}");
+        assert!(log.contains(" swap work->spare "), "{log}");
+        assert!(log.contains("reason=projected"), "{log}");
+        assert!(!log.contains("work->third"), "{log}");
+        assert!(!log.contains("affinity: crossing"), "{log}");
+    });
+}
+
+lane!(lo2);
+
+/// Only `third` (org B) has capacity. The projection to 76% does not
+/// cross, and is not the no-capacity ALERT either: there is capacity, in
+/// another organisation. The measured 76% next cycle needs relief, and
+/// that threshold swap crosses, with the crossing warning.
+#[cfg(target_os = "linux")]
+#[test]
+fn o2_a_projection_never_crosses_and_the_measured_threshold_does() {
+    in_two_orgs(|e| {
+        let third = stored(e, "third");
+        seed(&lo2::CLOCK);
+        set(
+            &lo2::LIVE,
+            &[
+                Live::Direct(50.0, 41.0),
+                Live::Direct(63.0, 41.0),
+                Live::Direct(76.0, 41.0),
+            ],
+        );
+        set(
+            &lo2::OTHERS,
+            &[("spare", exh(100.0, 100.0)), ("third", rd(0.0, 0.0, None))],
+        );
+        let mut c = ctx(e, lo2::clock, lo2::measure, Some(lo2::reread));
+        assert_eq!(step(&mut c, &lo2::CLOCK), CycleOutcome::Stayed);
+        let got = step(&mut c, &lo2::CLOCK);
+        let log = log_of(e);
+        assert_eq!(basis(&c), Some(Basis::Projected), "{log}");
+        assert_eq!(
+            got,
+            CycleOutcome::Stayed,
+            "no crossing on a forecast: {log}"
+        );
+        assert_eq!(swaps(&log), 0, "{log}");
+        assert!(!log.contains("ALERT"), "capacity exists, across: {log}");
+        let got = step(&mut c, &lo2::CLOCK);
+        let log = log_of(e);
+        assert_eq!(got, CycleOutcome::Swapped, "{log}");
+        assert_eq!(ino_at(&e.live()), third, "{log}");
+        assert!(
+            log.contains("swap work->third live s=76% w=41% target s=0% w=0% reason=threshold"),
+            "{log}"
+        );
+        assert!(log.contains("affinity: crossing work->third"), "{log}");
+        assert!(!log.contains("reason=projected"), "{log}");
+    });
+}
+
+lane!(lo3);
+
+/// A failed probe after 66%: the substituted 70% leaves `work` 30 points.
+/// The failed-probe rules choose `spare` (org A, 32 points), which does
+/// not beat 70% by `--margin`. `third` (org B, 100 points) would, but
+/// another login's headroom never makes `spare`'s swap sooner: damping
+/// applies, and the failed-probe swap to `spare` comes on failure 3.
+#[cfg(target_os = "linux")]
+#[test]
+fn o3_a_substitution_tests_the_failed_probe_swaps_own_target() {
+    in_two_orgs(|e| {
+        take_key_from_home(e);
+        let wanted = stored(e, "spare");
+        seed(&lo3::CLOCK);
+        set(&lo3::LIVE, &[Live::Direct(66.0, 41.0), Live::Failed]);
+        set(
+            &lo3::OTHERS,
+            &[
+                ("spare", rd(68.0, 40.0, None)),
+                ("third", rd(0.0, 0.0, None)),
+            ],
+        );
+        let mut c = ctx(e, lo3::clock, lo3::measure, Some(lo3::reread));
+        assert_eq!(step(&mut c, &lo3::CLOCK), CycleOutcome::Stayed);
+        for nth in 1..=2 {
+            let got = step(&mut c, &lo3::CLOCK);
+            let log = log_of(e);
+            assert_eq!(basis(&c), Some(Basis::Substituted), "failure {nth}");
+            assert_eq!(got, CycleOutcome::StayedUnread, "failure {nth}: {log}");
+            assert!(
+                log.contains(&format!("stay: live probe failed ({nth}/3)")),
+                "failure {nth}: {log}"
+            );
+        }
+        let got = step(&mut c, &lo3::CLOCK);
+        let log = log_of(e);
+        assert_eq!(got, CycleOutcome::Swapped, "{log}");
+        assert_eq!(ino_at(&e.live()), wanted, "{log}");
+        assert!(
+            log.contains("swap work->spare live failed target s=68% w=40% reason=failed-probe"),
+            "{log}"
+        );
+        assert_eq!(swaps(&log), 1, "{log}");
+    });
+}
+
+lane!(lo4);
+
+/// A failed probe after 66% with only `third` (org B) to go to: the
+/// failed-probe rules may cross, since a dead login needs relief, but the
+/// substitution never makes that crossing sooner, though `third` beats
+/// 70% easily. The crossing is the failed-probe swap on failure 3.
+#[cfg(target_os = "linux")]
+#[test]
+fn o4_a_substitution_never_makes_a_crossing_sooner() {
+    in_two_orgs(|e| {
+        take_key_from_home(e);
+        let third = stored(e, "third");
+        seed(&lo4::CLOCK);
+        set(&lo4::LIVE, &[Live::Direct(66.0, 41.0), Live::Failed]);
+        set(
+            &lo4::OTHERS,
+            &[("spare", exh(100.0, 100.0)), ("third", rd(0.0, 0.0, None))],
+        );
+        let mut c = ctx(e, lo4::clock, lo4::measure, Some(lo4::reread));
+        assert_eq!(step(&mut c, &lo4::CLOCK), CycleOutcome::Stayed);
+        for nth in 1..=2 {
+            let got = step(&mut c, &lo4::CLOCK);
+            let log = log_of(e);
+            assert_eq!(basis(&c), Some(Basis::Substituted), "failure {nth}");
+            assert_eq!(got, CycleOutcome::StayedUnread, "failure {nth}: {log}");
+            assert_eq!(swaps(&log), 0, "failure {nth}: {log}");
+        }
+        let got = step(&mut c, &lo4::CLOCK);
+        let log = log_of(e);
+        assert_eq!(got, CycleOutcome::Swapped, "{log}");
+        assert_eq!(ino_at(&e.live()), third, "{log}");
+        assert!(
+            log.contains("swap work->third live failed target s=0% w=0% reason=failed-probe"),
+            "{log}"
+        );
+        assert!(log.contains("affinity: crossing work->third"), "{log}");
+        assert!(!log.contains("reason=projected"), "{log}");
+    });
 }

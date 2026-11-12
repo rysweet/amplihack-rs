@@ -954,6 +954,7 @@ fn caller_without_a_proc_entry_has_no_parent() {
 
 #[test]
 fn record_appends_one_timed_private_line() {
+    let _proc = crate::test_support::proc::fake_proc_scope();
     let f = fx();
     // `record` reads the run ids from the real environment, which holds them
     // when the tests themselves run inside a recipe run or a systemd unit.
