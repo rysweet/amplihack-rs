@@ -49,7 +49,7 @@ const AUTODRIVE_RECIPES: [&str; 8] = [
     "autodrive-finalize",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 29] = [
+const AUTODRIVE_TOOLS: [&str; 30] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
@@ -63,6 +63,7 @@ const AUTODRIVE_TOOLS: [&str; 29] = [
     "autodrive_crusty_record.sh",
     "autodrive_crusty_finalize.sh",
     "autodrive_completion_context.sh",
+    "autodrive_merge_message.sh",
     "autodrive_merge_ready_files.sh",
     "autodrive_platform_facts.sh",
     "autodrive_pr_head.sh",
@@ -945,8 +946,10 @@ fn the_forbidden_flag_scanner_catches_every_spelling() {
         r#"git commit -m "clear merge-ready blockers: <what changed>""#,
         "git add -A",
         "git push",
-        r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA")"#,
-        "gh pr view \"$PR\" --json state,mergedAt",
+        r#"MERGE_ARGV=(pr merge "$PR" --squash --delete-branch --match-head-commit "$HEAD_SHA" --subject "$MERGE_SUBJECT" --body-file -)"#,
+        r#"gh pr merge "$PR" --squash --subject "$MERGE_SUBJECT""#,
+        r#"printf '%s' "$MERGE_BODY" | gh pr merge "$PR" --squash --body-file -"#,
+        "gh pr view \"$PR\" --json state,mergedAt,title,body",
         "amplihack hygiene artifact-guard --repo . --mode pre-commit",
     ] {
         assert!(
@@ -3776,6 +3779,65 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
     }
 }
 
+// ── The squash commit message (#2056) ──────────────────────────────────────
+
+// #2329 retired the shell merge gate whose suite carried #2262's MSG-* cases.
+// The message is now composed by autodrive_merge_message.sh, sourced by
+// autodrive-finalize's finalize-observed-action agent step. This runs the
+// helper-level suite and requires the cases #2262 named, so they cannot drop
+// out unnoticed.
+#[test]
+fn the_squash_message_suite_passes_and_keeps_its_named_cases() {
+    let root = workspace_root();
+    let script = root.join("amplifier-bundle/recipes/tests/test-issue-2056-squash-message.sh");
+    assert!(script.is_file(), "missing {}", script.display());
+    let out = Command::new("bash")
+        .arg(&script)
+        .current_dir(&root)
+        .env_remove("BASH_ENV")
+        .output()
+        .expect("run the squash message suite");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "test-issue-2056-squash-message.sh failed ({:?})\n{stdout}\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    for case in [
+        "MSG-report-cut-at-marker",
+        "MSG-report-cut-at-heading",
+        "MSG-template-marker",
+        "MSG-control-chars",
+        "MSG-unreadable-body",
+        "MSG-no-jq-refuses",
+        "MSG-finalize-prompt",
+    ] {
+        assert!(
+            stdout.contains(&format!("PASS[{case}]")),
+            "{case} did not pass; the squash message must keep #2056's contract\n{stdout}"
+        );
+    }
+}
+
+#[test]
+fn finalize_supplies_the_squash_message_instead_of_the_platform_default() {
+    let finalizer = recipe_yaml("autodrive-finalize");
+    let prompt = field(step(&finalizer, "finalize-observed-action"), "prompt");
+    for needle in [
+        "issue #2056",
+        "autodrive_merge_message.sh",
+        "never a copy from the PR's tree",
+        "--subject \"$subject\" --body-file -",
+        "printf '%s' \"$MERGE_BODY\" | gh pr merge",
+    ] {
+        assert!(
+            prompt.contains(needle),
+            "finalize-observed-action must say `{needle}` (#2056)"
+        );
+    }
+}
+
 // ── Which `amplihack` the shell test runs ────────────────────────────────────
 
 // Writes a fake `amplihack` for the shell test's probe, which needs
@@ -4230,7 +4292,7 @@ fn issue_2033_merge_evidence_steps_clear_before_any_git_command() {
             first.contains(GIT_REPO_ENV_LOAD)
                 && first.contains("[ ! -L \"{{autodrive_tools_dir}}/git-repo-env.sh\" ] &&")
                 && first.contains(
-                    "|| { echo \"STOP: cannot load git-repo-env.sh (#2033)\" >&2; exit 1; }"
+                    "|| { echo \"STOP: cannot load git-repo-env.sh from the tools directory (#2033)\" >&2; exit 1; }"
                 ),
             "{id} must load the checked helper, refuse a symlink and stop when it cannot be loaded:\n  {first}"
         );

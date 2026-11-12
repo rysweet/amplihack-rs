@@ -920,8 +920,8 @@ if grep -q 'test-issue-1763-qa-scope.sh' "$REPO_ROOT/.github/workflows/ci.yml"; 
 else fail ci-wired ".github/workflows/ci.yml does not run test-issue-1763-qa-scope.sh"; fi
 if command -v shellcheck >/dev/null 2>&1; then
     if [ -f "$SCOPE" ] && (cd "$TOOLS" && shellcheck -x -S warning autodrive_qa_scope.sh autodrive_trust.sh autodrive_qa_evidence.sh \
-            autodrive_qa_sources.sh autodrive_scenario_name.sh) >/dev/null 2>&1; then
-        pass shellcheck "the scope file, autodrive_trust.sh, the evidence tool and the gate are clean at -S warning"
+            autodrive_merge_message.sh autodrive_qa_sources.sh autodrive_scenario_name.sh) >/dev/null 2>&1; then
+        pass shellcheck "the scope file, autodrive_trust.sh, the evidence tool and the squash-message helper are clean at -S warning"
     else fail shellcheck "shellcheck -S warning reports problems (or the scope file is missing)"; fi
 else
     echo "  SKIP[shellcheck]: shellcheck not installed"

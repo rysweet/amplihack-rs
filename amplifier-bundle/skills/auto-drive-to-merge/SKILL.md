@@ -53,7 +53,11 @@ captures authorization afresh.
    disabled, make no merge request and report the observed open PR.
 5. For an authorized merge, require expected-head protection. Observe platform
    state before retrying ambiguous requests and after the action. Report
-   `merged` only with platform confirmation.
+   `merged` only with platform confirmation. Squash with an explicit message
+   composed by the trusted `autodrive_merge_message.sh`: subject `<title> (#N)`
+   with control characters removed, body the PR description up to the
+   merge-ready report, piped on stdin with `--body-file -`. Never let the
+   platform concatenate the branch's commit messages and trailers (#2056).
 6. Report readiness, requested action, request outcome, platform state,
    blockers, failures/recovery, and stop reason separately.
 

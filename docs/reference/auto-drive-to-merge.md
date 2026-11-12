@@ -270,6 +270,41 @@ a successful server action. Command success and queue admission do not prove
 a merge. With merging disabled, readiness can be complete while the PR stays
 open. See the [result contract](auto-drive-evidence.md#result-contract).
 
+### The squash commit message (#2056)
+
+`main` squashes with `squash_merge_commit_message: COMMIT_MESSAGES`, so a
+merge that supplies no message gets every commit on the branch concatenated:
+each commit's trailers, a `Fixes #N` written for a stacked branch, and the
+`Co-authored-by` lines GitHub writes for commit authors. A wrong trailer on a
+pushed commit cannot be corrected without a force-push, which this workflow
+never does. So an authorized merge supplies its own message.
+
+The `finalize-observed-action` step sources the trusted launch-bundle
+`amplifier-bundle/tools/autodrive_merge_message.sh`, never a copy from the
+PR's tree, and composes the message from one `gh pr view --json title,body`
+read:
+
+| Part | Source | Refused when |
+| --- | --- | --- |
+| Subject | `autodrive_merge_subject`: the title with C0, DEL and C1 controls removed by code point, then ` (#N)` unless the title already ends with this PR's suffix | the title is absent, null, not a string, blank, or over 1024 characters |
+| Body | `autodrive_merge_body`: the description up to the first line starting `<!-- merge-ready-report` or `## Merge readiness`, so the report never lands on `main`; `MERGE_REPORT_CUT` says whether one was cut | the `body` key is absent, not a string or null, or over 65,536 bytes |
+
+The body goes to `gh` on standard input from the shell's memory, never as a
+path a same-user process could rewrite between a check and the read:
+
+```bash
+printf '%s' "$MERGE_BODY" | gh pr merge <N> --squash --match-head-commit <sha> --subject "$subject" --body-file -
+```
+
+A refusal from either function is a blocker; the step reports it and does
+not fall back to the platform's default message. The step records the
+subject and whether a report was cut.
+
+Two limitations stay open. An empty description gives `gh` an empty body;
+whether GitHub then falls back to its default message is unverified (#2263).
+GitHub is believed, from landed commits rather than a controlled probe, to
+add no `Co-authored-by` lines to a supplied body (#2263).
+
 ### Hosting calls and rate limits
 
 The bundled [evidence contract](../../amplifier-bundle/skills/auto-drive-to-merge/evidence-contract.md)

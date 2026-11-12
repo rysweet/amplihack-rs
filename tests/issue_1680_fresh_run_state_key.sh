@@ -4,134 +4,91 @@
 # checkout's branch (…_mistt-ui-platform_main), so two fresh runs in one
 # repository at once shared verdict files.
 #
-# Contract under test (autodrive-build's own step-01 and step-03 commands,
-# extracted from the recipe):
-#   1. Acceptance: a fresh run's build_result.state_dir is the directory a
-#      later pr_number=N run's preflight resolves to, and phase 1's "build"
-#      mark is written there, not in the base-branch directory.
-#   2. Acceptance: two fresh runs that open different PRs get different state
-#      directories.
-#   3. A PR the preflight already knew keeps its directory.
+# Issue #2329 retired the bash bodies of autodrive-build's step-01 and step-03:
+# both are agent steps now and the keying duty is stated in their prompts.
+# This test pins that prompt contract:
+#   1. Shape: step-01 and step-03 are agent steps; their parsed JSON carries
+#      state_dir; neither carries a command body.
+#   2. State is keyed by full host/repository/PR identity, never by a branch
+#      name alone (two fresh runs that open different PRs therefore get
+#      different directories).
+#   3. A fresh run's preflight, which knows no PR yet, does not create
+#      branch-keyed state; step-03 keys it once the PR exists, at the directory
+#      a later run given that PR number resolves to.
 #   4. An explicit autodrive_state_dir is kept.
-#
-# Every run uses `env -i`, a sandboxed HOME and state root, and stub `gh` /
-# `amplihack`, so no real credentials, state or GitHub are reachable.
+#   5. State is private and outside the worktree; historical state never
+#      establishes current readiness.
 #
 # Run: bash tests/issue_1680_fresh_run_state_key.sh
 set -uo pipefail
-# Issue #1764: no git this script runs may wait on a credential prompt.
-export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
 exec </dev/null
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$REPO_ROOT/amplifier-bundle/recipes/autodrive-build.yaml"
-BASH_BIN="$(command -v bash)"
 pass=0; fail=0
 ok()  { pass=$((pass + 1)); echo "PASS: $1"; }
 bad() { fail=$((fail + 1)); echo "FAIL: $1 -- $2"; }
 
-WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
-HOME_D="$WORK/home"; mkdir -p "$HOME_D"
-STATE_ROOT="$WORK/state"
-STUB="$WORK/stub"; mkdir -p "$STUB"
-OUT="$WORK/out"; ERR="$WORK/err"
+[ -f "$BUILD" ] || { echo "FAIL: missing $BUILD"; exit 1; }
 
-step_cmd() {
-  awk -v id="$1" '
-    $0 == "  - id: \"" id "\"" { s=1; next }
+step_block() {
+  awk -v id="  - id: \"$1\"" '
+    $0 == id { s=1; print; next }
     s && /^  - id: / { exit }
-    s && /^    command: \|/ { c=1; next }
-    s && c { if ($0 ~ /^    [a-zA-Z_]+:/) exit; sub(/^      /, ""); print }' "$BUILD"
+    s && /^[a-z]/ { exit }
+    s { print }' "$BUILD"
 }
-S01="$(step_cmd step-01-build-preflight)"
-S03="$(step_cmd step-03-resolve-pr)"
-[ -n "$S01" ] && [ -n "$S03" ] || { echo "FAIL: could not extract step-01 / step-03"; exit 1; }
+step_prompt() {
+  step_block "$1" | awk '
+    /^    prompt: \|/ { p=1; next }
+    p { if ($0 ~ /^    [a-zA-Z_]+:/) exit; sub(/^      /, ""); print }' | tr '\n' ' '
+}
 
-# stub amplihack: the `orch helper` calls the steps make.
-cat > "$STUB/amplihack" <<'AMP'
-#!/usr/bin/env bash
-[ "${1:-} ${2:-}" = "orch helper" ] || { echo "ampstub: unsupported: $*" >&2; exit 2; }
-sub="${3:-}"; shift 3; field=""; def=""
-while [ $# -gt 0 ]; do
-  case "$1" in --require-field|--field) field="${2:-}"; shift 2 ;; --default) def="${2:-}"; shift 2 ;; *) shift ;; esac
+S01_BLOCK="$(step_block step-01-build-preflight)"; S01="$(step_prompt step-01-build-preflight)"
+S03_BLOCK="$(step_block step-03-resolve-pr)";      S03="$(step_prompt step-03-resolve-pr)"
+[ -n "$S01" ] && [ -n "$S03" ] || { echo "FAIL: step-01-build-preflight / step-03-resolve-pr prompt missing"; exit 1; }
+
+# has <name> <step-label> <prompt> <clause>
+has() { case "$3" in *"$4"*) ok "$2: $1" ;; *) bad "$2: $1" "prompt lacks: $4" ;; esac; }
+both() { has "$1" step-01 "$S01" "$2"; has "$1" step-03 "$S03" "$2"; }
+
+# 1. Shape.
+for pair in "step-01:build_preflight" "step-03:build_result"; do
+  label="${pair%%:*}"; out="${pair#*:}"
+  if [ "$label" = step-01 ]; then blk="$S01_BLOCK"; else blk="$S03_BLOCK"; fi
+  if printf '%s\n' "$blk" | grep -qE '^    type: "agent"$' \
+     && printf '%s\n' "$blk" | grep -qE "^    output: \"$out\"\$" \
+     && ! printf '%s\n' "$blk" | grep -qE '^    command: '; then
+    ok "$label is an agent step with output $out and no bash body"
+  else
+    bad "$label shape" "expected type: agent, output: $out, no command:"
+  fi
 done
-in="$(cat)"
-case "$sub" in
-  extract-json) printf '%s' "$in" | jq -e --arg f "$field" 'has($f)' >/dev/null 2>&1 || exit 1; printf '%s\n' "$in" ;;
-  extract-field) printf '%s' "$in" | jq -r --arg f "$field" --arg d "$def" '(.[$f] // $d) | tostring' ;;
-esac
-AMP
-# stub gh: `pr list --head` answers $GH_PR, which only step-03 runs set, so
-# the preflight sees no PR (a fresh run) and step-03 finds the one phase 1
-# opened. Numbered views answer OPEN and a URL.
-cat > "$STUB/gh" <<'GH'
-#!/usr/bin/env bash
-case "$*" in
-  "pr list --head "*) echo "${GH_PR:-}" ;;
-  "pr view --json number"*) exit 1 ;;
-  "pr view "[0-9]*" --json url"*) echo "https://github.com/acme/widget/pull/$3" ;;
-  "pr view "[0-9]*" --json state"*) echo '{"state":"OPEN","mergedAt":null}' ;;
-  *) exit 1 ;;
-esac
-GH
-chmod 0755 "$STUB/amplihack" "$STUB/gh"
+has "the returned JSON carries state_dir" step-01 "$S01" '"state_dir":"absolute private directory"'
+has "build_result carries state_dir" step-03 "$S03" 'Return build_result as JSON with pr, pr_url, branch, state_dir'
 
-REPO="$WORK/repo"; mkdir -p "$REPO"
-git -C "$REPO" init -q -b main
-git -C "$REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m base
-git -C "$REPO" remote add origin https://github.com/acme/widget.git
+# 2. Keyed by host, repository and PR; never a branch alone.
+both "state is keyed by full host/repository/PR identity" \
+  "otherwise use a collision-resistant key of full host/repository/PR identity under the configured durable work root"
+both "state is never keyed by a branch name alone" \
+  "never a key made from a branch name alone such as the launch checkout's main (issue #1680)"
 
-# run <cmd> [extra env...]: one step, from REPO_PATH, sandboxed.
-run() {
-  local cmd="$1"; shift
-  ( cd "$REPO" && env -i GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true HOME="$HOME_D" PATH="$STUB:/usr/bin:/bin" \
-      AMPLIHACK_HOME="$REPO_ROOT" AMPLIHACK_STATE_DIR="$STATE_ROOT" REPO_PATH="$REPO" \
-      NO_MERGE=false RECIPE_VAR_no_merge=false \
-      "$@" "$BASH_BIN" -c "$cmd" ) > "$OUT" 2> "$ERR"
-}
-field() { jq -r --arg f "$1" '.[$f]' < "$OUT"; }
+# 3. Fresh run: the preflight defers, step-03 keys by the PR it resolved.
+has "a fresh preflight does not create branch-keyed state" step-01 "$S01" \
+  "the PR is not known yet, so do not create state keyed by the branch: step-03 keys the state once phase 1 has opened the PR (issue #1680)"
+has "a fresh run's state is keyed by the PR step-03 resolved" step-03 "$S03" \
+  "State for such a fresh run is keyed by the PR this step resolved, the same directory a later run given that PR number resolves to, never the preflight's branch-keyed location (issue #1680)"
 
-# preflight <extra env...> -> prints the preflight JSON
-preflight() { run "$S01" "$@" && cat "$OUT"; }
-# fresh_run <pr> -> prints build_result.state_dir
-fresh_run() {
-  local pf
-  pf="$(preflight)" || { echo "preflight failed: $(head -c 300 "$ERR")" >&2; return 1; }
-  run "$S03" BUILD_PREFLIGHT="$pf" RECIPE_VAR_build_preflight="$pf" GH_PR="$1" \
-      RECIPE_VAR_worktree_setup__worktree_path="" || { echo "step-03 failed: $(head -c 300 "$ERR")" >&2; return 1; }
-  field state_dir
-}
+# 4. Explicit state dir.
+both "an explicit autodrive_state_dir is kept" \
+  "Prefer the provided state dir {{autodrive_state_dir}}"
 
-# 1. Acceptance: fresh run -> the later PR run's directory.
-BASE_DIR="$(preflight | jq -r .state_dir)"
-D73="$(fresh_run 73)"
-LATER="$(preflight PR_NUMBER=73 RECIPE_VAR_pr_number=73 | jq -r .state_dir)"
-if [ -n "$D73" ] && [ "$D73" = "$LATER" ] && [ "$D73" != "$BASE_DIR" ] && grep -q '^build' "$D73/phases.tsv" 2>/dev/null \
-   && [ ! -e "$BASE_DIR/phases.tsv" ]; then
-  ok "acceptance: a fresh run's state_dir is the one a later pr_number=73 run resolves to"
-else
-  bad "acceptance: fresh run keyed by PR" "base=$BASE_DIR d73=$D73 later=$LATER err=$(head -c 300 "$ERR")"
-fi
-case "$BASE_DIR" in *_main) ok "the preflight still keys a PR-less run by REPO_PATH's branch until the PR is known" ;;
-  *) bad "preflight key" "base=$BASE_DIR" ;; esac
-
-# 2. Acceptance: two fresh runs -> two directories.
-D74="$(fresh_run 74)"
-if [ -n "$D74" ] && [ "$D74" != "$D73" ]; then ok "acceptance: two fresh runs in one repository get different state directories"
-else bad "two fresh runs" "d73=$D73 d74=$D74"; fi
-
-# 3. A preflight-known PR keeps its directory.
-PF="$(preflight PR_NUMBER=73 RECIPE_VAR_pr_number=73)"
-run "$S03" BUILD_PREFLIGHT="$PF" RECIPE_VAR_build_preflight="$PF"
-if [ "$(field state_dir)" = "$LATER" ] && ! grep -q '#1680' "$ERR"; then ok "a PR run keeps the preflight's directory"
-else bad "PR run" "out=$(head -c 200 "$OUT") err=$(head -c 200 "$ERR")"; fi
-
-# 4. An explicit autodrive_state_dir is kept.
-EXPLICIT="$WORK/explicit-state"
-PF="$(preflight AUTODRIVE_STATE_DIR="$EXPLICIT")"
-run "$S03" BUILD_PREFLIGHT="$PF" RECIPE_VAR_build_preflight="$PF" GH_PR=75 \
-    AUTODRIVE_STATE_DIR="$EXPLICIT" RECIPE_VAR_autodrive_state_dir="$EXPLICIT"
-if [ "$(field state_dir)" = "$EXPLICIT" ] && [ "$(field pr)" = "75" ]; then ok "an explicit autodrive_state_dir is kept"
-else bad "explicit dir" "out=$(head -c 200 "$OUT") err=$(head -c 200 "$ERR")"; fi
+# 5. Private, outside the worktree, never evidence of readiness.
+both "state is private and outside the worktree" \
+  'Create private state outside the worktree using `amplihack orch helper autodrive state --directory <absolute-path>`'
+both "historical state never establishes readiness" \
+  "Existing historical evidence never establishes current readiness."
+both "state identity is never changed to escape a budget" \
+  "change state identity to escape a budget"
 
 echo "issue #1680 fresh-run state key: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
