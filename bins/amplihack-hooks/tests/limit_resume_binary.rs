@@ -160,9 +160,30 @@ fn limit_payload(session: &str) -> String {
 }
 
 fn spawn(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (std::process::Child, Instant) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_amplihack-hooks"));
-    cmd.arg("limit-resume")
-        .current_dir(&e.home)
+    spawn_via(e, toggle, stdin, false)
+}
+
+/// [`spawn`], optionally through `/bin/sh -c` the way Claude Code runs a
+/// hook command. Where `/bin/sh` is dash, the shell does not `exec` the
+/// command, so the hook's parent is the short-lived shell, not the session
+/// (crusty, PR #2295 round 3).
+fn spawn_via(
+    e: &Env,
+    toggle: Option<&str>,
+    stdin: &[u8],
+    shell: bool,
+) -> (std::process::Child, Instant) {
+    let bin = env!("CARGO_BIN_EXE_amplihack-hooks");
+    let mut cmd = if shell {
+        let mut c = Command::new("/bin/sh");
+        c.args(["-c", &format!("\"{bin}\" limit-resume")]);
+        c
+    } else {
+        let mut c = Command::new(bin);
+        c.arg("limit-resume");
+        c
+    };
+    cmd.current_dir(&e.home)
         .env("HOME", &e.home)
         .env("AMPLIHACK_HOME", e.home.join(".amplihack"))
         .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &e.root)
@@ -221,6 +242,19 @@ const IN_CLOSE_NOWRITE: u32 = 0x0000_0010;
 /// Linux the hook cannot wait for a swap at all.
 #[cfg(target_os = "linux")]
 fn run_with_swap(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (Output, Duration) {
+    run_with_swap_record(e, toggle, stdin, json!({}), false)
+}
+
+/// [`run_with_swap`], with `extra` merged into the record written, and the
+/// hook spawned through `/bin/sh -c` when `shell` is set.
+#[cfg(target_os = "linux")]
+fn run_with_swap_record(
+    e: &Env,
+    toggle: Option<&str>,
+    stdin: &[u8],
+    extra: Value,
+    shell: bool,
+) -> (Output, Duration) {
     let rotate = e.root.join(".auto-switch.d/rotate");
     private_dir(&e.root.join(".auto-switch.d"));
     private_dir(&rotate);
@@ -236,17 +270,20 @@ fn run_with_swap(e: &Env, toggle: Option<&str>, stdin: &[u8]) -> (Output, Durati
         std::process::id(),
     )
     .unwrap();
-    let (child, start) = spawn(e, toggle, stdin);
+    let (child, start) = spawn_via(e, toggle, stdin, shell);
     let woke = watch.wait(start + CHILD_LIMIT).unwrap();
     assert_eq!(woke, Woke::File(0), "the hook never read swap.json");
     let at = now() + 120;
-    let record = json!({
+    let mut record = json!({
         "seq": 1,
         "live_login": "spare",
         "from_login": "work",
         "swapped_at": at,
         "reading": {"session": 10, "week": 20, "measured_at": at}
     });
+    if let (Some(r), Some(x)) = (record.as_object_mut(), extra.as_object()) {
+        r.extend(x.clone());
+    }
     let tmp = rotate.join(".swap.json.tmp");
     private_file(&tmp, record.to_string().as_bytes());
     fs::rename(&tmp, rotate.join("swap.json")).unwrap();
@@ -287,6 +324,47 @@ fn resumes_when_a_fresh_cycle_has_capacity() {
     let resume = e.root.join(".auto-switch.d/resume");
     assert_eq!(fs::read_dir(resume.join("events")).unwrap().count(), 1);
     assert!(resume.join("resume.log").is_file());
+}
+
+/// Issue #2136, crusty PR #2295 round 3: the organisation warning goes out
+/// with the resume that follows the swap, read from that swap's record, and
+/// depends on no process identity. Run through `/bin/sh -c` as Claude Code
+/// runs it, twice: the crossing record's warning reaches the first wake,
+/// and the second wake, after a same-organisation swap, carries none. No
+/// state is kept between the two calls, so nothing depends on which process
+/// is the hook's parent.
+#[test]
+#[cfg(target_os = "linux")]
+fn shell_wrapped_hook_delivers_the_warning_from_the_swap_record_alone() {
+    let e = env();
+    let _rotator = StandInRotator::start(&e.root);
+    write_ledger(&e.root, "swapped", 120, false);
+    let crossing = json!({"from_org": "org-a", "to_org": "org-b", "affinity": "crossing"});
+    let (first, _) = run_with_swap_record(
+        &e,
+        Some("1"),
+        limit_payload("sess-1").as_bytes(),
+        crossing,
+        true,
+    );
+    assert_eq!(first.status.code(), Some(2));
+    assert!(first.stdout.is_empty());
+    let text = String::from_utf8(first.stderr).unwrap();
+    let warning = amplihack_utils::organisation_affinity::Affinity::Crossing
+        .warning()
+        .unwrap();
+    assert_eq!(text, format!("{warning}\n{RESUME_MSG}\n"));
+
+    let same = json!({"from_org": "org-a", "to_org": "org-a", "affinity": "same"});
+    let (second, _) = run_with_swap_record(
+        &e,
+        Some("1"),
+        limit_payload("sess-2").as_bytes(),
+        same,
+        true,
+    );
+    assert_eq!(second.status.code(), Some(2));
+    assert_eq!(second.stderr, format!("{RESUME_MSG}\n").into_bytes());
 }
 
 #[test]

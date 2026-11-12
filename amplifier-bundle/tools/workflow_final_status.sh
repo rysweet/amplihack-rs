@@ -6,6 +6,29 @@ echo ""
 
 export GH_PAGER=cat PAGER=cat LESS=FRX
 
+# Usage: workflow_final_status.sh [--base BRANCH]
+#   --base BRANCH  The base the pull request was opened against: the run's
+#                  base_branch, which step-16 passed to `gh pr create --base`.
+#                  The no-diff check, the scoped PR match and the terminal
+#                  evidence all use it. Empty or absent keeps the discovery
+#                  (origin/HEAD, then origin/main, origin/master, origin/develop),
+#                  which matches a pull request step-16 opened without --base. A
+#                  set value is never replaced by a discovered one
+#                  (docs/reference/workflow-delivery-inputs.md).
+EXPECTED_BASE_INPUT=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --base)
+      [ "$#" -ge 2 ] || { echo "ERROR: workflow_final_status.sh: --base needs a value" >&2; exit 2; }
+      EXPECTED_BASE_INPUT="$2"; shift 2 ;;
+    *) echo "ERROR: workflow_final_status.sh: unknown argument '$1' (usage: workflow_final_status.sh [--base BRANCH])" >&2; exit 2 ;;
+  esac
+done
+if [ -n "$EXPECTED_BASE_INPUT" ] && ! git check-ref-format --branch "$EXPECTED_BASE_INPUT" >/dev/null 2>&1; then
+  printf 'ERROR: workflow_final_status.sh: --base %q is not a valid branch name\n' "$EXPECTED_BASE_INPUT" >&2
+  exit 2
+fi
+
 command -v jq >/dev/null 2>&1 || { echo "ERROR: workflow_final_status.sh requires jq to read step outputs" >&2; exit 2; }
 
 # rv_field <key> <field>: this run's own field from the base RECIPE_VAR_<key> (#1561).
@@ -160,8 +183,12 @@ case "$PUBLISH_STATE" in
       # shellcheck source=/dev/null
       . "$RUNTIME_ARTIFACT_HELPER"
       preflight_known_workflow_runtime_artifacts .
-      base_ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-      [ -n "$base_ref" ] || base_ref="origin/main"
+      if [ -n "$EXPECTED_BASE_INPUT" ]; then
+        base_ref="origin/$EXPECTED_BASE_INPUT"
+      else
+        base_ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+        [ -n "$base_ref" ] || base_ref="origin/main"
+      fi
       if git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null && [ -z "$(git status --porcelain)" ] && git diff --quiet "${base_ref}..HEAD"; then
         if [ "$PUBLISH_STATE" = "no-diff" ]; then
           PUBLISH_STATE="NO_DIFF_SUCCESS"
@@ -179,6 +206,7 @@ esac
 
 resolve_expected_base_branch() {
   local candidate
+  if [ -n "$EXPECTED_BASE_INPUT" ]; then printf '%s\n' "$EXPECTED_BASE_INPUT"; return 0; fi
   candidate="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
   if [ -n "$candidate" ] && git rev-parse --verify --quiet "${candidate}^{commit}" >/dev/null; then printf '%s\n' "${candidate#origin/}"; return 0; fi
   for candidate in origin/main origin/master origin/develop; do
@@ -255,6 +283,7 @@ collect_terminal_evidence() {
   }
   created_after="${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-${TASK_STARTED_AT:-}}}"
   evidence_args=(--scope-reason "$scope_failure_reason")
+  [ -n "$EXPECTED_BASE_INPUT" ] && evidence_args+=(--base "$EXPECTED_BASE_INPUT")
   [ -n "$PR_URL" ] && evidence_args+=(--pr-url "$PR_URL")
   [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] && evidence_args+=(--pr-number "$PR_NUMBER")
   [ -n "$created_after" ] && evidence_args+=(--created-after "$created_after")

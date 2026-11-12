@@ -176,6 +176,7 @@ amplihack copilot
 - [Keep Tests Passing Under Host Load](howto/keep-tests-passing-under-host-load.md) - Wait on conditions under one 10-minute ceiling, use the debug-only identity knobs, and prove a fix with all-core CPU load
 - [Wait Without Leaving Orphan Processes](howto/wait-without-orphan-processes.md) - Wait with `amplihack wait --seconds N` or `wait $pid`, use uutils `timeout` safely, and what the tail-follow guard in the `pre-tool-use` hook denies
 - [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
+- [Profile Organisation Affinity](reference/profile-organisation-affinity.md) - Same-organisation selection, crossing restrictions and session warnings
 - [Capacity Governor](reference/capacity-governor.md) - How recipe runs and agent launches are admitted, made to wait or refused (exit 80) from session and weekly budgets, and `amplihack governor status`
 - [`amplihack sessions` Reference](reference/sessions-command.md) - Archive old Claude Code session logs out of `~/.claude/projects`, restore one, and the rotator's daily run
 - [`amplihack agent` Reference](reference/agent-command.md) - Register flags, `amplihack claude --supervise`, the supervisor pass, result texts, status formats, the registry and the systemd unit
@@ -378,6 +379,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [PR-Ownership Lease Reference](reference/pr-ownership-lease.md) - `PrLease`, `LeaseStore`, `Clock`, `LeaseError`, on-disk format, configuration, and the behavior contract locked by `pr_lease_behavior.rs`
 - [Step 03 Host-Aware Tracking Idempotency](reference/recipe-step-03-idempotency.md) - GitHub issue, Azure Boards work-item, and local tracking reuse/create behavior
 - [Tracking Issue Selection Reference](reference/workflow-tracking-issue-selection.md) - How step 03 honours `issue_number` on GitHub, reuses only open issues referenced in the task text (#1595), defaults to local tracking unless `create_issue=true`, reuses exact-title matches, and bounds rate-limit retries with jittered backoff (#1881)
+- [Workflow Delivery Inputs Reference](reference/workflow-delivery-inputs.md) - `base_branch` (the pull request's base everywhere it is used) and the opt-in `strict_delivery` contract for a caller that has already assigned the issue and the branch
 - [Workflow Issue Extraction Reference](reference/workflow-issue-extraction.md) - Three-tier issue-number resolution (direct URL → PR closing-refs → `#N` verify) in step 03b
 - [Multi-Provider Workflow Reference](reference/multi-provider-workflow.md) - Provider-neutral helper routing for GitHub, Azure DevOps, local, and unsupported repositories
 - [How to Use the Workflow with Azure DevOps](howto/use-workflow-with-azure-devops.md) - Run default-workflow against an AzDO repository
