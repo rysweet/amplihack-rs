@@ -102,9 +102,9 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     };
     let auto = super::autostart_line(store.root());
     // Issue #1803: read only under a private root; never echoes the marker.
-    let exe = exe_name();
-    let owner = super::owner::describe(store.root(), &proc_root(), exe.as_deref());
+    let owner = super::owner::describe(store.root(), &proc_root(), exe_name().as_deref());
     println!("rotate: {word}\n{auto}\n{owner}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    super::observe::affinity::print_status(store.root());
     // Issue #1797: from the usage history only; no probe and no `claude`.
     let (capacity, warnings) = history::capacity(store.root(), now());
     for w in warnings {

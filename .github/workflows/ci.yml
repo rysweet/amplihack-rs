@@ -375,6 +375,9 @@ jobs:
       - name: Recipes — #1551 no merge outside gate
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
+      - name: Recipes — #2186 every expected check exists and passed at the head
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-2186-expected-checks.sh
       - name: Recipes — auto-drive QA command selection, nested Cargo and mixed roots (issue #1516)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh

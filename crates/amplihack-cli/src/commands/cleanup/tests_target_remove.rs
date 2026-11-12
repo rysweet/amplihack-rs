@@ -515,7 +515,7 @@ fn held_cargo_lock_at_any_level_means_in_use_and_nothing_is_deleted() {
             "{lock}"
         );
         assert!(dir.join("debug/blob").exists(), "{lock}: nothing deleted");
-        drop(held);
+        crate::test_support::release_flock(held, &dir.join(lock));
         fx.remove(&dir, &Shape::Dir, &fx.no_links(), false).unwrap();
         assert!(!exists_no_follow(&dir), "{lock}: removed once released");
     }
@@ -533,7 +533,7 @@ fn held_cargo_lock_in_a_linked_destination_keeps_link_and_destination() {
     );
     assert!(dest.join("debug/blob").exists());
     assert!(exists_no_follow(&link));
-    drop(held);
+    crate::test_support::release_flock(held, &dest.join("debug/.cargo-lock"));
     fx.remove(&link, &shape, &fx.links(), false).unwrap();
     assert!(!exists_no_follow(&dest) && !exists_no_follow(&link));
 }
