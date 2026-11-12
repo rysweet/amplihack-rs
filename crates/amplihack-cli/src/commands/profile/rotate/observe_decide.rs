@@ -113,7 +113,13 @@ pub(in crate::commands::profile::rotate) fn decide_available(
     let verdict = match outlook {
         None => verdict,
         Some(o) => affinity::with_outlook(
-            snap, &input, verdict, o, &measured, &eligible, need, attempted,
+            snap,
+            &input,
+            verdict,
+            o,
+            (&measured, &eligible),
+            need,
+            attempted,
         ),
     };
     // A spend limit on a live overflow profile is handled by its block, so

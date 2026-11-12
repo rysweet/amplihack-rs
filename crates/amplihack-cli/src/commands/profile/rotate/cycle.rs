@@ -358,14 +358,13 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     // Issue #2085: the record the limit-resume hook waits for, under the lock.
     if swapped.is_some()
         && let Some(mut j) = ctx.rs.load_journal()?
+        && let Err(error) = swap_record::complete(&ctx.rs, &mut j, swapped_at)
     {
-        if let Err(error) = swap_record::complete(&ctx.rs, &mut j, swapped_at) {
-            out.emit(
-                (ctx.now)(),
-                &format!("swap event publication pending: {error}"),
-            );
-            return Err(error);
-        }
+        out.emit(
+            (ctx.now)(),
+            &format!("swap event publication pending: {error}"),
+        );
+        return Err(error);
     }
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.

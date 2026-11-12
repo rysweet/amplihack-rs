@@ -126,11 +126,11 @@ pub(in super::super) fn with_outlook(
     input: &OverflowInput<'_>,
     verdict: Verdict,
     o: &Outlook,
-    measured: &[Measured],
-    eligible: &[bool],
+    pool: (&[Measured], &[bool]),
     need: Need,
     attempted: &[ProfileName],
 ) -> Verdict {
+    let (measured, eligible) = pool;
     let (s, real) = (input.settings, &input.live.reading);
     let on_outlook = if *real == Reading::Failed {
         outlook_failed(snap, s, &verdict.decision, &o.reading(), measured)

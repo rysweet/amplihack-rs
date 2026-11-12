@@ -8366,11 +8366,15 @@ never refreshed. These still refuse the refresh:
 | Another process holds the refresh lock | `refresh busy` |
 | The directory fails the [login directory rule](#login-directory-rule) | `refresh refused` |
 
-A token that has not expired is left alone, and nothing is logged for it;
-Claude refreshes it. The log says
-`refresh: expired login in ~/.claude refreshed; identity read again`, or
-`refresh: expired login in ~/.claude not refreshed (<reason>)` with one of the
-direct read's reasons.
+A token that has not expired is left alone; Claude refreshes it. Successful
+refresh logs `refresh: expired login in ~/.claude refreshed; identity read again`.
+With readable ownership state, definitive authentication failures enter
+[needs-login](#needs-login-profiles), while temporary failures report
+`profile <name>: authentication reassessment uncertain (<reason>)`.
+If the rotate ledger is unreadable, only the existing live-slot refresh
+exception runs before the stop below; it can report
+`refresh: expired login in ~/.claude not refreshed (<reason>)`. Profile
+episode assessment waits until ownership can be read safely.
 
 The refresh is not identity evidence. The cycle reads the identity of the
 refreshed credential afresh, and only that reading can let a login move. A

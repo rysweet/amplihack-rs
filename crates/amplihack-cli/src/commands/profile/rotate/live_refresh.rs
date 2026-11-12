@@ -11,25 +11,18 @@
 
 use super::super::cycle::Ctx;
 use super::super::log::{Sink, msg};
-#[cfg(test)]
 use crate::commands::profile::usage_cmd::PROBE_CANCEL;
 use crate::commands::profile::usage_direct;
-#[cfg(test)]
 use crate::commands::profile::usage_direct::Endpoints;
-#[cfg(test)]
 use std::path::Path;
-#[cfg(test)]
 use std::time::Duration;
 
 /// Each refresh of an expired live login ends within this time.
-#[cfg(test)]
 pub const LIVE_REFRESH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// `usage_direct::refresh_expired` against the endpoints the environment
 /// sets, with the direct read's refusals: a pending swap journal under
 /// `root`, a directory others can write, or a cancelled probe.
-#[cfg(test)]
-#[allow(dead_code)]
 pub fn refresh_direct(root: &Path, creds_dir: &Path) -> Result<bool, &'static str> {
     let (ep, _warnings) = Endpoints::from_env();
     let state = root.join(".auto-switch.d");
@@ -70,6 +63,22 @@ pub fn refresh_expired_live(
         && expired
     {
         out.emit((ctx.now)(), &msg::excluded_not_refreshed(name));
+    }
+    if ctx.rs.load_ledger().is_err() {
+        // Preserve #1962: refresh only the live slot before the prelude
+        // reports the unreadable ledger. Unknown ownership cannot authorise
+        // profile assessment or movement. Unit fixtures never call a real endpoint.
+        if expired && excluded.is_none() && !cfg!(test) {
+            match refresh_direct(ctx.store.root(), &dir) {
+                Ok(true) => out.emit((ctx.now)(), msg::LIVE_REFRESHED),
+                Ok(false) => {}
+                Err(cause) => out.emit(
+                    (ctx.now)(),
+                    &format!("refresh: expired login in ~/.claude not refreshed ({cause})"),
+                ),
+            }
+        }
+        return Ok(()); // The prelude owns the ledger error and its stop line.
     }
     // Structured assessment refreshes at most once and persists definitive
     // failures before any identity reader can attempt this credential again.

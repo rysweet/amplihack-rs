@@ -4,6 +4,21 @@ use super::super::super::recover::{RecoverOutcome, recover_with};
 use super::*;
 
 #[test]
+fn a_damaged_ledger_reports_its_stop_before_any_custody_attempt() {
+    let e = fixture();
+    let mut c = context(&e);
+    let damaged = r#"{"version":99,"live":"work"}"#;
+    private(&e.rs.ledger, damaged);
+    assert_eq!(drive(&e, &mut c).unwrap(), CycleOutcome::Alerted);
+    assert!(log(&e).contains("rotate ledger unreadable"), "{}", log(&e));
+    assert_eq!(fs::read_to_string(&e.rs.ledger).unwrap(), damaged);
+    assert_eq!(ino_at(&e.live()), Some(e.l));
+    assert_eq!(ino_at(&e.slot("spare")), Some(e.t));
+    assert!(!e.rs.journal.exists());
+    assert!(!e.rs.dir.join("swap.json").exists());
+}
+
+#[test]
 fn duplicate_intent_cannot_park_credentials_when_fresh_server_verification_fails() {
     let e = fixture();
     private(

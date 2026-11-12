@@ -15,12 +15,14 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+type FileEvidence = (u64, u64, u64, i64, i64, i64, i64, u32, u32, u64);
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Evidence {
     dir: PathBuf,
     directory: (u64, u64, u32, u32),
-    file: Option<(u64, u64, u64, i64, i64, i64, i64, u32, u32, u64)>,
+    file: Option<FileEvidence>,
 }
 fn evidence(dir: &Path) -> Result<Evidence, ProfileError> {
     let d = fs::symlink_metadata(dir)?;
