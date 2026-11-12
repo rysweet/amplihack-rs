@@ -260,16 +260,25 @@ impl GitRecord {
         if self.required && self.spawned.get() == 0 {
             // The run stopped before any runner started (a refused guard or
             // context check): no step ran, so there is nothing to record.
-            return match fs::remove_dir(&trace_dir) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(error).with_context(|| {
-                    format!(
-                        "cannot release unused recorder storage {}",
-                        trace_dir.display()
-                    )
-                }),
-            };
+            // Storage that holds anything is still validated below.
+            match fs::read_dir(&trace_dir) {
+                Ok(mut entries) => {
+                    if entries.next().is_none() {
+                        return fs::remove_dir(&trace_dir).with_context(|| {
+                            format!(
+                                "cannot release unused recorder storage {}",
+                                trace_dir.display()
+                            )
+                        });
+                    }
+                }
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("cannot inspect recorder storage {}", trace_dir.display())
+                    });
+                }
+            }
         }
         let mut text = String::new();
         if self.required {
