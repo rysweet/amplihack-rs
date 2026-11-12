@@ -342,9 +342,12 @@ round_record() {
   case "$verdict" in MERGE_READY|NOT_MERGE_READY) ;; *) verdict="NOT_MERGE_READY" ;; esac
   count="$(field "${RECIPE_VAR_merge_ready_verdict:-}" blocker_count 0)"
   case "$count" in '' | *[!0-9]*) count=0 ;; esac
-  qa="$(field "${RECIPE_VAR_qa_evidence:-}" qa_status MISSING)"
-  ci_signal="$(field "${RECIPE_VAR_ci_evidence:-}" ci_signal unreadable)"
-  ci_status="$(field "${RECIPE_VAR_ci_evidence:-}" ci_status MISSING)"
+  qa="$(token "$(field "${RECIPE_VAR_qa_evidence:-}" qa_status MISSING)")"
+  # Since #2342 an agent writes ci_evidence after reading CI logs, so a quote in ci_signal or ci_status must not open
+  # a second, winning merge_ready_verdict key. ci_signal is free text: it keeps its spaces and loses only quotes,
+  # backslashes and control bytes; ci_status is a closed vocabulary and goes through token().
+  ci_signal="$(field "${RECIPE_VAR_ci_evidence:-}" ci_signal unreadable | LC_ALL=C tr -d '"\\\000-\037\177')"
+  ci_status="$(token "$(field "${RECIPE_VAR_ci_evidence:-}" ci_status MISSING)")"
   # step-00d's hash, whole hex or "": the gate trusts the qa evidence only at this hash (#1517 D5).
   qh="$(hex_or_empty "$(field "${RECIPE_VAR_qa_evidence_hash:-}" qa_evidence_sha '')")"
   # What held this round up, for the stop line (#2219). Written for every

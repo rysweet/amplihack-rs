@@ -62,7 +62,8 @@ command -v python3 >/dev/null 2>&1 || harness_error "python3 is required to vali
 # from THIS tree, and require the --require-field pipeline the steps use.
 supports_helper() {
   printf '{"a":"b"}' | "$1" orch helper extract-field --field a --default X >/dev/null 2>&1 \
-    && printf '{"a":"b"}' | "$1" orch helper extract-json --require-field a >/dev/null 2>&1
+    && printf '{"a":"b"}' | "$1" orch helper extract-json --require-field a >/dev/null 2>&1 \
+    && "$1" orch helper ci-evidence-ready --help >/dev/null 2>&1  # #2342: step-02's QA needs it
 }
 REAL_AMPLIHACK=""
 for cand in "${REPO_ROOT}/target/release/amplihack" "${REPO_ROOT}/target/debug/amplihack" \
@@ -71,7 +72,7 @@ for cand in "${REPO_ROOT}/target/release/amplihack" "${REPO_ROOT}/target/debug/a
   if supports_helper "${cand}"; then REAL_AMPLIHACK="${cand}"; break; fi
 done
 [[ -n "${REAL_AMPLIHACK}" ]] || {
-  echo "HARNESS-ERROR: no 'amplihack' providing 'orch helper extract-json --require-field'." >&2
+  echo "HARNESS-ERROR: no 'amplihack' providing 'orch helper extract-json --require-field' and 'ci-evidence-ready'." >&2
   echo "  Build it with: cargo build -p amplihack --bin amplihack" >&2; exit 2; }
 export REAL_AMPLIHACK
 
