@@ -1,6 +1,5 @@
-//! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude` on
-//! the account with the most capacity left; `profile switch` uses the same swap.
-//! See docs/reference/profile-command.md.
+//! `amplihack profile rotate` (#1592): keeps the login in `~/.claude` on the account with the
+//! most capacity left; `profile switch` shares the swap. See docs/reference/profile-command.md.
 #[cfg(unix)]
 mod account;
 #[cfg(unix)]
@@ -53,6 +52,8 @@ mod handfix_plan;
 mod held;
 #[cfg(unix)]
 mod history;
+#[cfg(unix)]
+mod hook_heal;
 #[cfg(unix)]
 pub(super) mod identify;
 #[cfg(unix)]
@@ -201,15 +202,14 @@ use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
 
 // Issue #1797: `Probes` is what the usage history records from a cycle.
 #[cfg(unix)]
-pub(super) use self::{identify::is_live, observe::Probes, platform_block::platform_live_line};
+pub(super) use self::{autostart::autostart_line, identify::excluded_offline::*};
 #[cfg(unix)]
-pub(in crate::commands::profile) use autostart::autostart_line;
+pub(super) use self::{identify::is_live, observe::Probes, platform_block::platform_live_line};
 #[cfg(unix)]
 pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rotator};
 #[cfg(unix)]
 pub(super) use {control::clear_overflow_block, control::overflow_blocks, log::timestamp};
 
-// Auto-switch's overflow gate (`gate_record`): the running rotator's own
 #[cfg(all(test, unix))]
 pub(super) use gate_record::effective_at as overflow_gate_at;
 #[cfg(unix)]
@@ -268,9 +268,8 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                 if mode == cycle::Mode::OneShot {
                     warn_foreign_rotator(Some(store.root()));
                 }
-                let mut ctx = cycle::Ctx::new(store.clone(), home?, s);
-                ctx.reread = Some(fresh::reread_as_configured);
-                cycle::run_cycle(&mut ctx, mode)?;
+                let mut ctx = cycle::Ctx::new(store.clone(), home?, s).with_rereads();
+                hook_heal::after_cycle(cycle::run_cycle(&mut ctx, mode)?, &ctx);
             }
             Some(RotateAction::Start(w)) => {
                 if w.supervised.is_some() {
