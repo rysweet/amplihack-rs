@@ -583,6 +583,18 @@ jobs:
       # Without strace it skips, so CI installs it and requires it.
       - name: Install strace (issue #2042)
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends strace
+      - name: Isolate test temporary roots (issue #2291)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_tmp_root="$(mktemp -d "$RUNNER_TEMP/ah.XXXXXX")"
+          mkdir -m 700 "$test_tmp_root/t" "$test_tmp_root/r"
+          {
+            echo "TMPDIR=$test_tmp_root/t"
+            echo "TMP=$test_tmp_root/t"
+            echo "TEMP=$test_tmp_root/t"
+            echo "AMPLIHACK_WORKFLOW_RUNTIME_DIR=$test_tmp_root/r"
+          } >> "$GITHUB_ENV"
       # nextest: better parallelism and lower peak disk than `cargo test`.
       # Report every failing target; an early failure must not hide other contracts.
       - run: cargo nextest run --workspace --locked --no-fail-fast
