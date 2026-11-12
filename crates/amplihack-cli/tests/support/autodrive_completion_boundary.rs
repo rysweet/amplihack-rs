@@ -34,6 +34,20 @@ printf '%s\n' "$AUTODRIVE_ROUND_LABEL" >> "$FAKE_LOG/rounds"
 bash "$FIXTURE/round.sh"
 "#;
 
+/// The agent side of crusty-round step-01-round-context (#2329 made it an
+/// agent step): the returned JSON contract, built from the fixture's measured
+/// PR number, local head, resolved concerns and round label.
+pub const CONTEXT_SCRIPT: &str = r#"set -euo pipefail
+head="$(git -C "${REPO_PATH:-.}" rev-parse HEAD)"
+resolved=""
+if [ -n "${AUTODRIVE_RESOLVED_CONCERNS_FILE:-}" ] && [ -f "$AUTODRIVE_RESOLVED_CONCERNS_FILE" ]; then
+  resolved="$(tr '\n' ' ' < "$AUTODRIVE_RESOLVED_CONCERNS_FILE")"
+fi
+jq -cn --arg pr "${PR_NUMBER:-}" --arg head "$head" --arg resolved "$resolved" \
+  --arg label "${AUTODRIVE_ROUND_LABEL:-round}" \
+  '{pr:$pr,head_sha:$head,resolved_concerns:$resolved,round_label:$label,blockers:[],attempts:[]}'
+"#;
+
 pub const ROUND_SCRIPT: &str = r#"set -euo pipefail
 export RECIPE_VAR_review_index="$(bash "$FIXTURE/guard.sh")"
 export RECIPE_VAR_crusty_round_context="$(bash "$FIXTURE/context.sh")"

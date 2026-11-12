@@ -1759,3 +1759,106 @@ mod stale_file {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #2218 (D7): history of an excluded profile is kept as written
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod excluded {
+    use super::super::auto_switch::config::{self, ReadMode};
+    use super::super::usage_history::{FILE, read_all, read_recent, to_line};
+    use super::{Entry, HOUR, T, entry, name, p};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    struct Root {
+        _t: tempfile::TempDir,
+        root: PathBuf,
+    }
+
+    impl Root {
+        /// A synthetic profile root with a private `.auto-switch.d` and a
+        /// history holding `lines`.
+        fn with(lines: &[Entry]) -> Self {
+            let t = tempfile::tempdir().unwrap();
+            let root = t.path().to_path_buf();
+            let state = root.join(".auto-switch.d");
+            fs::create_dir(&state).unwrap();
+            fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+            let body: String = lines.iter().map(|e| format!("{}\n", to_line(e))).collect();
+            fs::write(state.join(FILE), body).unwrap();
+            fs::set_permissions(state.join(FILE), fs::Permissions::from_mode(0o600)).unwrap();
+            Self { _t: t, root }
+        }
+
+        fn exclude(&self, names: &[&str]) {
+            config::update(&self.root, ReadMode::Editable, |c| {
+                c.exclude.extend(names.iter().map(|s| name(s)));
+                Ok(())
+            })
+            .unwrap();
+        }
+
+        fn bytes(&self) -> Vec<u8> {
+            fs::read(self.root.join(".auto-switch.d").join(FILE)).unwrap()
+        }
+    }
+
+    /// A line from before the fix: `spare` has a reading and `extra` is
+    /// unknown, alongside `work`.
+    fn old_line(at: i64) -> Entry {
+        let mut e = entry(
+            at,
+            &[
+                ("work", p(Some(10), 40, None)),
+                ("spare", p(Some(0), 0, None)),
+            ],
+        );
+        e.unknown = vec!["extra".to_string()];
+        e
+    }
+
+    #[test]
+    fn read_all_returns_old_entries_for_an_excluded_profile_unchanged() {
+        // D7: history is neither removed nor filtered for an excluded
+        // profile; the readers that build figures leave it out themselves.
+        let r = Root::with(&[old_line(T - 2 * HOUR), old_line(T - HOUR)]);
+        r.exclude(&["spare", "extra"]);
+        let before = r.bytes();
+        assert_eq!(
+            read_all(&r.root, T),
+            (vec![old_line(T - 2 * HOUR), old_line(T - HOUR)], None)
+        );
+        let (recent, _) = read_recent(&r.root, T, 6 * HOUR);
+        assert_eq!(recent, vec![old_line(T - 2 * HOUR), old_line(T - HOUR)]);
+        assert_eq!(r.bytes(), before, "the file keeps the old lines as written");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2218 (D5): the refusal text for a named excluded profile
+// ---------------------------------------------------------------------------
+
+mod excluded_refusal {
+    use super::super::usage_cmd::excluded_refusal;
+    use super::name;
+
+    #[test]
+    fn the_refusal_names_the_profile_and_the_command_that_set_the_exclusion() {
+        assert_eq!(
+            excluded_refusal(&name("shared")),
+            "shared: excluded (in auto-switch exclude list); not probed \
+             (amplihack profile auto-switch exclude)"
+        );
+    }
+
+    #[test]
+    fn the_refusal_holds_no_path_or_account() {
+        let line = excluded_refusal(&name("shared"));
+        for word in ["/", "@", ".credentials", "uuid"] {
+            assert!(!line.contains(word), "{word}: {line}");
+        }
+    }
+}

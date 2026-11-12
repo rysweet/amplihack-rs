@@ -90,6 +90,16 @@ pub fn status_live_unreadable(field: Option<&str>) -> String {
     )
 }
 
+/// Issue #2218: the `live:` value of `profile rotate status` when the
+/// ledger names no live profile and the excluded profiles cannot be worked
+/// out, so whether an excluded login is live is unknown, not `-`.
+pub fn status_live_exclude_unknown(cause: &str) -> String {
+    format!(
+        "unknown (excluded profiles unreadable: {})",
+        crate::commands::profile::usage_cmd::sanitize_display(cause, false)
+    )
+}
+
 /// Issue #1886: a confirmed suspicion that would leave `l` with no login
 /// anywhere (the only-login rule).
 pub fn only_login(m: &ProfileName, l: &ProfileName) -> String {

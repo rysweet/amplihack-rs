@@ -710,8 +710,27 @@ fn run_worktree_call(repo: &Repo, recipe: &str, inherited: &[(&str, &str)]) -> O
 
 /// The branch `recipe`'s pull request step passes to `gh pr create --base`,
 /// worked out in `repo` by that step's own lines.
+// The shell a step runs: its bash command, or for an agent step (#2329 made
+// light-open-pr one) the command example its prompt gives the agent.
+fn step_shell(recipe: &str, step_id: &str) -> String {
+    let path = workspace_root().join(format!("amplifier-bundle/recipes/{recipe}.yaml"));
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let doc: Value = serde_yaml::from_str(&text).expect("recipe parses");
+    let step = doc["steps"]
+        .as_sequence()
+        .expect("steps")
+        .iter()
+        .find(|s| s["id"].as_str() == Some(step_id))
+        .unwrap_or_else(|| panic!("{recipe}: no step {step_id}"));
+    step["command"]
+        .as_str()
+        .or_else(|| step["prompt"].as_str())
+        .unwrap_or_else(|| panic!("{recipe}/{step_id} has neither a command nor a prompt"))
+        .to_owned()
+}
+
 fn pull_request_base(repo: &Repo, recipe: &str, step_id: &str) -> String {
-    let command = step_command(recipe, step_id);
+    let command = step_shell(recipe, step_id);
     assert!(
         command.contains("--base \"$DEFAULT\""),
         "{recipe}/{step_id} opens the pull request on $DEFAULT"

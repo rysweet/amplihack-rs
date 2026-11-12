@@ -210,32 +210,9 @@ steps:
 }
 
 pub(super) fn build_canonical_native_hook_settings(hooks_bin: &Path) -> serde_json::Value {
-    let mut settings = serde_json::json!({});
-    let root = hooks::ensure_object(&mut settings);
-    let hooks_map = root
-        .entry("hooks")
-        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-    let hooks_map = hooks::ensure_object(hooks_map);
-
-    for entry in CANONICAL_AMPLIHACK_HOOK_CONTRACT
-        .iter()
-        .filter(|entry| entry.native_subcmd.is_some())
-    {
-        let wrappers = hooks_map
-            .entry(entry.event)
-            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-        let wrappers = hooks::ensure_array(wrappers);
-        let spec = HookSpec {
-            event: entry.event,
-            cmd: HookCommandKind::BinarySubcmd {
-                subcmd: entry.native_subcmd.expect("filtered to native hooks"),
-            },
-            timeout: entry.timeout,
-            matcher: entry.matcher,
-            async_rewake: entry.async_rewake,
-        };
-        wrappers.push(hooks::build_hook_wrapper(&spec, hooks_bin));
-    }
-
-    settings
+    let target = hook_block::HookTarget {
+        bin: hooks_bin.to_path_buf(),
+        limit_resume: true,
+    };
+    serde_json::json!({ "hooks": hook_block::block(&target) })
 }

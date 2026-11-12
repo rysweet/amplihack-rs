@@ -206,6 +206,31 @@ fn recipe_step_environment_keeps_state_and_contract_out_of_the_checkout() {
     let contract = ensure_contract_file(&contract_dir).expect("contract file is written");
     assert_eq!(contract, contract_dir.join(CONTRACT_RELATIVE_PATH));
 
+    // The launch hooks settings share the contract's runtime home (#2279).
+    #[cfg(unix)]
+    {
+        use super::hook_settings::{Inject, Inputs, LAUNCH_FILE, launch_file_path, prepare_with};
+        use crate::commands::install::hook_block::{HookTarget, block};
+        let target = HookTarget {
+            bin: PathBuf::from("/opt/test/bin/amplihack-hooks"),
+            limit_resume: true,
+        };
+        let expected = expected_state_root.join(LAUNCH_FILE);
+        assert_eq!(launch_file_path(), Some(expected.clone()));
+        let injected = prepare_with(&Inputs {
+            binary_name: "claude",
+            extra_args: &[],
+            proxy: false,
+            newer_stamp: false,
+            target: Some(&target),
+            amplihack_home: &contract_dir,
+        });
+        assert_eq!(injected, Inject::Path(expected.clone()));
+        let settings: serde_json::Value =
+            serde_json::from_slice(&fs::read(expected).unwrap()).unwrap();
+        assert_eq!(settings, serde_json::json!({ "hooks": block(&target) }));
+    }
+
     assert!(session_dir.starts_with(&expected_state_root));
     assert!(contract.starts_with(&expected_state_root));
     assert_untouched(&checkout, &before);

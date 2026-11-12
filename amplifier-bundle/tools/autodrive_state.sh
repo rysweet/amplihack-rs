@@ -25,9 +25,9 @@
 #
 # This file only DEFINES functions; sourcing it has no side effects.
 #
-# PRIVATE STATE. The merge gate reads the crusty and qa evidence in this store
+# PRIVATE STATE. Native finalization validates the crusty and qa evidence in this store
 # only when the directory and each file are owned by this user, are not
-# symlinks, and have no group or world write bit (autodrive_merge_gate.sh,
+# symlinks, and have no group or world write bit (native evidence validation,
 # sections 6b and 6c). The caller's umask must not decide that: under the
 # umask 0002 that hosts with user private groups use, a plain mkdir or `>`
 # makes every file group-writable and the gate refuses every merge. So the
@@ -66,9 +66,9 @@ autodrive_state_dir() {
   printf '%s\n' "$dir"
 }
 
-# autodrive_private_dir <dir> -> makes <dir> a state dir the merge gate and
-# completion preparation accept, whatever the caller's umask, or prints a
-# named ERROR and returns 1.
+# autodrive_private_dir <dir> -> makes <dir> an owner-only state dir that
+# finalization and completion preparation accept, whatever the caller's umask,
+# or prints a named ERROR and returns 1.
 #
 #   ERROR: state-dir-not-private: <dir> is empty, a symlink, not a directory,
 #     not owned by this user, or cannot be created or changed. Nothing in it is
@@ -95,7 +95,7 @@ autodrive_private_dir() {
     echo "ERROR: state-dir-not-private: no state directory was given" >&2; return 1
   fi
   if [ -L "$dir" ]; then
-    echo "ERROR: state-dir-not-private: ${dir} is a symlink; the merge gate never reads evidence through one" >&2; return 1
+    echo "ERROR: state-dir-not-private: ${dir} is a symlink; finalization never reads evidence through one" >&2; return 1
   fi
   if ! ( umask 077 && mkdir -p -- "$dir" ) 2>/dev/null || [ ! -d "$dir" ]; then
     echo "ERROR: state-dir-not-private: ${dir} could not be created as a directory" >&2; return 1
@@ -122,8 +122,8 @@ autodrive_private_dir() {
 }
 
 # autodrive_private <path>: <path> is owned by this user, is not a symlink, and
-# has no group or world write bit. The merge gate's test for every state file
-# it reads as evidence (autodrive_merge_gate.sh sections 6b and 6c).
+# has no group or world write bit. Finalization's test for every state file
+# it reads as evidence (native evidence validation).
 autodrive_private() {
   local loose
   [ -L "$1" ] && return 1
@@ -133,7 +133,7 @@ autodrive_private() {
 }
 
 # autodrive_untrusted_entries <dir> <uid> <find action...> -> runs the action
-# on each entry directly in <dir> that the merge gate would refuse: a symlink,
+# on each entry directly in <dir> that finalization would refuse: a symlink,
 # an entry not owned by <uid>, or one with a group or world write bit. These
 # are the tests of autodrive_private above, applied to a whole directory.
 autodrive_untrusted_entries() {
@@ -146,8 +146,8 @@ autodrive_untrusted_entries() {
 #
 # A phase is recorded as done only after its own gate passed in a real run.
 # For most phases `autodrive_phase_done` only lets a resumed run skip work; the
-# merge gate re-verifies those criteria in the run that merges. The exception
-# is `crusty-loop`: the merge gate reads that marker, together with the final
+# finalizer re-verifies those criteria in the run that merges. The exception
+# is `crusty-loop`: finalization reads that marker, together with the final
 # verdict in crusty-latest.json, as evidence for merge-ready criterion 3 (issue
 # #1517), and only from a state dir private to this user. The only permitted
 # writers are autodrive_record_crusty_loop_done below, which writes the marker
