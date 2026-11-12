@@ -5065,6 +5065,17 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
     }
 
     let mut cmd = Command::new("bash");
+    // Only the injected context is inherited. A run inside a live auto-drive
+    // round (the pre-push hook of a round's commit) carries that drive's
+    // AUTODRIVE_* and RECIPE_VAR_* values, such as AUTODRIVE_COMPLETION_STATE
+    // and AUTODRIVE_ROUND_RECORD; kept, they point the script's steps at the
+    // live state directory.
+    for (name, _) in std::env::vars_os() {
+        let n = name.to_string_lossy();
+        if n.starts_with("AUTODRIVE_") || n.starts_with("RECIPE_VAR_") {
+            cmd.env_remove(&name);
+        }
+    }
     cmd.arg(&script)
         .current_dir(&root)
         .env_remove("AMPLIHACK_MERGE_GUARD_USER_BASH_ENV")
