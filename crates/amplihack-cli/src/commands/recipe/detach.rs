@@ -325,7 +325,9 @@ fn session_exists(session: &str) -> bool {
 /// (issue #1976, D8): it must not watch the launching run as its parent, nor
 /// write into another drive's state directory. The governor markers are
 /// issue #1811's.
-pub(crate) const PANE_ENV_REMOVED: [&str; 5] = [
+pub(crate) const PANE_ENV_REMOVED: [&str; 7] = [
+    "AMPLIHACK_RECOVERY_ATTACHMENT",
+    "AMPLIHACK_RECOVERY_DESCRIPTOR",
     crate::commands::governor::GOVERNOR_PARENT_ENV,
     crate::commands::governor::GOVERNOR_RECIPE_ENV,
     super::run::parent_watch::PARENT_WATCH_ENV[0],
