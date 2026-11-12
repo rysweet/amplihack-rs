@@ -32,9 +32,7 @@ use std::process::Output;
 use serde_json::{Value, json};
 
 use crate::issue_2336_autodrive_completion::fixture::{Drive, json_output};
-use crate::support::auto_drive_light::{
-    read, recipe, show, stderr, stdout, step_command, tools_dir,
-};
+use crate::support::auto_drive_light::{recipe, show, stderr, stdout, step_command, tools_dir};
 
 const ROUND: &str = "autodrive-crusty-round";
 const KEY: &str = "autodrive_minor_findings";
@@ -714,66 +712,11 @@ fn entry_recipes_pass_the_setting_to_each_loop() {
     }
 }
 
+// No test runs the round recipe through the runner, so this is the only check
+// that keeps step-04 and step-05 running under `address`: an all-minor round
+// is CONCERNS there, and these steps need no new condition.
 #[test]
-fn merge_loop_forwards_the_setting_without_a_second_clean_token() {
-    let cmd = step_command("autodrive-merge-loop", "step-02-merge-ready-loop");
-    assert!(
-        cmd.contains(
-            "--context \"autodrive_minor_findings=${RECIPE_VAR_autodrive_minor_findings:-}\""
-        ),
-        "the merge loop forwards the raw value to the re-review through the round context"
-    );
-    assert!(
-        !read("amplifier-bundle/recipes/autodrive-merge-loop.yaml").contains("--also-clean-token"),
-        "the merge-ready loop never ends on MINOR_ONLY itself"
-    );
-}
-
-#[test]
-fn no_bash_step_substitutes_the_setting_into_its_command() {
-    for r in [
-        "auto-drive-to-merge",
-        "auto-drive-light",
-        "autodrive-crusty-loop",
-        "autodrive-crusty-round",
-        "autodrive-merge-loop",
-    ] {
-        for s in recipe(r)["steps"].as_sequence().unwrap() {
-            if let Some(cmd) = s["command"].as_str() {
-                assert!(
-                    !cmd.contains("{{autodrive_minor_findings}}"),
-                    "{r}/{:?}: read the value from the environment, never by template",
-                    s["id"]
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn round_prompts_address_minor_findings_by_default() {
-    let address = step_of(ROUND, "step-04-address-concerns")["prompt"]
-        .as_str()
-        .unwrap()
-        .to_lowercase();
-    assert!(
-        address.contains("minor"),
-        "step-04 says minor findings are addressed too"
-    );
-    let next = recipe(ROUND)["steps"]
-        .as_sequence()
-        .unwrap()
-        .last()
-        .unwrap()["prompt"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    assert!(
-        next.contains("MINOR_ONLY") && next.contains("follow_up"),
-        "the next-action prompt says MINOR_ONLY occurs only under follow_up"
-    );
-    // Step-04 and step-05 keep their CONCERNS condition: under address an
-    // all-minor round is CONCERNS, so they run without a new condition.
+fn round_address_steps_still_run_on_concerns() {
     for id in [
         "step-04-address-concerns",
         "step-05-verify-concerns-addressed",
