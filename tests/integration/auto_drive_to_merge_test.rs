@@ -48,7 +48,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 30] = [
+const AUTODRIVE_TOOLS: [&str; 29] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
@@ -65,7 +65,6 @@ const AUTODRIVE_TOOLS: [&str; 30] = [
     "autodrive_merge_gate.sh",
     "autodrive_merge_ready_files.sh",
     "autodrive_platform_facts.sh",
-    "autodrive_pr_head.sh",
     "autodrive_progress.sh",
     "autodrive_qa_docs.sh",
     "autodrive_qa_evidence.sh",
@@ -5281,95 +5280,16 @@ fn issue_1543_pr_head_worktree_shell_test_passes() {
     );
 }
 
-/// Drop double- and single-quoted segments so message text ("refusing to
-/// enter the merge loop", "run `git pull --ff-only`") is not read as a verb.
-fn unquoted(line: &str) -> String {
-    let mut out = String::new();
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    for c in line.chars() {
-        match quote {
-            Some(q) => {
-                if escaped {
-                    escaped = false;
-                } else if c == '\\' && q == '"' {
-                    escaped = true;
-                } else if c == q {
-                    quote = None;
-                }
-            }
-            None if c == '"' || c == '\'' => quote = Some(c),
-            None => out.push(c),
-        }
-    }
-    out
-}
-
+/// #2188: the read-only bash resolver was replaced by the shared Rust
+/// preflight (`amplihack orch helper autodrive-preflight`). It must not be
+/// shipped once nothing calls it.
 #[test]
-fn the_pr_head_resolver_is_read_only() {
+fn the_retired_pr_head_resolver_is_not_shipped() {
     let path = tool_path("autodrive_pr_head.sh");
-    assert!(path.is_file(), "missing tool {}", path.display());
-    let text = read(&path);
-    const GIT_VERBS: [&str; 14] = [
-        "fetch",
-        "pull",
-        "checkout",
-        "switch",
-        "config",
-        "update-ref",
-        "reset",
-        "stash",
-        "commit",
-        "push",
-        "merge",
-        "rebase",
-        "clone",
-        "init",
-    ];
-    const WORKTREE_VERBS: [&str; 6] = ["add", "prune", "remove", "repair", "move", "lock"];
-    const GH_VERBS: [&str; 6] = ["merge", "edit", "close", "comment", "review", "api"];
-    let mut offenders = Vec::new();
-    for (n, raw) in text.lines().enumerate() {
-        let line = raw.trim_start();
-        if line.starts_with('#') {
-            continue;
-        }
-        let code = unquoted(line);
-        let words: Vec<&str> = code
-            .split(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '$'))
-            .filter(|w| !w.is_empty())
-            .collect();
-        for (i, w) in words.iter().enumerate() {
-            let rest = &words[i + 1..];
-            let hit = match *w {
-                "git" => {
-                    rest.iter().any(|r| GIT_VERBS.contains(r))
-                        || rest
-                            .windows(2)
-                            .any(|p| p[0] == "worktree" && WORKTREE_VERBS.contains(&p[1]))
-                }
-                "gh" => rest.iter().any(|r| GH_VERBS.contains(r)),
-                _ => false,
-            };
-            if hit {
-                offenders.push(format!("{}: {}", n + 1, raw.trim()));
-                break;
-            }
-        }
-    }
     assert!(
-        offenders.is_empty(),
-        "autodrive_pr_head.sh must never create, fetch into, check out, \
-         commit in, push from or merge anything — it only measures:\n{}",
-        offenders.join("\n")
-    );
-    assert!(
-        text.contains("pr view") && text.contains("headRefOid") && text.contains("headRefName"),
-        "the resolver must read the PR head from the platform (gh pr view headRefOid/headRefName)"
-    );
-    assert!(
-        text.contains("worktree list --porcelain"),
-        "the resolver must find the PR branch's EXISTING worktree via git worktree list --porcelain"
+        !path.exists(),
+        "{} is no longer called by either loop and must not be shipped",
+        path.display()
     );
 }
 
@@ -5402,8 +5322,12 @@ fn both_loops_resolve_the_pr_worktree_in_their_preflight() {
         }
         let pf = field(step(&recipe, preflight), "command");
         assert!(
-            pf.contains("autodrive_pr_head.sh") && pf.contains("RECIPE_VAR_autodrive_pr_input"),
-            "{loop_name} {preflight} must resolve the PR head when pr_number was supplied"
+            pf.contains("amplihack orch helper autodrive-preflight")
+                && pf.contains("RECIPE_VAR_autodrive_pr_input")
+                && !pf.contains("AMPLIHACK_AUTODRIVE_READY")
+                && !pf.contains("autodrive_pr_head.sh"),
+            "{loop_name} {preflight} must resolve the PR worktree through the shared \
+             preflight helper, and only there, when pr_number was supplied (#2188)"
         );
         assert!(
             pf.contains("[ -n \"$PR_GIVEN\" ]") && !pf.contains("[ -n \"$PR_INPUT\" ]; then"),
@@ -5412,9 +5336,23 @@ fn both_loops_resolve_the_pr_worktree_in_their_preflight() {
              (PR #1588 review round 4)"
         );
         assert!(
-            pf.contains("head_matches") && pf.contains("pr-worktree-stale"),
-            "{loop_name} {preflight} must refuse a worktree that is not at the PR \
-             head by name, not enter a loop whose every round would be refused"
+            pf.contains("head_matches")
+                && !pf.contains("pr-worktree-stale")
+                && pf.contains("printf '%s\\n' \"$RES\"; exit \"$PRC\""),
+            "{loop_name} {preflight} must pass the preflight's named refusal \
+             (pr-worktree-behind, -diverged, -interrupted, ...) through with its \
+             exit status, and enter the loop only on a ready decision whose \
+             head_matches is true (#2188)"
+        );
+        let private = pf
+            .find("autodrive_private_dir \"$DIR\" || exit 1")
+            .unwrap_or_else(|| {
+                panic!("{loop_name} {preflight} must stop on a non-private state dir")
+            });
+        assert!(
+            private < pf.find("autodrive-preflight").unwrap(),
+            "{loop_name} {preflight} must refuse a symlinked or foreign state dir \
+             locally, before the PR preflight can push or comment (#2188)"
         );
         assert!(
             pf.contains("\"repo\"") && !pf.contains("\"head_sha\""),

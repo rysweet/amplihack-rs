@@ -420,5 +420,7 @@ mod spec_conformance;
 #[path = "system_prompt_append_fragment.rs"]
 mod system_prompt_append_fragment;
 
+#[path = "issue_2188_autodrive_preflight.rs"]
+mod issue_2188_autodrive_preflight;
 #[path = "issue_2297_codex_installation.rs"]
 mod issue_2297_codex_installation;

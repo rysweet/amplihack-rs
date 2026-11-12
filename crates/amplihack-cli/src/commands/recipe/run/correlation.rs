@@ -33,6 +33,7 @@ pub(super) struct RecipeRunCorrelation {
     /// Issue #1606: what this run resolved, recorded so a run can be audited
     /// for the agent CLI and home it actually used.
     settings: RunSettings,
+    preflight_refusal: Option<JsonValue>,
 }
 
 /// The resolved values the log pointer records (issue #1606).
@@ -55,6 +56,7 @@ pub(super) enum RecipeRunFinalStatus {
     /// Issue #1976: the parent `recipe run` exited and this nested run
     /// stopped itself.
     Orphaned,
+    PreflightRefusal(crate::commands::orch::autodrive_preflight::RefusalOutcome),
 }
 
 /// Issue #1976: the reason recorded for an orphan stop.
@@ -75,6 +77,7 @@ impl RecipeRunFinalStatus {
             Self::SpawnFailure => "spawn_failure",
             Self::ParseFailure => "parse_failure",
             Self::Orphaned => "orphaned",
+            Self::PreflightRefusal(outcome) => outcome.as_str(),
         }
     }
 }
@@ -94,6 +97,7 @@ impl RecipeRunCorrelation {
             .filter(|value| !value.is_empty());
 
         Self {
+            preflight_refusal: None,
             run_id: Uuid::new_v4().to_string(),
             recipe_name,
             cwd,
@@ -138,6 +142,7 @@ impl RecipeRunCorrelation {
         self.emit(LogPointerEvent {
             schema_version: SCHEMA_VERSION,
             event: "early",
+            preflight_refusal: None,
             run_id: &self.run_id,
             recipe_name: &self.recipe_name,
             cwd: &self.cwd,
@@ -175,6 +180,10 @@ impl RecipeRunCorrelation {
         self.emit_final_with(status, child_pid, exit_code, log_paths, None)
     }
 
+    pub(super) fn set_preflight_refusal(&mut self, envelope: JsonValue) {
+        self.preflight_refusal = Some(envelope);
+    }
+
     /// Issue #1976: the final record of an orphaned nested run. It has no
     /// `exit_code`: the runner child was torn down, and the 75 is the exit
     /// status of this `recipe run` process, not of the child.
@@ -208,6 +217,7 @@ impl RecipeRunCorrelation {
         self.emit(LogPointerEvent {
             schema_version: SCHEMA_VERSION,
             event: "final",
+            preflight_refusal: self.preflight_refusal.as_ref(),
             run_id: &self.run_id,
             recipe_name: &self.recipe_name,
             cwd: &self.cwd,
@@ -316,6 +326,8 @@ pub(super) fn known_log_paths(result: Option<&RecipeRunResult>) -> JsonMap<Strin
 
 #[derive(Serialize)]
 struct LogPointerEvent<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preflight_refusal: Option<&'a JsonValue>,
     schema_version: u8,
     event: &'a str,
     run_id: &'a str,

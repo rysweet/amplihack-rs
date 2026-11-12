@@ -22,6 +22,8 @@ use std::path::PathBuf;
 use crate::commands::multitask;
 
 mod autodrive_completion;
+pub(crate) mod autodrive_preflight;
+pub(crate) mod autodrive_runner;
 mod named_branch;
 mod select_workflow;
 mod workflow_log_inventory;
@@ -48,6 +50,8 @@ pub enum OrchCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum OrchHelperCommands {
+    /// Check and publish the PR worktree without reconciling history.
+    AutodrivePreflight(autodrive_preflight::PreflightRequest),
     /// Prepare driver-owned identity and completion dispatch context.
     AutodriveCompletionPrepare(autodrive_completion::Prepare),
     /// Seal the round evidence before the next-action agent runs.
@@ -506,6 +510,7 @@ fn read_bounded_stdin() -> String {
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
+        OrchHelperCommands::AutodrivePreflight(request) => autodrive_preflight::run(request),
         OrchHelperCommands::AutodriveCompletionPrepare(args) => autodrive_completion::prepare(args),
         OrchHelperCommands::AutodriveCompletionSeal { private_state } => {
             autodrive_completion::seal(private_state)

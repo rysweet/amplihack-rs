@@ -934,6 +934,14 @@ pub(super) fn execute_recipe_via_rust_fresh(
             if !failed {
                 return AttemptOutcome::Final(attempt_result);
             }
+            // A current helper refusal is terminal even when its diagnostic
+            // mentions a transport error. Preserve the recovery state.
+            if let Ok(result) = &attempt_result
+                && result.extra.contains_key("autodrive_preflight_refusal")
+            {
+                *last_verdict.borrow_mut() = None;
+                return AttemptOutcome::Final(attempt_result);
+            }
             // Issue #1267: repair before a retry too — a second attempt must not
             // run against a checkout the first attempt corrupted.
             caller_git.restore_on_failure();
@@ -1043,10 +1051,29 @@ fn finish_workspace(
     dry_run: bool,
 ) {
     use crate::commands::cleanup::run_dir::{Outcome, StepStatus};
+    if let Ok(run_result) = result
+        && let Some(envelope) = run_result.extra.get("autodrive_preflight_refusal")
+        && let Err(error) = workspace.record_preflight_refusal(envelope)
+    {
+        eprintln!("ERROR: could not preserve preflight evidence in run workspace: {error:#}");
+    }
     let (outcome, steps, log_path) = match result {
         Ok(run_result) => (
             if run_result.success {
                 Outcome::Success
+            } else if let Some(envelope) = run_result.extra.get("autodrive_preflight_refusal") {
+                match serde_json::from_value::<
+                    crate::commands::orch::autodrive_preflight::RefusalOutcome,
+                >(envelope["outcome"].clone())
+                {
+                    Ok(outcome) => Outcome::Refused(outcome.as_str()),
+                    Err(error) => {
+                        eprintln!(
+                            "ERROR: invalid preflight outcome during workspace finalization: {error}"
+                        );
+                        Outcome::Failure
+                    }
+                }
             } else {
                 Outcome::Failure
             },
@@ -1089,12 +1116,19 @@ fn terminal_action(summary: &RetrySummary) -> &'static str {
 /// stderr tail. (#357)
 fn spawn_with_streaming_stderr(
     mut command: Command,
-    correlation: RecipeRunCorrelation,
+    mut correlation: RecipeRunCorrelation,
     recipe_path: &Path,
     timeout: Duration,
     tree_id: &str,
     stderr_sink: &mut String,
 ) -> Result<RecipeRunResult> {
+    // #2188: where an `autodrive-preflight` helper run by this child hands
+    // its refusal back (autodrive_runner::read_handoff).
+    let handoff_dir = command.get_envs().find_map(|(key, value)| {
+        (key == "AMPLIHACK_WORKFLOW_RUNTIME_DIR")
+            .then(|| value.map(std::path::PathBuf::from))
+            .flatten()
+    });
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(unix)]
     {
@@ -1342,7 +1376,34 @@ fn spawn_with_streaming_stderr(
         dropped,
     ) {
         Ok(mut result) => {
-            let final_status = if status.success() && result.success {
+            // Child output never establishes execution authority.
+            result.extra.remove("autodrive_preflight_refusal");
+            if crate::commands::orch::autodrive_runner::known(
+                result.status.as_deref().unwrap_or(""),
+            ) {
+                result.status = Some("failure".into());
+                result.success = false;
+            }
+            // #2188: a refusal the helper handed to this run, in this run's
+            // private runtime directory and stamped with this attempt's run
+            // id, names the final event. This is how a loop run as a
+            // sub-recipe of auto-drive-to-merge reports its outcome.
+            let handed = if status.success() && result.success {
+                None
+            } else {
+                handoff_dir.as_deref().and_then(|dir| {
+                    crate::commands::orch::autodrive_runner::read_handoff(dir, correlation.run_id())
+                })
+            };
+            let final_status = if let Some((outcome, envelope)) = handed {
+                result.status = Some(outcome.as_str().into());
+                result.success = false;
+                result
+                    .extra
+                    .insert("autodrive_preflight_refusal".into(), envelope.clone());
+                correlation.set_preflight_refusal(envelope);
+                RecipeRunFinalStatus::PreflightRefusal(outcome)
+            } else if status.success() && result.success {
                 RecipeRunFinalStatus::Success
             } else {
                 RecipeRunFinalStatus::Failure

@@ -18,6 +18,7 @@
 
 #![cfg(unix)]
 
+#[cfg(target_os = "linux")]
 use amplihack_hooks::limit_resume::RESUME_MSG;
 #[cfg(target_os = "linux")]
 use amplihack_utils::file_event::{Waiter, Watch, Woke};

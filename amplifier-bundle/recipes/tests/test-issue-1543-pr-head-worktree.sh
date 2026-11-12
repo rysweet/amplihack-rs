@@ -36,8 +36,8 @@
 # as NOT_MERGED after a real merge, was fixed by #1511 (PR #1563, cf1f3e71);
 # this change does not touch it. T21 checks it end to end.
 #
-# The stub gh refuses everything but `pr view`; every case asserts that no
-# merge was ever attempted. Tests never touch the real checkout.
+# The stub gh permits fixture metadata reads and informational comments;
+# every case asserts that no merge was attempted. Tests never touch the real checkout.
 #
 # Usage: bash amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
@@ -47,7 +47,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd -P)"
 RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"
-TOOL="${REPO_ROOT}/amplifier-bundle/tools/autodrive_pr_head.sh"
 
 harness_error() { echo "HARNESS-ERROR: $*" >&2; exit 2; }
 
@@ -141,11 +140,13 @@ done < <(compgen -e)
 unset _inherited
 
 # --- stubs -------------------------------------------------------------------
-# gh: answers only `pr view` from STUB_* env, honouring --json/--jq; logs every
-# call; refuses (97) anything else, so an attempted merge cannot succeed.
+# gh: answers fixture identity/PR reads and comments, honouring --json/--jq;
+# logs every call and refuses other writes, so a merge cannot succeed.
 cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${GH_LOG:-/dev/null}"
+if [ "$1 $2" = "repo view" ]; then echo fixture/project; exit 0; fi
+if [ "$1 $2" = "pr comment" ]; then exit 0; fi
 if [ "${1:-}" != "pr" ] || { [ "${2:-}" != "view" ] && [ "${2:-}" != "list" ]; }; then
   echo "stub gh: refusing '$*'" >&2; exit 97
 fi
@@ -157,7 +158,7 @@ while [ $# -gt 0 ]; do
 done
 OBJ="$(jq -cn --arg oid "${STUB_HEAD_OID:-}" --arg ref "${STUB_HEAD_REF:-}" \
   --arg state "${STUB_STATE:-OPEN}" --arg num "${STUB_PR:-7}" \
-  '{number:($num|tonumber),state:$state,mergedAt:null,headRefOid:$oid,headRefName:$ref,isCrossRepository:false,baseRefName:"main",url:("https://example.invalid/pull/"+$num)}')"
+  '{number:($num|tonumber),state:$state,mergedAt:null,headRefOid:$oid,headRefName:$ref,isCrossRepository:false,baseRefName:"main",headRepository:{nameWithOwner:"fixture/project"},url:("https://example.invalid/pull/"+$num)}')"
 # `pr list`: the PR exists only once STUB_PR_EXISTS names an existing file
 # (the stand-in default-workflow creates it), as after a fresh build.
 if [ "$SUB" = list ]; then
@@ -175,7 +176,24 @@ cat > "$STUB_BIN/amplihack" <<'STUB'
 #!/usr/bin/env bash
 exec "$REAL_AMPLIHACK" "$@"
 STUB
-chmod +x "$STUB_BIN/gh" "$STUB_BIN/cargo" "$STUB_BIN/amplihack"
+# #2188: the shared preflight compares and pushes against the PR's HTTPS
+# source URL from a scratch Git directory (--git-dir=...), and refuses any
+# url.<x>.insteadOf rewrite as a redirected destination. Keep real Git and
+# replace only that offline wire: in those isolated invocations the fixture's
+# source URL becomes the current fixture's bare origin (STUB_SOURCE_GIT).
+REAL_GIT="$(command -v git)"
+cat > "$STUB_BIN/git" <<STUB
+#!/usr/bin/env bash
+isolated=0
+for arg in "\$@"; do case "\$arg" in --git-dir=*) isolated=1 ;; esac; done
+[ "\$isolated" = 1 ] && [ -n "\${STUB_SOURCE_GIT:-}" ] || exec "$REAL_GIT" "\$@"
+args=()
+for arg in "\$@"; do
+  if [ "\$arg" = https://github.com/fixture/project.git ]; then args+=("\$STUB_SOURCE_GIT"); else args+=("\$arg"); fi
+done
+exec "$REAL_GIT" -c protocol.file.allow=always "\${args[@]}"
+STUB
+chmod +x "$STUB_BIN/gh" "$STUB_BIN/cargo" "$STUB_BIN/amplihack" "$STUB_BIN/git"
 export PATH="$STUB_BIN:$PATH"
 
 # A stand-in amplihack home whose autodrive_loop.sh records what step-02 gave it.
@@ -249,6 +267,7 @@ make_fixture() {
   git init -q --bare "$base/origin.git" || harness_error "git init --bare failed"
   git -C "$MAIN" remote add origin "$base/origin.git" \
     && git -C "$MAIN" push -q origin main feat/x || harness_error "push to fixture origin failed"
+  export STUB_SOURCE_GIT="$base/origin.git"
   WT="$(cd "$WT" && pwd -P)"
   export STUB_HEAD_OID="$SHA_B" STUB_HEAD_REF="feat/x" STUB_STATE=OPEN STUB_PR=7 STUB_GH_FAIL=0
 }
@@ -395,6 +414,11 @@ echo "== T11b: tools from ~/.amplihack, PR worktree ships its own tools — AMPL
 # must not become the rounds' tool root.
 install_fake_tools "$HOME/.amplihack/amplifier-bundle/tools"
 install_fake_tools "$WT/amplifier-bundle/tools"
+# PR-authored tools belong to the committed PR tree. Leaving them untracked
+# would correctly trigger the shared preflight's dirty-worktree refusal.
+git -C "$WT" add amplifier-bundle && git -C "$WT" commit -q -m "fixture PR-authored tools" \
+  && git -C "$WT" push -q origin feat/x || harness_error "PR-authored tools publication failed"
+SHA_B="$(git -C "$WT" rev-parse HEAD)"; export STUB_HEAD_OID="$SHA_B"
 for loop in merge crusty; do
   preflight "$loop"
   PF="$OUT"
@@ -408,14 +432,11 @@ for loop in merge crusty; do
     "$(real "$HOME/.amplihack")/amplifier-bundle/recipes/$(round_of "$loop").yaml" \
     "$(awk 'p{print; exit} $0=="--round-recipe"{p=1}' "$WORK/argv")"
 done
-rm -rf "$HOME/.amplihack" "$WT/amplifier-bundle"
+rm -rf "$HOME/.amplihack"
 
 echo "== T1-RO: resolution is read-only =="
 snap() { { git -C "$MAIN" for-each-ref; git -C "$MAIN" worktree list --porcelain; git -C "$MAIN" status --porcelain; git -C "$WT" status --porcelain; } 2>&1; }
 BEFORE="$(snap)"
-if [[ -x "$TOOL" || -f "$TOOL" ]]; then
-  (cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" >/dev/null 2>&1)
-fi
 preflight merge; preflight crusty
 check_eq T1-RO "refs, worktrees and status are unchanged by resolution" "$BEFORE" "$(snap)"
 
@@ -428,22 +449,13 @@ done
 echo "== T7: an option-looking existing_branch is compared literally and refused =="
 preflight merge EXISTING_BRANCH=--force
 check_eq T7-rc "a --force branch that is not headRefName refuses" 1 "$RC"
-check_eq T7-out "nothing on stdout for step-02 to act on" "" "$OUT"
-case "$ERR" in
-  *"branch-mismatch: --branch '--force'"*) pass T7-msg "stderr names the literal branch" ;;
-  *) fail T7-msg "expected a branch-mismatch line naming '--force'; got: $ERR" ;;
-esac
+check_eq T7-out "named refusal envelope" pr-worktree-branch-mismatch "$(field "$OUT" outcome)"
+check_eq T7-msg "literal branch in evidence" --force "$(printf %s "$OUT" | jq -r .evidence.expected)"
 check_eq T7-ro "no worktree was created or changed" "$BEFORE" "$(snap)"
 
 echo "== T16: existing_branch differs from headRefName — refuse, never pick its worktree =="
 git -C "$MAIN" branch feat/x-2 "$SHA_A"
 git -C "$MAIN" worktree add -q "$WORK/t1/wt-x2" feat/x-2 || harness_error "worktree add feat/x-2 failed"
-(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x-2 --repo "$MAIN" >"$WORK/tool.out" 2>"$WORK/tool.err"); TRC=$?
-check_eq T16-rc "a branch other than headRefName exits 5" 5 "$TRC"
-check_eq T16-out "stdout is empty on refusal" "" "$(cat "$WORK/tool.out")"
-grep -q "branch-mismatch: --branch 'feat/x-2' is not PR #7's head branch 'feat/x'" "$WORK/tool.err" \
-  && pass T16-msg "stderr names both branches" \
-  || fail T16-msg "unexpected stderr: $(cat "$WORK/tool.err")"
 for loop in merge crusty; do
   preflight "$loop" EXISTING_BRANCH=feat/x-2
   check_eq "T16-$loop-rc" "$loop preflight refuses" 1 "$RC"
@@ -462,7 +474,7 @@ for loop in merge crusty; do
   check_eq "T17-$loop-pr" "$loop preflight pr is AUTODRIVE_PR_INPUT" 7 "$(field "$OUT" pr)"
   check_eq "T17-$loop-repo" "$loop preflight repo is the PR worktree" "$WT" "$(real "$(field "$OUT" repo)")"
 done
-if grep -q -- '--json number' "$GH_LOG"; then
+if grep -Fq -- '--json number --jq .number' "$GH_LOG"; then
   fail T17-gh "the launch checkout's PR was guessed although pr_number was supplied"
 else
   pass T17-gh "no gh pr view guess from the launch checkout"
@@ -516,11 +528,7 @@ git -C "$MAIN" worktree remove --force "$WT" || harness_error "worktree remove f
 for loop in merge crusty; do
   preflight "$loop"
   if [[ "$RC" -ne 0 ]]; then pass "T2-$loop-rc" "$loop preflight exits non-zero (rc=$RC)"; else fail "T2-$loop-rc" "$loop preflight succeeded without a PR worktree"; fi
-  if [[ "$ERR" == *"feat/x"* && "$ERR" == *refusing* ]]; then
-    pass "T2-$loop-msg" "stderr names the branch and says it is refusing"
-  else
-    fail "T2-$loop-msg" "stderr must name feat/x and say 'refusing'; got: ${ERR:0:400}"
-  fi
+  check_eq "T2-$loop-msg" "missing worktree is named" pr-worktree-not-found "$(field "$OUT" outcome)"
   if [[ "$(field "$OUT" should_run)" == true ]]; then fail "T2-$loop-run" "should_run is true"; else pass "T2-$loop-run" "should_run is not true"; fi
 done
 
@@ -536,59 +544,17 @@ done
 
 echo "== T6: a worktree path with a space and a double quote round-trips =="
 make_fixture t6 'wt "q" dir'
-TOOL_OUT="$(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" 2>/dev/null)"
-if printf '%s' "$TOOL_OUT" | python3 -c 'import json,sys; json.loads(sys.stdin.read())' 2>/dev/null; then
-  pass T6-tool-json "the tool's JSON line parses"
-else
-  fail T6-tool-json "the tool's output is not valid JSON: ${TOOL_OUT:0:200}"
-fi
-check_eq T6-tool-wt "tool worktree round-trips" "$WT" "$(field "$TOOL_OUT" worktree)"
 preflight merge
 check_eq T6-repo "preflight repo round-trips" "$WT" "$(field "$OUT" repo)"
 check_eq T6-run "should_run is the real value, not forged by the path" true "$(field "$OUT" should_run)"
 
-echo "== tool contract: output, exit codes =="
-make_fixture tool
-TOOL_OUT="$(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" 2>"$WORK/tool.err")"; TRC=$?
-check_eq TOOL-rc "exit 0 when the worktree is found" 0 "$TRC"
-check_eq TOOL-pr "pr" 7 "$(field "$TOOL_OUT" pr)"
-check_eq TOOL-sha "head_sha is headRefOid" "$SHA_B" "$(field "$TOOL_OUT" head_sha)"
-check_eq TOOL-ref "head_ref" feat/x "$(field "$TOOL_OUT" head_ref)"
-check_eq TOOL-wt "worktree" "$WT" "$(field "$TOOL_OUT" worktree)"
-check_eq TOOL-wthead "worktree_head" "$SHA_B" "$(field "$TOOL_OUT" worktree_head)"
-check_eq TOOL-match "head_matches" true "$(field "$TOOL_OUT" head_matches)"
-check_eq TOOL-reason "reason" ok "$(field "$TOOL_OUT" reason)"
-check_eq TOOL-oneline "stdout is exactly one line" 1 "$(printf '%s\n' "$TOOL_OUT" | grep -c .)"
-
-echo "== T13: worktree behind the PR head — warn, do not refuse =="
+echo "== T13b: unavailable comparison data is a named refusal, never guessed behind =="
 NEWER="$(printf '%040d' 1 | tr 0 c)"
-TOOL_OUT="$(cd "$WORK" && STUB_HEAD_OID="$NEWER" bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" 2>"$WORK/tool.err")"; TRC=$?
-check_eq T13-rc "a stale worktree is not a refusal" 0 "$TRC"
-check_eq T13-match "head_matches is false" false "$(field "$TOOL_OUT" head_matches)"
-check_eq T13-wthead "worktree_head is the worktree's real HEAD" "$SHA_B" "$(field "$TOOL_OUT" worktree_head)"
-check_eq T13-rel "a PR head missing from the object store is unfetched, never ahead" unfetched "$(field "$TOOL_OUT" worktree_relation)"
-if grep -q WARNING "$WORK/tool.err" && grep -q "$NEWER" "$WORK/tool.err" && grep -q "$SHA_B" "$WORK/tool.err"; then
-  pass T13-warn "stderr WARNING prints both SHAs"
-else
-  fail T13-warn "expected a WARNING with both SHAs on stderr; got: $(head -c 400 "$WORK/tool.err")"
-fi
-
-echo "== T13b: worktree behind the PR head — both preflights refuse as pr-worktree-stale =="
-# PR #1588 review round 4: entering the loop on a stale tree cannot succeed
-# (every crusty round refuses with crusty-local-head-not-pr-head; the merge
-# gate refuses every round's evidence), so the preflight refuses by name.
 for loop in merge crusty; do
   preflight "$loop" STUB_HEAD_OID="$NEWER"
-  check_eq "T13b-$loop-rc" "$loop preflight refuses a stale worktree" 1 "$RC"
-  check_eq "T13b-$loop-out" "$loop preflight prints nothing for step-02 to act on" "" "$OUT"
-  case "$ERR" in
-    *"pr-worktree-stale: worktree $WT is at $SHA_B, PR #7 head is $NEWER (worktree unfetched); run: git -C $WT pull --ff-only"*)
-      pass "T13b-$loop-msg" "stderr names the reason, both SHAs and the recovery command" ;;
-    *) fail "T13b-$loop-msg" "unexpected stderr: ${ERR:0:400}" ;;
-  esac
+  check_eq "T13b-$loop-rc" "comparison failure refuses" 1 "$RC"
+  check_eq "T13b-$loop-out" "named comparison failure" pr-worktree-comparison-failed "$(field "$OUT" outcome)"
 done
-preflight merge STUB_HEAD_OID="$NEWER" RECIPE_VAR_autodrive_pr_input=
-check_eq T13b-build-pr "the build phase's PR on a stale worktree is refused too" 1 "$RC"
 
 echo "== T13c: the stale-worktree remedy follows the direction (behind, ahead, diverged) =="
 # PR #1588 review round 8: a round whose `git push` failed leaves its fix
@@ -599,25 +565,19 @@ make_fixture t13c
 # A PR head one commit past the worktree, present in the object store but
 # not checked out: the worktree is behind.
 SHA_D="$(git -C "$WT" commit-tree "${SHA_B}^{tree}" -p "$SHA_B" -m D)" || harness_error "commit-tree D failed"
-# stale_case <id> <relation> <remedy-prefix> — tool and both preflights.
 stale_case() {
   local id="$1" rel="$2" remedy="$3" loop
-  TOOL_OUT="$(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" 2>"$WORK/tool.err")"; TRC=$?
-  check_eq "$id-tool-rc" "the tool reports, it does not refuse" 0 "$TRC"
-  check_eq "$id-tool-rel" "worktree_relation" "$rel" "$(field "$TOOL_OUT" worktree_relation)"
-  case "$(field "$TOOL_OUT" remedy)" in
-    "$remedy"*) pass "$id-tool-remedy" "remedy starts with '$remedy'" ;;
-    *) fail "$id-tool-remedy" "remedy must start with '$remedy'; got: $(field "$TOOL_OUT" remedy)" ;;
-  esac
   for loop in merge crusty; do
+    git -C "$WT" push -q origin "$STUB_HEAD_OID:refs/heads/fixture-$id" || harness_error "comparison object publication failed"
+    git --git-dir "$WORK/t13c/origin.git" update-ref refs/heads/feat/x "$STUB_HEAD_OID" || harness_error "source ref update failed"
     preflight "$loop"
-    check_eq "$id-$loop-rc" "$loop preflight refuses" 1 "$RC"
-    check_eq "$id-$loop-out" "$loop preflight prints nothing for step-02 to act on" "" "$OUT"
-    case "$ERR" in
-      *"pr-worktree-stale: worktree $WT is at "*" (worktree $rel); run: $remedy"*)
-        pass "$id-$loop-msg" "stderr names the direction and its remedy" ;;
-      *) fail "$id-$loop-msg" "want '(worktree $rel); run: $remedy'; got: ${ERR:0:500}" ;;
-    esac
+    if [ "$rel" = ahead ]; then
+      check_eq "$id-$loop-rc" "clean ahead pushes and continues" 0 "$RC"
+      check_eq "$id-$loop-run" "loop proceeds" true "$(field "$OUT" should_run)"
+    else
+      check_eq "$id-$loop-rc" "unsafe history refuses" 1 "$RC"
+      check_eq "$id-$loop-out" "named history refusal" "pr-worktree-$rel" "$(field "$OUT" outcome)"
+    fi
   done
 }
 export STUB_HEAD_OID="$SHA_D"
@@ -636,99 +596,47 @@ esac
 # Local commit C and remote commit D both on top of B: diverged.
 export STUB_HEAD_OID="$SHA_D"
 stale_case T13c-diverged diverged "git -C $WT pull --no-rebase, then git -C $WT push origin feat/x"
-case "$(field "$TOOL_OUT" remedy)" in
-  *reset*discard*|*discard*) pass T13c-diverged-noreset "the diverged remedy merges and warns that a reset discards" ;;
-  *) fail T13c-diverged-noreset "the diverged remedy must keep local commits: $(field "$TOOL_OUT" remedy)" ;;
-esac
-check_eq T13c-readonly "the tool and preflights never moved the worktree" "$SHA_C" "$(git -C "$WT" rev-parse HEAD)"
+check_eq T13c-readonly "the preflights never moved the worktree" "$SHA_C" "$(git -C "$WT" rev-parse HEAD)"
 
-echo "== T13d: the remedy is a pasteable command when the worktree path has a space =="
-# PR #1588 review round 9: the remedy field is documented as the command to
-# run, so the worktree path in it must survive word-splitting as one argument.
+echo "== T13d: a behind worktree whose path has a space is named in structured evidence =="
 make_fixture t13d 'my wt'
 SHA_E="$(git -C "$WT" commit-tree "${SHA_B}^{tree}" -p "$SHA_B" -m E)" || harness_error "commit-tree E failed"
-# remedy_argv <cmd> — parse the command part (before any " (" or ", then")
-# as the shell would, one argument per line.
-remedy_argv() { local cmd="${1%% (*}"; cmd="${cmd%%, then*}"; eval "set -- $cmd" && printf '%s\n' "$@"; }
 export STUB_HEAD_OID="$SHA_E"
-TOOL_OUT="$(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" 2>"$WORK/tool.err")"
-check_eq T13d-behind-rel "worktree_relation" behind "$(field "$TOOL_OUT" worktree_relation)"
-check_eq T13d-behind-argv "the behind remedy parses to git -C <path> pull --ff-only" \
-  "$(printf '%s\n' git -C "$WT" pull --ff-only)" "$(remedy_argv "$(field "$TOOL_OUT" remedy)")"
+git -C "$WT" push -q origin "$SHA_E:refs/heads/feat/x" || harness_error "quoted-path source publication failed"
 preflight merge
-case "$ERR" in
-  *"run: $(field "$TOOL_OUT" remedy)"*) pass T13d-preflight "the preflight prints the quoted remedy" ;;
-  *) fail T13d-preflight "the preflight must print the tool's remedy; got: ${ERR:0:500}" ;;
-esac
-printf 'c\n' > "$WT/file"
-git -C "$WT" commit -q -am C || harness_error "commit C failed"
+check_eq T13d-preflight "the preflight retains the named refusal" pr-worktree-behind "$(field "$OUT" outcome)"
+check_eq T13d-worktree "structured evidence preserves the path with spaces" "$WT" "$(printf '%s' "$OUT" | jq -r .evidence.worktree)"
 export STUB_HEAD_OID="$SHA_B"
-TOOL_OUT="$(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" 2>"$WORK/tool.err")"
-check_eq T13d-ahead-rel "worktree_relation" ahead "$(field "$TOOL_OUT" worktree_relation)"
-check_eq T13d-ahead-argv "the ahead remedy parses to git -C <path> push origin feat/x" \
-  "$(printf '%s\n' git -C "$WT" push origin feat/x)" "$(remedy_argv "$(field "$TOOL_OUT" remedy)")"
-export STUB_HEAD_OID="$SHA_E"
-TOOL_OUT="$(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" 2>"$WORK/tool.err")"
-check_eq T13d-diverged-rel "worktree_relation" diverged "$(field "$TOOL_OUT" worktree_relation)"
-check_eq T13d-diverged-argv "the diverged remedy's first command parses to git -C <path> pull --no-rebase" \
-  "$(printf '%s\n' git -C "$WT" pull --no-rebase)" "$(remedy_argv "$(field "$TOOL_OUT" remedy)")"
 
 echo "== T12: two worktrees on the PR branch — refuse as ambiguous =="
 make_fixture t12
 git -C "$MAIN" worktree add -q -f "$WORK/t12/wt2" feat/x || harness_error "second worktree add failed"
-(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" >"$WORK/tool.out" 2>"$WORK/tool.err"); TRC=$?
-check_eq T12-rc "ambiguous worktrees exit 3" 3 "$TRC"
-check_eq T12-stdout "stdout is empty on failure" "" "$(cat "$WORK/tool.out")"
-if grep -q "$WT" "$WORK/tool.err" && grep -q "wt2" "$WORK/tool.err"; then
-  pass T12-msg "stderr lists every matching worktree"
-else
-  fail T12-msg "stderr must list both worktrees; got: $(head -c 400 "$WORK/tool.err")"
-fi
 preflight merge
 if [[ "$RC" -ne 0 && "$(field "$OUT" should_run)" != true ]]; then pass T12-preflight "preflight refuses on ambiguity"; else fail T12-preflight "preflight did not refuse (rc=$RC)"; fi
 
-echo "== T2-tool: no worktree — exit 3 =="
-make_fixture t2tool
-git -C "$MAIN" worktree remove --force "$WT" || harness_error "worktree remove failed"
-(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" >"$WORK/tool.out" 2>"$WORK/tool.err"); TRC=$?
-check_eq T2-tool-rc "no PR worktree exits 3" 3 "$TRC"
-check_eq T2-tool-stdout "stdout is empty on failure" "" "$(cat "$WORK/tool.out")"
-
-echo "== T8: a worktree record that resolves to another repository is skipped =="
+echo "== T8: a worktree record that resolves to another repository is never handed to a loop =="
 make_fixture t8
 OTHER="$WORK/t8/other"
 git init -q -b feat/x "$OTHER" && git -C "$OTHER" commit -q --allow-empty -m other || harness_error "other repo failed"
 WT_ADMIN="$(git -C "$WT" rev-parse --absolute-git-dir)"
 printf '%s/.git\n' "$OTHER" > "$WT_ADMIN/gitdir"
 if git -C "$MAIN" worktree list --porcelain | grep -qx "worktree $OTHER"; then
-  (cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" >"$WORK/tool.out" 2>"$WORK/tool.err"); TRC=$?
-  check_eq T8-rc "a foreign repository's directory is never the PR worktree (exit 3)" 3 "$TRC"
-  if grep -q "$OTHER" "$WORK/tool.out"; then fail T8-out "the tool emitted the foreign path"; else pass T8-out "the foreign path is not emitted"; fi
+  preflight merge
+  if [[ "$RC" -ne 0 && "$(field "$OUT" should_run)" != true ]]; then pass T8-preflight "preflight refuses"; else fail T8-preflight "preflight accepted a foreign repository (rc=$RC)"; fi
+  case "$(field "$OUT" repo)" in "$OTHER"*) fail T8-out "the foreign path reached the loop" ;; *) pass T8-out "the foreign path is not handed to the loop" ;; esac
 else
   harness_error "T8: could not make the worktree list point at another repository"
 fi
 
 echo "== T10: a non-hex headRefOid — exit 4 and refuse =="
 make_fixture t10
-(cd "$WORK" && STUB_HEAD_OID="not-a-sha" bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" >"$WORK/tool.out" 2>"$WORK/tool.err"); TRC=$?
-check_eq T10-rc "non-hex headRefOid exits 4" 4 "$TRC"
 preflight merge STUB_HEAD_OID=not-a-sha
 if [[ "$RC" -ne 0 && "$(field "$OUT" should_run)" != true ]]; then pass T10-preflight "preflight refuses"; else fail T10-preflight "preflight did not refuse (rc=$RC)"; fi
 
 echo "== T14: gh pr view fails — exit 4 and refuse, no gh output echoed =="
-(cd "$WORK" && STUB_GH_FAIL=1 bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" >"$WORK/tool.out" 2>"$WORK/tool.err"); TRC=$?
-check_eq T14-rc "a failed lookup exits 4" 4 "$TRC"
-if grep -q "lookup failed" "$WORK/tool.err"; then fail T14-leak "gh's own stderr was echoed"; else pass T14-leak "gh's output is summarised, not echoed"; fi
 for loop in merge crusty; do
   preflight "$loop" STUB_GH_FAIL=1
   if [[ "$RC" -ne 0 ]]; then pass "T14-$loop" "$loop preflight refuses"; else fail "T14-$loop" "$loop preflight succeeded on a failed lookup"; fi
-done
-
-echo "== T19: usage errors exit 2 =="
-for args in "--pr abc" "--pr 0" "--pr" ""; do
-  # shellcheck disable=SC2086
-  (cd "$WORK" && bash "$TOOL" $args --repo "$MAIN" >/dev/null 2>&1); TRC=$?
-  check_eq "T19[${args:-<none>}]" "bad --pr is a usage error" 2 "$TRC"
 done
 
 echo "== T4: build and crusty skipped as already done, the merge gate merged =="

@@ -374,6 +374,7 @@ pub(crate) enum Outcome {
     Success,
     Failure,
     Interrupted,
+    Refused(&'static str),
 }
 
 impl Outcome {
@@ -382,6 +383,7 @@ impl Outcome {
             Self::Success => "success",
             Self::Failure => "failure",
             Self::Interrupted => "interrupted",
+            Self::Refused(outcome) => outcome,
         }
     }
 }
@@ -568,6 +570,17 @@ impl RunWorkspace {
         if let Self::Scoped { scope, .. } = self {
             scope.record_attempt(correlation_id);
         }
+    }
+
+    /// Preserve trusted preflight evidence separately from the status-only
+    /// run report, before runtime teardown removes the execution channel.
+    pub(crate) fn record_preflight_refusal(&self, envelope: &serde_json::Value) -> Result<()> {
+        if let Self::Scoped { scope, .. } = self {
+            let mut bytes = serde_json::to_vec(envelope)?;
+            bytes.push(b'\n');
+            write_atomic_0600(&scope.run_dir.join("preflight-refusal.json"), &bytes)?;
+        }
+        Ok(())
     }
 
     /// Removes `runtime/`, finalises `run.json` and, when `sweep` is true and
