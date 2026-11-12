@@ -70,7 +70,7 @@ use super::usage_direct::{
     API_BASE_ENV, BETA, CLIENT_ID, Creds, DEFAULT_API_BASE, DEFAULT_TOKEN_URL, Endpoints, MAX_BODY,
     MAX_EXPIRES_IN, MAX_STEP, MAX_TOKEN, MIN_STEP, REFRESH_BUDGET, REFRESH_MARGIN_SECS, Request,
     TOKEN_URL_ENV, Token, USAGE_PATH, USER_AGENT, base_ok, bounded_lookup, expires_in, map_err,
-    post_failure, read, reason, refresh_counter, refresh_status, refreshes_in_progress,
+    post_failure, reason, refresh_counter, refresh_status, refreshes_in_progress,
 };
 use super::usage_direct::{Ctx, get_step, post_step, read_with, refresh_expired_with};
 use super::usage_parse::UsageState;
@@ -826,9 +826,8 @@ fn a_weekly_only_answer_follows_1818() {
 }
 
 // Deadline tests (issue #1962, round 3; issue #2019). Outcomes are decided
-// on the injected `VirtualClock` or by a server that is held at a gate until
-// the read has returned, never by how long the read took in real time. The
-// time bounds themselves are pinned on the pure step functions below.
+// on the injected `VirtualClock`, never by how long the read took in real
+// time. The time bounds themselves are pinned on the pure step functions below.
 
 /// Virtual time left after the initial 401 beyond `REFRESH_BUDGET`.
 const V_SEND_MARGIN: Duration = Duration::from_secs(4);
@@ -881,26 +880,35 @@ fn a_refresh_step_is_not_cut_to_the_get_step() {
     }
 }
 
-/// A server that answers nothing in time gives `timeout`. The server is held
-/// at a gate until the read has returned, so the read cannot have waited for
-/// the answer, however long the host took to reach the socket timeout.
+/// A GET whose answer stalls until the deadline gives `timeout`. The scripted
+/// transport spends the virtual budget before returning an I/O timeout, so
+/// neither DNS worker scheduling nor a real socket deadline decides the result.
 #[test]
 fn a_stalled_server_is_a_timeout_within_the_deadline() {
     const STALL_T: Duration = Duration::from_secs(2);
-    let gate = Gate::new();
-    let hold = gate.waiter();
-    let fake = FakeHttp::start(move |_, _| {
-        hold();
-        Reply::json(200, &body_100_55())
+    let clock = VirtualClock::shared();
+    let c = Arc::clone(&clock);
+    let fake = FakeHttp::scripted(move |_, _| {
+        c.advance(STALL_T);
+        Reply::timed_out()
     });
-    let _release = gate.release_on_drop();
     let l = login();
+    let before = fs::read(l.path()).unwrap();
     let journals = l.journals();
     let mut req = request(&l, &journals, true);
     req.timeout = STALL_T;
-    let r = read(&endpoints(&fake), &req);
-    gate.release();
+    let counter = AtomicUsize::new(0);
+    let r = read_with(
+        &endpoints(&fake),
+        &req,
+        &Ctx::new(&*clock, &counter, HANG_GUARD).with_transport(&fake),
+    );
     assert_eq!(r, Err(reason::TIMEOUT));
+    assert_eq!(clock.elapsed(), STALL_T);
+    assert_eq!(gets(&fake).len(), 1, "the stalled GET was sent");
+    assert_eq!(posts(&fake), 0, "a timeout must not trigger a refresh");
+    assert_eq!(fs::read(l.path()).unwrap(), before);
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
 }
 
 /// The deadline covers the whole read, not each request. With `T` =

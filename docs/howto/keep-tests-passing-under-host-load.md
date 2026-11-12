@@ -577,7 +577,7 @@ wait for them before the process exits. In production that is the
 process-wide `REFRESHING`. Tests that ran in parallel shared it, so one test's
 refresh could make another test's `wait_for_refreshes` wait.
 
-Each test passes its own counter:
+Tests pass their own counter unless they explicitly cover the process-wide count:
 
 ```rust
 let counter = AtomicUsize::new(0);
@@ -589,19 +589,24 @@ let r = read_with(&endpoints(&fake), &req, &Ctx::new(&*clock, &counter, HANG_GUA
 assert_eq!(counter.load(Ordering::SeqCst), 0);
 ```
 
-`read_uses_the_process_wide_counter` pins the default path: it calls `read()`
-with a gated handler and asserts that `refreshes_in_progress()` is at least
-1 before it opens the gate. `wait_for_refreshes(limit)` is
+`read_uses_the_process_wide_counter` calls `read_with()` with an injected
+`Ctx::new(&clock, refresh_counter(), HANG_GUARD)`. It uses the same counter as
+`Ctx::system()`, while virtual time stays fixed and the transport has an
+independent hang guard. With the shared refresh-count lock excluding other
+process-wide refresh tests, it holds the token handler at a gate and asserts
+that `refreshes_in_progress()` is exactly 1 before opening the gate and 0
+after the reader joins. `wait_for_refreshes(limit)` is
 `wait_for_refreshes_on(&REFRESHING, limit, &SystemClock)`; the
 `rotate::tests_daemon` case below waits on that process-wide count.
 
-Every other read in `tests_usage_direct` runs on a clock that does not move
-(`run_with`, `read_frozen`), so a loaded host cannot use up its deadline
-before the fake answers. A longer real deadline is not the fix. The one
-test whose deadline must run out in real time,
-`a_stalled_server_is_a_timeout_within_the_deadline`, holds its server at a
-gate until the read has returned, so it passes however late the deadline
-fires.
+Loopback reads in `tests_usage_direct` use a clock that does not move
+(`run_with`, `read_frozen`), so host scheduling cannot use up their logical
+deadline before the fake answers. The stalled-GET test,
+`a_stalled_server_is_a_timeout_within_the_deadline`, uses the scripted transport:
+after recording the GET, it advances the virtual clock by the full read budget
+and returns an I/O timeout. It requires the exact `timeout` reason, one GET,
+no refresh POST and unchanged credentials. No DNS worker or real socket deadline
+can change its error class.
 
 ### `wait_for_refreshes_on`
 
@@ -625,11 +630,15 @@ the lock is still there and that releasing the old inode leaves it alone.
 only the outcome. A gated token handler holds the refresh. The stopper runs
 what `finish_refreshes` runs, `wait_for_refreshes_on` on the process-wide
 count (`usage_direct::refresh_counter()`, test-only) with the stop's grace,
-on a clock that delegates to `SystemClock` and reports its first `sleep` over
-a channel. It sleeps only while the count is above zero, so the report means
-the stop is waiting on the held refresh. The test receives it, asserts the
-stopper has not finished, opens the gate, asserts the stop returns `true`,
-joins the reader, then asserts that no lock file remains.
+on a `ReportsFirstWait` clock that delegates to `FrozenClock` and reports its
+first `sleep` over a channel. Its `now()` stays fixed while `sleep()` waits
+for real, so host scheduling cannot exhaust the stop's grace. It sleeps only
+while the count is above zero, so the report means the stop is waiting on the
+held refresh. The test receives it, asserts the stopper has not finished,
+opens the gate, asserts the stop returns `true` and no lock file remains, then
+joins the reader. The reader also uses a frozen clock and an independent
+transport hang guard, and the shared refresh-count lock excludes other
+process-wide refresh tests throughout this ordering check.
 
 ## Run a private copy of the binary
 
