@@ -155,15 +155,15 @@ impl Fx {
         Self::in_tempdir(tempfile::tempdir().unwrap())
     }
 
-    /// Issue #2291: a fixture whose root is at most 55 bytes, so a run's
-    /// `<root>/tmp/ahr-<12 hex>/tmp` fits the 80-byte limit even
-    /// when the test process has a long `TMPDIR`.
+    /// Issue #2291: a fixture whose root is at most 51 bytes. This keeps
+    /// `<root>/tmp` below the 56-byte resolved alias case and leaves room
+    /// for the run's 21-byte socket-path suffix inside the 80-byte limit.
     pub fn new_short() -> Self {
         let short =
-            |t: &tempfile::TempDir| t.path().canonicalize().unwrap().as_os_str().len() <= 55;
+            |t: &tempfile::TempDir| t.path().canonicalize().unwrap().as_os_str().len() <= 51;
         let tmp = tempfile::Builder::new()
             .prefix("f")
-            .rand_bytes(3)
+            .rand_bytes(2)
             .tempdir()
             .unwrap();
         assert!(
@@ -242,6 +242,13 @@ impl Fx {
             .env_clear()
             .env("PATH", &self.bin)
             .env("HOME", &self.home)
+            .env("TMPDIR", &self.tmp)
+            .env("TMP", &self.tmp)
+            .env("TEMP", &self.tmp)
+            .env(
+                "AMPLIHACK_WORKFLOW_RUNTIME_DIR",
+                self.root.join("parent-runtime"),
+            )
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_TERMINAL_PROMPT", "0")

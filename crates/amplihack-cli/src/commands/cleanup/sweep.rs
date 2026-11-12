@@ -894,7 +894,11 @@ impl Collector<'_> {
                                 self.items.push(Item::skip(
                                     Category::RunTmp,
                                     &recorded,
-                                    "no independent runtime root recorded",
+                                    if active {
+                                        "run is active"
+                                    } else {
+                                        "no independent runtime root recorded"
+                                    },
                                     Some(id),
                                 ));
                             }
