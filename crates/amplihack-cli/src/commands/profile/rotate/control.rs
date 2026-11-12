@@ -3,11 +3,10 @@
 //! overflow list` and `clear` (issue #1606).
 
 use super::daemon::{DaemonState, current_state, daemon_err, exe_name, proc_root, running_on_host};
-use super::exhausted;
-use super::history;
 use super::identify::{self, LiveId};
 use super::ledger::{LastCycle, Phase, RotateLedger, RotateState, active_blocks};
 use super::log::{msg, timestamp};
+use super::{exhausted, history, hook_heal};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, now};
 use crate::commands::profile::name::ProfileName;
@@ -75,10 +74,7 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     let on_overflow = on_overflow_line(&store, &rs, home, &names, last_tag.as_deref(), &pin);
     let api_key = api_key_line(&store, home, ledger.as_ref().ok().and_then(Option::as_ref));
     let live = match &ledger {
-        Ok(l) => l
-            .as_ref()
-            .and_then(|l| l.live.clone())
-            .unwrap_or_else(|| "-".into()),
+        Ok(l) => super::status_live(&store, &rs, home, l.as_ref().and_then(|l| l.live.clone())),
         Err(e) => super::handfix_msg::status_live_unreadable(super::ledger::refused_field(e)),
     };
     let ledger = ledger.ok().flatten();
@@ -149,7 +145,8 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         Ok(None) => {}
         Err(_) => println!("journal: damaged"),
     }
-    println!("log: {}", rs.log.display());
+    let hooks = hook_heal::status_line(&rs, now());
+    println!("{hooks}\nlog: {}", rs.log.display());
 }
 
 /// The ledger's hand-change guidance as `note:` or `alert:` lines, then a

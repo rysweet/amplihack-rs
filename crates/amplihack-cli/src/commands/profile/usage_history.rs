@@ -286,7 +286,8 @@ pub(super) fn from_rows(
 ) -> Option<Snapshot> {
     let mut points = BTreeMap::new();
     let mut unknown = Vec::new();
-    let logins = rows.iter().filter(|r| !r.api_key);
+    // Issue #2218: excluded rows are neither counted nor unknown.
+    let logins = rows.iter().filter(|r| r.is_login());
     let mut any = false;
     for r in logins {
         any = true;
@@ -736,6 +737,9 @@ fn read_history(_root: &Path) -> Result<Vec<u8>, ReadRefused> {
 /// history does not look like an empty one. One read parses the whole
 /// tail, so a caller that needs both the newest entry and the ones before
 /// it reads once.
+///
+/// Issue #2218 (D7): entries are returned as written, including readings
+/// of profiles excluded since.
 pub(super) fn read_all(root: &Path, now: i64) -> (Vec<Entry>, Option<String>) {
     match read_history(root) {
         Ok(bytes) => {
