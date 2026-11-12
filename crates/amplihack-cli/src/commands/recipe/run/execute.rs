@@ -1030,8 +1030,20 @@ pub(super) fn execute_recipe_via_rust_fresh(
             admission.finish(outcome)?;
         }
     }
-    finish_workspace(workspace.into_inner(), &final_result, dry_run);
-    final_result
+    let cleanup = finish_workspace(workspace.into_inner(), &final_result, dry_run);
+    match final_result {
+        Ok(result) => {
+            cleanup?;
+            Ok(result)
+        }
+        Err(error) => {
+            // Keep the original execution error, with cleanup failure attached.
+            match cleanup {
+                Ok(()) => Err(error),
+                Err(cleanup) => Err(error.context(format!("runtime cleanup failed: {cleanup:#}"))),
+            }
+        }
+    }
 }
 
 /// Issue #1808: removes runtime/, finalises run.json with the outcome, step
@@ -1041,7 +1053,7 @@ fn finish_workspace(
     workspace: crate::commands::cleanup::run_dir::RunWorkspace,
     result: &Result<RecipeRunResult>,
     dry_run: bool,
-) {
+) -> Result<()> {
     use crate::commands::cleanup::run_dir::{Outcome, StepStatus};
     let (outcome, steps, log_path) = match result {
         Ok(run_result) => (
@@ -1072,7 +1084,7 @@ fn finish_workspace(
         }
         Err(_) => (Outcome::Failure, Vec::new(), None),
     };
-    workspace.finish(outcome, steps, log_path, !dry_run);
+    workspace.finish(outcome, steps, log_path, !dry_run)
 }
 
 /// The `action` recorded on the classification attached to a terminal result.

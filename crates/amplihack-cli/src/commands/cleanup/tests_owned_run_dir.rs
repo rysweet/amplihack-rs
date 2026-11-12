@@ -108,7 +108,11 @@ enum Finish {
 
 fn finish(guard: RuntimeGuard, how: Finish) {
     match how {
-        Finish::Explicit => guard.remove(),
+        Finish::Explicit => {
+            // Preservation cases assert filesystem state in their caller;
+            // dedicated completion tests below assert the returned error.
+            let _outcome = guard.remove();
+        }
         Finish::Drop => drop(guard),
         Finish::Unwind => {
             let error = std::panic::catch_unwind(move || {
@@ -169,15 +173,16 @@ fn copied_creation_marker_does_not_authorize_a_different_directory() {
 #[cfg(target_os = "linux")]
 fn valid_owned_children_are_removed_in_all_three_layouts_and_exit_paths() {
     isolated(|fx| {
-        // A too-long invocation TMPDIR must be fixed by the caller, never by
-        // silently allocating outside its private run directory.
-        assert!(
-            fx.work.as_os_str().len() <= 26,
-            "use a shorter private outer TMPDIR to exercise the actual default layout"
-        );
+        use std::os::fd::AsRawFd;
+        let work_fd = fs::File::open(&fx.work).unwrap();
+        // Keep allocation inside this fixture even when the launcher's path
+        // is long. Linux resolves this short alias to the same private root.
+        let short_work = PathBuf::from(format!("/proc/self/fd/{}", work_fd.as_raw_fd()));
         for layout in ["default", "short", "external"] {
             for how in [Finish::Explicit, Finish::Drop, Finish::Unwind] {
-                let work = if layout == "short" {
+                let work = if layout == "default" {
+                    short_work.clone()
+                } else if layout == "short" {
                     fx.work.join("long".repeat(20))
                 } else {
                     fx.work.clone()
@@ -191,11 +196,12 @@ fn valid_owned_children_are_removed_in_all_three_layouts_and_exit_paths() {
                 };
                 assert_eq!(
                     runtime.parent(),
-                    Some(expected_parent.as_path()),
+                    Some(fs::canonicalize(&expected_parent).unwrap().as_path()),
                     "layout coverage: {layout}"
                 );
                 let _record = marker(&runtime);
-                let sibling = fx.sentinel(&expected_parent.join("sibling"));
+                let sibling =
+                    fx.sentinel(&fs::canonicalize(&expected_parent).unwrap().join("sibling"));
                 finish(guard, how);
                 assert!(
                     !runtime.exists(),
@@ -505,5 +511,86 @@ fn chooser_does_not_adopt_or_mark_an_existing_leaf() {
             1,
             "exclusive creation never grants ownership to an existing directory"
         );
+    });
+}
+
+// Red-phase interface contracts: explicit completion must return a useful
+// error instead of only logging a failed authorization. The current unit-return
+// signatures deliberately do not satisfy these tests. Execution remains held.
+#[test]
+fn explicit_guard_completion_returns_a_protected_path_refusal() {
+    isolated(|fx| {
+        let (_scope, guard) = begin(fx, &fx.work, false);
+        let runtime = guard.path().to_owned();
+        let sentinel = fx.sentinel(&runtime);
+        // SAFETY: isolated holds the shared environment lock through restoration.
+        unsafe { std::env::set_var("TMPDIR", &runtime) };
+        let error = guard
+            .remove()
+            .expect_err("completion must expose a cleanup refusal");
+        let diagnostic = format!("{error:#}");
+        assert!(diagnostic.contains(&runtime.display().to_string()));
+        assert!(
+            diagnostic.len() > runtime.as_os_str().len(),
+            "caller needs the preservation reason as well as the path"
+        );
+        fx.assert_sentinel(&sentinel);
+    });
+}
+
+#[test]
+fn workspace_completion_propagates_cleanup_failure_and_finalizes_the_report() {
+    isolated(|fx| {
+        let (scope, guard) = begin(fx, &fx.work, false);
+        let report_path = scope.run_dir.join("run.json");
+        let sentinel = fx.sentinel(guard.path());
+        fs::remove_file(marker(guard.path())).unwrap();
+        let workspace = RunWorkspace::Scoped {
+            scope: Box::new(scope),
+            guard,
+        };
+        let error = workspace
+            .finish(super::run_dir::Outcome::Success, vec![], None, false)
+            .expect_err("workspace caller must observe failure to authorize cleanup");
+        assert!(!error.to_string().is_empty());
+        fx.assert_sentinel(&sentinel);
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(report_path).unwrap()).unwrap();
+        assert!(
+            report["ended_at"].is_string(),
+            "cleanup refusal must not lose the run report"
+        );
+        assert_eq!(report["outcome"], "success");
+    });
+}
+
+#[test]
+#[cfg(not(target_os = "linux"))]
+fn unavailable_platform_guarantees_preserve_the_owned_directory_and_report_why() {
+    use super::owned_run_dir::{CleanupOutcome, OwnedRunDir};
+    isolated(|fx| {
+        let owned = OwnedRunDir::create(&fx.external, "owned", "run").unwrap();
+        let sentinel = fx.sentinel(owned.path());
+        match owned.remove() {
+            CleanupOutcome::Unsupported(reason) => assert!(!reason.is_empty()),
+            other => panic!("unsupported platform must preserve and explain: {other:?}"),
+        }
+        fx.assert_sentinel(&sentinel);
+        assert!(OwnedRunDir::load(&fx.external, owned.path(), "run").is_err());
+    });
+}
+
+#[test]
+fn protected_descendants_survive_removal_of_their_owned_ancestor() {
+    isolated(|fx| {
+        for key in ["TMPDIR", "HOME"] {
+            let (_scope, guard) = begin(fx, &fx.work, false);
+            let nested = guard.path().join("tmp/protected");
+            let sentinel = fx.sentinel(&nested);
+            let _restore = EnvGuard::capture(&[key]);
+            unsafe { std::env::set_var(key, &nested) };
+            assert!(guard.remove().is_err());
+            fx.assert_sentinel(&sentinel);
+        }
     });
 }

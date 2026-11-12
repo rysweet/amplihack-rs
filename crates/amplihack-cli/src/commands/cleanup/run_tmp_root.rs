@@ -14,6 +14,7 @@
 //! resolved path would make every step's `TMPDIR` 77 bytes, too long for
 //! common socket users under the 104-byte macOS limit.
 
+use super::owned_run_dir::RunRoot;
 use super::run_dir::{MAX_RUNTIME_TMP_BYTES, runtime_dir_for, short_id};
 use super::work_root::create_private_dir_all;
 use std::ffi::OsString;
@@ -156,12 +157,12 @@ pub(crate) fn choose_runtime_dir(work_root: &Path, run_id: &str, inputs: &TmpRoo
     if let (Some(name), Some((rule, value))) = (external_dir_name(run_id), candidate) {
         let value = Path::new(value);
         let attempt = usable_root(work_root, rule, value, inputs).and_then(|root| {
-            super::owned_run_dir::OwnedRunDir::create(&root, &name, run_id)
+            super::owned_run_dir::OwnedRunDir::create_selected(&root, &name, run_id)
                 .map(|owned| {
                     (
                         RuntimeChoice::External {
                             dir: owned.path().to_owned(),
-                            root,
+                            root: root.path,
                         },
                         owned,
                     )
@@ -193,10 +194,18 @@ pub(crate) fn choose_runtime_dir(work_root: &Path, run_id: &str, inputs: &TmpRoo
 /// Legacy mode only: the canonical `AMPLIHACK_RUN_TMP_ROOT` when rule 1
 /// accepts it, `Ok(None)` when it is unset or empty, and the warning line
 /// otherwise. `TMPDIR` is not looked at; `tempdir()` already follows it.
+#[cfg(test)]
 pub(crate) fn usable_explicit_root(
     work_root: &Path,
     inputs: &TmpRootInputs,
 ) -> Result<Option<PathBuf>, String> {
+    usable_explicit_selected_root(work_root, inputs).map(|root| root.map(|root| root.path))
+}
+
+pub(crate) fn usable_explicit_selected_root(
+    work_root: &Path,
+    inputs: &TmpRootInputs,
+) -> Result<Option<RunRoot>, String> {
     let Some(value) = inputs.explicit_root() else {
         return Ok(None);
     };
@@ -216,7 +225,7 @@ fn usable_root(
     rule: Rule,
     value: &Path,
     inputs: &TmpRootInputs,
-) -> Result<PathBuf, Refused> {
+) -> Result<RunRoot, Refused> {
     let explicit = rule == Rule::Explicit;
     let warn_or_silent = |reason: String| {
         if explicit {
@@ -281,6 +290,15 @@ fn usable_root(
         return Err(Refused::Silent);
     }
 
+    let selected = RunRoot::select(&root)
+        .map_err(|error| warn_or_silent(format!("cannot retain selected parent: {error:#}")))?;
+    let selected_meta = selected
+        .metadata()
+        .map_err(|error| warn_or_silent(format!("cannot inspect selected parent: {error:#}")))?;
+    if selected_meta.dev() != meta.dev() || selected_meta.ino() != meta.ino() {
+        return Err(warn_or_silent("parent replaced during selection".into()));
+    }
+    let meta = selected_meta;
     if meta.uid() != inputs.euid && meta.uid() != 0 {
         return Err(Refused::Warn("is owned by another user".into()));
     }
@@ -301,7 +319,7 @@ fn usable_root(
             "would make the run temp path {len} bytes (limit {MAX_RUNTIME_TMP_BYTES})"
         )));
     }
-    Ok(root)
+    Ok(selected)
 }
 
 /// Whether `TMPDIR` lies inside the caller's

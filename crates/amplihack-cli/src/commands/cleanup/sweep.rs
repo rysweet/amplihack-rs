@@ -874,26 +874,27 @@ impl Collector<'_> {
 
             // Issue #2291: a per-run folder under an external root, as
             // `run.json` records it. A missing path produces no item.
-            if want_tmp
-                && let Some(recorded) = report.runtime_dir.as_deref().map(PathBuf::from)
-                && !matches!(
-                    fs::symlink_metadata(&recorded),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound
-                )
-            {
-                match external_runtime_check(&recorded, id, &root.path, euid()) {
-                    Ok(()) => runtime_dirs.push(recorded),
-                    Err(reason) => self.items.push(Item::skip(
-                        Category::RunTmp,
-                        &recorded,
-                        format!("recorded temp folder refused: {reason}"),
-                        Some(id),
-                    )),
+            if want_tmp && let Some(recorded) = report.runtime_dir.as_deref().map(PathBuf::from) {
+                if !recorded.exists()
+                    && let Some(parent) = &report.runtime_root
+                    && super::owned_run_dir::OwnedRunDir::load(parent, &recorded, id).is_ok()
+                {
+                    runtime_dirs.push(recorded);
+                } else {
+                    match external_runtime_check(&recorded, id, &root.path, euid()) {
+                        Ok(()) => runtime_dirs.push(recorded),
+                        Err(reason) => self.items.push(Item::skip(
+                            Category::RunTmp,
+                            &recorded,
+                            format!("recorded temp folder refused: {reason}"),
+                            Some(id),
+                        )),
+                    }
                 }
             }
 
             if want_tmp {
-                for dir in runtime_dirs.iter().filter(|d| is_real_dir(d)) {
+                for dir in &runtime_dirs {
                     if active {
                         self.items.push(Item::skip(
                             Category::RunTmp,
@@ -929,6 +930,13 @@ impl Collector<'_> {
                             ));
                             continue;
                         };
+                        if !is_real_dir(dir)
+                            && matches!(fs::symlink_metadata(dir), Err(e) if e.kind() == std::io::ErrorKind::NotFound)
+                            && super::owned_run_dir::OwnedRunDir::load(&expected_root, dir, id)
+                                .is_err()
+                        {
+                            continue;
+                        }
                         let owned = match super::owned_run_dir::OwnedRunDir::load(
                             &expected_root,
                             dir,
@@ -945,6 +953,27 @@ impl Collector<'_> {
                                 continue;
                             }
                         };
+                        let current = match owned.current_path() {
+                            Ok(path) => path,
+                            Err(error) => {
+                                self.items.push(Item::skip(
+                                    Category::RunTmp,
+                                    dir,
+                                    format!("ownership refused: {error:#}"),
+                                    Some(id),
+                                ));
+                                continue;
+                            }
+                        };
+                        if self.in_use(&current) {
+                            self.items.push(Item::skip(
+                                Category::RunTmp,
+                                dir,
+                                "in use by a running process",
+                                Some(id),
+                            ));
+                            continue;
+                        }
                         self.items.push(Item {
                             category: Category::RunTmp,
                             path: dir.clone(),

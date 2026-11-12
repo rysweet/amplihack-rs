@@ -25,6 +25,10 @@ mod execute {
 #[test]
 #[ignore = "requires recipe-runner-rs binary in PATH"]
 fn test_execute_recipe_via_rust_dry_run_succeeds_with_known_recipe() {
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     // Skip if recipe-runner-rs is definitely not available and no override set
     if !which_recipe_runner_available() && std::env::var("RECIPE_RUNNER_RS_PATH").is_err() {
         // Still run the test so CI catches the missing binary — it will fail
@@ -1791,19 +1795,9 @@ fn test_execute_recipe_via_rust_sets_isolated_runtime_directories() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _fixture_environment = fixture_environment();
-    // Issue #2291: pin the default layout. Without this, a caller's TMPDIR
-    // outside the work root would be used as the run's temp root. The
-    // caller's TMPDIR is made to lie inside a "parent runtime folder", which
-    // the chooser skips silently, so TMPDIR itself is never changed for
-    // tests running alongside this one.
-    let _tmp_root_env = crate::test_support::EnvGuard::capture(&[
-        "AMPLIHACK_RUN_TMP_ROOT",
-        "AMPLIHACK_WORKFLOW_RUNTIME_DIR",
-    ]);
-    unsafe {
-        std::env::remove_var("AMPLIHACK_RUN_TMP_ROOT");
-        std::env::set_var("AMPLIHACK_WORKFLOW_RUNTIME_DIR", std::env::temp_dir());
-    }
+    // The fixture pins TMPDIR beneath its own parent runtime, so the chooser
+    // skips that root and exercises a work-root layout. Neither variable ever
+    // points at the inherited process temporary root.
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let repo = temp.path().join("repo");
     let runner = temp.path().join("recipe-runner-rs");
@@ -3437,6 +3431,43 @@ fn fixture_environment() -> (
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
     (saved, crate::test_support::IsolatedWorkRoot::new())
+}
+
+#[test]
+fn fixture_environment_isolates_and_restores_temporary_runtime_paths() {
+    let _guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let keys = [
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "AMPLIHACK_WORKFLOW_RUNTIME_DIR",
+        "AMPLIHACK_RUN_TMP_ROOT",
+    ];
+    let before: Vec<_> = keys.iter().map(std::env::var_os).collect();
+    let private_base;
+    {
+        let fixture = fixture_environment();
+        private_base = fixture.1.path().parent().unwrap().to_owned();
+        let runtime = PathBuf::from(std::env::var_os("AMPLIHACK_WORKFLOW_RUNTIME_DIR").unwrap());
+        let tmp = std::env::temp_dir();
+        assert!(runtime.starts_with(&private_base));
+        assert!(tmp.starts_with(&runtime) && tmp != runtime);
+        assert!(runtime.is_dir() && tmp.is_dir());
+        for key in ["TMPDIR", "TMP", "TEMP"] {
+            assert_eq!(std::env::var_os(key).unwrap(), tmp.as_os_str());
+        }
+        assert_eq!(std::env::var_os("AMPLIHACK_RUN_TMP_ROOT").unwrap(), "");
+    }
+    assert_eq!(
+        keys.iter().map(std::env::var_os).collect::<Vec<_>>(),
+        before
+    );
+    assert!(
+        !private_base.exists(),
+        "restore environment before fixture teardown"
+    );
 }
 
 #[test]

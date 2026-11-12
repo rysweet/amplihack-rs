@@ -179,7 +179,12 @@ impl Drop for EnvGuard {
 /// isolated here. On drop the variables are restored and then the folder is
 /// removed.
 ///
-/// This guard is the only owner of these three variables in any fixture that
+/// It also creates private `runtime/tmp` directories beneath its own fixture,
+/// sets TMPDIR/TMP/TEMP and AMPLIHACK_WORKFLOW_RUNTIME_DIR, and clears the
+/// inherited AMPLIHACK_RUN_TMP_ROOT. Allocation requires an existing private
+/// launcher TMPDIR; it never falls back to a shared temporary root.
+///
+/// This guard is the only owner of these variables in any fixture that
 /// uses it. Do not also capture or set them in another `EnvGuard` in the same
 /// fixture: two guards saving one variable restore it in the wrong order.
 /// For example, in a `(EnvGuard, IsolatedWorkRoot)` tuple the first element
@@ -196,16 +201,38 @@ pub(crate) struct IsolatedWorkRoot {
 
 impl IsolatedWorkRoot {
     pub(crate) fn new() -> Self {
-        let dir = tempdir_outside_framework_roots();
+        let parent = std::env::var_os("TMPDIR")
+            .expect("safety hold: supply a private launcher TMPDIR before running recipe tests");
+        let parent = std::fs::canonicalize(parent).expect("private launcher TMPDIR must exist");
+        assert!(parent != Path::new("/tmp") && parent != Path::new("/var/tmp"));
+        assert_eq!(
+            scratch_base::scratch_base_rejection(&parent, None),
+            None,
+            "private launcher TMPDIR must be outside framework roots"
+        );
+        let dir = tempfile::tempdir_in(parent).expect("create isolated recipe test fixture");
+        let runtime = dir.path().join("runtime");
+        let tmp = runtime.join("tmp");
+        std::fs::create_dir_all(&tmp).expect("create private recipe test runtime and TMPDIR");
         let env = EnvGuard::capture(&[
             "AMPLIHACK_WORK_ROOT",
             "AMPLIHACK_WORK_ROOT_EXPLICIT",
             "AMPLIHACK_CLEANUP_ON_EXIT",
+            "AMPLIHACK_RUN_TMP_ROOT",
+            "AMPLIHACK_WORKFLOW_RUNTIME_DIR",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
         ]);
         unsafe {
             std::env::set_var("AMPLIHACK_WORK_ROOT", dir.path().join("work"));
             std::env::remove_var("AMPLIHACK_WORK_ROOT_EXPLICIT");
             std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0");
+            std::env::set_var("AMPLIHACK_RUN_TMP_ROOT", "");
+            std::env::set_var("AMPLIHACK_WORKFLOW_RUNTIME_DIR", &runtime);
+            for key in ["TMPDIR", "TMP", "TEMP"] {
+                std::env::set_var(key, &tmp);
+            }
         }
         Self { _env: env, dir }
     }

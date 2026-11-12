@@ -7,7 +7,7 @@
 use super::owned_run_dir::{CleanupOutcome, OwnedRunDir};
 use super::run_tmp_root::{
     DRY_DIR_PREFIX, DRY_RAND_LEN, RUN_TMP_ROOT_ENV, RuntimeChoice, TmpRootInputs,
-    choose_runtime_dir, usable_explicit_root,
+    choose_runtime_dir, usable_explicit_selected_root,
 };
 use super::work_root::{WORK_ROOT_ENV, WorkRoot, create_private_dir_all};
 use anyhow::{Context, Result, bail};
@@ -87,25 +87,20 @@ impl RuntimeGuard {
         &self.path
     }
 
-    pub(crate) fn remove(mut self) {
-        self.remove_inner();
+    pub(crate) fn remove(mut self) -> Result<()> {
+        self.remove_inner()
     }
 
-    fn remove_inner(&mut self) {
+    fn remove_inner(&mut self) -> Result<()> {
         let Some(owned) = self.owned.take() else {
-            return;
+            bail!("runtime {:?} preserved: no creation authority", self.path);
         };
         match owned.remove() {
-            CleanupOutcome::Removed => {}
-            CleanupOutcome::Preserved(reason) | CleanupOutcome::Failed(reason) => {
-                tracing::warn!(path = ?self.path, %reason, "run runtime preserved");
-                if let Err(error) = writeln!(
-                    std::io::stderr().lock(),
-                    "amplihack: runtime {:?} preserved: {reason}",
-                    self.path
-                ) {
-                    tracing::warn!(%error, "could not report preserved runtime");
-                }
+            CleanupOutcome::Removed | CleanupOutcome::AlreadyAbsent => Ok(()),
+            CleanupOutcome::Preserved(reason)
+            | CleanupOutcome::Unsupported(reason)
+            | CleanupOutcome::Failed(reason) => {
+                bail!("runtime {:?} preserved: {reason}", self.path)
             }
         }
     }
@@ -113,7 +108,15 @@ impl RuntimeGuard {
 
 impl Drop for RuntimeGuard {
     fn drop(&mut self) {
-        self.remove_inner();
+        // Explicit removal consumes the handle even when validation refuses.
+        if self.owned.is_some()
+            && let Err(error) = self.remove_inner()
+        {
+            tracing::warn!(path = ?self.path, %error, "run runtime preserved");
+            if let Err(report_error) = writeln!(std::io::stderr().lock(), "amplihack: {error:#}") {
+                tracing::warn!(%report_error, "could not report preserved runtime");
+            }
+        }
     }
 }
 
@@ -595,17 +598,21 @@ impl RunWorkspace {
     /// [`Self::dry_runtime`] with explicit inputs, so tests need no process
     /// environment.
     pub(crate) fn dry_runtime_with(inputs: &TmpRootInputs) -> Result<Self> {
-        let explicit_root = match usable_explicit_root(&legacy_work_root(inputs), inputs) {
+        let selected = match usable_explicit_selected_root(&legacy_work_root(inputs), inputs) {
             Ok(root) => root,
             Err(warning) => {
                 eprintln!("{warning}");
                 None
             }
         };
-        let root = explicit_root.clone().unwrap_or_else(std::env::temp_dir);
+        let explicit_root = selected.as_ref().map(|root| root.path.clone());
+        let selected = match selected {
+            Some(root) => root,
+            None => super::owned_run_dir::RunRoot::select(&std::env::temp_dir())?,
+        };
         let run_id = new_run_id();
         let leaf = format!("{DRY_DIR_PREFIX}{}", &short_id(&run_id)[..DRY_RAND_LEN]);
-        let guard = RuntimeGuard::owned(OwnedRunDir::create(&root, &leaf, &run_id)?);
+        let guard = RuntimeGuard::owned(OwnedRunDir::create_selected(&selected, &leaf, &run_id)?);
         create_private_dir_all(&guard.path().join("tmp"))?;
         create_private_dir_all(&guard.path().join("artifacts"))?;
         Ok(Self::Legacy {
@@ -685,14 +692,15 @@ impl RunWorkspace {
         steps: Vec<StepStatus>,
         log_path: Option<String>,
         sweep: bool,
-    ) {
+    ) -> Result<()> {
         match self {
             Self::Scoped { mut scope, guard } => {
-                guard.remove();
+                let cleanup = guard.remove();
                 scope.finish(outcome, steps, log_path);
                 if sweep && super::cleanup_on_exit_enabled() {
                     super::sweep::end_of_run(&scope.work_root);
                 }
+                cleanup
             }
             Self::Legacy { guard, .. } => guard.remove(),
         }

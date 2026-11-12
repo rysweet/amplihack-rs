@@ -73,7 +73,8 @@ fn recorded_external_matches(
                 .flatten()
                 .as_deref()
                 == owned.root_path()
-            && external_runtime_check(c, id, work_root, euid()).is_ok()
+            && (external_runtime_check(c, id, work_root, euid()).is_ok()
+                || (!c.exists() && owned.path() == c))
     })
 }
 
@@ -139,6 +140,14 @@ pub(super) fn execute(
     }
     let now = match fs::canonicalize(&item.path) {
         Ok(now) => now,
+        // Missing original entries can represent interrupted claims. The
+        // retained authority rechecks their location and both records below.
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && matches!(item.op, Op::RemoveRunTmp { .. }) =>
+        {
+            item.path.clone()
+        }
         Err(error) => refuse!("{} cannot be resolved: {error}", item.path.display()),
     };
     if now != item.canonical {
@@ -162,12 +171,18 @@ pub(super) fn execute(
             run_still_inactive(run_dir)?;
             // A child of a killed runner (an agent, cargo) may outlive it and
             // still use its TMPDIR.
-            if procs.in_use(target) {
+            let current = match owned.current_path() {
+                Ok(path) => path,
+                Err(error) => refuse!("ownership refused: {error:#}"),
+            };
+            if procs.in_use(target) || procs.in_use(&current) {
                 refuse!("in use by a running process");
             }
             match owned.remove() {
-                super::super::owned_run_dir::CleanupOutcome::Removed => Ok(()),
-                super::super::owned_run_dir::CleanupOutcome::Preserved(reason) => {
+                super::super::owned_run_dir::CleanupOutcome::Removed
+                | super::super::owned_run_dir::CleanupOutcome::AlreadyAbsent => Ok(()),
+                super::super::owned_run_dir::CleanupOutcome::Preserved(reason)
+                | super::super::owned_run_dir::CleanupOutcome::Unsupported(reason) => {
                     refuse!("{reason}");
                 }
                 super::super::owned_run_dir::CleanupOutcome::Failed(reason) => bail!("{reason}"),
