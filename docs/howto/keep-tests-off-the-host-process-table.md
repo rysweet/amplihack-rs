@@ -2,7 +2,7 @@
 title: Keep Tests off the Host Process Table
 type: howto
 updated: 2026-11-11
-related: issue #2042, issue #2040, issue #1760, issue #1690, issue #2175
+related: issue #2196, issue #2042, issue #2040, issue #1760, issue #1690, issue #2175
 ---
 
 # Keep Tests off the Host Process Table
@@ -22,6 +22,14 @@ reads a fake process table that the test owns. This guide shows how to write suc
 processes, and what the guard test checks. It is for contributors who write
 tests in `crates/amplihack-cli/tests/`.
 
+Since #2196 the unit tests inside the crate (`cargo test -p amplihack-cli
+--lib`) also read only a fake table. They do not start a binary, so they
+cannot use the environment variable. A test that needs fake processes
+installs a per-thread scope; every other lib test reads one shared, empty
+fake table. Both are described in
+[Lib tests: the per-thread scope](#lib-tests-the-per-thread-scope). In a lib
+test build, `proc_root()` never returns `/proc`.
+
 ## Contents
 
 - [How the seam works](#how-the-seam-works)
@@ -29,6 +37,7 @@ tests in `crates/amplihack-cli/tests/`.
 - [Keep the fake tree after `env_clear()`](#keep-the-fake-tree-after-env_clear)
 - [Add fake processes with `FakeProc`](#add-fake-processes-with-fakeproc)
 - [Show a process the test started](#show-a-process-the-test-started)
+- [Lib tests: the per-thread scope](#lib-tests-the-per-thread-scope)
 - [What the guard test checks](#what-the-guard-test-checks)
 - [The strace check](#the-strace-check)
 - [What still reads the real `/proc`](#what-still-reads-the-real-proc)
@@ -48,7 +57,11 @@ named in `AMPLIHACK_TEST_PROC_ROOT` when every one of these holds (rule S27 in
 | It is a directory owned by the effective user | Another user cannot plant a tree. |
 | No other user can write to it | Another user cannot change a tree after it is checked. |
 
-If any condition fails, the code reads the real `/proc`. A debug build, which
+In a lib test build, a per-thread override is checked before the variable,
+and the shared fake table replaces `/proc` as the last step; see
+[Lib tests: the per-thread scope](#lib-tests-the-per-thread-scope).
+
+In every other build, if any condition fails, the code reads the real `/proc`. A debug build, which
 is what every test runs, also prints one line to stderr, once per process:
 
 ```text
@@ -327,6 +340,296 @@ covers that race in a unit test. The integration test
 `issue_1592_daemon::starts_beside_a_running_rotator_refuse` checks only that
 two concurrent starts beside a running, linked rotator both refuse.
 
+## Lib tests: the per-thread scope
+
+Unit tests under `crates/amplihack-cli/src/` call profile and rotation code
+directly, in one process, on many threads at once. Setting
+`AMPLIHACK_TEST_PROC_ROOT` there would change the table for every test in the
+binary, so lib tests never set it (nor `PROC_ROOT_ENV`). A test that needs
+fake processes installs a table for its own thread instead. A test that
+installs nothing reads the shared default described below.
+
+### The order `proc_root()` resolves in
+
+| Order | Source | Present in |
+|-------|--------|------------|
+| 1 | The calling thread's override, set by `proc_scope_at` or `fake_proc_scope` | lib test builds only (`#[cfg(test)]`) |
+| 2 | `AMPLIHACK_TEST_PROC_ROOT`, accepted under the rules in [How the seam works](#how-the-seam-works) | every build |
+| 3 | The shared default fake table, `shared_default_root()` | lib test builds only (`#[cfg(test)]`) |
+| 4 | `/proc` | every build except lib test builds |
+
+In a lib test build, step 3 takes every outcome of step 2 other than an
+accepted tree: an unset variable, an empty one, and a refused one. A refused
+variable prints its stderr line once, ending in `reading the shared fake
+table` rather than `reading /proc`. So `proc_root()` cannot return `/proc` in
+a lib test, whether or not the test asked for a fake table.
+
+Release, debug and integration-test binaries compile only steps 2 and 4 and
+resolve exactly as before. The override, its guard, the shared default and
+the changed stderr text are all `#[cfg(test)]`; a release binary contains
+neither the string `amplihack-fake-proc` nor `shared fake table`.
+
+This is the same resolver and the same `FakeProc` builder that #2042 added,
+not a second seam. The shared default asserts nothing about the code under
+test and never panics on its account: it only gives code that does not ask
+for a table an empty one to read.
+
+### The shared default
+
+`crate::test_support::proc::shared_default_root() -> &'static Path` is
+created on first use and kept for the life of the test process:
+
+| Property | Value |
+|----------|-------|
+| Location | A randomly named directory directly under `std::env::temp_dir()` (the seam accepts trees only there, so not under the scratch base, which can fall back to `/var/tmp`), never under `target/`, never a fixed or pid-derived name |
+| Mode | 0700 at creation, owned by the effective user |
+| Contents | `self/environ` only, written by `seed_proc_tree` |
+| Checked | Once, by the same `check_tree` that guards the variable; a refusal panics naming the path and the reason |
+| Lifetime | One per test process, shared by every thread, never deleted during the run |
+
+A small directory stays in `TMPDIR` after the run. That is expected.
+
+It is returned as `&'static Path`, not as a `FakeProc`, so no test can add an
+entry to it. A test that needs a process installs its own scope. Because the
+default holds only `self/environ`, liveness reports nothing live, the rotator
+is not running, and no session holds any profile.
+
+### Choose the injection point
+
+Use the first of these that the code under test offers:
+
+1. A root the code already takes: `autostart::Deps.proc_root`, or a
+   function with a `proc_root: &Path` argument. Pass `scope.path()`, or
+   `fake.path()` for a fixture that holds a `FakeProc`. A test that reads
+   only its own process may pass `Path::new("/proc")` to the `*_at` variant:
+   its own pid is not another process.
+2. A scan function the code lets the test replace: `cycle::Ctx.scan` is a
+   `fn(&Path) -> Liveness` (`rotate/cycle_ctx.rs`), set to `scan_system` in
+   production. A test sets it to a function that returns the liveness it
+   needs, and no table is read at all.
+3. Otherwise, a scope on the test's thread. Code that calls `proc_root()`
+   itself (`recover_auto_switch`, `swap_check`, `change_log::record`,
+   `shared_dirs::ensure_for`, `owner::describe`) then reads the fake table.
+
+There is no other seam: no process-table trait, no second fake, no extra
+environment variable and no `State` field. A test that needs none of these,
+because it expects no live process, uses the shared default and installs
+nothing.
+
+### `fake_proc_scope` and `proc_scope_at`
+
+Both live in `crate::test_support::proc`
+(`crates/amplihack-cli/src/test_support_proc.rs`, declared from the
+`#[cfg(test)]` module `src/test_support.rs`). The module includes the same
+`tests/support/fake_proc.rs` builder the integration tests use, so there is
+one builder for both.
+
+| Item | What it does |
+|------|--------------|
+| `fake_proc_scope() -> FakeProcScope` | Creates a fresh `FakeProc` (0700, `self/environ` seeded) and installs it as this thread's override. |
+| `proc_scope_at(&FakeProc) -> ProcRootOverride` | Installs an existing `FakeProc` as this thread's override. Use it inside a thread the test spawns, or for a fixture that already holds a `FakeProc`. It takes a `FakeProc`, not a path, so only a tree built by the one fake builder can be installed. |
+| `FakeProcScope::path()` | The tree's root, for an explicit `proc_root` argument. |
+| `shared_default_root() -> &'static Path` | The [shared default](#the-shared-default). Tests rarely call it; `proc_root()` returns it when nothing else applies. |
+| `FakeProcScope::fake` | The `FakeProc`, for `process(pid)`, `remove(pid)` and `self_cgroup(..)`. |
+| `FakeProcScope::running_session(pid, config_dir) -> FakeEntry` | Seeds a Claude session that uses `config_dir`; see [below](#seed-a-running-session). |
+
+`ProcRootOverride` restores the previous override when it is dropped, so
+scopes nest, but only if they are dropped in the reverse of the order they
+were installed. If an outer guard is dropped first, the inner guard later
+restores the outer tree's path after that tree has been deleted. Let guards
+drop at the end of their block, and do not call `drop` on an outer one early.
+A test needs one scope; `env()` already installs it (see below). The guard
+is `#[must_use]`, is neither `Clone` nor `Copy`, and is not
+`Send`: it cannot be moved to another thread, where it would restore the
+wrong thread's value. It is `Sync`, so a fixture that holds one can still be
+lent to a scoped thread by reference. `FakeProcScope` holds the guard before the tree, so the
+override is removed before the directory is deleted.
+
+A test with no fixture installs the scope itself and keeps it to the end:
+
+```rust
+use crate::test_support::proc::fake_proc_scope;
+
+#[test]
+fn a_profile_with_no_session_is_not_live() {
+    let _proc = fake_proc_scope();
+    // Code under test that calls proc_root() on this thread reads _proc.path().
+    assert!(!is_live("work"));
+}
+```
+
+`rotate::tests_swap::Env` carries a `proc: FakeProcScope` as its last field,
+so every test built on `env()` already reads an empty fake table. Such a test
+seeds processes through `e.proc` and does not call `fake_proc_scope()` as
+well.
+
+The names `is_live`, `switch` and `run_auto_switch` in this section stand for
+the function under test. The tests converted for #2196 call the real
+functions; see the `tests_swap` module for current examples.
+
+### Seed a running session
+
+`running_session` writes one entry for a pid at or above `FAKE_PID_BASE`:
+
+| File | Contents |
+|------|----------|
+| `cmdline` | `claude` |
+| `status` | `State: S` and `Uid:` set to the effective uid |
+| `environ` | `CLAUDE_CONFIG_DIR=<config_dir>` |
+
+It writes no `exe` link. Add `.exe_link(..)` on the returned `FakeEntry`
+where an owner check needs one. It panics on a pid below `FAKE_PID_BASE`, so
+no lib test can name a pid a host process might hold.
+
+A test that refuses a switch while a session holds a profile seeds the
+session, checks the refusal, then removes the entry and checks that the
+refusal goes away. The second half proves the result came from the fake
+entry and not from anything else:
+
+```rust
+let pid = FAKE_PID_BASE + 1;
+e.proc.running_session(pid, &e.root.join("work"));
+assert!(switch(&e, "work").is_err(), "a live session holds `work`");
+
+e.proc.fake.remove(pid);
+assert!(switch(&e, "work").is_ok(), "nothing holds `work` once the entry is gone");
+```
+
+No lib test starts a process to stand for a session. The
+`tests_switch_candidates` sessions are fake entries. The lease in
+`tests_login_check` is an entry in the auto-switch ledger, not a process:
+no pid is checked or signalled, and the liveness scan behind it reads the
+test's empty fake table.
+
+### Threads
+
+The override belongs to one thread and is not inherited by threads that
+thread starts.
+
+- **A thread the test spawns.** Install the scope inside the closure. Borrow
+  the tree under `std::thread::scope`, so it outlives the threads and the
+  test waits for them by `join`:
+
+  ```rust
+  let scope = fake_proc_scope();
+  let fake = &scope.fake;
+  std::thread::scope(|s| {
+      for _ in 0..2 {
+          s.spawn(|| {
+              let _proc = proc_scope_at(fake);
+              run_auto_switch(&config);
+          });
+      }
+  });
+  ```
+
+  Because `FakeProcScope` is not `Send`, a struct that holds one (such as
+  `Env`) cannot be moved into a thread. Borrow it (`&Env`) inside
+  `thread::scope` instead; the compiler points at every place that needs
+  this.
+
+- **A thread production code spawns.** That thread sees no override, so it
+  reads the shared default: an empty table, never `/proc`. If a test needs
+  a fake process to be visible on such a thread, inject at a layer the code
+  already takes, `cycle::Ctx.scan` or a `*_at(proc_root, ..)` function,
+  rather than adding a process-wide override. The PR that converts such a
+  test names it.
+
+### A refused tree panics
+
+`override_proc_root` runs the same checks as the variable (a directory
+inside the canonical temp dir and not the temp dir itself, owned by the
+effective user, not writable by others), skipping only the home-guard check.
+A tree that fails them panics at once, naming the path and the reason:
+
+```text
+override_proc_root(/tmp/.tmpAbC123): others can write the directory
+```
+
+This differs from the variable on purpose. A refused variable falls back with
+a stderr line (to `/proc` in a child binary, to the shared default in a lib
+test), because a child process cannot fail its parent's test. A refused
+override is a mistake in the test, so it stops the test. The panic is a
+precondition on the helper's argument; it is not a check on the code under
+test. Build trees with `FakeProc`, which always passes.
+
+`procfs/tests_root.rs` still builds refused trees by hand to test this, and
+calls the internal `override_proc_root(&Path)` directly. Tests of the refused
+variable call `procfs::resolve()` and never set the process-wide variable,
+since under `cfg(test)` `proc_root()` would hide the refusal behind the
+shared default.
+
+The precedence test runs a single lib test in a child process with the
+variable set on `Command`, checks that the thread override wins, then drops
+it and checks that the variable wins. It never changes the parent process's
+environment: other lib tests read the shared default without an environment
+lock.
+
+### Guard against bypassing the resolver
+
+`src/test_support_proc_guard.rs` runs as part of `cargo test --lib`. It
+parses every Rust source under `src/`, checks inline `#[cfg(test)]` modules
+and `#[test]` functions, and checks helpers in `tests/`, `tests*.rs`,
+`*_tests.rs` and `test_support*.rs` files. It rejects filesystem reads that
+enumerate a literal `/proc` root or name a literal numeric host pid, even
+when the path is passed through local bindings (including typed bindings),
+module or block constants, `Path` constructors,
+`format!`, raw strings or an assertion. Pure validation inputs and diagnostic
+strings do not count as reads. The guard's negative samples include
+`fs::read_to_string("/proc/1/stat")` in both inline and separate test code,
+typed `let root: &str = "/proc"` bindings, and constant aliases declared
+before or after the test. Bindings follow block scope and shadowing.
+
+This source guard complements the integration guard; its coverage does not
+depend on whether a particular lib test happened to run during a trace.
+It permits `/proc/self/*` and global kernel files such as `loadavg` and
+`meminfo`. Dynamic pid paths still require an ownership review: only the
+test itself or a child it holds may be read. Arbitrarily computed paths and
+interprocedural data flow need the strace check below.
+
+The release-layout opaque-process test uses `fake_proc_scope()` and the real
+`classify_opaque_at(root, pid)` classifier. It supplies process `stat` and `cgroup` files and a synthetic
+boot-time file, then checks exact classifications, including malformed and
+missing data. It never enumerates the host table.
+
+### Run the lib tests
+
+Plain `cargo test` runs them:
+
+```bash
+cargo test -p amplihack-cli --lib
+cargo test -p amplihack-cli --lib -- --test-threads=1
+```
+
+Run both over the whole lib suite: the first catches a test that depends on
+another thread's override, the second a test that depends on running
+alongside others.
+
+Some hosts put a local wrapper in front of `cargo` that skips the profile and
+rotation lib tests. That wrapper is not part of this repository, and no
+setting in the repository reads `AMPLIHACK_RUN_PROC_TESTS`. Where the wrapper
+is installed, `AMPLIHACK_RUN_PROC_TESTS=1` tells it to run them. Since these
+tests read only fake tables, the wrapper's skip can be removed.
+
+To confirm a module reads no host process, build the lib test binary first,
+then trace that binary alone on one thread. Tracing `cargo` itself would mix
+cargo's own `/proc` reads into the output.
+
+```bash
+bin=$(cargo test -p amplihack-cli --lib --no-run --message-format=json \
+  | jq -r 'select(.profile.test == true and .target.kind == ["lib"]) | .executable')
+strace -f -e trace=openat,connect "$bin" commands::profile::rotate --test-threads=1 \
+  2>&1 | grep -E '"/proc/[0-9]+|/proc"|connect\('
+```
+
+`/proc/self/...` and `/proc/loadavg` may appear. `/proc/<pid>` may appear
+only for a pid inside the traced tree: `strace -f` prefixes each line from a
+child or thread with `[pid N]`, and those pids, with the test binary's own,
+are the ones allowed. They come from tests that read their own pid through
+`Path::new("/proc")` and from the exceptions in `util.rs` and
+`recipe/process_tree.rs`. A `/proc/<pid>` for any other pid is a host
+process and a failure, as is any tmux or session socket `connect`.
+
 ## What the guard test checks
 
 `crates/amplihack-cli/tests/issue_2042_proc_root_guard.rs` spawns nothing. It
@@ -443,6 +746,7 @@ lists `/proc`.
 | `amplihack-utils::running_on_host`, called by `rotate stop` just before it signals | The pid it confirms is signalled, so a fake tree must not choose it. Discovery and `rotate status` still read the fake tree. |
 | `recipe/process_tree.rs`, used by `recipe stop <session>` and `recipe run`'s teardown | Every pid it finds may be signalled, so a fake tree must not choose one. It lists `/proc` and reads `/proc/<pid>/stat` to build a tree from its roots, and reads no `environ`. `recipe stop <run_id>` does not use it: it reads only the `stat` of the pids in the run's record (`recipe/run_record.rs`). |
 | A recorded run's `/proc/<pid>/stat` in `cleanup/run_dir.rs` and `eligibility.rs` | One named pid's start time, not a scan and not its `cmdline` or `environ`. |
+| `/proc/1/cgroup` and `/.dockerenv` in `docker::DockerDetector::is_in_docker`, and `docker info` in `is_running`, reached through `profile::docker_env_active` | Reached only when `AMPLIHACK_USE_DOCKER` is truthy. Decides whether Docker mode is active so that `profile run` can refuse it; a session already inside a container is not refused. Tests pass the answer directly to `reject_docker_mode(active)` in `profile/mod.rs` and `run::run_in_mode(store, name, args, docker_active)` in `profile/run.rs` (see `profile/tests_run.rs`), so they read no host file and need no Docker daemon. `run_in_mode` checks Docker before it touches the profile store. |
 | Governor and launch scans | Not reached by these tests. If one is, that call site alone moves to `proc_root()`. |
 
 Agent code is not in this table: `agent/pass.rs`, `register.rs` and
@@ -463,6 +767,14 @@ child's `TMPDIR` and links each process `live_process` starts.
 | A fake rotator reads as foreign | The entry has no `exe` link. | Add `.exe_link(<binary under test>)`. |
 | `rotate status` reports `Stale` for a daemon the test started | Its pid is not in the fake tree. | `fake.link_own(pid)` with the pid from the pid file. |
 | `process(pid)` panics | The pid is below `FAKE_PID_BASE`. | Use `FAKE_PID_BASE + n`. |
+| `running_session` panics | The pid is below `FAKE_PID_BASE`. | Use `FAKE_PID_BASE + n`. |
+| A lib test panics with `override_proc_root(<path>): <reason>` | The tree failed the checks in [A refused tree panics](#a-refused-tree-panics). | Build it with `FakeProc` under `std::env::temp_dir()`. |
+| A lib test does not see a session it seeded | The code ran on a thread with no override and read the empty shared default. | Install `proc_scope_at(&scope.fake)` inside a closure the test spawns. For a thread production code spawns, inject through `Ctx.scan` or a `*_at(proc_root, ..)` function. |
+| A lib test that reads its own pid fails | The shared default has no entry for the test's pid. | Pass `Path::new("/proc")` to the `*_at` variant, or add the pid with `FakeProc::link_own`. |
+| A lib test panics naming the shared default and a reason | The default could not be built or `check_tree` refused it. `check_tree` checks the created directory, not `std::env::temp_dir()`, so a `/tmp` at mode 1777 is accepted. The causes are: `TMPDIR` is missing or cannot be canonicalised; the directory cannot be created in it; or the created directory fails the owner or mode checks, as it can on a shared or network filesystem or where an ACL changes the mode. The panic names which. | Set `TMPDIR` to an existing local directory on a filesystem that keeps the owner and mode a directory is created with. |
+| stderr has `AMPLIHACK_TEST_PROC_ROOT ignored (..); reading the shared fake table` | A lib test, or the shell it ran from, set the variable to a tree `check_tree` refuses. | Unset it; lib tests use scopes, not the variable. |
+| A lib test reads a deleted tree or the wrong table after a nested scope | Guards were dropped out of order, so an inner guard restored an outer path that no longer exists. | Use one scope per test (`env()` or `fake_proc_scope()`, not both), and let guards drop at the end of their block. |
+| `Env` cannot be sent to a thread | `FakeProcScope` is not `Send`. | Borrow `&Env` under `std::thread::scope`. |
 
 ## Related
 
