@@ -5077,7 +5077,13 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
         .env("PATH", path)
         .env("TMPDIR", &tmpdir)
         .env("BASH_ENV", &bash_env)
-        .env("AMPLIHACK_MERGE_GUARD", "1");
+        .env("AMPLIHACK_MERGE_GUARD", "1")
+        // Record-only fixtures must override a parent driver's completion
+        // state even when the suite deliberately keeps inherited context.
+        .env(
+            "AUTODRIVE_COMPLETION_STATE",
+            root.join("target/unowned-completion-state-must-not-be-used.json"),
+        );
     if inherited != Inherited::Scrubbed {
         cmd.envs(context).env("AUTODRIVE_TEST_KEEP_INHERITED", "1");
     } else {

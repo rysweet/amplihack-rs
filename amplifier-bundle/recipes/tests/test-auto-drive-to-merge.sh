@@ -4542,7 +4542,10 @@ s6_run() { # s6_run <round-context-json> <fix-evidence-json> <verdict-json> [lab
   S6_REC="${d}/crusty-round-1.json"
   # Object outputs reach bash as RECIPE_VAR_<name> only (recipe-runner 0.3.8), so
   # that is all this sets; the upper-case names are removed from the environment.
+  # These record-only cases have no driver-owned completion context. Never
+  # seal against a parent workflow's inherited private state.
   env -u CRUSTY_ROUND_CONTEXT -u CRUSTY_FIX_EVIDENCE -u CRUSTY_VERDICT \
+    AUTODRIVE_COMPLETION_STATE="" \
     PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" RECIPE_VAR_crusty_round_context="$1" RECIPE_VAR_crusty_fix_evidence="$2" RECIPE_VAR_crusty_verdict="$3" \
     AUTODRIVE_LAUNCH_TOOLS="${TOOLS}" AUTODRIVE_ROUND_RECORD="${S6_REC}" AUTODRIVE_ROUND_LABEL="${4:-round-1}" \
     bash -c "${S6_BODY}" >"${d}.out" 2>"${d}.err"; S6_RC=$?
