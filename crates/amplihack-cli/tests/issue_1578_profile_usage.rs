@@ -945,11 +945,20 @@ fn no_ledger_is_quiet_and_marks_nothing_live() {
     let (rows, stderr) = f.json(&["profile", "usage", "--json"]);
     assert!(rows.iter().all(|r| r["live_in"].is_null()));
     assert!(warning_lines(&stderr).is_empty(), "{stderr}");
-    // c is probed through its own directory, not ~/.claude. The fake
-    // `claude` does not check for a login, so its canned 5% comes back.
+    // c is read through its own directory, not ~/.claude. That directory
+    // has no credentials file, so on Linux (issue #2271) it reads as not
+    // signed in without starting `claude`; elsewhere `claude` is started
+    // there, and the fake, which does not check for a login, answers 5%.
     let c = rows.iter().find(|r| r["profile"] == "c").unwrap();
-    assert_eq!(c["session"]["used_percentage"], 5.0);
-    assert!(f.records.join("env.c").exists());
+    if cfg!(target_os = "linux") {
+        assert_eq!(c["state"], "not_logged_in", "{c}");
+        assert_eq!(c["source"], "direct", "{c}");
+        assert_eq!(c["error"], "direct read: no credentials file", "{c}");
+        assert!(!f.records.join("env.c").exists());
+    } else {
+        assert_eq!(c["session"]["used_percentage"], 5.0);
+        assert!(f.records.join("env.c").exists());
+    }
     assert!(!f.records.join("env..claude").exists());
 }
 

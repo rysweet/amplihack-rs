@@ -11,7 +11,8 @@ use std::io::Write;
 /// so its cause goes to stderr (the daemon's `rotate.err`); the text is fixed
 /// and never Claude's output. Both read `Failed`: never a target and never
 /// exhausted, and probed again next cycle. Both are also unknown, which
-/// blocks a move onto overflow. A profile directory refused just before the
+/// holds a move onto overflow. A profile with no login (issue #2271) is not:
+/// see [`reading_to`]. A profile directory refused just before the
 /// spawn is no exception (issue #1698): that login may have capacity. From
 /// the next cycle the profile is skipped as `directory refused` before any
 /// probe, and that skip holds the move until the directory is fixed.
@@ -21,7 +22,9 @@ pub(in crate::commands::profile::rotate) fn reading(who: &str, p: &Probe) -> Pro
 
 /// [`reading`] with its warnings written to `err`; a failed write panics, as
 /// `eprintln!` does. A profile with no login (`NotSignedIn`, issue #2271)
-/// reads `Failed`, so it is never chosen, but writes no warning.
+/// reads what the old `claude` fallback read, a known `not_logged_in`:
+/// `Failed`, so it is never chosen, but not unknown, so it does not hold the
+/// move onto overflow. It writes no warning.
 pub(super) fn reading_to(who: &str, p: &Probe, err: &mut dyn Write) -> Probed {
     const ERR: &str = "failed printing to stderr";
     // SR-10: logged whether or not the row fell back to `claude`.
@@ -29,7 +32,7 @@ pub(super) fn reading_to(who: &str, p: &Probe, err: &mut dyn Write) -> Probed {
         writeln!(err, "{}", usage_cmd::not_saved_warning(who)).expect(ERR);
     }
     if matches!(p.error, Some(ErrorReason::NotSignedIn(_))) {
-        return Probed::failed();
+        return Probed::from_report(&p.report);
     }
     if p.error.is_some() || p.report.state == UsageState::Error {
         let why = p

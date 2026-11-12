@@ -458,9 +458,12 @@ under `auto` or `text`, is shown as before, with the `(fallback)` mark.
 The [rotator](#rotate-decision-rule) uses the same reads, so it also starts
 no `claude` for a login with no token. It treats the row as it treats any
 `not_logged_in` result: never a target, and `<name>:failed` in the cycle
-line. It writes no `warning: rotate: probe of <name> failed` line for it,
-to stderr or to `rotate.err`, so an unused profile does not add a line to
-every cycle. The verdict is read-only: no login is written, refreshed, moved
+line. Like any `not_logged_in` result, and unlike a probe that timed out,
+it is not unknown, so it does not hold the move onto
+[overflow](#rotate-overflow) profiles. It writes no
+`warning: rotate: probe of <name> failed` line for it, to stderr or to
+`rotate.err`, so an unused profile does not add a line to every cycle. The
+verdict is read-only: no login is written, refreshed, moved
 or removed because of it.
 
 ##### Usage credits on

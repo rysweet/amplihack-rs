@@ -7,9 +7,12 @@
 //!   to `err`. `reading(who, p)` is `reading_to(who, p, &mut io::stderr())`,
 //!   so the daemon's `rotate.err` is unchanged for every other probe.
 //! - A probe whose error is `ErrorReason::NotSignedIn(_)` (built by
-//!   `Probe::not_signed_in`) reads exactly `Probed::failed()`: `Failed`,
-//!   unknown, no windows, `headroom()` of `None`. The rotator therefore never
-//!   chooses it, never counts it as exhausted, and reads it again next cycle.
+//!   `Probe::not_signed_in`) reads a known `not_logged_in`, as the `claude`
+//!   fallback did before: `Failed`, not unknown, no windows, `headroom()` of
+//!   `None`. The rotator therefore never chooses it, never counts it as
+//!   exhausted, reads it again next cycle, and does not let it hold the move
+//!   onto overflow (`tests_overflow.rs`). Only a failed or timed-out probe is
+//!   unknown.
 //! - It writes nothing to `err`: no `warning: rotate: probe of <who> failed`
 //!   line, since a profile with no login to use is not a failed probe.
 //! - Every other failure still writes its line: an error row writes
@@ -59,8 +62,10 @@ fn timed_out() -> Probe {
 fn a_not_signed_in_probe_reads_failed_with_no_headroom() {
     for why in SIGNED_OUT {
         let (p, _) = read("nosign", &Probe::not_signed_in(why));
-        assert_eq!(p, Probed::failed(), "{why}");
         assert_eq!(p.reading, Reading::Failed, "{why}");
+        assert!(!p.unknown, "{why}: a known not_logged_in, not unknown");
+        let before = Probed::from_report(&UsageReport::empty(UsageState::NotLoggedIn));
+        assert_eq!(p, before, "{why}: what the claude fallback read");
         assert_eq!(p.reading.headroom(), None, "{why}: never a target");
         assert_eq!(p.windows, Windows::default(), "{why}");
         assert!(!p.spend_limit, "{why}");
@@ -94,6 +99,7 @@ fn a_failed_probe_still_writes_its_warning() {
 fn a_timed_out_probe_still_writes_its_warning() {
     let (p, err) = read("slow", &timed_out());
     assert_eq!(p.reading, Reading::Failed);
+    assert!(p.unknown, "a timed-out probe stays unknown");
     assert_eq!(err, "warning: rotate: probe of slow timed out\n");
 }
 

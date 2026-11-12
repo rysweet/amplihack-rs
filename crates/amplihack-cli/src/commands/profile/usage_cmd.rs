@@ -624,8 +624,9 @@ fn print_empty(output: Output, time: &TimeView, codex: Option<CodexRead>) {
 }
 
 /// Flushes stdout so that its lines are out before anything that follows
-/// on stderr or blocks. A failure (a closed pipe) is logged; the next
-/// write reports it the usual way.
+/// on stderr or blocks. A broken stdout is reported by the next write to
+/// it (`println!` panics on a closed pipe), so a flush error is only
+/// logged here.
 fn flush_stdout() {
     use std::io::Write;
     if let Err(e) = std::io::stdout().flush() {

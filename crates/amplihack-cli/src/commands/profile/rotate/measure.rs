@@ -19,6 +19,8 @@ use std::hash::Hash;
 use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
+// `probe_reading` belongs to `measure`; it has its own file to keep
+// `measure.rs` under the line budget.
 #[path = "probe_reading.rs"]
 mod probe_reading;
 #[cfg(test)]

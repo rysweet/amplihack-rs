@@ -688,6 +688,33 @@ fn a_lasting_plan_failure_does_not_block_overflow() {
     }
 }
 
+/// Issue #2271: a plan profile with no login is read without starting
+/// `claude`. It is a known `not_logged_in`, as the `claude` fallback read
+/// it before, so it does not hold the move onto credits; a timed-out plan
+/// probe still does.
+#[test]
+fn a_not_signed_in_plan_profile_does_not_hold_overflow() {
+    use crate::commands::profile::usage_direct::reason;
+    let case = |spare: Probed| {
+        Case::new("work", exhausted(FAR, FAR))
+            .cand("spare", spare)
+            .cand("extra", exhausted(FAR, FAR))
+            .cand("cred", exhausted(None, None))
+            .overflow(&["cred"])
+            .run()
+    };
+    for why in [reason::NO_TOKEN, reason::NO_REFRESH_TOKEN, reason::NO_FILE] {
+        let spare = reading("spare", &Probe::not_signed_in(why));
+        assert!(!spare.unknown, "{why}");
+        let v = case(spare);
+        assert_eq!(v.decision, swap("cred", Reason::OverflowIn), "{why}");
+        assert_eq!(v.tag, Some(Tag::In), "{why}");
+    }
+    let v = case(timed_out());
+    assert_eq!(v.decision, Decision::Alert, "a timed-out probe still holds");
+    assert_eq!(v.tag, None);
+}
+
 #[test]
 fn a_refused_plan_profile_directory_blocks_overflow() {
     // A directory refused just before the spawn reads `error`; that login
