@@ -167,10 +167,9 @@ steps:
     prompt: |
       # merge-ready assessment — PR #{{platform_facts.pr}} ({{autodrive_round_label}})
 
-      The `merge-ready` skill sets `disable-model-invocation: true`, so it is
-      read here as files instead of invoked. Read both in full, apply their
-      criteria, and cite the SKILL.md path in your evidence:
-      `{{merge_ready_files.skill_md}}` and `{{merge_ready_files.template}}`.
+      The `merge-ready` skill sets `disable-model-invocation: true`, so it is read here as files
+      instead of invoked: read its SKILL.md (named below) and `{{merge_ready_files.template}}` in
+      full, apply their criteria, and cite the SKILL.md path in your evidence.
 
       Do not create, edit, move, rename, delete or archive any file in the
       auto-drive state directory (the directory holding crusty-round-*.json,
@@ -327,12 +326,15 @@ steps:
         nothing there; report `gadugi-scenario-dir-outside-repo`.
       - **`qa-unresolved`**, **`qa-config-invalid`**: operator action, not a code fix: set
         AUTODRIVE_QA_COMMAND or fix/add .amplihack/qa.toml; keep the blocker.
-      - **`gadugi-test-missing`**: only a person can install `gadugi-test`. Do not install, stub or work around it; keep this blocker in your report.
-      - **`quality-audit-convergence-crusty-not-done-clean`**: do not run a quality-audit in its place. Fix any crusty concern still open and keep
+      - **`gadugi-test-missing`**: only a person can install `gadugi-test`. Do
+        not install, stub or work around it; keep this blocker in your report.
+      - **`quality-audit-convergence-crusty-not-done-clean`**: do not run a
+        quality-audit in its place. Fix any crusty concern still open and keep
         this blocker in your report.
-      - **`crusty-review-required`** and **`crusty-range-unreadable`**: do not try to clear them. Before the next round the merge-ready loop sends
-        unreviewed commits to crusty, so every code commit you make costs one crusty run; an unreadable range (a shallow clone, a git error) needs a
-        person.
+      - **`crusty-review-required`** and **`crusty-range-unreadable`**: do not
+        try to clear them. The loop sends unreviewed commits to crusty before
+        the next round, so each code commit costs a crusty run; an unreadable
+        range (a shallow clone, a git error) needs a person.
       - **`approval-pending-other-blockers`** and **`approval-facts-unreadable`**: not a request for a person yet.
         Clear the other blockers first: failing or pending CI, a conflict, a branch behind its base,
         unresolved review threads (outdated ones included: `unresolved_threads` counts them). The next
@@ -372,13 +374,10 @@ steps:
       git push || { echo "STOP: the push failed (#1528)" >&2; exit 1; }
       ```
 
-      If the artifact guard objects, before or after staging, remove the
-      artifact rather than silencing it. Stage only through the block: never
-      stage ignored files or anything under `worktrees/` (staging one records a
-      gitlink to another checkout, #1528); never force a path past `.gitignore`
-      or a guard refusal. If a hook fails, fix the cause. Never reach for a flag
-      that skips hooks, nor for a branch-protection bypass at merge time. Both
-      are prohibited here without exception.
+      If the artifact guard objects, before or after staging, remove the artifact rather than
+      silencing it. Stage only through the block: never stage ignored files or anything under
+      `worktrees/` (staging one records a gitlink to another checkout, #1528); never force a path
+      past `.gitignore` or a guard refusal. If a hook fails, fix the cause; never skip a hook.
     output: "merge_ready_fixes"
   # The round record (verdict, head_sha, qa/CI signals, qa_evidence_sha; #1517 D5): round-record.
   - id: "step-05-write-round-record"

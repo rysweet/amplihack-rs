@@ -29,20 +29,44 @@ evaluator exists to do.
 
 `classify_failure_text` is a pure function: evidence text in, class out. It is
 unit-tested in isolation
-(`crates/amplihack-cli/src/commands/recipe/run/tests_failure_class.rs`).
+(`crates/amplihack-cli/src/commands/recipe/run/tests_failure_class.rs`, and
+`tests_failure_class_1437.rs` for `agent_api` and `structural_refusal`).
+The marker tables live in `failure_markers.rs` beside it, except the
+usage-limit markers, which live in `limit_patterns.rs` (#1618); the evidence
+helpers are in `failure_evidence.rs`, and `failure_class.rs` holds the decision
+and the marker writer.
 
 | Class                 | Examples                                                                                  | Retried by code? |
 | --------------------- | ----------------------------------------------------------------------------------------- | ---------------- |
 | `transient_transport` | `API Error: 529`, 503, 502, 500, 429, `overloaded_error`, `rate_limit_error`, `ECONNRESET`, `socket hang up`, `request timed out` | **Yes**, bounded |
 | `usage_limit`         | `session limit`, `5-hour limit`, `usage limit`, `weekly limit`, `spend limit`; see [Usage-limit markers](#usage-limit-markers) | No               |
-| `environmental`       | 401/403, `invalid x-api-key`, `command not found`, `no space left on device`                | No               |
-| `work`                | `test result: FAILED`, `assertion failed`, `panicked at`, `error[E0308]`, `merge conflict`, a `BLOCKED_TERMINAL` policy refusal | No               |
-| `indeterminate`       | nothing in the evidence identifies the failure                                              | No               |
+| `environmental`       | 401/403, `invalid x-api-key`, `API Error: 404`, `404 Not Found`, `not_found_error`, `model_not_found`, `command not found`, `no space left on device` | No               |
+| `work`                | `test result: FAILED`, `assertion failed`, `panicked at`, `error[E0308]`, `merge conflict`, a failed step terminating with exit `79` | No               |
+| `agent_api`           | `Execution failed: 400`, `Execution failed: 404`, `The resource you requested was not found`, `API Error: 400`, `400 Bad Request`, `invalid_request_error`, `session not found`, `conversation not found` | No               |
+| `indeterminate`       | nothing in the evidence identifies the failure; or a transport marker in evidence that also quotes the guard's line (see [the retry veto](#quoted-guard-text-vetoes-a-retry)) | No               |
 
-Two rules matter more than the tables:
+Six rules matter more than the tables:
 
 - **401 and 403 are not transient.** They are stable server answers. Retrying
   them burns the budget and can never succeed, so they are `environmental`.
+- **An agent endpoint rejection is `agent_api`, not `indeterminate`** (issue
+  #1437). `Execution failed: 400 The resource you requested was not found`
+  names its own cause. It is not retried mechanically, because the identical
+  request gets the identical rejection, and it is not a policy refusal: a
+  supervising loop may start a fresh round.
+- **A 404 that names an unknown model is `environmental`, not `agent_api`**
+  (issue #1421). `API Error: 404`, `404 Not Found`, `not_found_error` and
+  `model_not_found` are environmental markers, and environmental markers are
+  checked before agent-API markers, so the same evidence never gets two
+  classes depending on which phrase a provider used.
+- **A policy refusal requires the reserved terminating status `79`.** The
+  guard's phrase, even in full, can be quoted from a descendant refusal the
+  agent already handled inline. Captured text cannot set
+  [`structural_refusal`](#the-structural_refusal-field).
+- **Quoted guard text cannot refuse, but it does stop a retry.** A failed
+  step whose evidence quotes `BLOCKED_TERMINAL orchestration_unavailable`
+  is never `transient_transport`; see
+  [Quoted guard text vetoes a retry](#quoted-guard-text-vetoes-a-retry).
 - **Ambiguity resolves toward not retrying.** When the same evidence carries a
   work marker *and* a transient marker, the verdict is `work`. A missed retry
   costs one run; an unbounded retry of an impossible step costs the whole budget
@@ -125,9 +149,10 @@ its table there.
   usage-limit wait ever writes an overflow block: only the rotator's probe
   does (see [Overflow spend-limit block](./profile-command.md#overflow-spend-limit-block)).
 - **Checked after work and environmental, before transient.** The order is
-  `work` → `environmental` → `usage_limit` → `transient_transport`, and the
-  first class with a match wins. A usage-limit marker inside a 429 envelope is
-  still `usage_limit`, and `weekly limit` text cannot hide a real test failure.
+  `work` → `environmental` → `usage_limit` → `agent_api` →
+  `transient_transport` → `indeterminate`, and the first class with a match
+  wins. A usage-limit marker inside a 429 envelope is still `usage_limit`, and
+  `weekly limit` text cannot hide a real test failure.
 - **`daily limit` is not a marker.** Provider and GitHub API daily request
   quotas use the same phrase. Filing those as `usage_limit` would stop retrying
   failures that clear on their own.
@@ -175,7 +200,7 @@ retry never runs against state the previous attempt corrupted.
 Every classification decision writes a greppable single-line marker to stderr:
 
 ```
-amplihack.recipe.failure_class {"schema_version":1,"issue":1267,"class":"transient_transport","signal":"api error: 529","reasoning":"classified `transient_transport` — evidence contains \"api error: 529\"","action":"retry","attempt":1,"retryable":true,"failed_steps":["step-12-run-precommit"],"completed_steps":["workflow-prep","workflow-worktree"],"evidence":"..."}
+amplihack.recipe.failure_class {"schema_version":1,"issue":1267,"class":"transient_transport","signal":"api error: 529","reasoning":"classified `transient_transport` — evidence contains \"api error: 529\"","action":"retry","attempt":1,"retryable":true,"structural_refusal":false,"failed_steps":["step-12-run-precommit"],"completed_steps":["workflow-prep","workflow-worktree"],"evidence":"..."}
 ```
 
 `action` is one of `retry`, `terminal`, or `terminal_budget_exhausted`. The
@@ -186,6 +211,146 @@ marker that a run ended abnormally.
 ```sh
 grep amplihack.recipe.failure_class run.log | jq -r '.class + " " + .action'
 ```
+
+### The `structural_refusal` field
+
+`structural_refusal` is a JSON boolean, never a string. It is `true` only when
+an unsuccessful step's terminating error header records the reserved exit code
+`79`. The runner decodes the pinned runner's error envelope
+(recipe-runner-rs `90286bc`), anchored at the start of `error`, before
+diagnostics. It does not search captured stdout, stderr or diagnostic text
+for refusal phrases or embedded exit-code references. The class is then
+`work`, and the failure is never mechanically retried. The decoder is
+`termination.rs`.
+
+```text
+Command failed (exit 79): <any diagnostics>                  -> true, work
+amplihack copilot failed (exit 79)                            -> true, work
+Command failed (exit 1): BLOCKED_TERMINAL orchestration_unavailable -> false
+quoted guard phrase followed by Execution failed: 400        -> false, agent_api
+```
+
+#### Sub-recipe steps
+
+An in-process `type: recipe` step (for example `autodrive-merge-loop` and
+`autodrive-crusty-loop` inside `auto-drive-to-merge`) fails with a different
+envelope. The step id is in Rust `Debug` form (double quotes), and the runner
+lists the sub-recipe's failed steps after it:
+
+```text
+Step "autodrive-merge-loop" failed: Sub-recipe 'autodrive-merge-loop' failed.
+Failed steps:
+- step-02-merge-ready-loop [error]: Step 'step-02-merge-ready-loop' failed: bash step failed: Command failed (exit 79): ERROR: ...
+Completed steps: step-01-merge-loop-preflight
+```
+
+The decoder reads the header line, then **only the first** `- <id> [error]: `
+entry, which starts on the line right after `Failed steps:`, and decodes that
+entry's error with the same rules. It repeats this for each level, so the
+example above gives `79`, and so does `auto-drive-light` running
+`auto-drive-to-merge` running the merge loop. A header that ends `failed and
+agentic recovery was unsuccessful.` (a step with `recovery_on_failure`) is
+read the same way.
+
+No later entry is read. The first entry's error runs on into the step's
+stderr, so a later line that looks like `- x [error]: ... (exit 79)` can be
+anything that step printed. An entry marked `[output tail]` is captured output
+and is not read either. Both decode to no status.
+
+This leaves one known miss. If the sub-recipe's first failed step was
+non-fatal (`continue_on_error: true` or `fatal: false`) and a later step
+exited `79`, the decoder reads the first step's status, and
+`structural_refusal` is `false`. None of the shipped auto-drive loop recipes
+has a non-fatal step before its exit-79 step. The
+[retry veto](#quoted-guard-text-vetoes-a-retry) still keeps such a run from
+being retried when the guard's line is in the failed step's evidence. The
+runner reporting each step's exit code as a number would close the miss
+(issue #2490).
+
+#### When the runner pin moves
+
+The decoder matches text the runner writes, so a new runner revision can
+change that text and make every refusal decode to no status. To catch this,
+`tests_termination_contract.rs` takes the text from the pinned
+`recipe_runner_rs` crate itself rather than from a copy:
+
+- the `Step '<id>' failed: ` envelope from `models::StepExecutionError`'s
+  own `Display`, with an id that needs escaping (`a'b`);
+- the `Command failed (exit N): <stderr>` text from
+  `CLISubprocessAdapter::execute_bash_step`, running a real `exit 79`.
+
+If a pin bump changes either, those tests fail. Two pieces are still copied
+because the runner builds them in private code: the `bash step failed: `
+prefix and the sub-recipe header above. Issue #2490 removes the need for the
+decoder and for both copies.
+
+#### Quoted guard text vetoes a retry
+
+Text never sets `structural_refusal`. It can stop a retry. When any failed
+step's evidence (its `error`, output and captured stdout/stderr tails, read
+before truncation) contains `BLOCKED_TERMINAL orchestration_unavailable` in
+any case, and the text classes would make the run `transient_transport`, the
+class is `indeterminate` instead, with the guard's phrase as `signal` and
+`structural_refusal: false`:
+
+```text
+failed step: "amplihack copilot failed (exit 1)", stdout quotes the guard line, then "API Error: 529 Overloaded"
+-> class=indeterminate signal="blocked_terminal orchestration_unavailable" retryable=false structural_refusal=false
+```
+
+Without the veto, a refusal the decoder cannot see would be classified from
+whatever else is in the evidence. A `529` from an earlier round's tail would
+make it `transient_transport`, and the runner would re-run the whole recipe
+up to three times, straight into the guard. Only the transport class changes:
+`work`, `environmental`, `usage_limit` and `agent_api` are never retried
+anyway. The guard's whole phrase is required; the bare word
+`BLOCKED_TERMINAL` does not veto. A completed step's output and the runner's
+own stderr tail do not veto either: they hold refusals that descendants
+handled before a later, unrelated failure. When the runner produced no
+structured result, the veto reads the error chain.
+
+#### What reads which evidence
+
+`class` still reads the failed steps' diagnostics, run status and the last 40
+lines of the runner's stderr. `structural_refusal` reads only the failed
+steps' terminating status. Completed steps, captured transcripts, runner stderr
+and run status cannot set it. The decision is stored before combining and
+truncating diagnostic evidence to its 2,000-character bound. Eliding a failed
+step's header, or even its entire diagnostic when later runner stderr displaces
+it, cannot clear an exit-79 refusal or make it mechanically retryable.
+
+When the runner produced no structured result (a spawn failure, unparseable
+stdout, a runner that died before writing its JSON), the class comes from the
+error chain, which already includes the stderr tail. That evidence is not a
+failed step's own output, so on this path `structural_refusal` is always
+`false`, whatever the error says.
+
+The marker is serialised with `serde_json`. If serialisation fails the marker
+is `{}`, which a reader treats as no refusal unless the child exited `79`.
+
+A failed run writes the marker twice: when the failure is classified, and
+again, unchanged, as the run's last line after the result table. The table
+shows each step's output, and a multi-line output can put any text at the
+start of a line, including a line that looks like a marker; the second copy
+keeps the runner's own marker last.
+
+A supervising loop reads this field from the **last** marker in a child's log
+instead of searching the transcript. `autodrive_loop.sh` does so through
+`terminal_refusal` in
+[`autodrive_refusal.sh`](auto-drive-to-merge.md#autodrive_refusalsh), which
+treats a child as refused only when it exited `79` or its last marker has
+`"structural_refusal": true`:
+
+```bash
+. amplifier-bundle/tools/autodrive_refusal.sh
+if terminal_refusal 1 run.log; then echo "terminal: $TERMINAL_WHY"; else echo "not terminal"; fi
+# not terminal
+child_failure_summary 1 run.log
+# rc=1 class=agent_api retryable=false signal=execution failed: 400
+```
+
+The field was added without changing `schema_version`, the marker prefix or
+any existing key; a consumer that does not read it is unaffected.
 
 The same object is attached to the structured run result under
 `failure_classification`, so an agentic step consumes it as data rather than
@@ -210,7 +375,14 @@ undifferentiated `exit 1` is the point of this change.
 ## Source
 
 - `crates/amplihack-cli/src/commands/recipe/run/failure_class.rs`
+- `crates/amplihack-cli/src/commands/recipe/run/failure_evidence.rs`
+- `crates/amplihack-cli/src/commands/recipe/run/failure_markers.rs`
 - `crates/amplihack-cli/src/commands/recipe/run/limit_patterns.rs`
 - `crates/amplihack-cli/src/commands/recipe/run/retry.rs`
+- `crates/amplihack-cli/src/commands/recipe/run/termination.rs`
 - `crates/amplihack-cli/src/commands/recipe/run/tests_failure_class.rs`
+- `crates/amplihack-cli/src/commands/recipe/run/tests_failure_class_1437.rs`
+- `crates/amplihack-cli/src/commands/recipe/run/tests_termination.rs`
+- `crates/amplihack-cli/src/commands/recipe/run/tests_termination_contract.rs`
+- `crates/amplihack-cli/tests/issue_1437_final_marker.rs`
 - `crates/amplihack-utils/src/backoff.rs`

@@ -903,10 +903,13 @@ pub(super) fn execute_recipe_via_rust_fresh(
                 Err(error) => return AttemptOutcome::Final(Err(error)),
             };
             let mut stderr_tail = String::new();
+            // Cloned so no RefCell borrow is held across the attempt.
+            let run_dir = workspace.borrow().run_dir().map(Path::to_path_buf);
             let attempt_result = spawn_with_streaming_stderr(
                 command,
                 correlation,
                 recipe_path,
+                run_dir.as_deref(),
                 timeout,
                 &guard.tree_id,
                 &mut stderr_tail,
@@ -1091,6 +1094,7 @@ fn spawn_with_streaming_stderr(
     mut command: Command,
     correlation: RecipeRunCorrelation,
     recipe_path: &Path,
+    run_dir: Option<&Path>,
     timeout: Duration,
     tree_id: &str,
     stderr_sink: &mut String,
@@ -1128,10 +1132,10 @@ fn spawn_with_streaming_stderr(
             });
         }
     }
-    correlation.emit_early();
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
+            correlation.emit_early();
             return Err(fail_with_final_record(
                 &correlation,
                 RecipeRunFinalStatus::SpawnFailure,
@@ -1142,6 +1146,27 @@ fn spawn_with_streaming_stderr(
         }
     };
     let child_pid = Some(child.id());
+    // Issue #2175: the record `recipe stop <run_id>` finds this attempt's
+    // processes by, written before `early` so a run id seen there always has
+    // one. Held for this attempt only: dropping the guard on any return
+    // removes it. A dry run has no run folder and writes none.
+    #[cfg(target_os = "linux")]
+    let _run_record = run_dir.and_then(|dir| {
+        match super::super::run_record::write(dir, correlation.run_id(), child.id()) {
+            Ok(guard) => Some(guard),
+            Err(error) => {
+                eprintln!(
+                    "amplihack: warning: recipe run {:?} wrote no process record, so \
+                     `amplihack recipe stop` cannot stop it by run id: {error:#}",
+                    correlation.run_id()
+                );
+                None
+            }
+        }
+    });
+    #[cfg(not(target_os = "linux"))]
+    let _ = run_dir;
+    correlation.emit_early();
 
     let captured_stderr: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let dropped_stderr_lines: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));

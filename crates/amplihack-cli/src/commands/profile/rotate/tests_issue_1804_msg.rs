@@ -224,6 +224,7 @@ fn snap_on_unmarked_key() -> Snap {
         detected_mark: None,
         home_no_oauth: true,
         candidate_accounts: Vec::new(),
+        live_excluded: false,
     }
 }
 

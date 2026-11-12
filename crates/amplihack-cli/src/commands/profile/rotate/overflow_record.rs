@@ -330,6 +330,13 @@ pub fn alert_line(
     key_held: &[ProfileName],
     reason: impl FnOnce() -> String,
 ) -> (&'static str, String) {
+    // Issue #2218: an excluded live login with no profile to move to. It
+    // was not measured, so the reason is the exclusion, not its room.
+    if snap.live_excluded
+        && let LiveId::Known(n) = &snap.live
+    {
+        return ("excluded-live", msg::alert_excluded_live(n));
+    }
     if !key_held.is_empty() {
         let name = live_name(&snap.live).map_or("-", ProfileName::as_str);
         return ("key-held", msg::alert_key_held(name, key_held));
