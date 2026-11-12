@@ -1,8 +1,8 @@
 ---
 title: Keep Tests Passing Under Host Load
 type: howto
-updated: 2026-11-11
-related: issue #1973, issue #1765, issue #1961, issue #2019, issue #1977, issue #1998, issue #2036, issue #2017
+updated: 2026-11-12
+related: issue #1973, issue #1765, issue #1961, issue #2019, issue #1977, issue #1998, issue #2036, issue #2017, issue #2194
 ---
 
 # Keep Tests Passing Under Host Load
@@ -434,9 +434,11 @@ pub struct SystemClock;
 ```
 
 No environment variable, global or config setting selects a clock. Production
-code always passes `SystemClock`, and no fake ships in a library. Each test
-module that needs a fake defines its own. A `*_with(.., clock)` function
-takes all of its time from the clock it is given.
+code always passes `SystemClock`, and no fake ships in a library. The test
+fakes are in one shared file, described under
+[Frozen and advancing fakes](#frozen-and-advancing-fakes). A
+`*_with(.., clock)` function takes all of its time from the clock it is
+given.
 
 These seams take a clock:
 
@@ -444,7 +446,7 @@ These seams take a clock:
 |------|--------------|-----------|
 | `amplihack_utils::secure_files` lock wait | `lock_exclusive_timeout(file, timeout)` calls the `_with` form with `&SystemClock` | `lock_exclusive_timeout_with(file, timeout, &clock)` |
 | `amplihack_hooks::limit_resume::guard::FsGuard` | `FsGuard::new(root)` uses `LOCK_TIMEOUT` (5 s) and `SystemClock`; `with_lock_timeout(root, t)` uses `SystemClock` | `FsGuard::with_clock(root, timeout, Arc::new(clock))` |
-| `amplihack-cli` `profile::usage_direct` read and refresh | `read(ep, req)` and `refresh_expired(ep, req)` pass `Ctx::system()`: `SystemClock` and the process-wide refresh counter | `read_with(ep, req, &ctx)` and `refresh_expired_with(ep, req, &ctx)`, where `ctx` is `Ctx::new(&clock, &refreshing)` |
+| `amplihack-cli` `profile::usage_direct` read and refresh | `read(ep, req)` and `refresh_expired(ep, req)` pass `Ctx::system()`: `SystemClock` and the process-wide refresh counter | `read_with(ep, req, &ctx)` and `refresh_expired_with(ep, req, &ctx)`, where `ctx` is `Ctx::new(&clock, &counter, HANG_GUARD)` |
 | `amplihack-cli` `profile::usage_direct` stop path | `wait_for_refreshes(limit)` calls `wait_for_refreshes_on(&REFRESHING, limit, &SystemClock)` | `wait_for_refreshes_on(&counter, limit, &clock)` |
 
 On non-unix targets `lock_exclusive_timeout` and its `_with` form return
@@ -464,23 +466,34 @@ tests pin each one:
 
 ### Frozen and advancing fakes
 
-A fake keeps virtual time as a base `Instant` plus an `AtomicU64` offset in
-nanoseconds. No third-party crate is used. There are three kinds:
+The fakes are in one file, `crates/amplihack-cli/tests/support/virtual_clock.rs`.
+`amplihack-cli` lib tests reach it as `test_support::virtual_clock`. The
+`amplihack-utils` and `amplihack-hooks` tests include it with `#[path]`, the
+same way they include `wait.rs`. Use them rather than writing another fake
+with the same behaviour in a test module; a clock with a behaviour of its
+own, such as `tests_daemon`'s `ReportsFirstWait`, stays with its test. No
+third-party crate is used.
 
 | Fake | `now()` | `sleep(d)` | Use it when |
 |------|---------|------------|-------------|
-| Advancing | base + offset | adds `d` to the offset and returns at once | the rule under test is about time, such as "a commit fails only after 5 s" |
-| Frozen | base + offset | calls `std::thread::yield_now()`, and leaves the offset alone | elapsed time is not the subject, and a slow host must not run a deadline out |
-| `PanicOnSleep` | base + offset | panics | the code under test must return without waiting at all |
+| `VirtualClock` | base + offset | records `(virtual start, d)`, adds `d` to the offset, runs the `on_sleep` hook and returns at once | the rule under test is about time, such as "a commit fails only after 5 s" |
+| `FrozenClock` | base, always | sleeps `d` for real | elapsed time is not the subject, and a slow host must not run a deadline out |
+| `PanicOnSleep` | base, always | panics | the code under test must return without waiting at all |
 
-A test can also call `advance(d)` on the advancing and frozen fakes to move
-virtual time from a fake HTTP handler, so "the token endpoint took 300 ms"
-costs no real time.
+`VirtualClock::advance(d)` moves virtual time without a sleep. A fake HTTP
+handler calls it, so "the token endpoint took 300 ms" costs no real time.
+`VirtualClock::on_sleep(f)` runs `f` after each sleep with the number of
+sleeps so far and the virtual time reached. A test uses it to make an event
+happen at a known point of virtual time: `limit_resume_fs` drops a held lock
+at 4.9 s, and `tests_wait_for_refreshes` drains its counter after a given
+poll.
 
-The frozen fake's `sleep()` yields instead of sleeping. Under contention a
-lock wait spins on `yield_now` for as long as another thread holds the lock.
-That holder's critical section is short and bounded, so the spin is too; the
-fake's doc comment says so.
+`FrozenClock::sleep` sleeps for real; it does not yield. Racing threads that
+lose a lock each sleep the 100 ms retry interval between tries while the
+winner commits, so they use no CPU, even when the winner's `fsync` takes
+seconds on a loaded disk. A thread spinning on `yield_now` would add the load
+these tests are meant to survive. The sleep is a pause between tries, not a
+deadline: the clock's time never moves, so no wait can time out.
 
 A frozen clock makes a lock wait unbounded, because virtual time never reaches
 the timeout. That is why `FsGuard::with_clock` is documented as test-only, and
@@ -497,19 +510,22 @@ advancing clock:
 assert_eq!(LOCK_TIMEOUT, Duration::from_secs(5));
 assert_eq!(FsGuard::new(root).lock_timeout(), LOCK_TIMEOUT);
 
-let clock = AdvancingClock::new(); // an Arc
+let clock = VirtualClock::shared(); // an Arc
 let mut g = FsGuard::with_clock(root, LOCK_TIMEOUT, clock.clone());
 assert!(matches!(g.commit(/* .. */), Err(CommitError::Io)));
 
-// Still waiting at 4.9 s: a retry began at or after 4.9 s.
-let (last_start, _) = *clock.sleeps.lock().unwrap().last().unwrap();
-assert!(last_start >= Duration::from_millis(4900) && last_start < LOCK_TIMEOUT);
-// Gave up only once virtual time reached 5 s.
+// The last retry began before 5 s of virtual time.
+let (last_start, _) = *clock.sleeps().last().unwrap();
+assert!(last_start < LOCK_TIMEOUT);
+// Gave up only once virtual time reached 5 s, and within one retry of it.
 assert!(clock.elapsed() >= LOCK_TIMEOUT);
+assert!(clock.elapsed() < LOCK_TIMEOUT + Duration::from_millis(100));
 ```
 
 No real time passes, and the old assertion that the failure took between
-4.5 s and 8 s of real time is gone.
+4.5 s and 8 s of real time is gone. Two more tests use `on_sleep` to let the
+holder go: at 4.9 s of virtual time the commit takes the lock, and a holder
+that would let go only after 5 s is given up on.
 
 ### Racing threads
 
@@ -525,7 +541,9 @@ channel. The test collects them with `recv_timeout(CEILING)` and asserts:
 The last check replaces the old `start.elapsed() < 3 s`. Its purpose was to
 prove that no racer waited out the lock timeout; asserting that no racer
 timed out proves the same thing, and with a frozen clock a timeout cannot
-happen by accident. The racers contain no real sleep.
+happen by accident. A loser sleeps the lock's 100 ms retry interval for real
+between tries, which bounds nothing: only the winner releasing the lock ends
+its wait.
 
 ### Deadlines in `usage_direct`
 
@@ -539,7 +557,7 @@ instead of sleeping, and assert the outcome, never the elapsed time.
 Logical deadline tests use `FakeHttp::scripted` through `Ctx::with_transport`.
 The script records the same requests and returns HTTP responses directly,
 without a listener, DNS lookup, socket, or worker scheduling. It advances
-`FakeClock` at each response. The late refresh test injects a transport timeout
+the `VirtualClock` at each response. The late refresh test injects a transport timeout
 after recording the POST, proving that an abandoned rotation leaves credentials
 untouched and releases the lock. The shared deadline test still saves the
 rotation and refuses the retry GET once the logical budget is spent.
@@ -563,7 +581,7 @@ Each test passes its own counter:
 
 ```rust
 let counter = AtomicUsize::new(0);
-let clock = FakeClock::new(); // moves only through advance()
+let clock = VirtualClock::shared(); // moves only through advance() or sleep()
 let req = request_guarded(&login, &[], true);
 
 let r = read_with(&endpoints(&fake), &req, &Ctx::new(&*clock, &counter, HANG_GUARD));
@@ -573,8 +591,17 @@ assert_eq!(counter.load(Ordering::SeqCst), 0);
 
 `read_uses_the_process_wide_counter` pins the default path: it calls `read()`
 with a gated handler and asserts that `refreshes_in_progress()` is at least
-1 before it opens the gate. `wait_for_refreshes` has a matching test that
-pins it to `REFRESHING`.
+1 before it opens the gate. `wait_for_refreshes(limit)` is
+`wait_for_refreshes_on(&REFRESHING, limit, &SystemClock)`; the
+`rotate::tests_daemon` case below waits on that process-wide count.
+
+Every other read in `tests_usage_direct` runs on a clock that does not move
+(`run_with`, `read_frozen`), so a loaded host cannot use up its deadline
+before the fake answers. A longer real deadline is not the fix. The one
+test whose deadline must run out in real time,
+`a_stalled_server_is_a_timeout_within_the_deadline`, holds its server at a
+gate until the read has returned, so it passes however late the deadline
+fires.
 
 ### `wait_for_refreshes_on`
 
@@ -786,8 +813,9 @@ capture path. The exit wait reads each pipe once per wake, so a grandchild
 that writes without pause cannot hold it away from the exit check. Once the
 child has exited it reads, once, the bytes each pipe holds at that moment
 (`FIONREAD`) and returns, without waiting for an EOF a grandchild may
-withhold. Folding the two functions into one is left to a follow-up issue,
-because it would change the release capture path that every launch uses.
+withhold. Folding the two functions into one, and removing the knob, are
+tracked in [#2194](https://github.com/rysweet/amplihack-rs/issues/2194),
+because the fold changes the release capture path that every launch uses.
 
 `AMPLIHACK_TEST_PROBE_WAIT` is a test-only knob and exists only in debug
 builds. Do not set it in a shell: with it set, a debug `amplihack` has no
@@ -796,7 +824,9 @@ hangs the launch.
 
 `isolated(..)` sets the knob on every child after `env_clear`, in both
 `tests/support/isolated_amplihack.rs` and the `amplihack-cli` test support,
-without widening its allow-list. These tests depend on it:
+without widening its allow-list. Making it opt-in per fixture is also
+tracked in [#2194](https://github.com/rysweet/amplihack-rs/issues/2194).
+These tests depend on it:
 
 | Test | Cause confirmed |
 |------|-----------------|
@@ -842,9 +872,14 @@ directory behind.
 The timeout fixtures block on shell builtin FIFO reads. Their
 `unix_process::FifoWorker` runs the executor on a worker thread and receives
 its result with `recv_timeout(CEILING)`, independently of the product's
-one-second timeout. Passing requires a "timed out" error; the process-tree
-test also waits for every process carrying its unique exec-time environment
-token to disappear and asserts that the orphan marker is absent.
+one-second timeout. Passing requires a "timed out" error. In the Linux
+process-tree test, the runner fixture writes its own pid and its
+descendant's before it writes `ready`. Both then block on the FIFO, so the
+test opens a pidfd for each while they are known to be alive (`runner_tree`),
+before it lets virtual time reach the timeout. It then waits on both pidfds
+with `wait_pid_gone` and asserts that the orphan marker is absent. It does
+not list `/proc`: `test_support_proc_guard` (#2196) rejects lib tests that
+read the host process table.
 
 The supervisor opens nonblocking read and write handles before starting the
 worker, and writes nothing until drop. It stays alive through the descendant
@@ -857,6 +892,15 @@ before the runner does. Drop waits up to `CEILING` for an outstanding worker
 to return before restoring the test's environment and removing its tempdir;
 a worker still stuck after cleanup is reported without an unbounded join.
 There is no `done` file or elapsed-time pass threshold.
+
+Tests that also need the executor's clock use `test_runner::RunnerWorker`.
+It runs the work on a `FifoWorker`, so the FIFO release and the join are the
+same code, and installs a test-only control for the executor's wait: a
+cancel flag that drop sets before the FIFO is released, and, when asked for,
+virtual time. `time_out_after_ready(what, ready)` waits for the executor's
+first clock read and for `ready`, then moves virtual time on by the timeout
+the executor reads (`recipe_runner_timeout()`). The test sets
+`AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` once, and the advance follows it.
 
 ### Teardown leaves no orphan
 
@@ -1033,6 +1077,10 @@ review the behavior and synchronization of each changed test directly.
   assert that something finished within one.
 - Do not select a fake clock from an environment variable, global or config
   setting. Pass it through a `_with` function or constructor.
+- Do not copy an advancing, frozen or panicking fake clock into a test
+  module. Use the ones in `tests/support/virtual_clock.rs`.
+- Do not add a test that reads source text (`include_str!`, `read_to_string`
+  of a `.rs` file) to check how code is written. Test what the code does.
 - Do not change a product timeout's default.
 - Do not write a stub with `fs::write` and `set_permissions`. Use
   `write_executable`.

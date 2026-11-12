@@ -494,6 +494,10 @@ mod proc_guard;
 #[path = "../tests/support/wait.rs"]
 pub(crate) mod wait;
 
+/// The fake clocks shared by every test crate (issue #2019).
+#[path = "../tests/support/virtual_clock.rs"]
+pub(crate) mod virtual_clock;
+
 #[cfg(unix)]
 #[path = "../tests/support/unix_process.rs"]
 pub(crate) mod unix_process;

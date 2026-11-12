@@ -11,19 +11,16 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 
-/// Supervise work whose fixture blocks on builtin FIFO reads. Only drop
-/// releases the reads, so cleanup cannot turn a timeout regression into a
-/// passing test. Keep this guard through assertions about surviving children.
-pub struct FifoWorker<T> {
-    result: mpsc::Receiver<T>,
-    worker: Option<JoinHandle<()>>,
+/// The test's own ends of a FIFO that fixture shells block on with builtin
+/// reads. [`FifoRelease::release`] writes one line per read.
+struct FifoRelease {
     writer: std::fs::File,
-    _reader: std::fs::File,
+    reader: std::fs::File,
     readers: usize,
 }
 
-impl<T: Send + 'static> FifoWorker<T> {
-    pub fn spawn(path: &Path, readers: usize, work: impl FnOnce() -> T + Send + 'static) -> Self {
+impl FifoRelease {
+    fn open(path: &Path, readers: usize) -> Self {
         assert!((1..=512).contains(&readers), "invalid FIFO reader count");
         // Separate nonblocking opens are portable Unix FIFO semantics; no
         // O_RDWR assumption and no blocking open before the worker starts.
@@ -37,10 +34,58 @@ impl<T: Send + 'static> FifoWorker<T> {
             .custom_flags(libc::O_NONBLOCK)
             .open(path)
             .expect("open supervisor FIFO writer");
-        let keepalive = (
-            reader.try_clone().expect("clone supervisor FIFO reader"),
-            writer.try_clone().expect("clone supervisor FIFO writer"),
-        );
+        Self {
+            writer,
+            reader,
+            readers,
+        }
+    }
+
+    /// Clones of both ends for the worker thread, so release lines written
+    /// before its fixture's first read stay buffered.
+    fn keepalive(&self) -> (std::fs::File, std::fs::File) {
+        (
+            self.reader
+                .try_clone()
+                .expect("clone supervisor FIFO reader"),
+            self.writer
+                .try_clone()
+                .expect("clone supervisor FIFO writer"),
+        )
+    }
+
+    fn release(&mut self) {
+        // One line per builtin read. Tree fixtures must open their FIFO fd
+        // before spawning descendants, so late readers retain the release.
+        // The private FIFO is empty until this write, well below PIPE_BUF.
+        if let Err(e) = self.writer.write_all(&vec![b'\n'; self.readers]) {
+            eprintln!("releasing a test's FIFO readers failed: {e}");
+        }
+    }
+}
+
+/// Supervise work whose fixture blocks on builtin FIFO reads. Only drop
+/// releases the reads, so cleanup cannot turn a timeout regression into a
+/// passing test. Keep this guard through assertions about surviving children.
+pub struct FifoWorker<T> {
+    result: mpsc::Receiver<T>,
+    worker: Option<JoinHandle<()>>,
+    fifo: Option<FifoRelease>,
+}
+
+impl<T: Send + 'static> FifoWorker<T> {
+    pub fn spawn(path: &Path, readers: usize, work: impl FnOnce() -> T + Send + 'static) -> Self {
+        Self::spawn_with(Some((path, readers)), work)
+    }
+
+    /// [`FifoWorker::spawn`] with the FIFO optional: with `None` there is
+    /// nothing to release, and drop only waits for the work.
+    pub fn spawn_with(
+        fifo: Option<(&Path, usize)>,
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> Self {
+        let fifo = fifo.map(|(path, readers)| FifoRelease::open(path, readers));
+        let keepalive = fifo.as_ref().map(FifoRelease::keepalive);
         let (tx, result) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             // Preserve buffered release lines even if unwinding releases the
@@ -51,9 +96,7 @@ impl<T: Send + 'static> FifoWorker<T> {
         Self {
             result,
             worker: Some(worker),
-            writer,
-            _reader: reader,
-            readers,
+            fifo,
         }
     }
 
@@ -61,11 +104,11 @@ impl<T: Send + 'static> FifoWorker<T> {
         self.wait_with_ceiling(super::wait::CEILING)
     }
 
-    fn wait_with_ceiling(&mut self, ceiling: std::time::Duration) -> T {
+    pub fn wait_with_ceiling(&mut self, ceiling: std::time::Duration) -> T {
         let result = self
             .result
             .recv_timeout(ceiling)
-            .expect("hung: FIFO fixture worker did not return before the ceiling");
+            .expect("hung: fixture worker did not return before the ceiling");
         self.worker
             .take()
             .unwrap()
@@ -77,11 +120,8 @@ impl<T: Send + 'static> FifoWorker<T> {
 
 impl<T> Drop for FifoWorker<T> {
     fn drop(&mut self) {
-        // One line per builtin read. Tree fixtures must open their FIFO fd
-        // before spawning descendants, so late readers retain the release.
-        // The private FIFO is empty until this write, well below PIPE_BUF.
-        if let Err(e) = self.writer.write_all(&vec![b'\n'; self.readers]) {
-            eprintln!("releasing a test's FIFO readers failed: {e}");
+        if let Some(fifo) = &mut self.fifo {
+            fifo.release();
         }
         if let Some(worker) = self.worker.take() {
             // Cleanup is independent of product timeout/termination: released
@@ -92,7 +132,7 @@ impl<T> Drop for FifoWorker<T> {
                     let _ = worker.join();
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    eprintln!("hung: FIFO worker did not return after fixture cleanup");
+                    eprintln!("hung: fixture worker did not return after fixture cleanup");
                 }
             }
         }
@@ -233,7 +273,7 @@ mod tests {
             worker.wait_with_ceiling(Duration::ZERO);
         });
         let message = failure.unwrap_err().downcast::<String>().unwrap();
-        assert!(message.contains("hung: FIFO fixture worker"), "{message}");
+        assert!(message.contains("hung: fixture worker"), "{message}");
         assert!(
             runner_marker.exists(),
             "cleanup must finish before unwinding returns"

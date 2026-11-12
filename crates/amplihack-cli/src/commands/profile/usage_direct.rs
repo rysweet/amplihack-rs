@@ -1124,23 +1124,11 @@ fn refresh(
 #[cfg(test)]
 mod transport_deadline_tests {
     use super::*;
-    use std::sync::Mutex;
-
-    struct TestClock(Mutex<Instant>);
-
-    impl Clock for TestClock {
-        fn now(&self) -> Instant {
-            *self.0.lock().unwrap()
-        }
-
-        fn sleep(&self, duration: Duration) {
-            *self.0.lock().unwrap() += duration;
-        }
-    }
+    use crate::test_support::virtual_clock::VirtualClock;
 
     #[test]
     fn transport_guard_is_independent_but_never_admits_a_spent_logical_budget() {
-        let clock = TestClock(Mutex::new(Instant::now()));
+        let clock = VirtualClock::new();
         let counter = AtomicUsize::new(0);
         let budget = Duration::from_secs(5);
         let guard = Duration::from_secs(120);
@@ -1148,16 +1136,16 @@ mod transport_deadline_tests {
         assert_eq!(deadline.transport_timeout(), Ok(guard));
         assert_eq!(deadline.transport_step(get_step(budget)), guard);
         assert_eq!(deadline.transport_step(post_step(budget)), guard);
-        clock.sleep(Duration::from_secs(4));
+        clock.advance(Duration::from_secs(4));
         assert_eq!(deadline.left(), Ok(Duration::from_secs(1)));
         assert_eq!(deadline.transport_timeout(), Ok(guard));
-        clock.sleep(Duration::from_secs(1));
+        clock.advance(Duration::from_secs(1));
         assert_eq!(deadline.transport_timeout(), Err(reason::TIMEOUT));
     }
 
     #[test]
     fn system_transport_keeps_production_steps_and_remaining_budget() {
-        let clock = TestClock(Mutex::new(Instant::now()));
+        let clock = VirtualClock::new();
         let budget = Duration::from_secs(5);
         // No test override: the same Deadline constructor account() and the
         // system context use, with a controlled clock for exact assertions.
@@ -1168,7 +1156,7 @@ mod transport_deadline_tests {
             Duration::from_secs(4)
         );
         assert_eq!(deadline.transport_step(post_step(budget)), budget);
-        clock.sleep(Duration::from_secs(4));
+        clock.advance(Duration::from_secs(4));
         assert_eq!(deadline.transport_timeout(), Ok(Duration::from_secs(1)));
     }
 }

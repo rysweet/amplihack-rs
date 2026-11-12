@@ -56,9 +56,10 @@
 //!   `left.min(MAX_STEP)`.
 //!
 //! No refresh or deadline test asserts on real elapsed time. Virtual time
-//! moves only through `FakeClock`. Logical deadline tests inject a scripted
-//! transport; loopback tests configure real I/O limits independently through
-//! `HANG_GUARD`, a hang cap no test asserts on.
+//! moves only through `VirtualClock` (`test_support::virtual_clock`).
+//! Logical deadline tests inject a scripted transport; loopback tests
+//! configure real I/O limits independently through `HANG_GUARD`, a hang cap
+//! no test asserts on.
 //!
 //! Tests use scripted responses or a loopback fake server and fake tokens;
 //! nothing reads a real credential or reaches a real endpoint.
@@ -73,13 +74,13 @@ use super::usage_direct::{
 };
 use super::usage_direct::{Ctx, get_step, post_step, read_with, refresh_expired_with};
 use super::usage_parse::UsageState;
-use amplihack_utils::clock::Clock;
+use crate::test_support::virtual_clock::VirtualClock;
 use serde_json::{Value, json};
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -291,42 +292,6 @@ fn token_answer() -> Value {
 /// on it, and a correct run never comes near it.
 const HANG_GUARD: Duration = Duration::from_secs(120);
 
-/// Virtual time: a base `Instant` plus an offset that moves only through
-/// `advance` (or `sleep`). Real time passing does not move it, so a loaded
-/// host cannot use up a deadline measured on it.
-struct FakeClock {
-    base: Instant,
-    offset_ns: AtomicU64,
-}
-
-impl FakeClock {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            base: Instant::now(),
-            offset_ns: AtomicU64::new(0),
-        })
-    }
-
-    fn advance(&self, d: Duration) {
-        self.offset_ns
-            .fetch_add(d.as_nanos() as u64, Ordering::SeqCst);
-    }
-
-    fn elapsed(&self) -> Duration {
-        Duration::from_nanos(self.offset_ns.load(Ordering::SeqCst))
-    }
-}
-
-impl Clock for FakeClock {
-    fn now(&self) -> Instant {
-        self.base + self.elapsed()
-    }
-
-    fn sleep(&self, d: Duration) {
-        self.advance(d);
-    }
-}
-
 /// A request whose deadline is `HANG_GUARD`: only the fake clock can use
 /// it up.
 fn request_guarded<'a>(l: &'a Login, journals: &'a [PathBuf], allow_refresh: bool) -> Request<'a> {
@@ -339,7 +304,7 @@ fn request_guarded<'a>(l: &'a Login, journals: &'a [PathBuf], allow_refresh: boo
 /// `read_with` on a clock that does not move, with a counter of the test's
 /// own; the counter must be back at zero when the read returns.
 fn read_frozen(ep: &Endpoints, req: &Request) -> Result<Direct, &'static str> {
-    let clock = FakeClock::new();
+    let clock = VirtualClock::shared();
     let counter = AtomicUsize::new(0);
     let r = read_with(ep, req, &Ctx::new(&*clock, &counter, HANG_GUARD));
     assert_eq!(counter.load(Ordering::SeqCst), 0, "a refresh count leaked");
@@ -861,7 +826,7 @@ fn a_weekly_only_answer_follows_1818() {
 }
 
 // Deadline tests (issue #1962, round 3; issue #2019). Outcomes are decided
-// on the injected `FakeClock` or by a server that is held at a gate until
+// on the injected `VirtualClock` or by a server that is held at a gate until
 // the read has returned, never by how long the read took in real time. The
 // time bounds themselves are pinned on the pure step functions below.
 
@@ -956,7 +921,7 @@ fn a_stalled_server_is_a_timeout_within_the_deadline() {
 fn a_401_refresh_and_retry_share_one_deadline() {
     let t = V_REFRESH_T;
     assert!(t >= REFRESH_BUDGET + V_SEND_MARGIN);
-    let clock = FakeClock::new();
+    let clock = VirtualClock::shared();
     let c = Arc::clone(&clock);
     let fake = FakeHttp::scripted(move |s, _| {
         if s.path == TOKEN_PATH {
@@ -995,7 +960,7 @@ fn a_401_refresh_and_retry_share_one_deadline() {
 #[test]
 fn a_slow_refresh_within_the_deadline_still_reads() {
     let d = Duration::from_millis(300);
-    let clock = FakeClock::new();
+    let clock = VirtualClock::shared();
     let c = Arc::clone(&clock);
     let fake = FakeHttp::scripted(move |s, _| {
         c.advance(d);
@@ -1029,7 +994,7 @@ fn a_slow_refresh_within_the_deadline_still_reads() {
 #[test]
 fn the_refresh_budget_is_checked_against_the_injected_clock() {
     let t = V_REFRESH_T;
-    let clock = FakeClock::new();
+    let clock = VirtualClock::shared();
     let c = Arc::clone(&clock);
     let fake = FakeHttp::scripted(move |s, _| {
         if s.path == TOKEN_PATH {
@@ -1064,7 +1029,7 @@ fn the_refresh_budget_is_checked_against_the_injected_clock() {
 /// that request no more: the second `GET` is never made.
 #[test]
 fn a_deadline_spent_on_the_injected_clock_sends_nothing_more() {
-    let clock = FakeClock::new();
+    let clock = VirtualClock::shared();
     let c = Arc::clone(&clock);
     let fake = FakeHttp::scripted(move |s, _| {
         if s.path == TOKEN_PATH {
@@ -1118,7 +1083,7 @@ fn a_refresh_with_too_little_time_left_is_not_sent() {
     let journals = l.journals();
     let mut req = request(&l, &journals, true);
     req.timeout = SHORT_T;
-    let clock = FakeClock::new();
+    let clock = VirtualClock::shared();
     let counter = AtomicUsize::new(0);
     assert_eq!(
         read_with(
@@ -1145,7 +1110,7 @@ fn a_refresh_with_too_little_time_left_is_not_sent() {
 fn a_refresh_with_the_budget_left_saves_the_rotated_token() {
     let token_d = get_step(V_REFRESH_T) + Duration::from_millis(50);
     assert!(token_d < MAX_STEP);
-    let clock = FakeClock::new();
+    let clock = VirtualClock::shared();
     let c = Arc::clone(&clock);
     let fake = FakeHttp::scripted(move |s, _| {
         if s.path == TOKEN_PATH {
@@ -1193,7 +1158,7 @@ fn a_refresh_with_the_budget_left_saves_the_rotated_token() {
 #[test]
 fn a_refresh_answered_after_the_deadline_is_not_saved() {
     let t = V_REFRESH_T;
-    let clock = FakeClock::new();
+    let clock = VirtualClock::shared();
     let c = Arc::clone(&clock);
     let fake = FakeHttp::scripted(move |s, _| {
         if s.path == TOKEN_PATH {
@@ -1354,7 +1319,7 @@ fn a_set_stop_flag_takes_no_lock_and_sends_no_post() {
         cancel: &cancel,
         ..request_guarded(&l, &journals, true)
     };
-    let clock = FakeClock::new();
+    let clock = VirtualClock::shared();
     let counter = AtomicUsize::new(0);
     assert_eq!(
         read_with(
@@ -1697,7 +1662,7 @@ fn the_refresh_counter_covers_a_refresh_in_progress() {
     let dir = l.dir.clone();
     let root = l.root.clone();
     let ep = endpoints(&fake);
-    let clock = FakeClock::new();
+    let clock = VirtualClock::shared();
     let counter = Arc::new(AtomicUsize::new(0));
     let (c, n) = (Arc::clone(&clock), Arc::clone(&counter));
     let reader = std::thread::spawn(move || {
@@ -1773,7 +1738,7 @@ fn refresh_expired_with_uses_the_injected_counter() {
     let l = login_expiring_in(-1_000);
     let journals = l.journals();
     let req = request_guarded(&l, &journals, true);
-    let clock = FakeClock::new();
+    let clock = VirtualClock::shared();
     let counter = AtomicUsize::new(0);
     assert_eq!(
         refresh_expired_with(
@@ -1794,7 +1759,7 @@ fn wait_for_refreshes_returns_at_once_when_none_run() {
     // A counter of the test's own, so refreshes in parallel tests cannot
     // hold it, and a zero limit on a clock that never moves: with nothing
     // running it is true without waiting at all.
-    let clock = FakeClock::new();
+    let clock = VirtualClock::shared();
     assert!(super::usage_direct::wait_for_refreshes_on(
         &AtomicUsize::new(0),
         Duration::ZERO,
@@ -1858,7 +1823,7 @@ fn an_unusable_endpoint_fails_without_connecting() {
     let missing = l.path().with_file_name("no-such-dir");
     let mut req = request(&l, &journals, true);
     req.creds_dir = &missing;
-    let clock = FakeClock::new();
+    let clock = VirtualClock::shared();
     let counter = AtomicUsize::new(0);
     assert_eq!(
         read_with(&ep, &req, &Ctx::new(&*clock, &counter, HANG_GUARD)),

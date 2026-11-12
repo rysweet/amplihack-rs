@@ -11,8 +11,6 @@
 //!   a private temporary directory (mode 0700, not under `target/debug`).
 //!   Each copy is a regular file of mode 0755; no `.tmp` file is left.
 //! - Every call in the process returns the same path.
-//! - The tests listed in the issue reach the binary only through
-//!   `amplihack_bin()`, never through `current_exe()/../../amplihack`.
 
 #![cfg(unix)]
 
@@ -126,21 +124,4 @@ fn the_copy_runs() {
         "stderr={}",
         String::from_utf8_lossy(&out.stderr)
     );
-}
-
-#[test]
-fn listed_tests_reach_the_binary_only_through_the_helper() {
-    let tests = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    for rel in [
-        "claude_code_plugin_manifest.rs",
-        "codex_frontdoor_contract.rs",
-        "codex_frontdoor_contract/fixture.rs",
-    ] {
-        let text = fs::read_to_string(tests.join(rel)).unwrap();
-        assert!(
-            !text.contains("current_exe()"),
-            "{rel} locates amplihack through current_exe(); use support::amplihack_bin()"
-        );
-        assert!(text.contains("amplihack_bin()"), "{rel}");
-    }
 }

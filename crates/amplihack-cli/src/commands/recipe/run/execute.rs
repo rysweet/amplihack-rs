@@ -1649,7 +1649,7 @@ pub(super) fn meaningful_stderr_tail_with_prior_drops(
     tail
 }
 
-fn recipe_runner_timeout() -> Duration {
+pub(super) fn recipe_runner_timeout() -> Duration {
     std::env::var(RECIPE_RUNNER_TIMEOUT_ENV)
         .ok()
         .and_then(|value| value.parse::<u64>().ok())

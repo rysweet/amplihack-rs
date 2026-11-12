@@ -1745,17 +1745,17 @@ fn runner_worker_failure_kills_group_and_joins_before_fixture_teardown() {
     crate::test_support::write_executable(
         &runner,
         &format!(
-            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nexec 3< '{}'\n(read _hold <&3) &\necho ready > '{}'\nwait\n",
+            "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\nexec 3< '{}'\n(read _hold <&3) &\n{}echo ready > '{}'\nwait\n",
             hold.display(),
+            write_tree_pids(temp.path()),
             ready.display(),
         ),
     );
     fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
-    let token = format!("cancel-{}-{}", std::process::id(), temp.path().display());
-    fixture_env.assign(ORPHAN_TOKEN_ENV, &token);
 
     for panic_before_receive in [false, true] {
         let _ = std::fs::remove_file(&ready);
+        let mut tree = Vec::new();
         let joined = Arc::new(AtomicBool::new(false));
         let finished = joined.clone();
         let (recipe, dir) = (recipe.clone(), temp.path().to_path_buf());
@@ -1774,8 +1774,9 @@ fn runner_worker_failure_kills_group_and_joins_before_fixture_teardown() {
                 result.is_err()
             });
             crate::test_support::wait::wait_until("the cancellation fixture tree", || {
-                ready.exists() && processes_with_token(&token).len() >= 2
+                ready.exists()
             });
+            tree.extend(runner_tree(temp.path()));
             assert!(!panic_before_receive, "fixture readiness assertion failed");
             worker.wait_with_ceiling(std::time::Duration::ZERO);
         }));
@@ -1789,7 +1790,7 @@ fn runner_worker_failure_kills_group_and_joins_before_fixture_teardown() {
             message.contains(if panic_before_receive {
                 "fixture readiness assertion failed"
             } else {
-                "hung: recipe runner worker"
+                "hung: fixture worker"
             }),
             "{message}"
         );
@@ -1797,10 +1798,10 @@ fn runner_worker_failure_kills_group_and_joins_before_fixture_teardown() {
             joined.load(Ordering::SeqCst),
             "worker must finish before unwinding returns"
         );
-        assert!(
-            processes_with_token(&token).is_empty(),
-            "runner group survived cleanup"
-        );
+        // A survivor of the group kill fails this wait as hung at CEILING.
+        for (process, what) in tree.iter().zip(["the runner", "its descendant"]) {
+            crate::test_support::pidfd_wait::wait_pid_gone(&process.0, what);
+        }
         assert!(
             temp.path().exists(),
             "fixture is still owned during cleanup checks"
@@ -1864,23 +1865,20 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
     let hold = temp.path().join("hold");
     mkfifo(&hold);
     let ready = temp.path().join("descendant-ready");
-    // Every process of the runner's tree carries a token of this test in its
-    // environment. Both shells block on builtin FIFO reads. The supervisor
-    // writes only on drop, after the assertions (or on failure), so
-    // only the 1 s virtual product timeout ends the run (#1998: no sleeps).
-    let token = format!(
-        "{}-{}",
-        std::process::id(),
-        temp.path().file_name().unwrap().to_string_lossy()
-    );
+    // The runner and its descendant write their pids, then both block on
+    // builtin FIFO reads. The supervisor writes only on drop, after the
+    // assertions (or on failure), so only the 1 s virtual product timeout
+    // ends the run (#1998: no sleeps).
     crate::test_support::write_executable(
         &runner,
         &format!(
             "#!/bin/sh\ncase \"$1\" in --capabilities) printf '%b\\n' '\\173\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\",\"durable_recovery_v1\"]\\175'; exit 0 ;; esac\n\
              exec 3< '{hold}'\n\
-             (echo ready > '{ready}'; read _hold <&3; echo orphan > '{marker}') &\n\
+             (read _hold <&3; echo orphan > '{marker}') &\n\
+             {pids}echo ready > '{ready}'\n\
              read _hold <&3\n",
             hold = hold.display(),
+            pids = write_tree_pids(temp.path()),
             ready = ready.display(),
             marker = marker.display(),
         ),
@@ -1890,8 +1888,6 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
     std::fs::write(&recipe, "name: timeout-tree-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
-    // /proc/environ sees the exec-time environment, not a later shell export.
-    fixture_env.assign(ORPHAN_TOKEN_ENV, &token);
     fixture_env.assign("RECIPE_RUNNER_RS_PATH", &runner);
     fixture_env.assign("AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS", "1");
 
@@ -1901,21 +1897,20 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
             .map(|_| ())
             .map_err(|err| format!("{err:#}"))
     });
-    worker.advance_after_ready("the runner descendant to start", || {
-        ready.exists() && processes_with_token(&token).len() >= 2
-    });
+    // Virtual time stands still until the advance below, so the executor
+    // cannot time out before both pidfds are open.
+    crate::test_support::wait::wait_until("the runner descendant to start", || ready.exists());
+    let tree = runner_tree(temp.path());
+    worker.time_out_after_ready("the executor's first clock read", || true);
     let result = worker.wait();
 
     let err = result.expect_err("hung recipe-runner must time out");
     assert!(format!("{err:#}").contains("timed out"), "{err:#}");
-    // The runner was reaped before the call returned. A descendant that
-    // survived the tree kill keeps its token for as long as it lives, so the
-    // wait ends only when no process of the tree is left; a survivor fails
-    // the test as hung at `CEILING`.
-    crate::test_support::wait::wait_until(
-        "timeout cleanup to terminate the recipe-runner descendants",
-        || processes_with_token(&token).is_empty(),
-    );
+    // A process of the tree that survived the kill fails this wait as hung
+    // at `CEILING`.
+    for (process, what) in tree.iter().zip(["the runner", "its descendant"]) {
+        crate::test_support::pidfd_wait::wait_pid_gone(&process.0, what);
+    }
     assert!(
         !marker.exists(),
         "timeout cleanup must terminate recipe-runner descendants"
@@ -1938,40 +1933,32 @@ fn timeout_fixture_worker(
     })
 }
 
-/// The variable that marks the processes of one test's runner tree.
+/// Shell lines for a runner fixture that record its own pid and the pid of
+/// the job it last started in the background, in `dir`. They go before the
+/// fixture's `ready` line, so both files are complete once `ready` exists.
 #[cfg(target_os = "linux")]
-const ORPHAN_TOKEN_ENV: &str = "AMPLIHACK_TEST_ORPHAN_TOKEN";
+fn write_tree_pids(dir: &Path) -> String {
+    format!(
+        "printf '%s\\n' \"$$\" > '{}'\nprintf '%s\\n' \"$!\" > '{}'\n",
+        dir.join("runner.pid").display(),
+        dir.join("descendant.pid").display(),
+    )
+}
 
-/// Pids of live processes whose environment holds `ORPHAN_TOKEN_ENV=token`.
-/// A pid reused by an unrelated process cannot match: it has no token.
+/// Pidfds for the runner and its descendant, from the files
+/// `write_tree_pids` wrote. Call it once `ready` exists and before the
+/// executor can end the tree: both processes are blocked on a FIFO the test
+/// holds, so each pid still names the fixture's process, and the pidfd keeps
+/// naming it after it exits. No process table is read (issue #2196). A
+/// failed test kills both on drop.
 #[cfg(target_os = "linux")]
-fn processes_with_token(token: &str) -> Vec<u32> {
-    let needle = format!("{ORPHAN_TOKEN_ENV}={token}");
-    let mut found = Vec::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        panic!("cannot list /proc to look for surviving descendants");
-    };
-    for entry in entries.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|n| n.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        // A process that exited meanwhile, or one of another user, has no
-        // readable environment and is not one of ours.
-        let Ok(environ) = std::fs::read(entry.path().join("environ")) else {
-            continue;
-        };
-        if environ
-            .split(|b| *b == 0)
-            .any(|var| var == needle.as_bytes())
-        {
-            found.push(pid);
-        }
-    }
-    found
+fn runner_tree(dir: &Path) -> [crate::test_support::pidfd_wait::KillOnDrop; 2] {
+    use crate::test_support::pidfd_wait::{KillOnDrop, PidFd, parse_pid};
+    ["runner.pid", "descendant.pid"].map(|name| {
+        let raw = std::fs::read_to_string(dir.join(name)).expect("read a fixture pid file");
+        let pid = parse_pid(&raw).unwrap_or_else(|e| panic!("{name}: {e}"));
+        KillOnDrop(PidFd::open(pid).unwrap_or_else(|e| panic!("pidfd for {name}: {e}")))
+    })
 }
 
 /// Makes a FIFO at `path`.

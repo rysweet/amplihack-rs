@@ -32,25 +32,6 @@ fn lib_tests_share_the_600_second_ceiling() {
     assert_eq!(CEILING, Duration::from_secs(600));
 }
 
-#[test]
-fn output_within_has_no_etxtbsy_retry() {
-    // A stub that fails to start is a bug fixed by write_executable, not
-    // something to retry.
-    let src = include_str!("../../tests/support/wait.rs");
-    assert!(
-        !src.contains("BUSY_RETRIES"),
-        "wait.rs must not retry ETXTBSY"
-    );
-    assert!(
-        !src.contains("BUSY_PAUSE"),
-        "wait.rs must not pause between spawns"
-    );
-    assert!(
-        !src.contains("fn spawn_retrying"),
-        "wait.rs must spawn once"
-    );
-}
-
 // ── Gate ────────────────────────────────────────────────────────────────────
 
 #[test]

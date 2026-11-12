@@ -12,6 +12,8 @@
 
 #![cfg(unix)]
 
+#[path = "../../amplihack-cli/tests/support/virtual_clock.rs"]
+mod virtual_clock;
 #[path = "../../amplihack-cli/tests/support/wait.rs"]
 mod wait;
 
@@ -37,9 +39,9 @@ use serde_json::json;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier, Mutex, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use virtual_clock::{FrozenClock, VirtualClock};
 
 const NOW: i64 = 1_792_592_000;
 const DAY: i64 = 86_400;
@@ -399,7 +401,7 @@ fn stuck_lock_times_out_as_io_error() {
     let held = held_lock(r.path());
     // Issue #2019: the give-up is checked on virtual time, so a loaded host
     // cannot fail it. The outcome (an Io error and no marker) is the proof.
-    let clock = AdvancingClock::new();
+    let clock = VirtualClock::shared();
     let mut g = FsGuard::with_clock(r.path(), Duration::from_millis(200), clock.clone());
     assert!(matches!(
         g.commit(&ev(1), &sess(), NOW, NOW),
@@ -415,64 +417,8 @@ fn stuck_lock_times_out_as_io_error() {
 }
 
 // Issue #2019: no test here measures real elapsed time. The lock wait reads
-// an injected clock (`FsGuard::with_clock`); the fakes below keep virtual
-// time as a base `Instant` plus an offset.
-
-/// Virtual time that moves only when something sleeps on it, and records
-/// the virtual start and length of each sleep. Never sleeps for real.
-struct AdvancingClock {
-    base: Instant,
-    offset_ns: AtomicU64,
-    sleeps: Mutex<Vec<(Duration, Duration)>>,
-}
-
-impl AdvancingClock {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
-            base: Instant::now(),
-            offset_ns: AtomicU64::new(0),
-            sleeps: Mutex::new(Vec::new()),
-        })
-    }
-
-    fn elapsed(&self) -> Duration {
-        Duration::from_nanos(self.offset_ns.load(Ordering::SeqCst))
-    }
-}
-
-impl Clock for AdvancingClock {
-    fn now(&self) -> Instant {
-        self.base + self.elapsed()
-    }
-
-    fn sleep(&self, d: Duration) {
-        self.sleeps.lock().unwrap().push((self.elapsed(), d));
-        self.offset_ns
-            .fetch_add(d.as_nanos() as u64, Ordering::SeqCst);
-    }
-}
-
-/// Virtual time that never moves, so a lock wait on it never times out
-/// however loaded the host is. `sleep` yields the thread instead of
-/// sleeping: the spin is bounded by the lock holder's critical section, and
-/// no real time is spent (issue #2019, A5).
-struct FrozenClock(Instant);
-
-impl FrozenClock {
-    fn new() -> Arc<Self> {
-        Arc::new(Self(Instant::now()))
-    }
-}
-
-impl Clock for FrozenClock {
-    fn now(&self) -> Instant {
-        self.0
-    }
-
-    fn sleep(&self, _d: Duration) {
-        std::thread::yield_now();
-    }
-}
+// an injected clock (`FsGuard::with_clock`): `VirtualClock` where the timeout
+// is the subject, `FrozenClock` where it must never run out.
 
 #[test]
 fn default_lock_timeout_is_five_seconds() {
@@ -485,7 +431,7 @@ fn default_lock_timeout_is_five_seconds() {
     );
 
     let held = held_lock(r.path());
-    let clock = AdvancingClock::new();
+    let clock = VirtualClock::shared();
     let mut g = FsGuard::with_clock(r.path(), LOCK_TIMEOUT, clock.clone());
     assert_eq!(g.lock_timeout(), LOCK_TIMEOUT);
     assert!(matches!(
@@ -494,7 +440,7 @@ fn default_lock_timeout_is_five_seconds() {
     ));
     let at_failure = clock.elapsed();
     drop(held);
-    let sleeps = clock.sleeps.lock().unwrap().clone();
+    let sleeps = clock.sleeps();
     assert!(!sleeps.is_empty(), "a held lock is waited for");
     let (last_start, _) = *sleeps.last().unwrap();
     assert!(
@@ -512,31 +458,26 @@ fn default_lock_timeout_is_five_seconds() {
     assert!(!g.seen(&ev(1)).unwrap(), "no marker after a failed lock");
 }
 
-/// Virtual time that moves only by what is slept on it, and drops the held
-/// lock on the first sleep that starts at or after `release_at`: the holder
-/// lets go at that point of virtual time, an event the waiter must see.
-struct ReleasingClock {
-    inner: Arc<AdvancingClock>,
+/// A virtual clock that drops `held` after the first sleep that reaches
+/// `release_at`: the holder lets go at that point of virtual time, an event
+/// the waiter must see. The second value is where it let go, if it did.
+fn releasing_clock(
+    held: ExclusiveLock,
     release_at: Duration,
-    held: Mutex<Option<ExclusiveLock>>,
-    released_at: Mutex<Option<Duration>>,
-}
-
-impl Clock for ReleasingClock {
-    fn now(&self) -> Instant {
-        self.inner.now()
-    }
-
-    fn sleep(&self, d: Duration) {
-        self.inner.sleep(d);
-        let now = self.inner.elapsed();
-        if now >= self.release_at
-            && let Some(lock) = self.held.lock().unwrap().take()
+) -> (Arc<VirtualClock>, Arc<Mutex<Option<Duration>>>) {
+    let clock = VirtualClock::shared();
+    let released_at = Arc::new(Mutex::new(None));
+    let seen = Arc::clone(&released_at);
+    let mut held = Some(held);
+    clock.on_sleep(move |_, now| {
+        if now >= release_at
+            && let Some(lock) = held.take()
         {
             drop(lock);
-            *self.released_at.lock().unwrap() = Some(now);
+            *seen.lock().unwrap() = Some(now);
         }
-    }
+    });
+    (clock, released_at)
 }
 
 /// The default lock wait does not give up before 5 s: a holder that lets go
@@ -545,17 +486,10 @@ impl Clock for ReleasingClock {
 fn a_lock_released_at_4_9_virtual_seconds_is_still_taken() {
     let r = root();
     let held = held_lock(r.path());
-    let release_at = LOCK_TIMEOUT - Duration::from_millis(100);
-    let clock = Arc::new(ReleasingClock {
-        inner: AdvancingClock::new(),
-        release_at,
-        held: Mutex::new(Some(held)),
-        released_at: Mutex::new(None),
-    });
-    let mut g = FsGuard::with_clock(r.path(), LOCK_TIMEOUT, clock.clone());
+    let (clock, released) = releasing_clock(held, LOCK_TIMEOUT - Duration::from_millis(100));
+    let mut g = FsGuard::with_clock(r.path(), LOCK_TIMEOUT, clock);
     let got = g.commit(&ev(1), &sess(), NOW, NOW);
-    let released_at = clock
-        .released_at
+    let released_at = released
         .lock()
         .unwrap()
         .expect("the holder let go during the wait");
@@ -572,24 +506,19 @@ fn a_lock_released_at_4_9_virtual_seconds_is_still_taken() {
 fn a_lock_released_only_at_5_virtual_seconds_is_given_up_on() {
     let r = root();
     let held = held_lock(r.path());
-    let clock = Arc::new(ReleasingClock {
-        inner: AdvancingClock::new(),
-        release_at: LOCK_TIMEOUT + Duration::from_secs(60),
-        held: Mutex::new(Some(held)),
-        released_at: Mutex::new(None),
-    });
+    let (clock, released) = releasing_clock(held, LOCK_TIMEOUT + Duration::from_secs(60));
     let mut g = FsGuard::with_clock(r.path(), LOCK_TIMEOUT, clock.clone());
     assert!(matches!(
         g.commit(&ev(1), &sess(), NOW, NOW),
         Err(CommitError::Io)
     ));
-    let gave_up = clock.inner.elapsed();
+    let gave_up = clock.elapsed();
     assert!(
         gave_up >= LOCK_TIMEOUT,
         "gave up at {gave_up:?}, before 5 s"
     );
     assert!(
-        clock.released_at.lock().unwrap().is_none(),
+        released.lock().unwrap().is_none(),
         "the wait ended before the holder let go"
     );
     assert!(!g.seen(&ev(1)).unwrap(), "no marker after a failed lock");
@@ -598,7 +527,7 @@ fn a_lock_released_only_at_5_virtual_seconds_is_given_up_on() {
 #[test]
 fn a_guard_debug_does_not_show_its_clock() {
     let r = root();
-    let g = FsGuard::with_clock(r.path(), LOCK_TIMEOUT, FrozenClock::new());
+    let g = FsGuard::with_clock(r.path(), LOCK_TIMEOUT, FrozenClock::shared());
     let shown = format!("{g:?}");
     assert!(shown.starts_with("FsGuard"), "{shown}");
     assert!(!shown.contains("Frozen"), "{shown}");
@@ -608,6 +537,7 @@ fn a_guard_debug_does_not_show_its_clock() {
 
 /// Runs `commit` on eight threads released together by a barrier, each
 /// with a frozen clock so a loser waiting for the lock cannot time out.
+/// A loser sleeps for real between tries while the winner commits.
 /// Results come back over a channel; a thread that hangs fails the test at
 /// the shared `CEILING` instead of hanging it.
 fn race_eight(
@@ -617,7 +547,7 @@ fn race_eight(
     let path = Arc::new(root.to_path_buf());
     let barrier = Arc::new(Barrier::new(8));
     let commit = Arc::new(commit);
-    let clock = FrozenClock::new();
+    let clock = FrozenClock::shared();
     let (tx, rx) = mpsc::channel();
     for i in 0..8u32 {
         let (p, b, c, tx) = (path.clone(), barrier.clone(), commit.clone(), tx.clone());

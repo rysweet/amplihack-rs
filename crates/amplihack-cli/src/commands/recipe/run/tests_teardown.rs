@@ -36,6 +36,7 @@ mod execute {
     };
     pub(super) use super::execute_recipe_via_rust_for_test as execute_recipe_via_rust;
 }
+use crate::test_support::EnvGuard;
 use std::collections::BTreeMap;
 use std::path::Path;
 #[cfg(target_os = "linux")]
@@ -49,41 +50,6 @@ const RUNNER_PATH_ENV: &str = "RECIPE_RUNNER_RS_PATH";
 /// Issue #1326: the session-tree store is durable now ($HOME/.amplihack). Tests
 /// must redirect it or they write into the developer's real home directory.
 const SESSION_TREE_DIR_ENV: &str = "AMPLIHACK_SESSION_TREE_DIR";
-
-/// Minimal RAII guard that snapshots an env var and restores it on drop so a
-/// two-phase test cannot leak state into sibling tests. Env is process-global;
-/// callers must additionally hold `home_env_lock()` for serialization.
-struct EnvVarGuard {
-    key: &'static str,
-    previous: Option<std::ffi::OsString>,
-}
-
-impl EnvVarGuard {
-    fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
-        let previous = std::env::var_os(key);
-        unsafe { std::env::set_var(key, value) };
-        Self { key, previous }
-    }
-
-    fn unset(key: &'static str) -> Self {
-        let previous = std::env::var_os(key);
-        unsafe { std::env::remove_var(key) };
-        Self { key, previous }
-    }
-
-    fn apply(&self, value: impl AsRef<std::ffi::OsStr>) {
-        unsafe { std::env::set_var(self.key, value) };
-    }
-}
-
-impl Drop for EnvVarGuard {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => unsafe { std::env::set_var(self.key, value) },
-            None => unsafe { std::env::remove_var(self.key) },
-        }
-    }
-}
 
 /// Write an executable `/bin/sh` stub at `path` (mode 0755) through
 /// `write_executable`, which never holds a write descriptor on it in this
@@ -264,9 +230,10 @@ fn test_orphan_probe_readiness_failure_cleans_up_runner_and_worker() {
     for wait_for_readiness in [true, false] {
         let temp = tempfile::tempdir().expect("create probe directory");
         let mut probe = OrphanProbe::new(temp.path());
-        let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &probe.runner);
-        let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-        let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
+        let mut env = EnvGuard::capture(&[]);
+        env.assign(RUNNER_PATH_ENV, &probe.runner);
+        env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+        env.clear(RUNNER_TIMEOUT_ENV);
         let mut observed = None;
         let failure = catch_unwind(AssertUnwindSafe(|| {
             let _execution = probe.execute(temp.path());
@@ -311,8 +278,6 @@ fn test_orphan_probe_readiness_failure_cleans_up_runner_and_worker() {
 // A runner that spawns a detached descendant and then exits NON-ZERO must have
 // that descendant reaped. The descendant writes a marker after a short delay;
 // if teardown works the marker never appears.
-//
-// RED today: the failure path never reaps the tree, so the marker appears.
 // -------------------------------------------------------------------------
 #[cfg(target_os = "linux")]
 #[test]
@@ -326,10 +291,11 @@ fn test_failure_path_reaps_orphaned_descendants() {
     // The runner starts an orphan and then FAILS (exit 1), not a timeout.
     let probe = OrphanProbe::new(temp.path());
 
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &probe.runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &probe.runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     // Ensure a fast failure is not misread as a timeout.
-    let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
+    env.clear(RUNNER_TIMEOUT_ENV);
 
     let mut execution = probe.execute(temp.path());
     let orphan = KillOnDrop(probe.orphan());
@@ -355,13 +321,11 @@ fn test_failure_path_reaps_orphaned_descendants() {
 // Test 2 — teardown is GRACEFUL: SIGTERM is delivered before SIGKILL.
 //
 // The runner traps SIGTERM, records that it received it, and exits cleanly.
-// With a graceful three-phase reaper the trap runs (marker written). With the
-// current immediate-SIGKILL teardown the trap never runs.
+// The reaper sends SIGTERM first, so the trap runs and writes the marker. A
+// teardown that sent SIGKILL first would leave no marker.
 //
-// Uses the timeout path (which is the only path that reaps today) so the ONLY
-// thing under test is SIGTERM-before-SIGKILL, isolating it from Test 1.
-//
-// RED today: immediate SIGKILL means the SIGTERM trap never runs -> no marker.
+// Uses the timeout path so the ONLY thing under test is SIGTERM-before-SIGKILL,
+// isolating it from Test 1.
 // -------------------------------------------------------------------------
 #[test]
 fn test_timeout_teardown_sends_sigterm_before_sigkill() {
@@ -402,20 +366,21 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: graceful-probe\nsteps: []\n").expect("failed to write recipe");
 
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-    let _timeout_env = EnvVarGuard::set(RUNNER_TIMEOUT_ENV, "1");
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    env.assign(RUNNER_TIMEOUT_ENV, "1");
     // Grace stays frozen in virtual time until the child exits. Scheduling
     // delays cannot exhaust it; grace expiration is covered by the policy
     // test below, while CEILING only fails a missing completion event.
-    let _grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "1");
+    env.assign(TEARDOWN_GRACE_ENV, "1");
 
     let dir = temp.path().to_path_buf();
     let mut worker = super::test_runner::RunnerWorker::spawn(Some((&hold, 1)), true, move || {
         execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &dir, &[], None)
             .is_err()
     });
-    worker.advance_after_ready("the runner to install its TERM trap", || ready.exists());
+    worker.time_out_after_ready("the runner to install its TERM trap", || ready.exists());
     crate::test_support::wait::wait_until("the TERM handler completion event", || {
         let event = completion.read(&mut [0; 1]);
         match event {
@@ -458,33 +423,21 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
 // -------------------------------------------------------------------------
 #[test]
 fn test_teardown_grace_window_is_configurable() {
-    use amplihack_utils::clock::Clock;
-    use std::sync::Mutex;
-    use std::time::{Duration, Instant};
-
-    struct CleanupClock(Mutex<Instant>);
-    impl Clock for CleanupClock {
-        fn now(&self) -> Instant {
-            *self.0.lock().unwrap()
-        }
-        fn sleep(&self, duration: Duration) {
-            *self.0.lock().unwrap() += duration;
-        }
-    }
+    use crate::test_support::virtual_clock::VirtualClock;
+    use std::time::Duration;
 
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "0");
+    let mut env = EnvGuard::capture(&[]);
     for (setting, cleanup_duration, expected_elapsed, cleaned) in [
         ("0", 1, 0, false),
         ("4", 1, 1, true),
         // An uncooperative process must receive KILL at the configured limit.
         ("4", 10, 4, false),
     ] {
-        grace_env.apply(setting);
-        let start = Instant::now();
-        let clock = CleanupClock(Mutex::new(start));
+        env.assign(TEARDOWN_GRACE_ENV, setting);
+        let clock = VirtualClock::new();
         let events = std::cell::RefCell::new(Vec::new());
         let terminated = std::cell::Cell::new(false);
         let cleanup_done = std::cell::Cell::new(false);
@@ -492,7 +445,7 @@ fn test_teardown_grace_window_is_configurable() {
             &clock,
             || {
                 assert!(terminated.get(), "TERM must precede the grace wait");
-                if clock.now().duration_since(start) >= Duration::from_secs(cleanup_duration) {
+                if clock.elapsed() >= Duration::from_secs(cleanup_duration) {
                     cleanup_done.set(true);
                     events.borrow_mut().push("cleanup");
                     false
@@ -511,7 +464,7 @@ fn test_teardown_grace_window_is_configurable() {
         );
         assert_eq!(cleanup_done.get(), cleaned, "configured grace {setting}");
         assert_eq!(
-            clock.now().duration_since(start),
+            clock.elapsed(),
             Duration::from_secs(expected_elapsed),
             "virtual elapsed time for configured grace {setting}"
         );
@@ -532,11 +485,8 @@ fn test_teardown_grace_window_is_configurable() {
 // The reaper signals the runner's process group (the runner is a session
 // leader via setsid). It must NEVER broadcast to unrelated / parent processes.
 // A sibling process spawned directly by the test lives in the TEST's process
-// group, so it must survive while the runner's own orphan is reaped.
-//
-// RED today: the failure-path orphan is not reaped (marker appears). The
-// sibling-survives half already holds; this test also guards against a future
-// over-broad kill.
+// group, so it must survive while the runner's own orphan is reaped. The
+// test also guards against a future over-broad kill.
 // -------------------------------------------------------------------------
 #[cfg(target_os = "linux")]
 #[test]
@@ -568,9 +518,10 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let sibling = Reap(&mut sibling);
 
     let probe = OrphanProbe::new(temp.path());
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &probe.runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-    let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &probe.runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    env.clear(RUNNER_TIMEOUT_ENV);
 
     let mut execution = probe.execute(temp.path());
     let orphan = KillOnDrop(probe.orphan());
@@ -663,24 +614,25 @@ fn depth_guard_spawned(session_depth: &str, max_depth: Option<&str>) -> bool {
     let recipe = temp.path().join("recipe.yaml");
     std::fs::write(&recipe, "name: depth-probe\nsteps: []\n").expect("failed to write recipe");
 
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-    let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    env.clear(RUNNER_TIMEOUT_ENV);
     // Issue #1326: a genuine nested run names a tree that has sealed a ceiling.
     // Pin both so the probe does not depend on the ambient process ancestry of
     // whoever runs the suite (a developer inside an `amplihack` session has an
     // orchestrator ancestor; CI does not).
-    let _tree_id_env = EnvVarGuard::set("AMPLIHACK_TREE_ID", "probe");
+    env.assign("AMPLIHACK_TREE_ID", "probe");
     crate::commands::session_tree::state::ensure_sealed(
         "probe",
         max_depth.and_then(|v| v.parse().ok()).unwrap_or(3),
     )
     .expect("seal probe tree");
-    let _depth_env = EnvVarGuard::set(SESSION_DEPTH_ENV, session_depth);
-    let _max_env = match max_depth {
-        Some(v) => EnvVarGuard::set(MAX_DEPTH_ENV, v),
-        None => EnvVarGuard::unset(MAX_DEPTH_ENV),
-    };
+    env.assign(SESSION_DEPTH_ENV, session_depth);
+    match max_depth {
+        Some(v) => env.assign(MAX_DEPTH_ENV, v),
+        None => env.clear(MAX_DEPTH_ENV),
+    }
 
     let _ = execute::execute_recipe_via_rust(
         &recipe,
@@ -699,8 +651,6 @@ fn depth_guard_spawned(session_depth: &str, max_depth: Option<&str>) -> bool {
 // Test 5 — depth AT the limit BAILS BEFORE SPAWN.
 //
 // SESSION_DEPTH == MAX_DEPTH must be refused: no descendant runner is spawned.
-//
-// RED today: no guard exists, so the runner spawns and writes the marker.
 // -------------------------------------------------------------------------
 #[test]
 fn test_depth_guard_bails_at_limit_before_spawn() {
@@ -722,8 +672,6 @@ fn test_depth_guard_bails_at_limit_before_spawn() {
 //
 // A non-numeric AMPLIHACK_SESSION_DEPTH must be treated as "at the limit" and
 // BAIL — never silently parsed as depth 0 (which would defeat the guard).
-//
-// RED today: no guard exists, so the runner spawns regardless.
 // -------------------------------------------------------------------------
 #[test]
 fn test_depth_guard_fails_closed_on_malformed_session_depth() {
@@ -746,8 +694,6 @@ fn test_depth_guard_fails_closed_on_malformed_session_depth() {
 // AMPLIHACK_MAX_DEPTH is attacker-influenceable; a huge value must be clamped
 // to MAX_DEPTH_CEILING (32) before comparison. At depth == ceiling the guard
 // must still bail even though the raw MAX_DEPTH is astronomically larger.
-//
-// RED today: no guard exists (and no clamping is applied on the spawn path).
 // -------------------------------------------------------------------------
 #[test]
 fn test_depth_guard_clamps_forged_max_depth_to_ceiling() {
@@ -840,9 +786,6 @@ fn init_git_repo(repo: &Path) -> bool {
 // operation must be run in a work tree") and then exits non-zero. After the
 // failed run the caller's checkout must be usable again: `core.bare` restored
 // and `git status` succeeds.
-//
-// RED today: no snapshot/restore logic exists, so `core.bare` stays `true` and
-// `git status` remains broken after the run.
 // -------------------------------------------------------------------------
 #[test]
 fn test_caller_git_state_restored_after_terminal_failure() {
@@ -877,9 +820,10 @@ fn test_caller_git_state_restored_after_terminal_failure() {
     std::fs::write(&recipe, "name: git-corrupt-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-    let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    env.clear(RUNNER_TIMEOUT_ENV);
 
     let result =
         execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &repo, &[], None);
@@ -941,9 +885,10 @@ fn test_restore_preserves_durable_child_worktree() {
     std::fs::write(&recipe, "name: child-worktree-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-    let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    env.clear(RUNNER_TIMEOUT_ENV);
 
     let result =
         execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &repo, &[], None);
@@ -1004,9 +949,10 @@ fn test_caller_git_state_restored_after_structured_failure_result() {
     std::fs::write(&recipe, "name: structured-fail-probe\nsteps: []\n")
         .expect("failed to write recipe");
 
-    let _runner_env = EnvVarGuard::set(RUNNER_PATH_ENV, &runner);
-    let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
-    let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
+    let mut env = EnvGuard::capture(&[]);
+    env.assign(RUNNER_PATH_ENV, &runner);
+    env.assign(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
+    env.clear(RUNNER_TIMEOUT_ENV);
 
     let result =
         execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, true, &repo, &[], None);
@@ -1083,7 +1029,7 @@ fn generated_tree_ids_are_valid_and_distinct() {
 /// guard restores its variables and removes its folder, then the temp `HOME`
 /// is removed, so no `amplihack-recipe-home-*` directory outlives the test.
 struct FixtureEnvironment {
-    _env: crate::test_support::EnvGuard,
+    _env: EnvGuard,
     _work_root: crate::test_support::IsolatedWorkRoot,
     _home: tempfile::TempDir,
 }
@@ -1097,7 +1043,7 @@ fn fixture_environment() -> FixtureEnvironment {
         .tempdir()
         .expect("create the recipe fixture HOME");
     let work_root = crate::test_support::IsolatedWorkRoot::new();
-    let mut env = crate::test_support::EnvGuard::capture(&[]);
+    let mut env = EnvGuard::capture(&[]);
     env.assign("HOME", home.path());
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     env.assign("AMPLIHACK_AGENT_BINARY", "claude");

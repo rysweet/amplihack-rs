@@ -17,6 +17,9 @@
 
 #![cfg(unix)]
 
+#[path = "../../amplihack-cli/tests/support/virtual_clock.rs"]
+mod virtual_clock;
+
 use amplihack_utils::clock::{Clock, SystemClock};
 use amplihack_utils::secure_files::{
     ExclusiveLock, lock_exclusive_timeout, lock_exclusive_timeout_with,
@@ -27,73 +30,9 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use virtual_clock::{PanicOnSleep, VirtualClock};
 
 const RETRY: Duration = Duration::from_millis(100);
-
-/// Called with the number of sleeps so far, after each sleep.
-type OnSleep = Box<dyn FnMut(usize) + Send>;
-
-/// Virtual time: a base `Instant` plus an offset. `sleep` records when it
-/// started and for how long, then moves the offset forward; it never
-/// sleeps for real.
-struct AdvancingClock {
-    base: Instant,
-    offset_ns: AtomicU64,
-    sleeps: Mutex<Vec<(Duration, Duration)>>,
-    on_sleep: Mutex<Option<OnSleep>>,
-}
-
-impl AdvancingClock {
-    fn new() -> Self {
-        Self {
-            base: Instant::now(),
-            offset_ns: AtomicU64::new(0),
-            sleeps: Mutex::new(Vec::new()),
-            on_sleep: Mutex::new(None),
-        }
-    }
-
-    fn elapsed(&self) -> Duration {
-        Duration::from_nanos(self.offset_ns.load(Ordering::SeqCst))
-    }
-
-    /// `(virtual start, length)` of every sleep, in order.
-    fn sleeps(&self) -> Vec<(Duration, Duration)> {
-        self.sleeps.lock().unwrap().clone()
-    }
-}
-
-impl Clock for AdvancingClock {
-    fn now(&self) -> Instant {
-        self.base + self.elapsed()
-    }
-
-    fn sleep(&self, d: Duration) {
-        let n = {
-            let mut s = self.sleeps.lock().unwrap();
-            s.push((self.elapsed(), d));
-            s.len()
-        };
-        self.offset_ns
-            .fetch_add(d.as_nanos() as u64, Ordering::SeqCst);
-        if let Some(f) = self.on_sleep.lock().unwrap().as_mut() {
-            f(n);
-        }
-    }
-}
-
-/// A clock that panics if anything sleeps on it.
-struct NoSleepClock(Instant);
-
-impl Clock for NoSleepClock {
-    fn now(&self) -> Instant {
-        self.0
-    }
-
-    fn sleep(&self, d: Duration) {
-        panic!("no sleep expected, got one of {d:?}");
-    }
-}
 
 fn open(p: &Path) -> fs::File {
     fs::OpenOptions::new()
@@ -128,7 +67,7 @@ fn clock_is_object_safe_send_and_sync() {
 #[test]
 fn a_free_lock_is_taken_at_once_without_sleeping() {
     let t = tempfile::tempdir().unwrap();
-    let clock = NoSleepClock(Instant::now());
+    let clock = PanicOnSleep::new();
     let lock = lock_exclusive_timeout_with(open(&t.path().join("lock")), RETRY * 50, &clock)
         .expect("a free lock is taken");
     drop(lock);
@@ -137,7 +76,7 @@ fn a_free_lock_is_taken_at_once_without_sleeping() {
 #[test]
 fn a_held_lock_times_out_only_once_virtual_time_reaches_the_timeout() {
     let (_t, p, held) = held_lock();
-    let clock = AdvancingClock::new();
+    let clock = VirtualClock::new();
     let timeout = Duration::from_secs(1);
     let err = lock_exclusive_timeout_with(open(&p), timeout, &clock).expect_err("the lock is held");
     assert_eq!(err.kind(), io::ErrorKind::TimedOut);
@@ -161,7 +100,7 @@ fn a_held_lock_times_out_only_once_virtual_time_reaches_the_timeout() {
 #[test]
 fn the_last_wait_is_cut_to_the_time_left() {
     let (_t, p, held) = held_lock();
-    let clock = AdvancingClock::new();
+    let clock = VirtualClock::new();
     let timeout = Duration::from_millis(250);
     let err = lock_exclusive_timeout_with(open(&p), timeout, &clock).unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::TimedOut);
@@ -178,7 +117,7 @@ fn the_last_wait_is_cut_to_the_time_left() {
 #[test]
 fn a_zero_timeout_tries_once_and_never_sleeps() {
     let (_t, p, held) = held_lock();
-    let clock = AdvancingClock::new();
+    let clock = VirtualClock::new();
     let err = lock_exclusive_timeout_with(open(&p), Duration::ZERO, &clock).unwrap_err();
     assert_eq!(err.kind(), io::ErrorKind::TimedOut);
     assert!(clock.sleeps().is_empty(), "{:?}", clock.sleeps());
@@ -189,14 +128,14 @@ fn a_zero_timeout_tries_once_and_never_sleeps() {
 #[test]
 fn a_lock_released_during_the_wait_is_taken_on_the_next_try() {
     let (_t, p, held) = held_lock();
-    let clock = AdvancingClock::new();
+    let clock = VirtualClock::new();
     let holder = std::sync::Arc::new(Mutex::new(Some(held)));
     let h = std::sync::Arc::clone(&holder);
-    *clock.on_sleep.lock().unwrap() = Some(Box::new(move |n| {
+    clock.on_sleep(move |n, _| {
         if n == 3 {
             h.lock().unwrap().take();
         }
-    }));
+    });
     let lock = lock_exclusive_timeout_with(open(&p), Duration::from_secs(5), &clock)
         .expect("taken once the holder lets go");
     assert_eq!(

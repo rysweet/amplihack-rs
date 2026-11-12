@@ -408,7 +408,8 @@ pub(crate) enum ProbeWait {
     Exit,
 }
 
-/// The debug-only test knob that selects [`ProbeWait::Exit`].
+/// The debug-only test knob that selects [`ProbeWait::Exit`]. Removing it,
+/// with the second capture path it selects, is tracked in issue #2194.
 #[cfg(debug_assertions)]
 pub(crate) const PROBE_WAIT_ENV: &str = "AMPLIHACK_TEST_PROBE_WAIT";
 
