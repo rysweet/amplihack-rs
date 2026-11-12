@@ -334,9 +334,9 @@ fn overflow_wait_variable_must_be_a_whole_number_of_seconds() {
 // - `Origin { Flag, Env, Config, Default, Rotator }` and
 //   `Threshold<T> { value: T, origin: Origin }`;
 // - `thresholds(env, cfg) -> Thresholds { session_at, week_at: Result<
-//   Threshold<u8>, _>, interval, codex_floor: Result<Threshold<u64>, _> }`,
+//   Threshold<u8>, _>, interval, codex_credit_floor: Result<Threshold<u64>, _> }`,
 //   each field resolved on its own;
-// - `codex_floor(cfg) -> Result<Threshold<u64>, ProfileError>`, the one
+// - `codex_credit_floor(cfg) -> Result<Threshold<u64>, ProfileError>`, the one
 //   function #2162 calls;
 // - `UserConfig::at(home)`, `.get(key) -> Result<Option<u64>, String>`;
 // - `#[cfg(test)] config_spec(key) -> Option<(default, min, max)>`, the
@@ -346,7 +346,8 @@ fn overflow_wait_variable_must_be_a_whole_number_of_seconds() {
 
 mod config_2007 {
     use super::super::settings::{
-        Origin, UserConfig, codex_floor, config_spec, gate_from_env, no_config, resolve, thresholds,
+        Origin, UserConfig, codex_credit_floor, config_spec, gate_from_env, no_config, resolve,
+        thresholds,
     };
     use super::{env_of, err, flags, no_env};
     use crate::commands::profile::ProfileError;
@@ -398,14 +399,14 @@ mod config_2007 {
     #[test]
     fn the_codex_floor_default_is_the_codex_pick_default() {
         use amplihack_utils::codex_capacity::DEFAULT_FLOOR;
-        let def = key_def("rotator.codex_floor").unwrap();
+        let def = key_def("rotator.codex_credit_floor").unwrap();
         assert_eq!(def.default, Some("3000"));
         assert_eq!(
             def.default,
             Some((DEFAULT_FLOOR as u64).to_string().as_str())
         );
         assert_eq!(DEFAULT_FLOOR, (DEFAULT_FLOOR as u64) as f64, "whole number");
-        let f = codex_floor(&no_config).unwrap();
+        let f = codex_credit_floor(&no_config).unwrap();
         assert_eq!((f.value, f.origin), (DEFAULT_FLOOR as u64, Origin::Default));
     }
 
@@ -417,7 +418,7 @@ mod config_2007 {
         let s = t.session_at.unwrap();
         let w = t.week_at.unwrap();
         let i = t.interval.unwrap();
-        let c = t.codex_floor.unwrap();
+        let c = t.codex_credit_floor.unwrap();
         assert_eq!((s.value, s.origin), (85, Origin::Default));
         assert_eq!((w.value, w.origin), (90, Origin::Default));
         assert_eq!((i.value, i.origin), (600, Origin::Default));
@@ -432,7 +433,7 @@ mod config_2007 {
             ("rotator.session_at", 70),
             ("rotator.week_at", 80),
             ("rotator.interval", 120),
-            ("rotator.codex_floor", 0),
+            ("rotator.codex_credit_floor", 0),
         ]);
         let s = resolve(&flags(), None, &no_env(), &cfg).unwrap();
         assert_eq!((s.session_at, s.week_at, s.interval), (70, 80, 120));
@@ -442,7 +443,7 @@ mod config_2007 {
         assert_eq!(t.session_at.as_ref().unwrap().origin, Origin::Config);
         assert_eq!(t.week_at.as_ref().unwrap().value, 80);
         assert_eq!(t.interval.as_ref().unwrap().origin, Origin::Config);
-        let c = t.codex_floor.unwrap();
+        let c = t.codex_credit_floor.unwrap();
         assert_eq!((c.value, c.origin), (0, Origin::Config));
     }
 
@@ -512,8 +513,8 @@ mod config_2007 {
             ("AMPLIHACK_ROTATE_CODEX_FLOOR", "10"),
             ("AMPLIHACK_CODEX_FLOOR", "10"),
         ]);
-        let t = thresholds(&env, &cfg_of(&[("rotator.codex_floor", 5000)]));
-        let c = t.codex_floor.unwrap();
+        let t = thresholds(&env, &cfg_of(&[("rotator.codex_credit_floor", 5000)]));
+        let c = t.codex_credit_floor.unwrap();
         assert_eq!((c.value, c.origin), (5000, Origin::Config));
     }
 
@@ -542,9 +543,10 @@ mod config_2007 {
             assert!(e.contains(key), "{key}={v}: {e}");
             assert!(e.contains("config set"), "{key}={v}: {e}");
         }
-        let e = codex_floor(&cfg_of(&[("rotator.codex_floor", 1_000_001)])).unwrap_err();
+        let e = codex_credit_floor(&cfg_of(&[("rotator.codex_credit_floor", 100_000_001)]))
+            .unwrap_err();
         assert!(matches!(e, ProfileError::RotateConfig(_)), "{e:?}");
-        assert!(e.to_string().contains("rotator.codex_floor"), "{e}");
+        assert!(e.to_string().contains("rotator.codex_credit_floor"), "{e}");
     }
 
     #[test]
@@ -583,21 +585,21 @@ mod config_2007 {
         assert!(e.contains("rotator.week_at"), "{e}");
         assert_eq!(t.session_at.unwrap().value, 85);
         assert_eq!(t.interval.unwrap().value, 600);
-        assert_eq!(t.codex_floor.unwrap().value, 3000);
+        assert_eq!(t.codex_credit_floor.unwrap().value, 3000);
     }
 
     #[test]
     fn a_bad_codex_floor_is_an_error_naming_the_key() {
         let cfg = cfg_bad(
-            "rotator.codex_floor",
-            "must be an integer from 0 to 1000000",
+            "rotator.codex_credit_floor",
+            "must be an integer from 0 to 100000000",
         );
-        let e = codex_floor(&cfg).unwrap_err();
+        let e = codex_credit_floor(&cfg).unwrap_err();
         assert_eq!(
             e.to_string(),
             fix_msg(
-                "rotator.codex_floor",
-                "must be an integer from 0 to 1000000"
+                "rotator.codex_credit_floor",
+                "must be an integer from 0 to 100000000"
             )
         );
         // The rotator itself has no use for the floor.
@@ -631,13 +633,13 @@ mod config_2007 {
 
     #[test]
     fn a_real_user_file_round_trips_into_settings() {
-        let h = home_with("[rotator]\ninterval = 900\ncodex_floor = 0\n", 0o600);
+        let h = home_with("[rotator]\ninterval = 900\ncodex_credit_floor = 0\n", 0o600);
         let cfg = UserConfig::at(&h.home);
         assert_eq!(cfg.get("rotator.interval"), Ok(Some(900)));
         assert_eq!(cfg.get("rotator.session_at"), Ok(None));
         let s = resolve(&flags(), None, &no_env(), &|k| cfg.get(k)).unwrap();
         assert_eq!((s.session_at, s.interval), (85, 900));
-        assert_eq!(codex_floor(&|k| cfg.get(k)).unwrap().value, 0);
+        assert_eq!(codex_credit_floor(&|k| cfg.get(k)).unwrap().value, 0);
     }
 
     #[test]
@@ -673,7 +675,7 @@ mod config_2007 {
         let e = resolve(&flags(), None, &no_env(), &|k| cfg.get(k)).unwrap_err();
         assert!(matches!(e, ProfileError::RotateConfig(_)), "{e:?}");
         assert!(gate_from_env(&no_env(), &|k| cfg.get(k)).is_err());
-        assert!(codex_floor(&|k| cfg.get(k)).is_err());
+        assert!(codex_credit_floor(&|k| cfg.get(k)).is_err());
     }
 
     #[test]
@@ -683,7 +685,7 @@ mod config_2007 {
             "rotator.session_at",
             "rotator.week_at",
             "rotator.interval",
-            "rotator.codex_floor",
+            "rotator.codex_credit_floor",
         ] {
             assert!(cfg.get(key).is_err(), "{key}");
         }
@@ -705,7 +707,7 @@ mod config_2007 {
         let cfg = UserConfig::at(&home);
         let s = resolve(&flags(), None, &no_env(), &|k| cfg.get(k)).unwrap();
         assert_eq!((s.session_at, s.week_at, s.interval), (85, 90, 600));
-        assert_eq!(codex_floor(&|k| cfg.get(k)).unwrap().value, 3000);
+        assert_eq!(codex_credit_floor(&|k| cfg.get(k)).unwrap().value, 3000);
     }
 
     #[test]
@@ -764,7 +766,7 @@ mod config_2007 {
             "rotator.session_at",
             "rotator.week_at",
             "rotator.interval",
-            "rotator.codex_floor",
+            "rotator.codex_credit_floor",
         ] {
             let raw = cfg.get(key).unwrap_err();
             assert!(raw.contains(why), "{key}: {raw}");
@@ -773,8 +775,8 @@ mod config_2007 {
         let t = thresholds(&no_env(), &|k| cfg.get(k));
         let week = t.week_at.unwrap_err().to_string();
         assert_eq!(week, whole_file_msg("rotator.week_at", why));
-        let floor = t.codex_floor.unwrap_err().to_string();
-        assert_eq!(floor, whole_file_msg("rotator.codex_floor", why));
+        let floor = t.codex_credit_floor.unwrap_err().to_string();
+        assert_eq!(floor, whole_file_msg("rotator.codex_credit_floor", why));
         // The commands that act fail closed with the same hint.
         let e = err(resolve(&flags(), None, &no_env(), &|k| cfg.get(k)));
         assert_whole_file(&e, &h.home);
@@ -792,7 +794,7 @@ mod config_2007 {
             "rotator.session_at",
             "rotator.week_at",
             "rotator.interval",
-            "rotator.codex_floor",
+            "rotator.codex_credit_floor",
         ] {
             let raw = cfg.get(key).unwrap_err();
             assert!(
@@ -803,9 +805,9 @@ mod config_2007 {
         }
         let e = err(resolve(&flags(), None, &no_env(), &|k| cfg.get(k)));
         assert_whole_file(&e, &h.home);
-        let floor = codex_floor(&|k| cfg.get(k)).unwrap_err().to_string();
+        let floor = codex_credit_floor(&|k| cfg.get(k)).unwrap_err().to_string();
         assert!(
-            floor.starts_with("invalid rotate setting rotator.codex_floor: "),
+            floor.starts_with("invalid rotate setting rotator.codex_credit_floor: "),
             "{floor}"
         );
         assert_whole_file(&floor, &h.home);
@@ -848,16 +850,16 @@ mod config_2007 {
         fs::create_dir_all(project.join(".amplihack")).unwrap();
         fs::write(
             project.join(".amplihack").join("config.toml"),
-            "[rotator]\nweek_at = 100\nsession_at = 1\ncodex_floor = 0\n",
+            "[rotator]\nweek_at = 100\nsession_at = 1\ncodex_credit_floor = 0\n",
         )
         .unwrap();
         let cfg = UserConfig::at(&home);
         assert_eq!(cfg.get("rotator.week_at"), Ok(None));
         assert_eq!(cfg.get("rotator.session_at"), Ok(None));
-        assert_eq!(cfg.get("rotator.codex_floor"), Ok(None));
+        assert_eq!(cfg.get("rotator.codex_credit_floor"), Ok(None));
         let s = resolve(&flags(), None, &no_env(), &|k| cfg.get(k)).unwrap();
         assert_eq!((s.session_at, s.week_at), (85, 90));
-        let floor = codex_floor(&|k| cfg.get(k)).unwrap();
+        let floor = codex_credit_floor(&|k| cfg.get(k)).unwrap();
         assert_eq!((floor.value, floor.origin), (3000, Origin::Default));
     }
 }

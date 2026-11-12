@@ -60,7 +60,7 @@ fn gate(session_at: u8, week_at: u8) -> Gate {
     }
 }
 
-const DEFAULT_LINE: &str = "thresholds: session-at 85% (default), week-at 90% (default, review reserve 10%), interval 600s (default), codex floor 3000 (default)";
+const DEFAULT_LINE: &str = "thresholds: session-at 85% (default), week-at 90% (default, review reserve 10%), interval 600s (default), codex credit floor 3000 (default)";
 
 fn fix_msg(key: &str, why: &str) -> String {
     format!(
@@ -86,7 +86,7 @@ fn the_documented_override_example() {
     );
     assert_eq!(
         text_line(&t),
-        "thresholds: session-at 85% (default), week-at 80% (config, review reserve 20%), interval 300s (env), codex floor 3000 (default)"
+        "thresholds: session-at 85% (default), week-at 80% (config, review reserve 20%), interval 300s (env), codex credit floor 3000 (default)"
     );
 }
 
@@ -99,12 +99,12 @@ fn every_key_from_config() {
             ("rotator.session_at", 70),
             ("rotator.week_at", 100),
             ("rotator.interval", 120),
-            ("rotator.codex_floor", 0),
+            ("rotator.codex_credit_floor", 0),
         ]),
     );
     assert_eq!(
         text_line(&t),
-        "thresholds: session-at 70% (config), week-at 100% (config, review reserve 0%), interval 120s (config), codex floor 0 (config)"
+        "thresholds: session-at 70% (config), week-at 100% (config, review reserve 0%), interval 120s (config), codex credit floor 0 (config)"
     );
 }
 
@@ -117,7 +117,7 @@ fn a_running_rotator_s_session_and_week_points_win_with_origin_rotator() {
     );
     assert_eq!(
         text_line(&t),
-        "thresholds: session-at 70% (rotator), week-at 95% (rotator, review reserve 5%), interval 120s (config), codex floor 3000 (default)"
+        "thresholds: session-at 70% (rotator), week-at 95% (rotator, review reserve 5%), interval 120s (config), codex credit floor 3000 (default)"
     );
 }
 
@@ -155,7 +155,7 @@ fn a_bad_key_shows_its_message_and_leaves_the_others() {
     assert_eq!(
         text_line(&t),
         format!(
-            "thresholds: session-at invalid ({}), week-at 90% (default, review reserve 10%), interval 600s (default), codex floor 3000 (default)",
+            "thresholds: session-at invalid ({}), week-at 90% (default, review reserve 10%), interval 600s (default), codex credit floor 3000 (default)",
             fix_msg("rotator.session_at", "must be an integer from 1 to 100")
         )
     );
@@ -185,16 +185,16 @@ fn a_bad_codex_floor_is_named_on_the_line() {
         None,
         &no_env,
         &cfg_bad(
-            "rotator.codex_floor",
-            "must be an integer from 0 to 1000000",
+            "rotator.codex_credit_floor",
+            "must be an integer from 0 to 100000000",
         ),
     );
     assert!(
         text_line(&t).ends_with(&format!(
-            ", codex floor invalid ({})",
+            ", codex credit floor invalid ({})",
             fix_msg(
-                "rotator.codex_floor",
-                "must be an integer from 0 to 1000000"
+                "rotator.codex_credit_floor",
+                "must be an integer from 0 to 100000000"
             )
         )),
         "{}",
@@ -241,7 +241,7 @@ fn the_default_object_is_the_documented_one() {
             "session_at": { "value": 85, "origin": "default" },
             "week_at": { "value": 90, "origin": "default", "review_reserve": 10 },
             "interval": { "value": 600, "origin": "default" },
-            "codex_floor": { "value": 3000, "origin": "default" }
+            "codex_credit_floor": { "value": 3000, "origin": "default" }
         })
     );
 }
@@ -251,7 +251,7 @@ fn values_are_integers_and_origins_are_lowercase() {
     let t = resolve(
         Some(gate(70, 80)),
         &env_of(&[("AMPLIHACK_ROTATE_INTERVAL", "300")]),
-        &cfg_of(&[("rotator.codex_floor", 1_000_000)]),
+        &cfg_of(&[("rotator.codex_credit_floor", 100_000_000)]),
     );
     let v = json(&t);
     assert_eq!(
@@ -260,10 +260,10 @@ fn values_are_integers_and_origins_are_lowercase() {
             "session_at": { "value": 70, "origin": "rotator" },
             "week_at": { "value": 80, "origin": "rotator", "review_reserve": 20 },
             "interval": { "value": 300, "origin": "env" },
-            "codex_floor": { "value": 1_000_000, "origin": "config" }
+            "codex_credit_floor": { "value": 100_000_000, "origin": "config" }
         })
     );
-    for k in ["session_at", "week_at", "interval", "codex_floor"] {
+    for k in ["session_at", "week_at", "interval", "codex_credit_floor"] {
         assert!(v[k]["value"].is_u64(), "{k}: {}", v[k]);
     }
 }
@@ -293,7 +293,7 @@ fn a_bad_key_is_null_with_the_raw_error() {
     );
     assert!(!text.contains('\u{1b}'), "escaped in the text: {text:?}");
     // The other keys have no `error`.
-    for k in ["session_at", "interval", "codex_floor"] {
+    for k in ["session_at", "interval", "codex_credit_floor"] {
         assert!(v[k].get("error").is_none(), "{k}: {}", v[k]);
     }
 }
@@ -304,14 +304,14 @@ fn the_object_always_has_all_four_keys() {
         "rotator.session_at",
         "rotator.week_at",
         "rotator.interval",
-        "rotator.codex_floor",
+        "rotator.codex_credit_floor",
     ] {
         let v = json(&resolve(None, &no_env, &cfg_bad(bad, "x")));
         let mut k: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         k.sort_unstable();
         assert_eq!(
             k,
-            ["codex_floor", "interval", "session_at", "week_at"],
+            ["codex_credit_floor", "interval", "session_at", "week_at"],
             "{bad}"
         );
     }
@@ -384,7 +384,7 @@ fn a_running_rotator_never_changes_the_interval_or_floor_origin() {
     let t = resolve(Some(gate(70, 80)), &no_env, &no_config);
     let i = t.interval.as_ref().unwrap();
     assert_eq!((i.value, i.origin.label()), (600, "default"));
-    let c = t.codex_floor.as_ref().unwrap();
+    let c = t.codex_credit_floor.as_ref().unwrap();
     assert_eq!((c.value, c.origin.label()), (3000, "default"));
     assert_eq!(t.session_at.as_ref().unwrap().origin.label(), "rotator");
     assert_eq!(t.week_at.as_ref().unwrap().origin.label(), "rotator");
@@ -392,12 +392,15 @@ fn a_running_rotator_never_changes_the_interval_or_floor_origin() {
     let t = resolve(
         Some(gate(70, 80)),
         &env_of(&[("AMPLIHACK_ROTATE_INTERVAL", "300")]),
-        &cfg_of(&[("rotator.interval", 120), ("rotator.codex_floor", 10_000)]),
+        &cfg_of(&[
+            ("rotator.interval", 120),
+            ("rotator.codex_credit_floor", 10_000),
+        ]),
     );
     let o = json(&t);
     assert_eq!(o["interval"]["value"], 300);
     assert_eq!(o["interval"]["origin"], "env");
-    assert_eq!(o["codex_floor"]["value"], 10_000);
-    assert_eq!(o["codex_floor"]["origin"], "config");
+    assert_eq!(o["codex_credit_floor"]["value"], 10_000);
+    assert_eq!(o["codex_credit_floor"]["origin"], "config");
     assert_eq!(o["session_at"]["origin"], "rotator");
 }

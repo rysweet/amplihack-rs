@@ -165,7 +165,7 @@ command, so it never prints `flag`.
 | `rotator.session_at` | integer percent, 1 to 100 | `85` | `AMPLIHACK_ROTATE_SESSION_AT` | `--session-at` | user only |
 | `rotator.week_at` | integer percent, 1 to 100 | `90` | `AMPLIHACK_ROTATE_WEEK_AT` | `--week-at` | user only |
 | `rotator.interval` | integer seconds, 1 to 86400 | `600` | `AMPLIHACK_ROTATE_INTERVAL` | `--interval` | user only |
-| `rotator.codex_floor` | integer credits, 0 to 1000000 | `3000` | — | — | user only |
+| `rotator.codex_credit_floor` | integer credits, 0 to 100000000 | `3000` | — | — | user only |
 | `sessions.daily_archive` | bool | `true` | — | — | user only |
 | `sessions.archive_days` | integer days, 1 to 4294967295 | `3` | — | `--days` | user only |
 | `sessions.archive_dest` | absolute path | (unset: `~/.amplihack/session-archive`) | — | `--dest` | user only |
@@ -434,7 +434,7 @@ four and prints them in its
 | `rotator.session_at` | The rotator swaps away from the live login when its session use reaches this percentage. Also the session part of the plan-capacity test that auto-switch uses for [overflow profiles](./profile-command.md#rotate-overflow) while no rotator runs. |
 | `rotator.week_at` | The same for weekly use. It is also the review reserve: `100 - week_at` percent of each login's weekly allowance is held back for review work. The default `90` keeps 10%. The reserve cannot be set on its own, and it is separate from [`governor.reserve_points`](#governor-keys). |
 | `rotator.interval` | Time between rotator cycles, for `profile rotate start` and `profile rotate watch`. |
-| `rotator.codex_floor` | The credit balance a Codex account must be above to count as having room once its rate limits are used up. Used for the `<- next` choice in [`profile usage`](./profile-command.md#codex-next-choice). `0` lets any account with a positive balance be chosen. |
+| `rotator.codex_credit_floor` | The credit balance a Codex account must be above to count as having room once its rate limits are used up. Used for the `<- next` choice in [`profile usage`](./profile-command.md#codex-next-choice). `0` lets any account with a positive balance be chosen. |
 
 For the first three, a `profile rotate` flag beats the variable, the
 variable beats the user file, and the user file beats the default:
@@ -443,7 +443,7 @@ variable beats the user file, and the user file beats the default:
 --session-at  >  AMPLIHACK_ROTATE_SESSION_AT  >  rotator.session_at  >  85
 ```
 
-`rotator.codex_floor` has no variable and no flag. The defaults are the
+`rotator.codex_credit_floor` has no variable and no flag. The defaults are the
 values the rotator used before these keys existed, so nothing changes until
 a key is set.
 
@@ -461,7 +461,7 @@ ignored, so a cloned repository cannot move your swap points or make a Codex
 account with few credits look usable:
 
 ```text
-/home/alice/src/myapp/.amplihack/config.toml: rotator.codex_floor: can only be set in the user file; ignored
+/home/alice/src/myapp/.amplihack/config.toml: rotator.codex_credit_floor: can only be set in the user file; ignored
 ```
 
 `profile rotate start` and autostart read `rotator.session_at`,
@@ -469,7 +469,7 @@ account with few credits look usable:
 background rotator, and pass the values to it as flags. The background
 rotator never reads the config file, so a change to these three reaches a
 rotator that is already running only after `profile rotate stop` and
-`start`. The rotator does not use `rotator.codex_floor`; `profile usage`
+`start`. The rotator does not use `rotator.codex_credit_floor`; `profile usage`
 reads it on each run, so a change to it applies at once.
 `profile rotate switch` makes no threshold decision and does not read them.
 
@@ -489,7 +489,7 @@ or a user file that group or others can write:
 - closes the auto-switch overflow gate while no rotator runs, with the same
   message on the `overflow gate:` line;
 - does not stop `profile usage`, which prints the message in place of that
-  key's value. A bad `rotator.codex_floor` means no Codex account is marked
+  key's value. A bad `rotator.codex_credit_floor` means no Codex account is marked
   `<- next`.
 
 These messages, including the `error` field of `profile usage --summary-json`,

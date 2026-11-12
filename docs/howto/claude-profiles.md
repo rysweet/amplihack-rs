@@ -952,7 +952,7 @@ An account whose rate limits are used up is chosen only when its credit
 balance is above the floor, 3000 by default. To change it:
 
 ```bash
-amplihack config set rotator.codex_floor 1000
+amplihack config set rotator.codex_credit_floor 1000
 ```
 
 This changes only the `<- next` mark in `profile usage`. The host's

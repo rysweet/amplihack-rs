@@ -18,10 +18,10 @@ pub fn no_config(_: &str) -> Result<Option<u64>, String> {
     Ok(None)
 }
 
-/// `rotator.codex_floor`: no flag, no variable, `codex-pick`'s default.
-pub(super) const CODEX_FLOOR_KEY: &str = "rotator.codex_floor";
+/// `rotator.codex_credit_floor`: no flag, no variable, `codex-pick`'s default.
+pub(super) const CODEX_FLOOR_KEY: &str = "rotator.codex_credit_floor";
 pub(super) const CODEX_FLOOR_MIN: u64 = 0;
-pub(super) const CODEX_FLOOR_MAX: u64 = 1_000_000;
+pub(super) const CODEX_FLOOR_MAX: u64 = 100_000_000;
 pub(super) const CODEX_FLOOR_DEFAULT: u64 = DEFAULT_FLOOR as u64;
 
 /// The `rotator.*` keys [`UserConfig`] reads.
@@ -70,7 +70,7 @@ pub struct Thresholds {
     pub session_at: Result<Threshold<u8>, ProfileError>,
     pub week_at: Result<Threshold<u8>, ProfileError>,
     pub interval: Result<Threshold<u64>, ProfileError>,
-    pub codex_floor: Result<Threshold<u64>, ProfileError>,
+    pub codex_credit_floor: Result<Threshold<u64>, ProfileError>,
 }
 
 /// How to fix a problem with the whole user file. `config set` and
@@ -114,10 +114,10 @@ pub(super) fn from_config(
     config_value(key, min, max, cfg).map_err(|why| config_error(key, &why))
 }
 
-/// The Codex credit floor: `rotator.codex_floor`, else `codex-pick`'s
+/// The Codex credit floor: `rotator.codex_credit_floor`, else `codex-pick`'s
 /// default [`DEFAULT_FLOOR`]. It has no flag and no variable. An account
 /// whose rate limits are used up counts only with a balance above it.
-pub fn codex_floor(cfg: &Cfg<'_>) -> Result<Threshold<u64>, ProfileError> {
+pub fn codex_credit_floor(cfg: &Cfg<'_>) -> Result<Threshold<u64>, ProfileError> {
     let at = |value, origin| Threshold { value, origin };
     Ok(
         from_config(CODEX_FLOOR_KEY, CODEX_FLOOR_MIN, CODEX_FLOOR_MAX, cfg)?
@@ -127,10 +127,10 @@ pub fn codex_floor(cfg: &Cfg<'_>) -> Result<Threshold<u64>, ProfileError> {
     )
 }
 
-/// [`codex_floor`]'s value, with only the bare reason when it cannot be
-/// used (`must be an integer from 0 to 1000000`), for the Codex block's
-/// `next: not chosen (rotator.codex_floor: <reason>)` line.
-pub fn codex_floor_value(cfg: &Cfg<'_>) -> Result<u64, String> {
+/// [`codex_credit_floor`]'s value, with only the bare reason when it cannot be
+/// used (`must be an integer from 0 to 100000000`), for the Codex block's
+/// `next: not chosen (rotator.codex_credit_floor: <reason>)` line.
+pub fn codex_credit_floor_value(cfg: &Cfg<'_>) -> Result<u64, String> {
     Ok(
         config_value(CODEX_FLOOR_KEY, CODEX_FLOOR_MIN, CODEX_FLOOR_MAX, cfg)?
             .unwrap_or(CODEX_FLOOR_DEFAULT),

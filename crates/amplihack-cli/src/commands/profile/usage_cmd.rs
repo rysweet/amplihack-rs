@@ -264,7 +264,7 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     // cannot be used is shown, never an error: this is a read-only report.
     let usage_thresholds::Current {
         thresholds,
-        codex_floor: floor,
+        codex_credit_floor: floor,
     } = usage_thresholds::current(store.root());
     let thresholds = &thresholds;
     // Issue #2001: names select Claude profiles only; with none, every
@@ -555,7 +555,7 @@ impl CodexRead {
 
     /// Waits for the read. A root that could not be listed, or a read
     /// thread that panicked, gives no rows and one warning. `floor` is
-    /// `rotator.codex_floor`, or why it cannot be used (issue #2007).
+    /// `rotator.codex_credit_floor`, or why it cannot be used (issue #2007).
     fn finish(self, floor: Result<u64, String>) -> CodexView {
         let rows = match self.handle.join() {
             Ok(Ok(rows)) => rows,

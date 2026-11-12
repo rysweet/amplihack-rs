@@ -109,7 +109,7 @@ fn config_list_shows_the_four_keys_in_schema_order_with_defaults() {
         "rotator.session_at = 85",
         "rotator.week_at = 90",
         "rotator.interval = 600",
-        "rotator.codex_floor = 3000",
+        "rotator.codex_credit_floor = 3000",
     ];
     let at: Vec<usize> = want
         .iter()
@@ -131,7 +131,7 @@ fn config_set_rejects_out_of_range_and_non_integer_values_with_exit_2() {
         ("rotator.session_at", "abc"),
         ("rotator.week_at", "0"),
         ("rotator.interval", "86401"),
-        ("rotator.codex_floor", "1000001"),
+        ("rotator.codex_credit_floor", "100000001"),
     ] {
         let out = run(
             &mut f.cmd(&["config", "set", key, value]),
@@ -284,7 +284,7 @@ fn a_group_writable_user_file_leaves_profile_usage_working_with_errors() {
     user_config(&f, "[rotator]\nsession_at = 70\n", 0o660);
     let v = summary_json(&f, &[]);
     let t = &v["thresholds"];
-    for k in ["session_at", "week_at", "interval", "codex_floor"] {
+    for k in ["session_at", "week_at", "interval", "codex_credit_floor"] {
         assert!(t[k]["value"].is_null(), "{k}: {t}");
         let e = t[k]["error"].as_str().unwrap_or_else(|| panic!("{k}: {t}"));
         assert!(e.contains(WHOLE_FILE_FIX), "{k}: {e}");
@@ -301,7 +301,7 @@ fn profile_usage_prints_the_default_thresholds_line() {
     let stdout = text(&out.stdout);
     assert_eq!(
         thresholds_line(&stdout),
-        "thresholds: session-at 85% (default), week-at 90% (default, review reserve 10%), interval 600s (default), codex floor 3000 (default)"
+        "thresholds: session-at 85% (default), week-at 90% (default, review reserve 10%), interval 600s (default), codex credit floor 3000 (default)"
     );
 }
 
@@ -310,7 +310,7 @@ fn profile_usage_shows_config_and_env_origins() {
     let f = Fixture::new();
     user_config(
         &f,
-        "[rotator]\nsession_at = 70\nweek_at = 80\ncodex_floor = 5000\n",
+        "[rotator]\nsession_at = 70\nweek_at = 80\ncodex_credit_floor = 5000\n",
         0o600,
     );
     let mut c = f.cmd(&["profile", "usage"]);
@@ -319,7 +319,7 @@ fn profile_usage_shows_config_and_env_origins() {
     let stdout = text(&out.stdout);
     assert_eq!(
         thresholds_line(&stdout),
-        "thresholds: session-at 70% (config), week-at 80% (config, review reserve 20%), interval 120s (env), codex floor 5000 (config)"
+        "thresholds: session-at 70% (config), week-at 80% (config, review reserve 20%), interval 120s (env), codex credit floor 5000 (config)"
     );
 }
 
@@ -334,7 +334,7 @@ fn summary_json_has_the_thresholds_object() {
             "session_at": { "value": 70, "origin": "config" },
             "week_at": { "value": 90, "origin": "default", "review_reserve": 10 },
             "interval": { "value": 600, "origin": "default" },
-            "codex_floor": { "value": 3000, "origin": "default" }
+            "codex_credit_floor": { "value": 3000, "origin": "default" }
         })
     );
 }
@@ -396,12 +396,12 @@ fn at_the_default_floor_a_credited_account_is_the_codex_pick() {
 #[test]
 fn a_floor_above_the_balance_drops_the_account_from_the_pick() {
     let f = Fixture::new();
-    user_config(&f, "[rotator]\ncodex_floor = 10000\n", 0o600);
+    user_config(&f, "[rotator]\ncodex_credit_floor = 10000\n", 0o600);
     let stdout = codex_usage(&f);
     assert!(!hhale_line(&stdout).contains("<- next"), "{stdout}");
     assert!(!stdout.contains("<- next"), "nothing is picked: {stdout}");
     assert!(
-        thresholds_line(&stdout).ends_with("codex floor 10000 (config)"),
+        thresholds_line(&stdout).ends_with("codex credit floor 10000 (config)"),
         "{stdout}"
     );
 }

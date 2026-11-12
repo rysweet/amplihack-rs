@@ -22,7 +22,7 @@ use std::path::Path;
 pub(super) struct Current {
     pub(super) thresholds: Thresholds,
     /// The floor `next_choice` uses, or the bare reason it cannot be used.
-    pub(super) codex_floor: Result<u64, String>,
+    pub(super) codex_credit_floor: Result<u64, String>,
 }
 
 /// The thresholds under `root`, from this process's environment, the user
@@ -33,7 +33,7 @@ pub(super) fn current(root: &Path) -> Current {
     let env = |k: &str| std::env::var_os(k);
     Current {
         thresholds: resolve(gate_record::running(root), &env, &cfg),
-        codex_floor: settings::codex_floor_value(&cfg),
+        codex_credit_floor: settings::codex_credit_floor_value(&cfg),
     }
 }
 
@@ -82,7 +82,7 @@ pub(super) fn text_line(t: &Thresholds) -> String {
     let interval = field("interval", &t.interval, |i| {
         format!("{}s ({})", i.value, i.origin.label())
     });
-    let floor = field("codex floor", &t.codex_floor, |c| {
+    let floor = field("codex credit floor", &t.codex_credit_floor, |c| {
         format!("{} ({})", c.value, c.origin.label())
     });
     format!("thresholds: {session}, {week}, {interval}, {floor}")
@@ -119,6 +119,6 @@ pub(super) fn json(t: &Thresholds) -> Value {
         "session_at": json_field(&t.session_at),
         "week_at": week,
         "interval": json_field(&t.interval),
-        "codex_floor": json_field(&t.codex_floor),
+        "codex_credit_floor": json_field(&t.codex_credit_floor),
     })
 }

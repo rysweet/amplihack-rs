@@ -31,7 +31,7 @@ const SCHEMA_ORDER: &[&str] = &[
     "rotator.session_at",
     "rotator.week_at",
     "rotator.interval",
-    "rotator.codex_floor",
+    "rotator.codex_credit_floor",
     "sessions.daily_archive",
     "sessions.archive_days",
     "sessions.archive_dest",
@@ -341,7 +341,7 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "rotator.session_at = 85",
             "rotator.week_at = 90",
             "rotator.interval = 600",
-            "rotator.codex_floor = 3000",
+            "rotator.codex_credit_floor = 3000",
             "sessions.daily_archive = true",
             "sessions.archive_days = 3",
             "sessions.archive_dest = (unset)",
@@ -464,8 +464,8 @@ fn set_rejects_invalid_values_with_exit_2() {
         ("rotator.week_at", "101"),
         ("rotator.interval", "0"),
         ("rotator.interval", "86401"),
-        ("rotator.codex_floor", "1000001"),
-        ("rotator.codex_floor", "-1"),
+        ("rotator.codex_credit_floor", "100000001"),
+        ("rotator.codex_credit_floor", "-1"),
     ] {
         let out = fx.amp(&["config", "set", key, value]);
         assert_exit(&out, 2);
@@ -491,8 +491,8 @@ fn set_accepts_boundary_values() {
         ("rotator.session_at", "1"),
         ("rotator.session_at", "100"),
         ("rotator.interval", "86400"),
-        ("rotator.codex_floor", "0"),
-        ("rotator.codex_floor", "1000000"),
+        ("rotator.codex_credit_floor", "0"),
+        ("rotator.codex_credit_floor", "100000000"),
     ] {
         assert_ok(&fx.amp(&["config", "set", key, value]));
     }
@@ -510,7 +510,7 @@ fn set_user_only_key_with_project_is_a_usage_error() {
         ("node.heap_consent", "true"),
         ("node.max_old_space_mb", "16384"),
         ("rotator.session_at", "70"),
-        ("rotator.codex_floor", "0"),
+        ("rotator.codex_credit_floor", "0"),
     ] {
         let out = fx.amp(&["config", "set", key, value, "--project"]);
         assert_exit(&out, 2);

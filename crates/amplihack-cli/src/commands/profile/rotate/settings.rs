@@ -5,7 +5,7 @@
 //!
 //! Only `session_at`, `week_at` and `interval` have a key; the other
 //! settings go from the variable straight to the default. The Codex credit
-//! floor (`rotator.codex_floor`, [`codex_floor`]) is a key with no flag and
+//! floor (`rotator.codex_credit_floor`, [`codex_credit_floor`]) is a key with no flag and
 //! no variable. A config value is checked against the range again here and
 //! is never clamped: a value that cannot be used is an error naming the key.
 
@@ -19,8 +19,8 @@ use config::from_config;
 #[cfg(test)]
 use config::{CODEX_FLOOR_DEFAULT, CODEX_FLOOR_KEY, CODEX_FLOOR_MAX, CODEX_FLOOR_MIN};
 pub use config::{
-    Cfg, Origin, Threshold, Thresholds, UserConfig, codex_floor, codex_floor_value, no_config,
-    user_file_cfg,
+    Cfg, Origin, Threshold, Thresholds, UserConfig, codex_credit_floor, codex_credit_floor_value,
+    no_config, user_file_cfg,
 };
 
 /// The environment, as a lookup: `std::env::var_os` or a test's map.
@@ -121,16 +121,12 @@ const INTERVAL: Spec = Spec {
     max: Some(86_400),
 };
 
-/// A percentage as `u8`; the ranges stop at 100, so this only fails if a
-/// range is ever widened past 255.
-fn narrow(t: Threshold<u64>, name: &str) -> Result<Threshold<u8>, ProfileError> {
-    let value = u8::try_from(t.value).map_err(|_| {
-        ProfileError::RotateConfig(format!("invalid rotate setting {name}: above 255"))
-    })?;
-    Ok(Threshold {
-        value,
+/// A percentage as `u8`: every percentage range stops at 100.
+fn narrow(t: Threshold<u64>) -> Threshold<u8> {
+    Threshold {
+        value: t.value as u8,
         origin: t.origin,
-    })
+    }
 }
 
 /// Shown value: the first 32 characters, escaped.
@@ -201,7 +197,7 @@ impl Spec {
     }
 
     fn pct(&self, flag: Option<&str>, env: &Env<'_>, cfg: &Cfg<'_>) -> Result<u8, ProfileError> {
-        narrow(self.resolve_traced(flag, env, cfg)?, self.flag).map(|t| t.value)
+        Ok(narrow(self.resolve_traced(flag, env, cfg)?).value)
     }
 }
 
@@ -263,15 +259,12 @@ pub fn gate_from_env(env: &Env<'_>, cfg: &Cfg<'_>) -> Result<Gate, ProfileError>
 /// The thresholds with no flag given, each with its origin, for
 /// `profile usage`.
 pub fn thresholds(env: &Env<'_>, cfg: &Cfg<'_>) -> Thresholds {
-    let pct = |spec: &Spec| {
-        spec.resolve_traced(None, env, cfg)
-            .and_then(|t| narrow(t, spec.flag))
-    };
+    let pct = |spec: &Spec| spec.resolve_traced(None, env, cfg).map(narrow);
     Thresholds {
         session_at: pct(&SESSION_AT),
         week_at: pct(&WEEK_AT),
         interval: INTERVAL.resolve_traced(None, env, cfg),
-        codex_floor: codex_floor(cfg),
+        codex_credit_floor: codex_credit_floor(cfg),
     }
 }
 

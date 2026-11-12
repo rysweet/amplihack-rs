@@ -37,7 +37,7 @@ pub(super) struct CodexView {
     /// `codex-pick` reads session files, which can be older, so the two can
     /// disagree.
     pub(super) next: Option<usize>,
-    /// Why no row was chosen at all: the reason `rotator.codex_floor`
+    /// Why no row was chosen at all: the reason `rotator.codex_credit_floor`
     /// cannot be used (issue #2007). A floor the operator did not set is
     /// never chosen with.
     pub(super) next_withheld: Option<String>,
@@ -48,7 +48,7 @@ pub(super) struct CodexView {
 }
 
 /// The view of `rows`, with the next choice worked out at the configured
-/// floor (`rotator.codex_floor`, `codex-pick`'s 3000 by default). With
+/// floor (`rotator.codex_credit_floor`, `codex-pick`'s 3000 by default). With
 /// `Err(reason)` nothing is chosen and the reason is kept for the
 /// `next: not chosen` line.
 pub(super) fn view(
@@ -140,7 +140,7 @@ fn block(v: &CodexView, time: &TimeView, usage: &dyn Fn(&Window) -> String) -> S
     }
     if let Some(why) = &v.next_withheld {
         out.push_str(&format!(
-            "next: not chosen (rotator.codex_floor: {})\n",
+            "next: not chosen (rotator.codex_credit_floor: {})\n",
             sanitize_ascii(why)
         ));
     }

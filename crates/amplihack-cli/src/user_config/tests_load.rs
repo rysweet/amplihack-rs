@@ -288,13 +288,19 @@ fn the_legacy_consent_is_a_layer_until_migrated() {
 #[test]
 fn rotator_keys_in_a_project_file_are_ignored_with_a_diagnostic() {
     let fx = Fx::new();
-    fx.project("[rotator]\nsession_at = 10\ncodex_floor = 0\n");
+    fx.project("[rotator]\nsession_at = 10\ncodex_credit_floor = 0\n");
     let e = fx.load(&[]);
     assert_eq!(e.entry("rotator.session_at").value, Some(Value::Int(85)));
     assert_eq!(e.entry("rotator.session_at").origin, Origin::Default);
-    assert_eq!(e.entry("rotator.codex_floor").value, Some(Value::Int(3000)));
-    assert_eq!(e.entry("rotator.codex_floor").origin, Origin::Default);
-    for key in ["rotator.session_at", "rotator.codex_floor"] {
+    assert_eq!(
+        e.entry("rotator.codex_credit_floor").value,
+        Some(Value::Int(3000))
+    );
+    assert_eq!(
+        e.entry("rotator.codex_credit_floor").origin,
+        Origin::Default
+    );
+    for key in ["rotator.session_at", "rotator.codex_credit_floor"] {
         let d = e
             .diagnostics
             .iter()
@@ -321,11 +327,11 @@ fn the_rotator_variable_outranks_the_user_file() {
 #[test]
 fn user_keys_returns_one_entry_per_name_in_order() {
     let fx = Fx::new();
-    fx.user("[rotator]\ninterval = 900\ncodex_floor = 0\n");
+    fx.user("[rotator]\ninterval = 900\ncodex_credit_floor = 0\n");
     let names = [
         "rotator.session_at",
         "rotator.interval",
-        "rotator.codex_floor",
+        "rotator.codex_credit_floor",
         "rotator.week_at",
     ];
     let got = super::user_keys(&fx.home, &names);
@@ -365,7 +371,10 @@ fn user_keys_reports_a_bad_value_for_that_key_only() {
 fn user_keys_fails_every_name_when_the_file_cannot_be_parsed() {
     let fx = Fx::new();
     fx.user("[rotator\nsession_at = 70\n");
-    let got = super::user_keys(&fx.home, &["rotator.session_at", "rotator.codex_floor"]);
+    let got = super::user_keys(
+        &fx.home,
+        &["rotator.session_at", "rotator.codex_credit_floor"],
+    );
     assert_eq!(got.len(), 2);
     assert!(got.iter().all(Result::is_err), "{got:?}");
 }
@@ -444,7 +453,8 @@ fn a_group_writable_user_file_gives_the_safe_rs_reason_for_each_key() {
     let fx = Fx::new();
     fx.user("[rotator]\nweek_at = 80\n");
     fs::set_permissions(user_file(&fx.home), fs::Permissions::from_mode(0o664)).unwrap();
-    let read = super::user_keys_detail(&fx.home, &["rotator.week_at", "rotator.codex_floor"]);
+    let read =
+        super::user_keys_detail(&fx.home, &["rotator.week_at", "rotator.codex_credit_floor"]);
     let p = read[0]
         .clone()
         .expect_err("a key the file sets fails closed");
@@ -475,7 +485,7 @@ fn a_guarded_home_keeps_the_path_in_full_and_out_of_reason() {
     // Issue #2007 S1: under the test guard the reason reaches RotateConfig
     // errors and `thresholds.*.error` in JSON, so it must not hold HOME.
     let home = Path::new("/");
-    let read = super::user_keys_detail(home, &["rotator.session_at", "rotator.codex_floor"]);
+    let read = super::user_keys_detail(home, &["rotator.session_at", "rotator.codex_credit_floor"]);
     assert_eq!(read.len(), 2);
     let shown = super::display_path(home);
     for r in read {

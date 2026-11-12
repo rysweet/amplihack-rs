@@ -795,7 +795,7 @@ amplihack profile rotate start
 | `rotator.session_at` | `85` | `--session-at` |
 | `rotator.week_at` | `90` | `--week-at` |
 | `rotator.interval` | `600` | `--interval` |
-| `rotator.codex_floor` | `3000` | the credit floor for the Codex `<- next` choice in `profile usage` |
+| `rotator.codex_credit_floor` | `3000` | the credit floor for the Codex `<- next` choice in `profile usage` |
 
 `--week-at` also sets the review reserve: with `rotator.week_at 85`, 15% of
 each login's weekly allowance is kept back for review work.
@@ -814,7 +814,7 @@ it, and autostart does not start a rotator. It never falls back to the
 default. See [Rotator keys](../reference/user-config.md#rotator-keys).
 
 The host's `~/.local/bin/codex-pick` script is not changed by
-`rotator.codex_floor`; it keeps its own `--floor` option.
+`rotator.codex_credit_floor`; it keeps its own `--floor` option.
 
 To check what is in force, run `amplihack profile usage` and read its
 `thresholds:` line (see [See how much capacity is left](#see-how-much-capacity-is-left)).
@@ -1528,7 +1528,7 @@ came from. Here the rotator was started with `--session-at 70` and
 `rotator.interval` is set to `120`:
 
 ```
-thresholds: session-at 70% (rotator), week-at 90% (rotator, review reserve 10%), interval 120s (config), codex floor 3000 (default)
+thresholds: session-at 70% (rotator), week-at 90% (rotator, review reserve 10%), interval 120s (config), codex credit floor 3000 (default)
 ```
 
 `rotator` means the value was read from the running rotator, so it is the

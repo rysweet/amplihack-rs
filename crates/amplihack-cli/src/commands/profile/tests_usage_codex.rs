@@ -9,7 +9,7 @@
 //!
 //! - `view(root, rows, timeout_secs, floor: Result<u64, String>) -> CodexView`,
 //!   which also works out `next` at that floor (issue #2007:
-//!   `rotator.codex_floor`); with `Err(reason)` no row is chosen and
+//!   `rotator.codex_credit_floor`); with `Err(reason)` no row is chosen and
 //!   `next_withheld` holds the reason;
 //! - `bars_block(&CodexView, &TimeView, colour) -> String` and
 //!   `table_block(&CodexView, &TimeView) -> String`, each the block from its
@@ -35,7 +35,7 @@ const HOME_CODEX: &str = "/home/ryan/.codex";
 const MIN: i64 = 60;
 const HOUR: i64 = 3600;
 const DAY: i64 = 86_400;
-/// The default `rotator.codex_floor`, `codex-pick`'s own default.
+/// The default `rotator.codex_credit_floor`, `codex-pick`'s own default.
 const FLOOR: u64 = 3000;
 
 /// The `thresholds` object of `--summary-json` with nothing set.
@@ -715,7 +715,7 @@ fn summary_json_has_codex_after_summary_and_keeps_profiles() {
 }
 
 // ---------------------------------------------------------------------------
-// The floor comes from `rotator.codex_floor` (issue #2007)
+// The floor comes from `rotator.codex_credit_floor` (issue #2007)
 // ---------------------------------------------------------------------------
 
 /// One account with its rate limits used up and 4000 credits, and one
@@ -760,7 +760,7 @@ fn a_floor_of_zero_lets_any_positive_balance_be_chosen() {
 
 #[test]
 fn an_unreadable_floor_chooses_nothing_and_says_why() {
-    let why = "must be an integer from 0 to 1000000";
+    let why = "must be an integer from 0 to 100000000";
     let v = view(
         PathBuf::from(ROOT),
         example_rows(),
@@ -772,7 +772,8 @@ fn an_unreadable_floor_chooses_nothing_and_says_why() {
         "never chosen with a floor the operator did not set"
     );
     assert_eq!(v.next_withheld.as_deref(), Some(why));
-    let want = "next: not chosen (rotator.codex_floor: must be an integer from 0 to 1000000)\n";
+    let want =
+        "next: not chosen (rotator.codex_credit_floor: must be an integer from 0 to 100000000)\n";
     for block in [bars_block(&v, &utc0(), false), table_block(&v, &utc0())] {
         assert!(!block.contains("<- next"), "{block}");
         assert!(block.ends_with(want), "the line follows the rows: {block}");
@@ -794,7 +795,7 @@ fn the_not_chosen_line_is_cleaned() {
     for block in [bars_block(&v, &utc0(), false), table_block(&v, &utc0())] {
         let line = block
             .lines()
-            .find(|l| l.starts_with("next: not chosen (rotator.codex_floor: "))
+            .find(|l| l.starts_with("next: not chosen (rotator.codex_credit_floor: "))
             .unwrap_or_else(|| panic!("{block}"));
         assert!(
             !line.contains('\u{1b}') && !line.contains('\u{202e}'),

@@ -2156,7 +2156,7 @@ the two can disagree. The rule:
    a row with no window percentage has room `0`.
 3. A candidate with room `0` or less gets `0.5` instead when it reports
    `hasCredits` true and a balance above the credit floor, and `-1`
-   otherwise. The floor is `rotator.codex_floor` from the
+   otherwise. The floor is `rotator.codex_credit_floor` from the
    [user config](./user-config.md#rotator-keys), `3000` by default; the
    [thresholds line](#thresholds-in-force) shows the value in use. With
    `0`, any positive balance counts.
@@ -2166,13 +2166,13 @@ the two can disagree. The rule:
 5. The first candidate with room above `0` is marked. When there is none,
    no row is marked.
 
-When `rotator.codex_floor` cannot be read (a value out of range, a file that
+When `rotator.codex_credit_floor` cannot be read (a value out of range, a file that
 cannot be parsed, or a user file that group or others can write), no row is
 marked and the line after the Codex rows says why, instead of choosing with
 a floor the operator did not set:
 
 ```
-next: not chosen (rotator.codex_floor: must be an integer from 0 to 1000000)
+next: not chosen (rotator.codex_credit_floor: must be an integer from 0 to 100000000)
 ```
 
 The brackets hold the key and the bare reason only. The
@@ -2181,10 +2181,10 @@ the [thresholds line](#thresholds-in-force) that follows already shows the
 full message for the same key.
 
 Every Codex row's `next_choice` in `--summary-json` is then `false`, and
-`thresholds.codex_floor.error` holds the full message.
+`thresholds.codex_credit_floor.error` holds the full message.
 
 The host's `~/.local/bin/codex-pick` script is not part of amplihack and
-does not read `rotator.codex_floor`; it keeps its own `--floor` option.
+does not read `rotator.codex_credit_floor`; it keeps its own `--floor` option.
 
 In the example, `ggrant` (room 66) is chosen over `ffarmer` (59), `hhale`
 (credits only, 0.5) and `~/.codex` (12). Two accounts with the same room
@@ -2702,14 +2702,14 @@ before the Codex block. It gives the thresholds the rotator and the Codex
 choice use, and where each came from. With nothing set:
 
 ```
-thresholds: session-at 85% (default), week-at 90% (default, review reserve 10%), interval 600s (default), codex floor 3000 (default)
+thresholds: session-at 85% (default), week-at 90% (default, review reserve 10%), interval 600s (default), codex credit floor 3000 (default)
 ```
 
 With `amplihack config set rotator.week_at 80` and
 `AMPLIHACK_ROTATE_INTERVAL=300` in the environment:
 
 ```
-thresholds: session-at 85% (default), week-at 80% (config, review reserve 20%), interval 300s (env), codex floor 3000 (default)
+thresholds: session-at 85% (default), week-at 80% (config, review reserve 20%), interval 300s (env), codex credit floor 3000 (default)
 ```
 
 | Field | Value | Source |
@@ -2717,7 +2717,7 @@ thresholds: session-at 85% (default), week-at 80% (config, review reserve 20%), 
 | `session-at` | The live login's session use, in percent, at which the rotator swaps. | `rotator.session_at` |
 | `week-at` | The same for weekly use, followed by the review reserve, `100 - week-at`: the share of each weekly allowance held back for review work. | `rotator.week_at` |
 | `interval` | Seconds between rotator cycles. | `rotator.interval` |
-| `codex floor` | The credit balance a Codex account needs once its rate limits are used up; see [Codex next choice](#codex-next-choice). | `rotator.codex_floor` |
+| `codex credit floor` | The credit balance a Codex account needs once its rate limits are used up; see [Codex next choice](#codex-next-choice). | `rotator.codex_credit_floor` |
 
 Each origin is one of:
 
@@ -2736,7 +2736,7 @@ therefore the value a rotator would use at its next start, not that of a
 rotator already running. A rotator reads `rotator.session_at`,
 `rotator.week_at` and `rotator.interval` only when it starts, so run
 `amplihack profile rotate stop` and `amplihack profile rotate start` after
-changing them. `codex floor` is read by `profile usage` itself on each run,
+changing them. `codex credit floor` is read by `profile usage` itself on each run,
 so a change to it applies at once.
 
 The review reserve is derived from `week-at` and cannot be set on its own.
@@ -2748,7 +2748,7 @@ A key that cannot be read is shown with the reason in place of its value,
 and the other fields are unaffected. `profile usage` still exits 0:
 
 ```
-thresholds: session-at invalid (invalid rotate setting rotator.session_at: must be an integer from 1 to 100; fix it with `amplihack config set rotator.session_at <value>` or `amplihack config unset rotator.session_at`), week-at 90% (default, review reserve 10%), interval 600s (default), codex floor 3000 (default)
+thresholds: session-at invalid (invalid rotate setting rotator.session_at: must be an integer from 1 to 100; fix it with `amplihack config set rotator.session_at <value>` or `amplihack config unset rotator.session_at`), week-at 90% (default, review reserve 10%), interval 600s (default), codex credit floor 3000 (default)
 ```
 
 The line is plain ASCII. Values and messages are cleaned as table names
@@ -2817,7 +2817,7 @@ shown and no Codex accounts:
     "session_at": { "value": 85, "origin": "default" },
     "week_at": { "value": 90, "origin": "default", "review_reserve": 10 },
     "interval": { "value": 600, "origin": "default" },
-    "codex_floor": { "value": 3000, "origin": "default" }
+    "codex_credit_floor": { "value": 3000, "origin": "default" }
   }
 }
 ```
@@ -2838,8 +2838,8 @@ shown and no Codex accounts:
 | `summary.runway_hours` | number or `null` | Hours of weighted headroom at that rate, one decimal place; `null` when the rate is `null` or zero. |
 | `summary.weekly_resets_next_24h` | array | Valid logins whose weekly reset is after now and no more than 24 hours away, and whose weighted `restores` (`weight × week% / 100`, two decimal places) is above `0`, soonest first, then by name. Each is `{"at", "profile", "restores"}`. |
 | `codex` | array | The [Codex JSON rows](#codex-json-rows), unchanged; `[]` with profile names given. Codex rows never count towards `summary`. |
-| `thresholds` | object | The [thresholds in force](#thresholds-in-force): `session_at`, `week_at`, `interval` and `codex_floor`, always all four. |
-| `thresholds.<key>.value` | integer or `null` | The value in use: percent for `session_at` and `week_at`, seconds for `interval`, credits for `codex_floor`. `null` when the key cannot be read. |
+| `thresholds` | object | The [thresholds in force](#thresholds-in-force): `session_at`, `week_at`, `interval` and `codex_credit_floor`, always all four. |
+| `thresholds.<key>.value` | integer or `null` | The value in use: percent for `session_at` and `week_at`, seconds for `interval`, credits for `codex_credit_floor`. `null` when the key cannot be read. |
 | `thresholds.<key>.origin` | string or `null` | `rotator`, `env`, `config` or `default`, as on the text line. `null` when the key cannot be read. |
 | `thresholds.<key>.error` | string | Present only when the key cannot be read: the message the text line shows, uncleaned (JSON escaping applies). |
 | `thresholds.week_at.review_reserve` | integer or `null` | `100 - value`; `null` when `week_at` cannot be read. |

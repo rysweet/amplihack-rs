@@ -36,7 +36,7 @@ fn keys_are_in_documented_order() {
             "rotator.session_at",
             "rotator.week_at",
             "rotator.interval",
-            "rotator.codex_floor",
+            "rotator.codex_credit_floor",
             "sessions.daily_archive",
             "sessions.archive_days",
             "sessions.archive_dest",
@@ -85,7 +85,7 @@ fn user_only_keys_are_agent_home_node_log_dir_governor_and_sessions() {
             "rotator.session_at",
             "rotator.week_at",
             "rotator.interval",
-            "rotator.codex_floor",
+            "rotator.codex_credit_floor",
             "sessions.daily_archive",
             "sessions.archive_days",
             "sessions.archive_dest"
@@ -242,7 +242,7 @@ fn governor_keys_are_user_only_with_documented_ranges_and_defaults() {
 /// Issue #2007: the `rotator.*` keys are user-only, so a repository cannot
 /// move the swap points or steer the Codex choice. Three have the rotator's
 /// `AMPLIHACK_ROTATE_*` variable (so `config get --show-origin` reports it);
-/// `codex_floor` has none.
+/// `codex_credit_floor` has none.
 #[test]
 fn rotator_keys_are_user_only_with_documented_ranges_defaults_and_env() {
     let cases: [(&str, u64, u64, u64, Option<&str>); 4] = [
@@ -267,7 +267,7 @@ fn rotator_keys_are_user_only_with_documented_ranges_defaults_and_env() {
             86_400,
             Some("AMPLIHACK_ROTATE_INTERVAL"),
         ),
-        ("rotator.codex_floor", 3000, 0, 1_000_000, None),
+        ("rotator.codex_credit_floor", 3000, 0, 100_000_000, None),
     ];
     for (name, default, min, max, env) in cases {
         let def = key_def(name).unwrap_or_else(|| panic!("{name} missing"));

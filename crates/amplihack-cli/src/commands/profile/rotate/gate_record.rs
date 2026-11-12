@@ -22,7 +22,7 @@
 
 use super::daemon::{DaemonState, current_state};
 use super::ledger::RotateState;
-use super::settings::{Cfg, Env, Settings, UserConfig, gate_from_env, gate_in_range};
+use super::settings::{Cfg, Env, Settings, gate_from_env, gate_in_range, user_file_cfg};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::overflow::Gate;
 use serde::{Deserialize, Serialize};
@@ -107,15 +107,10 @@ pub enum GateSource {
 /// means no overflow, so an unreadable record or a typo never spends money.
 pub fn effective(root: &Path) -> (Option<Gate>, GateSource) {
     let rs = RotateState::new(root);
-    let state = current_state(&rs);
-    // The config file is read only when no rotator runs: a running
-    // rotator's record is the authority.
-    let cfg = match state {
-        DaemonState::Stopped | DaemonState::Stale => Some(UserConfig::read()),
-        DaemonState::Running(_) | DaemonState::Unverifiable => None,
-    };
-    let lookup = |k: &str| cfg.as_ref().map_or(Ok(None), |c| c.get(k));
-    effective_with(&rs, state, &|k| std::env::var_os(k), &lookup)
+    // The lazy lookup reads the config file only when no rotator runs: a
+    // running rotator's record is the authority.
+    let cfg = user_file_cfg();
+    effective_with(&rs, current_state(&rs), &|k| std::env::var_os(k), &cfg)
 }
 
 /// The running rotator's recorded gate: `None` when no rotator runs, when
