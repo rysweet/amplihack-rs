@@ -63,6 +63,8 @@ collect_evidence() {
     else
       dirty_worktree="false"
     fi
+    # An explicit base_ref wins, then the run's base_branch (collect --base).
+    [ -n "$base_ref" ] || [ -z "${FINALIZATION_BASE_BRANCH:-}" ] || base_ref="origin/$FINALIZATION_BASE_BRANCH"
     if [ -z "$base_ref" ]; then
       base_ref="$(git -C "$target_dir" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || printf '')"
     fi

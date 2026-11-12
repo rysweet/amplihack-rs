@@ -6,7 +6,7 @@
 //! `TMUX_TMPDIR` and a synthetic `/proc` (`AMPLIHACK_TEST_PROC_ROOT`, honoured
 //! only with the home guard that `isolated` sets) all lie under one temp
 //! directory. The one exception is `TMUX_TMPDIR` when the temp directory is
-//! too long for a socket path: it then moves under `XDG_RUNTIME_DIR`, by the
+//! too long for a socket path: it then moves under `XDG_RUNTIME_DIR` or a private `/tmp` directory, by the
 //! rule in `support::socket_dir`. No real `~/.claude`, `~/.amplihack`, profile root, tmux server
 //! or `/proc` entry of another process is read or written.
 //!
@@ -58,7 +58,7 @@ pub struct Fx {
     pub records: PathBuf,
     /// State and call log of the fake `tmux`.
     pub tmux_state: PathBuf,
-    /// `TMUX_TMPDIR`: `root/tt`, or a directory under `XDG_RUNTIME_DIR` when
+    /// `TMUX_TMPDIR`: `root/tt`, or a private short socket directory when
     /// the socket path under `root` would not fit in `sun_path`. Tests that
     /// bind their own sockets put them here too.
     pub tmux_tmpdir: PathBuf,

@@ -57,7 +57,7 @@ fn probe_fixture(stdout: &str, exit: i32, compatible: bool) {
 #[test]
 fn codex_runner_accepts_newer_custom_version_and_extra_capabilities() {
     probe_fixture(
-        r#"{"schema_version":1,"version":"99.0.0-custom","capabilities":["future","codex_exec"],"extra":true}"#,
+        r#"{"schema_version":1,"version":"99.0.0-custom","capabilities":["future","codex_exec","durable_recovery_v1"],"extra":true}"#,
         0,
         true,
     );
@@ -77,7 +77,7 @@ fn codex_runner_rejects_missing_capability() {
 #[test]
 fn codex_runner_rejects_unknown_major() {
     probe_fixture(
-        r#"{"schema_version":2,"version":"1","capabilities":["codex_exec"]}"#,
+        r#"{"schema_version":2,"version":"1","capabilities":["codex_exec","durable_recovery_v1"]}"#,
         0,
         false,
     );
@@ -89,7 +89,7 @@ fn codex_runner_rejects_invalid_json() {
 #[test]
 fn codex_runner_rejects_failed_probe_even_with_valid_json() {
     probe_fixture(
-        r#"{"schema_version":1,"version":"1","capabilities":["codex_exec"]}"#,
+        r#"{"schema_version":1,"version":"1","capabilities":["codex_exec","durable_recovery_v1"]}"#,
         2,
         false,
     );

@@ -46,6 +46,9 @@ const START: i64 = NOW - 600;
 
 fn record(seq: u64, swapped_at: i64, measured_at: i64, session: u8, week: u8) -> SwapRecord {
     SwapRecord {
+        from_org: None,
+        to_org: None,
+        affinity: None,
         seq,
         live_login: "spare".into(),
         from_login: "work".into(),
