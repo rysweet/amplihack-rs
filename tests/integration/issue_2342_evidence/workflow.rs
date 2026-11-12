@@ -253,6 +253,13 @@ impl Fixture {
             self.log("cargo.log")
         );
         assert!(!self.marker(), "repository code ran while blocked");
+        // The suite was skipped for CI, not missing: its cause must not appear.
+        let summary = evidence["qa_summary"].as_str().unwrap_or_default();
+        assert!(
+            !summary.contains("no repository test command"),
+            "a CI block reported a missing test command: {}",
+            diagnostic(out)
+        );
     }
 
     fn head_now(&self) -> String {
