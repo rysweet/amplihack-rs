@@ -133,6 +133,12 @@ fn run_step(recipe: &str, step_id: &str, preflight_var: &str, context: &str) -> 
         &repo_root().join("amplifier-bundle/tools/recipe_context_value.sh"),
         &tools.join("recipe_context_value.sh"),
     );
+    // Crusty step-02 reads autodrive_minor_findings through the one parser
+    // beside the loop helper (#2391).
+    crate::support::exec_stub::copy_executable(
+        &repo_root().join("amplifier-bundle/tools/autodrive_minor_findings.sh"),
+        &tools.join("autodrive_minor_findings.sh"),
+    );
     // PR #1588 review: step-02 takes the round recipe from the recipes/
     // directory beside the loop driver and refuses when it is missing.
     let recipes = tmp.path().join("home/amplifier-bundle/recipes");

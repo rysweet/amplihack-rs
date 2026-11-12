@@ -1674,6 +1674,8 @@ fn step03(d: &Drive, review: &str) -> Output {
     let tools = tools_dir();
     let rec = d.record(1);
     let env: Vec<(&str, &OsStr)> = vec![
+        // #2391: classification runs only under follow_up; these cases test it.
+        ("AUTODRIVE_MINOR_FINDINGS", OsStr::new("follow_up")),
         ("RECIPE_VAR_crusty_review", OsStr::new(review)),
         ("AUTODRIVE_ROUND_RECORD", rec.as_os_str()),
         ("AUTODRIVE_ROUND_LABEL", OsStr::new("round-1")),
@@ -1804,6 +1806,7 @@ fn round_step03_without_the_tool_keeps_concerns() {
     let rec = d.record(1);
     let rv = review("CONCERNS", &two_minor());
     let env: Vec<(&str, &OsStr)> = vec![
+        ("AUTODRIVE_MINOR_FINDINGS", OsStr::new("follow_up")),
         ("RECIPE_VAR_crusty_review", OsStr::new(&rv)),
         ("AUTODRIVE_ROUND_RECORD", rec.as_os_str()),
         ("AUTODRIVE_LAUNCH_TOOLS", empty_tools.as_os_str()),
@@ -2159,6 +2162,8 @@ fn every_touched_recipe_and_tool_stays_within_400_lines() {
         "amplifier-bundle/tools/autodrive_crusty_finalize.sh",
         "amplifier-bundle/tools/autodrive_completion_context.sh",
         "amplifier-bundle/tools/autodrive_crusty_rereview.sh",
+        // #2391: the one parser for autodrive_minor_findings.
+        "amplifier-bundle/tools/autodrive_minor_findings.sh",
         "amplifier-bundle/tools/autodrive_state.sh",
         "amplifier-bundle/tools/autodrive_merge_gate.sh",
         // #2186: the expected-checks reader the gate runs for its CI section.
@@ -2305,6 +2310,9 @@ fn docs_no_longer_give_light_mode_priority() {
 
 #[test]
 fn only_the_crusty_loops_pass_the_second_clean_token() {
+    // #2391: both crusty entry points pass the token only under
+    // autodrive_minor_findings=follow_up; issue_2391_minor_findings_setting
+    // checks the condition by running them.
     let cl = step_command("autodrive-crusty-loop", "step-02-crusty-loop");
     assert!(
         cl.contains("--also-clean-token MINOR_ONLY")

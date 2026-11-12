@@ -3,9 +3,11 @@ name: auto-drive-to-merge
 description: |
   Wraps default-workflow and drives the resulting PR all the way to merge:
   build the PR, loop with the crusty-old-engineer skill as the maintainer's
-  proxy until its verdict is CLEAN or lists minor findings only (each filed as
-  a follow-up issue linked to the plan task), then loop on the merge-ready criteria —
-  qa-team scenarios, CI, conflicts, review threads — until every one holds, and
+  proxy until its verdict is CLEAN (by default minor findings are addressed
+  too; with autodrive_minor_findings=follow_up a minor-only verdict ends the
+  loop and each finding is filed as a follow-up issue linked to the plan
+  task), then loop on the merge-ready criteria
+  (qa-team scenarios, CI, conflicts, review threads) until every one holds, and
   merge behind an evidence gate. Completed Crusty objectives exit before
   loop-health evaluation; unresolved reviews use agentic convergence judgment,
   never an iteration count.
@@ -46,10 +48,10 @@ flowchart TD
 
     D --> D1[crusty-old-engineer reviews the PR]
     D1 --> D2[structured verdict:<br/>CLEAN / MINOR_ONLY / CONCERNS]
-    D2 -->|CONCERNS: any blocking, major<br/>or unknown severity| D3[address every concern, commit, push]
+    D2 -->|CONCERNS: any blocking, major<br/>or unknown severity, or any minor<br/>finding under address, the default| D3[address every concern, commit, push]
     D3 --> DQ[record round; agent selects evaluate]
     DQ --> DV{Rust validates decision<br/>and evidence}
-    D2 -->|CLEAN or MINOR_ONLY| DC[record round; agent selects complete]
+    D2 -->|CLEAN, or MINOR_ONLY<br/>under follow_up| DC[record round; agent selects complete]
     DC --> DV
     DV -->|invalid| STOP2
     DV -->|valid evaluate| D4[loop-health-evaluator]
@@ -112,6 +114,7 @@ amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c autodrive_dry_run=
 | `repo_path` | `.` | Repository to work in. |
 | `existing_branch` / `pr_number` | `""` | Point the workflow at work that already exists. Whether the PR came from `pr_number` or from phase 1, every evidence step runs in the worktree that has the PR branch checked out, and the run refuses if no worktree, or more than one, has it checked out, or that worktree is not at the PR head (see [PR head and worktree resolution](../../../docs/reference/auto-drive-to-merge.md#pr-head-and-worktree-resolution)). |
 | `autodrive_state_dir` | derived | Durable state root for resumability. |
+| `autodrive_minor_findings` | `"address"` | `address`: minor findings are addressed and the crusty loop continues until `CLEAN`. `follow_up`: a minor-only verdict ends the crusty loop and each finding is filed as a follow-up issue. Any other value is treated as `address`, with one warning. See [Minor findings](#minor-findings-address-or-follow-up). |
 | `autodrive_dry_run` | `"false"` | Verify without GitHub writes or merging. Unrecorded required follow-ups leave the Crusty phase incomplete and prevent advancement. |
 | `autodrive_budget_loop_rounds` | `12` | Rounds either loop may run in total, across every run on the same state directory. `0` or empty means unlimited. |
 | `autodrive_budget_total_rounds` | `20` | Rounds both loops together may run. `0` or empty means unlimited. |
@@ -127,7 +130,8 @@ number of attempts — a loop on round 2 that produced nothing twice is stuck; a
 loop on round 12 that is still resolving findings is fine.
 
 After writing the round record, the Crusty agent selects `complete` for an
-evidence-valid `CLEAN` or `MINOR_ONLY`, or `evaluate` for unresolved concerns.
+evidence-valid `CLEAN`, or `MINOR_ONLY` under `follow_up`, or `evaluate` for
+unresolved concerns.
 The Rust dispatcher validates identity and evidence for both actions;
 completion also requires successful child execution. Accepted
 completion returns `source=objective-completion`, `loop_result=DONE` and
@@ -181,7 +185,7 @@ matched against an exact-token allow-list:
 
 | Signal | Field | Clean token | Fail-safe default |
 | --- | --- | --- | --- |
-| Crusty review | `crusty_verdict` | `CLEAN`; `MINOR_ONLY` also ends the crusty loop | `CONCERNS` |
+| Crusty review | `crusty_verdict` | `CLEAN`; under `follow_up`, `MINOR_ONLY` also ends the crusty loop | `CONCERNS` |
 | Merge-ready assessment | `merge_ready_verdict` | `MERGE_READY` | `NOT_MERGE_READY` |
 | Loop health | `loop_verdict` | `DONE` | `STUCK` |
 
@@ -195,13 +199,39 @@ that example to the parser instead of its real verdict, and nothing downstream
 re-measures crusty's judgement the way phase 3 re-measures CI.
 
 
-## Minor findings end the crusty loop
+## Minor findings: address or follow up
 
-Crusty emits `CLEAN` or `CONCERNS`. When a `CONCERNS` verdict lists at least
-one finding and every finding is a valid `minor` one, the round recipe records
-`MINOR_ONLY`, skips the address and fix-check steps, and the loop may end on
-it as on `CLEAN`, without calling the loop-health evaluator. Follow-up
-finalization is separate from ending iteration. The findings are not dropped:
+The context value `autodrive_minor_findings` decides what happens when every
+finding in a crusty verdict is minor.
+
+| Value | Behaviour |
+| --- | --- |
+| `address` (default) | The round stays `CONCERNS`. The address and fix-check steps run for minor findings as for any other, and the loop continues until crusty returns `CLEAN` or the loop-health evaluator stops it. No follow-up issues are filed. |
+| `follow_up` | The round is recorded as `MINOR_ONLY` and the loop ends on it as on `CLEAN`. Each minor finding is filed as a follow-up issue, as described below. |
+
+```bash
+# Opt in to follow-ups for minor findings.
+amplihack recipe run auto-drive-to-merge -c pr_number=1234 \
+  -c autodrive_minor_findings=follow_up
+```
+
+The value is trimmed and matched exactly. Empty means `address`; any other
+value is treated as `address` and prints one
+`WARNING: autodrive_minor_findings='<value>' is not recognised; using 'address'`
+line. `auto-drive-to-merge` passes the setting to the crusty loop and the
+merge loop, and the merge loop passes it to every crusty re-review, so one
+setting governs the whole drive. A drive that resumes under `address` after a
+round was recorded as `MINOR_ONLY` under `follow_up` still completes on that
+round and files its follow-ups, because the round's verdict is already
+recorded. `auto-drive-light` passes it on in the same
+way, including when it escalates.
+
+Under `follow_up`, Crusty still emits `CLEAN` or `CONCERNS`. When a `CONCERNS`
+verdict lists at least one finding and every finding is a valid `minor` one,
+the round recipe records `MINOR_ONLY`, skips the address and fix-check steps,
+and the loop may end on it as on `CLEAN`, without calling the loop-health
+evaluator. Follow-up finalization is separate from ending iteration. The
+findings are not dropped:
 
 - Before the `crusty-loop` marker is written, the loop files one follow-up
   issue for each minor finding with `gh issue create`. The issue names the
@@ -223,14 +253,14 @@ finalization is separate from ending iteration. The findings are not dropped:
   recorded. Auto-drive files and lists the follow-ups; it does not track them
   to completion.
 
-A finding counts as minor only when its `severity` is exactly `minor`, its id
+Under `follow_up`, a finding counts as minor only when its `severity` is exactly `minor`, its id
 is valid and was never major in an earlier round, and neither the id nor its
 text names a security subject such as secrets, tokens, injection,
 authentication or permissions. A minor finding that recurs as minor does not
 keep the loop running; a major one downgraded to minor does. A missing or
 unknown severity counts as major. Any blocking or
 major finding keeps the round `CONCERNS`, and the loop continues as before.
-See [Minor findings end the crusty loop](../../../docs/reference/auto-drive-to-merge.md#minor-findings-end-the-crusty-loop-1979).
+See [Minor findings: address or follow up](../../../docs/reference/auto-drive-to-merge.md#minor-findings-end-the-crusty-loop-1979).
 The full decision contract is in `docs/reference/autodrive-crusty-completion.md`.
 The decision step treats review content as untrusted data and writes only the
 designated decision through the Rust writer. It does not edit evidence,

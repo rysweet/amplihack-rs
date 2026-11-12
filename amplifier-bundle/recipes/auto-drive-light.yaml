@@ -69,6 +69,8 @@ context:
   # Empty: derived from the repository remote and the PR number.
   autodrive_state_dir: ""
   autodrive_dry_run: "false"
+  # #2391: passed to the crusty loop and on escalation; empty means address.
+  autodrive_minor_findings: ""
   # Governs the build only; passed unchanged to auto-drive-to-merge on escalation.
   no_merge: "true"
   # Filled as the steps run.
@@ -508,6 +510,7 @@ steps:
       existing_branch: ""
       autodrive_state_dir: "{{build_result.state_dir}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
+      autodrive_minor_findings: "{{autodrive_minor_findings}}"
       no_merge: "{{no_merge}}"
       plan_task_id: "{{light_task_id}}"
     output: "light_escalation_result"
@@ -525,6 +528,7 @@ steps:
       task_description: "{{task_description}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
       plan_task_id: "{{light_task_id}}"
+      autodrive_minor_findings: "{{autodrive_minor_findings}}"
 
   # Issue #1551, as autodrive-check-unmerged in auto-drive-to-merge: a PR
   # merged outside the gate during the crusty loop stops the run.
@@ -568,6 +572,7 @@ steps:
       autodrive_state_dir: "{{build_result.state_dir}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
       plan_task_id: "{{light_task_id}}"
+      autodrive_minor_findings: "{{autodrive_minor_findings}}"
 
   # Which path ran (light or escalate, decided once by light-eligibility), the
   # reason, the follow-up issues filed by autodrive_followups.sh (column 2 of

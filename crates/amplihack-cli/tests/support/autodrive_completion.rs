@@ -29,6 +29,10 @@ pub struct Drive {
     pub review: PathBuf,
     pub fakes: Fakes,
     pub task: PathBuf,
+    /// Issue #2391: the `autodrive_minor_findings` value this drive runs with.
+    /// `None` leaves it unset (the `address` default). The #2336 cases were
+    /// written for minor findings ending the loop, so `new` sets `follow_up`.
+    minor_findings: std::cell::RefCell<Option<String>>,
 }
 
 impl Drive {
@@ -58,6 +62,7 @@ impl Drive {
             review,
             fakes,
             task,
+            minor_findings: std::cell::RefCell::new(Some("follow_up".to_owned())),
         };
         let origin = d.tmp.path().join("origin.git");
         d.git(
@@ -101,6 +106,16 @@ impl Drive {
         d
     }
 
+    /// Issue #2391: the `autodrive_minor_findings` value for later calls;
+    /// `None` leaves it unset.
+    pub fn minor_findings(&self, value: Option<&str>) {
+        *self.minor_findings.borrow_mut() = value.map(str::to_owned);
+    }
+
+    fn minor_findings_value(&self) -> Option<String> {
+        self.minor_findings.borrow().clone()
+    }
+
     pub fn set(&self, name: &str, text: &str) {
         private_file(&self.tmp.path().join(name), text);
     }
@@ -133,7 +148,14 @@ impl Drive {
             .env("FAKE_GH_HEAD", self.head())
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("AMPLIHACK_SESSION_DEPTH", "2")
-            .env("AMPLIHACK_MAX_DEPTH", "6");
+            .env("AMPLIHACK_MAX_DEPTH", "6")
+            .env_remove("RECIPE_VAR_autodrive_minor_findings")
+            .env_remove("AUTODRIVE_MINOR_FINDINGS");
+        // A round step reads the setting as the runner exports it (#2391).
+        // The loop entry points remove it again and pass it the way a caller does.
+        if let Some(v) = self.minor_findings_value() {
+            c.env("AUTODRIVE_MINOR_FINDINGS", v);
+        }
         c
     }
 
@@ -290,8 +312,13 @@ impl Drive {
 
     pub fn run_loop(&self) -> Output {
         let script = step_command("autodrive-crusty-loop", "step-02-crusty-loop");
-        self.script(&script)
-            .env("REPO_PATH", &self.review)
+        let mut c = self.script(&script);
+        // #2391: the round sees the setting only if step-02 forwards it.
+        c.env_remove("AUTODRIVE_MINOR_FINDINGS");
+        if let Some(v) = self.minor_findings_value() {
+            c.env("RECIPE_VAR_autodrive_minor_findings", v);
+        }
+        c.env("REPO_PATH", &self.review)
             .env(
                 "RECIPE_VAR_crusty_loop_preflight",
                 json!({
@@ -335,8 +362,13 @@ impl Drive {
             .arg(&self.review)
             .arg("--state-dir")
             .arg(&self.state)
-            .args(["-c", "pr_number=7", "-c", "plan_task_id=#2336"])
-            .arg("--context-from-file")
+            .args(["-c", "pr_number=7", "-c", "plan_task_id=#2336"]);
+        // #2391: the round sees the setting only if the re-review forwards it.
+        c.env_remove("AUTODRIVE_MINOR_FINDINGS");
+        if let Some(v) = self.minor_findings_value() {
+            c.arg("-c").arg(format!("autodrive_minor_findings={v}"));
+        }
+        c.arg("--context-from-file")
             .arg(format!("task_description={}", self.task.display()));
         if fail {
             c.env("FAKE_GH_FAIL", "issue create");

@@ -5832,6 +5832,9 @@ fi
 # tools they call are replaced by recorders under a fake AMPLIHACK_HOME.
 FAKE_HOME="${WORK}/fake-home"; FAKE_TOOLS="${FAKE_HOME}/amplifier-bundle/tools"
 mkdir -p "${FAKE_TOOLS}" "${WORK}/notgit"
+# #2391: crusty step-02 reads autodrive_minor_findings through the one parser
+# beside the loop helper; it is the real tool.
+cp "${REPO_ROOT}/amplifier-bundle/tools/autodrive_minor_findings.sh" "${FAKE_TOOLS}/" || { echo "autodrive_minor_findings.sh missing from the bundle" >&2; exit 2; }
 cat > "${FAKE_TOOLS}/autodrive_loop.sh" <<'EOF'
 printf '%s\n' "$@" > "${FAKE_CALLS_DIR}/loop-args"
 echo '{"loop":"stub","loop_result":"DONE"}'

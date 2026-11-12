@@ -42,7 +42,10 @@
 #      base merge or a description or evidence change needs no re-review, and
 #      an unreadable range is left to step-01b and the merge gate, which block.
 #   2. On "true": the crusty loop, `autodrive_loop.sh --loop-name crusty` on
-#      the same state dir, with MINOR_ONLY as a second clean token (#1979).
+#      the same state dir. MINOR_ONLY is a second clean token only when
+#      -c autodrive_minor_findings=follow_up (#1979, #2391); by default
+#      (address) minor findings are addressed and the loop runs to CLEAN.
+#      The canonical value is forwarded to the round as --context.
 #      When it ends DONE, `autodrive_followups.sh collect` adds the last
 #      round's minor findings to the follow-up set, files or verifies them,
 #      then autodrive_record_crusty_loop_done writes
@@ -74,7 +77,7 @@
 set -uo pipefail
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 
-REPO=""; REVIEW_DIR=""; DIR=""; PR=""; PR_URL_V=""; TASK_FILE=""; TASK_ID=""; BUDGET_ARGS=()
+REPO=""; REVIEW_DIR=""; DIR=""; PR=""; PR_URL_V=""; TASK_FILE=""; TASK_ID=""; BUDGET_ARGS=(); MF=
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="${2:-}"; shift 2 ;;
@@ -85,6 +88,7 @@ while [ $# -gt 0 ]; do
         pr_number=*) PR="${2#*=}" ;;
         pr_url=*) PR_URL_V="${2#*=}" ;;
         plan_task_id=*) TASK_ID="${2#*=}" ;;
+        autodrive_minor_findings=*) MF="${2#*=}" ;;
         autodrive_budget_loop_rounds=*|autodrive_budget_total_rounds=*|autodrive_budget_wall_seconds=*)
           BUDGET_ARGS+=(--context "${2:-}") ;;
         autodrive_budget_*) echo "WARNING: autodrive_crusty_rereview.sh: '${2%%=*}' is not a budget key; it is not forwarded to the crusty loop." >&2 ;;
@@ -107,13 +111,18 @@ result() { # result <before_round_result> <range> <crusty_loop_result> <exit>
 }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
-for t in autodrive_round_evidence.sh autodrive_loop.sh autodrive_state.sh autodrive_trust.sh autodrive_followups.sh autodrive_crusty_finalize.sh; do
+for t in autodrive_round_evidence.sh autodrive_loop.sh autodrive_state.sh autodrive_trust.sh autodrive_followups.sh autodrive_crusty_finalize.sh autodrive_minor_findings.sh; do
   [ -n "$HERE" ] && [ -f "$HERE/$t" ] && continue
   echo "ERROR: autodrive-tools-not-found: ${t} is not beside autodrive_crusty_rereview.sh (${HERE:-<unknown>})" >&2
   result crusty-rereview-unavailable not-checked "" 1
 done
 # shellcheck source=/dev/null
 . "$HERE/autodrive_state.sh" || result crusty-rereview-unavailable not-checked "" 1
+# #2391: autodrive_minor_findings is parsed in one place,
+# autodrive_minor_findings.sh (also used by
+# autodrive-crusty-loop.yaml step-02).
+MF="$(bash "$HERE/autodrive_minor_findings.sh" "$MF")" || result crusty-rereview-unavailable not-checked "" 1
+ALSO_CLEAN=(); [ "$MF" != follow_up ] || ALSO_CLEAN=(--also-clean-token MINOR_ONLY)
 
 # 1. The range, measured in the repository; the marker is cleared there.
 DECISION="$(cd -- "$REPO" 2>/dev/null && AUTODRIVE_STATE_DIR="$DIR" PR_NUMBER="$PR" \
@@ -138,7 +147,7 @@ echo "INFO: commits after the clean crusty round need review; running the crusty
 OUT="$(bash "$HERE/autodrive_loop.sh" \
   --loop-name "crusty" \
   --round-recipe "autodrive-crusty-round" \
-  --clean-token "CLEAN" --also-clean-token MINOR_ONLY \
+  --clean-token "CLEAN" ${ALSO_CLEAN[@]+"${ALSO_CLEAN[@]}"} \
   --verdict-field "crusty_verdict" \
   --repo "$REPO" \
   --review-dir "$REVIEW_DIR" \
@@ -147,6 +156,7 @@ OUT="$(bash "$HERE/autodrive_loop.sh" \
   --context "repo_path=${REPO}" \
   --context "pr_number=${PR}" \
   --context "pr_url=${PR_URL_V}" \
+  --context "autodrive_minor_findings=${MF}" \
   ${BUDGET_ARGS[@]+"${BUDGET_ARGS[@]}"})"
 RC=$?
 LOOP_RESULT="$(printf '%s' "$OUT" | "${AMPLIHACK_BIN:-amplihack}" orch helper extract-json --require-field loop_result \
