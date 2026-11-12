@@ -1,6 +1,6 @@
 ---
 title: Hook State Root Reference
-description: Where amplihack-hooks writes per-session and per-project state, how the location is resolved, and what happens when it cannot be.
+description: Hook state paths, Stop controls, counter synchronisation and storage failure behaviour.
 last_updated: 2026-11-12
 doc_type: reference
 related_issues: ["#1963", "#2053", "#2361", "#2368"]
@@ -30,6 +30,7 @@ Other project changes are listed under
 - [Project keys](#project-keys)
 - [Files written by each hook](#files-written-by-each-hook)
 - [Stop state and controls](#stop-state-and-controls)
+- [Stop counter synchronisation](#stop-counter-synchronisation)
 - [Directory permissions](#directory-permissions)
 - [When no state root resolves](#when-no-state-root-resolves)
 - [Write failures](#write-failures)
@@ -310,7 +311,15 @@ generated state. Features remain opt-in.
 All Stop counters, completion markers, summaries, feedback, reflection history,
 current findings and presentation semaphores are beneath `S`. Atomic companion
 locks and temporary files stay beside their counters in `S/locks/` or
-`S/power-steering/`. Successful atomic operations leave no temporary files.
+`S/power-steering/` throughout their lifetime, including before the counter
+file exists. Successful atomic operations leave no temporary files. Companion
+lock files can remain after the operating-system lock is released:
+
+| Counter | Companion lock |
+| --- | --- |
+| `S/locks/lock_invocations.txt` | `S/locks/lock_invocations.json.lock` |
+| `S/power-steering/session_count` | `S/power-steering/session_count.json.lock` |
+
 Directories are created only when needed, using the
 [private-directory permissions](#directory-permissions).
 
@@ -341,8 +350,9 @@ remain project-owned inputs and are not moved into `S`.
 
 ### Continuation, completion and presentation
 
-An active lock increments its session counter and blocks with the continuation
-prompt. When the counter reaches or exceeds the safety-valve threshold, it
+An active lock successfully increments its session counter before evaluating
+the safety valve. Below the threshold it blocks with the continuation prompt.
+When the counter reaches or exceeds the safety-valve threshold, it
 removes the project controls
 `.lock_active`, `.lock_goal`, `.lock_message` and `.continuation_prompt` from
 `.claude/runtime/locks/`, then approves immediately. Neither lock result runs
@@ -366,8 +376,68 @@ input locations. Redirect history is still read from
 `.claude/runtime/logs/<normalised session key>/redirects.jsonl` in the project;
 relocating generated feedback does not move or create this input.
 
-Legacy project-local Stop state is not imported, moved or deleted. Counters
-and markers at the new location are reused independently of that legacy state.
+### Legacy state
+
+Legacy project-local generated Stop state is not read, imported, moved,
+modified or deleted. An old lock counter cannot trigger the new session's
+safety valve. Old power-steering counters and completion markers cannot skip
+the first-invocation exemption or mark the new session complete. Old reflection
+findings and presentation semaphores cannot supply or suppress its findings.
+Existing state beneath `S` is reused independently of those legacy files.
+Project controls and redirect history remain inputs as described above.
+
+Stop adds no Git ignore rules and makes no changes to `.git/info/exclude`.
+Generated state needs no checkout exclusions.
+
+## Stop counter synchronisation
+
+Both Stop counters explicitly select blocking acquisition through
+`AtomicCounter`, `AtomicJsonFile` and `FileLock`. On Unix, acquisition uses
+`fcntl(F_SETLKW)` for the existing whole-file lock range. An interrupted call
+(`EINTR`) is retried immediately, with no timer, deadline, polling or delayed
+retry. A competing invocation waits until the holder releases the lock; a
+live holder can delay it indefinitely. Contention alone does not cause a
+timeout and fail-open exit. Other storage errors follow Stop's
+[fail-open policy](#write-failures).
+See the [lock implementation](../../crates/amplihack-state/src/file_lock.rs),
+[atomic storage](../../crates/amplihack-state/src/atomic_json.rs) and Stop's
+[lock](../../crates/amplihack-hooks/src/stop/lock.rs) and
+[power-steering](../../crates/amplihack-hooks/src/stop/power_steering/mod.rs)
+counter sites.
+
+An exclusive companion lock covers the whole read–modify–replace operation
+on Unix. The counter remains JSON
+(`{"value": N}`), including the file named `lock_invocations.txt`; replacement
+uses a temporary file in the same directory and an atomic rename. The lock is
+released when its guard is dropped, including on an error.
+
+The companion file's continued existence does not mean the lock is held.
+
+Blocking acquisition is opt-in for these Stop operations. Other callers
+retain their existing timeout defaults. Non-Unix platforms retain
+best-effort locking without a cross-process exclusion guarantee.
+
+### Platform coverage and validation
+
+The blocking path runs on both macOS and Linux. macOS evidence cannot establish
+Linux-only behaviour involving `/proc`, pidfd or FIFO pools. In particular,
+these tests in
+[`limit_resume_binary.rs`](../../bins/amplihack-hooks/tests/limit_resume_binary.rs)
+are gated with `#[cfg(target_os = "linux")]` and are omitted on macOS:
+
+- `resumes_when_a_fresh_cycle_has_capacity`
+- `shell_wrapped_hook_delivers_the_warning_from_the_swap_record_alone`
+- `second_run_on_the_same_event_is_a_silent_duplicate`
+- `toggle_file_turns_it_on_too`
+
+The [CI Test job](../../.github/workflows/ci.yml) runs the workspace tests on
+`ubuntu-latest`, where these cases are included. Corresponding Linux CI
+validation remains pending; no passing run is available for this branch.
+These limit-resume cases do not validate Stop counter locking.
+
+Live lock and temporary-file placement requires
+observation while the files exist; a clean checkout after execution alone
+cannot establish that property.
 
 ## Directory permissions
 
@@ -430,6 +500,15 @@ Stop never redirects failed writes to the project or another storage root.
 Missing storage or a propagated storage error therefore prevents enforcement
 for that invocation. A write failure can leave partial state beneath `S`,
 such as a completion marker saved before a summary failure.
+
+A resolved but unwritable root is a storage failure, rather than a reason to
+try another root. If lock directory preparation or the counter update fails,
+Stop approves without removing any of the four project lock controls. A
+power-steering completion marker written before a summary failure remains in
+place and is recognised on subsequent invocations. Reflection output writes
+are independent: failure to save one does not prevent attempts to save the
+others or present available findings. Failure to remove a presentation
+semaphore is logged and still passes through on that invocation.
 
 Only the no-root case makes PreCompact report success with `transcript_path`
 and `metadata` set to `null`. A failed export or metadata write under a

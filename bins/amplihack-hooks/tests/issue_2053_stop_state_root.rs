@@ -103,6 +103,7 @@ fn hook(s: &HookSandbox) -> Command {
         // Explicitly select the normal protocol; native Codex skips Stop checks.
         .env("AMPLIHACK_HOOK_PROTOCOL", "claude")
         .env("AMPLIHACK_AGENT_BINARY", "claude")
+        .env("AMPLIHACK_ROOT", s.root().join("absent-framework"))
         .env("CLAUDE_CONFIG_DIR", s.profiles().join("claude"))
         .env("CODEX_HOME", s.profiles().join("codex"))
         .env("XDG_CONFIG_HOME", s.profiles().join("config"))
@@ -541,6 +542,7 @@ fn safety_valve_removes_only_four_project_controls_and_approves_immediately() {
     enable_reflection(&s);
     write(s.project().join(".claude/runtime/locks/keep.txt"), "keep");
     init_repo(&s);
+    let repository_before = snapshot(&s);
     let before = tree(&s.project());
     let mut command = hook(&s);
     command.env("AMPLIHACK_MAX_LOCK_ITERATIONS", "2");
@@ -560,6 +562,10 @@ fn safety_valve_removes_only_four_project_controls_and_approves_immediately() {
         expected.remove(&PathBuf::from(".claude/runtime/locks").join(control));
     }
     assert_eq!(tree(&s.project()), expected);
+    let repository_after = snapshot(&s);
+    assert_eq!(repository_after.stage, repository_before.stage);
+    assert_eq!(repository_after.config, repository_before.config);
+    assert_eq!(repository_after.exclude, repository_before.exclude);
     assert!(!state(&s, Some("valve")).join("power-steering").exists());
     assert!(!state(&s, Some("valve")).join("reflection").exists());
 }
@@ -1006,5 +1012,231 @@ fn legacy_project_state_is_neither_imported_nor_modified() {
         &state(&s, Some("legacy")).join("locks/lock_invocations.txt"),
         1,
     );
+    assert_eq!(snapshot(&s), before);
+}
+
+#[test]
+fn legacy_power_counter_and_completion_cannot_skip_new_session_processing() {
+    let s = HookSandbox::new();
+    enable_power(&s);
+    let path = transcript(&s, false);
+    let legacy = s.project().join(".claude/runtime/power-steering");
+    write(legacy.join("legacy/session_count"), r#"{"value":49}"#);
+    write(
+        legacy.join("legacy/session_count.json.lock"),
+        "legacy companion",
+    );
+    write(legacy.join(".legacy_completed"), "legacy completion");
+    write(legacy.join("legacy/summary.md"), "legacy summary");
+    init_repo(&s);
+    let before = snapshot(&s);
+    assert_eq!(
+        invoke(hook(&s), Some("legacy"), Some(&path))["decision"],
+        "approve"
+    );
+    let power = state(&s, Some("legacy")).join("power-steering");
+    assert_counter(&power.join("session_count"), 1);
+    assert_eq!(
+        invoke(hook(&s), Some("legacy"), Some(&path))["decision"],
+        "block"
+    );
+    assert_counter(&power.join("session_count"), 2);
+    assert!(!power.join(".legacy_completed").exists());
+    assert!(!power.join("summary.md").exists());
+    assert_eq!(snapshot(&s), before);
+}
+
+#[test]
+fn legacy_reflection_presentation_cannot_suppress_or_seed_new_findings() {
+    let s = HookSandbox::new();
+    enable_reflection(&s);
+    let path = transcript(&s, true);
+    let legacy = s.project().join(".claude/runtime/reflection");
+    write(
+        legacy.join(".reflection_presented_legacy"),
+        "legacy semaphore",
+    );
+    write(legacy.join("reflection_legacy_0.md"), "legacy history");
+    write(legacy.join("current_findings.md"), "legacy findings");
+    write(
+        s.project()
+            .join(".claude/runtime/logs/legacy/FEEDBACK_SUMMARY.md"),
+        "legacy feedback",
+    );
+    init_repo(&s);
+    let before = snapshot(&s);
+    assert_eq!(
+        invoke(reflective_hook(&s, ""), Some("legacy"), Some(&path))["decision"],
+        "block"
+    );
+    assert_eq!(invocations(&s), 1);
+    let resolved = state(&s, Some("legacy"));
+    assert_eq!(
+        fs::read_to_string(resolved.join("logs/FEEDBACK_SUMMARY.md")).unwrap(),
+        FINDINGS
+    );
+    assert_eq!(
+        fs::read_to_string(resolved.join("reflection/current_findings.md")).unwrap(),
+        FINDINGS
+    );
+    assert_eq!(
+        invoke(reflective_hook(&s, ""), Some("legacy"), Some(&path))["decision"],
+        "approve"
+    );
+    assert_eq!(invocations(&s), 1);
+    assert!(
+        !resolved
+            .join("reflection/.reflection_presented_legacy")
+            .exists()
+    );
+    assert_eq!(snapshot(&s), before);
+}
+
+#[test]
+fn unknown_session_reuses_power_completion_and_reflection_presentation() {
+    let s = HookSandbox::new();
+    enable_power(&s);
+    enable_reflection(&s);
+    let path = transcript(&s, true);
+    init_repo(&s);
+    let before = snapshot(&s);
+    // First power invocation reaches reflection. The second completes power
+    // steering and consumes that same presentation despite the empty raw id.
+    assert_eq!(
+        invoke(reflective_hook(&s, ""), None, Some(&path))["decision"],
+        "block"
+    );
+    assert_eq!(
+        invoke(reflective_hook(&s, ""), Some(""), Some(&path))["decision"],
+        "approve"
+    );
+    let resolved = state(&s, None);
+    let power = resolved.join("power-steering");
+    assert_counter(&power.join("session_count"), 2);
+    assert!(power.join(".unknown-session_completed").is_file());
+    let summary = fs::read(power.join("summary.md")).unwrap();
+    // An unfinished transcript must still reuse completion and run reflection.
+    transcript(&s, false);
+    assert_eq!(
+        invoke(reflective_hook(&s, ""), Some(" \t\n"), Some(&path))["decision"],
+        "block"
+    );
+    assert_counter(&power.join("session_count"), 3);
+    assert_eq!(fs::read(power.join("summary.md")).unwrap(), summary);
+    assert_eq!(invocations(&s), 2);
+    assert!(
+        resolved
+            .join("reflection/.reflection_presented_unknown-session")
+            .is_file()
+    );
+    assert_eq!(snapshot(&s), before);
+    assert_owned_by_sessions(&s.amplihack_home(), &[None]);
+}
+
+#[test]
+fn counter_file_and_companion_failures_preserve_controls_before_the_safety_valve() {
+    for feature in ["locks", "power-steering"] {
+        for obstruction in [
+            "counter-directory",
+            "counter-malformed",
+            "companion-directory",
+        ] {
+            let s = HookSandbox::new();
+            if feature == "locks" {
+                enable_lock(&s);
+            } else {
+                enable_power(&s);
+            }
+            enable_reflection(&s);
+            let resolved = state(&s, Some("counter-error"));
+            let counter = resolved.join(if feature == "locks" {
+                "locks/lock_invocations.txt"
+            } else {
+                "power-steering/session_count"
+            });
+            match obstruction {
+                "counter-directory" => fs::create_dir_all(&counter).unwrap(),
+                "counter-malformed" => write(&counter, "broken counter"),
+                _ => fs::create_dir_all(counter.with_extension("json.lock")).unwrap(),
+            }
+            init_repo(&s);
+            let before = snapshot(&s);
+            let mut command = hook(&s);
+            command.env("AMPLIHACK_MAX_LOCK_ITERATIONS", "1");
+            assert_eq!(
+                invoke(command, Some("counter-error"), None),
+                json!({}),
+                "{feature}: {obstruction}"
+            );
+            assert!(!resolved.join("reflection").exists());
+            assert_eq!(snapshot(&s), before, "{feature}: {obstruction}");
+        }
+    }
+}
+
+#[test]
+fn completion_marker_failure_approves_without_summary_or_later_feature_processing() {
+    let s = HookSandbox::new();
+    enable_power(&s);
+    enable_reflection(&s);
+    let path = transcript(&s, true);
+    let resolved = state(&s, Some("completion-error"));
+    write(
+        resolved.join("power-steering/session_count"),
+        r#"{"value":1}"#,
+    );
+    // A dangling symlink has exists() == false, so it reaches mark_complete;
+    // its missing parent makes that write fail on macOS even for root users.
+    symlink(
+        s.root().join("absent-parent/marker"),
+        resolved.join("power-steering/.completion-error_completed"),
+    )
+    .unwrap();
+    init_repo(&s);
+    let before = snapshot(&s);
+    assert_eq!(
+        invoke(hook(&s), Some("completion-error"), Some(&path)),
+        json!({})
+    );
+    assert_counter(&resolved.join("power-steering/session_count"), 2);
+    assert!(!resolved.join("power-steering/summary.md").exists());
+    assert!(!resolved.join("reflection").exists());
+    assert!(!s.root().join("absent-parent").exists());
+    assert_eq!(snapshot(&s), before);
+}
+
+#[test]
+fn presentation_write_failure_keeps_findings_and_allows_subsequent_reflection() {
+    let s = HookSandbox::new();
+    enable_reflection(&s);
+    let path = transcript(&s, true);
+    let resolved = state(&s, Some("presentation-error"));
+    let reflection = resolved.join("reflection");
+    fs::create_dir_all(&reflection).unwrap();
+    let marker = reflection.join(".reflection_presented_presentation-error");
+    symlink(s.root().join("absent-parent/marker"), &marker).unwrap();
+    init_repo(&s);
+    let before = snapshot(&s);
+    for count in 1..=2 {
+        let result = invoke(
+            reflective_hook(&s, ""),
+            Some("presentation-error"),
+            Some(&path),
+        );
+        assert_eq!(result["decision"], "block");
+        assert!(result["reason"].as_str().unwrap().contains(FINDINGS));
+        assert_eq!(invocations(&s), count);
+        assert_eq!(
+            fs::read_to_string(reflection.join("current_findings.md")).unwrap(),
+            FINDINGS
+        );
+        assert!(!marker.exists());
+        assert!(
+            fs::symlink_metadata(&marker)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
     assert_eq!(snapshot(&s), before);
 }

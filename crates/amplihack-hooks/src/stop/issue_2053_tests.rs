@@ -8,6 +8,39 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Observe the mode selected by the actual Stop construction sites while
+/// delegating storage to the real counter. All existing lock and power-steering
+/// execution tests therefore reject accidental use of the timeout default.
+/// This adapter and its two imports are compiled only into unit tests.
+pub(super) struct StopCounter {
+    counter: amplihack_state::AtomicCounter,
+    blocking: bool,
+}
+
+impl StopCounter {
+    pub(super) fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            counter: amplihack_state::AtomicCounter::new(path),
+            blocking: false,
+        }
+    }
+
+    pub(super) fn with_blocking_lock(self) -> Self {
+        Self {
+            counter: self.counter.with_blocking_lock(),
+            blocking: true,
+        }
+    }
+
+    pub(super) fn increment(&self) -> Result<u64, amplihack_state::counter::CounterError> {
+        assert!(
+            self.blocking,
+            "Stop counter must explicitly select blocking acquisition"
+        );
+        self.counter.increment()
+    }
+}
+
 fn write(path: impl AsRef<Path>, text: &str) {
     let path = path.as_ref();
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -16,13 +49,13 @@ fn write(path: impl AsRef<Path>, text: &str) {
 
 /// Callers hold env_lock for this guard's entire lifetime. Every environment
 /// variable that can select a home, profile, framework or agent is isolated.
-struct Environment {
+pub(super) struct Environment {
     _vars: Vec<EnvVarGuard>,
     root: tempfile::TempDir,
 }
 
 impl Environment {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let root = crate::test_support::isolated_tempdir();
         let mut vars = Vec::new();
         for (key, name) in [
@@ -32,6 +65,7 @@ impl Environment {
             ("AMPLIHACK_CLAUDE_PROFILE_ROOT", "profiles"),
             ("CLAUDE_CONFIG_DIR", "claude-profile"),
             ("CODEX_HOME", "codex-profile"),
+            ("XDG_CONFIG_HOME", "config"),
         ] {
             let path = root.path().join(name);
             fs::create_dir(&path).unwrap();
@@ -50,6 +84,8 @@ impl Environment {
             "AMPLIHACK_REFLECTION_BINARY",
             root.path().join("absent-agent"),
         ));
+        vars.push(EnvVarGuard::set("GIT_CONFIG_NOSYSTEM", "1"));
+        vars.push(EnvVarGuard::set("GIT_CONFIG_GLOBAL", "/dev/null"));
         Self { _vars: vars, root }
     }
 
@@ -62,6 +98,33 @@ impl Environment {
     fn state(&self, id: Option<&str>) -> PathBuf {
         session_state_dir_under(&self.root.path().join("state"), id)
     }
+}
+
+/// Call before changing HOME, while holding env_lock. Only the installed Rust
+/// toolchain is read from outside the fixture; compiler and child homes,
+/// profiles, sources and outputs all belong to temporary directories.
+pub(super) fn reflection_fixture() -> &'static Path {
+    use std::process::Command;
+    use std::sync::OnceLock;
+    static FIXTURE: OnceLock<(tempfile::TempDir, PathBuf)> = OnceLock::new();
+    &FIXTURE.get_or_init(|| {
+        let root = crate::test_support::isolated_tempdir();
+        let source = root.path().join("reflection.rs");
+        write(&source, include_str!("../../../../bins/amplihack-hooks/tests/support/issue_2053_reflection_fixture.rs"));
+        let binary = root.path().join("reflection-fixture");
+        let mut compiler = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()));
+        compiler.env_clear().current_dir(root.path())
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", root.path());
+        if let Some(rustup) = std::env::var_os("RUSTUP_HOME").map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".rustup"))) {
+            compiler.env("RUSTUP_HOME", rustup);
+        }
+        let output = compiler.args(["--edition=2024", "--crate-name", "stop_reflection_fixture"])
+            .arg(&source).arg("-o").arg(&binary).output().unwrap();
+        assert!(output.status.success(), "compile Rust fixture: {}", String::from_utf8_lossy(&output.stderr));
+        (root, binary)
+    }).1
 }
 
 fn count(path: &Path) -> u64 {

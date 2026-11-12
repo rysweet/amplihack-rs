@@ -4,8 +4,11 @@
 //! - Increments lock invocation counter per session
 //! - Safety valve: auto-approves after N iterations
 
+#[cfg(test)]
+use super::issue_2053_tests::StopCounter as AtomicCounter;
 use super::state_paths::StopStatePaths;
 use crate::state_dir::create_private_dir_all;
+#[cfg(not(test))]
 use amplihack_state::AtomicCounter;
 use amplihack_state::env_config::env_u64;
 use amplihack_types::{ProjectDirs, session_state_dir};
@@ -60,7 +63,7 @@ pub(super) fn handle_lock_mode_with_state(
     create_private_dir_all(&state.locks)?;
 
     // Use .txt for Python parity (Python lock counter is plain text).
-    let counter = AtomicCounter::new(state.locks.join("lock_invocations.txt"));
+    let counter = AtomicCounter::new(state.locks.join("lock_invocations.txt")).with_blocking_lock();
     let count = counter.increment()?;
 
     let max_iterations = get_max_iterations();

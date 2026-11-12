@@ -1,7 +1,6 @@
-//! Timeout-based file locking using `F_SETLK` (non-blocking).
+//! Exclusive file locking with timed or opt-in blocking acquisition.
 //!
-//! Never uses `F_SETLKW` (blocks indefinitely).
-//! Retries with configurable timeout and checks holder PID liveness.
+//! Timed callers retry `F_SETLK`; blocking callers wait in `F_SETLKW`.
 
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -23,8 +22,8 @@ pub enum FileLockError {
 
 /// An exclusive file lock that is released on drop.
 ///
-/// Uses `F_SETLK` (non-blocking) with retry loop instead of
-/// `F_SETLKW` which can block indefinitely.
+/// Timed acquisition uses `F_SETLK` with retries. Blocking acquisition uses
+/// `F_SETLKW` and can wait indefinitely for another process to release its lock.
 #[derive(Debug)]
 pub struct FileLock {
     _file: File,
@@ -32,6 +31,33 @@ pub struct FileLock {
 }
 
 impl FileLock {
+    /// Acquire an exclusive lock without a timeout or polling.
+    ///
+    /// On Unix, waits in `F_SETLKW`, retrying interrupted calls immediately.
+    /// Other platforms retain best-effort locking. Dropping the guard closes
+    /// its file and releases the lock.
+    pub fn exclusive_blocking(path: &Path) -> Result<Self, FileLockError> {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .read(true)
+            .open(path)
+            .map_err(|source| FileLockError::Open {
+                path: path.to_path_buf(),
+                source,
+            })?;
+
+        lock_exclusive_blocking(&file).map_err(|source| FileLockError::Lock {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        Ok(Self {
+            _file: file,
+            _path: path.to_path_buf(),
+        })
+    }
+
     /// Acquire an exclusive lock with timeout.
     ///
     /// Retries every 10ms until the lock is acquired or timeout expires.
@@ -77,11 +103,44 @@ impl FileLock {
     }
 }
 
+#[cfg(unix)]
+fn lock_exclusive_blocking(file: &File) -> io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    let mut flock = libc::flock {
+        l_type: libc::F_WRLCK as libc::c_short,
+        l_whence: libc::SEEK_SET as i16,
+        l_start: 0,
+        l_len: 0,
+        l_pid: 0,
+    };
+    loop {
+        // SAFETY: file owns a valid descriptor and flock is initialised and
+        // remains alive for this call. The whole-file range matches F_SETLK.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLKW, &mut flock) } == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_exclusive_blocking(_file: &File) -> io::Result<()> {
+    // Match the existing best-effort non-Unix backend.
+    Ok(())
+}
+
 /// Try to acquire an exclusive lock without blocking.
 /// Returns `Ok(true)` if locked, `Ok(false)` if would block.
 #[cfg(unix)]
 fn try_lock_exclusive(file: &File) -> Result<bool, io::Error> {
     use std::os::unix::io::AsRawFd;
+
+    #[cfg(test)]
+    crate::stop_counter_tests::reject_timed_acquisition();
 
     let fd = file.as_raw_fd();
     let mut flock = libc::flock {
@@ -125,19 +184,5 @@ mod tests {
         drop(lock);
         // Should be able to re-acquire after drop.
         let _lock2 = FileLock::exclusive(&lock_path, Duration::from_secs(1)).unwrap();
-    }
-
-    #[test]
-    fn lock_contention_across_processes() {
-        // fcntl locks are per-process, so we can't test contention within
-        // a single process using threads. Instead, test basic lock/unlock.
-        let dir = tempfile::tempdir().unwrap();
-        let lock_path = dir.path().join("contention.lock");
-
-        // Acquire and release multiple times.
-        for _ in 0..5 {
-            let lock = FileLock::exclusive(&lock_path, Duration::from_secs(1)).unwrap();
-            drop(lock);
-        }
     }
 }

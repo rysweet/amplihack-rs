@@ -8,8 +8,11 @@ mod analysis;
 mod decision;
 mod state;
 
+#[cfg(test)]
+use super::issue_2053_tests::StopCounter as AtomicCounter;
 use super::state_paths::StopStatePaths;
 use crate::state_dir::create_private_dir_all;
+#[cfg(not(test))]
 use amplihack_state::AtomicCounter;
 use amplihack_types::{ProjectDirs, session_state_dir};
 use serde_json::Value;
@@ -83,7 +86,8 @@ pub(super) fn check_with_state(
 ) -> anyhow::Result<Option<Value>> {
     create_private_dir_all(&paths.power_steering)?;
 
-    let counter = AtomicCounter::new(paths.power_steering.join("session_count"));
+    let counter =
+        AtomicCounter::new(paths.power_steering.join("session_count")).with_blocking_lock();
     let count = counter.increment()?;
 
     // First stop: let the agent end naturally, only enforce on repeated stop

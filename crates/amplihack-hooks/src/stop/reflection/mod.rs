@@ -150,7 +150,6 @@ pub(super) fn run_reflection_with_state(
 mod tests {
     use super::*;
     use crate::test_support::env_lock;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn not_enabled_by_default() {
@@ -290,12 +289,32 @@ mod tests {
     }
 
     #[test]
+    fn feedback_survives_history_and_current_findings_storage_failures() {
+        let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _environment = crate::stop::issue_2053_tests::Environment::new();
+        let state = StopStatePaths::new(session_state_dir(Some("output-error")).unwrap());
+        fs::create_dir_all(&state.logs).unwrap();
+        // Obstruct both reflection outputs without depending on permissions,
+        // effective uid or the timestamp chosen for the history filename.
+        fs::write(&state.reflection, "not a directory").unwrap();
+        save_reflection_artifacts(&state, "isolated findings");
+        assert_eq!(
+            fs::read_to_string(state.logs.join("FEEDBACK_SUMMARY.md")).unwrap(),
+            "isolated findings"
+        );
+        assert_eq!(
+            fs::read_to_string(&state.reflection).unwrap(),
+            "not a directory"
+        );
+    }
+
+    #[test]
     fn run_reflection_invokes_cli_and_writes_artifacts() {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let home = crate::test_support::isolated_tempdir();
-        let _state = crate::test_support::isolate_state_home(home.path());
+        let fake_cli = crate::stop::issue_2053_tests::reflection_fixture();
+        let _environment = crate::stop::issue_2053_tests::Environment::new();
         let dir = crate::test_support::isolated_tempdir();
         let dirs = ProjectDirs::new(dir.path());
         fs::create_dir_all(dirs.tools_amplihack.join("hooks/templates")).unwrap();
@@ -321,25 +340,15 @@ mod tests {
         )
         .unwrap();
 
-        let fake_cli = dir.path().join("fake-claude.sh");
-        fs::write(
-            &fake_cli,
-            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '## Task Summary\\nReflected session\\n'\n",
-        )
-        .unwrap();
-        let mut perms = fs::metadata(&fake_cli).unwrap().permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&fake_cli, perms).unwrap();
-
-        let previous = std::env::var_os("AMPLIHACK_REFLECTION_BINARY");
-        unsafe { std::env::set_var("AMPLIHACK_REFLECTION_BINARY", &fake_cli) };
+        let _binary =
+            crate::test_support::EnvVarGuard::set("AMPLIHACK_REFLECTION_BINARY", fake_cli);
+        let _project = crate::test_support::EnvVarGuard::set("STOP_FIXTURE_PROJECT", &dirs.root);
+        let _findings = crate::test_support::EnvVarGuard::set(
+            "STOP_FIXTURE_UNIT_FINDINGS",
+            "## Task Summary\nReflected session\n",
+        );
 
         let result = run_reflection(&dirs, "test-session", Some(&transcript)).unwrap();
-
-        match previous {
-            Some(value) => unsafe { std::env::set_var("AMPLIHACK_REFLECTION_BINARY", value) },
-            None => unsafe { std::env::remove_var("AMPLIHACK_REFLECTION_BINARY") },
-        }
 
         let session_dir = amplihack_types::session_state_dir(Some("test-session")).unwrap();
         assert_eq!(result.as_ref().unwrap()["decision"], "block");
