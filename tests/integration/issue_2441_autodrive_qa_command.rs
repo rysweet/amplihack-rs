@@ -163,9 +163,14 @@ impl Fixture {
     }
 
     fn helper(&self, command: Option<&str>, dir: &Path) -> Output {
+        let result = self.root.join("completion.status");
+        if result.exists() {
+            fs::remove_file(&result).unwrap();
+        }
         let mut c = self.child(env!("CARGO_BIN_EXE_amplihack"));
         c.args(["orch", "helper", "autodrive-qa-command"])
-            .arg(format!("--dir={}", dir.display()));
+            .arg(format!("--dir={}", dir.display()))
+            .arg(format!("--result-file={}", result.display()));
         if let Some(command) = command {
             c.env("AUTODRIVE_QA_COMMAND", command);
         }
@@ -203,7 +208,35 @@ impl Fixture {
         assert_eq!(value["head_sha"], self.git(&["rev-parse", "HEAD"]));
         assert_eq!(value["qa_round"], "issue-2441");
         assert_eq!(value["gadugi_status"], "NOT_REQUIRED");
+        self.no_helper_temporaries();
         (value, stderr)
+    }
+
+    fn no_helper_temporaries(&self) {
+        for entry in fs::read_dir(&self.root).unwrap() {
+            let name = entry.unwrap().file_name();
+            assert!(
+                !name.to_string_lossy().starts_with("autodrive-qa-"),
+                "temporary QA file left behind: {name:?}"
+            );
+        }
+    }
+
+    fn failed_evidence(&self, out: &Output) {
+        assert!(!out.status.success(), "{out:?}");
+        assert!(
+            out.stdout.is_empty(),
+            "no successful final response: {out:?}"
+        );
+        assert!(!self.root.join("evidence.json").exists());
+        self.no_helper_temporaries();
+    }
+
+    fn replace_helper(&self, source: &str) {
+        let helper = self.bin.join("amplihack");
+        fs::remove_file(&helper).unwrap();
+        fs::write(&helper, format!("#!/bin/bash\n{source}\n")).unwrap();
+        fs::set_permissions(helper, fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     fn record(&self, tag: &str, dir: &Path, args: &[&str]) {
@@ -331,6 +364,28 @@ fn quoted_executable_paths_and_compound_shell_commands_run() {
 }
 
 #[test]
+fn bash_expands_unquoted_globs_and_preserves_quoted_globs() {
+    let f = Fixture::new(None);
+    f.write("suite-one.txt", "first match");
+    f.write("suite-two.txt", "second match");
+    let (e, _) = f.evidence(&[(
+        "AUTODRIVE_QA_COMMAND",
+        "qa-arg-recorder globs suite-*.txt 'suite-*.txt' \"suite-*.txt\"",
+    )]);
+    outcome(&e, "PASS", "", "0", "1");
+    f.record(
+        "globs",
+        &f.repo,
+        &[
+            "suite-one.txt",
+            "suite-two.txt",
+            "suite-*.txt",
+            "suite-*.txt",
+        ],
+    );
+}
+
+#[test]
 fn singular_and_plural_keep_separate_directories_order_and_first_failure() {
     let f = Fixture::new(None);
     let sub = f.repo.join("sub");
@@ -345,6 +400,26 @@ fn singular_and_plural_keep_separate_directories_order_and_first_failure() {
     f.record("singular", &sub, &["one argument"]);
     f.record("plural", &f.repo, &["root argument"]);
     f.record("last", &f.repo, &[]);
+}
+
+#[test]
+fn plural_entries_start_with_fresh_shell_state_and_keep_first_plural_failure() {
+    let f = Fixture::new(None);
+    fs::create_dir(f.repo.join("sub")).unwrap();
+    let (e, _) = f.evidence(&[
+        (
+            "AUTODRIVE_QA_COMMAND",
+            "export QA_ENTRY_STATE=singular; qa-arg-recorder singular-state \"$QA_ENTRY_STATE\"; cd sub",
+        ),
+        (
+            "AUTODRIVE_QA_COMMANDS",
+            "qa-arg-recorder first-entry \"${QA_ENTRY_STATE-unset}\"; export QA_ENTRY_STATE=plural; cd sub; exit 17\nqa-arg-recorder second-entry \"${QA_ENTRY_STATE-unset}\"; exit 41",
+        ),
+    ]);
+    outcome(&e, "FAIL", "qa-command-failed", "17", "3");
+    f.record("singular-state", &f.repo, &["singular"]);
+    f.record("first-entry", &f.repo, &["unset"]);
+    f.record("second-entry", &f.repo, &["unset"]);
 }
 
 #[test]
@@ -364,6 +439,8 @@ fn bash_determines_missing_executable_and_complete_command_status() {
             "0",
         ),
         ("exit 37", "FAIL", "qa-command-failed", "37"),
+        ("exit 126", "FAIL", "qa-command-failed", "126"),
+        ("exit 255", "FAIL", "qa-command-failed", "255"),
         ("true && exit 19", "FAIL", "qa-command-failed", "19"),
         ("true 'unterminated", "FAIL", "qa-command-failed", "2"),
         ("kill -TERM $$", "FAIL", "qa-command-failed", "143"),
@@ -503,6 +580,10 @@ fn helper_preserves_arguments_directory_null_stdin_and_output() {
         .child(env!("CARGO_BIN_EXE_amplihack"))
         .args(["orch", "helper", "autodrive-qa-command"])
         .arg(format!("--dir={}", sub.display()))
+        .arg(format!(
+            "--result-file={}",
+            f.root.join("completion.status").display()
+        ))
         .env(
             "AUTODRIVE_QA_COMMAND",
             "qa-arg-recorder helper 'two words' \"\"",
@@ -511,22 +592,32 @@ fn helper_preserves_arguments_directory_null_stdin_and_output() {
         .output()
         .unwrap();
     assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        fs::read_to_string(f.root.join("completion.status")).unwrap(),
+        "0\n"
+    );
     f.record("helper", &sub, &["two words", ""]);
     assert!(String::from_utf8_lossy(&out.stdout).contains("QA-RECORDER-STDOUT"));
     assert!(String::from_utf8_lossy(&out.stderr).contains("QA-RECORDER-STDERR"));
 }
 
 #[test]
-fn helper_propagates_exit_codes_and_unix_signal_status() {
+fn helper_records_exit_codes_and_unix_signal_status_without_failing() {
     let f = Fixture::new(None);
     for (command, code) in [
         ("exit 0", 0),
         ("exit 23", 23),
+        ("exit 126", 126),
+        ("exit 255", 255),
         ("issue-2441-command-that-does-not-exist", 127),
         ("kill -TERM $$", 143),
     ] {
         let out = f.helper(Some(command), &f.repo);
-        assert_eq!(out.status.code(), Some(code), "{command}: {out:?}");
+        assert!(out.status.success(), "{command}: {out:?}");
+        assert_eq!(
+            fs::read_to_string(f.root.join("completion.status")).unwrap(),
+            format!("{code}\n")
+        );
     }
 }
 
@@ -546,6 +637,7 @@ fn helper_rejects_missing_input_and_unusable_directory() {
         );
         // An unknown CLI subcommand is not an implementation of this contract.
         assert!(!stderr.contains("unrecognized subcommand"), "{stderr}");
+        assert!(!f.root.join("completion.status").exists());
         f.no_records();
     }
     // No Bash on PATH: the helper must diagnose spawn failure and return non-zero.
@@ -553,6 +645,10 @@ fn helper_rejects_missing_input_and_unusable_directory() {
         .child(env!("CARGO_BIN_EXE_amplihack"))
         .args(["orch", "helper", "autodrive-qa-command"])
         .arg(format!("--dir={}", f.repo.display()))
+        .arg(format!(
+            "--result-file={}",
+            f.root.join("completion.status").display()
+        ))
         .env("PATH", &f.bin)
         .env("AUTODRIVE_QA_COMMAND", "qa-arg-recorder forbidden")
         .output()
@@ -560,6 +656,7 @@ fn helper_rejects_missing_input_and_unusable_directory() {
     assert!(!out.status.success(), "{out:?}");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.to_ascii_lowercase().contains("bash"), "{stderr}");
+    assert!(!f.root.join("completion.status").exists());
     f.no_records();
 }
 
@@ -631,4 +728,166 @@ fn established_binary_override_is_used() {
     ]);
     outcome(&e, "PASS", "", "0", "1");
     f.record("override", &f.repo, &[]);
+}
+
+#[test]
+fn relative_binary_override_with_spaces_is_resolved_from_the_invocation_directory() {
+    let f = Fixture::new(None);
+    let sub = f.repo.join("sub");
+    fs::create_dir(&sub).unwrap();
+    fs::rename(f.bin.join("amplihack"), f.bin.join("custom helper")).unwrap();
+    let out = f
+        .evidence_child()
+        .current_dir(&f.home)
+        .env("AMPLIHACK_BIN", "../bin/custom helper")
+        .env("AUTODRIVE_QA_DIR", "sub")
+        .env(
+            "AUTODRIVE_QA_COMMAND",
+            "qa-arg-recorder relative-override 'two words'",
+        )
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let e: Value = serde_json::from_slice(&out.stdout).unwrap();
+    outcome(&e, "PASS", "", "0", "1");
+    f.record("relative-override", &sub, &["two words"]);
+    f.no_helper_temporaries();
+}
+
+#[test]
+fn incompatible_and_unusable_helpers_do_not_produce_measured_evidence() {
+    for source in [
+        "echo 'error: unrecognized subcommand autodrive-qa-command' >&2; exit 2",
+        // A helper whose own startup command is unavailable.
+        "exec /issue-2441-missing-interpreter",
+        // Even a plausible completion result cannot override helper failure.
+        "for arg in \"$@\"; do case \"$arg\" in --result-file=*) printf '0\\n' > \"${arg#--result-file=}\" ;; esac; done; exit 1",
+    ] {
+        let f = Fixture::new(None);
+        f.replace_helper(source);
+        let out = f
+            .evidence_child()
+            .env("AUTODRIVE_QA_COMMAND", "qa-arg-recorder forbidden")
+            .output()
+            .unwrap();
+        f.failed_evidence(&out);
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("QA command helper failed"),
+            "{out:?}"
+        );
+        f.no_records();
+    }
+    let f = Fixture::new(None);
+    // Resolution may find the path, but the kernel cannot execute it.
+    fs::remove_file(f.bin.join("amplihack")).unwrap();
+    fs::write(f.bin.join("amplihack"), "unusable helper").unwrap();
+    let out = f
+        .evidence_child()
+        .env("AUTODRIVE_QA_COMMAND", "qa-arg-recorder forbidden")
+        .env("AMPLIHACK_BIN", f.bin.join("amplihack"))
+        .output()
+        .unwrap();
+    f.failed_evidence(&out);
+    f.no_records();
+}
+
+#[test]
+fn missing_empty_and_malformed_completion_results_fail_evidence_generation() {
+    for result in [
+        None,
+        Some(""),
+        Some("0"),
+        Some("not-a-status\n"),
+        Some("256\n"),
+        Some("-1\n"),
+        Some("01\n"),
+        Some("0\n23\n"),
+        Some("0\n\n"),
+        Some("0\\000\\n"),
+    ] {
+        let f = Fixture::new(None);
+        let action = match result {
+            None => "rm -f -- \"$result\"".to_owned(),
+            Some(text) => format!("printf '%b' '{text}' > \"$result\""),
+        };
+        f.replace_helper(&format!(
+            "for arg in \"$@\"; do case \"$arg\" in --result-file=*) result=\"${{arg#--result-file=}}\" ;; esac; done\n{action}\nexit 0"
+        ));
+        let out = f
+            .evidence_child()
+            .env("AUTODRIVE_QA_COMMAND", "qa-arg-recorder forbidden")
+            .output()
+            .unwrap();
+        f.failed_evidence(&out);
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("missing or invalid"),
+            "{result:?}: {out:?}"
+        );
+        f.no_records();
+    }
+}
+
+#[test]
+fn helper_result_write_failure_is_an_infrastructure_error_after_qa_completion() {
+    let f = Fixture::new(None);
+    let out = f
+        .child(env!("CARGO_BIN_EXE_amplihack"))
+        .args(["orch", "helper", "autodrive-qa-command"])
+        .arg(format!("--dir={}", f.repo.display()))
+        .arg(format!(
+            "--result-file={}",
+            f.root.join("missing/result").display()
+        ))
+        .env(
+            "AUTODRIVE_QA_COMMAND",
+            "qa-arg-recorder completed; exit 127",
+        )
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("cannot write Bash QA completion result"),
+        "{out:?}"
+    );
+    f.record("completed", &f.repo, &[]);
+}
+
+#[test]
+fn failed_requested_evidence_write_returns_nonzero_without_success_response() {
+    for destination in ["missing/evidence.json", "evidence-directory"] {
+        let f = Fixture::new(None);
+        fs::create_dir(f.root.join("evidence-directory")).unwrap();
+        let out = f
+            .evidence_child()
+            .env("AUTODRIVE_QA_COMMAND", "qa-arg-recorder completed")
+            .env("AUTODRIVE_QA_EVIDENCE", f.root.join(destination))
+            .output()
+            .unwrap();
+        f.failed_evidence(&out);
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("cannot persist requested QA evidence"),
+            "{out:?}"
+        );
+        f.record("completed", &f.repo, &[]);
+    }
+}
+
+#[test]
+fn unset_and_empty_evidence_destinations_allow_stdout_only_results() {
+    for destination in [None, Some("")] {
+        let f = Fixture::new(None);
+        let mut child = f.evidence_child();
+        child.env("AUTODRIVE_QA_COMMAND", "qa-arg-recorder stdout-only");
+        match destination {
+            None => child.env_remove("AUTODRIVE_QA_EVIDENCE"),
+            Some(path) => child.env("AUTODRIVE_QA_EVIDENCE", path),
+        };
+        let out = child.output().unwrap();
+        assert!(out.status.success(), "{destination:?}: {out:?}");
+        let e: Value = serde_json::from_slice(&out.stdout).unwrap();
+        outcome(&e, "PASS", "", "0", "1");
+        assert!(!f.root.join("evidence.json").exists());
+        f.record("stdout-only", &f.repo, &[]);
+        f.no_helper_temporaries();
+    }
 }

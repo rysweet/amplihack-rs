@@ -1674,9 +1674,19 @@ passes `slow one` as one argument to the test runner. Set
 repository, or use an absolute directory path. Leaving `AUTODRIVE_QA_DIR`
 unset or empty runs the singular command at the repository root. Paths
 containing spaces are supported when quoted in the variable assignment.
+The value `AUTODRIVE_QA_DIR=-` selects the repository's literal `-` directory.
 When both command variables contain commands, the singular command runs
 first in its selected directory, then each plural entry runs at the
 repository root in a separate Bash process.
+
+Bash expands unquoted glob characters such as `*`, `?` and `[abc]` in the
+command's working directory. Quote them inside the stored command to pass
+them literally:
+
+```bash
+export AUTODRIVE_QA_COMMAND='printf "<%s>\n" "slow *"'
+# Suite log: <slow *>
+```
 
 These shell semantics apply only to the operator overrides. The repository
 file, CI source and detected commands retain their restricted execution rules.
@@ -2268,6 +2278,30 @@ exit codes are preserved; Unix signal termination is recorded as
 produces evidence, even when that evidence reports QA failure. Read
 `qa_status` to determine the QA result; the tool's own non-zero exit means
 evidence generation failed.
+
+The evidence tool invokes the Rust executor as
+`amplihack orch helper autodrive-qa-command --dir=PATH --result-file=PATH`.
+Both path arguments are required. The helper reads `AUTODRIVE_QA_COMMAND`
+from the environment, runs it through Bash with null stdin and inherited
+stdout and stderr, and writes Bash's status to the completion file. Its own
+zero exit means execution and status recording completed, including when QA
+exits non-zero. It does not select command sources or produce evidence JSON.
+
+The evidence tool resolves `${AMPLIHACK_BIN:-amplihack}` before changing
+directory, preserving relative helper paths. It creates a fresh private
+completion file for each invocation and requires helper success plus exactly
+one decimal status from `0` to `255` followed by one newline. Missing, empty,
+malformed or extra completion content is refused. An incompatible or unusable
+helper, failure to start Bash, or a completion failure makes evidence
+generation fail. Temporary suite logs and completion files are removed on
+normal success and failure.
+
+Successful evidence generation also requires successful requested persistence:
+when `AUTODRIVE_QA_EVIDENCE` contains a non-empty path, the tool writes that
+file before printing the final JSON response. When the variable is unset or
+empty, no file is written and evidence generation may succeed. A failed
+requested write returns non-zero and produces no successful final stdout
+response.
 
 **This is not a sandbox, and the installed check is not a security control.**
 The suite runs code from the branch whichever binary starts it: `npm test`

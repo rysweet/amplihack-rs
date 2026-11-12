@@ -1,11 +1,32 @@
 #!/usr/bin/env bash
-# Measure criterion 1 for autodrive-merge-evidence.yaml step-02-qa-team-scenarios.
-# Suite source precedence: env, committed qa.toml, clean CI step, detected suite.
-# Gadugi validates and runs scenarios only where autodrive_gadugi_required says so.
-# Inputs are environment-only: REPO_PATH, AUTODRIVE_QA_* and AUTODRIVE_ROUND_LABEL.
-# Output: one JSON line on stdout and in the optional AUTODRIVE_QA_EVIDENCE file.
-# Exit 0 when evidence is produced (PASS or not); exit 1 for installation/I/O errors.
-# Executed, never sourced. NO-TIMEOUT POLICY (#439): never cut a suite off mid-run.
+# autodrive_qa_evidence.sh — measure merge-ready criterion 1 for one round of
+# the auto-drive-to-merge merge loop. step-02-qa-team-scenarios of
+# autodrive-merge-evidence.yaml runs this file (moved out of the step, PR #1520).
+#
+# Criterion 1 follows qa-team's repo-type table: one or two measurements,
+# both always run so the evidence lists every cause at once. (1) The suite
+# command from the first source present (#1763): env, .amplihack/qa.toml, one
+# clean CI step, or `cargo test`, `npm test` or `pytest` detected in the
+# project the changed paths pick (QA_UNRESOLVED when they pick none, and
+# nothing runs). (2) Only where autodrive_gadugi_required says true (a Node
+# project, or AUTODRIVE_QA_SCENARIO_DIR set): the qa-team scenarios, validated
+# with `gadugi-test validate` and run one `gadugi-test run --scenario` per
+# file. Elsewhere gadugi_status is NOT_REQUIRED and gadugi-test is never
+# called: qa-team's Rust CLI rule substitutes `cargo test`, and a measured docs_only drops (2) in a Node project too (#2219).
+#
+# Input comes from the environment only:
+#   REPO_PATH              the repository to measure (default: the working directory)
+#   AUTODRIVE_QA_EVIDENCE  file the evidence is written to, private (optional)
+#   AUTODRIVE_ROUND_LABEL  recorded as qa_round
+#   AUTODRIVE_QA_BASE      the base branch name, for the changed paths
+#   AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR, AUTODRIVE_QA_COMMANDS and
+#   AUTODRIVE_QA_SCENARIO_DIR, described where they are read below.
+# Output: one JSON line on stdout, and the same line in AUTODRIVE_QA_EVIDENCE.
+# qa_status is PASS only when every measurement that applies passes. Exit 0
+# whenever evidence was produced, PASS or not; exit 1 when REPO_PATH, a
+# temporary file or the helpers beside this file are unavailable, so no evidence
+# exists. Executed, never sourced; helpers come from beside this file only.
+# NO-TIMEOUT POLICY (issue #439): a test suite is never cut off mid-run.
 set -uo pipefail
 # This file's own directory, found before the cd below (BASH_SOURCE may be
 # relative); without the helpers there, no evidence. An exported CDPATH would
@@ -103,8 +124,8 @@ res() { printf '%s\t%s\n' "${1##*/}" "$2" >> "$RES"; } # res <file> <PASS|FAIL|I
 # gives none, its reason is qa_ci_skip), then detected. The operator variables
 # come from the environment only (a recipe context default would hide them).
 # Set but empty means "no command", never "detect one":
-#   AUTODRIVE_QA_COMMAND   trusted shell source, passed unchanged to Bash by
-#                          the Rust helper in AUTODRIVE_QA_DIR
+#   AUTODRIVE_QA_COMMAND   trusted Bash source, passed unchanged by the Rust
+#                          helper, run in AUTODRIVE_QA_DIR
 #   AUTODRIVE_QA_COMMANDS  one command per line (blank and # lines skipped),
 #                          each run alone with bash -c from the repository root
 # qa_dir records where the singular, word or detected command ran, else `.`.
@@ -149,6 +170,8 @@ else
   fi
 fi
 LOG="$(mktemp -t autodrive-qa-XXXXXX)" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
+HELPER_RESULT=""
+trap 'rm -f -- "$LOG"; [ -z "$HELPER_RESULT" ] || rm -f -- "$HELPER_RESULT"' EXIT
 CMDTEXT=""; RAN=0; FIRST_NZ=""; S_FAILED="false"; S_MISSING="false"; S_NOTINST="false"
 if [ "${#TEXTS[@]}" -eq 0 ] && [ -z "${QUNRES}${CFGBAD}" ]; then
   S_MISSING="true"; [ -n "$NOSCOPE" ] || cause "no repository test command for repository type ${TYPE}"
@@ -170,13 +193,27 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
     fi
     if [ -z "$QA_HELPER" ]; then
       echo "ERROR: amplihack QA command helper not found" >&2
-      rm -f "$LOG"; exit 1
+      exit 1
     fi
     # A literal '-' is a directory, never $OLDPWD. The directory is a separate
     # argument; the helper reads the unchanged shell source from the environment.
     case "$dir" in /*) ;; *) dir="./$dir" ;; esac
-    "$QA_HELPER" orch helper autodrive-qa-command --dir="$dir" >>"$LOG" 2>&1 </dev/null
-    rc=$?
+    HELPER_RESULT="$(mktemp -t autodrive-qa-result-XXXXXX)" || { echo "ERROR: cannot create a QA completion file" >&2; exit 1; }
+    # Only completed Bash execution is measured. Helper startup/compatibility
+    # failures cannot be distinguished from QA statuses using exit codes alone.
+    if ! "$QA_HELPER" orch helper autodrive-qa-command --dir="$dir" --result-file="$HELPER_RESULT" >>"$LOG" 2>&1 </dev/null; then
+      tail -n 60 "$LOG" >&2
+      echo "ERROR: QA command helper failed; no measured QA evidence" >&2
+      exit 1
+    fi
+    # The protocol is exactly one decimal status and a newline. Checking the
+    # byte count also rejects extra lines and bytes Bash cannot store (NUL).
+    if ! IFS= read -r rc < "$HELPER_RESULT" || ! [[ "$rc" =~ ^(0|[1-9][0-9]{0,2})$ ]] \
+       || [ "$rc" -gt 255 ] || ! [ "$(wc -c < "$HELPER_RESULT")" -eq "$((${#rc} + 1))" ]; then
+      echo "ERROR: missing or invalid QA command helper completion result" >&2
+      exit 1
+    fi
+    rm -f -- "$HELPER_RESULT"; HELPER_RESULT=""
   else
     dir="$QA_DIR"
     first="$(set -f; set -- $text; printf '%s' "${1:-}")"
@@ -396,5 +433,8 @@ OUT="$(printf "$F" \
   "$(printf '%s' "${UNNAMED} ${STAGEFAIL} ${RUNFAIL} ${SYMFAIL}" | san | tr -s ' ' | sed 's/^ //; s/ $//')" \
   "$(printf '%s' "$RESULTS" | san)" "$(printf '%s' "$GCLR" | san | ascii)" "$(printf '%s' "$RCLR" | san | ascii)")"
 # Private to this user (#1517 D5), and never written through a planted symlink.
-[ -z "$EVIDENCE" ] || ( umask 077; rm -f -- "$EVIDENCE"; printf '%s' "$OUT" > "$EVIDENCE" )
+if [ -n "$EVIDENCE" ] && ! ( umask 077; rm -f -- "$EVIDENCE" && printf '%s' "$OUT" > "$EVIDENCE" ); then
+  echo "ERROR: cannot persist requested QA evidence" >&2
+  exit 1
+fi
 printf '%s\n' "$OUT"

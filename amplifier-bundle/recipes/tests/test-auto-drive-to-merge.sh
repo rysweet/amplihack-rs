@@ -145,7 +145,8 @@ supports_helper() {
     && printf '{"a":"b"}' | "$1" orch helper extract-json --require-field a >/dev/null 2>&1
 }
 REAL_AMPLIHACK=""
-for cand in "${REPO_ROOT}/target/release/amplihack" "${REPO_ROOT}/target/debug/amplihack" \
+# Cargo integration tests name their freshly built binary explicitly.
+for cand in "${AMPLIHACK_BIN:-}" "${REPO_ROOT}/target/release/amplihack" "${REPO_ROOT}/target/debug/amplihack" \
             "${CARGO_TARGET_DIR:+${CARGO_TARGET_DIR}/release/amplihack}" \
             "${CARGO_TARGET_DIR:+${CARGO_TARGET_DIR}/debug/amplihack}" \
             "$(command -v amplihack 2>/dev/null || true)"; do
@@ -4499,6 +4500,7 @@ ev_run() { # ev_run <stub-dir> [VAR=value ...] -> runs the step; EV_OUT = last s
   # AMPLIHACK_HOME is this tree, so gadugi_scenario_results comes from the
   # autodrive_trust.sh under test, as in a real run.
   env -i HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" PATH="${stubs}:${EV_AMP}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" \
+    AMPLIHACK_BIN="${REAL_AMPLIHACK}" AMPLIHACK_TEST_HOME_GUARD=1 AMPLIHACK_ROTATE_AUTOSTART=0 \
     REPO_PATH="${EV_REPO}" AUTODRIVE_ROUND_LABEL="round-7" AUTODRIVE_QA_EVIDENCE="${EV_REPO}.evidence.json" \
     EV_CALLS="${EV_CALLS}" RECIPE_VAR_merge_sync='{"base":"main","conflict":"false"}' "$@" \
     "${BASH}" -c "${EV_BODY}" >"${EV_REPO}.out" 2>"${EV_REPO}.err"

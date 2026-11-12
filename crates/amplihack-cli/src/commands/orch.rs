@@ -54,6 +54,9 @@ pub enum OrchHelperCommands {
         /// Working directory selected by the QA evidence tool.
         #[arg(long, value_name = "PATH")]
         dir: PathBuf,
+        /// Completion file containing Bash's exit status; helper errors return nonzero.
+        #[arg(long, value_name = "PATH")]
+        result_file: PathBuf,
     },
     /// Prepare driver-owned identity and completion dispatch context.
     AutodriveCompletionPrepare(autodrive_completion::Prepare),
@@ -513,12 +516,8 @@ fn read_bounded_stdin() -> String {
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
-        OrchHelperCommands::AutodriveQaCommand { dir } => {
-            let code = autodrive_qa_command::run(&dir)?;
-            if code != 0 {
-                return Err(crate::command_error::exit_error(code));
-            }
-            Ok(())
+        OrchHelperCommands::AutodriveQaCommand { dir, result_file } => {
+            autodrive_qa_command::run(&dir, &result_file)
         }
         OrchHelperCommands::AutodriveCompletionPrepare(args) => autodrive_completion::prepare(args),
         OrchHelperCommands::AutodriveCompletionSeal { private_state } => {

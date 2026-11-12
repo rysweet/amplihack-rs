@@ -5468,6 +5468,7 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
     let mut cmd = crate::isolated_amplihack::isolated("bash");
     cmd.arg(&script)
         .current_dir(&root)
+        .env("AMPLIHACK_BIN", &bin)
         .env_remove("AMPLIHACK_MERGE_GUARD_USER_BASH_ENV")
         .env("PATH", path)
         .env("TMPDIR", &tmpdir)
@@ -5599,7 +5600,7 @@ fn run_shell_test_copy(
         Ok(p) => format!("{}:{p}", path_dir.display()),
         Err(_) => path_dir.display().to_string(),
     };
-    let mut cmd = Command::new("bash");
+    let mut cmd = crate::isolated_amplihack::isolated("bash");
     cmd.arg(&script)
         .current_dir(scratch)
         .env("PATH", path)
