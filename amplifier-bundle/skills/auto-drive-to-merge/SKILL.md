@@ -287,8 +287,8 @@ cannot be read is a blocker, in the same way an unreadable criterion is. An
 empty PR body is not a blocker: the gate sends an empty message body. Whether
 GitHub then commits an empty body or falls back to its concatenated default is
 not yet verified; see
-[the empty-body limitation](../../../docs/reference/auto-drive-to-merge.md#limitation-an-empty-pull-request-body-2263)
-and #2263.
+[the empty-body limitation](https://github.com/rysweet/amplihack-rs/blob/main/docs/reference/auto-drive-to-merge.md#limitation-an-empty-pull-request-body-2263)
+and [#2263](https://github.com/rysweet/amplihack-rs/issues/2263).
 
 **An unreadable criterion is a failure, never a pass.** Unreadable CI, zero
 reported checks, unreadable review threads, missing `qa-team` evidence, an
