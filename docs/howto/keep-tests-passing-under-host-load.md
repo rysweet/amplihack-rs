@@ -763,10 +763,15 @@ The one test of the limit itself,
 removes the knob from its command, so the product's 10 s limit applies and
 the fake's 30 s sleep still outlasts it.
 
-Check that a release binary contains no test knob:
+Check that a release binary contains no test knob. The `amplihack` binary
+belongs to the `amplihack` package. The first count is a name the release
+binary does read: if it is not at least 1, the binary is missing and the
+`0` below proves nothing, because `grep -c` prints `0` when `strings` fails.
 
 ```bash
-cargo build --release -p amplihack-cli --bin amplihack
+cargo build --release --locked -p amplihack --bin amplihack
+strings target/release/amplihack | grep -c AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS
+# Output: 1 or more
 strings target/release/amplihack \
   | grep -c -e AMPLIHACK_TEST_IDENTITY_ -e AMPLIHACK_TEST_AGENT_ -e AMPLIHACK_TEST_PROBE_WAIT
 # Output: 0
