@@ -14,10 +14,19 @@ fn make_binary(path: &str) -> BinaryInfo {
     }
 }
 
+/// Issue #1883 (C1): every launch inside an amplihack session exports
+/// `AMPLIHACK_PARENT_*`, so a `cargo test` started there inherits them and an
+/// exact-argv test would see the session's `--model` and `--effort`. Removes
+/// all three until the guard drops; the caller holds `home_env_lock()`.
+pub(super) fn clear_parent_env() -> EnvGuard {
+    EnvGuard::unset(super::inherit::PARENT_ENV_VARS)
+}
+
 fn with_uvx_detection_disabled<T>(f: impl FnOnce() -> T) -> T {
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _parent = clear_parent_env();
     let cwd = tempfile::tempdir().unwrap();
     fs::create_dir_all(cwd.path().join(".claude")).unwrap();
     let original_cwd = crate::test_support::CwdGuard::set(cwd.path()).unwrap();
@@ -69,6 +78,7 @@ pub(super) fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() ->
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _parent = clear_parent_env();
     let previous = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
     let previous_proxy: Vec<_> = PROXY_ENV_VARS
         .iter()
@@ -1131,10 +1141,11 @@ fn codex_resume_uses_subcommand_and_continue_selects_last_without_model_pin() {
 
 /// Every variable the inheritance path reads or writes, plus the ones the
 /// argv assertions below depend on.
-const INHERIT_TEST_VARS: [&str; 14] = [
+const INHERIT_TEST_VARS: [&str; 15] = [
     "AMPLIHACK_PARENT_EFFORT",
     "AMPLIHACK_AGENT_BINARY",
     "AMPLIHACK_PARENT_MODEL",
+    "AMPLIHACK_PARENT_MODEL_BINARY",
     "AMPLIHACK_RECIPE_RUN_ID",
     "AMPLIHACK_DEFAULT_MODEL",
     "ANTHROPIC_MODEL",

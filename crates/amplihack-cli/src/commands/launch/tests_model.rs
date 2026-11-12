@@ -695,10 +695,13 @@ fn model_args_with(env: &[(&str, &str)], binary_name: &str, extra: &[&str]) -> M
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // `AMPLIHACK_PARENT_*` too (#1883 C1): a session's exported model and
+    // effort must not reach a test that asserts what amplihack chose itself.
     let names = PROXY_ENV_VARS
         .into_iter()
         .chain(NON_GATEWAY_LITELLM_VARS)
-        .chain(["AMPLIHACK_DEFAULT_MODEL", "ANTHROPIC_BASE_URL"]);
+        .chain(["AMPLIHACK_DEFAULT_MODEL", "ANTHROPIC_BASE_URL"])
+        .chain(super::inherit::PARENT_ENV_VARS);
     let restore = RestoreEnv(names.map(|name| (name, std::env::var_os(name))).collect());
     for (name, _) in &restore.0 {
         unsafe { std::env::remove_var(name) };

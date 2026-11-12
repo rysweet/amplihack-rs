@@ -903,6 +903,38 @@ fn codex_effort_from_argv_reads_config_overrides() {
     assert_eq!(codex_effort_from_argv(&s(&["-c"])), None);
 }
 
+/// The Codex walk reads `codex_options`, the one Codex table (#1985), so a
+/// value of an option that table lists is never read as the step's own
+/// `--model` or `-c`. `--thread-source` and `--cyber-access-program` are two
+/// options a hand-written copy here had missed; `--image` takes several values.
+#[test]
+fn codex_option_values_come_from_the_shared_codex_table() {
+    for option in ["--thread-source", "--cyber-access-program", "-o", "--image"] {
+        let args = s(&[option, "--model", "exec", "-"]);
+        assert_eq!(flag_value("codex", &args, "--model"), None, "{option}");
+        let args = s(&[option, "-c", "--model", "gpt-5.5"]);
+        assert_eq!(
+            flag_value("codex", &args, "--model").as_deref(),
+            Some("gpt-5.5"),
+            "{option}"
+        );
+        assert_eq!(flag_value("codex", &args, "--config"), None, "{option}");
+    }
+    let images = s(&["--image", "a.png", "b.png", "-m", "gpt-5.5", "exec", "-"]);
+    assert_eq!(
+        flag_value("codex", &images, "--model").as_deref(),
+        Some("gpt-5.5")
+    );
+    for (name, _, arity, _) in amplihack_launcher::prompt_delivery::codex_options::EXEC {
+        use amplihack_launcher::prompt_delivery::codex_options::Arity;
+        if *arity == Arity::Flag || *name == "model" || *name == "config" {
+            continue;
+        }
+        let args = s(&[&format!("--{name}"), "--model", "-"]);
+        assert_eq!(flag_value("codex", &args, "--model"), None, "--{name}");
+    }
+}
+
 #[test]
 fn codex_quoted_effort_is_decoded_before_export_and_nested_inheritance() {
     for args in [

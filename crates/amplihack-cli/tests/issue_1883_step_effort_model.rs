@@ -52,11 +52,25 @@ const DEFAULT_MODEL: &str = "claude-opus-5[1m]";
 const X: &str = "claude-opus-5-5";
 const Y: &str = "claude-haiku-4-5";
 
-/// The fake agent: answers `--version`; otherwise writes `call.<STEP>` and
-/// exits 0. Values are recorded only for the allowlisted variables.
+/// The fake agent: answers `--version` and `plugin`; otherwise writes
+/// `call.<STEP>` and exits 0. Values are recorded only for the allowlisted
+/// variables. As `codex` it reports a version the Codex health gate verifies
+/// (with `codex-code-mode-host` beside it, as in `issue_1985`'s fixture); as
+/// anything else, a Claude Code new enough for `--system-prompt-file` (#2030).
 const FAKE_AGENT: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
+  --version)
+    case "${0##*/}" in
+      codex) echo 'codex-cli 0.166.0' ;;
+      *) echo '2.1.322 (Claude Code)' ;;
+    esac
+    exit 0 ;;
+  plugin)
+    case "$2" in
+      list) echo '{"installed":[]}' ;;
+      *) echo '{"ok":true}' ;;
+    esac
+    exit 0 ;;
 esac
 step="${STEP:-0}"
 {
@@ -89,7 +103,7 @@ exit 0
 const STUB_RUNNER: &str = r#"#!/bin/sh
 case "$1" in
   --version) echo 'recipe-runner-rs 0.0.0 (stub)'; exit 0 ;;
-  --capabilities) printf '%s\n' '{"schema_version":1,"version":"fixture","capabilities":["codex_exec"]}'; exit 0 ;;
+  --capabilities) printf '%s\n' '{"schema_version":1,"version":"fixture","capabilities":["codex_exec","durable_recovery_v1"]}'; exit 0 ;;
 esac
 export AMPLIHACK_NONINTERACTIVE=1
 bin="${AMPLIHACK_AGENT_BINARY:-claude}"
@@ -182,6 +196,8 @@ impl Fixture {
         for name in ["claude", "copilot", "codex"] {
             executable(&tools.join(name), FAKE_AGENT);
         }
+        // The Codex health gate requires this helper beside codex 0.147-0.166.
+        executable(&tools.join("codex-code-mode-host"), "#!/bin/sh\nexit 0\n");
         executable(&tools.join("recipe-runner-rs"), STUB_RUNNER);
         fs::write(root.join("inherit-1883.yaml"), RECIPE).unwrap();
         add_proc(&proc_root, 10, 1, "bash", &["bash"]);
@@ -255,16 +271,10 @@ impl Fixture {
             .arg("-w")
             .arg(&self.work)
             .args(extra);
-        let mut tries = 0;
-        loop {
-            match c.output() {
-                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && tries < 50 => {
-                    tries += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-                r => return r.expect("run amplihack recipe run"),
-            }
-        }
+        // No ETXTBSY retry: the command is `amplihack_bin()`, and every stub
+        // this fixture execs is written by `exec_stub::write_executable`, so
+        // this process never holds an executable open for writing.
+        c.output().expect("run amplihack recipe run")
     }
 
     fn run(&self, agent: &str, env: &[(&str, &str)]) -> Output {
@@ -1032,6 +1042,10 @@ fn codex_quoted_and_attached_effort_overrides_reach_nested_runs_without_quotes()
     }
 }
 
+/// A `--system-prompt` value that looks like `--model=…` never becomes the
+/// step's own model. Since #2030 the text reaches Claude as a
+/// `--system-prompt-file` path, never on argv, so the agent sees the
+/// inherited `--model` and the file flag, and no `--model=haiku` anywhere.
 #[test]
 fn system_prompt_that_looks_like_a_model_flag_keeps_inherited_model() {
     let f = Fixture::new(&[]);
@@ -1053,9 +1067,9 @@ fn system_prompt_that_looks_like_a_model_flag_keeps_inherited_model() {
         args.windows(2).any(|pair| pair == ["--model", "sonnet"]),
         "{args:?}"
     );
+    assert!(args.iter().any(|a| a == "--system-prompt-file"), "{args:?}");
     assert!(
-        args.windows(2)
-            .any(|pair| pair == ["--system-prompt", "--model=haiku"]),
+        !args.iter().any(|a| a == "--model=haiku" || a == "haiku"),
         "{args:?}"
     );
     assert_eq!(call["ANTHROPIC_MODEL"], "sonnet");

@@ -1,11 +1,13 @@
 //! Issue #1883: `inherit_for_run`, which `amplihack recipe run` calls once per
 //! run to work out the effort and model its steps inherit (D1, D3, D7, D8).
 //!
-//! `/proc` is a synthetic tree under a private temp dir, named through
-//! `AMPLIHACK_TEST_PROC_ROOT` with the test guard set, so the developer's own
-//! `claude` session (which is usually an ancestor of `cargo test`) is never
-//! read. Every variable the function reads is set or cleared under the shared
-//! environment lock and restored afterwards.
+//! `/proc` is a synthetic tree under a private temp dir, installed for the
+//! calling thread only with `procfs::override_proc_root` (issue #2196), so the
+//! developer's own `claude` session (which is usually an ancestor of
+//! `cargo test`) is never read and no other test sees the tree. These tests
+//! never set `AMPLIHACK_TEST_PROC_ROOT` or the test home guard. Every variable
+//! the function reads is set or cleared under the shared environment lock and
+//! restored afterwards.
 
 #![cfg(unix)]
 
@@ -80,7 +82,8 @@ const READ_VARS: [&str; 8] = [
 ];
 
 /// `inherit_for_run(context, binary)` with exactly `env` set among the
-/// variables it reads, no LiteLLM gateway, and `/proc` replaced by `proc`.
+/// variables it reads, no LiteLLM gateway, and `/proc` replaced by `proc` on
+/// this thread.
 fn run(
     proc: &FakeProc,
     context: &[(&str, &str)],
@@ -99,15 +102,12 @@ fn run(
         vars.retain(|(name, _)| name != k);
         vars.push((k, Some(OsStr::new(v))));
     }
-    vars.push(("AMPLIHACK_TEST_PROC_ROOT", Some(proc.root.as_os_str())));
-    vars.push((
-        crate::user_config::TEST_HOME_GUARD_ENV,
-        Some(OsStr::new("1")),
-    ));
     let context: BTreeMap<String, String> = context
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
+    // This thread only, and removed when the guard drops (issue #2196).
+    let _proc = crate::commands::agent::procfs::override_proc_root(&proc.root);
     with_env(&vars, || inherit_for_run(&context, binary))
 }
 

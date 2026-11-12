@@ -355,9 +355,12 @@ Every value, from any source, is trimmed and then checked before use:
   U+FEFF) or bidirectional controls (U+202A to U+202E, U+2066 to U+2069)
 
 A value that fails is treated as unset and the next source is tried, with one
-"ignoring" line. Values that pass are used unchanged; there is no allowlist of
-efforts or models, except the `codex` effort mapping above. Values are always
-passed as separate argv elements, never through a shell.
+"ignoring" line. Values that pass are used unchanged, with two exceptions:
+the `codex` and `copilot` effort allowlists in the table above. `codex` takes
+only `low`, `medium` or `high`, and `copilot` takes only the levels
+`copilot --help` lists; each value is rebuilt from a matched literal, and any
+other effort is dropped with a log line. There is no allowlist of models.
+Values are always passed as separate argv elements, never through a shell.
 
 No failure in this path stops a launch or a run. The worst case is "nothing
 inherited", and the operator's own flags still apply.

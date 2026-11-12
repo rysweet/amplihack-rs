@@ -17,6 +17,7 @@
 
 use super::command::is_claude_compatible_tool as is_claude_compatible;
 use crate::commands::agent::option_check::option_value;
+use amplihack_launcher::prompt_delivery::codex_options;
 use serde::Deserialize;
 use std::process::Command;
 use std::sync::Once;
@@ -27,6 +28,12 @@ pub(crate) const PARENT_EFFORT_ENV: &str = "AMPLIHACK_PARENT_EFFORT";
 pub(crate) const PARENT_MODEL_ENV: &str = "AMPLIHACK_PARENT_MODEL";
 /// The binary for which the parent model was selected. Model ids are not portable.
 pub(crate) const PARENT_MODEL_BINARY_ENV: &str = "AMPLIHACK_PARENT_MODEL_BINARY";
+/// Every variable a launch exports for its children (C1). [`set_parent_env`]
+/// removes all three before it sets any, and a test that asserts an exact
+/// argv clears all three: every launch inside an amplihack session exports
+/// them, so `cargo test` run there inherits them.
+pub(crate) const PARENT_ENV_VARS: [&str; 3] =
+    [PARENT_EFFORT_ENV, PARENT_MODEL_ENV, PARENT_MODEL_BINARY_ENV];
 
 const EFFORT_LEVEL_ENV: &str = "CLAUDE_CODE_EFFORT_LEVEL";
 const RECIPE_RUN_ID_ENV: &str = "AMPLIHACK_RECIPE_RUN_ID";
@@ -311,9 +318,11 @@ pub(crate) fn codex_effort(level: &str) -> Option<String> {
 }
 
 /// Walk launch options without interpreting another option's consumed value as
-/// a flag. The value-taking options belong to the supported agent CLIs; unknown
-/// options are forwarded untouched. `--` ends option parsing. Codex short model
-/// and config aliases (including attached values) use their canonical names.
+/// a flag. The value-taking options belong to the supported agent CLIs: Codex's
+/// come from `amplihack_launcher::prompt_delivery::codex_options`, the one
+/// Codex table; Claude's and Copilot's are listed here. Unknown options are
+/// forwarded untouched. `--` ends option parsing. Codex short model and config
+/// aliases (including attached values) use their canonical names.
 pub(crate) fn launch_options<'a>(
     binary: &'a str,
     args: &'a [String],
@@ -384,30 +393,13 @@ pub(crate) fn launch_options<'a>(
                         | "--remote-control-session-name-prefix"
                 )
             } else if binary == "codex" {
-                matches!(
-                    name,
-                    "--config"
-                        | "--profile"
-                        | "-p"
-                        | "--sandbox"
-                        | "-s"
-                        | "--cd"
-                        | "-C"
-                        | "--ask-for-approval"
-                        | "-a"
-                        | "--image"
-                        | "-i"
-                        | "--add-dir"
-                        | "--local-provider"
-                        | "--enable"
-                        | "--disable"
-                        | "--remote"
-                        | "--remote-auth-token-env"
-                        | "--output-last-message"
-                        | "-o"
-                        | "--output-schema"
-                        | "--color"
-                )
+                // The one Codex option table, checked against saved
+                // `codex --help` output (#1985). An option that takes several
+                // values (`--image a.png b.png`) has its first value consumed
+                // here; each further value cannot start with `-`, so it is
+                // never read as an option name, and no caller of this walk
+                // looks at positionals.
+                codex_options::takes_value(name)
             } else if binary == "copilot" {
                 matches!(
                     name,
@@ -616,9 +608,9 @@ pub(crate) fn export_to_child(cmd: &mut Command, applied: &Inherited, binary: &s
 /// Replace parent values and model provenance together, removing stale values
 /// first and setting provenance only when a model is present.
 pub(crate) fn set_parent_env(cmd: &mut Command, values: &Inherited, binary: &str) {
-    cmd.env_remove(PARENT_EFFORT_ENV);
-    cmd.env_remove(PARENT_MODEL_ENV);
-    cmd.env_remove(PARENT_MODEL_BINARY_ENV);
+    for var in PARENT_ENV_VARS {
+        cmd.env_remove(var);
+    }
     if let Some(effort) = &values.effort {
         cmd.env(PARENT_EFFORT_ENV, effort);
     }
