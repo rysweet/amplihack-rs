@@ -66,7 +66,8 @@ fn field<T>(
     }
 }
 
-/// The one ASCII line, without its newline.
+/// The one line, without its newline. Values and messages are ASCII; the
+/// only other characters are the fixed ` · ` separators (decision D10).
 pub(super) fn text_line(t: &Thresholds) -> String {
     let session = field("session-at", &t.session_at, |s| {
         format!("{}% ({})", s.value, s.origin.label())
@@ -85,7 +86,7 @@ pub(super) fn text_line(t: &Thresholds) -> String {
     let floor = field("codex credit floor", &t.codex_credit_floor, |c| {
         format!("{} ({})", c.value, c.origin.label())
     });
-    format!("thresholds: {session}, {week}, {interval}, {floor}")
+    format!("Rotator thresholds: {session} · {week} · {interval} · {floor}")
 }
 
 /// One key of the JSON object: `{value, origin}`, or both `null` and the
@@ -106,18 +107,18 @@ fn json_field<T: Copy + Into<u64>>(r: &Result<Threshold<T>, ProfileError>) -> Ma
     m
 }
 
-/// The `thresholds` object of `--summary-json`: always all four keys, and
-/// `week_at.review_reserve` always present (`null` when `week_at` is bad).
+/// The `thresholds` object of `--summary-json`: always all four keys and
+/// `review_reserve` at the top level (decision D10), `null` when `week_at`
+/// is bad.
 pub(super) fn json(t: &Thresholds) -> Value {
-    let mut week = json_field(&t.week_at);
     let reserve = t
         .week_at
         .as_ref()
         .map_or(Value::Null, |w| json!(100u8.saturating_sub(w.value)));
-    week.insert("review_reserve".into(), reserve);
     json!({
         "session_at": json_field(&t.session_at),
-        "week_at": week,
+        "week_at": json_field(&t.week_at),
+        "review_reserve": reserve,
         "interval": json_field(&t.interval),
         "codex_credit_floor": json_field(&t.codex_credit_floor),
     })

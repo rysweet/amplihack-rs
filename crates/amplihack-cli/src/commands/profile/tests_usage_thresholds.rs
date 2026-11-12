@@ -60,7 +60,7 @@ fn gate(session_at: u8, week_at: u8) -> Gate {
     }
 }
 
-const DEFAULT_LINE: &str = "thresholds: session-at 85% (default), week-at 90% (default, review reserve 10%), interval 600s (default), codex credit floor 3000 (default)";
+const DEFAULT_LINE: &str = "Rotator thresholds: session-at 85% (default) · week-at 90% (default, review reserve 10%) · interval 600s (default) · codex credit floor 3000 (default)";
 
 fn fix_msg(key: &str, why: &str) -> String {
     format!(
@@ -86,7 +86,7 @@ fn the_documented_override_example() {
     );
     assert_eq!(
         text_line(&t),
-        "thresholds: session-at 85% (default), week-at 80% (config, review reserve 20%), interval 300s (env), codex credit floor 3000 (default)"
+        "Rotator thresholds: session-at 85% (default) · week-at 80% (config, review reserve 20%) · interval 300s (env) · codex credit floor 3000 (default)"
     );
 }
 
@@ -104,7 +104,7 @@ fn every_key_from_config() {
     );
     assert_eq!(
         text_line(&t),
-        "thresholds: session-at 70% (config), week-at 100% (config, review reserve 0%), interval 120s (config), codex credit floor 0 (config)"
+        "Rotator thresholds: session-at 70% (config) · week-at 100% (config, review reserve 0%) · interval 120s (config) · codex credit floor 0 (config)"
     );
 }
 
@@ -117,7 +117,7 @@ fn a_running_rotator_s_session_and_week_points_win_with_origin_rotator() {
     );
     assert_eq!(
         text_line(&t),
-        "thresholds: session-at 70% (rotator), week-at 95% (rotator, review reserve 5%), interval 120s (config), codex credit floor 3000 (default)"
+        "Rotator thresholds: session-at 70% (rotator) · week-at 95% (rotator, review reserve 5%) · interval 120s (config) · codex credit floor 3000 (default)"
     );
 }
 
@@ -130,7 +130,7 @@ fn a_running_rotator_hides_a_bad_config_value_for_its_own_keys_only() {
     );
     let line = text_line(&t);
     assert!(
-        line.starts_with("thresholds: session-at 70% (rotator), "),
+        line.starts_with("Rotator thresholds: session-at 70% (rotator) · "),
         "{line}"
     );
     let t = resolve(
@@ -155,7 +155,7 @@ fn a_bad_key_shows_its_message_and_leaves_the_others() {
     assert_eq!(
         text_line(&t),
         format!(
-            "thresholds: session-at invalid ({}), week-at 90% (default, review reserve 10%), interval 600s (default), codex credit floor 3000 (default)",
+            "Rotator thresholds: session-at invalid ({}) · week-at 90% (default, review reserve 10%) · interval 600s (default) · codex credit floor 3000 (default)",
             fix_msg("rotator.session_at", "must be an integer from 1 to 100")
         )
     );
@@ -171,7 +171,7 @@ fn a_bad_week_at_has_no_review_reserve_on_the_line() {
     let line = text_line(&t);
     assert!(
         line.contains(&format!(
-            ", week-at invalid ({}), interval 600s (default)",
+            " · week-at invalid ({}) · interval 600s (default)",
             fix_msg("rotator.week_at", "must be an integer from 1 to 100")
         )),
         "{line}"
@@ -191,7 +191,7 @@ fn a_bad_codex_floor_is_named_on_the_line() {
     );
     assert!(
         text_line(&t).ends_with(&format!(
-            ", codex credit floor invalid ({})",
+            " · codex credit floor invalid ({})",
             fix_msg(
                 "rotator.codex_credit_floor",
                 "must be an integer from 0 to 100000000"
@@ -226,7 +226,7 @@ fn messages_are_cleaned_and_the_line_is_ascii() {
     for c in ['\u{1b}', '\u{202e}', '\u{7}', '\n'] {
         assert!(!line.contains(c), "{c:?} in {line:?}");
     }
-    assert!(line.is_ascii(), "{line:?}");
+    assert!(line.replace(" · ", " ").is_ascii(), "{line:?}");
     assert!(line.contains("rotator.week_at"), "{line}");
 }
 
@@ -239,7 +239,8 @@ fn the_default_object_is_the_documented_one() {
         json(&t),
         serde_json::json!({
             "session_at": { "value": 85, "origin": "default" },
-            "week_at": { "value": 90, "origin": "default", "review_reserve": 10 },
+            "week_at": { "value": 90, "origin": "default" },
+            "review_reserve": 10,
             "interval": { "value": 600, "origin": "default" },
             "codex_credit_floor": { "value": 3000, "origin": "default" }
         })
@@ -258,7 +259,8 @@ fn values_are_integers_and_origins_are_lowercase() {
         v,
         serde_json::json!({
             "session_at": { "value": 70, "origin": "rotator" },
-            "week_at": { "value": 80, "origin": "rotator", "review_reserve": 20 },
+            "week_at": { "value": 80, "origin": "rotator" },
+            "review_reserve": 20,
             "interval": { "value": 300, "origin": "env" },
             "codex_credit_floor": { "value": 100_000_000, "origin": "config" }
         })
@@ -276,11 +278,12 @@ fn a_bad_key_is_null_with_the_raw_error() {
     let w = &v["week_at"];
     assert!(w["value"].is_null(), "{w}");
     assert!(w["origin"].is_null(), "{w}");
-    assert!(w["review_reserve"].is_null(), "{w}");
+    assert!(v["review_reserve"].is_null(), "{v}");
     assert!(
-        w.as_object().unwrap().contains_key("review_reserve"),
-        "review_reserve is always present on week_at: {w}"
+        v.as_object().unwrap().contains_key("review_reserve"),
+        "review_reserve is always present at the top level: {v}"
     );
+    assert!(w.get("review_reserve").is_none(), "not inside week_at: {w}");
     assert_eq!(w["error"], fix_msg("rotator.week_at", raw).as_str());
     // JSON escaping, not display cleaning: the raw control survives a parse.
     let text = serde_json::to_string(&v).unwrap();
@@ -299,7 +302,7 @@ fn a_bad_key_is_null_with_the_raw_error() {
 }
 
 #[test]
-fn the_object_always_has_all_four_keys() {
+fn the_object_always_has_all_four_keys_and_the_review_reserve() {
     for bad in [
         "rotator.session_at",
         "rotator.week_at",
@@ -311,7 +314,13 @@ fn the_object_always_has_all_four_keys() {
         k.sort_unstable();
         assert_eq!(
             k,
-            ["codex_credit_floor", "interval", "session_at", "week_at"],
+            [
+                "codex_credit_floor",
+                "interval",
+                "review_reserve",
+                "session_at",
+                "week_at"
+            ],
             "{bad}"
         );
     }
@@ -350,7 +359,7 @@ fn a_group_writable_file_shows_the_whole_file_fix_and_no_path() {
     let line = text_line(&t);
     assert!(!line.contains(&home.display().to_string()), "{line}");
     assert!(line.contains("fix the user config file first"), "{line}");
-    assert!(line.is_ascii(), "{line}");
+    assert!(line.replace(" · ", " ").is_ascii(), "{line}");
 }
 
 #[cfg(unix)]

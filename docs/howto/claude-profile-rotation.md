@@ -818,7 +818,7 @@ The host's `~/.local/bin/codex-pick` script is not changed by
 `rotator.codex_credit_floor`; it keeps its own `--floor` option.
 
 To check what is in force, run `amplihack profile usage` and read its
-`thresholds:` line (see [See how much capacity is left](#see-how-much-capacity-is-left)).
+`Rotator thresholds:` line (see [See how much capacity is left](#see-how-much-capacity-is-left)).
 
 ## When a swap happens
 
@@ -1529,7 +1529,7 @@ came from. Here the rotator was started with `--session-at 70` and
 `rotator.interval` is set to `120`:
 
 ```
-thresholds: session-at 70% (rotator), week-at 90% (rotator, review reserve 10%), interval 120s (config), codex credit floor 3000 (default)
+Rotator thresholds: session-at 70% (rotator) · week-at 90% (rotator, review reserve 10%) · interval 120s (config) · codex credit floor 3000 (default)
 ```
 
 `rotator` means the value was read from the running rotator, so it is the

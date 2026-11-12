@@ -14,7 +14,7 @@
 //!
 //! - precedence: flag, then `AMPLIHACK_ROTATE_*`, then the user file key,
 //!   then the default (85, 90, 600, 3000);
-//! - `profile usage` prints `thresholds: session-at <n>% (<origin>), ...`
+//! - `profile usage` prints `Rotator thresholds: session-at <n>% (<origin>) · ...`
 //!   and `--summary-json` gains a `thresholds` object; `--json` is
 //!   unchanged;
 //! - a user file group or others can write fails closed: the rotator
@@ -94,7 +94,7 @@ fn setting_errors(stderr: &str) -> String {
 fn thresholds_line(stdout: &str) -> &str {
     stdout
         .lines()
-        .find(|l| l.starts_with("thresholds: "))
+        .find(|l| l.starts_with("Rotator thresholds: "))
         .unwrap_or_else(|| panic!("no thresholds line in:\n{stdout}"))
 }
 
@@ -301,7 +301,7 @@ fn profile_usage_prints_the_default_thresholds_line() {
     let stdout = text(&out.stdout);
     assert_eq!(
         thresholds_line(&stdout),
-        "thresholds: session-at 85% (default), week-at 90% (default, review reserve 10%), interval 600s (default), codex credit floor 3000 (default)"
+        "Rotator thresholds: session-at 85% (default) · week-at 90% (default, review reserve 10%) · interval 600s (default) · codex credit floor 3000 (default)"
     );
 }
 
@@ -319,7 +319,7 @@ fn profile_usage_shows_config_and_env_origins() {
     let stdout = text(&out.stdout);
     assert_eq!(
         thresholds_line(&stdout),
-        "thresholds: session-at 70% (config), week-at 80% (config, review reserve 20%), interval 120s (env), codex credit floor 5000 (config)"
+        "Rotator thresholds: session-at 70% (config) · week-at 80% (config, review reserve 20%) · interval 120s (env) · codex credit floor 5000 (config)"
     );
 }
 
@@ -332,7 +332,8 @@ fn summary_json_has_the_thresholds_object() {
         v["thresholds"],
         serde_json::json!({
             "session_at": { "value": 70, "origin": "config" },
-            "week_at": { "value": 90, "origin": "default", "review_reserve": 10 },
+            "week_at": { "value": 90, "origin": "default" },
+            "review_reserve": 10,
             "interval": { "value": 600, "origin": "default" },
             "codex_credit_floor": { "value": 3000, "origin": "default" }
         })

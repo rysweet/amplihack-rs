@@ -2202,7 +2202,8 @@ mod summary_1797 {
                 "codex": [],
                 "thresholds": {
                     "session_at": { "value": 85, "origin": "default" },
-                    "week_at": { "value": 90, "origin": "default", "review_reserve": 10 },
+                    "week_at": { "value": 90, "origin": "default" },
+                    "review_reserve": 10,
                     "interval": { "value": 600, "origin": "default" },
                     "codex_credit_floor": { "value": 3000, "origin": "default" }
                 }
@@ -2951,7 +2952,8 @@ fn summary_json_carries_overridden_thresholds_and_the_review_reserve() {
         v["thresholds"],
         serde_json::json!({
             "session_at": { "value": 85, "origin": "default" },
-            "week_at": { "value": 80, "origin": "config", "review_reserve": 20 },
+            "week_at": { "value": 80, "origin": "config" },
+            "review_reserve": 20,
             "interval": { "value": 300, "origin": "env" },
             "codex_credit_floor": { "value": 3000, "origin": "default" }
         })

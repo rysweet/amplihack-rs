@@ -2703,14 +2703,14 @@ before the Codex block. It gives the thresholds the rotator and the Codex
 choice use, and where each came from. With nothing set:
 
 ```
-thresholds: session-at 85% (default), week-at 90% (default, review reserve 10%), interval 600s (default), codex credit floor 3000 (default)
+Rotator thresholds: session-at 85% (default) · week-at 90% (default, review reserve 10%) · interval 600s (default) · codex credit floor 3000 (default)
 ```
 
 With `amplihack config set rotator.week_at 80` and
 `AMPLIHACK_ROTATE_INTERVAL=300` in the environment:
 
 ```
-thresholds: session-at 85% (default), week-at 80% (config, review reserve 20%), interval 300s (env), codex credit floor 3000 (default)
+Rotator thresholds: session-at 85% (default) · week-at 80% (config, review reserve 20%) · interval 300s (env) · codex credit floor 3000 (default)
 ```
 
 | Field | Value | Source |
@@ -2749,10 +2749,10 @@ A key that cannot be read is shown with the reason in place of its value,
 and the other fields are unaffected. `profile usage` still exits 0:
 
 ```
-thresholds: session-at invalid (invalid rotate setting rotator.session_at: must be an integer from 1 to 100; fix it with `amplihack config set rotator.session_at <value>` or `amplihack config unset rotator.session_at`), week-at 90% (default, review reserve 10%), interval 600s (default), codex credit floor 3000 (default)
+Rotator thresholds: session-at invalid (invalid rotate setting rotator.session_at: must be an integer from 1 to 100; fix it with `amplihack config set rotator.session_at <value>` or `amplihack config unset rotator.session_at`) · week-at 90% (default, review reserve 10%) · interval 600s (default) · codex credit floor 3000 (default)
 ```
 
-The line is plain ASCII. Values and messages are cleaned as table names
+The line is plain ASCII apart from the ` · ` separators. Values and messages are cleaned as table names
 are: control characters and bidirectional overrides are shown as escapes.
 With no profiles the line follows the `no profiles` line. It is not printed
 with `--raw`, which has no summary either, nor with `--json` or
@@ -2816,7 +2816,8 @@ shown and no Codex accounts:
   "codex": [],
   "thresholds": {
     "session_at": { "value": 85, "origin": "default" },
-    "week_at": { "value": 90, "origin": "default", "review_reserve": 10 },
+    "week_at": { "value": 90, "origin": "default" },
+    "review_reserve": 10,
     "interval": { "value": 600, "origin": "default" },
     "codex_credit_floor": { "value": 3000, "origin": "default" }
   }
@@ -2839,11 +2840,11 @@ shown and no Codex accounts:
 | `summary.runway_hours` | number or `null` | Hours of weighted headroom at that rate, one decimal place; `null` when the rate is `null` or zero. |
 | `summary.weekly_resets_next_24h` | array | Valid logins whose weekly reset is after now and no more than 24 hours away, and whose weighted `restores` (`weight × week% / 100`, two decimal places) is above `0`, soonest first, then by name. Each is `{"at", "profile", "restores"}`. |
 | `codex` | array | The [Codex JSON rows](#codex-json-rows), unchanged; `[]` with profile names given. Codex rows never count towards `summary`. |
-| `thresholds` | object | The [thresholds in force](#thresholds-in-force): `session_at`, `week_at`, `interval` and `codex_credit_floor`, always all four. |
+| `thresholds` | object | The [thresholds in force](#thresholds-in-force): `session_at`, `week_at`, `interval` and `codex_credit_floor`, always all four, and `review_reserve`. |
 | `thresholds.<key>.value` | integer or `null` | The value in use: percent for `session_at` and `week_at`, seconds for `interval`, credits for `codex_credit_floor`. `null` when the key cannot be read. |
 | `thresholds.<key>.origin` | string or `null` | `rotator`, `env`, `config` or `default`, as on the text line. `null` when the key cannot be read. |
 | `thresholds.<key>.error` | string | Present only when the key cannot be read: the message the text line shows, uncleaned (JSON escaping applies). |
-| `thresholds.week_at.review_reserve` | integer or `null` | `100 - value`; `null` when `week_at` cannot be read. |
+| `thresholds.review_reserve` | integer or `null` | `100 - thresholds.week_at.value`; `null` when `week_at` cannot be read. Always present. |
 
 Numbers are rounded half away from zero only when printed; a value that is
 not finite is printed as `null`. Keys are only ever added, as for `--json`.
@@ -2865,7 +2866,7 @@ amplihack profile usage --summary-json | jq '.summary.runway_hours'
 To read the review reserve in a script:
 
 ```bash
-amplihack profile usage --summary-json | jq '.thresholds.week_at.review_reserve'
+amplihack profile usage --summary-json | jq '.thresholds.review_reserve'
 ```
 
 ```

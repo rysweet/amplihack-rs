@@ -909,7 +909,7 @@ Below the bars, a six-line summary gives the weekly headroom across all
 logins, how many can take work now, the next session reset and how long the
 weekly capacity lasts at the recent rate; see
 [See how much capacity is left](claude-profile-rotation.md#see-how-much-capacity-is-left).
-A `thresholds:` line follows: the rotator's session and weekly switch
+A `Rotator thresholds:` line follows: the rotator's session and weekly switch
 points, the review reserve, the interval and the Codex credit floor, each
 with where it came from. To change them permanently, see
 [Set the thresholds permanently](claude-profile-rotation.md#set-the-thresholds-permanently).
