@@ -298,3 +298,78 @@ fn stale_collection_does_not_adopt_valid_records_moved_to_another_parent() {
         fx.assert_sentinel(&sentinel);
     });
 }
+
+#[test]
+fn interrupted_claim_in_use_is_preserved_at_discovery_and_at_apply() {
+    use super::super::owned_run_dir::OwnedRunDir;
+    use std::os::unix::fs::symlink;
+    isolated(|fx| {
+        let work = WorkRoot {
+            path: fx.work.clone(),
+            explicit: true,
+        };
+        let (scope, guard) = RunScope::begin_with(
+            work.clone(),
+            "busy-claim",
+            &fx.base,
+            &TmpRootInputs::default(),
+        )
+        .unwrap();
+        let runtime = guard.path().to_owned();
+        drop(guard);
+        let parent = if runtime == scope.run_dir.join("runtime") {
+            scope.run_dir.clone()
+        } else {
+            work.short_runtime_dir()
+        };
+        let owned = OwnedRunDir::create(
+            &parent,
+            runtime.file_name().unwrap().to_str().unwrap(),
+            &scope.run_id,
+        )
+        .unwrap();
+        fx.sentinel(owned.path());
+        let record: serde_json::Value =
+            serde_json::from_slice(&fs::read(runtime.join(".amplihack-owner.json")).unwrap())
+                .unwrap();
+        let claim = parent.join(format!(
+            ".amplihack-claim-{}",
+            record["nonce"].as_str().unwrap()
+        ));
+        fs::rename(&runtime, &claim).unwrap();
+        drop(owned);
+        mark_dead(&scope.run_dir);
+        let settings = settings(&work);
+        let items = collect(&settings).unwrap();
+        assert!(
+            items
+                .iter()
+                .any(|item| item.path == runtime && matches!(item.op, Op::RemoveRunTmp { .. }))
+        );
+        let process = fx.proc_root.join("999999");
+        fs::create_dir(&process).unwrap();
+        symlink(&claim, process.join("cwd")).unwrap();
+        let entries = apply_items(items, &settings, true);
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.path == runtime && entry.action == Action::Skipped)
+        );
+        fx.assert_sentinel(&claim.join("sentinel"));
+        let entries = run_sweep(&settings, true).unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.path == runtime && entry.action == Action::Skipped)
+        );
+        fx.assert_sentinel(&claim.join("sentinel"));
+        fs::remove_file(process.join("cwd")).unwrap();
+        let entries = run_sweep(&settings, true).unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.path == runtime && entry.action == Action::Removed)
+        );
+        assert!(!claim.exists());
+    });
+}
